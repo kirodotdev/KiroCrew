@@ -20,11 +20,8 @@ from kiro_crew.testing.wait import default_timeout
 class TestMemberEventLogAppendsAreOrdered:
     """Two appends handed to the DEFAULT thread pool complete in either order.
 
-    The member log is the authoritative record other surfaces read, so two
-    transitions close together could be written newest-first with no crash and no
-    unusual load involved. The single-worker executor lives in ``eventlog_hooks``,
-    beside the ``emit`` every writer already calls, so a writer cannot offload an
-    append without seeing it.
+    So appends go through a single-worker executor in ``eventlog_hooks``, beside the
+    ``emit`` every writer calls, so the authoritative log is never written newest-first.
     """
 
     def test_the_shared_executor_has_exactly_one_worker(self):
@@ -184,20 +181,12 @@ def _gateway_source() -> str:
 class TestPatrolTransitionPersistsBeforeItPublishes:
     """The patrol frame must not be broadcast before its append has landed.
 
-    The member log -- not the live loop -- is what the Crew Members drawer reads
-    for a patrol's stop REASON across a restart:
-    ``reconcile_members_at_startup`` closes a log that still reads ``armed`` with
-    no live loop as ``reason='interrupted'``. So a transition published before its
-    append landed lets a crash in that window replace the real reason
-    (``runtime_budget``, say) permanently, with no later event able to correct it.
+    After a restart, ``reconcile_members_at_startup`` closes a log still reading ``armed``
+    as ``reason='interrupted'``, so a crash between publish and append would replace the
+    real stop reason permanently.
 
-    Pinned at the CALL SITE rather than by driving the observer, because the
-    observer is a closure built during gateway construction and reaching it needs
-    the whole gateway stood up. The invariant that makes the ordering enforceable
-    is that exactly ONE place performs the publish: once every caller goes through
-    that one function, moving it relative to the append is a visible edit rather
-    than an easy accident. Matched on the enclosing function of the call, not on a
-    substring, so wrapping the call does not defeat it.
+    Pinned at the call site (the observer is a closure needing a whole gateway): exactly
+    ONE function publishes, matched by the call's enclosing function, not a substring.
     """
 
     def _publish_call_owners(self) -> list[str]:
@@ -270,14 +259,10 @@ class TestPatrolTransitionPersistsBeforeItPublishes:
         )
 
     def test_the_observers_own_publish_is_only_the_nothing_was_queued_fallback(self):
-        """Closes the gap the two tests above leave open.
+        """The observer's own ``_publish()`` sits under an ``if`` (nothing was queued).
 
-        Both of those still pass if the observer ALSO calls ``_publish()``
-        unconditionally before submitting the append -- the frame stays funnelled
-        through one function and the job still publishes, while the pre-fix
-        ordering is fully restored. What rules that out is that the observer's own
-        publish is reachable only when nothing was queued, i.e. it sits under an
-        ``if``.
+        The two tests above still pass if the observer also publishes unconditionally
+        before submitting the append, which would put the publish first again.
         """
         import ast
 
@@ -343,16 +328,9 @@ class TestPatrolTransitionPersistsBeforeItPublishes:
     def test_the_publish_is_gated_on_the_appends_answer_not_merely_ordered_after_it(self):
         """Ordering alone is not persistence.
 
-        The three tests above pin that the publish happens inside the submitted
-        append and not before it. They all still pass when `_emit_patrol` DISCARDS
-        what `emit` answered and publishes regardless -- which is exactly the
-        report-success-on-a-failed-write shape `persist-before-you-publish`
-        forbids, because the frame then asserts a transition the ledger does not
-        hold and the drawer reads the ledger for the stop reason after a restart.
-
-        So: the result must be ASSIGNED (a bare expression statement is the
-        return-not-read shape), and a guard on that name must be able to leave the
-        function before any publish is reached.
+        The tests above still pass if `_emit_patrol` discards what `emit` answered and
+        publishes anyway, which `persist-before-you-publish` forbids. So the result must
+        be assigned, and a guard on it must be able to return before any publish.
         """
         import ast
 
@@ -398,13 +376,8 @@ class TestPatrolTransitionPersistsBeforeItPublishes:
     def test_the_fallback_publish_is_not_reachable_on_a_refused_queue(self):
         """`_publish_deferred` answers "will a worker publish", not "was anything owed".
 
-        Both are false when the queue REFUSES the append, and the fallback that owns
-        the frame in that case published it anyway -- asserting a patrol transition the
-        ledger never received. Gating `_emit_patrol` (the test above) does not close
-        this: on a refusal `_emit_patrol` never runs at all.
-
-        So the fallback's test must ALSO depend on whether a durable transition applied,
-        not on `_publish_deferred` alone.
+        Both are false when the queue refuses the append, and then `_emit_patrol` never
+        runs, so the fallback must also check that a durable transition applied.
         """
         import ast
 

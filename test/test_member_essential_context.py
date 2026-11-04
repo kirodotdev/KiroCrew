@@ -314,15 +314,9 @@ def test_execution_namespace_controls_member_prompt_identity(env, entrypoint, se
 def _delegate_expectations(prompt: str, store: str, *, template_instructions: bool = True) -> None:
     """The subset a member turn with the desk WITHHELD receives.
 
-    Shared by the template-selected delegate and the member selection off its
-    desk (a plain chat on the alias, a cron or channel turn): the two arms of
-    ``_desk_withheld``, one section shape.
-
-    Identity, `[PERMANENT RULES]`, the store's anchors and the selected template's
-    own instructions stay; the desk protocol and the briefing do not, in any of
-    their spellings (the full layer, the platform placeholder, the scope
-    placeholder), and neither does the rules header's reference to a protocol
-    that is not there.
+    Shared by both arms of ``_desk_withheld``. Identity, `[PERMANENT RULES]`, anchors and
+    template instructions stay; the desk protocol and briefing go in every spelling,
+    along with the rules header's reference to the protocol.
     """
     assert "You are writer." in prompt
     assert "A careful bilingual writer" in prompt
@@ -372,11 +366,8 @@ def test_template_selected_delegate_keeps_identity_and_rules_but_not_the_desk_pr
 ):
     """The member's store under a selected template is the member's DELEGATE.
 
-    It reads and writes the member's memory, so it is that member and runs under
-    that member's rules; it was picked to do the work, so the desk protocol whose
-    second item hands substantial work to a separate session -- and the working
-    briefing that protocol maintains -- are withheld on every lifecycle the
-    envelope is rebuilt for.
+    It uses the member's memory and rules, but it was picked to do the work, so the desk
+    protocol (which hands work to another session) and its briefing are withheld.
     """
     delegate = _template_delegate(KiroCrewConfig.load())
     prompt, _ = env.builder.build_message(
@@ -442,14 +433,9 @@ def test_member_selected_off_its_desk_keeps_identity_and_rules_but_not_the_desk(
 ):
     """A member SELECTION with no desk argument is not the member's desk.
 
-    An ordinary dashboard chat that resolved to a crew alias -- every plain chat
-    lands on the stock ``default`` alias this way -- a cron turn or a channel turn
-    carries the member's record and therefore its identity, rules and memory, but
-    no caller named it as the member's DM thread. It gets exactly what a delegate
-    gets: identity and `[PERMANENT RULES]`, no `[HOW YOU WORK]`, no briefing (so
-    nothing tells it to rewrite the briefing file), and no sentence describing a
-    DM thread it is not in. Pinned on every lifecycle the section is rebuilt for
-    and on both entry points.
+    A plain chat on a crew alias, a cron turn or a channel turn gets what a delegate gets:
+    identity and `[PERMANENT RULES]`, no `[HOW YOU WORK]`, no briefing, and no DM-thread
+    sentence. Pinned on every lifecycle and both entry points.
     """
     from kiro_crew.execution_context import resolve_member_execution
 
@@ -537,17 +523,9 @@ def test_a_member_with_no_persisted_id_keeps_its_rules_when_session_create_names
 ):
     """The record shape the split cannot express, on the `session_create` arm.
 
-    A member whose record predates persisted identity is named by `selection_kind
-    == "member"` and `selection_name` alone. Rewriting those to the template's
-    namespace would leave a record ContextBuilder attributes to no member -- no
-    identity and, the part that matters, no `[PERMANENT RULES]`. The arm keeps the
-    selection and changes only the template (the record
-    `test_explicit_template_child_of_a_member_with_no_persisted_id_keeps_its_selection`
-    pins through the arm itself), so the child stays that member with its rules.
-    It does NOT keep the desk: no caller names a delegate as the member's
-    DM thread, so the surface half of ``_desk_withheld`` withholds the protocol
-    and the briefing without the record having to say "this member, under that
-    template".
+    Such a member is named only by `selection_kind` and `selection_name`; rewriting them
+    to the template's namespace would drop `[PERMANENT RULES]`. The arm changes only the
+    template, so the child keeps its rules, while ``_desk_withheld`` still drops the desk.
     """
     from dataclasses import replace
 
@@ -585,15 +563,9 @@ def test_a_member_with_no_persisted_id_keeps_its_rules_when_session_create_names
 def test_a_member_with_no_persisted_id_spawns_a_plain_template_child(env):
     """The spawn gate's `agent=` child of such a member is a template run.
 
-    `with_template` flips the selection namespace for every record, and a member
-    with no persisted id has no identity field to survive that, so its
-    `spawn_run(agent=...)` child is a plain template run on the parent's store
-    with no member section -- neither the desk protocol nor the rules (the record
-    cannot say "this member, under that template"; a record-shape change for the
-    memory model). A continuation of
-    that child is a template turn: `run_turn.py` takes the kind from the record, the
-    member refresh is skipped, the spawn template is kept, and no member is
-    looked up, so a renamed alias is not an error.
+    `with_template` flips the selection namespace, and such a member has no identity
+    field to survive it, so the child gets no member section. A continuation is a
+    template turn with no member lookup, so a renamed alias is not an error.
     """
     from unittest.mock import MagicMock
 
@@ -1255,11 +1227,8 @@ def test_symlinked_root_still_refuses_a_document_outside_it(env, tmp_path):
 def test_absolute_resource_in_realpath_spelling_admits_under_a_linked_root(env, tmp_path):
     """A realpath-spelled declaration must resolve against a link-spelled root.
 
-    An installer records an absolute ``file://`` resource in its realpath spelling
-    while the declared root stays the link, which is the ordinary ``$HOME`` layout
-    wherever ``/home/<user>`` points at another filesystem. The lexical
-    ``relative_to`` then called a resource genuinely inside the root outside it
-    and refused every absolute essential source on such a host.
+    Installers record realpath spellings while the root stays a link (``/home/<user>``
+    on another filesystem), so a lexical ``relative_to`` would refuse every source.
     """
     from kiro_crew import member_essential_context as essentials
 

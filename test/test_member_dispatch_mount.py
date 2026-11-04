@@ -1,27 +1,14 @@
 """Per-session mounting of the dashboard session-control server for crew members.
 
-Pins the four seams the member-dispatch mount rides on:
+Seams: ``members.member_dispatch_session_server`` (env carries
+``KIROCREW_SESSION_KEY``, the bound port and ``KIROCREW_HOME``, which a from-scratch env
+drops), ``kas_agents.to_client_custom_agent(member_dispatch=True)`` (verbs join
+``allowedTools`` BEFORE the governance ceiling filter),
+``AcpClient._append_member_dispatch_server``, ``AcpProvider._member_session_key`` and
+``AcpRuntime._kas_custom_agents``.
 
-- ``members.member_dispatch_session_server`` — the session-level ``mcpServers``
-  element, carrying strict identity via ``KIROCREW_SESSION_KEY`` in its env
-  plus the gateway's bound port and its ``KIROCREW_HOME`` override, both of
-  which the from-scratch env would otherwise drop.
-- ``kas_agents.to_client_custom_agent(member_dispatch=True)`` — the KAS wire
-  projection widening: the server joins ``tools`` and the conductor's
-  approval-free dashboard verbs join the ``allowedTools`` input BEFORE the
-  governance ceiling filter.
-- ``AcpClient._append_member_dispatch_server`` — the claude session-array append,
-  honoring the permission-surface precondition.
-- ``AcpProvider._member_session_key`` — the set membership that decides whether the
-  runtime's session/new and session/load paths mount anything at all, which is the
-  only route a codex member session has.
-- ``AcpRuntime._kas_custom_agents`` / ``create_session`` threading — the member
-  flag reaches the projection.
-
-The mount is deliberately session-scoped: every test here also pins the
-negative (a non-member session gains nothing), because THAT is the property the
-per-session design exists for — mounting through the on-disk template would
-hand session control to every session of the agent.
+Every test also pins that a non-member session gains nothing: mounting through the
+on-disk template would hand session control to every session of the agent.
 """
 
 from __future__ import annotations
@@ -64,14 +51,9 @@ MEMBER_KEY = "dashboard_member-autofix"
 def goose_agents_dir(tmp_path, monkeypatch):
     """A goose agent spec on disk, declaring the control plane AND the dashboard server.
 
-    The documented seam for driving a mirror over a spec: materialization would
-    otherwise rebuild the managed default and overwrite the spec under test. Module
-    level rather than on a class, because both goose classes below need the same tree
-    and a fixture defined on one class is not reachable from another.
-
-    The spec DECLARING ``kirocrew-dashboard`` is load-bearing: the projection withholds
-    a spec-described control-plane server (``mirrors.identity``), so whatever appears
-    in the array is the entry the member mount placed.
+    Without this seam materialization would overwrite the spec under test. Declaring
+    ``kirocrew-dashboard`` matters: the projection withholds a spec-described copy
+    (``mirrors.identity``), so the array entry must be the member mount's.
     """
     import kiro_crew.agent as agent_mod
     from kiro_crew.acp import session_mcp
@@ -164,12 +146,9 @@ class TestCapabilitySet:
     def test_the_precondition_is_read_from_the_routing(self):
         """Opposite answers from one question, and claude's answer must not move.
 
-        The client's owned-file fallback answers for an UNENFORCED routing alone.
-        claude's is declared and unenforced, so owning ``settings.local.json`` stands
-        in for the read-back this core does not have. opencode's IS enforced, and its
-        mirror documents ``permission_surface_owned`` as accepted-and-ignored, so
-        asking for an owned file there would withhold every member's tools on a
-        condition that cannot describe the backend.
+        The owned-file fallback applies to an unenforced routing (claude's). opencode's is
+        enforced and ignores ``permission_surface_owned``, so requiring it there would
+        withhold every member's tools.
         """
         assert acp_tool_gate.is_enforced(ACP_BACKEND_CLAUDE) is False
         assert acp_tool_gate.is_enforced(ACP_BACKEND_OPENCODE) is True
@@ -486,11 +465,8 @@ class TestClaudeMemberAppend(
 class TestCodexMemberMount:
     """What actually mounts session control on a codex member DM.
 
-    NOT ``_append_member_dispatch_server``: that helper serves the backends whose
-    array the CLIENT composes, and codex is not one of them -- its array is built by
-    ``AcpRuntime._mirrored_session_mcp`` and the runtime appends the member entry
-    itself, keyed only on a non-empty ``member_session_key``. So the codex-specific
-    fact is the one asserted here, the seam that decides whether that key is empty.
+    Not ``_append_member_dispatch_server``: ``AcpRuntime._mirrored_session_mcp`` builds
+    codex's array and appends the entry on a non-empty ``member_session_key``.
     """
 
     @staticmethod
@@ -539,13 +515,9 @@ class TestCodexMemberMount:
 class TestOpencodeMemberAppend:
     """An opencode member session mounts without owning any permission file.
 
-    Same precondition shape as codex, reached through a DIFFERENT routing:
-    ``VERIFIED_SEEDED_SETTINGS`` is enforced because the seeded value is read back
-    from the harness's own config resolution before the first prompt. The mutation
-    these carry is the precondition itself -- read claude's flag on this backend and
-    the first test withholds the entry, which is the state the mirror's own docstring
-    says must not happen (``permission_surface_owned`` is accepted and ignored here,
-    so no opencode session can ever satisfy it).
+    ``VERIFIED_SEEDED_SETTINGS`` is enforced (the seeded value is read back before the
+    first prompt). ``permission_surface_owned`` is ignored here, so requiring it would
+    withhold the entry from every opencode session.
     """
 
     @staticmethod
@@ -587,16 +559,10 @@ class TestOpencodeMemberAppend:
 class TestOpencodeSessionArray:
     """The whole array an opencode ``session/new`` would carry, not just the append.
 
-    The claim membership makes is about the ARRAY: a member DM thread on this harness
-    holds the session-control tools. So these drive
-    ``AcpClient._resolve_session_mcp_servers`` with the REAL opencode mirror over a
-    real agent spec, and read the elements that come out. Nothing here asserts set
-    membership -- that would be the claim proving itself.
-
-    The spec's own ``kirocrew-dashboard`` is the case the projection must NOT supply:
-    ``mirrors.identity.identity_bound_crew_servers`` withholds it because a
-    spec-described element carries no session identity, so the entry in the array has
-    to be the one this session's mount places.
+    Drives ``AcpClient._resolve_session_mcp_servers`` with the real opencode mirror and
+    reads the elements; asserting set membership would be the claim proving itself.
+    ``mirrors.identity.identity_bound_crew_servers`` withholds the spec's own
+    ``kirocrew-dashboard``, so the array entry must be this session's mount.
     """
 
     @staticmethod
@@ -693,11 +659,8 @@ class TestOpencodeSessionArray:
     ):
         """``disabled`` is the stronger switch and binds on every backend.
 
-        A per-tool narrowing can be honoured by a harness that refuses the call; a
-        whole-server disable has no per-call form at all, so nothing downstream can
-        refuse a call to a server it was handed. The ``tools`` allowlist keeps a
-        disabled server out of the spec-described half of the array, but this entry is
-        appended after that filter and would otherwise walk straight past it.
+        A whole-server disable has no per-call form to refuse by, and this entry is
+        appended after the ``tools`` allowlist filter, so the append must check it.
         """
         (tmp_path / "settings-mcp.json").write_text(
             json.dumps({"mcpServers": {MEMBER_DISPATCH_SERVER: {"disabled": True}}}),
@@ -715,9 +678,7 @@ class TestOpencodeSessionArray:
         (``SETTINGS_FILE``), so the member keeps its mount and the switched-off tool
         is denied by name -- the rule keys on the server name the mount carries.
 
-        The restriction is written the way the dashboard's tool-off action writes it --
-        to the global MCP settings file, which for Crew's own managed servers is the only
-        place it can live.
+        The restriction goes in the global MCP settings file, as the dashboard writes it.
         """
         (tmp_path / "settings-mcp.json").write_text(
             json.dumps(
@@ -752,12 +713,8 @@ class TestRestrictedServerIsNotReAdded:
     """The append may not un-withhold a narrowed server -- but only where that would
     actually widen anything.
 
-    Three answers from one declaration (``registry.PerToolDeny``), which is why the
-    client reads that rather than a membership set of its own: withholding is the whole
-    enforcement on opencode, while codex still refuses the call at permission time from
-    ``denied_tools`` and claude's ``permissions.deny`` rules refuse it inside the
-    adapter. Withholding the mount on either of those two would cost a member thread
-    its tools and buy nothing.
+    Read from ``registry.PerToolDeny``: withholding is the only enforcement on opencode,
+    while codex (``denied_tools``) and claude (``permissions.deny``) refuse the call.
     """
 
     @staticmethod
@@ -820,15 +777,9 @@ class TestRestrictedServerIsNotReAdded:
 class TestDisabledServerIsNeverMounted:
     """``disabled`` stops the client's mount with no backend condition.
 
-    The contrast with :class:`TestRestrictedServerIsNotReAdded` is the point: there,
-    codex and claude keep the mount because each still refuses the CALL. A whole-server
-    disable has no per-call form for either of them to refuse by, so there is nothing
-    to weigh and no backend is exempt on this path.
-
-    Scope worth stating, since these parametrize over backends: they pin the CLIENT
-    path, which is opencode's. The other composer is pinned beside its own code, in
-    ``test_acp_runtime_load_session.py::TestRuntimeMemberDispatchDisabled`` -- both of
-    ``AcpRuntime``'s paths, create and resume.
+    A whole-server disable has no per-call form, so no backend is exempt. These pin the
+    client path; ``AcpRuntime`` is pinned in
+    ``test_acp_runtime_load_session.py::TestRuntimeMemberDispatchDisabled``.
     """
 
     @staticmethod
@@ -1119,14 +1070,8 @@ class TestGooseMemberAppend:
 class TestGooseSessionArray:
     """The whole array a goose ``session/new`` would carry, not just the append.
 
-    The claim membership makes is about the ARRAY: a member DM thread on this harness
-    holds the session-control tools. So these drive
-    ``AcpClient._resolve_session_mcp_servers`` with the REAL goose mirror over a real
-    agent spec and read the elements that come out. Nothing here asserts set
-    membership -- that would be the claim proving itself.
-
-    goose reads no ``~/.kiro/agents/<name>.json``, so this array is the only channel
-    any tool set reaches the session on.
+    Drives ``AcpClient._resolve_session_mcp_servers`` with the real goose mirror. goose
+    reads no ``~/.kiro/agents/<name>.json``, so this array is its only tool channel.
     """
 
     def test_a_member_session_carries_the_dashboard_element_last(self, goose_agents_dir, tmp_path):
@@ -1185,20 +1130,9 @@ class TestGooseSessionArray:
 class TestGooseIdentityDrift:
     """The server this session mounted must not be refused as a DRIFTED one.
 
-    goose is the only member of ``ACP_BACKENDS_META_IDENTITY``, so it is the only
-    member of the dispatch set whose every tool approval runs
-    ``AcpClient._refuse_identity_drift``. That refusal rejects a trusted identity
-    naming a server Crew never placed on the array, and ``kirocrew-dashboard`` is
-    neither the harness's builtin extension (``developer``) nor a server the template
-    supplies -- the projection withholds the spec-described copy. So a mount that
-    landed in one array while the identity check read another would refuse EVERY
-    dispatch call instead of degrading to plain chat, which is strictly worse than not
-    mounting at all.
-
-    These drive the real chain rather than a stubbed array: the elements come from
-    ``_resolve_session_mcp_servers``, the cache the check enumerates is that same
-    list, and the identity is the one goose publishes for a mounted element -- the
-    element's own name in ``_meta.goose.toolCall.extensionName``, the field
+    goose (``ACP_BACKENDS_META_IDENTITY``) runs ``AcpClient._refuse_identity_drift`` on
+    every approval, so if the check read a different array it would refuse every
+    dispatch call. The identity is ``_meta.goose.toolCall.extensionName``, as
     ``mcp-stdio-mount-live.jsonl`` pins for ``crew-probe``.
     """
 

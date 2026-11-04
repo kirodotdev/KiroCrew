@@ -1,12 +1,7 @@
 """Deterministic coverage for the member-memory V2 retrieval benchmark.
 
-``kiro_crew.eval.bench.member_v2`` is the CI-run, model-backed gate measurement
-(``scripts/ci-member-memory-benchmark.py``); this file drives the same
-``evaluate()`` entry point with a deterministic FAKE embedder instead of a real
-model, so the report-shape and structural-failure logic is covered without a
-model download or network access. ``main()``'s CLI wiring is also exercised
-with a fake stand-in for ``LlamaCppEmbedder`` (never the real class -- no
-model is ever loaded or downloaded).
+Drives ``evaluate()`` and ``main()`` of ``kiro_crew.eval.bench.member_v2`` with a fake
+embedder (never ``LlamaCppEmbedder``), so no model is downloaded.
 """
 
 from __future__ import annotations
@@ -76,20 +71,11 @@ def home() -> Path:
 def sound_report(tmp_path_factory: pytest.TempPathFactory) -> dict:
     """One sound ``evaluate()`` report shared by every read-only / mutation test.
 
-    ``evaluate()`` is deterministic for the fake embedder (same corpus, same
-    text-derived vectors) but costs 35-50 s on a CI runner: 3 modes x 50 topics
-    x (2 searches + 7 bounded recalls) through the real V2 store. Running it once
-    per module instead of once per test is what keeps this file from dominating
-    the shard's ``--durations`` list. Tests that mutate the report MUST
-    ``copy.deepcopy`` it first; nothing here hands out the shared dict for writes.
+    A run costs 35-50 s on CI, so it runs once per module; tests that mutate the report
+    MUST ``copy.deepcopy`` it first.
 
-    The home is a module-scoped temp dir, and ``KIROCREW_HOME`` is pointed at it
-    for the duration of the call through a private ``MonkeyPatch`` context: the
-    V2 store only opens as owned (``algorithm_version == "v2"``) when its
-    ``memory_stores/<name>`` directory sits under the resolved data home, and the
-    per-test ``KIROCREW_HOME`` pin is function-scoped, so a module fixture cannot
-    lean on it. ``evaluate()`` closes every store it opens, so nothing outlives
-    the context that still refers to this home.
+    ``KIROCREW_HOME`` is pinned here by a private ``MonkeyPatch``: the V2 store opens as
+    owned only under the resolved data home, and the per-test pin is function-scoped.
     """
     home = tmp_path_factory.mktemp("member-v2-bench-home")
     with pytest.MonkeyPatch.context() as patch:
