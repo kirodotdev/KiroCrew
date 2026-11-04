@@ -180,6 +180,9 @@ class AcpError(Exception):
         # ``llm_helpers.acp_error_is_session_not_found`` routes it down the
         # reset-and-reload-once path a dropped session takes.
         self.credential_reload: bool = False
+        # The AWS exception name of a credential rejection (``ExpiredTokenException``),
+        # set by :func:`_raise_acp_error` from the raw frame, so a caller compares a code.
+        self.auth_error_code: str = ""
 
 
 class AcpTimeoutError(AcpError):
@@ -1893,6 +1896,8 @@ def _raise_acp_error(
     err.throttle = (
         bool(err.transient) and classify_provider_error(raw_data).kind == PROVIDER_ERROR_THROTTLE
     )
+    verdict = classify_provider_error(raw_data)
+    err.auth_error_code = verdict.matched if verdict.kind == PROVIDER_ERROR_AUTH else ""
     # Tag deterministic STRUCTURAL rejections so self-driving callers can
     # stop resending identical context. Keep the classifier data-scoped: a phrase
     # echoed only in JSON-RPC ``message`` cannot stamp an unrelated error, except

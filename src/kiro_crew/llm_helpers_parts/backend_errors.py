@@ -17,7 +17,7 @@ import time
 from typing import Any
 
 from kiro_crew.agent_sdk.drivers.acp import provider_error_client
-from kiro_crew.agent_sdk.drivers.acp_turn_vocab import AcpError, AcpPromptBusy
+from kiro_crew.agent_sdk.drivers.acp_turn_vocab import AcpAuthRequired, AcpError, AcpPromptBusy
 from kiro_crew.credential_errors import is_credential_propagation_delay
 from kiro_crew.platform.context import redact_via_context
 
@@ -285,6 +285,30 @@ def acp_error_needs_fresh_credentials(exc: BaseException) -> bool:
     for a lost session, and to hand the provider's own remedy to the user.
     """
     return isinstance(exc, AcpError) and getattr(exc, "credential_reload", False) is True
+
+
+#: AWS exception names that say a credential expired: signing in again clears them.
+_EXPIRED_TOKEN_CODES = frozenset({"ExpiredToken", "ExpiredTokenException"})
+
+
+def acp_error_needs_sign_in(exc: BaseException) -> bool:
+    """True when *exc* says the harness needs a new sign-in, read from typed data only.
+
+    The harness reported itself signed out (``AcpAuthRequired``); the frame was a
+    session-expiry answer ``_raise_acp_error`` tagged ``auth_required`` for the
+    sign-in card; or its ``auth_error_code`` (the AWS exception name, read from
+    the raw frame at raise time) is an expired token. The message is never read,
+    so expiry wording in any other error is not a sign-out. ``is True`` keeps a
+    stand-in with a truthy attribute out.
+    """
+    if isinstance(exc, AcpAuthRequired):
+        return True
+    if not isinstance(exc, AcpError):
+        return False
+    code = getattr(exc, "auth_error_code", "")
+    return getattr(exc, "auth_required", False) is True or (
+        isinstance(code, str) and code in _EXPIRED_TOKEN_CODES
+    )
 
 
 #: The frame's structured ``data`` as the ACP formatter appends it to the provider

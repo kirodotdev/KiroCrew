@@ -448,14 +448,16 @@ class CronJob:
         off, whatever limit it carries: 0 and any limit above the default alike,
         so raising the limit buys the same bounded retry rate as turning
         auto-pause off. A job at or below the default pauses before it gets
-        here. Below the default streak a job fires on schedule.
+        here, unless the failures were auth expiries (:meth:`record_failure`),
+        which never pause it: it is still enabled, so it backs off the same way.
+        Below the default streak a job fires on schedule.
 
         The delay counts from ``last_run_ts``. For an ``every`` job that is the
         start of the last run, because ``close_run`` restores the start time;
         for a cron-expression job it is the last run's completion.
         """
         limit = self.auto_pause_limit()
-        if limit is not None and limit <= _AUTO_PAUSE_THRESHOLD:
+        if limit is not None and limit <= _AUTO_PAUSE_THRESHOLD and not self.enabled:
             return None
         failures = self.consecutive_failures
         if isinstance(failures, bool) or not isinstance(failures, int):
@@ -514,7 +516,7 @@ class CronJob:
         except Exception:
             logger.debug("SEL logging failed for a cron auto-pause limit change", exc_info=True)
 
-    def record_failure(self) -> None:
+    def record_failure(self, *, auth_expiry: bool = False) -> None:
         """Count one consecutive failure and auto-pause once the threshold is hit.
 
         Sets both `enabled` (the scheduler stops at once) and `auto_paused` (the
@@ -525,8 +527,16 @@ class CronJob:
         resume in this process) counts nothing: the resume gave the job fresh
         attempts. ``failure_recorded`` is still set, so the timeout arm and the
         reaper treat the failure as handled.
+
+        A failure the gateway classified as an auth expiry (``auth_expiry``: the
+        harness needs a new sign-in, see ``_cron_auth_expiry``) counts like any
+        other but never auto-pauses the job: it is environmental and clears once
+        the user signs in again. Its streak still drives the alert and, past the
+        default threshold, the backoff in :meth:`failure_backoff_until`, so a job
+        that stays signed out keeps a bounded retry rate. A later failure of
+        another kind pauses the job as usual once the streak is at its limit.
         """
-        if self.count_failure() and self.failure_limit_reached():
+        if self.count_failure() and not auth_expiry and self.failure_limit_reached():
             self.enabled = False
             self.auto_paused = True
             self._audit_pause_change("auto_paused")

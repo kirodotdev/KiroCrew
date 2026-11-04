@@ -43,7 +43,9 @@ if TYPE_CHECKING:
     )
 
 
-def _failure_alert_due(job: CronJob, streak: int, *, denied: bool = False) -> bool:
+def _failure_alert_due(
+    job: CronJob, streak: int, *, denied: bool = False, auth_expiry: bool = False
+) -> bool:
     """Whether this failure leaves the dashboard bell for the channel or DM.
 
     *streak* counts consecutive failed runs including this one, floored at 1: a
@@ -56,13 +58,15 @@ def _failure_alert_due(job: CronJob, streak: int, *, denied: bool = False) -> bo
     ``delete_after_run`` job is paused after a failed run
     (``auto_pause_failed_one_shot``) and a retained ``at`` job is parked
     (``run_parks_one_shot``), so it alerts too. A silent job reaches nobody
-    either way and keeps its own path.
+    either way and keeps its own path. An *auth_expiry* failure never pauses the
+    job (``record_failure``), so the run at the pause limit is not its last one
+    and only ``alert_after_failures`` decides.
     """
     if denied or job.silent or job.delete_after_run or job.schedule.kind == "at":
         return True
     streak = max(streak, 1)
     pause_limit = job.auto_pause_limit()
-    if pause_limit is not None and streak >= pause_limit:
+    if not auth_expiry and pause_limit is not None and streak >= pause_limit:
         return True
     return streak >= job.alert_after_limit()
 
@@ -370,11 +374,16 @@ async def _cron_single_failure(
     _gate_counted: bool,
     _job_owns_failure: bool,
     _hand_over_streak: bool,
+    *,
+    _auth_expiry: bool = False,
 ) -> None:
     """Alert a failed single-agent cron run, or suppress a duplicate, and charge it.
 
     Called from the turn's failure handler, which re-raises *exc* afterwards.
     Every await precedes the charge, so a cancellation mid-alert counts nothing.
+    ``_auth_expiry`` (see ``_cron_auth_expiry``) is passed on to the charge, so
+    the failure counts like any other but never auto-pauses the job, and to the
+    alert threshold, which then reads ``alert_after_failures`` alone.
     """
     # ── Failure dedup: suppress repeated identical crash notifications ──
     # A chain-exhaustion failure carries the fallback story on the
@@ -422,10 +431,10 @@ async def _cron_single_failure(
     # it is about to pause the job.
     _charges = _job_owns_failure and not _gate_counted
     streak = _streak_after_charge(job, _charges, _hand_over_streak)
-    if not _failure_alert_due(job, streak):
+    if not _failure_alert_due(job, streak, auth_expiry=_auth_expiry):
         # A held alert is still a failed run: charge it, as the dup branch does.
         if _charges:
-            _charge_failure(job, _hand_over_streak)
+            _charge_failure(job, _hand_over_streak, auth_expiry=_auth_expiry)
         limit = job.alert_after_limit()
         logger.info(
             "Cron '%s': failure %d of %d held below alert_after_failures",
@@ -457,7 +466,7 @@ async def _cron_single_failure(
         # on five distinct failures, or the failure belonged to a
         # shared runtime rather than to this job.
         if not _gate_counted and _job_owns_failure:
-            _charge_failure(job, _hand_over_streak)
+            _charge_failure(job, _hand_over_streak, auth_expiry=_auth_expiry)
         if job.auto_paused:
             logger.warning(
                 "Cron '%s' auto-paused after %d consecutive failures",
@@ -603,7 +612,7 @@ async def _cron_single_failure(
     # verdict already counted THIS run, or when the failure belonged
     # to a runtime this job was sharing rather than to the job.
     if not _gate_counted and _job_owns_failure:
-        _charge_failure(job, _hand_over_streak)
+        _charge_failure(job, _hand_over_streak, auth_expiry=_auth_expiry)
     if job.auto_paused:
         logger.warning(
             "Cron '%s' auto-paused after %d consecutive failures",

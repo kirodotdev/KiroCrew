@@ -64,6 +64,7 @@ __all__ = sorted(n for n in set(globals()) | set(_EXPORTS) if not n.startswith("
 if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and IDEs
     from kiro_crew.llm_helpers_parts.backend_errors import (  # noqa: F401
         _CONNECTION_MARKERS,
+        _EXPIRED_TOKEN_CODES,
         _FRAME_DATA_TAIL_RE,
         _JITTER_RNG,
         _PROMPT_BUSY_DELAY,
@@ -90,6 +91,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         acp_error_is_throttle,
         acp_error_is_transient,
         acp_error_needs_fresh_credentials,
+        acp_error_needs_sign_in,
         connection_recovery_open,
         connection_retry_delay,
         credential_give_up_text,
@@ -214,6 +216,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         EVENT_TEXT_CHUNK,
         EVENT_TOOL_CALL,
         EVENT_TOOL_RESULT,
+        AcpAuthRequired,
         AcpError,
         AcpPromptBusy,
         LLMEvent,

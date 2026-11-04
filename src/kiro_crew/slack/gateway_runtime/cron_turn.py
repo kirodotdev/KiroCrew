@@ -37,6 +37,7 @@ if TYPE_CHECKING:
         _annotate_model_fallback,
         _annotate_partial_block,
         _apply_gate_verdict,
+        _cron_auth_expiry,
         _cron_failure_attribution,
         _cron_stream_with_posttoken_resume,
         _CronCapture,
@@ -817,6 +818,7 @@ async def _cron_run_single(
         # attempt fails it may have dispatched, so the transient ladder
         # must not run again. A failed reset leaves it unset.
         _acp_retry_attempted = False
+        _retry_exc_for_auth: Exception | None = None  # set when the retry ran and failed
         if (
             # Match the death by type: the pipe-broken raise sites in
             # acp/client.py word it "pipe broken", which no substring
@@ -868,8 +870,13 @@ async def _cron_run_single(
                 _turn_compaction["completed"] = False
                 _acp_retry_attempted = True
                 return await retry(job)
-            except Exception:
-                pass  # retry failed — fall through to dedup + alert
+            except Exception as _retry_exc:
+                # Keep the retry's exception for the auth-expiry decision only
+                # (``_cron_auth_expiry`` below). The outer raise stays bare so the
+                # original process-death exception is reported and stored, and
+                # the transient-retry ladder can still read it.
+                if _acp_retry_attempted:
+                    _retry_exc_for_auth = _retry_exc
             finally:
                 job._acp_retried = False  # type: ignore[attr-defined]
         # ── Transient backend errors: retry the whole callback with ──
@@ -955,9 +962,20 @@ async def _cron_run_single(
         # and advances dedup state, duplicating the outer handler.
         if getattr(job, "_acp_retried", False):
             raise
+        # Classify from the retry's exception when the ACP retry ran and failed,
+        # since that is what ended the turn; else from the original one.
+        _exc_for_auth = _retry_exc_for_auth if _retry_exc_for_auth is not None else exc
+        # From typed data only (``acp_error_needs_sign_in``), never the error's text.
+        _auth_expiry = _cron_auth_expiry(job, _exc_for_auth)
         _job_owns_failure, _hand_over_streak = _cron_failure_attribution(job, _run_provider)
         await self._cron_single_failure(
-            job, exc, session_key, _gate_counted, _job_owns_failure, _hand_over_streak
+            job,
+            exc,
+            session_key,
+            _gate_counted,
+            _job_owns_failure,
+            _hand_over_streak,
+            _auth_expiry=_auth_expiry,
         )
         raise
     finally:
