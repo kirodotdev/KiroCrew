@@ -9229,6 +9229,10 @@
       "withdraw_hint": "Você pode revogar isso depois em {{capabilities}} → {{tab}}.",
       "working": "Confiando…"
     },
+    "projectSkillsPlatformHint": {
+      "load_failed": "Não foi possível verificar se as skills do projeto podem carregar aqui.",
+      "text": "As skills do projeto (.kiro/skills) ainda não carregam no Windows. O log do gateway tem os detalhes."
+    },
     "projectSkillsTrustList": {
       "folder_missing": "Esta pasta já não existe.",
       "hint": "Estas pastas de projeto podem carregar os próprios skills em um chat. Remova uma pasta para que os skills dela não sejam mais carregados.",

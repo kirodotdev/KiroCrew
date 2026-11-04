@@ -9020,6 +9020,10 @@
       "withdraw_hint": "Du kannst das später unter {{capabilities}} → {{tab}} widerrufen.",
       "working": "Vertrauen wird erteilt…"
     },
+    "projectSkillsPlatformHint": {
+      "load_failed": "Es konnte nicht geprüft werden, ob Projekt-Skills hier geladen werden können.",
+      "text": "Projekt-Skills (.kiro/skills) werden unter Windows noch nicht geladen. Details stehen im Gateway-Log."
+    },
     "projectSkillsTrustList": {
       "folder_missing": "Dieser Ordner existiert nicht mehr.",
       "hint": "Diese Projektordner dürfen ihre eigenen Skills in einen Chat laden. Widerrufe einen Ordner, damit seine Skills nicht mehr geladen werden.",
