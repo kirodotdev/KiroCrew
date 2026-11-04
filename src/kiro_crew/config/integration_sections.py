@@ -569,10 +569,10 @@ class McpGatewayConfig:
             "initialize once the session sends it. A backend that stays silent is "
             "failed and reaped so its slot frees; the broker holds the spawn "
             "permit for this same window. Raise it for servers whose startup is "
-            "legitimately slow (large runtimes, remote resolution). On "
-            "Windows the effective deadline is floored at 30 seconds (a "
-            "cold-start floor): a configured value below it is lifted, a "
-            "value above it is used as is.",
+            "legitimately slow (large runtimes, remote resolution). The "
+            "effective deadline is floored at 30 seconds (a cold-start "
+            "floor): a configured value below it is lifted, a value above "
+            "it is used as is.",
             restart=True,
         ),
     )

@@ -1338,7 +1338,7 @@ connection-private, mid-call respawn and prewarm -- through `_acquire_backend`:
   frame), so the spawn path never awaits it inline -- a detached watcher on
   `_init_done_event`, bounded by `Backend.initialize_timeout_secs` (a
   constructor field fed from `mcp_gateway.initialize_timeout_secs`, not a module
-  setter), settles the permit `success` (ready), `failure` (handshake failed;
+  setter, and never below the 30 s cold-start floor), settles the permit `success` (ready), `failure` (handshake failed;
   the permit is then held until the process is reaped) or `neutral` (no
   handshake ever arrived -- an unused prewarm or a client that never
   initialised is not congestion). `settle` is exactly-once and separate from

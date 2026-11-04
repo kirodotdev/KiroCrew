@@ -110,9 +110,9 @@ class Thresholds:
     #: policy counts the failures that landed in the last this-many seconds.
     gate_failure_window_secs: float = 60.0
     #: Slow successful backend inits in the daemon's window (each took >= 80%
-    #: of its own ``initialize_timeout_secs``) that count as the gate's starts
-    #: being slow. Two, so one slow but healthy server is not enough. 0
-    #: disables.
+    #: of its own effective ``initialize_timeout_secs``, cold-start floor
+    #: included) that count as the gate's starts being slow. Two, so one slow
+    #: but healthy server is not enough. 0 disables.
     gate_slow_inits: int = 2
     #: Consecutive severe samples before dispatch pauses.
     severe_samples: int = 2
