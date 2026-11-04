@@ -486,6 +486,22 @@ def active_binding(channel_id: str | None, thread_ts: str | None = None) -> Bind
     return binding
 
 
+def code_channel_anchor_owner(channel_id: str | None, thread_ts: str | None) -> str | None:
+    """The session key a code channel binds, when *thread_ts* is its anchor.
+
+    None for anything that is not a bound code channel's anchor. Read without
+    the feature toggle (a binding outlives a switch-off, and turning the toggle
+    back on must not find the channel split) and lock-free (never the store's
+    cold load; it is preloaded at Slack startup).
+    """
+    if not channel_id or not thread_ts:
+        return None
+    binding = store().get_binding_if_loaded(channel_id)
+    if binding is None or binding.anchor_ts != thread_ts:
+        return None
+    return binding.session_key or None
+
+
 def mirror_post_thread(channel_id: str | None, thread_ts: str | None) -> str | None:
     """The ``thread_ts`` a dashboard-to-Slack mirror post uses.
 

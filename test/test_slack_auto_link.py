@@ -605,6 +605,52 @@ class TestSharedHelper:
             await link_slot_to_slack(state, slot, governed=False)
         assert exc.value.status == 503
 
+    @pytest.mark.asyncio
+    async def test_a_code_channel_anchor_is_never_handed_to_another_session(
+        self, tmp_path, monkeypatch
+    ):
+        """A code channel IS its binding's session: Stop and button answers follow
+        the binding, typed messages the link. Moving the anchor link to another
+        slot would split the channel, so it is refused before any Slack write and
+        nothing is relinked. The binding's own session may still re-link."""
+        from kiro_crew.slack.code_channels.store import Binding, CodeChannelStore, set_store
+
+        state = _slack_state(tmp_path, monkeypatch)
+        owner = _user_slot(state, "owner")
+        other = _user_slot(state, "other")
+        store = CodeChannelStore(tmp_path / "cc.json")
+        owner_key = chat_slack.effective_session_key(owner)
+        store.put_binding(
+            Binding(channel_id="C0CODE", team_id="T1", session_key=owner_key, anchor_ts="300.1")
+        )
+        set_store(store)
+        try:
+            with pytest.raises(SlackLinkError) as exc:
+                await link_slot_to_slack(
+                    state, other, channel="C0CODE", existing_thread="300.1", governed=False
+                )
+            assert (exc.value.status, exc.value.code) == (409, "code_channel_anchor")
+            state.slack_client.post_message.assert_not_awaited()
+            assert state.sessions.get_slack_link(chat_slack.effective_session_key(other)) == (
+                None,
+                None,
+            )
+            del exc
+            # Any other thread in the same channel links as before.
+            assert (
+                await link_slot_to_slack(
+                    state, other, channel="C0CODE", existing_thread="301.9", governed=False
+                )
+            )["ok"]
+            # The channel's own session re-links its anchor.
+            assert (
+                await link_slot_to_slack(
+                    state, owner, channel="C0CODE", existing_thread="300.1", governed=False
+                )
+            )["ok"]
+        finally:
+            set_store(None)
+
 
 class TestConfig:
     def test_default_is_off_with_no_target_field(self):
