@@ -178,7 +178,10 @@ def _probe_store_blocking(name: str) -> dict[str, Any]:
     if path is None:
         return row
     try:
-        backups = memory_backup.list_backups(path)
+        # Stamped names only, as retention and restore read them: a file such as
+        # ``memory.pre-upgrade.db`` has no taken-at time, so it is neither the
+        # newest backup nor one of the backups the rotation keeps.
+        backups = memory_backup.list_backups(path, stamped_only=True)
     except OSError:
         # An unreadable backups directory costs the backup summary, not the
         # counts: the two answers are independent and one of them is still real.
