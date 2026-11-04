@@ -871,6 +871,30 @@ class TestCompanionRuntimeGuard:
         assert companion_pid in active, "companion runtime PID must be sweep-protected"
         assert bg_pid in active, "bg runtime PID must be sweep-protected"
 
+    def test_a_task_session_on_a_companion_runtime_keeps_the_sweep_running(self):
+        """A task-runner step session holds an ``AcpSessionProvider`` over a
+        companion runtime. The sweep must still run, and that runtime's pid must be
+        in the active set, read from the runtime's owner rather than the session."""
+        from types import SimpleNamespace
+
+        from kiro_crew.acp.session_provider import AcpSessionProvider
+        from kiro_crew.session_pid import _collect_active_pids
+        from kiro_crew.testing.ids import unallocatable_pids
+
+        manager = self._make_manager()
+        (companion_pid,) = unallocatable_pids(1)
+        runtime = self._fake_runtime(companion_pid)
+        manager._subagent_runtimes["parent-a"] = runtime
+        step = AcpSessionProvider.__new__(AcpSessionProvider)
+        step._runtime = runtime
+        manager._sessions["task-step-1"] = SimpleNamespace(provider=step)
+
+        active, ok = _collect_active_pids(manager._sessions)
+        active.update(manager._companion_runtime_pids())
+
+        assert ok is True, "a task session must not stop the orphan sweep"
+        assert companion_pid in active, "the task session's runtime must be sweep-protected"
+
 
 class TestTheSuiteNeverRunsTheBootSandboxSweep:
     """``test/conftest.py`` pins the session module's boot sandbox sweep to a no-op.
