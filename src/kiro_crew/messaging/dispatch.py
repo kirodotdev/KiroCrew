@@ -164,6 +164,7 @@ def build_directive_consumer(
     session_key: str,
     sessions: Any,
     dispatcher: Any = None,
+    wake_loop_id: str = "",
 ) -> DirectiveConsumer:
     """Session-directive consumer for one channel turn (``TurnDriver`` injection).
 
@@ -181,6 +182,13 @@ def build_directive_consumer(
     still sees it. Slack's function-style dispatch has no dispatcher object;
     the minimal *sessions*-backed stand-in covers the Slack routability check,
     and everything it cannot answer fails CLOSED in the authorizer.
+
+    *wake_loop_id* is set only by a caller that fires a loop's own delivered
+    wake (the Slack thread's ``nudge_channel_fire``): the turn is then that
+    loop's self-wake, exactly as ``_fire_dashboard_nudge`` marks a dashboard
+    wake, so ``nothing_to_do`` may end it quietly and a stop or revision is
+    checked against the loop that woke it. Empty (every inbound message)
+    keeps the turn person-opened.
     """
 
     async def _consume(kind: str, args: dict[str, Any]) -> bool:
@@ -193,6 +201,11 @@ def build_directive_consumer(
         state: Any = getattr(dispatcher, "dashboard_state", None)
         if state is None:
             state = _ChannelDirectiveState(sessions=sessions)
+        wake: dict[str, Any] = (
+            {"producer_is_self_wake": True, "producer_wake_loop_id": wake_loop_id}
+            if wake_loop_id
+            else {}
+        )
         outcome = await apply_session_directive_outcome(
             state,
             None,
@@ -200,6 +213,7 @@ def build_directive_consumer(
             kind,
             args,
             producer_is_channel=True,
+            **wake,
         )
         result = outcome.text
         # The channel surface never renders tool results, so the applier's
@@ -1029,7 +1043,14 @@ class ChannelTurns:
                     user_display_name=asker.display_name,
                     skill_trigger_text=skill_trigger_text,
                 )
-                tool_gate = build_tool_gate(ctx_builder, session_key=session_key, agent=agent)
+                # A monitor wake runs with nobody watching: a governance check
+                # that cannot be evaluated refuses the call.
+                tool_gate = build_tool_gate(
+                    ctx_builder,
+                    session_key=session_key,
+                    agent=agent,
+                    unattended=monitor is not None,
+                )
                 if Drift.GENERIC_DENY_REASON in drift:
                     tool_gate = _without_deny_reason(tool_gate)
                 if monitor is not None:
@@ -1555,6 +1576,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         TOOL_DENY,
         event_is_spawn_run,
         hook_gate_kwargs,
+        unattended_turn,
     )
     from kiro_crew.messaging.identity import (  # noqa: F401
         channel_inbound_permitted,

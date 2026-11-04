@@ -1,16 +1,8 @@
 """Tests for the gateway's local IPC transport layer.
 
-Three jobs:
-
-1. Exercise the POSIX branch against real sockets -- this is the code every
-   existing gateway test now runs through, so a break here is a break
-   everywhere.
-2. Cover the platform dispatch that cannot be reached from Linux, using the
-   ``monkeypatch(IS_WINDOWS)`` pattern established by ``test_platform_compat``.
-3. Pin the two private ``asyncio`` attributes the Windows server pipe factory
-   depends on. Those assertions run only on Windows, where they are meaningful,
-   so a future CPython that renames either one fails in CI rather than on a
-   user's machine.
+Exercises the POSIX branch on real sockets, covers the Windows dispatch via
+``monkeypatch(IS_WINDOWS)``, and pins (on Windows only) the two private ``asyncio``
+attributes the server pipe factory depends on, so a CPython rename fails in CI.
 """
 
 from __future__ import annotations
@@ -40,17 +32,10 @@ from kiro_crew.testing.wait import await_until, finished
 def _no_git_fingerprint(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     """``code_fingerprint()`` without a git spawn, per test, cache isolated.
 
-    ``GatewayManager._start_locked`` and ``run_gatewayd`` both warm
-    ``code_fingerprint()`` before ``prepare_dir``, and the cached fingerprint is
-    of ``_PACKAGE_ROOT`` -- THIS checkout -- so a cold read runs
-    ``git -C <checkout> rev-parse HEAD`` and ``git diff HEAD`` on the developer's
-    own repository from a pool thread with the worker's cwd inherited; which test
-    pays depends on run order (whoever reads first after a ``cache_clear``).
-    Nothing in this module reads the value, so the trusted-git resolver is pinned
-    to "absent" -- the product's own no-spawn arm, the mtime rule -- exactly as
-    ``test_mcp_gateway_daemon_lifecycle.py`` does. The cache is cleared on both
-    sides so the pinned value neither reuses a real one nor leaks to a module
-    that must match a child daemon's real fingerprint.
+    A cold read runs git on this checkout, and which test pays depends on run order.
+    The git resolver is pinned to absent (the mtime rule), as in
+    ``test_mcp_gateway_daemon_lifecycle.py``; the cache is cleared on both sides so
+    the pinned value never leaks to a module that needs a real fingerprint.
     """
     monkeypatch.setattr(cf, "trusted_git_bin", lambda: None)
     cf.code_fingerprint.cache_clear()
@@ -58,7 +43,7 @@ def _no_git_fingerprint(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     cf.code_fingerprint.cache_clear()
 
 
-# --- Address resolution ------------------------------------------------------
+# Address resolution
 
 
 #: Conservative ``sun_path`` capacity. The real limit is 108 bytes on Linux and
@@ -71,15 +56,8 @@ _SUN_PATH_BUDGET = 100
 def test_sock_dir_stays_within_the_af_unix_limit(sock_dir: Path) -> None:
     """Guard the ``sock_dir`` fixture, on a platform where it can be checked.
 
-    ``sock_dir`` exists because a long endpoint path fails ``bind`` with
-    ``OSError: AF_UNIX path too long`` -- six binds in this module failed that way
-    the first time the suite ran on macOS. But nothing asserts the property the
-    fixture is supposed to deliver, and a regression would NOT fail on Linux:
-    pytest's temp root there already fits inside ``sun_path``, which is exactly why
-    the original defect stayed invisible until a macOS runner existed.
-
-    Asserting the length rather than the platform means a regression is caught on
-    the matrix that runs every PR, instead of waiting for the macOS job.
+    A long path fails ``bind`` with ``AF_UNIX path too long`` on macOS but fits on
+    Linux, so the length is asserted to catch a regression on every runner.
     """
     sock = sock_dir / "gateway.sock"
     assert len(str(sock).encode()) < _SUN_PATH_BUDGET, (
@@ -125,15 +103,9 @@ def test_windows_address_folds_case_and_separators(
 ) -> None:
     """Equivalent spellings of one Windows path must yield ONE pipe name.
 
-    The filesystem is case-insensitive but a hash is not, so without folding a
-    daemon started as ``C:\\Users\\Foo\\...`` and a stub handed
-    ``c:\\users\\foo\\...`` would bind and connect to two different pipes and
-    never meet -- with no error, just a gateway nothing can reach.
-
-    ``ntpath.normcase`` is substituted for ``os.path.normcase`` because the
-    latter is the identity function on this POSIX runner: it IS ntpath's
-    implementation on Windows, so this exercises the real folding rather than a
-    no-op. The Windows-only test below asserts the same property natively.
+    The filesystem is case-insensitive but a hash is not, so unfolded spellings
+    would bind two pipes that never meet. ``ntpath.normcase`` stands in because
+    ``os.path.normcase`` is the identity on POSIX; a Windows-only test checks natively.
     """
     import ntpath
 
@@ -247,7 +219,7 @@ def test_singleton_refusal_says_what_to_do_instead_of_deleting(tmp_path: Path) -
     assert f"Do not delete {transport.lock_path_for(sock)}" in msg
 
 
-# --- POSIX serve / connect ---------------------------------------------------
+# POSIX serve / connect
 
 
 def _close_immediately(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
@@ -264,26 +236,9 @@ def _close_immediately(reader: asyncio.StreamReader, writer: asyncio.StreamWrite
 def sock_dir(tmp_path: Path) -> Iterator[Path]:
     """A directory short enough to hold a bindable ``AF_UNIX`` endpoint.
 
-    ``sockaddr_un.sun_path`` is a FIXED-SIZE char array — 104 bytes on macOS/BSD,
-    108 on Linux — and the kernel rejects a longer path with ``OSError: AF_UNIX
-    path too long`` at ``bind`` time. It is a limit on the path, not on any
-    configurable buffer, so there is nothing to raise.
-
-    ``tmp_path`` cannot be used by the tests that BIND: pytest derives it from
-    ``TMPDIR`` and appends the test's own name, and on macOS ``TMPDIR`` is already
-    a ~50-byte per-user path under ``/var/folders/...``. A test whose name is long
-    enough — ``test_harden_endpoint_makes_the_socket_owner_only`` — pushed the
-    total to 132 bytes and failed on every macOS checkout while passing on Linux,
-    where the shorter ``/tmp`` and the 108-byte cap both help.
-
-    The short base comes from ``tmpdir_helpers.short_tmp_base()`` -- the ONE seam
-    the suite has for "a temp dir short enough for ``sun_path``" -- rather than a
-    literal ``/tmp`` spelled here: a second spelling of the same platform rule is
-    what let the two drift, and whatever root that helper hands out (today the
-    system temp root; a run-owned short root once the floor grows one) applies to
-    this module's binds without a per-site edit. Only the tests that actually
-    bind a socket need this; the ones asserting path arithmetic
-    (``lock_path_for``, ``resolve_address``) are unaffected and keep ``tmp_path``.
+    ``sun_path`` is fixed at 104 bytes on macOS/BSD and 108 on Linux. ``tmp_path``
+    appends the test name to a ~50-byte macOS ``TMPDIR``, which overflows it. Only
+    tests that bind need it; path-arithmetic tests keep ``tmp_path``.
     """
     base = Path(tempfile.mkdtemp(prefix=SHORT_TMP_PREFIX + "gwsock-", dir=short_tmp_base()))
     try:
@@ -363,7 +318,7 @@ def test_connect_to_a_missing_endpoint_raises_oserror(tmp_path: Path) -> None:
         asyncio.run(go())
 
 
-# --- Liveness / staleness ----------------------------------------------------
+# Liveness / staleness
 
 
 @pytest.mark.skipif(pc.IS_WINDOWS, reason="AF_UNIX connect probe")
@@ -524,7 +479,7 @@ def test_teardown_tolerates_a_missing_endpoint(tmp_path: Path, caplog) -> None:
     assert list(tmp_path.iterdir()) == []
 
 
-# --- TransportServer wrapper -------------------------------------------------
+# TransportServer wrapper
 
 
 class _FakePipeServer:
@@ -568,7 +523,7 @@ def test_pipe_server_close_survives_a_raising_instance() -> None:
     assert good.closed() is True
 
 
-# --- Windows security descriptor ---------------------------------------------
+# Windows security descriptor
 
 
 def test_owner_only_sddl_names_the_current_user(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -590,7 +545,7 @@ def test_owner_only_sddl_refuses_without_a_sid(monkeypatch: pytest.MonkeyPatch) 
         transport._owner_only_sddl()
 
 
-# --- Private-API contract pins (Windows only) --------------------------------
+# Private-API contract pins (Windows only)
 
 
 @pytest.mark.skipif(not pc.IS_WINDOWS, reason="pins Windows asyncio internals")
@@ -864,15 +819,9 @@ async def test_wait_closed_returns_once_connections_are_cancelled(
 ) -> None:
     """Pins the shutdown ordering gatewayd depends on.
 
-    Since Python 3.12 ``asyncio.Server.wait_closed()`` waits for every accepted
-    connection to complete, so ``close()`` -> ``wait_closed()`` -> drain hangs for
-    as long as one stub stays connected. The daemon therefore closes, then
-    drains and cancels, and only then awaits. This test fails if that order is
-    ever reversed back.
-
-    The "it would have blocked" half only holds on 3.12+; on 3.10
-    ``wait_closed()`` returns immediately regardless, so the reordering is a
-    no-op there and only the positive assertion is checked.
+    From 3.12 ``wait_closed()`` waits for every connection, so the daemon closes,
+    drains and cancels, then awaits. On 3.10 it returns at once, so only the
+    positive assertion is checked there.
     """
     sock = sock_dir / "gateway.sock"
     transport.prepare_dir(sock)
@@ -912,12 +861,8 @@ async def test_wait_closed_returns_once_connections_are_cancelled(
 def test_invalid_handle_constant_is_the_unsigned_pointer_form() -> None:
     """Guards a 64-bit comparison bug that a literal -1 would reintroduce.
 
-    ``CreateNamedPipeW``'s restype is ``wintypes.HANDLE``, i.e. ``c_void_p``, so
-    ctypes hands back the UNSIGNED pointer value. ``INVALID_HANDLE_VALUE`` is
-    ``(HANDLE)-1``, which arrives as 18446744073709551615 on 64-bit -- a literal
-    ``-1`` never compares equal, so a failed pipe creation would be accepted as a
-    valid handle. Architecture-derived rather than OS-derived, so this is
-    checkable off Windows.
+    ctypes returns the unsigned ``c_void_p`` value, so ``(HANDLE)-1`` arrives as
+    18446744073709551615 on 64-bit and never equals ``-1``. Checkable off Windows.
     """
     import ctypes
 
@@ -934,7 +879,7 @@ def test_null_handle_returns_as_none_from_a_pointer_restype() -> None:
     assert ctypes.c_void_p(0).value is None
 
 
-# --- Windows dispatch reachable from Linux -----------------------------------
+# Windows dispatch reachable from Linux
 
 
 def test_probe_live_treats_a_busy_pipe_as_alive(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -974,7 +919,7 @@ def test_probe_live_reports_an_unknown_error_as_dead(
     assert transport.probe_live("C:/state/gateway.sock") is False
 
 
-# --- POSIX probe reachable from Windows --------------------------------------
+# POSIX probe reachable from Windows
 
 
 class _ScriptedConnectSocket:
@@ -1033,11 +978,8 @@ def test_probe_live_treats_a_full_backlog_eagain_as_live(
 ) -> None:
     """The real Linux full-backlog case: a non-blocking connect fails EAGAIN.
 
-    ``settimeout`` makes the socket non-blocking, so on Linux a ``connect()``
-    against a full accept backlog fails at once with ``EAGAIN``
-    (``BlockingIOError``) rather than raising ``socket.timeout``. That is the
-    exact condition the fix protects -- a healthy but overloaded daemon -- so
-    it must report live, not dead.
+    ``settimeout`` makes the socket non-blocking, so a full accept backlog raises
+    ``BlockingIOError``, not ``socket.timeout``. An overloaded daemon is still live.
     """
     _force_posix_probe_branch(monkeypatch, BlockingIOError(errno.EAGAIN, "try again"))
     assert transport.probe_live("/state/gateway.sock") is True
@@ -1066,11 +1008,8 @@ async def test_serve_rejects_a_loop_without_pipe_support(
     """Running under SelectorEventLoop must say so, not fail as an
     AttributeError deep inside the bind.
 
-    The absent ``start_serving_pipe`` is simulated rather than obtained by
-    running under a real SelectorEventLoop: on Windows the loop under test IS a
-    proactor loop, so asserting on the ambient loop passed on Linux (no such
-    attribute) and vacuously failed to raise on Windows -- the one platform the
-    guard exists for.
+    The absent ``start_serving_pipe`` is simulated: on Windows the ambient loop is
+    a proactor loop, so relying on it would never raise there.
     """
     monkeypatch.setattr(pc, "IS_WINDOWS", True)
 
@@ -1104,18 +1043,9 @@ def test_installing_the_pipe_factory_twice_is_a_noop(
 
 # --- prepare_dir must not run on the event loop -------------------------------
 
-# ``prepare_dir`` -> ``platform_compat.make_owner_only_dir`` is blocking file
-# IO whose Windows DACL write can block on a network volume round-trip. Both
-# call sites are
-# coroutines, so an inline call stalls the loop it runs on -- for the manager
-# that is the live gateway's loop (a dashboard toggle freezes chat turns and the
-# liveness heartbeat), and for the daemon it is the loop already serving its
-# signal handlers.
-#
-# These assert the observable property (did it run on a thread with no running
-# loop) rather than "was asyncio.to_thread called", so they stay honest if the
-# offload mechanism changes. They are platform-independent: the offload is
-# unconditional, and only the work inside it is Windows-specific.
+# ``platform_compat.make_owner_only_dir`` is blocking IO (a Windows DACL write can
+# wait on a network volume), and both callers are coroutines on a live loop.
+# These assert it ran on a thread with no running loop, not how it was offloaded.
 
 
 class _LoopProbe:

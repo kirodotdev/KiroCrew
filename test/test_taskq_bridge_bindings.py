@@ -52,6 +52,8 @@ from kiro_crew.subagent_manager.admission.taskq_bridge import _TaskqBridgeMixin
 
 pytestmark = pytest.mark.xdist_group(name="tree_scan_taskq_bridge_bindings")
 
+SHARED_BINDINGS_CHECKS = ("the_member_set_is_the_frozen_inventory",)
+
 _FACADE = "kiro_crew.subagent_manager.admission.taskq_bridge"
 _PACKAGE = "kiro_crew.subagent_manager.admission"
 _ADMISSION_LOGGER = "kiro_crew.subagent_manager.admission"
@@ -259,10 +261,6 @@ def test_the_kind_reader_tells_a_coroutine_from_a_function() -> None:
 
     assert (_kind(stand_in), _kind(lambda self: None)) == ("coroutine", "function")
     assert _kind(staticmethod(stand_in)) == "staticmethod"
-
-
-def test_the_member_set_is_the_frozen_inventory() -> None:
-    assert sorted(_members()) == sorted(_MEMBERS)
 
 
 @pytest.mark.parametrize("name", sorted(_MEMBERS))

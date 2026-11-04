@@ -87,15 +87,10 @@ def test_stale_timestamp_fails():
 def test_a_non_ascii_signature_is_a_clean_refusal_not_a_crash(codepoint: int):
     """A non-ASCII signature must be refused like any other wrong one.
 
-    ``hmac.compare_digest`` rejects a ``str`` holding a non-ASCII character by
-    raising ``TypeError``. The header is attacker-chosen: any local process can
-    open the loopback socket this verifier guards, and aiohttp decodes a header
-    byte that is not valid UTF-8 into a lone surrogate, so both shapes arrive
-    here. Raising would turn the denial into an unhandled 500, drop the
-    connection, and skip the caller's SEL ``proxy_auth_failed`` record -- the
-    ASCII-wrong case returns a plain ``False`` and keeps all three. The code
-    points are built rather than written as literals because ``0xDCFF`` is a lone
-    surrogate, which cannot appear in source.
+    ``hmac.compare_digest`` raises ``TypeError`` on a non-ASCII ``str``, and the header is
+    attacker-chosen (aiohttp decodes invalid UTF-8 to a lone surrogate). Raising would be a
+    500 that skips the SEL ``proxy_auth_failed`` record. Code points are built because
+    ``0xDCFF`` cannot appear in source.
     """
     ts = int(time.time())
     assert not verify_proxy_request(
@@ -123,15 +118,9 @@ def test_a_non_ascii_signature_does_not_accept_a_valid_one():
 def test_a_valid_signature_suffixed_with_a_lone_surrogate_is_refused():
     """A surrogate must keep a signature distinct, not be dropped from it.
 
-    This is the case that separates ``surrogatepass`` from ``ignore``. A
-    lone surrogate cannot be encoded as UTF-8 at all, so ``ignore`` silently
-    DROPS it: a valid signature with one appended encodes to the same bytes as
-    the valid signature alone and is accepted. ``surrogatepass`` encodes it,
-    so the appended character changes the bytes and the request is refused.
-
-    A non-ASCII character that IS encodable, like the ones the other tests
-    use, does not exercise this: ``ignore`` keeps those, so the two encodings
-    agree and neither test notices the difference.
+    ``ignore`` silently DROPS an unencodable lone surrogate, so a valid signature plus one
+    would be accepted; ``surrogatepass`` encodes it and the request is refused. Encodable
+    non-ASCII characters cannot tell the two encodings apart.
     """
     hdr = _sign("GET", "/api/read", b"")
     ts, sig = hdr.split(":", 1)
@@ -172,9 +161,7 @@ def test_raw_request_target_no_query_appends_nothing():
     assert raw_request_target(req) == "/api/vaults"
 
 
-# ---------------------------------------------------------------------------
 # X-KiroCrew-Principal: the opt-in, request-bound principal claim
-# ---------------------------------------------------------------------------
 
 _REQUEST_ID = "0123456789abcdef0123456789abcdef"
 _BODY = b'{"action":"approve"}'

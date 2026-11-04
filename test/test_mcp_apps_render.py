@@ -311,13 +311,9 @@ async def test_handle_tool_result_replayed_marker_is_inert(spool):
 async def test_a_cancelled_redaction_leaves_the_record_claimable(spool):
     """A turn cancelled inside the redaction offload must not spend the claim.
 
-    The claim is irreversible and makes every later replay inert, and
-    ``CancelledError`` is a ``BaseException`` that the seam's ``except
-    Exception`` does not catch, so a cancellation there returns nothing to the
-    caller: no ``app_on_row``, so no row records the app. The property that
-    keeps it recoverable is ORDER -- the claim is taken after the redaction, so a
-    cancellation in this window has nothing to give back. The very next call
-    renders for real. (A cancellation during the claim itself is the next test.)
+    ``CancelledError`` escapes the seam's ``except Exception``, so no row records the
+    app. Order keeps it recoverable: the claim is taken after the redaction, so the
+    next call still renders. (A cancellation during the claim is the next test.)
     """
     sid = _hex()
     _write_spool(spool, sid, {"server": "s", "tool": "t", "html": "h"})
@@ -366,16 +362,10 @@ async def test_a_cancelled_redaction_leaves_the_record_claimable(spool):
 async def test_the_claim_is_offloaded_to_a_worker_thread(spool):
     """Both filesystem steps are offloaded; neither runs on the event loop.
 
-    ``os.close()`` on a file descriptor is named by the ``blocking: true``
-    ``no-blocking-call-on-event-loop`` rule in ``AUTOSDE.yaml``, so the claim
-    cannot run inline however cheap its syscalls are on a local path: one stalled
-    spool filesystem freezes the user's turn and the liveness heartbeat together
-    until the watchdog kills the process. This run reaches the claim (it renders)
-    so the assertion is not vacuous.
-
-    Offloading alone would lose an app to a cancellation, because the worker
-    thread finishes whatever happens to the awaiting coroutine. The test below
-    pins the property that pays for that.
+    ``os.close()`` falls under the ``no-blocking-call-on-event-loop`` rule in
+    ``AUTOSDE.yaml``: a stalled spool filesystem would freeze the turn and the liveness
+    heartbeat. This run renders, so it reaches the claim and the assertion is not
+    vacuous. The next test covers a cancellation while the worker thread runs.
     """
     sid = _hex()
     _write_spool(spool, sid, {"server": "s", "tool": "t", "html": "h"})
@@ -406,16 +396,9 @@ async def test_the_claim_is_offloaded_to_a_worker_thread(spool):
 async def test_a_cancellation_during_the_claim_gives_the_claim_back(spool):
     """A claim its caller can never record must be given back, not kept.
 
-    This is the window the offload reopens and the one an inline call did not
-    have: the worker thread runs to completion whatever happens to the awaiting
-    coroutine, so a cancellation delivered while it runs creates the sidecar
-    while the caller raises and records nothing. A kept claim makes every later
-    replay inert, so the app would be gone with no row saying it existed.
-
-    Shielding the call keeps the outcome knowable through the cancellation, so
-    the seam releases the claim it cannot use. Unlike the inline version's
-    property, this one IS schedulable: the sidecar provably exists at the moment
-    the test cancels, so the release is measured rather than inferred.
+    The worker thread finishes even if the awaiting coroutine is cancelled, so the
+    sidecar can exist while the caller records nothing. Shielding keeps the outcome
+    knowable so the seam releases the claim; the sidecar exists when the test cancels.
     """
     sid = _hex()
     _write_spool(spool, sid, {"server": "s", "tool": "t", "html": "h"})
@@ -465,12 +448,9 @@ async def test_a_cancellation_during_the_claim_gives_the_claim_back(spool):
 async def test_a_spent_claim_on_the_same_row_recovers_the_flag(spool):
     """The durable claim alone is enough to put the row's flag back.
 
-    ``_take_claim`` writes the sidecar durably while ``meta["mcp_app"]`` reaches
-    disk only when the slot is next persisted. A gateway death between the two
-    would otherwise leave the claim spent with no flag: the app unrenderable
-    forever and nothing on the row saying it existed. Re-processing the SAME row
-    reports the flag from the sidecar, so the row recovers with no ordering
-    between the two writes and no restart-time scan for orphaned claims.
+    The sidecar is durable at once, while ``meta["mcp_app"]`` reaches disk only at the
+    next slot persist. If the gateway dies between them, re-processing the same row
+    reports the flag from the sidecar, with no restart-time scan.
     """
     sid = _hex()
     _write_spool(spool, sid, {"server": "s", "tool": "t", "html": "h"})
@@ -528,13 +508,9 @@ async def test_the_claim_records_the_row_that_owns_it(spool):
 async def test_a_reused_call_id_on_a_later_row_stays_inert(spool):
     """A reissued ``tool_call_id`` must not make a replay look like recovery.
 
-    ``tool_call_id`` is the BACKEND's id and is session-local in general, so a
-    session reset that preserves the transcript can hand a genuinely new call an
-    id an older row already used. If attribution matched on it, a marker echoed
-    into that new call's text would read as "spent by this row" and the new row
-    would be told an app of its own is not viewable -- a notice pointing at
-    nothing. Row timestamps cannot collide this way: they are strictly
-    increasing within a slot, so the later row's ``ts`` is always distinct.
+    ``tool_call_id`` is session-local, so after a reset a new call can reuse an old
+    row's id and would get a false "not viewable" notice. Attribution uses the row
+    ``ts``, which strictly increases within a slot.
     """
     sid = _hex()
     _write_spool(spool, sid, {"server": "s", "tool": "t", "html": "h"})
@@ -562,11 +538,8 @@ async def test_a_reused_call_id_on_a_later_row_stays_inert(spool):
 async def test_a_claim_taken_with_no_row_cannot_be_attributed_later(spool):
     """No row at claim time means no later "spent" can be attributed to it.
 
-    The caller's flag loop only runs for a call that HAS a transcript row, so a
-    claim taken without one has no flag a recovery could restore. Reporting
-    ``"spent"`` on the strength of the slot alone would instead hand the flag to
-    whichever later row happened to ask, which is the false notice this
-    attribution exists to prevent -- so the unprovable case stays silent.
+    Reporting ``"spent"`` on the slot alone would hand the flag to whichever later row
+    asked, a false notice, so the unprovable case stays silent.
     """
     sid = _hex()
     _write_spool(spool, sid, {"server": "s", "tool": "t", "html": "h"})
@@ -593,14 +566,9 @@ async def test_a_claim_taken_with_no_row_cannot_be_attributed_later(spool):
 async def test_a_stale_claim_temp_does_not_block_the_claim(spool):
     """A residue at a reproducible temp name must not fail the claim forever.
 
-    The temp is private scratch, so nothing already sitting in the spool dir may
-    decide whether the claim is taken. A name this code composed from the pid
-    could: a hard kill between the open and the unlink leaves
-    ``<id>.claim.<pid>.tmp`` behind, and a respawn handed the same pid then
-    collides on ``O_CREAT|O_EXCL`` and answers ``"error"`` for every later
-    claim on that record until the 24h sweep -- the app neither rendered nor
-    recorded. This plants that residue under BOTH the current pid and a
-    neighbour, so a composed name is blocked whichever one the process gets.
+    A hard kill can leave ``<id>.claim.<pid>.tmp`` behind; a pid-derived name would then
+    collide on ``O_CREAT|O_EXCL`` until the 24h sweep. The residue is planted under the
+    current pid and a neighbour, so any composed name is blocked.
     """
     sid = _hex()
     _write_spool(spool, sid, {"server": "s", "tool": "t", "html": "h"})
@@ -663,16 +631,9 @@ async def test_an_unreadable_spent_claim_flags_nothing(spool):
 async def test_a_failed_close_still_reports_the_claim_it_took(spool):
     """The directory entry is the claim, so ``close`` must not overturn it.
 
-    ``os.open`` with ``O_CREAT|O_EXCL`` is the only syscall here that can fail to
-    create the sidecar. Reporting the ``close`` outcome instead left the sidecar
-    on disk while the seam answered "not claimed", which makes every later replay
-    inert AND writes no flag on the row -- the app is gone and nothing says it
-    existed. A deferred write error surfacing at ``close()`` is a real case on the
-    network or FUSE spool storage the module plans for.
-
-    Releasing the sidecar is not the alternative: the caller strips the marker
-    from the transcript on both branches, so a released record has no replay left
-    to render it.
+    Only ``os.open`` with ``O_CREAT|O_EXCL`` can fail to create the sidecar. Answering
+    "not claimed" after a ``close()`` error (real on network or FUSE spools) would leave
+    the sidecar with no flag. Releasing it does not help: the marker is stripped either way.
     """
     sid = _hex()
     _write_spool(spool, sid, {"server": "s", "tool": "t", "html": "h"})
@@ -713,18 +674,10 @@ async def test_a_failed_close_still_reports_the_claim_it_took(spool):
 async def test_a_second_cancellation_still_gives_the_claim_back(spool):
     """Cancelling twice must not strand the claim, which a shield alone allows.
 
-    ``asyncio.shield`` protects the inner future, NOT the awaiting coroutine, so
-    a second ``.cancel()`` raises out of the release path's own ``await`` and
-    skips the unlink -- ``CancelledError`` is a ``BaseException`` that the
-    handler's ``except Exception`` does not catch. The sidecar would stay taken
-    with nothing recorded, which makes every later replay inert: the app is gone
-    and no row says it existed. A turn deadline and a slot deletion firing on one
-    task is ordinary operation, not a contrived pair.
-
-    The claim is held on an event the TEST owns, so the second cancellation
-    provably lands while the claim is still in flight rather than after the
-    unlink has already been dispatched. That is what makes the drain the thing
-    under test instead of the scheduler.
+    ``asyncio.shield`` protects the inner future, not the awaiting coroutine, so a second
+    ``.cancel()`` can skip the unlink. A turn deadline plus a slot deletion does this.
+    The claim waits on an event the test owns, so the second cancellation lands while
+    the claim is still in flight.
     """
     sid = _hex()
     _write_spool(spool, sid, {"server": "s", "tool": "t", "html": "h"})
@@ -937,9 +890,10 @@ async def test_binding_uses_producing_session_key_not_slot(spool):
 
 @pytest.mark.asyncio
 async def test_render_uses_owner_only_channel_not_generic(spool):
-    """#418/#11: the render frame carries the callback_secret, so it MUST go to
-    the owner-only WS channel and NEVER the generic broadcast. Reverting the
-    channel selection would leak the capability to guest sockets."""
+    """The render frame carries the callback_secret, so it goes only to owner sockets.
+
+    The generic broadcast would leak the capability to guest sockets.
+    """
 
     class _OwnerState:
         def __init__(self):
@@ -994,11 +948,9 @@ def test_load_spool_rejects_and_reaps_expired(spool, monkeypatch):
 class TestAClaimSurvivesAFilesystemWithoutHardLinks:
     """``os.link`` is not available everywhere, and it was the only publisher.
 
-    exFAT and a number of FUSE and network mounts refuse every ``link``, which
-    is a standing property of the data home rather than a transient fault. The
-    old code read that as ``"error"``, and the caller strips the marker on that
-    branch without recording anything, so EVERY app render on such a host was
-    lost in silence with no replay left to recover it.
+    exFAT and some FUSE and network mounts always refuse ``link``. Reading that as
+    ``"error"`` would lose every app render on such a host, since the caller strips the
+    marker on that branch.
     """
 
     def test_the_claim_is_taken_when_link_is_unsupported(self, spool):
@@ -1070,12 +1022,9 @@ class TestAClaimSurvivesAFilesystemWithoutHardLinks:
 class TestAnIdentitylessClaimIsNeverHandedToTheAskingRow:
     """A zero-byte sentinel must stay inert, because LEGACY renders leave one.
 
-    The shipped code took its claim as ``os.open(sentinel, O_CREAT|O_EXCL)``
-    followed by a bare ``os.close`` -- nothing written. So on every deployed
-    gateway each SUCCESSFULLY rendered app leaves an empty ``<id>.rendered``
-    behind for the record's TTL. Emptiness therefore cannot mean "nobody owns
-    this", and treating it as an unowned claim would re-render every one of those
-    apps on whichever row replayed its marker after an upgrade.
+    A legacy claim is an empty ``<id>.rendered`` left by a successful render. Emptiness
+    cannot mean "nobody owns this", or each such app would re-render on whichever row
+    replays its marker.
     """
 
     def test_an_empty_sentinel_is_inert_not_taken(self, spool):
@@ -1124,15 +1073,9 @@ class TestAnIdentitylessClaimIsNeverHandedToTheAskingRow:
     def test_a_failed_body_write_unlinks_the_sentinel_it_could_not_fill(self, spool):
         """The recoverable half of the window, which IS detectable in-process.
 
-        A write failure is observed by the caller that created the sentinel, so it
-        can restore the pre-claim state; only a hard death cannot, and that case
-        is accepted rather than guessed at.
-
-        The fault is aimed at the SENTINEL's own descriptor, not at every write.
-        Failing all of them kills the temp's write instead, which returns before
-        the sentinel is ever created -- so the assertion below would hold with the
-        unlink deleted, and the test would measure nothing. Confirmed: the
-        all-writes form let that mutation survive.
+        The fault targets the sentinel's own descriptor. Failing every write would fail
+        the temp's write first, before the sentinel exists, and the assertion would hold
+        even with the unlink deleted.
         """
         sid = _hex()
         sentinel = spool / f"{sid}.rendered"

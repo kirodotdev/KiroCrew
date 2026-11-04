@@ -287,6 +287,23 @@ def test_the_default_agent_s_outcome_is_read_from_its_spec(monkeypatch):
     assert tsr._rebuild_specs() is False
 
 
+def test_a_composition_refused_rebuild_is_logged_as_governance(monkeypatch, caplog):
+    from kiro_crew import agent
+    from kiro_crew.platform import PlatformCompositionError
+
+    def rebuild(*, _held_out=None):
+        raise PlatformCompositionError("companion missing")
+
+    monkeypatch.setattr(agent, "rebuild_agent_config_reporting", rebuild)
+    caplog.set_level("ERROR", logger=tsr.logger.name)
+
+    assert tsr._rebuild_specs() is False
+
+    errors = [r for r in caplog.records if r.name == tsr.logger.name and r.levelname == "ERROR"]
+    assert len(errors) == 1
+    assert "(governance)" in errors[0].getMessage()
+
+
 def test_only_a_conductor_needs_its_spec_rewritten(monkeypatch):
     _rebuild(monkeypatch, wrote=False)
     assert tsr._rebuild_required("kirocrew-conductor", "files", present=True) is True

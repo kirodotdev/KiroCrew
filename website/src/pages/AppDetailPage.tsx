@@ -54,6 +54,7 @@ import { fmtDateNumeric, fmtCompact, fmtNumber } from '../i18n/format'
 import { HeroBanner, ScreenshotGallery } from './AppDetailPageArt'
 import { messageActionGrantLabel } from '../messageActions/messageActionRegistry'
 import AppDetailAdoptionNotice from './AppDetailAdoptionNotice'
+import { selectionActionGrantLabel } from '../selectionActions/selectionActionRegistry'
 import type { AppInfo, NormalizedRegistryEntry, RegistryEntry } from './appDetailPageTypes'
 import { actionGrant } from '../composerActions/composerActionRegistry'
 // The page's parts live in sibling owners that never import this module:
@@ -117,7 +118,10 @@ export default function AppDetailPage() {
   const stagedOpenFullUrl = app?.linkOpenGrant?.stagedFullUrl === true
   // A composer button an update added waits the same way.
   const stagedComposerActions = app?.composerActionGrant?.staged || []
-  const hasStagedGrants = stagedApi.length + stagedEvents.length + stagedLinkHosts.length + stagedLinkPatterns.length + stagedMessageActions.length + stagedOpenHosts.length + stagedComposerActions.length > 0 || stagedFullUrl || stagedOpenFullUrl
+  // Selection actions an update added or changed (a new source, more text, a new effect).
+  const stagedSelection = app?.selectionActionGrant?.staged || []
+  const declaredSelectionActions = (app?.manifest as { contributes?: { selectionActions?: unknown } } | undefined)?.contributes?.selectionActions
+  const hasStagedGrants = stagedApi.length + stagedEvents.length + stagedLinkHosts.length + stagedLinkPatterns.length + stagedMessageActions.length + stagedOpenHosts.length + stagedComposerActions.length + stagedSelection.length > 0 || stagedFullUrl || stagedOpenFullUrl
   // Shown where the notice was once the owner approves, so the moment is confirmed.
   const [grantsApprovedMsg, setGrantsApprovedMsg] = useState('')
   const enableLabel = app?.sessionApprovalConsentPending
@@ -302,12 +306,15 @@ export default function AppDetailPage() {
             messageActionGrant: installed.messageActionGrant,
             linkOpenGrant: installed.linkOpenGrant,
             composerActionGrant: installed.composerActionGrant,
+            selectionActionGrant: installed.selectionActionGrant,
             managed: installed.managed,
             source: installed.source,
             installedAt: installed.installedAt,
             origin: installed.origin,
             resources: installed.resources,
             lifecycle: installed.lifecycle,
+            // Set when boot skipped this built-in; the notice below reads it.
+            unavailable: installed.unavailable,
             updateAvailable: registryEntry.updateAvailable || false,
             // Built-ins never carry a star count (they have no repository of
             // their own) — enforce the invariant here rather than trusting the
@@ -432,12 +439,15 @@ export default function AppDetailPage() {
             messageActionGrant: installed.messageActionGrant,
             linkOpenGrant: installed.linkOpenGrant,
             composerActionGrant: installed.composerActionGrant,
+            selectionActionGrant: installed.selectionActionGrant,
             managed: installed.managed,
             source: installed.source,
             installedAt: installed.installedAt,
             origin: installed.origin,
             resources: installed.resources,
             lifecycle: installed.lifecycle,
+            // Set when boot skipped this built-in; the notice below reads it.
+            unavailable: installed.unavailable,
             updateAvailable: registryEntry?.updateAvailable || false,
             manifest: m,
           })
@@ -969,6 +979,18 @@ export default function AppDetailPage() {
           />
         )}
 
+        {/* A built-in app the gateway skipped at boot: its page cannot open, so say
+            why here instead of leaving the user with a page that fails silently.
+            It is a caught import error, so it renders through ErrorNotice; the
+            hand-off is safe because this page holds no unsaved state. */}
+        {app.installed && app.unavailable && (
+          <ErrorNotice
+            message={i18nT('pages.appDetailPage.unavailable_notice', { reason: app.unavailable.reason })}
+            askAgent
+            className="mb-4 animate-rise"
+          />
+        )}
+
         {/* Re-consent after an update that widened the session-approval grant.
             Warn-styled like the PR's other session-approval surfaces -- the text
             says "it is now disabled", so a green box would contradict it. Cleared
@@ -1081,6 +1103,16 @@ export default function AppDetailPage() {
                   </div>
                 </div>
               )}
+              {stagedSelection.length > 0 && (
+                <div>
+                  <div className="text-[13px]">{i18nT('pages.appDetailPage.grants_reconsent_selection_actions')}</div>
+                  <ul className="mt-1 text-[13px] list-disc pl-5" data-testid="staged-selection-actions">
+                    {stagedSelection.map(e => (
+                      <li key={e}>{selectionActionGrantLabel(e, declaredSelectionActions)}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
               {stagedOpenFullUrl && (
                 <div className="text-[13px]">{i18nT('pages.appDetailPage.grants_reconsent_link_open_full_url')}</div>
               )}
@@ -1096,7 +1128,7 @@ export default function AppDetailPage() {
               primary
               onClick={async () => {
                 startAction('approve_grants')
-                const approved = [...stagedApi, ...stagedEvents, ...stagedLinkHosts, ...stagedLinkPatterns, ...(stagedFullUrl ? ['fullUrl'] : []), ...stagedMessageActions.map(e => messageActionGrantLabel(e, declaredMessageActions)), ...stagedOpenHosts, ...(stagedOpenFullUrl ? ['fullUrl'] : []), ...stagedComposerActions].join(', ')
+                const approved = [...stagedApi, ...stagedEvents, ...stagedLinkHosts, ...stagedLinkPatterns, ...(stagedFullUrl ? ['fullUrl'] : []), ...stagedMessageActions.map(e => messageActionGrantLabel(e, declaredMessageActions)), ...stagedOpenHosts, ...(stagedOpenFullUrl ? ['fullUrl'] : []), ...stagedComposerActions, ...stagedSelection.map(e => selectionActionGrantLabel(e, declaredSelectionActions))].join(', ')
                 try {
                   const result = await api.enableApp(app.name, false, {
                     api: stagedApi,
@@ -1108,6 +1140,7 @@ export default function AppDetailPage() {
                     linkOpenHosts: stagedOpenHosts,
                     linkOpenFullUrl: stagedOpenFullUrl ? ['fullUrl'] : [],
                     composerActions: stagedComposerActions.map(actionGrant),
+                    selectionActions: stagedSelection,
                   })
                   setBackendRefusedMsg(backendRefusedNotice(appDisplayName(app), result))
                   setGrantsApprovedMsg(i18nT('pages.appDetailPage.grants_approved', { entries: approved }))

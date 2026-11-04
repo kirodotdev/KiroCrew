@@ -31,6 +31,7 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
 from kiro_crew import _facade_mirror, mcp_core, platform_compat
+from kiro_crew.atomic_write import replace_with_retry
 from kiro_crew.constants import WAIT_TOOL_MAX_SECS
 from kiro_crew.mcp_shared import DeferredTool
 from kiro_crew.mcp_tools.control_parts.directive import (
@@ -362,7 +363,7 @@ def register_hook(name: str, args: dict[str, Any]) -> str:
                     os.fsync(fd)
                 finally:
                     os.close(fd)
-                os.replace(tmp, str(hook_file))
+                replace_with_retry(tmp, str(hook_file))
             except BaseException:
                 os.unlink(tmp)
                 raise

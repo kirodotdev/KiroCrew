@@ -16,9 +16,7 @@ from app_backend_helpers import _FakeHealthResp, _FakeProc, _probe_outcome
 
 from kiro_crew.apps.backend import AppProcess
 
-# =============================================================================
 # Post-startup liveness watch
-# =============================================================================
 
 
 class TestBackendLivenessWatch:
@@ -620,13 +618,11 @@ class TestProbeSurvivesAMalformedHttpResponse:
 
 
 class TestAFailedHealthCheckNamesWhatItObserved:
-    """A 403, a 404 and a dead port were one indistinguishable log line.
+    """A failed health check names what it observed: a 403, a 404 or a dead port.
 
-    The probe is deliberately UNSIGNED, so a manifest whose ``healthCheck`` names a route
-    behind the backend's own auth can never pass — the app stays unreachable and the only
-    evidence was "failed health check after 15 attempts". Reading the status off the wire
-    is the whole point, so these drive a REAL socket: ``urlopen`` RAISES on >= 400 instead
-    of returning the response, and stubbing that would beg the question.
+    The probe is UNSIGNED, so a ``healthCheck`` behind the backend's own auth never passes.
+    A REAL socket is used because ``urlopen`` RAISES on >= 400, and a stub would beg the
+    question.
     """
 
     @staticmethod
@@ -870,11 +866,9 @@ class TestWatchSurvivesAnUnexpectedSweepFault:
 class TestSupervisorIsBoundAtSpawn:
     """The supervisor carries its record, not a name to re-resolve.
 
-    A name and a port are two independent inputs that can disagree. A stop/restart
-    landing between the spawn inserting the record and the supervisor thread's first
-    statement would hand a name lookup the SUCCESSOR while the port argument still named
-    the predecessor — and the poll would then promote, or on exhaustion scrub, a backend
-    whose port it never probed.
+    A stop/restart between the spawn and the thread's first statement would resolve the
+    name to the SUCCESSOR while the port still named the predecessor, so the poll would
+    promote or scrub a backend it never probed.
     """
 
     def test_the_starter_hands_over_the_record_itself(self, monkeypatch):

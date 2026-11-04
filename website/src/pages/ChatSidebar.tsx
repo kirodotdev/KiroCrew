@@ -105,6 +105,7 @@ const NO_CREW_GROUPS: CrewGroup[] = []
 const NO_MEMORY_ROWS: MemorySourceRow[] = []
 
 import { SIDEBAR_MIN } from './chat/sidebarWidth'
+import { askAppConfirm } from '../lib/appConfirm'
 export { SIDEBAR_MIN, SIDEBAR_MAX } from './chat/sidebarWidth'
 
 /**
@@ -120,8 +121,7 @@ export { SIDEBAR_MIN, SIDEBAR_MAX } from './chat/sidebarWidth'
  * render owners, which call no hooks: the lane-row and folder-block factories (built once
  * per render, so the row stamps belong to that pass), the lanes, the header, the dock and
  * the Older Sessions pane. What stays here: every hook call, the row actions and row shell
- * the row memo compares, the native confirm() dialogs (eslint's native-dialog allowlist
- * names this file) and the root region. The owner table and the pin list are in
+ * the row memo compares, the destructive-action confirmations and the root region. The owner table and the pin list are in
  * docs/system-specs/modules/history.md.
  */
 function ChatSidebar({
@@ -869,12 +869,40 @@ function ChatSidebar({
   // The Older Sessions pane's guide scope (`open:chat.older-sessions`).
   useGuideDisclosureScope('chat.older-sessions', historyOpen)
 
-  // The native confirm() dialogs stay in this file, the one eslint's native-dialog
-  // allowlist names; the render owners call these.
-  const deleteFolderWithConfirm = (folder: ChatFolder) => { if (confirm(i18nT('pages.chatSidebar.delete_folder_confirm', { name: folder.name }))) deleteFolderMutation.mutate(folder.id) }
-  const deleteColumnWithConfirm = (columnId: string) => { if (confirm(i18nT('pages.chatSidebar.delete_this_column'))) deleteColumnMutation.mutate(columnId) }
-  const clearClosedSessionsWithConfirm = async () => { if (confirm(i18nT('pages.chatSidebar.clear_closed_sessions_active_tabs_and_pinned_ses'))) { await dispatch(clearHistorySessions()); dispatch(fetchHistory(false)) } }
-  const deleteHistorySessionWithConfirm = (key: string) => { if (confirm(i18nT('pages.chatSidebar.are_you_sure_you_want_to_delete_this_history_ses'))) dispatch(deleteHistorySession(key)) }
+  // The destructive-action confirmations the render owners call. Each asks
+  // through the in-app dialog (`askAppConfirm`), never the browser's native
+  // confirm(): in the desktop app that one can leave the window unable to take
+  // input once it closes. A long sentence goes in `body`, which wraps; the
+  // title is one line and truncates.
+  const deleteFolderWithConfirm = (folder: ChatFolder) => {
+    void askAppConfirm({
+      title: i18nT('pages.chatSidebar.delete_folder'),
+      body: i18nT('pages.chatSidebar.delete_folder_confirm', { name: folder.name }),
+      confirmLabel: i18nT('pages.chatSidebar.delete_folder'),
+    }).then(ok => { if (ok) deleteFolderMutation.mutate(folder.id) })
+  }
+  const deleteColumnWithConfirm = (columnId: string) => {
+    void askAppConfirm({
+      title: i18nT('pages.chatSidebar.delete_this_column'),
+      body: i18nT('pages.chatSidebar.delete_column_body'),
+      confirmLabel: i18nT('pages.chatSidebar.delete_column'),
+    }).then(ok => { if (ok) deleteColumnMutation.mutate(columnId) })
+  }
+  const clearClosedSessionsWithConfirm = async () => {
+    const ok = await askAppConfirm({
+      title: i18nT('pages.chatSidebar.clear'),
+      body: i18nT('pages.chatSidebar.clear_closed_sessions_active_tabs_and_pinned_ses'),
+      confirmLabel: i18nT('pages.chatSidebar.clear'),
+    })
+    if (ok) { await dispatch(clearHistorySessions()); dispatch(fetchHistory(false)) }
+  }
+  const deleteHistorySessionWithConfirm = (key: string) => {
+    void askAppConfirm({
+      title: i18nT('pages.chatSidebar.delete_history_session'),
+      body: i18nT('pages.chatSidebar.are_you_sure_you_want_to_delete_this_history_ses'),
+      confirmLabel: i18nT('pages.chatSidebar.delete_history_session'),
+    }).then(ok => { if (ok) dispatch(deleteHistorySession(key)) })
+  }
 
   // Everything the render owners draw from, built after the last hook call. The
   // factories run once per render, so the row stamps belong to this pass.

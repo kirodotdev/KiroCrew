@@ -517,9 +517,9 @@ describe('useWebSocket frame router', () => {
     }
   })
 
-  it('re-broadcasts tool_call so the Browser panel can open on a browse', () => {
-    // ChatPage listens for this to auto-open the panel when a shell call turns out
-    // to be `playwright-cli`. Without the re-broadcast the listener is live code
+  it('re-broadcasts tool_call as a window event for page-level listeners', () => {
+    // Page-level listeners react to tool calls as they stream (the transcript's
+    // activity cues). Without the re-broadcast the listener is live code
     // that can never fire, which is exactly how the previous frame-based trigger
     // broke when its producer was removed.
     const { ws } = mount()
@@ -532,12 +532,12 @@ describe('useWebSocket frame router', () => {
           type: 'tool_call',
           data: {
             slot: ACTIVE, tool: 'execute_bash', kind: 'tool', purpose: 'open a page',
-            input_preview: 'playwright-cli open https://example.com', is_shell: true,
+            input_preview: 'curl -sS https://example.com', is_shell: true,
           },
         })
       })
       expect(seen).toHaveLength(1)
-      expect((seen[0] as { input_preview: string }).input_preview).toContain('playwright-cli')
+      expect((seen[0] as { input_preview: string }).input_preview).toContain('curl')
     } finally {
       window.removeEventListener('kirocrew-tool-call', onTool)
     }

@@ -1,19 +1,10 @@
 """Contracts the agent-materialization split must carry across unchanged.
 
-``kiro_crew.agent`` is the import path every caller, test and document uses, and its
-implementation now lives in owners under ``kiro_crew.agent_materialization``. These
-tests freeze what the pre-split module offered and what it wrote, independently of
-where the code lives:
-
-* the SURFACE: every name the module bound, with its kind, signature and value;
-* ``toolsSettings.subagent.availableAgents``: a kiro-cli-owned allowlist Crew reads at
-  its own spawn gate (``subagent_parts/agent_policy.py``), carried byte-for-byte through every read,
-  normalize, rebuild, derived-agent and atomic-write path;
-* the tool-less guest spec, including its model fallback and install order;
-* the conductor prompts and grant tuples, which are spec bytes too.
-
-``test_agent_refactor_spec_bytes.py`` freezes the whole rebuild's output; this module
-pins the individual contracts a reviewer would otherwise have to find in that output.
+``kiro_crew.agent`` is the import path everyone uses; the code lives under
+``kiro_crew.agent_materialization``. Pinned: the module surface, the
+``toolsSettings.subagent.availableAgents`` allowlist (read by
+``subagent_parts/agent_policy.py``) byte-for-byte on every path, the guest spec, and the
+conductor prompts and grants. ``test_agent_refactor_spec_bytes.py`` freezes whole output.
 """
 
 from __future__ import annotations
@@ -244,7 +235,7 @@ BASE_SURFACE: dict[str, str] = {
     "_project_shadow_of": "callable _project_shadow_of(agent: 'str', work_dir: 'str | Path | None', *, markdown_specs: 'bool' = True, dispatchable_only: 'bool' = False) -> 'Path | None'",
     "_projected_ceiling_generation": "value state",
     "_prompt_path": "callable _prompt_path() -> 'Path'",
-    "_read_agent_spec": "callable _read_agent_spec(path: 'Path', *, operation: 'str' = 'list_agents', source: 'str' = 'list_agents') -> 'dict[str, Any] | None'",
+    "_read_agent_spec": "callable _read_agent_spec(path: 'Path', *, operation: 'str' = 'list_agents', source: 'str' = 'list_agents', fence: 'Callable[[Path], bool] | None' = None) -> 'dict[str, Any] | None'",
     "_read_spec_capped": "callable _read_spec_capped(path: 'Path') -> 'dict | None'",
     "_reconcile_tool_aliases_from_disk": "callable _reconcile_tool_aliases_from_disk(path: 'Path', config: 'dict') -> 'bool'",
     "_refresh_dynamic_fields": "callable _refresh_dynamic_fields(config: 'dict', *, gated_off: \"'frozenset[str] | None'\" = None, fork: 'bool' = False) -> 'None'",
@@ -513,11 +504,12 @@ _RUNTIME_STATE = frozenset(
 )
 
 #: Values compiled per platform at import, pinned for each platform they are built on:
-#: the hook path allowlist admits ``\`` and ``:`` on Windows only.
+#: the hook path allowlist admits ``\``, ``:`` and Unicode letters and digits on
+#: Windows only.
 _PER_PLATFORM: dict[str, dict[str, str]] = {
     "_SAFE_PATH_RE": {
         "posix": "value Pattern 0d1f4584e517d253",
-        "windows": "value Pattern 92e93b93e927a8a7",
+        "windows": "value Pattern 87efde2f8558ca88",
     },
 }
 
@@ -756,11 +748,8 @@ def test_derived_specs_inherit_the_shape_from_the_template(
 ) -> None:
     """``agent.json`` overrides reach every spec derived from ``build_agent_config``.
 
-    The conductors and the research agent start from ``build_agent_config``, so an
-    operator's ``subagent`` settings land on them as written. The worker starts from
-    the same template and mirrors only ``_WORKER_MIRRORED_SHAPES`` from the default
-    spec on disk, which does not include ``toolsSettings`` -- so its settings are the
-    template's, whatever the default spec on disk carries.
+    The worker mirrors only ``_WORKER_MIRRORED_SHAPES`` from the default spec on disk,
+    which excludes ``toolsSettings``, so its settings are the template's.
     """
     rig = _Rig(tmp_path, monkeypatch)
     override = {"toolsSettings": {"subagent": SUBAGENT_SHAPES[shape] or {}}}

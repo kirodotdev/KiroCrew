@@ -18,6 +18,7 @@ import { KasBundleCard } from '../developer/KasBundleCard'
 import { KIRO_SIGN_IN_BACKEND } from '../developer/kiroSignInLink'
 import { useConfigSchema } from '../../components/settingRef/useConfigSchema'
 import { DecisionsCard } from './DecisionsCard'
+import { RemoteDispatchCard } from './RemoteDispatchCard'
 import { i18nT } from '../../i18n/t'
 
 
@@ -433,6 +434,13 @@ export function FeaturePreviewsSection() {
           onChange={v => setPreviewFlag(PREVIEW_CREWMATE_HARNESS, v)}
         />
       </SettingsCard>
+      {/* Conductor remote dispatch (`work_ledger.remote_dispatch`). Like the KAS card
+          below, its switch is the gateway's own config value, not a preview flag:
+          every remote-dispatch path reads it per call, so it gates the server and
+          not only the UI. Renders nothing until the config read answers. */}
+      <ErrorBoundary scope="feature-preview-remote-dispatch" fallback={null}>
+        <RemoteDispatchCard />
+      </ErrorBoundary>
       {/* The built-in KAS engine (`agent.kas_bundle`), the whole card: its switch
           and the Install button for the pinned engine. It lives here, not on the
           KAS harness row, while the route is in shadow testing, so the one click

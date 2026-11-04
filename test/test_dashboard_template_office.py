@@ -37,9 +37,10 @@ import re
 from pathlib import Path
 from typing import Any
 
+import dashboard_template_checks
 import pytest
 
-from kiro_crew.dashboard_templates.manifest import MAX_FIELDS, ManifestError, load_template
+from kiro_crew.dashboard_templates.manifest import ManifestError, load_template
 from kiro_crew.work_vocab import WORK_ITEM_STATES, WORK_VERDICTS, WORK_WORKER_STATUSES
 
 TEMPLATE_ID = "office"
@@ -49,6 +50,7 @@ FIXTURES = ROOT / "test/fixtures/dashboard_templates"
 POD = FIXTURES / "pod_folds.json"
 WORKSTREAMS = FIXTURES / "sample_workstreams.json"
 SAMPLE = FIXTURES / "sample_office.json"
+
 
 #: The fold's own series cap, which the page sums over and must disclose. Read out of the
 #: projection rather than retyped, so a cap change fails here instead of leaving the page
@@ -119,13 +121,7 @@ def html(loaded: tuple[Any, str]) -> str:
     return loaded[1]
 
 
-class TestItLoads:
-    def test_the_shared_loader_accepts_it(self, loaded: tuple[Any, str]) -> None:
-        manifest, page = loaded
-        assert manifest.id == TEMPLATE_ID
-        assert manifest.source == "builtin"
-        assert page.strip()
-        assert len(manifest.fields) <= MAX_FIELDS
+class TestItLoads(dashboard_template_checks.TheSharedLoaderAcceptsIt):
 
     def test_the_page_is_well_under_the_hosts_document_cap(self, html: str) -> None:
         """Far under the host's 3 MiB page ceiling, which a shipped page should never near."""
@@ -639,14 +635,11 @@ class TestTheButtonsFillTheChatBox:
         assert "'Undo'" in html
 
 
-class TestItDrawsFromTheHost:
-    def test_it_reaches_no_network(self, html: str) -> None:
-        lowered = html.lower()
-        for forbidden in ("<script src", "fetch(", "xmlhttprequest", "importscripts", "//cdn."):
-            assert forbidden not in lowered, f"reaches the network via {forbidden!r}"
-
-    def test_it_reads_the_hosts_own_field_bag(self, html: str) -> None:
-        assert "window.kirocrew" in html
+class TestItDrawsFromTheHost(
+    dashboard_template_checks.ItReadsTheHostsOwnFieldBag,
+    dashboard_template_checks.ItRendersOnLoadAndOnEveryMessage,
+    dashboard_template_checks.ItReachesNoNetwork,
+):
 
     def test_every_bound_cell_is_overwritten_with_a_readable_count(self, html: str) -> None:
         """The host fills each bound element with the value's raw JSON before any script
@@ -686,10 +679,6 @@ class TestItDrawsFromTheHost:
         for part in ("getUTCFullYear", "getUTCMonth", "getUTCDate"):
             assert part in source, f"the day comparison does not use {part}"
         assert "getFullYear()" not in source and "getDate()" not in source
-
-    def test_it_renders_on_load_and_on_every_message(self, html: str) -> None:
-        assert "window.addEventListener('load', render)" in html
-        assert "addEventListener('kirocrew-dashboard'" in html
 
     def test_every_colour_falls_back_to_the_products_own(self, html: str) -> None:
         """The frame injects the theme variables, and the accent differs per theme (it is

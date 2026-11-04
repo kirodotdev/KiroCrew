@@ -26,11 +26,12 @@ from kiro_crew.agent_sdk.backends import (
     effort_config_option_value,
     resolve_selected_backend,
     routing_for,
+    selectable_backends,
 )
 from kiro_crew.agent_sdk.capabilities import capabilities_for
 from kiro_crew.agent_sdk.provider_identity import is_claude_code
 from kiro_crew.config import live
-from kiro_crew.config.loader import read_config_text
+from kiro_crew.config.loader import read_merged_config_files
 from kiro_crew.config.paths import config_dir
 from kiro_crew.effort import (
     EFFORT_LEVELS,
@@ -117,27 +118,28 @@ _VALID_SANDBOX_MODES = frozenset({"auto", "standard", "strict", "cc", "off"})
 
 
 def _read_config() -> dict:
-    """Read the data home's ``config.json`` once; ``{}`` on any error.
+    """Read the data home's config once; ``{}`` on any error.
 
     ``config_dir()`` resolves to ``~/.kiro/crew`` (or ``$KIROCREW_HOME``), so
-    this reads ``<data home>/config.json``.
+    this reads ``<data home>/config.json`` with ``config.local.json`` merged over
+    it, the way the loader merges the overlay.
 
     Synchronous disk read — call from a thread (e.g. ``asyncio.to_thread``) when
     on the event loop, then thread the returned dict into the pure parsers below
     so worker construction never blocks the loop.
     """
     try:
-        config_path = config_dir() / "config.json"
-        if config_path.exists():
-            data = json.loads(read_config_text(config_path))
-            if isinstance(data, dict):
-                # Coerce nested sections to dicts so the pure parsers' chained
-                # ``.get(...).get(...)`` never hits a hand-edited leaf value
-                # (e.g. ``{"agent": "acp"}``) and raises AttributeError.
-                for key in ("agent", "knowledge"):
-                    if not isinstance(data.get(key, {}), dict):
-                        data[key] = {}
-                return data
+        home = config_dir()
+        # config.local.json is an overlay whose keys win, as the loader merges it.
+        data = read_merged_config_files(home / "config.json", home / "config.local.json")
+        if data:
+            # Coerce nested sections to dicts so the pure parsers' chained
+            # ``.get(...).get(...)`` never hits a hand-edited leaf value
+            # (e.g. ``{"agent": "acp"}``) and raises AttributeError.
+            for key in ("agent", "knowledge"):
+                if not isinstance(data.get(key, {}), dict):
+                    data[key] = {}
+            return data
     except Exception:
         pass
     return {}
@@ -186,6 +188,59 @@ def _get_sandbox_mode(config: Optional[dict] = None) -> str:
     return "auto"  # present but malformed -> fail secure, never silently unsandboxed
 
 
+class KnowledgeHarnessUnavailable(RuntimeError):
+    """An enterprise knowledge pool would fall back to the Kiro CLI harness.
+
+    Enterprise only (RFC D6): KAS is the floor and the Kiro CLI harness is being
+    retired, so an enterprise build never falls back to it. The pool cannot run on
+    KAS (it needs a client KAS has no arm in), so it runs on Kiro CLI only when the
+    user picked Kiro CLI (``agent.acp_backend`` ``"kiro"``) and the remote
+    ``agent_backend`` policy allows it. Otherwise it refuses before any process.
+    """
+
+    code = "knowledge_harness_unavailable"
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(
+            f"{self.code}: knowledge extraction cannot run here ({reason}). Kiro Crew "
+            "does not fall back to the Kiro CLI harness in an enterprise build. Run "
+            "`kiro-cli update` to get a kiro-cli that supports `--agent-engine v3`, "
+            "and to run knowledge extraction on the Kiro CLI harness, pick it "
+            '(agent.acp_backend "kiro") and ask your administrator to allow `kiro` '
+            "in the agent_backend policy, then restart Kiro Crew. Nothing runs on "
+            "another harness in its place."
+        )
+
+
+def _kiro_fallback(reason: str) -> str:
+    """``ACP_BACKEND_KIRO`` as the pool's FALLBACK harness: ``oss`` only.
+
+    Every automatic move to Kiro CLI in this module goes through here. In an ``oss``
+    build it returns Kiro CLI, as before. In an enterprise build it always raises
+    :class:`KnowledgeHarnessUnavailable`: there is no automatic fallback to Kiro CLI
+    there (RFC D6), and an explicit Kiro CLI pick never reaches this function.
+    """
+    from kiro_crew import edition
+
+    if edition.is_enterprise():
+        raise KnowledgeHarnessUnavailable(reason)
+    return ACP_BACKEND_KIRO
+
+
+def _kiro_pick_allowed() -> str:
+    """``ACP_BACKEND_KIRO`` for a worker that STARTS on Kiro CLI again (a restart).
+
+    Kiro CLI reaches a worker only as an explicit pick (``_get_acp_backend``), so a
+    restart repeats that pick. In an enterprise build the pick must still be one the
+    governed selection allows (``selectable_backends()``); otherwise it refuses.
+    """
+    from kiro_crew import edition
+
+    if edition.is_enterprise() and ACP_BACKEND_KIRO not in selectable_backends():
+        raise KnowledgeHarnessUnavailable("the agent_backend policy does not allow `kiro`")
+    return ACP_BACKEND_KIRO
+
+
 def _get_acp_backend(config: Optional[dict] = None) -> str:
     """Configured ``agent.acp_backend``, through the one selection gate (H3),
     then narrowed to a backend this pool's zero-tool workers can trust.
@@ -226,11 +281,16 @@ def _get_acp_backend(config: Optional[dict] = None) -> str:
             declared,
             "does not honor a zero-tool spec (honors_zero_tool_ban is False)",
         )
-        return ACP_BACKEND_KIRO
+        return _kiro_fallback(f"{_label(resolved)} does not honor a zero-tool spec")
     if not capabilities_for(resolved).acp_client_spawnable:
         _log_capability_fallback(resolved, declared, "is not acp_client_spawnable")
-        return ACP_BACKEND_KIRO
+        return _kiro_fallback(f"{_label(resolved)} cannot run the knowledge pool's client")
     return resolved
+
+
+def _label(backend: str) -> str:
+    """The policy id of *backend*, for messages (Kiro CLI is ``kiro``, not ``""``)."""
+    return POLICY_ID_BY_BACKEND.get(backend, backend)
 
 
 def _log_capability_fallback(resolved: str, declared: bool, reason: str) -> None:
@@ -480,6 +540,12 @@ class AcpWorker(Worker):
             if self._acp_backend is not None
             else await asyncio.to_thread(_get_acp_backend)
         )
+        if acp_backend == ACP_BACKEND_KIRO:
+            # A worker restarts with the backend it chose before (a recycle or a
+            # stalled client), or a caller hands one in, so every start that would
+            # run Kiro CLI asks the same enterprise check as the first pick does.
+            # In-memory; unchanged in an oss build.
+            acp_backend = _kiro_pick_allowed()
         logger.info(
             "AcpWorker: starting with agent=%s backend=%s",
             AGENT_NAME,
@@ -503,8 +569,11 @@ class AcpWorker(Worker):
                 await self._client.shutdown()
             except Exception:
                 logger.debug("AcpWorker: unsafe-backend client shutdown failed", exc_info=True)
-            acp_backend = ACP_BACKEND_KIRO
-            self._acp_backend = ACP_BACKEND_KIRO
+            self._client = None
+            acp_backend = _kiro_fallback(
+                f"{_label(acp_backend)} did not confirm the zero-tool spec"
+            )
+            self._acp_backend = acp_backend
             self._client, authored_before_spawn = await self._spawn_client(
                 acp_backend, sandbox_mode
             )
@@ -1437,6 +1506,10 @@ class LLMPool:
         async def _do_one(idx: int, prompt: str) -> None:
             try:
                 results[idx] = await self.send(prompt, timeout=timeout)
+            except KnowledgeHarnessUnavailable:
+                # Not a failed item: no prompt in the batch can run, and an empty
+                # reply would let the ingest commit a document with no extraction.
+                raise
             except Exception as e:
                 logger.warning("LLMPool: batch item %d failed: %s", idx, e)
                 results[idx] = ""

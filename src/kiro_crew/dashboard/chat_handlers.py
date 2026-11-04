@@ -36,6 +36,7 @@ from kiro_crew.agent_sdk.provider_identity import is_claude_code  # noqa: F401
 from kiro_crew.agent_switch_command import switch_announcement  # noqa: F401
 from kiro_crew.apps import seams as _app_seams
 from kiro_crew.atomic_write import atomic_write, read_bytes_with_retry  # noqa: F401
+from kiro_crew.config.fields import _coerce_bool  # noqa: F401 -- read by chat_api.slot_repair
 from kiro_crew.config.loader import (  # noqa: F401
     AUTOCOMPACT_PCT_MAX,
     AUTOCOMPACT_PCT_MIN,
@@ -216,6 +217,7 @@ from kiro_crew.dashboard.chat_api.slot_approval import (  # noqa: F401
     _apply_inherited_postures,
     _approval_target_required,
     _deny_approval_mode,
+    _deny_override_answer_refusal,
     _deny_trust_pattern,
     _elicitation_not_an_approval,
     _end_trust_scope,
@@ -223,6 +225,7 @@ from kiro_crew.dashboard.chat_api.slot_approval import (  # noqa: F401
     _get_pattern_from_pending,
     _grant_deadline,
     _internal_session_approval_refusal,
+    _is_deny_override_card,
     _pending_elicitation_ids,
     _still_owning,
     _sweep_pending_approvals,
@@ -281,6 +284,7 @@ from kiro_crew.dashboard.chat_api.slot_lifecycle import (  # noqa: F401
     _await_guarded_history_write,
     _close_slot,
     _drain_file_changes_flush,
+    _emit_archived_rows,
     _NudgeRetireFailed,
     _pending_guarded_history_writes,
     _release_closed_execution,
@@ -346,6 +350,8 @@ from kiro_crew.dashboard.chat_api.turn_stop import (  # noqa: F401
     _reject_pending_approvals,
     _resolve_stop_event,
     _settle_discarded_stage_deliveries,
+    _start_chosen_restored_card,
+    _unchoose_restored_card,
     api_chat_slot_interrupt,
     api_chat_slot_stop,
     stop_slot_turn,
@@ -403,10 +409,12 @@ from kiro_crew.dashboard.chat_persistence import (  # noqa: F401
     save_slot_off_loop,
 )
 from kiro_crew.dashboard.chat_runner import (  # noqa: F401
+    _arm_pending_reset_retry,
     _context_usage_payload,
     _run_chat,
     _start_next_queued_turn,
     _sync_served_model,
+    _wake_pending_reset_retry,
     context_entry_expired,
     schedule_eager_spawn,
     subagents_hold_user_messages,
@@ -458,6 +466,7 @@ from kiro_crew.dashboard.chat_utils import (  # noqa: F401
     slot_history_key,
     slot_transcript_key,
     subagents_attached_async,
+    teardown_hold_active,
     tighten_live_slot_memory_mode,
 )
 from kiro_crew.dashboard.chat_utils import (  # noqa: F401
@@ -465,6 +474,10 @@ from kiro_crew.dashboard.chat_utils import (  # noqa: F401
 )
 from kiro_crew.dashboard.default_session_folder import (  # noqa: F401
     resolve_default_session_folder,
+)
+from kiro_crew.dashboard.deny_override import (  # noqa: F401
+    DENY_OVERRIDE_ACTIONS,
+    is_deny_override_card,
 )
 from kiro_crew.dashboard.handlers._shared import (  # noqa: F401
     _SLOT_SCOPED_TRUST_MODES,
@@ -530,7 +543,11 @@ from kiro_crew.dashboard.slot_projection import (  # noqa: F401
     resolved_row_identity,
     stop_declined_armed,
 )
-from kiro_crew.dashboard.slot_queue_repository import warn_if_not_durable  # noqa: F401
+from kiro_crew.dashboard.slot_queue_repository import (  # noqa: F401
+    RESTORED_QUEUE_KEY,
+    RESTORED_SEND_CHOSEN_KEY,
+    warn_if_not_durable,
+)
 from kiro_crew.dashboard.slot_registry import (  # noqa: F401
     SlotRegistry,
     TakeoverBasis,
@@ -665,7 +682,15 @@ _SESSION_RELOAD_NOTICE = (
 #: could displace human sessions. Stripped here so the gateway re-applies it below
 #: only for a genuine human send. ``TURN_ACTOR_META_KEY`` is the gateway's record
 #: that an app sent the row, which the title counter reads (``chat_title``).
-RESERVED_ROW_META_KEYS = frozenset({"decisions_strip", HUMAN_TURN_META_KEY, TURN_ACTOR_META_KEY})
+#: ``slack_sender`` names the Slack person a code channel's row came from
+#: (``slack.code_channels.creation.slack_sender``); only the Slack routing writes
+#: it, so a dashboard send cannot pass a row off as a Slack user's.
+#: ``slack_request`` names the Slack message a code channel's first turn delivered
+#: (``slack.code_channels.routing.REQUEST_META_KEY``); a caller-supplied one would
+#: mark a request delivered that never reached the session.
+RESERVED_ROW_META_KEYS = frozenset(
+    {"decisions_strip", HUMAN_TURN_META_KEY, TURN_ACTOR_META_KEY, "slack_sender", "slack_request"}
+)
 
 #: The ``steer`` value that means "let Jev choose between the two paths" rather
 #: than naming one. A STRING beside the boolean the two manual modes send, so the

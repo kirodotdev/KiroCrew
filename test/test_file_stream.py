@@ -77,13 +77,75 @@ def test_parse_range_forms():
     assert _parse_range_header("bytes=0-9999", 1000) == (0, 999)  # end clamped
 
 
-def test_parse_range_rejects_malformed_and_unsatisfiable():
+def test_parse_range_unsatisfiable_is_none():
+    """A well-formed range that misses the body is answered 416."""
     assert _parse_range_header("bytes=1000-1001", 1000) is None  # start past EOF
-    assert _parse_range_header("bytes=5-2", 1000) is None
-    assert _parse_range_header("bytes=0-10,20-30", 1000) is None  # multi-range
-    assert _parse_range_header("items=0-10", 1000) is None
-    assert _parse_range_header("bytes=abc-def", 1000) is None
+    assert _parse_range_header("bytes=1000-", 1000) is None
     assert _parse_range_header("bytes=-0", 1000) is None
+    assert _parse_range_header("bytes=0-", 0) is None
+    assert _parse_range_header("bytes=-5", 0) is None
+
+
+@pytest.mark.parametrize(
+    "header",
+    [
+        "bytes=5-2",  # last-pos before first-pos is invalid syntax (RFC 9110 14.1.1)
+        "bytes=0-10,20-30",  # multi-range: served whole rather than multipart
+        "items=0-10",  # a unit this server does not know
+        "bytes=abc-def",
+        "bytes=1_0-20",  # int() would read 10
+        "bytes=+5-20",  # int() would read 5
+        "bytes=-+5",
+        "bytes=-",
+        "bytes=",
+        "bytes",
+        "bytes=\u0661-\u0662",  # non-ASCII digits int() would accept
+    ],
+)
+def test_parse_range_malformed_is_ignored(header):
+    """RFC 9110 14.2: a malformed Range is ignored and the whole body sent (200)."""
+    assert _parse_range_header(header, 1000) == "ignore"
+
+
+def test_parse_range_keeps_the_whitespace_leniency_it_had():
+    """The old ``int()`` parse tolerated whitespace around positions; kept."""
+    assert _parse_range_header("bytes= 0-99", 1000) == (0, 99)
+    assert _parse_range_header("bytes=0 - 99", 1000) == (0, 99)
+    assert _parse_range_header("bytes=-5000", 1000) == (0, 999)  # suffix past start
+
+
+def test_parse_range_a_huge_position_reads_as_past_the_end():
+    """A position of thousands of digits is past any file, never a crash.
+
+    ``int()`` refuses more than 4300 digits with ValueError; the parser must answer
+    as for any position past the end instead.
+    """
+    huge = "9" * 5000
+    try:
+        assert _parse_range_header(f"bytes={huge}-", 1000) is None  # start past EOF: 416
+        assert _parse_range_header(f"bytes=0-{huge}", 1000) == (0, 999)  # end clamped
+        assert _parse_range_header(f"bytes=-{huge}", 1000) == (0, 999)  # suffix past start
+        assert _parse_range_header(f"bytes={'0' * 5000}5-9", 1000) == (5, 9)
+    except ValueError as exc:
+        pytest.fail(f"a long range position raised: {exc}")
+
+
+def test_parse_range_unit_is_case_insensitive():
+    """RFC 9110 14.1: range units are case-insensitive."""
+    assert _parse_range_header("Bytes=0-99", 1000) == (0, 99)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("header", ["bytes=5-2", "bytes=0-10,20-30", "bytes=1_0-20"])
+async def test_malformed_range_serves_whole_body_200(tmp_path, mock_sel, header):
+    f = tmp_path / "demo.mp4"
+    f.write_bytes(_MP4_BYTES)
+    with patch("kiro_crew.dashboard.handlers._validate_dashboard_path", return_value=str(f)):
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.get(f"/api/file-stream?path={f}", headers={"Range": header})
+            assert resp.status == 200
+            assert "Content-Range" not in resp.headers
+            assert await resp.read() == _MP4_BYTES
 
 
 # --- endpoint: happy paths ---

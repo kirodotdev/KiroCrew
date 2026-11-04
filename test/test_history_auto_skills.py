@@ -1178,6 +1178,8 @@ class TestSkillDetectionFullWindow:
             with patch.object(c, "_process_auto_skills"):
                 await c._run_skill_detection(key)
                 assert m1.call_count == 1  # first pass evaluates
+                # The guard keys on (rotation generation, message count).
+                assert c._last_skillgen_marker[key] == (0, 6)
                 await c._run_skill_detection(key)
                 assert m1.call_count == 1, (
                     "an unchanged session must NOT be re-judged on the next "
@@ -1308,6 +1310,7 @@ class TestSkillDetectionFullWindow:
                     "a rotation (generation bump) must force a fresh detection "
                     "pass even when the message count is unchanged"
                 )
+                assert c._last_skillgen_marker[key] == (meta["rotation_generation"], 6)
 
 
 @pytest.mark.asyncio

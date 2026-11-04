@@ -31,6 +31,14 @@ describe('isAppNavigable', () => {
     expect(isAppNavigable(app({ enabled: undefined }))).toBe(false)
   })
 
+  it('rejects a built-in the gateway skipped at boot', () => {
+    // Its routes were never registered, so its page would fail: no rail row,
+    // no palette entry, no destination.
+    const skipped = app({ unavailable: { reason: 'PermissionError: denied' } })
+    expect(isAppNavigable(skipped)).toBe(false)
+    expect(appNavTarget(skipped)).toBeNull()
+  })
+
   it('rejects an app with no UI pages', () => {
     expect(isAppNavigable(app({ manifest: { ui: { pages: [] } } }))).toBe(false)
     expect(isAppNavigable(app({ manifest: { ui: {} } }))).toBe(false)

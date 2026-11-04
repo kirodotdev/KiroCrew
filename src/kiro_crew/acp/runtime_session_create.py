@@ -39,6 +39,8 @@ from kiro_crew.acp._dispatch import (
 from kiro_crew.acp.kas_agents import hoist_servers_for_session
 from kiro_crew.acp.runtime_session_setup import (
     _disable_check_scope,
+    _drop_withdrawn_stubs,
+    _kas_worker_stub_names,
     _pooled_session_servers_and_ref_spec,
 )
 from kiro_crew.acp.runtime_start import _START_COLLECT_TIMEOUT_DEFAULT, StartCollector, StartPermit
@@ -197,6 +199,8 @@ async def create_session(
     mirrored_snapshot: Any = None
     consumed_spec: Any = None
     ref_spec: Any = None
+    # The KAS crewmate worker's stub names, set beside its one overlay lookup.
+    worker_stubs: frozenset[str] | None = None
     if mcp_servers is None:
         # A mirrored host takes its whole array from the mirror; every other host
         # takes the pooled stubs it always took. Which one is a synchronous
@@ -227,9 +231,13 @@ async def create_session(
                 self.acp_backend,
                 session_work_dir,
                 launch_spec,
+                session_key or "",
             )
             mcp_servers = await self._unpooled_control_planes(
                 pooled, agent or self._agent, session_work_dir
+            )
+            worker_stubs = _kas_worker_stub_names(
+                self.acp_backend, pool_agent, session_key or "", pooled
             )
             mcp_servers, stub_token = await self._own_stub_session(mcp_servers, session_key)
             # After the token stamp, so a label element never carries the token.
@@ -326,6 +334,7 @@ async def create_session(
         # the mount and the grant together so the two cannot disagree.
         crew_panel=panel_mounted,
         session_key=session_key,
+        **({} if worker_stubs is None else {"worker_stub_names": worker_stubs}),
     )
     kas_agents = kas_extras.custom_agents
     # The generation the wire payload was built from, or None when this host takes its
@@ -334,6 +343,9 @@ async def create_session(
     # The vault identity the request goes out under, for the KAS catalog recorder;
     # read by the harness with the payload, ``""`` on every host but KAS.
     request_identity = kas_extras.vault_identity
+    # The MCP servers the payload withholds part of the config from, for the new
+    # chat's notice row; "" on every host but KAS.
+    withheld_notice = kas_extras.withheld_credentials_notice
     # Crew's managed servers travel in the session-level array, the one
     # declaration site the captured 2.18.0 release honours over a same-named
     # global/workspace entry and 2.20.0 reports as the client's own (see
@@ -342,6 +354,8 @@ async def create_session(
     # Read BEFORE the hoist: it moves app launcher entries out of the batch, and
     # the recorded batch then lacks the snapshots this projection wrote.
     launch_snapshots = kas_env_launch.batch_snapshot_names(kas_agents)
+    # A worker stub whose server the payload's later read of the spec muted.
+    mcp_servers = _drop_withdrawn_stubs(mcp_servers, kas_extras.withdrawn_stub_names)
     kas_agents, mcp_servers = hoist_servers_for_session(
         kas_agents,
         active_agent,
@@ -469,6 +483,7 @@ async def create_session(
             request_sent_at=request_sent_at,
             request_identity=request_identity,
             launch_snapshots=launch_snapshots,
+            withheld_notice=withheld_notice,
         )
         if collector is None:
             permit.release()
@@ -505,6 +520,7 @@ async def create_session(
         request_sent_at=request_sent_at,
         request_identity=request_identity,
         launch_snapshots=launch_snapshots,
+        withheld_notice=withheld_notice,
     )
 
 
@@ -535,6 +551,7 @@ def _collect_late_start(
     request_sent_at: float | None = None,
     request_identity: str = "",
     launch_snapshots: list[str] | None = None,
+    withheld_notice: str = "",
 ) -> StartCollector | None:
     """Hand a timed-out ``session/new`` to a :class:`StartCollector`.
 
@@ -623,6 +640,7 @@ def _collect_late_start(
                 request_sent_at=request_sent_at,
                 request_identity=request_identity,
                 launch_snapshots=launch_snapshots,
+                withheld_notice=withheld_notice,
             )
             # A declining (or raising) adopter answers False and the
             # collector performs the one teardown.
@@ -688,6 +706,7 @@ async def _finish_create_session(
     request_sent_at: float | None = None,
     request_identity: str = "",
     launch_snapshots: list[str] | None = None,
+    withheld_notice: str = "",
 ) -> AcpSessionHandle:
     """Everything after a successful ``session/new``: queue, handle, mode, drain.
 
@@ -741,6 +760,9 @@ async def _finish_create_session(
     if launch_snapshots is None:
         launch_snapshots = kas_env_launch.batch_snapshot_names(kas_agents)
     handle.kas_launch_snapshots.extend(launch_snapshots)
+    # The servers the payload sent without part of their env or headers, for the
+    # session-start notice; "" on a host that sends no payload.
+    handle.kas_withheld_credentials_notice = withheld_notice
     if self._mirrored_spec_check_needed(mirrored_snapshot):
         await self._require_unchanged_mirrored_spec(session_id, mirrored_snapshot)
 

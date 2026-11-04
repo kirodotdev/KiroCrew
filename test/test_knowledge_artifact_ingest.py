@@ -989,22 +989,21 @@ class TestArtifactKnowledgeSync:
         ``release_stale_claim`` (a write-lock take). Ingest once off strict, then
         edit and re-upsert under strict: the second upsert exercises the
         ``_get_state`` read AND the ``release_stale_claim`` write, both of which
-        must be offloaded.
+        must be offloaded. The real ingest runs, so the stored text proves the
+        changed-content branch ran rather than the unchanged short-circuit.
         """
         sid, _ = await asyncio.to_thread(ensure_artifact_source, kstore)
         art = art_store.create(name="Doc", content="v1 body", kind="markdown")
         await ingest_artifact(pipeline, art_store, art.slug, sid, DEFAULT_KINDS)
         art_store.update(art.slug, content="v2 body", snapshot=True)
-        monkeypatch.setattr(
-            pipeline, "ingest_file", AsyncMock(return_value=None))
         monkeypatch.setenv("KIROCREW_STRICT_ON_LOOP_STORE", "1")
         sync = ArtifactKnowledgeSync(
             art_store=art_store, pipeline=pipeline, kinds=DEFAULT_KINDS,
             loop=asyncio.get_running_loop())
         await sync._handle("upsert", art.slug)  # raises if a store take is on-loop
-        # Reaching the ingest proves the changed-content branch ran, not the
-        # unchanged short-circuit that returns before release_stale_claim.
-        assert pipeline.ingest_file.await_count == 1
+        contents = await asyncio.to_thread(lambda: _contents(kstore, sid))
+        assert len(contents) == 1
+        assert "v2 body" in contents[0]
 
     @pytest.mark.asyncio
     async def test_handle_delete_takes_no_db_connection_on_the_loop(

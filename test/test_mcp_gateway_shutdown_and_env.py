@@ -1,12 +1,8 @@
 """Tests for two MCP gateway pooling behaviours.
 
-Part 1 — shutdown: the supervisor's SIGTERM→SIGKILL grace must cover gatewayd's
-own drain budget, and the drain must wait on IN-FLIGHT REQUESTS rather than on
-the (never-empty) connection set.
-
-Part 2 — declared env: a pooled backend may receive the operator's declared
-non-secret env, and must never receive a rotating-secret or credential-prefixed
-key.
+Shutdown: the SIGTERM→SIGKILL grace covers gatewayd's drain budget, and the drain
+waits on in-flight requests, not the never-empty connection set.
+Declared env: a pooled backend gets declared non-secret env, never a secret key.
 """
 
 from __future__ import annotations
@@ -79,7 +75,7 @@ def _make_backend(key: PoolKey | None = None) -> Backend:
     )
 
 
-# --- Part 1: shutdown budgets ------------------------------------------------
+# Part 1: shutdown budgets
 
 
 class TestShutdownBudget:
@@ -230,7 +226,7 @@ class TestDrainPredicate:
         assert gatewayd._active_stub_writes == before
 
 
-# --- Part 2: declared env forwarding ----------------------------------------
+# Part 2: declared env forwarding
 
 
 class TestEffectiveEnvHash:
@@ -264,11 +260,8 @@ class TestEffectiveEnvHash:
     def test_naming_a_key_makes_the_hash_injective_over_it(self):
         """The whole basis of ``mcp_gateway.pool_identity_env``.
 
-        ``test_secret_keys_do_not_change_the_hash`` above states the problem: two
-        sessions differing only in a rotating secret collide onto one hash, so
-        they share a backend and no single value for that key is correct. Naming
-        the key removes the collision — which is what makes forwarding it safe,
-        by the same argument that already makes every other hashed key safe.
+        Two sessions differing only in a rotating secret share one hash and one
+        backend; naming the key splits them, which is what makes forwarding it safe.
         """
         a = {"FLAG": "on", "AWS_SESSION_TOKEN": "token-a"}
         b = {"FLAG": "on", "AWS_SESSION_TOKEN": "token-b"}
@@ -302,18 +295,12 @@ class TestDeclaredEnvForwarding:
     def _write_sidecar(
         tmp_path, monkeypatch, pairs: dict, key: PoolKey, identity_keys=()
     ) -> PoolKey:
-        """Write the sidecar and return a PoolKey whose ``effective_env_hash`` is
-        COHERENT with it — i.e. what a stub that read this same sidecar would
-        have registered. The forwarding path enforces that equality, so tests
-        must model it rather than using a placeholder hash.
+        """Write the sidecar and return a PoolKey whose hash is coherent with it.
 
-        ``identity_keys`` is the set THE STUB hashed with. Passing a set the
-        daemon does not share is how a lying stub is modelled: the daemon
-        recomputes under its own configured set and the equality fails.
-
-        The file is named for ``(agent, server)`` exactly as the rewriter names
-        it, because it holds the declaration's full env and no PoolKey field can
-        separate two agents whose secrets are the only difference."""
+        The forwarding path checks that equality, so a placeholder hash will not do.
+        ``identity_keys`` is the set the stub hashed with; a set the daemon does not
+        share models a lying stub. The file is named for ``(agent, server)`` as the
+        rewriter names it."""
         monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
         sidecar_dir = env_sidecar_dir(resolve_overlay_dir())
         sidecar_dir.mkdir(parents=True, exist_ok=True)
@@ -330,15 +317,9 @@ class TestDeclaredEnvForwarding:
     ):
         """Drift guard for the two-places-must-agree contract.
 
-        ``_withheld_env_count`` claims to mirror
-        ``gatewayd._declared_non_secret_env``. Pin it against the REAL forwarder
-        rather than a reproduction of its filter chain: a filter added to the
-        forwarder and not to the classifier has to fail this test, which it
-        cannot do if the test re-implements the chain it is meant to police.
-
-        Load-bearing because of the default flip: with forwarding off the
-        classifier short-circuits on ``len(entry_env)`` and never consults the
-        forwarder's rules, so only the ON path can drift.
+        ``_withheld_env_count`` must mirror ``gatewayd._declared_non_secret_env``.
+        It is pinned against the real forwarder, not a copy of its filter chain, so
+        a filter added only to the forwarder fails here. Only the ON path can drift.
         """
         from kiro_crew.mcp_gateway import gatewayd
         from kiro_crew.mcp_gateway.hashing import is_secret_env_key
@@ -424,12 +405,8 @@ class TestDeclaredEnvForwarding:
     def test_a_credential_scrub_name_cannot_be_opted_in(self, tmp_path, monkeypatch):
         """``pool_identity_env`` does not lift ``is_credential_env_key``.
 
-        That scrub is the broader guard and predates pooling — it keeps one
-        session's credentials out of another session's backend in the per-session
-        topology too. ``pool_identity_env_keys`` drops such names at the source so
-        hash, forwarder and classifier cannot end up in a half-state where a key
-        is in the identity but still refused, which would re-partition the pool on
-        every rotation while leaving the entry unpoolable anyway.
+        ``pool_identity_env_keys`` drops such names at the source, so a key can never
+        be in the identity yet still refused by the forwarder.
         """
         from kiro_crew.mcp_gateway.rewriter import pool_identity_env_keys
 
@@ -447,12 +424,8 @@ class TestDeclaredEnvForwarding:
     ):
         """A stub cannot widen what reaches a SHARED backend.
 
-        The stub is handed the identity set on argv so it can compute the hash,
-        and stubs are untrusted clients. A stub that claims a key the operator did
-        not name registers a hash the daemon does not reproduce, because the
-        daemon recomputes under ITS OWN configured set — so the existing coherence
-        gate refuses the whole sidecar. No new check: the gate that guards a spec
-        edited mid-session guards this identically.
+        Stubs are untrusted. The daemon recomputes the hash under its own configured
+        set, so a stub claiming an extra key fails the coherence gate.
         """
         from kiro_crew.mcp_gateway import gatewayd
 
@@ -475,12 +448,9 @@ class TestDeclaredEnvForwarding:
     ):
         """The coherence hash and the forward filter must observe ONE snapshot.
 
-        Reading ``pool_identity_env_keys()`` twice would make them two separate
-        observations of a file an operator can edit at any moment, so the gate
-        could accept a sidecar under one set while the filter applied another --
-        and the wider of the two would decide what reaches a shared backend.
-        Counting the reads pins the structural fix (the set is a required
-        parameter of ``_declared_env_pairs``) rather than the current line order.
+        Two reads of ``pool_identity_env_keys()`` could see an operator edit between
+        them, letting the gate and the filter apply different sets. Counting the reads
+        pins the set as a required parameter of ``_declared_env_pairs``.
         """
         from kiro_crew.mcp_gateway import gatewayd
 
@@ -650,12 +620,9 @@ class TestApprovalIdentityCountsDeclarationsNotFiles:
     ):
         """The Goal's own case, and the one a file COUNT would break.
 
-        Two agents declare one server identically, secrets included. Each gets
-        its own sidecar holding the SAME bytes, so there are two FILES and one
-        DECLARATION. The approval identity must stay the full-env fingerprint:
-        falling back to the PoolKey hash here would never match an approval
-        whose env holds an ``OAUTH``/``AWS_SECRET`` key, so the one shared spawn
-        this change exists to enable would be refused at launch.
+        Two agents declare one server identically: two files, one declaration. The
+        approval identity stays the full-env fingerprint, since the PoolKey hash
+        would never match an approval whose env holds an ``OAUTH``/``AWS_SECRET`` key.
         """
         pairs = {"TOOL": "on", "OAUTH_TOKEN": "same-token"}
         base = _pool_key(server="builder-mcp")
@@ -709,11 +676,8 @@ class TestCoherentSidecarScanReadsOnce:
     def test_the_scan_returns_the_contents_it_verified(self, tmp_path, monkeypatch):
         """A replacement landing after the hash check must not reach a backend.
 
-        ``_coherent_env_sidecars`` hashes each candidate and returns the pairs.
-        If it returned a PATH instead, every caller would re-open the file, and
-        the rewriter can replace it between the two reads -- so the bytes
-        applied to the spawn would be bytes no hash ever covered. The second
-        read is modelled here by making the loader answer differently each time.
+        ``_coherent_env_sidecars`` returns the pairs it hashed, not a path to re-open.
+        The loader answers differently on a second read to model a swapped file.
         """
         pairs = {"TOOL_PERSONALIZATION_ENABLED": "false"}
         key = TestDeclaredEnvForwarding._write_sidecar(tmp_path, monkeypatch, pairs, _pool_key())
@@ -740,11 +704,8 @@ class TestCoherentSidecarScanReadsOnce:
     def test_one_undecodable_file_does_not_take_down_the_scan(self, tmp_path, monkeypatch):
         """A non-UTF-8 ``*.json`` in the directory must be SKIPPED, not raised.
 
-        The scan reads every candidate in the sidecar directory, so an
-        exception escaping one file reaches callers spawning servers that have
-        nothing to do with it -- the stub exits 1 and that server's tools
-        disappear. ``read_text`` decodes, so the raise happens before any JSON
-        parsing and a catch around ``json.loads`` is too late to help.
+        One bad file would break spawns of unrelated servers. ``read_text`` decodes,
+        so the raise comes before JSON parsing and a catch around ``json.loads`` is too late.
         """
         pairs = {"TOOL_PERSONALIZATION_ENABLED": "false"}
         key = TestDeclaredEnvForwarding._write_sidecar(tmp_path, monkeypatch, pairs, _pool_key())
@@ -771,11 +732,8 @@ class TestSidecarNaming:
     def test_two_agents_declaring_one_server_get_two_files(self):
         """The security property the name exists for.
 
-        This file holds a declaration's FULL env, rotating secrets included, and
-        it is read back unfiltered for a connection-private backend. Two agents
-        declaring one server must therefore never land on one name, or the
-        second write clobbers the first and one agent's private backend is
-        spawned with the other agent's credentials.
+        The file holds the full env, secrets included, read back unfiltered. A shared
+        name would spawn one agent's private backend with the other agent's credentials.
         """
         assert env_sidecar_name("gpu-dev", "builder-mcp") != env_sidecar_name(
             "kirocrew", "builder-mcp"
@@ -895,12 +853,8 @@ class TestForwardDeclaredEnvFlag:
     def test_defaults_to_on(self):
         """Absence means forward.
 
-        The forwarded set is a strict subset of the hashed set and gatewayd
-        re-hashes the sidecar at spawn, forwarding nothing on mismatch -- so a
-        forwarded key is one every co-tenant of that backend declared
-        identically. With the flag off, declaring a single ordinary key costs the
-        whole server its pooling, on the strength of a disagreement that check
-        has already ruled out.
+        Safe because gatewayd re-hashes the sidecar at spawn, so a forwarded key is one
+        every co-tenant declared identically.
         """
         from kiro_crew.config.loader import McpGatewayConfig
 
@@ -913,13 +867,8 @@ class TestForwardDeclaredEnvFlag:
     def test_string_false_is_not_read_as_a_boolean(self):
         """``bool("false")`` is True, so a hand-edited string must not decide this.
 
-        The schema type-checks before the parse and strips a non-boolean, so the
-        dataclass default applies. With the default ON that means a typo now
-        resolves to forwarding rather than to not-forwarding -- a deliberate
-        consequence of the flip, and a safe one: the forwarded set is a strict
-        subset of the hashed set and the spawn-time hash check refuses anything
-        the co-tenants did not agree on. A typo cannot silently
-        cost a server its pooling.
+        The schema strips a non-boolean, so the ON default applies. That is safe: the
+        spawn-time hash check refuses anything the co-tenants did not agree on.
         """
         cfg = _load_config_from_dict({"mcp_gateway": {"forward_declared_env": "false"}})
         assert cfg.mcp_gateway.forward_declared_env is True
@@ -966,11 +915,8 @@ class TestForwardDeclaredEnvFlag:
 class TestPrivateBackendDeclaredEnv:
     """A connection-private backend gets its declared env in full.
 
-    Both filters the pooled path applies exist for co-tenancy: no single value is
-    correct when several sessions share one process. A private backend has one
-    stub, so the declaring session and the only consuming session are the same
-    one -- and withholding the env would be a regression, since the same server
-    spawned without a gateway receives it from the agent runtime.
+    The pooled filters exist for co-tenancy. A private backend has one stub, and the
+    same server spawned without a gateway gets the env from the agent runtime.
     """
 
     def test_forwards_declared_env_with_the_flag_off(self, tmp_path, monkeypatch):

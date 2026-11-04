@@ -29,12 +29,19 @@ from kiro_crew.apps.manager import (
 )
 from kiro_crew.testing.wait import await_until, finished, wait_until
 
-# ---------------------------------------------------------------------------
+#: The update's refusal for an installed `.app_secret` that is a symlink; the
+#: test pins the full sentence so a wording change is visible.
+_APP_SECRET_IS_A_LINK = (
+    "`.app_secret` in the app directory is a link; moving it aside for "
+    "the update places it outside its tree where a relative target does not "
+    "resolve and the secret is lost. Replace the link with a regular "
+    "`.app_secret` file holding the same secret, then retry the update."
+)
+
 # _copy_app_tree — symlink / denylist / off-loop regression tests
 # (app install must not run a raw follow-symlinks copytree on the event loop;
 # a large `build` symlink target froze the loop until the watchdog killed
 # the gateway)
-# ---------------------------------------------------------------------------
 
 
 class TestCopyAppTree:
@@ -529,14 +536,10 @@ class TestCopyAppTree:
     def test_an_installed_data_link_refuses_the_update_before_the_transaction(
         self, tmp_path, app_home
     ):
-        """An installed `data` that is a LINK (an install from before the link
-        refusal) cannot be preserved: the move would relocate the link beside the
-        app directory, where its relative target does not resolve, put nothing
-        back, and delete the directory it named with the retired tree on the
-        update's success path. The update refuses before anything moves: the link,
-        the directory it names, the rest of the tree and the record are untouched,
-        no temp copy and no retired tree appear, and the sentence is the one
-        predicate every entry point asks (`gateway_data_dir_obstruction`)."""
+        """An installed `data` that is a LINK makes update refuse before anything moves.
+
+        Moving the link breaks its relative target, and the retired tree would delete the
+        directory it named. The message comes from `gateway_data_dir_obstruction`."""
         from kiro_crew.apps.manager import app_dir, update_app
 
         src = _make_app_source(tmp_path)
@@ -569,17 +572,10 @@ class TestCopyAppTree:
     def test_an_installed_data_junction_refuses_the_update_before_the_transaction(
         self, tmp_path, app_home, monkeypatch
     ):
-        """The Windows shape of the same loss: a directory JUNCTION at `<app>/data`
-        is not a symlink -- `os.path.islink` and `Path.is_symlink` both say False --
-        so a link test built on either calls it a directory, moves it aside as one,
-        retires the tree it names with the old app files and cannot put the
-        dangling junction back: the stored data is deleted on the update's own
-        success path. Fed as a SHAPE through the module's junction seam, the way the
-        dangling-junction tests do (a junction has no POSIX equivalent to create):
-        `data` is a real directory here that `is_link_or_junction` reports as a
-        junction, and the predicate, the preservation forecast and the update
-        preflight must all answer as they do for a symlink -- refuse before anything
-        moves, with the data, the record and the tree untouched."""
+        """A Windows JUNCTION at `<app>/data` is refused like a symlink.
+
+        `os.path.islink` and `Path.is_symlink` both say False for it. POSIX cannot create
+        one, so `is_link_or_junction` is patched to report a real directory as a junction."""
         from kiro_crew.apps.manager import (
             _owned_data_dir,
             app_dir,
@@ -646,18 +642,10 @@ class TestCopyAppTree:
     def test_an_installed_data_file_refuses_the_update_before_the_transaction(
         self, tmp_path, app_home
     ):
-        """The FILE shape of the same loss: an installed `data` that is a regular
-        file (an install from before the refusal, or the app's own runtime
-        replacing its directory) is not a directory the gateway can move aside. A
-        link-only preflight lets the update through: the move skips the file, the
-        old tree is retired with the file in it, the post-copy question is asked of
-        the NEW tree only, the retired tree is deleted on the success path and an
-        empty `data/` is created in the file's place -- the content gone, with
-        `ok=True`. The preflight asks the one predicate every entry point asks
-        (`gateway_data_dir_obstruction`), so the update refuses before anything
-        moves: the file and its content, the rest of the tree and the record are
-        untouched, no temp copy and no retired tree appear, and no directory
-        replaces the file."""
+        """An installed `data` that is a regular FILE makes update refuse before moving.
+
+        A link-only preflight would retire the file with the old tree and return `ok=True`
+        with an empty `data/`. The check is `gateway_data_dir_obstruction`."""
         from kiro_crew.apps.manager import app_dir, update_app
 
         assert install_app(_make_app_source(tmp_path)).ok
@@ -750,6 +738,45 @@ class TestCopyAppTree:
         else:
             assert not os.path.lexists(secret)
         assert (dest / "ui" / "leak.js").read_text(encoding="utf-8") == "export const leak = 1;\n"
+
+    @requires_symlinks
+    def test_an_installed_app_secret_link_refuses_the_update_before_the_transaction(
+        self, tmp_path, app_home
+    ):
+        """An installed `.app_secret` that is a relative in-tree symlink (e.g.
+        `.app_secret -> state/secret`) cannot be preserved on update: the move
+        relocates the link to `.<name>-secret-tmp` beside the app directory where
+        the relative target does not resolve, so `tmp_secret.is_file()` fails
+        and the secret is silently lost.  Refused before the transaction opens:
+        the link, its target, the rest of the tree and the record are untouched."""
+        from kiro_crew.apps.manager import app_dir
+
+        src = _make_app_source(tmp_path)
+        assert install_app(src).ok
+        dest = app_dir("test-app")
+
+        # Replace the gateway-written regular file with a relative in-tree symlink.
+        (dest / "state").mkdir()
+        (dest / "state" / "secret").write_text("s3cret", encoding="utf-8")
+        secret = dest / ".app_secret"
+        secret.unlink(missing_ok=True)
+        secret.symlink_to(Path("state") / "secret")
+        assert secret.is_file()  # resolves through the link inside its tree
+        before = _read_installed("test-app")
+
+        v2 = _make_app_source(tmp_path / "v2", version="2.0.0")
+        result = update_app(v2)
+
+        assert not result.ok
+        assert result.error == _APP_SECRET_IS_A_LINK, result.error
+        assert os.path.islink(secret)
+        assert secret.read_text(encoding="utf-8") == "s3cret"  # still reachable
+        assert _read_installed("test-app") == before  # version 1.0.0, untouched
+        assert not (dest.parent / ".test-app-secret-tmp").exists()
+        # No retired tree: the transaction was never opened.
+        assert [
+            p.name for p in dest.parent.iterdir() if p.name.startswith(".test-app-update-old-")
+        ] == []
 
     def test_an_update_shipping_a_root_data_file_where_none_is_preserved_rolls_back(
         self, tmp_path, app_home

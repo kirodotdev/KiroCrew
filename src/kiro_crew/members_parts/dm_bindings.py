@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import logging
 from datetime import datetime, timezone
+from enum import Enum
 from pathlib import Path
 from typing import Any
 
@@ -75,6 +76,38 @@ def read_dm_binding(slug: str) -> dict | None:
     data = _read_canonical_binding(slug)
     if data is None:
         return None
+    outcome = _resolve_canonical_binding(slug, data)
+    return outcome if isinstance(outcome, dict) else None
+
+
+class DmBindingOutcome(Enum):
+    """Non-binding answers: only confirmed absence permits pruning a reopen seed."""
+
+    UNKNOWN = "unknown"
+    CONFIRMED_ABSENT = "confirmed_absent"
+
+
+def resolve_dm_binding_outcome(slot_key: str) -> dict | DmBindingOutcome:
+    """Resolve one canonical read, distinguishing absence from uncertainty.
+
+    Total and blocking: async callers must use ``asyncio.to_thread``.
+    """
+    try:
+        slug = slug_from_dm_slot_key(slot_key)
+        if slug is None:
+            return DmBindingOutcome.UNKNOWN
+        data = _read_canonical_binding(slug)
+        if data is None or data["slot_key"] != slot_key:
+            return DmBindingOutcome.UNKNOWN
+        return _resolve_canonical_binding(slug, data, require_healthy_config=True)
+    except Exception:
+        return DmBindingOutcome.UNKNOWN
+
+
+def _resolve_canonical_binding(
+    slug: str, data: dict, *, require_healthy_config: bool = False
+) -> dict | DmBindingOutcome:
+    """Share identity checks with the legacy reader without changing its answers."""
     # And the member must actually BELONG to this slug: a tampered dm.json in
     # slug A's directory naming crew B (a real, registered crew whose slug
     # differs) would otherwise pin A's thread — and A's restored transcript —
@@ -82,15 +115,36 @@ def read_dm_binding(slug: str) -> dict | None:
     # this slug passes; anything else reads as absent.
     if data.get("member_id") == slug:
         from kiro_crew.config.loader import KiroCrewConfig
+        from kiro_crew.config.resolution import DEGRADED_WHOLE_CONFIG
         from kiro_crew.execution_context import member_config_for_id
 
         try:
-            alias, _ = member_config_for_id(KiroCrewConfig.load(), slug)
+            config = KiroCrewConfig.load()
         except ValueError:
-            return None
-        data["member"] = alias
+            return DmBindingOutcome.UNKNOWN
+        # A unique match resolves whatever the health markers say: they stay
+        # sticky until restart, so a boot read that failed mid-write would
+        # otherwise block every later retry. Two matches are never absence.
+        try:
+            alias, _ = member_config_for_id(config, slug)
+        except ValueError:
+            pass
+        else:
+            data["member"] = alias
+            return data
+        if any(getattr(m, "member_id", "") == slug for m in config.agents.values()):
+            return DmBindingOutcome.UNKNOWN
+        # No match: either lost file, or an agents/whole-config marker, can
+        # hide the crewmate. Unrelated degraded sections do not hide agents.
+        if require_healthy_config and (
+            config._base_unreadable
+            or config._overlay_unreadable
+            or config.degraded_sections & {"agents", DEGRADED_WHOLE_CONFIG}
+        ):
+            return DmBindingOutcome.UNKNOWN
+        return DmBindingOutcome.CONFIRMED_ABSENT
     elif slug_for_name(data["member"]) != slug:
-        return None
+        return DmBindingOutcome.UNKNOWN
     return data
 
 

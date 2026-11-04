@@ -182,7 +182,9 @@ KAS can also run with **no kiro-cli at all**. `kirocrew kas install` downloads
 the `@kiro/agent` version this Kiro Crew release pins, plus its own Node runtime,
 from a sha256-pinned manifest (`agent.kas_bundle_url`) into
 `<data home>/engines/kas/<version>/`. Each Kiro Crew release runs exactly one
-engine version; after a Kiro Crew update run `kirocrew kas install` again. And
+engine version, and `kirocrew update` (like the dashboard's Update and the
+automatic update) installs the new release's engine before it switches over;
+the previous version stays on disk. And
 `agent.kas_bundle: true` makes the `kas` backend spawn that engine directly. On
 this route Kiro Crew is always the credential owner: sign in from the dashboard
 (Sign in) — kiro-cli's login is not consulted. The chat model picker lists the
@@ -698,6 +700,25 @@ read other members' files. Ordinary transport authentication, host sandbox,
 credential protection and enterprise policy remain in force. No additional
 member-memory sandbox is required.
 
+### Browser
+
+Which browser the agent drives, and the live view of it in the chat. Every key is
+edited on Settings → Browser and applies without a restart.
+
+| Key | Description | Default |
+|-----|-------------|---------|
+| `browser.choice` | `auto` picks your Chrome (with your logins, once remote debugging is allowed in it), then Edge on Windows, then Kiro's own Chromium without a window where there is no display or Chrome's policy forbids remote debugging. `user_chrome` and `kiro_chromium` pin one of those; `headless` runs Kiro's Chromium without a window even on a desktop. Any other stored value reads as `auto` with one warning | `"auto"` |
+| `browser.live.enabled` | Show a live card of the page in the chat turn while the agent browses; click it to take over. Off hides the card, the agent still browses | `true` |
+| `browser.live.quality` | `auto` adapts frame rate and picture quality to your link (frame rate first, picture only when the lowest frame rate does not fit; a still page gets one sharp frame); `high`, `medium` or `low` pins the picture and leaves only the frame rate adaptive | `"auto"` |
+| `browser.live.max_fps` | Frame-rate ceiling of the live view: `15`, `30` or `60`. No frames are sent while the card is off screen | `60` |
+| `browser.live.mask_passwords` | Cover password boxes in the live picture. Passwords are only ever typed by you during a takeover and never pass through the agent | `true` |
+| `browser.recording.enabled` | Keep a replay of each turn the agent browses: masked pictures of the page (at most 5 a second, only when it changes) and the clicks, typing and scrolls. Password fields are covered before a picture is kept and typed secrets are kept as a length only. Kept on this machine only, removed with the chat | `true` |
+| `browser.recording.max_session_mb` | The most replay one chat keeps, in MB; past it the chat's oldest turns are removed first | `200` |
+| `browser.recording.max_total_mb` | The most replay all chats keep together, in MB; past it the oldest turns are removed first, whichever chat they belong to | `1024` |
+| `browser.credentials.enabled` | Start Kiro's own Chromium signed in to the sites your edition's sign-in provider serves. Unset follows the edition's default; with no provider it does nothing. Your own Chrome is never changed | unset |
+| `browser.credentials.domains` | The sites that sign-in may be used for (`example.com` covers its subdomains). Only a site both listed here and served by the provider is used. Empty follows the provider's default | `[]` |
+| `dashboard.browser_local_origins` | The loopback origins the side panel's Preview tab may open, each `host:port` with host `localhost`, `127.0.0.1` or `[::1]` (`localhost:5173` for a Vite dev server). The tab is for previewing your own dev server; the agent never drives it, and an outside URL is answered with "Open this in your Chrome, or ask Kiro". The same list is the only way the agent's `browser` tool may open a loopback address, so listing an origin also opens it to the agent's browser (which may be your own Chrome). Empty keeps every address refused. Entries in any other shape are dropped | `[]` |
+
 ### Skills
 
 | Key | Description | Default |
@@ -739,9 +760,10 @@ member-memory sandbox is required.
 | Key | Description | Default |
 |-----|-------------|---------|
 | `work_ledger.max_depth` | How many levels of the work ledger may conduct. Depth 0 is the root conductor, so `2` lets it dispatch one level of conductors whose own items are workers, and `3` lets those conductors dispatch conductors of their own. Accepted range 2-10; a value outside it is refused at load with a warning and the default applies, it is never clamped. Each extra level multiplies sessions (three levels of three items is 27), so raise it only where concurrency is already capped per level. Lowering it leaves open ledgers alone, but new ledgers and new items at the levels it removes are refused. | `2` |
-| `work_ledger.remote_dispatch` | Preview. Lets a conductor on another machine place work items on this crew. When `true`, `GET /api/chat/headroom` answers this machine's free memory, CPU load and free scratch disk to the owner, every owner session-create reply carries that `headroom` snapshot, and an owner create that carries a `work_item` is refused `crew_busy` (naming `memory`, `cpu` or `disk`) when one is short. On the hub side, `true` also makes `session_create`, `session_send`, `session_read_message`, `session_stop` and `session_close` offer `crew=`, admitted only from a turn the owner sent in their own dashboard tab (`crew_owner_unverifiable` otherwise). When `false`, the route answers 404, no create is checked, the five tools do not offer `crew`, and a call carrying it is refused `remote_dispatch_disabled`. Read on every request, so no restart is needed | `false` |
+| `work_ledger.remote_dispatch` | Preview. Lets a conductor on another machine place work items on this crew. When `true`, `GET /api/chat/headroom` answers this machine's free memory, CPU load and free scratch disk to the owner, every owner session-create reply carries that `headroom` snapshot, and an owner create that carries a `work_item` is refused `crew_busy` (naming `memory`, `cpu` or `disk`) when one is short. On the hub side, `true` also makes `session_create`, `session_send`, `session_read_message`, `session_stop` and `session_close` offer `crew=`, admitted only from a turn the owner sent in their own dashboard tab (`crew_owner_unverifiable` otherwise). When `false`, the route answers 404, no create is checked, the five tools do not offer `crew`, and a call carrying it is refused `remote_dispatch_disabled`. Read on every request, so no restart is needed. Switched from Settings > Developer > Feature previews > Remote dispatch | `false` |
 | `work_ledger.remote_dispatch_memory_gb` | Free memory one dispatched worker needs; a work-item create is refused `crew_busy` on memory when less is free. The default covers the largest measured worker session process tree (see the session-control spec). A value that is not a positive number uses the default | `5.0` |
 | `work_ledger.remote_dispatch_disk_gb` | Free disk under the scratch root one dispatched worker needs; a work-item create is refused `crew_busy` on disk when less is free. The default is about twice one measured self-contained clone with its dependencies. A value that is not a positive number uses the default | `5.0` |
+| `work_ledger.remote_dispatch_retire_minutes` | Minutes a crew a work item is bound to may stay unreachable before the conductor's next ledger read retires that binding and leaves the item unbound for redispatch on another crew. A value that is not a positive number uses the default | `30.0` |
 
 ### Power
 

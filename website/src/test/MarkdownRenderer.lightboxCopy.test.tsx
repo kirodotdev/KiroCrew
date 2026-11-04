@@ -64,7 +64,7 @@ afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks() })
 describe('Lightbox copy image', () => {
   it('copies the shown image and confirms only after the write lands', async () => {
     const { write } = stubEnv()
-    const { container } = render(<Lightbox />)
+    render(<Lightbox />); const container = document.body
     act(() => open())
     openMenu(container)
     expect(copyLabel()).toBe('Copy image')
@@ -76,7 +76,7 @@ describe('Lightbox copy image', () => {
 
   it('surfaces a refused clipboard write through ErrorNotice, not a tick', async () => {
     stubEnv({ write: async () => { throw new DOMException('denied', 'NotAllowedError') } })
-    const { container } = render(<Lightbox />)
+    render(<Lightbox />); const container = document.body
     act(() => open())
     openMenu(container)
     selectItem(copyItem()!)
@@ -93,7 +93,7 @@ describe('Lightbox copy image', () => {
     vi.useFakeTimers()
     try {
       stubEnv({ write: async () => { throw new DOMException('denied', 'NotAllowedError') } })
-      const { container } = render(<Lightbox />)
+      render(<Lightbox />); const container = document.body
       act(() => open())
       openMenu(container)
       // Async act: the rejected clipboard write settles inside this scope, so the
@@ -120,7 +120,7 @@ describe('Lightbox copy image', () => {
 
   it('does not offer copy on an origin with no Clipboard API at all', () => {
     stubEnv({ clipboard: false })
-    const { container } = render(<Lightbox />)
+    render(<Lightbox />); const container = document.body
     act(() => open())
     // No Copy means no two-action menu: Download is a DIRECT button (its old
     // one-press behaviour), not buried behind an overflow trigger. Copy — a
@@ -132,7 +132,7 @@ describe('Lightbox copy image', () => {
 
   it('announces the success in a live region, which the tick cannot do', async () => {
     stubEnv()
-    const { container } = render(<Lightbox />)
+    render(<Lightbox />); const container = document.body
     act(() => open())
     // Present before the copy, so the region is not inserted together with its
     // text — a region that appears with its content is announced inconsistently.
@@ -145,7 +145,7 @@ describe('Lightbox copy image', () => {
 
   it('copies on a bare c and leaves Ctrl/Cmd+C to the platform', async () => {
     const { write } = stubEnv()
-    const { container } = render(<Lightbox />)
+    render(<Lightbox />); const container = document.body
     act(() => open())
     act(() => { fireEvent.keyDown(window, { key: 'c', metaKey: true }) })
     act(() => { fireEvent.keyDown(window, { key: 'c', ctrlKey: true }) })
@@ -164,7 +164,7 @@ describe('Lightbox copy image', () => {
 
   it('drops the confirmation when the viewer pages to another image', async () => {
     stubEnv()
-    const { container } = render(<Lightbox />)
+    render(<Lightbox />); const container = document.body
     act(() => open(3))
     openMenu(container)
     selectItem(copyItem()!)
@@ -176,7 +176,7 @@ describe('Lightbox copy image', () => {
 
   it('keeps Download a direct one-press button when there is no clipboard', () => {
     stubEnv({ clipboard: false })
-    const { container } = render(<Lightbox />)
+    render(<Lightbox />); const container = document.body
     act(() => open())
     // UX BLOCK fix: where Copy is not offered the overflow menu would hold only
     // Download, so burying it behind `•••` costs an extra click for nothing.
@@ -192,7 +192,7 @@ describe('Lightbox copy image', () => {
   // ever sees the key. While the menu is open those keys belong to the menu.
   it('leaves Escape to the menu while it is open — closes the menu, not the viewer', () => {
     stubEnv()
-    const { container } = render(<Lightbox />)
+    render(<Lightbox />); const container = document.body
     act(() => open())
     openMenu(container)
     expect(copyItem()).not.toBeNull()
@@ -204,7 +204,7 @@ describe('Lightbox copy image', () => {
 
   it('leaves the arrows to the menu while it is open — does not page the image behind it', async () => {
     stubEnv()
-    const { container } = render(<Lightbox />)
+    render(<Lightbox />); const container = document.body
     act(() => open(3))
     openMenu(container)
     // Copy image 0, then press ArrowRight while the menu is still open. The
@@ -220,7 +220,7 @@ describe('Lightbox copy image', () => {
 
   it('still closes the viewer on Escape once the menu is closed', () => {
     stubEnv()
-    const { container } = render(<Lightbox />)
+    render(<Lightbox />); const container = document.body
     act(() => open())
     openMenu(container)
     // Radix closes the menu on Escape; fire its onOpenChange(false) path by

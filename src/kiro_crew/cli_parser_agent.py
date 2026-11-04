@@ -749,7 +749,11 @@ def register_memory_parser(sub: _Commands) -> None:
     mem_forget = mem_sub.add_parser(
         "forget",
         help="Delete one semantic memory key after you confirm it (owner only; "
-        "needs a terminal and the running gateway)",
+        "needs a terminal and the running gateway; not on native Windows)",
+        description="Delete one semantic memory key after you confirm it. Owner only: "
+        "it needs an interactive terminal and the running gateway, and it is not "
+        "available on native Windows, which has no dashboard Unix socket. There, "
+        "delete the key from the dashboard Memory page.",
     )
     mem_forget.add_argument("key", help="Semantic memory key to forget")
     mem_forget.add_argument(
@@ -879,6 +883,7 @@ Examples:
   kirocrew app install /path/to/oncall-watchtower
   kirocrew app list
   kirocrew app enable oncall-watchtower
+  kirocrew app update oncall-watchtower
   kirocrew app disable oncall-watchtower
   kirocrew app info oncall-watchtower
   kirocrew app uninstall oncall-watchtower
@@ -909,6 +914,11 @@ Examples:
     app_sub.add_parser("list", help="List installed apps")
     app_enable = app_sub.add_parser("enable", help="Enable an installed app")
     app_enable.add_argument("name", help="App name to enable")
+    app_update = app_sub.add_parser(
+        "update",
+        help="Update an installed app to its newest published version (needs a running gateway)",
+    )
+    app_update.add_argument("name", help="App name")
     app_disable = app_sub.add_parser("disable", help="Disable an installed app")
     app_disable.add_argument("name", help="App name to disable")
     app_mcp = app_sub.add_parser(

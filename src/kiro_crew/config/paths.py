@@ -738,10 +738,19 @@ def _validate_scratch_root_override() -> tuple[Path | None, str | None]:
     # to inherit (allocation creates it owner-only), so only an existing one is checked.
     # Fail-closed: an owner that cannot be read is an owner that cannot be trusted. A lazy,
     # in-function import keeps this module an import-time leaf (see the module docstring).
-    if p.exists():
-        reason = scratch_root_owner_refusal(p)
-        if reason is not None:
-            return None, reason
+    #
+    # ``Path.exists()`` swallows only "not found" errors, so a value whose stat is denied
+    # (on Windows a ``::$DATA`` spelling of a real directory raises ``WinError 5``) would
+    # escape here and out of ``scratch_root()`` on every call. A root that cannot be
+    # stat'ed cannot have its owner verified either, so it is refused the same fail-closed
+    # way as an unreadable owner, and the caller pins the default and logs once.
+    try:
+        if p.exists():
+            reason = scratch_root_owner_refusal(p)
+            if reason is not None:
+                return None, reason
+    except OSError:
+        return None, "unreadable"
     return p, None
 
 

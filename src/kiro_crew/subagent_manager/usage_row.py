@@ -41,15 +41,21 @@ def persist_usage_row(
             read_context_tokens,
             read_effective_agent,
         )
+        from kiro_crew.llm_helpers import engine_attributed_model
 
         _used, _window = read_context_tokens(client)
         _usage_row = ns.asyncio.ensure_future(
             persist_token_record_async(
                 session_key,
-                # Blank while a fallback serves this run: the explicit pin
-                # would bill the fallback's spend to a model that never
-                # executed; model_source reports what actually ran.
-                ("" if ns.provider_fallback_active(client) else (info.model or "")),
+                # Blank while Crew's fallback serves this run: the explicit
+                # pin would bill the fallback's spend to a model that never
+                # executed; model_source reports what actually ran. An
+                # engine fallback bills the model the engine moved to.
+                (
+                    ""
+                    if ns.provider_fallback_active(client)
+                    else engine_attributed_model(info.model or "", client)
+                ),
                 completion,
                 provider="claude_code" if is_cc else "acp",
                 surface="subagent",

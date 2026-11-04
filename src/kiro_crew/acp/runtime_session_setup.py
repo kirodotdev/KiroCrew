@@ -41,6 +41,7 @@ from kiro_crew.acp.session_mcp import (
     session_mcp_server_is_disabled,
 )
 from kiro_crew.acp.types import (
+    ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
     ACP_BACKENDS_SESSION_MCP_ARRAY,
     overlay_project_scope,
@@ -48,6 +49,7 @@ from kiro_crew.acp.types import (
 from kiro_crew.agent_sdk.tool_search import spec_grants_tool_search
 from kiro_crew.config import live
 from kiro_crew.mcp_gateway.claim import mint_stub_session_token, send_claim
+from kiro_crew.mcp_gateway.mate_overlays import MATE_WORKER_AGENT
 from kiro_crew.mcp_gateway.session_servers import (
     attach_stub_session_token,
     injection_server_names,
@@ -127,6 +129,7 @@ def _pooled_session_servers_and_ref_spec(
     backend: str,
     work_dir: str | Path,
     ref_spec: dict[str, Any] | None = None,
+    session_key: str = "",
 ) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
     """The pooled stub array AND the guard's spec snapshot, from one off-loop hop.
 
@@ -147,10 +150,59 @@ def _pooled_session_servers_and_ref_spec(
     path at spawn (``AcpRuntime._pool_lookup``). Then *agent* is the registered spec's
     overlay name, and the lookup is user-level: kiro-cli reads no checkout spec for a
     launch copy, so a checkout's file of that name says nothing about this session.
+
+    *session_key* reaches the lookup on KAS only (a positive ``backend == kas``
+    check), the one non-mirrored host a crewmate's worker runs on: its stubs are
+    the session's crewmate's (``mcp_gateway.mate_overlays``). KAS subtracts the
+    names of the entries returned here (:func:`_kas_worker_stub_names`), so the
+    subtraction and the injection come from this one lookup. Every other host
+    passes no key, and its lookup is unchanged.
     """
     scope_dir = None if ref_spec is not None else work_dir
-    servers = pooled_session_servers(overlay, agent, **overlay_project_scope(backend, scope_dir))
+    worker: dict[str, Any] = (
+        {"kas_worker_session_key": session_key}
+        if session_key and backend == ACP_BACKEND_KAS
+        else {}
+    )
+    servers = pooled_session_servers(
+        overlay, agent, **overlay_project_scope(backend, scope_dir), **worker
+    )
     return servers, ref_spec if ref_spec is not None else _ref_spec_snapshot(agent, work_dir)
+
+
+def _kas_worker_stub_names(
+    backend: str, agent: str | None, session_key: str, pooled: list[dict[str, Any]]
+) -> frozenset[str] | None:
+    """The stub names a KAS crewmate worker's projection subtracts, or ``None``.
+
+    The names of the entries :func:`_pooled_session_servers_and_ref_spec` just
+    returned for this session, so KAS withholds from its projection exactly the
+    servers ``session/new`` injects: one lookup answers both, and a crewmate edit
+    or an overlay refresh landing in between cannot make them differ. ``None``
+    for every other host, agent, or a session with no key: the projection then
+    asks the overlay by agent name, as before.
+    """
+    if backend == ACP_BACKEND_KAS and agent == MATE_WORKER_AGENT and session_key:
+        return frozenset(
+            str(entry["name"]) for entry in pooled if isinstance(entry, dict) and entry.get("name")
+        )
+    return None
+
+
+def _drop_withdrawn_stubs(
+    mcp_servers: list[dict[str, Any]], withdrawn: frozenset[str]
+) -> list[dict[str, Any]]:
+    """*mcp_servers* without the stubs the payload withdrew (``withdrawn_stub_names``).
+
+    A KAS crewmate worker's stubs are picked before its payload reads the worker
+    spec again, so a server muted in between is dropped here, by the later
+    reading. With nothing withdrawn the list is returned as it is.
+    """
+    if not withdrawn:
+        return mcp_servers
+    for name in sorted(withdrawn):
+        logger.info("worker stub %s withdrawn: its server was muted or removed", name)
+    return [e for e in mcp_servers if not (isinstance(e, dict) and e.get("name") in withdrawn)]
 
 
 class _MirroredSessionMcp(NamedTuple):
@@ -281,6 +333,7 @@ async def _kas_custom_agents(
     member_dispatch: bool = False,
     crew_panel: bool = False,
     session_key: str = "",
+    worker_stub_names: frozenset[str] | None = None,
 ) -> SessionExtras:
     """The per-session payload for a wire-registered host, and what built it.
 
@@ -297,7 +350,14 @@ async def _kas_custom_agents(
     that will ALSO arrive as session-level broker stubs, because a
     session-injected server outranks an agent-declared one and declaring both
     is a double registration.
+
+    *worker_stub_names* is :func:`_kas_worker_stub_names`' answer, handed down
+    only when it is one (a KAS crewmate worker), so every other host's call is
+    unchanged.
     """
+    worker: dict[str, Any] = (
+        {} if worker_stub_names is None else {"worker_stub_names": worker_stub_names}
+    )
     extras = await self._harness.session_extras(
         agent,
         work_dir=getattr(self, "_work_dir", None),
@@ -305,6 +365,7 @@ async def _kas_custom_agents(
         member_dispatch=member_dispatch,
         crew_panel=crew_panel,
         session_key=session_key,
+        **worker,
     )
     # Judged HERE, on the payload, so every path that builds one -- session/new
     # and session/load alike -- is covered, and a host that builds none (kiro:

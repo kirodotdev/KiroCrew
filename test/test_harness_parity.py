@@ -295,7 +295,7 @@ def test_member_capabilities_are_opt_in() -> None:
     for provider in (providers_acp.AcpProvider, AcpSessionProvider):
         source = inspect.getsource(provider.member_tool_limits_supported.fget)
         assert "in ACP_BACKENDS_MEMBER_TOOL_LIMITS" in source
-    assert ACP_BACKENDS_MEMBER_TOOL_LIMITS == frozenset({ACP_BACKEND_KIRO})
+    assert ACP_BACKENDS_MEMBER_TOOL_LIMITS == frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
 
 
 def test_the_mate_worker_takes_the_member_rule() -> None:
@@ -1346,6 +1346,18 @@ _DECLARED_IDENTITY_TESTS: dict[tuple[str, str], str] = {
     "does in ``_unpooled_control_planes``: only native Kiro launches spec servers from "
     "a shared process with no session-valued environment. KAS carries the label on its "
     "per-session wire agent, and mirrored hosts project their own arrays.",
+    (
+        "src/kiro_crew/acp/runtime_session_setup.py",
+        "_pooled_session_servers_and_ref_spec",
+    ): "Only KAS subtracts a crewmate worker's stubbed servers from its own custom-agent "
+    "projection, so only there must the pooled lookup be keyed by the worker session "
+    "(mcp_gateway.mate_overlays). Every other host keeps the by-name lookup it had.",
+    (
+        "src/kiro_crew/acp/runtime_session_setup.py",
+        "_kas_worker_stub_names",
+    ): "The subtraction set is consumed only by the KAS harness's projection "
+    "(kas_custom_agents worker_stub_names); no harness property means 'this host "
+    "projects the worker's servers itself and must withhold the stubbed ones'.",
     (
         "src/kiro_crew/acp/runtime_session_load.py",
         "load_session",

@@ -18,13 +18,8 @@ from chat_test_helpers import _make_app, _make_state
 class TestSaveDoesNotResurrectDeletedSession:
     """A save must not recreate a session whose permanent delete committed.
 
-    ``delete_session`` unlinks under the same ``_locked`` region the save
-    holds, leaves no tombstone, and reports success. A save routed through
-    ``save_slot_off_loop`` takes the patient acquire, so it can sit waiting
-    while the delete runs to completion ahead of it — the sequential
-    delete-then-save below exercises exactly the code path such a save takes
-    once the lock is finally granted (file gone, slot still carrying its
-    in-memory window).
+    ``delete_session`` leaves no tombstone, and a save waiting on ``_locked`` can run
+    after it; delete-then-save below is the path that save takes.
     """
 
     def test_save_after_committed_delete_does_not_recreate_the_file(self, tmp_path, monkeypatch):
@@ -85,14 +80,10 @@ class TestSaveDoesNotResurrectDeletedSession:
     async def test_fork_aborts_even_after_a_flush_consumed_the_delete_signal(
         self, tmp_path, monkeypatch
     ):
-        """The flush-ordering bypass: a NON-dirty deleted slot must still not fork.
+        """A NON-dirty deleted slot must still not fork.
 
-        The periodic 5s flush can hit the delete-won guard first and clear
-        ``_dirty``. The fork then skips its own flush arms entirely (they are
-        gated on ``slot._dirty``), the disk read comes back empty, and
-        ``all_messages`` falls back to the in-memory window — republishing the
-        deleted conversation with no save ever returning ``False`` to the fork.
-        The direct ``session_was_deleted`` probe must refuse it anyway.
+        The 5s flush can clear ``_dirty`` first, so the fork skips its flush and falls
+        back to the in-memory window; only the ``session_was_deleted`` probe refuses it.
         """
         from kiro_crew.dashboard.chat_persistence import _save_slot_to_history
 
@@ -146,10 +137,8 @@ class TestSaveDoesNotResurrectDeletedSession:
     async def test_transfer_refuses_a_delete_landing_during_assembly(self, tmp_path, monkeypatch):
         """A delete completing INSIDE the threaded bundle read must still refuse.
 
-        The assembly read is the builder's longest await, so the pre-read probe
-        can pass and the permanent delete complete before the bundle returns —
-        the bundle in hand is the destroyed conversation. The post-assembly
-        re-check must catch it.
+        The pre-read probe can pass before the delete, so the post-assembly re-check
+        must catch it.
         """
         from kiro_crew.dashboard import session_transfer as st
         from kiro_crew.dashboard.chat_persistence import _save_slot_to_history
@@ -181,12 +170,8 @@ class TestSaveDoesNotResurrectDeletedSession:
     ):
         """Delete -> foreign append recreates the file -> pending save must skip.
 
-        ``delete_session`` leaves no tombstone, so a channel/cron
-        ``append_off_loop`` landing after the delete creates a FRESH session
-        file (new metadata ``created_at``). A pending save that only checked
-        file existence would merge the deleted window into that new transcript
-        — resurrecting the destroyed conversation inside someone else's rows.
-        The guard must recognize the new incarnation by its identity and skip.
+        The recreated file has a new ``created_at``; the guard must spot that identity,
+        since a file-exists check would merge the deleted window into it.
         """
         from kiro_crew.dashboard.chat_persistence import _save_slot_to_history
 
@@ -217,12 +202,8 @@ class TestSaveDoesNotResurrectDeletedSession:
     def test_channel_surfaced_slot_records_the_disk_identity(self, tmp_path, monkeypatch):
         """The channel surfacing path must arm the delete-won identity too.
 
-        ``surface_channel_session`` adopts an append-created transcript — its
-        slot never runs the dashboard rehydrate paths, so without recording
-        ``_disk_meta_created_at`` here the identity arm of the delete-won
-        guard fails open for every channel tab: delete -> inbound append
-        recreates the file -> the pending save merges the deleted window into
-        the new transcript.
+        Its slot never runs the dashboard rehydrate paths, so without
+        ``_disk_meta_created_at`` the guard fails open for every channel tab.
         """
         from kiro_crew.dashboard import channel_slots
         from kiro_crew.dashboard.chat_persistence import _save_slot_to_history
@@ -260,15 +241,8 @@ class TestSaveDoesNotResurrectDeletedSession:
     def test_failed_first_save_is_not_mistaken_for_deletion(self, tmp_path, monkeypatch):
         """A fork whose best-effort first save failed must still persist on retry.
 
-        ``chat_fork`` saves the destination slot best-effort and then sets
-        ``_resumed_count`` unconditionally — a transient first-write failure is
-        swallowed (dirty re-armed) and leaves a slot with resumed evidence but
-        NO file and NO observed identity. An evidence gate built on the
-        counters alone would misread that as "was on disk, now deleted", skip
-        the retry, clear ``_dirty``, and lose the acknowledged fork at the next
-        restart. The gate must require an observed disk identity
-        (``_disk_meta_created_at``), which only a real hydrate or a committed
-        save records.
+        ``chat_fork`` sets ``_resumed_count`` even when that save failed, so the gate
+        must require ``_disk_meta_created_at``, not the counters, or the fork is lost.
         """
         from kiro_crew.dashboard.chat_persistence import _save_slot_to_history
 
@@ -292,10 +266,7 @@ class TestSaveDoesNotResurrectDeletedSession:
     def test_zero_message_resumed_session_delete_still_wins(self, tmp_path, monkeypatch):
         """A restored EMPTY session's delete must beat the save of its first message.
 
-        A zero-message restore leaves every window counter at 0, so an
-        evidence gate that requires the counters alongside the identity skips
-        the guard for exactly this slot — the save of the session's first
-        message would recreate the deleted history. Identity alone must gate.
+        All window counters are 0 here, so identity alone must gate.
         """
         from kiro_crew.dashboard.chat_persistence import _save_slot_to_history
 
@@ -329,11 +300,7 @@ class TestSaveDoesNotResurrectDeletedSession:
     def test_unreadable_metadata_defers_the_save_instead_of_writing(self, tmp_path, monkeypatch):
         """A transient metadata read failure must fail CLOSED, not blank the check.
 
-        ``get_metadata`` returns ``{}`` for both "no metadata" and "read
-        failed"; blanking the identity comparison on a transient failure would
-        let a pending save overwrite a replacement session with deleted
-        content. The save must refuse to write (raising, so ``_dirty`` stays
-        armed and the flush retries) until the metadata is readable again.
+        The save raises, so ``_dirty`` stays armed and the flush retries later.
         """
         from kiro_crew.dashboard.chat_persistence import _save_slot_to_history
 
@@ -394,12 +361,8 @@ class TestSaveDoesNotResurrectDeletedSession:
     async def test_fork_aborts_when_the_source_was_deleted(self, tmp_path, monkeypatch):
         """A fork must not republish a permanently deleted conversation.
 
-        The fork's pre-copy flush runs with ``best_effort=False`` and must not
-        treat any non-raising return as a confirmed durable write. A delete-won
-        skip raises nothing, and the fork's DESTINATION slot is brand new — it
-        carries no delete evidence, so its save would proceed and the destroyed
-        conversation would come back under a fresh key. The fork must abort
-        instead.
+        A delete-won skip raises nothing, and the new destination slot carries no delete
+        evidence, so the fork itself must abort.
         """
         from kiro_crew.dashboard.chat_persistence import _save_slot_to_history
 
@@ -444,14 +407,8 @@ class TestSaveDoesNotResurrectDeletedSession:
     ):
         """A delete committing INSIDE the destination save must still win.
 
-        The pre-copy probe passes (the source is alive when it runs) and the
-        destination save takes the DESTINATION's history lock, which does not
-        serialise against the source's delete. So the delete can commit inside
-        that await, and the fork would be acknowledged holding a full copy of a
-        conversation the user destroyed. The handler must refuse at the
-        acknowledgment boundary and remove the copy it had already written --
-        the same rule ``build_transfer_bundle_async`` applies by re-probing
-        after assembly.
+        The destination's lock does not serialise against the source's delete, so the
+        handler re-probes before acknowledging and removes the copy it wrote.
         """
         from kiro_crew.dashboard import chat_fork as fork_mod
         from kiro_crew.dashboard.chat_persistence import _save_slot_to_history
@@ -511,14 +468,8 @@ class TestSaveDoesNotResurrectDeletedSession:
     ):
         """The probe is lock-free, so a delete can land in the middle of it.
 
-        ``get_metadata_status`` reports a file that does not exist as
-        ``({}, True)`` -- by its own contract a GENUINE empty answer, not an
-        unreadable one. So a delete committing between the probe's ``stat`` and
-        its metadata read leaves an empty ``created_at`` that must not be read
-        as "legacy metadata, fail open": that would answer "not deleted" for a
-        session that is gone and let fork/transfer republish it. The save's own
-        guard cannot hit this -- it reads both inside ``_locked``, the lock
-        ``delete_session`` unlinks under.
+        A missing file reads as ``({}, True)``; that empty ``created_at`` must not be
+        taken as legacy metadata and answer "not deleted".
         """
         from kiro_crew.dashboard.chat_persistence import session_was_deleted
 

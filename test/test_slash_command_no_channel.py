@@ -17,7 +17,7 @@ to the model as text.
 from __future__ import annotations
 
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 from chat_test_helpers import _make_state
@@ -106,7 +106,7 @@ class TestKasClear:
         dispatched.assert_not_called()
         state.sessions.get_or_create.assert_not_called()
         state.sessions.discard_conversation.assert_awaited_once_with(
-            effective_session_key(slot), replay=False, skip_if_busy=True
+            effective_session_key(slot), replay=False, skip_if_busy=True, refuse_if=ANY
         )
         assert any("Conversation cleared" in t for t in _texts(slot)), _texts(slot)
         # The plan goes with the conversation, or the fresh one rebuilds it.
@@ -215,7 +215,7 @@ class TestOtherHarnessesClear:
         dispatched.assert_not_called()
         state.sessions.get_or_create.assert_not_called()
         state.sessions.discard_conversation.assert_awaited_once_with(
-            effective_session_key(slot), replay=False, skip_if_busy=True
+            effective_session_key(slot), replay=False, skip_if_busy=True, refuse_if=ANY
         )
         assert any("Conversation cleared" in t for t in _texts(slot)), _texts(slot)
         assert slot.todo_payload() is None
@@ -237,9 +237,13 @@ class TestOtherHarnessesClear:
     async def test_goose_runs_its_own_clear(self, tmp_path) -> None:
         """goose's prompt handler runs ``/clear`` itself, so it is sent on."""
         state, slot, dispatched = _live(tmp_path, ACP_BACKEND_GOOSE)
+        slot.set_todo({"description": "plan", "tasks": [{"id": "1", "task_description": "a"}]})
 
         await _run_chat(state, slot, "/clear")
 
+        # Nothing was cleared locally: the slot keeps its todo and shows no notice.
+        assert slot.todo_payload() is not None
+        assert not any("Conversation cleared" in t for t in _texts(slot)), _texts(slot)
         assert dispatched.called
         state.sessions.discard_conversation.assert_not_awaited()
 
@@ -248,9 +252,13 @@ class TestKiroUnchanged:
     @pytest.mark.asyncio
     async def test_kiro_clear_still_runs_natively(self, tmp_path) -> None:
         state, slot, dispatched = _live(tmp_path, ACP_BACKEND_KIRO)
+        slot.set_todo({"description": "plan", "tasks": [{"id": "1", "task_description": "a"}]})
 
         await _run_chat(state, slot, "/clear")
 
+        # Nothing was cleared locally: the slot keeps its todo and shows no notice.
+        assert slot.todo_payload() is not None
+        assert not any("Conversation cleared" in t for t in _texts(slot)), _texts(slot)
         dispatched.assert_called_once_with("/clear")
         state.sessions.discard_conversation.assert_not_awaited()
 

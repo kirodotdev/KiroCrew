@@ -1,6 +1,7 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
 import { crewApprovalDecidableHere, crewModeRoot, crewRootOf, runsCrewMode } from '../lib/crewMode'
-import CrewApprovalCards from './crew/CrewApprovalCards'
+import CrewApprovalCards, { MateApprovalCards } from './crew/CrewApprovalCards'
+import MateWorkerQuestions from './crew/MateWorkerQuestions'
 import { CrewSteerUnrecordedNotice, CrewWorkerComposerGate } from './crew/CrewWorkerComposerGate'
 import { useCrewRoot } from './crew/useCrewRoot'
 import { X } from 'lucide-react'
@@ -73,6 +74,7 @@ import { answerRejectedMessage } from '../utils/questionAnswers'
 import { fetchDashboardConfig } from '../api/dashboardConfigQuery'
 import type { ChatPaneProps } from './ChatPaneProps'
 import { useChatPaneDraft } from './useChatPaneDraft'
+import { useSentPromptHistory } from './useSentPromptHistory'
 import { useChatPaneUploads } from './useChatPaneUploads'
 import { useChatPanePickerModels, useChatPanePickerActions } from './useChatPanePickers'
 import { ChatPaneAgentMenu, ChatPaneModelMenu } from './ChatPanePickerMenus'
@@ -177,6 +179,8 @@ export default function ChatPane({
   const transcriptRestoreOwned = useCallback(() => listRef.current?.restoreGate ?? false, [])
 
   const allMessages = useAppSelector((s) => selectSlotMessages(s, slotKey))
+  // ↑/↓ prompt history for this pane's composer, on the same terms as ChatPage.
+  const sentMessages = useSentPromptHistory(allMessages, slotKey)
   const activeSlot = useAppSelector((s) => s.chat.activeSlot)
   // Consume a Side Chat → composer hand-off staged for THIS pane's slot. Keyed
   // by slot so a member's hand-off merges into that member's own composer and
@@ -1118,6 +1122,16 @@ export default function ChatPane({
         {quoteFlight && <FlyingQuote text={quoteFlight.text} from={quoteFlight.from} targetRef={inputAreaRef} onComplete={endQuoteFlight} />}
         <div ref={inputAreaRef} className="relative z-10 dock-inert">
         {crewModeRoot(paneSlot) && <CrewApprovalCards root={slotKey} />}
+        {/* A crewmate thread: the approvals and question cards of the sessions it
+            dispatched (their `mate_root`), so none waits unseen. */}
+        {/* One height budget for both stacks, so together they never push the
+            composer or each other's top out of the pane. */}
+        {paneSlot?.mode === 'member' && (
+          <div className="mx-2 mb-2 max-h-[45vh] overflow-y-auto empty:hidden" data-testid="mate-worker-prompts">
+            <MateApprovalCards root={slotKey} />
+            <MateWorkerQuestions key={slotKey} root={slotKey} />
+          </div>
+        )}
         {paneCrewRoot ? (
           <CrewWorkerComposerGate root={paneCrewRoot} worker={slotKey} workerTitle={title}
             waitingForApproval={!!paneSlot?.pending_approval} />
@@ -1147,6 +1161,7 @@ export default function ChatPane({
           slotApprovalChrome={crewApprovalDecidableHere(paneSlot, 'worker_split_pane')}
           disabled={paneCrewRootClosed}
           lockedPlaceholder={paneCrewRootClosed ? '' : undefined}
+          sentMessages={sentMessages}
           // A chat bound to a Session Environment runs in its workspace, so a `!`
           // command would land on this machine instead: refused like a remote
           // crew's, and held while that placement is still unread.

@@ -12,6 +12,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import ai_review_workflow_checks
 import pytest
 import yaml
 from ai_review_workflows_helpers import (
@@ -1444,7 +1445,15 @@ class TestForkScopeGitFetchesAbortAStalledTransfer:
             server.close()
 
 
-class TestForkGptRefusalTerminalState:
+class TestForkGptRefusalTerminalState(
+    ai_review_workflow_checks.ProviderEmittedRefusalLineClassifiesAsRefused,
+    ai_review_workflow_checks.EchoedSignatureInPrControlledTextStaysACrash,
+    ai_review_workflow_checks.SignatureOutsideTheStreamTailStaysACrash,
+    ai_review_workflow_checks.RefusedPassPublishesItsOwnTerminalState,
+    ai_review_workflow_checks.CrashedPassKeepsTheRerunnableIncompleteState,
+    ai_review_workflow_checks.RefusalDominatesAMixedFailure,
+    ai_review_workflow_checks.CleanRunStillPublishesPass2Verbatim,
+):
     """A reviewer that CRASHED and one that REFUSED both arrive as ``rc != 0``
     or an empty pass file, but they mean opposite things: a crash is fixed by
     re-running, while a provider refusal is caused by what the diff IS and is
@@ -1553,28 +1562,6 @@ class TestForkGptRefusalTerminalState:
         record = runner_temp / "codex-refused-passes"
         return record.read_text(encoding="utf-8") if record.exists() else ""
 
-    def test_provider_emitted_refusal_line_classifies_as_refused(self, tmp_path: Path) -> None:
-        signature = self._pass_step("GPT 6.1 review (discovery pass)")["env"]["REFUSAL_SIGNATURE"]
-        log = f"some progress output\n{signature}.\nLearn more here: https://example.invalid\n"
-        assert self._classify(tmp_path, log) == " 1"
-
-    def test_echoed_signature_in_pr_controlled_text_stays_a_crash(self, tmp_path: Path) -> None:
-        # The stream carries the diff the reviewer echoed. A fork PR touching
-        # this workflow contains the signature verbatim -- as an indented diff
-        # line, never line-leading -- and a crash on such a PR must stay a
-        # crash, not reclassify as refused.
-        signature = self._pass_step("GPT 6.1 review (discovery pass)")["env"]["REFUSAL_SIGNATURE"]
-        log = f'+          REFUSAL_SIGNATURE: "{signature}"\n> quoted: {signature}\n'
-        assert self._classify(tmp_path, log) == ""
-
-    def test_signature_outside_the_stream_tail_stays_a_crash(self, tmp_path: Path) -> None:
-        # The provider emits the refusal as the stream's final act. A copy of
-        # the line early in a long stream (echoed content scrolled past) must
-        # not classify a later, unrelated crash.
-        signature = self._pass_step("GPT 6.1 review (discovery pass)")["env"]["REFUSAL_SIGNATURE"]
-        log = f"{signature}.\n" + ("x" * 80 + "\n") * 100
-        assert self._classify(tmp_path, log) == ""
-
     def _assemble_verdict(
         self,
         tmp_path: Path,
@@ -1615,52 +1602,6 @@ class TestForkGptRefusalTerminalState:
         )
         assert result.returncode == 0, result.stderr
         return result.stdout, gh_output.read_text(encoding="utf-8")
-
-    def test_refused_pass_publishes_its_own_terminal_state(self, tmp_path: Path) -> None:
-        out, gh_output = self._assemble_verdict(
-            tmp_path, failed_passes=" 2", refused_passes=" 2", pass2=None
-        )
-        assert "Reviewer refused" in out
-        # The refusal must not read as a completed review, must not prescribe
-        # the re-run that has never been observed to work, and deliberately
-        # carries NO machine marker.
-        assert "[GPT-REVIEWED]" not in out
-        assert "[GPT-REFUSED]" not in out
-        assert "Re-run the workflow" not in out
-        # The fork lane does resolve /ai-review override gpt $HEAD records, so
-        # the refused copy names the same remedy as the same-repo lane.
-        assert "/ai-review override gpt" in out
-        # Downstream classification rides this output, never a body grep.
-        assert "refused=true" in gh_output
-
-    def test_crashed_pass_keeps_the_rerunnable_incomplete_state(self, tmp_path: Path) -> None:
-        out, gh_output = self._assemble_verdict(
-            tmp_path, failed_passes=" 1", refused_passes=None, pass2=None
-        )
-        assert "Incomplete review" in out
-        assert "Re-run the workflow" in out
-        assert "[GPT-REFUSED]" not in out
-        assert "refused=false" in gh_output
-
-    def test_refusal_dominates_a_mixed_failure(self, tmp_path: Path) -> None:
-        # Pass 1 crashed AND pass 2 was refused: the adjudication route is the
-        # reliable exit either way, while a re-run only helps if the refusal
-        # does not recur, so the refusal is what the operator is told about.
-        out, gh_output = self._assemble_verdict(
-            tmp_path, failed_passes=" 1 2", refused_passes=" 2", pass2=None
-        )
-        assert "Reviewer refused" in out
-        assert "Re-run the workflow" not in out
-        assert "refused=true" in gh_output
-
-    def test_clean_run_still_publishes_pass_2_verbatim(self, tmp_path: Path) -> None:
-        verdict = f"all good\n[GPT-REVIEWED] {self.HEAD}\n"
-        out, gh_output = self._assemble_verdict(
-            tmp_path, failed_passes="", refused_passes=None, pass2=verdict
-        )
-        assert f"[GPT-REVIEWED] {self.HEAD}" in out
-        assert "[GPT-REFUSED]" not in out
-        assert "refused=false" in gh_output
 
     def test_refused_run_never_modifies_an_existing_comment(self) -> None:
         # A refused run produces a body with no [GPT-REVIEWED] stamp. The

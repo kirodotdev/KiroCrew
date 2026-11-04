@@ -20,6 +20,7 @@ import { removeWarm, setActiveId, setWarm } from '../store/instancesSlice'
 import {
   __resetErrorJournalForTests,
   __resetNavSeamForTests,
+  recentErrors,
 } from '../utils/errorReport'
 import { __resetInstanceFailuresForTests } from '../utils/instanceFailureReport'
 import { mockConnectedCd1 } from './InstancesViewportTestUtils'
@@ -355,6 +356,100 @@ describe('InstancesViewport', () => {
     }
     // The escape-hatch strip is on the panel (query resolves under real timers).
     expect(await screen.findByRole('group', { name: /Remote crews/i })).toBeInTheDocument()
+  })
+
+  it('names the unreachable port and the fix when this browser cannot reach the pane port', async () => {
+    // The gateway's tunnel is connected on ITS host, but the browser runs on
+    // another machine that forwards only the dashboard port: nothing answers on
+    // the pane port here. The panel and the agent hand-off must say so.
+    mockConnectedCd1()
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new TypeError('Failed to fetch'))
+    vi.useFakeTimers()
+    try {
+      const store = createTestStore({
+        instances: { warm: { 'cd-1': { port: 7778, token: 'tok' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {}, ready: {} },
+      })
+      renderWithProviders(<InstancesViewport />, { store })
+      await act(async () => {
+        vi.advanceTimersByTime(15_000)
+      })
+      await act(async () => { await Promise.resolve() })
+      expect(fetchSpy).toHaveBeenCalledWith('http://localhost:7778/', expect.objectContaining({ mode: 'no-cors' }))
+      expect(screen.getByText(/Pane failed to load/i)).toBeInTheDocument()
+      const notice = screen.getByTestId('instances-viewport-timeout-error')
+      expect(notice).toHaveTextContent(/cannot reach port 7778/)
+      expect(notice).toHaveTextContent('ssh -L 7778:127.0.0.1:7778 <gateway-host>')
+      expect(notice).toHaveTextContent(/different machines/)
+      expect(notice).toHaveTextContent(/may be restarting; retry/)
+      expect(notice).not.toHaveTextContent(/tunnel looks connected/i)
+      // The journaled report the agent receives carries the same fact, once.
+      const reports = recentErrors().filter(r => r.detail?.includes('stage: pane_load'))
+      expect(reports).toHaveLength(1)
+      expect(reports[0].message).toMatch(/cannot reach port 7778/)
+      expect(reports[0].detail).toContain('pane port: http://localhost:7778/')
+      expect(reports[0].detail).toContain('pane port probe: unreachable')
+      expect(reports[0].message).toMatch(/different machines/)
+    } finally {
+      vi.useRealTimers()
+      fetchSpy.mockRestore()
+    }
+  })
+
+  it('keeps the existing timeout message when the port probe itself times out', async () => {
+    // A probe that never answers proves nothing either way (a slow far end on
+    // the SAME machine looks like this), so it must not claim a different machine.
+    mockConnectedCd1()
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation((_url, init) => new Promise((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')))
+    }))
+    vi.useFakeTimers()
+    try {
+      const store = createTestStore({
+        instances: { warm: { 'cd-1': { port: 7778, token: 'tok' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {}, ready: {} },
+      })
+      renderWithProviders(<InstancesViewport />, { store })
+      await act(async () => {
+        vi.advanceTimersByTime(15_000)
+      })
+      await act(async () => { await vi.advanceTimersByTimeAsync(3_000) })
+      expect(fetchSpy).toHaveBeenCalledTimes(1)
+      const notice = screen.getByTestId('instances-viewport-timeout-error')
+      expect(notice).toHaveTextContent(/tunnel looks connected/i)
+      expect(notice).not.toHaveTextContent(/cannot reach port/)
+      const reports = recentErrors().filter(r => r.detail?.includes('stage: pane_load'))
+      expect(reports).toHaveLength(1)
+      expect(reports[0].detail).not.toContain('pane port')
+    } finally {
+      vi.useRealTimers()
+      fetchSpy.mockRestore()
+    }
+  })
+
+  it('keeps the existing timeout message when the pane port answers', async () => {
+    mockConnectedCd1()
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(null, { status: 200 }))
+    vi.useFakeTimers()
+    try {
+      const store = createTestStore({
+        instances: { warm: { 'cd-1': { port: 7778, token: 'tok' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {}, ready: {} },
+      })
+      renderWithProviders(<InstancesViewport />, { store })
+      await act(async () => {
+        vi.advanceTimersByTime(15_000)
+      })
+      await act(async () => { await Promise.resolve() })
+      expect(fetchSpy).toHaveBeenCalledTimes(1)
+      const notice = screen.getByTestId('instances-viewport-timeout-error')
+      expect(notice).toHaveTextContent(/tunnel looks connected/i)
+      expect(notice).not.toHaveTextContent(/cannot reach port/)
+      const reports = recentErrors().filter(r => r.detail?.includes('stage: pane_load'))
+      expect(reports).toHaveLength(1)
+      expect(reports[0].message).toBe('Pane failed to load')
+      expect(reports[0].detail).not.toContain('pane port')
+    } finally {
+      vi.useRealTimers()
+      fetchSpy.mockRestore()
+    }
   })
 
   it('Retry after a load timeout force-reloads the iframe even for an identical token', async () => {

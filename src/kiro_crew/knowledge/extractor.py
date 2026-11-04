@@ -39,6 +39,17 @@ def _source_label() -> str:
     return _EXTRACTION_SOURCE.get() or "(unknown)"
 
 
+def _is_harness_refusal(exc: BaseException) -> bool:
+    """Whether *exc* is the enterprise pool's harness refusal (RFC D6).
+
+    It is not an extraction failure to store past: no chunk can be extracted, so it
+    reaches the ingest, which fails the job rather than commit empty metadata.
+    """
+    from kiro_crew.knowledge.llm_pool import KnowledgeHarnessUnavailable
+
+    return isinstance(exc, KnowledgeHarnessUnavailable)
+
+
 _PAYLOAD_KEYS = frozenset({"title", "entities", "relations", "category", "summary"})
 
 
@@ -101,6 +112,8 @@ class EntityExtractor:
             )
             response = await self._pool.send(prompt, timeout=EXTRACTION_TIMEOUT)
         except Exception as exc:
+            if _is_harness_refusal(exc):
+                raise
             # The type only: an exception's message can echo the prompt, which
             # carries the document text.
             logger.warning(
@@ -139,6 +152,8 @@ class EntityExtractor:
         try:
             responses = await self._pool.send_batch(prompts, timeout=EXTRACTION_TIMEOUT)
         except Exception as exc:
+            if _is_harness_refusal(exc):
+                raise
             # The type only: an exception's message can echo the prompt, which
             # carries the document text.
             logger.warning(

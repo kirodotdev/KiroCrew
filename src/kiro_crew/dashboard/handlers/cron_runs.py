@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+from typing import Any
 
 from aiohttp import web
 
@@ -22,6 +23,12 @@ from kiro_crew.dashboard.cron_inject import (
     inject_cron_result_to_dashboard,
     prefetch_cron_dismissed,
     restore_cron_turn_timeout,
+)
+from kiro_crew.dashboard.cron_note_ack import (
+    cron_item_already_recorded,
+    cron_note_transition,
+    mark_cron_item_recorded,
+    new_ack_id,
 )
 from kiro_crew.dashboard.handlers._shared import (
     _owner_denial_response,
@@ -275,15 +282,40 @@ async def api_cron_ack(request: web.Request) -> web.Response:
         ):
             _audit_app_cron(app, "crons.ack", "denied", job_id)
             return _owner_denial_response(request)
-    try:
-        ok = await state.crons.ack_job_async(job_id, summary)
-    except CronStoreBusy:
-        return web.json_response(_CRON_BUSY_BODY, status=_CRON_BUSY_STATUS)
-    except CronStoreUnreadable as exc:
-        return _cron_unreadable_response(exc)
-    if notification_ts:
+    if not notification_ts:
+        ok, refused = await _ack_job(state, job_id, summary, "")
+        return refused or web.json_response({"ok": ok})
+    # The check, the store write and the record are one step per note, so two
+    # overlapping acks (a double click) cannot both pass the check.
+    async with cron_note_transition(state, notification_ts):
+        if cron_item_already_recorded(state, notification_ts, job_id):
+            # This note's entry is already on the job (a double click, a
+            # retry): a second copy would outlive the one unack that takes
+            # the first back.
+            await state.ack_notification(notification_ts)
+            return web.json_response({"ok": True})
+        ack_id = new_ack_id()
+        ok, refused = await _ack_job(state, job_id, summary, ack_id)
+        if refused is not None:
+            return refused
+        if ok:
+            mark_cron_item_recorded(state, notification_ts, job_id, ack_id)
         await state.ack_notification(notification_ts)
     return web.json_response({"ok": ok})
+
+
+async def _ack_job(
+    state: DashboardState, job_id: str, summary: Any, ack_id: str
+) -> tuple[bool, web.Response | None]:
+    """Append *summary* to the job under *ack_id*: ``(ok, None)``, or the store's refusal."""
+    try:
+        if not ack_id:
+            return await state.crons.ack_job_async(job_id, summary), None
+        return await state.crons.ack_job_async(job_id, summary, ack_id), None
+    except CronStoreBusy:
+        return False, web.json_response(_CRON_BUSY_BODY, status=_CRON_BUSY_STATUS)
+    except CronStoreUnreadable as exc:
+        return False, _cron_unreadable_response(exc)
 
 
 # The most runs one history page returns. The in-tree callers ask for 10, 21 and

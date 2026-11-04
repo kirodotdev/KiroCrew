@@ -11,8 +11,10 @@ from typing import TYPE_CHECKING, Any
 
 from kiro_crew.agent_files import is_kirocrew_default_agent
 from kiro_crew.agent_sdk.spec_hooks import (
+    OverlongHookCommand,
     crew_fired_spec_hooks,
     merge_user_hook_files,
+    overlong_spec_hook_commands,
     project_hook_files_present,
     session_agent,
     spec_hook_events,
@@ -235,6 +237,10 @@ async def _prepare_spec_hooks(
             "msg msg-info",
         )
     if is_new:
+        await _surface_overlong_hook_commands(
+            state, slot, agent, spec_project_dir(client), by_session.get("session_key", "")
+        )
+    if is_new:
         # A withheld project spec yields the user-level spec in its place, so
         # these hooks are exactly the user-level ones that still run.
         await _surface_withheld_project_hooks(
@@ -247,6 +253,61 @@ async def _prepare_spec_hooks(
         if is_kas:
             await _surface_withheld_project_hook_files(state, slot, client)
     return hooks, False, work_dir
+
+
+#: How many too-long hooks the notice names before it counts the rest.
+_OVERLONG_NOTICE_ENTRIES = 3
+
+
+def _overlong_hook_commands_notice(agent: str, hooks: list[OverlongHookCommand]) -> str:
+    """The session-start notice for spec hooks whose command is over the length limit."""
+    shown = []
+    for hook in hooks[:_OVERLONG_NOTICE_ENTRIES]:
+        # Redact each whole value before the cut, as the steering notice does.
+        label = _redact_display_text(hook.event)[:64]
+        if hook.matcher:
+            label += f" (matcher {_redact_display_text(hook.matcher)[:64]})"
+        shown.append(f"{label}: {hook.length:,} characters, limit {hook.limit:,}")
+    text = "; ".join(shown)
+    more = len(hooks) - _OVERLONG_NOTICE_ENTRIES
+    if more > 0:
+        text += f"; and {more} more"
+    noun = "hook does" if len(hooks) == 1 else "hooks do"
+    return (
+        f"ℹ Agent {agent}: {len(hooks)} {noun} not run because the command is too "
+        f"long ({text}). Put the logic in a script file and call that script from "
+        "the hook."
+    )
+
+
+async def _surface_overlong_hook_commands(
+    state: "DashboardState",
+    slot: "_ChatSlot",
+    agent: str,
+    project_dir: str | None,
+    session_key: str,
+) -> None:
+    """One notice row naming the spec hooks dropped for a command over the length limit.
+
+    Best-effort: a spec that cannot be read renders no row rather than failing the turn.
+    """
+    by_session = {"session_key": session_key} if session_key else {}
+    try:
+        hooks = await asyncio.to_thread(
+            functools.partial(overlong_spec_hook_commands, agent, project_dir, **by_session)
+        )
+    except Exception:  # noqa: BLE001 - an informational row must never fail a turn
+        logger.debug("too-long spec hooks for %r could not be read", agent, exc_info=True)
+        return
+    if hooks:
+        append_and_surface(
+            state,
+            slot,
+            "notice",
+            _redact_display_text(_overlong_hook_commands_notice(agent, hooks)),
+            "msg msg-info",
+            meta={"kind": SPEC_HOOKS_NOTICE_KIND},
+        )
 
 
 async def _surface_withheld_project_hook_files(
@@ -369,8 +430,15 @@ def _notice_steer_upgrade(state: "DashboardState", slot: "_ChatSlot", client: An
     """One notice row on a new session whose adapter is too old to take a mid-turn
     message, one whose KAS drops its agent's prompt, and one whose goose or codex is
     outside its tested range: the chat runs, and each row names the installed version, the
-    tested one and the command that installs it."""
-    for name in ("steer_upgrade_notice", "agent_prompt_upgrade_notice", "tested_version_notice"):
+    tested one and the command that installs it. One more on a session whose MCP
+    servers start without part of their env or headers, naming each server and the
+    key names it lost, never a value."""
+    for name in (
+        "steer_upgrade_notice",
+        "agent_prompt_upgrade_notice",
+        "tested_version_notice",
+        "withheld_credentials_notice",
+    ):
         notice = getattr(client, name, "")
         if isinstance(notice, str) and notice:
             append_and_surface(state, slot, "notice", _redact_display_text(notice), "msg msg-info")
@@ -656,6 +724,7 @@ async def _turn_stop_hook(turn: _ChatTurn) -> None:
     """The Stop hook, the continuations it and a tool refusal queue, the reply's Slack and cross-surface legs."""
     _answer_text = turn._answer_text
     _mirror_chan = turn._mirror_chan
+    _mirror_post_ts = turn._mirror_post_ts
     _mirror_thread = turn._mirror_thread
     _refusal_notices = turn._refusal_notices
     _refusal_notices_settled = turn._refusal_notices_settled
@@ -914,7 +983,7 @@ async def _turn_stop_hook(turn: _ChatTurn) -> None:
                 state.slack_client, _mirror_chan, turn._mirror_thinking_ts
             )
             for _part in render_for_slack(_mirror_body):
-                await state.slack_client.post_message(_mirror_chan, _part, _mirror_thread)
+                await state.slack_client.post_message(_mirror_chan, _part, _mirror_post_ts)
             if _mirror_options:
                 # Keep the ts this posts: the control has to be spendable
                 # later, and discarding the ts is what leaves a superseded
@@ -944,7 +1013,7 @@ async def _turn_stop_hook(turn: _ChatTurn) -> None:
                     _mirror_chan,
                     _mirror_blocks,
                     "Options",
-                    _mirror_thread,
+                    _mirror_post_ts,
                 )
                 if _mirror_ts:
                     _owner = (

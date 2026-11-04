@@ -1,10 +1,7 @@
 """Per-agent rewriter wrapping guards.
 
-A poolable stdio server that the user has explicitly disabled must never be
-wrapped into a live pooling stub -- ``_build_stub_entry`` returns a fixed shape
-and would drop the ``disabled`` flag, silently re-enabling the muted server in
-the agent overlay. These tests pin that guard (mirroring the settings-inject
-guard in ``_injectable_settings_servers``).
+A disabled server must never be wrapped: ``_build_stub_entry`` returns a fixed shape
+that drops ``disabled``, which would re-enable the muted server in the overlay.
 """
 
 from __future__ import annotations
@@ -37,16 +34,11 @@ from kiro_crew.sandbox import scrub_agent_denied_env
 
 
 class TestSettingsInjection:
-    """``_injectable_settings_servers`` drives the per-agent injection of
-    global settings servers, so it must return exactly the servers that get
-    injected.
+    """``_injectable_settings_servers`` returns exactly the settings servers injected per agent.
 
-    A server it returns is wrapped with each agent's own name and injected at
-    ACP ``session/new``, where the stub takes precedence over the raw
-    same-named entry kiro-cli merges from the real settings file
-    (``session_servers.py``). A server it does NOT return is left entirely to
-    that merge — the rewriter never writes a settings overlay and never
-    modifies the real settings file.
+    A returned server is injected as a stub at ACP ``session/new`` and wins over the raw
+    entry kiro-cli merges; any other server is left to that merge. The rewriter never
+    writes a settings overlay or touches the real settings file.
     """
 
     def _spec(self) -> dict:
@@ -84,11 +76,10 @@ class TestSettingsInjection:
 
     @pytest.mark.parametrize("value", [True, "true", 1, {}], ids=repr)
     def test_a_muted_settings_server_is_never_injected(self, value: object) -> None:
-        """Same class as the per-agent wrap guard, same fail-closed reading.
+        """Same fail-closed mute reading as the per-agent wrap guard.
 
-        A settings server injected as a stub is a LIVE server in every agent's
-        overlay, so reading only a literal ``True`` here re-enabled a globally
-        muted server for every agent at once — the wider blast radius of the two.
+        An injected settings stub is live in every agent's overlay, so a missed mute
+        re-enables the server for every agent at once.
         """
         spec = {"mcpServers": {"muted-mcp": {"command": sys.executable, "disabled": value}}}
         assert _injectable_settings_servers(spec, frozenset(["muted-mcp"])) == {}
@@ -155,16 +146,11 @@ class TestSettingsInjection:
     def test_an_agent_that_opts_out_of_the_global_file_gets_only_its_own_servers(
         self, tmp_path: Path
     ) -> None:
-        """``includeMcpJson: false`` tells kiro-cli not to merge the global file,
-        so the overlay must not add the global servers back as stubs.
+        """``includeMcpJson: false`` means the overlay must not add global servers as stubs.
 
-        Every wrapped entry in an overlay is sent at ACP ``session/new``, so an
-        injected stub reaches the session even though the agent excluded the file
-        it came from. A server there that publishes a tool name the agent's own
-        server also publishes leaves one of them with no tools. The agent's own
-        servers are kept exactly: the remote one passes through and its own
-        rostered stdio server is still wrapped. An agent without the opt-out, in
-        the same pass, still gets the injected stub.
+        Every wrapped entry is sent at ACP ``session/new``, so an injected stub would
+        reach the session anyway and could clash with the agent's own tool names. The
+        agent's own servers are kept; an agent without the opt-out still gets the stub.
         """
         from kiro_crew.mcp_gateway.rewriter import rewrite_agents
 
@@ -279,12 +265,8 @@ def test_disabled_poolable_server_is_not_wrapped(tmp_path: Path) -> None:
 def test_a_non_boolean_mute_is_not_wrapped_either(tmp_path: Path, value: object) -> None:
     """The mute is read fail-closed, through the shared launch-decision predicate.
 
-    Reading only a literal ``True`` here was not a cosmetic difference: a wrapped
-    entry carries the wrapper marker, ``session_servers.injection_server_names``
-    collects exactly those names, and the session projections subtract a stubbed
-    name BEFORE their own mute check -- so an entry the spec silenced with a
-    non-boolean value was injected at session level as a live server. The value is
-    also unforwardable on its own terms, since both spec schemas type it boolean.
+    A wrapped entry's name is subtracted by the session projections BEFORE their own
+    mute check, so a non-boolean mute that got wrapped would launch as a live server.
     """
     spec = {
         "name": "agent-a",
@@ -301,11 +283,8 @@ def test_a_non_boolean_mute_is_not_wrapped_either(tmp_path: Path, value: object)
 def test_a_registry_governed_server_is_not_wrapped(tmp_path: Path) -> None:
     """A catalog-governed entry has nothing here to pool.
 
-    In registry access mode the client resolves it by map key and supplies the
-    catalog's own command, so a stub is overridden; outside that mode the marked
-    entry is the one the client drops. Wrapping it only made the name a "stubbed
-    name" the session projections subtract, which is how the entry reached a
-    session as a live local process with the marker governing nothing.
+    The client either supplies the catalog command or drops the entry. Wrapping it
+    would let the session projections subtract the name and launch it as a local process.
     """
     spec = {
         "name": "agent-a",
@@ -405,11 +384,8 @@ def test_unstubbed_server_is_left_for_the_session_to_launch(
 ) -> None:
     """A server nobody stubbed gets NO stub, and its entry is untouched.
 
-    Routing is the per-server opt-in, and it is what puts a stub in the path at
-    all. Emitting one for every server made an upgrade add a daemon plus a proxy
-    process per (server, session) to installs that asked for neither, so absence
-    of a choice must mean absence of a stub — the session launches the server
-    itself, exactly as with no gateway present.
+    Routing is a per-server opt-in; a stub for every server would add a daemon and a
+    proxy per (server, session) to installs that asked for neither.
     """
     spec = {
         "name": "agent-a",
@@ -442,12 +418,8 @@ def test_allowlisted_server_gets_the_poolable_flag(tmp_path: Path) -> None:
 def test_private_server_with_declared_env_is_not_warned_about(tmp_path: Path, caplog) -> None:
     """The pooled warnings must not fire for a connection-private backend.
 
-    Both reasons the shared path withholds declared env are absent when there is
-    one stub, and gatewayd forwards the block in full — so the warning would be
-    false on its face. Worse, its remedy ("stop sharing this server") names the
-    state the server is already in, which sends an operator chasing a
-    non-problem. Reachable whenever a stubbed server runs with sharing off, which
-    is the useful middle state for a stateful server.
+    gatewayd forwards the full env to a private backend, so the warning would be false
+    and its remedy ("stop sharing this server") names the state it is already in.
     """
     import logging
 
@@ -610,16 +582,10 @@ def test_secret_env_server_is_declassified_even_with_forwarding_on(
 
 
 def test_spec_env_path_wins_over_augmented_host_path(tmp_path: Path, monkeypatch) -> None:
-    """The spec's declared env.PATH is the operator's explicit intent: the
-    search is composed by the canonical ``env.mcp_search_path`` (spec entries
-    FIRST, contributed MCP dirs then the augmented host PATH behind), so a
-    well-known dir can never shadow a same-named binary the spec deliberately
-    points elsewhere.
+    """The spec's env.PATH comes first in ``env.mcp_search_path``, ahead of the host PATH.
 
-    ``shutil.which`` is faked (first matching dir in path order wins) so the
-    ordering assertion is platform-independent; the search string itself
-    comes from the REAL ``mcp_search_path``, spied to prove the resolver
-    delegates to it rather than hand-rolling the composition."""
+    ``shutil.which`` is faked so the order check is platform-independent; the real
+    ``mcp_search_path`` is spied to prove the resolver delegates to it."""
     import os as _os
 
     from kiro_crew.mcp_gateway import rewriter as _rw
@@ -699,11 +665,8 @@ def test_windows_authored_path_key_is_honoured(tmp_path: Path, monkeypatch) -> N
 def test_pooling_disabled_still_wraps_but_shares_nothing(tmp_path: Path) -> None:
     """Pooling off is not stubs off.
 
-    With ``mcp_gateway.enabled`` false every LISTED server keeps its stub -- so
-    MCP Apps keeps working -- and nothing is marked shareable, so each connection
-    gets its own backend. A spec-level ``poolable: true`` neither overrides the
-    operator's global switch nor opts the server in: the config list is the only
-    thing that produces a stub.
+    With ``mcp_gateway.enabled`` false every listed server keeps its stub (so MCP Apps
+    works) but none is shareable. A spec-level ``poolable: true`` opts nothing in.
     """
     spec = {
         "name": "agent-a",
@@ -732,18 +695,10 @@ def test_pooling_disabled_still_wraps_but_shares_nothing(tmp_path: Path) -> None
 
 
 def test_rewriter_calls_restrict_to_owner_on_windows(tmp_path: Path, monkeypatch) -> None:
-    """On Windows (IS_POSIX=False, IS_WINDOWS=True), rewrite_agents must call
-    make_owner_only_dir on overlay directories (which internally calls
-    restrict_to_owner for DACL lockdown) and restrict_to_owner directly on
-    env sidecar files so credentials are not left world-readable under
-    inherited ACLs.
+    """On Windows, overlay dirs go through make_owner_only_dir and files through restrict_to_owner.
 
-    Regression test for GPT 5.6 findings:
-    - Windows enablement exposes credential sidecars in inherited-readable
-      overlay directories.
-    - restrict_to_owner applies 0o600 on POSIX directories, removing the
-      execute bit needed for traversal; directories must use make_owner_only_dir
-      which applies 0o700 on POSIX and restrict_to_owner (DACL) on Windows.
+    Otherwise credential sidecars stay readable under inherited ACLs. Directories must
+    not use restrict_to_owner: its 0o600 on POSIX drops the execute bit for traversal.
     """
     from unittest.mock import patch
 
@@ -838,9 +793,6 @@ def test_rewriter_calls_restrict_to_owner_on_windows(tmp_path: Path, monkeypatch
 def test_rewriter_overlay_dirs_are_traversable_on_posix(tmp_path: Path) -> None:
     """Overlay and stubs directories must be 0o700 (owner rwx) on POSIX,
     not 0o600 (owner rw-) which would block traversal and break pooling.
-
-    Regression test for GPT 5.6 finding: restrict_to_owner applies 0o600 to
-    directories, removing the execute bit needed for traversal.
     """
     from kiro_crew import platform_compat
 
@@ -887,15 +839,10 @@ def test_rewriter_overlay_dirs_are_traversable_on_posix(tmp_path: Path) -> None:
 
 
 def test_overlay_lockdown_precedes_content(tmp_path: Path, monkeypatch) -> None:
-    """The per-agent overlay writer locks the temp file down BEFORE content
-    reaches it (the settings overlay shares the same atomic_write call shape).
+    """The per-agent overlay writer locks the temp file down BEFORE content reaches it.
 
-    Overlays carry passed-through env blocks (tokens / API keys); a Windows-only
-    post-rename restrict_to_owner leaves them readable under the
-    inherited DACL for the whole write window. Asserted by
-    measuring the file's SIZE at lockdown time — zero means no payload byte
-    existed yet. A post-write stat passes on the buggy ordering too, so it
-    would not be a regression test.
+    Overlays carry env tokens. The file's SIZE is measured at lockdown time (zero means
+    no payload yet), because a post-write stat would pass on the wrong order too.
     """
     from kiro_crew import platform_compat
     from kiro_crew.mcp_gateway.rewriter import rewrite_agents
@@ -958,10 +905,9 @@ def _overlay_stub_args(overlay_dir: Path) -> list[str]:
 def test_env_sidecar_directory_goes_through_make_owner_only_dir(
     tmp_path: Path, monkeypatch
 ) -> None:
-    """The directory holding credential sidecars was created with mkdir +
-    chmod(0o700). The mode argument is inert on Windows, where the DACL is the
-    only carrier of access, so that left every local principal able to read the
-    sidecars. make_owner_only_dir applies 0o700 on POSIX and a DACL on Windows.
+    """The credential sidecar directory is created by make_owner_only_dir.
+
+    A chmod mode is inert on Windows, where only the DACL controls access.
     """
     from unittest.mock import patch
 
@@ -1003,12 +949,8 @@ def test_failed_sidecar_protection_leaves_no_readable_credentials(
 ) -> None:
     """A lockdown failure must not leave the credentials on disk.
 
-    The previous order wrote the sidecar first (with a mode argument that is
-    inert on Windows) and applied the DACL afterwards, catching the failure with
-    a bare warning -- so a readable file full of API keys stayed on disk AND the
-    stub was still pointed at it via --env-file. Protection is now applied to
-    the temp file before any secret byte is written, so a failure leaves nothing
-    behind and the sidecar is not advertised.
+    Protection is applied to the temp file before any secret byte is written, so a
+    failure leaves nothing behind and the stub gets no --env-file.
     """
     from unittest.mock import patch
 
@@ -1081,13 +1023,9 @@ def test_failed_sidecar_protection_leaves_no_readable_credentials(
 
 
 def test_stub_fingerprint_is_the_module_on_the_launch_line(tmp_path: Path) -> None:
-    """``STUB_MODULE`` must be BOTH what the rewriter launches and what the
-    Sessions surface matches a stub process by.
+    """``STUB_MODULE`` is both what the rewriter launches and what Sessions matches stubs by.
 
-    The two counters (per-session and per-task) identify stubs by cmdline
-    substring. A copy of the string that drifts from the launch line does not
-    fail loudly — it reports zero stubs for a runtime that is carrying them,
-    which is precisely the reading this pair of columns exists to give.
+    The stub counters match by cmdline substring; a drifted copy silently reports zero.
     """
     from kiro_crew import subagent
     from kiro_crew.dashboard import session_memory
@@ -1181,12 +1119,10 @@ def test_expand_env_map_expands_values_only(monkeypatch) -> None:
 
 
 def test_rewriter_writes_resolved_env_to_sidecar(tmp_path: Path, monkeypatch) -> None:
-    """End-to-end (write side): a stubbed server with env forwarding on has its
-    ${env:VAR} resolved into the 0600 sidecar gatewayd/the stub spawn the backend
-    from; an unresolved reference stays literal. This is the only path that
-    writes an env sidecar — an env-declaring server is otherwise left unwrapped
-    (see the forward_env-off behaviour), so kiro-cli launches it and expands the
-    env itself."""
+    """With forwarding on, ${env:VAR} is resolved into the 0600 sidecar; misses stay literal.
+
+    This is the only path that writes an env sidecar; otherwise kiro-cli launches the
+    server and expands the env itself."""
     monkeypatch.setenv("MYVAR", "s3cr3t-token")
     monkeypatch.delenv("MISSING", raising=False)
     spec = {
@@ -1211,12 +1147,8 @@ def test_two_agents_declaring_one_server_alike_share_its_sidecar(
 ) -> None:
     """Identical declarations get SEPARATE sidecars holding IDENTICAL bytes.
 
-    Sharing a backend does not mean sharing this file. The file holds the
-    declaration's full env, rotating secrets included, and it is read back
-    unfiltered for a connection-private backend -- so one file per declaration
-    is what keeps one agent's credentials out of another agent's backend. The
-    contents being equal here is what makes the separate files cost nothing:
-    whichever one is read, the backend sees the same env.
+    The file holds the full env, secrets included, and is read unfiltered for a private
+    backend, so one file per declaration keeps one agent's credentials from another.
     """
     monkeypatch.setenv("MYVAR", "s3cr3t-token")
     paths = []
@@ -1236,21 +1168,13 @@ def test_two_agents_declaring_one_server_alike_share_its_sidecar(
 
 
 def test_a_rotating_secret_alone_still_splits_the_sidecars(tmp_path: Path, monkeypatch) -> None:
-    """The collision the agent in the name exists to prevent.
+    """Two agents differing only in ``OAUTH_TOKEN`` keep separate sidecars.
 
-    These two agents declare ``srv`` with the same non-secret env and DIFFERENT
-    ``OAUTH_TOKEN`` values. ``effective_env_hash`` excludes ``OAUTH``-prefixed
-    keys, so the two hash equal -- a name built from that hash would put both
-    declarations on one file and the second write would hand the first agent's
-    private backend the second agent's token. Each must keep its own file with
-    its own token.
+    ``effective_env_hash`` excludes ``OAUTH``-prefixed keys, so a hash-only name would
+    put both on one file and hand one agent's token to the other's backend.
 
-    ``pooling_enabled=False`` is what makes this reachable, and is the whole
-    hazard: with pooling ON the rewriter leaves a secret-declaring server
-    unwrapped (``_withheld_env_count``), so no sidecar carries a secret. With it
-    OFF every backend is connection-private, the full declared env IS written to
-    the sidecar, and ``_declared_env_for_private_backend`` hands it back
-    unfiltered.
+    ``pooling_enabled=False`` is what makes this reachable: with pooling on, a
+    secret-declaring server is left unwrapped and no sidecar carries a secret.
     """
     seen = {}
     for agent, token in (("gpu-dev", "token-a"), ("kirocrew", "token-b")):
@@ -1330,14 +1254,10 @@ def test_placeholder_source_env_mirrors_the_forwarder_filters(monkeypatch) -> No
 
 # ── cmd.exe-safe launch argv (Windows cmd.exe quote-stripping) ──
 #
-# kiro-cli spawns MCP entries on Windows through ``cmd.exe /C``. A launch line
-# whose command is quoted (a ``Program Files`` interpreter) survives only
-# cmd's exactly-two-quotes special case; one more quoted element strips the
-# outer pair and the interpreter becomes ``C:\Program``. Every stub flag
-# already rides inside the base64url envelope, so the wrapped entry's
-# ``command`` is the one element that must be normalised to a metacharacter-
-# free spelling (the 8.3 short form). These tests construct the hazardous
-# input directly, so they assert the invariant on every platform.
+# kiro-cli spawns MCP entries on Windows through ``cmd.exe /C``, which strips the outer
+# quotes once a line holds more than two, so a quoted ``Program Files`` interpreter
+# becomes ``C:\Program``. Stub flags ride in the base64url envelope, so only ``command``
+# needs a metacharacter-free spelling (the 8.3 short form).
 
 
 @pytest.fixture(autouse=True)
@@ -1646,18 +1566,10 @@ def _json_text_reads(source: str) -> list[tuple[int, bool]]:
 
 
 class TestRewriterDecodesJsonAsUtf8:
-    """Agent specs and the global settings file are UTF-8 JSON written by
-    somebody else -- a user, an editor, the Kiro IDE -- so the rewriter decodes
-    them as UTF-8 rather than as the host's text code page.
+    """Agent specs and the settings file are decoded as UTF-8, not the host code page.
 
-    Two harms follow from a code-page decode. Where the bytes are undecodable
-    the read raises ``UnicodeDecodeError``, which is a ``ValueError`` and so
-    matches neither the ``OSError`` arm (transient: keep the previous overlay)
-    nor the ``json.JSONDecodeError`` arm (deterministic: skip this agent) --
-    it leaves ``rewrite_agents`` entirely and takes the whole pass down, not
-    just the one offending agent. Where the bytes are decodable under the code
-    page but mean something else, nothing raises and the mojibake is written
-    into the overlay that spawns the backend.
+    A code-page decode either raises ``UnicodeDecodeError`` (a ``ValueError`` that
+    neither except arm catches, so the whole pass aborts) or writes mojibake silently.
     """
 
     @staticmethod
@@ -1733,15 +1645,10 @@ class TestRewriterDecodesJsonAsUtf8:
         )
 
     def test_undecodable_agent_spec_skips_only_that_agent(self, tmp_path: Path) -> None:
-        """Bytes that are not valid UTF-8 degrade to the documented skip.
+        """Bytes that are not valid UTF-8 skip only that agent.
 
-        Pinning the read to UTF-8 removes the common trigger but not this one:
-        a genuinely corrupt file still raises ``UnicodeDecodeError``, and that
-        is a ``ValueError``, so it matches neither the ``OSError`` arm nor a
-        bare ``json.JSONDecodeError`` arm. Unhandled, it leaves
-        ``rewrite_agents`` and abandons every OTHER agent in the same pass --
-        the blast radius this asserts against. Runs on every platform, because
-        the bytes are invalid under UTF-8 rather than under a code page.
+        The ``UnicodeDecodeError`` is a ``ValueError``; unhandled it would abort the pass
+        for every other agent. Runs on every platform: the bytes are invalid UTF-8.
         """
         from kiro_crew.mcp_gateway.rewriter import rewrite_agents
 
@@ -1774,11 +1681,8 @@ class TestRewriterDecodesJsonAsUtf8:
     def test_every_json_read_pins_utf8(self) -> None:
         """A ratchet, because the defect is one omitted keyword and reads clean.
 
-        The behavioural test above only diverges on a host whose code page is
-        not UTF-8, so on a UTF-8 runner it passes either way. This one fails
-        everywhere, which is what stops a re-added bare ``read_text()``
-        reaching a release through a green Linux shard. It also covers the
-        settings-file read, which has no cheap behavioural harness.
+        The behavioural test passes either way on a UTF-8 runner; this scan fails on
+        every platform and also covers the settings-file read.
         """
         import importlib
 
@@ -1810,14 +1714,10 @@ class TestRewriterDecodesJsonAsUtf8:
         )
 
     def test_every_json_read_catches_a_decode_error(self) -> None:
-        """Pins the other half of the UTF-8 fix: the except arm.
+        """Every JSON read of a file sits under an except that catches ``UnicodeDecodeError``.
 
-        ``encoding="utf-8"`` makes a non-UTF-8 file raise
-        ``UnicodeDecodeError``, a ``ValueError`` the old
-        ``(OSError, json.JSONDecodeError)`` tuples let through. The corrupt-file
-        behaviour test reaches the strict spec reader, not these arms, so
-        dropping ``UnicodeDecodeError`` from one of them would leave every other
-        test green. This scan fails instead.
+        A ``(OSError, json.JSONDecodeError)`` tuple lets it through, and no behaviour test
+        reaches these arms, so this scan is the only guard.
         """
         import importlib
 

@@ -396,6 +396,9 @@ def test_first_run_is_best_effort(tmp_path, monkeypatch):
     # Must not propagate — gateway startup cannot be broken by setup failures.
     agent.run_first_run_setup()
 
+    # A failed purge leaves no marker, so the next start tries it again.
+    assert not marker.exists()
+
 
 # --------------------------------------------------------------------------
 # Default-on builtin backfill — runs ONCE, and must reach EXISTING installs

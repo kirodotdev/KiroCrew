@@ -422,6 +422,41 @@ class TestFetchAppManifest:
         assert got == {"name": "demo", "version": "2.0.0"}
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("body", ['["x"]', '"str"', "7", "null"])
+    async def test_a_manifest_that_is_not_an_object_reads_as_none(
+        self, monkeypatch, tmp_path, body
+    ):
+        monkeypatch.setattr(registry, "is_clone_host_trusted", lambda url: True)
+        clone = _tmp_clone_dir(monkeypatch, tmp_path)
+        (clone / "app.json").write_text(body, encoding="utf-8")
+        _fake_sandbox(monkeypatch, [_FakeProc(returncode=0)])
+        got = await registry._fetch_app_manifest(
+            "o/demo", "main", git_url="https://github.com/o/demo.git"
+        )
+        assert got is None
+
+    @pytest.mark.asyncio
+    async def test_a_local_manifest_that_is_not_an_object_falls_through(
+        self, monkeypatch, tmp_path
+    ):
+        src = tmp_path / "app-sources" / "demo"
+        src.mkdir(parents=True)
+        (src / "app.json").write_text('["x"]', encoding="utf-8")
+        monkeypatch.setattr(registry, "app_source_dir", lambda n: src)
+
+        async def _true(*a, **k):
+            return True
+
+        monkeypatch.setattr(registry, "_clone_origin_matches", _true)
+        monkeypatch.setattr(registry, "_clone_branch_matches", _true)
+        assert (
+            await registry._fetch_app_manifest(
+                "o/demo", "main", app_name="demo", git_url="bare-name"
+            )
+            is None
+        )
+
+    @pytest.mark.asyncio
     async def test_subdirectory_escape_after_clone_is_refused(self, monkeypatch, tmp_path):
         monkeypatch.setattr(registry, "is_clone_host_trusted", lambda url: True)
         _tmp_clone_dir(monkeypatch, tmp_path)
@@ -1031,6 +1066,24 @@ class TestVersionNewer:
             ("not-a-version", "1.0.0", False),
             ("1.0.0", "", False),
             ("", "", False),
+            # A PEP 440 suffix with no separator, as every insider build stamps.
+            ("0.5.0", "0.4.0rc3", True),
+            # The final release is newer than its own release candidate.
+            ("0.4.0", "0.4.0rc3", True),
+            ("v0.4.0", "0.4.0rc3", True),
+            ("1.0.0", "1.0.0-beta.1", True),
+            ("1.0.0+build.9", "1.0.0-rc.1", True),
+            # ...but not the other way round, and two pre-releases stay unordered.
+            ("0.4.0rc3", "0.4.0", False),
+            ("0.4.0rc4", "0.4.0rc3", False),
+            ("1.0.0-rc.1", "1.0.0+build.9", False),
+            # A leading "v" on either side.
+            ("v1.1.0", "1.0.0", True),
+            ("1.1.0", "v1.0.0", True),
+            # A numeric semver pre-release, and padding the old int() parse accepted.
+            ("2.0.0-1", "1.0.0", True),
+            ("1.0.0-0.3.7", "0.9.0", True),
+            (" 1.1.0", "1.0.0\n", True),
         ],
     )
     def test_version_newer(self, registry_ver, installed_ver, expected):

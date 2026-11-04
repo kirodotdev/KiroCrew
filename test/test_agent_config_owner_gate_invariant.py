@@ -1,19 +1,9 @@
 """Every mutating route registered by the agent_config registrar refuses non-owner callers.
 
-Unlike ``test_agents_endpoints_owner_auth.py`` which filters by handler module
-(``handlers.agents``), this test walks ALL mutating routes registered by both
-the ``agent_config`` and ``agents`` route registrars without filtering by
-handler module. This ensures that new routes added to ANY handler module in the
-registrar cannot silently escape the owner gate invariant.
-
-A mutating route (POST/PUT/PATCH/DELETE) that is registered through the
-registrar must either:
-1. Return 401 or 403 for a non-owner caller, OR
-2. Be explicitly documented in one of the exclusion sets below with a
-   justification for why the route intentionally skips the owner gate.
-
-The coherence floor ``_MINIMUM_GATED_ROUTES`` prevents the walk from going
-vacuous if a refactor empties the route table.
+Unlike ``test_agents_endpoints_owner_auth.py``, this walks every mutating route of the
+``agent_config`` and ``agents`` registrars regardless of handler module. Each must
+answer 401/403 to a non-owner or sit in an exclusion set below with a justification;
+``_MINIMUM_GATED_ROUTES`` keeps the walk from going vacuous.
 """
 
 from __future__ import annotations
@@ -31,53 +21,23 @@ pytestmark = pytest.mark.asyncio
 
 _MUTATING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 
-# --------------------------------------------------------------------------- #
-# Pre-owner exclusions: routes that intentionally only require authentication
-# (not ownership) because they execute during the initial onboarding flow
-# BEFORE an owner is configured.
-#
-# Empty by intent: the onboarding import routes are owner-gated like every
-# other mutating route. The pre-owner shape needs no exemption because
-# ``is_owner_dashboard_request`` accepts the signed local bootstrap subjects
-# (``local-app`` / ``local-startup``) whenever no ``owner_id`` is configured,
-# so the local onboarding flow passes the ordinary gate. A pre-owner route
-# that must skip the gate for a real reason belongs here, with justification.
-# --------------------------------------------------------------------------- #
+# Pre-owner exclusions: routes that need only authentication during onboarding.
+# Empty by intent: with no ``owner_id`` the gate accepts the signed local bootstrap
+# subjects (``local-app`` / ``local-startup``), so onboarding passes the ordinary gate.
 _PRE_OWNER_EXCLUSIONS: frozenset[tuple[str, str]] = frozenset()
 
-# --------------------------------------------------------------------------- #
-# Known ungated routes: mutating routes that predate the owner-gating effort.
-# These routes are currently authenticated-only (not owner-gated). They are
-# candidates for future owner-gating work but are NOT in scope for the current
-# migration PR. Each entry documents WHY it is excluded.
-#
-# IMPORTANT: This set must NOT grow. Any NEW mutating route added to the
-# registrar that is not owner-gated must either be added to _PRE_OWNER_EXCLUSIONS
-# (with justification) or must implement require_owner_dashboard_request.
-# The test_known_ungated_routes_not_growing test enforces this via the
-# _MAX_KNOWN_UNGATED_ROUTES ceiling below.
-# --------------------------------------------------------------------------- #
+# Known ungated routes: authenticated-only mutating routes, each with its reason.
+# This set must not grow; ``test_known_ungated_routes_not_growing`` enforces the
+# ``_MAX_KNOWN_UNGATED_ROUTES`` ceiling below.
 _KNOWN_UNGATED_ROUTES: frozenset[tuple[str, str]] = frozenset()
 
 # Ceiling for the debt list above, asserted by
-# ``test_known_ungated_routes_not_growing``. Raising it is the reviewable act
-# that adding a new ungated route costs; lower it whenever an entry is gated and
-# removed, so the ratchet stays tight.
+# ``test_known_ungated_routes_not_growing``. Lower it whenever an entry is gated.
 _MAX_KNOWN_UNGATED_ROUTES = 0
 
-# --------------------------------------------------------------------------- #
-# Coherence floor: the walk must find at least this many GATED mutating routes.
-# This is the count of owner-gated routes the walk enforces, measured live at
-# Registered by handlers.agents, handlers.connections,
-# handlers.files, and handlers.members). Keep it equal to the real count -- a
-# slack floor cannot catch a refactor that silently drops routes out of the
-# walk. Hardcoded deliberately: deriving it from the walk itself would
-# reintroduce the vacuity one level up. If routes are intentionally removed,
-# the assertion fails and you must lower the floor in the same commit. If
-# routes are added, the ``>=`` assertion still passes, so raising the floor
-# back to the real count is a manual, unenforced step -- do it whenever you
-# touch this file, or the slack this floor exists to prevent regrows.
-# --------------------------------------------------------------------------- #
+# Coherence floor: the real count of gated mutating routes. Hardcoded, since deriving
+# it from the walk would be vacuous. Lower it when removing routes; raise it to the
+# real count whenever routes are added, or the slack it prevents regrows.
 _MINIMUM_GATED_ROUTES = 59
 
 
@@ -163,12 +123,8 @@ async def test_walk_finds_minimum_gated_routes() -> None:
 async def test_every_gated_route_refuses_non_owner() -> None:
     """A non-owner dashboard subject gets 401 or 403 on every gated route.
 
-    The request carries no JSON body and uses a non-owner identity header.
-    The owner gate must fire BEFORE body parsing or state access, so the
-    denial response should always come first.
-
-    We accept both 401 (stale session relabel) and 403 (direct owner denial)
-    as valid denial responses.
+    No JSON body is sent, so the gate must fire before body parsing. 401 (stale session
+    relabel) and 403 (owner denial) both count.
     """
     app = _build_app()
     routes = _gated_routes(app)
@@ -189,19 +145,9 @@ async def test_every_gated_route_refuses_non_owner() -> None:
 async def test_known_ungated_routes_not_growing() -> None:
     """The ungated set is a shrink-only ratchet -- it must never grow.
 
-    This is the tightening direction of the invariant. ``_KNOWN_UNGATED_ROUTES``
-    is the debt list: mutating routes that predate owner-gating and are still
-    authenticated-only. Every entry is registered (asserted by
-    ``test_exclusion_sets_are_actually_registered``) and every route OUTSIDE the
-    two exclusion sets is proven to refuse non-owners (asserted by
-    ``test_every_gated_route_refuses_non_owner``).
-
-    What neither of those catches is a NEW ungated route being added to the
-    registrar and quietly appended to this set to keep CI green. Pinning the
-    ceiling makes that edit visible: the ceiling has to be raised in the same
-    diff, which is a reviewable act rather than a silent one. Gating a route and
-    deleting its entry is the only change that needs no ceiling edit -- lower
-    ``_MAX_KNOWN_UNGATED_ROUTES`` to the new size to keep the ratchet tight.
+    The other tests miss a new ungated route quietly appended to the debt list; the
+    ceiling makes that a visible edit in the same diff. Lower
+    ``_MAX_KNOWN_UNGATED_ROUTES`` when an entry is gated and removed.
     """
     assert len(_KNOWN_UNGATED_ROUTES) <= _MAX_KNOWN_UNGATED_ROUTES, (
         f"_KNOWN_UNGATED_ROUTES grew to {len(_KNOWN_UNGATED_ROUTES)} entries "

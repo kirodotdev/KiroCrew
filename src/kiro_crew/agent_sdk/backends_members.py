@@ -69,7 +69,7 @@ from kiro_crew.agent_sdk.backends import (
 #     pi's native tools too, and is not run wider than saved.
 #
 # ``test/fixtures/acp_frames/pi/saved-spec-projection-live.jsonl`` is a member session on
-# pi-acp 0.0.34 over pi 1.3.0 whose saved spec the client confirmed after
+# pi-acp 0.0.34 over pi 1.4.0 whose saved spec the client confirmed after
 # ``session/new``; the same drive with the spec edited after its save was refused.
 #
 # strands is NOT a member, although its mirror records the consumed spec and the
@@ -94,12 +94,19 @@ ACP_BACKENDS_MEMBER_CAPABILITIES = frozenset(
 
 # Backends of the set above that also honour a saved member spec's per-tool
 # ``disabledTools`` on an MCP server. kiro-cli reads the field off the saved file.
-# The KAS customAgents wire accepts it and then discards it
-# (``kas_agents._KAS_DISCARDED_ENTRY_KEYS``), so a server declared with one runs
-# there with those tools on. A saved spec that uses it is refused before spawn on
-# a non-member (``capability_tool_limits_unsupported``) rather than run wider than
-# it was saved.
-ACP_BACKENDS_MEMBER_TOOL_LIMITS = frozenset({ACP_BACKEND_KIRO})
+# The KAS customAgents wire accepts the field and then discards it
+# (``kas_agents._KAS_DISCARDED_ENTRY_KEYS``), so the projection carries each
+# switched-off tool of a launched server as ``@<server>/<tool>`` in the agent's
+# ``excludedTools`` instead (``kas_tool_limits.disabled_tool_exclusions``), the same
+# carrier the crewmate worker's spec uses (``ACP_BACKENDS_MATE_WORKER_TOOL_LIMITS``).
+# KAS tags each MCP tool ``@<server>/<tool>`` and drops a tool whose tag equals an
+# ``excludedTools`` entry (``@kiro/agent`` 3.0.0 ``dist/server/acp-server.js``:
+# the MCP tool wrapper's ``tags`` and the tool filter ``BM``). The live capture of
+# that field is ``test/fixtures/acp_frames/kas/worker-kit-live.jsonl`` (KAS 0.66.58,
+# a native tool withheld). A saved spec that uses ``disabledTools`` is refused
+# before spawn on a non-member (``capability_tool_limits_unsupported``) rather than
+# run wider than it was saved.
+ACP_BACKENDS_MEMBER_TOOL_LIMITS = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
 
 # Backends that honour a crewmate WORKER's single-tool limits. The worker's spec
 # is built per session (``mate_worker.worker_session_spec``), with every tool the
@@ -422,7 +429,7 @@ ACP_BACKENDS_MEMBER_DISPATCH = frozenset(
 #
 # The mount is driven, not inferred:
 # ``test/fixtures/acp_frames/pi/member-panel-mount-live.jsonl`` is a member DM session
-# key on pi-acp 0.0.34 over pi 1.3.0, in which the client's own resolver composed the
+# key on pi-acp 0.0.34 over pi 1.4.0, in which the client's own resolver composed the
 # panel element, pi registered ``kirocrew-panel`` from the handoff and listed its
 # tools, the model's ``panel_publish`` call asked ``session/request_permission``
 # through the gate first, and the panel server's own answer reached the turn: the

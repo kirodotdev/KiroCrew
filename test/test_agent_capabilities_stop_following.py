@@ -146,7 +146,8 @@ def _set_member_backend(home, backend):
         ("", (), None),
         ("", ("docs",), None),
         ("kas", (), None),
-        ("kas", ("docs",), "tool_limits_unsupported"),
+        # KAS carries them as excludedTools (kas_tool_limits.disabled_tool_exclusions).
+        ("kas", ("docs",), None),
         # Claude, Codex and DeepSeek confirm the consumed projection, so they host a
         # saved spec; none of them carries single-tool limits.
         ("codex", (), None),
@@ -180,9 +181,9 @@ def test_saved_view_has_no_backend_warning_on_the_default_backend(editor):
     assert save(service, enroll=True)["backend_warning"] is None
 
 
-def test_preview_and_save_warn_when_kas_cannot_apply_single_tool_limits(editor):
+def test_preview_and_save_warn_when_codex_cannot_apply_single_tool_limits(editor):
     service, home, specs, parent = editor
-    _set_member_backend(home, "kas")
+    _set_member_backend(home, "codex")
     body = {
         "revision": service.get("A")["revision"],
         "enroll": True,
@@ -191,7 +192,7 @@ def test_preview_and_save_warn_when_kas_cannot_apply_single_tool_limits(editor):
     preview = service.preview("A", body)
     expected = {
         "code": "tool_limits_unsupported",
-        "backend": "kas",
+        "backend": "codex",
         "setting": "agent.member_acp_backend",
         "servers": ["docs"],
     }
@@ -203,20 +204,16 @@ def test_preview_and_save_warn_when_kas_cannot_apply_single_tool_limits(editor):
     assert service.get("A")["backend_warning"] == expected
 
 
-def test_a_kiro_member_backend_is_judged_as_kas_for_single_tool_limits(editor):
-    # A member DM set to "kiro" runs on KAS, so the warning names KAS, while the
-    # same "kiro" in agent.acp_backend stays kiro-cli and honours the limits.
+def test_kas_member_backends_apply_single_tool_limits_without_a_warning(editor):
+    # KAS carries them as excludedTools, so neither "kas" nor a member DM's "kiro"
+    # (which reads as KAS) warns, beside a kiro-cli agent.acp_backend.
     service, home, specs, parent = editor
-    config = json.loads((home / "config.json").read_text())
-    config["agent"] = {"member_acp_backend": "kiro", "acp_backend": "kiro"}
-    (home / "config.json").write_text(json.dumps(config), encoding="utf-8")
-    loader._invalidate_config_cache()
-    assert save(service, [_LIMITED_DOCS], enroll=True)["backend_warning"] == {
-        "code": "tool_limits_unsupported",
-        "backend": "kas",
-        "setting": "agent.member_acp_backend",
-        "servers": ["docs"],
-    }
+    for member_backend in ("kas", "kiro"):
+        config = json.loads((home / "config.json").read_text())
+        config["agent"] = {"member_acp_backend": member_backend, "acp_backend": "kiro"}
+        (home / "config.json").write_text(json.dumps(config), encoding="utf-8")
+        loader._invalidate_config_cache()
+        assert save(service, [_LIMITED_DOCS], enroll=True)["backend_warning"] is None
 
 
 def test_unsupported_member_backend_warns_on_preview_and_save(editor):
@@ -260,7 +257,7 @@ def test_member_backend_refusal_is_named_before_the_default_backend(editor):
 
 
 def test_harness_warning_also_names_limited_servers(editor):
-    # The switch the page suggests (kas) would refuse these next.
+    # Some member backends that load saved specs (codex) would refuse these next.
     service, home, specs, parent = editor
     _set_member_backend(home, "opencode")
     warning = save(service, [_LIMITED_DOCS], enroll=True)["backend_warning"]

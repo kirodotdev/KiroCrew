@@ -41,7 +41,7 @@ from kiro_crew.apps.manager import (
 )
 from kiro_crew.apps.manifest import Dependencies, PlatformConfig
 from kiro_crew.apps.point_grants import point_grant_families
-from kiro_crew.apps.registry import minimal_env
+from kiro_crew.apps.registry import _manifest_shell_platform_refusal, minimal_env
 from kiro_crew.apps.routes_lifecycle import (
     _backend_platform_refusal,
     _deregister_app_off_loop,
@@ -683,7 +683,8 @@ async def handle_open_app(request: web.Request) -> web.Response:
     launches the app.  This endpoint executes it in the background.
 
     On cloud/remote environments (no display), returns the command
-    for the user to run locally instead of executing it.
+    for the user to run locally instead of executing it. On native Windows,
+    which has no ``/bin/sh``, answers 409 ``app_open_unsupported_platform``.
     """
     # local import: avoids a circular import with dashboard.handlers
     from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
@@ -720,6 +721,23 @@ async def handle_open_app(request: web.Request) -> web.Response:
     )
     if denied:
         return web.json_response({"error": denied, "code": "app_execution_denied"}, status=403)
+
+    # Native Windows has no /bin/sh to launch the command through. Refuse here,
+    # before the display test below: a Windows desktop sets no DISPLAY, so it would
+    # read as a remote host and be handed a POSIX command to "run locally".
+    platform_refusal = _manifest_shell_platform_refusal()
+    if platform_refusal:
+        error = f"openCommand not run: {platform_refusal}"
+        sel().log_api_access(
+            caller="dashboard",
+            operation="app_open",
+            outcome="denied",
+            resources=name,
+            error=error,
+        )
+        return web.json_response(
+            {"error": error, "code": "app_open_unsupported_platform"}, status=409
+        )
 
     # Detect cloud/remote — no DISPLAY and not macOS desktop
     import platform

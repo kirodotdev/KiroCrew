@@ -31,6 +31,7 @@ from kiro_crew.acp.types import (
     STOP_REASON_END_TURN,
 )
 from kiro_crew.constants import COMPACT_WAIT_TIMEOUT_SECS
+from kiro_crew.process_identity import record_live_children_after_turn
 from kiro_crew.providers.base import CancelOutcome, LLMEvent
 
 if TYPE_CHECKING:
@@ -103,6 +104,11 @@ def _to_llm_event(e: Any) -> LLMEvent:
         # spec-write-allowlist row reads this.
         spec_write_allowlist=e.spec_write_allowlist,
         spec_write_cwd=e.spec_write_cwd,
+        # Dropping this would let a native KAS sub-agent's call inherit the
+        # parent's in-session deny overrides on this surface.
+        native_child_call=e.native_child_call,
+        # Dropping this would offer no deny override on this surface (fail closed).
+        child_calls_marked=e.child_calls_marked,
         # Dropping this would refuse every deepseek read on a side turn.
         deepseek_tool_name=e.deepseek_tool_name,
         # Dropping this would let a READ_ONLY turn on an unproved dsh
@@ -154,6 +160,11 @@ def _to_llm_event(e: Any) -> LLMEvent:
         # nothing to render: an empty card the person cannot answer, while
         # the engine holds the tool call open for the whole window.
         elicitation=e.elicitation,
+        # The engine's fallback decision on EVENT_MODEL_FALLBACK. Dropping it
+        # zeroes the payload to None, so the dashboard enters its branch with
+        # nothing to record: no notice line and no promotion of the slot to
+        # the model the engine moved to (acp/engine_fallback.py).
+        model_fallback=e.model_fallback,
     )
 
 
@@ -199,11 +210,17 @@ async def stream(
         send = functools.partial(send, allow_image=False)
     if timeout is not None:
         send = functools.partial(send, timeout=timeout)
-    async with aclosing(
-        self.essential_delivery.stream(message, send, lambda: self.context_incarnation)
-    ) as events:
-        async for e in events:
-            yield self._to_llm_event(e)
+    try:
+        async with aclosing(
+            self.essential_delivery.stream(message, send, lambda: self.context_incarnation)
+        ) as events:
+            async for e in events:
+                yield self._to_llm_event(e)
+    finally:
+        # Record any child this turn forked while the leader is still alive,
+        # so a leader that exits before teardown does not leave them
+        # unrecorded and their group reported "kill failed".
+        await record_live_children_after_turn(self._client)
 
 
 async def stream_command(self: AcpProvider, command: str) -> AsyncIterator[LLMEvent]:
@@ -230,11 +247,14 @@ async def stream_command(self: AcpProvider, command: str) -> AsyncIterator[LLMEv
         if self._client.backend not in ACP_BACKENDS_KIRO_SLASH_COMMANDS
         else self._client.stream_command
     )
-    async with aclosing(
-        self.essential_delivery.stream(command, send, lambda: self.context_incarnation)
-    ) as events:
-        async for e in events:
-            yield self._to_llm_event(e)
+    try:
+        async with aclosing(
+            self.essential_delivery.stream(command, send, lambda: self.context_incarnation)
+        ) as events:
+            async for e in events:
+                yield self._to_llm_event(e)
+    finally:
+        await record_live_children_after_turn(self._client)
 
 
 async def compact(self: AcpProvider, context: str = "") -> None:

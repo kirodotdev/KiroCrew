@@ -61,9 +61,14 @@ export interface TipPos {
    *  anchor's bounding-box `below` position for viewport fitting. A `flow`
    *  `below` carries `above` (first fragment, boundary lift) when it would
    *  cross the viewport bottom or `floor`. A `flow` `above` has no candidate
-   *  below, to spare the following prose. An explicit `below` has no above
-   *  to go to (its anchor is in the top bar) and is clamped instead. */
+   *  below, to spare the following prose. An explicit `below` carries `above`
+   *  too, but takes it only when the whole bubble fits there (`flipNeedsRoom`):
+   *  a top-bar anchor has no room above and is clamped instead, while a row low
+   *  in a scrolling list opens above rather than being pushed up over itself. */
   flip?: { top: number; left: number }
+  /** Set for an explicit `below`: take `flip` only when the bubble fits above
+   *  the anchor, otherwise clamp to the viewport. */
+  flipNeedsRoom?: boolean
   /** The bottom edge a `below` bubble must stay inside: a flow anchor's
    *  container bottom (`flowFloor`) — the message's own box. A bubble that
    *  would cross it lands on what follows the message, so it takes `flip`. */
@@ -321,10 +326,12 @@ export function useInstantTip({ hold = 0, placement = 'above', openOnTap = false
       // fit in the viewport (a chip on the last line of a full-height pane) or
       // would cross the floor (a chip on or near the message's last line — the
       // bubble would sit on the timestamp and action row under the message) the
-      // bubble goes above after all; the explicit below consumer has no above
-      // to go to and is clamped.
+      // bubble goes above after all. An explicit below goes above only when it
+      // fits there (a row low in the sidebar); a top-bar anchor has no room
+      // above and is clamped.
       const b = el.getBoundingClientRect()
-      setTip({ top: b.bottom + 8, left: b.left, placement: side, flip: placement === 'flow' ? above : undefined, floor: placement === 'flow' ? flowFloor(el) : undefined })
+      const flow = placement === 'flow'
+      setTip({ top: b.bottom + 8, left: b.left, placement: side, flip: above, flipNeedsRoom: flow ? undefined : true, floor: flow ? flowFloor(el) : undefined })
       return
     }
     const b = el.getBoundingClientRect()
@@ -497,11 +504,13 @@ export function InstantTip({ tip, tipId, className = '', children }: {
     if (wanted === 'below') {
       // The lower of the viewport's bottom edge and the flow floor (the
       // message's own box): a flow bubble that would cross either takes its
-      // flip; the explicit top-bar below is clamped to the viewport.
+      // flip; an explicit below takes it only when the bubble fits above, and
+      // is clamped to the viewport otherwise.
       const limit = Math.min(window.innerHeight - 8, tip.floor ?? Infinity)
       const maxTop = limit - el.offsetHeight
       if (top > maxTop) {
-        if (tip.flip) { placement = 'above'; top = tip.flip.top; left = tip.flip.left }
+        const flip = tip.flip && (!tip.flipNeedsRoom || tip.flip.top - el.offsetHeight >= 8) ? tip.flip : undefined
+        if (flip) { placement = 'above'; top = flip.top; left = flip.left }
         else top = Math.max(8, maxTop)
       }
     } else if (tip.flip && top - el.offsetHeight < 8) {

@@ -1862,10 +1862,40 @@ canonical taxonomy parser — never re-implemented). Resolution is:
   (fail-closed, never a permissive fall-through), mirroring the dashboard
   `api_session_tool_policy` precedent.
 
+`resolve_task_bound_profile(agent)` reads only the `task` bind for one agent,
+with no app or surface fallback (an unloaded store denies). A caller that already
+resolved the active profile uses it to narrow that by a second agent's own
+profile without re-applying the surface default; the one caller is a crewmate
+stub's app callback (`mcp_gateway/app_call.py`).
+
 **`identity_proven` is true for ANY non-empty session key**, so an unattended
 surface that *does* carry a key — `cron:<job>`, `subagent:<id>`, `taskrunner` —
 resolves to `None` (policy-ceiling-only), **not** `deny_all_profile`; only `_bg`
 and `_hb` fall to deny-all. That is correct for every scope that remains.
+
+**Unattended turns at the PreToolUse gate.** A cron turn hands
+`stream_and_collect` its own `cron:<job>` session key and the agent's alias or
+crew record name (each step's alias on an `agent_sequence`), the name a chat turn
+on that agent hands the gate, so the gate resolves that session's profile the
+same way it does for a chat turn, including a `task` bind on that name. A
+schedule whose capture selected a member runs as that member, so its gate name
+is the member's own live alias (the record `member_config_for_id` finds for the
+captured `member_id`, the one dispatch resolves through, else the captured
+`selection_name`), even when the job's `agent` names a template or another
+member; the job's `agent` is the gate name only for a capture that selected no
+member. The template the alias collapses to is used only to acquire the session
+and build the message. Cron, heartbeat and
+Slack-thread nudge turns pass `stream_and_collect(unattended=True)`. A
+structured monitor wake runs its gate call under the same marker on every
+surface: `build_tool_gate(unattended=True)` for a Slack thread and for a
+messaging channel's `drive_turn` with a `MonitorWake`, and the wrapped gate call
+in the dashboard's `_run_chat(_directive_self_wake=True)`. The marker is
+`hooks.unattended_turn`, a ContextVar scoped to the one gate consultation. When the governance tier's own evaluation raises,
+`_governance_denial` records it through `audit_governance_degraded` (failed
+closed on an unattended turn, failed open otherwise, with the traceback logged)
+and then refuses the call on an unattended turn; on an attended turn it keeps
+"no governance opinion", so a transient fault never refuses an ordinary user
+action.
 
 There is no feature-local unattended refusal in `computer_use.gate` and no shipped
 `cu-off` profile bound to the unattended surfaces. Computer use has
@@ -2554,6 +2584,14 @@ refuses on an evaluation error. Edits and stream appends are checked too, so a
 channel withdrawn mid-turn gets no further content, and each refused write is
 audited (`slack.write`). A pure `!stop` stays exempt from the inbound check so a
 withdrawn channel can still halt its turn; its notices are withheld there.
+A code channel's id is unknown until Slack creates it, so before opening one the
+code-channel routing asks `channel_policy.new_channel_refusal`, which admits it
+only when the policy's patterns admit any id (`*`, `C*`); a list of explicit ids
+keeps the request in its thread (audited as a denied `slack.code_channel.create`),
+and the created id is checked again before the channel is bound. Every
+`agents.conversations.*` write that names a channel (`CodeChannelsClient._call`;
+the code-channel workspace's views and context bar) asks `channel_refusal`
+before it is sent, as the real client's posts do.
 
 `channels.posture.slack.allowed_enterprise_ids` (policy-only) is enforced in
 `slack.enterprise.validate_enterprise`: a workspace must satisfy the governance
@@ -2729,8 +2767,8 @@ switched off. Two fields keep that honest:
 only POSTURE — set `mode`, entry COUNTS (`allow_count`/`deny_count`),
 capability `enabled` + inner scope names, ordinal `floor` — and NEVER the rule
 CONTENTS (the allow/deny globs, command patterns). This is deliberate: the
-dashboard is reachable by the agent's own browser tooling (`playwright-cli attach
---extension` drives the user's authenticated Chrome), and `security_policy.json` /
+dashboard is reachable by the agent's own browser tooling (the `browser` tool
+drives the user's own Chrome through the gateway relay), and `security_policy.json` /
 `profiles` are on the `is_sensitive_path` keystone, so the agent's file tools refuse
 to read them and no sandbox mode lets the agent write them (they are OS read-only).
 They are still OS-readable by design, so posture-only serialization is
@@ -2810,8 +2848,8 @@ denials leave the same forensic trail.
   through the same effective-deny floor as `on_tool_call` is tracked as its own
   follow-up; do not describe computer-use governance as covering it.
 - **Raster capture has two channels and neither is governed.** Computer use has no
-  `observations` scope any more, and `playwright-cli screenshot` is a shell command
-  rather than a tool call, so an `mcp` deny cannot reach it at all. A fleet that
+  `observations` scope any more, and the `browser` tool's `screenshot` op sits
+  behind `capabilities.browse`, not behind computer-use governance. A fleet that
   means "no raster capture" must deny `@kirocrew-computer` via the `mcp` scope
   **and** the browser CLI via the `commands` scope.
 - **The `mcp`-scope deny is the only per-tool governance lever over computer use, and
@@ -2899,11 +2937,19 @@ materialised by narrowing the `acp_backends` registry at gateway start),
 (ordinal floor at `wrap_argv`), `approval_mode` (boot floor only), and every capability
 gate — `capabilities.spawn`, `capabilities.messaging`, `capabilities.cron`,
 `capabilities.memory_writes`, `capabilities.script_hooks`,
-`capabilities.browse` (the native `browser` MCP tool's dispatch chokepoint —
-default on; a deny makes the tool refuse outright, and it does NOT fall back to
-`playwright-cli`. The `playwright-cli` fallback path itself remains governed by
-the `commands` scope, so denying browsing wholesale means denying both this
-capability AND the `playwright-cli` command),
+`capabilities.browse` (default on; one deny turns the whole browser off. It is
+asked at the `browser` MCP tool's dispatch chokepoint in the shim, which never
+falls back to another driver, and again, fail-closed, in the gateway
+(`browser_harness/governance.py`): at every `/api/browser/*` route that drives,
+shows or installs the browser (the op route, takeover claim and input, "Open
+live", the replay, a quick ask's answer and poll, the hand-back poll, Settings'
+status, install and connect, and the startup auto-install), at the engine's own
+start and at every helper it runs, so a deny that lands mid-op ends it and stops
+the running browser. Only the routes that end something stay open under a deny
+(`input/release`, `live/close`, `browser/disconnect`). Every refusal is 403
+`policy_denied`; `GET /api/dashboard/config` reports the answer as
+`browse_enabled`, and Settings → Browser and the live card then show one policy
+line with no install or takeover control),
 `capabilities.publish` (artifact publish chokepoint — see below),
 `capabilities.agentcore` (opt-in agent workload identity + Gateway MCP —
 see below),
@@ -3677,10 +3723,28 @@ binary while adding a second thing that can be absent. The floor has to be the
 member with the fewest preconditions of its own; revisit if KAS ever ships a
 binary of its own.
 
-This describes today's code. The enterprise edition RFC
-([rfc-crew-enterprise-edition](../../request-for-change/rfc-crew-enterprise-edition.md),
-D6, 2026-11-02) makes KAS the floor and the baseline minimal set in an
-enterprise build; that code change is pending. The `oss` floor stays kiro-cli.
+That reasoning holds in an `oss` build. In an enterprise build the floor is KAS
+(`acp_backends.governance_floor_backend()`, the enterprise edition RFC
+[rfc-crew-enterprise-edition](../../request-for-change/rfc-crew-enterprise-edition.md)
+D6), and the baseline minimal set is `kas`, so the Kiro CLI harness needs a
+remote rule there. KAS now has a route of its own, Crew's engine bundle
+(`acp/kas_bundle.py`), which is the "binary of its own" the paragraph above
+waits for. A KAS proven unable to start on the route it would take refuses the
+gateway start when the main backend runs KAS, and otherwise refuses each
+gateway session whose resolved backend is KAS (`enterprise_boot.require_kas_harness`,
+`enterprise_boot.refuse_unstartable_kas`); no session the provider factory builds
+falls back to the Kiro CLI harness. An enterprise build has no automatic
+fallback to the Kiro CLI harness anywhere: the Kiro CLI harness runs only as an
+explicit pick (`agent.acp_backend` `"kiro"`) that the remote policy allows. Two
+runtimes outside the provider factory fall back to it in `oss` when their backend
+cannot serve them: the knowledge model pool, which never spawns KAS
+(`knowledge/llm_pool.py`), and Code Review Sage's shared review runtime for a
+backend it does not serve (`code_review_sage/sage_lib/review_pool.py`). In an
+enterprise build both refuse instead, before any process exists
+(`KnowledgeHarnessUnavailable`, `ReviewHarnessDenied`); Sage with no backend
+configured runs on the governed default, KAS, and refuses a KAS that boot proved
+cannot start. A background runtime whose `agent.acp_backend` cannot be read takes
+the build's floor, and refuses that KAS the same way.
 
 **Enforced by RECOMPUTING the registry, not by a per-decision read.** This is the
 one scope here whose answer is materialised instead of resolved at each decision.

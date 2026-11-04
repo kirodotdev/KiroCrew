@@ -274,12 +274,14 @@ class TestHealthyDrainUnchanged:
     @pytest.mark.asyncio
     async def test_send_error_still_delivers(self) -> None:
         client, proc = _client_with_stdin(stalled=False)
+        client._last_activity = 0.0
         await await_until(
             asyncio.ensure_future(client._send_error(3, -32601, "Method not found: x/y")),
             what="_send_error to resolve",
         )
         assert b'"code": -32601' in proc.stdin.write.call_args.args[0]
         proc.stdin.drain.assert_awaited_once()
+        assert client._last_activity > 0.0
 
     @pytest.mark.asyncio
     async def test_broken_pipe_mapping_survives_the_bound(self) -> None:
@@ -322,6 +324,7 @@ class TestHealthyDrainUnchanged:
                 await asyncio.sleep(0)
 
         client, proc = _client_with_stdin(stalled=False)
+        client._last_activity = 0.0
         proc.stdin.drain = AsyncMock(side_effect=_slow_drain)
         try:
             await await_until(
@@ -331,6 +334,7 @@ class TestHealthyDrainUnchanged:
         finally:
             watchdog.cancel()
         proc.stdin.drain.assert_awaited_once()
+        assert client._last_activity > 0.0, "a delivered rejection stamps activity"
 
 
 class TestRuntimeStalledDrainFailsFast:

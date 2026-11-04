@@ -280,6 +280,7 @@ function StorageEntryRow({ onOpen }: { onOpen: () => void }) {
         <div className="text-[11px] text-muted mt-0.5">
           {data
             ? i18nT('pages.performanceTab.session_storage_detail', {
+                count: data.total_sessions,
                 sessions: fmtNumber(data.total_sessions),
                 reclaimable: fmtBytes(data.reclaimable_bytes),
               })

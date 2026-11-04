@@ -1296,9 +1296,14 @@ A private member store is reachable on two authorities and no others:
   caller's own claim. The vouched identity is written only by
   `bind_session_execution`, which no session can reach, and only when the store it
   publishes was established independently of that record — a publication that
-  carries the owner over FROM the record, as a provider template switch or a
-  dashboard fork does, does not vouch for it, because vouching a value the session
-  chose would make the two sources one. Claiming it is OPT-IN: the default is not to
+  carries the owner over FROM the record, as a provider template switch does, does
+  not vouch for it, because vouching a value the session chose would make the two
+  sources one. A dashboard fork also copies its child's identity from the source's
+  record, so it vouches only on this gateway's own word about the source:
+  `source_vouch_agrees` answers yes when the source's in-memory vouch, or after a
+  restart its durable vouch copy while config still gives that member that store,
+  names the same member and store the child copied. A source record rewritten to a
+  peer's store disagrees with that word, so its fork publishes unvouched. Claiming it is OPT-IN: the default is not to
   vouch, so a binder that says nothing about provenance publishes the record and
   claims no authority, and a caller that should have claimed it fails loudly at a
   refused dispatch rather than quietly widening access. An owner's pick of a member
@@ -1335,11 +1340,15 @@ automatic: own-store dispatch self-heals at the next gate-verified admission, wh
 member DM key agrees with its record and the config, or the durable
 `vouched-executions/` copy agrees (`revouch_at_verified_admission`). Only when neither
 source agrees does a member session's worker dispatch keep answering
-`memory_delegation_denied`; the fallback is the owner re-selecting that member's agent
-on the slot, which binds afresh through the durable path and vouches again.
-Re-selecting the agent the slot already names is enough: the owner-facing switch
-records the selection with `replace`, so it re-binds rather than short-circuiting on an
-unchanged choice. Closing a tab is NOT such a trigger — a non-destructive close and an
+`memory_delegation_denied`; the fallback is the owner running the dispatch from their
+own chat tab, or starting a new chat with that member's agent and dispatching from
+there. A new member chat is vouched when it is created, because the vouching binder
+(`_pin_private_agent_assignment`) runs while a chat has no messages. Picking an agent
+again on the refused chat does not recover it: a different member is refused
+`member_session_pinned`, and the same agent is recorded through
+`record_agent_selection(replace=True)`, which re-publishes the record without vouching.
+The `session_create` tool reply names only the remedies that work
+(`_create_refusal_remedy`). Closing a tab is NOT such a trigger — a non-destructive close and an
 idle archive both retain a persistent session's vouch, because the conversation is
 recreated from the warm pool on resume and the turn-start rebind publishes nothing when
 the selection has not changed, so withdrawing there would charge a restart's refusal to
@@ -2508,6 +2517,14 @@ An idle session with few MCP servers is 0.6 GB; one with the usual MCP servers i
 Disk: a fresh `git clone --filter=blob:none` of the repository is 983 MB (356 MB of it `.git`), `website/node_modules` after `npm ci` is 869 MB, and an existing worktree's backend virtualenv is 430 MB (sizes from `du`): 2.3 GB for one self-contained worker. The default doubles that for build output, test temp files and repository growth.
 
 Why fixed defaults and not a peer-reported per-worker figure: a fixed default changes two numbers and no wire format, older peers and hubs agree on it, and the peer gate already reads live free memory and disk on every create, so a worker that outgrows the estimate shrinks the headroom the next create on that crew is checked against. A peer-reported average would add a reply field, sampling state on the peer and a trust question about a number the hub cannot check, for a ranking the peer gate overrides anyway.
+
+### Wave 8: retire and redispatch
+
+With the switch on, the conductor's `work_ledger_read` retires a remote binding whose crew this hub process has seen unreachable, on each read's own tunnel state and in the stored record, for longer than `work_ledger.remote_dispatch_retire_minutes` (default 30). `ingest_board` also runs from the hub's background puller (`dashboard/handlers/remote_puller.py`) with no conductor turn, so `_retire_overdue` can retire a binding, leave it `redispatch_due`, and close its old slot on reconnect, with nobody watching; the redispatch itself still waits for a turn the owner sends. With the switch off the puller never starts. The clock is monotonic and in memory: it starts at the first read after process start that sees the crew down, so a stored `crew_down_since` from before a restart, and time the host spent asleep, never count; a read that sees the crew `connected` or `connecting` stops it (`connecting` also clears `crew_down_since`). The retire is a recorded conductor write (action and event kind `retire`, `dashboard/handlers/remote_ingest.py` `_retire_overdue`, store `work_ledger.apply_remote_retire`): the pair moves into the item's `retired_bindings` (oldest first, at most 8: a `destroyed` entry is dropped first, a `retired` one never, so a ninth retire while all eight are `retired` is refused `retired_history_full` and the binding stays) with the worker's last `artifacts.branch`, the reason `crew_unreachable` and a stamp, and the item stays open and unbound. The item's remote record names the binding it describes (`RemoteState.binding`) and starts fresh after a retire, so a later binding is timed from its own crew and its reports are not held against the retired worker's last stamp: the report floor belongs to the binding (`RemoteState.report_floor`), never the item. A retired item with no readable record has no floor; only an item never retired falls back to its `last_report_at`. If that fresh record fails to store, the old one still names the retired pair and the item is fenced: nothing is ingested on it, a bind is refused `crew_retire_pending`, and each later read retries the store. A rebuild from the crew log keeps the history and the unbound pair.
+
+Only the current binding is read. Ingest pulls only the pair the item holds, so a report a retired worker files later, `done` included, is never applied. The retire drops the slot from the in-memory dispatch record (no peer call), so `send`, `read` and `stop` reach only the current binding and refuse a retired slot without reading the history (`crew_target_retired` when the history names it, else `crew_target_not_dispatched`), and the slot stops counting against its caller's crew-session cap. A retire that does not land puts the slot back for every caller that held it. Evict, write and restore run under the cap lock (`remote_dispatch_routes.cap_lock`), which a `session_create(crew=)` also takes for its cap check and for its record, so the cap never reads a record a retire is still settling. A `session_close(crew=)` of a retired slot is admitted only when the history can be read and holds it. When a retired binding's crew reads `connected` again, the read starts one close of the old slot (`DELETE api/chat/slots/{slot}`, its own task, so it never delays the read); a 2xx, or a 404 `slot_not_found`, records `destroy` and the entry reads `destroyed`. Each slot is tried once per hub process, never in a retry loop: a failed close leaves the entry `retired`, still close-only, and the owner's `session_close(crew=)` closes it and records `destroy` too.
+
+The read row of an item with retired bindings adds `redispatch_due` (open and unbound) and `retired_crews`, compact rows included. The redispatch is the conductor's own `session_create(work_item=)`, so it needs a turn the owner sent, as every crew create does: a patrol wake shows `redispatch_due` and cannot place. Placement skips every crew in `retired_crews`, and its reply carries `previous_branch`, the retired worker's last pushed branch, for the seed; the conductor names a new branch, so two workers never push to one. The peer half (replacing a closed worker on the same crew, removing an empty `hub:` mailbox list) is wave 8b.
 
 ## Configuration
 

@@ -265,6 +265,29 @@ describe('SkillsTab', () => {
     confirmSpy.mockRestore()
   })
 
+  it('a row picked while a delete is in flight stays open when the delete lands', async () => {
+    // The first read serves the list; later reads never answer, so the cache
+    // shows what the optimistic removal left rather than a refetch.
+    mockApi.skills.mockResolvedValueOnce([
+      { key: 'doomed', name: 'doomed', description: 'will go', source: 'kirocrew', loaded_by_agents: [] },
+      { key: 'second', name: 'second', description: 'two', source: 'kirocrew', loaded_by_agents: [] },
+      { key: 'third', name: 'third', description: 'three', source: 'kirocrew', loaded_by_agents: [] },
+    ]).mockImplementation(() => new Promise(() => {}))
+    let land!: (v: { ok: boolean }) => void
+    mockApi.deleteSkill.mockImplementation(() => new Promise(resolve => { land = resolve }))
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
+
+    renderWithQuery()
+    fireEvent.click(await screen.findByText('Delete'))
+    await waitFor(() => expect(mockApi.deleteSkill).toHaveBeenCalledWith('doomed'))
+    fireEvent.click(screen.getByText('Third'))
+    await waitFor(() => expect(screen.getByTestId('dir-browser')).toHaveAttribute('data-skill', 'third'))
+
+    await act(async () => { land({ ok: true }) })
+    expect(screen.getByTestId('dir-browser')).toHaveAttribute('data-skill', 'third')
+    confirmSpy.mockRestore()
+  })
+
   it('Edit button enters edit mode for kirocrew-sourced skills', async () => {
     mockApi.skills.mockResolvedValue([
       { key: 'editable', name: 'editable', description: 'fixme', source: 'kirocrew', loaded_by_agents: [] },

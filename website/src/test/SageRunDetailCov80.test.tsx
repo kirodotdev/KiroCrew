@@ -1,5 +1,7 @@
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+// `/all` for every catalog: `../i18n` registers English only.
+import { i18next } from '../i18n/all'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ReactNode } from 'react'
 
@@ -129,6 +131,23 @@ describe('RunDetail header', () => {
       ],
     })} />)
     expect(screen.getByText(/\+2 more/)).toBeInTheDocument()
+  })
+
+  it('counts the extra pull requests in the interface language', async () => {
+    await i18next.changeLanguage('de')
+    try {
+      render(<RunDetail run={makeRun({
+        repo: undefined,
+        changes: [
+          'https://github.com/zzzowner/zzzrepo/pull/7',
+          'https://github.com/zzzowner/zzzrepo/pull/8',
+          'https://github.com/zzzowner/zzzrepo/pull/9',
+        ],
+      })} />)
+      expect(screen.getByText(/\+2 weitere/)).toBeInTheDocument()
+    } finally {
+      await i18next.changeLanguage('en')
+    }
   })
 
   it('explains skipped in-flight pull requests when the backend refused duplicates', () => {

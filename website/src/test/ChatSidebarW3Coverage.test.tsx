@@ -143,6 +143,7 @@ Object.defineProperty(window, 'matchMedia', {
 
 import ChatSidebar from '../pages/ChatSidebar'
 import { RECENT_UNIT_MS, DEFAULT_RECENT_WINDOW_MS } from '../pages/recentWindow'
+import { stubAppConfirm } from './appConfirmStub'
 
 interface TestSlot {
   key: string
@@ -403,15 +404,14 @@ describe('ChatSidebar — list-view folder header', () => {
   })
 
   it('deletes the folder only once the confirm is accepted', async () => {
-    const confirmFn = vi.fn().mockReturnValue(false)
-    vi.stubGlobal('confirm', confirmFn)
+    const confirmFn = stubAppConfirm(false)
     renderSidebar()
     openFolderMenu('f1')
     fireEvent.click(screen.getByTestId('folder-delete-f1'))
-    expect(confirmFn).toHaveBeenCalledWith('Delete “Alpha”? Sessions will be ungrouped.')
+    expect(confirmFn).toHaveBeenCalledWith(expect.objectContaining({ body: 'Delete “Alpha”? Sessions will be ungrouped.' }))
     expect(mocks.deleteChatFolder).not.toHaveBeenCalled()
 
-    confirmFn.mockReturnValue(true)
+    confirmFn.mockImplementation(() => Promise.resolve(true))
     openFolderMenu('f1')
     fireEvent.click(screen.getByTestId('folder-delete-f1'))
     await waitFor(() => expect(mocks.deleteChatFolder).toHaveBeenCalledWith('f1'))
@@ -433,12 +433,11 @@ describe('ChatSidebar — list-view folder header', () => {
   })
 
   it('right-click deletes only through the same confirm as the ⋯ menu', async () => {
-    const confirmFn = vi.fn().mockReturnValue(true)
-    vi.stubGlobal('confirm', confirmFn)
+    const confirmFn = stubAppConfirm(true)
     renderSidebar()
     fireEvent.contextMenu(screen.getByRole('group', { name: 'Folder Alpha' }), { clientX: 40, clientY: 20 })
     fireEvent.click(screen.getByTestId('folder-delete-f1-ctx'))
-    expect(confirmFn).toHaveBeenCalledWith('Delete “Alpha”? Sessions will be ungrouped.')
+    expect(confirmFn).toHaveBeenCalledWith(expect.objectContaining({ body: 'Delete “Alpha”? Sessions will be ungrouped.' }))
     await waitFor(() => expect(mocks.deleteChatFolder).toHaveBeenCalledWith('f1'))
   })
 

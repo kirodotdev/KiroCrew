@@ -98,7 +98,7 @@ module imports the ACP layer. The rest lives in one owner per responsibility, lo
 | Owner | Owns |
 |---|---|
 | `config/loader_credentials.py` | Credential keys (`CRED_*`, `CREDENTIAL_KEYS`, named by [code-style](../common/code-style.md)), the `.env` reader and its decoder, `secret://` env resolution, the `kiro-cli` API-key injection, the dashboard port. |
-| `config/loader_locations.py` | The data-home and workspace path helpers (`config_path`, `config_local_path`, the per-feature state paths, `workspace_root`, `workspace_dir_from_entry`, `materialize_workspace_dir`) and `read_local_secret`. |
+| `config/loader_locations.py` | The data-home and workspace path helpers (`config_path`, `config_local_path`, the per-feature state paths, `workspace_root`, `workspace_dir_from_entry`, `materialize_workspace_dir`), `read_local_secret`, and `read_merged_config_files`, the raw read for a reader that stays off the dataclass graph: it merges `config.local.json` over `config.json` as whole documents, as the loader does, before any section is read. |
 | `config/loader_document.py` | Document I/O: `_raw_config`, `read_config_for_update`, the publish floor, `write_config_atomically`, `update_config_locked` and its lock, the meta stamp, the unsandboxed-exec policy and `acp_backend_declared` read from the raw document, and the validated-document cache fingerprint. The config-writer scans exempt it with `loader_config.py` (`save`). |
 | `config/write_provenance.py` | The record of the latest `config.json` / `config.local.json` inode this gateway process published (read from the staged descriptor, held open), with its per-process nonce, read by the Linux launcher's pin (security.md). Written by `write_config_atomically`; logs under `kiro_crew.config.loader`. |
 | `config/loader_builders.py` | The load-time field readers, the security clamp and its SEL event, the agent, session, telemetry and dashboard `_build_*` helpers, the harness-choice mapping (`_read_backend_choice`, `_stored_agent_dict`, `_restore_stored_harness_fields`), and the loop-stall and managed-launch readers. |
@@ -1759,8 +1759,7 @@ a present value the reader cannot use takes the reader's value:
   `dashboard.tailscale.pin_scope`, `auto` for an unknown `agent.jail`, `false` for
   a present non-boolean `agent.dangerously_skip_permissions` (never a grant),
   `per-channel-peer` for an unknown `messaging.dm_scope` (never one session for
-  two people's DMs), and unset (`0`) for a malformed or out-of-range
-  `dashboard.browser_view_port` (never a port nobody named).
+  two people's DMs).
 - `None` for an out-of-domain `resource_limits` value, and `local` for a retired
   `stt.provider` (the recogniser that user already had).
 - The sentinel a clamp lands on, among them automatic for a negative
@@ -3170,11 +3169,13 @@ that constant is what has to rise instead. Because the key's help text is the
 only statement of this an operator reads, `test_config_baseline.py` pins the
 sentence against that arithmetic rather than leaving it to review;
 `initialize_timeout_secs` (10) bounds a fresh backend's first
-`initialize` and is threaded onto each `Backend` as a constructor field (on Windows the
-effective deadline is floored to 30 s by `_WINDOWS_INITIALIZE_TIMEOUT_FLOOR_SECS` through
-`_effective_initialize_timeout_secs`, since a Windows cold start routinely overruns the
-POSIX-measured 10 s default and would otherwise be reaped and respawned; a configured
-value already above the floor and every POSIX host are unchanged);
+`initialize` and is threaded onto each `Backend` as a constructor field (on every
+platform the effective deadline is floored to 30 s by
+`_INITIALIZE_TIMEOUT_COLD_START_FLOOR_SECS` through `_effective_initialize_timeout_secs`:
+right after a daemon restart several backends cold-start at once and take 13-15 s, and a
+Windows cold start can overrun 10 s alone, so a 10 s deadline reaps backends that were
+about to answer; a configured value already above the floor is unchanged, and the spawn
+gate's initialize watcher and its slow-init fraction read the same effective value);
 `host_budget_max_procs` / `host_budget_max_rss_mb` / `host_budget_max_fds` (all
 0) cap what the host budget admits across pooled, private and fallback
 backends, where `0` means derive from the available-memory sample the gateway
@@ -3397,6 +3398,13 @@ class SkillsConfig:
     max_triggered: int = 0         # max skills loaded per message (>=0)
     lazy_load: bool = True         # true (default) = bounded usage-ranked index with paths and a families line; false = short eight-name skill_search entry; neither expands background admission
     # ... auto_create_from_sessions / auto_refine_on_deviation / extra_paths
+
+@dataclass
+class BrowserConfig:               # config/sections_browser.py; Settings -> Browser writes it via PATCH /api/config/kirocrew
+    choice: str = "auto"           # "auto" | "user_chrome" | "kiro_chromium" | "headless"; any other value reads as "auto" with one warning per process (browser_choice_resolution)
+    live: BrowserLiveConfig        # enabled=True, quality="auto"|"high"|"medium"|"low", max_fps=60 (15|30|60; a digit string is accepted; a bool or junk reads as 60), mask_passwords=True; the screencast reads them when a stream starts
+    credentials: BrowserCredentialsConfig  # enabled: bool | None = None (None follows the edition provider's default), domains: list[str] = [] (lowercase host names, at most 64; [] follows the provider's default); read by the supervisor at each Kiro Chromium start and before each agent navigation
+    # The Preview tab's allowlist is dashboard.browser_local_origins (DashboardConfig): PATCH-editable as a str_list of at most BROWSER_LOCAL_ORIGINS_MAX (32) `host:port` loopback entries matching BROWSER_LOCAL_ORIGIN_PATTERN; the loader's coerce_browser_local_origins drops anything else and caps the list at the same count.
 
 @dataclass
 class TelemetryConfig:

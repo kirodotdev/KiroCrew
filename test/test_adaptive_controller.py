@@ -885,7 +885,8 @@ class TestSubagentManagerSeam:
         mgr.spawn = MagicMock(return_value=None)  # type: ignore[method-assign]
         mgr._emit_queue_depth = MagicMock()  # type: ignore[method-assign]
         mgr._queue.append({"task": "queued work", "parent_session_key": "p", "batch_id": ""})
-        mgr.set_effective_cap(3)
+        assert mgr.set_effective_cap(3) == 3
+        assert list(mgr._queue) == []
         mgr.spawn.assert_called_once()
         assert mgr.spawn.call_args.kwargs["_from_queue"] is True
 

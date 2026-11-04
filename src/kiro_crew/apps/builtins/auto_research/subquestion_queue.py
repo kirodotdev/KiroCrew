@@ -31,7 +31,7 @@ import re
 import uuid
 from pathlib import Path
 
-from kiro_crew.atomic_write import read_json_or
+from kiro_crew.atomic_write import atomic_write, read_json_or
 
 QUEUE_FILENAME = "subquestion_queue.json"
 _WS_RE = re.compile(r"\s+")
@@ -214,9 +214,12 @@ def load_queue(campaign_dir: Path) -> dict:
 
 
 def save_queue(campaign_dir: Path, queue: dict) -> None:
-    """Atomically persist the queue to the campaign dir."""
+    """Atomically persist the queue to the campaign dir.
+
+    Through ``atomic_write``, whose unique temp name keeps two writers of the
+    same campaign from sharing one staging file and whose rename retries the
+    Windows sharing-violation window.
+    """
     p = Path(campaign_dir) / QUEUE_FILENAME
     p.parent.mkdir(parents=True, exist_ok=True)
-    tmp = p.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(queue, indent=2), encoding="utf-8")
-    tmp.replace(p)
+    atomic_write(p, json.dumps(queue, indent=2))

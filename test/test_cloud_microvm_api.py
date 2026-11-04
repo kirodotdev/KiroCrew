@@ -14,6 +14,7 @@ the lane says, and the only local way to check what it says is to read it.
 
 from __future__ import annotations
 
+import logging
 import os
 import pathlib
 
@@ -842,12 +843,16 @@ class TestDeleteSecret:
         assert _value_after(argv, "--secret-id") == "kc/abc"
         assert "--force-delete-without-recovery" not in argv
 
-    def test_a_failure_is_swallowed_so_the_teardown_continues(self, monkeypatch):
+    def test_a_failure_is_swallowed_so_the_teardown_continues(self, monkeypatch, caplog):
         def fake(args, profile="", region="", *, action="", timeout=0, visible_dirs=()):
             raise RuntimeError("boom")
 
         monkeypatch.setattr(api, "checked_json", fake)
-        api.delete_secret("kc/abc", region="us-east-1")
+        with caplog.at_level(logging.WARNING, logger=api.logger.name):
+            api.delete_secret("kc/abc", region="us-east-1")
+        # The failure is logged by its type alone: the secret's name stays out.
+        logged = [r.getMessage() for r in caplog.records if r.name == api.logger.name]
+        assert logged == ["could not delete a crew secret: RuntimeError"]
 
 
 class TestCredentialsAreStagedUnderTheMaskedRoot:

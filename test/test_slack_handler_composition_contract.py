@@ -39,6 +39,11 @@ from kiro_crew._facade_compose import compose as facade_compose
 from kiro_crew.slack import handler, handler_runtime
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
+# One worker per file, so the shared checks run beside the tests that load this module.
+pytestmark = pytest.mark.xdist_group(name="slack_handler_composition_contract")
+
+SHARED_FACADE_CHECKS = ("the_owner_set_is_the_package",)
+
 # ── the surface ───────────────────────────────────────────────────────────────
 
 #: Every module-level name ``handler.py`` bound at the base this split was cut from:
@@ -228,8 +233,12 @@ _SPLIT_HELPERS: dict[str, str] = {
 
 #: SHA-256 of the sorted ``"<name> <kind> <signature>"`` lines of every moved name,
 #: captured from the one-module file before the split, less the two reaction-trail
-#: names deleted with the trail (``_add_phase_reaction``, ``_tool_to_phase``).
-_BASE_SHAPE_DIGEST = "4345ad1233f0afb979e1c8be4f5ae174bbde211628f8b610ef3f3e4959caf2eb"
+#: names deleted with the trail (``_add_phase_reaction``, ``_tool_to_phase``), with
+#: ``user_meta`` on ``maybe_route_linked_thread`` (the user row's meta a code
+#: channel passes), ``turn_context`` on it too (a pinned action answer's payload),
+#: and ``post_linked_approval``'s ``thread_ts`` widened to ``str | None`` (a code
+#: channel's own session posts its approval card top-level).
+_BASE_SHAPE_DIGEST = "9c2096ea9679a75df7a69af2454821e3afa1d412ec754742dcaa93f3e311cfea"
 
 #: Definitions that stay in the facade file, each because a repository guard, a
 #: contract or the import-time body reads it there. The reason per entry is in
@@ -433,10 +442,6 @@ def test_every_name_a_production_module_imports_from_the_facade_resolves() -> No
 
 
 # ── the composition ───────────────────────────────────────────────────────────
-
-
-def test_the_owner_set_is_the_package() -> None:
-    assert {info.name for info in pkgutil.iter_modules([str(_OWNER_DIR)])} == set(_BASE_OWNERS)
 
 
 def _shape(obj: object) -> str:

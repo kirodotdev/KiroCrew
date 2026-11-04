@@ -110,12 +110,9 @@ def test_listing_agrees_with_the_call_gate_from_one_predicate() -> None:
 def test_unreadable_enablement_lists_the_tools(body: str) -> None:
     """A read fault lists rather than hides, as the policy filter does.
 
-    kiro-cli calls ``tools/list`` once per session and caches it, so hiding on a
-    transient fault would hide the tools for the session's whole life; the call
-    path still refuses while the app cannot be proven enabled, so a listed tool
-    that refuses is not a hole. The read may answer ``None`` or may raise; either
-    way the descriptor build survives it, because an exception escaping
-    ``tools/list`` would withdraw every tool of the pooled server.
+    kiro-cli caches ``tools/list`` per session, so hiding on a transient fault hides the
+    tools for the whole session; the call path still refuses. A raising read must not
+    escape ``tools/list``, which would withdraw every tool of the pooled server.
     """
     _write_installed("dev-fleet", enabled=True).write_text(body, encoding="utf-8")
     try:
@@ -129,12 +126,8 @@ def test_unreadable_enablement_lists_the_tools(body: str) -> None:
 def test_the_names_only_build_lists_the_declaration_without_reading(monkeypatch) -> None:
     """The names-only build never consults the gate, so it reads no enablement record.
 
-    ``build_tool_names`` is what in-process discovery reads on the gateway's event
-    loop, keeping only tool NAMES; it takes each domain's ``schemas()`` directly,
-    the same rule that keeps ``spawn.schemas`` and ``control.schemas`` from their
-    live reads on that path. Every app is installed and disabled here, so the full
-    build (the stdio server's answer to a model) and the names-only build differ
-    visibly: the first hides the app tools, the second still names them all.
+    ``build_tool_names`` runs on the gateway's event loop. Every app is installed and
+    disabled, so the full build hides the app tools and the names-only build lists them.
     """
     for name in APP_TOOLS:
         _write_installed(name, enabled=False)
@@ -190,11 +183,8 @@ def test_declaration_and_handlers_cover_every_app_tool_regardless_of_enablement(
 def test_tool_apps_name_the_apps_whose_routes_gate_the_calls() -> None:
     """``TOOL_APPS`` is spelled in literals; each must be the name the route reads.
 
-    The listing agrees with the call only if both read the same ``installed.json``,
-    and the file is found by the app's installed name -- so a literal that drifts
-    from the app's own ``APP_NAME`` would gate the listing on a record the route
-    never consults. A declared tool's app is pinned to the manifest name its
-    package directory is installed under, which is what the app reverse proxy reads.
+    ``installed.json`` is found by installed name, so a literal that drifts from the
+    app's ``APP_NAME`` would gate the listing on a record the route never reads.
     """
     from kiro_crew.apps import builtins
     from kiro_crew.apps.builtins.dev_fleet import agent_pod_api

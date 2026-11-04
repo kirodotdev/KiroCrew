@@ -181,6 +181,27 @@ changed and whether only their identity did, or a parent re-render). Run one
 scenario with `node scripts/bench-render.mjs --scenario s2 --runs 1` after the
 first build; `--viewport mobile --cpu 4` approximates a phone.
 
+The benchmark hooks into the store through `window.__kcPerfMw` (a middleware
+that counts dispatches) and `window.__kcSelWrap` (a wrapper around every
+`useAppSelector` selector), read in `src/store/index.ts`. Only the profiling
+build defines `VITE_KC_PERF`, so other builds drop both seams.
+
+CI runs the same command in the `bench-render` job when a diff touches
+`website/src/**` or the benchmark's own files, on the `kirocrew-linux-4-core`
+runner the budgets were measured on, and uploads the JSON report as the
+`bench-render-report` artifact. The job is report-only for now
+(`continue-on-error`): an overrun reddens its own check but blocks no merge.
+Take new budgets from that report's per-run
+counts, not from a local run. Commits and renders depend on the host: a slower
+one batches more frames per commit and counts fewer, a faster one counts more.
+So the kirocrew-prepare-pr gate floor, which runs the benchmark when the diff
+touches the same inputs, passes `--fail-on dispatches,selectorCalls`. Those two
+follow the frames sent, so they mean the same on any host; commits and renders
+are printed as report only. A counter listed in a scenario's
+`report` array varies between runs on the runner by more than the tolerance; it
+is printed but never fails the job. Today that is `s1x5` selector calls, which
+follow how the five streams' frames batch into dispatches.
+
 ## CI gates
 
 - **jscpd** duplication check: copy-pasted code fails the build.
@@ -516,6 +537,22 @@ Six more CI reds (#17237) added two shapes to the ones above:
   (`MISSING_FILE_RETRY_MS`, `RUNTIME_POLL_MS`, `CACHE_WARM_BOUND_MS`), never a literal
   that silently stops matching when the value changes. Every case starts from reset
   mocks and restored window stubs, so a file never passes only in file order.
+- **A placeholder row is not a settled search.** `FilePickerMenu` keeps the PREVIOUS
+  payload's rows on screen (`placeholderData`) while a re-rooted query is in flight,
+  and a row's rendered name is root-independent, so `findByText('main.ts')` resolves
+  on the stale rows and a click there relativizes against the OLD root. Waiting for
+  the mock to have been CALLED, or for its promise plus a `setTimeout(0)`, is a timing
+  barrier, not a state one. The listbox is `aria-busy` exactly while the fetch is in
+  flight; wait for the re-rooted call AND for `aria-busy` to clear
+  (`pickerSettledFor` in `ChatPage.dirStaging.test.tsx`).
+- **A one-shot init effect is a latch that lags its source.** `SttSettings` seeded
+  its editable rows and the custom-model intent from the served config in an effect,
+  so the commit that first showed the model select was one frame short of the
+  explanation the config implied, and a `getBy` right after `waitFor(select)` read
+  `null`. The seed now runs during render (React's set-state-during-render shape, which
+  re-renders before committing), and a `<Profiler onRender>` probe pins that the first
+  commit with the select already carries the explanation. Derive what a value implies
+  in the render that has it; an effect is for work the DOM must exist for.
 
 ## Manual procedures
 

@@ -243,12 +243,39 @@ def data_home() -> Path:
     return Path(env) if env else Path.home() / ".kiro" / "crew"
 
 
+#: Attempts at the final rename on Windows, and the pause between them. The
+#: script is stdlib-only, so this is a small inline twin of
+#: ``kiro_crew.atomic_write.replace_with_retry`` rather than an import of it.
+_REPLACE_ATTEMPTS = 5
+_REPLACE_BACKOFF_SECONDS = 0.05
+#: Only Windows refuses to replace a file another handle has open.
+_ON_WINDOWS = os.name == "nt"
+
+
+def _replace(tmp: str, path: Path) -> None:
+    """``os.replace``, retrying while another handle holds the file on Windows.
+
+    On Windows a rename onto a file that an indexer, an AV scan or a reader has
+    open fails with ``PermissionError`` for as long as that handle lives. On
+    POSIX the same error is genuine, so it is raised at once.
+    """
+    for _ in range(_REPLACE_ATTEMPTS - 1):
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError:
+            if not _ON_WINDOWS:
+                raise
+            time.sleep(_REPLACE_BACKOFF_SECONDS)
+    os.replace(tmp, path)
+
+
 def _atomic_write(path: Path, payload: str) -> None:
     fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=path.name + ".")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             fh.write(payload)
-        os.replace(tmp, path)
+        _replace(tmp, path)
     except BaseException:
         try:
             os.unlink(tmp)

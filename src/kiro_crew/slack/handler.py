@@ -61,8 +61,10 @@ from kiro_crew.config.loader import (  # noqa: F401 - read by the owners
     KIRO_CLI_BUILTIN_AGENTS,
     ConfigReadError,
     KiroCrewConfig,
+    config_local_path,
     config_path,
     read_config_text,
+    read_merged_config_files,
     update_config_locked,
 )
 from kiro_crew.config.paths import kiro_agents_dir, peek_data_home
@@ -324,6 +326,7 @@ from kiro_crew.slack.handler_runtime.finalize import (  # noqa: F401
     build_timing_footer,
 )
 from kiro_crew.slack.handler_runtime.inbound import (  # noqa: F401
+    LinkedRoute,
     _apply_privacy_mode,
     _get_agent_for_session,
     _get_default_agent,
@@ -344,6 +347,7 @@ from kiro_crew.slack.handler_runtime.inbound import (  # noqa: F401
     maybe_apply_privacy_modifiers,
     maybe_route_linked_thread,
     read_link_record,
+    route_linked_thread,
 )
 from kiro_crew.slack.handler_runtime.permission_ladder import (  # noqa: F401
     _answer_permission_request,
@@ -930,6 +934,7 @@ async def handle_message(
     spool_attachments: int = 0,
     _compaction_replay: _CompactionReplay | None = None,
     start_priority: StartPriority = StartPriority.BACKGROUND,
+    user_meta: dict[str, Any] | None = None,
 ) -> None:
     """Route a Slack message through ACP with streaming and tool approval.
 
@@ -1053,6 +1058,7 @@ async def handle_message(
         spool_attachments=spool_attachments,
         _compaction_replay=_compaction_replay,
         start_priority=start_priority,
+        user_meta=user_meta,
         _t0=_t0,
         reply_ts=reply_ts,
         session_key=session_key,

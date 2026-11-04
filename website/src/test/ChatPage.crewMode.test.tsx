@@ -227,18 +227,17 @@ describe('Ultra Mode on ChatPage', () => {
     expect(screen.getByTestId('crew-worker-header').querySelector('.crew-grad-text')).toBeNull()
   })
 
-  it('opens a worker like a session: a plain breadcrumb and no header Back button', async () => {
+  it('opens a worker like a session: the root crumb is the way back, no separate Back button', async () => {
     const store = await renderWith({ messages: [{ role: 'user', content: 'do part 2' }], agent: 'kirocrew-worker', agentKind: 'template', createdBy: 'root-1', crewRoot: 'root-1', slotKeys: ['slot-a', 'root-1'] })
     const crumb = screen.getByTestId('crew-worker-breadcrumb')
     expect(crumb).toHaveTextContent('Sample goal')
     expect(crumb).toHaveTextContent('Worker B')
     expect(screen.getByTestId('crew-steer-composer')).toBeInTheDocument()
-    // Owner ruling: the one way back is the Crew tab's "Back to main chat" bar,
-    // so the header has no Back button of its own.
-    expect(within(crumb).queryByRole('button')).toBeNull()
+    // The root crumb is the header's only control; there is no Back button beside it.
+    expect(within(crumb).getAllByRole('button')).toEqual([within(crumb).getByRole('button', { name: 'Back to Sample goal' })])
     expect(screen.queryByTestId('crew-back-to-conductor')).toBeNull()
     expect(screen.queryByText(/Back to conductor/)).toBeNull()
-    await act(async () => { openCrewSession(store.dispatch, 'root-1', true) })
+    await act(async () => { fireEvent.click(within(crumb).getByRole('button', { name: 'Back to Sample goal' })) })
     await waitFor(() => expect(store.getState().chat.activeSlot).toBe('root-1'))
   })
 

@@ -334,6 +334,7 @@ from kiro_crew.platform_compat import get_process_start_id as _get_process_start
 from kiro_crew.platform_compat import pid_exists as _pid_exists  # noqa: F401
 from kiro_crew.platform_compat import proc_rss_bytes as _proc_rss_bytes  # noqa: F401
 from kiro_crew.platform_compat import process_start_time as _process_start_time
+from kiro_crew.platform_compat_offloop_spawn import gateway_loop_factory
 from kiro_crew.sandbox import warm_backend  # noqa: F401
 from kiro_crew.sandbox import (
     CANONICAL_TEMP_KEYS,
@@ -458,25 +459,15 @@ async def run_gatewayd(
             4-tuple ``(command, args, env, work_dir)``. Pass ``None`` to
             use the default :func:`env_target_resolver`. Tests supply a
             custom resolver to avoid coupling to environment variables.
-        prewarm_count: Number of hottest observed PoolKeys to spawn at
-            startup before the first stub connects, closing the
-            cold-after-restart / cold-after-idle new-chat latency gap. The
-            list of hot keys is learned from prior registers and persisted
-            beside the socket in ``hot-keys.json``. ``0`` (default) disables
-            prewarming entirely — no file is read or written, no extra task
-            runs. Clamped to ``max_backends - 1`` if set at or above pool
-            capacity, since prewarmed backends are pinned and would otherwise
-            leave no reclaimable slot for a live, non-warm session.
-        credential_watch_paths: Credential files to watch for content
-            changes. On a real rotation (content digest change — a no-op
-            rewrite with identical bytes never fires), ALL pooled backends
-            are drained via a blue-green cutover so they respawn with the
-            fresh credential, then the warm pool is re-warmed. ``None`` or
-            empty (the public default) creates no watcher task — the run
-            flow is byte-identical to the pre-watcher daemon. The paths are
-            caller-supplied (typically threaded through the seam-resolved
-            ``--credential-watch-path`` argv flags); the daemon never
-            hardcodes or interprets any credential path.
+        prewarm_count: Number of hottest observed PoolKeys (persisted in
+            ``hot-keys.json`` beside the socket) to spawn at startup. ``0``
+            (default) disables prewarming and its file I/O. Clamped to
+            ``max_backends - 1``, since prewarmed backends are pinned and
+            would leave no reclaimable slot.
+        credential_watch_paths: Credential files to watch. A content-digest
+            change drains ALL pooled backends via blue-green cutover so they
+            respawn with the fresh credential, then re-warms. ``None`` or
+            empty creates no watcher. The daemon never interprets the paths.
         spawn_concurrency: Daemon-wide number of backend spawn+initialize
             windows allowed in flight at once (the :class:`SpawnGate`
             capacity); ``spawn_concurrency_min`` / ``_max`` clamp it and are
@@ -997,16 +988,13 @@ async def _acquire_backend(
     """Return ``(backend, was_spawned)`` for ``pool_key`` — spawning one via
     the resolver if absent.
 
-    ``was_spawned`` is ``True`` iff THIS call actually created a new
-    subprocess (the ``_spawn`` closure ran), ``False`` on a pool reuse. It is
-    set inside ``pool.get_or_create`` under the per-key create lock, so it is
-    the authoritative, race-free signal of a real spawn — callers can gate a
-    spawn-only SEL audit on it without a racy ``pool.get()`` pre-check.
+    ``was_spawned`` is ``True`` iff THIS call created a new subprocess. It is
+    set under the per-key create lock, so callers can gate a spawn-only SEL
+    audit on it without a racy ``pool.get()`` pre-check.
 
-    ``exclusive_stub_uuid`` non-empty routes to a backend bound to that
-    connection alone: no reuse lookup, no pooling capacity budget, and released
-    when the connection ends. ``was_spawned`` is then always ``True``, because a
-    private backend has nothing to reuse by construction.
+    ``exclusive_stub_uuid`` non-empty routes to a backend private to that
+    connection (no reuse, no pool capacity budget, released when the
+    connection ends); ``was_spawned`` is then always ``True``.
 
     ``declaring_agent`` is the agent named on this connection's Register frame.
     It is NOT part of pool identity -- it never reaches ``pool_key`` -- and is
@@ -1025,19 +1013,14 @@ async def _acquire_backend(
     a pooled backend -- a resident pool slot. Each is released in reverse on any
     failure before the fork.
 
-    The GATE first, and only then the budget: the gate is the one step that
-    waits, and a waiter that already held a charge would be charging the host for
-    a process that does not exist for as long as it waited -- so a queue of ten
-    reaches the ceiling with nothing running, and the eleventh stub is refused
-    ``capacity`` on an idle host, which authorises no fallback. The budget answers
-    without waiting, so taking it after the permit means it is read against what
-    the host carries at the moment of the fork.
+    The GATE comes before the budget because the gate waits: a queued waiter
+    holding a charge would bill the host for a process that does not exist, and
+    a queue could exhaust the budget on an idle host.
 
-    After the fork the charge follows the process
-    (released when it is reaped) and the permit follows the first
-    ``initialize`` (released by a detached watcher), except under ``prewarm``,
-    where the permit settles neutral at once: nothing will initialise a warm
-    backend until a stub attaches.
+    After the fork the charge is released when the process is reaped and the
+    permit after the first ``initialize``, except under ``prewarm``, where the
+    permit settles at once (no one initialises a warm backend until a stub
+    attaches).
 
     Raises :class:`_TargetUnknown` when the resolver has no mapping for the
     server (a clean rejection, not a crash); :class:`HostBudgetExhausted`,
@@ -1461,7 +1444,8 @@ def main() -> None:
     ensure_data_home()
     _prepare_telemetry()
     try:
-        rc = asyncio.run(_amain())
+        # Windows: every spawn on this loop builds its child off-loop.
+        rc = asyncio.run(_amain(), loop_factory=gateway_loop_factory())
     except KeyboardInterrupt:
         rc = 0
     sys.exit(rc)

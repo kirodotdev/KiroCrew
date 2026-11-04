@@ -63,6 +63,8 @@ from typing import IO, Callable
 
 from aiohttp.multipart import BodyPartReader
 
+from kiro_crew.atomic_write import replace_with_retry
+
 #: Bytes buffered before the signature predicate is consulted. Every container
 #: signature the callers check lives well inside this window (the MP4 family's
 #: ``ftyp`` box ends at 12, EBML's magic is 4, PNG's is 8).
@@ -170,7 +172,7 @@ class _TempSink:
         """
         assert self.sink is not None
         self.sink.close()
-        os.replace(self.tmp, self.dest)
+        replace_with_retry(self.tmp, self.dest)
         self.committed = True
 
 

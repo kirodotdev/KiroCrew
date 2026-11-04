@@ -12,6 +12,7 @@ import time
 import uuid
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.agent_sdk.drivers.acp_vocab import EngineFallbackWalk
 from kiro_crew.dashboard.poisoned_escalation import PoisonedConversationEscalation
 from kiro_crew.dashboard.state import SUBAGENT_SYNTHESIS_PROMPT, row_mid
 from kiro_crew.llm_helpers import _NO_PRIOR_STATS
@@ -452,8 +453,6 @@ async def _turn_open(turn: _ChatTurn) -> _Flow | None:
     # object must hold it before the cut is published on the slot. Nothing touches it
     # between here and the flag block.
     turn._produced_visible_output = False
-    last_heartbeat = time.time()
-    turn.last_heartbeat = last_heartbeat
     # Continues the slot's counter rather than starting at 0: seqs are ordered
     # across turns so a client floor from an earlier turn sits below every
     # chunk of this one (see _ChatSlot._chunk_seq).
@@ -935,6 +934,10 @@ async def _turn_open(turn: _ChatTurn) -> _Flow | None:
     # teardown before that, so it must be bound up front.
     _stop_reason = ""
     turn._stop_reason = _stop_reason
+    # The engine's own fallback hops this turn (acp/engine_fallback.py). Bound up
+    # front for the same reason: _run_chat's finally ends the walk with a notice.
+    _engine_fallback_walk = EngineFallbackWalk()
+    turn._engine_fallback_walk = _engine_fallback_walk
     # Replay settlement also lives in _turn_settle_debts. Bind at turn scope because
     # config, binding and session-start failures can reach teardown before the
     # acquisition block in _turn_admit determines whether replay is pending.

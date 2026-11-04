@@ -216,13 +216,15 @@ function DailyTrend({ rows }: { rows: { date: string; count: number; cold_p50_ms
               date: r.date,
               cold: fmtMs(r.cold_p50_ms),
               warm: fmtMs(r.warm_p50_ms),
-              count: fmtNumber(r.count),
+              count: r.count,
+              n: fmtNumber(r.count),
             })}
             title={i18nT('pages.telemetryPanel.daily_trend_point', {
               date: r.date,
               cold: fmtMs(r.cold_p50_ms),
               warm: fmtMs(r.warm_p50_ms),
-              count: fmtNumber(r.count),
+              count: r.count,
+              n: fmtNumber(r.count),
             })}
           >
             <span className="block w-full rounded-t-sm" style={{ height: `${cold}%`, background: 'var(--accent)' }} />

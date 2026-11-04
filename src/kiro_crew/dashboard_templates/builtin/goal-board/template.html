@@ -98,14 +98,17 @@
           empty: 'No item on this board yet.',
           needs_you: 'Needs you', calm: 'Nothing needs you right now.',
           done_of: '{d} of {n} accepted', running: '{n} in progress', waiting: '{n} need you',
-          parked: '{n} waiting', stalled_n: '{n} stalled',
+          parked: '{n} waiting', quiet_n: '{n} quiet', stuck_n: '{n} stuck',
           reason_approval: 'approval', reason_needs_human: 'needs a person',
           reply: '\u270e Write a reply', option: '\u270e {o}', option_title: 'Puts this in your chat box to check and send',
           next_approval: 'Approve the tool on its approval card in chat. Writing a reply does not approve it.',
           status_progress: 'progress', status_done: 'reported done', status_question: 'has a question',
-          status_blocked: 'is stuck',
-          state_needs_you: 'needs you', state_working: 'working', state_waiting: 'waiting', state_stalled: 'stalled',
-          state_with_conductor: 'waiting on conductor',
+          status_blocked: 'is blocked',
+          state_needs_you: 'needs you', state_working: 'working', state_waiting: 'waiting', state_quiet: 'quiet', state_stuck: 'stuck',
+          state_with_conductor: 'waiting on conductor', pill_waiting_pr: 'waiting on PR {n}',
+          pill_stuck: 'stuck \u00b7 no chat to resume it',
+          pill_stuck_unread: 'stuck \u00b7 the main chat closed, reopen it so its reports are read',
+          pill_quiet: 'quiet \u00b7 nothing is scheduled to wake it',
           about: 'About "{t}" ({id}): ',
           fills_chat: 'Buttons fill your chat box. Nothing sends until you press send.',
           state_open: 'open', state_accepted: 'accepted', state_rejected: 'rejected',
@@ -122,15 +125,18 @@
           empty: '\u770b\u677f\u4e0a\u8fd8\u6ca1\u6709\u4efb\u4f55\u4e8b\u9879\u3002',
           needs_you: '\u9700\u8981\u4f60', calm: '\u73b0\u5728\u6ca1\u6709\u9700\u8981\u4f60\u5904\u7406\u7684\u4e8b\u3002',
           done_of: '{d} / {n} \u5df2\u63a5\u53d7', running: '{n} \u8fdb\u884c\u4e2d', waiting: '{n} \u9700\u8981\u4f60',
-          parked: '{n} \u7b49\u5f85\u4e2d', stalled_n: '{n} \u505c\u6ede',
+          parked: '{n} \u7b49\u5f85\u4e2d', quiet_n: '{n} \u65e0\u52a8\u9759', stuck_n: '{n} \u5361\u4f4f',
           reason_approval: '\u7b49\u5f85\u6279\u51c6', reason_needs_human: '\u9700\u8981\u4eba\u5de5',
           fills_chat: '\u6309\u94ae\u53ea\u4f1a\u586b\u5165\u4f60\u7684\u804a\u5929\u6846\u3002\u4f60\u6309\u53d1\u9001\u524d\u4e0d\u4f1a\u53d1\u51fa\u3002',
           reply: '\u270e \u5199\u56de\u590d', option: '\u270e {o}', option_title: '\u586b\u5165\u4f60\u7684\u804a\u5929\u6846\uff0c\u68c0\u67e5\u540e\u518d\u53d1\u9001',
           next_approval: '\u8bf7\u5728\u804a\u5929\u91cc\u7684\u6279\u51c6\u5361\u7247\u4e0a\u6279\u51c6\u8be5\u5de5\u5177\u3002\u5199\u56de\u590d\u4e0d\u4f1a\u6279\u51c6\u5b83\u3002',
           status_progress: '\u8fdb\u5c55', status_done: '\u5df2\u62a5\u544a\u5b8c\u6210', status_question: '\u6709\u95ee\u9898',
-          status_blocked: '\u88ab\u5361\u4f4f',
+          status_blocked: '\u53d7\u963b',
           state_needs_you: '\u9700\u8981\u4f60', state_working: '\u5de5\u4f5c\u4e2d', state_waiting: '\u7b49\u5f85\u4e2d',
-          state_stalled: '\u505c\u6ede', state_with_conductor: '\u7b49\u5f85\u534f\u8c03\u8005',
+          state_quiet: '\u65e0\u52a8\u9759', state_stuck: '\u5361\u4f4f', state_with_conductor: '\u7b49\u5f85\u534f\u8c03\u8005',
+          pill_waiting_pr: '\u7b49\u5f85 PR {n}', pill_stuck: '\u5361\u4f4f \u00b7 \u6ca1\u6709\u53ef\u7ee7\u7eed\u7684\u804a\u5929',
+          pill_stuck_unread: '\u5361\u4f4f \u00b7 \u4e3b\u804a\u5929\u5df2\u5173\u95ed\uff0c\u91cd\u65b0\u6253\u5f00\u5b83\u5373\u53ef\u8bfb\u53d6\u6c47\u62a5',
+          pill_quiet: '\u65e0\u52a8\u9759 \u00b7 \u6ca1\u6709\u5b89\u6392\u4efb\u4f55\u4e8b\u5524\u9192\u5b83',
           about: '\u5173\u4e8e\u201c{t}\u201d\uff08{id}\uff09\uff1a',
           state_open: '\u8fdb\u884c\u4e2d', state_accepted: '\u5df2\u63a5\u53d7', state_rejected: '\u5df2\u62d2\u7edd',
           state_blocked: '\u53d7\u963b', state_abandoned: '\u5df2\u653e\u5f03', state_unknown: '\u672a\u77e5'
@@ -177,7 +183,8 @@
       var STATES = [
         ['needs_you', 'needs you', 'var(--warn, #ffd230)'],
         ['working', 'working', 'var(--accent, #00d492)'],
-        ['stalled', 'stalled', 'var(--danger, #ff5c5c)'],
+        ['stuck', 'stuck', 'var(--danger, #ff5c5c)'],
+        ['quiet', 'quiet', 'var(--warn, #ffd230)'],
         ['waiting', 'waiting', 'var(--muted-strong, #778)'],
         ['open', 'open', 'var(--accent, #00d492)'],
         ['accepted', 'accepted', 'var(--info, #6aa9ff)'],
@@ -211,17 +218,29 @@
 
       // What one item is doing, first match wins. A closed item shows its own state.
       // An open one NEEDS YOU only when its worker named a person (`reason`); a plain
-      // question or block waits on the conductor. WORKING, STALLED and WAITING read the
+      // question or block waits on the conductor. WORKING, STUCK and WAITING read the
       // host's `worker` (running / idle / closed) and `stale`, derived from the session
-      // key before the host masks it. A value without them keeps the old rule: an item
-      // that last reported progress is working.
+      // key before the host masks it. A stale item with no chat left to resume it is
+      // STUCK; a stale item whose chat is idle is QUIET (nothing is scheduled to wake
+      // it, but it can be resumed). The host's `orphaned` (the main chat closed, so no
+      // one reads its reports) makes an open report STUCK too, as the Crew panel does.
+      // A value without them keeps the old rule: an item that last reported progress
+      // is working.
+      // The host's `awaits_person`, when it sent one, is the Board's own test: it also
+      // drops an ask a person already answered (a decision, a steer, an approval
+      // answered in the worker's chat). A value without it keeps the old rule.
       function view(it) {
         var state = text(it.state) || 'unknown';
         if (state !== 'open') return state;
-        if ((it.status === 'question' || it.status === 'blocked') &&
-          (it.reason === 'approval' || it.reason === 'needs_human')) return 'needs_you';
+        if (typeof it.awaits_person === 'boolean' ? it.awaits_person :
+          ((it.status === 'question' || it.status === 'blocked') &&
+          (it.reason === 'approval' || it.reason === 'needs_human'))) return 'needs_you';
         if (it.worker === 'running') return 'working';
-        if (it.stale === true) return 'stalled';
+        if (it.orphaned === true && (it.status === 'progress' || it.status === 'blocked' ||
+          it.status === 'question')) return 'stuck';
+        // Stuck needs a worker that reported and then lost its chat; an item with no
+        // report may have no worker bound at all, which the host also calls closed.
+        if (it.stale === true) return it.worker === 'closed' && text(it.status) ? 'stuck' : 'quiet';
         if (it.worker === undefined && it.status === 'progress') return 'working';
         return 'waiting';
       }
@@ -369,17 +388,18 @@
         var done = document.getElementById('done');
         var you = document.getElementById('you');
         if (!done || !you) return;
-        var acc = 0, run = 0, park = 0, stuck = 0, ask = [];
+        var acc = 0, run = 0, park = 0, hush = 0, stuck = 0, ask = [];
         for (var i = 0; i < list.length; i++) {
           var v = view(list[i]);
           if (v === 'accepted') acc += 1;
           if (v === 'working') run += 1;
           if (v === 'waiting') park += 1;
-          if (v === 'stalled') stuck += 1;
+          if (v === 'quiet') hush += 1;
+          if (v === 'stuck') stuck += 1;
           if (v === 'needs_you') ask.push(list[i]);
         }
         var gone = forgotten();
-        var signature = JSON.stringify([locale(), acc + gone.accepted, list.length + gone.items, run, park, stuck, ask.length]);
+        var signature = JSON.stringify([locale(), acc + gone.accepted, list.length + gone.items, run, park, hush, stuck, ask.length]);
         if (signature !== doneSignature) {
           doneSignature = signature;
           done.textContent = '';
@@ -387,7 +407,7 @@
           b.textContent = i18n('done_of', { d: acc + gone.accepted, n: list.length + gone.items });
           done.appendChild(b);
           done.appendChild(document.createTextNode([
-            i18n('running', { n: run }), i18n('parked', { n: park }), i18n('stalled_n', { n: stuck }),
+            i18n('running', { n: run }), i18n('parked', { n: park }), i18n('quiet_n', { n: hush }), i18n('stuck_n', { n: stuck }),
             i18n('waiting', { n: ask.length })
           ].join(' \u00b7 ')));
         }
@@ -474,7 +494,12 @@
           card.style.setProperty('--tone', colourFor(state));
           // A plain question or block waits on the conductor, and the pill says so.
           var withConductor = state === 'waiting' && (it.status === 'question' || it.status === 'blocked');
-          var pill = chip(withConductor ? i18n('state_with_conductor') : stateLabel(state), colourFor(state));
+          // A waiting item names the PR it reported; a stuck or quiet one says why.
+          var heldPr = state === 'waiting' && !withConductor ? num(it.pr) : null;
+          var pill = chip(withConductor ? i18n('state_with_conductor')
+            : heldPr ? i18n('pill_waiting_pr', { n: heldPr })
+              : state === 'stuck' ? i18n(it.worker === 'closed' ? 'pill_stuck' : 'pill_stuck_unread')
+                : state === 'quiet' ? i18n('pill_quiet') : stateLabel(state), colourFor(state));
           if (live(it)) {
             var dot = document.createElement('span');
             dot.className = 'dot';

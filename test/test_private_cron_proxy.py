@@ -19,6 +19,8 @@ from kiro_crew.mcp_caller import CallerContext, current_caller, set_current_call
 from kiro_crew.memory_stores import provision_member_memory
 from kiro_crew.testing.wait import default_timeout
 
+pytestmark = pytest.mark.usefixtures("command_crons_run_here")
+
 
 @pytest.fixture
 def env(tmp_path, monkeypatch):

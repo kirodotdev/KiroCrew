@@ -154,7 +154,7 @@ async def _answer_slash_for_harness(
         )
     elif command.lower() == "/clear":
         await _reset_conversation(slot, session_key, {})
-        torn_down = await _consume_pending_reset(state, slot, allow_discard=True)
+        torn_down = await _consume_pending_reset(state, slot, allow_discard=True, own_turn=True)
         # The consumer's True also covers a queued project reset; only a spent
         # discard flag means THIS conversation was dropped.
         cleared = torn_down and not slot._pending_discard_conversation_key
@@ -832,6 +832,11 @@ async def _turn_slash_gate(turn: _ChatTurn) -> _Flow | None:
     turn._mirror_active_task_title = _mirror_active_task_title
     _mirror_thread: str | None = ""
     turn._mirror_thread = _mirror_thread
+    # Where mirrored posts go: `_mirror_thread`, or None (top-level) for a Slack
+    # code channel's own session. `_mirror_thread` keeps its ownership meaning.
+    _mirror_post_ts: str | None = ""
+    turn._mirror_post_ts = _mirror_post_ts
+    turn._code_channel_turn = False
     _mirror_task_counter = 0
     turn._mirror_task_counter = _mirror_task_counter
     _memory_preparation_admitted = False

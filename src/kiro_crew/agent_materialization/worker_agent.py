@@ -1381,6 +1381,7 @@ def rederive_worker_agent(reason: str) -> bool:
     try:
         _install_worker_agent()
     except Exception:  # noqa: BLE001 — a stale worker spec must not fail a registration
+        # A PlatformCompositionError degrades the same way: the previous worker spec stays in place.
         agent_mod.logger.warning("Worker agent re-derive failed after %s", reason, exc_info=True)
         return False
     agent_mod.logger.info("Re-derived worker agent config after %s", reason)
@@ -1572,6 +1573,7 @@ def rederive_heartbeat_agent(reason: str) -> bool:
     try:
         agent_mod._install_heartbeat_agent()
     except Exception:  # noqa: BLE001 — the caller turns a failure into a refusal
+        # A PlatformCompositionError lands here too, and the spawn gate refuses the start.
         agent_mod.logger.warning("Heartbeat agent re-derive failed after %s", reason, exc_info=True)
         return False
     agent_mod.logger.info("Re-derived heartbeat agent config after %s", reason)

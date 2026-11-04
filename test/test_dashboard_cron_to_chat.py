@@ -171,11 +171,8 @@ class TestInjectCronResultToDashboard:
     def test_history_is_required_so_the_read_cannot_land_on_the_loop(self):
         """Omitting the prefetch is a TypeError at the call, not a production stall.
 
-        The failure mode is an async caller that simply
-        does not pass ``history=``, leaving this synchronous function to parse the
-        whole transcript on the event loop. The parameter has no default so that
-        omission cannot compile, rather than being caught by a convention in a
-        spec file.
+        Without ``history=`` this synchronous function would parse the whole
+        transcript on the event loop, so the parameter has no default.
         """
         with pytest.raises(TypeError, match="history"):
             inject_cron_result_to_dashboard(_make_state(), _make_job(), "result")
@@ -184,8 +181,8 @@ class TestInjectCronResultToDashboard:
         """A cron result is the job's output, not something the person typed.
 
         An untagged slot would be labelled USER by
-        get_or_create_slot's default, which put private cron content inside the
-        ``slots:user`` WS scope -- so any app holding that scope received it.
+        get_or_create_slot's default, which puts private cron content inside the
+        ``slots:user`` WS scope, so any app holding that scope would receive it.
         """
         from kiro_crew.dashboard.state import SlotOrigin
 
@@ -248,14 +245,9 @@ class TestInjectCronResultToDashboard:
     def test_dedup_prevents_duplicate_result(self):
         """One run injected twice stays one pair.
 
-        This is what makes ``/to-chat`` idempotent against the executor's own
-        auto-inject: both read the stamp off the job, so they render the same
-        bytes and the second call adds nothing.
-
-        It is also what stops the repeat-suppression from reading a run's own row
-        as its precedent. The second call sees the prompt row the first one just
-        wrote; counting that would make it emit a REFERENCE where the first
-        emitted the instruction, and two differing rows dedup to neither.
+        This keeps ``/to-chat`` idempotent against the executor's auto-inject. The
+        second call must not read the first call's prompt row as its precedent: it
+        would emit a REFERENCE, and two differing rows dedup to neither.
         """
         state = _make_state()
         job = _make_job(last_result_ts=1_756_000_000.0)
@@ -286,10 +278,8 @@ class TestInjectCronResultToDashboard:
     def test_two_runs_in_the_same_minute_stay_two_rows(self):
         """Stamp resolution bounds which distinct runs can collapse.
 
-        The stamp is part of the compared content, so a minute-resolution stamp
-        silently merged two runs that finished in the same minute with identical
-        output -- reachable for a fast script cron and for two manual runs.
-        Seconds keep them apart.
+        The stamp is part of the compared content, so a minute stamp would merge
+        two same-minute runs with identical output (a fast script cron).
         """
         state = _make_state()
         first = _make_job(last_result_ts=1_756_000_000.0)
@@ -304,11 +294,8 @@ class TestInjectCronResultToDashboard:
     def test_two_runs_in_the_same_second_stay_two_rows(self):
         """Identity must not inherit the DISPLAY stamp's resolution.
 
-        Both dedup layers compare row content, so while identity rode on the
-        human-readable stamp its resolution was the bound: at minutes two runs in
-        one minute collapsed, and at seconds two runs in one second still did.
-        The invisible run marker carries the timestamp at full precision, so the
-        bound is gone rather than moved.
+        The invisible run marker carries the timestamp at full precision, so two
+        runs in one second stay apart even though the shown stamp matches.
         """
         state = _make_state()
         first = _make_job(last_result_ts=1_756_000_000.100000)
@@ -355,12 +342,8 @@ class TestInjectCronResultToDashboard:
     def test_editing_the_timezone_after_a_run_does_not_respell_its_row(self):
         """A re-render under edited config would duplicate a row already on disk.
 
-        ``append_if_absent`` judges "already persisted" by ``(role, content)``
-        and the stamp is inside that content, so re-rendering it at injection
-        time meant an edited ``timezone`` spelled the SAME run differently --
-        appending a second copy instead of collapsing onto the first. The stamp
-        is rendered once, when the result is recorded, so a later edit cannot
-        reach it.
+        ``append_if_absent`` dedups by ``(role, content)`` and the stamp is in the
+        content, so the stamp is rendered once, when the result is recorded.
         """
         state = _make_state()
         job = _make_job(last_result_ts=1_756_000_000.0)
@@ -375,10 +358,8 @@ class TestInjectCronResultToDashboard:
     def test_re_surfacing_does_not_write_a_prompt_row(self):
         """Only the run that produced a result knows the prompt behind it.
 
-        ``/to-chat`` re-surfaces a STORED result, and ``job.message`` is live
-        configuration a user can edit afterwards -- so pairing the two there
-        attributes the output to an instruction that never ran. The re-surfacing
-        caller writes the result alone.
+        ``/to-chat`` re-surfaces a STORED result, and ``job.message`` may have been
+        edited since, so pairing them would cite an instruction that never ran.
         """
         state = _make_state()
         job = _make_job(message="the message as edited later")
@@ -390,11 +371,8 @@ class TestInjectCronResultToDashboard:
     def test_an_unchanged_prompt_is_referenced_not_repeated(self):
         """Run two of a persistent cron must not store the instruction again.
 
-        The message of a persistent cron is one value for the job's whole life,
-        and each row carries a per-run marker so nothing dedups them. Storing it
-        verbatim every run spent the log's rotation window and the replay's
-        character budget on copies of an unchanged instruction, so the tab
-        retained FEWER distinct runs than before the prompt row existed.
+        Each row carries a per-run marker, so nothing dedups the copies; storing
+        them would spend the log's rotation window and the replay budget.
         """
         state = _make_state(
             history_messages=[
@@ -418,10 +396,8 @@ class TestInjectCronResultToDashboard:
     def test_a_referenced_run_still_carries_its_own_boundary(self):
         """The placeholder row is still a run boundary.
 
-        Its body changes; its header does not. The stamp and the marker are what
-        separate one run from the next, so a referenced run must remain as
-        distinguishable as a verbatim one — otherwise suppressing the repeat
-        would undo the fix it is part of.
+        Only its body changes: the stamp and the marker still separate it from
+        the next run.
         """
         state = _make_state(
             history_messages=[
@@ -444,24 +420,12 @@ class TestInjectCronResultToDashboard:
     def test_a_message_that_is_literally_the_placeholder_is_a_real_instruction(self):
         """A run whose message equals the pointer prose must not be skipped.
 
-        The scan for the latest instruction-bearing row cannot decide "this row
-        is a reference" from its body, because a job's ``message`` can literally
-        BE :data:`_UNCHANGED_PROMPT_BODY`. If it did, this sequence would corrupt
-        run attribution: a long instruction A, then a run whose message is exactly
-        the placeholder text, then A again. Skipping the placeholder-valued row as
-        though it were a pointer makes the third run reference the first A while
-        the run directly above it was given the placeholder -- the reference then
-        asserts "same as the previous run" about a different instruction, and a
-        reader resolving it lands on the wrong text.
-
-        Reference-ness is keyed off the structural marker instead, so the
-        placeholder-valued row is a genuine antecedent: the third run compares A
-        against it, they differ, and A is stored verbatim rather than mis-pointed.
+        A ``message`` can literally BE :data:`_UNCHANGED_PROMPT_BODY`. For A, then
+        the placeholder text, then A, skipping the middle row by its body would
+        make run three reference run one. Reference-ness is keyed off the marker.
         """
-        # A long A, so suppression is in scope at all; the placeholder run is
-        # short (below the reference threshold) and so is always stored verbatim,
-        # exactly as a real such message would be -- which is what plants the
-        # collision the scan would trip on.
+        # A is long so suppression applies; the placeholder run is below the
+        # threshold, so it is stored verbatim and plants the collision.
         placeholder = _UNCHANGED_PROMPT_BODY
         assert len(placeholder) < _MIN_PROMPT_CHARS_TO_REFERENCE
         row_a = (
@@ -470,9 +434,7 @@ class TestInjectCronResultToDashboard:
         row_placeholder = (
             "# Cron Run: test-cron\n\n<!-- cron-run:abc123:2.000000 -->" f"\n\n{placeholder}"
         )
-        # The row holding the placeholder text is a VERBATIM instruction, not a
-        # reference: it carries no reference marker, so the parser reports it as
-        # instruction-bearing with its real body.
+        # No reference marker, so the parser reads it as a verbatim instruction.
         assert _parse_prompt_row(row_placeholder) == (False, placeholder)
         state = _make_state(
             history_messages=[
@@ -502,9 +464,8 @@ class TestInjectCronResultToDashboard:
                 {"role": "user", "content": f"# Cron Run: test-cron\n\n{old}"},
             ]
         )
-        # A real timestamp, so the run HAS a marker: suppression is only ever
-        # attempted for a run that carries one, and a job left at ts 0 would make
-        # this pass through the no-identity short-circuit instead of the compare.
+        # A real timestamp gives the run a marker; at ts 0 this would take the
+        # no-identity short-circuit instead of the compare.
         job = _make_job(message=new, last_result_ts=1_756_000_000.0)
         _inject(state, job, "a result")
 
@@ -515,11 +476,8 @@ class TestInjectCronResultToDashboard:
     def test_a_reverted_instruction_is_not_referenced_against_the_older_copy(self):
         """A → B → A must store A again, not point at the run above.
 
-        The placeholder asserts "same instruction as the previous run". The run
-        above this one was given B, so a scan that accepted ANY older copy would
-        find the first A row and make that sentence false about a transcript that
-        plainly contains the contradiction. Only the LATEST instruction-bearing
-        row may be compared.
+        The placeholder means "same as the previous run", so only the LATEST
+        instruction-bearing row may be compared.
         """
         first = _LONG_INSTRUCTION
         second = _LONG_INSTRUCTION.replace("Skip anything", "Escalate anything")
@@ -541,10 +499,7 @@ class TestInjectCronResultToDashboard:
     def test_a_short_instruction_is_never_referenced(self):
         """Below the threshold a reference costs more than the text it replaces.
 
-        The row keeps its header, stamp and marker either way, so replacing a
-        one-line message with a ~100-char pointer makes the transcript BIGGER and
-        loses the instruction. Most crons in the wild carry exactly such a
-        message, so the common case is deliberately left alone.
+        A ~100-char pointer would make a one-line message's row BIGGER.
         """
         short = "check pipeline health"
         assert len(short) < _MIN_PROMPT_CHARS_TO_REFERENCE
@@ -563,26 +518,14 @@ class TestInjectCronResultToDashboard:
     def test_a_copy_beyond_the_look_back_is_written_again(self):
         """A reference may not reach further than the reader can.
 
-        The live slot window keeps 10,000 rows; the durable transcript keeps ~200
-        lines and the replay a follow-up turn reads is character-budgeted and
-        tail-heavy. An unbounded scan reads the largest of the three, so a copy
-        rotation has already dropped from disk would keep satisfying it and the
-        instruction would be referenced forever with the text nowhere reachable.
-        Beyond the look-back the run re-anchors a verbatim copy instead.
+        The slot keeps 10,000 rows but the durable transcript only ~200 lines, so
+        a copy already rotated off disk must not satisfy the scan.
         """
 
         def _row(ts: float, body: str, *, reference: bool = False) -> dict[str, str]:
-            # Each row carries its OWN marker, as a real run's does. Rows written
-            # with identical content collapse on the way into the slot, so a
-            # window built from repeated bytes would hold two rows rather than
-            # forty and the copy would still be in reach -- the test would then
-            # assert the opposite of its name.
-            #
-            # A reference row also carries the structural _REFERENCE_MARKER the
-            # writer emits, so the scan skips it as a pointer -- not because its
-            # body reads like the placeholder. Building the intervening rows the
-            # way production writes them is what makes this exercise the look-back
-            # bound rather than the (now removed) body-text skip.
+            # Each row needs its OWN marker: identical rows collapse in the slot,
+            # which would leave the copy in reach. Reference rows carry
+            # _REFERENCE_MARKER, as the writer emits it.
             marker = f"\n\n<!-- cron-run:abc123:{ts:.6f} -->"
             if reference:
                 marker = f"{marker}{_REFERENCE_MARKER}"
@@ -604,17 +547,11 @@ class TestInjectCronResultToDashboard:
     def test_an_instruction_starting_with_a_blank_line_still_round_trips(self):
         """Reading a body back must not eat newlines the instruction owns.
 
-        The row is built as ``header\\n\\nbody``, so a body that itself begins with
-        a blank line is indistinguishable from the separator to a greedy strip.
-        Getting this wrong is invisible: the body read back never equals the
-        prompt, so the suppression silently never fires and the transcript keeps
-        the pre-change shape for that job.
+        The row is ``header\\n\\nbody``, so a greedy strip eats a leading blank line
+        and the suppression silently never fires.
 
-        The stored row carries a marker, as every row a real run writes does. It
-        is the marker branch that has to re-find the separator by hand -- the
-        unmarked legacy branch splits on the first blank line and keeps the rest
-        whole -- so a row without one exercises the wrong branch and stays green
-        however greedily the newlines are stripped.
+        The stored row needs a marker: only the marker branch re-finds the
+        separator by hand, so an unmarked row stays green however greedy the strip.
         """
         message = f"\n\n{_LONG_INSTRUCTION}"
         stored_marker = "\n\n<!-- cron-run:abc123:1.000000 -->"
@@ -636,12 +573,8 @@ class TestInjectCronResultToDashboard:
     def test_an_instruction_that_quotes_the_marker_is_read_whole(self):
         """A prompt is untrusted text and may spell the marker itself.
 
-        The marker is recognised only in its own block directly after the header.
-        A row-wide search would cut a body at the marker the INSTRUCTION quotes --
-        a prompt asking the agent about this very format is the obvious case --
-        and then compare the tail as though it were the whole instruction, so a
-        later message equal to that tail would suppress against a row that stored
-        something else.
+        The marker counts only in its own block right after the header; a
+        row-wide search would cut the body at a marker the instruction quotes.
         """
         quoting = f"Explain what <!-- cron-run:x:1 --> means.\n{_LONG_INSTRUCTION}"
         marked = f"# Cron Run: test-cron{run_marker(_make_job(last_result_ts=1.0))}\n\n{quoting}"
@@ -652,11 +585,8 @@ class TestInjectCronResultToDashboard:
     def test_only_a_user_row_counts_as_a_previous_run(self):
         """Evidence of what a run was given is a ``user`` row and nothing else.
 
-        Replying in a cron tab is documented behaviour, and an assistant turn can
-        quote the instruction back verbatim -- headers and all -- while no run was
-        involved. Counting such a row as precedent makes the placeholder cite "the
-        previous run" for a row no run wrote, and once the real verbatim copy has
-        rotated away the instruction is recoverable from nothing.
+        An assistant reply in a cron tab can quote the instruction verbatim,
+        headers and all, without any run having written it.
         """
         marker = "\n\n<!-- cron-run:abc123:1.000000 -->"
         state = _make_state(
@@ -692,17 +622,10 @@ class TestInjectCronResultToDashboard:
     def test_a_result_row_is_not_mistaken_for_a_prompt_copy(self):
         """``# Cron Job Result:`` must not satisfy the ``# Cron Run:`` scan.
 
-        The two headers are adjacent in spelling, and treating a result row as a
-        surviving prompt copy would leave the placeholder pointing at output
-        rather than at an instruction.
-
-        The result row's body is the instruction ITSELF, not some other text: a
-        row whose body merely differs is rejected by the equality comparison
-        whatever the prefix does, so such a test would stay green if
-        ``_PROMPT_ROW_PREFIX`` were widened to ``"# Cron"`` -- the exact confusion
-        it claims to guard. The parser is also asserted directly, because the
-        end-to-end path additionally rejects this row for its ``assistant`` role,
-        which would mask a prefix that had stopped discriminating.
+        The result row's body is the instruction ITSELF, else the equality check
+        would hide a ``_PROMPT_ROW_PREFIX`` widened to ``"# Cron"``. The parser is
+        asserted directly because the end-to-end path also rejects the
+        ``assistant`` role.
         """
         assert (
             _prompt_row_body(f"# Cron Job Result: test-cron\n\n{_LONG_INSTRUCTION}") is None
@@ -725,17 +648,11 @@ class TestInjectCronResultToDashboard:
     def test_three_runs_of_one_persistent_cron_read_as_three_runs(self):
         """End-to-end: the tab a user opens after three runs.
 
-        Every other test here pins ONE run's decision. What a user actually
-        reads is the accumulated transcript, and its shape is the whole point of
-        the change: three distinguishable runs, the instruction stored ONCE.
-
-        Driven through a real ``CronJob`` rather than the fake, and each run's
-        rows are fed back as the next run's history the way the gateway re-reads
-        the transcript per run.
+        Three distinguishable runs, the instruction stored ONCE. Driven through a
+        real ``CronJob`` rather than the fake.
         """
-        # A realistically large prompt: the suppression only applies above
-        # ``_MIN_PROMPT_CHARS_TO_REFERENCE``, so a one-liner here would make the
-        # end-to-end assertion describe the branch this change does NOT take.
+        # Suppression applies only above ``_MIN_PROMPT_CHARS_TO_REFERENCE``, so a
+        # one-liner would test the verbatim branch instead.
         message = _LONG_INSTRUCTION
         result = "No new pages since the last check."
         job = CronJob(id="abc123", name="oncall", message=message, timezone="UTC")
@@ -747,10 +664,8 @@ class TestInjectCronResultToDashboard:
             # renderer stays the production one.
             job.last_result_ts = ts
             job.last_result_stamp = job._render_run_stamp(ts)
-            # Production's own shape: prefetch_cron_history reads the transcript
-            # only for an UNLINKED slot and returns None once it is linked, so
-            # every run after the first passes None. Feeding a list here instead
-            # would hide a decision that reads the parameter rather than the slot.
+            # As in production: prefetch_cron_history returns None once the slot
+            # is linked, so a list here would hide a decision read off the parameter.
             _inject(state, job, result, history=[] if i == 0 else None)
 
         rows = state._slots["cron-abc123"].messages
@@ -764,17 +679,13 @@ class TestInjectCronResultToDashboard:
         ], "three runs, each a prompt/result pair"
 
         prompts = [r["content"] for r in rows if r["role"] == "user"]
-        # The instruction is stored ONCE across the three runs -- the defect this
-        # change fixes was storing it three times.
+        # The instruction is stored ONCE across the three runs.
         assert sum(message in p for p in prompts) == 1
         assert prompts[0].endswith(message)
         assert all(_UNCHANGED_PROMPT_BODY in p for p in prompts[1:])
 
-        # The pointer must RESOLVE, not merely be true. In the steady state the
-        # row directly above a reference is another reference, which is why the
-        # placeholder says "the nearest row above that carries one" -- so for each
-        # referenced run there must be a row holding the instruction within the
-        # look-back that wording promises.
+        # The pointer must RESOLVE: each reference needs a row holding the
+        # instruction within the look-back.
         for i, row in enumerate(rows):
             if row["role"] != "user" or _UNCHANGED_PROMPT_BODY not in row["content"]:
                 continue
@@ -783,8 +694,7 @@ class TestInjectCronResultToDashboard:
                 r["role"] == "user" and message in r["content"] for r in above
             ), "a reference with no antecedent in reach describes a text nobody can read"
 
-        # And the runs stay distinguishable, which is what the repeat suppression
-        # must not cost: every row carries its own run's marker.
+        # Every row still carries its own run's marker.
         markers = [run_marker_of(r["content"]) for r in rows]
         assert len(set(markers)) == 3, "one distinct marker per run"
         assert all(markers), "no row may lose its identity marker"
@@ -792,12 +702,8 @@ class TestInjectCronResultToDashboard:
     def test_a_repeat_is_suppressed_even_though_history_is_none(self):
         """The steady state passes ``history=None``, and must still suppress.
 
-        ``prefetch_cron_history`` reads the transcript only to hydrate an
-        UNLINKED slot and returns ``None`` once the slot is linked -- which is
-        every run of a persistent cron after the first. A decision that consulted
-        the parameter would therefore see nothing exactly when it matters and
-        write the instruction verbatim on every run, making the suppression a
-        no-op in production while still passing a test that hand-fed a list.
+        ``prefetch_cron_history`` returns ``None`` once the slot is linked, so a
+        decision read off the parameter would never suppress in production.
         """
         message = _LONG_INSTRUCTION
         job = CronJob(id="abc123", name="oncall", message=message, timezone="UTC")
@@ -806,16 +712,9 @@ class TestInjectCronResultToDashboard:
         job.set_run_result("run one")
         _inject(state, job, "run one", history=[])
         job.set_run_result("run two")
-        # Pin the second run's identity past the first run's, as the sibling
-        # test setting ``last_result_ts`` explicitly already does. This test is
-        # about the ``history=None`` steady state, not about clock resolution:
-        # ``set_run_result`` stamps at wall-clock time, and on a coarse clock
-        # (Windows/CPython <= 3.12 resolves ~15.6 ms) two back-to-back calls
-        # can return the identical float, rendering both runs a byte-identical
-        # marker -- so the dedupe would CORRECTLY drop run two as a repeat and
-        # the test would assert against a single-run transcript it never meant
-        # to build. Two real runs are separated by a schedule interval; the
-        # explicit stamp gives the test the two distinct identities it needs.
+        # Pin run two past run one: on a coarse clock (Windows/CPython <= 3.12,
+        # ~15.6 ms) back-to-back ``set_run_result`` calls can share a timestamp,
+        # and the dedupe would then correctly drop run two as a repeat.
         job.last_result_ts += 1.0
         job.last_result_stamp = job._render_run_stamp(job.last_result_ts)
         _inject(state, job, "run two", history=None)
@@ -830,18 +729,11 @@ class TestInjectCronResultToDashboard:
     def test_a_placeholder_is_not_a_surviving_copy_of_the_prompt(self):
         """A reference must not resolve to another reference.
 
-        The placeholder shares the ``# Cron Run:`` header on purpose -- it is
-        still a run boundary -- so a decision that read the header, or matched
-        the body loosely, would answer "is there a prompt row" rather than "is
-        THIS instruction still here". Once rotation has evicted the verbatim row,
-        counting a placeholder as a surviving copy would leave a run whose
-        instruction is recoverable from nothing.
+        The placeholder shares the ``# Cron Run:`` header, so once the verbatim
+        row has rotated away it must not count as a surviving copy.
 
-        ``last_result_ts`` is set explicitly: the fixture default of ``0.0`` gives
-        the run no marker, and a run with no marker is refused suppression before
-        any row is examined -- so a test leaving it at the default asserts the
-        verbatim branch through a short-circuit and can never exercise the
-        placeholder comparison it is named for.
+        ``last_result_ts`` is set because at ``0.0`` the run has no marker and is
+        refused suppression before any row is compared.
         """
         state = _make_state(
             history_messages=[
@@ -863,19 +755,9 @@ class TestInjectCronResultToDashboard:
     def test_a_run_that_wrote_no_row_cannot_spend_the_change(self):
         """A hidden run must not leave the next one referencing the OLD text.
 
-        Not every run reaches this injection: ``hide_in_chat`` and
-        ``persistent_session=False`` skip it while the run itself completes
-        normally. So a decision carried on the JOB -- "the instruction changed
-        since last time" -- is set by a component that always runs and consumed
-        by one that does not, and an edit landing on a hidden run spends the
-        signal against a row that was never written. The next visible run would
-        then reference a surviving row still holding the previous instruction,
-        attributing its result to something it was never asked.
-
-        Reading the transcript cannot desync from the transcript, which is why
-        the decision lives there. The edited text must be stored verbatim by the
-        first run that actually writes a row, however many silent runs preceded
-        it.
+        ``hide_in_chat`` and ``persistent_session=False`` runs skip this
+        injection, so a "changed" flag on the job would be spent by a run that
+        wrote no row. The decision reads the transcript instead.
         """
         old = _LONG_INSTRUCTION
         new = _LONG_INSTRUCTION.replace("Skip anything already acknowledged.", "Page me instead.")
@@ -902,13 +784,8 @@ class TestInjectCronResultToDashboard:
     def test_a_shortened_instruction_is_not_matched_by_the_longer_stored_one(self):
         """The stored body must EQUAL this run's prompt, not merely contain it.
 
-        A substring test would find the shortened instruction inside the stored
-        longer one and suppress a genuine edit, leaving the transcript claiming
-        the run was given an instruction it was not.
-
-        Both variants clear ``_MIN_PROMPT_CHARS_TO_REFERENCE``: if the shortened
-        one fell below it, suppression would be refused on length alone and the
-        assertion would hold without the comparison ever being reached.
+        Both variants clear ``_MIN_PROMPT_CHARS_TO_REFERENCE``; otherwise length
+        alone would refuse suppression and the compare would never run.
         """
         stored = _LONG_INSTRUCTION + "Then page the secondary on-call.\n"
         assert _LONG_INSTRUCTION in stored, "the stored text must CONTAIN the shortened one"
@@ -927,20 +804,9 @@ class TestInjectCronResultToDashboard:
     def test_a_credential_only_edit_references_the_row_holding_identical_bytes(self):
         """A redaction collision cannot lose anything a reader could have seen.
 
-        Two instructions differing ONLY inside a credential redact to the same
-        text, so the comparison treats the second as unchanged. That is correct
-        rather than a misattribution, and the reason is that BOTH sides of the
-        decision are post-redaction: the body this run would otherwise store is
-        the redacted text, which is byte-identical to the antecedent row's body.
-        So the reference resolves to exactly the bytes a verbatim copy would have
-        carried, and no reader -- the tab, the durable transcript, a replay or
-        ``/to-chat`` -- can distinguish the two outcomes. Storing a second copy
-        would add bytes and zero information.
-
-        This is the invariant behind declining "store whenever a redactor fired":
-        that rule would re-introduce a full copy every run for precisely the
-        long, script-shaped prompts this change exists to stop duplicating,
-        while the copies it wrote would be indistinguishable from each other.
+        Instructions differing only inside a credential redact to the same text.
+        Both sides of the compare are post-redaction, so the reference resolves
+        to exactly the bytes a verbatim copy would have stored.
         """
         secret_a = "ghp_" + "A" * 36
         secret_b = "ghp_" + "B" * 36
@@ -991,10 +857,8 @@ class TestInjectCronResultToDashboard:
     def test_the_prompt_is_persisted_verbatim(self):
         """The replay must record the prompt the run was GIVEN.
 
-        The executor sends ``job.message`` as written, so trimming it on the way
-        to the transcript records a different instruction than the one that ran.
-        Leading indentation is not decoration in a message carrying a fenced
-        block or an indented snippet.
+        The executor sends ``job.message`` as written, and leading indentation
+        matters in a fenced block or an indented snippet.
         """
         state = _make_state()
         message = "    indented line\n\n```\ncode\n```\n"
@@ -1077,14 +941,11 @@ class TestInjectCronResultToDashboard:
         assert [m["role"] for m in slot.messages] == ["user", "assistant"]
 
     def test_publishes_the_tab_to_the_surface_registry(self):
-        """Regression: the cron tab must be surfaced the moment it is created.
+        """The cron tab must be surfaced the moment it is created.
 
-        Every gate that asks "does this session have a tab?" — sub-agent event
-        routing, completion injection, widget/question delivery — reads the
-        surface registry via has_dashboard_surface. A created-but-unpublished
-        slot fails those gates until some unrelated slot change republishes,
-        so the first cron run's sub-agents stayed invisible and their results
-        were never injected."""
+        Sub-agent routing, completion injection and widget delivery all read
+        has_dashboard_surface; an unpublished slot would hide the first run's
+        sub-agents."""
         from kiro_crew.dashboard.chat_utils import dashboard_slot_key
         from kiro_crew.session_surface import (
             has_dashboard_surface,
@@ -1111,8 +972,7 @@ class TestPersistsResultToConversationLog:
         state = _make_state()
         job = _make_job(job_id="job1", name="my-cron")
         _inject(state, job, "the result")
-        # Persistence now goes through the atomic append_if_absent (the dup
-        # check runs UNDER the session lock, not as a separate unlocked probe).
+        # The atomic append_if_absent runs the dup check under the session lock.
         # Two rows per run: the prompt, then the result.
         assert state.conversation_log.append_if_absent.call_count == 2
         prompt_args, _ = state.conversation_log.append_if_absent.call_args_list[0]
@@ -1125,17 +985,14 @@ class TestPersistsResultToConversationLog:
         assert args[1] == "assistant"
         assert "the result" in args[2]
         assert args[2].startswith("# Cron Job Result: my-cron")
-        # The old unlocked append() persist path is gone (dup check is now
-        # atomic inside append_if_absent). NB: read_messages is still called
-        # once to hydrate the fresh slot — that is not the persistence probe.
+        # No unlocked append(). read_messages still runs once to hydrate the
+        # fresh slot; that is not the persistence probe.
         state.conversation_log.append.assert_not_called()
 
     def test_delegates_log_dedup_to_append_if_absent(self):
-        # The log-level duplicate check is now performed ATOMICALLY inside
-        # append_if_absent (under the per-session lock), not as a separate
-        # unlocked read_messages probe at the inject layer. The inject path must
-        # delegate to append_if_absent and not do its own log-persist.
-        # (append_if_absent's own skip-on-duplicate behavior is covered by
+        # The log dup check runs atomically inside append_if_absent, under the
+        # per-session lock; the inject path must not persist on its own.
+        # (Skip-on-duplicate is covered by
         # test_history_locking_remediation_locked_section::TestAppendIfAbsent.)
         state = _make_state()
         job = _make_job(job_id="job2", name="my-cron")

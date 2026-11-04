@@ -30,6 +30,7 @@ from kiro_crew.acp import session_handle_updates as _sh_updates
 from kiro_crew.acp import session_handle_watchdog as _sh_watchdog
 from kiro_crew.acp._dispatch import MAX_ACTIVE_TOOL_CALLS
 from kiro_crew.acp.elicitation import ElicitationRequest
+from kiro_crew.acp.engine_fallback import EngineFallbackTracker
 from kiro_crew.acp.liveness import (
     InFlightToolTracker,
     InteractiveClassification,
@@ -682,6 +683,10 @@ class AcpSessionHandle:
         # The upgrade notice when that batch's prompt is dropped by the KAS this
         # process runs (``harness.kas.kas_agent_prompt_issue``); "" otherwise.
         self.kas_agent_prompt_notice: str = ""
+        # The notice naming the MCP servers this session's projection sent without
+        # part of their env or headers, by key name only
+        # (``kas_agents.withheld_credentials_notice``); "" otherwise.
+        self.kas_withheld_credentials_notice: str = ""
         # JSON-RPC request id -> {"once","always","reject"} optionId map, so
         # approve_tool / reject_tool echo the exact ids the agent advertised
         # (kiro "allow_once"/"allow_always"; claude-agent-acp "allow"/"reject").
@@ -712,6 +717,9 @@ class AcpSessionHandle:
         # (mirrors AcpClient._resolved_model_id; avoids the profile-id
         # pinning trap where a resolved profile id poisons slot.model).
         self._resolved_model_id: str = ""
+        # Keeps the two fields above in step with a fallback the ENGINE made
+        # mid-turn (acp/engine_fallback.py).
+        self._engine_fallback = EngineFallbackTracker()
         # True after set_mode switched a live session's agent, until the model
         # kiro-cli reported for that activation has been judged against the
         # served list (see _served_default_after_set_mode).
@@ -775,6 +783,11 @@ class AcpSessionHandle:
     @property
     def session_id(self) -> str:
         return self._session_id
+
+    @property
+    def session_activity_at(self) -> float | None:
+        """Monotonic time the runtime last routed a frame for this session."""
+        return self._runtime.session_activity_at(self._session_id)
 
     @property
     def prompt_or_tool_seen(self) -> bool:

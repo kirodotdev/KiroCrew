@@ -444,6 +444,13 @@ Two separate consolidation paths with independent triggers:
 | Preferences/projects | 30 messages (per session, `_CONSOLIDATION_THRESHOLD`) | Semantic entries; V1 legacy mode also updates `preferences.md` and `projects.md` | In-memory `_prefs_offset` dict |
 | Daily history + lessons | 3h idle (per session, `history_idle_hours` = 3.0) | V1: daily Markdown and vector/JSONL lessons. V2: history, episodes and lessons in one SQLite transaction | Transcript `last_consolidated`; V2 also retains an atomic source-span receipt |
 
+The history prompt lets the model answer `"history_entry": ""` when a span holds no
+decision, outcome or fact, and tells it never to write a "No substantive
+conversation" placeholder; a scheduled or automated run that did real work still
+gets an entry. Both writers append only a non-blank string entry (V1 in
+`_consolidate`, V2 in `apply_consolidation`), so an empty answer writes no dated
+line while the marker still advances.
+
 Per-consolidation extraction caps (`vector_memory_constants.py`, also
 interpolated into the LLM prompt so the model is told the same numbers):
 `_MAX_SEMANTIC_PER_CONSOLIDATION = 20`, `_MAX_EPISODIC_PER_CONSOLIDATION = 10`,
@@ -1683,7 +1690,9 @@ skips it without guessing:
   member's `member_id` is empty;
 - the record's `owner_member`, when set, equals that member's alias, and
   `member-memory.json` is absent or its `owner_member` equals that alias; a
-  malformed manifest refuses. Both labels are writer-populated and a rebinding
+  malformed manifest (unreadable, not UTF-8, not JSON, nested past the
+  recursion limit, or naming no `owner_member`) refuses that store alone, and
+  the scan goes on to the next store. Both labels are writer-populated and a rebinding
   can leave them naming another member, so two labels that agree with each
   other but not with the bound member are refused rather than adopted;
 - `memory.db` exists, is a regular file with exactly one name (`st_nlink == 1`:
@@ -1851,6 +1860,19 @@ Auto relevance and file paths first discovered through tools remain agent-driven
 the pointer tells the agent to read the complete file when its condition holds,
 not to apply every conditional body unconditionally.
 A project override of a template takes precedence over its global copy. A
+global template that no regular spec claims is looked up by declared name in the
+global agents directory, following links the way kiro-cli does
+(`member_essential_context.linked_global_template_spec`). Each entry is read once
+through `agent_discovery._read_agent_spec`, and a target outside the agents
+directory that sits inside managed memory or member private state is refused, as
+is every such target when a managed root cannot be resolved. Entries with
+differing content that declare the same name are ambiguous. The member persona,
+the execution prompt, the session MCP spec and the side-turn read-only spec read
+templates this way, and the read-only spec reaper counts such a base as present;
+spec writers refuse links. On Windows `_read_agent_spec` screens every link on
+the spec's path through `hooks._screen_windows_links` before it resolves
+anything, so a link whose target names an untrusted UNC share is refused and
+audited as `untrusted link target rejected` without the SMB probe. A
 relative `file://` prompt uses the project root when its template comes from the
 project's agents directory, and the user home when it comes from the global
 agents directory, even with a project bound. Both readers share the same path
@@ -2046,7 +2068,13 @@ exist is skipped, as kiro-cli skips it: the snapshot carries one core
 projection skips it without a note. "Does not exist" means a root-first lstat
 walk meets a missing component and no link; a declared link (dangling or not),
 an unreadable or non-regular file, a managed-state path and an out-of-root path
-still refuse. Missing optional root guides change the snapshot instead. The
+still refuse. One exception: a resource the template declares by ABSOLUTE path
+whose real path leaves its admitted root (a cloud desktop's `~/workplace` linked
+to `/workplace/<user>`) is left out unread; the snapshot names it in one core
+`essential-context#outside-skipped:<template>` note and the KAS projection skips
+it with a warning, because kiro-cli follows the link and loads it natively. A
+project-relative declaration through a link still refuses. Missing optional root
+guides change the snapshot instead. The
 project root's implicit `AGENTS.md` and
 `SOUL.md` go through the same reader, but a refusal there -- a link to a file
 outside the project, a dangling link, a managed memory file, a hard link -- does
@@ -2063,7 +2091,15 @@ agent definition) does the same for a link whose target the path screen resolves
 inside the glob's root: the snapshot and the KAS document reader
 (`projected_resource_documents`) leave it out unread, and the snapshot names it in
 that note. A link that resolves outside the root, or that the screen refuses, still
-refuses, and so does a link under any other declared glob. The launch-record size
+refuses, and so does a link under any other declared glob, with one exception for an
+ABSOLUTE declaration: a link its walk meets whose target the path screen resolves
+outside the root (a cloud desktop's `~/workplace` linked to another volume) is left out,
+unread and not descended into, and named in one core
+`essential-context#outside-skipped:<template>` note; the KAS document reader skips it
+the same way. Nothing outside the root is opened or listed. A target that is managed
+memory or member state still refuses (`_refuse_managed_source` runs on the screened
+target), and so do a link the screen refuses, a link that stays inside the root, and
+any link a relative declaration meets. The launch-record size
 check (`_declared_files_fit`, `projected_launch_paths`) does not opt in: it measures
 what kiro-cli loads and cannot measure a link it does not follow, so a link still
 withholds that record (the size check reports unfit, the path read refuses) and the
@@ -4318,7 +4354,11 @@ Neither refusal is silent. On an unsupported platform the loader logs one WARNIN
 process (unless `skills.project_skills_enabled` is off) naming the platform limit, and
 the enforcement audit's reason says the platform lacks the traversal rather than "no
 grant"; the warning names no project, because checking whether `.kiro/skills` exists
-would be the path lookup the gate refuses to make. On POSIX, a component the no-follow
+would be the path lookup the gate refuses to make. The Skills page says the same in one
+muted line: `GET /api/skills/-/trust` returns `platform_unsupported: true` when any chat
+slot has a project, `skills.project_skills_enabled` is on, and the platform lacks the
+traversal. It reads the slots, the config and the platform only, so it looks up no
+project path either; grant and revoke snapshots always carry `false`. On POSIX, a component the no-follow
 chain refuses is logged as a WARNING naming that component (a symlinked directory and a
 file both read as "a symlink or not a directory", since Linux reports both with
 the same errno), once per (base, component, errno) per process, saying the component
@@ -4480,6 +4520,38 @@ shows, its token cost, and how to make a session summarize well — so the agent
 help a user enable and interpret it. It does not enable the feature or trigger
 generation, and holds no runtime-written frontmatter, since a builtin skill is
 re-synced by `rmtree` + `copytree` on upgrade.
+
+The bundled `feature-request` skill is the in-session answer when a user asks to
+report a problem or send feedback; both phrases are among its triggers, and its
+description names them for the skill index. Before it gathers anything it routes
+the report, first match wins: a security vulnerability goes to `SECURITY.md`'s
+private email and is never drafted or filed in public; something broken on this
+install goes to the Report a Problem dialog, or `kirocrew doctor --bundle` without
+the dashboard, both of which build the redacted diagnostics bundle and link to
+the tracker the edition's `FeedbackTrackerProvider` names; a question or early
+idea goes to Discussions; anything else continues to the skill's GitHub filing
+workflow. The "Request a Feature" button does not load the skill but seeds
+`FEATURE_REQUEST_PROMPT_FALLBACK`, which carries the same three routes ahead of
+its own filing workflow. `website/src/test/featureRequestRouting.test.ts` holds
+both copies to these checks: each `issues/new?template=` form they name exists
+in `.github/ISSUE_TEMPLATE/`; the security and Discussions links are the ones
+its `config.yml` lists, cited whole rather than inside a longer link, and
+`SECURITY.md` says not to open a public issue and gives a `mailto:` address; the
+security route equals the text the test pins for that copy, ignoring only paired
+`**` bold outside code and the amount of whitespace; the security route comes
+first, which in the skill means that "Route it first", parsed as CommonMark up
+to the next heading of the same or a higher level, is the intro paragraph and
+then one list whose first item cites the security policy, so nothing but the
+intro comes before that item, and in the fallback means that the security route
+is the first line after the greeting and the greeting the first after the
+opening line; the other routes follow it in the order above; the
+Report a Problem labels and the Settings › About › Support › Report a Problem
+path are the strings in `en.manual.json`; and the fallback cites the same
+`kirocrew` commands as the skill. `test/test_feature_request_skill_routing.py`
+checks the description length and the triggers, and parses each `kirocrew`
+command the skill cites with the `doctor` registrar in `cli_parser_gateway.py`,
+abbreviations off. Wording outside the security route, the other routes' prose,
+the repository link and the plain and prefilled new-issue links are not checked.
 
 **`GET /api/skills` coalesces concurrent readers onto one scan, and stores nothing.**
 The catalog assembly is filesystem-heavy (`os.walk` plus per-file frontmatter reads, package
@@ -5744,6 +5816,13 @@ alias was deleted or a symlink retargeted. Repeat calls avoid a re-walk only thr
     to `atomic_write`, so it must land for all three surfaces at once rather than
     by reverting one of them to an in-place write that a mid-write failure or a full
     disk would turn into data loss.
+    Directory upload (`/api/directory-upload`) is not one of these surfaces: it is
+    create-only, so it never replaces a file. It creates the file through
+    `pinned_fs.write_new_file_pinned` (an `O_EXCL` create under the pinned
+    directory, with an identity-checked rollback), and an existing name answers
+    409 `name_collision`. The bytes are written under the final name, so a reader
+    can see a partially written file while the upload runs, and a failed write
+    removes it (see [learn-cron-dashboard.md](learn-cron-dashboard.md)).
 - `delete_skill(name)` — removes entire skill directory
 - All three address the leaf relative to a descriptor pinning the parent chain
   (`pinned_fs`) where the platform has the descriptor-relative syscalls, so an
@@ -6225,7 +6304,7 @@ What stays in `hooks.py`, and why, because a guard or a contract reads it there:
   types live in `hook_types`, and a class keeps its owner's `__module__`: `compose`
   selects the classes whose methods it rebinds by it, and nothing else reads it. Their
   shapes are unchanged;
-- `uncounted_gate` and its ContextVar: a `contextmanager`'s generator is not a function
+- `uncounted_gate`, `unattended_turn` and their ContextVars: a `contextmanager`'s generator is not a function
   `compose` rebinds, so in an owner it would read the owner's globals (the one owner
   `contextmanager`, `ScriptHookStore._atomic_mutation`, is rebound onto this module's
   globals right after `compose`);

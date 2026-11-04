@@ -81,11 +81,17 @@ def test_stop_pod_refuses_missing_root_with_prior_writer_evidence(model, monkeyp
 
 def test_stop_accepts_a_never_started_empty_plane(model, monkeypatch):
     cfg, state = model
-    monkeypatch.setattr(
-        win,
-        "schtasks",
-        lambda *args: state.events.append(args[0]) or subprocess.CompletedProcess([], 1, "", ""),
-    )
+
+    def scheduler(*args):
+        state.events.append(args[0])
+        # A reachable Scheduler with no such task: the per-task `/Query /TN` and
+        # `/Delete` are non-zero (no task), but a bare `/Query` answers rc 0.
+        # That reachability is what lets `stop` treat the plane as proven-empty;
+        # without it a failed `/Delete` could not be distinguished from residue.
+        rc = 0 if args == ("/Query",) else 1
+        return subprocess.CompletedProcess([], rc, "", "")
+
+    monkeypatch.setattr(win, "schtasks", scheduler)
     assert win.stop(cfg, "demo", timeout=0).returncode == 0
     assert not {"open_job", "retire", "job_zero"}.intersection(state.events)
 

@@ -7,9 +7,12 @@ import contextvars
 import fnmatch
 import logging
 import os
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
+from typing import Any
 
+from kiro_crew import agent as agent_mod
+from kiro_crew.agent_discovery import _read_agent_spec, declared_spec_entry, project_agent_files
 from kiro_crew.agent_sdk.drivers import acp as acp_driver
 from kiro_crew.config import KiroCrewConfig, config_dir
 from kiro_crew.config.loader import workspace_dir_for
@@ -17,6 +20,7 @@ from kiro_crew.config.paths import project_agents_dir
 from kiro_crew.frontmatter import STEERING_LOADER, split_frontmatter
 from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes_nolink, validate_file_path
 from kiro_crew.platform_compat import first_linked_ancestor, is_link_or_junction
+from kiro_crew.validation import is_registered_agent_name
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +37,11 @@ ESSENTIAL_LINKED_SKIP_SOURCE = "essential-context#linked-skipped"
 #: Source-label prefix of the in-band notice that names declared literal
 #: resources skipped because they do not exist; the full label appends ``:<template>``.
 ESSENTIAL_MISSING_SKIP_SOURCE = "essential-context#missing-skipped"
+#: Source-label prefix of the in-band notice that names paths an ABSOLUTE
+#: declaration reaches through a link whose target is outside the admitted root
+#: (home, reached through a linked folder such as ``~/workplace``), left out unread
+#: instead of refusing the whole turn; the full label appends ``:<template>``.
+ESSENTIAL_OUTSIDE_SKIP_SOURCE = "essential-context#outside-skipped"
 #: Source-label prefix of the in-band notice that names steering documents the
 #: no-follow descriptor read refused (a hard link, a reparse point that is not a
 #: link) and that were left out instead of refusing the whole turn; the full
@@ -129,6 +138,17 @@ class _OversizedEssentialSourceError(_UnreadableEssentialSourceError):
         self.size = size
 
 
+class _OutsideRootEssentialSourceError(MemberEssentialContextError):
+    """A source whose real path is not inside its admitted root; nothing was read.
+
+    Raised by :func:`_read` only for the containment failure, after the path
+    screen admitted both the source and the root. A resource the template
+    declares by absolute path and that fails this way is left out unread and
+    named (see :func:`_outside_declared_note`); every other source keeps
+    failing closed.
+    """
+
+
 #: Top-level workspace names the product itself writes as managed state. An entry
 #: the prefix prune catches under one of these names is the store working as
 #: intended; any other name is a prefix collision with ordinary project content.
@@ -151,13 +171,24 @@ _managed_roots: contextvars.ContextVar[_RootTable | None] = contextvars.ContextV
 )
 
 
-def _managed_root_table() -> _RootTable:
-    """The admin roots, the workspace roots, and their compared spellings, read now."""
+def _managed_root_table(*, refuse_unverifiable: bool = False) -> _RootTable:
+    """The admin roots, the workspace roots, and their compared spellings, read now.
+
+    With *refuse_unverifiable*, a root the path screen cannot admit raises
+    :class:`_ManagedEssentialSourceError` instead of keeping its lexical spelling.
+    """
     cfg = KiroCrewConfig.load()
     roots = [config_dir(), Path.home() / ".kiro/crew", Path.home() / ".kirocrew"]
     workspaces = [config_dir() / "workspace"]
     workspaces.extend(workspace_dir_for(name) for name in cfg.workspaces)
-    resolved_roots = {root: _comparable_root(root) for root in dict.fromkeys([*roots, *workspaces])}
+    resolved_roots = {
+        root: (
+            _comparable_root(root, refuse_unverifiable=True)
+            if refuse_unverifiable
+            else _comparable_root(root)
+        )
+        for root in dict.fromkeys([*roots, *workspaces])
+    }
     return roots, workspaces, resolved_roots
 
 
@@ -202,7 +233,12 @@ def _refuse_managed_source(path: Path) -> None:
     resolved, so those comparisons are exact; ``_read`` additionally re-checks the
     validated path, so the pre-validation call never has to be the deciding one.
     """
-    roots, workspaces, resolved_roots = _managed_roots.get() or _managed_root_table()
+    _refuse_managed_candidate(path, _managed_roots.get() or _managed_root_table())
+
+
+def _refuse_managed_candidate(path: Path, table: _RootTable) -> None:
+    """:func:`_refuse_managed_source` against one already-read root *table*."""
+    roots, workspaces, resolved_roots = table
     candidate = Path(os.path.abspath(path))
     in_workspace = False
     for workspace in workspaces:
@@ -255,16 +291,21 @@ def member_context_identity(member: str, *, member_is_id: bool = True) -> tuple[
     return member_id, configured_member.kiro_agent or "kirocrew"
 
 
-def _comparable_root(root: Path) -> Path:
+def _comparable_root(root: Path, *, refuse_unverifiable: bool = False) -> Path:
     """The spelling a root is compared against in :func:`_refuse_managed_source`.
 
     Resolved through ``validate_file_path`` when that screen admits the root, so
     a symlinked spelling matches resolved candidates. A root the screen refuses
     (a UNC share not on the trusted list, a sensitive path) is never handed to
     ``realpath`` -- on Windows that resolution is itself the network probe --
-    and keeps the lexical ``abspath`` comparison this check always had.
+    and keeps the lexical ``abspath`` comparison this check always had, unless
+    *refuse_unverifiable* asks for :class:`_ManagedEssentialSourceError` instead.
     """
     admitted = _admitted_root(root)
+    if admitted is None and refuse_unverifiable:
+        raise _ManagedEssentialSourceError(
+            f"Essential source {root}: managed root cannot be verified"
+        )
     return admitted if admitted is not None else Path(os.path.abspath(root))
 
 
@@ -295,13 +336,15 @@ def _read(path: Path, root: Path) -> str:
         _refuse_managed_source(path)
         admitted = validate_file_path(str(path))
         admitted_root = _admitted_root(root)
-        if (
-            admitted is None
-            or admitted_root is None
-            or not Path(admitted).is_relative_to(admitted_root)
-        ):
+        if admitted is None or admitted_root is None:
             raise ValueError("outside the admitted document root")
+        # Before the containment check: an outside source is skippable, managed
+        # state reached through a link is not.
         _refuse_managed_source(Path(admitted))
+        if not Path(admitted).is_relative_to(admitted_root):
+            raise _OutsideRootEssentialSourceError(
+                f"Essential source {path}: outside the admitted document root"
+            )
         # Pin this admitted parent, not the whole home. A racing ancestor
         # redirect cannot reach managed data allowed by the generic V1 gate.
         try:
@@ -331,7 +374,7 @@ def _read(path: Path, root: Path) -> str:
         # grammar finds no block, and a manual or fileMatch file reads as always.
         # A file without the mark decodes exactly as with plain utf-8.
         return data.decode("utf-8-sig").replace("\r\n", "\n").replace("\r", "\n")
-    except _UnreadableEssentialSourceError:
+    except (_UnreadableEssentialSourceError, _OutsideRootEssentialSourceError):
         raise
     except (OSError, ValueError) as exc:
         raise MemberEssentialContextError(f"Essential source {path}: {exc}") from exc
@@ -544,6 +587,34 @@ def _missing_declared_note(missing: list[Path], template: str) -> tuple[str, str
     )
 
 
+def _outside_declared_note(outside: list[Path], template: str) -> tuple[str, str] | None:
+    """The in-band note naming absolute declarations left out as outside home, or ``None``.
+
+    On a cloud desktop a folder under home (such as ``~/workplace``) is often
+    a link to another volume. kiro-cli follows the link and loads what the
+    template declares there; the snapshot does not read outside its root, so the
+    link is left out unread and named here, and the member still starts.
+    """
+    unique = list(dict.fromkeys(outside))
+    if not unique:
+        return None
+    listed = ", ".join(str(path) for path in unique[:_MAX_SKIPPED_LISTED])
+    more = len(unique) - _MAX_SKIPPED_LISTED
+    if more > 0:
+        listed += f", and {more} more"
+    return (
+        f"{ESSENTIAL_OUTSIDE_SKIP_SOURCE}:{template}",
+        f"DECLARED RESOURCES NOT IN THIS SNAPSHOT. {len(unique)} "
+        f"path{'' if len(unique) == 1 else 's'} the agent template declares by absolute "
+        f"path {'resolves' if len(unique) == 1 else 'resolve'} outside the home folder "
+        f"(for example through a linked folder) and {'was' if len(unique) == 1 else 'were'} "
+        f"left out unread: {listed}. The host may still load them natively, so their text "
+        "can appear elsewhere in your context; this note only says the snapshot does not "
+        "carry them. To load one here, ask the user to keep a regular copy of it inside "
+        "the home folder and declare that path.",
+    )
+
+
 def _matches(
     root: Path,
     pattern: str,
@@ -552,6 +623,7 @@ def _matches(
     missing: list[Path] | None = None,
     *,
     confined: bool = False,
+    outside: list[Path] | None = None,
 ) -> list[Path]:
     """Expand a declared glob with bounded directory work and no link traversal.
 
@@ -561,6 +633,13 @@ def _matches(
     points. A declared steering glob also passes *confined*: only a link whose
     target the path screen resolves inside *root* is left out, and any other link
     still refuses.
+
+    An ABSOLUTE declaration also passes *outside*: a link the path screen resolves
+    to a target outside *root* (``~/workplace`` linked to another volume) is appended
+    there and left out, unread and not descended into, instead of refusing. A
+    target that is managed memory state still refuses, and so does a link the
+    screen refuses or that stays inside *root* under a glob that does not leave it
+    out.
 
     A glob-free *pattern* naming a path that does not exist is appended to
     *missing*, when given, and matches nothing -- kiro-cli skips an absent
@@ -592,6 +671,22 @@ def _matches(
             return False
         target = validate_file_path(str(link))
         return target is None or not Path(target).is_relative_to(admitted_root)
+
+    def _left_out_outside(link: Path) -> bool:
+        """Whether *outside* leaves *link* out; it is then appended there, unread.
+
+        Nothing under the target is opened or listed. A managed-state target
+        raises: a link must not turn another member's store into a quiet skip.
+        """
+        if outside is None:
+            return False
+        target = validate_file_path(str(link))
+        if target is None or Path(target).is_relative_to(admitted_root):
+            return False
+        _refuse_managed_source(Path(target))
+        logger.warning("Essential source %s left out: it links outside %s", link, root)
+        outside.append(link)
+        return True
 
     if not any(c in pattern for c in "*?["):
         path = admitted_root / pattern
@@ -625,6 +720,8 @@ def _matches(
             if is_link_or_junction(path):
                 if linked is not None and not _escapes(path):
                     linked.append(path)
+                    continue
+                if _left_out_outside(path):
                     continue
                 raise MemberEssentialContextError(
                     f"Essential source {path}: linked document or directory"
@@ -692,6 +789,8 @@ def _matches(
                             ):
                                 linked.append(path)
                             continue
+                        if _left_out_outside(path):
+                            continue
                         raise MemberEssentialContextError(
                             f"Essential source {path}: linked document or directory"
                         )
@@ -713,9 +812,6 @@ def _matches(
 
 def resolve_template_path(template: str, project: str | None = None) -> Path | None:
     """Resolve one template, with a project override ahead of the global copy."""
-    from kiro_crew.agent import agent_spec_path
-    from kiro_crew.agent_discovery import _read_agent_spec, project_agent_files
-
     spec_path: Path | None = None
     if project:
         admitted = validate_file_path(project)
@@ -735,7 +831,7 @@ def resolve_template_path(template: str, project: str | None = None) -> Path | N
                 spec_path = path
     if spec_path is None:
         try:
-            spec_path = agent_spec_path(template)
+            spec_path = agent_mod.agent_spec_path(template)
         except ValueError as exc:
             raise MemberEssentialContextError(f"Essential template {template!r}: {exc}") from exc
     if spec_path is None:
@@ -747,10 +843,89 @@ def resolve_template_path(template: str, project: str | None = None) -> Path | N
         from kiro_crew.config.paths import mate_agents_dir
 
         try:
-            spec_path = agent_spec_path(template, agents_dir=mate_agents_dir())
+            spec_path = agent_mod.agent_spec_path(template, agents_dir=mate_agents_dir())
         except ValueError as exc:
             raise MemberEssentialContextError(f"Essential template {template!r}: {exc}") from exc
     return spec_path
+
+
+def read_template_spec(
+    template: str, project: str | None, *, operation: str, source: str
+) -> tuple[Path, dict[str, Any] | None] | None:
+    """Resolve and parse one template; the spec is ``None`` when it is unusable.
+
+    :func:`resolve_template_path` answers first. A template it does not find is
+    looked up by declared name in the global agents directory through
+    :func:`linked_global_template_spec`, so a linked global spec is read once,
+    behind the managed-state fence.
+    """
+    spec_path = resolve_template_path(template, project)
+    if spec_path is not None:
+        return spec_path, _read_agent_spec(spec_path, operation=operation, source=source)
+    try:
+        return linked_global_template_spec(template, operation=operation, source=source)
+    except ValueError as exc:
+        raise MemberEssentialContextError(f"Essential template {template!r}: {exc}") from exc
+
+
+def linked_global_template_spec(
+    template: str, *, operation: str, source: str
+) -> tuple[Path, dict[str, Any]] | None:
+    """The global spec declaring *template*, read through links in the agents directory.
+
+    For a template :func:`kiro_crew.agent.agent_spec_path` does not find: that
+    resolver serves spec writers and refuses links. Each entry is read by the
+    hardened reader under :func:`_managed_template_target_refused`, so a target
+    outside the agents directory and inside managed memory or member private
+    state reads as unusable, and a managed root that cannot be verified refuses
+    every such target. Claimants with differing content raise
+    :class:`~kiro_crew.agent_discovery.AmbiguousAgentSpecError`.
+    """
+    if not is_registered_agent_name(template):
+        return None
+    agents_dir = agent_mod.kiro_agents_dir_path()
+    if not agents_dir.is_dir():
+        return None
+    return declared_spec_entry(
+        agents_dir,
+        template,
+        operation=operation,
+        source=source,
+        fence=_managed_template_target_refused(agents_dir),
+    )
+
+
+def _managed_template_target_refused(agents_dir: Path) -> Callable[[Path], bool]:
+    """A fence that refuses a spec target inside managed memory or member state.
+
+    The fence judges the resolved target and the opened file, so a target inside
+    *agents_dir*, resolved through ``validate_file_path``, is admitted on what is
+    actually read. That covers every regular entry and a link between entries,
+    including when the agents directory itself sits under a managed root, as
+    ``KIRO_HOME`` does under ``KIROCREW_HOME`` in a pod. An agents directory the
+    path screen refuses admits nothing this way.
+    """
+    admitted = validate_file_path(str(agents_dir))
+    agents_root = None if admitted is None else Path(admitted)
+    # Read once for this lookup. A later lookup must observe new configuration
+    # and link targets through the same guarded resolver, never a cached grant.
+    try:
+        table: _RootTable | None = _managed_root_table(refuse_unverifiable=True)
+    except _ManagedEssentialSourceError:
+        table = None
+
+    def refused(path: Path) -> bool:
+        if agents_root is not None and Path(os.path.abspath(path)).is_relative_to(agents_root):
+            return False
+        if table is None:
+            return True
+        try:
+            _refuse_managed_candidate(path, table)
+        except _ManagedEssentialSourceError:
+            return True
+        return False
+
+    return refused
 
 
 def resolve_relative_prompt_path(
@@ -851,13 +1026,11 @@ def documents_for_member(
     template under its ``.kiro/agents`` (and anchors that template's relative
     prompt). No guide, steering or resource is read from it.
     """
-    from kiro_crew.agent import is_managed_prompt
-    from kiro_crew.agent_discovery import _read_agent_spec
-
     documents: list[tuple[str, str]] = []
     seen: set[Path] = set()
     skipped: list[Path] = []
     linked: list[Path] = []
+    outside: list[Path] = []
     missing: list[Path] = []
     unreadable: list[Path] = []
     oversized: list[tuple[Path, int]] = []
@@ -875,6 +1048,7 @@ def documents_for_member(
             if native_only
             else (
                 _skipped_linked_note(linked),
+                _outside_declared_note(outside, template),
                 _skipped_unreadable_note(unreadable, template),
                 _skipped_oversized_note(oversized, template),
                 _skipped_managed_note(skipped, template),
@@ -889,12 +1063,27 @@ def documents_for_member(
                 _mark_core(note[0])
         return documents
 
-    def add(path: Path, root: Path, *, steering: bool = False, body: str | None = None) -> None:
+    def add(
+        path: Path,
+        root: Path,
+        *,
+        steering: bool = False,
+        body: str | None = None,
+        outside_ok: bool = False,
+    ) -> None:
         if Path(os.path.abspath(path)) in seen:
             return
         if body is None:
             try:
                 body = _read(path, root)
+            except _OutsideRootEssentialSourceError as exc:
+                if not outside_ok:
+                    raise
+                # Declared by absolute path, but its real path leaves home (a
+                # linked ~/workplace on a cloud desktop). Left out unread and named.
+                logger.warning("Declared resource %s not loaded: %s", path, exc)
+                outside.append(path)
+                return
             except _UnreadableEssentialSourceError as exc:
                 if not steering:
                     raise
@@ -999,12 +1188,14 @@ def documents_for_member(
                 add(path, project_root, steering=True)
 
     template_root = project or template_dir
-    spec_path = resolve_template_path(template, template_root)
-    if spec_path is None:
+    template_spec = read_template_spec(
+        template, template_root, operation="member_essentials", source="context"
+    )
+    if template_spec is None:
         if template != "kirocrew":
             raise MemberEssentialContextError(f"Essential template {template!r}: not found")
         return _finish()
-    spec = _read_agent_spec(spec_path, operation="member_essentials", source="context")
+    spec_path, spec = template_spec
     if spec is None:
         raise MemberEssentialContextError(f"Essential template {spec_path}: cannot be read safely")
     # Native file resources are relative to the project cwd or user home.
@@ -1020,7 +1211,7 @@ def documents_for_member(
     # A fork inherits the managed contract; essentials omit it because the
     # session-start injection delivers it once, regardless of template name or
     # install directory (see is_managed_prompt).
-    if prompt and not is_managed_prompt(prompt):
+    if prompt and not agent_mod.is_managed_prompt(prompt):
         if prompt.startswith("file://"):
             path = Path(prompt[7:]).expanduser()
             if path.is_absolute():
@@ -1081,10 +1272,23 @@ def documents_for_member(
     if include_project and isinstance(resources, list):
         if _declared_document_count(resources) > _MAX_DOCUMENTS:
             raise MemberEssentialContextError(f"Essential template {spec_path}: too many resources")
+        absolute: set[Path] = set()
         for match, root in _resource_paths(
-            resources, source_root, absolute_root, skipped, missing, linked=linked
+            resources,
+            source_root,
+            absolute_root,
+            skipped,
+            missing,
+            linked=linked,
+            outside=outside,
+            absolute_out=absolute,
         ):
-            add(match, root, steering="steering" in match.parts)
+            add(
+                match,
+                root,
+                steering="steering" in match.parts,
+                outside_ok=match in absolute,
+            )
     return _finish()
 
 
@@ -1143,14 +1347,23 @@ def _resource_paths(
     *,
     linked: list[Path] | None = None,
     markdown_only: bool = True,
+    outside: list[Path] | None = None,
+    absolute_out: set[Path] | None = None,
 ) -> list[tuple[Path, Path]]:
     """Declared ``file://`` matches; an absent literal one goes to *missing* instead.
+
+    When *absolute_out* is given, every match of an ABSOLUTE declaration is also
+    added to it, so a reader can tell those apart from project-relative ones.
 
     A caller that passes *linked* has a steering glob (a ``steering`` component in
     its pattern, the test :func:`documents_for_member` applies to a match) leave a
     link that stays inside its root out and name it there, as the implicit steering
     scan does. A link that resolves elsewhere, and a link under any other glob,
     still refuses, as it does for a caller that passes none.
+
+    A caller that passes *outside* has an ABSOLUTE declaration leave out a link
+    whose target resolves outside its root and name it there (see
+    :func:`_matches`). A relative declaration never does.
     """
     paths: list[tuple[Path, Path]] = []
     absent: list[Path] = [] if missing is None else missing
@@ -1168,10 +1381,15 @@ def _resource_paths(
         else:
             pattern = str(path)
         left_out = linked if "steering" in Path(pattern).parts else None
-        for match in _matches(root, pattern, skipped, left_out, absent, confined=True):
+        escaping = outside if path.is_absolute() else None
+        for match in _matches(
+            root, pattern, skipped, left_out, absent, confined=True, outside=escaping
+        ):
             wanted = not markdown_only or match.suffix.lower() == ".md"
             if wanted and (match, root) not in paths:
                 paths.append((match, root))
+                if absolute_out is not None and path.is_absolute():
+                    absolute_out.add(match)
                 if markdown_only and len(paths) > _MAX_DOCUMENTS:
                     raise MemberEssentialContextError(
                         "Essential resources exceed the document limit"
@@ -1191,13 +1409,25 @@ def _declared_file_size(path: Path) -> int:
 
 
 def _projected_resource_paths(
-    definition: dict, cwd: str, *, markdown_only: bool = True, linked: list[Path] | None = None
+    definition: dict,
+    cwd: str,
+    *,
+    markdown_only: bool = True,
+    linked: list[Path] | None = None,
+    outside: list[Path] | None = None,
+    absolute_out: set[Path] | None = None,
 ) -> list[tuple[Path, Path]]:
     resources = definition.get("resources", [])
     if not isinstance(resources, list) or any(not isinstance(r, (str, dict)) for r in resources):
         raise MemberEssentialContextError("Projected resources must be a list of declarations")
     return _resource_paths(
-        resources, Path(cwd), Path.home(), linked=linked, markdown_only=markdown_only
+        resources,
+        Path(cwd),
+        Path.home(),
+        linked=linked,
+        markdown_only=markdown_only,
+        outside=outside,
+        absolute_out=absolute_out,
     )
 
 
@@ -1261,11 +1491,19 @@ def projected_resource_documents(definition: dict, cwd: str) -> dict[str, str]:
     non-link reparse point).
     """
     documents: dict[str, str] = {}
-    for path, root in _projected_resource_paths(definition, cwd, linked=[]):
+    absolute: set[Path] = set()
+    for path, root in _projected_resource_paths(
+        definition, cwd, linked=[], outside=[], absolute_out=absolute
+    ):
         if str(path) in documents:
             continue
         try:
             body = _read(path, root)
+        except _OutsideRootEssentialSourceError as exc:
+            if path not in absolute:
+                raise
+            logger.warning("Declared resource %s not loaded: %s", path, exc)
+            continue
         except _UnreadableEssentialSourceError as exc:
             if "steering" not in path.parts:
                 raise

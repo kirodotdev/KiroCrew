@@ -43,21 +43,53 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "description": "Log out of the Kiro sign-in your agents use, or sign in with another account."
   },
   {
-    "id": "browser.attach-token",
-    "labelKey": "pages.settings.browserPanel.token_label",
+    "id": "browser.max-frame-rate",
+    "label": "Max frame rate",
+    "labelKey": "pages.settings.browserPanel.max_fps_label",
+    "hint": "60 is the most this machine streams. Nothing is sent while the card is off screen.",
     "tab": "browser",
-    "type": "input",
+    "type": "select",
     "occurrence": 1,
-    "label": "Extension token (optional)"
+    "configKey": "browser.live.max_fps"
   },
   {
-    "id": "browser.use-the-built-in-browser",
-    "label": "Use the built-in browser",
-    "labelKey": "pages.settings.browserPanel.use_builtin_label",
+    "id": "browser.quality",
+    "label": "Quality",
+    "labelKey": "pages.settings.browserPanel.quality_label",
+    "hint": "Auto adapts to your link: a slow link lowers the frame rate first and keeps the picture sharp.",
+    "tab": "browser",
+    "type": "select",
+    "occurrence": 1,
+    "configKey": "browser.live.quality"
+  },
+  {
+    "id": "browser.run-with-no-window",
+    "label": "Run with no window",
+    "labelKey": "pages.settings.browserPanel.headless_label",
+    "hint": "Kiro’s Chromium runs with no window, for a machine with no display. Turning this off keeps Kiro’s Chromium, with a window.",
+    "tab": "browser",
+    "type": "toggle",
+    "occurrence": 1
+  },
+  {
+    "id": "browser.show-the-live-view-in-chat",
+    "label": "Show the live view in chat",
+    "labelKey": "pages.settings.browserPanel.live_enabled_label",
+    "hint": "When Kiro uses the browser, the turn shows a live card. Click the picture to take over.",
     "tab": "browser",
     "type": "toggle",
     "occurrence": 1,
-    "configKey": "dashboard.use_builtin_browser"
+    "configKey": "browser.live.enabled"
+  },
+  {
+    "id": "browser.which-browser",
+    "label": "Which browser",
+    "labelKey": "pages.settings.browserPanel.choice_label",
+    "hint": "Automatic tries your Chrome, then Edge on Windows, then Kiro’s Chromium. A hand pick skips that order.",
+    "tab": "browser",
+    "type": "select",
+    "occurrence": 1,
+    "configKey": "browser.choice"
   },
   {
     "id": "channels.agent-sessions-slack",
@@ -238,6 +270,20 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "params": {
       "channel": "teams"
     }
+  },
+  {
+    "id": "channels.code-channels-slack",
+    "label": "Code channels (Slack)",
+    "labelKey": "pages.settings.slackPanel.slackCode.code_channels",
+    "labelSuffix": "Slack",
+    "description": "On: lets the agent open a Slack channel for each coding task, invite you to it, and post and keep notes there under its own name. Your Slack app gets 5 permissions for this. Off: nothing changes, and you can remove the permissions in Slack later. Slack is rolling code channels out gradually, so your workspace may not have them yet.",
+    "tab": "channels",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "channel": "slack"
+    },
+    "configKey": "slack.code_channels"
   },
   {
     "id": "channels.connect-new-sessions-to-slack-automatically-slack",
@@ -1907,6 +1953,18 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "developer.also-send-screenshots-of-the-agent-s-browser-tab",
+    "label": "Also send screenshots of the agent's browser tab",
+    "labelKey": "pages.developer.featurePreviewsTab.decisions_browser_images",
+    "description": "On by default once a decision model is on; turn it off to keep screenshots on this machine. Sends a screenshot before and after a step to check it, and a screenshot to find a target drawn on a canvas, which the outline cannot see. No screenshot is taken while a password field is on the page or while you have taken over the browser. Only the hosted decision model accepts screenshots; a local model gets the outline only.",
+    "tab": "developer",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "feature-previews"
+    }
+  },
+  {
     "id": "developer.also-send-snippets-of-recalled-memories-so-jev-can-drop-the-ones-that-do-not-help",
     "labelKey": "pages.developer.featurePreviewsTab.decisions_memory_text",
     "tab": "developer",
@@ -2062,6 +2120,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "params": {
       "sub": "feature-previews"
     }
+  },
+  {
+    "id": "developer.remote-dispatch",
+    "label": "Remote dispatch",
+    "labelKey": "pages.developer.featurePreviewsTab.remote_dispatch",
+    "description": "Lets Ultra Mode chats run tasks on machines you've connected under Remote Crew. Nothing is sent until a machine is connected.",
+    "tab": "developer",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "feature-previews"
+    },
+    "configKey": "work_ledger.remote_dispatch"
   },
   {
     "id": "developer.reply-threads-on-mate-chat-messages",

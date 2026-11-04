@@ -5,6 +5,16 @@ import type { useAppDispatch } from '../../store'
 import { setAgentSwitchNotice } from '../../store/chatSlice'
 import { agentSwitchErrorNotice } from '../../utils/agentSwitchFeedback'
 
+/* The harness that compacts this session on its own, when the popover should
+   say so and that a threshold set here compacts sooner: only while the session
+   follows the global. An override or an agent default is an explicit threshold,
+   and the gate compacts a harness-managed backend at it. */
+export function harnessManagedNoteBackend(ac: { pct: number | null; agent_pct?: number | null; harness_managed?: string | null } | null): string | null {
+  if (!ac || !ac.harness_managed) return null
+  if (ac.pct != null || ac.agent_pct != null) return null
+  return ac.harness_managed
+}
+
 /* The per-session auto-compact threshold behind the context popover's slider:
    read lazily on open, written through one per-slot chain so writes commit in
    issue order, debounced per slot and flushed (never dropped) on a slot

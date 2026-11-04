@@ -80,6 +80,11 @@ export type McpManagedServer = {
   // `recommendation` — an older gateway does not send it, and its absence must
   // read as "no obstacle known", not as an obstacle.
   pooling_blocked_by_env?: boolean
+  // True when, with page-wide sharing on, the env would leave this server with
+  // no shared declaration at all. Reported even while sharing is off, so the
+  // confirm for turning sharing on can leave it out of what will share.
+  // Optional: an older gateway does not send it.
+  pooling_blocked_by_env_when_shared?: boolean
   // Sharing is on and the server's env names a vault secret, so the gateway
   // starts it on a backend of its own instead of sharing one or leaving it to
   // the session.

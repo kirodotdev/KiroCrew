@@ -584,6 +584,12 @@ Add a new protocol to `ALLOWED_PROTOCOLS` in that file, and only there. Each
 addition widens what a model-authored or user-pasted link can launch on the host,
 so treat it as a security change, not a formatting one.
 
+In a desktop-app pane (`isDesktopAppPane`), `MdAnchor` opens an editor link
+with `window.open` on a plain click, because the frame's CSP `frame-src`
+refuses an in-place navigation to a custom scheme. Other pages keep in-place
+navigation. In the desktop app that call reaches the window-open handler in
+`website/electron/external-scheme.js`, which asks the user before opening it.
+
 How a refused destination RENDERS is part of the contract (issue #9925): the
 transform's rejection sentinel is `''`, and `MdAnchor`'s `!href` guard renders
 the label as inert text with **no anchor** — never `<a href="">`, whose empty

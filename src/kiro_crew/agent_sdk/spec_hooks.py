@@ -337,6 +337,110 @@ def _reject(agent_id: str, event: object, value: object, reason: str) -> None:
     _sel_hook_rejected(str(event), str(value), f"spec hook for {agent_id}: {reason}")
 
 
+class OverlongHookCommand(NamedTuple):
+    """A spec hook left out because its command is over its form's limit.
+
+    ``event`` is the event or trigger as the spec spells it, ``matcher`` its
+    matcher ("" when none), ``length`` the command's length in characters and
+    ``limit`` the bound it passed: :data:`_MAX_COMMAND_LEN` for the object form,
+    the document validator's payload cap for a hook document.
+    """
+
+    event: str
+    matcher: str
+    length: int
+    limit: int
+
+
+def _overlong_reason(matcher: object, length: int, limit: int) -> str:
+    """The log reason for a command over the limit, naming the fix."""
+    shown = _diagnostic(matcher) if isinstance(matcher, str) and matcher else "none"
+    return (
+        f"command is {length:,} characters (matcher {shown}), over the "
+        f"{limit:,}-character limit; put the logic in a script file "
+        "and call that script from the hook"
+    )
+
+
+def _overlong_commands(spec: dict[str, Any]) -> list[OverlongHookCommand]:
+    """The spec's hooks that are left out only because their command is too long.
+
+    Reads either shape (see the module docstring). An entry with an unknown event
+    or trigger is left out, since it is dropped for that reason first.
+    """
+    # circular import: agent imports hooks, which this module imports at load time.
+    from kiro_crew.agent import (
+        _KAS_TRIGGER_CANONICAL,
+        _MAX_HOOK_PAYLOAD_LEN,
+        _MAX_SPEC_HOOK_DOCUMENTS,
+        _event_for_hook_trigger,
+    )
+
+    value = spec.get("hooks")
+    found: list[OverlongHookCommand] = []
+    if isinstance(value, dict):
+        for key, entries in value.items():
+            event = _OBJECT_EVENT_TO_HOOK_EVENT.get(key) if isinstance(key, str) else None
+            if event is None or not isinstance(entries, list):
+                continue
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                command = entry.get("command")
+                if isinstance(command, str) and len(command) > _MAX_COMMAND_LEN:
+                    matcher = entry.get("matcher") if event in _TOOL_EVENTS else None
+                    found.append(
+                        OverlongHookCommand(
+                            key,
+                            matcher if isinstance(matcher, str) else "",
+                            len(command),
+                            _MAX_COMMAND_LEN,
+                        )
+                    )
+    elif isinstance(value, list):
+        # The normalizer's own document slice and trigger aliases, so a hook it
+        # would drop for another reason is not blamed on its length.
+        for doc in value[:_MAX_SPEC_HOOK_DOCUMENTS]:
+            if not isinstance(doc, dict):
+                continue
+            trigger = doc.get("trigger")
+            canonical = (
+                _KAS_TRIGGER_CANONICAL.get(trigger.lower()) if isinstance(trigger, str) else None
+            )
+            action = doc.get("action")
+            if (
+                not isinstance(action, dict)
+                or action.get("type") != "command"
+                or not _event_for_hook_trigger(canonical)
+            ):
+                continue
+            command = action.get("command")
+            # The normalizer drops a document over its payload cap before
+            # :func:`_hook` sees it, so the document's own cap is the limit here.
+            if isinstance(command, str) and len(command) > _MAX_HOOK_PAYLOAD_LEN:
+                matcher = doc.get("matcher")
+                found.append(
+                    OverlongHookCommand(
+                        str(trigger),
+                        matcher if isinstance(matcher, str) else "",
+                        len(command),
+                        _MAX_HOOK_PAYLOAD_LEN,
+                    )
+                )
+    return found
+
+
+def overlong_spec_hook_commands(
+    agent_id: str, project_dir: str | None = None, *, session_key: str = ""
+) -> list[OverlongHookCommand]:
+    """The active spec's hooks that do not run because their command is too long.
+
+    For the session-start notice. Reads the spec :func:`crew_fired_spec_hooks`
+    reads; raises when it cannot be read.
+    """
+    return _overlong_commands(_agent_spec(agent_id, project_dir, session_key))
+
+
 def _hook(agent_id: str, event: str, index: int, entry: dict, timeout: int) -> ScriptHook | None:
     command = entry.get("command")
     if isinstance(command, str) and len(command) > _MAX_COMMAND_LEN:
@@ -420,6 +524,15 @@ def _from_documents(
     # circular import: agent imports hooks, which this module imports at load time.
     from kiro_crew.agent import _event_for_hook_trigger, normalize_spec_hooks
 
+    # The normalizer drops a document whose command is too long before this loop
+    # sees it, so name the hook and the fix here.
+    for overlong in _overlong_commands({"hooks": hooks}):
+        logger.warning(
+            "agent %r: spec hook on %s does not run on this backend: %s",
+            agent_id,
+            _diagnostic(overlong.event),
+            _overlong_reason(overlong.matcher, overlong.length, overlong.limit),
+        )
     out: list[ScriptHook] = []
     for index, doc in enumerate(normalize_spec_hooks(hooks)):
         if len(out) > _MAX_SPEC_HOOKS:
@@ -1132,18 +1245,28 @@ async def hook_projection_stale(provider: object, agent_id: str) -> bool:
         # circular import: the ACP layer imports the config loader, which sits
         # below this module; resolved at call time like the other seams here.
         from kiro_crew.acp.kas_agents import pre_tool_hook_matchers
-        from kiro_crew.acp.kas_permissions import hook_gated_capabilities
+        from kiro_crew.acp.kas_hook_mcp import approved_mcp_servers
+        from kiro_crew.acp.kas_permissions import (
+            cached_mcp_tool_names,
+            hook_gated_auto_approved,
+            hook_gated_capabilities,
+        )
 
         # A built-in mode with no spec: only the Hooks page's hooks count.
         spec = _agent_spec(agent_id, None, session_key)
-        return hook_gated_capabilities(pre_tool_hook_matchers(agent_id, spec))
+        covered = hook_gated_capabilities(
+            pre_tool_hook_matchers(agent_id, spec),
+            mcp_servers=approved_mcp_servers(approved),
+            mcp_tool_names=cached_mcp_tool_names,
+        )
+        return hook_gated_auto_approved(covered, approved)
 
     try:
-        covered = await asyncio.to_thread(_covered)
+        still_approved = await asyncio.to_thread(_covered)
     except Exception:  # noqa: BLE001 - re-projecting is the safe direction
         logger.warning("PreToolUse hook coverage for %r could not be read; re-projecting", agent_id)
         return True
-    return bool(covered & approved)
+    return bool(still_approved)
 
 
 #: :func:`invalidate_stale_kas_session`'s answers.

@@ -44,6 +44,12 @@ from kiro_crew.acp.session_handle import AcpSessionHandle
 
 pytestmark = pytest.mark.xdist_group(name="tree_scan_session_handle_bindings")
 
+SHARED_BINDINGS_CHECKS = (
+    "the_field_scan_counts_every_read_and_write_shape",
+    "the_signature_digest_ignores_an_object_address_in_either_spelling",
+    "the_bound_function_scans_include_every_static_method",
+)
+
 #: Member -> (kind, coroutine, signature digest, owning module). Frozen at the split: the
 #: kind, coroutine flag and signature are BASE's; the owner is where the member lives now.
 _MEMBERS: dict[str, tuple[str, object, str, str]] = {
@@ -231,7 +237,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
         "b60c5fea256e",
         "session_handle_permissions",
     ),
-    "approve_tool": ("function", True, "1241f87a8dc0", "session_handle_permissions"),
+    "approve_tool": ("function", True, "adc58eafd8e0", "session_handle_permissions"),
     "available_models": ("property", False, "92d6193dbe19", "session_handle_class"),
     "awaiting_permission": ("property", False, "a6632a57e602", "session_handle_class"),
     "bind_session_key": ("function", False, "57eca86d38c3", "session_handle_lifecycle"),
@@ -293,6 +299,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "report_native_children": ("function", False, "ccfc57bdf135", "session_handle_native_children"),
     "send_command": ("function", True, "068aab573b43", "session_handle_lifecycle"),
     "served_model": ("property", False, "bb418bb7ece8", "session_handle_class"),
+    "session_activity_at": ("property", False, "c2eec8a41739", "session_handle_class"),
     "session_id": ("property", False, "bb418bb7ece8", "session_handle_class"),
     "set_config_option": ("function", True, "d17f94a912fd", "session_handle_model_selection"),
     "set_mode": ("function", True, "50a35c0990a8", "session_handle_model_selection"),
@@ -419,15 +426,6 @@ def _signature_digest(fn: Any) -> str:
         params[0] = params[0].replace(annotation=inspect.Parameter.empty)
     text = _ADDRESS.sub(" at 0x", str(sig.replace(parameters=params)))
     return hashlib.sha256(text.encode()).hexdigest()[:12]
-
-
-def test_the_signature_digest_ignores_an_object_address_in_either_spelling() -> None:
-    def f(x: object = None) -> None: ...
-
-    lower = _ADDRESS.sub(" at 0x", "(x=<object object at 0x7f1a2b3c4d5e>)")
-    upper = _ADDRESS.sub(" at 0x", "(x=<object object at 0x000001A9BFA701B0>)")
-    assert lower == upper == "(x=<object object at 0x>)"
-    assert len(_signature_digest(f)) == 12
 
 
 def _member_function(name: str) -> Any:
@@ -642,16 +640,6 @@ def _fields(fns: list[ast.FunctionDef | ast.AsyncFunctionDef]) -> tuple[set[str]
     return written - members, read - written - members
 
 
-def test_the_field_scan_counts_every_read_and_write_shape() -> None:
-    tree = ast.parse(
-        "def f(self):\n"
-        "    self.a = 1\n    del self.b\n    self.c[k] = v\n    del self.d[k]\n"
-        "    self.e.add(1)\n    self.f.setdefault(k, v)\n    setattr(self, 'g', 1)\n"
-        "    return self.h, getattr(self, 'i', None), hasattr(self, 'j'), self.e\n"
-    )
-    assert _fields([tree.body[0]]) == ({"a", "b", "c", "d", "e", "f", "g"}, {"h", "i", "j"})
-
-
 def _listed(doc: str, label: str) -> set[str]:
     match = re.search(rf"{label}: (.*?)\.(?:\n\n|\n?$)", doc, re.S)
     return set(re.findall(r"``(\w+)``", match.group(1))) if match else set()
@@ -671,21 +659,6 @@ def test_owners_log_under_the_session_handle_logger(owner: str) -> None:
     logger = vars(sys.modules[owner]).get("logger", session_handle.logger)
     assert logger is session_handle.logger
     assert session_handle.logger.name == "kiro_crew.acp.session_handle"
-
-
-def test_the_bound_function_scans_include_every_static_method() -> None:
-    statics = {
-        name: f"{_PACKAGE}.{home}"
-        for name, (kind, _, _, home) in _MEMBERS.items()
-        if kind == "staticmethod" and home != _CLASS_HOME
-    }
-    assert statics
-    scanned = {
-        fn.name
-        for owner in set(statics.values())
-        for fn in _self_functions(_tree(sys.modules[owner]), owner)
-    }
-    assert set(statics) <= scanned
 
 
 def _owner_imports(tree: ast.Module) -> set[str]:

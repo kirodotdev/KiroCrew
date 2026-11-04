@@ -557,6 +557,43 @@ describe('ThemeExperienceLayer', () => {
     expect(AudioMock).not.toHaveBeenCalled()
   })
 
+  it('plays a category trigger before the generic one and leaves a user-chosen category alone', () => {
+    localStorage.setItem('mc-theme-consent-bikini-bottom', 'consented-v2')
+    const AudioMock = vi.fn(() => ({
+      loop: false,
+      play: () => Promise.resolve(),
+      pause() {},
+      addEventListener() {},
+    }))
+    ;(globalThis as unknown as { Audio: unknown }).Audio = AudioMock
+    setTheme({
+      assets: l2Assets({
+        audio: {
+          triggers: {
+            'category:approval': { src: 'audio/approve.wav', volume: 0.5 },
+            notification: { src: 'audio/chime.wav', volume: 0.5 },
+          },
+          ambient: null,
+        },
+      }),
+    })
+    const { unmount } = render(<ThemeExperienceLayer />)
+    window.dispatchEvent(new CustomEvent('mc-notification', { detail: { kind: 'approval' } }))
+    expect(AudioMock).toHaveBeenCalledTimes(1)
+    expect(AudioMock).toHaveBeenCalledWith(expect.stringContaining('/audio/approve.wav'))
+    AudioMock.mockClear()
+    window.dispatchEvent(new CustomEvent('mc-notification', { detail: { kind: 'cron' } }))
+    expect(AudioMock).toHaveBeenCalledTimes(1)
+    expect(AudioMock).toHaveBeenCalledWith(expect.stringContaining('/audio/chime.wav'))
+    // A sound the user picked for this category in Settings keeps playing;
+    // the theme stays silent for it.
+    AudioMock.mockClear()
+    localStorage.setItem('mc-notification-sound', JSON.stringify({ perCategory: { all: 'chime', approval: 'ding' } }))
+    window.dispatchEvent(new CustomEvent('mc-notification', { detail: { kind: 'approval' } }))
+    expect(AudioMock).not.toHaveBeenCalled()
+    unmount()
+  })
+
   // ── §3.1 manifest-driven overlay placement ──
   it('renders a declared corner overlay with corner placement and a legacy string overlay fullscreen', () => {
     setTheme({

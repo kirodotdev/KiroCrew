@@ -14,6 +14,7 @@ from kiro_crew.dashboard.mcp_banner_dedupe import (
     forget_mcp_banner,
     rejected_banner_is_repeat,
 )
+from kiro_crew.dashboard.mcp_oauth_provenance import record_emitted
 from kiro_crew.dashboard.urls import is_loopback
 from kiro_crew.security import sanitized_oauth_endpoint, sanitized_oauth_endpoint_display
 
@@ -488,6 +489,11 @@ def _emit_mcp_oauth_request(
     }
     if card_owned:
         meta["card_owned"] = True
+    # Recorded before the append, so the first read of this row (a refetch the
+    # append's broadcast may trigger) already finds it. Every later read of the
+    # banner goes through `_redact_meta_for_role`, which shows the link only for
+    # a (child, URL) pair recorded here; see `mcp_oauth_provenance`.
+    record_emitted(minted_by, oauth_url)
     slot.append(
         "mcp_oauth",
         content,

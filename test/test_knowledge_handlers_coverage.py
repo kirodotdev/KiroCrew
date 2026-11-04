@@ -550,7 +550,7 @@ class TestExport:
         async with _client(_make_app(store)) as client:
             resp = await client.get("/api/knowledge/export")
             assert resp.status == 200
-            assert "filename=knowledge.knowledge" in resp.headers["Content-Disposition"]
+            assert "filename*=UTF-8''knowledge.knowledge" in resp.headers["Content-Disposition"]
 
     @pytest.mark.asyncio
     async def test_export_all_sanitizes_namespace_into_filename(self, store):
@@ -560,7 +560,8 @@ class TestExport:
             disp = resp.headers["Content-Disposition"]
         # Path separators and dots-with-slashes cannot survive into the
         # suggested filename, so the download cannot escape its directory.
-        assert "/" not in disp.split("filename=")[1]
+        name = disp.split("filename*=UTF-8''")[1]
+        assert "/" not in name and "%2F" not in name
         assert "work" in disp
 
 

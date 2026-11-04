@@ -124,7 +124,9 @@ def test_serialize_output_is_pure_json() -> None:
     s = _full_stream()
     text = serialize_events([s.log(TS, message="m")])
     # json.loads must succeed — proves no pickle/marshal framing.
-    json.loads(text)
+    assert json.loads(text) == [
+        {"run_id": "wf_test", "seq": 0, "ts": TS, "type": "log", "data": {"message": "m"}}
+    ]
 
 
 def test_deserialize_rejects_non_json() -> None:

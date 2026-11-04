@@ -1,22 +1,11 @@
 """Tests for the cron-cost-optimize scan helper.
 
-The scan tells a user to change a job that already works, so the tests pin the
-direction of every wrong answer it could give:
+A reasoning prompt must never be sent to the script path (the job would silently stop
+working), unreadable history is not "did nothing", and bad payloads give a message.
+`test_ticket_examples_are_caught` keeps the ASBX cost-analysis prompts verbatim.
 
-* A prompt that reasons must never be sent down the script path. That failure
-  hides -- the job stays green and quietly stops doing its work.
-* A job whose run history could not be READ must never be reported as a job that
-  did nothing. Those are three states, not two, and conflating them would turn a
-  masked directory into a confident recommendation.
-* A half-typed or malformed payload must produce a plain message, not a crash.
-
-The four prompts in `test_ticket_examples_are_caught` are the real cases from the
-ASBX cost analysis, kept verbatim so a pattern change cannot quietly stop
-catching the traffic this skill was written for.
-
-Input is the JSON `cron_list json=true` produces. The script reads nothing from
-disk, deliberately: the job store is ownership-scoped by that tool and the run
-history is readable only by the gateway.
+Input is `cron_list json=true` output; the script reads no disk, since only the gateway
+can read run history.
 """
 
 from __future__ import annotations
@@ -353,12 +342,8 @@ class TestTruncatedPrompt(unittest.TestCase):
 class TestNonEnglishPromptsAreNotJudged(unittest.TestCase):
     """An empty blocker set means "unreadable" here, not "nothing blocks".
 
-    Every blocker is an English word list, so a Chinese or German prompt matches
-    none of them. Read naively that looks like a clean bill of health and points
-    at the DANGEROUS verdict: move-to-script for a job that asks a model to
-    summarize and decide. The failure is silent -- the rewritten job stays green
-    and quietly stops doing its work -- so an unreadable prompt has to refuse,
-    exactly as a truncated one does.
+    Blockers are English word lists, so a Chinese or German prompt matches none and
+    would get the silent move-to-script verdict. It must refuse, like a truncated one.
     """
 
     def test_a_chinese_judgement_prompt_is_not_cleared_for_script(self) -> None:

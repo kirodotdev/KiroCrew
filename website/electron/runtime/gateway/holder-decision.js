@@ -82,36 +82,45 @@ function createHolderDecision({
    * the previous version's detached gateway runs from a sibling folder and
    * isCurrentBundleGateway (this bundle only) does not see it. This recognizes
    * exactly that gateway: the one listener's command starts with this app's
-   * own backend-dist path with the folder named for this app's version
-   * replaced by the version the gateway itself reports.
+   * own backend-dist path with one version-named folder replaced by the
+   * version the gateway itself reports.
+   *
+   * The folder is found by that swap, not by app.getVersion(): a packager can
+   * name folders by its own build number (`0.12.0.4`) while the app reports
+   * its release version (`0.12.0-rc.5`). Returns the name of this install's
+   * own folder, which the stale check compares against, or "" when the
+   * listener is not such a gateway.
    *
    * Only the stale warning reads this. The update-time stop keeps
    * isCurrentBundleGateway, so nothing is stopped because of it.
    */
-  async function isPreviousManagedVersionGateway(gatewayVersion) {
-    if (!app.isPackaged || IS_WIN || !path.isAbsolute(processObj.resourcesPath || "")) return false;
-    const ownVersion = String(app.getVersion() || "");
+  async function previousManagedVersionFolder(gatewayVersion) {
+    if (!app.isPackaged || IS_WIN || !path.isAbsolute(processObj.resourcesPath || "")) return "";
     const oldVersion = String(gatewayVersion || "");
-    const segmentOk = (value) => /^[0-9A-Za-z._+-]+$/.test(value) && value !== "." && value !== "..";
-    if (!segmentOk(ownVersion) || !segmentOk(oldVersion) || ownVersion === oldVersion) return false;
+    // A folder named like a version: digits and dots first, then an optional
+    // suffix such as -rc.5 or -nightly.<ts>. Path-safe by construction.
+    const versionNamed = (value) => /^\d+(\.\d+)+([-+][0-9A-Za-z.-]+)?$/.test(value);
+    if (!versionNamed(oldVersion)) return "";
     const resourcePaths = [processObj.resourcesPath];
     try {
       const realpath = fs?.realpathSync?.native || fs?.realpathSync;
       if (realpath) resourcePaths.push(realpath(processObj.resourcesPath));
     } catch { /* keep the path as given */ }
-    const roots = [];
+    const candidates = [];
     for (const resources of new Set(resourcePaths)) {
       const parts = path.normalize(resources).split(path.sep);
-      const index = parts.lastIndexOf(ownVersion);
-      if (index < 1) continue;
-      const sibling = [...parts.slice(0, index), oldVersion, ...parts.slice(index + 1)].join(path.sep);
-      roots.push(path.join(sibling, "backend-dist") + path.sep);
+      for (let index = 1; index < parts.length; index += 1) {
+        const ownFolder = parts[index];
+        if (!versionNamed(ownFolder) || ownFolder === oldVersion) continue;
+        const sibling = [...parts.slice(0, index), oldVersion, ...parts.slice(index + 1)].join(path.sep);
+        candidates.push({ root: path.join(sibling, "backend-dist") + path.sep, ownFolder });
+      }
     }
-    if (!roots.length) return false;
+    if (!candidates.length) return "";
     const pids = await snapshotGatewayPortPids(PORT);
-    if (pids?.length !== 1) return false;
+    if (pids?.length !== 1) return "";
     const command = (await psCommand(pids[0])).trim();
-    return roots.some((root) => command.startsWith(root));
+    return candidates.find(({ root }) => command.startsWith(root))?.ownFolder || "";
   }
 
   /**
@@ -144,7 +153,7 @@ function createHolderDecision({
    *
    * @returns {Promise<"continue"|"stop-restart"|"quit">}
    */
-  async function askAboutExistingGateway(kind, { localOwner, oldVersion = "" }) {
+  async function askAboutExistingGateway(kind, { localOwner, oldVersion = "", appVersion = app.getVersion() }) {
     const stopCommand = `kirocrew stop --port ${PORT}`;
     const serviceNote = localOwner === "service"
       ? "\nIf the gateway starts again automatically, stop or update the service that restarts it."
@@ -176,7 +185,7 @@ function createHolderDecision({
     const { response } = await dialog.showMessageBox({
       type: "warning",
       message: "The gateway is still running an older version.",
-      detail: `This app is version ${app.getVersion()}. The gateway is still running version ${oldVersion}.\n\nContinue will try to connect to the existing gateway; updated features may be unavailable.\n\nTo finish the update, quit Kiro Crew.\nRun this command in Terminal:\n${stopCommand}${serviceNote}\nThen reopen Kiro Crew.`,
+      detail: `This app is version ${appVersion}. The gateway is still running version ${oldVersion}.\n\nContinue will try to connect to the existing gateway; updated features may be unavailable.\n\nTo finish the update, quit Kiro Crew.\nRun this command in Terminal:\n${stopCommand}${serviceNote}\nThen reopen Kiro Crew.`,
       buttons: ["Continue with existing gateway", "Quit"],
       defaultId: 0,
       cancelId: 0,
@@ -289,12 +298,14 @@ function createHolderDecision({
       glog(`:${PORT} is a configured remote host (${remoteHost}) — holder treated as non-local`);
     }
     const localOwner = remoteHost ? "foreign" : await probeGatewayPortOwner(PORT);
+    let bundleVersion = "";
     const bundledGateway = getRunLocalGateway()
       && health?.version !== app.getVersion()
       && (localOwner === "kirocrew" || localOwner === "service")
-      && (await isCurrentBundleGateway() || await isPreviousManagedVersionGateway(health?.version));
+      && (await isCurrentBundleGateway()
+        || Boolean(bundleVersion = await previousManagedVersionFolder(health?.version)));
     const decision = decideGatewayAction(app.getVersion(), health, {
-      localOwner, bundledGateway,
+      localOwner, bundledGateway, bundleVersion,
     });
     // The rule this enforces, as one sentence: adopt a responder on this port
     // only when the port can be attributed either to us (a Kiro Crew LISTEN
@@ -323,9 +334,10 @@ function createHolderDecision({
       return "foreign-holder";
     }
     if (decision.action === "warn-stale") {
-      glog(`bundled gateway ${decision.oldVersion} predates app ${app.getVersion()} — warning before reuse`);
+      glog(`bundled gateway ${decision.oldVersion} predates app ${bundleVersion || app.getVersion()} — warning before reuse`);
       const choice = await askAboutExistingGateway("stale", {
         localOwner: await staleDialogOwner(localOwner), oldVersion: decision.oldVersion,
+        appVersion: bundleVersion || app.getVersion(),
       });
       if (choice === "quit") return "abort";
     }

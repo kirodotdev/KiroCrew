@@ -3,6 +3,7 @@ import { useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Download, Loader2, RefreshCw, Sparkles } from 'lucide-react'
 import { api, ApiError, type SkillScriptValidation } from '../../api/client'
+import ProjectSkillsPlatformHint from '../../components/ProjectSkillsPlatformHint'
 import ProjectSkillsTrustList from '../../components/ProjectSkillsTrustList'
 import AskAgentButton from '../../components/AskAgentButton'
 import { Badge, Card, Btn, SearchInput, EmptyState, Toggle } from '../../components/ui'
@@ -15,6 +16,8 @@ import DiffBlock from '../../components/DiffBlock'
 import ErrorNotice from '../../components/ErrorNotice'
 import ListDetailBack from '../../components/ListDetailBack'
 import { useListDetailView } from '../../hooks/useListDetailView'
+import { useScrollEdgesY } from '../../hooks/useScrollEdges'
+import { MORE_BELOW_MASK } from '../../components/ModelEffortDropdown'
 import { useProvider } from '../../providers'
 import type { Skill } from '../../types'
 import SkillContextBudget from './SkillContextBudget'
@@ -299,7 +302,9 @@ export default function SkillsTab() {
       queryClient.setQueryData<Skill[]>(['skills'], old => old?.filter(s => s.key !== key) ?? [])
       return { removed }
     },
-    onSuccess: () => {
+    onSuccess: (_data, key) => {
+      // A row picked while the delete was in flight is the user's choice now,
+      // so only the deleted skill's own selection is torn down.
       // An OPEN editor must survive this teardown, whatever its save state:
       // dropping the selection or the editing flag unmounts it (a null
       // selection alone does, via the placeholder branch), which discards a
@@ -311,7 +316,7 @@ export default function SkillsTab() {
       // rather than the state variable to avoid a stale closure: onSuccess
       // executes after an async await, and the user may have entered edit mode
       // after the mutation was called but before it resolved.
-      if (!detailEditingRef.current) {
+      if (!detailEditingRef.current && selectedKeyRef.current === key) {
         setSelectedKey(null)
         setDetailEditing(false)
       }
@@ -367,6 +372,13 @@ export default function SkillsTab() {
 
   // Narrow viewport shows one pane at a time; a desktop shows both.
   const { isMobile, showList, showDetail, openDetail, closeDetail } = useListDetailView()
+
+  // A long list is cut at the pane's height, and with the scrollbar hidden
+  // until scroll a mouse user saw a list that just ended. The bottom fade says
+  // more rows sit below (see MORE_BELOW_MASK). A filter or sort changes the
+  // rows, not the scroller's own box, so no observer on the scroller sees it.
+  const [attachList, listEdges, remeasureList] = useScrollEdgesY<HTMLDivElement>()
+  useEffect(() => { remeasureList() }, [allFiltered, remeasureList])
 
   // Keep a valid selection: default to the first skill, and recover if the
   // current selection is filtered out or deleted.  Suspended while editing:
@@ -494,6 +506,7 @@ export default function SkillsTab() {
 
   return (<>
     <PendingSkillsPanel sort={skillSort} />
+    <ProjectSkillsPlatformHint />
     <ProjectSkillsTrustList />
     {/* Create Skill Modal */}
     {/* The gate reads the SANITIZED name and category, not the raw ones and not
@@ -597,17 +610,21 @@ export default function SkillsTab() {
          *  browser (panes 2+3: file tree + file content) on the right. */
         <div className={PANE_SHELL_CLASS}>
           {/* Pane 1 — skill list. */}
-          {showList && <div className={`${isMobile ? 'w-full' : 'w-[240px]'} shrink-0 overflow-y-auto border border-border rounded-md p-2`} role="listbox" aria-label={i18nT('pages.overview.skillsTab.skills')}>
-            {localSkills.map(renderRow)}
-            {packageSkills.length > 0 && (
-              <div className="mt-2">
-                <div className="text-[11px] text-aim font-semibold tracking-wider px-2 py-1.5 mb-1" title={i18nT('pages.overview.skillsTab.skills_from_read_only', { name: provider.labels.pluginRegistryName })}>
-                  {provider.labels.pluginRegistryName.toUpperCase()}
+          {/* The rows scroll in an inner box: a mask clips everything outside
+              the masked element, so on the pane it would also fade the border. */}
+          {showList && <div className={`${isMobile ? 'w-full' : 'w-[240px]'} shrink-0 flex flex-col border border-border rounded-md`}>
+            <div ref={attachList} className={`flex-1 min-h-0 overflow-y-auto p-2 ${listEdges.bottom ? MORE_BELOW_MASK : ''}`} role="listbox" aria-label={i18nT('pages.overview.skillsTab.skills')}>
+              {localSkills.map(renderRow)}
+              {packageSkills.length > 0 && (
+                <div className="mt-2">
+                  <div className="text-[11px] text-aim font-semibold tracking-wider px-2 py-1.5 mb-1" title={i18nT('pages.overview.skillsTab.skills_from_read_only', { name: provider.labels.pluginRegistryName })}>
+                    {provider.labels.pluginRegistryName.toUpperCase()}
+                  </div>
+                  {packageSkills.map(renderRow)}
                 </div>
-                {packageSkills.map(renderRow)}
-              </div>
-            )}
-            {allFiltered.length === 0 && <div className="text-muted/70 text-[12px] italic px-2 py-2">{i18nT('pages.overview.skillsTab.no_skills_match_query', { query: skillFilter })}</div>}
+              )}
+              {allFiltered.length === 0 && <div className="text-muted/70 text-[12px] italic px-2 py-2">{i18nT('pages.overview.skillsTab.no_skills_match_query', { query: skillFilter })}</div>}
+            </div>
           </div>}
 
           {/* Panes 2+3 — directory browser, or the edit form */}

@@ -99,6 +99,7 @@ FROZEN_NAMES: tuple[str, ...] = (
     "Iterator",
     "Literal",
     "NATIVE_WINDOWS_HOOK_REFUSAL",
+    "NATIVE_WINDOWS_SHELL_REFUSAL",
     "Path",
     "PinnedPathRefusal",
     "PlatformCompositionError",
@@ -212,6 +213,7 @@ FROZEN_NAMES: tuple[str, ...] = (
     "_looks_like_git_url",
     "_manifest_cache_dir",
     "_manifest_cache_path",
+    "_manifest_shell_platform_refusal",
     "_manifest_source_coordinates",
     "_merge_manifest",
     "_move_checkout_aside",
@@ -731,6 +733,7 @@ class TestAPatchOnTheFacadeReachesEveryCallSite:
             # catalog: a detectInstalled probe (its spawn failure reads as absent).
             probe = [{"name": "demo-app", "detectInstalled": "true"}]
             patched.setattr(registry, "app_execution_denied", lambda *a, **k: None)
+            patched.setattr(registry, "_manifest_shell_platform_refusal", lambda: None)
             assert await registry._detect_installed_probe(probe, {}) == set()
             # indexes: an external index fetch (its spawn failure reads as None).
             assert (

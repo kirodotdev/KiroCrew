@@ -131,21 +131,29 @@ def _rewrite_update_frontmatter(
     re-enable full-body injection on a skill the user had opted out — a
     setting reverting itself behind an unrelated approval.
     """
-    m = re.match(r"^---\n(.*?)\n---\n?(.*)$", candidate_content, re.DOTALL)
+    # A leading BOM or CRLF fence is still frontmatter: missing it would carry
+    # the candidate's whole block into the body under the rebuilt one.
+    # The closer is any column-0 line starting with ---, as the loader reads it.
+    m = re.match(r"^\ufeff?---\r?\n(.*?)\r?\n---[^\n]*(?:\n|$)(.*)$", candidate_content, re.DOTALL)
     if m:
-        fm_lines = m.group(1).split("\n")
+        fm_lines = [ln.removesuffix("\r") for ln in m.group(1).split("\n")]
         body = m.group(2)
     else:
         fm_lines = []
         body = candidate_content
     kept: list[str] = []
     for ln in fm_lines:
-        if not ln.strip():
-            continue
-        key = ln.split(":", 1)[0].strip() if ":" in ln else ""
-        if key in ("name", "created_at", "version", "pinned", "inject_on_trigger"):
-            continue
+        # Only a column-0 line is a key. An indented line, or a blank one,
+        # belongs to a block-scalar value and is kept as the author wrote it.
+        if ln[:1] not in ("", " ", "\t"):
+            key = ln.split(":", 1)[0].strip() if ":" in ln else ""
+            if key in ("name", "created_at", "version", "pinned", "inject_on_trigger"):
+                continue
         kept.append(ln)
+    # Leading blank lines belong to no value. Trailing ones are kept: a final
+    # ``|+`` block scalar keeps them as part of its text.
+    while kept and not kept[0].strip():
+        kept.pop(0)
     new_fm = [f"name: {target_name}"]
     new_fm.extend(kept)
     if created_at:

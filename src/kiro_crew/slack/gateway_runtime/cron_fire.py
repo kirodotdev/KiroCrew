@@ -63,6 +63,9 @@ class _CronCapture(NamedTuple):
     # The previous run's result framed as untrusted data, for build_message's
     # request_prefix_context (``cron_prior_result_context``); "" when none.
     prior_result: str = ""
+    # The agent name the governance gate is handed: the alias a chat turn on
+    # this agent hands it, read before a crewmate's worker swap. "" when unset.
+    gate_agent: str = ""
 
 
 def _cron_extra_env(job: CronJob) -> dict[str, str] | None:
@@ -207,24 +210,15 @@ async def _init_cron(self: GatewayOrchestrator, *, arm: bool = True) -> None:
             return None
 
         # ── First-run tab pre-create ──
-        # The result injection at the end of this callback is the other
-        # creator site for the job's dashboard tab, and on its own it leaves
-        # a NEW job's first run without one: session-control caller identity
-        # (caller_slot_key walks slot links for cron:{id}) refuses every verb
-        # with caller_unidentified, and the dashboard-surface registry has no
-        # row for sub-agent/widget/question/approval routing. Bind the tab up
-        # front — eligibility (persistent_session and not hide_in_chat) lives
-        # inside the helper, so script/command jobs never reach it (they
-        # return above) and ineligible message jobs are untouched. Placed
-        # AFTER the fire-time gate: a denied run dispatches nothing a tab
-        # could serve. Visible consequence, accepted deliberately: a first
-        # run that starts and then fails leaves an empty tab. Pre-creating
-        # anyway is the choice, because gating the tab on the run reaching
-        # injection would reopen the very hole this closes — identity must
-        # exist DURING the run. Guarded wrapper, not a bare await: a tab we
-        # FAIL to mint must not kill — or, via the run_never_started
-        # lifecycle, CONSUME — the one-shot run it was meant to serve (see
-        # _pre_create_cron_slot for the retention-marker contract).
+        # The result injection at the end is the only other creator of the
+        # job's dashboard tab, so a new job's first run would have none:
+        # caller_slot_key refuses every session-control verb with
+        # caller_unidentified, and sub-agent/widget/question/approval routing
+        # finds no surface row. The tab must exist DURING the run. Eligibility
+        # lives in the helper. After the fire-time gate, since a denied run
+        # needs no tab; a run that then fails leaves an empty tab, accepted.
+        # The guarded wrapper keeps a failed mint from killing or consuming a
+        # one-shot run (see _pre_create_cron_slot).
         if self.dashboard_state:
             await _pre_create_cron_slot(self.dashboard_state, job)
 
@@ -369,47 +363,24 @@ async def _cron_capture(self: GatewayOrchestrator, job: CronJob) -> _CronCapture
 
         await asyncio.to_thread(tag_run_transcript)
     # ── Default-agent fallback (LLM jobs) ──
-    # A job with no explicit agent_id must run the configured default
-    # agent (config.agent.default_agent), matching the chat transports'
-    # fallback (transport_dispatch: `self.agent or cfg.agent.default_agent`).
-    # Without it the empty selector reaches dispatch as AcpClient's
-    # "kirocrew" floor -- an agent whose config carries none of the
-    # default agent's MCP servers, so agent-less cron sessions silently
-    # run without the expected toolset.
+    # A job with no agent_id runs config.agent.default_agent, like the chat
+    # transports. Otherwise dispatch falls to AcpClient's "kirocrew" floor,
+    # which carries none of the default agent's MCP servers.
     #
-    # Resolved ABOVE the branch and applied BELOW it, to the dispatched
-    # agent only -- never to the captured execution identity -- and only
-    # where the resolved agent is still the bare "kirocrew" floor. All
-    # three halves are load-bearing:
-    #   * Above the branch, because every record created since the
-    #     execution-context migration carries `execution_context` and so
-    #     takes the other arm. Resolving inside `else:` reaches only
-    #     pre-migration jobs and leaves every newer job on the floor.
-    #   * Not into the capture, because `cron_execution` is what
-    #     `bind_session_execution` publishes under the session key, and a
-    #     persistent_session job (the default) reuses the stable key
-    #     `cron:{job.id}` on every fire. That binder is called
-    #     positionally, so `replace_existing` is False, and it refuses a
-    #     candidate that differs from what is already recorded. A job that
-    #     has already run holds `template_id="kirocrew"`; folding the
-    #     default into the captured identity changes that field, so every
-    #     later fire raises "session already belongs to another execution"
-    #     before get_or_create -- not transient, caught nowhere in this
-    #     callback, one recorded failure per fire until the job
-    #     auto-pauses. Leaving the captured identity alone is also what
-    #     keeps the resolved name out of the durable store.
-    #   * Floor-gated, because a captured `template_id` that names a real
-    #     template is a deliberate selection and must survive; see the
-    #     gate below.
-    # job.agent_id is never mutated: the snapshot is deliberately immune
-    # to later mutation ("captured selectors, never the scheduler's
-    # mutable job"), and a declared agent_sequence owns its own dispatch
-    # and is left untouched. agent_sequence_dispatches is the ONE spelling
-    # of "the sequence owns dispatch": a lone entry is dormant and
-    # dispatch falls through to agent_id, which must still get the default.
-    # Typed deliberately: a malformed or non-str configured default must
-    # not reach the dispatched agent kwarg, so it degrades to the existing
-    # "kirocrew" floor instead of failing the dispatch.
+    # Resolved above the branch and applied below it, to the dispatched agent
+    # only, and only where that agent is still the bare "kirocrew" floor:
+    #   * Above the branch, because every post-migration record carries
+    #     `execution_context` and takes the other arm.
+    #   * Not into the capture: `bind_session_execution` publishes it under the
+    #     stable key `cron:{job.id}` and refuses a candidate that differs from
+    #     the recorded one, so a changed `template_id` makes every later fire
+    #     raise "session already belongs to another execution" until the job
+    #     auto-pauses.
+    #   * Floor-gated, because a captured `template_id` naming a real template
+    #     is a deliberate selection (see the gate below).
+    # job.agent_id is never mutated. A dispatching agent_sequence owns its own
+    # dispatch (agent_sequence_dispatches); a lone entry is dormant and falls
+    # through to agent_id. A non-str configured default degrades to the floor.
     _default_agent = ""
     # True once the dispatched agent came from ``agent.default_agent``.
     # That field is the TEMPLATE namespace (config/sections_agent.py, free-form
@@ -426,14 +397,9 @@ async def _cron_capture(self: GatewayOrchestrator, job: CronJob) -> _CronCapture
     )
     if _agentless_job:
         try:
-            # Prefer the last APPLIED reload over the boot snapshot.
-            # agent.default_agent carries no restart=True mark, so the
-            # config watcher adopts a dashboard/CLI change live, while
-            # self._cfg is rebuilt only by unrelated MCP handlers. A
-            # boot-only read would keep dispatching the "kirocrew" floor
-            # after an operator sets a default -- the exact symptom this
-            # hunk removes -- until a gateway restart or an incidental
-            # reload. Same one-liner the sibling resolver below uses.
+            # Prefer the last applied reload over the boot snapshot: the config
+            # watcher adopts agent.default_agent live, while self._cfg is
+            # rebuilt only by unrelated MCP handlers.
             _cfg_now = live.snapshot() or self._cfg
             _configured = _cfg_now.agent.default_agent
             if isinstance(_configured, str):
@@ -462,6 +428,32 @@ async def _cron_capture(self: GatewayOrchestrator, job: CronJob) -> _CronCapture
             )
 
         cron_execution = await asyncio.to_thread(resolve_legacy_execution)
+    # The governance gate's agent is the name a chat turn on this agent hands
+    # it. A capture that selected a member runs as that member whatever the job
+    # names in agent_id (the dashboard saves a template there beside member_id;
+    # cron_update may set another member's name), so the gate gets the member's
+    # live alias, the one _resolve_cron_agent dispatches through
+    # member_config_for_id, else its captured selection_name. Only a capture
+    # that selected no member uses the job's own alias. Read here, before the
+    # worker swap below rewrites a crewmate's selection to the worker template,
+    # and kept apart from the dispatched template. A capture that selected
+    # nothing falls back to the dispatched agent at the return, so a
+    # substituted default is named as a chat turn on the default is.
+    if cron_execution.member_id or cron_execution.selection_kind == "member":
+        _gate_alias = ""
+        if cron_execution.member_id:
+            try:
+                from kiro_crew.execution_context import member_config_for_id
+
+                _gate_cfg = live.snapshot() or getattr(self, "_cfg", None)
+                if _gate_cfg is not None:
+                    _gate_alias, _ = member_config_for_id(_gate_cfg, cron_execution.member_id)
+            except Exception:
+                _gate_alias = ""
+        if not _gate_alias and cron_execution.selection_kind == "member":
+            _gate_alias = cron_execution.selection_name.strip()
+    else:
+        _gate_alias = (job.agent_id or "").strip()
     if not agent_sequence_dispatches(cron_agents):
         # A crewmate's scheduled turn is work, so it runs on that crewmate's
         # worker (its kit, servers and permissions), never on the conductor its
@@ -484,67 +476,24 @@ async def _cron_capture(self: GatewayOrchestrator, job: CronJob) -> _CronCapture
         cron_execution.store.legacy_name,
         cron_execution.template_id,
     )
-    # The configured default lands HERE and nowhere else: cron_agent is
-    # read only by _resolve_cron_agent and the `agent=` kwargs below, none
-    # of which any durable record compares.
-    #
-    # Gated on the resolved agent still being the bare "kirocrew" floor,
-    # the only value the default may replace. A record whose
-    # captured template_id names a REAL template keeps it: a schedule
-    # created from a template chat with no `agent` argument names its
-    # template ONLY there, `agent_id` staying empty: bind_cron_memory
-    # (cron_service/identity.py:143-152) captures the CREATOR session's
-    # execution, and overwrites template_id only `if job.agent_id`. So
-    # an agent_id-only gate reads that job as agent-less. Overriding it
-    # would re-point the job onto the default on every fire while its
-    # captured execution and memory store stayed the original template's,
-    # and dispatched_agents_from_disk -- the delete guard's ONE walk of
-    # the dispatch-mirroring rule -- still reported the old agent: guard
-    # and dispatch would drift into a silent wrong-agent dispatch.
-    # Compared after
-    # .strip() so a whitespace-only capture counts as the floor, which is
-    # where whitespace agent_id handling lives: the capture itself is
-    # left byte-for-byte alone.
-    # Also gated on the capture carrying no member_id. A cron created
-    # from a crew member's chat is captured by resolve_member_execution
-    # as a MEMBER execution whose template_id is
-    # `agent.kiro_agent or "kirocrew"` -- so a member whose agent names
-    # no kiro_agent captures the floor spelling with agent_id empty, and
-    # a floor-only gate reads it as "selected nothing". Substituting
-    # there makes build_message inject the substituted template's system
-    # prompt and documents into that member's envelope while
-    # _resolve_cron_agent still dispatches the member's own kiro_agent,
-    # and attributes the usage row to the substituted name. Requiring
-    # member_id to be unset narrows the override to a capture that
-    # really did select nothing.
-    #
-    # member_id ALONE does not narrow it far enough. A member predating
-    # the identity migration persists no member_id at all, and
-    # `with_template` states the rule that admits it: such a record "is
-    # named by ``selection_kind == \"member\"`` and ``selection_name``
-    # alone" (execution_context.py). ExecutionContext.__post_init__
-    # constrains selection_kind to exactly "member" or "template", so
-    # the namespace is the authoritative answer to "did this capture
-    # select a member?" and member_id is only its persisted form.
-    # Requiring BOTH keeps a legacy member on an unmigrated store out of
-    # the override; a member_id-only gate would admit it.
-    #
-    # And BOTH capture gates together are still not enough, because on
-    # the `job.execution_context is None` arm cron_execution is
-    # RECONSTRUCTED, not loaded: resolve_legacy_execution calls
-    # execution_for_store, which for a V1 store returns
-    # `ExecutionContext(None, MemoryStoreRef(name), "template", ...)` --
-    # hardcoding a null member_id and the "template" namespace whatever
-    # the schedule actually selected. A member cron predating the
-    # migration therefore passes both capture gates while job.member_id
-    # still names the member, and resolve_cron_memory deliberately keeps
-    # that record dispatching rather than raising
-    # (cron_service/identity.py: "Older V1 schedules may still carry the
-    # historical member selector beside their explicit legacy store"),
-    # with nothing backfilling execution_context on load. So the JOB is
-    # asked as well: on that arm it is the only surviving evidence of the
-    # selection. A truthy non-str also declines, which is the safe
-    # direction -- declining keeps the floor agent.
+    # The configured default lands only here: cron_agent is read only by
+    # _resolve_cron_agent and the `agent=` kwargs below, which no durable
+    # record compares. Every gate is needed:
+    #   * cron_agent is still the "kirocrew" floor (after .strip()). A schedule
+    #     made from a template chat with no `agent` names its template only in
+    #     the captured template_id (bind_cron_memory in cron_service/identity.py
+    #     overwrites it only `if job.agent_id`). Overriding that would split
+    #     dispatch from the captured store and from dispatched_agents_from_disk,
+    #     the delete guard's view of dispatch.
+    #   * No cron_execution.member_id. A member whose agent names no kiro_agent
+    #     captures the floor spelling; substituting would inject the default
+    #     template's prompt into that member's envelope and bill usage to it.
+    #   * selection_kind != "member". A pre-migration member persists no
+    #     member_id; selection_kind is the authoritative namespace.
+    #   * No job.member_id. On the `execution_context is None` arm,
+    #     execution_for_store rebuilds the capture as a "template" with a null
+    #     member_id, so the job is the only evidence of a member selection.
+    #     A truthy non-str declines, which keeps the floor.
     if (
         _default_agent
         and (cron_agent or "").strip() in ("", "kirocrew")
@@ -619,6 +568,7 @@ async def _cron_capture(self: GatewayOrchestrator, job: CronJob) -> _CronCapture
         cron_agent,
         _default_substituted,
         prior_result,
+        _gate_alias or cron_agent,
     )
 
 
@@ -632,40 +582,18 @@ def _resolve_cron_agent(
 ) -> "tuple[str | None, str | None, str | None]":
     """Resolve a cron agent alias to (kiro_agent, cwd, crew_alias).
 
-    A cron bound to a Slack channel carries that channel's agent
-    ALIAS (e.g. ``in-3d``) in ``job.agent_id`` / ``agent_sequence``.
-    kiro-cli only accepts a materialized agent MODE, not a Kiro Crew
-    alias, so dispatching the alias verbatim fails closed with
-    "Agent mode 'in-3d' is not available … its ~/.kiro/agents/
-    in-3d.json is likely missing". The dashboard chat path already
-    collapses the alias the right way — see
-    ``_turn_admit``'s ``_allocation_kwargs``, which passes
-    ``agent=<kiro_agent>`` alongside ``crew_agent=<alias>`` so
-    ``prepare_runtime`` still resolves the member identity from the
-    alias. The cron path was the one turn-running surface that
-    skipped it.
+    A channel-bound cron carries the channel's agent ALIAS (e.g. ``in-3d``),
+    but kiro-cli accepts only a materialized agent mode, so the raw alias fails
+    with "Agent mode 'in-3d' is not available". Like ``_turn_admit``'s
+    ``_allocation_kwargs``, dispatch the alias's ``kiro_agent`` in its workspace
+    ``cwd`` and return ``crew_alias`` for ``crew_agent=``. Without it
+    ``resolve_crew_identity`` returns ``""`` and the crew's member gates,
+    pinned model / reasoning effort and watchdog windows are skipped. Returns
+    (None, None, None) on any miss, so the caller keeps the raw value.
 
-    Mirror that here: dispatch the alias's ``kiro_agent`` (usually
-    ``kirocrew``) as ``agent``, run in the agent's workspace ``cwd``,
-    AND return the ``crew_alias`` so the caller can pass it as
-    ``crew_agent=`` — without which ``resolve_crew_identity`` sees
-    only the bare kiro template name (not a ``config.agents`` key),
-    returns ``""``, and every member-capability gate, the crew's
-    pinned model / reasoning-effort, and its watchdog windows are
-    silently skipped. Returns (None, None, None) on any miss so the
-    caller falls back to the raw value unchanged (behavior-preserving
-    for a job whose agent is already a real mode or is unset).
-
-    ``sequence_step`` marks a declared ``agent_sequence`` dispatch,
-    where ``alias`` is the step's OWN crew, not the schedule's
-    captured member. The captured-member pin below is then skipped so
-    each step resolves its own crew's kiro_agent, workspace, pinned
-    model and capability gates; the captured memory store is shared
-    by every step regardless (it is bound per session key by the
-    caller), so the run keeps one memory identity while the steps run
-    as the crews the sequence names. Without this, every step
-    resolved to the captured member and the other crews named in the
-    sequence never actually ran.
+    ``sequence_step`` marks an ``agent_sequence`` step, where ``alias`` is the
+    step's own crew. The captured-member pin is then skipped so each step runs
+    as its own crew; the captured memory store stays shared by every step.
     """
     if not alias:
         return None, None, None
@@ -701,34 +629,18 @@ def _resolve_cron_agent(
         )
 
         cfg = getattr(self, "_cfg", None)
-        # Prefer the last APPLIED reload over the boot snapshot: an
-        # agent created at runtime (dashboard/CLI) writes cfg.agents
-        # in live.snapshot() but not in the boot self._cfg, so a
-        # boot-only read would miss a hot-added alias and dispatch it
-        # raw (failing closed) on every fire until a gateway restart.
-        # Same one-liner the watchdog/mcp reads use elsewhere here.
+        # Prefer the last applied reload: an agent created at runtime is in
+        # live.snapshot() but not in the boot self._cfg.
         cfg = live.snapshot() or cfg
         if cfg is None:
             return None, None, None
         agents = getattr(cfg, "agents", None) or {}
-        # Resolve by IDENTITY, not by name, for a member execution.
-        # The memory store is captured at authoring (cron_execution),
-        # but the runtime/workspace/crew_agent are resolved live here;
-        # if a same-name alias was deleted and recreated, a by-name
-        # lookup would bind the NEW member's runtime while the store
-        # stays the retired member's silo — a cross-identity memory
-        # leak (the memory-store-seam execution_context.py guards).
-        # member_config_for_id pins resolution to the captured
-        # member_id, so the alias whose bindings we read is the same
-        # member the store belongs to; a mismatch (recreated/renamed)
-        # raises and we fall back to the raw value unchanged.
-        #
-        # Skipped for a declared agent_sequence step: there the
-        # captured member is the run's shared memory identity, not
-        # the agent each step runs as, and ``alias`` already names
-        # the step's OWN crew. Pinning here would collapse every step
-        # onto the captured member, so the sequence step falls
-        # through to the by-alias path below instead.
+        # Resolve a member execution by IDENTITY, not name. The store was
+        # captured at authoring; if a same-name alias was deleted and
+        # recreated, a by-name lookup would bind the new member's runtime to
+        # the retired member's store. member_config_for_id pins to the captured
+        # member_id and raises on a mismatch, so we fall back to the raw value.
+        # Skipped for an agent_sequence step, whose ``alias`` is its own crew.
         resolved_alias = alias
         captured_member = None if sequence_step else getattr(cron_execution, "member_id", None)
         from kiro_crew.mate_worker import MATE_WORKER_AGENT, is_own_worker_execution
@@ -748,21 +660,14 @@ def _resolve_cron_agent(
                     exc_info=True,
                 )
                 return None, None, None
-        # For a non-member (template/legacy) execution there is no
-        # identity to pin to: ONLY collapse a real Kiro Crew alias.
-        # resolve_agent_bindings falls back to the default agent for
-        # an unknown name, so resolving unconditionally would rewrite
-        # a legitimate kiro mode (e.g. 'kirocrew-lite') into the
-        # default. A name that is not an alias is either a real mode
-        # or unset — leave it untouched.
+        # A non-member execution collapses only a real Kiro Crew alias:
+        # resolve_agent_bindings falls back to the default agent for an unknown
+        # name, which would rewrite a real kiro mode (e.g. 'kirocrew-lite').
         elif alias not in agents:
             return None, None, None
-        # validate_memory_files=False: we only need the alias's
-        # kiro_agent + workspace mapping here, and this runs on the
-        # gateway event loop. The default (True) does a synchronous
-        # store dir stat + SQLite identity read, which would stall
-        # the loop on every cron fire; the session's own
-        # execution-context resolution validates the store later.
+        # validate_memory_files=False: this runs on the event loop, and the
+        # default does a synchronous stat + SQLite read. The session validates
+        # the store later.
         bindings = resolve_agent_bindings(cfg, resolved_alias, validate_memory_files=False)
         kiro_agent = bindings.kiro_agent or None
         if own_worker:

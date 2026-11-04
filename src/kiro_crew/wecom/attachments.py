@@ -25,9 +25,9 @@ from kiro_crew.messaging.attachments import (
     Attachment,
     IngestLimits,
     IngestResult,
+    attachment_suffix,
     cleanup_offloaded,
     ingest_attachments,
-    safe_suffix,
     transcribe_audio_attachments,
 )
 from kiro_crew.wecom.media import (
@@ -136,7 +136,7 @@ def _to_attachment(item: dict[str, Any]) -> Attachment | None:
         mimetype=mimetype,
         size=size,
         url=url,
-        suffix_hint=safe_suffix(name.rsplit(".", 1)[-1] if "." in name else kind),
+        suffix_hint=attachment_suffix(name, mimetype),
     )
 
 

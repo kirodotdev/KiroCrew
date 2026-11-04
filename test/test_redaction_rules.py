@@ -74,6 +74,11 @@ def rule_ids(result: rr.RedactionResult) -> list[str]:
     return [r.rule_id for r in result.records]
 
 
+def _named(name: str, values: list[str]) -> list[object]:
+    """Params whose ids name the case group they belong to."""
+    return [pytest.param(v, id=f"{name}-{v}") for v in values]
+
+
 # ── Loading ──
 
 
@@ -102,6 +107,48 @@ def _minimal(**row: object) -> dict[str, object]:
     return {"version": 1, "rules": [{k: v for k, v in base.items() if v is not None}]}
 
 
+_BAD_ROWS: dict[str, list[tuple[dict[str, object], str]]] = {
+    "bad_row_is_refused": [
+        ({"colour": "red"}, "unknown field"),
+        ({"tier": "severe"}, "unknown tier"),
+        ({"detector": "entropy"}, "unknown detector"),
+        ({"validate": "luhn"}, "unknown validator"),
+        ({"pattern": None}, "pattern must be"),
+        ({"corpus": None}, "corpus must be"),
+        ({"corpus": "rules/other"}, "corpus must be"),
+        ({"id": "Bad Id"}, "malformed"),
+        ({"pattern": "tst_[a-z]+"}, "unbounded"),
+        ({"pattern": "(?P<v>tst_[a-z]{8,})"}, "unbounded"),
+        ({"pattern": "(?P<v>tst_[a-z]{1,50000})"}, "unbounded"),
+        ({"pattern": "(?P<v>tst_[a-z]*)"}, "unbounded"),
+        ({"pattern": "tst_[a-z]{8}"}, "named group 'v'"),
+        ({"pattern": "(?P<v>tst_[a-z{8}"}, "does not compile"),
+        ({"replace": "signature"}, "replace must be"),
+        ({"labels": ["token"]}, "labels do not apply"),
+        ({"pair_with": {"pattern": "AKIA[A-Z0-9]{16}", "window": 10}}, "pair_with does not"),
+        ({"allow": {"prefixes": ["x"]}}, "unknown field"),
+        ({"allow": {"patterns": ["x+"]}}, "unbounded"),
+    ],
+    "detector_specific_fields_are_checked": [
+        ({"detector": "labelled", "pattern": None}, "labels are required"),
+        ({"detector": "labelled", "labels": ["token"]}, "pattern does not apply"),
+        (
+            {"detector": "url_param", "pattern": None, "labels": ["token"], "replace": "match"},
+            "replaces the value only",
+        ),
+        ({"detector": "key_id_pair"}, "needs pair_with"),
+        (
+            {"detector": "key_id_pair", "pair_with": {"pattern": "A{1,4}", "window": 0}},
+            "window must be",
+        ),
+        (
+            {"detector": "key_id_pair", "pair_with": {"pattern": "A{1,4}", "window": "near"}},
+            "window must be an integer",
+        ),
+    ],
+}
+
+
 class TestLoading:
     def test_packaged_table_loads_and_is_cached(self) -> None:
         table = rr.load_table()
@@ -119,54 +166,12 @@ class TestLoading:
     @pytest.mark.parametrize(
         "row, needle",
         [
-            ({"colour": "red"}, "unknown field"),
-            ({"tier": "severe"}, "unknown tier"),
-            ({"detector": "entropy"}, "unknown detector"),
-            ({"validate": "luhn"}, "unknown validator"),
-            ({"pattern": None}, "pattern must be"),
-            ({"corpus": None}, "corpus must be"),
-            ({"corpus": "rules/other"}, "corpus must be"),
-            ({"id": "Bad Id"}, "malformed"),
-            ({"pattern": "tst_[a-z]+"}, "unbounded"),
-            ({"pattern": "(?P<v>tst_[a-z]{8,})"}, "unbounded"),
-            ({"pattern": "(?P<v>tst_[a-z]{1,50000})"}, "unbounded"),
-            ({"pattern": "(?P<v>tst_[a-z]*)"}, "unbounded"),
-            ({"pattern": "tst_[a-z]{8}"}, "named group 'v'"),
-            ({"pattern": "(?P<v>tst_[a-z{8}"}, "does not compile"),
-            ({"replace": "signature"}, "replace must be"),
-            ({"labels": ["token"]}, "labels do not apply"),
-            ({"pair_with": {"pattern": "AKIA[A-Z0-9]{16}", "window": 10}}, "pair_with does not"),
-            ({"allow": {"prefixes": ["x"]}}, "unknown field"),
-            ({"allow": {"patterns": ["x+"]}}, "unbounded"),
+            pytest.param(row, needle, id=f"{name}-row{i}-{needle}")
+            for name, cases in _BAD_ROWS.items()
+            for i, (row, needle) in enumerate(cases)
         ],
     )
     def test_bad_row_is_refused(self, row: dict[str, object], needle: str) -> None:
-        with pytest.raises(rr.RuleTableError, match=needle):
-            rr.build_table(_minimal(**row))
-
-    @pytest.mark.parametrize(
-        "row, needle",
-        [
-            ({"detector": "labelled", "pattern": None}, "labels are required"),
-            ({"detector": "labelled", "labels": ["token"]}, "pattern does not apply"),
-            (
-                {"detector": "url_param", "pattern": None, "labels": ["token"], "replace": "match"},
-                "replaces the value only",
-            ),
-            ({"detector": "key_id_pair"}, "needs pair_with"),
-            (
-                {"detector": "key_id_pair", "pair_with": {"pattern": "A{1,4}", "window": 0}},
-                "window must be",
-            ),
-            (
-                {"detector": "key_id_pair", "pair_with": {"pattern": "A{1,4}", "window": "near"}},
-                "window must be an integer",
-            ),
-        ],
-    )
-    def test_detector_specific_fields_are_checked(
-        self, row: dict[str, object], needle: str
-    ) -> None:
         with pytest.raises(rr.RuleTableError, match=needle):
             rr.build_table(_minimal(**row))
 
@@ -465,40 +470,6 @@ class TestLabelledSecretField:
         assert rr.PLACEHOLDER in result.text
 
     @pytest.mark.parametrize(
-        "text",
-        [
-            '{"max_tokens": 4096, "token_type": "bearer", "expires_in": 3600}',
-            "next_token=abcdefgh1234 page_token=ijklmnop5678",
-            "input_tokens: 1200\noutput_tokens: 3400",
-            "token_endpoint: https://idp.example.com/oauth/token",
-            "secret_name = prod/db/credentials",
-            "aws_access_key_id = AKIA" + "0" * 16,
-            "public_key: ssh-ed25519-abcdefgh",
-            "tokenizer = cl100k_base",
-            "password: abc",
-            "password: changeme",
-            "password = ${DB_PASSWORD}",
-            "password = $DB_PASSWORD",
-            "password = <your-password>",
-            "password = {{ vault_password }}",
-            "password = %DB_PASSWORD%",
-            "password = ********",
-            "api_key = xxxxxxxxxxxxxxxx",
-            "api_key = ...",
-            "api_key: your-api-key-here",
-            "password = [REDACTED: credential]",
-            "<password>abc</password>",
-            "<password>${DB_PASSWORD}</password>",
-            "<username>alice-the-admin</username>",
-            '{"name": "region", "value": "us-east-1-west"}',
-            '{"name": "password", "type": "string"}',
-            '<add key="LogLevel" value="verbose-debug" />',
-        ],
-    )
-    def test_non_secret_is_kept(self, text: str) -> None:
-        assert redact(text).text == text
-
-    @pytest.mark.parametrize(
         "line, value",
         [
             ("DB_PASSWORD={v}", "P@ss,w0rd!long"),
@@ -562,16 +533,6 @@ class TestLabelledSecretField:
         if "{w}_key" in template:
             text = template.format(w=word, W=word.title(), v=value)
         assert value not in redact(text).text
-
-    @pytest.mark.parametrize(
-        "text", ["GITHUB_TOKEN=${{ secrets.GITHUB_TOKEN }}", "token: ${{ secrets.NPM_TOKEN }}"]
-    )
-    def test_ci_expression_is_kept(self, text: str) -> None:
-        assert redact(text).text == text
-
-    @pytest.mark.parametrize("text", ["use_password: false", "has_secret=true", "secret: null"])
-    def test_flag_words_are_kept(self, text: str) -> None:
-        assert redact(text).text == text
 
     @pytest.mark.parametrize(
         "template",
@@ -830,19 +791,6 @@ class TestStructuralRows:
         )
         assert rule_ids(result) == ["url.userinfo_password"]
 
-    @pytest.mark.parametrize(
-        "text",
-        [
-            "https://db.internal:5432/app",
-            "https://user@example.com/path",
-            "postgres://app_user:${DB_PASSWORD}@db.internal/app",
-            "postgres://app_user:<password>@db.internal/app",
-            "see https://example.com/a:b/c@d",
-        ],
-    )
-    def test_url_without_a_real_password_is_kept(self, text: str) -> None:
-        assert redact(text).text == text
-
 
 class TestSessionCookie:
     @pytest.mark.parametrize(
@@ -873,17 +821,6 @@ class TestSessionCookie:
 
 
 class TestNonCredentialValuesUnderCredentialNames:
-    @pytest.mark.parametrize(
-        "text",
-        [
-            "password=required",
-            '"access_token": "expired"',
-            '{"password": {"type": "string", "required": true}}',
-        ],
-    )
-    def test_is_kept(self, text: str) -> None:
-        assert redact(text).text == text
-
     @pytest.mark.parametrize(
         "template",
         [
@@ -944,6 +881,67 @@ class TestNonCredentialValuesUnderCredentialNames:
         assert secret not in redact(text).text
 
 
+@pytest.mark.parametrize(
+    "text",
+    _named(
+        "non_secret_is_kept",
+        [
+            '{"max_tokens": 4096, "token_type": "bearer", "expires_in": 3600}',
+            "next_token=abcdefgh1234 page_token=ijklmnop5678",
+            "input_tokens: 1200\noutput_tokens: 3400",
+            "token_endpoint: https://idp.example.com/oauth/token",
+            "secret_name = prod/db/credentials",
+            "aws_access_key_id = AKIA" + "0" * 16,
+            "public_key: ssh-ed25519-abcdefgh",
+            "tokenizer = cl100k_base",
+            "password: abc",
+            "password: changeme",
+            "password = ${DB_PASSWORD}",
+            "password = $DB_PASSWORD",
+            "password = <your-password>",
+            "password = {{ vault_password }}",
+            "password = %DB_PASSWORD%",
+            "password = ********",
+            "api_key = xxxxxxxxxxxxxxxx",
+            "api_key = ...",
+            "api_key: your-api-key-here",
+            "password = [REDACTED: credential]",
+            "<password>abc</password>",
+            "<password>${DB_PASSWORD}</password>",
+            "<username>alice-the-admin</username>",
+            '{"name": "region", "value": "us-east-1-west"}',
+            '{"name": "password", "type": "string"}',
+            '<add key="LogLevel" value="verbose-debug" />',
+        ],
+    )
+    + _named(
+        "ci_expression_is_kept",
+        ["GITHUB_TOKEN=${{ secrets.GITHUB_TOKEN }}", "token: ${{ secrets.NPM_TOKEN }}"],
+    )
+    + _named("flag_words_are_kept", ["use_password: false", "has_secret=true", "secret: null"])
+    + _named(
+        "url_without_a_real_password_is_kept",
+        [
+            "https://db.internal:5432/app",
+            "https://user@example.com/path",
+            "postgres://app_user:${DB_PASSWORD}@db.internal/app",
+            "postgres://app_user:<password>@db.internal/app",
+            "see https://example.com/a:b/c@d",
+        ],
+    )
+    + _named(
+        "NonCredentialValuesUnderCredentialNames-is_kept",
+        [
+            "password=required",
+            '"access_token": "expired"',
+            '{"password": {"type": "string", "required": true}}',
+        ],
+    ),
+)
+def test_text_without_a_real_secret_is_kept(text: str) -> None:
+    assert redact(text).text == text
+
+
 class TestPlaceholderHeadRedaction:
     @pytest.mark.parametrize(
         "template",
@@ -972,15 +970,28 @@ class TestPlaceholderHeadRedaction:
 class TestBackToBackTemplates:
     @pytest.mark.parametrize(
         "text",
-        [
-            "mytool --password ${A}${B} --v",
-            'curl -H "Authorization: Bearer ${A}${B}" u',
-            "mytool --token {{a}}{{b}} x",
-            "password=${A}${B}",
-            "api_key: {{a}}{{b}}",
-        ],
+        _named(
+            "run_of_templates_is_kept",
+            [
+                "mytool --password ${A}${B} --v",
+                'curl -H "Authorization: Bearer ${A}${B}" u',
+                "mytool --token {{a}}{{b}} x",
+                "password=${A}${B}",
+                "api_key: {{a}}{{b}}",
+            ],
+        )
+        + _named(
+            "template_with_brace_or_separator_is_kept",
+            [
+                'db_password: "{{ vault_db_password | default({}) }}"',
+                'password: "{{ x if y else {} }}"',
+                'password: "{{ a }}-{{ b }}"',
+                'password: "{{ a }}/{{ b }}"',
+                "token: ${A}-${B}",
+            ],
+        ),
     )
-    def test_run_of_templates_is_kept(self, text: str) -> None:
+    def test_templates_without_a_secret_are_kept(self, text: str) -> None:
         result = redact(text)
         assert result.text == text
         assert result.records == ()
@@ -997,22 +1008,6 @@ class TestBackToBackTemplates:
         assert result.records
         assert result.text == head + rr.PLACEHOLDER
         assert redact(result.text).text == result.text
-
-    @pytest.mark.parametrize(
-        "text",
-        [
-            'db_password: "{{ vault_db_password | default({}) }}"',
-            'password: "{{ x if y else {} }}"',
-            'password: "{{ a }}-{{ b }}"',
-            'password: "{{ a }}/{{ b }}"',
-            "token: ${A}-${B}",
-        ],
-    )
-    def test_template_with_brace_or_separator_is_kept(self, text: str) -> None:
-        result = redact(text)
-        assert result.text == text
-        assert result.records == ()
-        assert redact(result.text).text == text
 
     @pytest.mark.parametrize(
         "template",

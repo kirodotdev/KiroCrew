@@ -32,6 +32,7 @@ from kiro_crew.platform.defaults import (
     DefaultAgentRuntime,
     DefaultAppRegistryPolicy,
     DefaultAppsLoader,
+    DefaultBrowserCredentialProvider,
     DefaultCapabilityManager,
     DefaultCloudInstancePolicyProvider,
     DefaultCredentialPolicy,
@@ -277,6 +278,7 @@ def build_default_context(
         remote_provisioners=DefaultRemoteProvisionerProvider(),
         cloud_instance_policy=DefaultCloudInstancePolicyProvider(),
         feedback=DefaultFeedbackTrackerProvider(),
+        browser_credentials=DefaultBrowserCredentialProvider(),
         speech=DefaultSpeechProviderRegistry(),
         feature_apps=(),
         governance=governance,
@@ -489,6 +491,7 @@ def apply_kas_cli_floor(
     from kiro_crew.acp_backends import (
         ACP_BACKEND_KAS,
         ACP_BACKEND_KIRO,
+        governance_floor_backend,
         mark_backend_unservable,
         resolve_selected_backend,
         selectable_backends,
@@ -521,6 +524,16 @@ def apply_kas_cli_floor(
         return None
     if reason is None:
         return None
+    if governance_floor_backend() == ACP_BACKEND_KAS:
+        # Enterprise (RFC D6): KAS is the floor, so it is never marked unservable and
+        # nothing falls back to kiro-cli. ``enterprise_boot.require_kas_harness`` already
+        # refused a start whose main sessions run KAS, or recorded the verdict so each
+        # session on KAS is refused at its own start; only a Kiro CLI pick's notice holds.
+        if not kiro_pick:
+            return None
+        notice = KAS_CLI_FLOOR_KIRO_NOTICE.format(reason=reason)
+        logger.warning(notice)
+        return notice
     mark_backend_unservable(ACP_BACKEND_KAS, reason)
     agent.acp_backend = resolve_selected_backend(agent.acp_backend)
     parts = []

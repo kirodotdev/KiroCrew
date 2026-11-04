@@ -1,20 +1,13 @@
 """Script crons must carry a gateway-vouched identity into their MCP spawns.
 
-Every state-mutating MCP tool resolves its caller through
-``mcp_core._resolve_session_key_strict``, which accepts exactly three sources:
-the gateway-injected caller block, ``KIROCREW_SESSION_KEY``, or
-``KIROCREW_HOST_PID`` plus its signed sidecar. A script cron had none of them:
-``run_script_sandboxed`` never set the env var, nothing routes the child's direct
-MCP spawns through gatewayd, and nobody publishes a sidecar for the launcher pid.
-So ``ctx.call_tool("kirocrew-cron", "cron_trigger", ...)`` reached the handler
-and came back with ``_unidentified_caller_refusal`` -- a plain string most
-scripts swallow, so the job reported ``ok`` while writing nothing. Reads were
-unaffected, which is why the compose fix looked complete.
+``mcp_core._resolve_session_key_strict`` accepts only the gateway caller block,
+``KIROCREW_SESSION_KEY``, or ``KIROCREW_HOST_PID`` plus its signed sidecar.
+Without one, a mutating ``ctx.call_tool`` returns ``_unidentified_caller_refusal``,
+a plain string most scripts swallow, so the job reports ``ok`` while writing nothing.
 
-The fix is the same channel ``acp/client.py`` gives every agent subprocess,
-including agent crons: the launcher injects ``KIROCREW_SESSION_KEY=cron:<job>``
-into the child env, and the MCP bridge hard-pins that key on the server spawn so
-script code cannot swap it for another session's.
+As ``acp/client.py`` does for agent subprocesses, the launcher injects
+``KIROCREW_SESSION_KEY=cron:<job>`` and the MCP bridge hard-pins it on the server
+spawn so script code cannot swap in another session's key.
 
 Must be runnable with ``--noconftest`` (no hypothesis dependency).
 """
@@ -124,21 +117,14 @@ class _GatewayRequest(dict):
 def _no_ambient_identity(request, tmp_path):
     """The test process must not already look like an identified session.
 
-    Otherwise a launcher that merely INHERITED the parent's key would pass the
-    presence assertions below without ever setting one of its own.
+    Otherwise a launcher that merely INHERITED the parent's key would pass.
 
-    The signed mapping directory is redirected into the test's own tmp dir for a
-    separate reason: the launcher PUBLISHES one, and a unit test must not write
-    into the real crew home. Tests that need the mapping to verify layer their
-    own trust root over this (see ``signing_root``).
+    The data home and signed mapping directory go to tmp because the launcher
+    publishes a mapping (``signing_root`` layers a trust root on top). SEL is stubbed
+    so its daemon cannot re-create this test's dir without the root conftest.
 
-    The whole data home is pinned to the same tmp dir so every non-SEL write stays
-    out of the real home. Without the root conftest's session-scoped SEL dir, stub
-    SEL so its process-wide daemon cannot outlive and re-create this test's dir.
-
-    It patches through its OWN ``MonkeyPatch``, not the shared ``monkeypatch``, so
-    a test that calls ``monkeypatch.undo()`` cannot lift these pins. The rootdir
-    ``_floor_monkeypatch`` does the same job but is absent under ``--noconftest``.
+    It uses its OWN ``MonkeyPatch`` so ``monkeypatch.undo()`` cannot lift these pins;
+    ``_floor_monkeypatch`` does that job but is absent under ``--noconftest``.
     """
     from kiro_crew import cron_script, session_token_sig
 

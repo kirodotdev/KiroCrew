@@ -136,11 +136,29 @@ async function waitForServiceRebind({ isPortBound, sleep, graceMs = SERVICE_REBI
 // graceful-stop budget (drain ≤5s + flush) after the port has already cleared.
 const INCUMBENT_EXIT_GRACE_MS = 15_000;
 
-async function waitForProcessExit({ pids, isAlive, sleep, timeoutMs = INCUMBENT_EXIT_GRACE_MS, pollMs = 250 }) {
+// A lock holder that does not hold the port may be a gateway still STARTING
+// (it takes gateway.lock before it binds), not one draining. On a slow host a
+// version restart can take well over a minute to bind, so the wait for it to
+// either exit or start serving is longer than the drain grace above.
+const LOCK_HOLDER_START_GRACE_MS = 120_000;
+
+// With `isServing`, a holder that starts answering ends the wait as "serving":
+// the caller reconnects to it instead of spawning into its lock.
+async function waitForProcessExit({
+  pids,
+  isAlive,
+  sleep,
+  timeoutMs = INCUMBENT_EXIT_GRACE_MS,
+  pollMs = 250,
+  isServing = null,
+}) {
   const watched = (pids || []).filter((p) => Number.isInteger(p) && p > 0);
   if (!watched.length) return "exited";
   const deadline = Date.now() + timeoutMs;
   for (;;) {
+    // Serving is checked first: a successor that answers right as the watched
+    // holder exits is still a gateway to reconnect to.
+    if (isServing && await isServing()) return "serving";
     if (!watched.some((p) => isAlive(p))) return "exited";
     if (Date.now() >= deadline) return "timeout";
     await sleep(pollMs);
@@ -174,9 +192,9 @@ async function snapshotPortPids({
  * A `null` snapshot means the listener probe could not name the draining
  * process. On Windows that is anomalous — netstat ships in-box — so recovery
  * fails closed rather than respawning into the incumbent's `gateway.lock`. On
- * POSIX a missing or blocked `lsof` degrades to a no-op wait, and the
- * replacement's own lock refusal is an honest arbiter, so a host without `lsof`
- * must still be able to boot.
+ * POSIX a missing or blocked `lsof` must not stop a host from booting, so the
+ * lock-holder probe is still asked, but a probe that cannot answer lets
+ * recovery go on and the replacement's own lock refusal arbitrates.
  */
 function incumbentSnapshotBlocksRespawn({ pids, isWindows = false }) {
   return pids === null && isWindows;
@@ -234,8 +252,12 @@ const INCUMBENT_LOCK_HELD_POLL_MS = 2_000;
  *    returned at once so the caller ends on its terminal error instead of
  *    backing off behind a status line that names the wrong cause.
  *
- * With no `lockHolderProbe` injected a socket lookup that names no one yields
- * `"unverified"`.
+ * The probe is asked on every platform. Where `blocksRespawn` says an empty
+ * lookup does not block (POSIX), an `"unverified"` or `"refused"` probe answer
+ * is replaced by today's `{verdict:"captured", pids:null, via:"snapshot"}`, so
+ * a host without `lsof` or a working probe still boots. With no
+ * `lockHolderProbe` injected a blocking lookup that names no one yields
+ * `"unverified"`, and a non-blocking one is returned as captured.
  *
  * Pure/injectable so the whole policy is unit-testable without Electron.
  *
@@ -265,12 +287,24 @@ async function snapshotIncumbentForRespawn({
   // socket retry would only delay recovery without closing any gap the probe
   // leaves.
   const pids = await snapshot();
-  if (!blocksRespawn(pids)) {
+  const blocked = blocksRespawn(pids);
+  const named = Array.isArray(pids) && pids.length > 0;
+  if (!blocked && (named || !lockHolderProbe)) {
     return { verdict: "captured", pids, via: "snapshot" };
   }
+  // A probe answer that cannot name the holder ends the pass the way this
+  // platform ends an empty lookup: where an empty lookup does not block (POSIX,
+  // so a host without lsof can still boot), recovery goes on and the
+  // replacement's own lock refusal arbitrates.
+  const unanswered = (verdict) => (
+    blocked
+      ? { verdict, pids: null, via: "lock" }
+      : { verdict: "captured", pids, via: "snapshot" }
+  );
   // The listener snapshot named no one. A draining gateway that has shed its
-  // socket but still holds the lock cannot be named by a socket probe at all,
-  // so ask the lock itself, which outlives the socket.
+  // socket, or a starting one that holds the lock but has not bound the port
+  // yet, cannot be named by a socket probe at all, so ask the lock itself, on
+  // every platform: it outlives the socket and precedes the bind.
   if (lockHolderProbe) {
     log(
       "the listener snapshot named no incumbent "
@@ -298,7 +332,7 @@ async function snapshotIncumbentForRespawn({
             `the gateway lock is still held after waiting ${lockHeldBudgetMs}ms `
             + "and its owner stayed unnameable — ending this pass unverified",
           );
-          return { verdict: "unverified", pids: null, via: "lock" };
+          return unanswered("unverified");
         }
         log(
           "the gateway lock is held but its owner is unnameable (a draining gateway) "
@@ -310,10 +344,10 @@ async function snapshotIncumbentForRespawn({
       if (lock.verdict === "refused") {
         // The probe can never answer here (no bundled backend, or an
         // indeterminate lock); waiting would only hide the error.
-        return { verdict: "refused", pids: null, via: "lock" };
+        return unanswered("refused");
       }
       // No answer this time: the caller's backoff tries again.
-      return { verdict: "unverified", pids: null, via: "lock" };
+      return unanswered("unverified");
     }
   }
   return { verdict: "unverified", pids: null, via: "snapshot" };
@@ -598,4 +632,5 @@ module.exports = {
   unrecoverableGatewayDialog,
   SERVICE_REBIND_GRACE_MS,
   INCUMBENT_EXIT_GRACE_MS,
+  LOCK_HOLDER_START_GRACE_MS,
 };

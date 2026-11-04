@@ -1,32 +1,11 @@
 """One declaration per harness is the only place an auth fact may live.
 
-Four host controls have to name the same file for a harness to be both fenced and
-able to authenticate: the read-gate floor spells the credential leaf, the sandbox
-mask spells the one leaf to spare, a membership set spells whether a host logout
-may retire a running child, and the panel spells the sign-in advice. While each
-was hand-maintained, a harness became selectable with its live OAuth token off the
-floor -- the list that was supposed to carry it was edited somewhere else.
-
-``agent_sdk.host_auth`` makes that one table and the four controls projections of
-it. These tests pin the properties that make the projection trustworthy, and each
-one fails for a different reason:
-
-* a selectable harness with no declaration is a harness with no auth answer, so
-  the parity gate must fail when the known set grows without the table growing;
-* the table is read from inside the credential floor's own construction, so it
-  must stay a stdlib-only leaf or the floor cannot read it without a cycle;
-* each projection must still equal the table it replaced, and be reachable from
-  the consumer that actually reads it -- a correct table nobody reads fences
-  nothing;
-* a driver must not be able to unmask itself, which is the one asymmetry the
-  declaration's own validation exists to enforce;
-* an unnamed harness must fail CLOSED -- fence nothing extra, and never have a
-  live turn ended over a store there is no evidence it reads;
-* an in-product sign-in flow is optional, and its absence has to be visible as a
-  shape rather than as a flag a driver sets and then no-ops; and
-* the resolved-root cache key must change whenever a declared override would move
-  a target, because keying on less than the builder anchors on serves targets
-  computed for a stale root.
+The read-gate floor, the sandbox mask, the logout-recycle set and the panel's sign-in
+advice are all projections of ``agent_sdk.host_auth``, so they cannot name different
+files. Pinned here: every selectable harness is declared; the table stays a stdlib-only
+leaf (the floor imports it); each projection is read by its consumer; a driver cannot
+unmask itself; an unnamed harness fails closed; sign-in absence is a shape, not a flag;
+and the resolved-root cache key moves with every declared override.
 """
 
 from __future__ import annotations
@@ -193,18 +172,9 @@ def test_module_scope_imports_are_stdlib_or_the_backend_leaf() -> None:
 def test_importing_the_table_pulls_in_nothing_heavy() -> None:
     """The gate that keeps the credential floor able to read this table.
 
-    ``security.paths`` imports ``host_auth`` at module scope while assembling the
-    read-gate floor. If importing this table pulled in ``kiro_crew.security``,
-    ``kiro_crew.acp``, ``kiro_crew.config`` or ``kiro_crew.sandbox``, that would be
-    a cycle through the very module doing the importing -- and the failure mode is
-    not a clean ImportError but a partially-initialised security module whose floor
-    is shorter than its author believed.
-
-    Runs in a COLD interpreter: by the time this test executes the suite has
-    already imported most of the package, so an in-process ``sys.modules`` check
-    would pass no matter what this module imports. Only the modules that arrive
-    AFTER the import are judged, so interpreter and site startup are not mistaken
-    for this module's own dependencies.
+    ``security.paths`` imports ``host_auth`` while building the floor, so a cycle would
+    leave a half-initialised security module with a short floor, not an ImportError.
+    Runs in a cold interpreter, since the suite has already imported most modules.
     """
     probe = "\n".join(
         (
@@ -482,11 +452,8 @@ def test_logout_recycling_is_refused_off_the_host_store(source: str) -> None:
 def test_a_host_store_harness_that_survives_a_host_logout_is_refused() -> None:
     """The reverse of the rule above, and the same failure in the other direction.
 
-    A harness resolving its tokens from the host identity store that is NOT retired
-    when that store changes account keeps serving turns on the previous account's
-    credentials -- the exact failure the recycle set exists to prevent. Refusing
-    only retire-without-host-store would leave this half to a table-data test that
-    checks today's four rows and nothing a fifth author writes.
+    A harness reading the host identity store that is not retired on an account change
+    keeps serving turns on the previous account's credentials.
     """
     with pytest.raises(ValueError, match="survive a host logout"):
         host_auth.AgentAuthDeclaration(
@@ -586,10 +553,8 @@ def test_no_current_driver_implements_the_login_protocol() -> None:
     """Asserted POSITIVELY, so the day a harness gains an in-product sign-in this
     test is the thing that notices.
 
-    Every harness shipped today brings its own sign-in, which is the reason the
-    protocol is optional rather than a method on the base class. When that stops
-    being true, the panel, the doctor row and the remedy string all need an answer
-    for a harness whose login Kiro Crew drives -- and none of them has one yet.
+    The panel, doctor row and remedy string have no answer yet for a login Kiro Crew
+    drives, so a first implementer must be noticed.
     """
     implementers: list[str] = []
     # A matched class defines every protocol method, so only the files whose text
@@ -675,25 +640,15 @@ def test_an_unset_declared_override_resolves_to_none(_no_adapter_overrides, tmp_
     assert all(root is None for _env, root in roots.adapter_roots)
 
 
-# ---------------------------------------------------------------------------
 # A re-exposure must be a NARROWING of the mask, never a hole in the floor
-# ---------------------------------------------------------------------------
 
 
 def test_every_declared_expose_leaf_sits_under_a_masked_directory() -> None:
     """A re-exposed file must be inside something the mask hides, for EVERY harness.
 
-    A re-exposure asks the host to OPEN a path, and the mask is the only thing that
-    makes the request a narrowing. A leaf sitting under nothing the mask hides is a
-    fresh hole in the read-gate floor rather than a carve-out.
-
-    Iterates the whole table rather than one harness on purpose: the containment
-    check that existed covered only the harness that happened to need a
-    re-exposure, so a second entry would have gone unchecked at both layers.
-
-    This table is HOST-owned and stays that way -- containment is necessary but not
-    sufficient, because a private key under a masked directory satisfies it exactly
-    as the one legitimate case does. Which is why there is no declared field for it.
+    A leaf under nothing the mask hides is a new hole, not a carve-out. Containment is
+    necessary but not sufficient (a private key under a masked dir passes too), so the
+    table stays host-owned with no declared field.
     """
     from kiro_crew.agent_sdk import tool_gate as gate
 
@@ -749,19 +704,14 @@ def test_a_sibling_of_a_masked_directory_is_not_treated_as_inside_it() -> None:
     assert not gate._sits_under_any(root, (root,))
 
 
-# ---------------------------------------------------------------------------
 # Two registers, because only one of them has evidence behind it
-# ---------------------------------------------------------------------------
 
 
 def test_the_unprobed_remedy_never_asserts_the_sign_in_state() -> None:
     """A string rendered without a measurement states the ACTION, not the STATE.
 
-    The backend panel shows it as a standing caveat and the doctor row prints it
-    under an explicit "not checked here", so a sentence claiming the harness is not
-    signed in tells an operator who IS signed in something false -- which is how a
-    standing line teaches its reader to skip it. ``signed_out_message`` is the one
-    allowed to assert the state, and it is reached only on real evidence.
+    It is shown as a standing caveat, so a "not signed in" claim would be false for a
+    signed-in operator. Only ``signed_out_message`` asserts the state, on evidence.
     """
     for declaration in host_auth.AGENT_AUTH_DECLARATIONS:
         remedy = declaration.sign_in_remedy.lower()
@@ -814,9 +764,7 @@ def test_kas_messages_name_the_route_the_last_spawn_took(monkeypatch):
     assert "Kiro Crew's own engine" not in host_auth.signed_out_message("")
 
 
-# ---------------------------------------------------------------------------
 # The kiro-cli command named is the one this host's spawn runs
-# ---------------------------------------------------------------------------
 
 _BUNDLED_POSIX_DIR = "/Applications/Kiro Crew.app/Contents/Resources/kiro-cli"
 _BUNDLED_WINDOWS_DIR = r"C:\Program Files\Kiro Crew\resources\kiro-cli"
@@ -962,11 +910,8 @@ def test_an_empty_signed_out_message_is_refused(blank: str) -> None:
 def test_the_panel_remedy_reads_as_prose_not_as_terminal_output() -> None:
     """``sign_in_remedy`` is rendered as PLAIN TEXT, so it must not carry markup.
 
-    The dashboard prints it inside a div with no markdown pass. A ``--`` written the
-    way this codebase writes comments therefore reaches the reader as two hyphens,
-    and a markdown backtick as a backtick -- one line below sibling copy in the same
-    card that uses a real em dash. ``signed_out_message`` is exempt: it goes to a
-    terminal row and to the chat error card, both of which render them.
+    The dashboard has no markdown pass there, so ``--`` and backticks show raw.
+    ``signed_out_message`` is exempt: its terminal row and chat card render them.
     """
     for declaration in (*host_auth.AGENT_AUTH_DECLARATIONS, host_auth.UNKNOWN_AGENT_AUTH):
         remedy = declaration.sign_in_remedy
@@ -996,13 +941,10 @@ def test_every_entitlement_source_has_an_operator_facing_label() -> None:
 
 
 def test_the_host_vault_source_is_declared_and_labelled() -> None:
-    """The third source the module always anticipated, now that it exists.
+    """The host-vault entitlement is in both the source set and the label map.
 
-    The comment above :data:`ENTITLEMENT_LABELS` said a harness entitled some other
-    way "would add a third here, with its label, when it exists". Adding the
-    identifier without adding it to both the source set and the label map is the one
-    way to land a source that ``__post_init__`` refuses (unknown source) or that
-    doctor prints raw -- so both memberships are asserted, not just one.
+    Missing from the set, ``__post_init__`` refuses it; missing a label, doctor prints
+    it raw.
     """
     assert host_auth.ENTITLEMENT_HOST_VAULT in host_auth.ENTITLEMENT_SOURCES
     assert host_auth.ENTITLEMENT_HOST_VAULT in host_auth.ENTITLEMENT_LABELS
@@ -1024,11 +966,7 @@ def test_the_host_vault_source_is_declared_and_labelled() -> None:
 def test_a_host_vault_harness_names_the_config_surface_that_feeds_it() -> None:
     """Its remedy must send the operator to the vault, not to the harness's own file.
 
-    ``sign_in_remedy`` is rendered VERBATIM in the backend panel and printed by
-    doctor, and for this source the action is Crew's own -- store a secret, map it
-    in config. A remedy inherited from the file-based harnesses would tell the
-    operator to write a credential file that the child mask now hides, which is
-    advice that cannot work.
+    A file-based remedy would point at a credential file the child mask hides.
     """
     declarations = [
         d

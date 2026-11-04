@@ -282,6 +282,7 @@ from kiro_crew.llm_helpers import (
     annotate_model_fallback,
     append_fallback_story,
     configured_fallback_chain,
+    engine_attributed_model,
     provider_fallback_active,
     provider_last_turn_usage,
     provider_model_pin_partial,
@@ -314,6 +315,7 @@ from kiro_crew.messaging import (
     registry,
     turn_ceiling,
 )
+from kiro_crew.messaging.directive_tracker import DirectiveTracker
 from kiro_crew.messaging.dispatch import (
     build_directive_consumer,
     build_tool_gate,
@@ -323,6 +325,7 @@ from kiro_crew.messaging.dispatch import (
     stop_reason_landed,
 )
 from kiro_crew.messaging.display_safety import redact_for_display
+from kiro_crew.messaging.driver import directive_event_observer
 from kiro_crew.messaging.egress import channel_egress_parts, send_channel_parts
 from kiro_crew.messaging.identity import channel_inbound_permitted, publish_turn_identity
 from kiro_crew.messaging.link import (
@@ -363,7 +366,7 @@ from kiro_crew.monitoring.models import (
 )
 from kiro_crew.notifications.bus import MONITOR_CHANNEL
 from kiro_crew.parent_turns import ledger_of, note_turn_landed, settle_turn, settles_at_release
-from kiro_crew.platform import boot_platform
+from kiro_crew.platform import boot_platform, release_apply
 from kiro_crew.platform.bootstrap import apply_kas_cli_floor
 from kiro_crew.platform.context import (
     PlatformCompositionError,
@@ -422,7 +425,7 @@ from kiro_crew.security import (
     redact_exfiltration_urls,
 )
 from kiro_crew.security.readonly_bash import command_invokes_git, is_read_only_bash
-from kiro_crew.sel import flush_audit_queue_before_hard_exit, sel
+from kiro_crew.sel import flush_audit_queue, flush_audit_queue_before_hard_exit, sel
 from kiro_crew.service.common import restart_command_hint
 from kiro_crew.session import (
     HEARTBEAT_KEY,
@@ -519,6 +522,7 @@ from kiro_crew.slack.gateway_runtime.cron_verdict import (
     _result_hash,
 )
 from kiro_crew.slack.gateway_runtime.exit_path import (
+    _FORCE_EXIT_DEADLINE_SECS,
     _MARKER_WRITE_WAIT_SECS,
 )
 from kiro_crew.slack.gateway_runtime.heartbeat_turns import (
@@ -771,6 +775,7 @@ class GatewayOrchestrator:
     _marker_write_task: "asyncio.Task[None] | None"
     _sign_in_refresher_task: "asyncio.Task[None] | None"
     _marker_clear_pending: threading.Event
+    _force_exit_claimed: threading.Event
     _dashboard_runner: web.AppRunner | None
     _handler_tasks: set[asyncio.Task]
     _session_tasks: dict[str, asyncio.Task]
@@ -1133,6 +1138,7 @@ class GatewayOrchestrator:
     _write_marker_worker = _exit._write_marker_worker
     _install_shutdown_signal_handlers = _exit._install_shutdown_signal_handlers
     _shutdown_and_exit = _exit._shutdown_and_exit
+    _park_if_force_exit_claimed = _exit._park_if_force_exit_claimed
     # gateway_runtime/service_boot.py
     _auto_open_dashboard = _boot._auto_open_dashboard
     _init_services = _boot._init_services

@@ -267,6 +267,10 @@ async def test_a_policy_denial_alerts_whatever_the_threshold() -> None:
     orch = _orchestrator()
     job = _job(alert_after_failures=2)
     await _script_failure(orch, job, "blocked path", denied=True)
+    # The anchor only moves on an alert that went out; a held one leaves it empty.
+    assert job.last_failure_hash != ""
+    assert job.last_failure_at > 0.0
+    assert job.consecutive_failures == 0
     orch.slack.post_message.assert_awaited_once()
     assert "Blocked by policy" in orch.slack.post_message.await_args.args[1]
 
@@ -291,6 +295,8 @@ async def test_a_failed_one_shot_alerts_below_the_threshold(fail) -> None:
     orch = _orchestrator()
     job = _job(alert_after_failures=2, delete_after_run=True)
     await fail(orch, job, "boom")
+    assert job.last_failure_hash != ""
+    assert job.last_failure_at > 0.0
     orch.slack.post_message.assert_awaited_once()
 
 
@@ -307,6 +313,8 @@ async def test_a_retained_at_job_alerts_below_the_threshold(fail) -> None:
         alert_after_failures=2,
     )
     await fail(orch, job, "boom")
+    assert job.last_failure_hash != ""
+    assert job.last_failure_at > 0.0
     orch.slack.post_message.assert_awaited_once()
 
 
@@ -349,6 +357,9 @@ async def test_an_uncounted_script_failure_still_alerts_on_the_default() -> None
     job = _job()
     with patch.object(gw, "sel", lambda: MagicMock()):
         await orch._alert_cron_failure(job, "queue timeout")
+    assert job.consecutive_failures == 0
+    assert job.last_failure_hash != ""
+    assert job.last_failure_at > 0.0
     orch.slack.post_message.assert_awaited_once()
 
 

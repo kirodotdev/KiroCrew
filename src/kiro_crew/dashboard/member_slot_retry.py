@@ -67,16 +67,17 @@ async def retry_deferred_member_slots(
             end_deferral(state, key)
             continue
         _drop_retry_mark(state, key)
-        binding = await asyncio.to_thread(members_mod.read_dm_binding_for_slot, key)
+        outcome = await asyncio.to_thread(members_mod.resolve_dm_binding_outcome, key)
         # Asked again after the read: the user can open and close the thread
         # meanwhile, and the rebuild below starts its own close guard only on entry.
         if state.get_slot(key) is not None or closed_in_this_process(state, key):
             end_deferral(state, key)
             continue
-        if binding is None:
-            # Still no crewmate for the binding after the boot settled: one deleted
-            # for good is not carried from boot to boot. The next flush prunes the
-            # key; a check-in or an open still loads it once the binding resolves.
+        if outcome is members_mod.DmBindingOutcome.UNKNOWN:
+            logger.warning("member slot retry: %s resolution unknown; keeping its seed", key)
+            continue
+        if outcome is members_mod.DmBindingOutcome.CONFIRMED_ABSENT:
+            # Only an intact id-binding and a trustworthy roster can confirm absence.
             end_deferral(state, key)
             logger.warning("member slot retry: %s still names no crewmate; dropping it", key)
             continue

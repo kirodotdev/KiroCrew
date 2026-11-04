@@ -115,7 +115,7 @@ describe('warm task brief transcript rows', () => {
     const b = warmBriefOf(brief({ asked: 'Fix the test', now: 'PR is open.', needs_you: ['Approve'], next: ['Merge'] }))!
     expect(b).toEqual({
       status: null, headline: 'PR is open.', asked: 'Fix the test', remaining: '',
-      done: [], needsYou: ['Approve'], next: ['Merge'], extra: [], body: '', waiting: [], waitingTotal: 0, widget: '',
+      done: [], needsYou: ['Approve'], next: ['Merge'], extra: [], body: '', waiting: [], waitingTotal: 0, widget: '', links: [], asks: [],
     })
     render(<WarmBriefCard brief={b} />)
     expect(screen.queryByTestId('warm-brief-status')).toBeNull()
@@ -135,7 +135,7 @@ const FULL = {
 
 const EMPTY: WarmBrief = {
   status: null, headline: 'PR is open.', asked: '', remaining: '',
-  done: [], needsYou: [], next: [], extra: [], body: '', waiting: [], waitingTotal: 0, widget: '',
+  done: [], needsYou: [], next: [], extra: [], body: '', waiting: [], waitingTotal: 0, widget: '', links: [], asks: [],
 }
 
 describe('WarmBriefCard', () => {
@@ -471,6 +471,37 @@ describe('a picture the model chose', () => {
     expect(body).toHaveTextContent('See the PR and https://evil.example/y')
   })
 
+  it("draws the gateway's link row, one link per listed PR, labelled from its own URL", () => {
+    const ours = 'https://github.com/kirodotdev/KiroCrew/pull/12'
+    const theirs = 'https://github.com/acme/other/pull/12'
+    const m = brief({
+      status: 'needs_you', headline: 'Back.', body: `#12 is green. [x](${ours})`,
+      links: [ours, theirs, ours, 'https://evil.example/pull/1', 'https://github.com/a/b/pull/1?x=1', 42],
+    })
+    render(<WarmBriefCard brief={warmBriefOf(m)!} />)
+    const row = screen.getByTestId('warm-brief-links')
+    const anchors = Array.from(row.querySelectorAll('a'))
+    expect(anchors.map(a => [a.textContent, a.getAttribute('href')])).toEqual([
+      ['kirodotdev/KiroCrew#12', ours],
+      ['acme/other#12', theirs],
+    ])
+    for (const a of anchors) {
+      expect(a).toHaveAttribute('rel', 'noopener noreferrer')
+      // The chat's own PR pill, not a style of the card's.
+      expect(a.closest('.mc-md-ref-chip')).not.toBeNull()
+    }
+    // The body is drawn as written: its #N and its link stay text.
+    const body = screen.getByTestId('warm-brief-body')
+    expect(body.querySelector('a')).toBeNull()
+    expect(body).toHaveTextContent('#12 is green. x')
+    expect(searchableText(m)).toContain('kirodotdev/KiroCrew#12\nacme/other#12')
+  })
+
+  it('draws no link row when the gateway read no PR', () => {
+    render(<WarmBriefCard brief={warmBriefOf(brief({ status: 'on_track', headline: 'Back.', body: '#12 is green.' }))!} />)
+    expect(screen.queryByTestId('warm-brief-links')).toBeNull()
+  })
+
   it("leaves the widget's HTML out of chat search", () => {
     const m = brief({ status: 'needs_you', headline: 'Back.', body: PICTURE })
     const text = searchableText(m)
@@ -558,6 +589,41 @@ describe('the waiting cards', () => {
     const shownCount = (container.textContent ?? '').toLowerCase().split(term).length - 1
     expect(shownCount).toBeGreaterThan(0)
     expect(searchableText(m).toLowerCase().split(term).length - 1).toBe(shownCount)
+  })
+})
+
+describe('structured asks', () => {
+  const ASK = {
+    what: 'Push the fix',
+    why: 'Only you can approve a push',
+    options: [
+      { label: 'Push now', consequence: 'CI reruns' },
+      { label: 'Wait for CI', consequence: '' },
+    ],
+    recommended: 'Push now',
+    recommended_why: 'The fix is tested',
+  }
+
+  it('draws why, each consequence and the recommendation as text, and search reads them', () => {
+    const m = brief({ headline: 'Back.', status: 'needs_you', asks: [ASK] })
+    render(<WarmBriefCard brief={warmBriefOf(m)!} />)
+    const ask = screen.getByTestId('warm-brief-ask')
+    expect(ask.textContent).toContain('Why: Only you can approve a push')
+    expect(ask.textContent).toContain('Push now: CI reruns')
+    expect(screen.getByTestId('warm-brief-recommended').textContent).toBe('Recommended: Push now (The fix is tested)')
+    expect(ask.querySelector('[data-recommended]')?.textContent).toBe('Push now: CI reruns')
+    expect(ask.querySelectorAll('button, a')).toHaveLength(0)
+    for (const term of ['why: only you', 'push now: ci reruns', 'wait for ci', 'the fix is tested']) {
+      expect(searchableText(m).toLowerCase()).toContain(term)
+    }
+  })
+
+  it('drops a recommendation outside the labels and asks without a what', () => {
+    const m = brief({ headline: 'Back.', status: 'needs_you', asks: [{ ...ASK, recommended: 'Merge' }, { why: 'x' }, 'text'] })
+    const b = warmBriefOf(m)!
+    expect(b.asks).toHaveLength(1)
+    expect(b.asks[0].recommended).toBe('')
+    expect(b.asks[0].recommendedWhy).toBe('')
   })
 })
 

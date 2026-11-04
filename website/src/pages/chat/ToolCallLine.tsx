@@ -1,4 +1,4 @@
-import { lazy, memo, Suspense, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { lazy, memo, Suspense, useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { shallowEqual } from 'react-redux'
 import { useAppSelector, useAppDispatch, type RootState } from '../../store'
 import { clearFocusToolCallId, mcpAppKey } from '../../store/chatSlice'
@@ -24,6 +24,8 @@ import { countDiffStats } from '../../utils/diffLineCounts'
 import { isWaitToolTitle } from '../../utils/waitToolTitle'
 import { isSafePath } from '../../utils/safePath'
 import { usePathKind } from '../../hooks/usePathKind'
+import { ChatProjectDirCtx } from '../../components/markdown/contexts'
+import { joinProjectRelative } from '../../components/markdown/pathReferences'
 import McpAppFrame from '../../components/McpAppFrame'
 import DiffBlock, { extractFilePath as extractDiffHeaderPath } from '../../components/DiffBlock'
 import { presentToolDiff } from './toolDiff'
@@ -439,7 +441,13 @@ function selectToolRowView(s: RootState, slot: string | undefined, message: Chat
   // to it (`Read src/a.ts`, not the absolute path). Reads THIS row's slot —
   // a split-view pane must not borrow the active session's tree.
   const projectDir = waitSlotKey ? (slotRowByKey(s.dashboard.slots, waitSlotKey)?.project || undefined) : undefined
-  return { ...entry, isDone, mcpApp, isNewestRow, runMembers, approvedByUser, hasPendingPerm, runOutputs, waitSlotKey, waitState, focused, projectDir }
+  // A pending security-rule override card (DenyOverrideDropdown): the gate already
+  // refused this call, so the pill must not still read as "Running". The card's
+  // redacted command is what it names; empty for every other row.
+  const denyOverrideCommand = hasPendingPerm && perm?.meta?.deny_override_rule
+    ? String(perm.meta?.deny_override_command || '') || label
+    : ''
+  return { ...entry, isDone, mcpApp, isNewestRow, runMembers, approvedByUser, hasPendingPerm, denyOverrideCommand, runOutputs, waitSlotKey, waitState, focused, projectDir }
 }
 
 type ToolRowView = ReturnType<typeof selectToolRowView>
@@ -529,7 +537,7 @@ function ToolCallLineBody({ message, running: _running, slot, onFileOpen, disclo
   const noticeServer = (message.meta?.mcp_server as string | undefined) || ''
 
   // Every store fact this row draws, in ONE subscription (selectToolRowView).
-  const { effectiveId, isDone, isRejected, isAutoDenied, autoDenyReason, autoDenyNotice, purpose, input, output, inputCut, outputCut, auto, ts, executionStartedAt, hasEntry, isShell, toolKind, toolName, trustedToolName, mcpServer, mcpApp, isNewestRow, runMembers, approvedByUser, hasPendingPerm, runOutputs, waitSlotKey, waitState, focused, projectDir } =
+  const { effectiveId, isDone, isRejected, isAutoDenied, autoDenyReason, autoDenyNotice, purpose, input, output, inputCut, outputCut, auto, ts, executionStartedAt, hasEntry, isShell, toolKind, toolName, trustedToolName, mcpServer, mcpApp, isNewestRow, runMembers, approvedByUser, hasPendingPerm, denyOverrideCommand, runOutputs, waitSlotKey, waitState, focused, projectDir } =
     useAppSelector(s => selectToolRowView(s, slot, message, toolCallId, label), sameToolRowView)
 
   const isRun = runMembers.length > 1
@@ -835,7 +843,16 @@ function ToolCallLineBody({ message, running: _running, slot, onFileOpen, disclo
       : diffView?.mode === 'summary'
         ? { ...diffView, opensCard: false }
         : null
-  const probeEnabled = !!filePath && isSafePath(filePath) && !!onFileOpen
+  // What the Open pill probes and opens: a relative tool path joined to the
+  // transcript's project, the same rule the chips and diff headers follow, so
+  // it is never resolved against the gateway's own directory. The context,
+  // not the slot row's `projectDir`: the host provides it only for a chat
+  // confirmed to run on this machine (`useChatProjectDir`), and a remote
+  // chat's project names a folder on another machine. `filePath` stays as
+  // written for the label.
+  const transcriptProjectDir = useContext(ChatProjectDirCtx)
+  const openPath = filePath ? joinProjectRelative(filePath, transcriptProjectDir) : null
+  const probeEnabled = !!openPath && isSafePath(openPath) && !!onFileOpen
   // The existence probe shares the transcript-wide cache and batch the markdown
   // chips and diff headers use, so a file a chip already resolved costs no
   // request and N pills for one path ask once.
@@ -846,7 +863,7 @@ function ToolCallLineBody({ message, running: _running, slot, onFileOpen, disclo
   // being there, and a failed-probe notice on every tool row would be noise
   // about a link nobody clicked. Opening the file itself reports its own
   // failure when pressed.
-  const fileExists = usePathKind(probeEnabled ? filePath : null) === 'file'
+  const fileExists = usePathKind(probeEnabled ? openPath : null) === 'file'
   const showFileOpen = probeEnabled && fileExists
 
   const Icon = isDone
@@ -976,13 +993,16 @@ function ToolCallLineBody({ message, running: _running, slot, onFileOpen, disclo
   // command itself, so that case keeps the raw first line. Raw mode never
   // digests: that mode asked for the exact command.
   const pillLabelText = useMemo(() => {
+    // Refused by a security rule and waiting on the person's choice: say so.
+    void langGen // the blocked label is localized
+    if (denyOverrideCommand) return i18nT('components.denyOverride.pill_blocked', { command: denyOverrideCommand })
     // `derived.kind` is the shell signal here: a historical row has no
     // `is_shell` on its log entry, but the derivation read the same title.
     if (!simplified || derived.derived || derived.kind !== 'execute') return displayLabel
     if (displayLabel !== derived.title) return displayLabel // the purpose is showing
     const digest = deriveShellSummary(derived.rawTitle, { bareCommand: true })
     return digest && (digest.includes(', ') || digest.includes(' → ')) ? digest : displayLabel
-  }, [displayLabel, simplified, derived])
+  }, [displayLabel, simplified, derived, denyOverrideCommand, langGen])
   // Hover reveals the verbatim command / incoming title whenever the pill shows
   // a substitute for it — a derived title, a digest, or the purpose.
   const pillLabelTitle = pillLabelText === derived.rawTitle ? undefined : (derived.rawTitle || undefined)
@@ -1253,13 +1273,13 @@ function ToolCallLineBody({ message, running: _running, slot, onFileOpen, disclo
           both sides of its guess. The wrapper's row gap is therefore 0 and this
           margin is the whole separation: 8px on an unwrapped row, where it was
           the wrapper's 4px before. */}
-      {showFileOpen && filePath && (
+      {showFileOpen && openPath && (
         <button
           className="pi-morph shrink-0 inline-flex items-center gap-1 ms-2 px-1.5 py-0.5 rounded font-mono text-[12px] leading-5 bg-bg-hover text-muted hover:text-accent hover:bg-accent/10 cursor-pointer transition-colors focus-ring-accent"
           style={{ marginTop: '1px' }}
-          onClick={(e) => { e.stopPropagation(); onFileOpen!(filePath) }}
-          title={i18nT('pages.chat.toolCallLine.open_in_side_panel', { path: filePath })}
-          aria-label={i18nT('pages.chat.toolCallLine.open_in_side_panel', { path: filePath })}
+          onClick={(e) => { e.stopPropagation(); onFileOpen!(openPath) }}
+          title={i18nT('pages.chat.toolCallLine.open_in_side_panel', { path: openPath })}
+          aria-label={i18nT('pages.chat.toolCallLine.open_in_side_panel', { path: openPath })}
         >
           <span className="max-w-[240px] truncate">{basename}</span>
           <SidePanelGlyph size={12} className="shrink-0" />

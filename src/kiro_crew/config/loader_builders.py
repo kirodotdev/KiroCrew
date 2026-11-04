@@ -68,7 +68,6 @@ from kiro_crew.config.sections import (
     _normalize_acp_backend,
     _normalize_jail,
     _normalize_yolo_duration,
-    _port_or_unset,
     _read_skip_permissions,
     _safe_bool,
     _safe_float,
@@ -498,9 +497,9 @@ def _read_backend_choice(section: _sections.SectionReader, agent_data: dict, key
     if agent_data.get(key) == MALFORMED_BACKEND_FLOOR:
         # The floor for an unusable value (``validate_config_data``), already
         # warned about there: never a Kiro CLI pick, so never moved onto KAS.
-        from kiro_crew.acp_backends import GOVERNANCE_FLOOR_BACKEND
+        from kiro_crew.acp_backends import governance_floor_backend
 
-        return GOVERNANCE_FLOOR_BACKEND
+        return governance_floor_backend()
     value = backend_from_stored(agent_data.get(key))
     if value is None:
         default = section.default(key)
@@ -1206,11 +1205,9 @@ def _build_dashboard_config(_degraded: set[str], dashboard_data: dict) -> Dashbo
         session_card_source_links=section.read("session_card_source_links", _safe_bool),
         default_memory_mode=_default_memory_mode_from(section.get("default_memory_mode")),
         widget_density=section.get("widget_density"),
-        use_builtin_browser=section.read("use_builtin_browser", _safe_bool),
         browser_local_origins=_sections.coerce_browser_local_origins(
             section.get("browser_local_origins")
         ),
-        browser_view_port=_port_or_unset(section.get("browser_view_port")),
         verbosity=_sections.normalize_verbosity(section.get("verbosity")),
         link_previews=section.read("link_previews", _safe_bool),
         tail_fork_enabled=section.get("tail_fork_enabled"),

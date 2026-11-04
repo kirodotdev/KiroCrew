@@ -189,6 +189,35 @@ describe('kirocrew-conductor page', () => {
     expect(text('#cb-meter')).toContain('1 of 3 accepted by the conductor')
   })
 
+  it('calls a progress task working only while the host says its worker runs', () => {
+    mount({
+      items: [
+        item({ item_id: 'a', title: 'mid-turn', worker: 'running', stale: false }),
+        item({ item_id: 'b', title: 'turn ended', worker: 'idle', stale: false }),
+        item({ item_id: 'c', title: 'chat closed', worker: 'closed', stale: true }),
+        item({ item_id: 'd', title: 'no host facts' }),
+      ],
+    })
+    const cards = all('#cb-tasks .card')
+    expect(cards.map((c) => c.querySelector('.pill')?.textContent)).toEqual([
+      'working',
+      'waiting',
+      'waiting',
+      'working',
+    ])
+    // Only the running card and the old-rule card pulse; the meter counts them alone.
+    expect(cards.map((c) => c.querySelector('.dot') !== null)).toEqual([true, false, false, true])
+    expect(text('#cb-meter')).toContain('2 working')
+  })
+
+  it('stops calling a task working once its worker goes idle', () => {
+    mount({ items: [item({ title: 'one', worker: 'running', stale: false })] })
+    expect(text('#cb-tasks .card .pill')).toBe('working')
+    refill({ items: [item({ title: 'one', worker: 'idle', stale: false })] })
+    expect(text('#cb-tasks .card .pill')).toBe('waiting')
+    expect(text('#cb-meter')).toContain('0 working')
+  })
+
   it('keeps a title that looks like markup as text', () => {
     mount({ items: [item({ title: HOSTILE, summary: HOSTILE })] })
     expect(document.querySelector('#cb-tasks img')).toBeNull()

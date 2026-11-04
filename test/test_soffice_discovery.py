@@ -6,7 +6,7 @@ as "install it with: <command>", so its first executable must exist on this host
 its package name must resolve there. The apt family is decided by lineage. The rpm
 family carries ``dnf``, ``yum`` or ``microdnf`` depending on the generation, so the
 manager is probed the way the browser installer probes it
-(``os_deps.rpm_package_manager``). Amazon Linux 2023 reports ``ID_LIKE=fedora`` but
+(``os_release.rpm_package_manager``). Amazon Linux 2023 reports ``ID_LIKE=fedora`` but
 packages no LibreOffice, SUSE's manager is ``zypper``, and an unrecognized
 distribution is unknown: those get no command at all rather than a guessed ``apt`` or
 ``dnf`` line.
@@ -24,8 +24,7 @@ from unittest import mock
 
 import pytest
 
-from kiro_crew import platform_compat, soffice_discovery
-from kiro_crew.browser_cli import os_deps
+from kiro_crew import os_release, platform_compat, soffice_discovery
 
 _APT = "sudo apt install libreoffice"
 _DNF = "sudo dnf install libreoffice"
@@ -53,9 +52,11 @@ def linux_host(monkeypatch):
             fake = mock.Mock(side_effect=OSError("no os-release"))
         else:
             fake = mock.Mock(return_value=release)
-        monkeypatch.setattr(os_deps.platform, "freedesktop_os_release", fake)
+        monkeypatch.setattr(os_release.platform, "freedesktop_os_release", fake)
         monkeypatch.setattr(
-            os_deps.shutil, "which", lambda name: f"/usr/bin/{name}" if name in managers else None
+            os_release.shutil,
+            "which",
+            lambda name: f"/usr/bin/{name}" if name in managers else None,
         )
 
     yield _set
@@ -65,30 +66,44 @@ def linux_host(monkeypatch):
 @pytest.mark.parametrize(
     ("release", "managers", "expected"),
     [
-        (_AL2023, {"dnf", "yum"}, None),
-        ({"ID": "ubuntu", "ID_LIKE": "debian"}, set(), _APT),
-        ({"ID": "debian"}, set(), _APT),
-        ({"ID": "linuxmint", "ID_LIKE": "ubuntu debian"}, set(), _APT),
-        ({"ID": "fedora"}, {"dnf"}, _DNF),
-        ({"ID": "rocky", "ID_LIKE": "rhel centos fedora"}, {"dnf", "yum"}, _DNF),
+        pytest.param(
+            _AL2023, {"dnf", "yum"}, None, id="hint_matches_the_distribution-al2023-with-dnf"
+        ),
+        pytest.param(
+            {"ID": "ubuntu", "ID_LIKE": "debian"},
+            set(),
+            _APT,
+            id="hint_matches_the_distribution-ubuntu",
+        ),
+        pytest.param({"ID": "debian"}, set(), _APT, id="hint_matches_the_distribution-debian"),
+        pytest.param(
+            {"ID": "linuxmint", "ID_LIKE": "ubuntu debian"},
+            set(),
+            _APT,
+            id="hint_matches_the_distribution-mint",
+        ),
+        pytest.param({"ID": "fedora"}, {"dnf"}, _DNF, id="hint_matches_the_distribution-fedora"),
+        pytest.param(
+            {"ID": "rocky", "ID_LIKE": "rhel centos fedora"},
+            {"dnf", "yum"},
+            _DNF,
+            id="hint_matches_the_distribution-rocky-dnf-and-yum",
+        ),
+        pytest.param(_CENTOS7, {"yum"}, _YUM, id="an_rpm_host_is_told_the_manager_it_has-yum-only"),
+        pytest.param(
+            _UBI, {"microdnf"}, _MICRODNF, id="an_rpm_host_is_told_the_manager_it_has-microdnf-only"
+        ),
+        pytest.param(
+            _CENTOS7,
+            {"yum", "microdnf"},
+            _YUM,
+            id="an_rpm_host_is_told_the_manager_it_has-yum-before-microdnf",
+        ),
     ],
-    ids=["al2023-with-dnf", "ubuntu", "debian", "mint", "fedora", "rocky-dnf-and-yum"],
 )
-def test_hint_matches_the_distribution(linux_host, release, managers, expected) -> None:
-    linux_host(release, managers)
-    assert soffice_discovery.soffice_install_hint() == expected
-
-
-@pytest.mark.parametrize(
-    ("release", "managers", "expected"),
-    [
-        (_CENTOS7, {"yum"}, _YUM),
-        (_UBI, {"microdnf"}, _MICRODNF),
-        (_CENTOS7, {"yum", "microdnf"}, _YUM),
-    ],
-    ids=["yum-only", "microdnf-only", "yum-before-microdnf"],
-)
-def test_an_rpm_host_is_told_the_manager_it_has(linux_host, release, managers, expected) -> None:
+def test_hint_matches_the_distribution_and_its_manager(
+    linux_host, release, managers, expected
+) -> None:
     linux_host(release, managers)
     assert soffice_discovery.soffice_install_hint() == expected
 

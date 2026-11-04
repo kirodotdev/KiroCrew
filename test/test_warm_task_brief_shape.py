@@ -976,13 +976,6 @@ def test_content_turns_a_www_autolink_into_code():
 
 
 @pytest.mark.parametrize(
-    "body", ["- Merged #**31337**", "- Merged #`31337`", "- Merged #~~31337~~"]
-)
-def test_an_emphasis_split_pr_is_still_a_miss(body):
-    assert warm_task_brief._names_an_unknown_pr(_posted(_body_brief(body)), set())
-
-
-@pytest.mark.parametrize(
     ("body", "bad"), [("- at **23**:**47**", "23:47"), ("- **a1b**2c3d4", "a1b2c3d4")]
 )
 def test_an_emphasis_split_time_or_sha_still_fails_the_fact_check(body, bad):
@@ -1006,17 +999,28 @@ def test_a_colour_declaration_value_is_not_a_pr(body):
     assert not warm_task_brief._names_an_unknown_pr(_posted(brief), set())
 
 
+def _named(prefix, bodies):
+    return [pytest.param(body, id=f"{prefix}-{body}") for body in bodies]
+
+
 @pytest.mark.parametrize(
     "body",
-    [
-        "- fixed in #333",
-        "```mermaid\nflowchart LR\nA[#31337 merged] --> B\n```",
-        "```mermaid\nflowchart LR\nA[fill: #4242 merged] --> B\n```",
-        "- color:#333 is not in a style block",
-        '<mcwidget><p title="#4242">x</p></mcwidget>',
-    ],
+    _named(
+        "an_emphasis_split_pr_is_still_a_miss",
+        ["- Merged #**31337**", "- Merged #`31337`", "- Merged #~~31337~~"],
+    )
+    + _named(
+        "a_hash_number_outside_a_colour_declaration_is_still_a_pr",
+        [
+            "- fixed in #333",
+            "```mermaid\nflowchart LR\nA[#31337 merged] --> B\n```",
+            "```mermaid\nflowchart LR\nA[fill: #4242 merged] --> B\n```",
+            "- color:#333 is not in a style block",
+            '<mcwidget><p title="#4242">x</p></mcwidget>',
+        ],
+    ),
 )
-def test_a_hash_number_outside_a_colour_declaration_is_still_a_pr(body):
+def test_an_unknown_pr_reference_is_still_a_miss(body):
     assert warm_task_brief._names_an_unknown_pr(_posted(_body_brief(body)), set())
 
 

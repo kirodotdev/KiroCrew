@@ -17,6 +17,7 @@ holder's claim stops counting, and that a refused pass leaves every piece of
 import asyncio
 import contextlib
 import json
+import logging
 import os
 import threading
 import time
@@ -263,7 +264,7 @@ class TestTheHeartbeatKeepsALiveHolder:
 
     @pytest.mark.asyncio
     async def test_the_heartbeat_stops_once_the_lease_is_someone_elses(
-        self, tmp_path, monkeypatch
+        self, tmp_path, monkeypatch, caplog
     ) -> None:
         """A lost lease stops renewal rather than spinning."""
         monkeypatch.setattr(
@@ -272,8 +273,14 @@ class TestTheHeartbeatKeepsALiveHolder:
         log = _seed_log(tmp_path)
         c = _make_consolidator(log)
 
-        with patch.object(c, "_renew_consolidation_lease", return_value=False):
+        with (
+            patch.object(c, "_renew_consolidation_lease", return_value=False),
+            caplog.at_level(logging.WARNING, logger="kiro_crew.history"),
+        ):
             await asyncio.wait_for(c._heartbeat_consolidation_lease(KEY, "gone"), timeout=30)
+
+        messages = [r.getMessage() for r in caplog.records if r.name == "kiro_crew.history"]
+        assert f"Consolidation lease lost for {KEY}; aborting pass" in messages
 
     @pytest.mark.asyncio
     async def test_a_pass_renews_while_the_provider_turn_is_in_flight(

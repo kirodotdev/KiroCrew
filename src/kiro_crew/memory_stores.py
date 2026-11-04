@@ -1057,9 +1057,14 @@ def _legacy_member_manifest_owner(directory: Path) -> tuple[bool, str]:
         return False, ""
     except OSError as exc:
         raise UnknownMemoryStore(f"{LEGACY_MEMBER_MANIFEST} is unreadable: {exc}") from exc
+    except UnicodeDecodeError as exc:
+        # A ValueError, not an OSError: without this arm it escapes the
+        # per-store refusal and ends the upgrade scan for every other store.
+        raise UnknownMemoryStore(f"{LEGACY_MEMBER_MANIFEST} is not UTF-8") from exc
     try:
         value = json.loads(raw)
-    except ValueError as exc:
+    except (ValueError, RecursionError) as exc:
+        # RecursionError: nesting past the interpreter's limit, a hand-edited file.
         raise UnknownMemoryStore(f"{LEGACY_MEMBER_MANIFEST} is not valid JSON") from exc
     owner = value.get("owner_member") if isinstance(value, dict) else None
     if not isinstance(owner, str) or not owner:

@@ -178,6 +178,25 @@ export const clearSharedUnreadIfCovered = (slot: string, readTs: string | undefi
   persistSharedUnread({}, [slot])
   return undefined
 }
+/** The message watermark the shared record holds for one slot right now,
+ *  queued arrivals included; undefined when there is none ('' guards
+ *  nothing, and an unparseable value cannot be judged against a row). */
+export const sharedUnreadWatermark = (slot: string): string | undefined => {
+  flushSharedUnread()
+  let record: Record<string, string>
+  try { record = JSON.parse(localStorage.getItem('mc-unread-shared') ?? '{}') as Record<string, string> } catch { return undefined }
+  if (!Object.prototype.hasOwnProperty.call(record, slot)) return undefined
+  const w = record[slot]
+  return typeof w === 'string' && Number.isFinite(Date.parse(w)) ? w : undefined
+}
+/** Remove one slot's shared record only if it still holds `watermark`.
+ *  Any write since it was read (a sibling's newer arrival, a queued one
+ *  here) changes the value, and the record is then left alone. */
+export const retireSharedUnreadIfUnchanged = (slot: string, watermark: string): boolean => {
+  if (sharedUnreadWatermark(slot) !== watermark) return false
+  persistSharedUnread({}, [slot])
+  return true
+}
 /** This window's manual reminders, per-tab (sessionStorage): a deliberate
  *  mark-as-unread answers only to the window that made it, so a shared key
  *  would clobber siblings' reminder sets. */

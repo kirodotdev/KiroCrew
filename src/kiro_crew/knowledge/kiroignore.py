@@ -45,6 +45,7 @@ repository -- silent data loss the user never asked for. Creating a
 
 from __future__ import annotations
 
+import codecs
 import logging
 import os
 import re
@@ -237,7 +238,19 @@ def load(root: str | os.PathLike[str]) -> KiroIgnore | None:
             return None
         # errors="replace" so a stray non-UTF-8 byte costs one pattern, not the
         # file; utf-8-sig so a BOM (Notepad) does not spoil the first pattern.
-        text = raw.decode("utf-8-sig", errors="replace")
+        # Windows PowerShell 5.1's Out-File and ``>`` write UTF-16 with a BOM;
+        # read as UTF-8 every rule would be NUL-interleaved and match nothing.
+        if raw[:2] in (codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE):
+            text = raw.decode("utf-16", errors="replace")
+        else:
+            text = raw.decode("utf-8-sig", errors="replace")
+        if "\x00" in text:
+            # No rule can contain NUL; this is BOM-less UTF-16 or a binary
+            # file, and its rules will match nothing. Say so instead of
+            # silently indexing everything the user meant to exclude.
+            logger.warning(
+                "%s in %s contains NUL characters, so its rules match nothing; "
+                "save it as UTF-8", KIROIGNORE_FILENAME, root)
     except Exception:
         logger.debug("Could not read %s in %s", KIROIGNORE_FILENAME, root, exc_info=True)
         return None

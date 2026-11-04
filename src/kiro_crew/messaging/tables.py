@@ -568,25 +568,17 @@ def _in_cell_code_spans(row: str) -> list[tuple[int, int]]:
 def _row_cells(row: str, *, gfm_boundaries: bool = False) -> list[str]:
     """Split a table row on its cell boundaries.
 
-    Two kinds of pipe are content rather than a boundary during rendering, and
-    both cost a character if missed -- which a rendering, unlike a transport
-    choice, can never afford:
+    Two kinds of pipe are content, not a boundary, when rendering:
 
-    * ``\\|``. Escaping is decided by WALKING the row, not by a lookbehind:
-      ``\\\\`` is a literal backslash that leaves a following ``|`` a real
-      boundary, and a fixed-width lookbehind reads the second backslash of an
-      even run as an escape and merges two cells.
-    * a pipe inside an inline code span. GFM would split there and leave the
-      backticks unpaired, so this is deliberately LOOSER than GFM -- and the
-      looseness is safe because the decision here is only a RENDERING. On a
-      channel with no table support the platform renders that markup as a
-      paragraph either way, so the choice is between a card that keeps the
-      author's ``a|b`` and a card that has silently deleted the pipe.
+    * ``\\|``. Escaping is decided by WALKING the row: ``\\\\`` is a literal
+      backslash before a real boundary, which a fixed-width lookbehind misreads
+      and merges two cells.
+    * a pipe inside an inline code span. Deliberately looser than GFM (which
+      splits there), so a card keeps the author's ``a|b`` instead of losing it.
 
-    ``gfm_boundaries`` disables only the code-span exception. Shape validation
-    must count every unescaped pipe exactly as GFM does; otherwise malformed
-    markup can pass the header/separator width check and lose authored cells
-    during conversion.
+    ``gfm_boundaries`` disables only the code-span exception: shape validation
+    must count pipes exactly as GFM does, or malformed markup passes the width
+    check and loses cells.
     """
     spans = [] if gfm_boundaries else _in_cell_code_spans(row)
     cells: list[str] = []

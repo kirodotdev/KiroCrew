@@ -746,14 +746,16 @@ def validate_config_data(data: dict) -> dict:
         for harness_key in ("acp_backend", "member_acp_backend"):
             if harness_key in agent and not isinstance(agent[harness_key], str):
                 from kiro_crew.acp_backends import (
-                    GOVERNANCE_FLOOR_BACKEND,
                     backend_to_stored,
+                    floor_label,
+                    governance_floor_backend,
                 )
 
                 logger.warning(
-                    "Ignoring agent.%s %r (not a backend id); using the Kiro CLI floor",
+                    "Ignoring agent.%s %r (not a backend id); using the %s floor",
                     harness_key,
                     agent[harness_key],
+                    floor_label(),
                 )
                 # ``agent.acp_backend`` gets a marker, not ``"kiro"``: a stored Kiro
                 # CLI pick can run on KAS (``KIRO_SELECTION_BACKEND``), and this is
@@ -762,7 +764,7 @@ def validate_config_data(data: dict) -> dict:
                 agent[harness_key] = (
                     MALFORMED_BACKEND_FLOOR
                     if harness_key == "acp_backend"
-                    else backend_to_stored(GOVERNANCE_FLOOR_BACKEND)
+                    else backend_to_stored(governance_floor_backend())
                 )
 
     # 4. Preserve numeric values written by older config writers.

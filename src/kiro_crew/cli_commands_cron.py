@@ -373,7 +373,11 @@ def _cron_add(svc: CronService, args: argparse.Namespace) -> None:
 
     # ── Storage-time security vet for the two zero-token kinds ──
     if command:
-        err = _vet_shell_command(command)
+        # Imported in-function: a module-scope import would surface on the
+        # cli_commands star-import facade, whose import inventory is frozen.
+        from kiro_crew.mcp_cron import _command_cron_platform_refusal
+
+        err = _vet_shell_command(command) or _command_cron_platform_refusal()
         if err:
             _cron_add_fail(err, audit_kind="command")
     if script:

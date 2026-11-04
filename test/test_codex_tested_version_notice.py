@@ -36,13 +36,20 @@ def test_outside_the_tested_major_warns_with_version_range_and_fix(version):
     assert "start a new chat" in issue
 
 
-@pytest.mark.parametrize("version", ["2.0.0", "2.3.0", "2.99.0", "2.3.0+build.1"])
-def test_the_tested_major_is_silent(version):
-    assert untested_version_issue(CODEX, version) == ""
-
-
-@pytest.mark.parametrize("version", ["", "unknown", "2.3", "v2.3.0", None])
-def test_an_unreadable_version_is_silent_and_does_not_raise(version):
+@pytest.mark.parametrize(
+    "version",
+    [
+        *(
+            pytest.param(v, id=f"the_tested_major_is_silent-{v}")
+            for v in ["2.0.0", "2.3.0", "2.99.0", "2.3.0+build.1"]
+        ),
+        *(
+            pytest.param(v, id=f"an_unreadable_version_is_silent_and_does_not_raise-{v}")
+            for v in ["", "unknown", "2.3", "v2.3.0", None]
+        ),
+    ],
+)
+def test_a_tested_or_unreadable_version_is_silent_and_does_not_raise(version):
     assert untested_version_issue(CODEX, version) == ""
 
 

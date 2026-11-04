@@ -7,12 +7,10 @@ import pytest
 
 from kiro_crew.apps.manager import APP_MANIFEST_FILENAME, install_app
 
-# ---------------------------------------------------------------------------
 # Fixtures
-# ---------------------------------------------------------------------------
 
 
-def _make_app_source(tmp_path, name="cli-test-app", crons=None, hooks=None):
+def _make_app_source(tmp_path, name="cli-test-app", crons=None, hooks=None, permissions=None):
     src = tmp_path / "source" / name
     src.mkdir(parents=True)
     manifest = {
@@ -30,6 +28,8 @@ def _make_app_source(tmp_path, name="cli-test-app", crons=None, hooks=None):
             manifest["permissions"] = {"cron": True}
     if hooks is not None:
         manifest["backend"] = {"hooks": hooks}
+    if permissions is not None:
+        manifest.setdefault("permissions", {}).update(permissions)
     (src / APP_MANIFEST_FILENAME).write_text(json.dumps(manifest, indent=2))
     (src / "agents").mkdir()
     (src / "agents" / "test-agent.json").write_text('{"name": "test-agent"}')
@@ -53,9 +53,7 @@ def app_env(tmp_path, monkeypatch):
     return {"home": home, "kiro_agents": kiro_agents}
 
 
-# ---------------------------------------------------------------------------
 # _handle_app unit tests (call the function directly, not subprocess)
-# ---------------------------------------------------------------------------
 
 class TestHandleApp:
     """Test _handle_app by simulating argparse Namespace objects."""
@@ -168,16 +166,66 @@ class TestHandleApp:
         assert "Usage" in captured.out
 
 
+class TestFileOnlyInstallRegistration:
+    """A file-only `app install` registers under the gateway's install rule.
+
+    The gateway's install route registers a fresh install's resources unless the
+    app waits for session-approval consent (``_app_may_run_after_install``). The
+    CLI path, taken when no gateway answers, follows the same rule.
+    """
+
+    def _install(self, monkeypatch, src):
+        import argparse
+
+        from kiro_crew.apps.bridges import RegistrationResult
+        from kiro_crew.cli_commands import _handle_app
+
+        registered: list[str] = []
+
+        def _record(name):
+            registered.append(name)
+            return RegistrationResult()
+
+        monkeypatch.setattr(
+            "kiro_crew.cli_commands._install_app_through_gateway", lambda _source: False
+        )
+        monkeypatch.setattr("kiro_crew.cli_commands.register_app", _record)
+        _handle_app(argparse.Namespace(app_action="install", source=str(src)))
+        return registered
+
+    def test_a_session_approval_app_registers_nothing_and_stays_pending(
+        self, tmp_path, app_env, monkeypatch, capsys
+    ):
+        from kiro_crew.apps.manager import _read_installed
+
+        src = _make_app_source(tmp_path, permissions={"sessionApproval": True})
+
+        registered = self._install(monkeypatch, src)
+
+        assert registered == []
+        meta = _read_installed("cli-test-app")
+        assert meta is not None
+        assert meta.sessionApprovalConsentPending is True
+        assert meta.enabled is False
+        out = capsys.readouterr().out
+        assert "stays off until enabled from the dashboard" in out
+        assert "Run: kirocrew app enable cli-test-app" in out
+
+    def test_a_plain_app_still_registers(self, tmp_path, app_env, monkeypatch, capsys):
+        src = _make_app_source(tmp_path)
+
+        registered = self._install(monkeypatch, src)
+
+        assert registered == ["cli-test-app"]
+        assert "session approval" not in capsys.readouterr().out
+
+
 class TestEnableWarnsHooksNeedRestart:
     """CLI `app enable` states how a backend-hook change reaches a gateway.
 
-    Hooks are Python modules imported INTO the gateway process, and only the
-    gateway loads them (``on_app_enable`` -> ``register_app_routes`` ->
-    ``load_app_module``). The CLI is a separate process, so it cannot load them
-    directly -- but the gateway's hook reconciler (``apps/hook_reconcile.py``)
-    picks up the on-disk change within a poll interval, and a stopped gateway
-    loads it on next start. Printing only "enabled <app>" reads as though the new
-    code were already live; the notice states the actual timing.
+    Only the gateway imports hooks (``load_app_module``); the CLI is a separate process.
+    The hook reconciler (``apps/hook_reconcile.py``) picks up the change within a poll
+    interval, or a stopped gateway loads it on start, and the notice says so.
     """
 
     HOOKS = {
@@ -251,12 +299,9 @@ class TestEnableWarnsHooksNeedRestart:
 class TestEnableRegistersCrons:
     """CLI `app enable` must promote manifest crons into the scheduler store.
 
-    The HTTP enable route promotes app crons into the running CronService via
-    ``hooks_integration.on_app_enable``; the CLI runs in a separate process, so
-    it must write the jobs through the shared on-disk store instead (the
-    gateway's timer tick re-syncs the store by content digest and picks up
-    externally-added jobs). Without that write, an app enabled from the CLI
-    has its crons lie dormant until the next gateway restart.
+    The CLI cannot reach the running CronService, so it writes the shared on-disk store,
+    which the gateway's timer tick re-syncs by content digest. Without that the crons lie
+    dormant until a restart.
     """
 
     CRONS = [{"name": "poller", "every": 900, "message": "poll things", "silent": True}]
@@ -306,11 +351,8 @@ class TestEnableRegistersCrons:
     def test_concurrent_registration_persists_single_job(self, tmp_path, app_env):
         """Two registrars with stale absent-snapshots must not persist duplicates.
 
-        Reproduces the CLI-enable-vs-gateway-boot race at the primitive the
-        bridge now routes through: two store-backed services both see the name
-        absent, then add concurrently. ``add_job_if_absent_async`` (name check
-        + append under one store lock) must let exactly one win — with the old
-        snapshot-then-``add_job_async`` path this persists two jobs.
+        The CLI-enable-vs-gateway-boot race: both services see the name absent, then add.
+        ``add_job_if_absent_async`` checks and appends under one store lock, so one wins.
         """
         import asyncio
 

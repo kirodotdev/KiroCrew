@@ -57,6 +57,7 @@ from kiro_crew.acp.types import (
     EVENT_MCP_OAUTH_REQUEST,
     EVENT_MCP_SERVER_INIT_FAILURE,
     EVENT_MCP_SERVER_INITIALIZED,
+    EVENT_MODEL_FALLBACK,
     EVENT_STEER_CONSUMED,
     EVENT_STEER_DROPPED,
     STOP_CLASS_FAILED,
@@ -115,6 +116,7 @@ from kiro_crew.context import (
 from kiro_crew.crew_log import emit as crew_log_emit
 from kiro_crew.dashboard import chat_turn as _chat_turn
 from kiro_crew.dashboard import directive_queue
+from kiro_crew.dashboard import engine_fallback as _engine_fallback
 from kiro_crew.dashboard import git_repo_touches as _git_repo_touches
 from kiro_crew.dashboard.chat_delivery import COMMANDS_OFF_META_KEY  # noqa: F401
 from kiro_crew.dashboard.chat_delivery import TURN_ACTOR_META_KEY as _TURN_ACTOR_META_KEY
@@ -161,6 +163,7 @@ from kiro_crew.dashboard.chat_turn.mcp_session import (  # noqa: F401
     _on_mcp_server_initialized,
 )
 from kiro_crew.dashboard.chat_turn.model_fallback import (  # noqa: F401
+    _clear_fallback_sticky_state,
     _fallback_swap_for_turn,
     _on_acp_model_access,
     _sync_served_model,
@@ -177,6 +180,7 @@ from kiro_crew.dashboard.chat_turn.prompt_assembly import (  # noqa: F401
 )
 from kiro_crew.dashboard.chat_turn.queue_cycle import (
     TURN_FAILED_META,
+    _arm_synthesis_recheck,
     _end_turn_tail,
     _hand_off_unstarted_turn,
     _note_failed_before_the_try,
@@ -216,7 +220,11 @@ from kiro_crew.dashboard.chat_turn.session_events import (
     _on_compaction_status,
     _on_todo_update,
 )
-from kiro_crew.dashboard.chat_turn.session_reset import _turn_release_session
+from kiro_crew.dashboard.chat_turn.session_reset import (
+    _arm_pending_reset_retry,
+    _turn_release_session,
+    _wake_pending_reset_retry,
+)
 from kiro_crew.dashboard.chat_turn.slash_commands import (
     _answer_slash_without_channel,
     _turn_compact_command,
@@ -304,6 +312,7 @@ from kiro_crew.dashboard.chat_utils import (  # noqa: F401
     expire_slack_options,
     mirror_is_paused,
     run_to_completion,
+    teardown_hold_active,
     variant_from_row,
 )
 from kiro_crew.dashboard.handlers import (
@@ -444,6 +453,11 @@ from kiro_crew.session_agent_selection import (  # noqa: F401
     resolve_session_agent_bindings,
     restore_agent_selection,
     session_agent_selection_kind,
+)
+from kiro_crew.slack.code_channels.binding import mirror_post_thread as code_channel_post_thread
+from kiro_crew.slack.code_channels.binding import notify_turn_end as notify_code_channel_turn_end
+from kiro_crew.slack.code_channels.binding import (
+    notify_turn_start as notify_code_channel_turn_start,
 )
 from kiro_crew.slack.handler import post_linked_approval
 from kiro_crew.start_priority import StartPriority
@@ -934,7 +948,6 @@ async def _run_chat(
     _tcid_collapsed = turn._tcid_collapsed
     _tcid_first_source = turn._tcid_first_source
     _ttft_t0 = turn._ttft_t0
-    last_heartbeat = turn.last_heartbeat
     session_key = turn.session_key
     _flow = await _turn_slash_gate(turn)
     if _flow is _Flow.END:
@@ -986,6 +999,9 @@ async def _run_chat(
             note = getattr(client, "note_user_message", None)
             if note is not None:
                 note(turn.user_typed_message)
+        # The gateway-wide heartbeat ticks while any turn holds it; released first
+        # in ``finally`` below.
+        state.hold_turn_heartbeat(turn, slot.key)
         # The prefixes added after assembly made the prompt a plain string again;
         # re-apply build_message's provenance so only the user's text is upgraded.
         event_stream = (
@@ -1026,12 +1042,6 @@ async def _run_chat(
                 turn._replay_pending = _replay_pending
                 _replay_accepted_this_turn = True
                 turn._replay_accepted_this_turn = _replay_accepted_this_turn
-            # Heartbeat every 5s during long operations
-            if time.time() - last_heartbeat > 5:
-                state.broadcast_ws("heartbeat", {"slot": slot.key, "ts": time.time()})
-                last_heartbeat = time.time()
-                turn.last_heartbeat = last_heartbeat
-
             # First visible model output for this user prompt — emit TTFT once.
             if _ttft_t0 is not None and event.kind in (EVENT_TEXT_CHUNK, EVENT_THINKING_CHUNK):
                 _emit_ttft_metric(_ttft_t0, session_key, is_new=is_new, resumed=resumed)
@@ -1127,6 +1137,14 @@ async def _run_chat(
                 await _on_mcp_server_init_failure(turn, event)
             elif event.kind == EVENT_TODO_UPDATE:
                 await _on_todo_update(turn, event)
+            elif event.kind == EVENT_MODEL_FALLBACK:
+                # kiro-cli moved this turn onto another model, or could not. The
+                # handle already moved the resolved model; the slot follows a
+                # promotion, and the finally ends the walk with one notice.
+                if event.model_fallback is not None:
+                    _engine_fallback.record_engine_fallback(
+                        state, slot, client, turn._engine_fallback_walk, event.model_fallback
+                    )
             elif event.kind == EVENT_SUBAGENT_LIST:
                 await _on_subagent_list(turn, event)
             elif event.kind == EVENT_SUBAGENT_ACTIVITY:
@@ -1264,6 +1282,7 @@ async def _run_chat(
     except Exception as exc:
         await _on_error(turn, exc)
     finally:
+        state.release_turn_heartbeat(turn)
         # An interrupted or unexecuted proposal must not survive into a turn
         # whose backend may reuse its call id. Executed walker work is separate.
         _local_turn_marker_generation = turn._local_turn_marker_generation
@@ -1271,6 +1290,13 @@ async def _run_chat(
         slot._git_repo_touch_terminal.clear()
         slot._git_repo_touch_overflow = False
         await _turn_record_outcome(turn)
+        # The engine's fallback walk, said once whatever path ended the turn.
+        _engine_fallback.finish_engine_fallback(
+            slot,
+            turn._engine_fallback_walk,
+            stop_reason=turn._stop_reason,
+            cancelled=turn._crew_log_error == "CancelledError",
+        )
         await _turn_close_crew_log(turn)
         # Dead-turn bell, fired at this ONE choke point so every terminal arm --
         # stop-reason and exception alike -- rings through the same site, and a

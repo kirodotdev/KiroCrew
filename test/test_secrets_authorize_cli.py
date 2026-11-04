@@ -65,9 +65,20 @@ def _gateway_owned_policy_directory(tmp_path, _floor_monkeypatch):
     Pinned to the namespace backend (the CLI never creates the directory there), so
     no test here probes the host's real sandbox backend. Tests of the other
     backends override the pin.
+
+    ``_windows_authorize_unavailable`` is pinned False too: every
+    ``authorize``-the-add test here exercises the Unix authorize transaction, and on
+    a real Windows runner the add path refuses before that transaction (that is the
+    behaviour under test in the Windows cases below). Pinning only this predicate
+    turns the refusal off without touching ``platform_compat.IS_WINDOWS`` itself,
+    which the real publish path reads to take its own Windows branch. The Windows
+    cases set the predicate back to True themselves, after this fixture.
     """
     from kiro_crew import cli_commands_secrets
 
+    _floor_monkeypatch.setattr(
+        cli_commands_secrets, "_windows_authorize_unavailable", lambda: False
+    )
     _floor_monkeypatch.setattr(
         cli_commands_secrets, "_spawn_precreates_policy_directory", lambda: True
     )
@@ -512,3 +523,58 @@ def test_authorize_without_origin_and_without_remove_exits_2(tmp_path, monkeypat
     assert exc_info.value.code == 2
     # Nothing was published: no policy file exists.
     assert not (policy_path(tmp_path)).exists()
+
+
+def test_authorize_refuses_on_windows_and_writes_nothing(tmp_path, monkeypatch, capsys):
+    """On Windows the mediated call route refuses every call, so signing a grant
+    there only produces one the host can never use. Adding an authorization must
+    refuse at this first surface, exit 1, name the platform, and create neither
+    the hidden directory nor ``policy.json``.
+
+    The seam is Windows with the namespace precreate OFF, which is exactly the
+    arrangement that would otherwise have the CLI create the directory itself
+    (``_spawn_precreates_policy_directory`` false) and write the policy."""
+    from kiro_crew import cli_commands
+    from kiro_crew.secrets_mediation.provenance import REQUEST_POLICY_DIRNAME
+
+    # Start from a host with nothing precreated, so a failure to refuse would
+    # leave the directory + policy behind for the assertions to catch.
+    policy_path(tmp_path).parent.rmdir()
+    monkeypatch.setattr("kiro_crew.config.loader.config_dir", lambda: tmp_path)
+    # Drive the refusal through its own predicate, so the case runs the same on a
+    # non-Windows host (and on Windows) without patching the real platform flag the
+    # publish path reads.
+    monkeypatch.setattr(cli_commands_secrets, "_windows_authorize_unavailable", lambda: True)
+    monkeypatch.setattr(cli_commands_secrets, "_spawn_precreates_policy_directory", lambda: False)
+
+    args = argparse.Namespace(
+        name="K", origin="https://api.example.com", header=None, remove=False, reset=False
+    )
+    with pytest.raises(SystemExit) as exc_info:
+        cli_commands._handle_secrets_authorize(args)
+    assert exc_info.value.code == 1
+    err = capsys.readouterr().err
+    assert "Windows" in err
+    assert not (tmp_path / REQUEST_POLICY_DIRNAME).exists()
+    assert not policy_path(tmp_path).exists()
+
+
+def test_authorize_remove_still_works_on_windows(tmp_path, monkeypatch):
+    """``--remove`` under Windows is unchanged: an owner whose entry was signed on
+    another host (or before an upgrade) can still clear it. The Windows add-refuse
+    guard must not catch the remove path."""
+    from kiro_crew import cli_commands
+
+    # Seed an entry while the add refusal is off (the autouse fixture pins it).
+    _run_authorize(monkeypatch, tmp_path, secret_name="GONE", origin="https://api.example.com")
+    load_authorization(tmp_path, "GONE")  # present before removal
+
+    # Now turn the Windows add-refusal on and remove: --remove must not trip it.
+    # origin=None mirrors the omitted optional positional.
+    monkeypatch.setattr(cli_commands_secrets, "_windows_authorize_unavailable", lambda: True)
+    args = argparse.Namespace(name="GONE", origin=None, header=None, remove=True, reset=False)
+    cli_commands._handle_secrets_authorize(args)  # must NOT raise SystemExit
+
+    with pytest.raises(Exception) as exc_info:
+        load_authorization(tmp_path, "GONE")
+    assert "authoriz" in str(exc_info.value).lower()

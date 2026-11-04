@@ -263,6 +263,10 @@ The banned-process scan's contract:
   `unknown`), never an argument. `cmd=` carries only program names and flags,
   with the rest withheld, because a command line can carry a credential or a
   presigned URL.
+- **No scan, no count.** On a host with no `/proc` the scan does not run, and
+  the OK line prints `banned n/a | foreign n/a`, the same way `load/cpu n/a` and
+  `mem n/a` mark a field the host cannot measure. A `0` there always means a
+  scan ran and found nothing.
 
 The probe is three files. `fleet_probe.py` is the script an agent runs, and it
 loads `fleet_probe_sessions.py` and `fleet_probe_processes.py` from its own

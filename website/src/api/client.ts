@@ -69,9 +69,21 @@ import { createAgentChannelsEndpoints } from './client/agentChannels'
 import { createAppsEndpoints } from './client/apps'
 import { createArtifactsEndpoints } from './client/artifacts'
 import { createBrowserAndComputerUseEndpoints } from './client/browserAndComputerUse'
+export type {
+  BrowserKind,
+  BrowserConnection,
+  BrowserCredentialsStatus,
+  BrowserStatusData,
+  BrowserTestData,
+  BrowserInstallRequest,
+  BrowserInstallJob as BrowserHarnessInstallJob,
+  KiroChromiumState,
+} from './client/browserHarness'
+import { createBrowserHarnessEndpoints } from './client/browserHarness'
 import { createDecisionsEndpoints } from './client/decisions'
 import { createMessagingEndpoints } from './client/messaging'
 import { createAutoResearchEndpoints } from './client/autoResearch'
+import { createBrowserLiveEndpoints } from './client/browserLive'
 import { createSharedCrewEndpoints } from './client/sharedCrew'
 import type { DecisionsConsentData } from './client/decisions'
 
@@ -225,14 +237,7 @@ export type {
   FileMenuContext,
 } from './client/apps'
 export type { AppPublishProvider, DeploySitesResponse } from './client/artifacts'
-export { browserInstallConflictJob } from './client/browserAndComputerUse'
 export type {
-  BrowserInstallData,
-  BrowserEngine,
-  BrowserEngineStatus,
-  BrowserInstallJob,
-  BrowserViewData,
-  BrowserOpenData,
   ComputerUsePermissions,
   ComputerUseConfigData,
   ComputerUseConfigSave,
@@ -248,6 +253,8 @@ export type {
   SlackConfigSave,
   SlackCapability,
   SlackCodeSwitchKey,
+  SlackCodeChannelDefaults,
+  SlackCodeChannelEffective,
   SlackManifestChange,
   SlackManifestStatus,
   DiscordConfigData,
@@ -1238,6 +1245,17 @@ const jSlotEnvironment = (r: Response) => parseJson(r, SLOT_ENVIRONMENT_NOT_OWNE
 const SHARED_CREW_PREVIEW_NOT_OWNER: BenignDenial = { status: 403, code: 'owner_only' }
 const jSharedCrewPreview = (r: Response) => parseJson(r, SHARED_CREW_PREVIEW_NOT_OWNER)
 
+/**
+ * The sixth: `GET /api/members` answering `owner_only` to a caller that is not the dashboard
+ * owner. The left dock's starred-mates group reads the roster on every page, and for a guest
+ * that refusal means "no mates to dock", so journaling it would file one error report per
+ * page load for a guest whose dashboard works. Every other roster reader still receives the
+ * thrown `ApiError` and shows it as before; only the journal entry is skipped. Any other
+ * failure, a 403 without that code included, journals normally.
+ */
+const MEMBERS_NOT_OWNER: BenignDenial = { status: 403, code: 'owner_only' }
+const jMembers = (r: Response) => parseJson(r, MEMBERS_NOT_OWNER)
+
 /** Add transport failures that have no HTTP Response to the same journal as apiFailure.
  *
  *  The journaled report is also PINNED to the rejection (`attachReport`). Every deadline here
@@ -1501,6 +1519,7 @@ const transport: ClientTransport = {
   jCrewBoard,
   jSlotEnvironment,
   jSharedCrewPreview,
+  jMembers,
   sessionKeyHeader: _sk,
   checkSessionExpired,
   removeAuthBanner,
@@ -1545,9 +1564,11 @@ const agentChannels = createAgentChannelsEndpoints(transport)
 const apps = createAppsEndpoints(transport)
 const artifacts = createArtifactsEndpoints(transport)
 const browserAndComputerUse = createBrowserAndComputerUseEndpoints(transport)
+const browserHarness = createBrowserHarnessEndpoints(transport)
 const decisions = createDecisionsEndpoints(transport)
 const messaging = createMessagingEndpoints(transport)
 const autoResearch = createAutoResearchEndpoints(transport)
+const browserLive = createBrowserLiveEndpoints(transport)
 const sharedCrew = createSharedCrewEndpoints(transport)
 
 // Spread in the order the methods have always had, so the key order is
@@ -1685,6 +1706,7 @@ export const api = {
     ).then(jRemoteBrowse),
   ...artifacts.remoteAndComments,
   ...browserAndComputerUse.hostAutomation,
+  ...browserHarness.browserHarness,
   ...decisions.consentRead,
   // Defined here rather than in ./client/decisions: decisions.md names this
   // module as the home of the optional-`enabled` consent write.
@@ -1731,5 +1753,6 @@ export const api = {
   ...apps.fileMenu,
   ...artifacts.publishing,
   ...featureDiscovery.tips,
+  ...browserLive.browserLive,
   ...sharedCrew.requests,
 }

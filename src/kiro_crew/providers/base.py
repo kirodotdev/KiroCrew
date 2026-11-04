@@ -259,6 +259,17 @@ class LLMProvider(ABC):
         return False
 
     @property
+    def session_activity_at(self) -> float | None:
+        """Monotonic time the backend last sent anything for this session.
+
+        The session's own clock moves only when a turn is dispatched, but a
+        backend and the children it spawned keep working between turns. The
+        idle sweep reads the later of the two. None when the transport does
+        not observe frames between turns.
+        """
+        return None
+
+    @property
     def child_fidelity_aware(self) -> bool:
         """Consumer opt-in for the low-fidelity CHILD permission downgrade.
 
@@ -845,6 +856,23 @@ class LLMProvider(ABC):
         ``ACP_BACKENDS_HARNESS_MANAGED_COMPACTION`` membership. Consumers must
         act only on a non-empty ``str`` value."""
         return None
+
+    @property
+    def harness_compact_verb_advertised(self) -> bool:
+        """Whether the engine advertised the compaction verb Crew sends for ``/compact``.
+
+        Answered only for a backend that compacts on its own (a member of
+        ``ACP_BACKENDS_HARNESS_MANAGED_COMPACTION``, KAS): there the session
+        handle sends the engine's own compaction verb in place of the
+        ``/compact`` prompt, and an engine that did not list that verb at
+        ``initialize`` fails the turn at once. ``False`` everywhere else, and
+        the default, so a provider that has not answered is never handed an
+        explicit-threshold ``/compact`` it cannot serve. Declared here rather
+        than probed off the instance (harness-parity H14); the ACP
+        implementations answer from the KAS session handle's record of the
+        engine's ``initialize``. Consumers must act only on a literal ``True``,
+        so a mocked provider's attribute never reads as advertised."""
+        return False
 
     @property
     def compaction_unmanaged_backend(self) -> str | None:

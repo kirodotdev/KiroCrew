@@ -20,7 +20,9 @@ if TYPE_CHECKING:
         ExecutionContext,
         Iterator,
         SubagentDelivery,
+        SubagentEnding,
         _RunCreditAccounting,
+        classify_ending,
     )
 
 
@@ -391,6 +393,12 @@ class SubagentInfo:
     _delivery_queued: bool = False
     max_turns: int = 0
     reaped: bool = False
+    # True when ``error`` was written for a deadline or by the reaper, not by
+    # the run itself: the run's own ``wait_for`` timeout, ``_force_reap``'s
+    # synthesis and ``_record_reap_ending``. ``reaped`` alone cannot say this:
+    # the reaper sets it late, also on a run whose own failure was recorded
+    # first, which is the run's ``failed``, not ``reaped``.
+    _deadline_ending: bool = False
     streaming_text: str = ""
     elapsed: float = 0.0
     # Deadline captured when execution starts (``0`` until then). A config
@@ -758,21 +766,27 @@ class SubagentInfo:
         return self.tool_count == 0 and self.turns == 0
 
     @property
+    def ending(self) -> SubagentEnding:
+        """The fine-grained ending of this run (see :class:`SubagentEnding`)."""
+        return classify_ending(
+            user_stopped=self.user_stopped,
+            error=self.error,
+            deadline_ending=self._deadline_ending,
+            partial=self.partial,
+        )
+
+    @property
     def outcome(self) -> str:
         """Canonical three-way terminal outcome: 'stopped' | 'failed' | 'completed'.
 
-        THE single source of truth for terminal-state classification. Consumers
-        MUST use this (or the ``outcome`` field carried on every subagent_done
-        emission) instead of re-deriving from ``error``-nullability — the
-        legacy ``error ? failed : completed`` idiom silently misreports a
-        user-stopped agent as completed. ``stopped``/``error`` remain on the
-        wire for compatibility.
+        THE single source of truth for terminal-state classification, folded from
+        :attr:`ending`. Consumers MUST use this (or the ``outcome`` field
+        carried on every subagent_done emission) instead of re-deriving from
+        ``error``-nullability — the legacy ``error ? failed : completed`` idiom
+        silently misreports a user-stopped agent as completed.
+        ``stopped``/``error`` remain on the wire for compatibility.
         """
-        if self.user_stopped:
-            return "stopped"
-        if self.error:
-            return "failed"
-        return "completed"
+        return self.ending.coarse
 
 
 # Callback: (subagent_info) -> None

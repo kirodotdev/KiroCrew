@@ -88,6 +88,8 @@ vi.mock('../api/client', () => ({
     kirocrewConfig: vi.fn().mockResolvedValue({ agent: { acp_backend: 'claude' } }),
     system: vi.fn().mockResolvedValue({ mem_used_gb: 4.0, mem_total_gb: 16.0, cpu_pct: 25.0, disk_total_gb: 100.0, disk_free_gb: 60.0 }),
     chatSlotAgent: vi.fn().mockResolvedValue({}),
+    // The left dock reads the roster; an empty one keeps its notice out of these frames.
+    members: vi.fn().mockResolvedValue({ members: [] }),
     chatSlotReasoningEffort: vi.fn().mockResolvedValue({}),
     chatSlotModel: vi.fn().mockResolvedValue({}),
     chatMode: vi.fn().mockResolvedValue({}),

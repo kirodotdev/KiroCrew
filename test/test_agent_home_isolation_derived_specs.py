@@ -1,12 +1,9 @@
 """Agent-spec home isolation: derived specs follow the template spec's owner.
 
-The worker, conductor, service and read-only side specs are written on dispatch,
-long after boot, and a non-default home must not write them into a shared agents
-directory it does not own. Beside them: the user-level MCP registry is read from
-the file its writer writes, a refused write is never reported as done, and a
-rebuild's own decision covers the derived specs it installs, on its own stack
-only. The KIRO_HOME seam, the worktree decline guard and the anti-regression guard
-are in ``test_agent_home_isolation.py``.
+Derived specs are written on dispatch, long after boot, so a non-default home must
+not write them into a shared agents directory it does not own, and a refused write
+is never reported as done. The KIRO_HOME seam and the worktree decline guard are in
+``test_agent_home_isolation.py``.
 """
 
 from __future__ import annotations
@@ -33,21 +30,9 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 def _child_env(**overrides: str) -> dict[str, str]:
     """Env for a probe interpreter that must import THIS worktree.
 
-    Two corrections to a plain ``os.environ`` copy, both needed before the
-    child can report on the code under test:
-
-    ``PYTHONPATH`` leads with this worktree's ``src``, because otherwise the
-    child resolves ``kiro_crew`` through whatever editable install the ambient
-    environment carries — on a machine with more than one checkout that is a
-    different tree, and the probe then describes code this test is not
-    measuring.
-
-    The parent's ``site-packages`` entries follow it, because the autouse
-    ``_isolate_default_home`` fixture repoints ``HOME`` at a temp directory.
-    That redirect is wanted (it is what makes ``Path.home()`` assertable), but
-    it also moves ``$HOME/.local/.../site-packages`` out from under the child,
-    so third-party imports in the package's own import chain would fail and the
-    probe would report an ``ImportError`` rather than a path.
+    ``PYTHONPATH`` leads with this worktree's ``src``, or the child imports another
+    checkout's editable install. The parent's ``site-packages`` follow it, because the
+    autouse fixture repoints ``HOME`` and would hide ``$HOME/.local`` packages.
     """
     deps = [p for p in sys.path if p and ("site-packages" in p or "dist-packages" in p)]
     env = {
@@ -59,18 +44,9 @@ def _child_env(**overrides: str) -> dict[str, str]:
     return env
 
 
-# --------------------------------------------------------------------------
-# Derived specs obey the same owner as the template spec
-# --------------------------------------------------------------------------
-# ``rebuild_agent_config`` consults ``_decline_shared_agent_home`` and returns
-# without writing when this instance may not own the shared agents directory.
-# The DERIVED specs did not: ``kirocrew-worker.json``, the conductor agents, the
-# service agents (guest/lite/knowledge/research) and the read-only side spec all
-# write through ``agent._atomic_json_write`` on dispatch, long after boot, with
-# no ownership check. A second gateway on its own ``KIROCREW_HOME`` therefore
-# re-pinned the machine-wide ``kirocrew-worker.json`` to its own venv and data
-# home every time it dispatched a worker, which is the exact poisoning the
-# template-spec guard exists to prevent.
+# Derived specs (worker, conductor, service, read-only side spec) write through
+# ``agent._atomic_json_write`` on dispatch and obey the same owner check as the
+# template spec, or a second gateway would re-pin the machine-wide worker spec.
 class TestForeignHomeDerivedSpecWrites:
     """A non-default home must not write DERIVED specs into a shared agents dir."""
 
@@ -107,11 +83,8 @@ class TestForeignHomeDerivedSpecWrites:
     def test_the_refusal_is_an_oserror(self, monkeypatch, tmp_path):
         """Callers report the refusal through the ``except OSError`` arm they have.
 
-        The dashboard's spec editor, the read-only side spec and the Connections
-        mint each already treat a failed spec write as a failure with
-        ``except OSError``. Making the refusal one is what turns a discarded
-        edit into a reported failure in all of them at once, so the base class
-        is the contract — not an implementation detail.
+        The spec editor, the side spec and the Connections mint already treat
+        ``OSError`` as a failure, so the base class is the contract.
         """
         from kiro_crew import agent
         from kiro_crew.agent_files import WORKER_AGENT_FILENAME
@@ -162,18 +135,8 @@ class TestForeignHomeDerivedSpecWrites:
     def test_every_denial_is_audited(self, monkeypatch, tmp_path):
         """Every refusal records its own SEL event; only the WARNING is deduped.
 
-        Derived specs are written per dispatch, so the second and later
-        refusals against one directory are the ordinary path rather than noise.
-        ``_declined_home_warned`` exists to stop the operator-facing log line
-        repeating ~1/min for the process lifetime, and it says in its own
-        comment that the denied event is deliberately not throttled: a
-        permission decision over the shared resource that is absent from the
-        audit trail cannot be reviewed afterwards.
-
-        Recording here is also what covers a flip after boot. Boot evaluates
-        the guard before any ownership change and returns ``None``, recording
-        nothing, so a flip afterwards would otherwise leave every derived
-        denial untraced until the next rebuild.
+        A permission decision missing from the audit trail cannot be reviewed, so
+        ``_declined_home_warned`` dedupes only the log line, never the denied event.
         """
         from kiro_crew import agent
         from kiro_crew.agent_files import GUEST_AGENT_FILENAME, WORKER_AGENT_FILENAME
@@ -212,12 +175,8 @@ class TestForeignHomeDerivedSpecWrites:
     def test_the_worker_mirror_is_not_recorded_as_derived(self, monkeypatch, tmp_path):
         """A refused worker write must not stamp the mirror as re-derived.
 
-        This is the consequence that is not merely cosmetic. ``_write_worker_spec``
-        records ``set_mirrored_from`` immediately after the write, and the spawn
-        path's freshness gate reads that record: a mirror stamped for bytes that
-        were never written passes the gate while still carrying grants revoked
-        from ``kirocrew.json``. The refusal has to stop the bookkeeping, not just
-        the bytes.
+        The spawn gate reads ``set_mirrored_from``: a stamp for unwritten bytes would
+        pass it while the mirror still carries grants revoked from ``kirocrew.json``.
         """
         from kiro_crew import agent, agent_state
         from kiro_crew.agent_files import WORKER_AGENT_FILENAME
@@ -259,24 +218,9 @@ class TestForeignHomeDerivedSpecWrites:
     def test_person_facing_writers_report_the_refusal(self, module, function, needs_specific_arm):
         """Each path that reports success to a PERSON carries an arm for the refusal.
 
-        Named one function at a time rather than scanned per module on purpose:
-        a module also holds writes this guard never refuses (the global MCP
-        registry, which is not in the agents directory) and generic plumbing
-        whose caller chooses the path, so a module-wide scan reports on code
-        this contract is not about.
-
-        The arm is what separates "this edit was discarded" from "this edit was
-        saved". Without one the dashboard answered 200 on a spec it never wrote,
-        and the side spec and the mint handed out an agent name with no file
-        behind it.
-
-        ``needs_specific_arm`` is the difference between an arm that REPORTS the
-        refusal and one that merely catches it. The MCP syncs hold an
-        ``except OSError`` that logs a warning and returns, so inheriting from
-        ``OSError`` is precisely what made the refusal look like a successful
-        removal; those must name the subtype. ``publish_readonly_spec`` turns
-        its ``OSError`` into a raised ``ReadOnlySpecError``, so a generic arm
-        there already fails the call rather than reporting a save.
+        Named per function: the modules also hold writes this guard never refuses.
+        ``needs_specific_arm``: the MCP syncs' ``except OSError`` logs and returns, so
+        they must name the subtype; ``publish_readonly_spec`` re-raises, so any arm works.
         """
         import ast as _ast
         import importlib
@@ -318,12 +262,8 @@ class TestForeignHomeDerivedSpecWrites:
     async def test_the_mcp_remove_reports_the_refusal(self, monkeypatch, tmp_path):
         """A refused removal must not answer ``removed: true``.
 
-        This is the security-shaped half. The handler popped the entry from the
-        config it held in memory, the write was refused, and the generic
-        ``except OSError`` arm in the sync logged a warning and returned — so
-        the operator was told the server was uninstalled while the spec its own
-        sessions load kept it in ``mcpServers`` with whatever ``autoApprove``
-        it carried, which is a grant that never reaches the PreToolUse gate.
+        Otherwise the spec keeps the server in ``mcpServers`` with its ``autoApprove``,
+        a grant that never reaches the PreToolUse gate, while the UI says it is gone.
         """
         import json
         from unittest.mock import MagicMock
@@ -452,18 +392,9 @@ class TestForeignHomeDerivedSpecWrites:
     def test_the_spawn_gate_names_the_unowned_home(self, monkeypatch, tmp_path):
         """A refused mirror re-derive must not read as a generation mismatch.
 
-        ``rederive_worker_agent`` never raises, so without an attributed
-        refusal the spawn gate reports a mirror that "could not be
-        re-derived": a permanent dispatch outage described as stale
-        bookkeeping, with nothing naming the directory or the remedy. The gate
-        asks the ownership question itself, ahead of the re-derive, for the
-        same reason it refuses a foreign worker spec there rather than later.
-
-        The remedy named is the existing non-default-home one -- remove the
-        stale ``kirocrew*.json`` specs and restart -- deliberately NOT
-        ``KIRO_HOME``, whose own scope caveat says it relocates kiro-cli's
-        session storage that Kiro Crew still reads from the host path. The
-        rebuild's own refusal suggests no remedy for exactly that reason.
+        ``rederive_worker_agent`` never raises, so the gate asks the ownership question
+        itself. The remedy is removing stale ``kirocrew*.json`` specs, not ``KIRO_HOME``,
+        which moves kiro-cli session storage that Kiro Crew still reads from the host.
         """
         import json
 
@@ -497,16 +428,9 @@ class TestForeignHomeDerivedSpecWrites:
     def test_a_refused_fork_refresh_blocks_its_sessions(self, monkeypatch, tmp_path):
         """An ownership refusal must record the fork as unrefreshed.
 
-        ``_refresh_forked_templates_locked`` adds a fork to
-        ``_fork_refresh_failed``, and ``require_fork_governance`` then refuses
-        to start a session on it. A refusal has to count: ``allowedTools`` and
-        ``autoApprove`` are the grants that never reach the PreToolUse gate, so
-        this record is the only control between a tightened ceiling and a call
-        the operator revoked. Nothing else closes the gap either -- the fork
-        inventory and its crew binding are both read per data home, so a fork
-        corroborated here is iterated by no other instance. Blocking the
-        fork's sessions is the correct outcome; the remedy is a KIRO_HOME of
-        this instance's own, which the refusal's warning names.
+        ``require_fork_governance`` refuses forks in ``_fork_refresh_failed``. That
+        record is the only control on ``allowedTools`` and ``autoApprove``, grants
+        that never reach the PreToolUse gate, and no other instance refreshes this fork.
         """
         import json
         from types import SimpleNamespace
@@ -556,11 +480,8 @@ class TestForeignHomeDerivedSpecWrites:
     async def test_the_dashboard_patch_reports_the_refusal(self, monkeypatch, tmp_path):
         """A PATCH on a mis-homed gateway must not answer 200 for a discarded edit.
 
-        The whole harm of a silent refusal, end to end: the handler replied
-        ``{"ok": true}`` with the merged state it had computed in memory while
-        the file on disk was byte-identical, so the editor showed the save as
-        applied and the next GET quietly disagreed. The refusal now reaches the
-        handler, which reports it and leaves the file alone.
+        A silent refusal would show the in-memory merge as saved while the file
+        on disk is unchanged.
         """
         from unittest.mock import MagicMock
 
@@ -596,10 +517,8 @@ class TestForeignHomeDerivedSpecWrites:
         assert (
             spec.read_text(encoding="utf-8") == before
         ), "the refused PATCH still modified the spec on disk"
-        # The model branch writes a per-home sidecar BEFORE the refusable spec
-        # write, so a refusal taken only at the write answered 409 with the pin
-        # already flipped: the sidecar then records a model the spec on disk
-        # never carried. The ownership question is asked ahead of it instead.
+        # The model branch writes a per-home sidecar BEFORE the spec, so ownership
+        # must be checked first or the sidecar records a model the spec never got.
         from kiro_crew import agent_state
 
         assert not agent_state._state_path().exists(), (
@@ -610,11 +529,8 @@ class TestForeignHomeDerivedSpecWrites:
     def test_a_broken_audit_sink_still_refuses(self, monkeypatch, tmp_path):
         """A lost record must not turn a refusal into a write.
 
-        The audit calls are tolerant because an unwritable SEL log must cost one
-        record and not the agent a conductor dispatches to -- which is the
-        module's existing contract for every other audit in it. Tolerant is not
-        the same as skipped: the decision has to stand on its own, so the
-        refusal still holds with the sink raising on every call.
+        Audit calls tolerate an unwritable SEL log, but the refusal must still hold
+        with the sink raising on every call.
         """
         from kiro_crew import agent
         from kiro_crew.agent_files import WORKER_AGENT_FILENAME
@@ -636,16 +552,9 @@ class TestForeignHomeDerivedSpecWrites:
     def test_the_mint_write_is_authorized_not_exempt_by_name(self, monkeypatch, tmp_path):
         """A Connect must still work on an instance that owns nothing here.
 
-        The mint writes ONE server entry, copied verbatim out of the owner's own
-        on-disk spec, into a uniquely named file its manifest sweep reaps. There
-        is nothing of this instance in it, so refusing it protects nothing and
-        fails every OAuth Connect on a relocated or worktree-booted instance.
-
-        Authorized by the WRITER, at the call, rather than by a filename this
-        guard recognizes: a name is not evidence of who produced the bytes, so a
-        guard trusting one would let any writer reach the shared directory by
-        choosing the right name. Both halves are pinned -- an authorized write
-        lands, and the same path without the authorization does not.
+        The mint copies one server entry from the owner's spec, so refusing it protects
+        nothing. It is authorized by the writer, not by filename, since any writer could
+        pick the right name; both an authorized and an unauthorized write are pinned.
         """
         from kiro_crew import agent
         from kiro_crew.connections.mint import _mint_spec_name
@@ -667,10 +576,7 @@ class TestForeignHomeDerivedSpecWrites:
     def test_the_mint_itself_passes_the_authorization(self):
         """The mint's own write is the authorized one, asserted at its call site.
 
-        The entry point only helps if the real writer calls it; a test that calls
-        it directly proves the guard honours it and nothing about the mint. Read
-        structurally so a refactor that routes the mint back through the guarded
-        primitive is a red here rather than a failed Connect in production.
+        Read structurally: calling the entry point directly says nothing about the mint.
         """
         import ast as _ast
 
@@ -693,17 +599,9 @@ class TestForeignHomeDerivedSpecWrites:
     def test_the_batch_uninstall_arms_its_purge_against_the_refusal(self):
         """The batched uninstall's purge must not surface the refusal as a 500.
 
-        ``_purge_server_config`` strips every scope FIRST and the rendered spec
-        last, so a refusal there leaves the sources gone while the spec still
-        mounts the server with its ``autoApprove`` -- and nothing reconciles it,
-        because this instance's own rebuild is declined too. Uncaught it
-        propagated as a 500, past the post-apply recheck, and the name was never
-        recorded as purged so the guaranteed-cleanup sweep re-attempted the same
-        refused write.
-
-        Read structurally: the arm's absence is the hazard, and reaching it
-        behaviourally needs the whole two-phase apply plus an ownership flip
-        mid-request.
+        ``_purge_server_config`` strips the scopes before the spec, so a refusal leaves
+        the spec mounting the server with nothing to reconcile it. Read structurally:
+        reaching it at runtime needs the two-phase apply plus an ownership flip.
         """
         import ast as _ast
 
@@ -813,42 +711,21 @@ class TestForeignHomeDerivedSpecWrites:
         assert target.is_file(), "a write outside the agents dir must not be refused"
 
 
-# --------------------------------------------------------------------------
-# The Kiro user-level MCP registry stays on the home its writer writes
-# --------------------------------------------------------------------------
-# One hard-coded ``Path.home() / ".kiro" / "settings" / "mcp.json"`` looks like
-# two questions -- the servers a rebuild MERGES into the specs it writes, and
-# the restrictions a session reads -- and it is tempting to isolate the first
-# because it has no writer. It cannot be isolated: the same read also carries
-# the per-server mute, whose writer resolves a fixed home, so a split reads an
-# operator's switch-off as absent. This test holds the whole registry to the
-# file its writer writes.
+# The user-level MCP registry stays on the home its writer writes.
 class TestTheMcpRegistryStaysWithItsWriter:
     """The user-level MCP registry is read from the file its writer writes.
 
-    An earlier revision of this change pointed the SPEC-MERGE read at a
-    ``KIRO_HOME``-scoped registry, on the reasoning that a read-only input with
-    no writer is safe to isolate. It is not: the same read supplies the
-    per-server ``disabled`` mute, whose writer is the dashboard's fixed
-    ``Path.home()`` registry. Isolated, the mute reads as absent, the rebuild
-    pops ``disabled`` from the rendered entry and re-appends the server to
-    ``allowedTools`` -- the list that never reaches the PreToolUse gate -- so an
-    operator's switch-off came back auto-approved. Reader and writer move
-    together or not at all.
+    The spec-merge read also supplies the per-server ``disabled`` mute, written to a
+    fixed ``Path.home()`` registry. Isolated, the mute reads as absent and a muted
+    server comes back in ``allowedTools``, which never reaches the PreToolUse gate.
     """
 
     def test_the_restriction_reader_stays_with_its_writer(self, tmp_path):
         """The registry a RESTRICTION and a MUTE are read from must not follow ``KIRO_HOME``.
 
-        ``dashboard.handlers.mcp`` writes both ``disabledTools`` and the
-        per-server ``disabled`` mute to a fixed
-        ``Path.home() / ".kiro" / "settings" / "mcp.json"`` that ignores
-        ``KIRO_HOME``, and for Crew's own managed servers that file is the only
-        place such an entry can live. Moving the reader alone reads the entry as
-        absent: the restriction degrades to allow, and the rebuild pops
-        ``disabled`` from the rendered entry and re-appends the server to
-        ``allowedTools``, which never reaches the PreToolUse gate. So the
-        registry is pinned to the host until its writer moves with it.
+        ``dashboard.handlers.mcp`` writes ``disabledTools`` and ``disabled`` to a fixed
+        ``Path.home() / ".kiro" / "settings" / "mcp.json"``; moving the reader alone
+        would read a restriction as allow.
         """
         kiro_home_dir = tmp_path / "gateway-kiro"
         kiro_home_dir.mkdir()
@@ -899,20 +776,10 @@ class TestTheMcpRegistryStaysWithItsWriter:
 def _stub_disconnect_collaborators(monkeypatch, *, url: str, purge) -> None:
     """Stub everything ``remove_provider_entry`` reaches, leaving its judgment real.
 
-    Patched at each name's DEFINING module rather than on
-    ``kiro_crew.connections.ownership``: that function imports ``list_servers``,
-    ``revoke_local_grant``, ``surviving_grant_artifacts`` and
-    ``_purge_server_config`` inside its own body, so the module attribute a test
-    would patch is never read and such a patch silently does nothing -- the real
-    collaborators run instead and the assertion measures them. The function-local
-    import does run on every call, which is why patching the source module works.
-
-    ``spec_census`` is the exception: it is defined in ``ownership`` itself, so it
-    is patched there. It returns one ``kirocrew``-scope entry at ``url``, which is
-    the minimum that makes the slug OWNED (``is_scope_label`` rejects ``agent:``
-    and ``mirror:`` labels) with no second holder, so the census is complete and
-    the revoke is reached. The ownership judgment, the lock and the shielded
-    offload stay real, because they decide the field under test.
+    Patched at each DEFINING module: ``remove_provider_entry`` imports them inside its
+    body, so a patch on ``ownership`` would do nothing. ``spec_census`` lives in
+    ``ownership``; its one ``kirocrew``-scope entry is the minimum that makes the slug
+    owned with no second holder, so the revoke is reached.
     """
     monkeypatch.setattr(
         "kiro_crew.connections.ownership.spec_census",
@@ -928,11 +795,7 @@ def _stub_disconnect_collaborators(monkeypatch, *, url: str, purge) -> None:
     )
 
 
-# A refusal is not a commit, and that applies to what the caller is TOLD as much
-# as to what lands on disk. Both paths below reach the operator through the
-# dashboard: one renders "entry removed", the other asserts a package "was
-# uninstalled". Each is read as the end of the work, so a refusal reported as a
-# success is what stops the operator from ever fixing the one thing still broken.
+# A refusal reported as success stops the operator from fixing what is still broken.
 class TestARefusedWriteIsNotReportedAsDone:
     """A refused spec write must not be reported to the caller as a completed one."""
 
@@ -940,12 +803,8 @@ class TestARefusedWriteIsNotReportedAsDone:
     async def test_a_refused_entry_purge_is_not_reported_as_removed(self, monkeypatch):
         """A disconnect whose config purge is refused must answer ``entry_removed`` false.
 
-        The purge is deliberately allowed to fail without stopping the grant
-        revoke: a live credential is worse than a stale entry. But the refusal
-        leaves the server configured, and this instance's own
-        ``rebuild_agent_config`` is declined too, so nothing reconciles it. The
-        dashboard publishes this field as ``entryRemoved``, so reporting the
-        removal sends the operator away from the only repair left.
+        The purge may fail without stopping the grant revoke, but nothing reconciles
+        the leftover entry, so ``entryRemoved`` must not claim it is gone.
         """
         from kiro_crew.agent import SharedAgentHomeRefused
         from kiro_crew.connections import ownership as own
@@ -987,12 +846,8 @@ class TestARefusedWriteIsNotReportedAsDone:
         assert scope.entry_removed is True, "a committed purge must still report the removal"
 
 
-# The guard is asked at the primitive, which is also reached by the rebuild's own
-# derived installs. Those run AFTER the rebuild has written kirocrew.json, and the
-# temp-checkout arm declines precisely when a spec is present -- so a guard that
-# re-derives its answer per write refuses the rebuild against the file it just
-# created. That is a fresh install left with its main spec and none of the derived
-# ones, and a conductor that cannot dispatch a worker at all.
+# The rebuild's derived installs run after it writes kirocrew.json, and the temp-checkout
+# arm declines once a spec exists, so a per-write answer would refuse the rebuild itself.
 class TestTheRebuildsOwnDecisionCoversItsDerivedSpecs:
     """One ownership decision per rebuild, not one per spec it writes."""
 
@@ -1000,11 +855,8 @@ class TestTheRebuildsOwnDecisionCoversItsDerivedSpecs:
     def _temp_checkout(monkeypatch, agent_mod, shared: Path) -> None:
         """Present a plain clone under the system temp root, with an empty shared dir.
 
-        Built under ``tempfile.gettempdir()`` rather than ``tmp_path`` for the
-        reason ``test_declines_from_a_clone_under_the_temp_dir`` gives: pytest's
-        basetemp is created before the suite redirects the tempfile base, so
-        ``tmp_path`` is not under the root the predicate answers against and the
-        arm under test would be missed.
+        Callers build under ``tempfile.gettempdir()``, not ``tmp_path``: pytest's basetemp
+        predates the suite's tempfile redirect, so the temp arm would be missed.
         """
         monkeypatch.delenv("KIRO_HOME", raising=False)
         monkeypatch.delenv("KIROCREW_HOME", raising=False)
@@ -1016,12 +868,8 @@ class TestTheRebuildsOwnDecisionCoversItsDerivedSpecs:
     ):
         """The defect, stated as the guard's own answer flipping mid-rebuild.
 
-        With an empty shared directory the temp arm ALLOWS the write -- there is
-        nothing to preserve, which ``test_does_not_decline_from_a_temp_clone_when
-        _no_spec_exists`` already pins. Writing ``kirocrew.json`` is what makes
-        the next answer different, and this test holds that unchanged behaviour
-        of :func:`_decline_shared_agent_home` so the fix is visibly about the
-        rebuild's scope rather than about weakening the arm.
+        An empty shared dir is writable; writing ``kirocrew.json`` flips the answer. This
+        pins :func:`_decline_shared_agent_home` so the fix is about the rebuild's scope.
         """
         import tempfile
 
@@ -1051,11 +899,8 @@ class TestTheRebuildsOwnDecisionCoversItsDerivedSpecs:
     def test_a_derived_write_inside_an_admitted_rebuild_is_not_refused(self, monkeypatch, tmp_path):
         """The fix: the rebuild's admission covers the specs it installs.
 
-        Driven through :func:`_declined_foreign_spec_write`, the function every
-        derived writer reaches via ``_atomic_json_write``, in exactly the state
-        the rebuild is in when it installs them: a temp checkout whose main spec
-        is already on disk. Without the fix this answers True and the knowledge,
-        research, heartbeat, conductor and worker specs are all refused.
+        Driven through :func:`_declined_foreign_spec_write` in the rebuild's state: a
+        temp checkout whose main spec is already on disk.
         """
         import tempfile
 
@@ -1092,11 +937,8 @@ class TestTheRebuildsOwnDecisionCoversItsDerivedSpecs:
     def test_the_admission_does_not_outlive_a_raising_rebuild(self, monkeypatch, tmp_path):
         """A rebuild that raises mid-install must not leave the guard exempted.
 
-        Several installs inside that block can raise past their own arms. If the
-        flag were reset after the block instead of in a ``finally``, one raise
-        would exempt every later write in the process -- a worker dispatch, a
-        dashboard spec edit -- from the guard this change adds, which is strictly
-        worse than not having it.
+        The flag must reset in a ``finally``, or one raise exempts every later write in
+        the process from the guard.
         """
         from kiro_crew import agent
         from kiro_crew.agent_files import WORKER_AGENT_FILENAME
@@ -1125,13 +967,8 @@ class TestTheRebuildsOwnDecisionCoversItsDerivedSpecs:
     def test_the_admission_does_not_cross_into_another_threads_write(self, monkeypatch, tmp_path):
         """A concurrent write on another thread still consults the guard.
 
-        The exemption is a ``ContextVar``, so a value set while the rebuild runs
-        is confined to the rebuild's own context. ``rebuild_agent_config`` is
-        synchronous and the dashboard/dispatch writers reach the guard on worker
-        threads (``asyncio.to_thread`` runs the target in a copy of the context
-        taken at submit time). This asserts Design's clear condition: with the
-        rebuild's admission set on THIS stack, a write issued from a separate
-        thread sees the default and is still refused by the guard.
+        The exemption is a ``ContextVar`` confined to the rebuild's context, so a
+        dashboard or dispatch write on another thread sees the default and is refused.
         """
         import threading
 

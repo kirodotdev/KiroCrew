@@ -326,34 +326,22 @@ _LEDGER_TOOLS = ("work_ledger_record", "work_ledger_read", "work_ledger_rebuild"
 
 
 def test_the_patrol_piece_names_the_gated_ledger_watch_band_and_renewal() -> None:
-    text = crewmate_prompts.text("conductor.patrol")
+    from kiro_crew.context_assembly import member
+
+    text = member.ledger_rules_block("conductor.patrol")
     for mark in _PATROL_MARKS:
         assert mark in text, mark
     assert "Never pass gate:false on a patrol." in text
     # Bind before seed: create, then session_create, then bind, then the seed.
     order = [
         text.index("action=create"),
-        text.index("2. session_create"),
+        text.index("2. `session_create`"),
         text.index("action=bind"),
-        text.index("4. session_send"),
+        text.index("4. `session_send`"),
     ]
     assert order == sorted(order)
     # A quick single task keeps the report flow.
     assert "[Worker report] stays your patrol" in text
-
-
-def test_the_patrol_band_and_renew_wording_is_the_conductors_own() -> None:
-    """Copied from the conductor charter, not rewritten (``_about`` says so)."""
-    from kiro_crew.agent_parts.spec_prompts import _CONDUCTOR_SYSTEM_PROMPT
-
-    def flat(s: str) -> str:
-        return " ".join(s.split())
-
-    text = crewmate_prompts.text("conductor.patrol")
-    band = text[
-        text.index("Keep `interval_secs`") : text.index("a spent loop cannot be renewed later")
-    ]
-    assert flat(band) in flat(_CONDUCTOR_SYSTEM_PROMPT)
 
 
 def test_the_tracking_sentence_without_the_ledger_names_no_ledger_tool() -> None:
@@ -386,24 +374,28 @@ def _render(monkeypatch: pytest.MonkeyPatch, *, ledger: bool) -> str:
 def test_a_render_with_the_ledger_teaches_tracking_and_the_gated_patrol(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    from kiro_crew.context_assembly import member
+
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
     text = _render(monkeypatch, ledger=True)
     for mark in _PATROL_MARKS:
         assert mark in text, mark
     assert crewmate_prompts.text("conductor.tracking_ledger") in text
-    assert crewmate_prompts.text("conductor.patrol") in text
+    assert member.ledger_rules_block("conductor.patrol") in text
     assert _READ_THE_SKILL in text
 
 
-#: The line that sends the crewmate to the skill's operating procedure.
-_READ_THE_SKILL = "Read it before planning work with more than one item"
+#: The words that send the crewmate to the skill's operating procedure.
+_READ_THE_SKILL = "before planning work with more than one item"
 
 
 def test_the_skill_line_points_at_goal_conductor_for_the_whole_procedure() -> None:
-    text = crewmate_prompts.text("conductor.patrol")
-    line = next(s for s in text.splitlines() if _READ_THE_SKILL in s)
-    assert "goal-conductor skill" in line
-    assert "follow it for dispatch, patrol, verdicts and worker debate" in line
+    from kiro_crew.context_assembly import member
+
+    text = member.ledger_rules_block("conductor.patrol")
+    head = text[: text.index("Tracked work:")]
+    assert "`goal-conductor` skill" in head and _READ_THE_SKILL in head
+    assert "follow it for dispatch, patrol, verdicts and worker debate" in head
 
 
 def test_a_render_without_the_ledger_never_sends_the_crewmate_to_the_skill(

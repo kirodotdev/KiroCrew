@@ -1,32 +1,13 @@
 """Capture what every known harness is LAUNCHED as, for the golden and its writer.
 
-Two callers import this: ``test/test_acp_launch_goldens.py``, which is strictly
-read-only against the committed fixture, and
-``scripts/update_acp_launch_goldens.py``, which is the only thing that writes it. The
-machinery lives here rather than in the test module because a test must not create
-files in the repo that outlive the run (AUTOSDE ``no-test-side-effects``), and a
-regeneration hook inside a test module is exactly that.
+Imported by ``test/test_acp_launch_goldens.py`` (read-only) and
+``scripts/update_acp_launch_goldens.py`` (the only writer); it lives here because a test
+must not create files in the repo (AUTOSDE ``no-test-side-effects``).
 
-What is captured, per backend id: the argv handed to the process factory, the label
-the spawn is logged under, the label stderr is drained under, and the environment
-variables the spawn ADDS to the ones it inherited. Those four are the observable
-contract of the per-harness spawn arms. A change that moves where they are COMPUTED
-must not move what they ARE -- for kiro-cli above all, whose construction path
-harness-parity H13 keeps free of work added for an adapter.
-
-The environment is recorded as the DELTA from ``os.environ`` rather than in full, so
-the snapshot is a property of the code and not of the machine that ran it. Four
-values inside that delta are placeholders for the same reason: the augmented search
-path, the interpreter path, pi's per-session gate nonce and the per-session identity
-token all vary per host or per run, while the FACT that the harness receives them is
-what is pinned.
-
-Every collaborator on the spawn path is stubbed to a fixed answer, including the
-resolvers, the sandbox wrapper and each harness's own routing read-back. The point is
-the argv and the env, so a real sandbox profile or a real read-back child would add
-host dependence and prove nothing this capture asks about. A collaborator that answers
-with one of its own arguments is stubbed through :func:`_stub_for`, which reads what to
-accept off the live object, so this file holds no copy of a signature it does not own.
+Captured per backend id: the argv, the spawn and stderr labels, and the env variables
+the spawn adds. The env is a delta so the snapshot depends on the code, not the host;
+search path, interpreter path, pi's gate nonce and the identity token are placeholders.
+Every spawn collaborator is stubbed to a fixed answer (see :func:`_stub_for`).
 """
 
 from __future__ import annotations
@@ -131,16 +112,8 @@ VOLATILE_ENV = {
 #: The parent environment every capture runs against, whatever the recording host's
 #: own environment happens to be.
 #:
-#: This is load-bearing, and it is the correction to a real defect rather than
-#: tidiness. ``env_added`` is a DELTA, so measuring it against the ambient
-#: ``os.environ`` made the answer a property of the recording process: a host that
-#: already exported a variable ``_spawn`` also sets saw no difference and recorded no
-#: key, while a clean runner recorded one. The variable that actually did this is
-#: ``KIROCREW_SPAWNED`` -- Crew sets it on every agent it spawns, so a capture taken
-#: from inside an agent could never see ``_spawn`` set it.
-#:
-#: Pinning the parent makes the delta a property of the CODE. Anything ``_spawn``
-#: contributes now appears on every host, including a variable it merely re-asserts.
+#: ``env_added`` is a delta, so against the ambient env a variable the host already
+#: exports (``KIROCREW_SPAWNED`` inside any agent) would never show as set by ``_spawn``.
 _FIXED_PARENT_ENV = {
     "PATH": "/opt/bin",
 }
@@ -202,20 +175,9 @@ class _Recorder:
 def _stub_for(real: Any, answer: Callable[[dict[str, Any]], Any]) -> Callable[..., Any]:
     """A stub for *real* that accepts exactly the arguments *real* accepts.
 
-    What the stub accepts is DERIVED from ``real``'s own signature, by binding each
-    call against it, so the stub tracks the thing it stubs: a keyword the spawn path
-    starts handing over is accepted here the moment ``real`` declares it, and one
-    ``real`` does not declare raises ``TypeError`` here exactly as it would there.
-
-    That derivation is the point. A parameter list typed out by hand is a second copy
-    of somebody else's signature, and it goes stale silently the moment the first copy
-    grows an argument -- a capture that stubs eight collaborators would hold eight such
-    copies. Widening to ``**kwargs`` is worse than a stale copy: it accepts anything,
-    so the drift stops being visible at all and this file stops measuring the argument
-    it claims to.
-
-    ``answer`` receives the bound arguments by name and returns what the stub returns,
-    which lets a stub answer with one of the call's own values.
+    Each call is bound against ``real``'s signature, so an undeclared keyword raises
+    ``TypeError`` as it would there; a hand-typed list or ``**kwargs`` would hide drift.
+    ``answer`` receives the bound arguments by name.
     """
     signature = inspect.signature(real)
 
@@ -250,19 +212,9 @@ async def _windows_cleanup_passthrough(factory: Any) -> Any:
 def _allocate_capture_scratch(tmp_path: Path, label: str) -> Path:
     """A scratch window for *label*, as a REAL directory under *tmp_path*.
 
-    Stands in for ``agent_scratch.allocate_scratch`` on the arms that need a
-    window (DeepSeek, see :func:`_stub_common`; the runtime-served codex arm, whose
-    SQLite home is the window). It has to be a directory that
-    exists, and it has to be under the test's own temp dir, because the spawn path
-    does not stop at reading the path back: ``record_owner`` installs the child's
-    pid as ``.owner`` inside the session window from an executor thread, and the
-    gate probe's throwaway window is ``shutil.rmtree``'d in the arm's ``finally``.
-    A fixed synthetic path -- this file once answered ``/opt/scratch/dsh-session``
-    -- turns both of those into writes at a real absolute path on the recording
-    host, outside every sandbox: an ``unlink`` of that path's ``.owner`` and an
-    ``rmtree`` of the path itself. Neither reaches the golden (the sandbox wrap,
-    the read-back and ``scratch_env`` are all stubbed), so nothing is pinned by
-    naming a host path here and nothing changes in the fixture by not doing so.
+    Stands in for ``agent_scratch.allocate_scratch`` (DeepSeek, runtime-served codex).
+    It must be real and under the temp dir: ``record_owner`` writes ``.owner`` into it
+    and the gate probe's window is ``shutil.rmtree``'d, so a fixed host path would be hit.
     """
     path = tmp_path / "scratch" / label
     path.mkdir(parents=True, exist_ok=True)
@@ -353,8 +305,6 @@ def _stub_common(stack: list, rec: _Recorder, tmp_path: Path, backend: str = "")
             patch.object(AcpClient, "_drain_stderr", side_effect=_drain),
             patch.object(AcpClient, "_prepare_spawn_workspace", return_value=None),
             patch.object(AcpClient, "_resolve_session_mcp_servers", return_value=[]),
-            patch.object(client_mod, "browser_session_env", return_value={}),
-            patch.object(client_mod, "browser_socket_env", return_value={}),
             patch.object(client_mod, "inject_xdist_auto_cap", return_value=None),
             patch.object(client_mod, "_get_child_pids", return_value=[]),
             # A per-process temp root the sandbox masks, so every harness that does
@@ -377,18 +327,9 @@ def _stub_common(stack: list, rec: _Recorder, tmp_path: Path, backend: str = "")
                     ),
                 ),
             ),
-            # The env that window contributes, pinned to placeholders rather than to
-            # this host's spelling of it. Two things vary by platform and neither is
-            # the fact the golden exists to hold. ``str(Path(...))`` renders
-            # backslash-separated on Windows, so a literal path would fail there on
-            # separators alone; and ``KIRO_CHAT_LOG_FILE`` is set only where
-            # the log cap can bound it, which is every platform except Windows, so its
-            # KEY presence varies too. Stubbing the whole contribution keeps one
-            # golden for both platforms while still pinning what matters -- that the
-            # child's temp, scratch and log all point INTO its own private window.
-            # ``shared`` is the session tree's shared window, which the real
-            # function folds into the same contribution; accepted and folded into
-            # the same placeholders here, for the same reason.
+            # Placeholders keep one golden for all platforms: Windows paths use
+            # backslashes and ``KIRO_CHAT_LOG_FILE`` is unset there. ``shared`` folds
+            # into the same placeholders, as in the real function.
             patch.object(
                 client_mod.agent_scratch,
                 "scratch_env",
@@ -523,11 +464,8 @@ def snapshot_bin_caches() -> dict[str, Any]:
 def restore_bin_caches(saved: dict[str, Any]) -> None:
     """Put every resolver cache back exactly as :func:`snapshot_bin_caches` found it.
 
-    This is not tidiness. A capture stubs the resolvers and then drives the real
-    spawn, which writes the stub's synthetic path into the process-wide cache. Left
-    there, a later test in the same worker that reads a cache it did not seed would
-    see ``/opt/bin/...`` and pass or fail on this file's fiction. The mapping is
-    updated in place, so a caller holding the same dict object sees the restore.
+    The real spawn writes the stub's ``/opt/bin/...`` path into the process-wide cache,
+    where a later test would read it. The mapping is updated in place.
     """
     for name, module in _ADAPTER_CACHES.items():
         setattr(module, name, saved[name])
@@ -562,16 +500,8 @@ class _Captured(Exception):
 def _env_delta(parent_env: dict, child_env: dict) -> tuple[dict[str, str], list[str]]:
     """What the launch ADDED to and REMOVED from the environment it inherited.
 
-    *parent_env* is the environment the child actually inherited, which the caller
-    reads back from ``os.environ`` inside the patched context -- NOT the pre-roundtrip
-    dict it asked ``os.environ`` to become. The two differ on Windows, where
-    ``os.environ`` folds every variable name to a single case: a name the host
-    supplies as ``SystemRoot`` is stored, and inherited by the child, as
-    ``SYSTEMROOT``. Comparing the child against the pre-roundtrip ``SystemRoot`` key
-    then reports a removal that never happened. Reading the parent back through
-    ``os.environ`` applies the OS's own case rules once, so the comparison here stays
-    a plain case-sensitive dict comparison -- distinct names on POSIX, the folded name
-    on Windows -- and a name the child genuinely dropped is still reported removed.
+    *parent_env* must be read back from ``os.environ`` inside the patch: Windows folds
+    ``SystemRoot`` to ``SYSTEMROOT``, and the pre-roundtrip dict would show a fake removal.
     """
     added = {
         key: VOLATILE_ENV.get(key, value)
@@ -585,26 +515,11 @@ def _env_delta(parent_env: dict, child_env: dict) -> tuple[dict[str, str], list[
 def _default_home_pins(tmp_path: Path) -> list:
     """The default data home and its breadcrumb, pinned for the whole capture.
 
-    The fixed parent environment carries no ``KIROCREW_HOME``, so anything that
-    resolves ``config_dir()`` while it is installed falls through to the default
-    resolver, which would resolve and CREATE the operator's real ``~/.kiro/crew``
-    (``conftest._refuse_a_resolved_real_default_home`` fails the run for exactly
-    that). Pinning the resolver rather than exporting the variable keeps the capture
-    host-independent, which is the property the fixed parent exists to give it.
+    The fixed env has no ``KIROCREW_HOME``, so ``config_dir()`` would create the real
+    ``~/.kiro/crew``; the breadcrumb writer is stubbed for ``conftest._breadcrumb_guard``.
 
-    The breadcrumb that default resolution drops OUTSIDE the data home, at
-    ``~/.kirocrew.breadcrumb``, is written under ``Path.home()``, which the capture
-    deliberately does not relocate (``fixed_parent_env`` carries HOME through so the
-    interpreter and the OS still work). ``conftest._breadcrumb_guard`` fails the run
-    for that write, and stubbing the writer is the remedy it names -- the breadcrumb
-    is not a launch answer, and the DeepSeek arm reaches ``config_dir()`` to read its
-    ``agent.deepseek_env`` provider-key mapping.
-
-    The caller enters these BEFORE the environment patch, so they are exited AFTER
-    it: the resolver stays pinned for every instant ``KIROCREW_HOME`` is absent. A
-    thread the capture does not own -- one an earlier test on the same worker left
-    running -- reads the home at call time, so a pin that lifted while the cleared
-    environment was still installed would let that thread resolve the real home.
+    Enter these before the env patch so they exit after it: a stray thread from an
+    earlier test reads the home at call time.
     """
     return [
         patch.object(config_paths, "_resolve_default_home", lambda: tmp_path / "default-home"),
@@ -618,13 +533,8 @@ def _capture_runtime_served(
     """A host's launch driven through ``AcpRuntime._spawn_admitted``: the only launch of a
     runtime-only host, and the runtime launch of a kiro-family one.
 
-    The full runtime spawn path with the same collaborators stubbed as the client
-    capture, so what is recorded is what the runtime hands the process factory: the
-    argv after the harness's plan and the pass-through wraps, and the environment
-    after the harness's ``apply_spawn_env`` and every runtime-side addition. The
-    runtime has no per-harness spawn or stderr labels, so the entry names its server
-    instead; the process factory is stubbed to record and stop, since everything
-    after it is the handshake rather than the launch.
+    Records what the runtime hands the process factory, which records and stops. The
+    runtime has no per-harness labels, so the entry names its server instead.
     """
     rec = _Recorder()
 
@@ -654,8 +564,6 @@ def _capture_runtime_served(
                 side_effect=_windows_cleanup_passthrough,
             ),
             patch.object(runtime_mod, "_forward_ssh_auth_sock", return_value=False),
-            patch.object(runtime_mod, "browser_session_env", return_value={}),
-            patch.object(runtime_mod, "browser_socket_env", return_value={}),
             patch.object(runtime_mod, "inject_xdist_auto_cap", return_value=None),
             patch.object(runtime_mod, "resolve_krb5_ccname", return_value=None),
             # A real scratch dir under ``tmp_path`` (see
@@ -736,14 +644,9 @@ def capture(
 ) -> dict[str, Any]:
     """Drive the launch for *backend* and return its answers.
 
-    A runtime-only host is captured from its harness (see
-    :func:`_capture_runtime_served`); every other id is driven through ``_spawn``.
-    ``tmp_path`` is the work dir the client is built against; nothing is written
-    inside the repository. *extra_patches* are entered after every stub here, so a
-    test can replace one collaborator -- to record what the launch handed it -- and
-    leave the rest of the capture as the golden takes it. *observe*, when given, is
-    handed the client once its spawn returned, still inside the patches, so a test
-    can read what the spawn left on it.
+    Runtime-only hosts go through :func:`_capture_runtime_served`, others ``_spawn``.
+    *extra_patches* are entered after every stub, to replace one collaborator.
+    *observe* gets the client after its spawn, still inside the patches.
     """
     if backend in RUNTIME_ONLY_BACKENDS:
         return _capture_runtime_served(backend, tmp_path, fixed_parent_env(), extra_patches)

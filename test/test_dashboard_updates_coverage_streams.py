@@ -1,18 +1,9 @@
 """The log level endpoint, the log handlers and the two long-lived stream writers.
 
-``POST /api/logs/level`` refuses a bad body or level, applies a valid one and persists it
-best-effort, and its getter reports the live level. The per-connection queue handler and
-the always-on ring handler never raise into ``logging``; the ring fans out to WebSocket
-subscribers, a dead subscriber is dropped, and installing the ring handler is idempotent.
-``GET /api/logs`` replays the ring's tail, then streams live entries and a keepalive while
-idle. The dashboard SSE endpoint gives each note type its own event name and withholds row
-metadata and pin ranks from a reader that is not the dashboard user. Neither stream leaves a
-logging handler or an SSE queue behind when the client hangs up or the request is
-cancelled, and a source scan pins that both chat-message doors build the frame through
-the shared serialiser. The check, the auto-update switch and the changelog cache live in
-``test_dashboard_updates_coverage.py``, the apply in
-``test_dashboard_updates_coverage_apply.py``, and the shared fixture and request stub in
-``dashboard_updates_coverage_helpers.py``.
+Covers ``POST /api/logs/level``, the queue and ring log handlers, ``GET /api/logs`` and
+the dashboard SSE endpoint, which withholds row metadata from a non-dashboard reader.
+Neither stream leaves a handler or queue behind on hang-up. The check and apply live in
+``test_dashboard_updates_coverage.py`` and ``test_dashboard_updates_coverage_apply.py``.
 """
 
 from __future__ import annotations
@@ -185,12 +176,8 @@ class TestRingLogHandler:
     def test_set_state_keeps_no_loop_of_its_own(self):
         """The handler defers to the dashboard's one serving loop.
 
-        Its `emit()` runs on arbitrary threads while `set_state` captured a loop
-        ONCE, so any caller attaching the state from a non-loop context latches
-        None permanently and every later fan-out is dropped with nothing
-        surfaced. Today's only production caller runs inside `start_dashboard`,
-        so the capture did succeed -- this pins the shape, not a live bug.
-        Resolving through the state at emit time removes the latch entirely.
+        `emit()` runs on any thread; a loop captured once in `set_state` from a non-loop
+        context would latch None and drop every fan-out, so it resolves at emit time.
         """
         handler = updates._RingLogHandler(collections.deque(maxlen=4))
         handler.set_state(MagicMock())
@@ -258,13 +245,8 @@ class TestRingLogHandler:
     def test_a_closed_loop_drops_the_fan_out_but_keeps_the_ring(self):
         """The gateway shuts its loop down while the handler stays attached.
 
-        ``call_soon_threadsafe`` then raises, and losing the ring entry over a
-        subscriber that cannot be reached would blind the Logs page during
-        exactly the shutdown a reader wants to see.
-
-        The send coroutine is built BEFORE the scheduling call, so this path also
-        abandons it un-awaited -- harmless (nothing has run yet) but the reason
-        for the warning filter above.
+        ``call_soon_threadsafe`` then raises; the ring entry must still be kept. The send
+        coroutine is abandoned un-awaited, which is why the warning filter is above.
         """
         ring: collections.deque[str] = collections.deque(maxlen=4)
         handler = updates._RingLogHandler(ring)
@@ -457,20 +439,10 @@ class TestLogsStream:
 def test_neither_chat_message_door_builds_the_frame_by_hand() -> None:
     """Both delivery doors must route through the shared serialiser.
 
-    `_broadcast()` feeds ONE note to two doors — the WS arm in `state_parts/slots_push.py` and
-    the SSE arm in `handlers/updates_streams.py`. While each built the frame by hand
-    they could disagree silently, which is exactly how `meta` can go missing on
-    the SSE side while the WS side carries it.
-
-    Asserted on the SOURCE, not on a payload, because that is the only form
-    that catches the regression this guards: a payload comparison calling
-    `chat_message_frame` directly still passes after a door is re-inlined, since
-    it never exercises that door's own construction.
-
-    Scoped to each door's own `chat_message` BRANCH rather than the whole file.
-    A file-wide scan cannot work here: `chat_message_frame` is *defined* in
-    `state_parts/transcript_rows.py`, so its own `"slot": note[...]` body reads as a hand-built frame
-    and its `def` line satisfies a naive "calls the helper" check.
+    `state_parts/slots_push.py` (WS) and `handlers/updates_streams.py` (SSE) must not
+    hand-build frames. Asserted on SOURCE: a payload test calling `chat_message_frame`
+    passes after a door is re-inlined. Scoped to each `chat_message` branch, since the
+    helper's own definition reads as a hand-built frame.
     """
     from pathlib import Path
 
@@ -686,14 +658,8 @@ class TestDashboardStream:
     async def test_an_app_token_stream_never_receives_row_metadata(self, monkeypatch):
         """An app token on `/api/stream` gets no `cls`/`meta`, whatever its scope.
 
-        `_broadcast()` fans the raw note out to EVERY registered SSE queue with
-        no per-app filtering, so unlike the WS door there is no downstream gate
-        to drop a row an app may not see. `meta` carries tool/LLM content
-        (`tool_input`, a live `oauth_url`, `approval_id`), so including it here
-        would expose it to any app token granted this route regardless of its
-        `slots:*` scope — the same class of leak that put public-repo status
-        onto this same endpoint. The metadata therefore rides only the door that
-        filters.
+        SSE fans out with no per-app filter, and `meta` carries `tool_input`, a live
+        `oauth_url` and `approval_id`, so it rides only the WS door, which filters.
         """
         writes = _stub_stream(monkeypatch)
         req = self._request_with_queue(

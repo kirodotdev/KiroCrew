@@ -40,6 +40,7 @@ import { store } from '../store'
 import { sseSlots, markSlotUnread, markSlotRead, setSidebarOrder, updateSlot, updateSlotPin } from '../store/dashboardSlice'
 import type { ChatSlot } from '../types'
 import { pinMutationKeysInFlight, useSessionActions } from './useSessionActions'
+import { stubAppConfirm } from '../test/appConfirmStub'
 
 const KEY = 'zzq-slot-1'
 
@@ -487,24 +488,25 @@ describe('move', () => {
 describe('close', () => {
   it('closes without a prompt when the confirm preference is off', () => {
     chatConfig.confirmCloseSession = false
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    const ask = stubAppConfirm(false)
     const { result } = harness()
     act(() => result.current.close(KEY))
-    expect(confirmSpy).not.toHaveBeenCalled()
+    expect(ask).not.toHaveBeenCalled()
     expect(deleteSlot).toHaveBeenCalledWith(KEY)
   })
 
-  it('closes after an accepted confirm', () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
+  it('closes after an accepted confirm', async () => {
+    stubAppConfirm(true)
     const { result } = harness()
     act(() => result.current.close(KEY))
-    expect(deleteSlot).toHaveBeenCalledWith(KEY)
+    await waitFor(() => expect(deleteSlot).toHaveBeenCalledWith(KEY))
   })
 
-  it('keeps the session on a declined confirm', () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(false)
+  it('keeps the session on a declined confirm', async () => {
+    const ask = stubAppConfirm(false)
     const { result } = harness()
-    act(() => result.current.close(KEY))
+    await act(async () => { result.current.close(KEY); await ask.mock.results[0]?.value })
+    expect(ask).toHaveBeenCalledTimes(1)
     expect(deleteSlot).not.toHaveBeenCalled()
   })
 })

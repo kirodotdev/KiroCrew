@@ -624,12 +624,14 @@ def _spawn_run_receipt(
                 spawn_lines.append(
                     "\nAdvance only your ready, non-overlapping parent work for a short bounded "
                     "step (at most one minute), then END YOUR TURN so queued completion events "
-                    "can be delivered. If no such work remains, END YOUR TURN now. "
+                    "can be delivered. If no such work remains, reply with one line saying what you "
+                    "started, then END YOUR TURN. "
                     "Do not poll, duplicate child work, or claim the task is complete."
                 )
             else:
                 spawn_lines.append(
-                    "\nEND YOUR TURN now: this caller has no confirmed parent-work delivery "
+                    "\nReply with one line saying what you started, then END YOUR TURN: this "
+                    "caller has no confirmed parent-work delivery "
                     "boundary. Wait for the [Subagent completion event] messages. "
                     "Dispatch is not completion."
                 )
@@ -665,7 +667,7 @@ def spawn_continue(name: str, args: dict[str, Any]) -> str:
     return (
         f"Continued conversation {conv} as run {d.get('id', '?')}. "
         "The result will arrive as a [Subagent completion event] — "
-        "END YOUR TURN and wait for it."
+        "reply with one line saying what you continued, then END YOUR TURN and wait for it."
     )
 
 

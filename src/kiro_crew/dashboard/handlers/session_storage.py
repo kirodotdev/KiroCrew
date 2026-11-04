@@ -25,6 +25,7 @@ from typing import Any
 
 from aiohttp import web
 
+from kiro_crew.config.fields import _coerce_bool
 from kiro_crew.config.paths import config_dir
 from kiro_crew.dashboard.handlers._shared import (
     _is_restricted_session,
@@ -357,7 +358,10 @@ async def api_session_storage_cleanup(request: web.Request) -> web.Response:
         threshold = float(raw_days)
     except (OverflowError, ValueError):
         return _bad_request("older_than_days is out of range.", "invalid_threshold")
-    dry_run = bool(body.get("dry_run"))
+    # A spelled "false"/"0"/"no"/"off" means False; any other value keeps the
+    # truthiness it has always been read with.
+    raw_dry_run = body.get("dry_run")
+    dry_run = _coerce_bool(raw_dry_run, bool(raw_dry_run))
     # Reading and possibly migrating session_map.json is filesystem work, so it
     # belongs off the loop like every other operation on this surface.
     index = await asyncio.to_thread(_build_index)

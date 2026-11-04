@@ -75,7 +75,8 @@ def _overlay_inputs_unchanged(
     if not isinstance(prev, dict):
         return False
     for key in set(prev) | set(current):
-        if key == "sources":
+        # ``mate_sources`` signs the crewmate files, which no agent overlay encodes.
+        if key in ("sources", "mate_sources"):
             continue
         if key == "settings":
             cur_settings = current.get("settings")

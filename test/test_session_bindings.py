@@ -42,6 +42,8 @@ from kiro_crew.session_parts.state_views import StateProperty
 
 pytestmark = pytest.mark.xdist_group(name="tree_scan_session_bindings")
 
+SHARED_BINDINGS_CHECKS = ("the_field_scan_counts_every_read_and_write_shape",)
+
 #: Member -> (kind, coroutine, signature digest, owning module). Frozen at the split: the
 #: kind, coroutine flag and signature are BASE's; the owner is where the member lives now
 #: (``session`` is the facade, any other name a ``kiro_crew.session_parts`` module).
@@ -213,7 +215,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "destroy": ("function", True, "958babeb61c8", "teardown"),
     "destroy_if": ("function", True, "b2e16ab8f2dd", "teardown"),
     "detach_queue": ("function", False, "197b82a5019f", "claims"),
-    "discard_conversation": ("function", True, "b225e6bcbd95", "teardown"),
+    "discard_conversation": ("function", True, "185d63c540e6", "teardown"),
     "drain_active_turns": ("function", True, "5944c6af44b2", "teardown"),
     "drain_all_providers": ("function", True, "f5423acdeebc", "teardown"),
     "drain_warm_pool": ("function", True, "f5423acdeebc", "runtimes"),
@@ -805,16 +807,6 @@ def _fields(fns: list[ast.FunctionDef | ast.AsyncFunctionDef]) -> tuple[set[str]
             ):
                 (written if func.id == "setattr" else read).add(node.args[1].value)
     return written - set(_MEMBERS), read - written - set(_MEMBERS)
-
-
-def test_the_field_scan_counts_every_read_and_write_shape() -> None:
-    tree = ast.parse(
-        "def f(self):\n"
-        "    self.a = 1\n    del self.b\n    self.c[k] = v\n    del self.d[k]\n"
-        "    self.e.add(1)\n    self.f.setdefault(k, v)\n    setattr(self, 'g', 1)\n"
-        "    return self.h, getattr(self, 'i', None), hasattr(self, 'j'), self.e\n"
-    )
-    assert _fields([tree.body[0]]) == ({"a", "b", "c", "d", "e", "f", "g"}, {"h", "i", "j"})
 
 
 def test_the_field_scan_reads_self_dict_keys_as_fields() -> None:

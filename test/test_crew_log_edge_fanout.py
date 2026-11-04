@@ -16,9 +16,7 @@ from crew_log_drain import assert_drained
 
 from kiro_crew.crew_log import CrewLog, crew_log_path, emit
 
-# ---------------------------------------------------------------------------
 # Fixtures
-# ---------------------------------------------------------------------------
 
 
 @pytest.fixture(autouse=True)
@@ -32,9 +30,7 @@ def _isolated_home(tmp_path, monkeypatch):
     emit.reset_caches()
 
 
-# ---------------------------------------------------------------------------
 # Helpers
-# ---------------------------------------------------------------------------
 
 
 def _sid(n: int) -> str:
@@ -65,9 +61,7 @@ def _open(session_id: str) -> None:
     emit.flush(timeout=5.0)
 
 
-# ---------------------------------------------------------------------------
 # 1. Burst from N sessions: nothing dropped, accounting honest
-# ---------------------------------------------------------------------------
 
 
 class TestBurstFanout:
@@ -123,18 +117,11 @@ class TestBurstFanout:
         assert emit.dropped_writes() == 0
 
 
-# ---------------------------------------------------------------------------
 # 2. Hung writer starves siblings -- single writer thread invariant
 #
-# In test mode (no event loop) _submit takes the INLINE path: each call writes
-# directly on its own thread. So a true cross-session starvation (writer thread
-# stuck on A, B queued behind it) can only happen on the queued/writer path.
-#
-# What we test instead: entries for session A that are RETAINED (failed once, put
-# back at the front of the bucket) hold back session A's later entries while
-# session B's entries land independently. This is the per-session bucketing
-# guarantee the design documents.
-# ---------------------------------------------------------------------------
+# With no event loop _submit writes inline, so true cross-session starvation cannot
+# happen here. These pin per-session bucketing instead: A's retained entries hold back
+# only A, while B lands independently.
 
 
 class TestSingleWriterHazard:
@@ -218,21 +205,15 @@ class TestSingleWriterHazard:
             assert len(started) >= 1, f"{sid}: turn/started missing"
 
 
-# ---------------------------------------------------------------------------
 # 3. Per-session pending ceiling
-# ---------------------------------------------------------------------------
 
 
 class TestNothingIsShed:
     """No depth of backlog makes this module discard an entry.
 
-    A hole in this log may not be VOLUNTARY. Several subsystems read it to decide
-    what happened, and an entry discarded while the process is healthy reads exactly
-    like a fact that never occurred -- nothing recovers it and no reader detects it.
-    A crash-shaped loss is a different thing: the repair names and closes what a kill
-    left behind. So the backlog is held however deep it gets, short of the hard
-    memory ceilings the writer counts against (see test_crew_log_writer.py, where a
-    deep backlog behind a hung write is held entirely).
+    An entry dropped by a healthy process reads like a fact that never occurred, and no
+    reader can detect it (a crash-shaped loss is repaired instead). Only the writer's hard
+    memory ceilings bound the backlog (see test_crew_log_writer.py).
     """
 
     def test_no_ceiling_constant_exists_to_shed_against(self):

@@ -127,6 +127,7 @@ _MOVED: dict[str, tuple[str, ...]] = {
     "kiro_crew.platform_compat_native": tuple("""
         IS_WINDOWS IS_POSIX IS_LINUX IS_MACOS _WINDOWS_PID_MAX SIGKILL _OWN_PGID SIGTERM SIGHUP
         CREATE_NEW_PROCESS_GROUP DETACHED_PROCESS CREATE_SUSPENDED _SUBPROCESS_NO_WINDOW
+        _FileBasicInfo _FileId128 _FileIdInfo _ByHandleFileInformation
         _ProcessEntry32 _ProcessMemoryCounters _MemoryStatusEx _SidAndAttributes _TokenUser
         _IoCounters _JobObjectBasicLimitInformation _JobObjectExtendedLimitInformation
         _ThreadEntry32 _windows_last_error _open_process_query_handle _close_process_handle
@@ -187,12 +188,16 @@ _MOVED: dict[str, tuple[str, ...]] = {
         symlink_or_junction _ISJUNCTION _FILE_ATTRIBUTE_REPARSE_POINT
         _IO_REPARSE_TAG_MOUNT_POINT _is_junction_fallback _IO_REPARSE_TAG_NAME_SURROGATE
         lstat_is_name_surrogate _StrOrPath strip_extended_length_prefix is_link_or_junction
-        first_linked_ancestor unlink_link_or_junction _WIN_GENERIC_READ _WIN_GENERIC_WRITE
+        first_linked_ancestor unlink_link_or_junction _windows_handle_identity
+        _windows_file_identity opened_file_identity opened_path_identity_matches _WIN_DELETE
+        _WIN_FILE_WRITE_ATTRIBUTES _WIN_GENERIC_READ _WIN_GENERIC_WRITE
         _WIN_FILE_SHARE_READ_WRITE _WIN_FILE_SHARE_READ _WIN_OPEN_EXISTING
         _WIN_FILE_FLAG_BACKUP_SEMANTICS _WIN_FILE_FLAG_OPEN_REPARSE_POINT
-        _WIN_FILE_ATTRIBUTE_DIRECTORY _WIN_FILE_ATTRIBUTE_REPARSE_POINT pin_directory
+        _WIN_FILE_ATTRIBUTE_DIRECTORY _WIN_FILE_ATTRIBUTE_REPARSE_POINT
+        _WIN_FILE_ATTRIBUTE_READONLY _WIN_FILE_ATTRIBUTE_NORMAL pin_directory
         pinned_dir_flags PINNED_TREE_MAX_DEPTH PinnedDirectory pinned_directory
-        _win_open_without_following open_file_no_reparse _WIN_FILE_LIST_DIRECTORY
+        _win_open_without_following open_path_no_reparse unlink_path_if_identity
+        open_file_no_reparse _WIN_FILE_LIST_DIRECTORY
         _WIN_OPEN_ALWAYS _WIN_FILE_ATTRIBUTE_TAG_INFO win_fd_is_link _win_reparse_refused
         win_open_no_reparse open_create_no_reparse names_a_verbatim_only_file
         """.split()),
@@ -200,7 +205,8 @@ _MOVED: dict[str, tuple[str, ...]] = {
         _RENAME_NOREPLACE_FN _RENAME_NOREPLACE_FLAG _SYS_RENAMEAT2_BY_MACHINE
         _build_renameat2_via_syscall RENAME_NOREPLACE_AVAILABLE TCC_PROTECTED_HOME_DIRS
         TCC_LIBRARY_WALKABLE_CHILDREN _LIBRARY_DIR rename_noreplace publish_dir_noreplace
-        tcc_protected_dirs_for_walk tcc_prune_walk_dirs fchmod_safe chmod_safe
+        tcc_protected_dirs_for_walk tcc_prune_walk_dirs fchmod_safe dup_fd_at_or_above
+        chmod_safe
         claude_code_managed_settings_dir
         _clear_readonly_and_retry rmtree_force _WIN_FILE_SHARE_READ_WRITE_DELETE
         open_log_file_for_tail open_lock_file_for_sweep path_volume_is_remote
@@ -535,9 +541,11 @@ def test_the_owners_log_under_the_compatibility_layer_s_name() -> None:
 #: both bind, each importing its own, so the patch reaches the facade's and the carved
 #: owners' code (the mirror carries it there) but not the lock or owner-only module's.
 #: ``Path`` is rebound for the process-identity and trusted-binary helpers, in the carved
-#: identity and trust owners; no test fakes it for a lock or an owner-only helper. A new
-#: entry is a decision that the patch needs no forwarding.
-_PC_SHARED_BINDINGS_PATCHED: frozenset[str] = frozenset({"Path"})
+#: identity and trust owners; ``os`` is rebound for the native branch of
+#: ``unlink_path_if_identity``, in the carved links owner (its ``name``, ``fstat`` and
+#: ``close``). No test fakes either for a lock or an owner-only helper. A new entry is a
+#: decision that the patch needs no forwarding.
+_PC_SHARED_BINDINGS_PATCHED: frozenset[str] = frozenset({"Path", "os"})
 
 
 @pytest.mark.parametrize("part", range(shared.CENSUS_PARTS))

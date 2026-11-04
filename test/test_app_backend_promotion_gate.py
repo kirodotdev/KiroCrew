@@ -576,12 +576,8 @@ class TestTheUndoPathsAlsoRefuseAnUnknownState:
 class TestEnabledStateDistinguishesUnreadableFromDisabled:
     """The tri-state has to be real, not nominal.
 
-    `is_app_enabled` returns False for BOTH a deliberate disable and an unreadable
-    metadata file, because `_read_installed` answers None to both and never raises. Built
-    on that, the "unknown" branch was unreachable for exactly the transient fault it
-    exists to catch — so a momentary read blip during a demotion still deleted a
-    still-enabled app's user-edited agents. Driven against REAL files, since the whole
-    defect was a collapsed return value that a stubbed reader would hide.
+    `is_app_enabled` returns False for both a disable and an unreadable file, so a read
+    blip must reach "unknown", not delete agents. Uses REAL files: a stub would hide it.
     """
 
     def _meta(self, monkeypatch, tmp_path):

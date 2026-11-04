@@ -17,7 +17,7 @@ import subprocess
 import tempfile
 import threading
 import time
-from typing import Callable
+from typing import Callable, Mapping
 
 from kiro_crew.platform.wheel_engine_contract import (
     _NO_CONTEXT,
@@ -88,6 +88,7 @@ def _spawn_build_child(
     umask: int = -1,
     stdin_data: bytes | None = None,
     extra_fds: tuple[int, ...] = (),
+    env_overrides: Mapping[str, str] | None = None,
 ) -> tuple[int, bytes, bytes]:
     """Run one child of the apply to completion; return ``(rc, stdout, stderr tail)``.
 
@@ -98,7 +99,8 @@ def _spawn_build_child(
     no pipes: stdout and stderr go to anonymous files. *stdin_data*, when
     given, reaches the child through an anonymous file too, and *extra_fds*
     are inherited beside the lock's descriptor (openssl reads its key and
-    signature from them as ``/dev/fd/N``).
+    signature from them as ``/dev/fd/N``). *env_overrides* are set on top of
+    that environment.
 
     The group is killed when *timeout* passes, when the cancel is set
     (synchronously, inside :meth:`ApplyCancel.set`), and when this call is
@@ -112,6 +114,8 @@ def _spawn_build_child(
     """
     _raise_if_cancelled(ctx.cancel)
     env = _build_child_env(ctx.trusted_env)
+    if env_overrides:
+        env.update(env_overrides)
     pass_fds = ((ctx.lock_fd,) if ctx.lock_fd is not None else ()) + tuple(extra_fds)
     with (
         tempfile.TemporaryFile() as infile,

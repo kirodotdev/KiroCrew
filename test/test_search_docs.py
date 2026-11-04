@@ -103,27 +103,30 @@ def test_search_docs_reads_each_page_once_until_it_changes(tmp_path, monkeypatch
     assert reads == ["beta.md"]
 
 
-@pytest.mark.parametrize(
-    ("query", "top"),
-    [
-        ("how do I set up a one-time reminder", "cron-and-scheduling"),
-        ("how do I connect Slack", "slack-integration"),
-        ("what do I do when a command is blocked", "blocked-commands"),
-        ("how do I back up and restore my crew", "snapshot-and-restore"),
-        ("how do I run a task in the background", "subagents"),
-        ("how do I add a skill", "skills"),
-        ("how do I use artifacts", "artifacts"),
-    ],
-)
-def test_search_docs_ranks_the_page_a_how_to_question_is_about_first(query, top):
-    assert mcp_guide.search_docs(query)["results"][0]["page"] == top
+def _named(prefix, rows):
+    return [pytest.param(query, top, id=f"{prefix}-{query}") for query, top in rows]
 
 
 @pytest.mark.parametrize(
     ("query", "top"),
-    [("reminder", "cron-and-scheduling"), ("telegram", "telegram-integration")],
+    _named(
+        "search_docs_ranks_the_page_a_how_to_question_is_about_first",
+        [
+            ("how do I set up a one-time reminder", "cron-and-scheduling"),
+            ("how do I connect Slack", "slack-integration"),
+            ("what do I do when a command is blocked", "blocked-commands"),
+            ("how do I back up and restore my crew", "snapshot-and-restore"),
+            ("how do I run a task in the background", "subagents"),
+            ("how do I add a skill", "skills"),
+            ("how do I use artifacts", "artifacts"),
+        ],
+    )
+    + _named(
+        "search_docs_one_word_query_still_finds_its_page",
+        [("reminder", "cron-and-scheduling"), ("telegram", "telegram-integration")],
+    ),
 )
-def test_search_docs_one_word_query_still_finds_its_page(query, top):
+def test_search_docs_ranks_the_page_the_query_is_about_first(query, top):
     assert mcp_guide.search_docs(query)["results"][0]["page"] == top
 
 

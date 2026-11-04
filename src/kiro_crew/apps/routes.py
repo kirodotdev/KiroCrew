@@ -49,6 +49,8 @@ from kiro_crew.apps.bridges import (
     register_app,
     register_app_crons_with_service,
 )
+from kiro_crew.apps.builtin_unavailable import mark_unavailable as _mark_unavailable
+from kiro_crew.apps.builtin_unavailable import unavailable_builtins as _unavailable_builtins
 from kiro_crew.apps.builtins import BUILTIN_NAMES
 from kiro_crew.apps.dependencies import clean_dependencies
 from kiro_crew.apps.dependencies import resolve_dependencies as _resolve_deps
@@ -122,6 +124,7 @@ from kiro_crew.apps.registry import (
     _git_target_is_unsupported,
     _git_url_host,
     _loggable_git_transport_output,
+    _manifest_shell_platform_refusal,
     _owner_designated_repo_target,
     _pinned_registries,
     _registry_identity_key,

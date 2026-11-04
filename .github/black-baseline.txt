@@ -297,7 +297,6 @@ test/test_bench_scorers.py
 test/test_bench_windows_symlink.py
 test/test_bootstrap.py
 test/test_brand_name_gate.py
-test/test_browser_cli_snapshots.py
 test/test_browser_recording_skill.py
 test/test_bug_proposal_skip_status_default.py
 test/test_bug_validation_send_message_schema.py
@@ -373,7 +372,6 @@ test/test_dashboard_ws_offloop_fanout.py
 test/test_dashboard_yolo_startup.py
 test/test_delete_message.py
 test/test_denied_commands_api.py
-test/test_denied_commands_authority.py
 test/test_denied_commands_hooks.py
 test/test_dependencies.py
 test/test_dependency_ledger.py
@@ -711,7 +709,6 @@ test/test_turn_duration_slack.py
 test/test_turn_duration_task_runner.py
 test/test_turn_duration_workflow.py
 test/test_update_venv_detection.py
-test/test_use_builtin_browser_config.py
 test/test_user_resolution_fallback.py
 test/test_validation.py
 test/test_validation_user_actions.py
@@ -728,7 +725,6 @@ test/test_webhooks_event_loop.py
 test/test_webhooks_signing.py
 test/test_webhooks_store.py
 test/test_website_build_heap.py
-test/test_wecom_config_handlers.py
 test/test_wecom_wire.py
 test/test_weixin_media.py
 test/test_windows_sim.py

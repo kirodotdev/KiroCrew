@@ -554,6 +554,7 @@ class TestLaunchAndLifecycleBoundary:
             manifest_extra={"openCommand": "echo admitted"},
         )
         monkeypatch.setenv("DISPLAY", ":99")
+        monkeypatch.setattr(routes, "_manifest_shell_platform_refusal", lambda: None)
         monkeypatch.setattr(execution, "third_party_execution_allowed", lambda: True)
         monkeypatch.setattr(routes, "wrap_argv", lambda argv, **kwargs: (argv, None))
         monkeypatch.setattr(routes, "cgroup_scope_argv", lambda argv: argv)
@@ -702,14 +703,9 @@ class TestLaunchAndLifecycleBoundary:
 class TestTrustedGrantBounds:
     """``execution.trusted_app_names`` bounds — the gate's per-decision cost.
 
-    The set is rebuilt on EVERY execution decision (each hook load, backend
-    spawn, bridge registration and boot-reconcile iteration), so an unbounded
-    name or an unbounded list turns a hand-edited ``config.json`` into a cost
-    multiplier on the hot path. The caps are a DoS bound, not a naming rule:
-    a too-long NAME is dropped (it can name no real app), while a too-long LIST
-    is TRUNCATED rather than emptied, because ``apps_trusted`` is append-ordered
-    — the operator's real grants sit at the front, and denying the whole list
-    would revoke them all over someone else's junk.
+    The set is rebuilt on EVERY execution decision, so the caps are a DoS bound: a
+    too-long NAME is dropped, while a too-long LIST is TRUNCATED, not emptied, because
+    ``apps_trusted`` is append-ordered and the operator's real grants sit at the front.
     """
 
     @staticmethod

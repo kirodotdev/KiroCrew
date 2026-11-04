@@ -271,16 +271,22 @@ def test_measurement_boot_falls_back_when_the_recipe_has_no_seam(tmp_path):
 # ─────────────────────────── small pure helpers ───────────────────────────
 
 
-def test_progress_sink_failure_never_breaks_the_loop(tmp_path):
+def test_progress_sink_failure_never_breaks_the_loop(tmp_path, caplog):
     def _boom(_event):
         raise RuntimeError("sink down")
 
     d = _make(tmp_path, on_progress=_boom)
-    d._progress(stage="propose")  # swallowed
+    with caplog.at_level(logging.DEBUG, logger=LOG.name):
+        d._progress(stage="propose")  # swallowed
+    assert [r.getMessage() for r in caplog.records if r.name == LOG.name] == [
+        "on_progress sink failed"
+    ]
 
 
 def test_a_non_callable_progress_sink_degrades_to_a_no_op(tmp_path):
     d = _make(tmp_path, on_progress="not callable")
+    assert callable(d._on_progress)
+    assert d._on_progress({"stage": "gate"}) is None
     d._progress(stage="gate")
 
 
@@ -358,11 +364,15 @@ def test_capture_profile_tolerates_a_hook_that_captured_nothing(tmp_path):
     d._capture_profile(_proposal())
 
 
-def test_capture_profile_failure_never_loses_a_candidate(tmp_path):
+def test_capture_profile_failure_never_loses_a_candidate(tmp_path, caplog):
     def _hook(*, fp, worktree):
         raise RuntimeError("profiler died")
 
-    _make(tmp_path, profile=_Profile(capture=_hook))._capture_profile(_proposal())
+    with caplog.at_level(logging.DEBUG, logger=LOG.name):
+        _make(tmp_path, profile=_Profile(capture=_hook))._capture_profile(_proposal())
+    assert [r.getMessage() for r in caplog.records if r.name == LOG.name] == [
+        "profile capture failed for mod.py::sym"
+    ]
 
 
 # ─────────────────────────── re-verify + push with rebase ───────────────────────────

@@ -116,12 +116,6 @@ Three structural facts explain most of the rest:
   `required_status_checks` rule, or the variable `true` while the ruleset has
   no `merge_queue` rule. `scheduled-failure-watch.yml` turns that red into one
   issue.
-  The same shape covers an npm fact no diff shows: the installer tracks
-  `@playwright/cli@latest`, so the daily `playwright-cli-banner.yml` launches
-  that release once (`show --port 0`) and fails when
-  `scripts/check_playwright_cli_banner.py` cannot parse its `Listening on`
-  banner with the Browser view's own parser, naming the CLI version and the
-  lines read.
 - **Merge queue:** the queue is off on main today, by the owner's decision,
   and the push-to-main path runs the full matrix. What follows is what happens
   once an admin enables it. Every test workflow runs on `merge_group`, the tree
@@ -5131,7 +5125,10 @@ After the ledger, the same step appends a PUSH BUDGET section
 (`.github/review-prompts/gpt-push-budget.md`) once the PR has had three blocked
 pushes. The count is the one `pr_findings.py --rounds` and `sweep_check.py`
 print: `blocked_push_count` in the prepare-pr skill's `_review_pushes.py`, run
-as a script staged from the base commit. A push counts when the head it
+as a script staged from the base commit with `REVIEW_PUSHES_STOP_AT=3`, so it
+stops reading heads once it reaches three and the section says "at least" that
+many: the section needs only the threshold, and each replaced head costs a
+check-run read from the shared REST quota. A push counts when the head it
 replaced was blocked: the newest check run of a review lane (GPT, Opus, Design,
 UX, First Principles or Security Scope Review) ended as `failure` on it, or a
 `CHANGES_REQUESTED` review names it that the same reviewer has not since

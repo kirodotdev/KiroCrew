@@ -42,6 +42,8 @@ from kiro_crew.artifacts import ArtifactStore
 
 pytestmark = pytest.mark.xdist_group(name="tree_scan_artifacts_bindings")
 
+SHARED_BINDINGS_CHECKS = ("the_class_only_scan_can_fail",)
+
 #: Member -> (kind, signature digest, owning module). Frozen at the split: the kind and
 #: the signature are BASE's; the owner is where the member lives now.
 _MEMBERS: dict[str, tuple[str, str, str]] = {
@@ -227,13 +229,6 @@ def _class_only_constructs(fn: ast.FunctionDef) -> list[str]:
         if isinstance(spelled, str) and spelled.startswith("__") and not spelled.endswith("__"):
             found.append(spelled)
     return found
-
-
-def test_the_class_only_scan_can_fail() -> None:
-    tree = ast.parse("def f(self):\n    super().g()\n    return __class__, self.__hidden\n")
-    fn = tree.body[0]
-    assert isinstance(fn, ast.FunctionDef)
-    assert sorted(_class_only_constructs(fn)) == ["__class__", "__hidden", "super()"]
 
 
 @pytest.mark.parametrize("owner", art_mod._OWNERS)

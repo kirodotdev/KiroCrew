@@ -29,6 +29,7 @@ import '../utils/hljs'
 import { useBlockAssembler, maskInlineCode } from '../hooks/useBlockAssembler'
 import SegmentedControl from './SegmentedControl'
 import { urlTransform, ALLOWED_PROTOCOLS } from '../utils/urlTransform'
+import { isDesktopAppPane } from '../lib/hostRelay'
 import { safeHttpUrl } from '../lib/safeUrl'
 import { useLinkMeta, type LinkMeta } from '../lib/linkMeta'
 import { LinkChip, LinkCard } from './LinkPreview'
@@ -75,6 +76,7 @@ import {
   MdSourceCtx,
   MdBlockStartCtx,
   ParagraphNoticeSlotCtx,
+  ChatProjectDirCtx,
   PathActionCtx,
   PathProbeCtx,
   ReadOnlyCodeCtx,
@@ -87,7 +89,7 @@ import {
 import { artifactSlugFromHref, classifySessionLink, soleLinkInParagraph, useSessionChip, useUnfurlHref } from './markdown/linkTargets'
 import { dashboardPreviewRef, dashboardPreviewTargetFromHref } from '../utils/dashboardPreview'
 import { ClosedSessionNotice } from './markdown/ClosedSessionNotice'
-import { activatePath, usePathResolution } from './markdown/pathReferences'
+import { activatePath, isPathCandidate, splitLineRef, usePathResolution } from './markdown/pathReferences'
 import { ELEMENT_OVERRIDES, sp, textOf } from './markdown/elements'
 import { MD_FLOW_ROOT_CLS, MD_PARAGRAPH_CLS } from './markdown/typography'
 import { InlineCode } from './markdown/InlineCode'
@@ -131,6 +133,7 @@ function MdAnchor({ node, href, children, [SESSION_REF_TRAILING]: trailing }: Md
   const override = useContext(LinkOverrideCtx)
   const probeEnabled = useContext(PathProbeCtx)
   const actions = useContext(PathActionCtx)
+  const chatProjectDir = useContext(ChatProjectDirCtx)
   // The override is resolved FIRST and wins outright — Issue Radar's in-app
   // issue/PR affordance must keep beating a link preview. Feeding `null` into
   // the unfurl gate for a claimed href also means a claimed link is never
@@ -168,6 +171,25 @@ function MdAnchor({ node, href, children, [SESSION_REF_TRAILING]: trailing }: Md
     try {
       const decodedHref = decodeURIComponent(href)
       if (!decodedHref.startsWith('//')) localHref = decodedHref
+    } catch { /* keep it a normal link */ }
+  } else if (href && !URL_SCHEME_RE.test(href) && !href.startsWith('#') && !href.startsWith('?')) {
+    // A scheme-less, unrooted destination shaped like a path (`src/a.ts`,
+    // `~/notes.md`) is the same file reference the inline chip resolves: the
+    // chip joins it to the chat's project and opens it, while as a link it
+    // used to open a new tab at a dashboard URL that names nothing. Only the
+    // probe's confirmation changes the click (see `onPathClick`), so a
+    // relative link to something that is not a file stays an ordinary link.
+    //
+    // A RELATIVE destination is taken only inside a chat transcript, the one
+    // host that says which folder it is relative to (`ChatProjectDirCtx`).
+    // A previewed document's `[x](./CHANGELOG.md)` is relative to that
+    // document, which nothing here joins to, so it keeps its plain link rather
+    // than opening a same-named file from the gateway's directory. `~/` names
+    // the gateway user's home on every host, so it needs no project.
+    try {
+      const decodedHref = decodeURIComponent(href)
+      const relativeOk = decodedHref.startsWith('~/') || chatProjectDir != null
+      if (relativeOk && isPathCandidate(splitLineRef(decodedHref).path)) localHref = decodedHref
     } catch { /* keep it a normal link */ }
   }
   // Where the link goes, for the code spans in its label (`InsideLinkCtx`): a
@@ -287,6 +309,14 @@ function MdAnchor({ node, href, children, [SESSION_REF_TRAILING]: trailing }: Md
       pathResolution.endLine,
     )
   }
+  // In a desktop-app pane, CSP `frame-src` refuses an in-place navigation to an
+  // editor scheme and blanks the frame, so ask the app to open it instead.
+  const onEditorLinkClick = (e: React.MouseEvent<HTMLAnchorElement>) => {
+    const plainPrimaryClick = e.button === 0 && !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey
+    if (!plainPrimaryClick || !href || !isDesktopAppPane()) return
+    e.preventDefault()
+    window.open(href, '_blank', 'noopener,noreferrer')
+  }
   // A destination `urlTransform` REJECTED arrives here as '' — react-markdown's
   // defaultUrlTransform sentinel for a scheme outside its allowlist (a custom
   // scheme like `obsidian:`, a `javascript:`/`data:` payload the gate refuses
@@ -355,6 +385,7 @@ function MdAnchor({ node, href, children, [SESSION_REF_TRAILING]: trailing }: Md
   }
   let ext = false
   try { ext = !!href && ALLOWED_PROTOCOLS.has(new URL(href, 'http://x').protocol) } catch { /* not a URL */ }
+  const editorLink = ext && !sessionLink && !href?.startsWith('#')
   // A confirmed session link is in-app navigation, so it keeps in-place semantics.
   // So does a `#heading` link: the renderer scrolls to it (see handleClick).
   if (sessionLink || href?.startsWith('#')) ext = true
@@ -371,7 +402,9 @@ function MdAnchor({ node, href, children, [SESSION_REF_TRAILING]: trailing }: Md
       // closed or unknown key, a short name no open session answers to, or the
       // active session's own key) is intercepted and declined rather than left to
       // navigate the browser to a dead `?sid=` view (#9914) or a duplicate tab.
-      onClick={sessionHrefNamesSession ? onSessionClick : (pathResolution.candidate ? onPathClick : undefined)}
+      onClick={sessionHrefNamesSession
+        ? onSessionClick
+        : (pathResolution.candidate ? onPathClick : (editorLink ? onEditorLinkClick : undefined))}
       title={sessionLink && !sessionLink.failure
         ? `${sessionLink.title}\n${i18nT('components.markdownRenderer.click_to_switch_to_this_session')}`
         : sessionHrefNotOpen
