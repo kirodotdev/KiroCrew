@@ -38,16 +38,9 @@ def test_pool_key_field_set_is_exactly_the_six_dimensions() -> None:
     """The key's field set is asserted EXPLICITLY so adding or removing a
     pool dimension has to be a deliberate test change, never a silent one.
 
-    Intentionally absent. ``user_identity``: nothing populates its
-    ``KIROCREW_PRINCIPAL`` source, so it always collapses to the OS user and
-    never isolates anything -- adding it must come with a real multi-principal
-    design, not just a field. The four approval/sandbox fields
-    (``sandbox_mode``, ``autoapprove_set_hash``, ``approval_mode``,
-    ``trust_all_tools``): absent for the reasons in the ``pool`` module
-    docstring. ``agent_name``: the agent never reaches the backend process, so
-    two agents declaring one server identically asked for the same process.
-    ``config_snapshot_hash``: the stub always sent 64 zeros, so it partitioned
-    nothing at all.
+    Absent on purpose: ``user_identity`` (``KIROCREW_PRINCIPAL`` is never set, so it is
+    always the OS user), the approval/sandbox fields (see the ``pool`` docstring),
+    ``agent_name`` and ``config_snapshot_hash`` (the stub sends 64 zeros).
     """
     assert set(PoolKey.__dataclass_fields__) == {
         # identity
@@ -82,17 +75,9 @@ def test_string_os_uid_is_rejected_not_coerced() -> None:
 class TestApprovalAndSandboxAreNotPoolDimensions:
     """The four fields labeled "security boundary" do not partition the pool.
 
-    None of them changes how a pooled backend behaves:
-
-    * ``gatewayd`` spawns backends outside any mount namespace, so two
-      sessions configured for different sandbox tiers are confined
-      identically — splitting them buys a second unsandboxed process.
-    * kiro-cli decides tool visibility and approval per agent, against that
-      agent's own overlay entry, BEFORE a ``tools/call`` reaches the stub. A
-      backend never reads these values, so it cannot act on them.
-
-    The fields are still accepted on a register payload and ignored, the same
-    wire-compat treatment ``user_identity`` and ``channel_id`` get.
+    ``gatewayd`` spawns backends outside any mount namespace, and kiro-cli applies
+    approval per agent before a ``tools/call`` reaches the stub, so no backend reads
+    them. They are still accepted on a register payload and ignored.
     """
 
     _FIELDS = (
@@ -177,11 +162,8 @@ class TestApprovalAndSandboxAreNotPoolDimensions:
 class TestChannelIsNotAPoolDimension:
     """A channel does not partition the pool.
 
-    It was never a usable trust boundary: on Slack a channel is a room shared
-    by several people (so two humans in one channel shared a backend anyway),
-    while on Telegram the same field carried a per-user id. The channel is
-    delivered to backends PER CALL via ``_meta.kirocrew.caller`` instead, so a
-    channel-aware server does not need a process to itself.
+    A channel is not a trust boundary (a Slack channel is shared by many people). It
+    reaches backends per call via ``_meta.kirocrew.caller`` instead.
     """
 
     def test_two_channels_share_one_backend(self) -> None:
@@ -242,11 +224,8 @@ class TestChannelIsNotAPoolDimension:
 class TestAgentIsNotAPoolDimension:
     """Two agents with identical server config share ONE backend.
 
-    The agent name never reaches the backend process. Every input that does --
-    command, env, work dir, binary -- is its own dimension and already differs
-    whenever two agents declare a server differently, so an agent dimension only
-    ever duplicated processes: on a host running several agents a common server
-    ran up to five indistinguishable backends.
+    The agent name never reaches the backend; every input that does (command, env,
+    work dir, binary) is already its own dimension.
     """
 
     def test_two_agents_with_identical_config_share_one_backend(self) -> None:

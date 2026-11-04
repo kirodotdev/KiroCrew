@@ -148,11 +148,8 @@ class TestPrivateSessionsAreInvisible:
     def test_no_archived_count_is_rendered(self) -> None:
         """An archived transcript may be a private one, so the count stays out.
 
-        ``history_count`` counts filed history with no ``memory_mode`` to filter
-        on, so a folder holding one incognito conversation would disclose it as a
-        number. The invariant is per-server, not per-tool: nothing rendered here
-        may reveal a non-persistent session, and a count this server cannot prove
-        clean is therefore never emitted — not even when it is large.
+        ``history_count`` has no ``memory_mode`` to filter on, so one incognito chat
+        would show as a number. A count this server cannot prove clean is never emitted.
         """
         folders = [{"id": "aaaaaaaaaaaa", "name": "Work", "parent_id": "", "history_count": 42}]
         out, _ = _call("chat_folder_tree", {}, _reads(folders=folders, slots=_slots_with_caller()))
@@ -183,11 +180,8 @@ class TestPrivateSessionsAreInvisible:
 class TestTheVerifiedCallerKeyReachesTheRequest:
     """The gate resolves the caller strictly; the request must SEND that key.
 
-    Gating on the strict resolver and then letting the transport resolve again
-    authorizes the check and the action as potentially different sessions: the
-    lenient walk reads mutable process state, so what it answers at request time
-    need not be what the gate approved. The endpoint authorizes on the key it
-    receives, which makes the sent key the security-relevant one.
+    A second lenient resolve reads mutable process state and may name another session,
+    and the endpoint authorizes on the key it receives.
     """
 
     VERIFIED = Caller.strict("dashboard:chat-verified")
@@ -222,11 +216,8 @@ class TestTheVerifiedCallerKeyReachesTheRequest:
     def test_a_re_sent_stop_is_not_reported_as_nothing_to_stop(self) -> None:
         """A de-duplicated retry lands on the no-op reply routinely.
 
-        Its earlier cooperative stop IS still in flight, so rendering it the way a
-        never-running target is rendered would tell the caller the opposite of what
-        happened — and invite it to act as though the target were free-running.
-
-        Mutation guard: ignoring `already_stopping` restores "nothing to stop".
+        Its earlier stop is still in flight (`already_stopping`), so the reply must not
+        read "nothing to stop".
         """
         out, _ = _call(
             "session_stop",
@@ -264,12 +255,8 @@ class TestTheVerifiedCallerKeyReachesTheRequest:
     def test_an_empty_window_still_hands_back_the_cursor(self) -> None:
         """A poll loop's commonest answer is empty, and it must not lose its place.
 
-        Without the cursor the caller either re-reads with no `since` -- taking the
-        tail, which skips everything older than the last `limit` rows once the
-        target answers in a burst -- or reuses a stale position and re-reads rows it
-        has already seen.
-
-        Mutation guard: returning only the head line and "No messages" fails here.
+        Without the cursor a caller either takes the tail (skipping rows past `limit`
+        in a burst) or reuses a stale position and re-reads rows.
         """
         out, _ = _call(
             "session_read_message",

@@ -1,30 +1,15 @@
 """A stubbed MCP server's backend runs outside the sandbox only with an approved launch.
 
-gatewayd spawns a stubbed server's backend as the user, outside the session
-sandbox. The operator approves a server by NAME (``mcp_gateway.stub_servers``),
-while the command behind that name comes from agent-writable files. These tests
-drive each way such a file reached the daemon's spawn and pin that an unapproved
-launch never does:
-
-* a spec entry under an already-stubbed name, with a different command;
-* a spec entry that arrives pre-marked as a gateway wrapper, stubbed or not;
-* a tampered overlay served from the rewrite cache;
-* gatewayd resolving a target env entry nobody approved;
-* a spec edited between the operator's stub toggle and the next rewrite.
+The operator approves a server by NAME (``mcp_gateway.stub_servers``), but the command
+behind that name comes from agent-writable files, and gatewayd spawns it unsandboxed.
+These tests drive each such file path (a changed command under a stubbed name, a
+pre-marked wrapper, a tampered cached overlay, an unapproved target env entry, an edit
+after the toggle) and pin that an unapproved launch never reaches the spawn.
 
 New symbols are resolved with ``getattr`` so a tree without them fails at an
-assertion rather than at collection.
-
-This file pins the rewrite and gatewayd refusing an unapproved launch, the sealed
-approval store, the launch the stub toggle approves, the refusal and approved
-displays, and the store's bounds and caps. The toggle's compare-and-set, refusals,
-reapprove and stub off are in ``test_mcp_launch_approval_toggle.py``, the store's
-removed-field load, deferred-save merge, refused-stem record cap and
-revoke-restore in ``test_mcp_launch_approval_store_records.py``, the gateway
-start, seeding, the stem codec and the suite-wide fixture guard in
-``test_mcp_launch_approval_gateway.py``, and the placeholder rebind in
-``test_mcp_launch_approval_rebind.py``; ``mcp_launch_approval_helpers.py`` holds
-the builders these files share.
+assertion rather than at collection. Sibling topics live in the other
+``test_mcp_launch_approval_*.py`` files; shared builders in
+``mcp_launch_approval_helpers.py``.
 """
 
 from __future__ import annotations
@@ -150,13 +135,8 @@ def test_a_tampered_cached_overlay_is_not_served(tmp_path):
 def test_an_abandoned_cached_pass_leaves_no_refusal_state_behind(tmp_path):
     """The rewrite that replaces a refused cache still offers a way to approve.
 
-    A cache-served pass runs the target filter, and the filter records the
-    unapproved command it dropped. That pass is abandoned and the overlays are
-    regenerated, so the full pass that follows owns the refusal -- and it can
-    only report a complete identity set if every leftover of the abandoned
-    attempt was reset. Otherwise the stored record carries no
-    ``expected_launch``, and the MCP page shows the server refused with nothing
-    to approve.
+    The abandoned cache pass must reset its leftovers, or the full pass stores a refusal
+    with no ``expected_launch`` and the MCP page has nothing to approve.
     """
     mod = _approval_module()
     assert mod is not None
@@ -506,9 +486,7 @@ def test_nested_resolved_launch_overlap_uses_its_named_reason(tmp_path, monkeypa
     assert "executable" in reason
 
 
-# ---------------------------------------------------------------------------
 # The stub toggle approves the launch it resolves at the click
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -758,11 +736,8 @@ _LONG_ARGV = [
 def test_a_long_argv_entry_within_the_total_budget_is_shown_whole_and_approvable(tmp_path):
     """One argv entry longer than a per-entry cap is still fully displayable.
 
-    A server that passes every skill directory in one ``--skill-paths`` value
-    meets a per-entry character cap that cuts the display of a launch whose
-    whole argv is far smaller than the display budget. A cut display cannot be
-    approved, so such a server stays unapprovable and every session starts its
-    own copy.
+    A cut display cannot be approved, so a per-entry cap on a long ``--skill-paths``
+    value would leave the server unapprovable even within the total budget.
     """
     mod = _approval_module()
     assert mod is not None
