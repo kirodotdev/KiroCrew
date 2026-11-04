@@ -185,6 +185,42 @@ class StoreWriteError(Exception):
     """The store file could not be written; the change was NOT applied."""
 
 
+def _parse_tables(
+    data: Any,
+) -> tuple[dict[str, Route], dict[str, Binding], dict[str, Revoked]]:
+    """The routes, bindings and revocations in a parsed store file.
+
+    Raises on a file of the wrong shape (not an object, a table that is not
+    one, a field a bound needs of the wrong type); the caller reads that as an
+    unreadable file. Rows that merely fail validation are skipped.
+    """
+    routes: dict[str, Route] = {}
+    bindings: dict[str, Binding] = {}
+    revoked: dict[str, Revoked] = {}
+    if not isinstance(data, dict):
+        raise ValueError(f"top-level value is {type(data).__name__}, not an object")
+    for key, raw in (data.get("routes") or {}).items():
+        route = _from_dict(Route, raw)
+        if route is not None and route.session_id == key:
+            routes[key] = route
+    for key, raw in (data.get("bindings") or {}).items():
+        binding = _from_dict(Binding, raw)
+        if binding is not None and binding.channel_id == key:
+            bindings[key] = binding
+    for key, raw in (data.get("revoked") or {}).items():
+        record = _from_dict(Revoked, raw)
+        if (
+            record is not None
+            and isinstance(key, str)
+            and key not in bindings
+            and isinstance(record.at, (int, float))
+            and not isinstance(record.at, bool)
+            and isinstance(record.anchor_ts, str)
+        ):
+            revoked[key] = record
+    return routes, bindings, revoked
+
+
 class CodeChannelStore:
     """The routes and bindings tables (see the module docstring).
 
@@ -219,6 +255,11 @@ class CodeChannelStore:
         """Whether the file has been read, so a read here touches no disk."""
         return self._loaded
 
+    @property
+    def unreadable(self) -> bool:
+        """Whether the file existed but could not be read, so it reads as empty."""
+        return self._unreadable
+
     def load(self) -> None:
         """Read the file now (blocking; call it off the event loop)."""
         with self._lock:
@@ -228,9 +269,6 @@ class CodeChannelStore:
         """Load once. Callers hold the lock (or are the first, cold read)."""
         if self._loaded:
             return
-        routes: dict[str, Route] = {}
-        bindings: dict[str, Binding] = {}
-        revoked: dict[str, Revoked] = {}
         try:
             data = json.loads(self.path.read_text(encoding="utf-8")) if self.path.exists() else {}
         except Exception as exc:
@@ -244,28 +282,22 @@ class CodeChannelStore:
             )
             data = {}
             self._unreadable = True
-        if isinstance(data, dict):
-            for key, raw in (data.get("routes") or {}).items():
-                route = _from_dict(Route, raw)
-                if route is not None and route.session_id == key:
-                    routes[key] = route
-            for key, raw in (data.get("bindings") or {}).items():
-                binding = _from_dict(Binding, raw)
-                if binding is not None and binding.channel_id == key:
-                    bindings[key] = binding
-            for key, raw in (data.get("revoked") or {}).items():
-                record = _from_dict(Revoked, raw)
-                if (
-                    record is not None
-                    and isinstance(key, str)
-                    and key not in bindings
-                    and isinstance(record.at, (int, float))
-                    and not isinstance(record.at, bool)
-                    and isinstance(record.anchor_ts, str)
-                ):
-                    revoked[key] = record
-        self._routes, self._bindings = _bounded_routes(routes, time.time()), bindings
-        self._revoked = _bounded_revoked(revoked)
+        try:
+            routes, bindings, revoked = _parse_tables(data)
+            bounded = _bounded_routes(routes, time.time()), _bounded_revoked(revoked)
+        except Exception as exc:
+            # A file that parses but holds the wrong shapes is damaged too: read
+            # as empty and refuse writes, as for one that does not parse.
+            logger.error(
+                "code channel store %s is malformed; reading it as empty and refusing "
+                "writes until it is fixed or moved aside: %s",
+                self.path,
+                exc,
+            )
+            self._unreadable = True
+            bindings, bounded = {}, ({}, {})
+        self._routes, self._bindings = bounded[0], bindings
+        self._revoked = bounded[1]
         self._loaded = True
 
     def _read(self) -> None:

@@ -25,9 +25,10 @@ and :func:`mirror_post_thread` makes every mirrored post omit ``thread_ts``.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import dataclasses
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterator
 from dataclasses import dataclass
 from typing import Any
 
@@ -180,7 +181,9 @@ async def create_bound_session(
 
     Mirrors the owner path of ``POST /api/chat/slots`` (agent stamp, binding
     resolution, explicit selection record, folder filing, persist at birth),
-    then records the Slack link against *anchor_ts*. Returns the slot.
+    then records the Slack link against *anchor_ts*. Returns the slot. The
+    caller holds *anchor_ts* (:func:`hold_anchor`) from posting it until this
+    returns, so no other slot can be linked to it before the binding exists.
     """
     if state is None or not hasattr(state, "get_or_create_slot"):
         raise BindingUnavailable("no dashboard")
@@ -484,6 +487,128 @@ def active_binding(channel_id: str | None, thread_ts: str | None = None) -> Bind
     if thread_ts is not None and thread_ts != binding.anchor_ts:
         return None
     return binding
+
+
+#: Anchors of code channels being bound right now, ``anchor_ts -> holder``
+#: (:func:`hold_anchor`), so the guard covers the window before the binding
+#: exists.
+_BINDING_ANCHORS: dict[str, str] = {}
+
+_BIRTH_HOLD = "<code channel being bound>"
+
+
+@contextlib.contextmanager
+def hold_anchor(anchor_ts: str) -> Iterator[None]:
+    """Hold a just-posted anchor while its code channel is bound.
+
+    Entered with no await after the post returns, and held until the binding is
+    stored (or the bind failed): any link of the anchor meanwhile is refused by
+    :func:`check_anchor_handoff`. The binding session's own link writes it
+    directly, past the guard.
+    """
+    held = bool(anchor_ts) and anchor_ts not in _BINDING_ANCHORS
+    if held:
+        _BINDING_ANCHORS[anchor_ts] = _BIRTH_HOLD
+    try:
+        yield
+    finally:
+        if held:
+            _BINDING_ANCHORS.pop(anchor_ts, None)
+
+
+#: Stores whose unreadable file was already warned about and audited, by id.
+_UNREADABLE_REPORTED: set[int] = set()
+
+
+class AnchorHandoffRefused(Exception):
+    """A link refused by the code channel anchor guard.
+
+    ``reason`` is ``"anchor"`` (the thread is another slot's code channel
+    anchor) or ``"not_ready"`` (the store could not be loaded yet, so the
+    check could not run; retrying once it loads succeeds).
+    """
+
+    def __init__(self, thread_ts: str, reason: str = "anchor") -> None:
+        super().__init__(f"code channel anchor guard refused ({reason}): {thread_ts}")
+        self.thread_ts = thread_ts
+        self.reason = reason
+
+
+def anchor_owner_by_ts(thread_ts: str | None) -> str | None:
+    """The slot key that owns *thread_ts* as its code channel's anchor, or None.
+
+    Matched by timestamp alone, whatever channel a caller names: the link
+    writer (``DashboardState.link_slack``) keys a thread by its ts, so the
+    guard must too. A channel being bound right now answers from
+    :data:`_BINDING_ANCHORS`. Snapshot-only: never loads, never takes the
+    store's lock, so a cold store answers None.
+    """
+    if not thread_ts:
+        return None
+    pending = _BINDING_ANCHORS.get(thread_ts)
+    if pending:
+        return pending
+    cc = store()
+    if not cc.loaded:
+        return None
+    for binding in cc.bindings():
+        if binding.anchor_ts == thread_ts and binding.session_key:
+            return binding.session_key
+    return None
+
+
+async def load_store_for_links(operation: str) -> None:
+    """Load the store off the loop before a link that names an existing thread.
+
+    Idempotent and never raises: a failed load leaves the store unloaded, and
+    the caller's :func:`check_anchor_handoff` (``require_loaded=True``) then
+    refuses ``not_ready``. A file that cannot be read loads as empty: code
+    channels cannot route while it is unreadable, so there is nothing to split
+    and the link proceeds, with a warning and an audit row naming why.
+    """
+    cc = store()
+    try:
+        await asyncio.to_thread(cc.load)
+    except Exception:
+        logger.warning("code channel store load failed before a Slack link", exc_info=True)
+        return
+    if cc.unreadable and id(cc) not in _UNREADABLE_REPORTED:
+        _UNREADABLE_REPORTED.add(id(cc))
+        from kiro_crew.sel import sel
+
+        logger.warning("code channel store unreadable; linking without its anchor check")
+        sel().log_api_access(
+            caller="code_channels",
+            operation=operation,
+            outcome="allowed",
+            source="code_channel_store_unavailable",
+            error="the code channel store could not be read",
+        )
+
+
+def check_anchor_handoff(
+    thread_ts: str | None, slot_key: str, *, require_loaded: bool = False
+) -> None:
+    """Raise :class:`AnchorHandoffRefused` unless *slot_key* may own *thread_ts*.
+
+    The one chokepoint every public Slack-thread link passes through
+    (``DashboardState.link_slack``, and the routes before their Slack writes).
+    A code channel IS its binding's session (Stop and button answers follow the
+    binding), so its anchor thread is never linked to another slot. Read
+    without the feature toggle: a binding outlives a switch-off.
+
+    Synchronous and snapshot-only (:func:`anchor_owner_by_ts`). Every caller
+    that can name an EXISTING thread preloads the store off the loop
+    (:func:`load_store_for_links`) and passes *require_loaded*, so a store that
+    still did not load is refused ``not_ready`` rather than read as "no
+    binding". ``link_slack`` itself does not require it: its other writers link
+    a thread the gateway just posted, which no binding can hold.
+    """
+    if require_loaded and thread_ts and not store().loaded:
+        raise AnchorHandoffRefused(thread_ts, "not_ready")
+    owner = anchor_owner_by_ts(thread_ts)
+    if owner is not None and owner != slot_key:
+        raise AnchorHandoffRefused(thread_ts or "")
 
 
 def mirror_post_thread(channel_id: str | None, thread_ts: str | None) -> str | None:
