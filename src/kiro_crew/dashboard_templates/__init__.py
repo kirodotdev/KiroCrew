@@ -66,9 +66,7 @@ __all__ = [
 ]
 
 
-# --------------------------------------------------------------------------
-# the sentinel
-# --------------------------------------------------------------------------
+# The sentinel
 
 
 class Unsaid(Enum):
@@ -108,26 +106,14 @@ CardData = dict[str, str]
 """The ``data`` half of a card: flat, text only, bound by ``data-dashboard-field``."""
 
 
-# --------------------------------------------------------------------------
-# the host's own limits, restated
-# --------------------------------------------------------------------------
+# The host's own limits, restated
 #
-# RESTATED, not imported, and CHECKED against the host on every run.
-#
-# The host that owns them is ``kiro_crew.dashboard.dynamic_cards.normalize_card``. Only
-# one of the three is a constant there that could be imported: ``MAX_DATA_BYTES``. The
-# field cap is an inline literal inside that function, named nowhere, and the binding
-# attribute is not Python at all -- the browser half
-# (``website/src/pages/chat/command-center/dashboardDocument.ts``) is what queries it. So
-# importing would cover a third of the contract and couple this package to the dashboard
-# for it.
-#
-# Instead ``TestTheRestatedHostLimits`` compares all of it against the host: the byte cap
-# by name, the field cap by driving ``normalize_card`` at its boundary, the name pattern
-# against the host's own regex, and the attribute against the selector the browser runs. A
-# rename or an inlined constant on either side fails there, which an import would not
-# survive. What matters is that a template over a cap is dropped WHOLE by the host, so a
-# page that grew one field too many disappears rather than degrading.
+# RESTATED, not imported: the owner, ``kiro_crew.dashboard.dynamic_cards.normalize_card``,
+# exports only ``MAX_DATA_BYTES``; the field cap is an inline literal there and the
+# binding attribute lives in the browser half
+# (``website/src/pages/chat/command-center/dashboardDocument.ts``).
+# ``TestTheRestatedHostLimits`` checks every value against the host on each run. The host
+# drops an over-cap card WHOLE, so a page one field too big disappears.
 
 MAX_CARD_FIELDS: Final[int] = 24
 """Fields one card's ``data`` may carry. A card over the cap is refused entire."""
@@ -145,9 +131,7 @@ def field_name_ok(name: str) -> bool:
     return _FIELD_NAME.fullmatch(name) is not None
 
 
-# --------------------------------------------------------------------------
-# reading a fold, without inventing a zero
-# --------------------------------------------------------------------------
+# Reading a fold, without inventing a zero
 #
 # A fold's rendered value is a plain JSON object. A provider reading it with
 # ``value.get(key, 0)`` converts "this fold does not carry that" into a number, which
@@ -180,11 +164,9 @@ def read_int(view: Mapping[str, Any], key: str) -> int | Unsaid:
 def gate_text(value: str | Unsaid) -> str | Unsaid:
     """A sentence, or :data:`UNSAID`. Blank text is a gap, not an empty sentence.
 
-    Lives HERE rather than being emitted into each provider. A publisher gate is the
-    one piece of a template that must be identical across all of them: it is the thing
-    hardened in response to an incident, and a copy per template means a hardening
-    reaches only the templates written afterwards -- which is the failure mode that
-    produced the incident this package exists for.
+    Lives HERE rather than being emitted into each provider: a publisher gate must be
+    identical across templates, and a copy per template would let a fix reach only the
+    templates written after it.
     """
     if isinstance(value, Unsaid):
         return UNSAID
@@ -195,15 +177,10 @@ def gate_text(value: str | Unsaid) -> str | Unsaid:
 def gate_action(value: str | Unsaid) -> str | Unsaid:
     """An action, or :data:`UNSAID`.
 
-    A one-token value is refused. The field says what a person must DO, and a live
-    board once rendered an owner's name and a session id there: a name is not an
-    action, and the thing separating them is whether the value reads as a phrase at all.
-
-    Phrase SHAPE only, with no length floor. ``Raymond`` and ``chat-2176`` are both
-    rejected for being one token, which a minimum length does nothing to add to -- a
-    two-word name would clear any floor worth setting. What a floor does do is suppress
-    short real actions like ``fix it``, and a cell reading "not said" when somebody did
-    say what to do is the same information loss in the other direction.
+    A one-token value is refused. The field says what a person must DO, and a name or a
+    session id (``Raymond``, ``chat-2176``) is not an action. Phrase SHAPE only, with no
+    length floor: a floor would not stop a two-word name, and it would suppress short
+    real actions like ``fix it``.
     """
     if isinstance(value, Unsaid):
         return UNSAID
@@ -225,9 +202,7 @@ def fraction(part: int | Unsaid, whole: int | Unsaid) -> str | Unsaid:
     return f"{part}/{whole}"
 
 
-# --------------------------------------------------------------------------
-# the one exit to the card
-# --------------------------------------------------------------------------
+# The one exit to the card
 
 
 def card_data(payload: Mapping[str, Any]) -> CardData:
@@ -263,9 +238,7 @@ def card_data(payload: Mapping[str, Any]) -> CardData:
     return out
 
 
-# --------------------------------------------------------------------------
-# what a registration is
-# --------------------------------------------------------------------------
+# What a registration is
 
 
 @dataclass(frozen=True)
