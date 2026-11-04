@@ -28,7 +28,7 @@ from dashboard_state_ws_helpers import (  # noqa: F401 -- fixtures are requested
 )
 
 from kiro_crew import _facade_mirror
-from kiro_crew.dashboard import crewmate_feed
+from kiro_crew.dashboard import crewmate_feed, ws_event_scope
 from kiro_crew.dashboard.state import DashboardState
 
 STEP = 200
@@ -110,8 +110,14 @@ def test_one_crewmate_scan_reads_no_facade_per_slot(
 
 
 def test_one_slots_flush_stays_under_its_per_slot_facade_read_ceiling(
-    state: DashboardState, facade_reads: Counter
+    state: DashboardState, facade_reads: Counter, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # The frame's grant audit fires once per dedup window, and the window is shared
+    # by every test on the worker: one an earlier test opened can close mid-run and
+    # put its one lazy ``kiro_crew.sel`` import inside a measured flush. A window of
+    # this test's own that never closes keeps that audit in the first warm call.
+    monkeypatch.setattr(ws_event_scope, "_sel_last_audit", {})
+    monkeypatch.setattr(ws_event_scope, "_SEL_DEDUP_WINDOW_SECS", float("inf"))
     ws = _DashboardWS()
     state.register_ws(ws)  # type: ignore[arg-type]
 
