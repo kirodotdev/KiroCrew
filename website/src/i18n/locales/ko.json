@@ -14364,7 +14364,12 @@
         "crew_mode": "Ultra Mode",
         "crew_mode_desc": "채팅이 작업을 크루에게 맡기고 보드에서 추적할 수 있게 합니다.",
         "explore": "탐색",
-        "explore_desc": "상단 바에 탐색을 추가합니다. 해 볼 기능, 진행 상황, 새 채팅의 오늘 해 보기 카드가 표시됩니다."
+        "explore_desc": "상단 바에 탐색을 추가합니다. 해 볼 기능, 진행 상황, 새 채팅의 오늘 해 보기 카드가 표시됩니다.",
+        "remote_dispatch": "원격 디스패치",
+        "remote_dispatch_desc": "Ultra Mode 채팅이 Remote Crew에서 연결한 머신에서 작업을 실행하게 합니다. 머신이 연결될 때까지는 아무것도 보내지 않습니다.",
+        "remote_dispatch_save_failed": "원격 디스패치를 저장하지 못했습니다. 다시 시도하세요.",
+        "remote_dispatch_load_failed": "원격 디스패치 설정을 읽지 못했습니다.",
+        "remote_dispatch_connect": "<0>Settings › Remote Crew</0>에서 머신을 연결하세요."
       },
       "kasBundleCard": {
         "toggle_label": "{{productName}} 자체 엔진으로 KAS 실행",
