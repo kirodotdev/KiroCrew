@@ -381,6 +381,36 @@ class KiroCrewConfig:
                         "restart": True,
                     },
                 },
+                "batch_write_guard": {
+                    "type": "boolean",
+                    "default": False,
+                    "x-meta": {
+                        "label": "Batch write guard",
+                        "help": (
+                            "Off by default. When on, refuse a write-class tool call "
+                            "issued in the same parallel tool batch as a read-class "
+                            "call, so the model cannot write arguments that quote a "
+                            "read it has not seen returned yet. A discipline guard, not "
+                            "a security control: the security floor runs first and is "
+                            "unchanged."
+                        ),
+                    },
+                },
+                "batch_write_guard_commands": {
+                    "type": "array",
+                    "default": [],
+                    "x-meta": {
+                        "label": "Batch write guard commands",
+                        "help": (
+                            "Empty by default. Extra write-command prefixes (e.g. "
+                            '"myctl apply") that the batch write guard treats as '
+                            "write-class for tools only a local install knows. Matched "
+                            "on the command's program and subcommand words, never on "
+                            "argument text. Has no effect unless the batch write guard "
+                            "is on."
+                        ),
+                    },
+                },
             },
         ),
     )

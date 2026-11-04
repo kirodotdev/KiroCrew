@@ -3499,7 +3499,7 @@ class KiroCrewConfig:
     stt: SttConfig
     computer_use: ComputerUseConfig
     aws: AwsConfig
-    hooks: dict                    # raw hooks from config.json
+    hooks: dict                    # raw hooks from config.json; declares the settings-surface keys hooks.confirm_tools, hooks.batch_write_guard (bool, default off) and hooks.batch_write_guard_commands (list, default empty)
     dashboard: DashboardConfig     # dashboard.url, e.g. "http://my-host.example.com:8080"
     auto_update: bool = True
     snapshot_dir: str = ""         # snapshot output dir (default ~/.kiro/crew/snapshots)

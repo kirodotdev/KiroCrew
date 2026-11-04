@@ -35,7 +35,6 @@ if TYPE_CHECKING:
         APPROVAL_AUTO,
         DENY_CAUSE_APPROVAL_TIMEOUT,
         DENY_CAUSE_POLICY,
-        OUTCOME_REJECTED_TRANSPORT_FLOOR,
         TOOL_ALLOW,
         TOOL_AUTO_APPROVE,
         TOOL_DENY,
@@ -70,6 +69,21 @@ if TYPE_CHECKING:
         steer_refusal_notice,
         tool_approval_timeout_secs,
     )
+
+
+def _batch_refusal_outcome(client, request_id):
+    """``(outcome, metadata)`` for a Slack SEL row when ``approve_tool`` answered
+    ``False``: the batch write guard's own labels when it refused this request
+    (``client.take_batch_refusal``, taken once), the transport-floor label
+    otherwise. ``client`` may be ``None`` (no transport to ask)."""
+    from kiro_crew.acp import batch_guard
+
+    reason = None
+    take = getattr(client, "take_batch_refusal", None)
+    if take is not None:
+        maybe = take(request_id)
+        reason = maybe if isinstance(maybe, str) else None
+    return batch_guard.refusal_outcome(reason)
 
 
 def _should_auto_approve_spawn(context_builder, event) -> bool:
@@ -199,13 +213,15 @@ async def _answer_permission_request(
             if _ng_refusal is None:
                 approval_sent = await client.approve_tool(event.request_id)
                 if approval_sent is False:
+                    _outcome, _meta = _batch_refusal_outcome(client, event.request_id)
                     sel().log_tool_invocation(
                         session_key=session_key,
                         source="slack",
                         tool_name=event.title,
                         tool_kind=event.tool_kind,
-                        outcome=OUTCOME_REJECTED_TRANSPORT_FLOOR,
+                        outcome=_outcome,
                         request_id=event.request_id,
+                        **({"metadata": _meta} if _meta else {}),
                     )
                     return False
                 Stats().inc_tool_auto_approved()
@@ -273,13 +289,15 @@ async def _answer_permission_request(
     if _should_auto_approve_spawn(context_builder, event):
         approval_sent = await client.approve_tool(event.request_id)
         if approval_sent is False:
+            _outcome, _meta = _batch_refusal_outcome(client, event.request_id)
             sel().log_tool_invocation(
                 session_key=session_key,
                 source="slack",
                 tool_name=event.title,
                 tool_kind=event.tool_kind,
-                outcome=OUTCOME_REJECTED_TRANSPORT_FLOOR,
+                outcome=_outcome,
                 request_id=event.request_id,
+                **({"metadata": _meta} if _meta else {}),
             )
             return False
         Stats().inc_tool_auto_approved()
@@ -297,13 +315,15 @@ async def _answer_permission_request(
     if approval_mode == APPROVAL_AUTO:
         approval_sent = await client.approve_tool(event.request_id)
         if approval_sent is False:
+            _outcome, _meta = _batch_refusal_outcome(client, event.request_id)
             sel().log_tool_invocation(
                 session_key=session_key,
                 source="slack",
                 tool_name=event.title,
                 tool_kind=event.tool_kind,
-                outcome=OUTCOME_REJECTED_TRANSPORT_FLOOR,
+                outcome=_outcome,
                 request_id=event.request_id,
+                **({"metadata": _meta} if _meta else {}),
             )
             return False
         Stats().inc_tool_auto_approved()
@@ -323,13 +343,15 @@ async def _answer_permission_request(
     if _yolo_now or session_key in _trusted_sessions:
         approval_sent = await client.approve_tool(event.request_id)
         if approval_sent is False:
+            _outcome, _meta = _batch_refusal_outcome(client, event.request_id)
             sel().log_tool_invocation(
                 session_key=session_key,
                 source="slack",
                 tool_name=event.title,
                 tool_kind=event.tool_kind,
-                outcome=OUTCOME_REJECTED_TRANSPORT_FLOOR,
+                outcome=_outcome,
                 request_id=event.request_id,
+                **({"metadata": _meta} if _meta else {}),
             )
             return False
         Stats().inc_tool_auto_approved()
@@ -715,16 +737,17 @@ async def handle_interaction(
                 )
             if approval_sent is not False:
                 Stats().inc_tool_approval()
+                _refused_outcome = "allowed"
             else:
                 # The transport's gate refused the call: the card must not
-                # be relabelled as approved.
+                # be relabelled as approved. The batch write guard and the
+                # security floor both answer with False; label the row by which.
                 floor_refused = True
+                _refused_outcome, _ = _batch_refusal_outcome(pending.provider, pending.request_id)
             sel().log_api_access(
                 caller=user_id,
                 operation="slack.interactive.approval",
-                outcome=(
-                    "allowed" if approval_sent is not False else OUTCOME_REJECTED_TRANSPORT_FLOOR
-                ),
+                outcome=_refused_outcome,
                 source="slack",
                 resources=action_id,
             )
