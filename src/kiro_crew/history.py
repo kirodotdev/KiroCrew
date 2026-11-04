@@ -476,7 +476,13 @@ class ConversationLog:
         #: every session, so routing it through ``_msg_cache`` retains the full
         #: parsed transcript corpus. The file stamp includes inode and size in
         #: addition to nanosecond mtime so rotations and atomic rewrites miss.
-        self._file_change_cache: _LRUCache[_FileChangeCacheEntry] = _LRUCache(cache_max)
+        #:
+        #: Sized by ``_METADATA_CACHE_MAX``, NOT ``cache_max``: the scan walks
+        #: every session in one order, so an LRU smaller than the store evicts
+        #: each entry before it is read again and every call re-reads every
+        #: file. Entries hold changed paths only (a few hundred bytes for a
+        #: session with documents), so covering the whole store is cheap.
+        self._file_change_cache: _LRUCache[_FileChangeCacheEntry] = _LRUCache(_METADATA_CACHE_MAX)
         #: Sparse row-to-byte indexes for paginated transcript reads. Entries
         #: contain offsets and counts only, never message content, so a bounded
         #: page does not retain the complete parsed transcript in memory.

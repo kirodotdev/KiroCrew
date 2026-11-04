@@ -203,7 +203,13 @@ class TranscriptReadProjection:
         return self._log._read_messages(key)
 
     def read_file_change_messages(self, key: str) -> list[dict]:
-        """Return lightweight rows carrying only ``meta.file_changes``."""
+        """Return lightweight rows carrying only ``ts`` and the changed paths.
+
+        Each row is ``{"ts", "meta": {"file_changes": [{"path": str}, ...]}}``;
+        change entries without a string ``path`` and rows left with none are
+        dropped, and every other field of a change (``before``/``after``) is
+        not kept.
+        """
         path = self._log._path(key)
         generation = self._log._cache_gen(key)
         try:
@@ -237,12 +243,19 @@ class TranscriptReadProjection:
                 file_changes = meta.get("file_changes")
                 if not isinstance(file_changes, list):
                     continue
-                messages.append(
-                    {
-                        "ts": data.get("ts"),
-                        "meta": {"file_changes": file_changes},
-                    }
-                )
+                # Keep only the string ``path`` of each change: the one reader
+                # (the Artifacts session-docs scan) uses nothing else, and the
+                # ``before``/``after`` bodies made the cache ~112 MB on a real
+                # store. Entries without a string path were skipped by that
+                # reader anyway, so dropping them here changes no output.
+                paths = [
+                    {"path": fc["path"]}
+                    for fc in file_changes
+                    if isinstance(fc, dict) and isinstance(fc.get("path"), str)
+                ]
+                if not paths:
+                    continue
+                messages.append({"ts": data.get("ts"), "meta": {"file_changes": paths}})
 
         try:
             after = path.stat()
