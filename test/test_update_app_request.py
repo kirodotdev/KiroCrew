@@ -562,5 +562,5 @@ class TestCliApprove:
 
         assert exc.value.code == 1
         assert tcp_calls == [], "a stale socket must not fall back to TCP with the nonce+secret"
-        out = capsys.readouterr().out
-        assert "not running" in out
+        err = capsys.readouterr().err
+        assert "not running" in err
