@@ -315,6 +315,7 @@ from kiro_crew.messaging import (
     registry,
     turn_ceiling,
 )
+from kiro_crew.messaging.directive_tracker import DirectiveTracker
 from kiro_crew.messaging.dispatch import (
     build_directive_consumer,
     build_tool_gate,
@@ -324,6 +325,7 @@ from kiro_crew.messaging.dispatch import (
     stop_reason_landed,
 )
 from kiro_crew.messaging.display_safety import redact_for_display
+from kiro_crew.messaging.driver import directive_event_observer
 from kiro_crew.messaging.egress import channel_egress_parts, send_channel_parts
 from kiro_crew.messaging.identity import channel_inbound_permitted, publish_turn_identity
 from kiro_crew.messaging.link import (
