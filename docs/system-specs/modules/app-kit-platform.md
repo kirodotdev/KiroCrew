@@ -2739,6 +2739,15 @@ seed row with no cached manifest as its minimal entry instead of cloning its
 repository. Installs still use the network. The E2E harness gateway always sets it
 (`testing/harness.py`, `harness_environment`).
 
+Each of the three published documents' cache readers (`_read_cache`, and the
+catalog's `cached_entries`) reads its file through `read_bytes_with_retry`. The
+writer replaces the file with `atomic_write` and no lock, so two store requests
+refreshing at once race every reader, and on Windows a read that overlaps the
+replace raises a sharing violation. Folding that into "no cache" would send
+`load_official_catalog` to fetch again, and an offline fetch would then overwrite a
+good cache with the failure sentinel. An absent or damaged file still reads as no
+cache.
+
 That degradation is silent -- a failed fetch overwrites the on-disk cache with a
 failure sentinel and the seed listing renders with no error -- so the store
 header carries a manual refresh. `POST /api/app-store/refresh`
