@@ -224,7 +224,7 @@ def read_issues_cache(
         return None
     try:
         data = json.loads(read_bytes_with_retry(path).decode("utf-8"))
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, UnicodeDecodeError):
         return None
     if not isinstance(data, dict) or data.get("schema") != ISSUES_CACHE_SCHEMA:
         return None  # stale schema → treat as a miss so the route refetches
@@ -274,7 +274,7 @@ def read_issue_detail_cache(
         return None
     try:
         data = json.loads(read_bytes_with_retry(path).decode("utf-8"))
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, UnicodeDecodeError):
         return None
     if not isinstance(data, dict):
         return None
@@ -329,7 +329,7 @@ def read_ref_summary_cache(
             return None
     try:
         data = json.loads(read_bytes_with_retry(path).decode("utf-8"))
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, UnicodeDecodeError):
         return None
     if not isinstance(data, dict):
         return None
@@ -354,7 +354,7 @@ def _load_list_cache(
         return None, path
     try:
         data = json.loads(read_bytes_with_retry(path).decode("utf-8"))
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, UnicodeDecodeError):
         return None, path
     return (data if isinstance(data, dict) else None), path
 
@@ -376,7 +376,7 @@ def apply_label_change_to_caches(
             if isinstance(d, dict) and isinstance(d.get("detail"), dict):
                 d["detail"]["labels"] = label_objs
                 atomic_write(dpath, json.dumps(d, indent=2))
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, UnicodeDecodeError):
             pass
 
     for st in ("open", "closed"):
@@ -417,7 +417,7 @@ def apply_state_change_to_caches(
                 d["detail"]["state"] = state
                 d["detail"]["state_reason"] = state_reason
                 atomic_write(dpath, json.dumps(d, indent=2))
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, UnicodeDecodeError):
             pass
 
     drop_from = "open" if state == "closed" else "closed"
@@ -449,7 +449,7 @@ def apply_assignees_change_to_caches(
             if isinstance(d, dict) and isinstance(d.get("detail"), dict):
                 d["detail"]["assignees"] = logins
                 atomic_write(dpath, json.dumps(d, indent=2))
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, UnicodeDecodeError):
             pass
 
     for st in ("open", "closed"):

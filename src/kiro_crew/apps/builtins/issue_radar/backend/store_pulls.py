@@ -116,7 +116,7 @@ def read_pulls_cache(
         return None
     try:
         data = json.loads(read_bytes_with_retry(path).decode("utf-8"))
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, UnicodeDecodeError):
         return None
     if not isinstance(data, dict) or data.get("schema") != PULLS_CACHE_SCHEMA:
         return None
@@ -149,7 +149,7 @@ def apply_pr_checks_to_list_cache(
         with _pulls_cache_lock(owner, repo, root, state):
             try:
                 data = json.loads(read_bytes_with_retry(path).decode("utf-8"))
-            except (json.JSONDecodeError, FileNotFoundError):
+            except (json.JSONDecodeError, UnicodeDecodeError, FileNotFoundError):
                 continue
             if not isinstance(data, dict) or data.get("schema") != PULLS_CACHE_SCHEMA:
                 continue
@@ -201,7 +201,7 @@ def apply_pr_state_change_to_caches(
         with _pulls_cache_lock(owner, repo, root, leaving):
             try:
                 data = json.loads(read_bytes_with_retry(path).decode("utf-8"))
-            except (json.JSONDecodeError, FileNotFoundError):
+            except (json.JSONDecodeError, UnicodeDecodeError, FileNotFoundError):
                 data = None
             if isinstance(data, dict) and data.get("schema") == PULLS_CACHE_SCHEMA:
                 rows = data.get("pulls") or []
@@ -347,7 +347,7 @@ def read_pr_detail_cache(
             return None
     try:
         data = json.loads(read_bytes_with_retry(path).decode("utf-8"))
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, UnicodeDecodeError):
         return None
     if not isinstance(data, dict) or data.get("schema") != PR_DETAIL_CACHE_SCHEMA:
         return None
