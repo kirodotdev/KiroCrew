@@ -23,9 +23,11 @@ from kiro_crew.dashboard.chat_utils import (
     TRANSIENT_NOTICE_META_KEY,
     TRANSIENT_NOTICE_RESUMING,
     TRANSIENT_NOTICE_RETRYING,
+    TRANSIENT_NOTICE_THROTTLE_RETRYING,
     TRANSIENT_RESUMING_TEXT,
     TRANSIENT_RETRY_KIND,
     TRANSIENT_RETRYING_TEXT,
+    TRANSIENT_THROTTLE_RETRYING_TEXT,
     RecoveryPayload,
     ResetCause,
     build_recovery_requeue,
@@ -890,19 +892,27 @@ async def _on_acp_transient_retry(turn: _ChatTurn, exc) -> None:
                 continue
             _tail = _row
             break
+        # A throttle is the provider's answer, not a dropped connection, so
+        # its row says so.
+        if _throttled:
+            _notice, _notice_text = (
+                TRANSIENT_NOTICE_THROTTLE_RETRYING,
+                TRANSIENT_THROTTLE_RETRYING_TEXT,
+            )
+        else:
+            _notice, _notice_text = TRANSIENT_NOTICE_RETRYING, TRANSIENT_RETRYING_TEXT
         if not (
             _in_recovery_window
             and _tail.get("role") == "error"
-            and (_tail.get("meta") or {}).get(TRANSIENT_NOTICE_META_KEY)
-            == TRANSIENT_NOTICE_RETRYING
+            and (_tail.get("meta") or {}).get(TRANSIENT_NOTICE_META_KEY) == _notice
         ):
             slot.append(
                 "error",
-                TRANSIENT_RETRYING_TEXT,
+                _notice_text,
                 "msg msg-err",
                 meta={
                     "kind": TRANSIENT_RETRY_KIND,
-                    TRANSIENT_NOTICE_META_KEY: TRANSIENT_NOTICE_RETRYING,
+                    TRANSIENT_NOTICE_META_KEY: _notice,
                 },
             )
         await _recovery_delay(_delay)

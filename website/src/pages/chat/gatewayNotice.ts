@@ -42,6 +42,7 @@ interface Family {
 /** `meta.notice` wire tokens → family. Mirrors the Python token constants. */
 const NOTICE_FAMILIES = {
   transient_retrying: { role: 'error', card: 'pending' },
+  transient_throttle_retrying: { role: 'error', card: 'pending' },
   transient_resuming: { role: 'error', card: 'pending' },
   transient_give_up: { role: 'error', card: 'error' },
   connection_lost_retrying: { role: 'error', card: 'error' },
@@ -113,6 +114,7 @@ export type GatewayNoticeToken = keyof typeof NOTICE_FAMILIES
 /** Copy per token. Literal keys so `check-i18n-keys.mjs` resolves every lookup. */
 const COPY_KEY = {
   transient_retrying: 'pages.chat.transientNotice.retrying',
+  transient_throttle_retrying: 'pages.chat.transientNotice.throttle_retrying',
   transient_resuming: 'pages.chat.transientNotice.resuming',
   transient_give_up: 'pages.chat.transientNotice.give_up',
   connection_lost_retrying: 'pages.chat.gatewayNotice.connection_lost_retrying',
@@ -198,6 +200,18 @@ const RESUME_KEY = {
 
 const RESTORED_KEY = 'pages.chat.transientNotice.restored'
 const INTERRUPTED_KEY = 'pages.chat.transientNotice.interrupted'
+
+/**
+ * Settled copy for a pending token whose cause is not the connection: a
+ * throttle is the provider's answer, so its card never reads "Connection
+ * restored" or "Connection interrupted".
+ */
+const SETTLED_KEY = {
+  transient_throttle_retrying: {
+    answered: 'pages.chat.transientNotice.throttle_restored',
+    failed: 'pages.chat.transientNotice.throttle_interrupted',
+  },
+} as const satisfies Partial<Record<GatewayNoticeToken, { answered: string; failed: string }>>
 const BACKEND_HICCUP_RESUME_KEY = 'pages.chat.errorCard.retry_backend_hiccup'
 
 type Args = Readonly<Record<string, unknown>>
@@ -560,8 +574,9 @@ export function resolveGatewayNotice(
     return { card: 'error', text: copyOf(shape), ...(resumeText ? { resumeText } : {}) }
   }
   const outcome = outcomeAfter(messages, index)
-  if (outcome === 'answered') return { card: 'notice', text: i18nT(RESTORED_KEY), tone: 'info' }
-  if (outcome === 'failed') return { card: 'notice', text: i18nT(INTERRUPTED_KEY), tone: 'info' }
+  const settled = shape.token in SETTLED_KEY ? SETTLED_KEY[shape.token as keyof typeof SETTLED_KEY] : undefined
+  if (outcome === 'answered') return { card: 'notice', text: i18nT(settled?.answered ?? RESTORED_KEY), tone: 'info' }
+  if (outcome === 'failed') return { card: 'notice', text: i18nT(settled?.failed ?? INTERRUPTED_KEY), tone: 'info' }
   return { card: 'notice', text: copyOf(shape), tone: 'warn' }
 }
 

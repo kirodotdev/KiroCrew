@@ -13118,7 +13118,10 @@
         "resuming": "Conexión inestable — terminando esta respuesta…",
         "restored": "Conexión restablecida",
         "interrupted": "Conexión interrumpida",
-        "give_up": "Conexión inestable — inténtalo de nuevo."
+        "give_up": "Conexión inestable — inténtalo de nuevo.",
+        "throttle_retrying": "El proveedor del modelo está limitando las solicitudes — reintentando…",
+        "throttle_restored": "Limitación superada",
+        "throttle_interrupted": "El proveedor del modelo siguió limitando las solicitudes"
       },
       "gatewayNotice": {
         "connection_lost_retrying": "Conexión perdida{{detail}} — reintentando…",

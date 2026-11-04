@@ -7328,7 +7328,10 @@
         "resuming": "Connection unstable — finishing this answer…",
         "restored": "Connection restored",
         "interrupted": "Connection interrupted",
-        "give_up": "Connection unstable — please try again."
+        "give_up": "Connection unstable — please try again.",
+        "throttle_retrying": "The model provider is throttling requests — retrying…",
+        "throttle_restored": "Throttling cleared",
+        "throttle_interrupted": "The model provider kept throttling requests"
       },
       "gatewayNotice": {
         "connection_lost_retrying": "Connection lost{{detail}} — retrying…",

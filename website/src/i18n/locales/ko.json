@@ -12524,7 +12524,10 @@
         "resuming": "연결이 불안정합니다 — 이 답변을 마무리하는 중…",
         "restored": "연결이 복구되었습니다",
         "interrupted": "연결이 중단되었습니다",
-        "give_up": "연결이 불안정합니다 — 다시 시도해 주세요."
+        "give_up": "연결이 불안정합니다 — 다시 시도해 주세요.",
+        "throttle_retrying": "모델 제공업체가 요청을 제한하고 있습니다 — 다시 시도 중…",
+        "throttle_restored": "요청 제한이 해제되었습니다",
+        "throttle_interrupted": "모델 제공업체의 요청 제한이 계속되었습니다"
       },
       "gatewayNotice": {
         "connection_lost_retrying": "연결이 끊어졌습니다{{detail}} — 다시 시도 중…",

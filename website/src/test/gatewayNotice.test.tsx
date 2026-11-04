@@ -176,6 +176,26 @@ describe('resolveGatewayNotice', () => {
     expect(resolveGatewayNotice(retrying, withTool, 0)?.text).toBe(COPY.restored)
   })
 
+  it('words a throttle retry as the provider throttling, never as the connection', () => {
+    // A throttle is the provider's answer: the network was fine, so neither the
+    // pending card nor either settled card may speak of a connection.
+    const throttled = withNotice('transient_throttle_retrying', 'transient_retry')
+    expect(COPY.throttle_retrying).toBe('The model provider is throttling requests — retrying…')
+    expect(resolveGatewayNotice(throttled, [throttled], 0)).toEqual({ text: COPY.throttle_retrying, card: 'notice', tone: 'warn' })
+    const answered = [throttled, throttled, msg('assistant', { content: 'ok' })]
+    for (const i of [0, 1]) {
+      expect(resolveGatewayNotice(throttled, answered, i)).toEqual({ text: COPY.throttle_restored, card: 'notice', tone: 'info' })
+    }
+    expect(resolveGatewayNotice(throttled, [throttled, giveUp], 0)).toEqual({ text: COPY.throttle_interrupted, card: 'notice', tone: 'info' })
+    for (const text of [COPY.throttle_retrying, COPY.throttle_restored, COPY.throttle_interrupted]) {
+      expect(text).not.toMatch(/connection/i)
+    }
+    // A plain 5xx in the same ladder keeps its own connection wording.
+    const mixed = [throttled, retrying, msg('assistant', { content: 'ok' })]
+    expect(resolveGatewayNotice(retrying, mixed, 1)?.text).toBe(COPY.restored)
+    expect(resolveGatewayNotice(throttled, mixed, 0)?.text).toBe(COPY.throttle_restored)
+  })
+
   it('never settles the terminal shape', () => {
     const list = [giveUp, msg('assistant', { content: 'a later, unrelated turn' })]
     expect(resolveGatewayNotice(giveUp, list, 0)?.text).toBe(COPY.give_up)
