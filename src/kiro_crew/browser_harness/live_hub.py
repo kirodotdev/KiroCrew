@@ -259,11 +259,12 @@ def tab_alive(relay: Relay | None, target_id: str) -> bool:
 def live_event(sess: LiveSession) -> dict[str, Any]:
     """The ``browser_live`` payload: exactly the Wire-contract fields."""
     active = next((i for i, s in enumerate(sess.steps) if s.status == "active"), None)
-    step = (
-        {"index": active, "label": sess.steps[active].label}
-        if active is not None
-        else {"index": len(sess.steps) - 1, "label": sess.steps[-1].label} if sess.steps else None
-    )
+    if active is not None:
+        step = {"index": active, "label": sess.steps[active].label}
+    elif sess.steps:
+        step = {"index": len(sess.steps) - 1, "label": sess.steps[-1].label}
+    else:
+        step = None
     return {
         "session_key": sess.session_key,
         "turn_id": sess.turn_id,
