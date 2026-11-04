@@ -5785,10 +5785,10 @@
       "render_timezone": "Render timezone"
     },
     "tipCard": {
+      "collapse_tip": "Collapse tip",
       "dismiss_tip": "Dismiss tip",
       "feature_tip": "Feature tip",
       "learn_more": "Learn more",
-      "tip_settings": "Tip settings",
       "turn_off_tips": "Turn off tips"
     },
     "toolInputPreview": {

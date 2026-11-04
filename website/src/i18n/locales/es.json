@@ -9432,10 +9432,10 @@
       "render_timezone": "Zona horaria de visualización"
     },
     "tipCard": {
+      "collapse_tip": "Contraer consejo",
       "dismiss_tip": "Descartar el consejo",
       "feature_tip": "Consejo sobre la función",
       "learn_more": "Más información",
-      "tip_settings": "Ajustes de los consejos",
       "turn_off_tips": "Desactivar los consejos"
     },
     "toolInputPreview": {

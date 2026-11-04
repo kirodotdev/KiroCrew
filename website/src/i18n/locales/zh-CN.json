@@ -9038,10 +9038,10 @@
       "render_timezone": "显示时区"
     },
     "tipCard": {
+      "collapse_tip": "收起提示",
       "dismiss_tip": "忽略提示",
       "feature_tip": "功能提示",
       "learn_more": "了解更多",
-      "tip_settings": "提示设置",
       "turn_off_tips": "关闭提示"
     },
     "toolInputPreview": {

@@ -9235,10 +9235,10 @@
       "render_timezone": "प्रदर्शन समय-क्षेत्र"
     },
     "tipCard": {
+      "collapse_tip": "टिप छोटा करो",
       "dismiss_tip": "सुझाव खारिज करें",
       "feature_tip": "फ़ीचर सुझाव",
       "learn_more": "और जानें",
-      "tip_settings": "सुझाव सेटिंग्स",
       "turn_off_tips": "सुझाव बंद करें"
     },
     "toolInputPreview": {

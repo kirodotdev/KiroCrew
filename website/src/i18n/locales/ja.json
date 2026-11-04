@@ -9038,10 +9038,10 @@
       "render_timezone": "タイムゾーンをレンダリング"
     },
     "tipCard": {
+      "collapse_tip": "ヒントを折りたたむ",
       "dismiss_tip": "ヒントを閉じる",
       "feature_tip": "機能ヒント",
       "learn_more": "詳しく知る",
-      "tip_settings": "ヒント設定",
       "turn_off_tips": "ヒントをオフにする"
     },
     "toolInputPreview": {

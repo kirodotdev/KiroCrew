@@ -9432,10 +9432,10 @@
       "render_timezone": "Fuso orario di visualizzazione"
     },
     "tipCard": {
+      "collapse_tip": "Comprimi suggerimento",
       "dismiss_tip": "Ignora il suggerimento",
       "feature_tip": "Suggerimento sulla funzionalità",
       "learn_more": "Scopri di più",
-      "tip_settings": "Impostazioni dei suggerimenti",
       "turn_off_tips": "Disattiva i suggerimenti"
     },
     "toolInputPreview": {

@@ -9038,10 +9038,10 @@
       "render_timezone": "표시 시간대"
     },
     "tipCard": {
+      "collapse_tip": "팁 접기",
       "dismiss_tip": "팁 닫기",
       "feature_tip": "기능 팁",
       "learn_more": "자세히 알아보기",
-      "tip_settings": "팁 설정",
       "turn_off_tips": "팁 끄기"
     },
     "toolInputPreview": {
