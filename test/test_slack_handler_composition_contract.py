@@ -228,8 +228,12 @@ _SPLIT_HELPERS: dict[str, str] = {
 
 #: SHA-256 of the sorted ``"<name> <kind> <signature>"`` lines of every moved name,
 #: captured from the one-module file before the split, less the two reaction-trail
-#: names deleted with the trail (``_add_phase_reaction``, ``_tool_to_phase``).
-_BASE_SHAPE_DIGEST = "4345ad1233f0afb979e1c8be4f5ae174bbde211628f8b610ef3f3e4959caf2eb"
+#: names deleted with the trail (``_add_phase_reaction``, ``_tool_to_phase``), with
+#: ``user_meta`` on ``maybe_route_linked_thread`` (the user row's meta a code
+#: channel passes), ``turn_context`` on it too (a pinned action answer's payload),
+#: and ``post_linked_approval``'s ``thread_ts`` widened to ``str | None`` (a code
+#: channel's own session posts its approval card top-level).
+_BASE_SHAPE_DIGEST = "9c2096ea9679a75df7a69af2454821e3afa1d412ec754742dcaa93f3e311cfea"
 
 #: Definitions that stay in the facade file, each because a repository guard, a
 #: contract or the import-time body reads it there. The reason per entry is in
