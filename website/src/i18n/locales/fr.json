@@ -16930,7 +16930,10 @@
         "column_source": "Origine",
         "column_event": "Événement",
         "column_key_type": "Clé/Type",
-        "column_details": "Détails"
+        "column_details": "Détails",
+        "edit_value_label": "Modifier la valeur de « {{key}} »",
+        "save_edit": "Enregistrer",
+        "cancel_edit": "Annuler"
       },
       "wakatimeTab": {
         "active_projects": "Projets sur lesquels vous avez travaillé",

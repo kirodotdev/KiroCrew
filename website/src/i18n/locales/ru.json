@@ -17330,7 +17330,10 @@
         "column_source": "Источник",
         "column_event": "Событие",
         "column_key_type": "Ключ/тип",
-        "column_details": "Подробности"
+        "column_details": "Подробности",
+        "edit_value_label": "Изменить значение «{{key}}»",
+        "save_edit": "Сохранить",
+        "cancel_edit": "Отмена"
       },
       "wakatimeTab": {
         "active_projects": "Проекты, над которыми вы работали",

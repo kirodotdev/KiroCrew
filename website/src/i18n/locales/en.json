@@ -9434,7 +9434,10 @@
         "column_source": "Source",
         "column_event": "Event",
         "column_key_type": "Key/Type",
-        "column_details": "Details"
+        "column_details": "Details",
+        "edit_value_label": "Edit value of “{{key}}”",
+        "save_edit": "Save",
+        "cancel_edit": "Cancel"
       },
       "wakatimeTab": {
         "active_projects": "Projects you worked on",
