@@ -97,7 +97,10 @@ _EXTRA_PATH_DIRS = (
 # contribution out, :func:`mcp_runtime_path` wraps the former rather than
 # altering it, and nothing is persisted.
 #
-# That exception is also where the setting stops being live. A resolution caller
+# A second exception, the agent child (kiro-cli), which starts an unwrapped
+# bare-name server itself: see :func:`append_mcp_path_dirs`.
+#
+# The gatewayd exception is also where the setting stops being live. A resolution caller
 # reads the current snapshot on every call, so an edit reaches it immediately;
 # the daemon's PATH is a process environment fixed when ``manager._spawn_once``
 # spawns it, and an ADOPTED survivor never has a new one applied (``manager``'s
@@ -1398,6 +1401,25 @@ def mcp_runtime_path(base_path: str = "") -> str:
     if not extra:
         return path
     return os.pathsep.join(_dedup_dirs([*extra, *path.split(os.pathsep)]))
+
+
+def append_mcp_path_dirs(path: str) -> str:
+    """*path* with the contributed MCP dirs appended AFTER every entry, for an agent child.
+
+    kiro-cli resolves a bare-name server command against the PATH it inherits, and
+    its spec carries no contributed dir (:func:`spec_env_path`), so a gateway whose
+    PATH lacks one (a service installed from a non-login shell) starts no such
+    server. The dirs TRAIL, unlike :func:`mcp_runtime_path`, because the agent's
+    shell resolves against this PATH too: they only supply names found nowhere
+    else. Every existing entry, an empty (cwd) one too, is kept verbatim. Computed
+    per spawn, stored nowhere. A ``~user`` entry may block on lookup: run off-loop.
+    """
+    present = {os.path.normcase(os.path.normpath(p)) for p in path.split(os.pathsep) if p}
+    norm = os.path.normcase
+    added = [
+        d for d in _dedup_dirs(_extra_mcp_path_dirs()) if norm(os.path.normpath(d)) not in present
+    ]
+    return os.pathsep.join([p for p in (path, *added) if p]) if added else path
 
 
 # Env keys a spec's declared ``env`` must never set on a process WE spawn.
