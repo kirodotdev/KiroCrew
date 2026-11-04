@@ -33,6 +33,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
+from real_dashboard_state import _settle_real_dashboard_states  # noqa: F401
 from real_dashboard_state import drain, open_feed, real_dashboard_state
 from title_refresh_helpers import _fake_state, _patch_generator, _titled_slot
 

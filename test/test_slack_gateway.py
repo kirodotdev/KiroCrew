@@ -19,6 +19,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from real_dashboard_state import _settle_real_dashboard_states  # noqa: F401
 from real_dashboard_state import drain, notes, open_feed, real_dashboard_state
 from slack_gateway_helpers import _mock_context_builder  # noqa: F401
 from slack_gateway_helpers import _restore_update_check_cache  # noqa: F401
