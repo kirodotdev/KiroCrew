@@ -471,6 +471,72 @@ class TestPrivateStoreCallerIsolation:
             asyncio.run(sc.create_session(state, caller_session_key=child_key, agent=member))
         assert error.value.code == "memory_delegation_denied"
 
+    def _seed_member_tab(self, state, cfg, name, member, monkeypatch):
+        """A member tab the owner pinned, with a settled transcript an agent can fork."""
+        from unittest.mock import MagicMock
+
+        from kiro_crew.dashboard import chat_fork
+        from kiro_crew.dashboard.chat_persistence import (
+            _pin_private_agent_assignment,
+            _save_slot_to_history,
+        )
+
+        monkeypatch.setattr(chat_fork, "sel", lambda: MagicMock())
+        monkeypatch.setattr(sc, "sel", lambda: MagicMock())
+        slot = state.get_or_create_slot(name)
+        slot.memory_store = _pin_private_agent_assignment(
+            slot_history_key(slot), member, cfg, conversation_log=state.conversation_log
+        )
+        slot.agent = member
+        for i in range(2):
+            slot.append("user", f"question {i}", "msg msg-u")
+            slot.append("assistant", f"answer {i}", "msg msg-a")
+        slot.drain()
+        _save_slot_to_history(state, slot, closed=False)
+        slot._resumed_count = len(slot.messages)
+        slot._disk_window_len = len(slot.messages)
+        slot._dirty = False
+        return slot
+
+    def test_an_agent_fork_of_its_own_member_tab_dispatches_its_own_store_worker(
+        self, tmp_path, monkeypatch, _fresh_create_budget
+    ):
+        # `session_fork` reaches the same binder as the owner's Fork button, so a
+        # member forking its own vouched conversation hands the child that vouch.
+        from kiro_crew.execution_context import read_vouched_session_execution
+
+        state, cfg = self._prepare(tmp_path, monkeypatch)
+        parent = self._seed_member_tab(state, cfg, "chat-47-1789000000", "radar", monkeypatch)
+
+        forked = asyncio.run(sc.fork_session(state, caller_session_key=slot_history_key(parent)))
+        child_key = slot_history_key(state.get_slot(forked["target"]))
+        vouched = read_vouched_session_execution(child_key)
+        assert vouched is not None and vouched.store.store_id == parent.memory_store
+        result = asyncio.run(sc.create_session(state, caller_session_key=child_key, agent="radar"))
+        assert state.get_slot(result["target"]) is not None
+
+    def test_a_fenced_peer_member_cannot_fork_another_members_tab(
+        self, tmp_path, monkeypatch, _fresh_create_budget
+    ):
+        # The deny direction. A fenced peer naming another member's conversation as
+        # the source is refused at `authorize_target`, before any child exists, so
+        # it never gets a session carrying that member's vouch.
+        state, cfg = self._prepare(tmp_path, monkeypatch)
+        source = self._seed_member_tab(state, cfg, "chat-48-1789000000", "radar", monkeypatch)
+        peer = self._seed_member_tab(state, cfg, "chat-49-1789000000", "peer", monkeypatch)
+
+        with pytest.raises(sc.SessionControlError) as error:
+            asyncio.run(
+                sc.fork_session(
+                    state,
+                    caller_session_key=slot_history_key(peer),
+                    source=slot_history_key(source),
+                    caller_fenced=True,
+                )
+            )
+        assert error.value.code == "target_not_found"
+        assert state.creator_slot_count(peer.key) == 0
+
     def test_a_restart_self_heals_own_store_dispatch_at_the_next_gate_admission(
         self, tmp_path, monkeypatch, _fresh_create_budget
     ):
