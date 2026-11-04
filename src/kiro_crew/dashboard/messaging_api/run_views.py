@@ -214,6 +214,8 @@ async def api_spawn_status(request: web.Request) -> web.Response:
     # payload is unchanged: the backend asked for, and the one that ran.
     data.update(_failover_fields(info))
     if info.done:
+        data["outcome"] = info.outcome
+        data["stopped"] = info.user_stopped
         data["elapsed"] = info.elapsed
         data["credits"] = info.credits
         # ``spawn_sub_agents`` flags a completed run that made no tool call,

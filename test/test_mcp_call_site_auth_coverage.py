@@ -133,6 +133,7 @@ _SOURCES = (
     _SRC / "apps/builtins/code_review_sage/sage_lib/review_driver.py",
     _SRC / "computer_use/screencast.py",
     _SRC / "doctor_checks/workload.py",
+    _SRC / "subagent_read_collected.py",
     *sorted((_SRC / "mcp_tools").rglob("*.py")),
 )
 
