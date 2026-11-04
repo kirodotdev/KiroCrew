@@ -655,7 +655,10 @@ mapping, and only an unmapped custom agent's row also depends on the harness:
 
 `kirocrew-worker` takes the `kirocrew` rows (`WHOLE_CATALOG_TEMPLATES`): its
 `skill://` entries are the default's own, so it maps nothing exactly when the
-default maps nothing.
+default maps nothing. A crewmate's conductor and worker take the `kirocrew` rows
+too, being default agents (`KIROCREW_DEFAULT_AGENT_NAMES`, which the set is built
+from), except that on kiro-cli an unmapped one gets the inherited skill trees. In
+every row the `skill_search` scope is the same set the skill directory lists.
 
 The inherited trees are what kiro-cli gives a custom agent by default:
 `~/.kiro/skills` and the workspace's `.kiro/skills`

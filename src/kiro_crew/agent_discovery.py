@@ -180,6 +180,11 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from dataclasses import asdict, dataclass, field  # noqa: F401
     from pathlib import Path  # noqa: F401
     from typing import Any, Callable, Generic, Iterator, Sequence, TypeVar  # noqa: F401
+
+    from kiro_crew.agent_files import (  # noqa: F401
+        KIROCREW_DEFAULT_AGENT_NAMES,
+        WORKER_AGENT_FILENAME,
+    )
 # This module is the facade of the agent-discovery owners in
 # ``kiro_crew.agent_discovery_parts``, and every name is reached through it as
 # ``kiro_crew.agent_discovery.<name>``: a read is served by the owner that binds the name,

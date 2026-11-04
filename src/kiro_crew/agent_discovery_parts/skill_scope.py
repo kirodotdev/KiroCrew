@@ -25,6 +25,7 @@ from kiro_crew.agent_discovery_parts.spec_fields import (
 )
 from kiro_crew.agent_discovery_parts.spec_reads import _kiro_agents_dir, _read_agent_spec
 from kiro_crew.agent_discovery_parts.spec_snapshot import parsed_agent_specs
+from kiro_crew.agent_files import KIROCREW_DEFAULT_AGENT_NAMES, WORKER_AGENT_FILENAME
 from kiro_crew.config.paths import project_agents_dir
 
 # Logs under the facade's name, which operators and tests filter on.
@@ -39,10 +40,14 @@ class SkillScopeResolutionError(ValueError):
 # raised class as ``module.qualname``, so the owner module must not leak into it.
 SkillScopeResolutionError.__module__ = "kiro_crew.agent_discovery"
 
-#: The templates that see the whole catalog while they map no skill. The worker
-#: maps exactly the default's ``skill://`` entries (``_mirror_worker_skill_resources``),
-#: so an unmapped worker has an unmapped dispatcher and sees what it sees.
-WHOLE_CATALOG_TEMPLATES = frozenset({"kirocrew", "kirocrew-worker"})
+#: The templates that see the whole catalog while they map no skill: every default
+#: agent (:data:`~kiro_crew.agent_files.KIROCREW_DEFAULT_AGENT_NAMES`, which holds the
+#: crewmate's conductor and worker beside ``kirocrew``) and the dispatch worker. The
+#: worker maps exactly the default's ``skill://`` entries
+#: (``_mirror_worker_skill_resources``), so an unmapped worker has an unmapped
+#: dispatcher and sees what it sees. Built from the default-agent set so a name added
+#: there gets the catalog in ``skill_search`` as it does in the startup directory.
+WHOLE_CATALOG_TEMPLATES = KIROCREW_DEFAULT_AGENT_NAMES | {Path(WORKER_AGENT_FILENAME).stem}
 
 
 def skill_search_refusal(spec: dict[str, Any]) -> str | None:
