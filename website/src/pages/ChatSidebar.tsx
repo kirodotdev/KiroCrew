@@ -66,6 +66,7 @@ import FolderCleanupPanel from './chat-sidebar/FolderCleanupPanel'
 import { useSidebarResize } from './chat-sidebar/resize'
 import { useSidebarScrollPeek, useFullTitlesOnScrollSetting } from './chat-sidebar/scrollPeek'
 import ScrollPeekLayer from './chat-sidebar/ScrollPeekLayer'
+import NeedsMeHoverLayer from './chat-sidebar/NeedsMeHoverCard'
 import { useSidebarTags } from './chat-sidebar/tags'
 import { useSidebarModels } from './chat-sidebar/models'
 import { useBoardColumns, useColumnPopover, useBoardColumnMutations, useColumnMatches, useBoardFolderCollapse, crewLaneSets } from './chat-sidebar/board'
@@ -978,6 +979,8 @@ function ChatSidebar({
       {/* Scroll peek: full titles in a floating, click-through layer. The
           card itself keeps `sidebarWidth`. */}
       <ScrollPeekLayer titles={peekTitles} />
+      {/* Hovering a needs-me row opens its recap, asks and quick reply beside it (desktop pointer only). */}
+      <NeedsMeHoverLayer rootRef={sidebarRootRef} />
       {/* Outside the row list on purpose: a notice under a row adds a line every session
           pays for in above-fold density (AUTOSDE session-row-fixed-height). */}
       {duplicateError ? (
