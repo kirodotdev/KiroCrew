@@ -31,11 +31,16 @@ from dataclasses import dataclass, field
 from typing import Any, AsyncIterator
 from urllib.parse import parse_qsl
 
+import aiohttp
 import pytest
 from aiohttp import web
 
 from kiro_crew.slack import team_ids
 from kiro_crew.slack.client import RealSlackClient
+
+# Bound at import so a test that stubs ``aiohttp.ClientSession`` (for a
+# ``response_url`` post) still leaves the client a real session to the wire.
+_REAL_CLIENT_SESSION = aiohttp.ClientSession
 
 # Built from parts so no full token-shaped literal sits in the source.
 _TEST_TOKEN = "xoxb-" + "wire-" + "test"
@@ -153,9 +158,12 @@ async def slack_wire(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[SlackWire
     client = RealSlackClient(_TEST_TOKEN)
     url = f"http://127.0.0.1:{port}"
     client._web.base_url = f"{url}/api/"
+    session = _REAL_CLIENT_SESSION(timeout=aiohttp.ClientTimeout(total=10))
+    client._web.session = session
     wire = SlackWire(client=client, url=url)
     wire_ref.append(wire)
     try:
         yield wire
     finally:
+        await asyncio.wait_for(session.close(), timeout=10)
         await asyncio.wait_for(runner.cleanup(), timeout=10)
