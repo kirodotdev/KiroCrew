@@ -128,12 +128,16 @@ credential from them, so their gateway-backed calls would be refused. Its mirror
 already confirms a saved spec (`strands/saved-spec-projection-live.jsonl`, recorded
 with no mask); it joins once a host-side control-plane transport exists.
 `ACP_BACKENDS_MEMBER_TOOL_LIMITS`
-(Kiro only) says which honour a saved spec's per-tool `disabledTools`; on any
+(Kiro, KAS) says which honour a saved spec's per-tool `disabledTools`; on any
 other backend such a spec is refused before spawn with
-`capability_tool_limits_unsupported`. A member DM whose
+`capability_tool_limits_unsupported`. kiro-cli reads the field off the saved
+file. KAS's wire discards it from the server entry, so the projection carries
+each switched-off tool of a launched server as `@<server>/<tool>` in the
+agent's `excludedTools` (`kas_tool_limits.disabled_tool_exclusions`), the carrier
+the crewmate worker uses; KAS tags each MCP tool `@<server>/<tool>` and drops
+one whose tag equals an `excludedTools` entry. A member DM whose
 `agent.member_acp_backend` is `kiro` runs on KAS (the loader reads it so), so
-no member-DM backend setting honours per-tool limits and that refusal's remedy
-is to change the saved spec. A crewmate's WORKER runs a spec built per session
+it honours them too. A crewmate's WORKER runs a spec built per session
 from the worker base plus that crewmate's file (`mate_worker.worker_session_spec`,
 the one harness-neutral seam), carried the way a member chat's saved spec is.
 `ACP_BACKENDS_MATE_WORKER_KIT` (KAS, claude) names the hosts that

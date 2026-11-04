@@ -773,8 +773,7 @@ spec. The pane shows it on the Review section and on the saved state, in three
 forms. `harness_unsupported` on `agent.member_acp_backend` shows the
 `config set agent.member_acp_backend kas` command on its own line with a copy
 button, since no dashboard page edits that setting and kas (the member default)
-loads saved capabilities, plus a second step to clear `servers` when present,
-since kas would refuse those next. It never suggests `kiro`, which a member
+loads saved capabilities and honours `servers`' single-tool limits. It never suggests `kiro`, which a member
 setting reads as KAS. A member DM's `kiro` reads as KAS at config load, so the
 warning names `kas` as its backend and its refusals follow KAS. `harness_unsupported` on `agent.acp_backend` names
 the affected entry points (Slack threads, scheduled jobs, spawned tasks), says
