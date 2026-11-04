@@ -16,7 +16,7 @@ interface ChatPanelTrackpadSwipeOptions {
   activitySlot: HTMLElement | null
   activityOpen: boolean
   searchOpen: boolean
-  sidePanelDock: 'right' | 'bottom'
+  sidePanelDock: 'right' | 'bottom' | 'left'
   toggleAct: () => void
   dispatch: AppDispatch
   /** The session on screen. The panel's open state is per session, and a

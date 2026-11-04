@@ -111,9 +111,15 @@ export default function ChatSidePanels({
   const browserBehind = hasBrowserTab && activeTab?.kind !== 'browser'
   const hideNative = useCallback(() => { if (activeSlot) void window.browserAPI?.setInactive(activeSlot, true) }, [activeSlot])
   const { retireSlide } = trackpad
+  // Left dock: the panel renders INLINE in this page's flex row, between the
+  // sessions list and the chat pane (CSS `order`), instead of portaling into
+  // the shell's right-hand actbar column. It is per-chat like every dock.
+  const inlineLeft = sidePanelDock === 'left' && !isMobile && !embedded
+  const useInline = !activitySlot || inlineLeft
   // The store says open, the panel must be on screen (useSidePanelHealth).
+  // The health check reads the actbar column, which is empty in inline-left.
   useSidePanelHealth({
-    enabled: activityOpen && !isMobile && !embedded && !search.isOpen,
+    enabled: activityOpen && !isMobile && !embedded && !search.isOpen && !inlineLeft,
     activeSlot,
     dock: sidePanelDock,
     slot: activitySlot,
@@ -174,7 +180,7 @@ export default function ChatSidePanels({
           ? (sideOverlayPhase !== 'closed'
               || (shouldMountSidePanel({ activityOpen, hasLiveAppTab, hasBrowserTab, hasTaskDashboard, searchOpen: search.isOpen })
                   && isSidePanelHidden({ activityOpen, hasLiveAppTab, hasBrowserTab, hasTaskDashboard, searchOpen: search.isOpen }))) && !activitySlot
-          : shouldMountSidePanel({ activityOpen, hasLiveAppTab, hasBrowserTab, hasTaskDashboard, searchOpen: search.isOpen }) && !activitySlot) && (
+          : shouldMountSidePanel({ activityOpen, hasLiveAppTab, hasBrowserTab, hasTaskDashboard, searchOpen: search.isOpen }) && useInline) && (
           <motion.div
             key="side-panel-inline"
             data-testid="side-panel-inline"
@@ -187,7 +193,7 @@ export default function ChatSidePanels({
             // takes over the CONTENT area, not the shell chrome.
             className={isMobile
               ? 'fixed top-safe-offset-[42px] bottom-safe left-safe right-safe z-[47] flex justify-end bg-bg'
-              : 'h-full overflow-hidden flex justify-end shrink-0'}
+              : inlineLeft ? 'h-full overflow-hidden flex justify-start shrink-0 order-1' : 'h-full overflow-hidden flex justify-end shrink-0'}
             // On a phone this is an opaque overlay over the whole content area,
             // so while OPEN the transcript under it is not on screen
             // (paneVisibility, #23564); not while sliding out, and the desktop
@@ -223,7 +229,7 @@ export default function ChatSidePanels({
               expanded={panelMaximized}
               fillWidth={panelFillWidth}
               extraReserveW={!isMobile && sidebarOpen ? effectiveSidebarWidth : 0}
-              canDockBottom={false}
+              canDockBottom={inlineLeft}
             />
           </motion.div>
         )}
@@ -235,7 +241,7 @@ export default function ChatSidePanels({
           grid column tracks it frame-by-frame, so the chat pane slides left in
           sync while the panel (right-anchored via justify-end) slides out from
           the window edge — both sides move together instead of snapping. */}
-      {activitySlot && createPortal(
+      {activitySlot && !inlineLeft && createPortal(
         <AnimatePresence initial={false}>
           {(shouldMountSidePanel({ activityOpen, hasLiveAppTab, hasBrowserTab, hasTaskDashboard, searchOpen: search.isOpen }) || deskSlide) && (
             <motion.div

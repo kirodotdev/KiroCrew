@@ -6,7 +6,7 @@ import { AllTabsMenu } from '../../components/AllTabsMenu'
 import { useSidePanelTabNav } from './SidePanelTabNav'
 import { iconForKind } from './SidePanelTabIcons'
 import { Reorder } from 'framer-motion'
-import { Plus, MoreHorizontal, Globe, PanelRight, PanelBottom } from 'lucide-react'
+import { Plus, MoreHorizontal, Globe, PanelRight, PanelBottom, PanelLeft } from 'lucide-react'
 import { SidePanelDockHost, SidePanelGlyph } from '../../components/SidePanelGlyph'
 import ActivityViewer from './ActivityViewer'
 // Loaded with its tab, not the shell: the panel (attention cards, tile lists,
@@ -428,6 +428,10 @@ export default function SidePanel({
   }, [onClose, activeId])
   const pinnedTabs = useMemo(() => visibleTabs.filter(t => (pinnedViews as readonly string[]).includes(t.id)), [visibleTabs, pinnedViews])
   const dynamicTabs = useMemo(() => visibleTabs.filter(t => !(pinnedViews as readonly string[]).includes(t.id)), [visibleTabs, pinnedViews])
+  const {
+    rootRef, isMobile, isBottom, isLeft, setDock, effectiveWidth, effectiveHeight, dimTransition,
+    resizing, slotSwitched, dimAnimating, panelResize, panelResizeV,
+  } = useSidePanelSize({ slot, slotOwner, persistSlot, defaultWidth, extraReserveW, canDockBottom, expanded, fillWidth })
   // Edge cues for the dynamic session-tab group — the real overflow site when
   // many sessions are open. It hides its scrollbar, so a gradient is the only
   // signal that tabs continue past the clipped edge. remeasure on the tab
@@ -611,17 +615,215 @@ export default function SidePanel({
   // The panel's size: the width and height remembered per chat, the dock
   // placement, the clamp to the window, the two resize gestures and the eased
   // edge on a chat switch (`useSidePanelSize.ts`).
-  const {
-    rootRef, isMobile, isBottom, setDock, effectiveWidth, effectiveHeight, dimTransition,
-    resizing, slotSwitched, dimAnimating, panelResize, panelResizeV,
-  } = useSidePanelSize({ slot, slotOwner, persistSlot, defaultWidth, extraReserveW, canDockBottom, expanded, fillWidth })
+
+  const renderTabBody = (t: PanelTab) => {
+          const isActive = t.id === activeId
+          // Category views mount only while active (VIEW_KINDS below): they hold
+          // no editable buffer, so unmounting an inactive one loses nothing, and
+          // it keeps exactly one panel-level Escape handler live at a time. Files
+          // and Command Center are kept mounted instead, each for its own reason.
+          // App tabs render from `allAppTabs` below (one stable key for every slot);
+          // rendering them here too would mount the same body twice. Both
+          // body-owning kinds skip: an MCP frame's iframe and an app-contributed
+          // tab's `AppHost` are equally destroyed by a key change on chat switch.
+          if (t.kind === 'app' || isPanelTabKind(t.kind)) return null
+          // Keep the authored document and per-question drafts alive on tab switches.
+          if (t.kind === 'command-center') return (
+            <div key={`${t.id}:${slot}`} className="absolute inset-0" hidden={!isActive}>
+              {/* Local boundary: the panel is a lazy chunk, and a chunk that fails
+                  to load after main.tsx's preload-reload heal declined would
+                  otherwise reject up to the ROUTE boundary and replace the whole
+                  chat page with an error card. The fallback is the shared error
+                  surface, not nothing, so the tab says why it is empty. */}
+              {/* No hand-off: the adjacent chat composer holds unsent text and the
+                  panel's own answer drafts live in this tab. */}
+              <ErrorBoundary scope="command-center" fallback={<ErrorNotice className="m-3" message={i18nT('commandCenter.panel_load_failed')} />}>
+                <Suspense fallback={null}><CommandCenterPanel slot={slot ?? null} active={isActive && !panelHidden} onAct={onComposerInsert} /></Suspense>
+              </ErrorBoundary>
+            </div>
+          )
+          if (remoteEnvironment === undefined && (
+            t.kind === 'files' || t.kind === 'git' || t.kind === 'terminal'
+            || t.kind === 'file' || t.kind === 'diff' || t.kind === 'wtdiff' || t.kind === 'folder'
+          )) {
+            if (!isActive) return null
+            return (
+              <div key={t.id} className="absolute inset-0 p-4">
+                {/* No hand-off: the chat composer and open files may hold unsaved drafts. */}
+                {environmentError && slot
+                  ? <EnvironmentPlacementError slot={slot} />
+                  : <ContentSkeleton rows={8} />}
+              </div>
+            )
+          }
+          // A remote chat's files live in its workspace. These tabs read and write
+          // the GATEWAY's copy, so a remote chat gets a pointer to its Files tab
+          // instead; the tab and any draft it holds stay, unrendered. The Git tab
+          // is not one of them: ActivityViewer gives a remote chat the guest's
+          // Git view (RemoteGitPanel), never the gateway checkout.
+          if (remoteEnvironment && (
+            t.kind === 'file' || t.kind === 'diff' || t.kind === 'wtdiff' || t.kind === 'folder'
+          )) {
+            if (!isActive) return null
+            return (
+              <div key={t.id} className="absolute inset-0 p-4">
+                <p role="status" data-testid="remote-gateway-tab-withheld" className="text-[13px] text-muted">
+                  {i18nT('sessionEnvironments.gatewayTabWithheld', { name: remoteEnvironment.name })}
+                </p>
+              </div>
+            )
+          }
+          // A terminal opened on THIS machine before the chat was bound keeps its
+          // gateway shell; once the chat is confirmed remote it is no longer
+          // typed into here (a command meant for the workspace would run on the
+          // gateway). The tab stays so the user can close it.
+          if (remoteEnvironment && t.kind === 'terminal' && !t.remoteSlot) {
+            if (!isActive) return null
+            return (
+              <div key={t.id} className="absolute inset-0 p-4">
+                <p role="status" data-testid="remote-gateway-terminal-withheld" className="text-[13px] text-muted">
+                  {i18nT('sessionEnvironments.gatewayTerminalWithheld', { name: remoteEnvironment.name })}
+                </p>
+              </div>
+            )
+          }
+          // A Crew Mode root's workers, for the root and for each worker on screen.
+          if (t.kind === 'workers') {
+            if (!isActive) return null
+            return (
+              <div key={`${t.id}:${slot}`} className="absolute inset-0">
+                <ErrorBoundary scope="crew-workers" fallback={<ErrorNotice className="m-3" message={i18nT('commandCenter.workers_error')} askAgent />}>
+                  <CrewWorkersTab slot={slot ?? null} active={!panelHidden} onAct={onComposerInsert} />
+                </ErrorBoundary>
+              </div>
+            )
+          }
+          // The pinned Files tab renders the file-browser home directly — it
+          // is not one of ActivityViewer's multiplexed session views.
+          if (t.kind === 'files') {
+            // A remote session's files live in its guest workspace, not in the
+            // gateway project the local browser reads.
+            if (remoteEnvironment) {
+              if (!isActive) return null
+              return (
+                <div key={t.id} className="absolute inset-0">
+                  <Suspense fallback={null}>
+                    <RemoteFilesPanel
+                      slot={slot}
+                      name={remoteEnvironment.name}
+                      workdir={remoteEnvironment.workdir}
+                      onOpenTerminal={terminalEnabled && !isWithheld('terminal') ? openProjectTerminal : undefined}
+                    />
+                  </Suspense>
+                </div>
+              )
+            }
+            // Kept mounted while another tab is selected, as a hidden panel keeps
+            // it: unmounting drops the tree's scroll position, which the user then
+            // has to find again. `active` pauses its polling while it is not shown.
+            return (
+              <div key={t.id} className="absolute inset-0" hidden={!isActive}>
+                <FilesHomePanel
+                  active={isActive && !panelHidden}
+                  projectDir={projectDir ?? ''}
+                  title={viewTitles?.files}
+                  // A diff open from the Changed segment opens the working-tree
+                  // diff as its OWN tab (coexisting with any plain file tab for
+                  // the same path, #9695) when the host supplies the opener;
+                  // otherwise it falls back to flipping the file tab into diff
+                  // mode, the pre-#9695 behaviour.
+                  onFileOpen={(abs, diff, opts) => {
+                    if (diff && onOpenWorkingTreeDiff) { onOpenWorkingTreeDiff(abs); return }
+                    onFileOpen?.(abs, { diffMode: diff, line: opts?.line })
+                  }}
+                  onAddToContext={onAddToContext}
+                  // Withheld, not disabled, when the terminal feature is off or
+                  // the host withdraws the terminal view — the same withdrawal
+                  // that removes Terminal from the + menu must remove its
+                  // per-project shortcut, or the button promises a shell this
+                  // panel will not open.
+                  onOpenTerminal={terminalEnabled && !isWithheld('terminal') ? openProjectTerminal : undefined}
+                  onOpenFolder={p => openFolder(p, t.slot ?? null)}
+                  onExternalTerminalFailed={setExternalTerminalNote}
+                />
+              </div>
+            )
+          }
+          if (VIEW_KINDS.has(t.kind)) {
+            // A panel kept mounted but hidden (a Dynamic Dashboard or app tab holds it)
+            // must not keep these bodies polling: they unmount as a closed panel's did.
+            if (!isActive || panelHidden) return null
+            return (
+              <div key={t.id} className="absolute inset-0">
+                <ActivityViewer
+                  view={t.kind as 'changes' | 'issues' | 'links' | 'artifacts' | 'subagents' | 'workflows' | 'logs' | 'crewlog' | 'context' | 'side' | 'git' | 'summary' | 'pins'}
+                  open onToggle={() => { void closePanel() }} slot={slot}
+                  subagents={subagents} toolLog={toolLog}
+                  sources={sources}
+                  selectedSourceUrl={selectedSourceUrl}
+                  onSelectSource={onSelectSource}
+                  onReconcileSource={onReconcileSource}
+                  issues={issues}
+                  selectedIssueUrl={selectedIssueUrl}
+                  onSelectIssue={onSelectIssue}
+                  onReconcileIssue={onReconcileIssue}
+                  onAddToChat={onAddSourceToChat}
+                  // Of the pinned tabs, only Artifacts and Changes reach this
+                  // component — Files short-circuits to FilesHomePanel above.
+                  // Changes renders the session's pull-request sources; Artifacts
+                  // opens document rows as file tabs via onFileOpen and artifact
+                  // rows as artifact tabs via onArtifactOpen.
+                  onFileOpen={onFileOpen}
+                  onArtifactOpen={onArtifactOpen}
+                  pins={pins} pinsLoading={pinsLoading} onJumpToPin={onJumpToPin} onUnpin={onUnpin}
+                  slotTitle={slotTitle} chatMode={chatMode}
+                  remoteEnvironmentName={remoteEnvironment?.name}
+                  navLinks={navLinks} navResolving={navResolving}
+                />
+              </div>
+            )
+          }
+          // Terminal + documents: keep mounted, toggle visibility.
+          return (
+            <div key={t.id} className="absolute inset-0" style={{ display: isActive ? 'block' : 'none' }}>
+              <TabBody
+                // Visible to the user means BOTH: this tab is the selected one
+                // AND the panel itself is on screen. A hidden panel still has a
+                // selected tab, so selection alone would let a closed panel's
+                // editor answer Escape and Cmd+S.
+                tab={t} active={isActive && !panelHidden}
+                slot={slot}
+                onClose={() => handleCloseTab(t.id)}
+                onPanelHandle={registerPanelHandle}
+                onContentChange={(c) => patchTab(t.id, { content: c })}
+                onDiskContent={(c, binary, partial) => patchTab(t.id, { content: c, savedContent: c, ...(binary === undefined ? {} : { binary }), ...(partial === undefined ? {} : { partial }) })}
+                onDiffModeChange={(diffMode) => patchTab(t.id, { diffMode })}
+                onRevealConsumed={() => patchTab(t.id, { revealLine: undefined })}
+                onPathChange={(p) => patchTab(t.id, { path: p, title: pathBasename(stripTrailingSeparators(p)) || p })}
+                onFileSave={onFileSave}
+                onFileOpen={onFileOpen}
+                // A folder opened from a file tab keeps that tab's origin chat.
+                onFolderOpen={(p) => openFolder(p, t.slot ?? null)}
+                onAddToContext={onAddToContext}
+                projectDir={projectDir}
+                onSubmitComments={onSubmitComments}
+                connected={connected}
+                onTerminalSendToChat={onAddSourceToChat}
+                diffLineNumbers={diffLineNumbers}
+                setDiffLineNumbers={setDiffLineNumbers}
+                diffSideBySide={diffSideBySide}
+                setDiffSideBySide={setDiffSideBySide}
+              />
+            </div>
+          )
+          }
 
   return (
     <SidePanelDockHost value={canDockBottom}>
     <div
       ref={rootRef}
       data-testid="side-panel-root"
-      className={`shrink-0 flex flex-col bg-bg overflow-hidden relative ${isBottom ? 'min-w-0 w-full border-t border-border' : 'min-h-0 mt-0 mb-2 border-l border-t border-b border-border rounded-l-xl'}`}
+      className={`shrink-0 flex flex-col bg-bg overflow-hidden relative ${isBottom ? 'min-w-0 w-full border-t border-border' : isLeft ? 'min-h-0 mt-0 mb-2 border-r border-t border-b border-border rounded-r-xl' : 'min-h-0 mt-0 mb-2 border-l border-t border-b border-border rounded-l-xl'}`}
       style={isBottom
         ? { height: effectiveHeight, maxHeight: '85vh', width: '100%', ...dimTransition }
         : { width: effectiveWidth, maxWidth: '100vw', ...dimTransition }}
@@ -632,9 +834,9 @@ export default function SidePanel({
           <div className="absolute left-0 right-0 top-0 h-[2px] transition-colors duration-200 bg-transparent group-hover/drag:bg-accent resize-accent" />
         </div>
       ) : fillWidth == null ? (
-        /* Left-edge resize handle */
-        <div role="separator" aria-orientation="vertical" aria-label={i18nT('pages.chat.sidePanel.resize_panel')} className="absolute left-0 top-0 bottom-0 w-[6px] cursor-col-resize z-30 group/drag" style={{ touchAction: 'none' }} {...panelResize}>
-          <div className="absolute left-0 top-0 bottom-0 w-[2px] transition-colors duration-200 bg-transparent group-hover/drag:bg-accent resize-accent" />
+        /* Inner-edge resize handle: left edge on the right dock, right edge on the left dock */
+        <div role="separator" aria-orientation="vertical" aria-label={i18nT('pages.chat.sidePanel.resize_panel')} className={`absolute ${isLeft ? 'right-0' : 'left-0'} top-0 bottom-0 w-[6px] cursor-col-resize z-30 group/drag`} style={{ touchAction: 'none' }} {...panelResize}>
+          <div className={`absolute ${isLeft ? 'right-0' : 'left-0'} top-0 bottom-0 w-[2px] transition-colors duration-200 bg-transparent group-hover/drag:bg-accent resize-accent`} />
         </div>
       ) : null}
       {/* Tab strip — the row scrolls by touch/wheel; a chip is reordered by
@@ -877,6 +1079,15 @@ export default function SidePanel({
               </button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" sideOffset={6} className="min-w-[200px]">
+              {!isBottom && (
+                <DropdownMenuItem
+                  className="gap-2.5 py-2"
+                  onSelect={() => setDock(isLeft ? 'right' : 'left')}
+                >
+                  <span className="text-muted shrink-0">{isLeft ? <PanelRight size={16} /> : <PanelLeft size={16} />}</span>
+                  <span className="flex-1">{isLeft ? i18nT('pages.chat.sidePanel.dock_right') : i18nT('pages.chat.sidePanel.dock_left')}</span>
+                </DropdownMenuItem>
+              )}
               <DropdownMenuItem
                 className="gap-2.5 py-2"
                 onSelect={() => setDock(isBottom ? 'right' : 'bottom')}
@@ -1020,207 +1231,7 @@ export default function SidePanel({
             and hidden. A withdrawal can be temporary (the Members page withholds
             every slot view for the moment its thread POST is in flight), and
             unmounting a live browser for that moment would destroy its page. */}
-        {tabs.map(t => {
-          const isActive = t.id === activeId
-          // Category views mount only while active (VIEW_KINDS below): they hold
-          // no editable buffer, so unmounting an inactive one loses nothing, and
-          // it keeps exactly one panel-level Escape handler live at a time. Files
-          // and Command Center are kept mounted instead, each for its own reason.
-          // App tabs render from `allAppTabs` below (one stable key for every slot);
-          // rendering them here too would mount the same body twice. Both
-          // body-owning kinds skip: an MCP frame's iframe and an app-contributed
-          // tab's `AppHost` are equally destroyed by a key change on chat switch.
-          if (t.kind === 'app' || isPanelTabKind(t.kind)) return null
-          // Keep the authored document and per-question drafts alive on tab switches.
-          if (t.kind === 'command-center') return (
-            <div key={`${t.id}:${slot}`} className="absolute inset-0" hidden={!isActive}>
-              {/* Local boundary: the panel is a lazy chunk, and a chunk that fails
-                  to load after main.tsx's preload-reload heal declined would
-                  otherwise reject up to the ROUTE boundary and replace the whole
-                  chat page with an error card. The fallback is the shared error
-                  surface, not nothing, so the tab says why it is empty. */}
-              {/* No hand-off: the adjacent chat composer holds unsent text and the
-                  panel's own answer drafts live in this tab. */}
-              <ErrorBoundary scope="command-center" fallback={<ErrorNotice className="m-3" message={i18nT('commandCenter.panel_load_failed')} />}>
-                <Suspense fallback={null}><CommandCenterPanel slot={slot ?? null} active={isActive && !panelHidden} onAct={onComposerInsert} /></Suspense>
-              </ErrorBoundary>
-            </div>
-          )
-          if (remoteEnvironment === undefined && (
-            t.kind === 'files' || t.kind === 'git' || t.kind === 'terminal'
-            || t.kind === 'file' || t.kind === 'diff' || t.kind === 'wtdiff' || t.kind === 'folder'
-          )) {
-            if (!isActive) return null
-            return (
-              <div key={t.id} className="absolute inset-0 p-4">
-                {/* No hand-off: the chat composer and open files may hold unsaved drafts. */}
-                {environmentError && slot
-                  ? <EnvironmentPlacementError slot={slot} />
-                  : <ContentSkeleton rows={8} />}
-              </div>
-            )
-          }
-          // A remote chat's files live in its workspace. These tabs read and write
-          // the GATEWAY's copy, so a remote chat gets a pointer to its Files tab
-          // instead; the tab and any draft it holds stay, unrendered. The Git tab
-          // is not one of them: ActivityViewer gives a remote chat the guest's
-          // Git view (RemoteGitPanel), never the gateway checkout.
-          if (remoteEnvironment && (
-            t.kind === 'file' || t.kind === 'diff' || t.kind === 'wtdiff' || t.kind === 'folder'
-          )) {
-            if (!isActive) return null
-            return (
-              <div key={t.id} className="absolute inset-0 p-4">
-                <p role="status" data-testid="remote-gateway-tab-withheld" className="text-[13px] text-muted">
-                  {i18nT('sessionEnvironments.gatewayTabWithheld', { name: remoteEnvironment.name })}
-                </p>
-              </div>
-            )
-          }
-          // A terminal opened on THIS machine before the chat was bound keeps its
-          // gateway shell; once the chat is confirmed remote it is no longer
-          // typed into here (a command meant for the workspace would run on the
-          // gateway). The tab stays so the user can close it.
-          if (remoteEnvironment && t.kind === 'terminal' && !t.remoteSlot) {
-            if (!isActive) return null
-            return (
-              <div key={t.id} className="absolute inset-0 p-4">
-                <p role="status" data-testid="remote-gateway-terminal-withheld" className="text-[13px] text-muted">
-                  {i18nT('sessionEnvironments.gatewayTerminalWithheld', { name: remoteEnvironment.name })}
-                </p>
-              </div>
-            )
-          }
-          // A Crew Mode root's workers, for the root and for each worker on screen.
-          if (t.kind === 'workers') {
-            if (!isActive) return null
-            return (
-              <div key={`${t.id}:${slot}`} className="absolute inset-0">
-                <ErrorBoundary scope="crew-workers" fallback={<ErrorNotice className="m-3" message={i18nT('commandCenter.workers_error')} askAgent />}>
-                  <CrewWorkersTab slot={slot ?? null} active={!panelHidden} onAct={onComposerInsert} />
-                </ErrorBoundary>
-              </div>
-            )
-          }
-          // The pinned Files tab renders the file-browser home directly — it
-          // is not one of ActivityViewer's multiplexed session views.
-          if (t.kind === 'files') {
-            // A remote session's files live in its guest workspace, not in the
-            // gateway project the local browser reads.
-            if (remoteEnvironment) {
-              if (!isActive) return null
-              return (
-                <div key={t.id} className="absolute inset-0">
-                  <Suspense fallback={null}>
-                    <RemoteFilesPanel
-                      slot={slot}
-                      name={remoteEnvironment.name}
-                      workdir={remoteEnvironment.workdir}
-                      onOpenTerminal={terminalEnabled && !isWithheld('terminal') ? openProjectTerminal : undefined}
-                    />
-                  </Suspense>
-                </div>
-              )
-            }
-            // Kept mounted while another tab is selected, as a hidden panel keeps
-            // it: unmounting drops the tree's scroll position, which the user then
-            // has to find again. `active` pauses its polling while it is not shown.
-            return (
-              <div key={t.id} className="absolute inset-0" hidden={!isActive}>
-                <FilesHomePanel
-                  active={isActive && !panelHidden}
-                  projectDir={projectDir ?? ''}
-                  title={viewTitles?.files}
-                  // A diff open from the Changed segment opens the working-tree
-                  // diff as its OWN tab (coexisting with any plain file tab for
-                  // the same path, #9695) when the host supplies the opener;
-                  // otherwise it falls back to flipping the file tab into diff
-                  // mode, the pre-#9695 behaviour.
-                  onFileOpen={(abs, diff, opts) => {
-                    if (diff && onOpenWorkingTreeDiff) { onOpenWorkingTreeDiff(abs); return }
-                    onFileOpen?.(abs, { diffMode: diff, line: opts?.line })
-                  }}
-                  onAddToContext={onAddToContext}
-                  // Withheld, not disabled, when the terminal feature is off or
-                  // the host withdraws the terminal view — the same withdrawal
-                  // that removes Terminal from the + menu must remove its
-                  // per-project shortcut, or the button promises a shell this
-                  // panel will not open.
-                  onOpenTerminal={terminalEnabled && !isWithheld('terminal') ? openProjectTerminal : undefined}
-                  onOpenFolder={p => openFolder(p, t.slot ?? null)}
-                  onExternalTerminalFailed={setExternalTerminalNote}
-                />
-              </div>
-            )
-          }
-          if (VIEW_KINDS.has(t.kind)) {
-            // A panel kept mounted but hidden (a Dynamic Dashboard or app tab holds it)
-            // must not keep these bodies polling: they unmount as a closed panel's did.
-            if (!isActive || panelHidden) return null
-            return (
-              <div key={t.id} className="absolute inset-0">
-                <ActivityViewer
-                  view={t.kind as 'changes' | 'issues' | 'links' | 'artifacts' | 'subagents' | 'workflows' | 'logs' | 'crewlog' | 'context' | 'side' | 'git' | 'summary' | 'pins'}
-                  open onToggle={() => { void closePanel() }} slot={slot}
-                  subagents={subagents} toolLog={toolLog}
-                  sources={sources}
-                  selectedSourceUrl={selectedSourceUrl}
-                  onSelectSource={onSelectSource}
-                  onReconcileSource={onReconcileSource}
-                  issues={issues}
-                  selectedIssueUrl={selectedIssueUrl}
-                  onSelectIssue={onSelectIssue}
-                  onReconcileIssue={onReconcileIssue}
-                  onAddToChat={onAddSourceToChat}
-                  // Of the pinned tabs, only Artifacts and Changes reach this
-                  // component — Files short-circuits to FilesHomePanel above.
-                  // Changes renders the session's pull-request sources; Artifacts
-                  // opens document rows as file tabs via onFileOpen and artifact
-                  // rows as artifact tabs via onArtifactOpen.
-                  onFileOpen={onFileOpen}
-                  onArtifactOpen={onArtifactOpen}
-                  pins={pins} pinsLoading={pinsLoading} onJumpToPin={onJumpToPin} onUnpin={onUnpin}
-                  slotTitle={slotTitle} chatMode={chatMode}
-                  remoteEnvironmentName={remoteEnvironment?.name}
-                  navLinks={navLinks} navResolving={navResolving}
-                />
-              </div>
-            )
-          }
-          // Terminal + documents: keep mounted, toggle visibility.
-          return (
-            <div key={t.id} className="absolute inset-0" style={{ display: isActive ? 'block' : 'none' }}>
-              <TabBody
-                // Visible to the user means BOTH: this tab is the selected one
-                // AND the panel itself is on screen. A hidden panel still has a
-                // selected tab, so selection alone would let a closed panel's
-                // editor answer Escape and Cmd+S.
-                tab={t} active={isActive && !panelHidden}
-                slot={slot}
-                onClose={() => handleCloseTab(t.id)}
-                onPanelHandle={registerPanelHandle}
-                onContentChange={(c) => patchTab(t.id, { content: c })}
-                onDiskContent={(c, binary, partial) => patchTab(t.id, { content: c, savedContent: c, ...(binary === undefined ? {} : { binary }), ...(partial === undefined ? {} : { partial }) })}
-                onDiffModeChange={(diffMode) => patchTab(t.id, { diffMode })}
-                onRevealConsumed={() => patchTab(t.id, { revealLine: undefined })}
-                onPathChange={(p) => patchTab(t.id, { path: p, title: pathBasename(stripTrailingSeparators(p)) || p })}
-                onFileSave={onFileSave}
-                onFileOpen={onFileOpen}
-                // A folder opened from a file tab keeps that tab's origin chat.
-                onFolderOpen={(p) => openFolder(p, t.slot ?? null)}
-                onAddToContext={onAddToContext}
-                projectDir={projectDir}
-                onSubmitComments={onSubmitComments}
-                connected={connected}
-                onTerminalSendToChat={onAddSourceToChat}
-                diffLineNumbers={diffLineNumbers}
-                setDiffLineNumbers={setDiffLineNumbers}
-                diffSideBySide={diffSideBySide}
-                setDiffSideBySide={setDiffSideBySide}
-              />
-            </div>
-          )
-        })}
+        {tabs.map(renderTabBody)}
         {/* Every body-owning tab — MCP App frames and app-contributed tabs — from
             every chat slot, in ONE list keyed by slot + the tab's own id. Only the
             tab that is active in the CURRENT slot is shown; the rest stay mounted and

@@ -130,7 +130,7 @@ export interface SidePanelDockMotion {
  * cross axis keeps it under the animation's control at exactly the 100% its
  * class already asks for, so no axis is ever un-targeted and none can be frozen.
  */
-export function sidePanelDockMotion(dock: 'right' | 'bottom'): SidePanelDockMotion {
+export function sidePanelDockMotion(dock: 'right' | 'bottom' | 'left'): SidePanelDockMotion {
   return dock === 'bottom'
     ? {
       initial: { height: 0, width: '100%', opacity: 0 },

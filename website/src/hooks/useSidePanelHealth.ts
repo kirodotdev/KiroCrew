@@ -47,7 +47,7 @@ export function useSidePanelHealth({ enabled, activeSlot, dock, slot, chatPane, 
   /** Desktop, not embedded, the store has the panel open, the find pane is closed. */
   enabled: boolean
   activeSlot: string | null
-  dock: 'right' | 'bottom'
+  dock: 'right' | 'bottom' | 'left'
   slot: HTMLElement | null
   chatPane: () => Element | null
   deskSlide: boolean

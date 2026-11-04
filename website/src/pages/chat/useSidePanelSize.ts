@@ -176,6 +176,10 @@ export function useSidePanelSize({ slot, slotOwner, persistSlot, defaultWidth, e
   // Bottom dock only applies on desktop; mobile always renders as the
   // full-width inline panel regardless of the stored preference.
   const isBottom = canDockBottom && dock === 'bottom' && !isMobile
+  // Left dock: the panel sits between the nav rail and the chat, so its
+  // resize handle is on its RIGHT edge and dragging right widens.
+  const isLeft = canDockBottom && dock === 'left' && !isMobile
+  const isLeftRef = useRef(isLeft); isLeftRef.current = isLeft
   // The ceiling is what the ROW actually leaves for the panel: the live nav
   // rail track (0 / 74 / 236 -- it collapses, so a static budget at its expanded
   // width wasted up to 236px), the chat pane's minimum, and whatever sibling
@@ -308,7 +312,7 @@ export function useSidePanelSize({ slot, slotOwner, persistSlot, defaultWidth, e
       // fraction on top of it. A 70% cap sat well under that reserve on wide
       // windows and read as an arbitrary stop.
       const max = window.innerWidth - reserveW
-      const w = Math.max(MIN_W, Math.min(startWRef.current - dx, max))
+      const w = Math.max(MIN_W, Math.min(startWRef.current + (isLeftRef.current ? dx : -dx), max))
       dragWRef.current = w
       setWidth(w)
     },
@@ -377,7 +381,7 @@ export function useSidePanelSize({ slot, slotOwner, persistSlot, defaultWidth, e
   easingRef.current = dimTransition !== undefined
   effectiveRef.current = { width: effectiveWidth, height: effectiveHeight }
   return {
-    rootRef, isMobile, isBottom, setDock, effectiveWidth, effectiveHeight, dimTransition,
+    rootRef, isMobile, isBottom, isLeft, setDock, effectiveWidth, effectiveHeight, dimTransition,
     resizing, slotSwitched, dimAnimating, panelResize, panelResizeV,
   }
 }

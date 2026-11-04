@@ -9,15 +9,17 @@ import { safeSetItem } from '../utils/safeStorage'
  * open/close animation wrapper, and SidePanel owns its own chrome + resize —
  * all three must flip together the instant the user toggles the dock.
  */
-export type SidePanelDock = 'right' | 'bottom'
+export type SidePanelDock = 'right' | 'bottom' | 'left'
 
 const KEY = 'mc-side-panel-dock'
 
 let current: SidePanelDock = (() => {
   try {
-    return localStorage.getItem(KEY) === 'bottom' ? 'bottom' : 'right'
+    const stored = localStorage.getItem(KEY)
+    // Built-in default: 'left' (between the sessions list and the chat).
+    return stored === 'bottom' || stored === 'right' ? stored : 'left'
   } catch {
-    return 'right'
+    return 'left'
   }
 })()
 
