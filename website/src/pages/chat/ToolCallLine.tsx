@@ -1,4 +1,4 @@
-import { lazy, memo, Suspense, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { lazy, memo, Suspense, useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { shallowEqual } from 'react-redux'
 import { useAppSelector, useAppDispatch, type RootState } from '../../store'
 import { clearFocusToolCallId, mcpAppKey } from '../../store/chatSlice'
@@ -24,6 +24,8 @@ import { countDiffStats } from '../../utils/diffLineCounts'
 import { isWaitToolTitle } from '../../utils/waitToolTitle'
 import { isSafePath } from '../../utils/safePath'
 import { usePathKind } from '../../hooks/usePathKind'
+import { ChatProjectDirCtx } from '../../components/markdown/contexts'
+import { joinProjectRelative } from '../../components/markdown/pathReferences'
 import McpAppFrame from '../../components/McpAppFrame'
 import DiffBlock, { extractFilePath as extractDiffHeaderPath } from '../../components/DiffBlock'
 import { presentToolDiff } from './toolDiff'
@@ -841,7 +843,16 @@ function ToolCallLineBody({ message, running: _running, slot, onFileOpen, disclo
       : diffView?.mode === 'summary'
         ? { ...diffView, opensCard: false }
         : null
-  const probeEnabled = !!filePath && isSafePath(filePath) && !!onFileOpen
+  // What the Open pill probes and opens: a relative tool path joined to the
+  // transcript's project, the same rule the chips and diff headers follow, so
+  // it is never resolved against the gateway's own directory. The context,
+  // not the slot row's `projectDir`: the host provides it only for a chat
+  // confirmed to run on this machine (`useChatProjectDir`), and a remote
+  // chat's project names a folder on another machine. `filePath` stays as
+  // written for the label.
+  const transcriptProjectDir = useContext(ChatProjectDirCtx)
+  const openPath = filePath ? joinProjectRelative(filePath, transcriptProjectDir) : null
+  const probeEnabled = !!openPath && isSafePath(openPath) && !!onFileOpen
   // The existence probe shares the transcript-wide cache and batch the markdown
   // chips and diff headers use, so a file a chip already resolved costs no
   // request and N pills for one path ask once.
@@ -852,7 +863,7 @@ function ToolCallLineBody({ message, running: _running, slot, onFileOpen, disclo
   // being there, and a failed-probe notice on every tool row would be noise
   // about a link nobody clicked. Opening the file itself reports its own
   // failure when pressed.
-  const fileExists = usePathKind(probeEnabled ? filePath : null) === 'file'
+  const fileExists = usePathKind(probeEnabled ? openPath : null) === 'file'
   const showFileOpen = probeEnabled && fileExists
 
   const Icon = isDone
@@ -1262,13 +1273,13 @@ function ToolCallLineBody({ message, running: _running, slot, onFileOpen, disclo
           both sides of its guess. The wrapper's row gap is therefore 0 and this
           margin is the whole separation: 8px on an unwrapped row, where it was
           the wrapper's 4px before. */}
-      {showFileOpen && filePath && (
+      {showFileOpen && openPath && (
         <button
           className="pi-morph shrink-0 inline-flex items-center gap-1 ms-2 px-1.5 py-0.5 rounded font-mono text-[12px] leading-5 bg-bg-hover text-muted hover:text-accent hover:bg-accent/10 cursor-pointer transition-colors focus-ring-accent"
           style={{ marginTop: '1px' }}
-          onClick={(e) => { e.stopPropagation(); onFileOpen!(filePath) }}
-          title={i18nT('pages.chat.toolCallLine.open_in_side_panel', { path: filePath })}
-          aria-label={i18nT('pages.chat.toolCallLine.open_in_side_panel', { path: filePath })}
+          onClick={(e) => { e.stopPropagation(); onFileOpen!(openPath) }}
+          title={i18nT('pages.chat.toolCallLine.open_in_side_panel', { path: openPath })}
+          aria-label={i18nT('pages.chat.toolCallLine.open_in_side_panel', { path: openPath })}
         >
           <span className="max-w-[240px] truncate">{basename}</span>
           <SidePanelGlyph size={12} className="shrink-0" />
