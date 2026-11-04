@@ -10093,7 +10093,7 @@
       "chatPanel": {
         "about_you": "About You",
         "advanced": "Advanced",
-        "agent_model_pin_overrides_default": "New chats on the <agent/> agent use its own pinned model <model/>, not this setting. You can pin a model again later from the chat model picker.",
+        "agent_model_pin_overrides_default": "The <agent/> agent pins its own model <model/>. Only chats running as this agent without their own model choice use that pin. The New chat button does not. You can pin a model again later from the chat model picker.",
         "agent_template_pin_overrides_default": "New chats on the <agent/> agent use <model/>, which comes from its agent template or the backend default, not this setting. This agent does not pin a model itself, so there is nothing to clear here. To choose one, open the chat model picker and pin a model to this agent.",
         "discovery": "Discovery",
         "rail_label": "Chat settings",
