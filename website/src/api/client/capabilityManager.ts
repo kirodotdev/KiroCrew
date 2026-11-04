@@ -6,6 +6,34 @@
 
 import type { ClientTransport } from './transport'
 
+/** One thing a marketplace install would place: the listing itself, a bundled component or a dependency. */
+export interface MarketPlanItem {
+  ref: string
+  kind: string
+  semver: string
+  sha256: string
+  publisher: { kind: string; display: string }
+  reason: string
+  requiredBy: string[]
+  target: string
+  action: string
+}
+
+/** What installing a listing would place, and the union of what it may do. */
+export interface MarketPlan {
+  installable: boolean
+  refusal: { code: string; message: string } | null
+  items: MarketPlanItem[]
+  permissions: {
+    commands: string[][]
+    network: string[] | 'none' | 'any'
+    files: string[]
+    secrets: string[]
+  }
+  conflicts: string[]
+  planDigest: string
+}
+
 export function createCapabilityManagerEndpoints({ post, j, jfetch: fetch }: ClientTransport) {
   const catalog = {
     // Graceful no-ops on a public install, where AIM is stubbed; the panels
@@ -25,6 +53,12 @@ export function createCapabilityManagerEndpoints({ post, j, jfetch: fetch }: Cli
     capabilityPluginsList: () => fetch('/api/capability/plugins').then(j),
     capabilityPluginsSync: () => post('/api/capability/plugins/sync', {}).then(j),
     capabilityMcpRegistry: () => fetch('/api/capability/mcp/registry').then(j),
+    // Marketplace listings, installed by the edition's own installer. `plan` writes
+    // nothing; `apply` installs only the plan whose digest the user confirmed.
+    capabilityMarketStatus: (): Promise<{ available: boolean }> => fetch('/api/capability/market').then(j),
+    capabilityMarketPlan: (ref: string): Promise<MarketPlan> => post('/api/capability/market/plan', { ref }).then(j),
+    capabilityMarketApply: (ref: string, planDigest: string) =>
+      post('/api/capability/market/apply', { ref, plan_digest: planDigest }).then(j),
   }
 
   return { catalog }
