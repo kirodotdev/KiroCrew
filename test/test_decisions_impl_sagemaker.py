@@ -531,6 +531,16 @@ def test_through_the_gate_a_granted_screenshot_reaches_sagemaker(sagemaker_gate)
     assert impl_sagemaker.needs_images_opt_in(sagemaker_gate.sent[0])
 
 
+def test_through_the_gate_an_unrecorded_screenshot_choice_sends_no_image_to_sagemaker(
+    sagemaker_gate,
+):
+    # A consent given while this provider was text-only carries no screenshot
+    # choice. For a sagemaker:// endpoint that reads as NO: the owner turns it on.
+    sagemaker_gate.write()
+    assert _gate_decide(images={"a": ImageAsset(PNG)}, scopes=("browser_images",)) is None
+    assert sagemaker_gate.sent == []
+
+
 @pytest.mark.parametrize(
     ("granted", "scopes"),
     [(False, ("browser_images",)), (True, ())],
