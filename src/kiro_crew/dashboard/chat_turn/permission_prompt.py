@@ -90,6 +90,13 @@ async def _on_permission_prompt(
     state = turn.state
     # Auto-reject remaining tools after one rejection in a batch
     if getattr(slot, "_batch_rejected", False):
+        _cascade_offer = getattr(turn, "_deny_override", None)
+        if _cascade_offer is not None:
+            # A deny-rules refusal that would have had an override card: the batch
+            # cascade shows no card, and the agent reads the rule's own refusal,
+            # never the cascade's "User denied" (rfc-deny-session-override.md).
+            await _refuse_overridden_call(turn, event, _cascade_offer.reason, why="batch_rejection")
+            return _Flow.CONTINUE
         _title = _redact_display_text(event.title)
         _cascade_cause = getattr(slot, "_batch_rejected_cause", "")
         # Audit FIRST, before any wire I/O for this decision (see

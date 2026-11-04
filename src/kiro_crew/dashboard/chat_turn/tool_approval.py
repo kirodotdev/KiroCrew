@@ -1478,7 +1478,9 @@ async def _refuse_overridden_call(turn: _ChatTurn, event: Any, reason: str, *, w
 
     Used when the card is declined, times out or gets any answer but an allow
     (*why* ``deny_override_declined``), and when an allowed call's second
-    judgement still denies on another rule (``deny_override_still_denied``). The
+    judgement still denies on another rule (``deny_override_still_denied``), and
+    when an earlier rejection in the batch cascades over it before any card is
+    shown (``batch_rejection``). The
     agent reads the rule's refusal, as it does for a refusal no card was offered
     for, rather than kiro-cli's "User denied tool execution".
     """
