@@ -7052,16 +7052,20 @@ consecutive cycles all ending in
 `session/new timed out after 90s (0/10 MCP server(s) reported)`, stopped only by
 `max_cycles` running out. Evidence-driven like the approval stall, through the
 same shape: `notify_cycle_start_failed(slot_key)` — called from `chat_runner`'s
-terminal-error branch when the failure carries the `session_start_failed` tag
-(set at the ACP session-start timeout raise sites on both exception families, and
-on the oversize-reply arm; a runtime that DIES during the start raises an untagged
-`AcpRuntimeDead`, so a death advances no loop's streak, the starting loop's or a
-sibling's) AND
-the turn was this loop's own `_directive_self_wake` cycle or a recovery that cycle
-queued for itself (see below) — raises the persisted
+terminal-error branches and process-death recovery arm when the failure carries
+the `session_start_failed` tag (set at the ACP session-start failure raise sites
+on both exception families) AND the turn was this loop's own
+`_directive_self_wake` cycle or a recovery that cycle queued for itself (see
+below) — raises the persisted
 `consecutive_start_failures`, and `notify_cycle_landed(slot_key)` zeroes it on
 ANY landed turn, a human's included, since a turn that completed proves the
-session can start. `_timer` reads the streak with the other terminal bounds: at
+session can start. A runtime death interrupts every pending request with one
+process-wide exception; `session/new` raises a tagged request-local copy, and
+non-auth provider translation preserves the tag on its process-death result.
+The process-death arm reports that tag only when its bounded recovery chain
+reaches a give-up verdict, so one failed cycle advances once; the loop whose own
+start was interrupted advances while a loop behind a non-start sibling request
+does not. `_timer` reads the streak with the other terminal bounds: at
 `_START_FAILURE_BACKOFF_AFTER` (3) the wake is DEFERRED with the standard
 `_REARM_BACKOFF_SECS` escalation capped by the loop's own `idle_secs`, so a
 briefly-loaded host slows the loop to a poll rather than having it add its own

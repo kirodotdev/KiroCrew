@@ -137,22 +137,17 @@ def _note_cycle_start_failure(slot_key: str, exc: BaseException, *, self_wake: b
     only that may spend its stand-down budget, or a human turn that happened to be
     starved on a slot that also carries a loop would stop one the human never drove.
 
-    Only a start that TIMED OUT or whose reply was dropped as oversize carries the
-    tag: the ``session/new`` and ``session/load`` arms in ``acp/runtime`` and the
-    dedicated client's awaited-request timeout set it, and nothing else does. A
-    shared runtime dying during a session start takes neither arm -- ``_mark_dead``
-    fails the pending request with an untagged ``AcpRuntimeDead``, and the
-    ``AcpProcessDied`` the provider translates it to is untagged too -- so a death
-    is charged to no loop's streak: not the loop whose start it interrupted, and
-    not a sibling loop on the same process. There is nothing to attribute, because
-    the tag that would be attributed is absent.
+    A shared-runtime death wakes every pending request with one untagged
+    ``AcpRuntimeDead``. ``session/new`` raises a tagged request-local copy, and
+    non-auth provider translation preserves the tag on its process-death result.
+    The loop whose own start was interrupted is therefore charged without
+    charging a loop behind a non-start sibling request on that process.
 
     The tag is read with ``getattr`` because the two ACP exception families carry
     it independently and share no base -- which is also why this is a helper
-    rather than one inline block: a session start on the shared runtime raises an
-    ``AcpRuntimeError`` subclass and lands in a different terminal branch from an
-    ``AcpError``, and a report present in only one of them misses whichever
-    population the other serves.
+    rather than one inline block: session-start failures land in either terminal
+    branch or the process-death recovery arm, and each population must report the
+    same fact.
 
     Best-effort: a monitoring convenience never changes how this turn's failure is
     reported.

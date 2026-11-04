@@ -77,6 +77,7 @@ if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_turn.recovery import (
         _count_turn_retry,
         _discard_unanswered_attempt,
+        _note_cycle_start_failure,
         _recovery_delay,
         _shared_dependency_delay,
     )
@@ -362,6 +363,11 @@ async def _on_process_died(turn: _ChatTurn, exc) -> None:
             payload=_requeue_payload,
         )
     elif _death_attempts > SESSION_RECOVERY_MAX_ATTEMPTS:
+        _note_cycle_start_failure(
+            slot.key,
+            exc,
+            self_wake=turn._wake_cycle is not None,
+        )
         # Two verdicts, because the user's next move differs. A session whose
         # OWN runtime keeps dying is stuck and a fresh chat is the fix; a
         # session riding a process that keeps being taken out from under it is
@@ -384,6 +390,11 @@ async def _on_process_died(turn: _ChatTurn, exc) -> None:
             )
             turn.died_notice = "chat_stopped_agent_restarting"
     else:
+        _note_cycle_start_failure(
+            slot.key,
+            exc,
+            self_wake=turn._wake_cycle is not None,
+        )
         slot.append(
             "error",
             gn.GATEWAY_CONNECTION_LOST_GIVE_UP_TEXT,
