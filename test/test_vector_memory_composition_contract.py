@@ -187,13 +187,9 @@ def _corpus_facade_patches() -> frozenset[str]:
 
 
 def _facade_seams() -> frozenset[str]:
-    """Facade bindings tests REBIND to change what the store does: the base seams plus
-    every name the test corpus rebinds on the facade.
+    """Facade names tests rebind: the base seams plus every name the corpus rebinds.
 
-    Runtime code reads each through ``kiro_crew.vector_memory`` at call time. Beyond
-    the base, the set is derived, not listed, so a test that starts patching another
-    facade name puts that name under the placement rules below instead of passing
-    silently against an owner's own binding.
+    Derived, not listed, so a newly patched facade name falls under the placement rules.
     """
     return _BASE_FACADE_SEAMS | _corpus_facade_patches()
 
@@ -665,16 +661,11 @@ class TestPlacement(
     def _bare_seam_loads(source: str) -> list[str]:
         """Seam reads inside a function that a patch of the facade would miss.
 
-        A runtime function reads a seam as ``vm.<name>`` (or binds a local from it).
-        Three spellings bypass that: a bare global ``np`` or ``_now_iso``, which is the
-        module's own binding; a function-local import of a seam, under its own name or
-        an alias (``import time``, ``from datetime import datetime as when``), which
-        reads the real object; and a seam read through a sibling owner module
-        (``_text_scoring._ROW_STEM_CACHE_SIZE``), which reads that owner's copy. Every
-        function counts, class methods and nested classes included;
-        the one allowed import is the facade itself (``from kiro_crew import
-        vector_memory``). Module-level code runs once, at import, and is out of
-        scope here.
+        Seams must be read as ``vm.<name>``. Flagged: a bare global ``np``/``_now_iso``, a
+        function-local import of a seam (``import time``, ``... as when``), and a read
+        through a sibling (``_text_scoring._ROW_STEM_CACHE_SIZE``). The facade import
+        (``from kiro_crew import vector_memory``) is allowed; module-level code is out
+        of scope.
         """
         seams = _facade_seams()
         tree = ast.parse(source)

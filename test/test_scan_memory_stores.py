@@ -1,31 +1,15 @@
 """``security.scan_memory`` audits every DECLARED memory store, attributed per store.
 
-A crew silo's directive tier is loaded into that crew's prompt, so it is the
-highest-value prompt-injection target on disk — and it is the one file an audit that
-opens ``config_dir()/"memory.db"`` and nothing else can never see. These tests pin the
-three properties that make the wider scan safe to ship:
+A silo's directive tier reaches its crew's prompt, so it is a prime injection target.
+Pinned: each finding names its store and silos never merge; an install with no named
+stores gets byte-identical output; one unreadable silo costs only its own findings.
 
-* a silo's row is reported WITH its store name, and two silos are never merged into one
-  undifferentiated list (that would put one crew's memory text in another crew's report);
-* an install with no named stores gets byte-identical output, dict shape and printed
-  line — the standing constraint that memory v2 must not change the global memory;
-* one unreadable silo costs that silo's findings and nothing else.
+A silo with no ``memory.db`` still has ``memory_stores/<name>/lessons.jsonl`` injected as
+``[Learned corrections]``, so ``TestLessonsTierIsScanned`` and later classes scan that tier.
 
-V1 has two audited tiers, and its JSONL lessons tier is the one a vector-only audit is
-blind to in the exact case that matters most. A silo-bound crew's lesson writes land in
-``memory_stores/<name>/lessons.jsonl`` precisely when that silo has no vector store
-(``_lesson_jsonl_store`` routes by BINDING, and ``get_lessons_for`` creates only the
-markdown directory), those rows are injected into that crew's prompt as
-``[Learned corrections]``, and ``_memory_stores_to_scan`` skips a store with no
-``memory.db`` — so the whole of a crew's populated, prompt-injected memory could sit
-behind a clean verdict. ``TestLessonsTierIsScanned`` and the classes after it pin that.
-
-The rows are planted through the PRODUCTION writer with the injection screen lifted for
-the write only. Every public writer screens this content — ``write_episodic`` drops it
-and logs a reject event — so a row like this reaches disk only out of band: a build
-predating the screen, a restored backup, a direct write to the file. Neutralizing the
-screen keeps the row's schema whatever the file's own lineage produces, where
-hand-rolled SQL would pin one lineage and break on the other.
+Rows are planted through the PRODUCTION writer with the injection screen lifted for the
+write only (such rows reach disk out of band, e.g. a restored backup), so the schema
+matches either lineage.
 """
 
 from __future__ import annotations
@@ -124,16 +108,9 @@ def default_only_home() -> None:
 def _plant(db_path: Path, text: str) -> None:
     """Write *text* as an episodic row into the store file at *db_path*.
 
-    The screen is lifted on ``vector_memory``'s copy of the predicate only;
-    ``security`` imports its own from ``vector_memory_constants``, so the code under
-    test still runs the real matcher.
-
-    ``mock.patch.object`` rather than ``monkeypatch`` + ``undo()``, and that is not a
-    style preference. ``monkeypatch`` is ONE function-scoped instance shared with every
-    fixture the test used, so ``undo()`` reverts the rootdir conftest's host isolation
-    too — ``KIROCREW_HOME`` and ``config.paths._resolved_home`` — and every path this
-    module resolves afterwards lands in the operator's REAL data home. A context
-    manager reverts only itself, so the lift cannot reach past this helper.
+    Only ``vector_memory``'s copy of the predicate is lifted; ``security`` keeps the real
+    matcher. ``mock.patch.object``, not ``monkeypatch.undo()``, which would also revert
+    the conftest's ``KIROCREW_HOME`` isolation and reach the REAL data home.
     """
     with mock.patch.object(vector_memory, "_contains_injection", lambda _text: False):
         db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -217,11 +194,8 @@ def test_current_metadata_is_audited_independently_of_clean_content(declared_hom
 def _lessons_path(store: str) -> Path:
     """*store*'s ``lessons.jsonl``, resolved the way the PRODUCTION writer resolves it.
 
-    ``LessonStore`` is what ``_lesson_jsonl_store`` and ``get_lessons_for`` hand a write
-    to, so composing the path here would let the test and the writer drift onto two
-    different files and still pass. The named-store arm uses the store's own directory
-    (``resolve_store_path(...).parent``, i.e. what ``ensure_memory_store_dir`` returns)
-    without creating it, so a test can assert the audit did not materialize a silo.
+    Via ``LessonStore``, so test and writer cannot drift apart. The named-store directory
+    is not created, so a test can assert the audit did not materialize a silo.
     """
     base = None if store == DEFAULT_MEMORY_STORE else resolve_store_path(store).parent
     return LessonStore(base_dir=base).path
@@ -252,7 +226,7 @@ def _lesson_row(rule: str, negative: str | None = None) -> dict:
 
 class TestNamedStoresAreScannedAndAttributed:
     def test_silo_row_is_reported_with_its_store_name(self, declared_home) -> None:
-        """The hole this closes: a row in a silo the old scan never opened."""
+        """A row in a silo, outside the global ``memory.db``, is found and attributed."""
         _plant(resolve_store_path(WORK), INJECTIONS[WORK])
 
         grouped = _by_store(security.scan_memory())

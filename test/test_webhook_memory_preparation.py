@@ -71,11 +71,8 @@ def _notified(state) -> str:
 async def _run(state) -> None:
     """Run the hook the way the route handler hands it to the runner.
 
-    The handler claims the session key and takes a permit from the process-wide
-    semaphore; the runner's ``finally`` gives both back. Calling the runner
-    without taking them would release a permit that was never taken, and the
-    semaphore is unbounded, so later tests that fill it to get a 429 would
-    find spare permits.
+    The runner's ``finally`` releases the session key and a semaphore permit, so both are
+    taken first; a spare permit would break later tests that fill it to get a 429.
     """
     from kiro_crew.dashboard.handlers import hooks
 

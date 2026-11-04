@@ -1,19 +1,8 @@
 """Read-volume counters on ``VectorMemoryStore`` — the read-volume observable.
 
-A semantic query builds a resident scoring set once per (generation,
-data_version) state and reuses it across identical calls, so the read volume of
-a query path is HTTP-observable rather than inferable only from a stopwatch: a
-SELECT moves neither ``data_version`` nor the WAL, and wall-clock timing is not
-admissible evidence. These tests pin the structural signal — the population
-scan is credited once per state change and a warm repeat adds none.
-
-``test_a_second_identical_semantic_search_reuses_the_resident_population`` is the
-ratchet that asserts that reuse, so a regression that reintroduces a per-call
-scan flips it.
-
-No embedder is wired here (``embed_fn`` stays None), so the semantic path scores
-keyword-only and the episodic path takes its stdlib rung — both still perform the
-population reads under test.
+A population scan is credited once per (generation, data_version) state and a warm repeat
+adds none; a SELECT moves neither ``data_version`` nor the WAL, so counters, not timing,
+are the evidence. ``embed_fn`` stays None, yet both paths still do the population reads.
 """
 
 from __future__ import annotations
@@ -92,11 +81,7 @@ class TestSemanticSurface:
     ) -> None:
         """The read-volume assertion, in the form a live pod can make.
 
-        Two identical searches with no write in between read the population
-        once: the first builds the resident scoring columns under a
-        (generation, data_version) token, and the second serves them without a
-        scan. This is the ratchet that pins the reuse, so a regression that
-        reintroduces a per-call scan flips it.
+        Two identical searches with no write in between read the population once.
         """
         store = _store(tmp_path, semantic=4, opened=opened)
         store.get_semantic_context(query_text="tea")
@@ -166,11 +151,8 @@ class TestEpisodicSurface:
     ) -> None:
         """Either episodic rung — resident build or per-call read — is credited.
 
-        The resident set pays the population read once per invalidation
-        and the per-call rung pays it once per search; both land on
-        ``episodic_full_scans``, so the counter reads the same on a numpy install
-        and a stock one, and the DIFFERENCE between them is exactly what the
-        cross-call comparison shows.
+        Both land on ``episodic_full_scans``, so the counter means the same with or
+        without numpy.
         """
         store = _store(tmp_path, opened=opened)
         for i in range(3):

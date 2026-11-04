@@ -1,10 +1,8 @@
-"""A member store written before member identities existed is repaired at start.
+"""A member store without member identities is repaired at start.
 
-The old layout: ``memory_stores.<name>`` with ``memory_version: 2`` and an
-``owner_member`` label but no ``owner_member_id``; the bound Crew Member with no
-``member_id``; ``member-memory.json`` beside a ``memory.db`` holding the crew
-tables and learned rows but no ``member_database`` row. Today's resolvers refuse
-that shape outright, so the upgrade is the only way such a member works again.
+Shape: ``memory_version: 2`` with ``owner_member`` but no ``owner_member_id``, a Crew
+Member with no ``member_id``, and a ``memory.db`` with no ``member_database`` row. The
+resolvers refuse it, so only the upgrade makes such a member work.
 """
 
 from __future__ import annotations
@@ -275,11 +273,8 @@ class TestTheUpgradeRepairsAnAttributableStore:
     def test_a_published_member_identity_resumes_instead_of_stranding(self) -> None:
         """The member's identity is published before the store record's.
 
-        An interruption between the two leaves the member holding an id the
-        store lacks. That is this store's own half-finished upgrade, so it must
-        complete rather than refuse: refusing strands the store for good, and
-        the remedy of blanking the member_id would put the two into
-        disagreement.
+        An interruption between the two is this store's own half-finished upgrade, so it
+        must complete; refusing would strand the store for good.
         """
         directory = _write_legacy_home("reviewer")
         database = directory / memory_stores.MEMORY_DB_FILE
