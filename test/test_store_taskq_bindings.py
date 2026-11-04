@@ -34,7 +34,6 @@ import hashlib
 import importlib
 import inspect
 import re
-import sys
 import traceback
 from pathlib import Path
 from types import ModuleType
@@ -48,6 +47,12 @@ from kiro_crew.taskq import store as store_module
 from kiro_crew.taskq.store import TaskStore, TaskStoreUnavailable
 
 pytestmark = pytest.mark.xdist_group(name="tree_scan_store_taskq_bindings")
+
+SHARED_BINDINGS_CHECKS = (
+    "the_member_set_is_the_frozen_inventory",
+    "the_kind_reader_tells_a_coroutine_from_a_function",
+    "each_owner_imports_only_owners_listed_before_it",
+)
 
 _FACADE = "kiro_crew.taskq.store"
 _PACKAGE = "kiro_crew.taskq"
@@ -228,17 +233,6 @@ def _members() -> dict[str, object]:
 # --------------------------------------------------------------------------- #
 # The member inventory and the binding.
 # --------------------------------------------------------------------------- #
-
-
-def test_the_kind_reader_tells_a_coroutine_from_a_function() -> None:
-    async def stand_in(self: object) -> None:
-        return None
-
-    assert (_kind(stand_in), _kind(lambda self: None)) == ("coroutine", "function")
-
-
-def test_the_member_set_is_the_frozen_inventory() -> None:
-    assert sorted(_members()) == sorted(_MEMBERS)
 
 
 @pytest.mark.parametrize("name", sorted(_MEMBERS))
@@ -454,19 +448,6 @@ def test_the_runtime_import_scan_can_fail() -> None:
 def test_no_owner_imports_the_facade_at_run_time(owner: str) -> None:
     found = _runtime_imports(_tree(importlib.import_module(owner)))
     assert sorted(name for name in found if name == _FACADE or name.startswith(_FACADE + ".")) == []
-
-
-def test_each_owner_imports_only_owners_listed_before_it() -> None:
-    owners = store_module._STORE_OWNERS
-    later = {
-        owner: sorted(
-            name
-            for name in _runtime_imports(_tree(sys.modules[owner]))
-            if name in owners and name not in owners[:i]
-        )
-        for i, owner in enumerate(owners)
-    }
-    assert later == {owner: [] for owner in owners}
 
 
 def _module_and_package(src: Path, path: Path) -> tuple[str, str]:
