@@ -316,6 +316,11 @@ def init_turns_fields(self: _ChatSlot) -> None:
     # In memory only, so a restart drops timed grants along with every other
     # grant on the slot.
     self._trusted_pattern_deadlines = {}
+    # Deny-rule refusal keys a person overrode "for this session" on the
+    # dashboard approval card (``kiro_crew.dashboard.deny_override``). In memory
+    # only, never persisted and never written to ``denied_commands.json``: it
+    # ends with this slot or a gateway restart.
+    self._deny_waivers = set()
     # Depth of the current unbroken Stop-hook continuation run: 0 on a normal
     # turn, incremented on each consecutive hook-continuation turn, reset by
     # any turn that is not a hook continuation. Surfaced to Stop hooks as

@@ -504,6 +504,18 @@ describe('useWebSocket frame router', () => {
     }
   })
 
+  it('retires only the row a frame names when the request id recurs', () => {
+    const dispatchSpy = vi.spyOn(testStore, 'dispatch')
+    const { ws } = mount()
+    act(() => {
+      ws.simulateMessage({ type: 'approval_resolved', data: { id: 'ap-mid', slot: ACTIVE, approved: true, mid: 'row-2' } })
+    })
+    expect(dispatchSpy).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'chat/resolveByApprovalId',
+      payload: expect.objectContaining({ id: 'ap-mid', slot: ACTIVE, mid: 'row-2' }),
+    }))
+  })
+
   it('resolves only the named slot when approval ids collide', () => {
     testStore.dispatch(setActiveSlot(BACKGROUND))
     globalStore.dispatch(setActiveSlot(BACKGROUND))

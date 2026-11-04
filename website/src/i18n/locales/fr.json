@@ -10988,6 +10988,45 @@
       "grant_entry_copy": "{{title}}: jusqu’à {{max}} caractères du texte que tu sélectionnes dans les réponses du chat, et un bouton Copier",
       "grant_entry_open": "{{title}}: jusqu’à {{max}} caractères du texte que tu sélectionnes dans les réponses du chat, et un bouton pour ouvrir un lien",
       "grant_entry_copy_open": "{{title}}: jusqu’à {{max}} caractères du texte que tu sélectionnes dans les réponses du chat, et des boutons Copier et Ouvrir"
+    },
+    "denyOverride": {
+      "family": {
+        "git_publish": "Cette règle de sécurité arrête les push qui pourraient arriver directement sur ta branche principale.",
+        "self_protection": "Cette règle de sécurité arrête les commandes qui pourraient prendre le contrôle de {{productName}} lui-même, par exemple l’arrêter, le redémarrer ou le mettre à jour.",
+        "sandbox_escape": "Cette règle de sécurité arrête les commandes qui pourraient contourner les limites dans lesquelles {{productName}} s’exécute.",
+        "credentials": "Cette règle de sécurité arrête les commandes qui pourraient lire ou envoyer tes mots de passe et clés d’accès.",
+        "file_upload": "Cette règle de sécurité arrête les commandes qui pourraient envoyer tes fichiers hors de cet ordinateur.",
+        "remote_control": "Cette règle de sécurité arrête les commandes qui pourraient laisser un autre ordinateur contrôler celui-ci.",
+        "cloud": "Cette règle de sécurité arrête les commandes qui pourraient supprimer ou modifier tes ressources cloud.",
+        "wipe": "Cette règle de sécurité arrête les commandes qui pourraient effacer des fichiers ou des disques entiers sur cet ordinateur.",
+        "permissions": "Cette règle de sécurité arrête les commandes qui changent qui peut ouvrir ou modifier les fichiers système.",
+        "discard_changes": "Cette règle de sécurité arrête les commandes qui jettent des modifications de code que tu n’as pas encore commitées.",
+        "download_run": "Cette règle de sécurité arrête les commandes qui téléchargent un script et l’exécutent tout de suite.",
+        "database": "Cette règle de sécurité arrête les commandes qui suppriment des tables de base de données ou toutes leurs lignes.",
+        "generic": "Une règle de sécurité a arrêté cette commande."
+      },
+      "not_run": "Elle n’a pas été exécutée.",
+      "command_label": "Commande en attente de ton choix",
+      "details": "Détails techniques",
+      "rule_label": "Règle : {{rule}}",
+      "override": "Choisir comment autoriser",
+      "allow_once": "Autoriser une fois — exécuter cette commande une seule fois",
+      "session": {
+        "git_publish": "Autoriser dans cette session : cette règle ne bloque plus les push qui pourraient arriver directement sur ta branche principale, jusqu’à ce que tu fermes ce chat (Options de session → Fermer la session) ou que {{productName}} redémarre",
+        "self_protection": "Autoriser dans cette session : cette règle ne bloque plus les commandes qui pourraient prendre le contrôle de {{productName}} lui-même, par exemple l’arrêter, le redémarrer ou le mettre à jour, jusqu’à ce que tu fermes ce chat (Options de session → Fermer la session) ou que {{productName}} redémarre",
+        "sandbox_escape": "Autoriser dans cette session : cette règle ne bloque plus les commandes qui pourraient contourner les limites dans lesquelles {{productName}} s’exécute, jusqu’à ce que tu fermes ce chat (Options de session → Fermer la session) ou que {{productName}} redémarre",
+        "credentials": "Autoriser dans cette session : cette règle ne bloque plus les commandes qui pourraient lire ou envoyer tes mots de passe et clés d’accès, jusqu’à ce que tu fermes ce chat (Options de session → Fermer la session) ou que {{productName}} redémarre",
+        "file_upload": "Autoriser dans cette session : cette règle ne bloque plus les commandes qui pourraient envoyer tes fichiers hors de cet ordinateur, jusqu’à ce que tu fermes ce chat (Options de session → Fermer la session) ou que {{productName}} redémarre",
+        "remote_control": "Autoriser dans cette session : cette règle ne bloque plus les commandes qui pourraient laisser un autre ordinateur contrôler celui-ci, jusqu’à ce que tu fermes ce chat (Options de session → Fermer la session) ou que {{productName}} redémarre",
+        "cloud": "Autoriser dans cette session : cette règle ne bloque plus les commandes qui pourraient supprimer ou modifier tes ressources cloud, jusqu’à ce que tu fermes ce chat (Options de session → Fermer la session) ou que {{productName}} redémarre",
+        "wipe": "Autoriser dans cette session : cette règle ne bloque plus les commandes qui pourraient effacer des fichiers ou des disques entiers sur cet ordinateur, jusqu’à ce que tu fermes ce chat (Options de session → Fermer la session) ou que {{productName}} redémarre",
+        "permissions": "Autoriser dans cette session : cette règle ne bloque plus les commandes qui changent qui peut ouvrir ou modifier les fichiers système, jusqu’à ce que tu fermes ce chat (Options de session → Fermer la session) ou que {{productName}} redémarre",
+        "discard_changes": "Autoriser dans cette session : cette règle ne bloque plus les commandes qui jettent des modifications de code que tu n’as pas encore commitées, jusqu’à ce que tu fermes ce chat (Options de session → Fermer la session) ou que {{productName}} redémarre",
+        "download_run": "Autoriser dans cette session : cette règle ne bloque plus les commandes qui téléchargent un script et l’exécutent tout de suite, jusqu’à ce que tu fermes ce chat (Options de session → Fermer la session) ou que {{productName}} redémarre",
+        "database": "Autoriser dans cette session : cette règle ne bloque plus les commandes qui suppriment des tables de base de données ou toutes leurs lignes, jusqu’à ce que tu fermes ce chat (Options de session → Fermer la session) ou que {{productName}} redémarre",
+        "generic": "Autoriser dans cette session : cette règle ne bloque plus aucune commande, jusqu’à ce que tu fermes ce chat (Options de session → Fermer la session) ou que {{productName}} redémarre"
+      },
+      "pill_blocked": "En attente d’approbation : {{command}}"
     }
   },
   "hooks": {

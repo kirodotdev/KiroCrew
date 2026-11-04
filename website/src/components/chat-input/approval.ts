@@ -133,6 +133,18 @@ export function useToolApproval({ slotId, slotApprovalChrome, approvalMode, disp
    *  a card that could still take a session grant offered allow-once and reject
    *  alone. */
   const approvalTrustAllGrantable = approvalMeta?.trust_grantable === '1'
+  /** Set when the card is a security-rule override (the server refused the
+   *  command by this rule): the bar offers the override scopes and a reject,
+   *  and no Allow once / Trust, which the server would read as a refusal. */
+  const approvalDenyRule = typeof approvalMeta?.deny_override_rule === 'string' ? approvalMeta.deny_override_rule : ''
+  /** The plain sentence on what that rule blocks, when the server knows one. */
+  const approvalDenyDetail = typeof approvalMeta?.deny_override_detail === 'string' ? approvalMeta.deny_override_detail : ''
+  /** The rule's family slug, which picks the card's one plain-language line on
+   *  what the rule protects; empty for a rule no family covers. */
+  const approvalDenyFamily = typeof approvalMeta?.deny_override_family === 'string' ? approvalMeta.deny_override_family : ''
+  /** The refused command itself, redacted as the label is, shown on the card so
+   *  the person reads what an allow would run. */
+  const approvalDenyCommand = typeof approvalMeta?.deny_override_command === 'string' ? approvalMeta.deny_override_command : ''
   /** Sources that run with no human attached to THIS conversation. Session
    *  trust means "auto-approve tools for this chat session", which is
    *  incoherent for an unattended job: the job is not this session, so the
@@ -234,8 +246,13 @@ export function useToolApproval({ slotId, slotApprovalChrome, approvalMode, disp
     const responseId = mintResponseId()
     // The clicked row: a later request may reuse the same approval id.
     const clickedMid = approvalMid
+    // A security-rule override is bound to the card row it was clicked on.
+    const isDenyOverride = decision === 'deny_override_once' || decision === 'deny_override_session'
     const finish = () => {
-      dispatch(resolveByApprovalId({ id: approvalId, slot: activeSlot || undefined, decision }))
+      // An override settles the row it named; request ids recur.
+      dispatch(resolveByApprovalId({
+        id: approvalId, slot: activeSlot || undefined, decision, ...(isDenyOverride && clickedMid ? { mid: clickedMid } : {}),
+      }))
       setApprovalSubmitting(false)
       // A timed grant says what it covers and when it ends, since the card that
       // offered the lifetime is gone the moment the decision lands. The time
@@ -280,7 +297,12 @@ export function useToolApproval({ slotId, slotApprovalChrome, approvalMode, disp
       // orphan: leaving it up makes every button look broken, so clear it and
       // say why instead of only logging to the console.
       if (err instanceof ApiError && err.status === 404) {
-        dispatch(resolveByApprovalId({ id: approvalId, slot: activeSlot || undefined, decision: 'stale', allPending: true }))
+        // An override names its card row (`request_mid`), so its 404 proves only
+        // that row is gone: a replacement request reusing the id may still be
+        // pending, and must keep its card. A bare-id 404 proves none is pending.
+        dispatch(resolveByApprovalId(isDenyOverride && clickedMid
+          ? { id: approvalId, slot: activeSlot || undefined, decision: 'stale', mid: clickedMid }
+          : { id: approvalId, slot: activeSlot || undefined, decision: 'stale', allPending: true }))
         // Say WHOSE turn expired. Unattended sources deny-fast on a short
         // window (minutes), so by the time a human reads the card the job has
         // usually already been denied and moved on — "expired" alone reads as
@@ -297,6 +319,18 @@ export function useToolApproval({ slotId, slotApprovalChrome, approvalMode, disp
       console.error('Approval failed:', err)
       setApprovalNoticeKind('error')
       setApprovalNotice(i18nT('components.chatInput.could_not_submit_that_decision_see_the_console_f'))
+    }
+    if (isDenyOverride) {
+      // A security-rule override is slot-scoped and owner-only on the server;
+      // there is no one-shot fallback for it, so with no slot it is not sent.
+      // It names the exact card row it was clicked on (`request_mid`): request
+      // ids recur, and the server refuses an override that does not match the
+      // card it would settle.
+      if (!activeSlot || !clickedMid) { setApprovalSubmitting(false); return }
+      api.approveChatSlot(activeSlot, decision, {
+        request_id: approvalId, response_id: responseId, origin: 'native', request_mid: clickedMid,
+      }).then(finish).catch(fail)
+      return
     }
     if (['trust_command', 'trust_base', 'trust', 'trust_reads'].includes(decision) && activeSlot) {
       // Defence in depth: the Trust controls are not rendered for unattended
@@ -323,6 +357,7 @@ export function useToolApproval({ slotId, slotApprovalChrome, approvalMode, disp
     approvalNotice, setApprovalNotice, approvalNoticeKind, showApprovalError,
     approvalToolInput, approvalIsReadOnly, approvalFullCommand, approvalBaseCommand, approvalIsShell,
     approvalTrustCommandGrantable, approvalTrustBaseGrantable, approvalTrustAllGrantable, approvalIsUnattended, approvalTrustGrantable,
+    approvalDenyRule, approvalDenyDetail, approvalDenyFamily, approvalDenyCommand,
     approvalLabelRaw, approvalToolCallId, approvalPurpose, approvalTs, approvalLabel, showGhost, showInChat, handleApprovalAction,
   }
 }

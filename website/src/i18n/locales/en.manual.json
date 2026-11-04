@@ -4682,6 +4682,45 @@
       "grant_entry_copy": "{{title}}: up to {{max}} characters of text you select in chat replies, and a Copy button",
       "grant_entry_open": "{{title}}: up to {{max}} characters of text you select in chat replies, and an Open link button",
       "grant_entry_copy_open": "{{title}}: up to {{max}} characters of text you select in chat replies, and Copy and Open buttons"
+    },
+    "denyOverride": {
+      "family": {
+        "git_publish": "This security rule stops pushes that could land straight on your main branch.",
+        "self_protection": "This security rule stops commands that could take control of {{productName}} itself, such as stopping, restarting or updating it.",
+        "sandbox_escape": "This security rule stops commands that could get around the limits {{productName}} runs under.",
+        "credentials": "This security rule stops commands that could read or send your passwords and access keys.",
+        "file_upload": "This security rule stops commands that could send your files off this computer.",
+        "remote_control": "This security rule stops commands that could let another computer control this one.",
+        "cloud": "This security rule stops commands that could delete or change your cloud resources.",
+        "wipe": "This security rule stops commands that could erase files or whole disks on this computer.",
+        "permissions": "This security rule stops commands that change who can open or change system files.",
+        "discard_changes": "This security rule stops commands that throw away code changes you have not committed.",
+        "download_run": "This security rule stops commands that download a script and run it straight away.",
+        "database": "This security rule stops commands that delete database tables or all their rows.",
+        "generic": "A security rule stopped this command."
+      },
+      "not_run": "It has not run.",
+      "command_label": "Command waiting for your choice",
+      "details": "Technical details",
+      "rule_label": "Rule: {{rule}}",
+      "override": "Choose how to allow",
+      "allow_once": "Allow once — run this command one time",
+      "session": {
+        "git_publish": "Allow for this session: stop this rule from blocking pushes that could land straight on your main branch, until you close this chat (Session options → Close session) or {{productName}} restarts",
+        "self_protection": "Allow for this session: stop this rule from blocking commands that could take control of {{productName}} itself, such as stopping, restarting or updating it, until you close this chat (Session options → Close session) or {{productName}} restarts",
+        "sandbox_escape": "Allow for this session: stop this rule from blocking commands that could get around the limits {{productName}} runs under, until you close this chat (Session options → Close session) or {{productName}} restarts",
+        "credentials": "Allow for this session: stop this rule from blocking commands that could read or send your passwords and access keys, until you close this chat (Session options → Close session) or {{productName}} restarts",
+        "file_upload": "Allow for this session: stop this rule from blocking commands that could send your files off this computer, until you close this chat (Session options → Close session) or {{productName}} restarts",
+        "remote_control": "Allow for this session: stop this rule from blocking commands that could let another computer control this one, until you close this chat (Session options → Close session) or {{productName}} restarts",
+        "cloud": "Allow for this session: stop this rule from blocking commands that could delete or change your cloud resources, until you close this chat (Session options → Close session) or {{productName}} restarts",
+        "wipe": "Allow for this session: stop this rule from blocking commands that could erase files or whole disks on this computer, until you close this chat (Session options → Close session) or {{productName}} restarts",
+        "permissions": "Allow for this session: stop this rule from blocking commands that change who can open or change system files, until you close this chat (Session options → Close session) or {{productName}} restarts",
+        "discard_changes": "Allow for this session: stop this rule from blocking commands that throw away code changes you have not committed, until you close this chat (Session options → Close session) or {{productName}} restarts",
+        "download_run": "Allow for this session: stop this rule from blocking commands that download a script and run it straight away, until you close this chat (Session options → Close session) or {{productName}} restarts",
+        "database": "Allow for this session: stop this rule from blocking commands that delete database tables or all their rows, until you close this chat (Session options → Close session) or {{productName}} restarts",
+        "generic": "Allow for this session: stop blocking any command this rule blocks, until you close this chat (Session options → Close session) or {{productName}} restarts"
+      },
+      "pill_blocked": "Waiting for approval: {{command}}"
     }
   },
   "hooks": {

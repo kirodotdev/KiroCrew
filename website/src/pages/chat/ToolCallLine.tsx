@@ -439,7 +439,13 @@ function selectToolRowView(s: RootState, slot: string | undefined, message: Chat
   // to it (`Read src/a.ts`, not the absolute path). Reads THIS row's slot —
   // a split-view pane must not borrow the active session's tree.
   const projectDir = waitSlotKey ? (slotRowByKey(s.dashboard.slots, waitSlotKey)?.project || undefined) : undefined
-  return { ...entry, isDone, mcpApp, isNewestRow, runMembers, approvedByUser, hasPendingPerm, runOutputs, waitSlotKey, waitState, focused, projectDir }
+  // A pending security-rule override card (DenyOverrideDropdown): the gate already
+  // refused this call, so the pill must not still read as "Running". The card's
+  // redacted command is what it names; empty for every other row.
+  const denyOverrideCommand = hasPendingPerm && perm?.meta?.deny_override_rule
+    ? String(perm.meta?.deny_override_command || '') || label
+    : ''
+  return { ...entry, isDone, mcpApp, isNewestRow, runMembers, approvedByUser, hasPendingPerm, denyOverrideCommand, runOutputs, waitSlotKey, waitState, focused, projectDir }
 }
 
 type ToolRowView = ReturnType<typeof selectToolRowView>
@@ -529,7 +535,7 @@ function ToolCallLineBody({ message, running: _running, slot, onFileOpen, disclo
   const noticeServer = (message.meta?.mcp_server as string | undefined) || ''
 
   // Every store fact this row draws, in ONE subscription (selectToolRowView).
-  const { effectiveId, isDone, isRejected, isAutoDenied, autoDenyReason, autoDenyNotice, purpose, input, output, inputCut, outputCut, auto, ts, executionStartedAt, hasEntry, isShell, toolKind, toolName, trustedToolName, mcpServer, mcpApp, isNewestRow, runMembers, approvedByUser, hasPendingPerm, runOutputs, waitSlotKey, waitState, focused, projectDir } =
+  const { effectiveId, isDone, isRejected, isAutoDenied, autoDenyReason, autoDenyNotice, purpose, input, output, inputCut, outputCut, auto, ts, executionStartedAt, hasEntry, isShell, toolKind, toolName, trustedToolName, mcpServer, mcpApp, isNewestRow, runMembers, approvedByUser, hasPendingPerm, denyOverrideCommand, runOutputs, waitSlotKey, waitState, focused, projectDir } =
     useAppSelector(s => selectToolRowView(s, slot, message, toolCallId, label), sameToolRowView)
 
   const isRun = runMembers.length > 1
@@ -976,13 +982,16 @@ function ToolCallLineBody({ message, running: _running, slot, onFileOpen, disclo
   // command itself, so that case keeps the raw first line. Raw mode never
   // digests: that mode asked for the exact command.
   const pillLabelText = useMemo(() => {
+    // Refused by a security rule and waiting on the person's choice: say so.
+    void langGen // the blocked label is localized
+    if (denyOverrideCommand) return i18nT('components.denyOverride.pill_blocked', { command: denyOverrideCommand })
     // `derived.kind` is the shell signal here: a historical row has no
     // `is_shell` on its log entry, but the derivation read the same title.
     if (!simplified || derived.derived || derived.kind !== 'execute') return displayLabel
     if (displayLabel !== derived.title) return displayLabel // the purpose is showing
     const digest = deriveShellSummary(derived.rawTitle, { bareCommand: true })
     return digest && (digest.includes(', ') || digest.includes(' → ')) ? digest : displayLabel
-  }, [displayLabel, simplified, derived])
+  }, [displayLabel, simplified, derived, denyOverrideCommand, langGen])
   // Hover reveals the verbatim command / incoming title whenever the pill shows
   // a substitute for it — a derived title, a digest, or the purpose.
   const pillLabelTitle = pillLabelText === derived.rawTitle ? undefined : (derived.rawTitle || undefined)

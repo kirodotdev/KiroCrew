@@ -77,6 +77,7 @@ except ImportError:  # pragma: no cover - standalone / test fallback
         agent: str = "",
         app: str = "",
         security_only: bool = True,
+        deny_waivers: frozenset[str] = frozenset(),
     ) -> str | None:
         return "Blocked: the tool security gate could not be consulted"
 

@@ -10988,6 +10988,45 @@
       "grant_entry_copy": "{{title}}: hasta {{max}} caracteres del texto que seleccionas en las respuestas del chat, y un botón Copiar",
       "grant_entry_open": "{{title}}: hasta {{max}} caracteres del texto que seleccionas en las respuestas del chat, y un botón para abrir un enlace",
       "grant_entry_copy_open": "{{title}}: hasta {{max}} caracteres del texto que seleccionas en las respuestas del chat, y botones Copiar y Abrir"
+    },
+    "denyOverride": {
+      "family": {
+        "git_publish": "Esta regla de seguridad detiene los push que podrían ir directo a tu rama principal.",
+        "self_protection": "Esta regla de seguridad detiene los comandos que podrían tomar el control del propio {{productName}}, como detenerlo, reiniciarlo o actualizarlo.",
+        "sandbox_escape": "Esta regla de seguridad detiene los comandos que podrían saltarse los límites con los que se ejecuta {{productName}}.",
+        "credentials": "Esta regla de seguridad detiene los comandos que podrían leer o enviar tus contraseñas y claves de acceso.",
+        "file_upload": "Esta regla de seguridad detiene los comandos que podrían enviar tus archivos fuera de este ordenador.",
+        "remote_control": "Esta regla de seguridad detiene los comandos que podrían dejar que otro ordenador controle este.",
+        "cloud": "Esta regla de seguridad detiene los comandos que podrían eliminar o cambiar tus recursos en la nube.",
+        "wipe": "Esta regla de seguridad detiene los comandos que podrían borrar archivos o discos enteros de este ordenador.",
+        "permissions": "Esta regla de seguridad detiene los comandos que cambian quién puede abrir o modificar archivos del sistema.",
+        "discard_changes": "Esta regla de seguridad detiene los comandos que descartan cambios de código que aún no has confirmado.",
+        "download_run": "Esta regla de seguridad detiene los comandos que descargan un script y lo ejecutan al momento.",
+        "database": "Esta regla de seguridad detiene los comandos que eliminan tablas de la base de datos o todas sus filas.",
+        "generic": "Una regla de seguridad detuvo este comando."
+      },
+      "not_run": "No se ha ejecutado.",
+      "command_label": "Comando a la espera de tu decisión",
+      "details": "Detalles técnicos",
+      "rule_label": "Regla: {{rule}}",
+      "override": "Elegir cómo permitir",
+      "allow_once": "Permitir una vez — ejecutar este comando una sola vez",
+      "session": {
+        "git_publish": "Permitir en esta sesión: esta regla deja de bloquear los push que podrían ir directo a tu rama principal, hasta que cierres este chat (Opciones de la sesión → Cerrar la sesión) o {{productName}} se reinicie",
+        "self_protection": "Permitir en esta sesión: esta regla deja de bloquear los comandos que podrían tomar el control del propio {{productName}}, como detenerlo, reiniciarlo o actualizarlo, hasta que cierres este chat (Opciones de la sesión → Cerrar la sesión) o {{productName}} se reinicie",
+        "sandbox_escape": "Permitir en esta sesión: esta regla deja de bloquear los comandos que podrían saltarse los límites con los que se ejecuta {{productName}}, hasta que cierres este chat (Opciones de la sesión → Cerrar la sesión) o {{productName}} se reinicie",
+        "credentials": "Permitir en esta sesión: esta regla deja de bloquear los comandos que podrían leer o enviar tus contraseñas y claves de acceso, hasta que cierres este chat (Opciones de la sesión → Cerrar la sesión) o {{productName}} se reinicie",
+        "file_upload": "Permitir en esta sesión: esta regla deja de bloquear los comandos que podrían enviar tus archivos fuera de este ordenador, hasta que cierres este chat (Opciones de la sesión → Cerrar la sesión) o {{productName}} se reinicie",
+        "remote_control": "Permitir en esta sesión: esta regla deja de bloquear los comandos que podrían dejar que otro ordenador controle este, hasta que cierres este chat (Opciones de la sesión → Cerrar la sesión) o {{productName}} se reinicie",
+        "cloud": "Permitir en esta sesión: esta regla deja de bloquear los comandos que podrían eliminar o cambiar tus recursos en la nube, hasta que cierres este chat (Opciones de la sesión → Cerrar la sesión) o {{productName}} se reinicie",
+        "wipe": "Permitir en esta sesión: esta regla deja de bloquear los comandos que podrían borrar archivos o discos enteros de este ordenador, hasta que cierres este chat (Opciones de la sesión → Cerrar la sesión) o {{productName}} se reinicie",
+        "permissions": "Permitir en esta sesión: esta regla deja de bloquear los comandos que cambian quién puede abrir o modificar archivos del sistema, hasta que cierres este chat (Opciones de la sesión → Cerrar la sesión) o {{productName}} se reinicie",
+        "discard_changes": "Permitir en esta sesión: esta regla deja de bloquear los comandos que descartan cambios de código que aún no has confirmado, hasta que cierres este chat (Opciones de la sesión → Cerrar la sesión) o {{productName}} se reinicie",
+        "download_run": "Permitir en esta sesión: esta regla deja de bloquear los comandos que descargan un script y lo ejecutan al momento, hasta que cierres este chat (Opciones de la sesión → Cerrar la sesión) o {{productName}} se reinicie",
+        "database": "Permitir en esta sesión: esta regla deja de bloquear los comandos que eliminan tablas de la base de datos o todas sus filas, hasta que cierres este chat (Opciones de la sesión → Cerrar la sesión) o {{productName}} se reinicie",
+        "generic": "Permitir en esta sesión: esta regla deja de bloquear cualquier comando, hasta que cierres este chat (Opciones de la sesión → Cerrar la sesión) o {{productName}} se reinicie"
+      },
+      "pill_blocked": "Esperando aprobación: {{command}}"
     }
   },
   "hooks": {

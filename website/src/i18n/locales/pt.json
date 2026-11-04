@@ -10988,6 +10988,45 @@
       "grant_entry_copy": "{{title}}: até {{max}} caracteres do texto que você seleciona nas respostas do chat, e um botão Copiar",
       "grant_entry_open": "{{title}}: até {{max}} caracteres do texto que você seleciona nas respostas do chat, e um botão para abrir um link",
       "grant_entry_copy_open": "{{title}}: até {{max}} caracteres do texto que você seleciona nas respostas do chat, e botões Copiar e Abrir"
+    },
+    "denyOverride": {
+      "family": {
+        "git_publish": "Esta regra de segurança impede pushes que poderiam ir direto para sua branch principal.",
+        "self_protection": "Esta regra de segurança impede comandos que poderiam assumir o controle do próprio {{productName}}, como pará-lo, reiniciá-lo ou atualizá-lo.",
+        "sandbox_escape": "Esta regra de segurança impede comandos que poderiam contornar os limites em que o {{productName}} roda.",
+        "credentials": "Esta regra de segurança impede comandos que poderiam ler ou enviar suas senhas e chaves de acesso.",
+        "file_upload": "Esta regra de segurança impede comandos que poderiam enviar seus arquivos para fora deste computador.",
+        "remote_control": "Esta regra de segurança impede comandos que poderiam deixar outro computador controlar este.",
+        "cloud": "Esta regra de segurança impede comandos que poderiam excluir ou alterar seus recursos na nuvem.",
+        "wipe": "Esta regra de segurança impede comandos que poderiam apagar arquivos ou discos inteiros neste computador.",
+        "permissions": "Esta regra de segurança impede comandos que mudam quem pode abrir ou alterar arquivos do sistema.",
+        "discard_changes": "Esta regra de segurança impede comandos que descartam alterações de código que você ainda não commitou.",
+        "download_run": "Esta regra de segurança impede comandos que baixam um script e o executam na hora.",
+        "database": "Esta regra de segurança impede comandos que excluem tabelas do banco de dados ou todas as suas linhas.",
+        "generic": "Uma regra de segurança impediu este comando."
+      },
+      "not_run": "Ele não foi executado.",
+      "command_label": "Comando aguardando sua escolha",
+      "details": "Detalhes técnicos",
+      "rule_label": "Regra: {{rule}}",
+      "override": "Escolher como permitir",
+      "allow_once": "Permitir uma vez — executar este comando só uma vez",
+      "session": {
+        "git_publish": "Permitir nesta sessão: esta regra deixa de bloquear pushes que poderiam ir direto para sua branch principal, até você fechar este chat (Opções da sessão → Fechar sessão) ou o {{productName}} reiniciar",
+        "self_protection": "Permitir nesta sessão: esta regra deixa de bloquear comandos que poderiam assumir o controle do próprio {{productName}}, como pará-lo, reiniciá-lo ou atualizá-lo, até você fechar este chat (Opções da sessão → Fechar sessão) ou o {{productName}} reiniciar",
+        "sandbox_escape": "Permitir nesta sessão: esta regra deixa de bloquear comandos que poderiam contornar os limites em que o {{productName}} roda, até você fechar este chat (Opções da sessão → Fechar sessão) ou o {{productName}} reiniciar",
+        "credentials": "Permitir nesta sessão: esta regra deixa de bloquear comandos que poderiam ler ou enviar suas senhas e chaves de acesso, até você fechar este chat (Opções da sessão → Fechar sessão) ou o {{productName}} reiniciar",
+        "file_upload": "Permitir nesta sessão: esta regra deixa de bloquear comandos que poderiam enviar seus arquivos para fora deste computador, até você fechar este chat (Opções da sessão → Fechar sessão) ou o {{productName}} reiniciar",
+        "remote_control": "Permitir nesta sessão: esta regra deixa de bloquear comandos que poderiam deixar outro computador controlar este, até você fechar este chat (Opções da sessão → Fechar sessão) ou o {{productName}} reiniciar",
+        "cloud": "Permitir nesta sessão: esta regra deixa de bloquear comandos que poderiam excluir ou alterar seus recursos na nuvem, até você fechar este chat (Opções da sessão → Fechar sessão) ou o {{productName}} reiniciar",
+        "wipe": "Permitir nesta sessão: esta regra deixa de bloquear comandos que poderiam apagar arquivos ou discos inteiros neste computador, até você fechar este chat (Opções da sessão → Fechar sessão) ou o {{productName}} reiniciar",
+        "permissions": "Permitir nesta sessão: esta regra deixa de bloquear comandos que mudam quem pode abrir ou alterar arquivos do sistema, até você fechar este chat (Opções da sessão → Fechar sessão) ou o {{productName}} reiniciar",
+        "discard_changes": "Permitir nesta sessão: esta regra deixa de bloquear comandos que descartam alterações de código que você ainda não commitou, até você fechar este chat (Opções da sessão → Fechar sessão) ou o {{productName}} reiniciar",
+        "download_run": "Permitir nesta sessão: esta regra deixa de bloquear comandos que baixam um script e o executam na hora, até você fechar este chat (Opções da sessão → Fechar sessão) ou o {{productName}} reiniciar",
+        "database": "Permitir nesta sessão: esta regra deixa de bloquear comandos que excluem tabelas do banco de dados ou todas as suas linhas, até você fechar este chat (Opções da sessão → Fechar sessão) ou o {{productName}} reiniciar",
+        "generic": "Permitir nesta sessão: esta regra deixa de bloquear qualquer comando, até você fechar este chat (Opções da sessão → Fechar sessão) ou o {{productName}} reiniciar"
+      },
+      "pill_blocked": "Aguardando aprovação: {{command}}"
     }
   },
   "hooks": {

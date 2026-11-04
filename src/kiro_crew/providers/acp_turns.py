@@ -103,6 +103,11 @@ def _to_llm_event(e: Any) -> LLMEvent:
         # spec-write-allowlist row reads this.
         spec_write_allowlist=e.spec_write_allowlist,
         spec_write_cwd=e.spec_write_cwd,
+        # Dropping this would let a native KAS sub-agent's call inherit the
+        # parent's in-session deny overrides on this surface.
+        native_child_call=e.native_child_call,
+        # Dropping this would offer no deny override on this surface (fail closed).
+        child_calls_marked=e.child_calls_marked,
         # Dropping this would refuse every deepseek read on a side turn.
         deepseek_tool_name=e.deepseek_tool_name,
         # Dropping this would let a READ_ONLY turn on an unproved dsh
