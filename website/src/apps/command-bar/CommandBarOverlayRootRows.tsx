@@ -1,5 +1,5 @@
 import { useMemo } from 'react'
-import type { Dispatch, ReactNode, SetStateAction } from 'react'
+import type { Dispatch, MutableRefObject, ReactNode, SetStateAction } from 'react'
 import {
   Check,
   ChevronsDown,
@@ -118,6 +118,7 @@ export function useCommandBarOverlayRootRows({
   usage,
   attentionExpanded,
   setAttentionExpanded,
+  openedSessionRef,
 }: {
   liveSlots: RootState['dashboard']['slots']
   /** `{root: n}`: how many of a Crew Mode root's workers wait on a tool approval.
@@ -140,6 +141,10 @@ export function useCommandBarOverlayRootRows({
   usage: UsageMap
   attentionExpanded: boolean
   setAttentionExpanded: Dispatch<SetStateAction<boolean>>
+  /** Set true by a session-opening row as it runs, so the overlay's close effect
+   *  hands focus to that session's composer even when the pick did not change the
+   *  active slot (a split-view pick of the session already active in another pane). */
+  openedSessionRef: MutableRefObject<boolean>
 }): RankedRow[] {
   const rootRows: RootRow[] = useMemo(() => {
     const rows: RootRow[] = []
@@ -173,6 +178,11 @@ export function useCommandBarOverlayRootRows({
         // Same activation the sidebar and the recents listing use, so a session
         // opened from here lands exactly where it lands from anywhere else.
         run: async () => {
+          // This pick opens a session, so its composer owns focus after close even
+          // if the pick did not change the active slot (the session is already
+          // active in another pane). Set before the dispatch so the close effect,
+          // which can run the instant this settles, reads it.
+          openedSessionRef.current = true
           // Not awaited: the bar closes once this promise settles, and a session
           // open closes it at once -- a failed switch is explained by the pane's
           // own notice, not by keeping the bar up. The switch is handed on so the
@@ -223,7 +233,8 @@ export function useCommandBarOverlayRootRows({
         // order the root's idle-ordered `recent` group keeps, so the row needs no
         // sort key of its own.
         run: async () => {
-          // See the attention row above (#15732).
+          // See the attention row above (#15732); the opened-session flag too.
+          openedSessionRef.current = true
           const switched = dispatch(switchSlot({ key: slot.key, announceOnMissing: true, gesture: true })).unwrap()
           navigate('/chat')
           focusComposerForOpenedSession(switched, slot.key, store)
