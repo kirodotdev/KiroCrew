@@ -144,9 +144,10 @@ const BARE_FAMILY_ALIAS = /^[a-z]+$/i
  *
  *  A bare family alias names whatever model the backend currently serves under
  *  it (Claude Code's `opus` is its newest Opus), while the registry folds it to
- *  one fixed row (`opus` -> `opus-4.8-1m`). Folding it would hide that older
- *  model when the user hid `opus`, and hide `opus` when they hid Opus 4.8, so a
- *  bare alias only matches itself. */
+ *  one fixed row (`opus` -> `opus-5.5-1m`). Folding it would hide that row when
+ *  the user hid a bare `opus` the backend serves as another version, and hide
+ *  `opus` when they hid Opus 5.5, so a bare alias is keyed `bare:opus` and only
+ *  matches itself. */
 function hiddenModelKey(name: string): string {
   const trimmed = (name || '').trim()
   return BARE_FAMILY_ALIAS.test(trimmed) && trimmed.toLowerCase() !== 'auto'

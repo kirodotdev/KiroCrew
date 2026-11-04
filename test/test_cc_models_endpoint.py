@@ -486,7 +486,7 @@ class TestNormalizeModelKey:
         assert _normalize_model_key("claude-opus-4.8") == "opus-4.8-1m"
         assert _normalize_model_key("Claude-Opus-4.8") == "opus-4.8-1m"
         assert _normalize_model_key("opus-4.8-1m") == "opus-4.8-1m"
-        assert _normalize_model_key("opus") == "opus-4.8-1m"
+        assert _normalize_model_key("opus") == "opus-5.5-1m"
         assert _normalize_model_key("global.anthropic.claude-opus-4-8[1m]") == "opus-4.8-1m"
         # The "fold a provider/partition prefix" case: a regional
         # profile id that is not itself a registry entry folds after the peel.

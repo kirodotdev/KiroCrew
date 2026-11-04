@@ -35,12 +35,12 @@ describe('interactive model visibility', () => {
 
   it('matches a bare family alias only by itself', () => {
     // Claude Code's `opus` is its newest Opus, while the registry folds the
-    // alias to Opus 4.8 (1M). Hiding one must not hide the other.
+    // alias to Opus 5.5 (1M). Hiding one must not hide the other.
     const models = [{ name: 'auto' }, { name: 'opus' }, { name: 'claude-opus-4.8' }, { name: 'claude-opus-4-8[1m]' }, { name: 'claude-opus-5.5' }]
     expect(filterInteractiveModels(models, ['opus']).map(model => model.name))
       .toEqual(['auto', 'claude-opus-4.8', 'claude-opus-4-8[1m]', 'claude-opus-5.5'])
-    expect(filterInteractiveModels(models, ['claude-opus-4.8']).map(model => model.name))
-      .toEqual(['auto', 'opus', 'claude-opus-5.5'])
+    expect(filterInteractiveModels(models, ['claude-opus-5.5']).map(model => model.name))
+      .toEqual(['auto', 'opus', 'claude-opus-4.8', 'claude-opus-4-8[1m]'])
     expect(filterInteractiveModels(models, ['Opus']).map(model => model.name)).not.toContain('opus')
   })
 

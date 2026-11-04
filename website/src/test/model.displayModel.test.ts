@@ -217,7 +217,7 @@ describe('normalizeModelKey', () => {
     expect(normalizeModelKey('claude-opus-4.8')).toBe('opus-4.8-1m')
     expect(normalizeModelKey('Claude-Opus-4.8')).toBe('opus-4.8-1m')
     expect(normalizeModelKey('opus-4.8-1m')).toBe('opus-4.8-1m')
-    expect(normalizeModelKey('opus')).toBe('opus-4.8-1m')
+    expect(normalizeModelKey('opus')).toBe('opus-5.5-1m')
     expect(normalizeModelKey('global.anthropic.claude-opus-4-8[1m]')).toBe('opus-4.8-1m')
     // The "fold a provider/partition prefix" half of #5339: a regional profile
     // id that is not itself a registry entry still folds after the prefix peel.
