@@ -8,6 +8,7 @@ import asyncio
 import os
 from contextlib import AsyncExitStack
 from pathlib import Path
+from typing import Any
 
 from aiohttp import web
 
@@ -486,6 +487,14 @@ async def api_artifact_record_event(request: web.Request) -> web.Response:
     # than a silent metadata drop.
     if message_ts is not None and not isinstance(message_ts, str):
         return _err("metadata.message_ts must be a string")
+    warnings: list[str] = []
+    # A JSON boolean is a Python ``bool``, an ``int`` subclass, so the check
+    # below would store ``true`` as the widget's ordinal. It was saved that way
+    # before this check knew better, so it is ignored with a warning rather
+    # than refused: the impression is still recorded, without the index.
+    if isinstance(widget_index, bool):
+        warnings.append("metadata.widget_index must be an integer; the boolean was ignored")
+        widget_index = None
     if widget_index is not None and not isinstance(widget_index, int):
         return _err("metadata.widget_index must be an integer")
     try:
@@ -519,13 +528,15 @@ async def api_artifact_record_event(request: web.Request) -> web.Response:
     # event on this artifact) no `referenced` event was appended, so
     # `art.events[-1]` would be an unrelated prior event. Signal the
     # suppression explicitly rather than echoing a misleading payload.
+    # ``warnings`` only when there is one, so every other answer is unchanged.
+    extra: dict[str, Any] = {"warnings": warnings} if warnings else {}
     if not appended:
-        return _json_response({"slug": art.slug, "event": None, "suppressed": True})
+        return _json_response({"slug": art.slug, "event": None, "suppressed": True, **extra})
     # Return only the latest event entry — the full event log can be
     # fetched via the GET endpoint. Keeps this response small for the
     # high-frequency impression-logging case.
     latest = art.events[-1] if art.events else None
-    return _json_response({"slug": art.slug, "event": latest})
+    return _json_response({"slug": art.slug, "event": latest, **extra})
 
 
 async def api_artifact_relocate(request: web.Request) -> web.Response:
