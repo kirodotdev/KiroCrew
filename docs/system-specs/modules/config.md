@@ -1100,7 +1100,9 @@ does not have.
 User overrides can be placed in `~/.kiro/crew/config.local.json`. This file is
 deep-merged on top of `config.json` at load time and is never touched by
 `kirocrew setup` or package upgrades. Because `save()` keeps an overlay-owned
-leaf OUT of `config.json`, such a value exists only here, so the overlay rides
+leaf OUT of `config.json` -- unless `config.json` already stores that leaf, which
+then keeps its own stored value, so dropping the overlay later still finds it --
+such a value exists only here, so the overlay rides
 the dashboard export and the snapshot `config` component next to `config.json`
 (see [Settings import](#settings-import-dashboard-merge)).
 

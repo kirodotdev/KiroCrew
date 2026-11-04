@@ -16,7 +16,6 @@ from kiro_crew.config import KiroCrewConfig
 from kiro_crew.config.loader import (
     ConfigReadError,
     ConfigWriteRefused,
-    _subtract_overlay,
     config_local_path,
     config_path,
     read_config_text,
@@ -438,16 +437,10 @@ def _run_config_cmd(args: argparse.Namespace) -> None:
                     # Key was already validated above; use _dict_set_create so
                     # sections that were never written (still at defaults) get
                     # their intermediate keys created.
+                    # *existing* is config.json as stored, which holds no overlay
+                    # values to keep out, so every other key is left as it is.
                     _dict_set_create(existing, key, parsed)
                     _ack_explicit_config_write(key, parsed)
-                    lp = config_local_path()
-                    if lp.is_file():
-                        try:
-                            raw_local = json.loads(read_config_text(lp))
-                            if isinstance(raw_local, dict):
-                                return _subtract_overlay(existing, raw_local)
-                        except (json.JSONDecodeError, UnicodeDecodeError, OSError):
-                            pass
                     return existing
 
                 try:
