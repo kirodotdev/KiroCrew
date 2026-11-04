@@ -1,30 +1,13 @@
 """Round-trip contracts: the conductor's probe scripts read the REAL writers.
 
-The two pipeline-conductor scripts re-implement readers for three on-disk
-formats this package itself writes:
+The scripts re-implement readers for formats this package writes: the transcript JSONL
+entry (``ConversationLog.append``), the ``dashboard_<slot>.jsonl`` filename
+(``_history_key_for`` then ``_safe_key``), and the usage token row
+(``persist_token_record``).
 
-1. the session-transcript JSONL entry shape -- written by
-   ``kiro_crew.history.ConversationLog.append``;
-2. the ``dashboard_`` transcript-filename prefix -- a dashboard slot key
-   becomes ``dashboard:<slot>`` via ``chat_utils._history_key_for`` and then
-   the ``dashboard_<slot>.jsonl`` stem via ``history._safe_key``;
-3. the usage-shard token-row schema -- written by
-   ``dashboard.handlers.usage._build_token_record`` /
-   ``_write_token_record`` (via ``persist_token_record``).
-
-The sibling tests in ``test_pipeline_conductor_agent.py`` exercise the scripts
-over HAND-AUTHORED fixtures. A fixture authored to match a format another
-module owns cannot detect that module changing the format: drift keeps every
-fixture test green while the live probe silently misclassifies -- and the
-conductor's reclaim decision runs off that classification, so the failure mode
-is a running session read as GONE and its work item dispatched twice.
-
-Each test here drives the real writer and lets the script classify what the
-writer produced, so the writer changing its format reds a test. Mutation-
-verified for all three formats (see the PR): renaming the transcript
-``content`` field, changing ``_history_key_for``'s prefix, and renaming the
-token row's ``_type`` each red exactly these tests while every fixture test
-stays green.
+Hand-written fixtures cannot see another module change its format, and a drifted
+reader marks a running session GONE so its item is dispatched twice. Each test here
+drives the real writer and lets the script classify what it produced.
 """
 
 from __future__ import annotations
@@ -66,12 +49,8 @@ class TestTranscriptShapeRoundTrip:
     def test_probe_classifies_what_conversation_log_wrote(self, tmp_path, capsys, monkeypatch):
         """Format 1: the JSONL entry shape.
 
-        ``fleet_probe._classify`` walks entries for ``role``/``content`` and
-        tags the last assistant line. Here those entries come from the real
-        writer -- ``ConversationLog.append`` into the same
-        ``<data home>/sessions`` directory the probe derives -- so a change to
-        the persisted entry shape (field names, content encoding, the
-        metadata header line) surfaces as a misclassification here.
+        Entries come from ``ConversationLog.append`` into the ``<data home>/sessions``
+        directory the probe derives, so a changed entry shape misclassifies here.
         """
         mod, cfg = _probe(tmp_path, monkeypatch, ["s-real-writer"])
         log = ConversationLog(base_dir=tmp_path / "crew" / "sessions")
@@ -87,12 +66,9 @@ class TestTranscriptShapeRoundTrip:
 class TestDeliveryPatternRoundTrip:
     """Format 4: the phrases the delivery counters look for.
 
-    ``DEFAULT_WATCHDOG_RES`` and ``DEFAULT_INIT_TIMEOUT_RES`` are regexes over
-    text OTHER modules emit. A fixture that hand-copies the phrase cannot notice
-    the emitter rewording it: every fixture test stays green, the counters
-    silently read zero, and a fleet that cannot deliver reports as healthy --
-    which is the one failure these counters exist to make visible. So the
-    patterns are matched against the real constants.
+    ``DEFAULT_WATCHDOG_RES`` and ``DEFAULT_INIT_TIMEOUT_RES`` match text other modules
+    emit, so they are checked against the real constants: a reworded emitter would
+    read zero and a stalled fleet would report healthy.
     """
 
     def test_watchdog_patterns_match_the_constants_the_gateway_emits(self):
@@ -134,13 +110,8 @@ class TestFilenamePrefixRoundTrip:
     ):
         """Format 2: the ``dashboard_`` filename prefix.
 
-        The conductor watches raw slot keys while the store prefixes the
-        surface. Derive the on-disk name the way production does -- the slot
-        key through ``_history_key_for`` (``dashboard:<slot>``), folded to a
-        filename stem by ``ConversationLog``'s own ``_safe_key`` -- and the
-        probe, given only the RAW slot key, must still find and classify the
-        transcript. A false GONE here is the reclaim-and-double-dispatch
-        failure mode, so the assertion is spelled both ways.
+        The file is named the way production names it (``_history_key_for`` then
+        ``_safe_key``); the probe, given only the RAW slot key, must still find it.
         """
         slot = "chat-7-1756700000"
         mod, cfg = _probe(tmp_path, monkeypatch, [slot])
@@ -165,11 +136,7 @@ class TestUsageShardRoundTrip:
     def test_credit_spend_sums_what_the_recorder_wrote(self, tmp_path, capsys, monkeypatch):
         """Format 3: the token-row schema.
 
-        Rows come from the real recorder (``persist_token_record`` ->
-        ``_build_token_record`` -> ``_write_token_record``), so a renamed
-        field, a changed ``_type``, or the per-row ``turns: 0`` contract
-        changing all surface here. The turns assertion pins the row-counting
-        contract the script documents: production rows are per-turn with a
+        Rows come from ``persist_token_record``. Production rows are per-turn with a
         literal ``turns: 0`` field, so accepted rows ARE turns.
         """
         shard_dir = tmp_path / "tokens"
