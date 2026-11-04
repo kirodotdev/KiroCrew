@@ -14,6 +14,7 @@ they explain structure and rationale and link out to
 | [context-management.md](context-management.md) | What reaches the model's context: the first-turn block order and its budgets, what repeats per turn, a sub-agent's scope, why a custom agent sees no skills, and how a crew member's session is built. |
 | [security-deep-dive.md](security-deep-dive.md) | The security model as a whole: threat model, trust boundaries, and how the layers compose. |
 | [resource-protection.md](resource-protection.md) | Process limits, sandbox resource controls, and rate limiting. |
+| [non-linear-sessions.md](non-linear-sessions.md) | Non-linear session types for orchestration: super docs and super canvases as surfaces on one session. How threads, goals, the standing brief and the overlay work, pages opening pages, and the choice between one linear session and a thread ledger. |
 
 `design-notes/` holds narrow design records that have no owning module spec: see
 [its index](design-notes/README.md).
