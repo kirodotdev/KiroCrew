@@ -97,6 +97,11 @@ from kiro_crew.acp.kas_permissions import (
     without_allowed_commands,
 )
 from kiro_crew.acp.kas_prompt_paths import is_unsafe_prompt_path as _is_unsafe_prompt_path
+from kiro_crew.acp.kas_tool_limits import (
+    _KAS_CARRIED_ELSEWHERE,
+    _KAS_DISCARDED_ENTRY_KEYS,
+)
+from kiro_crew.acp.kas_tool_limits import disabled_tool_exclusions as _disabled_tool_exclusions
 from kiro_crew.agent_discovery import (
     AgentsDirMemo,
     AmbiguousAgentSpecError,
@@ -172,33 +177,6 @@ _ENV_REFERENCE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 #: Crew-internal bookkeeping on a rewritten entry. Never belongs on the wire: an
 #: unknown field can fail a strict schema, and it means nothing to the backend.
 _WRAPPER_MARKERS = ("_kirocrew_mcp_gateway_wrapped", "_mc_mcp_gateway_wrapped")
-
-#: Per-server keys KAS's wire schema ACCEPTS and then throws away, so projecting
-#: one is indistinguishable from omitting it. ``ClientAgentMcpServerSchema``
-#: declares every name below, and then ``mapClientMcpServers`` rebuilds each
-#: entry from ``command``/``args``/``env``/``timeout`` for a stdio server or
-#: ``url``/``headers``/``env``/``timeout`` for a remote one — nothing else
-#: survives the rebuild.
-#:
-#: ``type`` is absent from this tuple because it is lost one step EARLIER and for
-#: a different reason: the schema has no slot for it at all, so the unknown key
-#: is stripped before the mapper runs. The consequence of that is the registry
-#: filter in :func:`_project_mcp_servers`, not this tuple.
-#:
-#: Only ``disabled`` is acted on. It is the one whose loss INVERTS the user's
-#: decision — a muted server that arrives unmuted launches — and omitting the
-#: declaration is a faithful way to express it. The others are restrictions with
-#: no Crew-side carrier: ``disabledTools`` would need a per-tool exclusion
-#: grammar this projection cannot verify against the backend, ``cwd`` changes
-#: where the server runs and not whether it runs, and ``autoApprove`` is already
-#: dropped upstream of here for its own reason. They are named so an operator
-#: reading the log learns the restriction had no effect.
-#:
-#: TODO(kiro-agent): copy these through in ``mapClientMcpServers`` (and add
-#: ``type`` to ``ClientAgentMcpServerSchema``); the handling here then becomes a
-#: no-op rather than something to unpick.
-_KAS_DISCARDED_ENTRY_KEYS = ("autoApprove", "cwd", "disabled", "disabledTools")
-
 
 #: Spec keys with no slot in KAS's ``ClientCustomAgent`` wire schema.
 #:
@@ -803,6 +781,11 @@ def _project_mcp_servers(
         projected = {k: v for k, v in entry.items() if k not in _WRAPPER_MARKERS}
         projected.pop("autoApprove", None)
         labelled, relay_env = session_label.take_kas_marker(projected, entry.get("env"), managed)
+        for key in _KAS_CARRIED_ELSEWHERE:
+            # Carried in the agent's ``excludedTools`` (``to_client_custom_agent``),
+            # so the entry drops it: left on, it would keep a managed server off
+            # the session-level array and so without its session token.
+            projected.pop(key, None)
         discarded = [k for k in _KAS_DISCARDED_ENTRY_KEYS if projected.get(k)]
         if discarded:
             # Read off the PROJECTED entry, not the spec's: a key this function
@@ -1210,6 +1193,17 @@ def to_client_custom_agent(
             # ``fs_read`` for kiro-cli must not leave ``read_file`` mounted here,
             # and one that excludes ``fs_write`` must not leave ``delete_file``.
             out["excludedTools"] = expand_kiro_cli_tool_exclusions(entries)
+    switched_off, unusable = _disabled_tool_exclusions(spec)
+    if unusable:
+        raise KasAgentTranslationError(
+            f"agent {agent_id!r} sets disabledTools on {', '.join(unusable)} to something "
+            "other than a list of tool names, so those tools cannot be switched off on KAS. "
+            "Make each disabledTools a list of tool names, or remove it"
+        )
+    if switched_off:
+        # A server's ``disabledTools`` has no effect on the wire, so its tools are
+        # withheld here instead (see ``kas_tool_limits.disabled_tool_exclusions``).
+        out["excludedTools"] = list(dict.fromkeys([*out.get("excludedTools", []), *switched_off]))
 
     welcome = spec_welcome_message(spec)
     if welcome:
@@ -1642,8 +1636,9 @@ def build_kas_custom_agents(
 #: The keys a projected stdio declaration may carry and still be reproduced
 #: exactly by :func:`kiro_crew.acp.session_mcp.acp_server_element`. Anything
 #: else on a managed entry is a user customization with no session-level
-#: carrier -- ``disabledTools`` (a user guard), ``timeout`` -- so an entry
-#: carrying one stays in the block. ``disabled`` is absent from that list of
+#: carrier -- ``timeout``, for one -- so an entry carrying one stays in the
+#: block. ``disabledTools`` never reaches here: the projection carries it in the
+#: agent's ``excludedTools`` and drops it from the entry. ``disabled`` is absent from that list of
 #: examples for a reason worth stating: a disabled entry never reaches this
 #: function, because :func:`_project_mcp_servers` declines to declare it at all.
 _HOISTABLE_ENTRY_KEYS = frozenset({"command", "args", "env", "type"})
