@@ -502,11 +502,8 @@ class TestSavePathRefusesAnUnusablePin:
     ) -> None:
         """The member's DM slot runs on `member_acp_backend`, not the default.
 
-        When the two harnesses do not share a model-registry namespace, the
-        default backend's catalog cannot establish the pin's entitlement, so
-        validation consults any active provider — which, for this member, is
-        the member backend's own catalog: it admits what it advertises and
-        rejects what it does not.
+        With no shared model namespace, validation uses the member backend's catalog:
+        it admits what it advertises and rejects the rest.
         """
         from kiro_crew.config.loader import KiroCrewConfig
 
@@ -540,12 +537,8 @@ class TestSavePathRefusesAnUnusablePin:
     ) -> None:
         """A wrong-namespace live harness must not reject the member's pin.
 
-        default=codex, member=kas do not share a namespace, so the scope is
-        the member backend (kas). The only live provider is codex, whose
-        catalog does not advertise the pin. Scoping to kas means codex cannot
-        supply evidence, so entitlement is UNKNOWN (fail-open) rather than a
-        false rejection by the wrong backend's advertised ids — the defect the
-        unscoped fallback left open.
+        The scope is kas and the only live provider is codex, so entitlement is UNKNOWN
+        (fail-open) rather than a false rejection by codex's catalog.
         """
         from kiro_crew.config.loader import KiroCrewConfig
 

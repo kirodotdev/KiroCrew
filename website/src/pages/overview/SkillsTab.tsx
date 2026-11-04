@@ -3,6 +3,7 @@ import { useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Download, Loader2, RefreshCw, Sparkles } from 'lucide-react'
 import { api, ApiError, type SkillScriptValidation } from '../../api/client'
+import ProjectSkillsPlatformHint from '../../components/ProjectSkillsPlatformHint'
 import ProjectSkillsTrustList from '../../components/ProjectSkillsTrustList'
 import AskAgentButton from '../../components/AskAgentButton'
 import { Badge, Card, Btn, SearchInput, EmptyState, Toggle } from '../../components/ui'
@@ -301,7 +302,9 @@ export default function SkillsTab() {
       queryClient.setQueryData<Skill[]>(['skills'], old => old?.filter(s => s.key !== key) ?? [])
       return { removed }
     },
-    onSuccess: () => {
+    onSuccess: (_data, key) => {
+      // A row picked while the delete was in flight is the user's choice now,
+      // so only the deleted skill's own selection is torn down.
       // An OPEN editor must survive this teardown, whatever its save state:
       // dropping the selection or the editing flag unmounts it (a null
       // selection alone does, via the placeholder branch), which discards a
@@ -313,7 +316,7 @@ export default function SkillsTab() {
       // rather than the state variable to avoid a stale closure: onSuccess
       // executes after an async await, and the user may have entered edit mode
       // after the mutation was called but before it resolved.
-      if (!detailEditingRef.current) {
+      if (!detailEditingRef.current && selectedKeyRef.current === key) {
         setSelectedKey(null)
         setDetailEditing(false)
       }
@@ -503,6 +506,7 @@ export default function SkillsTab() {
 
   return (<>
     <PendingSkillsPanel sort={skillSort} />
+    <ProjectSkillsPlatformHint />
     <ProjectSkillsTrustList />
     {/* Create Skill Modal */}
     {/* The gate reads the SANITIZED name and category, not the raw ones and not

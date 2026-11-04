@@ -805,7 +805,7 @@ async def create_session(
             # a restart or a cap eviction produces -- the durable record survives
             # but this process holds no vouched word -- so re-establish that word
             # at THIS gate-verified admission rather than stranding own-store
-            # dispatch until the owner re-selects the agent. The trust source is
+            # dispatch on this chat for good. The trust source is
             # the VERIFIED session key: `revouch_at_verified_admission` re-vouches
             # a member DM key whose slug the durable record AGREES with, or any
             # other key whose disk vouch copy in `vouched-executions/` (written

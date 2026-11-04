@@ -528,16 +528,19 @@ class TestChildSide:
         with pytest.raises(ChildEmbeddingError, match="protected"):
             child_mod._load(self._load_request())
 
-    def test_set_threads_tolerates_a_runtime_without_the_dial(self):
-        child_mod._set_threads(object(), 2, 2)  # no _ctx: keeps the loaded count
-
+    def test_set_threads_tolerates_a_runtime_without_the_dial(self, caplog):
         class _Broken:
             class _ctx:  # noqa: N801 - mirrors the runtime attribute name
                 @staticmethod
                 def set_n_threads(a: int, b: int) -> None:
                     raise RuntimeError("no dial")
 
-        child_mod._set_threads(_Broken(), 2, 2)
+        with caplog.at_level("DEBUG", logger="kiro_crew.embeddings"):
+            child_mod._set_threads(object(), 2, 2)  # no _ctx: keeps the loaded count
+            child_mod._set_threads(_Broken(), 2, 2)
+        logged = [r.getMessage() for r in caplog.records if r.name == "kiro_crew.embeddings"]
+        # Only the dial that raised is reported; a runtime without one is silent.
+        assert logged == ["Could not set the embedding thread count"]
 
     def test_vendored_class_detection(self):
         assert not child_mod.is_vendored_llama_class(embed_child_fake.FakeLlama)

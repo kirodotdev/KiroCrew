@@ -1,9 +1,6 @@
 """SessionManager allocation: ``get_or_create`` and the checks an allocation passes.
 
-Among them: cancellation during a start, the model an allocation resolves and reports (including
-``_resolve_agent_model``'s guarded read of an agent spec), dead-provider cleanup and the
-``is_provider_alive`` verdict, warm-pool claims, concurrent allocations, the session state an
-allocation records, and the per-key ending fence that holds or refuses an allocation while that key
+Includes the per-key ending fence that holds or refuses an allocation while that key
 is being torn down.
 """
 
@@ -33,13 +30,8 @@ class TestCancelRaceCondition:
     async def test_cancel_during_start_kills_provider(self, cfg):
         """CancelledError during provider.start() dispatches the process kill.
 
-        The kill goes through _dispatch_hard_kill (non-blocking submission to
-        the subprocess executor) rather than an inline _sync_kill_provider:
-        the inline form blocks the event loop (os.waitpid / taskkill), and
-        resume prefetch makes this cancellation handler routine — a focus
-        flip mid-session/load cancels the loading task. Submission is
-        synchronous, so the kill is guaranteed dispatched before the
-        re-raise.
+        Through _dispatch_hard_kill, not an inline _sync_kill_provider, which blocks
+        the loop; submission is synchronous, so the kill is dispatched before the re-raise.
         """
         mock_provider = AsyncMock()
         mock_provider.start = AsyncMock(side_effect=asyncio.CancelledError)
@@ -395,18 +387,10 @@ class TestGetAgent:
 class TestTheEndingFenceAdmitsNothingUnderTheKey:
     """``ending_key``: the per-key sibling of the closing check, at every door of the registry.
 
-    A holder that is ending a run -- the cron reaper, ``cancel()`` -- raises the
-    fence around its kill passes. While it is up, a claim or a cold start under
-    the key is HELD at the front door of ``get_or_create``: it waits for the fence
-    to lift and then proceeds (the sub-agent completion injector's cold start
-    under the parent key, racing the reap, is delivered after it -- never
-    dropped). A cold start that was already inside ``provider.start()`` when the
-    fence went up -- nothing published yet, so no pass could see it -- is refused
-    at registration when its start returns, fence up or lifted, the provider it
-    started is hard-killed by the closing manager's own path, and the same call
-    then waits for the lift and allocates again. ``SessionEndingError`` reaches a
-    caller only when the fence outlives the wait bound, or from
-    ``open_task_session``, which is refused rather than held.
+    While the fence is up, a claim or cold start under the key is held at the front
+    door of ``get_or_create`` until it lifts. A start already inside ``provider.start()``
+    is refused at registration, its provider hard-killed, and the call allocates again.
+    ``SessionEndingError`` surfaces only past the wait bound, or from ``open_task_session``.
     """
 
     @staticmethod
@@ -772,11 +756,8 @@ class TestTheEndingFenceAdmitsNothingUnderTheKey:
     async def test_a_claim_waiting_on_the_busy_session_s_turn_is_not_a_spawn_in_flight(self, cfg):
         """A reservation is not a process: a claim parked on the live session's turn permit started nothing.
 
-        The sub-agent completion's claim of its busy parent -- ``get_or_create``
-        blocked on the turn semaphore -- holds a reservation for the whole wait.
-        The ending caller's read must not name it: it is held or woken, never
-        refused at a registration it never reaches, and no provider of its own
-        is started. Its reservation reads as an allocation, not as a spawn.
+        A claim blocked on the turn semaphore holds a reservation for the whole wait,
+        but it starts no provider, so it reads as an allocation, not a spawn.
         """
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
         provider, _, _ = await mgr.get_or_create("k1")  # the turn: permit held
@@ -805,15 +786,8 @@ class TestTheEndingFenceAdmitsNothingUnderTheKey:
     ):
         """The turn's ordinary release can reach the waiter before the ending caller's reset pops the session.
 
-        A claim blocked on the busy parent's turn permit passed the fence check
-        at the claim door before its wait began; the wait can outlast a fence
-        rising. If the busy turn then ends normally -- its permit released
-        before the ending caller's reset has popped the session -- the waiter
-        acquires the permit with the session still in the map. Without the
-        recheck it is handed the session and runs a turn under a key being
-        ended, which the reset then tears down under it. The fence is met
-        again after the acquire, under the lock: the waiter releases the permit
-        and is held at the front door until the lift, then lands.
+        The waiter passed the fence check before its wait, so the fence is checked
+        again after the acquire, under the lock: it releases the permit and is held.
         """
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
         provider, _, _ = await mgr.get_or_create("k1")  # the turn: permit held
@@ -965,14 +939,8 @@ class TestResolveAgentModelResolution:
     def test_resolve_agent_model_refuses_an_oversized_spec(self, tmp_path, monkeypatch):
         """The scan reads through the hardened, size-capped reader.
 
-        ``~/.kiro/agents`` is user-writable and shared with kiro-cli, so an
-        oversized "agent config" there must be refused rather than slurped into
-        memory — and this resolution is CACHED and reused on every later
-        lookup, so it is not a rare corner.
-
-        Exercised with a LOWERED cap rather than a real 50 MB fixture; the
-        property is that the cap is consulted, not its value. Paired with the
-        A-side below so the refusal cannot pass by breaking every read.
+        ``~/.kiro/agents`` is user-writable. The cap is lowered instead of a 50 MB
+        fixture; the A-side below shows the refusal does not come from breaking every read.
         """
         import json
 

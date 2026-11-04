@@ -311,8 +311,8 @@ export function memberMemoryState(member: string, store: string, stores: Record<
   return 'unavailable'
 }
 
-export function ModelField({ options, value, onChange, hint, servedAs, harness = '' }: {
-  options: string[]; value: string; onChange: (v: string) => void; hint?: string
+export function ModelField({ options, value, onChange, hint, servedAs, harness = '', disabled }: {
+  options: string[]; value: string; onChange: (v: string) => void; hint?: string; disabled?: boolean
   /** The id the crew's harness serves a stored pin `options` lacks as, `''` for none
    *  (`resolved-model`'s `pin_served_as`). Omitted while no live session has said. */
   servedAs?: string
@@ -343,6 +343,7 @@ export function ModelField({ options, value, onChange, hint, servedAs, harness =
         optionLabels={shown.map(label)}
         value={folded ? servedAs : value}
         onChange={onChange}
+        disabled={disabled}
         aria-label={i18nT('pages.kiroCrewAgentsPage.edit_model')}
         {...uiLocation('agents.model')}
       />

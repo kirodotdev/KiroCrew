@@ -101,12 +101,8 @@ class TestToolBloatFixesMountAndGrant:
     def test_a_rebuild_drops_a_ref_whose_server_the_map_does_not_declare(self, tmp_path: Path):
         """The assembled config leaves no ref to a server the map does not declare.
 
-        Pins the CALL SITE, not the helper: the rebuild narrows ``mcpServers`` in
-        passes that never touch the ref lists, so a rendered file carrying a ref
-        whose server is absent would keep probing that dead name every cycle. The
-        ``allowedTools`` side is the one that costs something -- that list never
-        reaches the PreToolUse gate, so the grant sits on the NAME and a server
-        added under it would inherit an approval nobody granted for it.
+        Pins the call site: ``allowedTools`` never reaches the PreToolUse gate, so a
+        leftover grant sits on the NAME and a server added under it inherits it.
         """
         cfg_dir = self._tool_search_defaults(tmp_path)
         kiro_dir = tmp_path / "kiro_agents"
@@ -134,16 +130,9 @@ class TestToolBloatFixesMountAndGrant:
     ):
         """Only an unresolved COMMAND is exempt from the ref reconcile, never a stub.
 
-        A declaration with no command, and one that is not even a spec, leave
-        nothing for a later pass to resolve, so their refs are real leftovers. An
-        `allowedTools` leftover is the one that costs something: that list never
-        reaches the PreToolUse gate, so the grant sits on the NAME and whatever
-        server is bound to it next inherits an approval nobody granted for it.
-
-        Asserted on the exempt set as well as the rendered file, because the set
-        IS the classification and a set built from "declared but not in the final
-        map" would sweep both of these in while every assertion about the mounted
-        server still passed.
+        A declaration with no command, or that is not a spec, leaves nothing to resolve.
+        The exempt set is asserted too: a set built from "declared but not in the final
+        map" would sweep both in while the rendered-file asserts still passed.
         """
         from kiro_crew import agent as agent_mod
 
@@ -195,23 +184,9 @@ class TestToolBloatFixesMountAndGrant:
     ):
         """A server whose command is merely not installed yet keeps the mount, loses the grant.
 
-        The two lists answer different questions and this is the input where they
-        part. Dropping the MOUNT would unmount the server permanently, because an
-        existing config never re-adds a template ref and the next rebuild reverses
-        this absence once the binary is installed. Dropping the GRANT costs one
-        approval a human can grant again.
-
-        So the grant goes. While the binary is absent nothing declares this name,
-        and an `allowedTools` entry never reaches the PreToolUse gate, so the
-        approval would sit on the NAME for whatever binds to it next. Having read
-        every app claim does not argue otherwise: that rules out a disabled app
-        hiding behind an unclaimed name, and says nothing about whether any source
-        still declares it.
-
-        This input is where the mount/grant split earns its keep: both lists are
-        asserted on it, so a reader that treats them alike fails whichever half it
-        gets wrong. Needs the resolver override because the stub echoes every
-        command, which makes this branch unreachable by default.
+        An existing config never re-adds a template ref, so a dropped mount is permanent;
+        a dropped grant costs one approval. Needs the resolver override because the stub
+        echoes every command, which makes this branch unreachable by default.
         """
         from kiro_crew import agent as agent_mod
 
@@ -371,12 +346,8 @@ class TestToolBloatFixesMountAndGrant:
     ):
         """The unresolved exemption's GRANT half does not outlive the app that owns the name.
 
-        A server can fail to resolve on this pass AND have its app deregistered
-        concurrently. Keeping the grant exemption then leaves an `allowedTools`
-        entry on a name whose owner is gone, and that list never reaches the
-        PreToolUse gate, so whatever is bound to the name next inherits the
-        approval. The mount half survives by design: it costs one mount attempt
-        against an empty name, where a dropped `tools` ref is unrecoverable.
+        The mount survives by design: it costs one mount attempt against an empty name,
+        where a dropped `tools` ref is unrecoverable.
         """
         from kiro_crew import agent as agent_mod
 
@@ -422,16 +393,8 @@ class TestToolBloatFixesMountAndGrant:
     def test_a_colon_keyed_server_no_app_owns_keeps_its_mount(self, tmp_path: Path, monkeypatch):
         """Ownership comes from the app's manifest, so a colliding prefix is not ownership.
 
-        `mcp_server_alias` returns a slash-free name unchanged, so a global
-        mcp.json server keyed `npm:foo` reaches the agent config with its colon
-        intact. An installed app may also be called `npm` and declare only `bar`
-        -- here switched ON, which is the direction that makes attribution
-        observable: a prefix-attributing reader hands `npm:foo` the enabled
-        app's answer and KEEPS its grant, leaving an auto-approval on a name
-        the app never declared, on the one list that never reaches the
-        PreToolUse gate. The correct reader sees `npm:foo` as unclaimed and
-        unvouched, so its grant goes while its mount stays. `npm:bar` IS the
-        app's own claim on the same input: enabled owner, so it keeps both.
+        App `npm` (switched ON) declares only `bar`; a global server keyed `npm:foo` keeps
+        its colon. A prefix-attributing reader would let `npm:foo` keep its grant.
         """
         from kiro_crew.apps import manager as apps_manager
 
@@ -479,16 +442,8 @@ class TestToolBloatFixesMountAndGrant:
     def test_a_slashed_manifest_name_is_matched_by_its_alias(self, tmp_path: Path, monkeypatch):
         """Ownership is keyed by the alias, because that is what the ref is spelled with.
 
-        A manifest may declare a slashed server -- the npm-scoped
-        `@playwright/mcp`, or the registry `namespace/name` form -- and
-        `mcp_server_alias` maps `npm:@playwright/mcp` to `playwright-mcp`, which
-        is the key a prior rebuild wrote and the candidate this pass sees. Keying
-        ownership by the raw composite matches no candidate at all, so the owner
-        of exactly the names that NEED aliasing reads as unowned and its grant
-        survives its app being switched off.
-
-        The unowned `solo` measures the other direction on the same input: a
-        reader that claims every candidate fails here.
+        `mcp_server_alias` maps `npm:@playwright/mcp` to `playwright-mcp`; keying by the raw
+        name matches nothing. The unowned `solo` fails a reader that claims everything.
         """
         from kiro_crew.apps import manager as apps_manager
 
@@ -537,17 +492,8 @@ class TestToolBloatFixesMountAndGrant:
     def test_an_unreadable_app_claim_does_not_read_as_unowned(self, tmp_path: Path, monkeypatch):
         """A claim that could not be read is not a claim of nothing.
 
-        `get_app_manifest` returns None for an absent file, a parse failure and a
-        permission error alike, so an app whose manifest stops being readable
-        claims no names. Its server is still in the rendered config, because
-        `_load_existing_config` carries the entry forward, so the permissive
-        "nobody owns this" branch would leave an auto-approval on a name whose
-        owner is switched off and cannot re-add the entry.
-
-        `vouched` is the other half on the same input: it is declared by a file
-        this rebuild READ, so no app read coming back blind can make it app-owned
-        and its exemption must not narrow. That half is what keeps a gated-off
-        server -- whose ref an existing config never re-adds -- mounted.
+        `get_app_manifest` returns None for absent, unparsable and unreadable files alike.
+        `vouched` is declared by a file this rebuild read, so its exemption must not narrow.
         """
         from kiro_crew.apps import manager as apps_manager
 
@@ -597,17 +543,8 @@ class TestToolBloatFixesMountAndGrant:
     ):
         """An app read failure is doubt about THAT app, never a licence to unmount others.
 
-        A user's own stdio server, added straight to the agent config, claimed by
-        no app and declared by no source scope, with its binary off PATH this
-        pass. An unrelated installed app's manifest fails to read, which
-        `_app_owned_mcp_keys` calls an ordinary shape of failure rather than an
-        exotic one. Nothing about that failure concerns this server, and a `tools`
-        ref is never re-added by a later pass, so pruning it would silently and
-        permanently stop offering the server's tools once the binary returned.
-
-        `nosuch` is the other half on the same input: its server is absent from
-        the config entirely rather than merely unresolved, so no pass can ever
-        mount it and a reader that keeps everything fails here.
+        A user's unclaimed stdio server, binary off PATH, keeps its `tools` ref: no later
+        pass re-adds it. `nosuch` is absent from the config, so it fails a keep-all reader.
         """
         from kiro_crew.apps import manager as apps_manager
 
@@ -653,26 +590,9 @@ class TestToolBloatFixesMountAndGrant:
     ):
         """A family match may narrow the GRANT, never the MOUNT.
 
-        Pinned by mutation: conditioning the mount exemption on an ownership
-        answer reds the `in config["tools"]`
-        asserts below; exempting grants unconditionally (a blanket keep) reds
-        the `not in config["allowedTools"]` ones.
-
-        `mcp_server_alias` is many-to-one, and `_normalize_mcp_server_keys` hands
-        the loser of a collision the lowest free `base-<n>` rather than dropping a
-        distinct server. Which claimant a suffix came from is not recoverable (it
-        is assigned against the live map, and the slashed key it came from is gone
-        by the next rebuild), so family membership is a GUESS: `playwright-mcp-2`
-        may be the switched-off app's collision half, or a user's own server that
-        merely failed to resolve this pass. Dropping its `tools` ref on that guess
-        deletes it with nothing to re-add it, so the mount survives; the grant
-        needs positive evidence the guess cannot supply, so it goes -- the same
-        mount-survives-doubt / grant-needs-evidence asymmetry the reconcile's
-        unresolved and gated handling already runs on.
-
-        `playwright-mcpx` is the precision half on the same input: it shares the
-        prefix but is not a numeric-suffixed sibling, so no app claims it and its
-        grant goes under either reader while its mount stays.
+        `_normalize_mcp_server_keys` gives a collision loser `base-<n>`, and its origin is
+        not recoverable, so `playwright-mcp-2` belonging to the app is a guess.
+        `playwright-mcpx` shares the prefix but is not a numeric-suffixed sibling.
         """
         from kiro_crew.apps import manager as apps_manager
 
@@ -726,23 +646,8 @@ class TestToolBloatFixesMountAndGrant:
     ):
         """Family membership is a guess, so it carries the mount and never the grant.
 
-        An app owns `playwright-mcp` and is switched ON. A `playwright-mcp-2` also
-        sits in the config with its command unresolved this pass. The suffix rule
-        matches the two, but nothing recoverable says the sibling came from that
-        app's collision rather than being a name its own author chose: the suffix
-        is minted against the live map and the slashed key it came from is gone by
-        the next rebuild.
-
-        Lending the enabled base's answer to that guess keeps an auto-approval on a
-        server the app never declared, and `allowedTools` never reaches the
-        PreToolUse gate, so whatever binds to the name next inherits it. The mount
-        rides on the same guess because being wrong there costs one mount attempt
-        against an empty name, while dropping it cannot be undone.
-
-        The base itself is the other half on the same input: it IS a claimed name,
-        its app is on, so it keeps both. A reader that required exactness for the
-        mount too would fail on the sibling, and one that accepted the family for
-        the grant would fail on it as well.
+        The app owning `playwright-mcp` is ON; the unresolved `playwright-mcp-2` may not be
+        its collision half. A wrong mount costs one attempt; a dropped mount is permanent.
         """
         from kiro_crew.apps import manager as apps_manager
 
@@ -788,18 +693,8 @@ class TestToolBloatFixesMountAndGrant:
     ):
         """A claimed name answers to its own app, even when it looks like a sibling.
 
-        Two apps: one switched ON declaring `x-y-2` literally, one switched OFF
-        declaring `@x/y`, which aliases to `x-y`. The suffix rule matches `x-y-2` to
-        `x-y`, so a reader that requires every family member to pass lets the
-        switched-off app delete a server whose own app is running, on both lists at
-        once.
-
-        Family matching exists for a name nothing claims exactly, where the suffix
-        is the only evidence available. Here there IS an exact claim, so it decides
-        and the family is irrelevant.
-
-        `x-y` is the other half on the same input: its own app is off, so it loses
-        both refs, which is what the family rule was added for.
+        An ON app declares `x-y-2`; an OFF app declares `@x/y` (alias `x-y`). Family
+        matching is only for names nothing claims exactly. `x-y` loses both refs.
         """
         from kiro_crew.apps import manager as apps_manager
 
@@ -850,15 +745,8 @@ class TestToolBloatFixesMountAndGrant:
     ):
         """One alias, two claimants: the family is switched on only while every claimant is.
 
-        Two apps can declare names that collide under `mcp_server_alias`, and the
-        suffix `_normalize_mcp_server_keys` assigns is computed against the live
-        server map, so which claimant a given sibling came from is not recoverable
-        from the manifests. A last-writer-wins map hands the whole family the
-        enablement of whichever app was read last, which grants on the strength of
-        an unrelated app being switched on.
-
-        `beta:solo` is the positive half on the same input: its only claimant is
-        enabled, so a reader that denies the whole map fails here.
+        A last-writer-wins map would give the family the state of whichever app was read
+        last. `beta:solo` has one enabled claimant, so a deny-all reader fails it.
         """
         from kiro_crew.apps import manager as apps_manager
 
@@ -916,16 +804,8 @@ class TestToolBloatFixesMountAndGrant:
     ):
         """A source that still declares a `base-<n>` name outranks family attribution.
 
-        `_normalize_mcp_server_keys` assigns a collision suffix against the live
-        server map, and the slashed key it derived from is gone from the rendered
-        config afterwards, so nothing at reconcile time can tell a minted
-        `base-<n>` from a server a source named that way on its own. Family
-        attribution therefore has to yield to positive evidence: a name the user's
-        own `mcp.json` still declares is not a switched-off app's sibling, because
-        nothing re-declares a disabled app's servers.
-
-        `playwright-mcp` is the other half on the same input: the app does own it,
-        so a reader that exempts everything fails here.
+        A minted `base-<n>` looks like a source-named one, so a name the user's `mcp.json`
+        still declares is not a disabled app's sibling. The app does own `playwright-mcp`.
         """
         from kiro_crew.apps import manager as apps_manager
 
@@ -974,11 +854,7 @@ class TestToolBloatFixesMountAndGrant:
     ):
         """`list_apps` drops an unreadable installed record silently, which is not "no such app".
 
-        The skip does not raise, so the returned list alone looks complete and the
-        omitted app's carried-forward server reaches the permissive branch --
-        leaving an `allowedTools` grant on a name whose owner cannot re-add the
-        entry. A directory still holding the record file `list_apps` reads, under a
-        name the list does not carry, is the signal that a claim went missing.
+        A record file on disk under a name the list does not carry signals a missing claim.
         """
         from kiro_crew.apps import manager as apps_manager
 
@@ -1059,12 +935,8 @@ class TestToolBloatFixesMountAndGrant:
     def test_an_unreadable_enablement_claims_nothing_rather_than_disabled(self, monkeypatch):
         """None from `app_enabled_state` is "could not read", never "switched off".
 
-        `is_app_enabled` returns a single False for both, which is why
-        `app_enabled_state` exists. Recording that False here would state a
-        definite disablement the reader never established, and a definite
-        disablement revokes an `allowedTools` grant that nothing re-derives. The
-        claim has to count as unread instead, so the reconcile falls back on the
-        answer it had before the rebuild.
+        `is_app_enabled` returns False for both. A false disablement would revoke a grant
+        nothing re-derives, so the claim counts as unread.
         """
         from kiro_crew import agent as agent_mod
         from kiro_crew.apps import manager as apps_manager
@@ -1085,15 +957,8 @@ class TestToolBloatFixesMountAndGrant:
     ):
         """Being withheld right now is not the same as anything still declaring the name.
 
-        A source declaring a name outranks a switched-off app's exact claim, because
-        pruning would widen the grant on recovery. The managed GATE must not carry
-        that privilege: `gated_off` reports only that a shipped server is withheld
-        at this moment. If an app's alias lands exactly on a gated managed name and
-        the gate vouched for it, the app's auto-approval would sit on the name until
-        the gate reopened and then belong to the managed server.
-
-        `@gated-alone` is the other half on the same input: gated and claimed by no
-        app, so its ref is preserved -- which is what the gate exemption is for.
+        If the gate vouched, a disabled app's grant would pass to the managed server once
+        the gate reopened. `@gated-alone` is claimed by no app, so its ref is kept.
         """
         from kiro_crew import agent as agent_mod
         from kiro_crew.apps import manager as apps_manager
@@ -1139,14 +1004,8 @@ class TestToolBloatFixesMountAndGrant:
     ):
         """The pre-rebuild ownership snapshot is what closes the gate's vouching hole.
 
-        An app claiming exactly a gated managed name can be uninstalled between
-        the two ownership reads. A reconcile reading only the FINAL read sees the
-        name as unclaimed, and the gate vouches for an unclaimed gated name -- so
-        the vanished app's auto-approval would sit on the managed name until the
-        gate reopened and then belong to the managed server. The union with the
-        start snapshot keeps the name exactly-claimed, and a claimant that
-        answers nothing is not consent, so the grant goes. The mount stays, as
-        everywhere.
+        The app is uninstalled between the two ownership reads; the union with the start
+        snapshot keeps the name claimed, so the grant goes and the mount stays.
         """
         from kiro_crew import agent as agent_mod
 
@@ -1176,16 +1035,8 @@ class TestToolBloatFixesMountAndGrant:
     ):
         """Pruning a source-declared name does not narrow its grant, it later widens it.
 
-        The tempting rule is that an EXACT app claim is unambiguous, so a
-        switched-off owner should decide even when another source declares the same
-        name. That is wrong because of what happens next: the shared sync re-adds
-        the BARE `@alias` to `allowedTools` once the command resolves again, so a
-        user who had only `@alias/one-tool` gets a whole-server grant back. Pruning
-        here therefore WIDENS the approval it was meant to protect.
-
-        So a readable non-app source declaring the name wins. The managed gate is
-        deliberately not such a source -- see the gated case below -- because being
-        withheld right now is not the same as anyone still declaring the name.
+        The shared sync re-adds the bare `@alias` once the command resolves, so a user who
+        had only `@alias/one-tool` would get a whole-server grant back.
         """
         from kiro_crew.apps import manager as apps_manager
 
@@ -1240,13 +1091,8 @@ class TestToolBloatFixesMountAndGrant:
     ):
         """An unread claim narrows the exemption whether or not its app is switched on.
 
-        The tempting refinement is to let an ENABLED app's unreadability pass,
-        since its own keys would be exempt under either answer. That is wrong for
-        the name NO app claims: the reading failure can be at the start while the
-        app is uninstalled by the end, and then the base was never recorded, the
-        owner is gone, and the name looks unowned though it never was. So both
-        reads must have seen every claim before an unclaimed, unvouched name is
-        exempted.
+        The app may be uninstalled by the end, leaving the name looking unowned, so both
+        reads must see every claim before an unclaimed, unvouched name is exempted.
         """
         from kiro_crew.apps import manager as apps_manager
 
@@ -1286,11 +1132,7 @@ class TestToolBloatFixesMountAndGrant:
     ):
         """An app that vanishes mid-rebuild answers nothing, and nothing is not consent.
 
-        Uninstalling takes the app out of the listing AND its manifest, so the
-        ownership read at the end cannot tell "this app is gone" from "no app ever
-        owned this name" -- and the second is the permissive answer. The snapshot
-        taken before the rebuild's work is what keeps the two apart, so the grant
-        does not sit on the name waiting for the next server bound to it.
+        The end read cannot tell "app gone" from "never owned"; the pre-rebuild snapshot can.
         """
         from kiro_crew import agent as agent_mod
 
@@ -1334,20 +1176,8 @@ class TestToolBloatFixesMountAndGrant:
     ):
         """Doubt about ownership is resolved differently for a mount than for a grant.
 
-        This is the pair of the uninstall test above, differing in one field. There
-        the final read was whole, so an alias absent from it really was gone. Here
-        the final read could not see some claim -- `get_app_manifest` returning None
-        is the ordinary shape of that failure -- so the same absence carries no
-        information, and the two lists take opposite answers to that doubt.
-
-        The `tools` ref survives, because dropping a mount on a doubt can unmount a
-        server for good: an existing config never re-adds a template ref. The
-        `allowedTools` grant does NOT, because keeping it on the same doubt leaves
-        an auto-approval sitting on a name, on the one list that never reaches the
-        PreToolUse gate, and a global "some app was unreadable" is not evidence
-        about THIS app. An approval a human can grant again is the cheaper loss.
-
-        The app is enabled throughout. Only the reading of it failed.
+        Pair of the uninstall test above: here the final read missed a claim, so the
+        absence carries no information. The app is enabled throughout.
         """
         from kiro_crew import agent as agent_mod
 

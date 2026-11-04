@@ -31,6 +31,8 @@ from kiro_crew.context import ContextBuilder
 
 pytestmark = pytest.mark.xdist_group(name="tree_scan_context_assembly_bindings")
 
+SHARED_BINDINGS_CHECKS = ("the_class_only_scan_can_fail",)
+
 _PACKAGE = "kiro_crew.context_assembly"
 
 #: Member -> (kind, coroutine, owner). Kind and coroutine are BASE's; the owner is the
@@ -172,13 +174,6 @@ def _class_only_constructs(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> list[s
         if isinstance(spelled, str) and spelled.startswith("__") and not spelled.endswith("__"):
             found.append(spelled)
     return found
-
-
-def test_the_class_only_scan_can_fail() -> None:
-    tree = ast.parse("def f(self):\n    super().g()\n    return __class__, self.__hidden\n")
-    fn = tree.body[0]
-    assert isinstance(fn, ast.FunctionDef)
-    assert sorted(_class_only_constructs(fn)) == ["__class__", "__hidden", "super()"]
 
 
 def test_the_class_only_scan_allows_dunders_and_explicit_super() -> None:

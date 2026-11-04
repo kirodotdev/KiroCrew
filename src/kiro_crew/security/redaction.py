@@ -57,6 +57,7 @@ from .redaction_entropy import (  # noqa: F401
     _RUN_PIECE_RES,
     _SECRET_KEY_LEN,
     _bare_secret_window_starts,
+    _chat_mail_link_spans,
     _contains_bare_secret,
     _contains_fixed_credential,
     _decode_b64_chunk,
@@ -85,7 +86,11 @@ def _plantuml_verdict(encoded: str, limit: int) -> tuple[bool, int]:
 
 
 def _document_link_spans(text: str) -> list[tuple[int, int]]:
-    """Return the spans of the :data:`_DOCUMENT_LINK_RE` matches that hold no key."""
+    """Return the spans of the document links that hold no key.
+
+    The :data:`_DOCUMENT_LINK_RE` matches, then the Outlook and Slack links
+    :func:`_chat_mail_link_spans` finds by structure.
+    """
     spans = []
     budget = 0 if _IN_DIAGRAM_SCAN.get() else _PLANTUML_SOURCE_CAP
     for m in _DOCUMENT_LINK_RE.finditer(text):
@@ -100,6 +105,7 @@ def _document_link_spans(text: str) -> list[tuple[int, int]]:
             )
         if kept:
             spans.append(m.span())
+    spans.extend(_chat_mail_link_spans(text))
     return spans
 
 
@@ -1499,9 +1505,19 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _DATA_URI_REACH,
         _DOCUMENT_ID,
         _ENTROPY_TERMS_KEY_LEN,
+        _EXCHANGE_GUID_DASHES,
+        _EXCHANGE_ID_MAX_BYTES,
         _GOOGLE_USER,
         _HEX_ONLY_RE,
         _HOST_ID_EXEMPT_OVERLAP,
+        _LINK_ALNUM,
+        _LINK_HOST_CHARS,
+        _LINK_PATH_CHARS,
+        _LINK_PATH_MAX,
+        _OUTLOOK_FOLDERS,
+        _OUTLOOK_HOSTS,
+        _OUTLOOK_ID_ESCAPES,
+        _OUTLOOK_ID_PREFIXES,
         _PLANTUML_ALPHABET,
         _PLANTUML_DIAGRAM,
         _PRINTABLE_BYTES,
@@ -1512,12 +1528,25 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _SECRET_MAX_SLASHES,
         _SECRET_MAX_VOWEL_RATIO,
         _SECRET_PRINTABLE_DECODE_RATIO,
+        _URL_PATH_SEP,
         _VOWELS,
+        _char_runs,
+        _chat_mail_link_at,
+        _chat_mail_link_pieces,
         _crosses_into_a_routed_commit,
         _decode_b64_safe,
         _decodes_to_printable_text,
+        _escapes_as_slash,
+        _expand_exchange_runs,
         _has_all_three_char_classes,
+        _is_guid_text,
+        _is_item_entry_id,
+        _is_outlook_id,
+        _is_slack_client_route,
+        _is_slack_host,
+        _is_whole_exchange_id,
         _lowercase_run_exceeds,
+        _outlook_item_id,
         _shannon_entropy,
         _steps_up,
         _vowel_ratio,

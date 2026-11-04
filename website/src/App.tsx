@@ -57,6 +57,7 @@ import KiroCrewNavBridge from './components/KiroCrewNavBridge'
 import InstancesViewport from './components/InstancesViewport'
 import { LocalOverlayRoot } from './components/overlayRoot'
 import EmbeddedHostBridge from './components/EmbeddedHostBridge'
+import AppConfirmHost from './components/AppConfirmHost'
 import EmbeddedDragRegionReporter from './components/EmbeddedDragRegionReporter'
 import EmbedTabStrip from './components/EmbedTabStrip'
 // Dev-only layout-editor harness (RFC §7 PR 2). Lazy so it never weighs the main
@@ -971,6 +972,10 @@ export default function App() {
     )}
     </WsContext.Provider>
     {shortcutsOpen && <ShortcutsModal onClose={() => setShortcutsOpen(false)} />}
+    {/* The dialog every `askAppConfirm()` caller raises (session close, ⌘W,
+        the sidebar's destructive actions), mounted outside the layout branches
+        so pop-out and embedded windows have it too. */}
+    <AppConfirmHost />
     <QuickSearchSurface
       owners={slotOwners}
       open={commandPalette.open}

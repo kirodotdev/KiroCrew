@@ -4354,7 +4354,11 @@ Neither refusal is silent. On an unsupported platform the loader logs one WARNIN
 process (unless `skills.project_skills_enabled` is off) naming the platform limit, and
 the enforcement audit's reason says the platform lacks the traversal rather than "no
 grant"; the warning names no project, because checking whether `.kiro/skills` exists
-would be the path lookup the gate refuses to make. On POSIX, a component the no-follow
+would be the path lookup the gate refuses to make. The Skills page says the same in one
+muted line: `GET /api/skills/-/trust` returns `platform_unsupported: true` when any chat
+slot has a project, `skills.project_skills_enabled` is on, and the platform lacks the
+traversal. It reads the slots, the config and the platform only, so it looks up no
+project path either; grant and revoke snapshots always carry `false`. On POSIX, a component the no-follow
 chain refuses is logged as a WARNING naming that component (a symlinked directory and a
 file both read as "a symlink or not a directory", since Linux reports both with
 the same errno), once per (base, component, errno) per process, saying the component

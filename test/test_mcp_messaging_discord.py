@@ -1,17 +1,9 @@
 """``send_message`` reaching Discord: the advertised contract and the delivery.
 
-Slack DM parity for Discord has three halves, and each one is a separate way to
-ship a tool that looks right and delivers nothing:
-
-* the ADVERTISEMENT -- the ``session`` enum, the argument validator that runs
-  before the handler (a value the enum offers and the validator rejects is
-  advertised and unreachable), and a description that says what the value does;
-* the TOOL -- which transport the ``channels`` governance vet is asked about, and
-  the refusal of Slack-only options that have no meaning off Slack;
-* the ROUTE -- resolving the configured owner's DM through the channel-neutral
-  transport contract, passing the same fail-closed egress gate an ordinary
-  Discord message passes, and telling the caller which surface actually took the
-  message.
+Each half can look right and deliver nothing: the ADVERTISEMENT (enum, validator and
+description agree), the TOOL (which transport governance vets; Slack-only options
+refused), and the ROUTE (owner DM via the channel-neutral contract, the same
+fail-closed egress gate, and the surface that took the message reported back).
 """
 
 from __future__ import annotations
@@ -85,12 +77,8 @@ def test_argument_validator_accepts_every_advertised_session(value: str) -> None
 def test_argument_validator_still_rejects_an_unadvertised_session(value: str) -> None:
     """The roster is derived, so the negative control must not be a real channel.
 
-    A registered channel name would be the wrong control: the roster derives from
-    ``CHANNEL_SESSION_NAMESPACES``, so every registered channel is advertised and
-    legal. The values here are the ones that must STAY refused —
-    ``unified`` is the session-key bucket rather than a transport and is excluded
-    on purpose, and the rest are a bare unknown name, a namespaced session key
-    where a transport is expected, and a case variant.
+    Every channel in ``CHANNEL_SESSION_NAMESPACES`` is legal. These must stay refused:
+    ``unified`` (a session-key bucket), an unknown name, a session key, a case variant.
     """
     with pytest.raises(ValidationError):
         validate_tool_args({"text": "hi", "session": value}, SEND_MESSAGE_SCHEMA)
@@ -220,10 +208,8 @@ def test_channel_target_with_a_slack_routing_field_is_refused(cron_caller, field
     """The pair addresses the destination directly, so a Slack-routing field
     travelling with it reaches nothing.
 
-    Refused at the argument validator rather than dropped at the handler's early
-    return: the pair wins the routing, and a silently discarded ``channel`` or
-    ``thread_ts`` would let the caller read a private Webex DM as a threaded post
-    to a named Slack channel. Nothing is posted.
+    Refused, not dropped: a silently discarded ``channel`` or ``thread_ts`` would let
+    the caller read a private Webex DM as a Slack thread post. Nothing is posted.
     """
     with patch("kiro_crew.mcp_core._post") as post:
         result = _call_tool(
@@ -257,12 +243,8 @@ def test_a_channel_addressed_send_does_not_claim_a_dm_or_notification(cron_calle
 def test_an_addressed_send_is_refused_without_a_verifiable_identity() -> None:
     """The forwarded key becomes the governance SUBJECT at the egress chokepoint.
 
-    The lenient resolver walks process ancestors, so a sub-agent whose identity was
-    not injected resolves to its PARENT — forwarding that would hand the child the
-    parent's channel permissions. Strict resolution accepts only the
-    gateway-injected key or an HMAC-verified pid, and a channel-ADDRESSED send has
-    no benign default to fall back to (the gateway would vet it as the host), so it
-    is refused rather than sent under a borrowed identity. Nothing is posted.
+    The lenient resolver would give an uninjected sub-agent its PARENT's permissions.
+    Strict resolution has no benign default for an addressed send, so it is refused.
     """
     with (
         patch.dict("os.environ", _PINNED_HOME_ONLY(), clear=True),
@@ -295,13 +277,8 @@ def test_a_bare_send_still_works_without_a_verifiable_identity() -> None:
 def test_every_slack_only_field_is_covered_by_the_refusal() -> None:
     """The refusal list is the whole Slack option set, so none is silently kept.
 
-    ``channel_type`` and ``target_id`` are excluded alongside the core fields
-    because together they are the OTHER destination mechanism, not Slack protocol
-    options: ``channel_type`` selects a non-Slack transport and ``target_id``
-    narrows it to one configured destination on that transport, and combining
-    either with a Slack routing field is refused by its own guard rather than
-    dropped. A genuinely new Slack option added to the schema still has to join
-    ``_SLACK_ONLY_FIELDS`` or this fails, which is the point.
+    ``channel_type`` and ``target_id`` are excluded: they are the other destination
+    mechanism, with their own guard. A new Slack option must join ``_SLACK_ONLY_FIELDS``.
     """
     properties = set(_descriptor()["inputSchema"]["properties"])
     # Not Slack-protocol options: text/title/session are universal, channel_type
@@ -426,12 +403,8 @@ async def test_endpoint_refuses_a_channel_target_with_a_slack_routing_field(
 async def test_a_body_caller_session_is_ignored_without_internal_auth() -> None:
     """A body-supplied ``caller_session`` is a self-declared governance identity.
 
-    Honoured only on the proven-internal transport (``internal_auth``, set solely
-    after an ``X-Internal-Secret`` match). Absent it, the addressed leg must vet
-    under the host sentinel, never the declared ``cron:*`` — otherwise a caller
-    that reached this route without the internal secret could pick a permissive
-    cron profile. This route is strict-internal today, so the guard is
-    defence-in-depth against a future reclassification.
+    Honoured only with ``internal_auth`` (an ``X-Internal-Secret`` match); otherwise
+    the leg vets as the host, so a caller cannot pick a permissive ``cron:*`` profile.
     """
     seen: list[str] = []
 
@@ -674,16 +647,9 @@ async def test_options_trailer_survives_as_a_numbered_list(audit) -> None:
 async def test_a_non_cron_channel_session_vets_on_the_headers_attested_identity() -> None:
     """The owner-DM leg must not vet a non-cron caller under the host sentinel.
 
-    ``_deliver_channel_dm`` resolves ``caller_session or HOST_SESSION_KEY``, and
-    HOST_SESSION_KEY is the PERMISSIVE default -- so dropping a non-cron caller's
-    identity here lets a session whose own profile denies the transport reach a
-    host-permitted owner DM. The sibling ``channel_type``/``target_id`` leg already
-    closed this; the channel-``session`` leg was not migrated with it.
-
-    The identity comes from the ``X-Session-Key`` HEADER, which
-    ``token_auth._verify_unix_peer`` kernel-attests against the peer's own process
-    ancestry, never from the body -- so it matches the principal
-    ``_channel_delivery_key`` resolves for delivery on this same path.
+    ``HOST_SESSION_KEY`` is the PERMISSIVE default, so a denied session would reach a
+    host-permitted owner DM. The identity comes from the ``X-Session-Key`` HEADER,
+    which ``token_auth._verify_unix_peer`` kernel-attests, never from the body.
     """
     seen: list[str] = []
 

@@ -425,8 +425,10 @@ test.describe('E2E: sidebar tag columns', () => {
     const col = await (await request.post('/api/chat/tag-columns', { data: { name: 'to-delete', tag_ids: [], mode: 'any' } })).json()
     await page.goto('/chat')
     await page.waitForSelector(`[data-testid="column-${col.id}"]`)
-    page.once('dialog', d => d.accept())
     await page.click(`[data-testid="column-delete-${col.id}"]`)
+    // The in-app dialog asks, not a native one.
+    const ask = page.getByRole('dialog', { name: 'Delete this column?' })
+    await ask.getByRole('button', { name: 'Delete column' }).click()
     await expect(page.locator(`[data-testid="column-${col.id}"]`)).toHaveCount(0)
     const list = await (await request.get('/api/chat/tag-columns')).json()
     expect(list.find((c: { id: string }) => c.id === col.id)).toBeFalsy()

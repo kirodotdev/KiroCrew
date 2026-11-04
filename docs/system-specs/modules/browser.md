@@ -823,11 +823,18 @@ internal-secret only) and renders the gateway's answer. It holds no state.
 `browser_harness.ops.run_op(op, args, ctx)` runs in the gateway. It reaches the
 browser only through `ctx.helper(name, **kwargs)` -- one allowlisted Harness
 helper over the daemon's IPC -- and the `js` helper is only ever given
-`snapshot_walker.js` plus one method call. The screenshot guards' counts
-(`askedValues`, `passwordBoxes`) run through `js_isolated` instead: the same
-walker call, evaluated in an isolated world of the tab's top frame
-(`helper_worker._local_js_isolated`), so a page script that replaces
-`document.querySelectorAll` in its own world cannot force them to 0. A count
+`snapshot_walker.js` plus one method call. Every method but three runs through
+`js_isolated`: the same walker call, evaluated in an isolated world of the tab's
+top frame (`helper_worker._local_js_isolated`), so a page script that replaces
+`document.querySelectorAll`, `getAttribute` or a property getter in its own world
+changes neither what the walker reads nor which fields it calls secret, and
+cannot force the screenshot guards' counts (`askedValues`, `passwordBoxes`) to 0.
+Only `stamp`, `state` and `consoleMessages` stay in the page's own world
+(`ops.PAGE_WORLD_METHODS`): they need its `window` and `console`. The refs live
+in the isolated world, which has one fixed name (`frames.TOP_WALKER_WORLD`, equal
+to the helper worker's); Chrome hands every session the same world for the same
+name, so the stream's session reads the refs the helper made (the quick ask's
+targets, the frame slots). A count
 that cannot be taken refuses: `screenshot` answers `secret_check_failed`, and a
 decision-hook capture is skipped. Any frame, `object` or `embed` the top
 document cannot read (`unreadableFrames`), hidden or not, refuses too, with or
@@ -873,10 +880,11 @@ into the same hidden leaf, read there and deleted, so it never sits in the
 screenshot directory. A page can still edit its own DOM (remove
 `data-kc-asked`, change an input's type), which no isolated world prevents.
 The walker installs `window.__kcWalker`
-per document; it mints `eN` refs into `window.__kcRefs` (dropped when the element
-leaves the DOM), never reads a password or credential-shaped value, and hooks
-`console.*` so `console` returns in-page messages since the last navigate or
-snapshot.
+per document; it mints `eN` refs into `window.__kcRefs` of its isolated world
+(dropped when the element leaves the DOM) and never reads a password or
+credential-shaped value. The `console` hook is installed in the page's own world,
+by `navigate` and by each `snapshot`, so `console` returns in-page messages since
+the last navigate or snapshot.
 
 | Op | Behaviour |
 |---|---|
@@ -920,7 +928,7 @@ its own visibility. A password field an ask would refuse has no ref and says why
 and is marked `[covered]`. A cross-origin iframe is a slot the gateway reads
 itself (`browser_harness/frames.py`): an out-of-process one through its child
 session, a same-site one Chrome keeps in the tab's process through the tab's
-session in a fixed isolated world of that frame, in both cases only directly
+session, in both cases in a fixed isolated world of that frame, and only directly
 under the tab and named `f<tag>e<n>`. Before reading a child's outline or acting
 on one of its refs, the op applies the same `OpContext.url_allowed` predicate to
 the child's current URL. Refused children stay marked unread; a refused frame-ref
@@ -1179,10 +1187,12 @@ One card and two controls; everything else is under a collapsed More group.
   own list), Engine
   (Harness and Chromium versions; Redownload posts `{components: ["chromium"],
   refresh: true}` so a Chromium already on disk is REPLACED, the repair for a
-  damaged copy; the ordinary install keeps a whole one. The route starts the job,
-  then `HarnessSupervisor.stop_for_chromium_replace` stops Kiro's own Chromium if
-  it runs (never the person's Chrome) and refuses every start that would launch it
-  until the job ends, with the detail "Kiro's Chromium is being redownloaded".
+  damaged copy; the ordinary install keeps a whole one. The route reserves the
+  job and closes the start gate at once; the job's first step,
+  `HarnessSupervisor.stop_for_chromium_replace`, stops Kiro's own Chromium if it
+  runs (never the person's Chrome) before anything is installed, and every start
+  that would launch it is refused until the job ends, with the detail "Kiro's
+  Chromium is being redownloaded".
   `chromium._swap_in` moves the installed copy aside (a `.previous-*` directory
   beside the version directories) before moving the new one in and puts it back
   if that fails, so a copy is never half-deleted, and a copy a failed restore left

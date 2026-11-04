@@ -172,8 +172,15 @@ class TestAClearInTheInterTurnWindowIsRefused:
         sessions.discard_conversation = AsyncMock(side_effect=_shutdown_hangs_then_cleans_up)
         sessions.has_session = MagicMock(return_value=True)
 
+        # Drive the deadline via a fake clock so the timeout fires after the teardown starts,
+        # not by racing a 10 ms wall-clock against the event loop on a slow shard.
+        # Call sequence: deadline = _now() + SECS, early-check _now(), wait_for timeout _now().
+        # t=0 when deadline is set; t=0 again at the early check (teardown is allowed to start);
+        # t >> deadline at the wait_for calc (timeout=0, immediate TimeoutError).
+        _times = iter([0.0, 0.0, hc._CLEAR_DISCARD_TIMEOUT_SECS + 1.0])
+
         request = _make_request("ch1", {"scope": "all"}, channel=ch, sessions=sessions)
-        with patch.object(hc, "_CLEAR_DISCARD_TIMEOUT_SECS", 0.01):
+        with patch.object(hc, "_now", side_effect=_times):
             with patch.object(hc, "_CANCEL_GRACE_SECS", 0.05):
                 with patch(
                     "kiro_crew.dashboard.handlers_channel._mgr",
@@ -232,7 +239,12 @@ class TestAClearInTheInterTurnWindowIsRefused:
         sessions.has_session = MagicMock(side_effect=lambda _k: not state["destroyed"])
 
         request = _make_request("ch1", {"scope": "all"}, channel=ch, sessions=sessions)
-        with patch.object(hc, "_CLEAR_DISCARD_TIMEOUT_SECS", 0.01):
+        # Drive the deadline via a fake clock so the timeout fires after the teardown starts,
+        # not by racing a 10 ms wall-clock against the event loop on a slow shard.
+        # t=0 when deadline is set; t=0 at the early check (teardown is allowed to start);
+        # t >> deadline at the wait_for timeout calc (immediate TimeoutError).
+        _times = iter([0.0, 0.0, hc._CLEAR_DISCARD_TIMEOUT_SECS + 1.0])
+        with patch.object(hc, "_now", side_effect=_times):
             with patch(
                 "kiro_crew.dashboard.handlers_channel._mgr",
                 return_value=MagicMock(get=MagicMock(return_value=ch)),

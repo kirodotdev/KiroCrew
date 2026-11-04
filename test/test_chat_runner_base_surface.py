@@ -295,7 +295,7 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         (
             "_drop_stale_admissions",
             "function",
-            "(state: 'DashboardState', slot: '_ChatSlot') -> 'None'",
+            "(state: 'DashboardState', slot: '_ChatSlot', *, selected_id: 'str | None' = None) -> 'None'",
         ),
         ("_has_user_queued_followup", "function", "(slot: \"'_ChatSlot'\") -> 'bool'"),
         (

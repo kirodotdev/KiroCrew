@@ -1,15 +1,8 @@
 """Coverage for ``dashboard/handlers/core.py``: security reads and the local-secret gates.
 
-The SEL and security-posture read endpoints, the loopback-gated local endpoints
-(token / logout), the app-secret exchange, and a non-ASCII ``X-Local-Secret`` at each
-local-secret gate.
-
-Style and isolation follow ``test_dashboard_handlers_core_coverage.py``: direct
-handler calls against a ``MagicMock(spec=web.Request)``, a real aiohttp ``TestClient``
-where the handler needs a genuine request body or streaming response, and every write
-under the autouse-isolated ``KIROCREW_HOME`` from ``conftest.py``; nothing here touches
-the network, downloads a model, or spawns a process. Shared stubs and fixtures come
-from ``dashboard_handlers_core_coverage_helpers.py``.
+SEL and posture reads, the loopback-gated token/logout endpoints, the app-secret
+exchange, and a non-ASCII ``X-Local-Secret`` at each gate. Shared stubs come from
+``dashboard_handlers_core_coverage_helpers.py``.
 """
 
 from __future__ import annotations
@@ -71,13 +64,8 @@ class TestSelEndpoints:
     async def test_a_successful_owner_read_is_audited_after_it_is_served(self, fake_sel) -> None:
         """A trail of refusals alone never says the log was read.
 
-        The denial branch records who was turned away; without a matching row for
-        the read that succeeded, an operator reviewing the trail cannot tell an
-        untouched log from one the owner has been reading. The write lands AFTER the
-        rows are captured, because ``recent()`` flushes the write queue before it
-        walks the log: enqueued first, this row would reach disk in time to be
-        served back as the newest event, and a ``limit=1`` read would return nothing
-        but its own audit.
+        The audit row lands after the rows are captured: ``recent()`` flushes the write
+        queue first, so a ``limit=1`` read would otherwise return only its own audit.
         """
         calls: list[str] = []
         fake_sel.log_api_access.side_effect = lambda **kw: calls.append(f"audit:{kw['outcome']}")
@@ -122,12 +110,8 @@ class TestSelEndpoints:
     async def test_events_refuses_every_non_owner_caller(self, fake_sel, kwargs) -> None:
         """The rows name the resources a security decision was about.
 
-        A dashboard session is not by itself the owner: the messaging bridges
-        mint a presigned token whose subject is the allowed user's own id, so
-        serving these rows to any authenticated session hands one principal the
-        other's audit trail. Each parameter is a caller class that must fail
-        closed, and the read must not happen AT ALL -- a 403 whose body still
-        carried the rows would pass a status-only assertion.
+        Messaging bridges mint tokens for allowed users, so a session is not the owner.
+        The read must not happen at all, not just answer 403.
         """
         resp = await core_mod.api_sel_events(_req(app=self._OWNER_APP, **kwargs))
         assert resp.status == 403
@@ -144,13 +128,8 @@ class TestSelEndpoints:
     ) -> None:
         """A bootstrap subject under a configured owner IS the owner, refused.
 
-        Configuring an owner after the dashboard session was signed leaves that
-        session's subject at the bootstrap name, and a token refresh preserves the
-        subject, so the real owner keeps failing the gate until they sign in again.
-        A generic 403 gives the one caller class that can act on the refusal no way
-        to know that, which is why the denial goes through the shared tail: the
-        status is 401 and the code names re-authentication. The read must still not
-        happen -- the relabel changes the response, not the decision.
+        A token refresh keeps the bootstrap subject, so the owner must sign in again: the
+        answer is 401 with a re-authentication code, and the read still does not happen.
         """
         resp = await core_mod.api_sel_events(_req(app=self._OWNER_APP, user=subject, app_token=""))
         assert resp.status == 401
@@ -348,11 +327,8 @@ class TestLocalToken:
     ) -> None:
         """The owning app's name reaches the audit row, not the response or the token.
 
-        The registry knows which app's backend owns the calling pid; the gate
-        hands that name through so forensics can tell which app minted an owner
-        token. The token itself carries no ``app`` claim: an app-scoped token is
-        refused by the owner-dashboard check, which would withdraw the capability
-        the admission grants.
+        The token carries no ``app`` claim because the owner-dashboard check refuses an
+        app-scoped token.
         """
         from kiro_crew import member_memory_auth as auth
 
@@ -399,11 +375,8 @@ class TestLocalToken:
     ) -> None:
         """A kernel-verified same-uid AF_UNIX peer is admitted.
 
-        The pod's `mint_token` connects over the pod's private unix socket,
-        where ``request.remote`` is EMPTY -- the loopback test alone 403s the
-        transport that is strictly harder to reach than loopback TCP. The
-        positive `check_peer_is_self` MATCH plus the unchanged secret check
-        must mint.
+        Over the pod's unix socket ``request.remote`` is empty, so a `check_peer_is_self`
+        match plus the secret check must mint.
         """
         from kiro_crew.mcp_gateway.socketsec import PeerCredResult
 
@@ -526,19 +499,9 @@ class TestLocalToken:
     ) -> None:
         """On Linux the namespace comparison is the whole owner verdict.
 
-        The other refusal tests on this route hand the gate no peer pid, which
-        answers on its first leg and leaves the Linux measure unreached from here.
-        In this one the kernel DOES identify the caller and its start id IS
-        readable, so the two callers below differ by one bit: whether they share
-        the gateway's user and mount namespaces. A same-uid caller that does not
-        is refused, and the refusal carries the code a mint reads its remedy from
-        beside the audit value the pod records for it.
-
-        Both directions are asserted, because a gate that refused every caller
-        would satisfy the negative one on its own. The comparison is also pinned
-        to the gateway's own pid, which is what makes it a statement about this
-        process rather than about any two processes. The app-backend escape is
-        held off so one cause decides the verdict; it is covered separately.
+        The two callers differ only in sharing the gateway's user and mount namespaces;
+        both directions are asserted so a gate refusing everyone fails. The app-backend
+        escape is held off so one cause decides the verdict.
         """
         from kiro_crew import member_memory_auth as auth
 
@@ -579,12 +542,8 @@ class TestLocalToken:
     ) -> None:
         """All three gates are machine-distinguishable to the caller, not just one.
 
-        The SEL record already tells the three apart. A caller that can read only
-        one of them has to guess between the other two, and their remedies differ:
-        one is a worktree update, one regenerates the secret, and the third is about
-        which process called and is fixed by neither. Each ``code`` therefore pairs
-        with the ``resources`` value written for the same refusal, so the pairing
-        cannot drift apart silently.
+        Their remedies differ, so each ``code`` is paired with the ``resources`` value
+        the SEL record writes for the same refusal.
         """
         from kiro_crew import member_memory_auth as auth
 

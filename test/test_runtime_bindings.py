@@ -47,6 +47,12 @@ from kiro_crew.acp.runtime import AcpRuntime
 
 pytestmark = pytest.mark.xdist_group(name="tree_scan_runtime_bindings")
 
+SHARED_BINDINGS_CHECKS = (
+    "the_field_scan_counts_every_read_and_write_shape",
+    "the_signature_digest_ignores_an_object_address_in_either_spelling",
+    "the_bound_function_scans_include_every_static_method",
+)
+
 #: Member -> (kind, coroutine, signature digest, owning module). Frozen at the split: the
 #: kind, coroutine flag and signature are BASE's; the owner is where the member lives now.
 _MEMBERS: dict[str, tuple[str, object, str, str]] = {
@@ -229,6 +235,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "send_request": ("function", True, "60d06c03f35b", "runtime_wire"),
     "send_request_for_answer": ("function", True, "f3fe127a3feb", "runtime_wire"),
     "send_response": ("function", True, "74f287d889d6", "runtime_wire"),
+    "session_activity_at": ("function", False, "8912ecd7f5d6", "runtime_session_registry"),
     "settle_stderr": ("function", True, "8fe4e298f96b", "runtime_liveness"),
     "spawn": ("function", True, "dbecd2a33a23", "runtime_spawn_entry"),
     "spawn_monotonic": ("property", False, "c2eec8a41739", "runtime_class"),
@@ -356,15 +363,6 @@ def _signature_digest(fn: Any) -> str:
         params[0] = params[0].replace(annotation=inspect.Parameter.empty)
     text = _ADDRESS.sub(" at 0x", str(sig.replace(parameters=params)))
     return hashlib.sha256(text.encode()).hexdigest()[:12]
-
-
-def test_the_signature_digest_ignores_an_object_address_in_either_spelling() -> None:
-    def f(x: object = None) -> None: ...
-
-    lower = _ADDRESS.sub(" at 0x", "(x=<object object at 0x7f1a2b3c4d5e>)")
-    upper = _ADDRESS.sub(" at 0x", "(x=<object object at 0x000001A9BFA701B0>)")
-    assert lower == upper == "(x=<object object at 0x>)"
-    assert len(_signature_digest(f)) == 12
 
 
 def _member_function(name: str) -> Any:
@@ -666,16 +664,6 @@ def _fields(fns: list[ast.FunctionDef | ast.AsyncFunctionDef]) -> tuple[set[str]
     return written - members, read - written - members
 
 
-def test_the_field_scan_counts_every_read_and_write_shape() -> None:
-    tree = ast.parse(
-        "def f(self):\n"
-        "    self.a = 1\n    del self.b\n    self.c[k] = v\n    del self.d[k]\n"
-        "    self.e.add(1)\n    self.f.setdefault(k, v)\n    setattr(self, 'g', 1)\n"
-        "    return self.h, getattr(self, 'i', None), hasattr(self, 'j'), self.e\n"
-    )
-    assert _fields([tree.body[0]]) == ({"a", "b", "c", "d", "e", "f", "g"}, {"h", "i", "j"})
-
-
 def _listed(doc: str, label: str) -> set[str]:
     match = re.search(rf"{label}: (.*?)\.(?:\n\n|\n?$)", doc, re.S)
     return set(re.findall(r"``(\w+)``", match.group(1))) if match else set()
@@ -695,21 +683,6 @@ def test_owners_log_under_the_runtime_logger(owner: str) -> None:
     logger = vars(sys.modules[owner]).get("logger", runtime.logger)
     assert logger is runtime.logger
     assert runtime.logger.name == "kiro_crew.acp.runtime"
-
-
-def test_the_bound_function_scans_include_every_static_method() -> None:
-    statics = {
-        name: f"{_PACKAGE}.{home}"
-        for name, (kind, _, _, home) in _MEMBERS.items()
-        if kind == "staticmethod" and home != _CLASS_HOME
-    }
-    assert statics
-    scanned = {
-        fn.name
-        for owner in set(statics.values())
-        for fn in _self_functions(_tree(sys.modules[owner]), owner)
-    }
-    assert set(statics) <= scanned
 
 
 def _owner_imports(tree: ast.Module) -> set[str]:

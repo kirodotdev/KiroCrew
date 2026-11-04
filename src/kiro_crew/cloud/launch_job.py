@@ -418,6 +418,15 @@ class LaunchJobStore:
             path = self._path(job_id)
         except ValueError:
             return None
+        return self._read(path)[0]
+
+    def _read(self, path: Path) -> "tuple[Optional[LaunchJob], bool]":
+        """The job in *path*, and whether its bytes were not UTF-8.
+
+        One read answers both, so a caller that needs the jobs and the unreadable
+        records sees the same bytes for each file rather than two scans a
+        concurrent save() can land between.
+        """
         # Retry a transient read failure. A concurrent save() replaces this file via
         # os.replace; on Windows a read that collides with the in-progress replace
         # raises a sharing violation (an OSError), and without this list() would then
@@ -427,32 +436,59 @@ class LaunchJobStore:
         raw = None
         for attempt in range(5):
             if not path.exists():
-                return None
+                return None, False
             try:
                 raw = json.loads(path.read_text(encoding="utf-8"))
                 break
             except OSError as e:
                 if attempt == 4:
                     logger.warning("Failed to read launch job %s: %s", path, e)
-                    return None
+                    return None, False
                 time.sleep(0.02 * (attempt + 1))
+            except UnicodeDecodeError as e:
+                # Bytes that are not UTF-8 are as unusable as bad JSON: skip the job,
+                # and say so, because the record's status is now unknown.
+                logger.warning("Failed to parse launch job %s: %s", path, e)
+                return None, True
             except json.JSONDecodeError as e:
                 logger.warning("Failed to parse launch job %s: %s", path, e)
-                return None
+                return None, False
         if not isinstance(raw, dict):
-            return None
-        return LaunchJob.from_dict(raw)
+            return None, False
+        return LaunchJob.from_dict(raw), False
 
-    def list(self) -> list:
+    def snapshot(self) -> "tuple[list, List[str]]":
+        """Every readable job, newest first, and the ids of job files that are not UTF-8.
+
+        Both come from ONE read of each file. A decision that needs both -- launch
+        admission, the lane of a crew -- must take them from here: two separate
+        scans let a worker's save() rewrite a file between them, so a running job
+        could be skipped by one and missed by the other.
+        """
         if not self._root.exists():
-            return []
+            return [], []
         jobs: list = []
+        undecodable: List[str] = []
         for p in self._root.glob("*.json"):
-            job = self.get(p.stem)
+            job, not_utf8 = self._read(p)
             if job is not None:
                 jobs.append(job)
+            elif not_utf8:
+                undecodable.append(p.stem)
         jobs.sort(key=lambda j: j.created_at, reverse=True)
-        return jobs
+        return jobs, sorted(undecodable)
+
+    def list(self) -> list:
+        return self.snapshot()[0]
+
+    def undecodable_ids(self) -> List[str]:
+        """Ids of job files whose bytes are not UTF-8, which :meth:`list` skips.
+
+        Launch admission refuses while one exists: such a record may be a launch
+        still in progress, and :meth:`list` cannot show its status. A caller that
+        also needs the jobs takes both from :meth:`snapshot`.
+        """
+        return self.snapshot()[1]
 
     def adopt(self, job_id: str) -> None:
         """Record that a worker in *this* process is driving ``job_id``.

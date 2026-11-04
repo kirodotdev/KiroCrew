@@ -120,6 +120,14 @@ def source_channels_of(item: Any) -> tuple[str, ...]:
     return tuple(ch for ch in raw if isinstance(ch, str) and ch)
 
 
+#: Marks a restored entry the user picked with a card's "run this next" while a
+#: turn was running. That click promotes the card and stops the turn, and the
+#: turn's end drains the queue with no card named, so the drain reads this mark
+#: to run the chosen card instead of holding it like every other restored entry.
+#: Process-local for the same reason as :data:`RESTORED_QUEUE_KEY`: the writer
+#: never emits it, so a restart forgets the choice and the card waits again.
+RESTORED_SEND_CHOSEN_KEY = "_restored_send_chosen"
+
 _DURABLE_QUEUE_KEYS: tuple[str, ...] = (
     "id",
     "content",
@@ -392,6 +400,7 @@ def sanitize_restored_queue(raw: object) -> list[dict[str, Any]]:
     # Local import: session_control reaches this module through state, so taking
     # the key at module level would close an import cycle.
     from kiro_crew.dashboard.chat_delivery import TURN_ACTOR_META_KEY
+    from kiro_crew.dashboard.chat_utils_injected_rows import STEER_INTENT_META
     from kiro_crew.dashboard.session_control import (
         CHANNEL_RECIPIENT_META_KEY,
         QUEUED_CONTAINMENT_META_KEY,
@@ -483,6 +492,11 @@ def sanitize_restored_queue(raw: object) -> list[dict[str, Any]]:
             # blast radius: it names a conversation on a network surface and the
             # drop notice would carry the entry's text there, so an edited stamp
             # would turn a file write into an outbound channel message.
+            #
+            # The STEER INTENT mark goes too: it lets an entry drain past the
+            # sub-agent hold (``releases_past_subagent_hold``), a path that never
+            # runs the drain's containment sweep. Restored, an act-now steer is
+            # an ordinary card that waits for the user like every other one.
             entry["meta"] = {
                 k: v
                 for k, v in meta.items()
@@ -492,6 +506,7 @@ def sanitize_restored_queue(raw: object) -> list[dict[str, Any]]:
                     TURN_ACTOR_META_KEY,
                     SEND_ORIGIN_META_KEY,
                     CHANNEL_RECIPIENT_META_KEY,
+                    STEER_INTENT_META,
                 )
             }
         try:
@@ -950,6 +965,10 @@ class SlotQueueRepository:
             meta = item.get("meta")
             if isinstance(meta, dict):
                 meta.pop(AUTOMATION_STEER_META, None)
+            if item["content"] != previous and isinstance(item.get("meta"), dict):
+                # A code channel's Slack sender names whose words these are;
+                # replacement text is the editor's, so the name goes.
+                item["meta"].pop("slack_sender", None)
             if directive_user_origin:
                 item["_directive_user_origin"] = True
             else:

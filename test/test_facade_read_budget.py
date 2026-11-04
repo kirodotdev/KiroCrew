@@ -18,6 +18,7 @@ every runner.
 from __future__ import annotations
 
 import json
+import threading
 from collections import Counter
 from unittest.mock import AsyncMock
 
@@ -34,11 +35,15 @@ from kiro_crew.dashboard.state import DashboardState
 STEP = 200
 
 # Facade reads each extra slot costs, measured on the main this file was written
-# against. The flush reads 6 per row: two ``__path__`` lookups from a per-row
-# import, and one each of ``effective_session_key``, ``chunk_generation``,
-# ``mirror_is_paused`` and ``slack_mirror_is_paused``.
+# against. The flush reads 4 per row: one each of ``effective_session_key``,
+# ``chunk_generation``, ``mirror_is_paused`` and ``slack_mirror_is_paused``.
+# The two ``__path__`` probes that Python's _handle_fromlist fired per slot
+# (one per ``from chat_utils import ...`` statement) are gone: both sites use
+# ``import ... as _cu`` + attribute access, which skips the probe.
+# ``mirror_is_paused`` is fetched once via ``_cu.mirror_is_paused`` and then
+# called twice from the local binding -- the second call does not re-read the facade.
 CREWMATE_SCAN_READS_PER_SLOT = 0
-SLOTS_FLUSH_READS_PER_SLOT = 6
+SLOTS_FLUSH_READS_PER_SLOT = 4
 
 
 def seed_slots(state: DashboardState, n: int, *, start: int = 0) -> None:
@@ -66,12 +71,22 @@ class _DashboardWS:
 
 @pytest.fixture
 def facade_reads(monkeypatch: pytest.MonkeyPatch) -> Counter:
-    """Count ``MirroredModule.__getattr__`` calls by attribute name."""
+    """Count ``MirroredModule.__getattr__`` calls by attribute name.
+
+    The patch is class-level and therefore active on every thread.  Reads
+    issued by the maintenance-pool thread (``_request_lineage_seed`` submits
+    ``_seed``, which re-fires on every flush in tests because the fast-failing
+    attempt resets the in-flight flag) must not pollute the measurement: the
+    budget covers the synchronous flush cost, not background work.  Only reads
+    from the thread that called ``run()`` are counted.
+    """
     seen: Counter = Counter()
     real = _facade_mirror.MirroredModule.__getattr__
+    test_thread_id = threading.get_ident()
 
     def counting(self, name: str):
-        seen[name] += 1
+        if threading.get_ident() == test_thread_id:
+            seen[name] += 1
         return real(self, name)
 
     monkeypatch.setattr(_facade_mirror.MirroredModule, "__getattr__", counting)

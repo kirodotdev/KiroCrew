@@ -185,9 +185,7 @@ def test_the_wheel_rules_reach_the_payload() -> None:
     )
 
 
-# --------------------------------------------------------------------------
 # The other direction: what must NOT travel
-# --------------------------------------------------------------------------
 # The rules above answer "does the image's build context reach an installed copy".
 # These answer the opposite question, because a rule broad enough to satisfy the first
 # was: `container_tests/` is the image's OWN test suite, 4,000 lines of it, and it was
@@ -245,9 +243,7 @@ def test_the_wheel_rules_do_not_carry_the_container_test_suite() -> None:
     )
 
 
-# --------------------------------------------------------------------------
 # The staged wheel, which must travel in NEITHER lane
-# --------------------------------------------------------------------------
 # `vendor/` is the one directory in this tree whose contents are build INPUT rather
 # than shipped content: `scripts/build_microvm_image_zip.py` stages a Kiro Crew wheel
 # there and `cloud/microvm/engine.py` reads it back to assemble a MicroVM recipe. A

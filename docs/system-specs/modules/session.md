@@ -245,7 +245,10 @@ URL in the pending ask's text and choices and in those items' text. A bare
 `#N` or a written `owner/repo#N` is never resolved to a repository, so it is
 not read. PR links in the card and buttons for the pending choices come in
 follow-up changes. Each answer
-is cached in process for 15 minutes. Every entry carries `read_at`, or
+is cached in process for 15 minutes. One welcome spends at most 10 seconds in
+total on live reads, both attempts included (`LIVE_READ_TOTAL_SECS`); at the
+limit the welcome goes out with the cached reads, and every PR still being read
+is `checked: false`. Every entry carries `read_at`, or
 `checked: false` with `not_checked_since` (the last good read, or `never`).
 The prompt allows merged, green, approved or conflict states only from
 `live_prs` or a change newer than the away time; anything else is written as
@@ -256,11 +259,22 @@ left (each fact with source and time), numbered asks (what, why only the
 owner, every option with its consequence, the recommendation and why), problems
 that do not need the owner, and what runs next. It returns one JSON object:
 `status` (`on_track`, `needs_you`, `blocked` or `done`; anything else reads as
-`needs_you` when `needs_you` has items, else `on_track`, and `on_track` or
-`done` beside `needs_you` items reads as `needs_you`), `headline` (at most
-240 characters), `needs_you` (at most four items of 200) and a markdown
-`body` (kept as source, defanged, trailing whitespace dropped, 6,000
-characters, 160 lines; the model's output budget is 40 KiB). Markdown images
+`needs_you` when an ask or waiting item exists, else `on_track`, and
+`on_track` or `done` beside one reads as `needs_you`), `headline` (at most
+240 characters), `asked` (the owner's request restated in one line, 160
+characters; the payload's `owner_request` is its source, and the gateway's
+quote fills it only when there is no `body`), `asks` (at most four, each
+`what`, `why`, `source`, `options` of `label` and `consequence`,
+`recommended` and `recommended_why`; texts 200 characters, a consequence
+160) and a markdown `body` (kept as source, defanged, trailing whitespace
+dropped, 6,000 characters, 160 lines; the model's output budget is 72 KiB).
+An ask's option labels come only from the `waiting_on_you` entry its
+`source` names, at most six: a renamed, added or dropped label keeps the
+source labels and drops the consequences and recommendation, an ask with no
+valid `source` keeps no options, and a recommendation outside the labels is
+dropped. Asks replace the older `needs_you` list (four items of 200), which
+is still read when a reply has no `asks`. In `content`, the asks pass
+through the same inert-body transform as the body. Markdown images
 and `<img>` tags outside a widget or code fence draw as their alt text only
 (a widget frame allows no remote image). The secret and grounding
 scans run last, after every transform, on the exact strings the row would
@@ -387,6 +401,9 @@ state are composed behind that facade:
   `session_lifecycle_parts/` owners below
 - `session_cleanup.py` — cleanup-task state, watchdog hooks, idle/RSS/stuck-turn
   policy, and process/filesystem sweeps
+- `session_idle_clock.py` — `last_activity`, the bounded clock the idle scan
+  and its post-probe recheck read (see *Idle cleanup*); `session_cleanup.py`
+  imports it as `_last_activity`
 
 `SessionLifecycleService` is defined in `session_lifecycle.py`; its behaviour lives in
 the `session_lifecycle_parts/` owner modules, one responsibility each. A member's body is
@@ -1952,9 +1969,23 @@ against sweep completeness, and are torn down at `close_all`.
   whatever the link names. A refused spec is skipped like a malformed one, so
   the resolution falls through to `"auto"` exactly as an absent spec does.
 - **Idle cleanup**: expires sessions after `session.timeout_secs` (default
-  60min) of idleness, measured on `session.last_used`, which is refreshed on
-  every acquire and on a successful `release(key)`. Never expires the persistent
-  keys (`_bg`, `_hb`). Dashboard per-tab sessions
+  60min) since the later of `last_used` and the provider's per-session
+  `session_activity_at` monotonic stamp, with the latter capped at one timeout
+  window after `last_used`. `session.last_used` is refreshed on every acquire
+  and on a successful `release(key)`. Passive traffic can therefore defer idle
+  expiration by at most one additional idle window. Beyond two windows since
+  the last dispatched turn, passive traffic alone no longer prevents expiration
+  on the next sweep. This bounds retention because frames can come from a
+  looping backend and do not establish finite work. The runtime stamps with
+  `time.monotonic()` in `acp/runtime_reader_loop.py`; the sweep reads
+  `SessionCleanupDeps.monotonic`, which `session.py` wires to the same clock.
+  Providers without a numeric
+  stamp use `last_used` alone. Busy-turn, attached-subagent, pending-injection
+  and harness-background launch guards apply independently on both axes; their
+  work evidence is separate from the passive-frame clock. Ordinary session-tagged frames can
+  arrive without an attached child or a tracked harness-background launch;
+  those frames receive only the bounded idle grace. Never expires the
+  persistent keys (`_bg`, `_hb`). Dashboard per-tab sessions
   (`dashboard:{slot_key}`) idle-expire like any other session. A crewmate's worker
   session is one of them: its process is released, its conversation resumes on
   the next send, and `session_status` reports it as `process: released`.
@@ -2076,7 +2107,8 @@ against sweep completeness, and are torn down at `close_all`.
   then the semaphore (a turn that took it during the await is exactly as live
   as one the scan skipped); then, on the idle axis only, the clock (a turn that
   began AND finished inside the await released the semaphore again but bumped
-  `last_used` on its way in, so the session is not idle now -- the orphan axis
+  `last_used` on its way in, or backend activity within the bounded grace
+  window advanced the effective clock, so the session is not idle now -- the orphan axis
   ignores the clock and re-asserts against the live set instead, below).
   Nothing between the probe's return and `reset` suspends. Neither read is the atomic
   one, though: `reset` itself suspends on the registry lock before it validates

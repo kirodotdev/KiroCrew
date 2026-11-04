@@ -425,7 +425,11 @@ class TestSupervision:
         _wait_for(h.runtime, "error")
         h._download_ok = True
         h.runtime.activate(m, 41023)
-        _wait_for(h.runtime, "running")
+        running = _wait_for(h.runtime, "running")
+        # The retry starts clean: the earlier error is gone and one server was launched.
+        assert running["error"] in (None, "")
+        assert running["port"] == 41023
+        assert len(h.spawns) == 1
         h.runtime.deactivate(wait=True)
 
 

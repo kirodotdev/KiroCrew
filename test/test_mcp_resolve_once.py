@@ -1,14 +1,8 @@
 """Behaviour of the resolve-once store for npm-launcher MCP servers.
 
-The store's whole contract is that it can only ever REMOVE dependency resolution
-from a launch, never add a failure to one. So most of what is pinned here is the
-shape of a miss: a spec that is not an npm launcher, a record that is absent,
-malformed, stale, or points at a missing file must each read as
-"launch it the way you would have anyway" rather than as an error.
-
-No test spawns npm. ``install`` is exercised through a stubbed ``npm`` that
-writes a tree, so the assertions are about the store's own logic -- entry-point
-discovery, the atomic commit, containment -- and not about npm's behaviour.
+The store may only REMOVE dependency resolution from a launch, never add a failure, so
+every miss (not an npm launcher; absent, malformed or stale record; missing file) must
+read as "launch it as before". No test spawns npm: a stubbed ``npm`` writes a tree.
 """
 
 from __future__ import annotations
@@ -24,7 +18,7 @@ import pytest
 
 from kiro_crew.mcp_gateway import resolve_once as R
 
-# --- Spec parsing -----------------------------------------------------------
+# Spec parsing
 
 
 class TestParseNpmLauncher:
@@ -105,11 +99,8 @@ class TestParseNpmLauncher:
     def test_a_flag_shaped_package_is_refused(self) -> None:
         """A spec that looks like an option must never reach ``npm install``.
 
-        ``npx -- --prefix=/somewhere`` puts a flag where the package belongs. npm
-        would parse it as ITS option, so pre-resolving it would redirect the
-        install into that directory -- writing into whatever project the path
-        names. Refused at parse time, and the call site also passes ``--`` so
-        neither layer alone is load-bearing.
+        npm would parse ``--prefix=/somewhere`` as its own option and install into that
+        path. Refused at parse time; the call site also passes ``--``.
         """
         assert R.parse_npm_launcher("npx", ["--", "--prefix=/tmp/victim"]) is None
         assert R.parse_npm_launcher("npx", ["-y", "--", "-g"]) is None
@@ -127,20 +118,16 @@ class TestParseNpmLauncher:
         assert spec.package == "foo@1.0.0"
 
 
-# --- Records and freshness --------------------------------------------------
+# Records and freshness
 
 
 class TestRecordIO:
     def test_two_writers_do_not_publish_each_others_record(self, tmp_path) -> None:
         """Concurrent writers must not share one temp path.
 
-        The timed pass and an operator pressing "Update now" can both be here at
-        once. With a fixed ``record.json.tmp`` the second writer truncated the
-        first's temp file, the first's rename published the SECOND's bytes, and
-        the second's rename then failed with its temp file already gone -- which
-        sent it down the cleanup path where it deleted the very tree the freshly
-        published record pointed at. This pins that no writer's rename fails and
-        no writer can see another's temp file.
+        The timed pass and "Update now" can run at once. A shared temp file lets one
+        writer publish the other's bytes, and the failed rename's cleanup then deletes the
+        tree the published record points at.
         """
         directory = tmp_path / "spec"
         directory.mkdir()
@@ -274,7 +261,7 @@ class TestFreshness:
         assert R.is_stale(self._rec(pinned=False, age=0), refresh_secs=0) is True
 
 
-# --- The synchronous lookup on the spawn path -------------------------------
+# The synchronous lookup on the spawn path
 
 
 def _commit_tree(home: str, spec: R.NpmSpec, *, entry_rel: str = "r-1/node_modules/foo/cli.js"):
@@ -361,15 +348,9 @@ class TestResolvedLaunch:
     def test_digest_collision_execs_nothing(self, tmp_path, monkeypatch) -> None:
         """A 64-bit digest collision must NOT exec the other spec's program (CWE-328).
 
-        ``spec_dir`` keys on the ``NpmSpec.digest`` property = a SHA-256 truncated
-        to 16 hex chars (64 bits), so two distinct specs can collide onto the same
-        directory. Force that: pin every spec's digest to one constant so the
-        installed ``innocent`` tree and a requested ``evil`` spec share a dir.
-        Without the ``record.package == spec.package`` guard the path-containment
-        and isfile checks both pass and the launcher execs the WRONG program;
-        with it the mismatch is a cache miss. A control run for the installed
-        spec (same constant digest) still launches, proving the miss is the
-        package-equality guard and not a broken directory.
+        ``NpmSpec.digest`` is 64 bits, so specs can share a ``spec_dir``; every digest is
+        pinned to one constant. The ``record.package == spec.package`` guard makes it a
+        miss. The control run for the installed spec still launches, so the directory works.
         """
         monkeypatch.setattr(R.shutil, "which", lambda _n: "/usr/bin/node")
         monkeypatch.setattr(R.NpmSpec, "digest", property(lambda self: "deadbeefdeadbeef"))
@@ -403,7 +384,7 @@ class TestResolvedLaunch:
         assert R.resolved_launch(str(tmp_path), "npx", ["-y", "foo@latest"]) is not None
 
 
-# --- Enumerating what to prefetch -------------------------------------------
+# Enumerating what to prefetch
 
 
 class TestLaunchSpecs:
@@ -432,7 +413,7 @@ class TestLaunchSpecs:
         assert R.launch_specs({"KIROCREW_MCP_TARGET_B": "   "}) == []
 
 
-# --- Installing (npm stubbed) -----------------------------------------------
+# Installing (npm stubbed)
 
 
 #: The npm double below is a ``#!/bin/sh`` script, so every test that spawns it is
@@ -459,18 +440,10 @@ def _fake_npm(
 ) -> str:
     """A shell stub standing in for npm that writes a tree and exits ``rc``.
 
-    Reads the ``--prefix`` it was handed so the test exercises the real prefix
-    plumbing rather than assuming where install lands.
-
-    ``write_tree_anyway`` makes it write the tree and STILL exit non-zero, which
-    is the realistic partial-failure npm actually produces and the only shape
-    that proves the return code is what gates the commit.
-
-    ``bin_field=None`` omits ``bin`` entirely (with ``main`` to prove ``main`` is
-    not a fallback), and ``shebang`` sets the interpreter line so the
-    node-runnable check can be exercised both ways. The written bin is named
-    after the manifest value, so a non-``.js`` name really does depend on its
-    shebang.
+    It honours the ``--prefix`` it is handed. ``write_tree_anyway`` writes the tree and
+    still exits non-zero (npm's real partial failure), proving the return code gates the
+    commit. ``bin_field=None`` omits ``bin`` but keeps ``main``, which is not a fallback;
+    ``shebang`` sets the bin's interpreter line for the node-runnable check.
     """
     key = f"{rc}-{int(write_tree_anyway)}-{name}-{abs(hash((str(bin_field), main, shebang)))}"
     script = tmp_path / f"fake-npm-{key}"
@@ -517,20 +490,10 @@ _sandbox_calls: list[dict] = []
 def _hermetic_sandbox(monkeypatch):
     """Spawn the npm stub directly instead of through the real OS sandbox.
 
-    ``install`` routes its spawn through ``sandboxed_spawn_argv``, and that
-    routing is what ``test_spawn_audit`` enforces -- by reading the source, not
-    by running it. Exercising the real chokepoint here would make every install
-    test depend on the HOST instead of on this module: a kernel that refuses
-    ``unshare(CLONE_NEWUSER)``, or a suite run that redirected ``HOME`` so the
-    box's own sandbox config is out of view, raises
-    ``SandboxUnavailableError`` before npm is ever reached. MEASURED: exactly
-    that turned two of these tests red under the full suite while a scoped run
-    of the same tests passed, because the sandbox probe caches per worker
-    process and the answer depended on which test primed it first.
-
-    The passthrough records what it was handed so the routing arguments can
-    still be pinned below -- the audit proves the call exists, this proves it
-    asks for the right mode.
+    The real sandbox depends on the host (``unshare(CLONE_NEWUSER)``, a redirected
+    ``HOME``) and its probe caches per worker, so results would depend on test order.
+    ``test_spawn_audit`` checks the routing in source; the passthrough records the
+    arguments so the requested mode is still pinned below.
     """
     _sandbox_calls.clear()
 
@@ -648,11 +611,8 @@ class TestInstall:
     async def test_noisy_install_output_is_drained_but_not_buffered(self, tmp_path) -> None:
         """A hostile or merely chatty package must not be able to OOM the gateway.
 
-        ``communicate()`` retains everything the child writes, so unbounded
-        third-party lifecycle output became unbounded gateway memory. The pipe is
-        still drained to EOF -- a child whose stdout fills would otherwise block on
-        write and never exit, turning noisy output into a hang -- but only the head
-        is kept.
+        ``communicate()`` keeps all output. The pipe is drained to EOF, or a child with a
+        full stdout would block and hang, but only the head is kept.
         """
         home = str(tmp_path / "home")
         spec = R.NpmSpec(package="foo@1.0.0", passthrough=())
@@ -929,14 +889,9 @@ class TestEnsureAndPrefetch:
 class TestSubstitutionActuallyHappens:
     """The wrapper must substitute for an ORDINARY production target.
 
-    This exists because an earlier revision of this PR added a guard that refused
-    substitution whenever the target's env carried an npm-affecting key -- and the
-    env handed to the resolver is ``_scrub_sensitive_env(dict(os.environ))``, a
-    full inherited environment that ALWAYS contains ``PATH``. The guard therefore
-    fired on every launch and silently disabled the whole feature, while the tests
-    for it passed because they hand-built three-key env dicts. So the thing worth
-    pinning is not a predicate in isolation but that a realistic env still gets the
-    fast path.
+    The resolver gets ``_scrub_sensitive_env(dict(os.environ))``, which always holds
+    ``PATH``. A guard on npm-affecting env keys would fire on every launch, which
+    hand-built three-key env dicts hide, so a realistic env must still get the fast path.
     """
 
     def test_a_realistic_inherited_env_still_gets_the_store(self, tmp_path, monkeypatch) -> None:
@@ -982,12 +937,9 @@ class TestSubstitutionActuallyHappens:
 class _ReapProbe:
     """An install-tree child double that records how it is reaped.
 
-    ``_reap_install_tree`` runs on the timeout and cancellation arms with the
-    ``_drain_capped`` reader already cancelled, so the stdout pipe is undrained:
-    a killed npm blocked writing into a full pipe -- or a lifecycle-script
-    grandchild still holding it open -- makes a bare ``await proc.wait()`` hang
-    forever. The bounded reap must drain via ``communicate()`` and never
-    touch ``wait()``.
+    ``_reap_install_tree`` runs after ``_drain_capped`` is cancelled, so a full pipe or a
+    grandchild holding it would hang a bare ``await proc.wait()``. The reap must drain
+    via ``communicate()`` and never touch ``wait()``.
     """
 
     def __init__(self, pid: int = 4242) -> None:

@@ -413,11 +413,8 @@ class TestCronFailureDedup:
 class TestCronDeliveryFailureAutoPause:
     """Delivery-path failures feed the single failure accountant.
 
-    The turn-level ``except`` in the gateway's cron delivery path must route
-    the counter through ``CronJob.record_failure()`` so a job that fails by
-    raising reaches the auto-pause threshold like every other failure path,
-    and so a count accumulated by another writer (gate verdict, timeout)
-    survives a later raise instead of being reset to 1.
+    The delivery path's ``except`` goes through ``CronJob.record_failure()``, so a
+    count from another writer (gate verdict, timeout) survives a later raise.
     """
 
     def test_repeated_identical_delivery_exceptions_auto_pause(self) -> None:

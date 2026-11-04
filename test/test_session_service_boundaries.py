@@ -278,18 +278,9 @@ async def test_conversation_clearing_reset_suppresses_the_successor_replay(
 ) -> None:
     """A reset that throws the conversation away must not let replay put it back.
 
-    ``clear_conversation=True`` has exactly one caller -- the critical-context
-    escalation in ``CompactionCoordinator._reset_still_critical`` -- and the
-    successor's session replay re-injects the ENTIRE conversation log as a single
-    prompt.  ``/compact`` cannot shrink one prompt, so the post-compaction reading
-    stays above the reset threshold and escalates again; the same reset also drops
-    the cooldown that would have damped it, so the cycle is unbounded.  Suppressing
-    replay on this one path is what terminates it.
-
-    The two negative rows are the blast radius: every other reset keeps the
-    conversation and must still replay it, and a reset on a key with no live
-    session has no conversation to throw away, so it must not arm the flag for
-    whatever cold-starts under that key next.
+    Replay re-injects the whole log as one prompt that ``/compact`` cannot shrink, so
+    ``_reset_still_critical`` would escalate forever. Other resets must still replay,
+    and a reset with no live session must not arm the flag for the next cold start.
     """
     manager = SessionManager(cfg, provider_factory=lambda **_: _provider())
     manager._session_map.clear_sid = MagicMock()  # type: ignore[method-assign]
@@ -307,14 +298,10 @@ async def test_conversation_clearing_reset_suppresses_the_successor_replay(
 
 @pytest.mark.asyncio
 async def test_remove_of_a_live_session_emits_no_close_edge(cfg: KiroCrewConfig) -> None:
-    """``remove`` must NOT write a ``session/closed`` crew-log edge, for a live
-    session or any other. ``remove`` has many callers that are not a worker
-    finishing -- archive-cleanup sweeps, a mid-handshake eager-spawn teardown,
-    Slack command paths -- and stamping ``END_REASON_REMOVED`` from inside it would
-    make a reaped or torn-down worker read ``closed`` in ``session_status``, the
-    fail-open mistake. The deliberate-close edge is written by the ONE deliberate
-    caller (``close_slot``) instead, pinned in ``test_slot_lifecycle*``; this test
-    is the fence that keeps the generic teardown silent.
+    """``remove`` must not write a ``session/closed`` crew-log edge, live session or not.
+
+    Many ``remove`` callers are not a worker finishing, and a torn-down worker reading
+    ``closed`` would fail open. Only ``close_slot`` writes that edge.
     """
     provider = _provider()
     provider.session_id = "sid-live-worker"

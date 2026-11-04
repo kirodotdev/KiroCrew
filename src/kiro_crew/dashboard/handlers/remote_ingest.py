@@ -242,8 +242,6 @@ async def open_unbound_item(board: str, item_id: str) -> work_ledger.WorkItem:
 
 
 def _response_code(resp: web.Response) -> str:
-    import json
-
     try:
         body = json.loads(resp.body) if isinstance(resp.body, bytes | str) else {}
     except ValueError:

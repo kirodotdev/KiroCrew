@@ -88,8 +88,8 @@ def _vouch(key: tuple[str, str], execution: ExecutionContext) -> None:
     exactly one direction: the entry is absent, `read_vouched_session_execution`
     answers None, and a caller asking whether that session may reach a private
     store must refuse. Nothing is granted by dropping an entry, and the durable
-    record is never touched, so a refused session recovers the moment its owner
-    re-selects its agent -- the same deferral a restart already carries.
+    record is never touched, so a refused session recovers at its next
+    gate-verified admission -- the same deferral a restart already carries.
     """
     oversized = _oversized_retained_field(execution)
     if oversized is not None:
@@ -642,9 +642,9 @@ def revouch_at_verified_admission(
     The recovery this process cannot do from the durable record alone. A restart
     (or a cap eviction) empties `_VOUCHED_EXECUTIONS` while the durable record
     survives, so a rehydrated member session's own-store dispatch is refused --
-    `read_vouched_session_execution` answers None -- until its owner re-selects the
-    agent and re-binds through the durable path. This restores the vouch WITHOUT
-    that owner action, at the session's next gate-verified admission.
+    `read_vouched_session_execution` answers None. Picking the agent again does not
+    vouch a chat that has messages, so nothing else on this chat restores it. This
+    restores the vouch at the session's next gate-verified admission.
 
     The trust source is the VERIFIED session key AND config, never the durable
     record. The caller passes ``verified_session_key`` only after the admission
@@ -1152,7 +1152,7 @@ def _backfill_legacy_member_record(
     not `bind_session_execution`, which would re-enter this read. The store came
     from the session's own record, so the result is never vouched: the migrated
     session is on the same footing as a member session after a restart and
-    re-establishes own-store authority the same way, by re-selecting its agent.
+    re-establishes own-store authority the same way, at a gate-verified admission.
     """
     from kiro_crew.config.loader import KiroCrewConfig
     from kiro_crew.history import ConversationLog
@@ -1436,9 +1436,9 @@ def restore_live_session_execution(session_key: str, prior, published) -> bool:
             # the vouched half of the agreement -- the same forgery this map
             # exists to refuse, and the one the paragraph above describes.
             #
-            # Dropping it defers own-store dispatch until the owner re-selects the
-            # agent, which binds afresh through the durable path. That is the
-            # fail-closed direction and the recovery the spec already documents.
+            # Dropping it defers own-store dispatch until a gate-verified admission
+            # re-vouches the session. That is the fail-closed direction and the
+            # recovery the spec already documents.
             _withdraw_vouched(key)
         current = _LIVE_EXECUTIONS.get(key)
         if current is None:

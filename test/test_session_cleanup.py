@@ -1,17 +1,4 @@
-"""Tests for subagent session cleanup feature.
-
-Feature: subagent-session-cleanup
-
-Property-based tests (Hypothesis) and unit tests for:
-- Path safety validation (_is_safe_path)
-- ACP session file cleanup
-- Cleanup error resilience
-- Cleanup restriction to subagent sessions
-- SubagentManager cleanup integration
-- Session ID persistence
-- Tombstone pruning with session file cleanup
-- Startup sweep processing
-"""
+"""Tests for subagent session cleanup: path safety, file cleanup, tombstones, startup sweep."""
 
 from __future__ import annotations
 
@@ -57,14 +44,9 @@ def agent_root(tmp_path, monkeypatch):
 async def _owning(manager):
     """Close the durable task-queue store a ``SubagentManager`` opens at construction.
 
-    ``SubagentManager.__init__`` opens ``tasks.db`` under the test's data home --
-    three descriptors (the database, its WAL, its shared-memory index) plus a
-    writer thread -- and a gateway holds its one manager for the process
-    lifetime, so nothing on the manager's surface closes them again. Left open
-    they survive the test: +3 descriptors per constructed manager, and the
-    hypothesis-driven startup sweep below constructs one per example. Closing
-    waits for the off-loop open first; a close BEFORE the attach would let the
-    late-arriving store reopen the very handles this releases.
+    Nothing on the manager closes ``tasks.db`` (3 descriptors and a writer thread),
+    and the hypothesis sweep builds one per example. Closing waits for the off-loop
+    open first, or the late store would reopen the handles.
     """
     try:
         yield manager
@@ -728,13 +710,10 @@ class TestStartupSweep:
 
 
 class TestStartingPidGuard:
-    """Regression: a provider that has start()ed but isn't registered yet must
-    not be swept as an orphan during the start()->register window.
+    """A provider started but not yet registered must not be swept as an orphan.
 
-    A slow ACP cold-start writes its PID to kiro_session_pids.txt before the
-    session is in self._sessions; the periodic sweep would otherwise SIGKILL it
-    mid-init (observed as 'ACP init failed (code=-9), retrying' loops and a
-    permanently 'processing' session).
+    A slow cold start writes its PID to kiro_session_pids.txt before the session is
+    in self._sessions; a sweep would SIGKILL it mid-init ('code=-9' retry loops).
     """
 
     def _make_manager(self):
@@ -899,17 +878,9 @@ class TestCompanionRuntimeGuard:
 class TestTheSuiteNeverRunsTheBootSandboxSweep:
     """``test/conftest.py`` pins the session module's boot sandbox sweep to a no-op.
 
-    ``SessionManager.get_or_create`` arms the cleanup loop, whose boot reclaim
-    submits ``kiro_crew.session.cleanup_stale_sandbox_profiles`` -- the real
-    ``/proc`` pin scan over the operator's data home -- to the shared
-    ``mc-maint`` executor, and ``close_all()`` cannot stop an executor thread.
-    The tenth hygiene pass measured 138 real sweeps from ``test_session.py``
-    alone, one of which logged into an unrelated test's ``caplog`` seconds
-    after its own test had torn down. ``test/conftest.py::_no_boot_sandbox_sweep``
-    is what stops that, by importing the session module itself rather than
-    asking ``sys.modules`` whether someone else already did; this test is the
-    only thing that notices if the pin goes away or stops reaching the name the
-    session module actually calls.
+    The boot reclaim submits ``kiro_crew.session.cleanup_stale_sandbox_profiles`` (a
+    real ``/proc`` scan of the operator's data home) to ``mc-maint``, which
+    ``close_all()`` cannot stop; its logs leak into later tests' ``caplog``.
     """
 
     def test_the_session_modules_binding_is_the_no_op_not_the_sandbox_sweep(self) -> None:

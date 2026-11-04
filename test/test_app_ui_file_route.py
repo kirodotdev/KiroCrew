@@ -1,17 +1,11 @@
 """Serving an app's UI bundle through a pinned descriptor.
 
-``/apps/{name}/ui/{path}`` serves the SAME app-owned directory the art route
-serves, and must not use the validate-then-``FileResponse`` shape: validating a
-path and then handing it to ``FileResponse`` opens it a SECOND time, so the app
-that owns the directory can swap a validated name for a symlink between the
-check and that open and have the unsandboxed gateway read the target on its
-behalf. Worse: this route's extension allowlist admits ``.json`` and ``.mjs``,
-so the route with the weaker open has the broader reach.
+``/apps/{name}/ui/{path}`` serves an app-owned directory, so validate-then-
+``FileResponse`` would open the path a SECOND time: the app could swap in a symlink
+between the check and that open. The route also admits ``.json`` and ``.mjs``.
 
-The suite mirrors ``test_app_art_route.py`` with this
-route's own behaviour contract: 400 on ``..``/absolute/escaping paths, 403 on
-a disallowed extension, 404 on anything else unservable, Content-Type from the
-extension map, and body-less 304s for conditional requests.
+Mirrors ``test_app_art_route.py``: 400 on ``..``/absolute/escaping paths, 403 on a
+disallowed extension, 404 otherwise, Content-Type by extension, body-less 304s.
 """
 
 from __future__ import annotations
@@ -86,11 +80,8 @@ async def test_a_symlink_at_the_final_NAME_is_refused_even_inside_the_root(
 ) -> None:
     """The property that closes the check-to-use swap.
 
-    A link pointing at a perfectly legitimate file INSIDE the root is refused
-    too: it is the indirection that is refused, not the destination, because
-    only the indirection is swappable. The old code served this with a 200 —
-    the resolved path sat inside the root, so containment passed, and
-    ``FileResponse`` followed the link on its second open.
+    A link to a legitimate file INSIDE the root is refused too: only the indirection is
+    swappable, so the indirection is what is refused.
     """
     real = ui_root / "asset.js"
     assert real.is_file(), "fixture precondition: the link's target is a real asset"
@@ -132,17 +123,11 @@ async def test_an_escaping_symlink_at_the_final_name_keeps_answering_400(
 
 @pytest.mark.asyncio
 async def test_a_symlinked_ANCESTOR_is_refused(ui_root: Path, tmp_path: Path) -> None:
-    """What the caller-side containment check is still for, once the pinned
-    open exists.
+    """A symlinked ANCESTOR is refused by the caller-side containment check.
 
-    ``O_NOFOLLOW`` refuses a link at the final NAME, and the handler's own
-    guard refuses ``..`` — so the one route left into the containment check is
-    an ANCESTOR that is a link. ``pin_parent`` deliberately does not close that
-    case (its contract: a component swapped BEFORE the parent was resolved is
-    followed by that resolution), so resolving the parent and proving it lands
-    under the resolved root is load-bearing — a genuine coverage gap
-    until a mutation surfaced it. ``make_dir_link`` so Windows gets a junction
-    and the branch without the pinned walk is covered by the same test.
+    ``O_NOFOLLOW`` covers the final NAME and the handler refuses ``..``; ``pin_parent``
+    follows a component swapped before the parent was resolved, so this check is what
+    catches it. ``make_dir_link`` gives Windows a junction, covering the unpinned branch.
     """
     outside = tmp_path / "elsewhere"
     outside.mkdir()
@@ -159,13 +144,9 @@ async def test_a_LINKED_ui_root_still_serves_under_the_dev_grant(
 ) -> None:
     """The legitimate link the hardening must NOT refuse.
 
-    The documented dev-mode setup links ``ui/`` at the developer's source tree
-    (junction on Windows). The root is resolved BEFORE containment, so the walk
-    and the check both happen where the link really lands — and the escape from
-    the install directory is allowed exactly because the OPERATOR granted dev
-    mode: a grant record (written only by the dev-mode toggle, never created
-    by the startup reconcile) BOUND to this resolved root, plus the metadata
-    flag — the grant half exercised for real here.
+    Dev mode links ``ui/`` at the developer's source tree. The root is resolved BEFORE
+    containment, and the escape is allowed only by an operator grant record BOUND to this
+    resolved root plus the metadata flag; the grant half is exercised for real here.
     """
     root = tmp_path / "apps"
     (root / APP).mkdir(parents=True)
@@ -211,12 +192,8 @@ async def test_a_SELF_GRANTED_dev_flag_does_not_authorize_the_link(
 ) -> None:
     """Why the grant is a separate operator record, not metadata-backed.
 
-    ``installed.json`` lives inside the install directory the APP ITSELF can
-    write, so an app that edits it to ``dev: true`` must not thereby authorize
-    its own out-of-install ui root — the grant record at the apps ROOT, which
-    only the owner's dashboard toggle writes, is the half it cannot forge.
-    ``is_dev_mode`` is forced True here (the forged metadata); with no grant
-    record the check must still refuse.
+    The APP can write ``installed.json``, so ``is_dev_mode`` is forced True here (forged
+    metadata); with no grant record at the apps ROOT the link is still refused.
     """
     root = tmp_path / "apps"
     (root / APP).mkdir(parents=True)
@@ -238,13 +215,9 @@ async def test_the_reconciled_sentinel_alone_does_not_authorize_the_link(
 ) -> None:
     """The restart-laundering vector: sentinel != grant.
 
-    The startup reconcile rebuilds the WATCH sentinel from each app's own
-    (app-writable) ``installed.json`` — so across a restart, a forged
-    ``dev: true`` DOES put the app's name in the sentinel. That must buy
-    watching and no-store serving at most: the authorization half is the
-    separate grant record only the operator toggle writes. Sentinel present +
-    metadata forged + no grant record → the out-of-install ui root is still
-    refused.
+    The startup reconcile builds the WATCH sentinel from app-writable ``installed.json``,
+    so a forged flag gets the name in. Sentinel + forged metadata + no grant record: the
+    out-of-install ui root is still refused.
     """
     root = tmp_path / "apps"
     (root / APP).mkdir(parents=True)
@@ -267,14 +240,9 @@ async def test_a_symlinked_INSTALL_ENTRY_cannot_vouch_for_its_own_containment(
 ) -> None:
     """The containment anchor is the resolved apps ROOT + the literal name.
 
-    Re-resolving through the app's own install entry would let that entry
-    vouch for itself: an install entry that IS a link to an outside tree made
-    `realpath(apps_dir()/name)` land in that same outside tree, so the
-    escaping ui root read as "inside the install" and served with no grant —
-    and the two independent realpath calls could be raced by swapping the
-    entry between them. With the literal-name anchor the resolved root lands
-    outside and takes the grant path like any other escape: refused without
-    an operator grant.
+    Resolving through the install entry lets a linked entry vouch for itself (its target
+    reads as "inside the install"), and two realpath calls could be raced. With the
+    literal-name anchor it takes the grant path and is refused without a grant.
     """
     root = tmp_path / "apps"
     root.mkdir()
@@ -296,12 +264,8 @@ async def test_a_grant_bound_to_a_DIFFERENT_root_does_not_authorize_the_link(
 ) -> None:
     """The grant covers ONE resolved root — the one the operator approved.
 
-    A stale or inherited grant (crash mid-revoke, an app update that repoints
-    ``ui``, a reinstall under the same name) must authorize only the exact
-    tree bound at toggle time: the current resolved root must EQUAL the
-    granted root. Here the operator granted a legitimate source tree, then
-    ``ui`` was repointed at a credential directory — refused, credential
-    bytes never leaked.
+    The current resolved root must EQUAL the granted root. Here ``ui`` is repointed at a
+    credential directory after the grant, and the credential bytes never leak.
     """
     root = tmp_path / "apps"
     (root / APP).mkdir(parents=True)

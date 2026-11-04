@@ -1,14 +1,8 @@
 """The credit refresh falls back to the ``/usage`` scrape, which parks after misses.
 
-The scrape runs whenever the API path returns no plan, with no config key in front
-of it, and parks after repeated failures; a parked refresh keeps the API's partial
-fields and a prior reading only for the same account. When a refresh ends with
-no reading, its ``reason`` names a lapsed sign-in only for an auth-class API
-verdict, and a working scrape outranks that verdict. The kiro-cli children the
-refresh spawns (whoami and the scrape) carry the no-window creation flag, and the
-scrape pins the ``v2`` agent engine only while the installed kiro-cli offers it. The
-whoami bracket around the scrape is pinned in test_session_usage_account_proof.py,
-and the scrape's environment scrub and child reaping in test_session_usage.py.
+A parked refresh keeps a prior reading only for the same account. The whoami bracket
+is in test_session_usage_account_proof.py, and the environment scrub and child reaping
+in test_session_usage.py.
 """
 
 from __future__ import annotations
@@ -262,11 +256,9 @@ class TestScrapeIsTheAutomaticFallback:
 class TestUnavailableReasonNamesTheRealRemedy:
     """The pill's ``reason`` names a lapsed sign-in when that is what the API saw.
 
-    ``signin_required`` renders "sign in again". It is attached only when the
-    API's own verdict was auth-class (no readable credential, or a rejected one)
-    AND the refresh still ended without a reading -- because the scrape failed
-    too, or because it was parked. A working scrape always outranks the verdict:
-    an empty candidate list does not prove kiro-cli cannot authenticate.
+    ``signin_required`` needs an auth-class API verdict and no reading at the end. A
+    working scrape outranks the verdict: an empty candidate list does not prove
+    kiro-cli cannot authenticate.
     """
 
     @pytest.fixture(autouse=True)
@@ -296,7 +288,7 @@ class TestUnavailableReasonNamesTheRealRemedy:
     def _scrape(self, stdout: bytes = b"not a usage block"):
         return patch("asyncio.create_subprocess_exec", AsyncMock(return_value=_mock_proc(stdout)))
 
-    # ---- the scrape ran and failed ----------------------------------------
+    # the scrape ran and failed
 
     @pytest.mark.asyncio
     async def test_expired_credential_reports_signin_required(self, monkeypatch):
@@ -427,7 +419,7 @@ class TestUnavailableReasonNamesTheRealRemedy:
             released.set()
         assert sessions_mod._usage_cache == {"available": False}
 
-    # ---- the scrape was parked --------------------------------------------
+    # the scrape was parked
 
     @pytest.mark.asyncio
     async def test_a_parked_scrape_carries_the_api_verdict(self, monkeypatch):
@@ -485,7 +477,7 @@ class TestUnavailableReasonNamesTheRealRemedy:
         assert sessions_mod._usage_cache.get("available") is False
         assert "reason" not in sessions_mod._usage_cache
 
-    # ---- the non-regression guard ---------------------------------------
+    # the non-regression guard
 
     @pytest.mark.asyncio
     async def test_the_scrape_still_runs_and_wins_without_a_readable_credential(self, monkeypatch):
@@ -500,7 +492,7 @@ class TestUnavailableReasonNamesTheRealRemedy:
         assert sessions_mod._usage_cache.get("credits_plan") == 10000.0
         assert "reason" not in sessions_mod._usage_cache
 
-    # ---- the mapping itself ---------------------------------------------
+    # the mapping itself
 
     def test_only_the_two_auth_class_states_map_to_signin_required(self):
         api = sessions_mod.kiro_usage_api
@@ -531,12 +523,8 @@ class TestSpawnSuppressesConsoleWindow:
     """The identity/usage helper spawns must thread ``creationflags`` carrying
     ``_SUBPROCESS_NO_WINDOW`` through ``spawn_supervised_oneshot``.
 
-    On Windows the gateway runs without a console, so a console-subsystem child
-    spawned without ``CREATE_NO_WINDOW`` gets a fresh console allocated that
-    flashes on screen ~every 30s. On POSIX the constant is ``0``; the kwarg is
-    forwarded untouched to ``asyncio.create_subprocess_exec`` by the spawn
-    shim, so the assertion still pins that the call threads the flag through
-    rather than dropping it.
+    On Windows a child without ``CREATE_NO_WINDOW`` flashes a console ~every 30s. On
+    POSIX the constant is ``0`` but is still forwarded, so the check holds there too.
     """
 
     @pytest.fixture(autouse=True)
@@ -637,11 +625,8 @@ class TestChatAgentEnginesParse:
 class TestUsageScrapeEngineFollowsTheInstalledKiroCli:
     """The ``/usage`` scrape picks its engine from what this kiro-cli offers.
 
-    ``/usage`` is a local slash command only on V2; V3 sends it to the model as
-    a prompt. So V2 is pinned while ``chat --help`` lists it, the scrape does not
-    run at all once V2 is retired, and a kiro-cli with no selector (or one that
-    could not be probed) keeps the plain argv, since an unknown flag fails the
-    whole command.
+    ``/usage`` is local only on V2 (V3 sends it to the model), so without V2 the scrape
+    does not run. With no selector the argv stays plain: an unknown flag fails the command.
     """
 
     @staticmethod

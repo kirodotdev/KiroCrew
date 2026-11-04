@@ -309,6 +309,17 @@ describe('goal-board item states', () => {
     expect(pill(all('#items .item')[0])).toBe('waiting')
   })
 
+  it("reads the host's awaits_person, so an answered approval ask leaves the needs-you band", () => {
+    const asked = { status: 'blocked', reason: 'approval', stale: false }
+    mount({ items: [item({ ...asked, worker: 'idle', awaits_person: true })] })
+    expect(pill(all('#items .item')[0])).toBe('needs you')
+    // The person approved in the worker's chat: the host says it no longer waits.
+    refill({ items: [item({ ...asked, worker: 'running', awaits_person: false })] })
+    expect(pill(all('#items .item')[0])).toBe('working')
+    expect(document.querySelector('#you .band')).toBeNull()
+    expect(tally()).not.toContain('needs you')
+  })
+
   it('falls back to the progress rule for a value without the host facts', () => {
     mount({ items: [item(), item({ item_id: 'b', status: 'question' })] })
     const cards = all('#items .item')

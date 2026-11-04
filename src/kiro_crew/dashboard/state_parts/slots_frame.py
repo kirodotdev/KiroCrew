@@ -606,17 +606,16 @@ def _slot_links(
 ) -> tuple[list[dict[str, Any]], bool, str, str]:
     """Build the redacted channel-neutral link projection for one slot."""
     # circular import: chat imports state at module scope.
-    from kiro_crew.dashboard.chat_utils import (
-        effective_session_key,
-        mirror_is_paused,
-        slack_mirror_is_paused,
-    )
+    # Module import (not from-import) avoids the _handle_fromlist __path__
+    # probe on the facade, which cost one __getattr__ per slot.
+    import kiro_crew.dashboard.chat_utils as _cu
 
-    session_key = effective_session_key(slot)
+    session_key = _cu.effective_session_key(slot)
     # Resolved once per slot rather than per row: all three are storage reads,
     # and a session holds at most one Slack thread, one born-in conversation
     # and one mirror binding.
-    slack_paused = slack_mirror_is_paused(self, session_key)
+    mirror_is_paused = _cu.mirror_is_paused
+    slack_paused = _cu.slack_mirror_is_paused(self, session_key)
     mirror_paused = mirror_is_paused(self, session_key)
     origin_paused = mirror_is_paused(self, session_key, origin=True)
     mirror: ChannelLink | None = None

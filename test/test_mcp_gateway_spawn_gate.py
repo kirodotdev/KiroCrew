@@ -1,35 +1,14 @@
 """The daemon-global spawn gate and the ``spawn_queue`` protocol around it.
 
-Mirrors ``test_mcp_gateway_breaker.py`` in spirit: the gate is a small
-in-process object, so its contract is pinned directly -- FIFO order, a permit
-whose ``settle`` is exactly-once and separate from ``release``, cancellation
-that is neutral at every boundary, a capacity seam that admits waiters when
-raised and revokes nothing when cut, and a drain that fails every waiter and
-releases every watcher. Time is injected wherever the gate reads it; the one
-real ``asyncio`` timing this file relies on is sub-100 ms.
+The gate is a small in-process object, so its contract is pinned directly: FIFO order,
+exactly-once ``settle``, neutral cancellation, capacity changes, and drain. Time is
+injected; the one real ``asyncio`` timing here is sub-100 ms.
 
-The second half drives ``gatewayd._handle_connection`` with the same scripted
-reader / recording writer the coverage suites use, so the WIRE is pinned too:
-no ``capacity`` refusal carries ``fallback`` on EITHER wire shape -- the legacy
-bare ``ensure_backend`` included, singly and eight at a time, because that tag
-authorised an exec the daemon could not charge and the failure mode was a rate --
-while a target-shaped ``compat`` refusal still does and is still charged; an old
-stub never sees ``queued``; a new stub gets ``queued`` keepalives and
-``retry_after_secs``; pings are answered while an acquire waits; the frames
-parked during that wait are bounded in both count and bytes (a burst one under
-the bound is parked whole; either bound exceeded drops that one connection); and
-a fallback charges the host budget until the connection closes.
-
-Three more properties are timing rather than shape, so no side of them is a
-double. That the daemon's queue wait ends before the stub's -- a stub whose own
-budget expires first runs the unaccounted ``fallback_exec`` the refusal exists to
-withhold -- is measured with the real stub pre-flight and the real handler on
-either end of a REAL endpoint, one budget serving both as the shipped defaults
-do. That a waiter in the gate holds no host charge is measured with a real pool
-and a real budget whose ceiling is the number of waiters. That a prewarm pass
-stands down per key when a live stub queues during it runs a real
-``run_gatewayd``, because the yield and the bounded wait are arguments that pass
-supplies.
+The second half drives ``gatewayd._handle_connection`` to pin the wire. No ``capacity``
+refusal carries ``fallback`` on either wire shape: that exec could not be charged to the
+host budget. A ``compat`` refusal still does. Timing properties (daemon wait ends before
+the stub's, no charge while queued, prewarm yields) use real endpoints, pools and
+``run_gatewayd`` rather than doubles.
 """
 
 from __future__ import annotations
@@ -63,7 +42,7 @@ _POSIX_ONLY = pytest.mark.skipif(
     "Windows uses a named pipe whose name is not a filesystem path",
 )
 
-# --- clock -------------------------------------------------------------------
+# clock
 
 
 class _Clock:
@@ -105,7 +84,7 @@ async def _within_ceiling(aw: Awaitable[Any], what: str) -> Any:
         ) from None
 
 
-# --- SpawnGate unit --------------------------------------------------------
+# SpawnGate unit
 
 
 class TestPermit:
@@ -494,7 +473,7 @@ class TestAdmissionBundle:
         assert admission.snapshot()["host_budget"]["charges"] == 0
 
 
-# --- daemon protocol -----------------------------------------------------------
+# daemon protocol
 
 _STUB = "stub-admission-0001"
 
@@ -697,14 +676,8 @@ class TestWaitBudgetNegotiation:
     ) -> None:
         """The daemon's wait must END FIRST, at every budget, not tie.
 
-        A tie is not a tie: the stub starts its timer before it writes
-        ``ensure_backend`` and the daemon starts its own only after reading the
-        frame, so at equal budgets the stub is always the one that gives up --
-        and a stub whose budget expires runs ``fallback_exec``, one more process
-        on the host the daemon was refusing one for, charged to nothing. The
-        margin is what turns that into the ``capacity`` refusal that authorises
-        no exec, so it is load-bearing for the same property
-        ``_LEGACY_SPAWN_WAIT_SECS`` is: the answer has to ARRIVE in time.
+        The stub's timer starts before it writes ``ensure_backend``, so at equal budgets
+        the stub gives up first and runs an uncharged ``fallback_exec``.
         """
         armed = gw._negotiated_wait_budget(
             {"wait_budget_secs": asked}, _admission(spawn_queue_wait_secs=ceiling)
@@ -760,13 +733,8 @@ class TestRejectionClasses:
     ) -> None:
         """No stub shape earns a fallback from a capacity refusal.
 
-        The classifier takes no "what did this stub negotiate" input at all, so
-        there is no argument that turns a ``capacity`` verdict into an exec
-        authorisation -- which is the point: the exec a pre-``spawn_queue`` stub
-        would run is one the daemon cannot charge (it closes its socket first),
-        so N concurrent refusals would leave N backends the host budget never
-        sees. The retry hint is asserted beside it because the hint is what the
-        refusal offers INSTEAD of the exec.
+        A stub's exec after closing its socket cannot be charged, so N refusals would
+        leave N uncounted backends. The retry hint is what the refusal offers instead.
         """
         verdict = gw._classify_rejection(exc, exclusive=False)
         assert verdict is not None, label
@@ -819,15 +787,8 @@ class TestRejectionClasses:
     def test_the_legacy_gate_wait_stays_under_the_pre_upgrade_stubs_own_window(self) -> None:
         """The capacity guarantee holds only for a refusal that ARRIVES in time.
 
-        A pre-upgrade stub gives up after its own 25 s pre-flight and execs on a
-        path that reads no frame, so a later refusal is unaccounted however it is
-        tagged. Keeping the daemon's legacy gate wait strictly under that window is
-        what makes the untagged refusal reach a stub still listening; the constant
-        is therefore load-bearing for a SECURITY property, not a tuning knob.
-
-        It bounds the gate wait only: a refusal raised past the permit can still
-        exceed the window, which is the residual `mcp.md` states rather than a hole
-        this pin closes.
+        A pre-upgrade stub execs after its own 25 s pre-flight, so this constant is a
+        security bound, not a tuning knob. It bounds the gate wait only (see `mcp.md`).
         """
         assert gw._LEGACY_SPAWN_WAIT_SECS < _PRE_UPGRADE_STUB_PREFLIGHT_SECS
 
@@ -847,12 +808,8 @@ class TestEnsureBackendWire:
     ) -> None:
         """The legacy WIRE -- a bare ``ensure_backend`` -- earns no exec either.
 
-        Driven through ``_handle_connection`` rather than the classifier because
-        the frame is what a pre-upgrade stub reads, and the frame is what
-        authorised the leak: on ``fallback: true`` that stub closes its socket
-        and execs, so the daemon's charge is released before the process exists
-        and nothing bounds the fan-out. A ``retry_after_secs`` with no
-        ``fallback`` key is the whole contract on this wire.
+        Driven through ``_handle_connection`` because the frame is what a pre-upgrade
+        stub reads: on ``fallback: true`` it closes its socket and execs uncharged.
         """
         monkeypatch.setattr(gw, "_acquire_backend", AsyncMock(side_effect=exc))
         writer = _FakeWriter()
@@ -880,11 +837,8 @@ class TestEnsureBackendWire:
     ) -> None:
         """The fan-out shape: many legacy refusals at once, zero exec authorisations.
 
-        One refusal being clean says nothing about the failure mode, which is a
-        RATE -- each pre-upgrade stub that is told ``fallback: true`` execs a
-        backend the budget released at its socket close, so the ceiling is never
-        reached however many arrive. Eight simultaneous refusals against a
-        budget of one must hand out no authorisation at all.
+        The failure mode is a rate, so eight refusals against a budget of one must hand
+        out no authorisation at all.
         """
         monkeypatch.setattr(gw, "_acquire_backend", AsyncMock(side_effect=PoolAtCapacity("full")))
         admission = _admission(max_procs=1)
@@ -914,12 +868,8 @@ class TestEnsureBackendWire:
     ) -> None:
         """The complement, and the reason this is not a blanket refusal.
 
-        ``compat`` is a property of the TARGET: this daemon has no mapping for
-        it, the host is fine, and the stub's own exec is the topology the
-        connection asked for. Refusing that too would strand every pre-upgrade
-        session behind a daemon whose target map drifted -- a worse outage than
-        the one the capacity rule prevents -- so the tag still rides it, and the
-        exec it authorises is still charged to the budget.
+        ``compat`` means the daemon has no mapping for the target; refusing the exec would
+        strand pre-upgrade sessions after map drift. The exec is still charged.
         """
         monkeypatch.setattr(
             gw, "_acquire_backend", AsyncMock(side_effect=gw._TargetUnknown("no mapping"))
@@ -1164,15 +1114,9 @@ class TestAcquireBackendOrder:
     async def test_nothing_is_charged_while_a_spawn_waits_in_the_gate(self, monkeypatch) -> None:
         """A queued spawn holds NO host charge, and none is left after it fails.
 
-        The gate is the only step that waits, so it goes first: a charge taken
-        before it prices a process that does not exist for as long as the wait
-        lasts (up to ``spawn_queue_wait_secs``, 600 s by default). Ten queued
-        stubs then reach the ceiling with nothing running and the eleventh is
-        refused ``capacity`` -- which deliberately authorises no fallback -- on an
-        idle host. Measured with a real ``BackendPool`` and a real budget whose
-        ceiling is exactly the number of waiters, so a charge held across the wait
-        cannot pass this: the third acquire would raise ``HostBudgetExhausted``
-        instead of queueing.
+        A charge taken before the gate would price a nonexistent process for up to
+        ``spawn_queue_wait_secs``. The real budget's ceiling equals the waiter count, so
+        a held charge makes the third acquire raise ``HostBudgetExhausted``.
         """
         from kiro_crew.mcp_gateway.pool import BackendPool
 
@@ -1314,12 +1258,8 @@ class TestSetSpawnCapacityFrame:
     def test_a_non_finite_capacity_is_refused_not_raised(self, capacity: float) -> None:
         """``int(inf)`` raises, and a raise here costs the REPLY, not the gate.
 
-        An exception escaping ``_apply_set_spawn_capacity`` propagates out of the
-        control short-circuit, which drops the connection with NO reply of either
-        kind -- so the controller keeps the value PENDING and retries it against a
-        daemon that answers nothing, instead of being told no once. And ``inf`` is
-        not an exotic input: it is what ``json.loads`` returns for a well-formed
-        ``1e400``, asserted below so the premise is measured, not claimed.
+        A raise drops the connection with no reply, so the controller retries the pending
+        value forever. ``json.loads`` yields ``inf`` for ``1e400``, as asserted below.
         """
         assert json.loads('{"capacity": 1e400}')["capacity"] == float("inf")
         admission = _admission(capacity=2)
@@ -1415,11 +1355,8 @@ class TestTheRefusalArrivesBeforeTheStubGivesUp:
 class TestPrewarmYieldsToALiveStub:
     """A real ``run_gatewayd`` prewarm pass, because the yield lives at its call site.
 
-    ``_acquire_backend`` cannot express this on its own: what the pass owes a
-    live session is a per-key decision and a bounded wait, and both are arguments
-    the pass passes IN. Driven the way ``test_gatewayd_more_coverage.py`` drives
-    prewarming -- seeded hot keys, a real daemon, ``_acquire_backend`` recording
-    what it was handed.
+    The per-key decision and bounded wait are arguments the pass hands to
+    ``_acquire_backend``, so seeded hot keys run through a real daemon.
     """
 
     @pytest.mark.asyncio

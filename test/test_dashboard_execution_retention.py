@@ -164,8 +164,9 @@ async def test_a_non_destructive_close_keeps_a_persistent_sessions_vouch(
     # Both paths are non-destructive: the conversation is saved and recreated from the
     # warm pool when the tab is resumed, and the turn-start rebind publishes nothing
     # when the selection is unchanged. A close that withdrew the vouch would therefore
-    # leave the resumed session unvouched and refuse its own-store dispatch until its
-    # owner re-selects the agent, charging a restart's refusal to closing a tab. The
+    # leave the resumed session unvouched and refuse its own-store dispatch until a
+    # gate-verified admission re-vouches it, charging a restart's refusal to closing a
+    # tab. The
     # count cap bounds the retained entry instead, and evicts it before a live one
     # because eviction follows use.
     from test_slot_close_recreation_race import _Req

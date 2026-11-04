@@ -633,6 +633,11 @@ _CLEAR_DISCARD_TIMEOUT_SECS = 30.0
 _CANCEL_GRACE_SECS = 2.0
 
 
+def _now() -> float:
+    """Return the current event-loop monotonic time. Extracted so tests can pin it."""
+    return asyncio.get_running_loop().time()
+
+
 async def _resumable(state, key: str, *, on_error: bool) -> bool:
     """Whether a persisted resume SID survives for *key*, read OFF the event loop.
 
@@ -688,7 +693,7 @@ async def _note_reset(state, agent, cleared: list, busy: list, deadline: float) 
     ):
         busy.append(label)
         return
-    if asyncio.get_running_loop().time() >= deadline:
+    if _now() >= deadline:
         # The clear's one deadline is spent. Starting a teardown now would cost another cancel
         # grace with `post` still waiting on the lock, so this member is refused untouched and
         # the lock is held for at most the deadline plus one grace.
@@ -709,7 +714,7 @@ async def _note_reset(state, agent, cleared: list, busy: list, deadline: float) 
     try:
         discarded = await asyncio.wait_for(
             asyncio.shield(_teardown),
-            timeout=max(0.0, deadline - asyncio.get_running_loop().time()),
+            timeout=max(0.0, deadline - _now()),
         )
     except (Exception, asyncio.CancelledError) as exc:
         if isinstance(exc, asyncio.CancelledError) and not _teardown.done():
@@ -898,7 +903,7 @@ async def api_channel_clear_context(request: web.Request) -> web.Response:
             )
         # ONE deadline for the whole clear, not one per member: `post` waits on this lock, so
         # an N-member channel with a per-member bound stalls every message for up to N x 30s.
-        deadline = asyncio.get_running_loop().time() + _CLEAR_DISCARD_TIMEOUT_SECS
+        deadline = _now() + _CLEAR_DISCARD_TIMEOUT_SECS
         if scope == "agent":
             # Re-read under the lock: a dismiss that won it has already removed this member.
             agent = ch.members.get(agent_id) if agent_id else None

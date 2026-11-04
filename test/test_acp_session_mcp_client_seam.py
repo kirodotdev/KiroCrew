@@ -1,15 +1,9 @@
 """Session-array MCP wiring at the client seam: what ``AcpClient`` puts on ``session/new``.
 
-A kiro backend passes no array; a claude backend translates the agent spec,
-projects the admitted direct or pooled servers, resolves the array once and drops
-it on reset. The array rides with the settings seed: the project tier's deny and
-ask rules go inline, an unexaminable or linked project file withholds it, and a
-session started in a mode that escapes Crew's gate is pinned (or stopped when the
-pin fails). The claude adapter's version floor decides whether a session gets
-tools at all, and a side read-only session starts confined and pinned, with
-root-anchored deny rules. The element shape, mounting, deny rules, control plane
-and settings seed are in ``test_acp_session_mcp.py``; both modules take their
-fixtures from ``acp_session_mcp_helpers.py``.
+Kiro passes no array; claude translates the spec and resolves the array once. The array
+rides with the settings seed, and a mode that escapes Crew's gate is pinned. The element
+shape and settings seed are in ``test_acp_session_mcp.py``; fixtures are in
+``acp_session_mcp_helpers.py``.
 """
 
 from __future__ import annotations
@@ -41,11 +35,8 @@ class TestClientSeam:
     def _seeded(self, tmp_path, **kw):
         """A client whose settings seed has already run, as the spawn path does.
 
-        The array is withheld unless Crew authored ``settings.local.json`` -- that
-        file is the backend's permission surface, and a tool Crew cannot gate is
-        not handed over at all. So a seam test that skips the seed exercises the
-        withhold path, not the translation. The spawn path runs the writer first
-        for the same reason; see ``_resolve_session_mcp_servers``.
+        Without a Crew-authored ``settings.local.json`` the array is withheld, so a test
+        skipping the seed would hit the withhold path (see ``_resolve_session_mcp_servers``).
         """
         client = AcpClient(work_dir=tmp_path, **kw)
         client._write_claude_local_settings()
@@ -116,12 +107,8 @@ class TestClientSeam:
     def test_neither_gate_is_an_identity_check(self, tmp_path, agents_dir, monkeypatch):
         """Two gates decide the seam, and neither reads the harness's identity.
 
-        The capability set decides WHETHER the array is consulted (a property of the
-        transport, not the vendor -- harness-parity H6), and the mirror registry
-        decides WHAT fills it. Widening the set alone must NOT populate: a backend
-        with no registered mirror has nothing to contribute and fails closed. Add
-        both and it works with no edit at either call site, which is what proves no
-        identity branch has crept back in.
+        The capability set decides whether (harness-parity H6), the mirror registry what.
+        The set alone fails closed; both together work with no call-site edit.
         """
         _write_spec(agents_dir, servers={"foo": {"command": "/bin/foo"}}, tools=["@foo"])
         client = self._seeded(tmp_path, agent="kirocrew")
@@ -262,13 +249,8 @@ class TestClientSeam:
     ):
         """A project that owns settings.local.json keeps Crew's tools, gated.
 
-        The file is left exactly as it is, and out of the session: the envelope
-        loads only the ``user`` setting source, so neither the project's
-        ``settings.local.json`` nor its checked-in ``.claude/settings.json`` reaches
-        the CLI. No ``permissions.allow`` a repository carries can pre-approve a
-        call before Crew's gate sees it. Crew's own settings ride inline instead.
-        That is what makes it safe to deliver the whole array -- so a cron job's
-        ``send_message`` reaches this session too.
+        The envelope loads only the ``user`` source, so no repo ``permissions.allow`` can
+        pre-approve a call; Crew's settings ride inline and the whole array is safe.
         """
         _write_spec(
             agents_dir,
@@ -506,11 +488,8 @@ class TestClientSeam:
     ):
         """The retry's envelope comes from the retry's own re-seed.
 
-        The first ``session/new`` is sent before the project file exists, under
-        Crew's own seed. The file then appears, and the retry leaves it out: the
-        array it re-derives must travel with ``settingSources`` minus ``local``
-        and with the substitute model inline, never with the first attempt's
-        envelope.
+        The project file appears after the first attempt, so the retry sends
+        ``settingSources`` minus ``local`` and the substitute model inline.
         """
         # Another settings source defines availableModels, so the warm cache is written.
         monkeypatch.setattr(
@@ -731,15 +710,9 @@ class TestClientSeam:
     ):
         """Answer the handshake with claude-agent-acp 0.84.0's recorded frames.
 
-        ``initialize``, ``session/new``, ``session/load`` and ``session/set_mode``
-        are answered from the live capture. Two fields are set per test and
-        named here so nothing else is invented: ``sessionId`` (``s-new``, or
-        the id a ``session/load`` asked for), and
-        ``modes.currentModeId`` when ``started_mode`` differs from the recorded
-        one -- the capture shows a project file cannot START a session in
-        ``auto`` or ``bypassPermissions`` on this path (``project-auto-filtered``),
-        so those starting modes reach the pin only from another tier. ``version``
-        replaces ``agentInfo.version`` for the floor tests, and ``None`` drops it.
+        Only ``sessionId`` and ``modes.currentModeId`` are set per test; a project file
+        cannot start ``auto`` here (``project-auto-filtered``). ``version`` replaces
+        ``agentInfo.version``, and ``None`` drops it.
         """
         recorded = cls._recorded_results(scenario)
         sent: list[tuple[str, dict]] = []
@@ -1311,11 +1284,8 @@ class TestClientSeam:
     def _claude_reads_natively(path, *, deny, allow):
         """Whether Claude Code runs a Read of *path* without asking the host.
 
-        Its documented order: a deny rule from any settings source refuses before
-        an allow rule from any source can pre-approve. Only the rule shapes in play
-        are modelled: a bare ``Read`` (every path), and a ``//`` pattern, exact or
-        ending in ``/**``, with gitignore's backslash escapes. Paths are compared
-        in the POSIX spelling Claude Code matches (``C:\\x`` is ``/c/x``).
+        Deny from any source beats allow. Models a bare ``Read`` and ``//`` patterns (exact
+        or ``/**``) in POSIX spelling (``C:\\x`` is ``/c/x``).
         """
         spelled = Path(path).as_posix()
         drive = re.match(r"([A-Za-z]):", spelled)
@@ -1343,13 +1313,8 @@ class TestClientSeam:
     ):
         """The user's settings allow every read; a side turn still cannot read a sensitive path.
 
-        A Side Chat session keeps the user tier, so a ``Read`` allow rule there (or
-        an ``additionalDirectories`` entry) lets claude run Read, Grep and Glob
-        without asking the host, and the READ_ONLY gate never sees the call. What
-        refuses it is the deny rule the session carries, which Claude Code checks
-        first. Launched as the spawn path launches it, every sensitive target is
-        denied as itself and as everything under it, while a work-dir file still
-        reads natively.
+        A user-tier ``Read`` allow skips the READ_ONLY gate, so only the session's deny
+        rules, checked first, refuse it. A work-dir file still reads natively.
         """
         from kiro_crew.acp.harness import claude as harness_claude
         from kiro_crew.acp.harness.base import SpawnContext
@@ -1503,13 +1468,8 @@ class TestClientSeam:
     def test_a_pooled_stub_the_spec_never_references_does_not_mount(self, tmp_path, agents_dir):
         """The `tools` allowlist covers the pooled half of the array too.
 
-        The gateway rewriter writes each agent's overlay from the GLOBAL settings
-        file as well as the agent's own spec, so the overlay can carry a stub for
-        a server this agent's ``tools`` never references -- and a stub is that
-        server. Before the mirror placed the stubs, the shared append mounted it
-        anyway, so a claude session received a pooled server the same spec would
-        NOT mount on kiro-cli or codex. The unreferenced server is the widening
-        direction, and this is the parity this test pins.
+        The overlay also comes from the global settings, so it can stub a server ``tools``
+        never names. Kiro-cli and codex would not mount it, so claude must not either.
         """
         _write_spec(agents_dir, servers={"direct": {"command": "/bin/direct"}}, tools=["@direct"])
         client = self._seeded(tmp_path, agent="kirocrew", acp_backend=ACP_BACKEND_CLAUDE)

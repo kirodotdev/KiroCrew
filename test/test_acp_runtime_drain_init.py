@@ -331,12 +331,8 @@ async def test_drain_init_skips_a_stale_backlog_report():
 async def test_drain_init_refuses_a_sessionless_frame_on_a_lone_runtime():
     """A frame naming no session is not this session's, even when unmarked.
 
-    The runtime sets ``fanout_no_owner`` only once MORE THAN ONE queue is
-    registered — right for the idle-stall clock, which may treat a lone session
-    as the sole owner of whatever arrives, but not for a view that publishes
-    server names as "what THIS session mounted". A co-tenant that emits a
-    sessionless frame before registering its own queue would otherwise have its
-    server attributed here.
+    ``fanout_no_owner`` is set only with two or more queues, so a co-tenant's sessionless
+    frame sent before it registers would otherwise be credited here.
     """
     rt, _, _ = _make_runtime()
     q = _register(rt, "sA")
@@ -388,12 +384,8 @@ async def test_drain_init_credits_the_active_agent_when_the_queue_never_empties(
 async def test_drain_init_credits_a_report_that_landed_before_set_mode_answered():
     """A count measured at drain time would swallow the active agent's own report.
 
-    The original defect: the pre-switch depth was read inside ``drain_init``,
-    i.e. AFTER set_mode returned. kiro-cli can emit the switched-to agent's
-    registrations before it answers, so those frames were already queued by then
-    and got counted as pre-switch — consumed without being recorded, leaving a
-    false "no report" panel. The caller measures before it sends instead, so a
-    frame that arrives during the request is credited.
+    kiro-cli can emit the new agent's registrations before answering set_mode, so the
+    caller measures the depth before it sends.
     """
     rt, _, _ = _make_runtime()
     q = _register(rt, "sA")
@@ -684,7 +676,7 @@ async def test_reader_retains_mcp_registration_frames_during_init():
 
 
 def test_backfill_context_window_from_pct(monkeypatch):
-    """#5b: pct-only metadata (kiro 2.10+) backfills window/used tokens from the
+    """Pct-only metadata (kiro 2.10+) backfills window/used tokens from the
     model registry; no-op once a real usage_update set the window."""
     import kiro_crew.acp.session_handle as sh
 

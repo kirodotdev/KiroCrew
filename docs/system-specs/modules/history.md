@@ -566,7 +566,8 @@ normal mate message roles and classes; older builds also wrote a deterministic
 opener row (`warm_task_brief_preparing`), which still reads as a brief row. The
 result row's `meta.brief` holds the validated, redacted fields (`status`,
 `headline`, `asked`, `remaining`, `done`, `needs_you`, `next`, `extra`, `body`,
-an optional HTML `widget`, and the goal-scoped `progress`; an older row holds `asked`, `now`, `needs_you` and `next`) that the
+`asks` (each `what`, `why`, `options` of `label` and `consequence`,
+`recommended`, `recommended_why`), an optional HTML `widget`, and the goal-scoped `progress`; an older row holds `asked`, `now`, `needs_you` and `next`) that the
 transcript draws as a fixed card; its `content` is the same brief as plain
 text, for export and any reader without the card.
 Their metadata marks them only for fingerprint and model-input
@@ -797,9 +798,9 @@ under `view.localKey`.
 
 What stays in `ChatSidebar.tsx`: every hook call (the owner hooks in `CALL_ORDER`
 order, and the inline state, queries and memos between them), the row actions and
-row shell the row memo compares, the crew-window open, the native `confirm()`
-dialogs as the confirming callbacks the render owners call (eslint's native-dialog
-allowlist names this file), the scope it builds after its last hook call, and the
+row shell the row memo compares, the crew-window open, the confirming callbacks
+the render owners call (each asks through the in-app `askAppConfirm()` dialog,
+never a browser-native `confirm()`), the scope it builds after its last hook call, and the
 root region with its resize handle. The render owners call no hooks: the factories
 (`createLaneRows`, `createFolderBlocks`, `createListLanes`, `createBoardLane`) run
 once per render after the scope is built, so the row stamps (`orderStamp`, a view

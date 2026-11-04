@@ -1,32 +1,13 @@
 """The two legacy identity consumers read the signed per-session token.
 
-``session_token_sig`` proves the ``token -> session_key`` mapping is trustworthy and
-``test_session_token_identity.py`` proves the two ``mcp_core`` resolvers read it. Two
-consumers resolved identity on their own and were left on the pre-token sources:
+Covers ``mcp_caller.CallerContext.from_env`` (the key gatewayd stamps on forwarded calls)
+and ``mcp_shared._resolve_tool_policy`` (the ``X-Session-Key`` and policy cache key). The
+env and pid sources name the wrong session after a warm-pool rekey or under
+``spawn_run`` sharing.
 
-* ``mcp_caller.CallerContext.from_env`` — the client-side resolver. Its real inbound
-  caller is ``mcp_gateway/stub_register.py``'s register/recaller caller block, so the key it
-  answers with is what gatewayd stamps on every forwarded call for that connection.
-* ``mcp_shared._resolve_tool_policy`` — the managed-tool-policy lookup, whose
-  resolved key becomes the ``X-Session-Key`` of the policy request AND the key its
-  policy is cached under.
-
-Both were wrong in the two topologies the token exists for: a warm-pool rekey (the
-env a child was spawned with names the PREVIOUS session) and ``spawn_run`` session
-sharing (one process hosts N sessions, so every pid-keyed source answers with the
-PARENT).
-
-Two of these pins are about a CACHE rather than about precedence, and they are the
-ones a token read alone would not satisfy:
-
-* ``from_env`` memoises a resolved legacy identity for the life of the process, so a
-  token read placed below that cache is invisible to every call after the first —
-  which is exactly the call a rekey has to be observable on.
-* the policy cache was keyed on the GATEWAY-supplied identity, so every caller the
-  gateway could not name shared one entry: two sessions on one process inherited each
-  other's tool policy, and a rekeyed session kept the previous session's for the life
-  of the process. It is keyed on the RESOLVED session now, which is also the key the
-  request was made with.
+Two traps are caches: ``from_env`` memoises a legacy identity, so the token must be read
+above that cache, and the policy cache is keyed on the resolved session, not the
+gateway-supplied one, or sessions on one process would share a policy.
 """
 
 from __future__ import annotations
@@ -61,11 +42,8 @@ def _path_for(cfg, token: str):
 def cfg(tmp_path, monkeypatch):
     """Isolated mapping dir + synthetic trust root, with every other source off.
 
-    ``config_dir`` is patched on THREE modules because the three readers resolve it
-    independently: ``session_token_sig`` for the mapping file, ``config.loader`` for
-    ``from_env``'s pid walk, and ``mcp_shared`` for the policy walk. Leaving any of
-    them pointed at the real home would let a host ``session_pid`` file for one of
-    this test process's own ancestors answer instead of the fixture.
+    ``config_dir`` is patched on three modules that resolve it independently; any left
+    on the real home could let a host ``session_pid`` file for an ancestor answer.
     """
     key_path = tmp_path / "sel_hmac.key"
     key_path.write_bytes(b"\x03" * 32)
@@ -133,9 +111,7 @@ def policy(monkeypatch, cfg):
     )
 
 
-# ---------------------------------------------------------------------------
 # CallerContext.from_env — the client-side resolver behind the stub's caller block
-# ---------------------------------------------------------------------------
 
 
 class TestFromEnvReadsTheToken:
@@ -248,16 +224,10 @@ class TestFromEnvReadsTheToken:
     ):
         """A raising binding probe is a REFUSAL, not absence — the fence holds.
 
-        ``KIROCREW_SESSION_KEY``, the signed token and the pid file are all
-        writable by the same uid the member binding exists to fence, so a failed
-        binding read must never be re-read as identity from any of them:
-        ``chmod`` needs only ownership, so the fenced process could make its OWN
-        binding record unreadable and come back as the ambient session with that
-        session's tool-policy exclusions and ``spawn_run`` identity. The probe
-        therefore maps to ``""`` (hard deny) for EVERY exception class,
-        ``PermissionError`` included. A host override that can tell an expected
-        sandbox deny (Seatbelt) from an induced one returns ``None`` for it —
-        that is the layer the distinction lives in.
+        The fenced process can ``chmod`` its own binding record unreadable and could then
+        fall through to the ambient session, so every exception maps to ``""`` (hard
+        deny), ``PermissionError`` included. Only a host override that can tell a
+        sandbox deny apart returns ``None``.
         """
         monkeypatch.setenv("KIROCREW_SESSION_KEY", STALE_KEY)
         monkeypatch.setattr(mcp_caller, "_FROM_ENV_CACHE", None)
@@ -277,9 +247,7 @@ class TestFromEnvReadsTheToken:
             assert ctx.session_type == "protected-pid"
 
 
-# ---------------------------------------------------------------------------
 # _resolve_excluded_tools — the managed-tool-policy lookup
-# ---------------------------------------------------------------------------
 
 
 class TestToolPolicyReadsTheToken:
@@ -397,12 +365,9 @@ class TestToolPolicyReadsTheToken:
     ):
         """The startup-race window is for a call that found NO identity.
 
-        The window is process-global. A ``tools/list`` before the mapping was
-        published opens it; a claim then publishes the mapping; a ``tools/call``
-        inside the same window resolves a real key. Answering ``no_session_key`` for
-        that call is a policy nobody read, and ``tools/call`` does not refuse on that
-        reason -- so an operator exclusion would go unenforced until the window
-        closed. A resolved key ends the race for that call.
+        The window is process-global, and ``tools/call`` does not refuse on
+        ``no_session_key``, so masking a resolved key would leave an operator exclusion
+        unenforced until the window closed.
         """
         monkeypatch.setenv(STUB_SESSION_TOKEN_ENV, TOKEN)
         policy.policies[LIVE_KEY] = ["live_only_tool"]
@@ -451,11 +416,8 @@ class TestToolPolicyReadsTheToken:
     ):
         """A broken host is not a startup race, and the two have different windows.
 
-        Resolution answers with three states rather than two — a key, ``""`` for "no
-        identity yet or refused", and ``None`` for "resolution itself broke" — so a
-        raising probe keeps the 60s window and the ``resolution_failed`` audit it had
-        when the resolution lived inline, instead of being retried every call as the
-        5s race.
+        Resolution answers a key, ``""`` (none yet or refused) or ``None`` (broken), so a
+        raising probe gets the 60s window and ``resolution_failed``, not the 5s race.
         """
 
         def _boom(_pid, **_kw):
@@ -478,12 +440,8 @@ class TestToolPolicyReadsTheToken:
     ):
         """``PermissionError`` from the probe is no different from any other raise.
 
-        A sandbox deny and a deny the fenced process induced on its own binding
-        record are indistinguishable HERE (``chmod`` needs only ownership), so
-        treating EPERM as absence would let the second one walk the resolver down
-        to ``KIROCREW_SESSION_KEY`` and inherit the ambient session's exclusions.
-        The resolver refuses instead; a host override that CAN tell the two apart
-        returns ``None`` for the expected deny.
+        A sandbox deny and one the fenced process induced look the same here, so EPERM
+        as absence would fall through to ``KIROCREW_SESSION_KEY``.
         """
         monkeypatch.setenv("KIROCREW_SESSION_KEY", STALE_KEY)
         policy.policies[STALE_KEY] = ["stale_tool"]
@@ -522,11 +480,8 @@ class TestToolPolicyReadsTheToken:
 class TestDispatchLoopAuditAttribution:
     """The stdio loop's audit records for an unstamped call name the token's session.
 
-    Three SEL records in the dispatch loop fall back to an ambient identity when the
-    gateway stamped no caller on the request: the tool-invocation audit, the
-    unfiltered-listing audit and the excluded-tool rejection. Each read the env var,
-    which after a warm-pool rekey names the previous session. They now share
-    ``_ambient_audit_session``, which reads the token first.
+    Three SEL records share ``_ambient_audit_session``, which reads the token before the
+    env var; after a warm-pool rekey the env var names the previous session.
     """
 
     def test_an_unstamped_call_is_audited_under_the_token_session(self, cfg, monkeypatch):
@@ -568,9 +523,7 @@ class TestDispatchLoopAuditAttribution:
         assert mcp_shared._ambient_audit_session() == "mcp"
 
 
-# ---------------------------------------------------------------------------
 # A locally resolved key with no attestation fails closed without a futile dial
-# ---------------------------------------------------------------------------
 #
 # With no gateway caller block and no signed token, the only key left is the
 # unsigned ``session_pid_<pid>.txt`` read. The gateway answers a request under it

@@ -26,15 +26,10 @@ def _cron_caller_is_named(named_cron_caller):
 def cron_home_fixture(monkeypatch, tmp_path):
     """Point cron_script.config_dir at the per-test patched home.
 
-    Same redirect as test_cron_script.py: scripts are written under
-    ``<home>/.kirocrew/crons`` and the vault lives beside them, so the
-    resolver, the pin computation, and the vault all agree on one root.
-
-    Tests that do NOT patch ``Path.home`` still reach this resolver through
-    the grant-pin key (every ``compute_secret_env_pin`` call), so those fall
-    back to a per-test tmp dir — never the operator's real ``~/.kirocrew``,
-    which this fixture must not create, read, or key. Returns the resolver
-    callable so tests can plant script files where the resolver looks.
+    Scripts and the vault share ``<home>/.kirocrew/crons``, so resolver, pin and
+    vault agree on one root. Tests that do not patch ``Path.home`` still reach the
+    resolver via ``compute_secret_env_pin``, so they get a per-test tmp dir, never
+    the real ``~/.kirocrew``. Returns the resolver so tests can plant scripts.
     """
     real_home = Path.home()
     fallback = tmp_path / "kirocrew-home-fallback"

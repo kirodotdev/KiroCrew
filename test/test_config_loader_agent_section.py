@@ -108,12 +108,12 @@ def test_sandbox_allow_unsandboxed_exec_default_resolves_per_platform(monkeypatc
 
     The resolution lives here, at the one place that sees the raw document, and the
     result is carried by the VALUE rather than by whether the key was present. That
-    is a safety property, not a style choice: :meth:`KiroCrewConfig.save` publishes
-    the whole in-memory snapshot through ``to_dict()`` -> ``asdict(self.agent)``, so
-    every full-document write (the boot default-config write, CLI one-shots)
-    materializes this key. Were the effective policy keyed on presence, such a write
-    would silently convert "never decided" into a declared lockdown and refuse every
-    agent subprocess on a host that has no backend to fall back on — see
+    is a safety property, not a style choice: :meth:`KiroCrewConfig.save` builds
+    the whole in-memory snapshot through ``to_dict()`` -> ``asdict(self.agent)``,
+    which holds the resolved value, and strips this key before writing unless the
+    operator declared it. If the key were written, every full-document write (the boot
+    default-config write, CLI one-shots) would turn "never decided" into a
+    declaration that outranks the platform default — see the save tests below and
     ``test_windows_default_survives_a_full_document_round_trip``.
 
     A declared value still wins in both directions, on every platform.

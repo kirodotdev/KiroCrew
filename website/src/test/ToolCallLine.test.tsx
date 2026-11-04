@@ -6,7 +6,8 @@ import { resolveByApprovalId, sseToolResult } from '../store/chatSlice'
 import type { RootState } from '../store'
 import type { ChatMessage } from '../types'
 import { __resetPathKindCache } from '../hooks/usePathKind'
-import { stubPathKinds } from './pathKindStub'
+import { probedPaths, stubPathKinds } from './pathKindStub'
+import { ChatProjectDirCtx } from '../components/markdown/contexts'
 
 type ChatState = RootState['chat']
 
@@ -539,6 +540,40 @@ describe('ToolCallLine file-open icon', () => {
     expect(onFileOpen).toHaveBeenCalledWith('/etc/hosts')
     // Icon is a sibling hit target — it must not expand the pill.
     expect(pill.getAttribute('aria-expanded')).toBe('false')
+  })
+
+  it('probes and opens a relative tool path inside the chat project', async () => {
+    const fetchMock = stubPathKinds(p => (p === '/home/user/proj/src/a.ts' ? 'file' : null))
+    const onFileOpen = vi.fn()
+    const store = fileStore('{"path":"src/a.ts"}')
+    renderWithProviders(
+      <ChatProjectDirCtx.Provider value="/home/user/proj">
+        <ToolCallLine message={fileMsg()} running={false} onFileOpen={onFileOpen} />
+      </ChatProjectDirCtx.Provider>,
+      { store },
+    )
+    const icon = await screen.findByTitle('Open /home/user/proj/src/a.ts in side panel')
+    expect(probedPaths(fetchMock)).toEqual(['/home/user/proj/src/a.ts'])
+    fireEvent.click(icon)
+    expect(onFileOpen).toHaveBeenCalledWith('/home/user/proj/src/a.ts')
+  })
+
+  it('does not join a relative tool path to a project the transcript did not confirm', async () => {
+    // The slot row names a project, but the transcript provides none (a remote
+    // chat's project is a folder on another machine), so the raw path is sent.
+    const fetchMock = stubPathKinds(() => 'file')
+    const store = createTestStore({
+      chat: {
+        messages: [fileMsg()],
+        toolLog: [{ type: 'tool', text: 'Read src/a.ts', purpose: 'Read a file', tool_call_id: 'tc_file', input: '{"path":"src/a.ts"}', output: 'ok', ts: 1 }],
+        slotRunning: false,
+        activeSlot: 'chat-remote',
+      } as unknown as ChatState,
+      dashboard: { slots: [{ key: 'chat-remote', project: '/work/repo', executor: 'remote' }] } as unknown as RootState['dashboard'],
+    })
+    renderWithProviders(<ToolCallLine message={fileMsg()} running={false} onFileOpen={vi.fn()} />, { store })
+    await screen.findByTitle('Open src/a.ts in side panel')
+    expect(probedPaths(fetchMock)).toEqual(['src/a.ts'])
   })
 
   it('does not render the icon for a non-file tool (bash)', async () => {

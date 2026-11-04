@@ -371,6 +371,10 @@ export default function SteeringTab() {
   const queryClient = useQueryClient()
   const [filter, setFilter] = useState('')
   const [selectedKey, setSelectedKey] = useState<string | null>(null)
+  // The live selection, for the delete's completion: it lands after an await,
+  // by which point the user may have opened, or started editing, another file.
+  const selectedKeyRef = useRef(selectedKey)
+  useEffect(() => { selectedKeyRef.current = selectedKey }, [selectedKey])
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState('')
   /** The project key in force when the draft was loaded.
@@ -539,8 +543,10 @@ export default function SteeringTab() {
   const deleteFile = useMutation({
     mutationFn: (key: string) => api.deleteSteering(key, slotKey, projectKey),
     onSuccess: (_res, key) => {
-      setSelectedKey(null)
-      setEditing(false)
+      if (selectedKeyRef.current === key) {
+        setSelectedKey(null)
+        setEditing(false)
+      }
       // Remove, not invalidate: the file is gone, so its cached detail must
       // not survive to seed a later file created under the same key.
       queryClient.removeQueries({ queryKey: ['steering-file', key] })

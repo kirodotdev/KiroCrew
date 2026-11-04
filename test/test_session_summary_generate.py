@@ -295,18 +295,10 @@ class TestGating:
     async def test_the_turn_being_summarised_is_flushed_before_the_signature(
         self, env, monkeypatch
     ):
-        """The reason the panel stayed empty on every real session.
+        """A dirty slot at dispatch is flushed first, then the post-flush mtime is stamped.
 
-        ``_ChatSlot.append`` marks the slot dirty; the bytes reach disk on the 5s
-        flush loop. This pass is dispatched from ``_finish_queue_cycle`` in the
-        same block that appended the turn's final assistant message, so the write
-        lands AFTER dispatch. A signature captured before it is stale the moment
-        the flush fires, and ``set_cached_intent_summary`` then refuses the
-        payload — on every turn, forever, since the next turn repeats it.
-
-        Here the slot carries a turn its transcript does not, which is exactly
-        the dirty-slot state at dispatch. The pass must flush it, then stamp the
-        post-flush mtime.
+        The final message reaches disk on the 5s flush after dispatch, so a signature taken
+        before it makes ``set_cached_intent_summary`` refuse the payload on every turn.
         """
         state, slot = env
         log = state.conversation_log
@@ -334,16 +326,10 @@ class TestGating:
     async def test_the_flush_loop_firing_mid_model_call_does_not_lose_the_summary(
         self, env, monkeypatch
     ):
-        """The production symptom, reproduced.
+        """A flush during the model call must not invalidate the signature.
 
-        The 5s flush loop is what actually invalidated the signature: it fires
-        while the model call is in flight, writes the dirty slot, and advances
-        the mtime past a signature captured before dispatch. The write guard then
-        refuses the payload and the panel never fills.
-
-        The stub below flushes the slot mid-call, standing in for that loop.
-        Flushing first makes it a no-op — the slot is already clean — so the
-        signature still matches at write time.
+        The stub flushes mid-call, standing in for the 5s flush loop; flushing first makes
+        it a no-op, so the signature still matches at write time.
         """
         state, slot = env
         log = state.conversation_log
@@ -426,18 +412,11 @@ class TestGating:
     async def test_a_turn_starting_during_the_model_call_refuses_the_forced_write(
         self, env, monkeypatch
     ):
-        """The liveness gate runs before the model call, so a turn that starts
-        DURING it cannot be caught by that gate -- the write guard is what closes
-        the window, and it closes it for the forced path too.
+        """A turn that starts during the model call is caught by the write guard, forced
+        path included.
 
-        This is the longest unguarded window in a pass (a model call runs for tens
-        of seconds while no lock is held), and it is the one a reader assumes the
-        `running` check covers. It does not: the signature captured at generation
-        start does not match once the racing turn's message is on disk, so
-        `set_cached_intent_summary` refuses the payload instead of publishing a
-        summary that predates the turn under a current signature. The guard is
-        strictly stronger than re-checking `slot.running` would be, because it
-        catches an append from ANY writer, not just this slot's own turn.
+        The `running` check runs before the call, so only the signature mismatch makes
+        `set_cached_intent_summary` refuse; it catches an append from ANY writer.
         """
         state, slot = env
         log = state.conversation_log
@@ -473,16 +452,10 @@ class TestGating:
     async def test_an_unflushed_turn_during_the_model_call_refuses_the_write(
         self, env, monkeypatch
     ):
-        """The mtime guard only sees DISK. A turn that starts during the model
-        call and has not reached the 5s flush leaves the transcript's mtime
-        untouched, so the signature still matches and the write would be accepted
-        -- then BROADCAST as current, showing a summary that omits that turn until
-        the flush finally moves the mtime.
+        """An unflushed append (`_dirty`) blocks publishing even though the mtime matches.
 
-        So the in-memory state is re-validated before publishing: `_dirty` means
-        an append exists that disk has not seen yet. This is the half of the race
-        the signature cannot cover, and it is the case a signature-only argument
-        wrongly calls benign.
+        The mtime guard only sees DISK, so without this a summary missing that turn would
+        be broadcast as current until the 5s flush.
         """
         state, slot = env
         log = state.conversation_log
@@ -512,15 +485,11 @@ class TestGating:
         assert log.get_cached_intent_summary(state.hkey) is None
 
     async def test_two_concurrent_passes_spend_only_one_model_call(self, env, monkeypatch):
-        """The in-flight guard is taken before the first await, so a second pass
-        cannot slip past it while the first is still awaiting the flush, the mtime
-        or the transcript read.
+        """The in-flight guard is taken before the first await, so a second pass cannot slip
+        past it.
 
-        On-demand generation is what makes this reachable: two clicks from two
-        clients (or a click racing a turn-end pass) are concurrent callers of a
-        function that sets its marker only after four awaits. The
-        signature guard made the outcome safe but not free -- the second pass had
-        already paid for a model call by the time its write was refused.
+        Two on-demand clicks are concurrent callers; without this the second pass pays for
+        a model call whose write is then refused.
         """
         state, slot = env
         calls: list[str] = []

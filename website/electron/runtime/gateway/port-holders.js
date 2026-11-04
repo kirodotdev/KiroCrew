@@ -167,8 +167,11 @@ function createPortHolders({
 
   // Port free is not lock free. Wait for captured incumbent PIDs to die so the
   // kernel has released gateway.lock before attempting the replacement spawn.
-  async function waitForIncumbentExit(pids, label) {
+  // `options` ({ isServing, timeoutMs, pollMs }) lets a caller also stop on a
+  // holder that starts answering; see waitForProcessExit.
+  async function waitForIncumbentExit(pids, label, options = {}) {
     const verdict = await waitForProcessExit({
+      ...options,
       pids,
       isAlive: pidAlive,
       sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),

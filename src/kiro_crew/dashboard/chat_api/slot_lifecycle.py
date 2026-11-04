@@ -300,7 +300,7 @@ def _release_closed_execution(
     warm pool when the tab is resumed -- and the ordinary turn-start rebind
     publishes nothing when the selection is unchanged, so withdrawing here leaves
     a resumed member session unvouched and refuses its own-store dispatch until
-    its owner re-selects the agent. That refusal belongs to a restart, which
+    a gate-verified admission re-vouches it. That refusal belongs to a restart, which
     empties the map wholesale, not to closing a tab.
 
     The retained population is bounded by the count cap rather than by a

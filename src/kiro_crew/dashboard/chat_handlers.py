@@ -350,6 +350,8 @@ from kiro_crew.dashboard.chat_api.turn_stop import (  # noqa: F401
     _reject_pending_approvals,
     _resolve_stop_event,
     _settle_discarded_stage_deliveries,
+    _start_chosen_restored_card,
+    _unchoose_restored_card,
     api_chat_slot_interrupt,
     api_chat_slot_stop,
     stop_slot_turn,
@@ -541,7 +543,11 @@ from kiro_crew.dashboard.slot_projection import (  # noqa: F401
     resolved_row_identity,
     stop_declined_armed,
 )
-from kiro_crew.dashboard.slot_queue_repository import warn_if_not_durable  # noqa: F401
+from kiro_crew.dashboard.slot_queue_repository import (  # noqa: F401
+    RESTORED_QUEUE_KEY,
+    RESTORED_SEND_CHOSEN_KEY,
+    warn_if_not_durable,
+)
 from kiro_crew.dashboard.slot_registry import (  # noqa: F401
     SlotRegistry,
     TakeoverBasis,
@@ -676,7 +682,15 @@ _SESSION_RELOAD_NOTICE = (
 #: could displace human sessions. Stripped here so the gateway re-applies it below
 #: only for a genuine human send. ``TURN_ACTOR_META_KEY`` is the gateway's record
 #: that an app sent the row, which the title counter reads (``chat_title``).
-RESERVED_ROW_META_KEYS = frozenset({"decisions_strip", HUMAN_TURN_META_KEY, TURN_ACTOR_META_KEY})
+#: ``slack_sender`` names the Slack person a code channel's row came from
+#: (``slack.code_channels.creation.slack_sender``); only the Slack routing writes
+#: it, so a dashboard send cannot pass a row off as a Slack user's.
+#: ``slack_request`` names the Slack message a code channel's first turn delivered
+#: (``slack.code_channels.routing.REQUEST_META_KEY``); a caller-supplied one would
+#: mark a request delivered that never reached the session.
+RESERVED_ROW_META_KEYS = frozenset(
+    {"decisions_strip", HUMAN_TURN_META_KEY, TURN_ACTOR_META_KEY, "slack_sender", "slack_request"}
+)
 
 #: The ``steer`` value that means "let Jev choose between the two paths" rather
 #: than naming one. A STRING beside the boolean the two manual modes send, so the

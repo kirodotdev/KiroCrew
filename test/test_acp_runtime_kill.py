@@ -55,21 +55,9 @@ def _bare_runtime(pid: int = 54321) -> rt.AcpRuntime:
 class _StubbedPlatformCompat:
     """The real ``platform_compat``, with only what a kill test must pin replaced.
 
-    These tests describe the POSIX-shaped teardown, so the module they run
-    against has to answer ``IS_WINDOWS`` False on a Windows host. Substituting a
-    hand-listed namespace for the module did that and paid for it twice: every
-    production read of an attribute nobody thought to list raised
-    ``AttributeError`` from inside the code under test, and the list went stale
-    the moment the teardown started reading one more thing (the root-identity
-    check). Delegating instead means only the pins are fiction.
-
-    Every destructive entry point is pinned to ``None`` rather than delegated, so
-    a test that forgets to stub one fails loudly on a call to ``None`` instead of
-    aiming a real terminate at a fabricated pid on the host running the suite.
-    Reads (``get_process_start_id``, ``pid_exists`` where a test sets it, the
-    signal constants) come from the real module. Assignment lands on the
-    instance, so ``monkeypatch.setattr(rt.platform_compat, ...)`` in a test wins
-    over both the pins and the delegation.
+    ``IS_WINDOWS`` is False so the POSIX teardown runs on any host; other reads delegate
+    so no attribute goes missing. Destructive entry points are ``None`` so a missing stub
+    fails loudly instead of killing a fabricated pid. ``monkeypatch.setattr`` wins.
     """
 
     #: Anything that can signal, terminate or reap a process on this host.
@@ -89,12 +77,8 @@ class _StubbedPlatformCompat:
     def kill_process_tree_pinned(self, pid: int, expected_start_time: str, sig: int) -> bool:
         """The POSIX half of the real function, spelled out rather than delegated.
 
-        The real one branches on ``platform_compat``'s OWN ``IS_WINDOWS``, which
-        this class cannot pin: on a Windows host it would take the owned-handle
-        drain and open a real process object for a pid these tests invented.
-        ``IS_WINDOWS`` False is already the premise here, and on that side the
-        real function is exactly ``kill_process_tree(pid, sig)`` -- so resolve it
-        through the instance, where the pin above (or a test's own stub) lives.
+        The real one reads its own ``IS_WINDOWS``, which this class cannot pin, and on
+        Windows would open a real process for an invented pid.
         """
         return self.kill_process_tree(pid, sig)
 
@@ -108,11 +92,8 @@ class _StubbedPlatformCompat:
 def _fast_kill_windows(monkeypatch):
     """Make the two escalation waits time out without waiting for a real clock.
 
-    `kill()` only reaches the SIGKILL escalation and the liveness probe after both
-    `wait_for`s expire. At 0.05s that depended on the scheduler resuming a coroutine
-    inside 50ms, which a loaded runner (and Windows, ~15.6ms timer granularity) does
-    not promise. Zero makes `wait_for` raise on its first check: same code path,
-    reached deterministically with no sleeping.
+    Zero makes both `wait_for`s raise on the first check, so the SIGKILL escalation is
+    reached deterministically; a small timeout depends on scheduler timing.
     """
     monkeypatch.setattr(rt, "platform_compat", _StubbedPlatformCompat())
     monkeypatch.setattr(rt.AcpRuntime, "_KILL_TERM_TIMEOUT", 0)
@@ -189,11 +170,8 @@ async def test_kill_signals_the_group_when_the_root_is_already_gone(monkeypatch)
     """The leak that survives descendant tracking: a root that died before any
     descendant was recorded.
 
-    kill_process_tree is killpg(getpgid(root)); getpgid raises once the root has
-    exited, and swallowing that leaves the launcher, agent and chat process in
-    the group unsignalled. The group id is known without the root -- it was a
-    session leader -- so the teardown must still reach it, and escalate, once a
-    live member vouches for it.
+    getpgid raises once the root exits, but the root was a session leader, so the group
+    id is known and must still be signalled once a live member vouches for it.
     """
     r = _bare_runtime()
 
@@ -422,12 +400,8 @@ async def test_kill_reports_an_unreached_tree_on_a_vouching_host_too(
 ):
     """On Linux, reaching no member is not proof the tree is gone.
 
-    The members can be there and simply not vouch -- a sandbox that scrubbed the
-    incarnation token, an unreadable `/proc/<pid>/environ`, a missing argv
-    identity -- which is the reported leak's own shape. So the group read is the
-    guard, not the platform: something still in the group means the teardown
-    reached nothing that was there and must say so, while an empty group is the
-    ordinary teardown and stays quiet.
+    Members may not vouch (scrubbed token, unreadable `/proc/<pid>/environ`). A
+    non-empty group must be reported; an empty group stays quiet.
     """
     r = _bare_runtime()
     monkeypatch.setattr(rt, "group_vouching_available", lambda: True)
@@ -656,15 +630,8 @@ async def test_kill_untracks_pid_when_process_died(monkeypatch):
 async def test_kill_untracks_root_off_the_event_loop(monkeypatch):
     """The root's PID-registry untrack runs off the event loop.
 
-    ``_untrack_root_by_identity`` takes the PID file's exclusive lock and
-    rewrites the file through ``atomic_write`` (mkstemp + fsync). On the loop
-    thread a slow disk would stall the gateway and the ``wait_for`` timeout
-    bounding the warm-pool discard could not fire, so the call is handed to a
-    worker thread the way ``_prune_dead_descendants`` is.
-
-    The assertion is on the recorded thread, not a call count: the point is
-    WHERE it ran, and ``kill()`` awaits the offload so the field is populated
-    by return.
+    It locks and fsyncs the PID file; on the loop a slow disk would stall the gateway
+    and block the warm-pool discard's ``wait_for``. Asserted on the recorded thread.
     """
     r = _bare_runtime()
     # A recorded identity so the retire goes through _untrack_root_by_identity,

@@ -71,6 +71,10 @@ def _provider(monkeypatch, shipped=()):
     return prov
 
 
+def _named(name, values):
+    return [pytest.param(v, id=f"{name}-raw{i}") for i, v in enumerate(values)]
+
+
 # ── the legacy string keeps working exactly as before ───────────────────────
 
 
@@ -146,25 +150,37 @@ class TestEntries:
 
     @pytest.mark.parametrize(
         "raw",
-        [
-            {"endpoint": "ftp://x.example/v1/metrics"},
-            {"endpoint": ""},
-            {"name": "has space", "endpoint": OPS},
-            {"endpoint": OPS, "temporality": "sometimes"},
-            {"endpoint": OPS, "point_attributes": {"user": "me"}},
-            {"endpoint": OPS, "point_attributes": {"ClientType": "has space"}},
-            {"endpoint": OPS, "headers_env": {"Authorization": "not-a-var"}},
-            # A literal header value would be a credential in config.json.
-            {"endpoint": OPS, "headers": {"X-Scope": "team-a"}},
-            {"endpoint": OPS, "headers": {}},
-            {"endpoint": OPS, "unknown_key": 1},
-            # A mistyped opt-out must not read as "on".
-            {"endpoint": OPS, "enabled": "false"},
-            {"endpoint": OPS, "enabled": 0},
-            # Only a build may lock an entry.
-            {"endpoint": OPS, "locked": True},
-            "not an object",
-        ],
+        _named(
+            "a_malformed_entry_is_skipped_and_the_rest_stay",
+            [
+                {"endpoint": "ftp://x.example/v1/metrics"},
+                {"endpoint": ""},
+                {"name": "has space", "endpoint": OPS},
+                {"endpoint": OPS, "temporality": "sometimes"},
+                {"endpoint": OPS, "point_attributes": {"user": "me"}},
+                {"endpoint": OPS, "point_attributes": {"ClientType": "has space"}},
+                {"endpoint": OPS, "headers_env": {"Authorization": "not-a-var"}},
+                # A literal header value would be a credential in config.json.
+                {"endpoint": OPS, "headers": {"X-Scope": "team-a"}},
+                {"endpoint": OPS, "headers": {}},
+                {"endpoint": OPS, "unknown_key": 1},
+                # A mistyped opt-out must not read as "on".
+                {"endpoint": OPS, "enabled": "false"},
+                {"endpoint": OPS, "enabled": 0},
+                # Only a build may lock an entry.
+                {"endpoint": OPS, "locked": True},
+                "not an object",
+            ],
+        )
+        + _named(
+            "a_line_end_inside_or_before_a_value_still_refuses_the_entry",
+            [
+                {"name": "ops\nx", "endpoint": OPS},
+                {"name": "\nops", "endpoint": OPS},
+                {"endpoint": OPS, "headers_env": {"X\nScope": "OPS_SCOPE"}},
+                {"endpoint": OPS, "allow": ["kirocrew.session\n.started"]},
+            ],
+        ),
     )
     def test_a_malformed_entry_is_skipped_and_the_rest_stay(self, raw, caplog):
         cfg = TelemetryConfig(otlp_endpoints=[raw, {"name": "good", "endpoint": OPS}])
@@ -319,19 +335,6 @@ class TestTrailingWhitespace:
         )
         assert [d.name for d in DefaultTelemetryProvider().otlp_destinations(cfg)] == ["good"]
         assert "repeats a key" in caplog.text
-
-    @pytest.mark.parametrize(
-        "raw",
-        [
-            {"name": "ops\nx", "endpoint": OPS},
-            {"name": "\nops", "endpoint": OPS},
-            {"endpoint": OPS, "headers_env": {"X\nScope": "OPS_SCOPE"}},
-            {"endpoint": OPS, "allow": ["kirocrew.session\n.started"]},
-        ],
-    )
-    def test_a_line_end_inside_or_before_a_value_still_refuses_the_entry(self, raw):
-        cfg = TelemetryConfig(otlp_endpoints=[raw, {"name": "good", "endpoint": OPS}])
-        assert [d.name for d in DefaultTelemetryProvider().otlp_destinations(cfg)] == ["good"]
 
     def test_every_pattern_refuses_a_final_line_end_on_its_own(self):
         """``fullmatch``, not ``match``: under ``match`` a ``$`` matches before a final

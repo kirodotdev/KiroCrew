@@ -222,7 +222,12 @@ def test_truncate_wal_before_close_empties_the_wal_in_place(tmp_path: Path) -> N
     conn.close()
 
 
-def test_truncate_wal_before_close_never_raises(tmp_path: Path) -> None:
+def test_truncate_wal_before_close_never_raises(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
     _db, conn = _wal_db(tmp_path)
     conn.close()
-    sqlite_wal.truncate_wal_before_close(conn)  # a closed connection is logged, not raised
+    with caplog.at_level("DEBUG", logger="kiro_crew.sqlite_wal"):
+        sqlite_wal.truncate_wal_before_close(conn)  # a closed connection is logged, not raised
+    logged = [r.getMessage() for r in caplog.records if r.name == "kiro_crew.sqlite_wal"]
+    assert logged == ["WAL checkpoint before close did not run"]

@@ -41,6 +41,7 @@ if TYPE_CHECKING:
         _extract_full_command,
         _redact_tool_field,
         _validate_tool_name,
+        code_channel_post_thread,
         crew_log_emit,
         logger,
         pin_human_approval,
@@ -351,10 +352,15 @@ async def _on_permission_prompt(
         and not slack_mirror_is_paused(state, session_key)
     ):
         try:
+            # A Slack Code channel's own session posts top-level,
+            # where its replies go (the mirror's own rule, read
+            # from the same helper); every other linked thread
+            # keeps threading under ``_slack_thread_ts``.
+            _approval_thread = code_channel_post_thread(slot._slack_channel, slot._slack_thread_ts)
             _slack_approval_ts = await post_linked_approval(
                 state.slack_client,
                 slot._slack_channel,
-                slot._slack_thread_ts,
+                _approval_thread,
                 event.request_id,
                 session_key,
                 (f"{_child_lf_warning}{event.title}" if _child_lf_warning else event.title),
@@ -650,6 +656,12 @@ async def _on_permission_prompt(
             from kiro_crew.autonudge import release_approval_hold_for
 
             release_approval_hold_for(slot.key, why="an approval was answered")
+            # The same person answer is what a worker's "waits on an approval"
+            # report asked for: record it on the worker's item, so its "needs
+            # you" clears without waiting for the worker's next report.
+            from kiro_crew.dashboard.handlers import work_ledger
+
+            work_ledger.note_approval_answered(state, slot.key)
         # Backstop: the future is now gone, so the permission
         # message MUST NOT be left reading pending — the UI would
         # keep rendering an approval bar whose every button answers

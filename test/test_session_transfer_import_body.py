@@ -39,12 +39,9 @@ from kiro_crew.testing.wait import async_wait_until, await_until
 async def test_import_accepts_the_exact_bytes_the_export_endpoint_writes(monkeypatch):
     """The acceptance bar: an exported file installs with no step in between.
 
-    Compressed with the EXPORT MODULE'S OWN serialiser, not a local
-    ``gzip.compress`` that happens to look similar — the defect this closes was
-    precisely that the two halves of one product disagreed about a format, so a
-    test that re-implements the sending half could pass while the endpoint still
-    refuses the real file. ``GET .../export`` answers ``application/gzip``; the
-    importer read ``request.json()`` and rejected those bytes as malformed JSON.
+    Compressed with the export module's own serialiser, not a local ``gzip.compress``:
+    a test that re-implements the sending half could pass while the two halves
+    disagree about the format.
     """
     from kiro_crew.dashboard import session_transfer as st
 
@@ -132,11 +129,8 @@ async def test_import_has_no_size_ceiling(monkeypatch):
 def test_import_never_reads_the_whole_body_into_memory():
     """Source guard: the arrival path streams and must not buffer the whole body.
 
-    ``request.read()`` / ``.post()`` / ``.json()`` each materialise the entire body
-    in memory AND are the calls aiohttp enforces ``client_max_size`` in — using any
-    of them would both cap the size and defeat the streaming. Assert the handler and
-    its body reader never call them (comments stripped, so a comment mentioning one
-    does not mask a real call).
+    ``request.read()`` / ``.post()`` / ``.json()`` buffer the whole body and are where
+    aiohttp enforces ``client_max_size``, so the handler and its reader must not call them.
     """
     import ast
     from pathlib import Path as _Path
@@ -238,13 +232,8 @@ async def test_concurrent_expansions_are_bounded_and_the_excess_is_refused(monke
 async def test_the_expansion_permit_outlives_the_decompression(monkeypatch):
     """A permit that ends at the gunzip bounds the CPU, not the memory.
 
-    A decompressed bundle stays resident -- first as bytes, then as the parsed
-    document -- through redaction and persistence, so what has to be bounded is
-    how many are resident AT ONCE, not how many are inflating at once. Measured
-    inside the post-decompression pass rather than at the gunzip: with the permit
-    released when the body has been read, every admitted caller frees its slot
-    immediately and they all pile into redaction together, which is precisely the
-    sum the bound exists to prevent.
+    A decompressed bundle stays resident through redaction and persistence, so the bound
+    is on how many are resident at once. Measured inside the post-decompression pass.
     """
     from kiro_crew.dashboard import session_transfer as st
 
@@ -298,13 +287,9 @@ async def test_the_transcript_only_mark_reads_layer_b_skipped_not_absence(monkey
     """A file bundle MAY carry Layer B and usually will not — so the mark is
     driven by the sender's explicit signal, never inferred from absence.
 
-    Three cases, because inferring from absence gets two of them wrong:
-
-    * no Layer B and no signal — a session that never HAD a kiro-cli context.
-      Nothing was lost, so nothing is marked. Inference would mark it.
-    * no Layer B, ``layer_b_skipped`` set — context existed and was withheld
-      (the export's default-off posture, or a mid-turn source). Marked.
-    * Layer B present — full fidelity, not marked.
+    * no Layer B, no signal: the session never had a kiro-cli context; not marked.
+    * no Layer B, ``layer_b_skipped`` set: context was withheld; marked.
+    * Layer B present: not marked.
     """
     from kiro_crew.dashboard import session_transfer as st
 
@@ -328,16 +313,9 @@ async def test_the_transcript_only_mark_reads_layer_b_skipped_not_absence(monkey
 async def test_an_exported_file_installs_with_no_step_in_between(tmp_path):
     """The two halves of the feature, wired to each other over HTTP.
 
-    Every other test here stubs one side. This one stubs NEITHER: a real
-    ``DashboardState``, the real ``api_chat_slot_export``, the real
-    ``api_chat_slot_import``. It is the test whose absence let the defect ship —
-    each half was covered, the PAIR was not, and the pair is where they disagreed
-    about a format.
-
-    Also covers, in one pass, the two exit criteria that are about repetition
-    rather than about a single install: the same file installed twice yields TWO
-    separate sessions, and a plain-JSON body keeps working alongside gzip so the
-    tunnel is unregressed.
+    Neither side is stubbed: the real ``api_chat_slot_export`` feeds the real
+    ``api_chat_slot_import``. Also: one file installed twice yields two sessions, and a
+    plain-JSON body still works beside gzip.
     """
     import gzip
 
@@ -423,12 +401,8 @@ async def test_an_exported_file_installs_with_no_step_in_between(tmp_path):
 async def test_a_body_past_the_server_client_max_size_still_imports(tmp_path):
     """A body larger than the Application's ``client_max_size`` imports successfully.
 
-    The import path streams ``request.content`` to disk instead of calling
-    ``request.read()``, so aiohttp's ``client_max_size`` — which it enforces only in
-    the buffering reads — does not gate it, exactly as the streaming multipart upload
-    path bypasses the same limit. A valid bundle several times the (deliberately
-    tiny) server limit installs successfully rather than being told it is too large,
-    over BOTH transports.
+    The import streams ``request.content``, and aiohttp enforces ``client_max_size`` only
+    in the buffering reads. Checked over both transports with a deliberately tiny limit.
     """
     import gzip
 

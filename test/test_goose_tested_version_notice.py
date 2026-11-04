@@ -35,13 +35,20 @@ def test_outside_the_tested_range_warns_with_version_range_and_fix(version):
     assert "download_cli.sh" in issue
 
 
-@pytest.mark.parametrize("version", ["1.50.0", "1.50.1", "1.50.9", "1.50.1+build.3"])
-def test_the_tested_range_is_silent(version):
-    assert untested_version_issue(GOOSE, version) == ""
-
-
-@pytest.mark.parametrize("version", ["", "unknown", "dev", "1.50", "v1.54.0", None])
-def test_an_unreadable_version_is_silent_and_does_not_raise(version):
+@pytest.mark.parametrize(
+    "version",
+    [
+        *(
+            pytest.param(v, id=f"the_tested_range_is_silent-{v}")
+            for v in ["1.50.0", "1.50.1", "1.50.9", "1.50.1+build.3"]
+        ),
+        *(
+            pytest.param(v, id=f"an_unreadable_version_is_silent_and_does_not_raise-{v}")
+            for v in ["", "unknown", "dev", "1.50", "v1.54.0", None]
+        ),
+    ],
+)
+def test_a_tested_or_unreadable_version_is_silent_and_does_not_raise(version):
     assert untested_version_issue(GOOSE, version) == ""
 
 

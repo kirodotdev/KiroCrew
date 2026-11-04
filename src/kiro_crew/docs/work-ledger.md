@@ -225,6 +225,12 @@ at the cap still reads.
 An item can carry a `steer` event: the time, actor `person`, and the person's own
 text, redacted and cut to 500 characters. It records that the person typed into
 the crew member (the worker session) that holds the item, from a Crew Mode chat.
+It is also written, with fixed text and nothing from the tool call, when the
+person answers a tool approval in that crew member's chat while the item's last
+report is `blocked` or `question` with reason `approval` and nobody has answered
+it yet (`work_ledger_worker.record_approval_answered`). One is written per such
+report, so the Board, the sidebar count and goal-board stop showing the item as
+needing you once the approval it asked for is answered.
 `work_ledger_read` shows it in the item's events. A steer moves no field: status,
 acceptance and verdict stay where they were, and acceptance stays the evaluator's.
 A person's steer outranks the conductor's decision. The ledger write

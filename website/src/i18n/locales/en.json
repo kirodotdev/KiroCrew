@@ -966,7 +966,8 @@
         "add_screens": "Add screens",
         "add_screenshots_or_paste_a_link_first": "Add screenshots or paste a link first",
         "clear_all": "Clear all",
-        "critique_this_flow_count_screens": "Critique this flow · {{count}} screens",
+        "critique_this_flow_count_screens_one": "Critique this flow · {{count}} screen",
+        "critique_this_flow_count_screens_other": "Critique this flow · {{count}} screens",
         "critique_this_screen": "Critique this screen",
         "drop_screenshots_or_click_to_browse": "Drop screenshots — or click to browse",
         "fix_my_access": "Fix my access",
@@ -1055,7 +1056,8 @@
         "configuration_1": "Drop in screenshots for zero-setup review, or provide a Figma file, repository, local folder, or already-running URL; private GitHub sources may require gh auth login."
       },
       "scopingPicker": {
-        "critique_this_flow_count_screens": "Critique this flow · {{count}} screens",
+        "critique_this_flow_count_screens_one": "Critique this flow · {{count}} screen",
+        "critique_this_flow_count_screens_other": "Critique this flow · {{count}} screens",
         "critique_this_screen": "Critique this screen",
         "drag_to_reorder": "Drag to reorder",
         "move_earlier": "Move earlier",
@@ -5724,6 +5726,10 @@
       "withdraw_hint": "You can withdraw this later from {{capabilities}} → {{tab}}.",
       "working": "Trusting…"
     },
+    "projectSkillsPlatformHint": {
+      "load_failed": "Could not check whether project skills can load here.",
+      "text": "Project skills (.kiro/skills) do not load on Windows yet. The gateway log has details."
+    },
     "projectSkillsTrustList": {
       "folder_missing": "This folder no longer exists.",
       "hint": "These project folders may load their own skills into a chat. Withdraw a folder to stop its skills loading.",
@@ -7561,6 +7567,7 @@
       "delete_folder": "Delete folder",
       "delete_history_session": "Delete history session",
       "delete_this_column": "Delete this column?",
+      "delete_column_body": "Only the column is removed. Its sessions, tags and folders are kept.",
       "double_click_to_rename": "Double-click to rename",
       "drag_to_reorder": "Drag to reorder",
       "drop_here_to_remove_from_folder": "Drop here to remove from folder",
@@ -9432,7 +9439,10 @@
         "column_source": "Source",
         "column_event": "Event",
         "column_key_type": "Key/Type",
-        "column_details": "Details"
+        "column_details": "Details",
+        "edit_value_label": "Edit value of “{{key}}”",
+        "save_edit": "Save",
+        "cancel_edit": "Cancel"
       },
       "wakatimeTab": {
         "active_projects": "Projects you worked on",

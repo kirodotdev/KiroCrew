@@ -45,8 +45,14 @@ FRAME_READ_CAP = 8
 #: accepts. A frame attached after that is still tracked for the secret-field
 #: guards, but gets no tag, so it is never read into an outline.
 FRAME_TAG_MAX = 9999
-#: The isolated world a same-process cross-origin frame's walker runs in.
+#: The isolated world a cross-origin frame's walker runs in (a same-process frame in
+#: the stream's session, an out-of-process one in its own child session).
 WALKER_WORLD = "kirocrew_frame_walker"
+#: The isolated world the TOP document's walker runs in, shared by name with the
+#: helper worker (``helper_worker._GUARD_WORLD``, kept equal by a test): Chrome hands
+#: every session the same world for the same name, so the refs the helper's walker
+#: makes are the ones the stream's session reads (frame slots, quick-ask targets).
+TOP_WALKER_WORLD = "kirocrew_guard_walker"
 #: How far the owner's box may differ from the frame's own viewport, in CSS
 #: pixels, before the frame counts as scaled (its points would land elsewhere).
 SCALE_TOLERANCE_PX = 1.5
@@ -145,7 +151,7 @@ class FrameOps:
 
     async def _eval(self, where: tuple[str, int | None], expression: str) -> Any:
         """Evaluate in *where*: ``(session, None)`` is that session's page world,
-        ``(top session, context id)`` a same-process frame's walker world."""
+        ``(session, context id)`` a frame's isolated walker world."""
         sid, ctx = where
         params: dict[str, Any] = {"expression": expression, "returnByValue": True}
         if ctx is not None:
@@ -186,7 +192,13 @@ class FrameOps:
         counting frames stops counting it as unreadable."""
         sid = self.registry.session_of(frame_id) if frame_id else ""
         if sid:
-            return sid, None
+            # An isolated world of the child's own frame: a script in that frame
+            # cannot change what the walker reads there.
+            try:
+                ctx = await self._isolated(sid)
+            except Exception:  # noqa: BLE001 - mid-navigation: unreadable this time
+                return None
+            return (sid, ctx) if ctx is not None else None
         if frame_id not in self.registry.local:
             return None
         try:
@@ -250,15 +262,38 @@ class FrameOps:
             value = {**value, "x": float(value["x"]) + at[0], "y": float(value["y"]) + at[1]}
         return value
 
+    async def _top_world(self) -> int:
+        """The top document's walker world on the stream's session."""
+        tree = await self._send("Page.getFrameTree", {}, self.top)
+        top_id = str(((tree.get("frameTree") or {}).get("frame") or {}).get("id") or "")
+        made = await self._send(
+            "Page.createIsolatedWorld",
+            {"frameId": top_id, "worldName": TOP_WALKER_WORLD, "grantUniveralAccess": False},
+            self.top,
+        )
+        ctx = made.get("executionContextId")
+        if not isinstance(ctx, int) or isinstance(ctx, bool):
+            raise RuntimeError("no isolated world was created")
+        return ctx
+
     async def slot_frames(self, count: int) -> list[str]:
         """The frame id behind each of the walker's ``slot`` nodes ('' when unknown)."""
         out: list[str] = []
+        try:
+            world = await self._top_world()
+        except Exception:  # noqa: BLE001 - no world: every slot stays unread
+            world = None
         for i in range(min(count, FRAME_READ_CAP)):
             frame_id = ""
             try:
+                if world is None:
+                    raise RuntimeError("no walker world")
                 found = await self._send(
                     "Runtime.evaluate",
-                    {"expression": f"(window.__kcFrameSlots || [])[{i}] || null"},
+                    {
+                        "expression": f"(window.__kcFrameSlots || [])[{i}] || null",
+                        "contextId": world,
+                    },
                     self.top,
                 )
                 obj = (found.get("result") or {}).get("objectId")
@@ -274,7 +309,7 @@ class FrameOps:
         return out
 
     async def frame_url(self, frame_id: str, where: tuple[str, int | None]) -> str:
-        if where[1] is not None:
+        if where[0] == self.top:
             return (await self._children()).get(frame_id, "")
         tree = await self._send("Page.getFrameTree", {}, where[0])
         return str(((tree.get("frameTree") or {}).get("frame") or {}).get("url") or "")
@@ -436,6 +471,7 @@ def content_origin(
 
 
 __all__ = [
+    "TOP_WALKER_WORLD",
     "FRAME_READ_CAP",
     "FRAME_REF_RE",
     "FrameOps",
