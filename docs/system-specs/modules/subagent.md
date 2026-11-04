@@ -3884,6 +3884,19 @@ when the parent's own call already returned every member it carries:
   members whose whole block the reply carries (`_carried_in_reply`; a member
   whose block ends past the `MAX_RESPONSE_LEN` cut is left out). A cancelled,
   refused, abandoned, crashed, torn or brokered answer marks nothing.
+  `spawn_status` sends the same mark for its one run when the read is a full
+  read of a finished run (`done: true`, `outcome: "completed"`, no
+  `offset`/`limit`/`grep`, no `result_meta`) and the whole reply after
+  `sanitize_string` fits within `MAX_RESPONSE_LEN`, because that reply holds
+  the result the completion event carries: it answers through
+  `subagent_read_collected.StatusReadAnswer`, whose `on_answered(True)` POSTs
+  it. A running, paged, grepped, over-cap or failed read, a stopped or failed
+  run, a missing or unknown outcome, and a caller with no resolvable session
+  answer plain text and mark nothing. The live done response includes
+  `outcome` and `stopped`, matching the disk fallback. The
+  gateway applies every rule below to that mark too, so for a parent that
+  settles at release a read in a later turn than the one that spawned the run
+  flags nothing and its completion is still delivered.
 - **Only the caller's own children are marked.** `mark-collected` sets
   `SubagentInfo._collected_inline` on each named record whose
   `parent_session_key` is the authorised claim; an unknown id, another parent's

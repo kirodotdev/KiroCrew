@@ -1074,6 +1074,9 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "cloud/connect.py",
         "cloud/login.py",
         "embeddings_download.py",
+        # The shared mark-collected sender: redacts only the gateway error text its
+        # warning log line carries; it returns nothing to the model or a user.
+        "subagent_read_collected.py",
         # Uses the redactor as a PREDICATE, not a transform: `resolve_deck_dir`
         # compares `redact(deck_id) != deck_id` to decide whether to refuse the deck
         # outright. A deck id cannot be scrubbed on the way out — it is the directory
