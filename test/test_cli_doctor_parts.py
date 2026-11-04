@@ -78,7 +78,10 @@ _BASE_SURFACE: dict[str, dict[str, str]] = {
         "_git_line": "(repo: 'Path', *args: 'str') -> 'str | None'",
         "_kiro_cli_signed_in": "() -> 'bool | None'",
         "_linger_enabled": "(user: 'str') -> 'bool | None'",
-        "_report_node": "(issues: 'list[str]') -> 'None'",
+        "_report_node": (
+            "(issues: 'list[str]', *, bundle_route: 'bool' = False, "
+            "bundle_node_version: 'str | None' = None) -> 'None'"
+        ),
         "_venv_deps_ok": "(venv_py: 'Path') -> 'bool'",
     },
     "kas_relay": {
