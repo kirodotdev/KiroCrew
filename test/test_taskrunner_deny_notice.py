@@ -30,6 +30,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import deny_notice_checks
 import pytest
 
 from kiro_crew import llm_helpers, task_executor, task_planner
@@ -379,7 +380,11 @@ def _site_for(sites: tuple[_Site, ...], lines: list[str], lo: int, hi: int) -> _
     return hits[0]
 
 
-class TestEveryHostDenyInTaskPlannerSteersFirst:
+class TestEveryHostDenyInTaskPlannerSteersFirst(
+    deny_notice_checks.EveryHostDenyIsPrecededByTheSharedSteer,
+    deny_notice_checks.EveryRejectAuditsBeforeTheSteer,
+    deny_notice_checks.EverySteerNamesItsCauseExplicitly,
+):
     MODULE = "task_planner.py"
     WINDOW = 8
     AUDIT_WINDOW = 20
@@ -395,44 +400,6 @@ class TestEveryHostDenyInTaskPlannerSteersFirst:
         lines = _lines(self.MODULE)
         seen = sorted(site.fingerprint for _i, site in self._walk(lines))
         assert seen == sorted(s.fingerprint for s in _PLANNER_SITES)
-
-    def test_every_host_deny_is_preceded_by_the_shared_steer(self):
-        lines = _lines(self.MODULE)
-        bare: list[int] = []
-        for i, site in self._walk(lines):
-            assert site.verdict == "host"
-            steers = [j for j in range(max(0, i - self.WINDOW), i) if _STEER.match(lines[j])]
-            if not steers:
-                bare.append(i + 1)
-        assert not bare, (
-            "these host denies hand the model kiro-cli's generic 'user denied' with "
-            f"nothing to correct it -- await _steer_host_deny(...) first: lines {bare}"
-        )
-
-    def test_every_reject_audits_before_the_steer(self):
-        lines = _lines(self.MODULE)
-        late: list[int] = []
-        previous = -1
-        for i, _site in self._walk(lines):
-            floor = max(0, i - self.AUDIT_WINDOW, previous + 1)
-            steers = [j for j in range(max(0, i - self.WINDOW), i) if _STEER.match(lines[j])]
-            audits = [j for j in range(floor, i) if _AUDIT.match(lines[j])]
-            if not audits or not steers or not audits[-1] < steers[-1]:
-                late.append(i + 1)
-            previous = i
-        assert not late, (
-            "the SEL row must be written before the steer and the reject, or a "
-            f"stalled pipe cancels the coroutine with the decision unaudited: lines {late}"
-        )
-
-    def test_every_steer_names_its_cause_explicitly(self):
-        lines = _lines(self.MODULE)
-        unnamed = [
-            i + 1
-            for i in _matches(_STEER, lines)
-            if "cause=DENY_CAUSE_" not in "\n".join(lines[i : i + self.WINDOW])
-        ]
-        assert not unnamed, unnamed
 
     def test_the_module_uses_the_shared_helper(self):
         assert task_planner._steer_host_deny is llm_helpers._steer_host_deny
