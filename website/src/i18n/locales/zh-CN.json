@@ -20341,6 +20341,7 @@
       "custom_title": "自定义密钥",
       "custom_description": "用于 MCP 服务器和 .env 设置的加密密钥。以 secret://YOUR_KEY 引用；其值绝不会在聊天中显示。",
       "custom_authorize": "若要让成员聊天中的智能体使用密钥调用一个已批准的 API，请为该智能体授予 {{server}}，然后在 shell 或终端页面中运行下方命令。",
+      "custom_authorize_windows": "在 Windows 上暂不支持使用自定义密钥调用 API。",
       "custom_empty": "尚未存储任何自定义密钥。添加一个即可从 MCP 服务器以 secret://YOUR_KEY 引用它。",
       "managed_config_error": "无法读取 $KIROCREW_HOME/config.json（默认 ~/.kiro/crew/config.json），因此部分自动凭证已隐藏。",
       "managed_name_hint": "在此保存会更新自动凭证部分中的 {{name}}。 — {{productName}}",
