@@ -42,9 +42,7 @@ from kiro_crew.decisions import outcomes
 from kiro_crew.decisions.points import model_route as mr
 from kiro_crew.decisions.types import Answer
 
-# ---------------------------------------------------------------------------
 # Fixtures and doubles
-# ---------------------------------------------------------------------------
 
 
 #: A tier map for the tests. Nothing ships one (see
@@ -149,9 +147,7 @@ def snapshot(monkeypatch):
     return _set
 
 
-# ---------------------------------------------------------------------------
 # The tier question
-# ---------------------------------------------------------------------------
 
 
 class TestTheQuestion:
@@ -230,9 +226,7 @@ class TestTheQuestion:
         assert "history" in mr.build_state("hi", [{"role": "user", "text": "earlier"}])
 
 
-# ---------------------------------------------------------------------------
 # Reading the answer
-# ---------------------------------------------------------------------------
 
 
 class TestReadingTheAnswer:
@@ -260,9 +254,7 @@ class TestReadingTheAnswer:
         assert mr.read_tier(answers) == ""
 
 
-# ---------------------------------------------------------------------------
 # The tier-to-model map
-# ---------------------------------------------------------------------------
 
 
 #: Every tier unpinned -- the shipped map.
@@ -347,16 +339,11 @@ class TestResolvingTheModel:
         assert mr.resolve_model("complex", {"complex": "model-c.1"}, ["model-c.1"]) == "model-c.1"
 
     def test_two_registry_entries_that_differ_only_in_punctuation_stay_distinct(self):
-        """The canonical registry deliberately keeps a 1M entry and its 200K
-        sibling apart even though they differ by one character, so the comparison
-        must ask the registry rather than fold punctuation away: routing to the
-        200K model because the pin spelled the 1M one is a silently smaller
-        context window, not a near-miss.
+        """The registry keeps a 1M entry and its 200K sibling apart though they differ
+        by one character, so the comparison must ask the registry, not fold punctuation.
 
-        These two literals are REGISTRY FIXTURES -- the pair whose distinctness is
-        under test -- not a default or a pin, so they are the one place a real id
-        belongs. A fake id has no registry entry and would exercise the string fold
-        instead, leaving the registry half of the comparison untested."""
+        Real ids on purpose: a fake id has no registry entry and would test only the
+        string fold."""
         dotted, dashed = "claude-opus-4.8", "claude-opus-4-8"
         assert mr._same_model(dotted, dashed) is False
         assert mr.resolve_model("medium", {"medium": dotted}, [dashed]) == ""
@@ -368,9 +355,7 @@ class TestResolvingTheModel:
         assert mr.resolve_model("simple", {"simple": "model-e.1"}, ["model-e-1"]) != ""
 
 
-# ---------------------------------------------------------------------------
 # routed_model: the answer, and every refusal
-# ---------------------------------------------------------------------------
 
 
 def _route(**kwargs):
@@ -539,9 +524,7 @@ class TestPriorTurns:
         assert "history" not in oracle.states[0]
 
 
-# ---------------------------------------------------------------------------
 # The outcome row and the strip
-# ---------------------------------------------------------------------------
 
 
 class TestTheOutcome:
@@ -594,9 +577,7 @@ class TestTheOutcome:
             assert forbidden not in serialized
 
 
-# ---------------------------------------------------------------------------
 # The two window rules
-# ---------------------------------------------------------------------------
 
 
 @pytest.fixture
