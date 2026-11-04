@@ -5675,13 +5675,15 @@
       "more_waiting": "{{count}}개 더",
       "needs_you": "확인이 필요해요",
       "next": "다음 단계",
+      "recommended": "추천",
       "remaining": "남은 일",
       "show_fewer": "접기",
       "status_blocked": "막힘",
       "status_done": "완료",
       "status_needs_you": "답변 대기",
       "status_on_track": "순조로움",
-      "unlisted": "목록에 없는 {{count}}개 더"
+      "unlisted": "목록에 없는 {{count}}개 더",
+      "why": "이유"
     },
     "voicePlaybackNotice": {
       "failed": "‘{{speak}}’를 실행하지 못했습니다. 텍스트 음성 변환 설정을 확인하고 다시 시도하세요.",

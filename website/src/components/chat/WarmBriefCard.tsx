@@ -53,6 +53,18 @@ export interface WarmBrief {
   widget: string
   /** The gateway's link row: each pull request it read live, labelled `owner/repo#N`. */
   links: { url: string; label: string }[]
+  /** Structured asks: why, each option's consequence, the recommendation.
+   *  Option labels are the gateway-checked source labels. */
+  asks: WarmBriefAsk[]
+}
+
+export interface WarmBriefAsk {
+  what: string
+  why: string
+  options: { label: string; consequence: string }[]
+  /** One of the option labels, or ''. */
+  recommended: string
+  recommendedWhy: string
 }
 
 // The gateway caps every field already; these are the renderer's own bound so
@@ -105,6 +117,25 @@ function waitingOf(value: unknown): WarmBriefCardItem[] {
     .slice(0, MAX_WAITING)
 }
 
+const MAX_ASK_OPTIONS = 6
+
+function asksOf(value: unknown): WarmBriefAsk[] {
+  if (!Array.isArray(value)) return []
+  return value
+    .map(raw => {
+      const s = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {}
+      const options = (Array.isArray(s.options) ? s.options : [])
+        .map(o => (o && typeof o === 'object' ? (o as Record<string, unknown>) : {}))
+        .map(o => ({ label: text(o.label), consequence: text(o.consequence) }))
+        .filter(o => o.label)
+        .slice(0, MAX_ASK_OPTIONS)
+      const recommended = options.some(o => o.label === text(s.recommended)) ? text(s.recommended) : ''
+      return { what: text(s.what), why: text(s.why), options, recommended, recommendedWhy: recommended ? text(s.recommended_why) : '' }
+    })
+    .filter(a => a.what)
+    .slice(0, MAX_ITEMS)
+}
+
 function extraOf(value: unknown): WarmBrief['extra'] {
   if (!Array.isArray(value)) return []
   return value
@@ -143,7 +174,18 @@ export function warmBriefOf(m: ChatMessage): WarmBrief | null {
     waitingTotal: Number.isInteger(total) && (total as number) > waiting.length ? (total as number) : waiting.length,
     widget: typeof b.widget === 'string' && b.widget.length <= MAX_WIDGET ? b.widget.trim() : '',
     links: linksOf(b.links),
+    asks: asksOf(b.asks),
   }
+}
+
+const whyText = (ask: WarmBriefAsk) => `${i18nT('components.warmBriefCard.why')}: ${ask.why}`
+const optionText = (o: WarmBriefAsk['options'][number]) => (o.consequence ? `${o.label}: ${o.consequence}` : o.label)
+const recommendedText = (ask: WarmBriefAsk) =>
+  `${i18nT('components.warmBriefCard.recommended')}: ${ask.recommended}${ask.recommendedWhy ? ` (${ask.recommendedWhy})` : ''}`
+
+/** One ask's lines, in DOM order: what, why, each option, the recommendation. */
+function askLines(ask: WarmBriefAsk): string[] {
+  return [ask.what, ...(ask.why ? [whyText(ask)] : []), ...ask.options.map(optionText), ...(ask.recommended ? [recommendedText(ask)] : [])]
 }
 
 function statusLabel(status: WarmBriefStatus): string {
@@ -176,6 +218,7 @@ export function warmBriefVisibleText(brief: WarmBrief): string {
     lines.push(i18nT('components.warmBriefCard.needs_you'), ...brief.needsYou)
   }
   if (brief.remaining) lines.push(remainingText(brief))
+  for (const ask of brief.asks) lines.push(...askLines(ask))
   const body = brief.body.replace(MCWIDGET_RE, '').trim()
   if (body) lines.push(body)
   lines.push(...brief.links.map(l => l.label))
@@ -189,6 +232,29 @@ export function warmBriefVisibleText(brief: WarmBrief): string {
 /** The waiting cards: the gateway's waiting items, then the model's other asks. */
 function cardsOf(brief: WarmBrief): WarmBriefCardItem[] {
   return [...brief.waiting, ...brief.needsYou.map(title => ({ title, ask: '' }))]
+}
+
+/** The structured asks. Every string is a plain text node; the recommended
+ *  option is marked, never a button (the working buttons are the chip bar's). */
+function Asks({ asks }: { asks: WarmBriefAsk[] }) {
+  return (
+    <ol className="m-0 pl-5 list-decimal flex flex-col gap-1.5 break-words" data-testid="warm-brief-ask-list" aria-label={i18nT('components.warmBriefCard.needs_you')}>
+      {asks.map((ask, i) => (
+        <li key={i} data-testid="warm-brief-ask">
+          <div className="font-medium text-text-strong">{ask.what}</div>
+          {ask.why && <div className="text-[12px] leading-4 text-muted">{whyText(ask)}</div>}
+          {ask.options.length > 0 && (
+            <ul className="m-0 pl-4 list-disc text-[12px] leading-4">
+              {ask.options.map((o, j) => (
+                <li key={j} data-recommended={o.label === ask.recommended || undefined}>{optionText(o)}</li>
+              ))}
+            </ul>
+          )}
+          {ask.recommended && <div className="text-[12px] leading-4 font-semibold" data-testid="warm-brief-recommended">{recommendedText(ask)}</div>}
+        </li>
+      ))}
+    </ol>
+  )
 }
 
 /** A brief with a status (every brief since the status chip) draws its asks
@@ -267,6 +333,7 @@ export default function WarmBriefCard({ brief, messageTs, slotKey }: { brief: Wa
           {brief.remaining && <div className="text-[12px] leading-4 mt-1 text-center break-words">{remainingText(brief)}</div>}
         </div>
       )}
+      {brief.asks.length > 0 && <Asks asks={brief.asks} />}
       {brief.body && (
         <div className="min-w-0 break-words" data-testid="warm-brief-body">
           {/* The chat's own renderer, with the welcome frame profile: an
