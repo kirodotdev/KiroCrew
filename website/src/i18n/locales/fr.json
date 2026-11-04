@@ -13531,7 +13531,10 @@
         "resuming": "Connexion instable — finalisation de cette réponse…",
         "restored": "Connexion rétablie",
         "interrupted": "Connexion interrompue",
-        "give_up": "Connexion instable — veuillez réessayer."
+        "give_up": "Connexion instable — veuillez réessayer.",
+        "throttle_retrying": "Le fournisseur du modèle limite les requêtes — nouvelle tentative…",
+        "throttle_restored": "Limitation levée",
+        "throttle_interrupted": "Le fournisseur du modèle a continué de limiter les requêtes"
       },
       "gatewayNotice": {
         "turn_limit_minutes_many": "{{count}} minutes",

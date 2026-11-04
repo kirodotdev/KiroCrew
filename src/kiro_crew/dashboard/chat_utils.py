@@ -57,6 +57,9 @@ logger = logging.getLogger("kiro_crew.dashboard.chat_utils")
 #: these values against the frontend table.
 TRANSIENT_NOTICE_META_KEY = "notice"
 TRANSIENT_NOTICE_RETRYING = "transient_retrying"
+#: The same pending link when the provider answered with a throttle: the
+#: network is fine, so the row names the throttle instead of the connection.
+TRANSIENT_NOTICE_THROTTLE_RETRYING = "transient_throttle_retrying"
 TRANSIENT_NOTICE_RESUMING = "transient_resuming"
 TRANSIENT_NOTICE_GIVE_UP = "transient_give_up"
 
@@ -64,6 +67,7 @@ TRANSIENT_NOTICE_GIVE_UP = "transient_give_up"
 #: failure is an upstream model-backend 5xx the gateway is already retrying
 #: against, and neither "backend" nor "hiccup" tells a reader that.
 TRANSIENT_RETRYING_TEXT = "⟳ Connection unstable — retrying…"
+TRANSIENT_THROTTLE_RETRYING_TEXT = "⟳ The model provider is throttling requests — retrying…"
 TRANSIENT_RESUMING_TEXT = "⟳ Connection unstable — resuming…"
 TRANSIENT_GIVE_UP_TEXT = "⟳ Connection unstable — please try again."
 
