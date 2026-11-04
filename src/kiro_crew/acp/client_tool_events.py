@@ -13,7 +13,7 @@ Instance fields written: ``_jsonl_pos``, ``_stale_eligible``, ``_tool_call_diff_
 ``_tool_call_inputs``, ``_tool_call_is_shell``, ``_tool_call_mcp_server``,
 ``_tool_call_params``, ``_tool_call_tool_name``, ``_tool_dispatched``.
 
-Instance fields read: ``_active_tool_calls``, ``_agent``, ``_audit_source``,
+Instance fields read: ``_active_tool_calls``, ``_agent``, ``_audit_source``, ``_batch_window``,
 ``_copilot_ambiguous_mcp_calls``, ``_copilot_unmatched_titles``,
 ``_observed_tool_calls``, ``_permission_mode``, ``_sel_settled_tool_calls``,
 ``_session_id``, ``_session_key``, ``_tool_call_harness_tool_name``,
@@ -27,6 +27,7 @@ import json
 import logging
 from typing import TYPE_CHECKING
 
+from kiro_crew.acp import batch_guard
 from kiro_crew.acp._dispatch import (
     _dumps_degraded,
     _measure_tool_output,
@@ -623,7 +624,7 @@ def _extract_tool_event(self: AcpClient, msg: JsonRpcMessage) -> AcpEvent | None
         # Trusted identity from adapter-authored markers (NOT the
         # LLM-authored title), shared with the dispatch builder so both
         # event paths carry the same classifier verdict.
-        return AcpEvent(
+        tool_event = AcpEvent(
             kind=EVENT_TOOL_CALL,
             title=title,
             # The backend's OWN title, before select_tool_title swaps in a
@@ -647,6 +648,9 @@ def _extract_tool_event(self: AcpClient, msg: JsonRpcMessage) -> AcpEvent | None
             mcp_identity_trusted=event_mcp_trusted,
             diff_path=_diff_path,
         )
+        # getattr: a client built without ``__init__`` keeps no window.
+        batch_guard.note_dispatched(getattr(self, "_batch_window", None), tool_event)
+        return tool_event
     return None
 
 
@@ -752,6 +756,8 @@ def _extract_tool_call_update(self: AcpClient, msg: JsonRpcMessage) -> AcpEvent 
         status=update.get("status"),
         scope=getattr(self, "_session_id", "") or "",
     )
+    if update.get("status") in TERMINAL_TOOL_STATUSES:
+        batch_guard.note_settled(getattr(self, "_batch_window", None), tool_use_id)
 
     output_parts: list[str] = []
 
@@ -969,7 +975,7 @@ def _extract_tool_call_refinement(self: AcpClient, msg: JsonRpcMessage) -> AcpEv
         from kiro_crew.security import redact
 
         purpose = redact(purpose)
-    return AcpEvent(
+    refinement = AcpEvent(
         kind=EVENT_TOOL_CALL_UPDATE,
         title=title_str,
         wire_title=title if isinstance(title, str) else "",
@@ -982,11 +988,18 @@ def _extract_tool_call_refinement(self: AcpClient, msg: JsonRpcMessage) -> AcpEv
         is_shell=is_shell,
         diff_path=_diff_path,
     )
+    # The refined input may be the first to carry the shell command, so the
+    # batch window classifies the call again (``acp.batch_guard``).
+    if is_shell:
+        batch_guard.note_refined(getattr(self, "_batch_window", None), refinement)
+    return refinement
 
 
 async def _read_new_tool_results(self: AcpClient) -> list[AcpEvent]:
     results = await asyncio.to_thread(self._read_new_tool_results_sync)
     if results:
+        for event in results:
+            batch_guard.note_settled(getattr(self, "_batch_window", None), event.tool_call_id or "")
         self._active_tool_calls.difference_update(event.tool_call_id or "" for event in results)
         self._tool_dispatched = self._active_tool_calls.possibly_open
         self._stale_eligible = not self._active_tool_calls.possibly_open
