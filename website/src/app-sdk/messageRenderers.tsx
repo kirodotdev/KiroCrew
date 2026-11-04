@@ -23,6 +23,7 @@ import { copyToClipboard } from '../utils/clipboard'
 import { extractToolFilePath } from '../utils/toolFilePath'
 import { deriveToolCallTitle } from '../utils/toolCallTitle'
 import { isSafePath } from '../utils/safePath'
+import { pathBasename } from '../utils/pathBasename'
 import { isHiddenInvisibleAssistantRow } from '../utils/invisibleText'
 import AssistantMessage, { type TurnStats } from '../pages/chat/AssistantMessage'
 import { type FileChangeEntry } from '../components/FileChangeChips'
@@ -389,7 +390,7 @@ export const ToolCallPill = memo(function ToolCallPill({ message, running, onFil
           aria-label={i18nT('appSdk.chatMessageList.open_path', { path: filePath })}
           className="inline-flex items-center gap-1 text-[12px] leading-5 font-mono px-1.5 py-0.5 rounded-md border border-border text-muted cursor-pointer hover:text-text hover:border-border-strong transition-all"
         >
-          {filePath.split('/').pop()}
+          {pathBasename(filePath)}
           <PanelRight size={11} />
         </button>
       )}
