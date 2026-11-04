@@ -57,6 +57,11 @@ export function createChatOrganizationEndpoints({ post, del, patch, j, jfetch: f
     createChatFolder: (name: string, parentId?: string, config?: { project_dir?: string; default_agent?: string; default_destination_crew?: string; color?: string; icon?: string; tags?: string[]; steering_dirs?: string[] }) =>
       post('/api/chat/folders', { name, parent_id: parentId || '', ...(config ?? {}) }).then(j),
     updateChatFolder: (id: string, body: object) => patch('/api/chat/folders/' + encodeURIComponent(id), body).then(j),
+    /** Pick an emoji for the folder without saving it. `name` is the draft
+     *  name (the stored one when empty); `avoid` lists emoji already shown, so
+     *  a repeat click gets a different one. */
+    previewChatFolderIcon: (id: string, name: string, avoid: string[]) =>
+      post('/api/chat/folders/' + encodeURIComponent(id) + '/icon-preview', { name, avoid }).then(j) as Promise<{ icon: string }>,
     /** Set several folders' `order` in ONE atomic request. The sidebar drag
      *  renumbers a run of siblings, and one PATCH per row has no transaction: a
      *  failure partway leaves a mix of old and new order numbers. This posts the
