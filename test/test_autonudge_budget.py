@@ -363,12 +363,8 @@ async def test_a_released_hold_hands_back_the_time_it_really_held(
 ):
     """A hold's release gives the budget back the time it held, whatever the wall clock did.
 
-    The loop runs 20 min of a 40 min budget, is held 30 min, and is released: it
-    has 20 min left. Read from the wall clock at the release, a 2 h forward step
-    before the hold spends the budget, and a 3 h backward step during the hold
-    (past its start, so the wall clock credits nothing) charges the 30 min held.
-    Crediting the anchor with the wall-clock span instead would hand a forward step
-    during the hold back as budget, so the loop must also be spent 20 min later.
+    20 min run of a 40 min budget, 30 min held, released: 20 min left, spent 20 min
+    later. Wall-clock steps before or during the hold must not change that.
     """
     from kiro_crew.autonudge_service import firing, model, timers
 
@@ -413,13 +409,8 @@ async def test_a_failed_resume_write_leaves_the_budget_clock_as_it_was(
 ):
     """A Resume whose write fails leaves the runtime budget reading what it read before.
 
-    The press on a budget the pause ran out, or that the timer stopped, re-anchors it,
-    and the rollback of the failed write puts ``created_ts`` back. The budget's anchor
-    is keyed to ``created_ts`` and kept outside the fields that rollback restores, so
-    one left for the re-anchored value is not the loop's any more: the next read takes
-    the spent time from the wall clock, with every step the wall clock took since the
-    anchor it replaced. A 20 min backward step then hands back 20 min of a spent
-    budget, and a 2 h forward step spends a budget that was raised past the loop's age.
+    The rollback restores ``created_ts`` but the budget anchor lives outside it, so a
+    stale anchor would read spent time off the wall clock and its steps.
     """
     from kiro_crew.autonudge import nudge_cycle_header
     from kiro_crew.autonudge_service import model, mutations
@@ -771,19 +762,11 @@ async def test_a_bare_revival_keeps_the_count_so_a_reconciler_cannot_mint_a_fres
 async def test_the_users_resume_resets_only_the_counter_behind_a_spent_bound(
     svc, monkeypatch, reason, cycles, budget, count_zeroed, clock_reanchored
 ):
-    """Play on a paused loop (the dashboard route's ``fresh_run`` revival through
-    ``authorize_and_update_nudge``) picks the loop up where it stopped: a loop a
-    person paused at cycle 7 of 24 comes back at cycle 7, not cycle 1, because
-    the cap is a lifetime limit and a pause must not quietly mint a fresh
-    allowance. Only a spent bound resets, and only its own counter: a spent cap
-    (stopped on it, or the count reached it) zeroes the count; a spent time
-    budget (stopped on it, or the clock ran it out while the loop sat paused)
-    re-anchors the clock -- Play there is otherwise a dead press, re-stopped on
-    its first tick unless the bound is raised first -- so an overnight pause at
-    7 of 24 with an hour of budget comes back at 7 of 24 on a fresh clock. A
-    reason or a bound that is not even the right type reads as "not spent"
-    rather than raising after ``active`` has flipped. The loop was armed 600s
-    ago in every row."""
+    """Play on a paused loop resumes where it stopped; only a spent bound resets its counter.
+
+    The cap is a lifetime limit, so cycle 7 of 24 comes back at 7. A spent cap zeroes
+    the count; a spent time budget re-anchors the clock. A mistyped reason or bound
+    reads as "not spent". The loop was armed 600s ago in every row."""
     monkeypatch.setattr(
         _autonudge_mod, "sel", lambda: SimpleNamespace(log_tool_invocation=lambda **kw: None)
     )

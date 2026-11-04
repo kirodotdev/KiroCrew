@@ -129,7 +129,7 @@ def _body(response: web.StreamResponse) -> dict:
     return json.loads(raw.decode("utf-8"))
 
 
-# --- /api/monitors ----------------------------------------------------------
+# /api/monitors
 
 
 @pytest.mark.asyncio
@@ -1089,7 +1089,7 @@ async def test_legacy_patch_rejects_a_structured_monitor_id(
     legacy_update.assert_not_awaited()
 
 
-# --- GET /api/autonudge ------------------------------------------------------
+# GET /api/autonudge
 
 
 @pytest.mark.asyncio
@@ -1251,11 +1251,8 @@ async def test_legacy_list_omits_cycle_accounting_only_for_structured_rows(
 ) -> None:
     """The three MAPPED fields, asserted on both sides.
 
-    A structured monitor never writes these on the loop, but each has a truthful
-    equivalent in the monitor's own state, so they carry the real value instead of
-    being withheld. Withholding was worse: the component defaults an absent
-    ``max_cycles`` to 0 under a label reading "0 = infinity", so the panel claimed
-    a budget-bounded monitor runs forever. A plain loop is untouched.
+    Each carries the monitor's own equivalent value: an absent ``max_cycles`` would
+    show as "0 = infinity" for a budget-bounded monitor. A plain loop is untouched.
     """
     legacy = _loop("lp-1")
     legacy.cycle_count = 4
@@ -1386,12 +1383,9 @@ async def test_both_legacy_reads_return_a_monitor_armed_through_the_create_route
 ) -> None:
     """Arm one the way production does, then read it off BOTH legacy routes.
 
-    The loop is built from the kwargs ``api_monitor_create`` actually hands the
-    arming chokepoint, not from a fixture, so the values under test are the ones a
-    real arm writes -- including the ``message`` that is really the wake
-    instructions, and the ``max_cycles=0`` the legacy shape cannot express. Before
-    this fix the list dropped the row and the per-slot read answered ``loop:
-    None``, so the goal popover reported nothing armed while the monitor probed.
+    Built from the kwargs ``api_monitor_create`` really passes, including a ``message``
+    that holds the wake instructions and ``max_cycles=0``. Otherwise the goal popover
+    would show nothing armed while the monitor probes.
     """
     svc = _svc(monkeypatch, _FakeSvc())
 
@@ -1471,7 +1465,7 @@ async def test_get_returns_null_loop_for_an_unbound_slot(monkeypatch: pytest.Mon
     assert _body(await h.api_autonudge_get(request)) == {"enabled": True, "loop": None}
 
 
-# --- POST /api/autonudge -----------------------------------------------------
+# POST /api/autonudge
 
 
 @pytest.mark.asyncio
