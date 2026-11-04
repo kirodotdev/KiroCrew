@@ -192,8 +192,9 @@ def _matcher_ok(matcher: object) -> bool:
     """The object form's matcher rules, plus the kinds in :data:`_SPEC_MATCHER_RE`.
 
     Both are length-capped. The extra kinds are accepted here only: kiro-cli runs
-    its spec's ``hooks`` itself and never reaches this conversion, so the
-    materialized spec's rule stays as it is.
+    its spec's ``hooks`` itself and never reaches this conversion. The materialized
+    spec has its own rule (``agent_materialization.kiro_hooks._kiro_cli_matcher_ok``),
+    which also takes an app bridge's ``@<app>:<server>`` name.
     """
     # circular import: agent imports hooks, which this module imports at load time.
     from kiro_crew.agent import _MAX_MATCHER_LEN, _hook_matcher_ok

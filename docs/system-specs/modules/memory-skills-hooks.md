@@ -6821,7 +6821,7 @@ Merge rules (implemented in `_merge_kiro_hooks()` in `agent_materialization/kiro
 - Malformed entries (missing `command`, non-dict, non-list) are skipped with warning
 - Commands are validated via allowlist regex (`[a-zA-Z0-9/_.-]`), must be absolute paths to existing files, not in sensitive locations (`is_sensitive_path`); symlinks and path traversal are resolved before the sensitive-path check
 - Matcher values must be strings; non-string matchers are skipped
-- Matcher content is validated via allowlist regex (`[a-zA-Z0-9_.*-]`) with a 200-char max length
+- Matcher content is validated via allowlist regex (`[a-zA-Z0-9_.*-]`) with a 200-char max length; kiro-cli's MCP forms `@server` and `@server/tool` (tool part may glob with `*`) are also accepted, because kiro-cli documents both and an MCP-scoped hook otherwise never reached the spec (#29841)
 - Only `command` and `matcher` fields are kept from user entries; arbitrary extra keys are stripped
 - Applied in both `build_agent_config()` (fresh install) and `_refresh_dynamic_fields()` (existing config refresh)
 

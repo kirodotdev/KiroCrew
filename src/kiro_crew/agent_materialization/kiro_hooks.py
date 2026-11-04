@@ -47,6 +47,14 @@ else:
     _SAFE_PATH_RE = re.compile(r"^[a-zA-Z0-9/_.\-]+$")
 _SAFE_MATCHER_RE = re.compile(r"^[a-zA-Z0-9_.*\-]+$")
 _MAX_MATCHER_LEN = 200
+# kiro-cli's own matcher for MCP tools: ``@server`` (every tool of one server) or
+# ``@server/tool`` (one tool, where the tool part may glob with ``*``). kiro-cli
+# documents both, and ``_SAFE_MATCHER_RE`` has no ``@`` or ``/``, so without this a
+# config hook scoped to an MCP server never reached the materialized spec (#29841).
+# The server part takes a non-leading ``:`` because an app's bridge is keyed
+# ``<app>:<server>`` in the spec (``action-radar:ledger``); it never holds a ``/``,
+# which ``mcp_server_alias`` strips from every key.
+_KIRO_CLI_MCP_MATCHER_RE = re.compile(r"@[A-Za-z0-9_.\-][A-Za-z0-9_.:\-]*(?:/[A-Za-z0-9_.*\-]+)?")
 
 
 def _first_refused_char(text: str) -> str:
@@ -358,6 +366,24 @@ def _hook_matcher_ok(matcher: object) -> bool:
         isinstance(matcher, str)
         and len(matcher) <= _MAX_MATCHER_LEN
         and bool(_SAFE_MATCHER_RE.match(matcher))
+    )
+
+
+def _kiro_cli_matcher_ok(matcher: object) -> bool:
+    """Whether ``matcher`` can go into the spec kiro-cli runs itself.
+
+    The object form's rules (:func:`_hook_matcher_ok`), plus kiro-cli's MCP forms
+    ``@server`` and ``@server/tool`` under the same length cap. Only the paths that
+    write the kiro-cli spec use it: the config merge, the config array form and
+    autoimport headers. Hooks Crew fires itself keep their own rule
+    (``agent_sdk.spec_hooks._matcher_ok``).
+    """
+    if _hook_matcher_ok(matcher):
+        return True
+    return (
+        isinstance(matcher, str)
+        and len(matcher) <= _MAX_MATCHER_LEN
+        and _KIRO_CLI_MCP_MATCHER_RE.fullmatch(matcher) is not None
     )
 
 
@@ -707,6 +733,16 @@ def hook_document_unsent_reason(doc: dict) -> str | None:
     return None
 
 
+def _normalize_config_hook_documents(value: object) -> list[dict]:
+    """:func:`normalize_spec_hooks` for an ``agent.kiro_hooks`` array.
+
+    That array is written into the spec kiro-cli runs, so its matchers are held to
+    kiro-cli's rule (:func:`_kiro_cli_matcher_ok`). Install and the Hooks page both
+    read it through here, so the two cannot disagree on which documents are valid.
+    """
+    return normalize_spec_hooks(value, matcher_ok=_kiro_cli_matcher_ok)
+
+
 def unsent_hook_documents(hooks: object) -> list[dict]:
     """The documents in an array-form ``hooks`` that validate but reach no kiro-cli spec.
 
@@ -714,7 +750,7 @@ def unsent_hook_documents(hooks: object) -> list[dict]:
     :func:`hook_document_unsent_reason`. Empty for the object form, which drops
     nothing for these reasons, and for anything that is not a list.
 
-    Validation runs exactly as on install, through :func:`normalize_spec_hooks`,
+    Validation runs exactly as on install, through :func:`_normalize_config_hook_documents`,
     with its warnings and audit lines muted: the install pass already wrote them,
     and this is a read the Hooks page makes on every load. A document that fails
     validation is not here, because it is not a hook Crew accepted.
@@ -723,7 +759,7 @@ def unsent_hook_documents(hooks: object) -> list[dict]:
         return []
     token = _document_audit_muted.set(True)
     try:
-        documents = normalize_spec_hooks(hooks)
+        documents = _normalize_config_hook_documents(hooks)
     finally:
         _document_audit_muted.reset(token)
     unsent: list[dict] = []
@@ -930,7 +966,8 @@ def _autoimport_kiro_hooks(hooks_dir: Path) -> dict[str, list[dict[str, str]]]:
 
     Security parity with the explicit config path:
       * Each script's resolved path goes through ``_validate_hook_command``.
-      * ``# matcher:`` headers are validated against ``_SAFE_MATCHER_RE`` / ``_MAX_MATCHER_LEN``.
+      * ``# matcher:`` headers are validated by ``_kiro_cli_matcher_ok`` (``_SAFE_MATCHER_RE``
+        or kiro-cli's ``@server`` / ``@server/tool`` form, capped at ``_MAX_MATCHER_LEN``).
       * Non-executable files are skipped (INFO log).
       * Sensitive paths are skipped (via ``_validate_hook_command``).
 
@@ -1088,7 +1125,7 @@ def _autoimport_kiro_hooks(hooks_dir: Path) -> dict[str, list[dict[str, str]]]:
 
         entry_dict: dict[str, str] = {"command": validated_command}
         if matcher_header is not None:
-            if len(matcher_header) > _MAX_MATCHER_LEN or not _SAFE_MATCHER_RE.match(matcher_header):
+            if not _kiro_cli_matcher_ok(matcher_header):
                 # An invalid matcher is treated as a validation failure:
                 # promoting a tool-scoped hook to unscoped (firing on every
                 # tool call) would be a silent privilege expansion.
@@ -1228,9 +1265,7 @@ def _merge_kiro_hooks(hooks: dict, user_hooks: dict) -> dict:
                 )
                 agent_mod._sel_hook_rejected(event, entry["command"], "non-string matcher")
                 continue
-            if isinstance(matcher, str) and (
-                len(matcher) > _MAX_MATCHER_LEN or not _SAFE_MATCHER_RE.match(matcher)
-            ):
+            if isinstance(matcher, str) and not _kiro_cli_matcher_ok(matcher):
                 agent_mod.logger.warning(
                     "kiro_hooks[%s]: matcher contains disallowed characters or is too long, skipping",
                     event,
@@ -1436,7 +1471,7 @@ def _apply_user_kiro_hooks(config: dict, mc_cfg: dict) -> None:
         # Every other value, a list included, goes through the normalizer, so a
         # ``hooks`` that is neither shape is audited rather than dropped in
         # silence.
-        documents = normalize_spec_hooks(user_hooks)
+        documents = _normalize_config_hook_documents(user_hooks)
         explicit_hooks = hook_documents_to_object_form(documents)
         # Read from the raw value, BEFORE validation: a document that says
         # ``enabled: false`` and is rejected for an unrelated field must still
