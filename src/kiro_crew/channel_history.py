@@ -272,7 +272,10 @@ class ChannelHistory:
         had_expired = False
 
         try:
-            with path.open("r", encoding="utf-8") as f:
+            # ``replace``: a crash mid-append can leave a partial UTF-8 sequence,
+            # which would otherwise abort the whole load. The damaged line then
+            # fails to parse and is skipped like any other corrupt line.
+            with path.open("r", encoding="utf-8", errors="replace") as f:
                 for line_no, raw in enumerate(f, 1):
                     raw = raw.strip()
                     if not raw:
@@ -286,7 +289,7 @@ class ChannelHistory:
                         logger.warning("Non-object JSONL line %d in %s — skipping", line_no, path)
                         continue
                     wall_ts = data.get("ts")
-                    if wall_ts is None:
+                    if isinstance(wall_ts, bool) or not isinstance(wall_ts, (int, float)):
                         continue
                     if wall_ts < cutoff:
                         had_expired = True
