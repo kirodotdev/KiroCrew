@@ -182,6 +182,21 @@ class TestSelfProtectionKillTargetScoping:
                 f"{_PK} -f kiro``crew",
                 f"{_KA} kiro$()crew",
             ),
+            # QUOTED-LITERAL construct text: bash passes these patterns with
+            # the $()/backticks as literal ERE characters, so they cannot
+            # select a normally-named process -- but the module has never
+            # tracked quote provenance into a pattern operand: the pkill leg
+            # and the token window already deny every plain-list and pkill
+            # twin of these on the same collapsed view (measured), so the
+            # dequoted view's composed leg matching them only removes
+            # window-sensitivity from the existing fail-closed posture.
+            *_named(
+                "test_a_quoted_literal_construct_pattern_stays_denied",
+                "kill $(case x in x) :;; esac; pgrep -f 'kiro$()crew')",
+                "kill $(case x in x) :;; esac; pgrep -f 'kiro``crew')",
+                "kill $(case x in x) :;; esac; pgrep -f kiro'$()'crew)",
+                "kill $(case x in x) :;; esac; pgrep -f kiro\\$\\(\\)crew)",
+            ),
         ],
     )
     def test_kill_spellings_that_name_the_cli_are_kills(self, origin, cmd):
@@ -722,20 +737,6 @@ class TestSelfProtectionKillTargetScoping:
         # rather than stripped from the end.
         assert _denied_by(cmd.format(n=_NAME, v=_TOK)) == _RULE_MINT
 
-    @pytest.mark.parametrize(
-        "cmd",
-        [
-            "kill $(echo x >/dev/null; pgrep {n})",
-            "kill $(echo x; pgrep -f {n})",
-            "kill $(true && pgrep {n})",
-        ],
-    )
-    def test_separator_inside_a_substitution_does_not_end_the_argv(self, cmd):
-        # `kill $(echo x; pgrep <name>)` is ONE argument -- the `;` belongs to the
-        # substitution.  The scan tracks substitution depth and ends the argv only at
-        # depth zero, so the half that names the target is still seen.
-        assert _denied_by(cmd.format(n=_NAME)) == _RULE_KILL
-
     def test_substitution_belonging_to_another_command_still_allowed(self):
         # The depth tracking must not re-associate a LATER command's substitution with
         # this kill: `kill 123` and the `echo` are separate commands.
@@ -1075,6 +1076,15 @@ class TestSelfKillArgvWindowIsQuoteAware:
                 # what discriminates its fail-closed remainder from an empty body
                 "kill $(printf ')' ; pgrep -f {n}",
             ),
+            # `kill $(echo x; pgrep <name>)` is ONE argument -- the `;` belongs to the
+            # substitution.  The scan tracks substitution depth and ends the argv only at
+            # depth zero, so the half that names the target is still seen.
+            *_named(
+                "test_separator_inside_a_substitution_does_not_end_the_argv",
+                "kill $(echo x >/dev/null; pgrep {n})",
+                "kill $(echo x; pgrep -f {n})",
+                "kill $(true && pgrep {n})",
+            ),
         ],
     )
     def test_quote_aware_window_still_sees_the_kill(self, origin, cmd):
@@ -1266,26 +1276,6 @@ class TestSelfKillRawWindowSearchesDequotedView:
     )
     def test_dequoted_view_keeps_these_denied(self, origin, cmd):
         assert _denied_by(cmd.format(n=_NAME, q=self._SPLICED)) == _RULE_KILL
-
-    @pytest.mark.parametrize(
-        "cmd",
-        [
-            # QUOTED-LITERAL construct text: bash passes these patterns with
-            # the $()/backticks as literal ERE characters, so they cannot
-            # select a normally-named process -- but the module has never
-            # tracked quote provenance into a pattern operand: the pkill leg
-            # and the token window already deny every plain-list and pkill
-            # twin of these on the same collapsed view (measured), so the
-            # composed leg matching them only removes window-sensitivity from
-            # the existing fail-closed posture.
-            "kill $(case x in x) :;; esac; pgrep -f 'kiro$()crew')",
-            "kill $(case x in x) :;; esac; pgrep -f 'kiro``crew')",
-            "kill $(case x in x) :;; esac; pgrep -f kiro'$()'crew)",
-            "kill $(case x in x) :;; esac; pgrep -f kiro\\$\\(\\)crew)",
-        ],
-    )
-    def test_a_quoted_literal_construct_pattern_stays_denied(self, cmd):
-        assert _denied_by(cmd) == _RULE_KILL
 
     def test_a_nul_poisoned_body_returns_a_verdict_instead_of_raising(self):
         # A literal NUL after a word-initial ``~`` inside the body made the

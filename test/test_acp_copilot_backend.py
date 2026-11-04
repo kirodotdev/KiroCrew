@@ -112,8 +112,20 @@ def test_a_command_that_moves_the_permission_state_is_refused(text: str) -> None
     assert "approval mode" in issue
 
 
-@pytest.mark.parametrize("text", _MEASURED_PASS_THROUGH)
-def test_text_the_harness_sends_to_the_model_is_not_refused(text: str) -> None:
+@pytest.mark.parametrize(
+    "text",
+    [
+        *(
+            pytest.param(t, id=f"text_the_harness_sends_to_the_model_is_not_refused-{t}")
+            for t in _MEASURED_PASS_THROUGH
+        ),
+        *(
+            pytest.param(t, id=f"a_path_shaped_slash_is_still_not_a_command-{t}")
+            for t in ["/yolo.", "/etc/hosts", "/compact:x"]
+        ),
+    ],
+)
+def test_text_that_is_not_a_command_is_not_refused(text: str) -> None:
     assert prompt_command_issue(COPILOT, [text]) == ""
 
 
@@ -1747,11 +1759,6 @@ def test_a_command_name_ended_by_a_character_the_runtimes_disagree_on_is_refused
 def test_unicode_whitespace_ends_the_name_as_the_harness_reads_it(text) -> None:
     issue = prompt_command_issue(COPILOT, [text])
     assert bool(issue) is text.startswith("/yolo")
-
-
-@pytest.mark.parametrize("text", ["/yolo.", "/etc/hosts", "/compact:x"])
-def test_a_path_shaped_slash_is_still_not_a_command(text) -> None:
-    assert prompt_command_issue(COPILOT, [text]) == ""
 
 
 @pytest.mark.parametrize("title", ["probe-m-arker", "elsewhere-marker"])
