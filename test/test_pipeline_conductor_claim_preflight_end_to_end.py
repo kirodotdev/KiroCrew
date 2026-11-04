@@ -188,24 +188,10 @@ def a_xref(number: int, *, repo: str = REPO) -> dict:
 class TestADisclaimedOpenPrDoesNotSuppress:
     """Rule 2 demands a closing keyword, the same thing rule 1 demands.
 
-    The defect these pin: the timeline event rule 2 reads is ``cross-referenced``,
-    which is keyword-free by construction -- it fires on a bare mention -- so an
-    open PR that said in plain words it was NOT fixing an item took that item out
-    of the dispatch queue anyway. ``Refs #N`` is this repository's own idiom for
-    referenced-but-deliberately-not-closed and its PR template keeps
-    ``Related Issues`` apart from a closing trailer, so the clearest signal an
-    author can give that they are leaving an item for somebody else was read as
-    the reason to skip it. Silently: the item never appeared as
-    refused-for-a-reason, it simply never came up.
-
-    Measured over one real candidate list, of 21 (item, covering PR) pairs 18
-    carried a closing keyword and 3 did not, and all 3 of those PRs disclaimed the
-    fix in their own words.
-
-    Both directions are here. Declining to suppress is only safe because the
-    decline is REPORTED -- a bare reference can still be work in flight whose
-    author never spelled a keyword -- so the risk goes high and the item takes the
-    live recheck instead of the batch.
+    The ``cross-referenced`` timeline event fires on a bare mention, and ``Refs #N`` is
+    this repository's idiom for "referenced, deliberately not closed", so it must not
+    silently skip the item. A bare reference may still be work in flight, so the risk
+    goes high and the item takes the live recheck.
     """
 
     def test_an_open_pr_claiming_closure_is_annotated_and_skips(self, mod, monkeypatch, capsys):
@@ -285,16 +271,10 @@ class TestADisclaimedOpenPrDoesNotSuppress:
 class TestAClosingKeywordCannotSpanTwoFields:
     """A closing reference counts only WITHIN one field.
 
-    The forge honours a closing keyword inside the title or inside the body, never
-    assembled across the two. The closing pattern's ``\\s+`` matches a newline, so
-    searching a newline-joined ``title + body`` matches a reference NEITHER field
-    carries: a title ending ``fix`` glued to a body opening ``#N`` reads as
-    ``fix\\n#N``.
-
-    That direction is the dangerous one. It fabricates coverage, and fabricated
-    coverage SKIPs an item nobody is fixing -- silently, which is the harm this
-    module exists to prevent. The text is arbitrary and opening a fork PR needs no
-    permission, so it is craftable rather than accidental.
+    The forge honours a keyword in the title or the body, never across both. The
+    pattern's ``\\s+`` matches a newline, so a joined ``title + body`` would read a title
+    ending ``fix`` and a body opening ``#N`` as ``fix\\n#N``: fabricated coverage that
+    any fork PR can craft, silently skipping the item.
     """
 
     @pytest.fixture
@@ -355,17 +335,11 @@ class TestAClosingKeywordCannotSpanTwoFields:
 
 
 class TestClosureProseNeverCloses:
-    """Rule 3 reads HAND-WRITTEN ENGLISH, and a naive reading answers with the
-    strongest thing this script can say about somebody else's live work.
+    """Rule 3 reads HAND-WRITTEN ENGLISH, so closure prose is read but never closes.
 
-    Nine false-CLOSE paths reached review in one change and each was fixed on the
-    merits, but the space of English that accidentally means "close this" has no
-    edge, so the next unguarded phrasing was always going to arrive. These tests
-    pin the structural answer instead: the reading survives, the response does
-    not. They are deliberately split -- one pins the CONSEQUENCE (no dispatch),
-    one pins the INTEGER -- because those two can drift apart in a refactor and a
-    caller that branches on the number would then break while a
-    consequence-only test stayed green.
+    English that accidentally means "close this" has no edge, so the response, not the
+    reading, is pinned. One test pins the consequence (no dispatch) and one the exit
+    integer, because the two can drift apart in a refactor.
     """
 
     def closure_checks(self) -> dict:
@@ -400,10 +374,7 @@ class TestClosureProseNeverCloses:
         assert run_main(mod, monkeypatch, self.closure_forge()) != 0
 
     def test_a_standing_closure_request_is_never_closed_either(self, mod, monkeypatch):
-        """The half that was wrong, and the whole point of the change: the item
-        must not be CLOSED on prose. Asserting the absence of CLOSE is what
-        distinguishes this from the old behaviour, which also refused to
-        dispatch."""
+        """The item must not be CLOSED on prose; refusing to dispatch alone is not enough."""
         name, _, _ = mod.verdict(self.closure_checks())
         assert name != "CLOSE"
         assert mod.EXIT_CODES[name] != mod.EXIT_CODES["CLOSE"]
@@ -456,16 +427,10 @@ class TestClosureProseNeverCloses:
         assert mod.EXIT_CODES[name] == 11
 
     def test_an_auto_pipeline_stand_down_is_not_read_as_closure_prose(self, mod):
-        """A pipeline's own stand-down note is the phrasing that most looks like
-        closure without being a reporter's verdict, and it is measurably INERT
-        here: it fires no closure pattern and no self-claim pattern.
+        """A pipeline's own stand-down note fires no closure or self-claim pattern.
 
-        Pinned because that is a property somebody could remove by accident. If
-        a future change teaches this scanner to read "standing down", this test
-        reds and forces the question of whether a pipeline's own note should
-        route through REVIEW at all -- rather than the phrase quietly acquiring a
-        verdict. It does NOT claim such an item is otherwise protected: this
-        script has no check for "my own pipeline already dispositioned this".
+        If the scanner learns to read "standing down", this fails and forces the question
+        of routing it through REVIEW. No check exists for "my pipeline dispositioned this".
         """
         stand_down = (
             "Kiro Crew Auto-Pipeline [operator: redacted] - standing down and "
@@ -1090,11 +1055,8 @@ class TestAgainstRealGit:
     def _hermetic_git_for_the_script(self, _floor_monkeypatch):
         """The SCRIPT's git inherits this process's environment, unlike the fixture's.
 
-        ``_git`` below hands its spawns ``_fixture_git_env``; ``mod.git`` does not
-        take an environment and reads ``os.environ``. Pin the same containment
-        there for the duration of each test: the operator's global and system config
-        are pointed away and the ``GIT_DIR`` family dropped, so the ancestry and grep
-        questions are answered about the clone and nothing else.
+        ``mod.git`` reads ``os.environ``, so the same containment is pinned there: global
+        and system config pointed away and the ``GIT_DIR`` family dropped.
         """
         for name in _GIT_LOCATION_VARS:
             _floor_monkeypatch.delenv(name, raising=False)
@@ -1217,16 +1179,10 @@ class TestAgainstRealGit:
 def _fixture_git_env() -> dict[str, str]:
     """Env for a fixture git call: no host config, templates, hooks, or identity bleed.
 
-    The session/module-scoped template builders below run BEFORE the function-scoped
-    ``_git_identity`` autouse fixture in ``test/conftest.py`` has pinned anything, so
-    they would otherwise read the developer's real ``~/.gitconfig`` -- a
-    ``commit.gpgSign`` aborts the whole template, and a ``core.hooksPath`` or
-    ``init.templateDir`` would EXECUTE host hooks from inside the test run. The
-    ``GIT_DIR`` location family is dropped (the production list, so an exported
-    ``GIT_DIR`` from a hook or ``rebase --exec`` cannot retarget the fixture), both
-    template channels are emptied, and identity is supplied. Deliberately NOT
-    ``git_command_env()``: that pins ``diff.external`` empty for commands that never
-    diff, and these fixtures run ``git diff``.
+    The session/module-scoped builders run before the ``_git_identity`` autouse fixture,
+    so the real ``~/.gitconfig`` could sign commits or run host hooks. Not
+    ``git_command_env()``: it pins ``diff.external`` empty, and these fixtures run
+    ``git diff``.
     """
     env = {k: v for k, v in os.environ.items() if k not in _GIT_LOCATION_VARS}
     env.update(
