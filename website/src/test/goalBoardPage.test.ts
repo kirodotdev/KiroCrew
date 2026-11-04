@@ -257,6 +257,36 @@ describe('goal-board item states', () => {
     expect(document.getElementById('done')?.textContent).toContain('1 quiet')
   })
 
+  it('calls an open report stuck when the main chat closed, as the Crew panel does', () => {
+    mount({
+      items: [
+        item({ item_id: 'o', worker: 'idle', stale: false, orphaned: true }),
+        item({ item_id: 'b', status: 'blocked', worker: 'idle', stale: true, orphaned: true }),
+        item({ item_id: 'c', worker: 'closed', stale: true, orphaned: true }),
+        item({ item_id: 'r', worker: 'running', stale: false, orphaned: true }),
+        item({ item_id: 'x', status: 'done', worker: 'idle', stale: false, orphaned: true }),
+        item({ item_id: 'u', status: null, worker: 'closed', stale: true, orphaned: true }),
+      ],
+    })
+    const unread = 'stuck \u00b7 the main chat closed, reopen it so its reports are read'
+    expect(all('#items .item').map(pill)).toEqual([
+      unread, unread, 'stuck \u00b7 no chat to resume it', 'working', 'waiting',
+      'quiet \u00b7 nothing is scheduled to wake it',
+    ])
+    expect(tally()).toContain('stuck 3')
+  })
+
+  it('leaves an item whose main chat is open as it was', () => {
+    mount({
+      items: [
+        item({ item_id: 'p', worker: 'idle', stale: false, orphaned: false }),
+        item({ item_id: 'n', worker: 'idle', stale: true, orphaned: false }),
+      ],
+    })
+    expect(all('#items .item').map(pill)).toEqual(['waiting', 'quiet \u00b7 nothing is scheduled to wake it'])
+    expect(tally()).not.toContain('stuck')
+  })
+
   it('never calls an item with no worker report stuck', () => {
     mount({ items: [item({ item_id: 'u', status: null, worker: 'closed', stale: true })] })
     expect(all('#items .item').map(pill)).toEqual(['quiet \u00b7 nothing is scheduled to wake it'])

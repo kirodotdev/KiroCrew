@@ -477,6 +477,48 @@ def test_work_items_get_worker_facts_and_the_key_still_never_reaches_the_page():
     assert routes.page_safe_for(_Slots())({"worker_session_key": "chat-run", "x": 1}) == {"x": 1}
     # No gateway state (the agent's own read): the plain mask.
     assert routes.page_safe_for(None)(value) == routes._page_safe(value)
+    # No conductor slot named: no `orphaned` stamp, so the page keeps its old rule.
+    assert all("orphaned" not in row for row in out)
+
+
+def test_work_items_say_orphaned_when_the_board_main_chat_is_closed():
+    """The Crew panel calls an open item stuck when its conductor's chat is closed.
+
+    The goal-board gets the same ``orphaned`` fact, read from the board's own slot,
+    for every open local item, and a closed item is never orphaned. A remote item
+    gets none: it has no ``worker`` here, so stuck would hide a running remote
+    worker. An open main chat orphans nothing.
+    """
+
+    def it(item_id, key, **over):
+        base = {"item_id": item_id, "state": "open", "status": "progress"}
+        return {**base, "worker_session_key": key, **over}
+
+    value = [
+        it("a", "chat-idle"),
+        it("f", "chat-gone", state="accepted", status="done"),
+        it("g", "peer-key", worker_instance_id="peer-1"),
+    ]
+    gone = routes.page_safe_for(_Slots(), "chat-conductor")(value)
+    assert {row["item_id"]: row.get("orphaned") for row in gone} == {
+        "a": True,
+        "f": False,
+        "g": None,
+    }
+    assert "chat-" not in json.dumps(gone) and "peer-key" not in json.dumps(gone)
+
+    slots = _Slots()
+    slots.slots["chat-conductor"] = SimpleNamespace(running=False)
+    open_ = routes.page_safe_for(slots, "chat-conductor")(value)
+    assert {row["item_id"]: row.get("orphaned") for row in open_} == {
+        "a": False,
+        "f": False,
+        "g": None,
+    }
+    # The worker facts are the same either way.
+    assert [(r.get("worker"), r.get("stale")) for r in gone] == [
+        (r.get("worker"), r.get("stale")) for r in open_
+    ]
 
 
 def test_a_credential_in_a_fold_value_is_redacted_before_it_reaches_the_page():
