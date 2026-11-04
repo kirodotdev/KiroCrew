@@ -421,7 +421,9 @@ async def _finish_queue_cycle(
     # status now instead of leaving the sidebar chips on TTL rotation and the
     # detail panel on no refresh at all.
     state.refresh_slot_source_status(slot.key)
-    state.push_refresh("history")
+    # The Older Sessions listing drops open slots, so a turn cannot change it;
+    # ``turn_end`` refreshes the caches a turn can write and skips that listing.
+    state.push_refresh("turn_end")
     # Chain the titling attempt into a refresh check, waiting out a
     # still-running on-send attempt first (see title_then_refresh). Both the
     # untitled and the already-titled case go through the same chain: an

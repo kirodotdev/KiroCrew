@@ -486,6 +486,7 @@ _BASE_STATE_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
         "(self, slug: 'str', version: 'int', *, deleted: 'bool' = False) -> " "'None'",
     ),
     "push_lineage_patch": ("function", False, False, "(self) -> 'None'"),
+    "push_listing_refresh": ("function", False, False, "(self) -> 'None'"),
     "push_refresh": ("function", False, False, "(self, *kinds: 'str') -> 'None'"),
     "push_session_summary": ("function", False, False, "(self, key: 'str') -> 'None'"),
     "push_slot_patch": (

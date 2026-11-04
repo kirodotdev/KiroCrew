@@ -65,6 +65,7 @@ if TYPE_CHECKING:
     from kiro_crew.dashboard.listener_guard import ListenerGuard
     from kiro_crew.dashboard.loop_watchdog import LoopStallWatchdog
     from kiro_crew.dashboard.state_parts.chat_slot import _ChatSlot
+    from kiro_crew.dashboard.state_parts.refresh_coalesce import RefreshCoalescer
     from kiro_crew.messaging.transport import MessagingTransport
     from kiro_crew.power import SleepInhibitor
     from kiro_crew.slack.outbound import PostedOptions
@@ -164,6 +165,15 @@ class DashboardState:
     _slots_broadcast_lock: "threading.Lock | None" = None
 
     _slots_broadcast_timer: "asyncio.TimerHandle | None" = None
+
+    _refresh_coalescer: "RefreshCoalescer | None" = None
+    _history_coalescer: "RefreshCoalescer | None" = None
+
+    # The session keys ``_sync_dashboard_slots`` last published. A gained key pushes
+    # ``history``; a lost key owes it. A class default lets a ``__new__`` state read an empty set.
+    _published_slot_keys: "frozenset[str]" = frozenset()
+    # Whether a slot-set shrink still owes the Older Sessions listing a ``history`` refresh.
+    _listing_refresh_owed: bool = False
 
     _slots_broadcast_last: float = 0.0
 
@@ -1248,6 +1258,7 @@ class DashboardState:
     push_session_summary = _slots_push.push_session_summary
     push_artifact_update = _slots_push.push_artifact_update
     push_refresh = _slots_push.push_refresh
+    push_listing_refresh = _slots_push.push_listing_refresh
     push_update_progress = _slots_push.push_update_progress
     clear_update_progress = _slots_push.clear_update_progress
     _broadcast = _slots_push._broadcast

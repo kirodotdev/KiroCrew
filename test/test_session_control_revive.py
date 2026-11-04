@@ -55,6 +55,21 @@ def test_revive_brings_a_closed_peer_back_with_its_transcript(tmp_path):
     assert not state.conversation_log.get_metadata(f"dashboard:{key}").get("closed")
 
 
+def test_revive_refreshes_the_older_sessions_listing(tmp_path):
+    """The revived session leaves the listing, so every tab must re-read it: the
+    turn that called the revive ends with ``turn_end``, which does not. The one
+    ``history`` frame comes from publishing the revived slot, a listing refresh."""
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    peer = _slot(state, "chat-2")
+    key = _archive(state, caller, peer)
+    state.push_listing_refresh = MagicMock()  # type: ignore[method-assign]
+
+    assert _revive(state, caller, key)["ok"] is True
+
+    state.push_listing_refresh.assert_called_once_with()
+
+
 def test_a_revive_in_the_close_clock_reading_keeps_the_marker(tmp_path, monkeypatch):
     """A revive that starts in the same clock reading as the close is refused,
     and the session stays archived.

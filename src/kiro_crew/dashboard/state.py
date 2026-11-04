@@ -499,6 +499,7 @@ _OWNERS = (
     "kiro_crew.dashboard.state_parts.sidebar_stores",
     "kiro_crew.dashboard.state_parts.slots_frame",
     "kiro_crew.dashboard.state_parts.slots_push",
+    "kiro_crew.dashboard.state_parts.refresh_coalesce",
     "kiro_crew.dashboard.state_parts.slot_list_hold",
     "kiro_crew.dashboard.state_parts.dashboard_state",
 )

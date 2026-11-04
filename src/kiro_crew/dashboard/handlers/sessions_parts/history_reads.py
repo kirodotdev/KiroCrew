@@ -14,9 +14,12 @@ import asyncio
 import logging
 import re
 from pathlib import Path
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
 
 from aiohttp import web
+
+if TYPE_CHECKING:
+    from kiro_crew.dashboard.state import _ChatSlot
 
 # circular import: handlers/__init__.py imports this family through the facade while
 # the package is still initialising, so a `from ... import` of individual names would
@@ -59,7 +62,9 @@ from kiro_crew.validation import sanitize_string
 logger = logging.getLogger("kiro_crew.dashboard.handlers.sessions")
 
 
-def _open_slot_transcript_keys(state: DashboardState) -> set[str]:
+def _open_slot_transcript_keys(
+    state: DashboardState, slots: list[_ChatSlot] | None = None
+) -> set[str]:
     """Every transcript key and filename stem a live slot could be reading.
 
     A session in this set is reachable as an open tab. That single fact drives
@@ -82,20 +87,24 @@ def _open_slot_transcript_keys(state: DashboardState) -> set[str]:
     cannot supply. Both names belong to the SAME slot, so covering both is safe
     in either direction — it can only protect, or hide, a transcript that one
     slot could itself be showing.
+
+    *slots* is a snapshot the caller already took; by default this takes its own.
     """
     from kiro_crew.dashboard.chat_utils import slot_history_key, slot_transcript_key
 
     keys: set[str] = set()
     # Snapshot the values: a concurrent turn can add or remove a slot while this
     # iterates, and a dict mutated mid-iteration raises.
-    for slot in list(state._slots.values()):
+    for slot in list(state._slots.values()) if slots is None else slots:
         for candidate in (slot_history_key(slot), slot_transcript_key(slot.key)):
             keys.add(candidate)
             keys.update(transcript_stems(candidate))
     return keys
 
 
-def _open_row_test(state: DashboardState) -> Callable[[str], bool]:
+def _open_row_test(
+    state: DashboardState, slots: list[_ChatSlot] | None = None
+) -> Callable[[str], bool]:
     """Whether a session row's ``key`` names a transcript an open tab owns.
 
     The one answer for every reader: the Older-sessions list hides these rows and
@@ -105,7 +114,7 @@ def _open_row_test(state: DashboardState) -> Callable[[str], bool]:
     report the RAW stem of whichever file won on mtime, so a resume round-trip's
     ``dashboard_dashboard_<name>`` file arrives under a name no slot produces.
     """
-    open_keys = _open_slot_transcript_keys(state)
+    open_keys = _open_slot_transcript_keys(state, slots)
     log = getattr(state, "conversation_log", None)
     canon = getattr(log, "_canonical_key", None) or (lambda key: key)
     return lambda key: key in open_keys or canon(key) in open_keys
@@ -324,7 +333,11 @@ async def api_sessions(request: web.Request) -> web.Response:
         )
         _audit_app_allow(request_app, "session_list", f"sessions={len(all_sessions)}")
     if exclude_open:
-        is_open = _open_row_test(state)
+        from kiro_crew.dashboard.chat_utils import listing_slot_snapshot
+
+        # One snapshot for the filter and the publish tracker: a session this listing
+        # shows as a row counts as newly open when its slot is next published.
+        is_open = _open_row_test(state, listing_slot_snapshot(state))
         all_sessions = [s for s in all_sessions if not is_open(s.get("key", ""))]
     if user_only:
         log = state.conversation_log

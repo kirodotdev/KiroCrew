@@ -236,6 +236,20 @@ class TestEnsureCronSlot:
         assert len(state._slots) == 1
 
     @pytest.mark.asyncio
+    async def test_minting_the_tab_refreshes_the_older_sessions_listing_once(self):
+        """The new tab's session leaves Older Sessions, which tabs re-read only on a
+        ``history`` frame: the bind's slot publication pushes one listing refresh,
+        and the short-circuited second run pushes none."""
+        state = _make_state()
+        state.push_listing_refresh = MagicMock()
+        job = _make_job()
+
+        await ensure_cron_slot(state, job)
+        await ensure_cron_slot(state, job)
+
+        state.push_listing_refresh.assert_called_once_with()
+
+    @pytest.mark.asyncio
     async def test_first_run_with_no_history_is_benign(self):
         """A genuinely new job has an empty cron:{id} transcript: the bind
         hydrates nothing and still produces a linked, published tab."""
