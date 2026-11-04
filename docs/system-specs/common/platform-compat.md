@@ -510,6 +510,45 @@ before it was ever observed/pinned remains unverifiable; a single numeric snapsh
 is not enough to recover that chain. The deterministic and self-owned native
 regressions are in `test/test_platform_compat_process_tree.py`, `TestProcessDescendants`.
 
+## Windows streaming spawns build their child off the event loop
+
+On the Proactor loop, CPython runs `CreateProcess` inside the subprocess
+transport's constructor (`_WindowsSubprocessTransport._start` ->
+`windows_utils.Popen`), before the transport's first await. A host whose
+endpoint protection holds `CreateProcess` for seconds therefore holds the
+gateway loop for seconds: every MCP probe and heartbeat on it stalls, and the
+loop-stall watchdog exits the gateway (#24968, #27800, design on #19136).
+
+`platform_compat_offloop_spawn` splits the transport build in two:
+
+1. A worker on `spawn_executor()` (a bounded `mc-spawn` pool) builds the `Popen`:
+   `CreateProcess` plus the overlapped pipe handles. No loop state is touched.
+2. On the calling loop, a subclass of the stock transport whose `_start` is the
+   interpreter's own `_start` with its `windows_utils.Popen` lookup answered by
+   that finished object binds it: the process-handle wait and `_connect_pipes`
+   run unchanged.
+
+The caller receives the same loop-bound `asyncio.subprocess.Process` a stock spawn
+returns, so stdin/stdout/`wait()`, terminate paths and the cleanup reservation's
+exact-handle capture (which still happens at `CreateProcess` return, now on the
+worker) are untouched. A cancellation during step 1 cannot stop the worker: the
+spawn waits for it, adopts any child it built and tears it down with `close()` then
+`_wait()`, exactly as a cancellation at the stock `await waiter` does.
+
+Both gateway entry points (`cli.main`'s gateway command and `gatewayd.main`) pass
+`gateway_loop_factory()` to `asyncio.run`. On Windows it returns
+`OffLoopSpawnProactorEventLoop`, whose `_make_subprocess_transport` takes this path,
+so every `create_subprocess_exec` / `create_subprocess_shell` on the gateway loop
+(ACP agent start, MCP server start, the Windows script-hook shell arm) is covered
+without a per-call-site change. The owned ACP spawn in `platform_compat_wintree`
+calls `make_subprocess_transport_off_loop` with its capturing `Popen`. Off Windows
+the factory is `None` (the default loop), so POSIX behaviour does not change. If an
+interpreter's `_start` no longer spawns through `windows_utils.Popen`, the spawn
+refuses before creation rather than silently spawning on the loop. The guards are in
+`test/test_windows_spawn_off_loop.py`: a slow simulated build must leave a heartbeat
+on the loop ticking, on POSIX through the same helper and on the Windows CI shards
+through a real Proactor loop with `CreateProcess` delayed.
+
 ## Windows session-tree teardown
 
 Windows physical ACP starts reserve cleanup bookkeeping atomically before the

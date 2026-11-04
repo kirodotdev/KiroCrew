@@ -334,6 +334,7 @@ from kiro_crew.platform_compat import get_process_start_id as _get_process_start
 from kiro_crew.platform_compat import pid_exists as _pid_exists  # noqa: F401
 from kiro_crew.platform_compat import proc_rss_bytes as _proc_rss_bytes  # noqa: F401
 from kiro_crew.platform_compat import process_start_time as _process_start_time
+from kiro_crew.platform_compat_offloop_spawn import gateway_loop_factory
 from kiro_crew.sandbox import warm_backend  # noqa: F401
 from kiro_crew.sandbox import (
     CANONICAL_TEMP_KEYS,
@@ -1461,7 +1462,8 @@ def main() -> None:
     ensure_data_home()
     _prepare_telemetry()
     try:
-        rc = asyncio.run(_amain())
+        # Windows: every spawn on this loop builds its child off-loop.
+        rc = asyncio.run(_amain(), loop_factory=gateway_loop_factory())
     except KeyboardInterrupt:
         rc = 0
     sys.exit(rc)

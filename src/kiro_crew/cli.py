@@ -88,6 +88,7 @@ from kiro_crew.platform import (  # noqa: F401
     boot_platform,
     current_context,
 )
+from kiro_crew.platform_compat_offloop_spawn import gateway_loop_factory
 from kiro_crew.preflight import run_preflight_checks
 from kiro_crew.project_dir import PROJECT_MARKERS, detect_project_dir
 from kiro_crew.seed import seed_cmd
@@ -923,7 +924,8 @@ def main() -> None:
             # Only now, holding the lock, move the previous run's log aside: a
             # start refused above must never rotate a running gateway's log.
             _start_gateway_log_after_lock()
-            asyncio.run(_gateway(**gw_kwargs))
+            # Windows: every spawn on this loop builds its child off-loop.
+            asyncio.run(_gateway(**gw_kwargs), loop_factory=gateway_loop_factory())
         finally:
             _gw_lock.release()
     elif args.command == "setup":
