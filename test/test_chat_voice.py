@@ -1073,6 +1073,9 @@ class TestVoiceVoices:
         ]
         monkeypatch.setattr("kiro_crew.dashboard.chat_voice._voices_cache", cached)
         monkeypatch.setattr("kiro_crew.dashboard.chat_voice._voices_cache_ts", time.time())
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_voice._voices_cache_key", ("", ""), raising=False
+        )
 
         from kiro_crew.dashboard.chat_voice import api_voice_voices
 
@@ -1085,6 +1088,156 @@ class TestVoiceVoices:
             assert resp.status == 200
             data = await resp.json()
             assert data["voices"] == cached
+
+    @pytest.mark.asyncio
+    async def test_a_cache_from_another_profile_or_region_is_not_served(
+        self, tmp_path, monkeypatch
+    ):
+        """A different account or region has a different catalogue."""
+        import time
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        mock_vc = MagicMock(provider="polly", aws_profile="", region="")
+        monkeypatch.setattr("kiro_crew.dashboard.chat_voice._vc", mock_vc)
+        stale = [
+            {
+                "id": "Old",
+                "name": "Old",
+                "language": "English",
+                "languageCode": "en-US",
+                "gender": "Female",
+                "engines": ["neural"],
+            }
+        ]
+        monkeypatch.setattr("kiro_crew.dashboard.chat_voice._voices_cache", stale)
+        monkeypatch.setattr("kiro_crew.dashboard.chat_voice._voices_cache_ts", time.time())
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_voice._voices_cache_key",
+            ("other", "eu-west-1"),
+            raising=False,
+        )
+        fresh = json.dumps(
+            {
+                "Voices": [
+                    {
+                        "Id": "Ruth",
+                        "Name": "Ruth",
+                        "LanguageName": "English",
+                        "LanguageCode": "en-US",
+                        "Gender": "Female",
+                        "SupportedEngines": ["neural"],
+                    }
+                ]
+            }
+        )
+        calls = []
+
+        async def mock_exec(*args, **kwargs):
+            calls.append(args)
+            proc = MagicMock()
+            proc.returncode = 0
+
+            async def comm():
+                return fresh.encode(), b""
+
+            proc.communicate = comm
+            return proc
+
+        monkeypatch.setattr("asyncio.create_subprocess_exec", mock_exec)
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_voice.resolve_polly_cli", lambda: "/usr/local/bin/aws"
+        )
+
+        from kiro_crew.dashboard import chat_voice
+
+        app = web.Application()
+        app["state"] = _make_state(tmp_path)
+        app.router.add_get("/api/voice/voices", chat_voice.api_voice_voices)
+
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.get("/api/voice/voices")
+            assert resp.status == 200
+            data = await resp.json()
+        assert [v["id"] for v in data["voices"]] == ["Ruth"]
+        assert len(calls) == 1
+        assert chat_voice._voices_cache_key == ("", "")
+
+    @pytest.mark.asyncio
+    async def test_the_command_and_cache_key_use_the_pair_read_at_the_start(
+        self, tmp_path, monkeypatch
+    ):
+        """A config PUT landing mid-request must not split consent, command and key."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        mock_vc = MagicMock(provider="polly", aws_profile="", region="")
+        monkeypatch.setattr("kiro_crew.dashboard.chat_voice._vc", mock_vc)
+        monkeypatch.setattr("kiro_crew.dashboard.chat_voice._voices_cache", None)
+        monkeypatch.setattr("kiro_crew.dashboard.chat_voice._voices_cache_ts", 0)
+        calls = []
+
+        async def mock_exec(*args, **kwargs):
+            calls.append(args)
+            proc = MagicMock()
+            proc.returncode = 0
+
+            async def comm():
+                return json.dumps({"Voices": []}).encode(), b""
+
+            proc.communicate = comm
+            return proc
+
+        def resolve_then_switch():
+            # The PUT lands while the handler waits on the CLI lookup.
+            mock_vc.aws_profile = "other"
+            mock_vc.region = "eu-west-1"
+            return "/usr/local/bin/aws"
+
+        monkeypatch.setattr("asyncio.create_subprocess_exec", mock_exec)
+        monkeypatch.setattr("kiro_crew.dashboard.chat_voice.resolve_polly_cli", resolve_then_switch)
+
+        from kiro_crew.dashboard import chat_voice
+
+        app = web.Application()
+        app["state"] = _make_state(tmp_path)
+        app.router.add_get("/api/voice/voices", chat_voice.api_voice_voices)
+
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.get("/api/voice/voices")
+            assert resp.status == 200
+        assert "--profile" not in calls[0] and "--region" not in calls[0]
+        assert chat_voice._voices_cache_key == ("", "")
+
+    @pytest.mark.asyncio
+    async def test_a_warm_cache_is_not_served_once_polly_is_not_the_provider(
+        self, tmp_path, monkeypatch
+    ):
+        import time
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        mock_vc = MagicMock(provider="system", aws_profile="", region="")
+        monkeypatch.setattr("kiro_crew.dashboard.chat_voice._vc", mock_vc)
+        cached = [
+            {
+                "id": "Ruth",
+                "name": "Ruth",
+                "language": "English",
+                "languageCode": "en-US",
+                "gender": "Female",
+                "engines": ["neural"],
+            }
+        ]
+        monkeypatch.setattr("kiro_crew.dashboard.chat_voice._voices_cache", cached)
+        monkeypatch.setattr("kiro_crew.dashboard.chat_voice._voices_cache_ts", time.time())
+
+        from kiro_crew.dashboard.chat_voice import api_voice_voices
+
+        app = web.Application()
+        app["state"] = _make_state(tmp_path)
+        app.router.add_get("/api/voice/voices", api_voice_voices)
+
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.get("/api/voice/voices")
+            assert resp.status == 200
+            assert await resp.json() == {"voices": []}
 
     @pytest.mark.asyncio
     async def test_voices_cli_failure(self, tmp_path, monkeypatch):
