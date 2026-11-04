@@ -220,8 +220,12 @@ ACP_BACKENDS_PERMISSION_KIND_FROM_TOOL_CALL: FrozenSet[str] = frozenset({ACP_BAC
 # Backends whose sub-agent calls the direct ``AcpClient`` tells apart from the
 # parent's (``acp.client_permissions._is_child_permission_frame``): a frame under a
 # foreign ``sessionId`` (kiro-cli's sub-agents run in their own session), or a
-# Claude tool call stamped ``_meta.claudeCode.parentToolUseId`` (recorded in
-# ``test/fixtures/claude_native_subagents/agent-task-0.94.0.jsonl``). Only a member
+# Claude tool call stamped ``_meta.claudeCode.parentToolUseId``. That fixture
+# (``test/fixtures/claude_native_subagents/agent-task-0.94.0.jsonl``) records the
+# stamp on ``session/update`` frames only; no ``session/request_permission`` frame
+# carrying it has been recorded. For Claude, what keeps a child's call out today is
+# the dashboard's ``_native_child_tc`` set, filled from those update frames and read
+# by ``dashboard.chat_turn.tool_approval`` before any override is offered. Only a member
 # is offered a deny-rule override card or a session waiver
 # (``security.deny_waiver.child_calls_marked``): on any other backend a child's call
 # would look like the parent's, so it fails closed to today's refusal. KAS is not a
