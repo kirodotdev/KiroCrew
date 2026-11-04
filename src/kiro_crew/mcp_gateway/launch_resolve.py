@@ -89,6 +89,7 @@ def _refresh_agent_specs() -> None:
     try:
         rebuild_agent_config()
     except Exception:
+        # PlatformCompositionError too: boot enforces composition; the previous specs stay.
         logger.warning(
             "mcp launch resolution: agent config rebuild failed; resolving from "
             "the current specs",

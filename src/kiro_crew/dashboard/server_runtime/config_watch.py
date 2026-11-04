@@ -59,6 +59,7 @@ def _register_config_watch(
 
             await asyncio.to_thread(rebuild_agent_config)
         except Exception:
+            # PlatformCompositionError too: boot enforces composition; the previous spec stays.
             logger.warning("Agent config rebuild after provider switch failed", exc_info=True)
         # reload_provider_factory() is ONLY for a provider switch: it clears every
         # session and shuts the providers down, which is correct here and wrong
@@ -120,6 +121,7 @@ def _register_config_watch(
             await asyncio.to_thread(rebuild_agent_config)
             logger.info("agent.role_models.background changed -- background agent specs rebuilt")
         except Exception:
+            # PlatformCompositionError too: boot enforces composition; the previous spec stays.
             logger.warning("background-model rebuild failed", exc_info=True)
 
     default_model_failure_notified = False
@@ -194,6 +196,7 @@ def _register_config_watch(
                     logger.debug("default-model recovery notification failed", exc_info=True)
             logger.info("agent.model changed -- kirocrew agent spec rebuilt")
         except Exception:
+            # PlatformCompositionError too: boot enforces composition; the previous spec stays.
             logger.warning("default-model rebuild failed", exc_info=True)
             # The config write is already durable, but the generated spec is
             # still the one new sessions actually consume. Surface that split

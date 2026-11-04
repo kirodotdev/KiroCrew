@@ -355,6 +355,42 @@ async def test_disconnect_reports_a_spec_rebuild_that_did_not_write(
 
 
 @pytest.mark.asyncio
+async def test_disconnect_logs_a_composition_refused_rebuild_as_governance(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The host's enterprise setup could not be built: the response keeps its shape,
+    and the gateway log names governance at ERROR."""
+    from kiro_crew.platform import PlatformCompositionError
+
+    def _refused(**_: object) -> pathlib.Path:
+        raise PlatformCompositionError("companion missing")
+
+    purged: list[str] = []
+    _wire(
+        monkeypatch,
+        removed=["token", "registration"],
+        surviving=[],
+        inventory=[_entry(_SLUG, _provider_url())],
+        purged=purged,
+    )
+    monkeypatch.setattr(agent_mod, "rebuild_agent_config", _refused)
+    caplog.set_level("ERROR", logger="kiro_crew.connections.ownership")
+
+    body = await _disconnect()
+
+    assert body["entryRemoved"] is True
+    assert body["agentSpecRewritten"] is False
+    assert purged == [_SLUG]
+    errors = [
+        r
+        for r in caplog.records
+        if r.name == "kiro_crew.connections.ownership" and r.levelname == "ERROR"
+    ]
+    assert len(errors) == 1
+    assert "governance" in errors[0].getMessage()
+
+
+@pytest.mark.asyncio
 async def test_disconnect_response_carries_no_slug_echo(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
