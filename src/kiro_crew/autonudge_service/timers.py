@@ -229,19 +229,14 @@ async def _run_admitted_transaction(
 ) -> _R:
     """Run one admitted transaction in a supervised, shielded child task.
 
-    A caller cancelled before THIS transaction submitted its write stops only its
-    wait: the child remains registered in ``_inflight_adds`` and completes the
-    admitted mutation. A caller cancelled once this transaction submitted a write
-    is held until the transaction settles and then receives the ``CancelledError``,
-    as it was when the transaction ran inline; like every drain wait that follows a
-    cancellation, that hold ends after the post-cancellation window even when the
-    write is wedged, and the child stays registered either way. The transaction's
-    submissions are counted on a token carried only in the child's context, so a
-    detached write made under the same callback lease is never this transaction's.
-    A companion completion keeps the original timer callback visible to shutdown
-    while the child runs. When admission has closed, such a callback receives
-    cancellation only after the child settles and only while it is still awaiting
-    that transaction, preserving the registered-section exit rule.
+    A caller cancelled before this transaction submitted a write stops only its wait;
+    the child stays in ``_inflight_adds`` and completes the mutation. One cancelled
+    after a submission is held until the transaction settles (bounded by the
+    post-cancellation window if the write is wedged), then gets the ``CancelledError``.
+    Submissions are counted on a token in the child's context only, so a detached write
+    under the same callback lease never counts. A companion completion keeps the timer
+    callback visible to shutdown; after admission closes, that callback is cancelled
+    only once the child settles and only while it still awaits this transaction.
     """
     # Criterion: an admitted write whose awaiting task can be cancelled by
     # anything other than shutdown's own drain before persistence lands uses
@@ -342,42 +337,23 @@ def _drained_bookkeeping(
 def notify_approval_stalled(self: AutoNudgeService, slot_key: str) -> None:
     """Record that a tool approval in *slot_key* went unanswered: hold the loop.
 
-    Called from the approval path when a prompt times out with no decision.
-    That is the only evidence available that an unattended loop cannot
-    act, and it is evidence rather than inference: an auto-approved tool
-    never reaches the interactive wait, so this is unreachable for a loop
-    whose cycles only touch read-only tools.
+    Called when an approval prompt times out with no decision: the only evidence
+    that an unattended loop cannot act (auto-approved tools never reach the wait).
 
-    Schedules the durable record (``_record_approval_hold``) and returns. The
-    HOLD is applied by ``_timer``, which
-    already owns every terminal and scheduling decision and evaluates them
-    serialized before a fire -- acting from here would mean cancelling a timer
-    that may be mid-fire (the one thing the fire-window contracts forbid, since
-    it kills the in-flight turn) and racing the very turn that produced the
-    evidence. Deferring costs the cycle already in flight and saves every later
-    one.
+    Schedules the durable record (``_record_approval_hold``) and returns; ``_timer``
+    applies the HOLD, since acting here would cancel a timer that may be mid-fire and
+    kill the in-flight turn. Deferring costs only the cycle already in flight.
 
-    A hold, not a stop: the loop stays active, fires nothing, spends neither
-    its cycle cap nor its runtime budget, and resumes on its own through
-    :func:`release_approval_hold` once a person is back in the slot. A stop
-    here would end a long patrol overnight for a prompt nobody was awake to
-    answer, and only a person re-arming it could bring it back.
+    A hold, not a stop: the loop stays active, fires nothing, spends neither cycle
+    cap nor runtime budget, and resumes through :func:`release_approval_hold` once a
+    person is back, so a long patrol does not end overnight for an unanswered prompt.
+    The evidence is slot-level, so an attended tab counts too: the safe direction, as
+    the fire window cannot tell a nudge cycle from a dashboard turn.
 
-    The evidence is slot-level, not cycle-level: an unanswered prompt in an
-    attended tab counts too. That is the conservative direction -- the loop
-    only waits, and a person who was merely away releases it by acting in the
-    slot -- whereas the alternative needs a reliable "is this turn a nudge
-    cycle?" test, which the fire window does not provide for dashboard slots
-    (their turn outlives it).
-
-    Admitted here, where the evidence arrives, before anything is scheduled. A
-    hold that arrives before gateway shutdown closes admission carries that
-    lease into its write and is drained with the other admitted owners, so it is
-    on disk before ``shutdown()`` returns: the hold is about the loop's NEXT
-    wake, and after a shutdown the only next wake is the restart that reads the
-    row. One that arrives after closure is dropped at DEBUG, because no wake is
-    left for it to hold. Either way nothing raises into the approval path that
-    called this.
+    Admitted here, before anything is scheduled. A hold admitted before shutdown
+    closes admission is drained, so it is on disk before ``shutdown()`` returns (the
+    restart is the next wake that reads it); one after closure is dropped at DEBUG.
+    Nothing raises into the approval path.
     """
     loop = self._find_by_slot(slot_key)
     if not loop or not loop.active or loop.approval_stalled:
@@ -419,21 +395,15 @@ async def _record_approval_hold(
 ) -> None:
     """Set *slot_key*'s approval hold durably, then announce it.
 
-    Persist before publishing, the same shape as ``release_approval_hold``: the
-    flag and its start time are staged on a copy of the loop, written under
-    ``_lock``, and applied to the live loop only once the AWAITED write returns,
-    before the WARNING, the ``updated`` event and the one-time ``held`` notice.
-    A write that fails leaves the live loop untouched, so a hold the store never
-    accepted is never shown or acted on -- not even during the write.
-    A ``CancelledError`` from the writer arrives only after the write settled, so
-    the hold is kept; only the announcement is skipped.
+    Persist before publishing, like ``release_approval_hold``: the flag and start
+    time are staged on a copy, written under ``_lock``, and applied to the live loop
+    only after the awaited write returns, so a hold the store refused is never shown
+    or acted on. A ``CancelledError`` from the writer comes after the write settled,
+    so the hold is kept and only the announcement is skipped.
 
-    Admitted before the first await: ``notify_approval_stalled`` passes the lease
-    it took where the evidence arrived and registers the task in
-    ``_inflight_adds`` before the task's first step. ``shutdown()`` re-snapshots
-    that registry until the task and any write it starts settle, so a hold admitted
-    before shutdown closed admission lands before ``shutdown()`` returns. A hold
-    refused admission writes and announces nothing and is logged at DEBUG.
+    Admitted before the first await: ``notify_approval_stalled`` passes its lease and
+    registers the task in ``_inflight_adds``, which ``shutdown()`` drains. A hold
+    refused admission writes nothing and is logged at DEBUG.
     """
     if admission is None:
         try:
@@ -505,41 +475,27 @@ async def release_approval_hold(
 ) -> bool:
     """End *slot_key*'s approval hold, because a person is back. True if one ended.
 
-    Reached from the places that prove a person is present in the slot: an
-    approval answered there (dashboard, Slack, Discord and the channel-neutral
-    registry, through ``autonudge.release_approval_hold_for``), a message a
-    person typed into the dashboard (``notify_user_input(human=True)``), and the
-    popover's manual fire. An agent's or app's turn does not count -- what the
-    hold waits for is someone who can answer the next prompt, and a landed turn
-    proves only that the session runs.
+    Reached only where a person is proven present: an approval answered in the slot
+    (via ``autonudge.release_approval_hold_for``), a typed dashboard message
+    (``notify_user_input(human=True)``), or the popover's manual fire. An agent's or
+    app's turn does not count: it proves the session runs, not that anyone can answer.
 
-    The held time is added to ``created_ts`` (the runtime-budget clock), so the
-    hold spends none of the budget. ``arm`` re-arms toward the loop's deadline,
-    which has usually passed while it was held, so the next cycle runs within
-    ``_OVERDUE_REARM_SECS``. A caller about to start a turn in the slot passes
-    ``arm=False``: its own turn-complete hook arms the loop when that turn ends,
-    which is the "user wins" rule ``notify_user_input`` already keeps.
+    The held time is added to ``created_ts`` so the hold spends no runtime budget.
+    ``arm`` re-arms toward the (usually passed) deadline, so the next cycle runs within
+    ``_OVERDUE_REARM_SECS``. A caller about to start a turn passes ``arm=False``: that
+    turn's completion arms the loop ("user wins", as in ``notify_user_input``).
 
-    Persist before publishing: the cleared hold and the moved clock are staged on
-    a copy of the loop, written under ``_lock``, and only applied to the live loop
-    once the AWAITED write returns -- so no reader sees a release the store has
-    not accepted. A write that fails leaves the live loop untouched, held exactly
-    as the store says. A ``CancelledError`` from the writer arrives
-    only after the write settled, so the release is durable and kept; the arm is
-    skipped then, and the reconciler re-arms the loop, which is not held any more.
-    A structured monitor never holds (its tick path does not read the flag), so
-    it is left alone.
+    Persist before publishing: the release is staged on a copy, written under
+    ``_lock``, and applied only after the awaited write returns; a failed write leaves
+    the loop held as the store says. A ``CancelledError`` from the writer comes after
+    the write settled, so the release stands and the reconciler does the skipped arm.
+    A structured monitor never holds, so it is left alone.
 
-    Admitted before the first await, like every public mutation: ``_schedule_release``
-    passes the lease it took where the person's action arrived, and a direct caller
-    is admitted here. The admitted body runs in a detached registered child, so a
-    cancelled handler cannot cut the release before persistence: one still waiting
-    for the lock stops waiting at once, and one cancelled once the write is in
-    flight is held until it settles and then receives the cancellation.
-    Shutdown drains that child and arms nothing, because ``_arm_from_deadline``
-    refuses after closure. After closure a direct caller whose loop is held gets
-    ``NudgeAdmissionRefused`` (the popover's manual fire answers 503) and nothing
-    is written; one with no hold to end still gets False.
+    Admitted before the first await (``_schedule_release`` passes its lease). The body
+    runs in a detached registered child: a cancelled handler waiting for the lock stops
+    at once, one cancelled mid-write is held until it settles. Shutdown drains it and
+    arms nothing. After closure a held loop's direct caller gets
+    ``NudgeAdmissionRefused`` (manual fire answers 503); with no hold, False.
     """
     if admission is None:
         try:
@@ -770,44 +726,21 @@ async def notify_cycle_failed(
 ) -> None:
     """Record that this loop's own delivered cycle in *slot_key* ended in a fault.
 
-    Called from the chat runner's terminal-error paths when the failure is neither
-    a structural rejection nor a session-start failure and the turn was this
-    loop's own cycle -- a turn that reached a model session and dispatched, then
-    died (``error`` or ``timeout``). Evidence, not inference: the loop spent a
-    turn and it failed, which is the one thing that distinguishes a loop making no
-    progress from a quiet one.
+    Called from the chat runner's terminal-error paths for a turn that reached a
+    model session and then died (``error`` or ``timeout``), excluding structural
+    rejections and session-start failures. A spent, failed turn is what tells a loop
+    making no progress from a quiet one. Only the loop's OWN cycle counts (the runner
+    applies the self-wake guard, as for ``notify_cycle_start_failed``), so an erroring
+    human turn cannot spend the stand-down budget.
 
-    Only the loop's OWN cycle counts (the chat runner passes the self-wake guard,
-    excluding the structural and session-start cases, before calling this), so a
-    human turn that happened to error on a slot carrying a loop cannot spend the
-    loop's stand-down budget. That is the same guard ``notify_cycle_start_failed``
-    relies on, and for the same reason.
+    Fenced by id AND ``config_generation`` captured at fire time (``_directive_loop_id``,
+    ``_directive_loop_gen``), matched under ``_lock``. The id catches a replaced loop
+    with the same slot and generation (both start at 0); the generation catches a
+    revision. Either mismatch is a stale fault and is dropped.
 
-    Scoped to the fired loop by BOTH its id AND its ``config_generation``,
-    captured at fire time (chat_runner passes ``_directive_loop_id`` and
-    ``_directive_loop_gen``), matched under ``_lock`` so there is no TOCTOU
-    window -- the same ``(id, generation)`` fence the structural-terminal verdict
-    is applied under. The id guards the slot-reuse case the generation alone
-    cannot: a loop A on this slot replaced by a fresh loop B that happens to carry
-    the same slot and the same generation (both start at 0) would otherwise take
-    A's stale failure onto B. The generation guards the revision case (A->B->A):
-    a completion whose generation advanced under it describes the OLD instruction
-    and must not stand the revised loop down. Either mismatch is a stale fault and
-    is dropped.
-
-    Durability (persist before you publish): the increment and its durable write
-    happen together under ``_lock`` and the write is AWAITED. A write that
-    genuinely fails rolls the live ``consecutive_failed_cycles`` back to what the
-    store last held, so the stand-down never reads a count the store has not
-    accepted. A ``CancelledError``, by contrast, is raised by the cancellation-
-    safe writer ONLY after its executor future has settled, so on cancel the write
-    DID land -- the committed increment is durable and is kept, never rolled back
-    (rolling it back would erase an accepted failure and leave the live count one
-    short of the store). The chat runner's terminal arm is async and awaits this,
-    which is what lets it stage-then-write rather than detach the write the way a
-    deadline-reassigning sync hook must. The stand-down DECISION still belongs to
-    ``_timer``, which owns every terminal and scheduling decision and evaluates
-    them serialized before a fire -- this only records the evidence.
+    The increment and its awaited write happen under ``_lock``; a failed write rolls
+    the count back, and a ``CancelledError`` (raised only after the write settled)
+    keeps it. The stand-down DECISION stays with ``_timer``; this only records it.
     """
     async with self._lock:
         loop = self._loops.get(loop_id)
@@ -829,24 +762,13 @@ async def notify_cycle_failed(
             # budget, not this stand-down, so skip the charge and keep the
             # counter meaning exactly what the bound that reads it expects.
             return
-        # Persist BEFORE publishing: increment, drive it to a durable write
-        # under the SAME lock hold, and roll back ONLY when the store genuinely
-        # refused it -- so a near-threshold streak the store never accepted can
-        # never stand the loop down, and a streak the store DID accept is never
-        # erased. The two failure modes are not the same event and must not share
-        # a handler:
-        #   * A real write error (``Exception``) means the fsync did not land, so
-        #     the increment is unpublished evidence -- roll the live field back to
-        #     what the store last held and propagate.
-        #   * ``CancelledError`` from ``_write_monitor_snapshot_locked`` is raised
-        #     ONLY AFTER its executor future is observed (it shields the write and
-        #     calls ``future.result()`` before re-raising), so the write DID land
-        #     -- the committed increment is now durable and must stand. Rolling it
-        #     back here (the earlier ``except BaseException``) would erase a
-        #     failure the store already accepted and leave the live count one
-        #     short of the durable one, so a cancellation during the fifth
-        #     charge's fsync would cost an extra cycle before the stand-down. Let
-        #     the cancellation propagate with the increment intact.
+        # Persist BEFORE publishing: increment and write under the SAME lock hold,
+        # rolling back ONLY when the store refused it. Two failure modes, two handlers:
+        #   * A write error (``Exception``): the fsync did not land, so roll the live
+        #     field back to what the store holds and propagate.
+        #   * ``CancelledError`` from ``_write_monitor_snapshot_locked`` comes only
+        #     AFTER its shielded write finished, so the increment is durable and
+        #     stands; rolling it back would leave the live count one short.
         prior = loop.consecutive_failed_cycles
         loop.consecutive_failed_cycles = prior + 1
         # A failed turn read nothing, so the person-wait hold must not count its
@@ -880,25 +802,16 @@ async def notify_cycle_failed(
 def notify_cycle_landed(self: AutoNudgeService, slot_key: str) -> None:
     """Clear *slot_key*'s failure streaks: a turn on it completed.
 
-    Any landed turn counts, a human's as much as a cycle's -- the streaks are a
-    reading of whether this session can start (``consecutive_start_failures``)
-    and make progress (``consecutive_failed_cycles``) at all, and a turn that
-    reached completion proves both. That is the conservative direction: it can
-    only let a loop keep running, never stop one.
+    Any landed turn counts, a human's too: it proves the session can start
+    (``consecutive_start_failures``) and make progress (``consecutive_failed_cycles``),
+    and clearing can only keep a loop running, never stop one.
 
-    Deliberately SYNCHRONOUS and lock-free: it clears ONE field on the live loop
-    and must be callable from the turn-completion path WHILE a baseline commit
-    holds ``_lock`` mid-write (see
-    ``test_a_streak_cleared_during_the_commit_write_stays_cleared``), so it must
-    not itself take the lock or await a write. The durable write is detached via
-    ``_persist_soon`` -- and a LOST clear is the harmless direction: the streak
-    returns to a stale non-zero value, which only ever slows or stands a loop
-    down, never fires one early or spuriously, and any later landed turn clears
-    it again. The dangerous direction (a durable count AHEAD of what the store
-    accepted, which can stand a loop down early) belongs to the INCREMENT, and
-    ``notify_cycle_failed`` closes that one by awaiting its write under the lock
-    with rollback. The two directions are not symmetric, so they do not share a
-    remedy.
+    SYNCHRONOUS and lock-free, because the turn-completion path calls it while a
+    baseline commit may hold ``_lock`` mid-write (see
+    ``test_a_streak_cleared_during_the_commit_write_stays_cleared``). The write is
+    detached via ``_persist_soon``: a lost clear only leaves a stale streak, which can
+    slow a loop but never fire one early. The dangerous direction is the increment,
+    which ``notify_cycle_failed`` awaits under the lock with rollback.
     """
     loop = self._find_by_slot(slot_key)
     if loop is not None:
@@ -926,30 +839,19 @@ def notify_turn_complete(
 ) -> None:
     """Called by gateway after HOOK_EVENT_STOP — resume the countdown for this slot.
 
-    Re-arms toward the loop's persistent deadline (``_arm_from_deadline``),
-    NOT with a fresh full interval: after a user turn the timer picks up
-    the remaining time (or fires shortly after, if the deadline passed
-    mid-turn), while the first turn-complete after a delivered fire — the
-    nudge turn's own end — finds the deadline cleared and starts the next
-    full cycle. DEFERS while the loop's own timer task is mid-fire:
-    ``_arm_timer`` cancels the existing task, and during the fire window
-    that task may be parked on ``_persist_locked()`` writing the delivered
-    cycle. Cancelling it there loses the ``cycle_count`` bump and lets the
-    loop run extra cycles after a restart. The deferred re-arm is applied
-    when the window closes.
+    Re-arms toward the persistent deadline (``_arm_from_deadline``), not a fresh
+    interval: after a user turn the timer resumes the remaining time, while the nudge
+    turn's own end finds the deadline cleared and starts the next full cycle. DEFERS
+    while the loop's timer is mid-fire: cancelling it during ``_persist_locked()``
+    would lose the ``cycle_count`` bump; the re-arm is applied when the window closes.
 
-    *tool_calls*, *tool_identities* and *reply_text* are what the completed turn
-    DID, and this is the only hook where the service can see it: the runner holds
-    all three as locals of the turn it is finishing. *tool_identities* is what makes
-    the label DISCRIMINATE -- it names each dispatch, so a turn whose only call read
-    a file is not counted as having acted, which a bare *tool_calls* count cannot
-    express. It is optional, and its absence falls back to the count.
-    *nudge_turn* binds those facts to this loop's own delivered turn.
-    *reply_flushed* says the visible text is only the final segment of the reply. An
-    unknown *nudge_turn* reads as not this loop's turn: declining to label costs one
-    row of hit rate, while labelling an unrelated turn writes a wrong row. None of
-    the five is stored: the rule reduces them to one boolean plus two numbers and a
-    flag, and that is what the loop's record and the calibration log keep.
+    *tool_calls*, *tool_identities* and *reply_text* are what the turn DID; only this
+    hook sees them. *tool_identities* names each dispatch, so a turn that only read a
+    file does not count as acting (absent, the count is used). *nudge_turn* binds the
+    facts to this loop's delivered turn; unknown reads as not ours, since a wrong
+    label is worse than a missing one. *reply_flushed* says the text is only the
+    reply's final segment. None is stored: the rule reduces them to one boolean, two
+    numbers and a flag.
     """
     loop = self._find_by_slot(slot_key)
     if not loop or not loop.active:
@@ -1007,21 +909,11 @@ def notify_turn_complete(
         self._rearm_pending.add(loop.id)
         return
     if loop.id in self._pending_monitor_wake:
-        # A wake this loop OWES, and the turn it was refused by has just ended.
-        #
-        # The refusal is ordinary: ``_fire_dashboard_nudge`` declines a busy slot, so
-        # a worker reporting while its conductor is mid-turn gets its wake held. The
-        # fire path already re-owes the claim and grants the next tick a gate-free
-        # retry, but nothing brought that tick FORWARD -- this hook armed toward the
-        # loop's own deadline, so on the hours-long cadence a work-ledger watch is
-        # meant to enable the report waited out a whole interval. Measured at 14 to 30
-        # minutes on a twenty-minute loop.
-        #
-        # Delay zero rather than ``_arm_from_deadline``'s overdue beat: that beat
-        # exists so an elapsed deadline does not ambush someone mid-conversation, and
-        # the turn it protects has just finished. The retry runs the ordinary
-        # ``_timer`` body, so every terminal bound still applies and a slot that
-        # became busy again simply refuses and re-owes.
+        # A wake this loop OWES (``_fire_dashboard_nudge`` declined the busy slot),
+        # and that turn has just ended: retry now, or the wake waits out a whole
+        # interval. Delay zero, not ``_arm_from_deadline``'s overdue beat, which
+        # guards a turn that has just finished. The retry runs the ordinary
+        # ``_timer`` body, so every bound applies and a busy slot re-owes.
         logger.debug(
             "AutoNudge: loop %s has a wake owed and its turn just ended -- "
             "retrying the delivery now rather than at its deadline",
@@ -1054,17 +946,13 @@ def notify_user_input(self: AutoNudgeService, slot_key: str, *, human: bool = Fa
     back in the slot, so it also ends an approval hold (``release_approval_hold``,
     unarmed: this turn's own completion re-arms the loop).
 
-    Cancelling the TASK defers delivery until the user's turn ends (a
-    nudge must never race a human turn); the loop's ``next_due_ts`` is
-    untouched, so the schedule itself survives — ``notify_turn_complete``
-    resumes the same countdown rather than restarting the full interval.
+    Cancelling the TASK defers delivery until the user's turn ends (a nudge never
+    races a human turn); ``next_due_ts`` is untouched, so ``notify_turn_complete``
+    resumes the same countdown.
 
-    While the loop is mid-fire this must NOT cancel the timer: that task may
-    be parked on ``_persist_locked()`` writing the delivered cycle, and
-    cancelling it there abandons an in-flight executor write whose stale
-    payload can later overwrite a newer update/delete (state resurrected
-    after a restart). User priority is still honoured — the deferred re-arm
-    is dropped, so no further nudge is scheduled from this cycle.
+    Mid-fire it must NOT cancel: the task may be in ``_persist_locked()``, and an
+    abandoned write can later overwrite a newer update/delete. The deferred re-arm is
+    dropped instead, so the user still wins.
     """
     if human:
         _schedule_release(self, slot_key, why="a person sent a message", arm=False)
@@ -1091,37 +979,24 @@ def notify_user_input(self: AutoNudgeService, slot_key: str, *, human: bool = Fa
 def _cancel_timer(self: AutoNudgeService, loop_id: str, *, drop_claims: bool = True) -> None:
     """Retire one loop's timer task. The single cancellation policy.
 
-    Three conditions make a cancel wrong rather than merely redundant, and all are
-    stated here so no caller has to remember them:
+    Three cases where a cancel is wrong, not just redundant:
 
-    * **The currently running timer task** (a self-re-arm from inside ``_timer``) is
-      about to return on its own, and cancelling it would inject a spurious
-      ``CancelledError`` into the finishing task. That includes a cancel reached from
-      ``update``'s shielded mutation when the tick itself issued that update,
-      recognised through :data:`_ACTING_TIMER`.
+    * **The running timer task itself** (a self-re-arm inside ``_timer``, or a cancel
+      from ``update``'s shielded mutation issued by the tick, via
+      :data:`_ACTING_TIMER`): cancelling injects a spurious ``CancelledError``.
     * **A timer callback whose admitted transaction runs in a detached child.** The
-      child inherits ``_admitted_transaction_owner`` so removal, structured-stop or
-      turn-completion bookkeeping still recognizes the original callback as
-      self-cancellation.
-      ``_emit`` clears it for its observers, so a task an observer creates from the
-      child is not mistaken for that callback. The
-      shared transaction helper cancels that callback after the child settles, only
-      while the callback is still awaiting the transaction, if shutdown has closed
-      admission.
-    * **A task whose event loop has already closed.** ``Task.cancel`` schedules the
-      cancellation through ``loop.call_soon``, which raises ``RuntimeError: Event loop
-      is closed`` — so this raises out of ``remove``/``remove_sync`` and the dashboard
-      handler above it answers 500. The service is a process-global singleton, so its
-      ``_timers`` outlive the loop that created them whenever one loop is replaced by
-      another: the gateway's own shutdown, and every test that drives a handler after
-      an earlier test's loop closed. Asked positively (``get_loop().is_closed()``)
-      rather than by catching the ``RuntimeError``, because a closed loop is the one
-      state where cancelling is a NO-OP by definition — the task can never run again —
-      and catching would also swallow a genuine scheduling fault.
+      child inherits ``_admitted_transaction_owner`` so bookkeeping still sees the
+      original callback as self-cancellation; ``_emit`` clears it for observers.
+      After shutdown closes admission, the transaction helper cancels the callback
+      once the child settles, only while it still awaits the transaction.
+    * **A task whose event loop has closed.** ``Task.cancel`` would raise
+      ``RuntimeError: Event loop is closed`` out of ``remove``/``remove_sync`` (a 500),
+      and this singleton's ``_timers`` outlive replaced loops (gateway shutdown, tests).
+      Checked via ``get_loop().is_closed()`` rather than catching, so a real
+      scheduling fault is not swallowed.
 
-    The closed-loop question is asked FIRST because it needs no running loop of its
-    own, and ``stop()`` reaches here from synchronous callers (gateway shutdown, test
-    teardown) where ``asyncio.current_task()`` would raise instead of answering — hence
+    The closed-loop check runs FIRST because ``stop()`` calls this from synchronous
+    callers where ``asyncio.current_task()`` would raise, hence
     :func:`_current_task_or_none`.
     """
     t = self._timers.pop(loop_id, None)
@@ -1174,40 +1049,21 @@ def _arm_timer(self: AutoNudgeService, loop: NudgeLoop, delay: float | None = No
 def _arm_from_deadline(self: AutoNudgeService, loop: NudgeLoop) -> None:
     """(Re)arm the timer toward the loop's persistent deadline.
 
-    The countdown anchors on ``next_due_ts`` instead of restarting at the
-    full interval on every arm, so user turns in the bound session defer a
-    pending fire without pushing the schedule back. An unset deadline (0 —
-    a just-delivered fire, a legacy store entry) starts a fresh full
-    countdown from now, and the assignment is persisted through a
-    supervised background write so a restart resumes this countdown
-    rather than restarting the interval. A deadline still in the future
-    resumes with exactly the remaining time; only one already in the past
-    fires after a short beat (``_OVERDUE_REARM_SECS``) rather than
-    instantly, so a user mid-conversation keeps deferring it simply by
-    sending another message. The delay is capped at ``idle_secs`` so a
-    clock jump can never park the timer beyond one full interval.
+    Anchored on ``next_due_ts`` so user turns defer a pending fire without pushing the
+    schedule back. An unset deadline (0: a just-delivered fire, a legacy entry) starts
+    a full countdown, persisted in a supervised background write so a restart resumes
+    it. A future deadline resumes with the remaining time; a past one fires after
+    ``_OVERDUE_REARM_SECS``, so a user mid-conversation keeps deferring it. The delay
+    is capped at ``idle_secs`` so a clock jump cannot park the timer past one interval.
 
-    A monitor loop arms through this same path and on the same deadline. Its
-    cadence is the interval the user already set, not a second clock on the
-    monitor record: two clocks for one countdown would have to be kept
-    agreed, and the one the user can see is the one they set. What differs
-    for a monitor is not WHEN the timer wakes but what the wake costs -- the
-    probe gate in :meth:`_timer` decides whether that tick spends a turn.
+    A monitor arms on the same deadline (one user-set clock); the probe gate in
+    :meth:`_timer` decides whether its tick spends a turn. A monitor whose
+    ``version`` this gateway does not implement (a newer gateway's record) gets no
+    timer: arming would run a policy nobody here understands. The record is left
+    as is, so its ``active`` intent survives a downgrade and an upgrade resumes it.
 
-    ONE monitor is refused a timer outright: a record whose ``version`` this
-    gateway does not implement. Such a record belongs to a newer gateway
-    (a downgrade or a rollback read its store), and this controller cannot
-    interpret its policy -- so arming it would run the loop under a policy
-    nobody here understands, which for the pre-gate code path means
-    injecting the raw message every interval with no decision at all. The
-    refusal is deliberately made HERE, on the arm, rather than by rewriting
-    the record: the stored ``active`` intent belongs to the gateway that
-    wrote it and must survive the downgrade so an upgrade resumes the watch.
-    Inertness is the local consequence, not a change of intent.
-
-    After ``shutdown()`` closes admission nothing is armed, so a drained owner
-    cannot leave a timer -- or the deadline persist that comes with one --
-    behind the teardown.
+    After ``shutdown()`` closes admission nothing is armed, so no timer or deadline
+    persist outlives the teardown.
     """
     from kiro_crew import autonudge as seams  # read at call time: the facade imports us
 
@@ -1240,26 +1096,14 @@ def _arm_from_deadline(self: AutoNudgeService, loop: NudgeLoop) -> None:
 async def _reconcile_forever(self: AutoNudgeService) -> None:
     """Periodically rescue any active loop left with no live timer.
 
-    A dashboard-bound loop has exactly one re-arm path after a delivered
-    fire: ``notify_turn_complete``, called by the gateway after the slot's
-    stop hook. If that hook never arrives -- the nudge turn errors, times
-    out or is cancelled on a path that skips it, or the deferred re-arm was
-    dropped by ``notify_user_input`` during the fire window -- the loop is
-    left persisted ``active=true`` with a finished (or missing) timer task
-    and nothing on a timer ever revives it. Without this task the only
-    rescues are a gateway restart or a genuine turn completing in that
-    exact slot. This task is the general backstop: it re-arms toward the loop's own
-    persisted deadline, so a rescue never fires earlier than the schedule
-    the user set (``_arm_from_deadline`` self-heals a cleared deadline into
-    a fresh full countdown).
+    After a delivered fire, ``notify_turn_complete`` is a dashboard loop's only
+    re-arm path. If the stop hook never arrives (the turn dies on a path that
+    skips it, or ``notify_user_input`` dropped the deferred re-arm), the loop
+    stays ``active=true`` with no timer until a restart. Rescues re-arm toward
+    the loop's persisted deadline, so they never fire before the user's schedule.
 
-    The wait is scheduled through ``loop.call_later`` rather than
-    ``asyncio.sleep`` on purpose: this file's own test suite (and any
-    similar consumer) routinely patches module-level ``asyncio.sleep`` to
-    a no-op to fast-forward the per-loop timers, and under that patch a
-    sleep-based periodic task degrades into a busy loop that re-arms and
-    re-fires everything continuously. A watchdog's cadence must stay on
-    the wall clock regardless of how the timers it watches are driven.
+    The wait uses ``loop.call_later``, not ``asyncio.sleep``: tests patch
+    ``asyncio.sleep`` to a no-op, which would turn this task into a busy loop.
     """
     from kiro_crew import autonudge as seams  # read at call time: the facade imports us
 
@@ -1282,74 +1126,38 @@ async def _reconcile_forever(self: AutoNudgeService) -> None:
 def _reconcile_once(self: AutoNudgeService) -> None:
     """One reconciler pass: rescue active loops stranded with no live timer.
 
-    "No live timer" means the ``_timers`` entry is absent OR its task has
-    finished. The finished-task form matters: nothing pops a timer task
-    from ``_timers`` when it completes normally, so the stranded states
-    this backstop exists for (a delivered fire whose stop hook never came,
-    a timer task killed by an exception) leave a DONE task behind rather
-    than an empty slot -- a membership test alone would miss every one of
-    them. The absent form covers a loop whose pending timer was cancelled
-    by ``notify_user_input`` and whose ``notify_turn_complete`` then never
-    arrived because the slot's turn died on a hook-skipping path.
+    "No live timer" means the ``_timers`` entry is absent OR its task is done:
+    nothing pops a finished task, so a membership test alone misses strandings.
 
-    A loop is re-armed only after TWO CONSECUTIVE passes observe it
-    eligible-and-unarmed, because one observation cannot tell "stranded"
-    apart from two live states that look identical for a while:
+    A loop is re-armed only after TWO CONSECUTIVE passes see it unarmed, because
+    one look cannot tell "stranded" from two live states:
 
-    * A slot whose user turn is still running. ``notify_user_input``
-      cancelled the timer on purpose, and ``notify_turn_complete`` will
-      re-arm when the turn ends. The turn-start hook also clears this
-      loop's candidacy (see ``notify_user_input``), so a session showing
-      any sign of life defers its rescue by a full two intervals. A turn
-      that outlives BOTH intervals is re-armed anyway -- one observation
-      window has to end somewhere, and the fire path's busy-slot refusal
-      (plus its backoff) keeps a rescue that guessed wrong from ever
-      delivering into the running turn; the wasted attempt is the cost of
-      rescuing the turn that died silently, which looks identical from
-      here.
-    * A loop inside another coroutine's mutation window. ``update()``
-      mutates fields, awaits an offloaded store write, and ROLLS BACK the
-      fields if the write fails -- a single-pass reconciler could arm the
-      transiently-active shape and leave a rolled-back inactive loop with
-      a live timer. Two passes shrink that window, but the write has no
-      timeout, so the guard that CLOSES it is the lock check below: every
-      mutation runs inside ``self._lock``, this pass is synchronous, and
-      a pass that finds the lock held defers entirely.
+    * A user turn still running (``notify_user_input`` cancelled the timer and
+      clears candidacy). A turn outliving both passes is re-armed anyway; the
+      fire path's busy-slot refusal keeps it out of the running turn.
+    * Another coroutine's mutation window: ``update()`` may roll fields back
+      after an untimed write. The lock check closes this; every mutation holds
+      ``self._lock`` and this pass is synchronous.
 
-    Deliberately never touched, whatever the passes observe:
+    Never touched:
 
-    * A loop mid-fire (``_firing``): its running task must never be
-      cancelled (see ``update``), and ``_arm_timer`` cancels before it
-      creates. The fire window owns its own re-arm bookkeeping.
+    * A loop mid-fire (``_firing``): ``_arm_timer`` cancels before it creates.
     * A loop quiesced by administrative cleanup: cleanup owns it.
-    * A monitor record whose version this gateway does not implement:
-      ``_arm_from_deadline`` refuses those with an INFO line, and letting
-      the reconciler retry it would repeat that line every pass forever.
-    * A monitor whose wake claim is in flight with NO completion-evidence
-      deadline -- EXCEPT a ``BUSY`` retry. The no-deadline shape is a
-      claim that died mid-handoff: ``_load`` retires it on restart, and
-      arming it here would wake a controller that answers ``NO_CHANGE``
-      forever (the probe path is never reached, so no budget or cap can
-      end it) -- an unretirable zombie dressed as a rescue. A ``BUSY``
-      delivery is the one no-deadline shape that is legitimately LIVE:
-      it proves no action turn started, and ``_load`` resumes it at its
-      persisted retry deadline, so this pass must too. A claim WITH a
-      deadline is safe: its ``next_due_ts`` is that deadline, and the
-      armed tick either finds evidence or retires the claim through
-      ``record_monitor_completion_evidence_unavailable``.
+    * A monitor version this gateway does not implement: ``_arm_from_deadline``
+      would log its refusal every pass.
+    * A monitor wake claim in flight with no completion-evidence deadline,
+      except a ``BUSY`` retry. That claim died mid-handoff (``_load`` retires
+      it); arming it would wake a controller answering ``NO_CHANGE`` forever.
+      A ``BUSY`` claim is live and resumes at its retry deadline, as in
+      ``_load``. A claim with a deadline is safe: the tick finds evidence or
+      retires it via ``record_monitor_completion_evidence_unavailable``.
     """
     if self._lock.locked():
-        # A mutation or persist is mid-flight. ``update()`` mutates loop
-        # fields, awaits an offloaded store write, and ROLLS BACK the
-        # fields if the write fails -- all inside ``self._lock`` -- and
-        # that write has no timeout, so a wedged disk can hold the
-        # transient shape across ANY number of passes; observation counts
-        # alone cannot bound it. This pass is synchronous, so deferring
-        # whenever the lock is held at entry makes overlap with a locked
-        # mutation window impossible rather than merely unlikely.
-        # Candidacies are left untouched: the deferred pass neither
-        # confirms nor refutes them, and dropping them would push every
-        # rescue behind a busy store's persist cadence.
+        # A mutation or persist is mid-flight: ``update()`` may roll fields back
+        # inside ``self._lock`` after an untimed write, so a wedged disk can hold
+        # that transient shape for any number of passes. This pass is synchronous,
+        # so deferring while the lock is held rules out overlap. Candidacies stay
+        # untouched: a deferred pass neither confirms nor refutes them.
         return
     eligible: set[str] = set()
     for loop in list(self._loops.values()):
