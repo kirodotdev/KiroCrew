@@ -290,13 +290,8 @@ class TestRewindSlot:
     ):
         """The commit must not restore pre-save persistence witnesses.
 
-        The save runs on the LIVE slot and stamps the post-rewrite truth:
-        ``_pending_rewrite`` cleared and the ``_disk_*`` witnesses matching
-        the truncated file. Copying the prospective slot's pre-save values
-        back would re-arm ``_pending_rewrite`` -- so the NEXT flush repeats
-        the destructive rewrite and can discard a cross-process append that
-        landed in between -- and would move the monotone ``_disk_tail_ts``
-        floor backwards.
+        Copying pre-save values back would re-arm ``_pending_rewrite``, so the next flush
+        repeats the destructive rewrite, and would move ``_disk_tail_ts`` backwards.
         """
         state = _make_state(tmp_path)
         slot = _populate_slot(state)
@@ -348,12 +343,8 @@ class TestRewindSlot:
     ):
         """The frozen window must be written against the boundary it was frozen at.
 
-        ``_disk_older_count`` is where the frozen prefix ends, and an ``append``
-        at the window cap moves it. Reading it in the save worker instead of
-        pairing it with the snapshot writes the trimmed rows twice -- once in the
-        prefix, once at the head of the snapshot. This pins the wiring (the
-        endpoint hands the save the PRE-await boundary and re-adopts it at the
-        commit); the two tests below drive the save's own refusal for real.
+        An ``append`` at the cap moves ``_disk_older_count``; reading it late writes trimmed
+        rows twice. This pins the wiring; the tests below drive the real refusal.
         """
         state = _make_state(tmp_path)
         slot = _populate_slot(state)
@@ -411,14 +402,8 @@ class TestRewindSlot:
     ):
         """A trim that re-credits rows to the frozen prefix must refuse the save.
 
-        Drives the refusal through the REAL save. The file written is
-        ``frozen_prefix + snapshot`` and the prefix boundary is
-        ``_disk_older_count``; an ``append`` at the cap trims the front and
-        credits the trimmed rows to that counter, so a save reading the counter
-        AFTER the trim writes those rows twice -- once in the prefix it now
-        claims, once at the head of the still-frozen snapshot. The paired count
-        makes that drift refuse instead: nothing written, retryable 503, and the
-        transcript on disk is untouched.
+        The file is ``frozen_prefix + snapshot``; a cap trim credits rows to
+        ``_disk_older_count``. Drift must refuse: retryable 503, disk untouched.
         """
         monkeypatch.setattr("kiro_crew.dashboard.state._MAX_SLOT_MESSAGES", 4)
         state = _make_state(tmp_path)
@@ -470,12 +455,8 @@ class TestRewindSlot:
     async def test_rewind_leaves_the_witnesses_alone_when_a_rebind_wins_the_write(self, tmp_path):
         """A rebind landing inside the write must not stamp the live witnesses.
 
-        The write itself is correct -- the save's own routing pin was checked
-        before it and the bytes land on the authorized transcript. What must not
-        follow is the post-write bookkeeping: those witnesses describe the file
-        just written, and the slot now writes a DIFFERENT one. Stamping would
-        clear a ``_pending_rewrite`` the new transcript still owes and claim its
-        unsaved rows as persisted, which a later flush then believes.
+        The write is correct, but the witnesses describe the old file. Stamping them would
+        clear a ``_pending_rewrite`` the new transcript still owes.
         """
         state = _make_state(tmp_path)
         slot = _populate_slot(state)
@@ -633,12 +614,8 @@ class TestRewindSlot:
     async def test_rewind_commit_keeps_a_row_that_arrived_during_the_boundaries(self, tmp_path):
         """A workflow row landing mid-boundary must survive the commit.
 
-        ``workflow_inject`` appends straight on the event loop without taking
-        ``slot._lock``, so a row can land between the pre-await snapshot and the
-        commit. A wholesale replace drops it, and the rewrite above cannot put it
-        back because a rewrite deliberately skips the cross-process-append scan
-        -- keeping it in the live window is what makes the next ORDINARY flush
-        re-persist it.
+        ``workflow_inject`` appends without ``slot._lock``. A rewrite skips the
+        cross-process-append scan, so only the live window lets the next flush persist it.
         """
         state = _make_state(tmp_path)
         slot = _populate_slot(state)
@@ -712,13 +689,9 @@ class TestRewindSlot:
     ):
         """An answer that lands mid-boundary must not be undone by the commit.
 
-        Answering retires the card by MUTATING the live dict --
-        ``clear_question_pending`` pops the id from ``slot._question_pending``.
-        Assigning the frozen prospective copy at commit time swaps that dict out,
-        so the card comes back with its answer channel already gone: rendered as
-        awaiting input against a round-trip that has completed. A BLOCKING card
-        is the shape that reaches this, because an append never retires one --
-        ``_QUESTION_RETIRING_ROLES`` fires only on the non-blocking records.
+        ``clear_question_pending`` mutates ``slot._question_pending``; swapping in the frozen
+        copy revives the card. Only a BLOCKING card reaches this
+        (``_QUESTION_RETIRING_ROLES`` retires only non-blocking ones).
         """
         state = _make_state(tmp_path)
         slot = _populate_slot(state)
@@ -760,11 +733,8 @@ class TestRewindSlot:
     ):
         """A row already delivered mid-boundary must not be queued again.
 
-        ``drain()`` does ``slot._pending.clear()`` on the LIVE list, so once a
-        client has drained, those rows are gone from the buffer because they
-        reached the client. ``prospective_slot._pending`` was frozen before the
-        awaits and still holds them, so replacing the list would hand the client
-        the same rows a second time.
+        ``drain()`` clears the LIVE ``slot._pending``; the frozen
+        ``prospective_slot._pending`` still holds the delivered rows.
         """
         state = _make_state(tmp_path)
         slot = _populate_slot(state)
@@ -807,11 +777,8 @@ class TestRewindSlot:
     async def test_rewind_retains_the_pre_await_rows_so_their_ids_cannot_recycle(self, tmp_path):
         """The arrival snapshot must hold the rows, not just their ``id()`` values.
 
-        ``id()`` is an integer that says nothing about lifetime. The window trims
-        at ``_MAX_SLOT_MESSAGES`` and a low-index edit pins nothing ahead of
-        ``index`` -- at index 0 the prospective copy is empty -- so a leading row
-        can be freed mid-boundary and CPython can hand its id to a newly appended
-        arrival, which the commit would then read as "not new" and drop.
+        A row trimmed at ``_MAX_SLOT_MESSAGES`` can be freed, and CPython can reuse its
+        ``id()`` for a new arrival that the commit would then drop.
         """
         state = _make_state(tmp_path)
         slot = _populate_slot(state)
@@ -860,11 +827,8 @@ class TestRewindSlot:
     ):
         """A 503 after the native discard must leave an attributable SEL record.
 
-        Once ``discard_conversation`` and ``aflush`` succeed the native session
-        is unrecoverable. SEL carries this endpoint's denials and its successful
-        commits, so without a record here the one outcome that destroyed context
-        WITHOUT committing anything is indistinguishable in the audit trail from
-        a denial that touched nothing.
+        After ``discard_conversation`` and ``aflush`` the native session is gone; without a
+        record this looks like a denial that touched nothing.
         """
         events: list[dict] = []
         monkeypatch.setattr(
@@ -908,12 +872,8 @@ class TestRewindSlot:
     ):
         """A key that changed hands before dispatch audits as ``history_save_refused``.
 
-        The dispatch verify runs after the native discard, so the context is
-        already gone: the record it leaves must say the save was REFUSED, not
-        that it raised. The replacement is minted during the sid flush, the
-        last await before the verify, so the handler reads a map whose key is
-        held by another slot and must settle the refusal without ever
-        dispatching a worker -- there is no task to await on that arm.
+        The verify runs after the native discard. The replacement is minted during the sid
+        flush, so the refusal settles without dispatching a worker.
         """
         events: list[dict] = []
         monkeypatch.setattr(
@@ -968,11 +928,8 @@ class TestRewindSlot:
     ):
         """A cancellation on the sid flush must still leave a SEL record.
 
-        ``discard_conversation`` has already returned True at this point, so the
-        native context IS gone. ``CancelledError`` derives from BaseException, so
-        the ``except Exception`` beside it cannot absorb it -- without its own
-        handler the destruction propagates with no record and no response, which
-        is the one outcome the audit exists for.
+        The native context is already gone, and ``CancelledError`` (a BaseException)
+        passes the ``except Exception`` beside it.
         """
         events: list[dict] = []
         monkeypatch.setattr(
@@ -1023,11 +980,8 @@ class TestRewindSlot:
     ):
         """A cancellation inside the discard's own awaits must be recorded.
 
-        ``discard_conversation`` pops the session and calls ``clear_sid`` before
-        its remaining awaits (``to_thread(unlink)``, ``provider.shutdown()``,
-        ``release_subagent_runtime``), so the destruction is already true while
-        those run. An unshielded await here would let a client disconnect
-        propagate past every later handler with the context gone and no record.
+        ``discard_conversation`` calls ``clear_sid`` before its remaining awaits, so the
+        context is already gone while they run.
         """
         events: list[dict] = []
         monkeypatch.setattr(
@@ -1130,11 +1084,8 @@ class TestRewindSlot:
     ):
         """A drain that raises must record the UNKNOWN outcome, not silence.
 
-        Three outcomes are possible and only two are facts: the teardown happened,
-        it refused and destroyed nothing, or the drained call raised and nothing
-        here can tell which. Spelling the third as ``destroyed = False`` asserted
-        the second, so the audit went quiet on exactly the case it exists for --
-        and silence in a trail reads as nothing to report.
+        When the drained call raises, nothing can tell whether the teardown happened.
+        Recording ``destroyed = False`` would claim it did not.
         """
         events: list[dict] = []
         monkeypatch.setattr(
@@ -1198,11 +1149,8 @@ class TestRewindSlot:
     ):
         """A second cancellation must not abandon the drain and lose the record.
 
-        The drain's own ``await`` is a cancellation point, so a single one is
-        defeated by exactly one more cancel -- a gateway shutdown reaching a
-        handler already unwinding from a client disconnect. The bounded re-shield
-        absorbs one per pass, which is the same shape the history-rewrite drain
-        uses.
+        A shutdown can cancel a handler already unwinding from a disconnect. The bounded
+        re-shield absorbs one cancel per pass, like the history-rewrite drain.
         """
         events: list[dict] = []
         monkeypatch.setattr(
@@ -1727,13 +1675,9 @@ class TestRewindSlot:
 class TestRewindCommitBoundaryIdentity:
     """POST /api/chat/slots/{slot}/rewind — what decides the truncating commit.
 
-    Rewind dispatches its rewrite onto a worker thread and the event loop is
-    free until that thread commits, so a same-name close-and-recreate can
-    republish the name in between. Such a replacement resumes the SAME
-    transcript, which leaves ``expected_history_key`` identical and the routing
-    pin satisfied, so only re-reading the slot map at the locked commit boundary
-    can refuse the write. Rewind has no loop-side identity check to fall back
-    on: the map is read once, when the handler resolves the slot.
+    A same-name recreate during the worker resumes the SAME transcript, so
+    ``expected_history_key`` still matches. Only re-reading the slot map at the
+    locked commit can refuse the write.
     """
 
     @pytest.mark.asyncio
@@ -1810,12 +1754,8 @@ class TestRewindCommitBoundaryIdentity:
 class TestRewindChainedHistory:
     """POST /api/chat/slots/{slot}/rewind — chained-history index handling.
 
-    ``slot.messages`` holds at most the last 500
-    messages of the chained view; older messages live in archived sibling
-    session files and ``slot._disk_older_count`` records how many. The
-    handler must validate against the chained length so error messages
-    match what the user sees, and translate the chained index back to a
-    ``slot.messages``-relative offset for the truncation.
+    ``slot.messages`` holds the last 500 chained messages; ``slot._disk_older_count``
+    counts the older ones. Validate against the chained length, truncate by offset.
     """
 
     @pytest.mark.asyncio

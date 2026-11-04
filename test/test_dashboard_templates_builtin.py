@@ -1,26 +1,12 @@
 """The built-in dashboard templates, checked against a fold value a pod really served.
 
-A template declares ``{"fold": ..., "path": ...}`` per field and the host resolves it
-at run time. Nothing in :mod:`kiro_crew.dashboard_templates.manifest` can tell whether
-such a path EXISTS -- it validates the path's spelling, not its target -- so a built-in
-can ship a plausible path that resolves to nothing on every crewmate's dashboard, and
-the page then renders a blank cell with every gate green.
+The manifest validates a ``{"fold": ..., "path": ...}`` path's spelling, not its target,
+so a built-in could ship a path that renders a blank cell with every gate green.
 
-That is the gap this module closes, and it closes it against
-``test/fixtures/dashboard_templates/pod_folds.json``: the eight folds a real pod
-session served over
-``GET /api/sessions/{slot}/crew-log/projection/{name}`` after two chat turns with tool
-calls and an approval, a session ledger written through ``session_ledger_record``, and a
-work board opened through ``POST /api/work-ledger/record``. A hand-written fixture would
-prove only that the test agrees with itself about the fold shape, which is the mistake
-the first contract's own example paths made: it showed ``usage.credits.total`` and
-``usage.turns.count``, and the real fold has ``usage.credits`` as a float and no
-``count`` under ``usage.turns`` at all.
-
-The fixture is a SNAPSHOT, so it ages. What ages safely is the thing being asserted: a
-path missing from it fails here rather than on somebody's dashboard, and a fold that
-gains a key leaves these assertions passing. A fold that RENAMES a key is exactly the
-break this is for.
+Paths resolve against ``test/fixtures/dashboard_templates/pod_folds.json``, the folds a
+real pod session served over ``GET /api/sessions/{slot}/crew-log/projection/{name}``.
+A hand-written fixture would only agree with itself about the fold shape. The fixture is
+a snapshot: an added key still passes, a RENAMED key fails here.
 """
 
 from __future__ import annotations
@@ -84,21 +70,11 @@ EXPECTED_IDS = frozenset(
     }
 )
 
-#: How many fields of one template may be agentic -- a fact no fold records, which the
-#: agent writes and the page marks.
+#: How many fields of one template may be agentic (written by the agent, no fold).
 #:
-#: A CAP rather than a prohibition, because the thing worth protecting is not the
-#: count: it is that every NUMBER on the page stays the record's own. The manifest
-#: already enforces that structurally, since a field names either a fold path or
-#: `agentic` and never both, so an agentic field cannot overwrite a folded value. What
-#: the cap buys on top of that is a decision point -- a template reaching for one more
-#: judgment field has to come here and say which question no fold can answer.
-#:
-#: `project-report` holds the three that earned it: the lead's `for_you` lines, its
-#: `verdict` (which of six reds is the one that matters is a judgment, and no fold
-#: ranks them), and `ci` (the lane board a babysitting worker already reads every cycle
-#: and currently throws away; a GitHub-polling fold is the correct source and is not a
-#: this-week source).
+#: A cap, not a ban: the manifest already stops an agentic field overwriting a folded
+#: value, so the cap is a decision point for each new judgment field. `project-report`
+#: holds three: `for_you`, `verdict` (which red matters is a judgment) and `ci`.
 MAX_AGENTIC_PER_TEMPLATE = 3
 
 
@@ -129,21 +105,11 @@ def pod_folds() -> dict[str, Any]:
 
 @pytest.fixture(scope="module")
 def checked_folds(pod_folds: dict[str, Any]) -> dict[str, Any]:
-    """Every fold value the cases below resolve paths against: the pod capture, plus a
-    named companion sample for any fold the capture PREDATES.
+    """Every fold value the cases resolve against: the pod capture plus named samples.
 
-    The capture is a snapshot of one real session, so a fold added after it was taken is
-    absent from it through no fault of the template that reads it -- and it cannot be
-    re-captured until that fold ships, which is a different change than the page. The
-    answer is not to hand-add the fold to the capture: a value typed into
-    ``pod_folds.json`` would claim a session served it, and the whole worth of that file
-    is that nobody typed it.
-
-    So a newer fold is resolved against ``sample_<fold>.json`` instead, which says in
-    its name that it is a sample. That keeps every assertion's teeth -- the paths still
-    have to resolve and the types still have to match -- while the two sources stay
-    told apart. :data:`SAMPLED_FOLDS` is the closed list, so this is not a hole a future
-    template can fall into quietly: a fold reaching here without being listed fails.
+    A fold newer than the capture resolves against ``sample_<fold>.json``; typing it into
+    ``pod_folds.json`` would claim a real session served it. :data:`SAMPLED_FOLDS` is the
+    closed list, so an unlisted fold reaching here fails.
     """
     out = dict(pod_folds)
     for fold in SAMPLED_FOLDS:
@@ -391,18 +357,10 @@ class TestEveryFoldPathResolves:
 
 
 class TestTheyActuallyShip:
-    """A built-in absent from the wheel is the quietest failure in this feature.
+    """Every built-in's page and manifest are named by a ``[options.package_data]`` glob.
 
-    Its page and its manifest are DATA files. ``pip`` copies a data file only when a
-    ``[options.package_data]`` glob names it, and every test here reads the
-    package-relative source tree -- which exists in a checkout whether or not the build
-    would have copied anything. So the whole suite stays green while the registry
-    discovers no built-in at all on any pip, PyPI or DMG install.
-
-    Both file kinds are checked, because the two fail differently and only one of them
-    is obvious: a directory with no page is nothing, while a directory whose manifest
-    did not ship is refused by ``load_template`` with a message about a missing file
-    that is present in every developer's checkout.
+    Tests read the source tree, so they stay green while an install ships no built-in.
+    Both kinds are checked: a missing manifest fails ``load_template`` confusingly.
     """
 
     @staticmethod
@@ -471,15 +429,9 @@ class TestTheSetOfBuiltins:
     def test_the_set_covers_the_slot_folds(
         self, loaded: dict[str, tuple[TemplateManifest, str]]
     ) -> None:
-        """The slot-keyed folds are where a long-running crewmate's work actually lives,
-        and the next author copies what is in the tree -- so the shipped set has to
-        demonstrate reading them rather than leaving them to a first-time author.
+        """The shipped set reads the slot-keyed folds, where a crewmate's work lives.
 
-        Asked about the SLOT half only, which is deliberate rather than an omission. A
-        crewmate's boards, its spend and its ledger belong to the CREWMATE and are
-        spread over every session it ran under, so a session-keyed fold answers for a
-        slice and a reader cannot tell a slice from the whole. A built-in reading a
-        session fold is allowed and simply not required.
+        Slot only: a session-keyed fold answers for one slice of a crewmate's sessions.
         """
         folds: set[str] = set()
         for manifest, _ in loaded.values():
@@ -498,23 +450,10 @@ class TestTheSetOfBuiltins:
 
 
 class TestEveryBuiltinSurvivesPreviewAndApply:
-    """A page that ships and cannot be adopted is a page nobody can reach.
+    """Every built-in passes ``stage_preview`` and ``apply_preview``, not only the loader.
 
-    The suite above proves each built-in LOADS. Loading is not adopting: a crewmate
-    gets a page by ``stage_preview`` then ``apply_preview``, and both run
-    ``instance._check`` -- which applies a size ceiling the loader never asked about.
-
-    THE BUG this closes. ``MAX_INSTANCE_HTML_BYTES`` was its own number, 64 KiB, while
-    ``dashboard_frame.MAX_PAGE_BYTES`` -- the ceiling the document that renders the page
-    is actually assembled under -- was far larger. ``project-report`` is over 147,000
-    bytes and is ``DEFAULT_TEMPLATE_ID``, so preview refused it with "over the
-    65536-byte ceiling": a crewmate that adopted any other page could never come back
-    to the one every crewmate starts on, and the only way to see the default was never
-    to have left it.
-
-    Asked over the WHOLE shipped set and not about the one page that was too big. The
-    next template somebody writes is the one that trips a ceiling nothing here states,
-    and a case naming ``project-report`` would pass while it did.
+    Both run ``instance._check``, whose size ceiling must fit ``MAX_PAGE_BYTES``:
+    ``project-report`` (the default) is over 147,000 bytes. Asked over the whole set.
     """
 
     @pytest.fixture(autouse=True)
@@ -614,16 +553,10 @@ class TestEveryBuiltinSurvivesPreviewAndApply:
         assert f"over the {instance.MAX_INSTANCE_HTML_BYTES}-byte ceiling" in said
 
     def test_rollback_reaches_the_default_again_after_switching_away(self) -> None:
-        """THE READER'S OWN JOURNEY, which is where the bug was felt.
+        """Adopt the default, switch away, then roll back to it.
 
-        Adopt the default, switch to another page, then go back. The rollback restores
-        the default's payload FROM DISK and re-checks it on the way in, so it runs the
-        same ceiling the preview does -- which is why this is a second case and not a
-        restatement of the one above: a rollback is the path a reader takes when they
-        have already left, and it was equally shut.
-
-        Forward, like every rollback: version 1 restored over version 2 becomes
-        version 3, so going back is itself undoable.
+        A rollback re-checks the payload from disk under the same ceiling as preview.
+        Version 1 restored over version 2 becomes version 3.
         """
         other = next(
             load_template(d)[0].id
