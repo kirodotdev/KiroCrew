@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
+import socket
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, AsyncIterator
 from unittest.mock import AsyncMock, patch
 
 import aiohttp
 import pytest
+from aiohttp import web
 
 from kiro_crew.testing.wait import async_wait_until, await_until
 from kiro_crew.wecom.client import (
@@ -22,6 +25,59 @@ from kiro_crew.wecom.client import (
 # ------------------------------------------------------------------
 # Helpers
 # ------------------------------------------------------------------
+
+_PROXY_VARS = ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "https_proxy", "http_proxy", "all_proxy")
+_WAIT_CEILING_S = 30
+
+
+@contextlib.asynccontextmanager
+async def _wecom_ws_wire(
+    monkeypatch: pytest.MonkeyPatch, frames: list[dict]
+) -> AsyncIterator[tuple[str, list[dict]]]:
+    """A loopback WebSocket server standing in for the WeCom long connection.
+
+    It records the client's first frame (the subscribe), sends ``frames`` in
+    order, then waits for the client to close. Yields its ``ws://`` URL and the
+    frames it received. Proxies are cleared and name lookups other than loopback
+    are refused, so a connection that misses the server fails instead of leaving
+    the host.
+    """
+    for var in _PROXY_VARS:
+        monkeypatch.delenv(var, raising=False)
+    real_getaddrinfo = socket.getaddrinfo
+
+    def _loopback_only(host: Any, *args: Any, **kwargs: Any) -> Any:
+        if host not in ("127.0.0.1", "localhost"):
+            raise OSError(f"wecom wire: refused name lookup for {host!r} (loopback only)")
+        return real_getaddrinfo(host, *args, **kwargs)
+
+    monkeypatch.setattr(socket, "getaddrinfo", _loopback_only)
+    received: list[dict] = []
+
+    async def _handle(request: web.Request) -> web.WebSocketResponse:
+        ws = web.WebSocketResponse()
+        await ws.prepare(request)
+        received.append(await asyncio.wait_for(ws.receive_json(), _WAIT_CEILING_S))
+        for frame in frames:
+            await ws.send_json(frame)
+        # Drain until the client closes; anything else it sends is recorded.
+        while True:
+            msg = await asyncio.wait_for(ws.receive(), _WAIT_CEILING_S)
+            if msg.type != aiohttp.WSMsgType.TEXT:
+                break
+            received.append(json.loads(msg.data))
+        return ws
+
+    app = web.Application()
+    app.router.add_get("/ws", _handle)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    await web.TCPSite(runner, "127.0.0.1", 0).start()
+    port = runner.addresses[0][1]
+    try:
+        yield f"ws://127.0.0.1:{port}/ws", received
+    finally:
+        await asyncio.wait_for(runner.cleanup(), timeout=_WAIT_CEILING_S)
 
 
 @dataclass
@@ -711,32 +767,24 @@ class TestMalformedFrames:
         assert client._handler_tasks == set()
 
     @pytest.mark.asyncio
-    async def test_handler_error_does_not_abort_receive_loop(self) -> None:
-        fake_ws = FakeWS(["first", "second"])
+    async def test_handler_error_does_not_abort_receive_loop(self, monkeypatch) -> None:
+        # The real client over a real socket. The first frame makes the real
+        # handler raise (an unhashable req_id meets the ping set); the kick that
+        # follows is still read and acted on.
+        frames = [
+            {"errcode": 0, "headers": {"req_id": ["unhashable"]}},
+            {"cmd": "disconnected_event", "headers": {}, "body": {}},
+        ]
+        async with _wecom_ws_wire(monkeypatch, frames) as (url, received):
+            client = WeComClient(bot_id="bot1", secret="sec1", ws_url=url)
+            try:
+                await asyncio.wait_for(client._connect_and_serve(), timeout=_WAIT_CEILING_S)
+            finally:
+                await asyncio.wait_for(client.close(), timeout=_WAIT_CEILING_S)
 
-        class FakeConnection:
-            async def __aenter__(self):
-                return fake_ws
-
-            async def __aexit__(self, *args):
-                return None
-
-        class FakeSession:
-            closed = False
-
-            def ws_connect(self, url, proxy=None):
-                return FakeConnection()
-
-        client = WeComClient(bot_id="bot1", secret="sec1", ws_url="wss://fake")
-        client._session = FakeSession()  # type: ignore[assignment]
-        client._handle_message = AsyncMock(  # type: ignore[method-assign]
-            side_effect=[ValueError("malformed"), None]
-        )
-        client._ping_loop = AsyncMock()  # type: ignore[method-assign]
-
-        await client._connect_and_serve()
-
-        assert client._handle_message.await_count == 2
+        assert [frame["cmd"] for frame in received] == ["aibot_subscribe"]
+        assert received[0]["body"] == {"bot_id": "bot1", "secret": "sec1"}
+        assert client._kicked is True, "the frame after the failing one was dropped"
 
     @pytest.mark.asyncio
     async def test_non_object_frame_warning_omits_payload(
