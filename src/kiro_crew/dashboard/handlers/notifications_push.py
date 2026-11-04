@@ -312,7 +312,16 @@ async def api_vapid_public_key(request: web.Request) -> web.Response:
         return denied
     # Offloaded: the first call on a fresh home generates the keypair and
     # writes it to disk, which must not run on the event loop.
-    public_key = await asyncio.to_thread(vapid_keys.public_key_b64url)
+    try:
+        public_key = await asyncio.to_thread(vapid_keys.public_key_b64url)
+    except vapid_keys.VapidKeysUnreadable:
+        return web.json_response(
+            {
+                "error": "The push key file could not be read. Try again shortly.",
+                "code": "vapid_keys_unreadable",
+            },
+            status=503,
+        )
     return web.json_response({"publicKey": public_key})
 
 
