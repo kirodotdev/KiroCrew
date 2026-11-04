@@ -259,9 +259,11 @@ class SlotProjection:
         Oldest first; the projection reads only the first one for the card.
         """
         # Local import avoids the state -> slot_projection -> chat_utils -> state
-        # cycle at module import time. The value is process-local and cheap to
-        # read; it pairs the slot's restarting turn counter with its gateway.
-        from kiro_crew.dashboard.chat_utils import chunk_generation
+        # cycle at module import time. Module import (not from-import) avoids
+        # the _handle_fromlist __path__ probe on the facade per slot.
+        import kiro_crew.dashboard.chat_utils as _cu
+
+        chunk_generation = _cu.chunk_generation
 
         # The newest DURABLE row: a transient row (the turn-end ``done`` row
         # among them) is never persisted, so a slot rebuilt from disk after a
