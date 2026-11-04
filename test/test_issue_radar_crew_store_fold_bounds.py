@@ -1,13 +1,10 @@
 """The radar fold bounds and screens everything it retains from a crew's log.
 
-This file pins what the fold keeps from the bytes it reads back: ``ci_state`` members,
-labels, free text and numbers are held to the record tool's own limits, and ``tried``
-rows, work items and passes to a named bound; an eviction is counted, never lands on
-the item that holds the edit, and a retry after one puts the item back; a line naming
-another crew is left out, and a number outside the tool's range is left out of the
-fold and of the entry an update writes; and a unit recreated under its id folds cold.
-The update entry itself lives in ``test_issue_radar_crew_store.py`` and the bounds the
-pre-projection carry applies in ``test_issue_radar_crew_store_legacy_carry.py``.
+Fields are held to the record tool's limits and lists to named bounds; an eviction is
+counted and never hits the edited item; another crew's lines and out-of-range numbers
+are left out; a recreated unit folds cold. The update entry is in
+``test_issue_radar_crew_store.py``, carry bounds in
+``test_issue_radar_crew_store_legacy_carry.py``.
 """
 
 from crew_log_drain import assert_drained
@@ -405,14 +402,10 @@ def test_a_retry_whose_item_was_evicted_is_not_vouched_for_by_a_surviving_skip(m
 
 def test_a_unit_recreated_under_its_id_folds_cold_however_far_its_seq_climbed(tmp_path):
     """The checkpoint cache is keyed by each unit's log identity, not by its seq
-    alone: a log removed and created again under the same id, whose new entries take
-    its seq PAST the cached one, is a different log, and the read must fold it from
-    the start rather than continue the retired log's checkpoint.
+    alone: a log recreated under the same id, with seq PAST the cached one, folds cold.
 
-    The new entries are appended straight through the emitter, because a store write
-    folds before it appends -- so writing them would refresh the cache while the new
-    log's seq was still below the cached one, and the stale checkpoint would never be
-    offered to the comparison this pins.
+    Entries go through the emitter, not a store write, which folds first and would
+    refresh the cache before the new seq passed the cached one.
     """
     from kiro_crew.crew_log import eager
     from kiro_crew.crew_log.store import segment_paths
