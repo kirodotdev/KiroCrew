@@ -1366,8 +1366,8 @@ measures, never above.
   with an explicit directory.
 
 - **Production code that edits `os.environ` leaks through a test that exercises the real
-  path.** `dashboard/server.py` startup does `os.environ.update(cli_env_overrides())` on
-  purpose (descendant `playwright-cli` processes need it), and `load_credentials()`
+  path.** `dashboard/server.py` startup exports the bound-port evidence into
+  `os.environ` on purpose (descendant processes read it), and `load_credentials()`
   `setdefault`s every `.env` key. A test that drives that real startup — via a shared
   helper like `_start_dashboard` — inherits the mutation for every later test on the
   worker. The per-test probe in the 5x run caught `PLAYWRIGHT_MCP_OUTPUT_DIR`,
@@ -1616,7 +1616,7 @@ measures, never above.
   directory that also contains sibling tools.
 
 - **Bootstrap fixtures must match the child's libc target.** In
-  `playwright_cli_installer_helpers.py`, `_expected_node_base` uses native
+  the retired browser-CLI installer helpers, `_expected_node_base` used native
   `os.confstr("CS_GNU_LIBC_VERSION")` on Linux/x64 to select `glibc-217` below
   glibc 2.28. OS and architecture alone give the fake mirror the wrong archive,
   failing before checksum and cleanup assertions. Keep the real platform tool
@@ -2386,7 +2386,7 @@ the host; and `os.kill(pid, 0)` against pids the worker never spawned is
 `OpenProcess` on Windows.
 
 **One finding is left OPEN on purpose, and the reason generalises.**
-`test_playwright_cli_installer.py::test_an_interrupted_rebootstrap_restores_the_previous_node`
+the retired browser-CLI installer's `test_an_interrupted_rebootstrap_restores_the_previous_node`
 sleeps 2.5s over a 60 MB incompressible tarball hoping to catch `tar` mid-unpack, and it
 never enters that window — so it costs ~1.5s of CPU and ~300 MB of temp I/O a run while
 both its assertions are satisfied by a prefix nothing modified. It is a *vacuous* test,
@@ -3318,9 +3318,8 @@ went red, or the fix lands in the wrong file and the leak stays.
   `monkeypatch.chdir(tmp_path)` in the fixture closes the process-cwd hazard; adding
   `cwd=` to the product would turn git's rc=128 for a missing clone into a Python
   `FileNotFoundError` before git runs, which every caller reads off `returncode`, so that
-  descriptor is deliberately left. One production change: `browser_cli/install_launcher.py`'s
-  staged node launcher now runs from the managed leaf its docstring already promised, and
-  `test_browser_cli_install_gateway_command.py` pins the `cwd` it is handed.
+  descriptor is deliberately left. (The one production change this pass made, to the
+  since-deleted browser CLI installer's staged node launcher, went with that installer.)
 - **`fd_leak` at +3 per unclosed SQLite handle, and why refcounting never reclaims it.**
   On CPython 3.11+ every `sqlite3.Connection` is a self-cycle through its `lru_cache`
   statement cache, so an unreferenced connection holds `db` + `-wal` + `-shm` until the

@@ -13,8 +13,7 @@ from unittest import mock
 
 import pytest
 
-from kiro_crew import soffice_discovery
-from kiro_crew.browser_cli import os_deps
+from kiro_crew import os_release, soffice_discovery
 
 _YUM = "sudo yum install libreoffice"
 
@@ -32,10 +31,12 @@ def linux_host(monkeypatch):
     def _set(release: dict[str, str], managers: set[str]) -> None:
         soffice_discovery._linux_hint.cache_clear()
         monkeypatch.setattr(
-            os_deps.platform, "freedesktop_os_release", mock.Mock(return_value=release)
+            os_release.platform, "freedesktop_os_release", mock.Mock(return_value=release)
         )
         monkeypatch.setattr(
-            os_deps.shutil, "which", lambda name: f"/usr/bin/{name}" if name in managers else None
+            os_release.shutil,
+            "which",
+            lambda name: f"/usr/bin/{name}" if name in managers else None,
         )
 
     yield _set

@@ -195,6 +195,13 @@ _SETTING_ORDER: dict[str, tuple[Any, ...]] = {
     "dashboard.shared_crew.tailnet_direct": (False, True),
     "skills.approval_required": (True, False),
     "telemetry.beacon_enabled": (False, True),
+    # Kiro's own Chromium holds none of the person's logins; ``auto`` and
+    # ``user_chrome`` hand the agent the person's Chrome, signed in.
+    "browser.choice": ("headless", "kiro_chromium", "auto", "user_chrome"),
+    # Off, password boxes show in the live picture.
+    "browser.live.mask_passwords": (True, False),
+    # On, Kiro's Chromium starts signed in to the edition's sites.
+    "browser.credentials.enabled": (False, True),
 }
 
 #: Card-editable config paths (``_EDITABLE_CONFIG``) that no value can widen
@@ -220,8 +227,19 @@ _CANNOT_WIDEN_SETTINGS: frozenset[str] = frozenset(
         "agent.soft_stop_budget_secs",
         "agent.tool_search",
         "auto_update",
+        # A list, so no card reaches it (see ``skills.extra_paths``). Adding a
+        # domain can widen where the edition's sign-in is used, so if cards ever
+        # carry list values this moves to a widening class.
+        "browser.credentials.domains",
+        # The live view's shape: on/off, picture quality, frame-rate ceiling.
+        "browser.live.enabled",
+        "browser.live.max_fps",
+        "browser.live.quality",
         "computer_use.max_tree_nodes",
         "computer_use.screenshot_max_px",
+        # A list, so no card reaches it (see ``skills.extra_paths``). Loopback
+        # ``host:port`` entries only, for the Preview tab, which no agent drives.
+        "dashboard.browser_local_origins",
         "dashboard.crewmate_threads",
         "dashboard.dynamic_dashboard_cards",
         # A feature preview only decides whether the dashboard OFFERS an

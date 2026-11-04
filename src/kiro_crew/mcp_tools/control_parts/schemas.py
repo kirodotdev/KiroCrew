@@ -104,8 +104,7 @@ def _prefers_structured_arming() -> bool:
     from needing a gateway restart: ``mcp_tools.build_tool_list`` rebuilds the
     descriptors per call and deliberately does not cache them. It does NOT
     reach a session that is already open, because kiro-cli caches a session's
-    tool list for that session's life -- the same limitation
-    ``mcp_tools/browser.py`` records for ``dashboard.use_builtin_browser``.
+    tool list for that session's life.
 
     Fails to the OFF position on any error: off is the shipped behaviour, and a
     config a gateway cannot parse must not silently re-point every arming

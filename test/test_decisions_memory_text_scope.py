@@ -112,7 +112,10 @@ class TestEveryScopeReaderResolves:
         for name, (reader_name, category) in gate._POINT_SCOPES.items():
             reader = getattr(consent, reader_name, None)
             assert callable(reader), f"{name} names no consent reader: {reader_name}"
-            assert reader({}) is False, f"{reader_name} must read an empty state as no"
+            # ``browser`` is the one POINT scope on by default once consent stands.
+            default_on = gate.POINT_SCOPE_KEYS[name] == consent.STATE_KEY_BROWSER
+            assert reader({}) is default_on, f"{reader_name} reads an empty state wrongly"
+            assert reader({gate.POINT_SCOPE_KEYS[name]: False}) is False, reader_name
             assert category, name
 
 
@@ -252,7 +255,7 @@ class TestTheGateRefusesWithoutIt:
                 asked.append(state)
                 raise AssertionError("nothing may be sent for an unscoped point")
 
-        monkeypatch.setattr("kiro_crew.decisions.impl_jev.JevOracle", _Oracle)
+        monkeypatch.setattr("kiro_crew.decisions.impl_systemone.SystemOneProvider", _Oracle)
         rows = [{"key": "mem-a", "snippet": "an episode"}]
         answers = await gate.decide(
             mr.POINT, mr.build_state("hi", rows), mr.build_questions(rows), config=_config()
@@ -543,6 +546,7 @@ class TestTheRoute:
             compaction=False,
             memory_text=False,
             nudge_evidence=False,
+            **browser_scopes,
         ):
             seen.append(memory_text)
             return real(
@@ -553,6 +557,7 @@ class TestTheRoute:
                 compaction=compaction,
                 memory_text=memory_text,
                 nudge_evidence=nudge_evidence,
+                **browser_scopes,
             )
 
         monkeypatch.setattr(consent, "save_enabled", _spy)

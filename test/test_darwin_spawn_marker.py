@@ -267,7 +267,6 @@ class TestTheArmLicensesNothingElse:
 
     # macOS cmdlines arrive from ``ps -o command=``: space-joined, no NULs.
     _PYTEST_PS = b"/opt/venv/bin/pytest test/test_thing.py"
-    _DAEMON_PS = b"node /opt/playwright-core/lib/entry/cliDaemon.js kc-1a2b3c4d"
 
     @pytest.fixture
     def darwin_with_marker(self, monkeypatch: pytest.MonkeyPatch):
@@ -281,10 +280,6 @@ class TestTheArmLicensesNothingElse:
     def test_the_work_class_still_declines(self, darwin_with_marker) -> None:
         """Its session-leader test reads ``/proc`` and fails closed to "alive"."""
         assert sp._is_sweepable_orphan_work(4242, self._PYTEST_PS, 86_400.0) is False
-
-    def test_the_browser_daemon_class_still_declines(self, darwin_with_marker) -> None:
-        """Its session name must come from a NUL-separated argv, which ``ps`` is not."""
-        assert sp._is_sweepable_orphan_browser_daemon(4242, self._DAEMON_PS, 86_400.0) is False
 
     @pytest.mark.skipif(
         sys.platform == "win32",

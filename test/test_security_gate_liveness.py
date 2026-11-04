@@ -334,7 +334,7 @@ def _url_payload_command(n: int) -> str:
 #:
 #: Raised again, from 29,293, for the ``engines`` leaf in ``paths.py``: the KAS
 #: engine bundle the gateway installs and later executes joins the file-tool floor
-#: beside ``playwright-cli`` -- one entry and its reason. No matcher moved.
+#: beside ``browser-harness`` -- one entry and its reason. No matcher moved.
 #:
 #: Raised again, from 29,296, for the hosts-file parse in ``argv_floor.py``
 #: telling apart the two halves of its cache key: a file that moves mid-parse is

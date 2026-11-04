@@ -359,39 +359,12 @@ contextBridge.exposeInMainWorld("browserAPI", {
     ipcRenderer.invoke("browser:set-inactive", panelId, !!value),
   close: (panelId) => ipcRenderer.invoke("browser:close", panelId),
   getState: (panelId) => ipcRenderer.invoke("browser:get-state", panelId),
-  // Agent control. `setAgentAct` mirrors the dashboard's general "let the agent
-  // act" authorization into the main process, which evaluates the control gate
-  // itself on every owner transition. `control` takes a CLOSED verb set, never a
-  // raw CDP method — the surface cannot be widened from here.
-  setAgentAct: (panelId, enabled) =>
-    ipcRenderer.invoke("browser:set-agent-act", panelId, !!enabled),
-  setControlOwner: (panelId, owner) =>
-    ipcRenderer.invoke("browser:set-control-owner", panelId, owner),
-  getControl: (panelId) => ipcRenderer.invoke("browser:get-control", panelId),
-  control: (panelId, op, args) => ipcRenderer.invoke("browser:control", panelId, op, args),
   // Human-initiated element annotation on the page in the native view:
   // start/stop pick mode, poll the notes the user typed in the in-page
   // overlay, remove/edit/clear, capture a screenshot with the markers. Read
-  // through executeJavaScript + capturePage, not the agent control plane.
+  // through executeJavaScript + capturePage.
   annotate: (panelId, op, args) => ipcRenderer.invoke("browser:annotate", panelId, op, args),
-  // Declares that a chat session may host a browser panel, so the agent command
-  // channel polls for it even before the Browser tab is ever opened. Grants no
-  // authorization — authorization to drive the built-in browser is Browser Mode
-  // (the Settings toggle), and the gate is just the view precondition. This is
-  // the ONLY session-declaration channel: reachability is simply the active slots
-  // the renderer declares here.
-  trackSession: (panelId, tracked) =>
-    ipcRenderer.invoke("browser:track-session", panelId, !!tracked),
   // Events carry their own panelId so a listener can ignore other panels'.
-  // `onAgentOpened` fires when the AGENT bootstrapped a native view for a
-  // session whose Browser panel may not be mounted yet — the dashboard must
-  // surface that panel so it can report bounds, or the page would render to
-  // nowhere.
-  onAgentOpened: (cb) => {
-    const handler = (_e, payload) => cb(payload);
-    ipcRenderer.on("browser:agent-opened", handler);
-    return () => ipcRenderer.removeListener("browser:agent-opened", handler);
-  },
   onDidNavigate: (cb) => {
     const handler = (_e, payload) => cb(payload);
     ipcRenderer.on("browser:did-navigate", handler);

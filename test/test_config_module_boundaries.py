@@ -333,6 +333,10 @@ _OWNER_CONFIG_IMPORTS = {
         "kiro_crew.config.sections_slack",
     },
     "kiro_crew.config.sections_stt": {"kiro_crew.config.fields"},
+    "kiro_crew.config.sections_browser": {
+        "kiro_crew.config.fields",
+        "kiro_crew.config.sections_defaults",
+    },
     "kiro_crew.config.sections_decisions": {
         "kiro_crew.config.fields",
         "kiro_crew.config.sections_agent_fields",
