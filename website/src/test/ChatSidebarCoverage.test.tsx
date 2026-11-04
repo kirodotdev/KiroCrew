@@ -96,6 +96,7 @@ Object.defineProperty(window, 'matchMedia', {
 
 import ChatSidebar from '../pages/ChatSidebar'
 import { requestSlotReveal } from '../store/chatSlice'
+import { stubAppConfirm } from './appConfirmStub'
 
 interface TestSlot {
   key: string
@@ -724,33 +725,31 @@ describe('ChatSidebar — Older Sessions pane', () => {
   })
 
   it('deletes one history session behind a confirmation', async () => {
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    const confirmSpy = stubAppConfirm(false)
     renderSidebar({ history: HISTORY })
     openHistory()
     fireEvent.click(screen.getAllByLabelText('Delete history session')[0])
     expect(mocks.deleteSession).not.toHaveBeenCalled()
-    confirmSpy.mockReturnValue(true)
+    confirmSpy.mockImplementation(() => Promise.resolve(true))
     fireEvent.click(screen.getAllByLabelText('Delete history session')[0])
     await waitFor(() => expect(mocks.deleteSession).toHaveBeenCalledWith('h1'))
-    confirmSpy.mockRestore()
   })
 
   it('clears all closed sessions behind a confirmation', async () => {
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    stubAppConfirm(true)
     const { store } = renderSidebar({ history: HISTORY })
     openHistory()
     fireEvent.click(screen.getByText('Delete all'))
     await waitFor(() => expect(mocks.clearSessions).toHaveBeenCalled())
     await waitFor(() => expect(mocks.sessions).toHaveBeenCalled())
     expect(store.getState().chat.undeletableHistory).toBeNull()
-    confirmSpy.mockRestore()
   })
 
   // The gateway answers a partial clear with 200 and `ok: false`. A handler
   // that only awaits the call reads that as success; the shortfall must reach
   // the shared refused-delete notice.
   it('reports a Delete all that left sessions behind', async () => {
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    stubAppConfirm(true)
     mocks.clearSessions.mockResolvedValueOnce({
       ok: false, cleared: 1, skipped: 0, failed: 2, undeletable: [],
     })
@@ -760,7 +759,6 @@ describe('ChatSidebar — Older Sessions pane', () => {
     await waitFor(() => expect(store.getState().chat.undeletableHistory).toEqual({
       key: '', title: '', code: '', bulk: { left: 2, cleared: 1, rows: [] },
     }))
-    confirmSpy.mockRestore()
   })
 
   it('loads another page when more history exists', async () => {

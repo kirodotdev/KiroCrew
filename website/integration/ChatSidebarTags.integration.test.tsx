@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 
 import ChatSidebar from '../src/pages/ChatSidebar'
+import AppConfirmHost from '../src/components/AppConfirmHost'
 import SlotTagPopover from '../src/components/SlotTagPopover'
 import { TagPopoverProvider } from '../src/hooks/useTagPopover'
 import { sseSlots } from '../src/store/dashboardSlice'
@@ -48,7 +49,7 @@ function renderBoard() {
   store.dispatch(sseConnected())
   store.dispatch(sseSlots(baseSlots as any))
   return renderWithProviders(
-    <TagPopoverProvider><ChatSidebar {...defaultProps} /><SlotTagPopover /></TagPopoverProvider>,
+    <TagPopoverProvider><ChatSidebar {...defaultProps} /><SlotTagPopover /><AppConfirmHost /></TagPopoverProvider>,
     { store },
   )
 }
@@ -434,7 +435,26 @@ describe('ChatSidebar tag/column UI', () => {
     renderBoard()
     await waitFor(() => expect(screen.getByTestId('column-c1')).toBeInTheDocument())
     await user.click(screen.getByTestId('column-delete-c1'))
+    // The in-app dialog asks, never the browser-native confirm(); the column
+    // stays until the dialog is confirmed.
+    const dialog = await screen.findByRole('dialog', { name: 'Delete this column?' })
+    expect(mockConfirm).not.toHaveBeenCalled()
+    expect(backend.state.columns.length).toBe(1)
+    await user.click(within(dialog).getByRole('button', { name: 'Delete column' }))
     await waitFor(() => expect(backend.state.columns.length).toBe(0))
+  })
+
+  it('× delete keeps the column when the dialog is cancelled', async () => {
+    const user = userEvent.setup()
+    backend.state.columns = [{ id: 'c1', name: '', tag_ids: [], mode: 'any', order: 0, include_untagged: false }]
+    renderBoard()
+    await waitFor(() => expect(screen.getByTestId('column-c1')).toBeInTheDocument())
+    await user.click(screen.getByTestId('column-delete-c1'))
+    const dialog = await screen.findByRole('dialog', { name: 'Delete this column?' })
+    await user.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Delete this column?' })).toBeNull())
+    expect(backend.state.columns.length).toBe(1)
+    expect(screen.getByTestId('column-c1')).toBeInTheDocument()
   })
 
   it('clear-filter button empties the column tag_ids', async () => {

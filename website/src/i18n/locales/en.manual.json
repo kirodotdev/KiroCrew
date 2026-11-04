@@ -4825,7 +4825,8 @@
         "reason_monitor": "It has a monitor watching for changes. Closing stops the monitor.",
         "reason_work": "It still has work running. Closing stops that work.",
         "reason_setting": "Nothing is running in it. You are asked because “{{setting}}” is turned on in Settings.",
-        "actions": "The conversation and the draft in your message box are kept, and you can reopen the session later."
+        "actions": "The conversation and the draft in your message box are kept, and you can reopen the session later.",
+        "confirm": "Close session"
       },
       "reload_failed": "Session reload failed. The agent may be mid-turn or the gateway unreachable; try again when the session is idle.",
       "duplicate_unreachable": "Couldn't duplicate this session. {{productName}} couldn't be reached. Check your connection and try again.",

@@ -46,6 +46,7 @@ import { ApiError } from '../api/apiError'
 import { sseSlots, sseSlotPatch, markSlotUnread, updateSlotPin } from '../store/dashboardSlice'
 import { useSessionActions, pinMutationKeysInFlight } from '../hooks/useSessionActions'
 import { recordError, __resetErrorJournalForTests } from '../utils/errorReport'
+import { stubAppConfirm, confirmText } from './appConfirmStub'
 
 /** A refusal as apiFailure (api/client.ts) builds it: `.message` is the friendly text, `.body` the raw body. */
 const refusal = (status: number, body: string, message: string) => new ApiError(status, message, body)
@@ -491,12 +492,11 @@ describe('useSessionActions', () => {
     expect(alertSpy.mock.calls[0][0]).not.toContain('Failed to fetch')
   })
 
-  it('close honours confirmCloseSession', () => {
+  it('close honours confirmCloseSession', async () => {
     seed()
     // disabled -> no confirm prompt, deleteSlot dispatched
     cfgMock.loadChatConfig.mockReturnValue({ confirmCloseSession: false })
-    const skipConfirm = vi.fn(() => true)
-    vi.stubGlobal('confirm', skipConfirm)
+    const skipConfirm = stubAppConfirm(true)
     const dispatchSpy = vi.spyOn(store, 'dispatch')
     const a = renderActions()
     dispatchSpy.mockClear()
@@ -506,35 +506,51 @@ describe('useSessionActions', () => {
 
     // enabled + user declines -> confirm prompted, nothing dispatched
     cfgMock.loadChatConfig.mockReturnValue({ confirmCloseSession: true })
-    const decline = vi.fn(() => false)
-    vi.stubGlobal('confirm', decline)
+    const decline = stubAppConfirm(false)
     dispatchSpy.mockClear()
-    act(() => a.current.close(SLOT))
+    await act(async () => { a.current.close(SLOT); await decline.mock.results[0]?.value })
     expect(decline).toHaveBeenCalled()
     expect(dispatchSpy).not.toHaveBeenCalled()
     dispatchSpy.mockRestore()
   })
 
-  it('close asks first for a session with a turn in flight, even with confirmCloseSession off', () => {
+  it('close asks in-app, never through the browser-native confirm()', async () => {
+    seed()
+    cfgMock.loadChatConfig.mockReturnValue({ confirmCloseSession: true })
+    const native = vi.fn(() => true)
+    vi.stubGlobal('confirm', native)
+    const ask = stubAppConfirm(true)
+    const dispatchSpy = vi.spyOn(store, 'dispatch')
+    const a = renderActions()
+    dispatchSpy.mockClear()
+    act(() => a.current.close(SLOT))
+    expect(native).not.toHaveBeenCalled()
+    expect(ask).toHaveBeenCalledTimes(1)
+    expect(ask.mock.calls[0][0].confirmLabel).toBe('Close session')
+    // The close lands once the dialog answers yes.
+    await waitFor(() => expect(dispatchSpy).toHaveBeenCalled())
+    dispatchSpy.mockRestore()
+  })
+
+  it('close asks first for a session with a turn in flight, even with confirmCloseSession off', async () => {
     // The sidebar row ✕ and the session menu share this close. It must ask on
     // the same busy rule Cmd+W uses, or a click stops live work with no warning.
     // Its own key: an earlier test's close of SLOT is still settling.
     const BUSY = 'chat-actions-busy'
     store.dispatch(sseSlots([{ key: BUSY, title: BUSY, messages: 1, running: true, folder_id: '' }]))
     cfgMock.loadChatConfig.mockReturnValue({ confirmCloseSession: false })
-    const decline = vi.fn(() => false)
-    vi.stubGlobal('confirm', decline)
+    const decline = stubAppConfirm(false)
     const dispatchSpy = vi.spyOn(store, 'dispatch')
     const a = renderActions()
     dispatchSpy.mockClear()
-    act(() => a.current.close(BUSY))
+    await act(async () => { a.current.close(BUSY); await decline.mock.results[0]?.value })
     expect(decline).toHaveBeenCalledTimes(1)
     expect(dispatchSpy).not.toHaveBeenCalled()
 
     // Accepting the ask closes it.
-    vi.stubGlobal('confirm', vi.fn(() => true))
+    stubAppConfirm(true)
     act(() => a.current.close(BUSY))
-    expect(dispatchSpy).toHaveBeenCalled()
+    await waitFor(() => expect(dispatchSpy).toHaveBeenCalled())
     dispatchSpy.mockRestore()
   })
 
@@ -546,18 +562,19 @@ describe('useSessionActions', () => {
       { key: IDLE, title: IDLE, messages: 1, running: false, folder_id: '' },
     ]))
     cfgMock.loadChatConfig.mockReturnValue({ confirmCloseSession: true })
-    const decline = vi.fn((_msg?: string) => false)
-    vi.stubGlobal('confirm', decline)
+    const decline = stubAppConfirm(false)
     const a = renderActions()
 
     act(() => a.current.close(BUSY))
-    expect(decline.mock.calls[0][0]).toContain('It is still working on a reply. Closing stops that reply.')
-    expect(decline.mock.calls[0][0]).not.toContain('Confirm Before Closing Session')
+    const busy = confirmText(decline.mock.calls[0][0])
+    expect(busy).toContain('It is still working on a reply. Closing stops that reply.')
+    expect(busy).not.toContain('Confirm Before Closing Session')
 
     act(() => a.current.close(IDLE))
-    expect(decline.mock.calls[1][0]).toContain('Nothing is running in it.')
-    expect(decline.mock.calls[1][0]).toContain('Confirm Before Closing Session')
-    expect(decline.mock.calls[1][0]).toContain('Chat › Confirm Before Closing Session')
+    const idle = confirmText(decline.mock.calls[1][0])
+    expect(idle).toContain('Nothing is running in it.')
+    expect(idle).toContain('Confirm Before Closing Session')
+    expect(idle).toContain('Chat › Confirm Before Closing Session')
   })
 
   it('close stays instant for a session waiting on the user (options card, question, interrupted turn)', () => {
@@ -568,8 +585,7 @@ describe('useSessionActions', () => {
       { key: WAITING, title: WAITING, messages: 1, running: false, has_options: true, needs_input: true, interrupted: true, folder_id: '' },
     ]))
     cfgMock.loadChatConfig.mockReturnValue({ confirmCloseSession: false })
-    const ask = vi.fn(() => false)
-    vi.stubGlobal('confirm', ask)
+    const ask = stubAppConfirm(false)
     const dispatchSpy = vi.spyOn(store, 'dispatch')
     const a = renderActions()
     dispatchSpy.mockClear()
@@ -582,8 +598,7 @@ describe('useSessionActions', () => {
   it('close stays instant for an idle session with confirmCloseSession off', () => {
     seed()
     cfgMock.loadChatConfig.mockReturnValue({ confirmCloseSession: false })
-    const ask = vi.fn(() => false)
-    vi.stubGlobal('confirm', ask)
+    const ask = stubAppConfirm(false)
     const dispatchSpy = vi.spyOn(store, 'dispatch')
     const a = renderActions()
     dispatchSpy.mockClear()
