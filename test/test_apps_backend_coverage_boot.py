@@ -33,9 +33,7 @@ from apps_backend_coverage_helpers import (
 import kiro_crew.apps.backend as bmod
 from kiro_crew.apps.backend import AppProcess
 
-# ---------------------------------------------------------------------------
 # Boot reconcile
-# ---------------------------------------------------------------------------
 
 
 def _app(
@@ -328,9 +326,7 @@ class TestPreclaimFixedPorts:
         assert bmod._start_backends_concurrently([]) == []
 
 
-# ---------------------------------------------------------------------------
 # Remaining defensive branches
-# ---------------------------------------------------------------------------
 
 
 class TestDefensiveBranches:

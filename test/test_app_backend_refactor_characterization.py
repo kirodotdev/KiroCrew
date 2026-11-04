@@ -72,9 +72,7 @@ def sel(monkeypatch: pytest.MonkeyPatch) -> _Sel:
     return recorder
 
 
-# ---------------------------------------------------------------------------
 # Generation safety: a verdict about a replaced record never lands on its successor
-# ---------------------------------------------------------------------------
 
 
 class TestHealthVerdictsStayOnTheirGeneration:
@@ -157,9 +155,7 @@ class TestHealthVerdictsStayOnTheirGeneration:
         assert transitions == [True, True]
 
 
-# ---------------------------------------------------------------------------
 # The lifecycle table: stops, in-flight starts, reservations
-# ---------------------------------------------------------------------------
 
 
 class TestLifecycleGuards:
@@ -236,9 +232,7 @@ class TestLifecycleGuards:
         assert bmod._pid_is_self_or_descendant_of(1000 + depth + 1, 1000) is False
 
 
-# ---------------------------------------------------------------------------
 # PID identity persistence
-# ---------------------------------------------------------------------------
 
 
 class TestPidfileIdentity:
@@ -271,9 +265,7 @@ class TestPidfileIdentity:
         }
 
 
-# ---------------------------------------------------------------------------
 # Provisioning failures are audited once
-# ---------------------------------------------------------------------------
 
 
 class TestProvisioningFailureAudit:
@@ -313,9 +305,7 @@ class TestProvisioningFailureAudit:
         assert [row["outcome"] for row in sel.rows] == ["deps_provision_failed"]
 
 
-# ---------------------------------------------------------------------------
 # The boot wave: order across the reap, the listing, the preclaim and the spawns
-# ---------------------------------------------------------------------------
 
 
 class TestBootOrdering:
@@ -365,9 +355,7 @@ class TestBootOrdering:
         assert registered == [(adopted, True)]
 
 
-# ---------------------------------------------------------------------------
 # Dependency activation and the path-based (no pinned walk) arm
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -494,9 +482,7 @@ class TestPathBasedPinnedDir:
             bmod._PinnedDir(tmp_path / "data")
 
 
-# ---------------------------------------------------------------------------
 # The watch's enforcement of a closed execution ceiling, verdict by verdict
-# ---------------------------------------------------------------------------
 
 
 class TestCeilingRevocationVerdicts:

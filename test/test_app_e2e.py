@@ -26,9 +26,7 @@ from kiro_crew.apps.manager import (
 from kiro_crew.apps.manifest import AppManifest
 from kiro_crew.apps.permissions import validate_permissions
 
-# ---------------------------------------------------------------------------
 # Fixtures
-# ---------------------------------------------------------------------------
 
 
 def _make_full_app(tmp_path, name="e2e-app"):
@@ -96,9 +94,7 @@ def app_env(tmp_path, monkeypatch):
     return {"home": home, "kiro_agents": kiro_agents}
 
 
-# ---------------------------------------------------------------------------
 # Full lifecycle test
-# ---------------------------------------------------------------------------
 
 
 class TestFullLifecycle:
@@ -170,9 +166,7 @@ class TestFullLifecycle:
         assert list_apps() == []
 
 
-# ---------------------------------------------------------------------------
 # OncallWatchTower manifest validation
-# ---------------------------------------------------------------------------
 
 
 class TestOncallWatchTowerManifest:

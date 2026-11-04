@@ -86,7 +86,7 @@ def test_cron_defs_read_still_answers_empty_for_a_damaged_file(
     assert bridges_crons.load_app_cron_defs("demo") == []
 
 
-# --- Official catalog caches -------------------------------------------------
+# Official catalog caches
 #
 # The store refreshes these caches through ``atomic_write`` with no lock, so two
 # store requests race every reader. A read folded into "no cache" makes
