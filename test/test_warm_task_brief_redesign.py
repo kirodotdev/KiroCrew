@@ -11,6 +11,7 @@ follow-up change. RC7 (the whole-board count) is pinned in
 
 from __future__ import annotations
 
+import asyncio
 import datetime as _dt
 import json
 import time
@@ -738,6 +739,64 @@ async def test_rc4_live_read_is_bounded_cached_and_stamped(monkeypatch, _no_gith
     assert len(_no_github) == 1
     await inputs.read_live_prs(refs[:1], now + inputs.LIVE_PR_TTL_SECS)
     assert len(_no_github) == 2
+
+
+@pytest.mark.asyncio
+async def test_rc4_live_read_past_its_limit_marks_unread_prs_not_checked(monkeypatch, _no_github):
+    async def never_done(fn, urls):
+        # Stands in for the worker thread: the read starts at once and never
+        # answers, so the limit always ends it. No thread, no pool.
+        _no_github.append(list(urls))
+        await asyncio.Event().wait()
+
+    seam = SimpleNamespace(wait_for=asyncio.wait_for, to_thread=never_done)
+    monkeypatch.setattr(inputs, "asyncio", seam)
+    now = time.time()
+    cached, unread = (inputs.PrRef("kirodotdev/KiroCrew", n) for n in (26100, 26101))
+    inputs._live_cache[cached.url] = (now, {"state": "open", "review": "APPROVED"})
+    entries = await inputs.read_live_prs([cached, unread], now, budget=0.01)
+    # What was already read still goes out; the unread PR is never guessed.
+    assert entries[0]["checked"] is True and entries[0]["state"] == "open"
+    assert entries[1] == {
+        "pr": "#26101",
+        "repo": "kirodotdev/KiroCrew",
+        "url": unread.url,
+        "checked": False,
+        "not_checked_since": "never",
+    }
+    assert _no_github == [[unread.url]]
+    # A spent limit starts no read at all.
+    again = await inputs.read_live_prs([unread], now, budget=0)
+    assert again[0]["checked"] is False and len(_no_github) == 1
+
+
+@pytest.mark.asyncio
+async def test_rc4_one_live_read_limit_covers_every_attempt(monkeypatch):
+    budgets: list[float] = []
+    # A synthetic clock scoped to the brief module: each read takes 3 s and
+    # each model call 20 s; only the reads may spend the limit.
+    now = [0.0]
+    clock = SimpleNamespace(time=time.time, monotonic=lambda: now[0])
+    monkeypatch.setattr(warm_task_brief, "time", clock)
+
+    async def read(refs, now_arg=None, budget=inputs.LIVE_READ_TOTAL_SECS):
+        budgets.append(budget)
+        now[0] += 3.0
+        return []
+
+    real_generate = warm_task_brief._generate
+
+    async def generate(*args, **kwargs):
+        now[0] += 20.0
+        return await real_generate(*args, **kwargs)
+
+    monkeypatch.setattr(inputs, "read_live_prs", read)
+    monkeypatch.setattr(warm_task_brief, "_generate", generate)
+    prompts, posted = await _write_run(
+        monkeypatch, [{"ledger_digest": "d1"}, {"ledger_digest": "d1"}]
+    )
+    assert len(prompts) == 2 and len(posted) == 1
+    assert budgets == [inputs.LIVE_READ_TOTAL_SECS, inputs.LIVE_READ_TOTAL_SECS - 3.0]
 
 
 @pytest.mark.asyncio
