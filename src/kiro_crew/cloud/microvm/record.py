@@ -42,6 +42,7 @@ from kiro_crew import platform_lock_compat
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.cloud.microvm import states
 from kiro_crew.config.loader import config_dir
+from kiro_crew.owner_only_files import owner_only_opener_for
 
 logger = logging.getLogger(__name__)
 
@@ -392,7 +393,9 @@ class CrewStore:
         lock_path = self._path.with_name(self._path.name + ".lock")
         lock_path.parent.mkdir(parents=True, exist_ok=True)
         with contextlib.ExitStack() as stack:
-            handle = stack.enter_context(open(lock_path, "a+"))
+            handle = stack.enter_context(
+                open(lock_path, "a+", opener=owner_only_opener_for(lock_path))
+            )
             stack.enter_context(platform_lock_compat.file_lock(handle.fileno(), exclusive=True))
             yield
 

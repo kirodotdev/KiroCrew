@@ -39,6 +39,7 @@ from typing import Any
 from aiohttp import web
 
 from kiro_crew import crewmate_stage
+from kiro_crew.owner_only_files import mkdirs_owner_only
 
 logger = logging.getLogger(__name__)
 
@@ -158,7 +159,7 @@ def _scripts_dir(slug: str) -> Path:
     for part in (crons_dir, parent, target):
         if part.is_symlink():
             raise _Refused(409, "scripts_dir_link", "the crewmate's script folder holds a link")
-    target.mkdir(mode=0o700, parents=True, exist_ok=True)
+    mkdirs_owner_only(target)
     real_crons = os.path.realpath(crons_dir)
     if os.path.commonpath([real_crons, os.path.realpath(target)]) != real_crons:
         raise _Refused(409, "scripts_dir_link", "the script folder is outside crons/")

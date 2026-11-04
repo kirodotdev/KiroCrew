@@ -683,7 +683,7 @@ def cancel_pending_restore(db_path: Path) -> bool:
     out = backup_dir_for(db_path)
     if not (out / _V1_PENDING).exists():
         return False
-    with (out / ".restore.lock").open("a+b") as lock:
+    with open(out / ".restore.lock", "a+b", opener=owner_only_opener) as lock:
         with platform_compat.file_lock(lock.fileno(), required=True, wait=False):
             try:
                 _, journal = _v1_journal(db_path)
@@ -711,7 +711,7 @@ def _apply_pending_v1_restore(db_path: Path) -> str | None:
     out, journal = _v1_journal(db_path)
     if journal is None:
         return None
-    with (out / ".restore.lock").open("a+b") as lock:
+    with open(out / ".restore.lock", "a+b", opener=owner_only_opener) as lock:
         with platform_compat.file_lock(lock.fileno(), required=True, wait=False):
             _, journal = _v1_journal(db_path)
             if journal is None:

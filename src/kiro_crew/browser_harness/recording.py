@@ -384,7 +384,9 @@ class RecordingStore:
             return root
 
     def _ensure_dir(self, path: Path) -> None:
-        path.mkdir(mode=_DIR_MODE, parents=True, exist_ok=True)
+        from kiro_crew.owner_only_files import mkdirs_owner_only
+
+        mkdirs_owner_only(path)
         if path.is_symlink():
             raise OSError(f"refusing a symlinked recording directory: {path}")
         try:

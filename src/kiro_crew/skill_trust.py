@@ -38,6 +38,7 @@ from kiro_crew import platform_compat
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.config.paths import config_dir
+from kiro_crew.owner_only_files import OWNER_ONLY_FILE_MODE
 from kiro_crew.sel import sel
 
 logger = logging.getLogger(__name__)
@@ -457,7 +458,7 @@ def _locked_store(*, exclusive: bool = True) -> Iterator[None]:
     # contract is explicitly to degrade rather than break a settings page.
     try:
         lock_path = _trust_dir() / (_STORE_FILENAME + ".lock")
-        lock_path.touch(exist_ok=True)
+        lock_path.touch(mode=OWNER_ONLY_FILE_MODE, exist_ok=True)
         # "r+" not "r": Windows msvcrt.locking needs write access on the fd, and a
         # read-only handle degrades the lock to a silent no-op.
         handle = open(lock_path, "r+")

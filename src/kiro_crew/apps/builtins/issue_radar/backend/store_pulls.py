@@ -65,7 +65,7 @@ def _pulls_cache_lock(owner: str, repo: str, root: Path | None, state: str):
     path = pulls_cache_path(owner, repo, root, state)
     path.parent.mkdir(parents=True, exist_ok=True)
     lock_path = path.with_suffix(".json.lock")
-    lock_path.touch(exist_ok=True)
+    lock_path.touch(mode=0o600, exist_ok=True)
     with open(lock_path, "r+") as fd:
         with platform_compat.file_lock(fd.fileno(), exclusive=True):
             yield

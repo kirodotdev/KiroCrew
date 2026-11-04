@@ -68,7 +68,7 @@ def _config_lock(root: Path | None = None):
     that race, so every config RMW below holds this exclusive lock across the
     whole read→mutate→atomic-write."""
     lock_path = data_dir(root) / "config.json.lock"
-    lock_path.touch(exist_ok=True)
+    lock_path.touch(mode=0o600, exist_ok=True)
     with open(lock_path, "r+") as fd:
         with platform_compat.file_lock(fd.fileno(), exclusive=True):
             yield

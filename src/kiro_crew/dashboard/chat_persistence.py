@@ -145,6 +145,7 @@ from kiro_crew.history import (  # noqa: F401
 )
 from kiro_crew.memory_stores import UnknownMemoryStore, named_store_or_empty  # noqa: F401
 from kiro_crew.messaging.link import is_channel_session_key
+from kiro_crew.owner_only_files import mkdirs_owner_only
 from kiro_crew.platform.context import redact_log_via_context
 from kiro_crew.platform_compat import file_lock
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls  # noqa: F401
@@ -346,7 +347,7 @@ def _remember_reasoning_effort_for_restore(level: str) -> None:
     directory = config_dir() / _VALIDATED_EFFORT_DIR
     if directory.parent.is_symlink():
         raise OSError("validated effort parent is a symlink")
-    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    mkdirs_owner_only(directory)
     if directory.is_symlink():
         raise OSError("validated effort directory is a symlink")
     path = _effort_marker_path(directory, level)

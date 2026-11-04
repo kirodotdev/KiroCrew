@@ -572,7 +572,7 @@ def provision_app_deps(app_name: str, root: Path) -> str:
             # macOS; the shared helper elects one creator, then lets contenders
             # open its existing inode, and never recreates a lock that
             # disappears before the reopen.
-            lfd = platform_compat.open_create_or_existing(lock_name, lflags, 0o644, dir_fd=pin.fd)
+            lfd = platform_compat.open_create_or_existing(lock_name, lflags, 0o600, dir_fd=pin.fd)
             with os.fdopen(lfd, "r+") as lf:
                 with platform_compat.file_lock(lf.fileno(), exclusive=True):
                     provision_error = _provision_app_deps_locked(app_name, root, pin)

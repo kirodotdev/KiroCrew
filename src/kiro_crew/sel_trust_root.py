@@ -29,6 +29,7 @@ from typing import TYPE_CHECKING
 
 from kiro_crew import platform_compat
 from kiro_crew.atomic_write import atomic_write
+from kiro_crew.owner_only_files import mkdirs_owner_only
 
 if TYPE_CHECKING:
     from kiro_crew.sel import SecurityEvent, SecurityEventLog
@@ -99,8 +100,8 @@ def _load_or_create_hmac_key(self: SecurityEventLog) -> bytes:
                 key_path = legacy_path
             else:
                 raise
-    # Owner-only trust dir. mkdir's mode is umask-filtered and ignored when
-    # the dir already exists, so chmod_safe re-asserts 0o700 every init
+    # Owner-only trust dir. The creation mode is ignored when the dir
+    # already exists, so chmod_safe re-asserts 0o700 every init
     # (fail-soft: a read-only FS must not take down SecurityEventLog init;
     # Windows relies on the key FILE's owner-only DACL below). Creation
     # failure itself is fail-soft too: a legacy install on a read-only
@@ -108,7 +109,7 @@ def _load_or_create_hmac_key(self: SecurityEventLog) -> bytes:
     # location, not crash before the migration fallback can run.
     if key_path != legacy_path:
         try:
-            trust_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+            mkdirs_owner_only(trust_dir)
         except OSError:
             if legacy_path.exists():
                 logger.warning(
