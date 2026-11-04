@@ -27,6 +27,7 @@ from kiro_crew.hooks import (
     ToolHookResult,
     hook_gate_kwargs,
     identity_grant_covers_child,
+    unattended_turn,
 )
 from kiro_crew.name_grant import log_decline, shell_command_for_event, should_log_decline
 from kiro_crew.permission_floor import OUTCOME_REJECTED_TRANSPORT_FLOOR
@@ -536,28 +537,32 @@ async def _decide_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CO
         # so the security gate evaluates what actually executes.
         # event.title may be an LLM-authored description that hides
         # a dangerous command (see HookManager.on_tool_call).
-        tool_result = await run_in_tool_gate_pool(
-            state.context_builder.hooks.on_tool_call,
-            event.title,
-            on_queue_timeout=hook_gate_busy,
-            session_key=session_key,
-            agent=slot.agent or "",
-            app=slot._app or "",
-            **hook_gate_kwargs(event),
-            # The RESOLVED agent (what actually served the turn), not
-            # slot.agent — that is an alias resolve_agent_bindings
-            # maps to a concrete kiro agent, so it must never decide
-            # which builtin app an agent belongs to.
-            resolved_agent=read_effective_agent(client),
-            # The slot's Reads approval mode, so the gate's read-only
-            # tier may prove one of Kiro Crew's OWN read-only MCP
-            # tools by its trusted identity (``@kirocrew-core/
-            # memory_recall`` and its siblings). A surface fact, like
-            # ``classifier_only``: it unlocks that one proof and
-            # nothing else, and the auto-approve it yields walks the
-            # same hook branch below -- PreToolUse hooks and all.
-            trust_reads=bool(slot._trust_reads),
-        )
+        # A monitor wake (the loop's own delivered turn, set only by the
+        # dispatch) runs with nobody watching: a governance check that cannot
+        # be evaluated refuses the call instead of allowing it.
+        with unattended_turn(bool(turn._directive_self_wake)):
+            tool_result = await run_in_tool_gate_pool(
+                state.context_builder.hooks.on_tool_call,
+                event.title,
+                on_queue_timeout=hook_gate_busy,
+                session_key=session_key,
+                agent=slot.agent or "",
+                app=slot._app or "",
+                **hook_gate_kwargs(event),
+                # The RESOLVED agent (what actually served the turn), not
+                # slot.agent — that is an alias resolve_agent_bindings
+                # maps to a concrete kiro agent, so it must never decide
+                # which builtin app an agent belongs to.
+                resolved_agent=read_effective_agent(client),
+                # The slot's Reads approval mode, so the gate's read-only
+                # tier may prove one of Kiro Crew's OWN read-only MCP
+                # tools by its trusted identity (``@kirocrew-core/
+                # memory_recall`` and its siblings). A surface fact, like
+                # ``classifier_only``: it unlocks that one proof and
+                # nothing else, and the auto-approve it yields walks the
+                # same hook branch below -- PreToolUse hooks and all.
+                trust_reads=bool(slot._trust_reads),
+            )
         if tool_result.action == TOOL_DENY:
             # Surface WHY: carry the deny reason into the pill so
             # the user sees "Blocked by security policy: ..." rather

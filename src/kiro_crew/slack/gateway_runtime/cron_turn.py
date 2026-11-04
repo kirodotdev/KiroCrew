@@ -260,6 +260,10 @@ async def _cron_run_sequence(
                     client,
                     full_message,
                     job_name=job.name,
+                    # The gate resolves this session's governance profile, as it
+                    # does for a chat turn, and refuses when it cannot evaluate.
+                    session_key=agent_session_key,
+                    unattended=True,
                     approval_policy=(
                         ToolApprovalPolicy.AUTO_APPROVE
                         if job.approval_mode == "auto"
@@ -658,6 +662,10 @@ async def _cron_run_single(
             client,
             full_message,
             job_name=job.name,
+            # The gate resolves this session's governance profile, as it does
+            # for a chat turn, and refuses when it cannot evaluate.
+            session_key=session_key,
+            unattended=True,
             approval_policy=(
                 ToolApprovalPolicy.AUTO_APPROVE
                 if job.approval_mode == "auto"
