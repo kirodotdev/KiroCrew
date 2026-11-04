@@ -37,7 +37,7 @@ import { findReport, type ErrorReport } from '../../utils/errorReport'
 import { useAppDispatch, useAppSelector } from '../../store'
 import { selectSlotStreamState } from '../../store/chatSlice'
 import { useLanguage } from '../../i18n/LanguageProvider'
-import { markSlotRead } from '../../store/dashboardSlice'
+import { markSlotRead, confirmOrphanUnread } from '../../store/dashboardSlice'
 import { selectSlotLastTs } from '../../store/slotLastTs'
 import { emitSlotRead, flushSlotRead } from '../../lib/slotReadRelay'
 import { setViewedThreadSlot, clearViewedThreadSlot } from '../../lib/viewedThread'
@@ -505,7 +505,10 @@ export function useMembersPageThreadView({
     // lit, and a visible view here retires that too. Throttled per slot by
     // the relay module; watermarked at the slot's newest known message ts.
     if (activeSlot && threadShown) {
-      if (activeSlotUnread) dispatch(markSlotRead(activeSlot))
+      if (activeSlotUnread) {
+        dispatch(markSlotRead(activeSlot))
+        void dispatch(confirmOrphanUnread(activeSlot))
+      }
       emitSlotRead(activeSlot, activeSlotLastTs)
     }
   }, [activeSlot, activeSlotUnread, threadShown, activeSlotLastTs, dispatch])

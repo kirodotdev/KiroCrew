@@ -13,7 +13,7 @@ import type { SessionColorMode, PaletteName, DefaultColorSetting, IntensityName 
 import { isChatPageSurface } from '../utils/channelOrigin'
 import { slotListHoldTest } from '../utils/slotListHold'
 import { crewModeEnabled } from '../lib/crewMode'
-import { MANUAL_UNREAD, _relayUnreadToParent, clearSharedUnreadIfCovered, crewMemberKeys, drainUnreadKeys, dropQueuedSharedUnreadCoveredBy, hasUnreadRelayHold, heldOrphanTest, persistManualSentinels, persistSharedUnread, queueSharedUnread, readCovers, relayUnreadCount, relayUnreadIfHolding, relayedUnreadKeys, restoreUnreadBadges, restoreUnreadSince } from './dashboard/unread'
+import { MANUAL_UNREAD, _relayUnreadToParent, clearSharedUnreadIfCovered, crewMemberKeys, drainUnreadKeys, dropQueuedSharedUnreadCoveredBy, hasUnreadRelayHold, heldOrphanTest, persistManualSentinels, persistSharedUnread, queueSharedUnread, readCovers, relayUnreadCount, relayUnreadIfHolding, relayedUnreadKeys, restoreUnreadBadges, restoreUnreadSince, retireSharedUnreadIfUnchanged, sharedUnreadWatermark } from './dashboard/unread'
 export { selectPersonSlots } from './personSlots'
 
 /** A close tombstone entry (see `applySlots`). */
@@ -271,6 +271,34 @@ const initialState: DashboardState = {
 }
 
 export const fetchSlots = createAsyncThunk('dashboard/fetchSlots', () => api.chatSlots())
+
+/** After a local read, check whether the shared watermark that read could
+ *  not cover is an ORPHAN: newer than every saved row the gateway has for an
+ *  idle session. Builds before #15014 left such records (the watermark was a
+ *  turn's unsaved `done` row, which a gateway restart drops). No read can
+ *  ever cover one, so without this check the dot comes back on every relayed
+ *  read and every reload.
+ *
+ *  This window's own slot row cannot decide it: it may lag a sibling that
+ *  just watermarked a real reply. So the gateway is asked, AFTER the
+ *  watermark is read: a real reply is a saved row the gateway already holds,
+ *  so its fresh `last_ts` covers it. The fulfilled reducer then removes the
+ *  record only if it still holds that same watermark. Does nothing (and
+ *  sends nothing) when the read already cleared the record. */
+export const confirmOrphanUnread = createAsyncThunk(
+  'dashboard/confirmOrphanUnread',
+  async (slot: string): Promise<{ slot: string; watermark: string } | null> => {
+    const watermark = sharedUnreadWatermark(slot)
+    if (watermark === undefined) return null
+    let rows: ChatSlot[]
+    try { rows = await api.chatSlots() } catch { return null }
+    const row = Array.isArray(rows) ? rows.find(r => r.key === slot) : undefined
+    // Unknown or mid-turn: rows still being written may cover it soon.
+    if (!row || row.running) return null
+    if (readCovers(row.last_ts, watermark)) return null // last-ts: the gateway's fresh reply, not this window's row
+    return { slot, watermark }
+  },
+)
 
 /** Switch the approval mode, carrying a policy refusal back to the caller.
  *
@@ -1768,6 +1796,19 @@ const dashboardSlice = createSlice({
         settleUnlistedMembers(state, action.meta?.requestId, null)
         settleSlotFetch(state, action.meta?.requestId)
         if (!(state.slotFetchesInFlight ?? []).length) state.slotsFetchFailed = true
+      })
+      .addCase(confirmOrphanUnread.fulfilled, (state, action) => {
+        if (!action.payload) return
+        const { slot, watermark } = action.payload
+        if (!retireSharedUnreadIfUnchanged(slot, watermark)) return
+        // The relayed read's echo may already have re-lit this window's badge
+        // from the orphan. Clear only that badge: one guarded by any other
+        // watermark (a newer arrival, a manual reminder) stays.
+        if (state.unreadSince?.[slot] !== watermark) return
+        delete state.unreadSince[slot]
+        if (!state.unreadSlots.includes(slot)) return
+        state.unreadSlots = state.unreadSlots.filter(k => k !== slot)
+        _relayUnreadToParent(JSON.stringify(relayedUnreadKeys(state)))
       })
       .addCase(changeApprovalMode.fulfilled, (state, action) => { state.approvalMode = action.payload })
       // The created slot joins the list on the SAME action that activates it
