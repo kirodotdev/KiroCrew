@@ -532,7 +532,11 @@ class TestHookManagerWatchConfig:
     def test_an_unchanged_auto_approve_set_leaves_no_audit_row(self) -> None:
         from kiro_crew import hooks as hooks_mod
 
-        manager = hooks_mod.HookManager(hooks_mod.HooksConfig.from_dict(_hooks_flat_section()))
+        # Same approval set, different auto_replies: the reload really changes
+        # the live config, yet the approval set it audits is unchanged.
+        manager = hooks_mod.HookManager(
+            hooks_mod.HooksConfig.from_dict({"auto_approve_tools": ["fs_read"]})
+        )
         manager.watch_config()
         cfg = KiroCrewConfig()
         cfg.hooks = _hooks_flat_section()  # type: ignore[assignment]
@@ -542,6 +546,8 @@ class TestHookManagerWatchConfig:
             patch.object(hooks_mod, "load_denied_commands_state", return_value=_keystone_state()),
         ):
             manager._on_config_change(_change(cfg, "hooks.auto_replies"))
+        assert [h.pattern for h in manager._config.auto_replies] == ["ping"]
+        assert manager._config.auto_approve_tools == ["fs_read"]
         sel_obj.log_api_access.assert_not_called()
 
 

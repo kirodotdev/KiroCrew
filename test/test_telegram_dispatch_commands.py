@@ -240,6 +240,7 @@ class TestCommandDispatchTable:
     def test_a_forum_command_threads_into_its_topic(self) -> None:
         d, _cli, _sess = _dispatcher({7}, allow_forum=True, allowed_forum_chat_ids=[-100999])
         mocks = {name: AsyncMock() for name in self._HANDLERS}
+        mocks["_handle_voice"] = AsyncMock(side_effect=d._handle_voice)
         for name, mock in mocks.items():
             setattr(d, name, mock)
         for text in ("/voice on", "/spawn x", "/task run s", "/yolo on", "/cron list"):
@@ -257,6 +258,8 @@ class TestCommandDispatchTable:
                 )
             )
         route = ("forum", "-100999:4")
+        # The real /voice handler stored the choice under the topic's own route.
+        assert d._voice_pref == {route: True}
         assert mocks["_handle_voice"].await_args.args == (route, -100999, "on", 4)
         assert mocks["_handle_spawn"].await_args.kwargs["thread"] == 4
         assert mocks["_handle_task"].await_args.kwargs["thread"] == 4

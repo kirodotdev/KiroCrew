@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import sys
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -166,12 +167,18 @@ class TestFireToolHooks:
         assert "tool_name" not in event
 
     @pytest.mark.asyncio
-    async def test_fire_exception_swallowed(self, hook_store: ScriptHookStore):
+    async def test_fire_exception_swallowed(self, hook_store: ScriptHookStore, caplog):
+        caplog.set_level(logging.DEBUG, logger="kiro_crew.hooks")
         with patch.object(
             hook_store, "fire", new_callable=AsyncMock, side_effect=RuntimeError("boom"),
         ):
-            # Should not raise
             await fire_tool_hooks(hook_store, "ReadFile")
+        swallowed = [
+            r for r in caplog.records
+            if r.name == "kiro_crew.hooks" and r.getMessage() == "PreToolUse hook error"
+        ]
+        assert len(swallowed) == 1
+        assert str(swallowed[0].exc_info[1]) == "boom"
 
     @pytest.mark.asyncio
     async def test_none_tool_input_skipped(self, probe):

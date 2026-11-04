@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -817,6 +818,7 @@ async def test_an_unattended_restore_survives_a_chained_promotion() -> None:
     provider._client._engine_fallback.apply(provider._client, _chained_promotions())
     await probe_fallback_restore(provider)
     provider.set_model.assert_awaited_once_with("primary")
+    assert getattr(provider, TURN_FALLBACK_ATTR) is None
 
 
 @pytest.mark.asyncio
@@ -1005,6 +1007,7 @@ async def test_the_next_cold_start_requests_the_model_the_engine_promoted(
     )
     await _drive(state, slot)
     assert state.sessions.get_or_create.await_args.kwargs["model"] == A
+    assert slot.model == (B if promoted else A)
     # The session is gone (respawn, eviction); the next turn starts a new one.
     state.sessions.get_or_create.reset_mock()
     await _drive(state, slot)
@@ -1216,14 +1219,18 @@ def test_walk_outcome(stop_reason: str, cancelled: bool, outcome: str) -> None:
     assert walk_outcome(stop_reason, cancelled=cancelled) == outcome
 
 
+def _notice_rows(slot: Any) -> list[tuple[str, str]]:
+    return [(m["content"], m["cls"]) for m in slot.messages if m["role"] == "notice"]
+
+
 def test_dashboard_finish_appends_one_notice_once() -> None:
-    slot, walk = _slot(), _walk(_hop(cause="unavailable"))
+    slot, walk = _runner_slot(), _walk(_hop(cause="unavailable"))
     kw = dict(stop_reason=STOP_REASON_END_TURN, cancelled=False)
     dash.finish_engine_fallback(slot, walk, **kw)
     dash.finish_engine_fallback(slot, walk, **kw)
-    slot.append.assert_called_once_with(
-        "notice", "model-a was unavailable; answered by model-b for this turn.", "msg msg-info"
-    )
+    assert _notice_rows(slot) == [
+        ("model-a was unavailable; answered by model-b for this turn.", "msg msg-info")
+    ]
 
 
 @pytest.mark.parametrize("engine", ["kas", "v2"])
@@ -1231,33 +1238,32 @@ def test_a_promotion_with_a_refusal_terminal_reads_as_no_answer(engine: str) -> 
     # The promoted target refused too, so the terminal is refusal. A promotion
     # is not an answer: KAS pins at move time, and a V2 target that refuses
     # after the hop leaves a refusal the fold keeps (see the unfold tests).
-    slot = _slot()
+    slot = _runner_slot()
     walk = _walk(
         _hop(engine=engine),
         ModelFallbackNotice(A, B, "refused", promoted=True, engine=engine),  # type: ignore[arg-type]
     )
     dash.finish_engine_fallback(slot, walk, stop_reason=STOP_REASON_REFUSAL, cancelled=False)
-    slot.append.assert_called_once_with(
-        "notice",
-        "model-a refused. No model answered. model-b is now this conversation's model.",
-        "msg msg-info",
-    )
+    assert _notice_rows(slot) == [
+        (
+            "model-a refused. No model answered. model-b is now this conversation's model.",
+            "msg msg-info",
+        )
+    ]
 
 
 @pytest.mark.parametrize("engine", ["kas", "v2"])
 def test_a_recovered_turn_reads_as_answered(engine: str) -> None:
     # The target answered, so the terminal is end_turn on both engines.
-    slot = _slot()
+    slot = _runner_slot()
     walk = _walk(
         _hop(engine=engine),
         ModelFallbackNotice(A, B, "refused", promoted=True, engine=engine),  # type: ignore[arg-type]
     )
     dash.finish_engine_fallback(slot, walk, stop_reason=STOP_REASON_END_TURN, cancelled=False)
-    slot.append.assert_called_once_with(
-        "notice",
-        "model-a refused; answered by model-b, now this conversation's model.",
-        "msg msg-info",
-    )
+    assert _notice_rows(slot) == [
+        ("model-a refused; answered by model-b, now this conversation's model.", "msg msg-info")
+    ]
 
 
 def test_provider_passthrough_preserves_the_fallback_payload() -> None:
