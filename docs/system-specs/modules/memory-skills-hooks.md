@@ -2722,7 +2722,9 @@ self-contained file with no WAL to pair.
   operator's `memory.pre-upgrade.db`, is not a backup to retention: `prune_backups`,
   the interval guard and `newest_backup` (restore's default choice) read
   `list_backups(..., stamped_only=True)`, so it is never deleted, never counted
-  toward `keep` and never restored without `--from`. The interval guard measures
+  toward `keep` and never restored without `--from`. The store picker's
+  `backup_count` and `newest_backup` (`GET /api/memory/stores`) read the same view,
+  so such a file neither adds to the count nor hides the newest real backup. The interval guard measures
   from the newest backup stamped at or before the current time and logs a warning
   for any stamped after it (taken under a wrong clock): a future stamp neither keeps
   every pass skipping until the clock catches up, nor turns the guard off so that
