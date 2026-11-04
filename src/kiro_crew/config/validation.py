@@ -347,6 +347,25 @@ def _apply_field_default(data: dict, dot_path: str) -> bool:
     return False
 
 
+#: The spellings :func:`~kiro_crew.config.fields._coerce_bool` reads as a bool.
+_BOOL_SPELLINGS = frozenset({"true", "false", "1", "0", "yes", "no", "on", "off"})
+
+
+def _quoted_bool_hint(expected: object, value: object, sensitive: bool) -> str:
+    """The fix to name when a boolean field holds a quoted boolean such as ``"false"``.
+
+    The value is still refused (the setting reads as its default); the hint only
+    tells the operator why their ``"false"`` did nothing and how to write it.
+    Empty for any other mismatch, and for a sensitive path, whose value is masked.
+    """
+    types = expected if isinstance(expected, list) else [expected]
+    if sensitive or "boolean" not in types or not isinstance(value, str):
+        return ""
+    if value.strip().lower() not in _BOOL_SPELLINGS:
+        return ""
+    return "; a quoted boolean is ignored: write true or false without quotes to set it"
+
+
 def _coerce_legacy_numeric_values(data: dict, schema: dict) -> None:
     """Normalize legacy numeric strings before JSON Schema validation.
 
@@ -814,12 +833,13 @@ def validate_config_data(data: dict) -> dict:
                 actual = _actual_type_name(value)
                 removed = _apply_field_default(data, dot_path)
                 logger.warning(
-                    "Config: type mismatch at '%s': " "expected %s, got %s (value: %s); %s",
+                    "Config: type mismatch at '%s': " "expected %s, got %s (value: %s); %s%s",
                     dot_path,
                     expected,
                     actual,
                     display_val,
                     "using default" if removed else "value kept (validated by its consumer)",
+                    _quoted_bool_hint(expected, value, sensitive),
                 )
             else:
                 # Generic validation error
