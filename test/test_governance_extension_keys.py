@@ -306,3 +306,30 @@ def test_a_null_manifest_version_is_refused_by_a_deny_list(
     _install_policy(monkeypatch, {"app_versions": {"mode": "deny", "deny": ["demoapp@2.*"]}})
     manifest = AppManifest.from_dict({"name": "demoapp", "version": None})
     assert app_admission_denied("demoapp", manifest=manifest, action="install")
+
+
+def test_theme_install_denied_resolves_the_host_profile(monkeypatch):
+    """A surface:host profile binds theme installs too: the query carries HOST_SESSION_KEY.
+
+    An empty key would classify as surface ``unknown`` and match no profile, so a
+    host profile that turns ``capabilities.theme_install`` off would be skipped
+    for both the Themes page and a marketplace listing that carries a theme.
+    """
+    from kiro_crew.platform import governance_profiles as gp
+    from kiro_crew.platform.governance import Decision
+
+    seen = {}
+
+    def _capture(scope, member, **kwargs):
+        seen.update(scope=scope, session_key=kwargs.get("session_key"))
+        seen["fail_closed"] = kwargs.get("fail_closed")
+        return Decision(False, "host profile denies theme installs", rule="profile")
+
+    monkeypatch.setattr(gp, "governance_permits", _capture)
+    reason = eg.theme_install_denied("capability_market_apply", audit=lambda *a, **k: None)
+    assert reason == "host profile denies theme installs"
+    assert seen == {
+        "scope": eg.THEME_INSTALL_SCOPE,
+        "session_key": gp.HOST_SESSION_KEY,
+        "fail_closed": True,
+    }

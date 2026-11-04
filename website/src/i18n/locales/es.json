@@ -6711,7 +6711,7 @@
         "commands_meaning": "Ejecuta estos programas cuando un agente usa el elemento que los declara. La versión de un comando es la del propio programa, no la de la publicación.",
         "network_meaning": "Puede conectarse a estos hosts.",
         "files_meaning": "Puede leer o cambiar estos archivos.",
-        "secrets_meaning": "No se lee nada hasta que tú defines estos valores, por ejemplo en tu shell. Un elemento los lee solo mientras un agente lo usa, y Kiro Crew no los guarda.",
+        "secrets_meaning": "No se lee nada hasta que tú defines estos valores, por ejemplo en tu shell. Un elemento los lee solo mientras un agente lo usa, y {{productName}} no los guarda.",
         "kind_skill": "Habilidad",
         "kind_mcp": "Servidor MCP",
         "kind_theme": "Tema",
