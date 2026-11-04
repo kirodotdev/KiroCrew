@@ -87,12 +87,8 @@ class TestGetParentRuntime:
 class TestIsCcProvider:
     """Which HOME tree a session's files live in, asked as a capability.
 
-    ``_is_cc_provider`` reads ``SessionCapabilities.provider_seam`` through
-    ``capabilities_of``, so these tests hand it a provider carrying a real
-    capability record instead of patching a module-level predicate. The third case
-    is the one a bare attribute read gets wrong: a shape that is not a provider
-    must answer False, which is what the ``isinstance`` gate in ``capabilities_of``
-    buys.
+    The providers carry a real capability record. The third case is a non-provider shape,
+    which must answer False through ``capabilities_of``'s ``isinstance`` gate.
     """
 
     @staticmethod

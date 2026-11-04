@@ -56,12 +56,8 @@ _no_tree_behind_the_leader = subagent_force_stop_audit_helpers._no_tree_behind_t
 class TestReaperRecordsAFailedKill:
     """``reaper_force_kill`` never says ``reaped`` for a process the kill left alive.
 
-    ``_sigkill_session`` raises nothing -- the reap must still finish the
-    teardown it owns -- but it REPORTS what stopped the kill: the broadcast
-    guard's refusal of the pid, or the error the kill raised. ``_force_reap``
-    carries that into the run's error text (``…; kill failed: <reason>``) and
-    audits ``failed``. A swallowed refusal leaves only a log line and an audit
-    that reads ``reaped`` while the process keeps running.
+    ``_sigkill_session`` raises nothing (the reap must still finish its teardown) but reports
+    what stopped the kill, which ``_force_reap`` appends as ``…; kill failed: <reason>``.
     """
 
     @pytest.mark.asyncio
@@ -424,11 +420,8 @@ def _orphan_on_disk(agent_id: str, pid: int) -> SubagentManager:
 class TestOrphanReconcileRecordsAFailedKill:
     """``orphan_reconcile_kill`` never says ``killed`` for a process the kill left standing.
 
-    The restart reconciliation is the third caller of a best-effort kill (after
-    the reaper and the run's own teardown); the defect shape these tests pin is
-    a ``_kill_orphan_pid`` that returns nothing and swallows every error while
-    its caller audits ``killed`` regardless -- the same shape the two other
-    paths had.
+    The restart reconciliation is the third caller of a best-effort kill; ``_kill_orphan_pid``
+    must report its errors rather than let the caller audit ``killed`` regardless.
     """
 
     @pytest.mark.asyncio
@@ -833,16 +826,9 @@ class TestTheOrphanKillLeavesTheLoopRunning:
 class TestTheKillFailureStaysInsideTheErrorBound:
     """The reap retains a bounded ``info.error`` through the shared ``with_kill_failure``.
 
-    Every writer of ``info.error`` holds it to ``MAX_ERROR_DETAIL_LEN`` -- the
-    one bound in ``kiro_crew.process_identity`` the sub-agent record and the cron
-    job's ``last_error`` share -- at the point of retention, and the record, the
-    tombstone and the report all carry the string as is. The kill's reason is
-    not this code's to size: a Windows tree drain that fails carries the tree's
-    own detail, one line per process the run spawned, and the error it is
-    appended to may already sit at the bound. The joining is the shared home's
-    (its own tests pin the helper's arithmetic: the reserve, the trim, the
-    verbatim short case); what is pinned HERE is that the sub-agent reap goes
-    through it.
+    ``MAX_ERROR_DETAIL_LEN`` is shared with the cron job's ``last_error``. A failed Windows
+    tree drain adds one line per process, and the error may already sit at the bound. The
+    helper's arithmetic has its own tests; this pins that the reap goes through it.
     """
 
     @pytest.mark.asyncio
