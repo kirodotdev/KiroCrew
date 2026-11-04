@@ -406,12 +406,23 @@ def resolve_slot(self: DashboardState, name: str) -> _ChatSlot | None:
     return _registry_for(self).resolve_slot(self, name, _CHAT_N_RE.fullmatch)
 
 
-def link_slack(self: DashboardState, slot_name: str, thread_ts: str, channel_id: str) -> None:
-    """Update a slot's Slack link state and persist to SessionStore."""
+def link_slack(
+    self: DashboardState, slot_name: str, thread_ts: str, channel_id: str, *, fresh: bool = False
+) -> None:
+    """Update a slot's Slack link state and persist to SessionStore.
+
+    Raises ``AnchorHandoffRefused`` when *thread_ts* is a Slack code channel's
+    anchor bound to another slot (or the code-channel store cannot be read and
+    the thread is not *fresh*, a message just posted): see
+    ``slack.code_channels.binding.check_anchor_handoff``. Nothing is changed then.
+    """
     slot = self._slots.get(slot_name)
     if not slot:
         logger.warning("slack link skipped: no live slot %r (chat closed?)", slot_name)
         return
+    from kiro_crew.slack.code_channels.binding import check_anchor_handoff
+
+    check_anchor_handoff(thread_ts, slot_name, fresh=fresh)
     # A thread handoff is ONE action with TWO persisted writes: the previous
     # owner's link is cleared and this slot's is claimed. Each write rewrites
     # the whole session map, so as two separate writes they are separately

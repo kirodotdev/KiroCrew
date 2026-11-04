@@ -331,6 +331,16 @@ async def create_bound_session(
         except BaseException:
             _retract(state, slot, anchor_ts, _sync_dashboard_slots)
             raise
+        # Until *before_publish* stored the binding, the anchor guard
+        # (:func:`check_anchor_handoff`) had nothing to match, so a link that
+        # landed in that window may hold the anchor now. The binding is stored:
+        # take the anchor back, which releases that slot, and every later link
+        # of it is refused.
+        if anchor_ts and state._slack_to_slot.get(anchor_ts) != slot.key:
+            logger.warning("code channel: anchor relinked during the bind; taking it back")
+            state._link_slack_persisted(slot, slot.key, anchor_ts, channel_id)
+            if getattr(state, "sessions", None) is not None:
+                await state.sessions.aflush()
         state.push_slots_update()
     return slot
 
@@ -484,6 +494,73 @@ def active_binding(channel_id: str | None, thread_ts: str | None = None) -> Bind
     if thread_ts is not None and thread_ts != binding.anchor_ts:
         return None
     return binding
+
+
+class AnchorHandoffRefused(Exception):
+    """A link would hand a code channel's anchor thread to another slot.
+
+    ``reason`` is ``"anchor"`` (the thread is bound to another slot) or
+    ``"store_unavailable"`` (the store is not loaded or could not be read, so a
+    binding may be hidden and the link is refused fail-closed).
+    """
+
+    def __init__(self, reason: str, thread_ts: str) -> None:
+        super().__init__(f"code channel anchor handoff refused ({reason}): {thread_ts}")
+        self.reason = reason
+        self.thread_ts = thread_ts
+
+
+def anchor_owner_by_ts(thread_ts: str | None) -> str | None:
+    """The slot key whose code channel binding has *thread_ts* as its anchor.
+
+    Matched by timestamp alone, whatever channel a caller names: the link
+    writer (``DashboardState.link_slack``) keys a thread by its ts, so the
+    guard must too. Lock-free and never the cold load; see
+    :func:`check_anchor_handoff` for the loaded/readable precondition.
+    """
+    if not thread_ts:
+        return None
+    cc = store()
+    if not cc.loaded:
+        return None
+    for binding in cc.bindings():
+        if binding.anchor_ts == thread_ts and binding.session_key:
+            return binding.session_key
+    return None
+
+
+def check_anchor_handoff(thread_ts: str | None, slot_key: str, *, fresh: bool = False) -> None:
+    """Raise :class:`AnchorHandoffRefused` unless *slot_key* may own *thread_ts*.
+
+    The one chokepoint every public Slack-thread link passes through. A code
+    channel IS its binding's session (Stop and button answers follow the
+    binding), so its anchor thread is never linked to another slot. Read
+    without the feature toggle: a binding outlives a switch-off.
+
+    A cold store is loaded here as a backstop (once per process; the async
+    callers load it off the loop first, and Slack startup preloads it), so a
+    link before that load can never read "no binding". A store that fails to
+    load or cannot be read may be hiding the binding: that fails closed,
+    except for a *fresh* thread -- a message this gateway just posted, whose ts
+    no binding can hold -- so a damaged store does not stop every new link.
+    """
+    if not thread_ts:
+        return
+    cc = store()
+    try:
+        if not cc.loaded:
+            cc.load()
+        unreadable = cc.unreadable
+    except Exception:
+        logger.warning("code channel store load failed; refusing the link", exc_info=True)
+        unreadable = True
+    if unreadable:
+        if fresh:
+            return
+        raise AnchorHandoffRefused("store_unavailable", thread_ts)
+    owner = anchor_owner_by_ts(thread_ts)
+    if owner is not None and owner != slot_key:
+        raise AnchorHandoffRefused("anchor", thread_ts)
 
 
 def mirror_post_thread(channel_id: str | None, thread_ts: str | None) -> str | None:

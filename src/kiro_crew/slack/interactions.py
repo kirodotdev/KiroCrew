@@ -374,6 +374,18 @@ async def dispatch(payload: dict) -> None:
             return
         try:
             slot = await _import_thread_to_slot(_orch.slack, ds, channel, thread_ts)
+        except AnchorHandoffRefused:
+            sel().log_tool_invocation(
+                session_key="",
+                agent="kirocrew",
+                source="slack",
+                tool_name="mc_link_dashboard",
+                tool_kind="interaction",
+                outcome="denied",
+                metadata={"user_id": user_id, "reason": "code_channel_anchor"},
+            )
+            await _orch.slack.post_message(channel, IMPORT_CODE_CHANNEL_NOTICE, thread_ts)
+            return
         except ChannelAgentMismatchError:
             sel().log_tool_invocation(
                 session_key="",
@@ -845,7 +857,8 @@ async def _handle_resume_choice(
         )
         if _orch.dashboard_state:
             slot_name = session_key.split(":", 1)[-1] if ":" in session_key else session_key
-            _orch.dashboard_state.link_slack(slot_name, link_ts, link_channel)
+            # A thread or DM header this resume just posted: a fresh ts.
+            _orch.dashboard_state.link_slack(slot_name, link_ts, link_channel, fresh=True)
 
         # Post last 5 messages as context
         try:
@@ -938,6 +951,8 @@ from kiro_crew.slack.interactions_options import _tell_user  # noqa: E402
 from kiro_crew.slack.interactions_options import _import_thread_to_slot  # noqa: E402
 from kiro_crew.slack.interactions_options import IMPORT_AGENT_MISMATCH_NOTICE  # noqa: E402
 from kiro_crew.slack.interactions_options import ChannelAgentMismatchError  # noqa: E402
+from kiro_crew.slack.interactions_options import IMPORT_CODE_CHANNEL_NOTICE  # noqa: E402
+from kiro_crew.slack.code_channels.binding import AnchorHandoffRefused  # noqa: E402
 from kiro_crew.slack.interactions_sessions import _handle_inline_stop  # noqa: E402
 from kiro_crew.slack.interactions_sessions import _handle_session_end  # noqa: E402
 from kiro_crew.slack.interactions_sessions import _handle_session_new  # noqa: E402

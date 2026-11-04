@@ -1561,7 +1561,7 @@ class TestResumeChoice:
         await ix._handle_resume_choice(
             _payload(), _choice(key="slack:slot9"), "C1", "m1", "U1", mode="dm"
         )
-        ds.link_slack.assert_called_once_with("slot9", "ts1", "D1")
+        ds.link_slack.assert_called_once_with("slot9", "ts1", "D1", fresh=True)
         assert _audit_ops(audit, "slack.session_resume") == [("allowed", "slack:slot9")]
 
     @pytest.mark.asyncio

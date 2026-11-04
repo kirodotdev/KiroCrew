@@ -730,6 +730,36 @@ class TestImportThreadToSlot:
         saved.assert_awaited_once_with(ds, slot)
         ds.push_slots_update.assert_called_once_with()
 
+    @pytest.mark.asyncio
+    async def test_a_code_channels_anchor_is_never_imported_into_a_new_slot(
+        self, saved: AsyncMock, tmp_path
+    ) -> None:
+        """Its thread is the binding's own session: refused before any slot."""
+        from kiro_crew.slack.code_channels.binding import AnchorHandoffRefused
+        from kiro_crew.slack.code_channels.store import Binding, CodeChannelStore, set_store
+
+        cc = CodeChannelStore(tmp_path / "cc.json")
+        cc.put_binding(
+            Binding(
+                channel_id="C0CODE",
+                team_id="T1",
+                session_key="owner",
+                anchor_ts="1700000000.000100",
+            )
+        )
+        set_store(cc)
+        try:
+            ds = _dashboard()
+            slack = MagicMock()
+            slack.fetch_thread_replies = AsyncMock(return_value=[{"user": "U1", "text": "hi"}])
+            with pytest.raises(AnchorHandoffRefused):
+                await ix._import_thread_to_slot(slack, ds, "C0CODE", "1700000000.000100")
+            ds.get_or_create_slot.assert_not_called()
+            ds.link_slack.assert_not_called()
+            saved.assert_not_awaited()
+        finally:
+            set_store(None)
+
 
 # ---------------------------------------------------------------------------
 # A code channel's button answers carry the clicker as the row's Slack sender

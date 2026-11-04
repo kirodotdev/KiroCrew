@@ -219,6 +219,11 @@ class CodeChannelStore:
         """Whether the file has been read, so a read here touches no disk."""
         return self._loaded
 
+    @property
+    def unreadable(self) -> bool:
+        """Whether the file existed but could not be read, so it reads as empty."""
+        return self._unreadable
+
     def load(self) -> None:
         """Read the file now (blocking; call it off the event loop)."""
         with self._lock:

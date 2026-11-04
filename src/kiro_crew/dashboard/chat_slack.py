@@ -385,6 +385,23 @@ def _audit_channel_pin_denial(session_key: str, operation: str) -> None:
     )
 
 
+def _anchor_link_error(exc: Exception) -> SlackLinkError:
+    """The HTTP refusal for a code-channel anchor guard (``AnchorHandoffRefused``)."""
+    if getattr(exc, "reason", "") == "store_unavailable":
+        return SlackLinkError(
+            503,
+            "code_channel_store_unavailable",
+            "Slack code channels could not be read, so linking an existing "
+            "thread is refused for now. Try again shortly.",
+        )
+    return SlackLinkError(
+        409,
+        "code_channel_anchor",
+        "This thread is a Slack code channel's own session; open that session "
+        "instead of linking another one to it.",
+    )
+
+
 async def link_slot_to_slack(
     state: DashboardState,
     slot: Any,  # _ChatSlot (avoids import cycle)
@@ -456,6 +473,28 @@ async def link_slot_to_slack(
                 permitted = False
             if not permitted:
                 raise SlackLinkError(403, "channel_not_permitted", "channel is not permitted")
+
+        # A code channel IS one session: its binding names it, and Stop and
+        # button answers follow the binding, so its anchor thread is never linked
+        # to another slot. ``link_slack`` enforces that for every writer
+        # (``check_anchor_handoff``, matched by ts whatever channel is named);
+        # it is asked here too, before any Slack write. The store is loaded off
+        # the loop first so the check never reads a cold store.
+        from kiro_crew.slack.code_channels.binding import (
+            AnchorHandoffRefused,
+            check_anchor_handoff,
+        )
+        from kiro_crew.slack.code_channels.store import store as code_channel_store
+
+        if existing_thread:
+            try:
+                await asyncio.to_thread(code_channel_store().load)
+            except Exception:
+                logger.warning("code channel store load failed", exc_info=True)
+            try:
+                check_anchor_handoff(existing_thread, slot.key)
+            except AnchorHandoffRefused as exc:
+                raise _anchor_link_error(exc) from None
 
         # A link hands the thread's replies to this slot, whether it binds an
         # existing thread or posts a new anchor. A channel pinned to an agent
@@ -567,14 +606,8 @@ async def link_slot_to_slack(
         _prior_owner_keys = slack_options_owner_keys_snapshot(state, thread_ts)
         _own_keys = {effective_session_key(slot), slot.key}
         _prior_keys = [k for k in _prior_owner_keys if k not in _own_keys]
-        for _prior_key in _prior_keys:
-            try:
-                await expire_slack_options(state, _prior_key)
-            except Exception:
-                logger.debug(
-                    "slack link: could not retire the previous owner's control",
-                    exc_info=True,
-                )
+        # The strike-through itself runs once the link has landed (below): a link
+        # refused at ``link_slack`` must not retire a control that keeps its owner.
 
         # Route through the ONE canonical link writer. ``link_slack`` sets the same
         # three slot fields and persists via ``set_slack_link``, but it ALSO
@@ -601,7 +634,7 @@ async def link_slot_to_slack(
             # `link_slack` writes the map inline on leaving its batch, so a failed
             # write can surface here as well as from the flush below; both leave
             # a binding only memory holds, and both take it back down.
-            state.link_slack(slot.key, thread_ts, target_channel)
+            state.link_slack(slot.key, thread_ts, target_channel, fresh=not existing_thread)
             # Persist before publishing: the map's writer is debounced, and everything
             # below -- the transcript backfilled into the thread, the slots push, the
             # `{ok, thread_ts}` answer -- tells the user the thread is linked. A gateway
@@ -610,12 +643,24 @@ async def link_slot_to_slack(
             # unlink routes; `link_slack`'s own slot redraw precedes this, and a redraw
             # the next push corrects is not a report the user acts on.)
             await state.sessions.aflush()
+        except AnchorHandoffRefused as exc:
+            # Refused before it changed anything: no binding to take back down.
+            raise _anchor_link_error(exc) from None
         except Exception as exc:
             # A link the map could not write is not one to mirror into: a restart
             # would drop it with the turns already posted there. Take this slot's
             # binding back down so memory agrees with what the next write saves.
             _drop_unsaved_link(state, slot, session_key, thread_ts)
             raise SlackLinkError(500, "link_not_saved", "could not save the Slack link") from exc
+
+        for _prior_key in _prior_keys:
+            try:
+                await expire_slack_options(state, _prior_key)
+            except Exception:
+                logger.debug(
+                    "slack link: could not retire the previous owner's control",
+                    exc_info=True,
+                )
 
         # Seed the new thread with readable history — only when we created a NEW
         # thread. Linking to an existing thread (challenge-and-redirect) would

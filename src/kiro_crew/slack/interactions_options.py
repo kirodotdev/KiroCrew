@@ -242,6 +242,11 @@ class ChannelAgentMismatchError(Exception):
     """The thread's channel is served by a different agent than the import's slot."""
 
 
+IMPORT_CODE_CHANNEL_NOTICE = (
+    "This thread is a Slack code channel's own session, so it cannot be imported"
+    " into another dashboard session. Open the code channel's session instead."
+)
+
 IMPORT_AGENT_MISMATCH_NOTICE = (
     "This channel is served by its own agent, so its threads cannot be imported"
     " into a dashboard session on another agent. Open a dashboard session on this"
@@ -303,6 +308,12 @@ async def _import_thread_to_slot(slack: Any, ds: Any, channel: str, thread_ts: s
     # The thread fetch awaited: read the channel's agent again before any slot.
     if channel_agent_mismatch(channel, "", "") is not None:
         raise ChannelAgentMismatchError(channel)
+    # A code channel's anchor thread is its binding's own session: never
+    # imported into a new slot (``link_slack`` would refuse it after the slot
+    # exists). Raises ``AnchorHandoffRefused`` before any slot is made.
+    from kiro_crew.slack.code_channels.binding import check_anchor_handoff
+
+    check_anchor_handoff(thread_ts, "")
     slot = ds.get_or_create_slot()
     pinned = channel_pinned_agent(channel)
     if pinned and pinned != "<unknown>":

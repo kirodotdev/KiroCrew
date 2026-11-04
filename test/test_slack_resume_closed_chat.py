@@ -143,7 +143,7 @@ class TestResumeReply:
         text = aiohttp_sess.post.await_args.kwargs["json"]["text"]
         assert text == "▶️ Resumed *My chat* in thread."
         orch.sessions.set_slack_link.assert_called_once_with("dashboard:s1", "ts1", "C5")
-        orch.dashboard_state.link_slack.assert_called_once_with("s1", "ts1", "C5")
+        orch.dashboard_state.link_slack.assert_called_once_with("s1", "ts1", "C5", fresh=True)
 
     @pytest.mark.asyncio
     async def test_session_without_dashboard_slot_says_plain_resumed(

@@ -420,7 +420,8 @@ _BASE_STATE_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
         "function",
         False,
         False,
-        "(self, slot_name: 'str', thread_ts: 'str', channel_id: 'str') -> 'None'",
+        "(self, slot_name: 'str', thread_ts: 'str', channel_id: 'str', *, "
+        "fresh: 'bool' = False) -> 'None'",
     ),
     "linked_session_busy": ("function", False, False, "(self, session_key: 'str') -> 'bool'"),
     "live_slot_count": ("function", False, False, "(self) -> 'int'"),

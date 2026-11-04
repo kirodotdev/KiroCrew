@@ -624,14 +624,28 @@ async def _bang_link_to_dashboard(
             channel, "Use this command inside a thread to import it.", reply_ts
         )
         return ""
+    from kiro_crew.slack.code_channels.binding import AnchorHandoffRefused
     from kiro_crew.slack.interactions import _import_thread_to_slot
     from kiro_crew.slack.interactions_options import (
         IMPORT_AGENT_MISMATCH_NOTICE,
+        IMPORT_CODE_CHANNEL_NOTICE,
         ChannelAgentMismatchError,
     )
 
     try:
         slot = await _import_thread_to_slot(slack, _dashboard_state, channel, reply_ts)
+    except AnchorHandoffRefused:
+        sel().log_tool_invocation(
+            session_key="",
+            agent="kirocrew",
+            source="slack",
+            tool_name="link_to_dashboard",
+            tool_kind="command",
+            outcome="denied",
+            metadata={"user_id": user_id, "channel": channel, "reason": "code_channel_anchor"},
+        )
+        await slack.post_message(channel, IMPORT_CODE_CHANNEL_NOTICE, reply_ts)
+        return ""
     except ChannelAgentMismatchError:
         sel().log_tool_invocation(
             session_key="",

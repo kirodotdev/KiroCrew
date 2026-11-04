@@ -880,6 +880,47 @@ async def test_a_failed_binding_write_or_flush_takes_the_linked_session_down(
 
 
 @pytest.mark.asyncio
+async def test_a_link_landing_before_the_binding_is_stored_is_taken_back(
+    tmp_path: Any,
+) -> None:
+    """Until the binding is stored the anchor guard has nothing to match, so a
+    rival link in that window passes; once it is stored the session takes its
+    anchor back and the rival is released and refused from then on."""
+    from chat_test_helpers import _make_state
+
+    from kiro_crew.slack.code_channels import store as store_mod
+
+    state = _make_state(tmp_path)
+    rival = state.get_or_create_slot("rival")
+    cc = store_mod.CodeChannelStore(tmp_path / "cc.json")
+    store_mod.set_store(cc)
+    try:
+
+        async def record_binding(slot: Any) -> None:
+            state.link_slack(rival.key, "9.0", "C1")  # lands inside the window
+            cc.put_binding(
+                store_mod.Binding(
+                    channel_id="C1", team_id="T1", session_key=slot.key, anchor_ts="9.0"
+                )
+            )
+
+        slot = await create_bound_session(
+            state,
+            SessionSpec(),
+            title="t",
+            channel_id="C1",
+            anchor_ts="9.0",
+            before_publish=record_binding,
+        )
+        assert state.get_linked_slot("9.0") is slot
+        assert not rival._slack_linked
+        with pytest.raises(binding_mod.AnchorHandoffRefused):
+            state.link_slack(rival.key, "9.0", "C1")
+    finally:
+        store_mod.set_store(None)
+
+
+@pytest.mark.asyncio
 async def test_a_fresh_home_resolves_to_the_conductor_in_code_channels(tmp_path: Any) -> None:
     from chat_test_helpers import _make_state
 
