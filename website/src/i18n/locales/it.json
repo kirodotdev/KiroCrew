@@ -10939,7 +10939,13 @@
       "failed_next_step": "Correggi la causa su {{name}} (ad esempio la rete o l'accesso), poi seleziona Riprova.",
       "try_again": "Riprova",
       "failed_restart_next_step": "{{name}} continua a eseguire la versione precedente finché non si riavvia. Esegui {{command}} su quell'equipaggio, oppure seleziona Riprova per riavviarlo da qui.",
-      "status_read_failed": "Impossibile leggere lo stato dell'aggiornamento di {{name}}: {{error}}"
+      "status_read_failed": "Impossibile leggere lo stato dell'aggiornamento di {{name}}: {{error}}",
+      "waiting_for_idle": "In attesa che {{name}} finisca il lavoro in corso prima del riavvio (turni di chat: {{turns}}, attività in background: {{background}})…",
+      "failed_still_busy": "La nuova versione è installata su {{name}}, ma dopo {{minutes}} minuti c’era ancora lavoro in corso, quindi non è stato riavviato. Seleziona Riprova per continuare ad attendere, o Riavvia ora per interrompere quel lavoro.",
+      "failed_cannot_wait": "{{name}} esegue una versione che non può segnalare il lavoro in corso, quindi non è stato riavviato. Aggiornalo dalla sua dashboard, o seleziona Riavvia ora per riavviarlo e interrompere tutto il lavoro in corso.",
+      "failed_idle_check": "La nuova versione è installata su {{name}}, ma non è riuscito a verificare il lavoro in corso, quindi non è stato riavviato ({{error}}). Seleziona Riavvia ora per riavviarlo comunque e interrompere tutto il lavoro in corso.",
+      "restart_now": "Riavvia ora",
+      "restart_now_confirm": "Riavvia «{{name}}» e interrompi il suo lavoro"
     },
     "remoteUpdateOffer": {
       "title": "Alcuni equipaggi remoti eseguono una versione più vecchia",

@@ -4628,7 +4628,13 @@
       "failed_next_step": "Fix the cause on {{name}} (for example its network or sign-in), then select Try again.",
       "try_again": "Try again",
       "failed_restart_next_step": "{{name}} keeps running its old version until it restarts. Run {{command}} on that crew, or select Try again to restart it from here.",
-      "status_read_failed": "Could not read {{name}}'s update status: {{error}}"
+      "status_read_failed": "Could not read {{name}}'s update status: {{error}}",
+      "waiting_for_idle": "Waiting for {{name}} to finish its running work before it restarts (chat turns: {{turns}}, background tasks: {{background}})…",
+      "failed_still_busy": "The new version is installed on {{name}}, but it was still running work after {{minutes}} minutes, so it was not restarted. Select Try again to keep waiting, or Restart now to stop that work.",
+      "failed_cannot_wait": "{{name}} runs a version that cannot report its running work, so it was not restarted. Update it from its own dashboard, or select Restart now to restart it and stop any running work.",
+      "failed_idle_check": "The new version is installed on {{name}}, but it could not check its running work, so it was not restarted ({{error}}). Select Restart now to restart it anyway and stop any running work.",
+      "restart_now": "Restart now",
+      "restart_now_confirm": "Restart “{{name}}” and stop its work"
     },
     "remoteUpdateOffer": {
       "title": "Some remote crews run an older version",

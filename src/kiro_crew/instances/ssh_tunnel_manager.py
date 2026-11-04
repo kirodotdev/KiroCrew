@@ -187,6 +187,14 @@ from kiro_crew.instances.registry import (  # noqa: F401
 from kiro_crew.instances.remote_update import (  # noqa: F401
     PHASE_RESTARTING,
     PHASE_VERIFYING,
+)
+from kiro_crew.instances.remote_update import (
+    REMOTE_UPDATE_IDLE_POLL_SECS as _REMOTE_UPDATE_IDLE_POLL_SECS,
+)
+from kiro_crew.instances.remote_update import (
+    REMOTE_UPDATE_IDLE_WAIT_SECS as _REMOTE_UPDATE_IDLE_WAIT_SECS,
+)
+from kiro_crew.instances.remote_update import (  # noqa: F401
     REMOTE_UPDATE_TIMEOUT_SECS,
     REMOTE_UPDATE_VERIFY_INTERVAL_SECS,
     REMOTE_UPDATE_VERIFY_SECS,
@@ -318,6 +326,7 @@ class SshTunnelManager:
     _run_remote_subcommand = _remote_ops._run_remote_subcommand
     start_remote_update = _remote_ops.start_remote_update
     _update_then_restart = _remote_ops._update_then_restart
+    _restart_when_idle = _remote_ops._restart_when_idle
     _peer_version = _remote_ops._peer_version
     _await_peer_version_change = _remote_ops._await_peer_version_change
     remote_update_job = _remote_ops.remote_update_job
@@ -457,6 +466,8 @@ class SshTunnelManager:
         # test can close the window without waiting it out.
         self._remote_update_verify_secs = REMOTE_UPDATE_VERIFY_SECS
         self._remote_update_verify_interval_secs = REMOTE_UPDATE_VERIFY_INTERVAL_SECS
+        self._remote_update_idle_wait_secs = _REMOTE_UPDATE_IDLE_WAIT_SECS
+        self._remote_update_idle_poll_secs = _REMOTE_UPDATE_IDLE_POLL_SECS
         # Instances whose coordinates are being rewritten right now. Self-heal
         # reads the record before it takes the lock, so cancelling the recoveries
         # in flight is not enough on its own: a tunnel exiting mid-edit schedules

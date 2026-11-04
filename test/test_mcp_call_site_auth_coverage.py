@@ -92,6 +92,7 @@ _SOURCES = (
     _SRC / "cli_server_requests.py",
     _SRC / "cli_server_stop.py",
     _SRC / "cli_server_restart.py",
+    _SRC / "cli_restart_idle.py",
     _SRC / "cli_server_update.py",
     _SRC / "cron_script.py",
     *sorted(_SRC.glob("cron_script_*.py")),

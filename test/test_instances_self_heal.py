@@ -1295,6 +1295,7 @@ class TestSelfHealRefreshRestart:
             marker_port=None,
             timeout_secs=60.0,
             connect_timeout_secs=10.0,
+            stdout_tail=False,
         ):
             calls["a"] = (host, sub, marker_port, connect_timeout_secs)
             return (0, "")
@@ -1306,7 +1307,13 @@ class TestSelfHealRefreshRestart:
         # so the ssh default from constants.DEFAULT_MINT_TIMEOUT_SECS), not the
         # 10s ssh-exec fail-fast fallback -- a restart
         # on a slow-proxy host must reuse the same budget the mint itself gets.
-        assert r["ok"] and calls["a"] == ("cd-1-alias", "restart", 5476, 30.0)
+        # The restart waits for the crew's in-flight work: one idle check.
+        assert r["ok"] and calls["a"] == (
+            "cd-1-alias",
+            "restart --when-idle --max-wait 0",
+            5476,
+            30.0,
+        )
         # validation failure
         r = asyncio.run(mgr.restart_remote("bad"))
         assert not r["ok"] and "invalid ssh settings" in r["message"]

@@ -339,6 +339,8 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
             "(self, *, mandatory: 'bool', mandatory_key: 'str' = '') -> 'bool'",
         ),
         ("_finish_auto_update_apply", "async method", "(self) -> 'None'"),
+        ("_restart_gate_when_idle", "async method", "(self) -> 'tuple[bool, int, int]'"),
+        ("_release_restart_gate_hold", "async method", "(self) -> 'None'"),
         ("_wheel_apply_module", "staticmethod", "() -> 'Any'"),
         ("_dashboard_policy_applies", "staticmethod", "() -> \"list['asyncio.Task[Any]']\""),
         (

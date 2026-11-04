@@ -27,12 +27,19 @@ from kiro_crew.instances.ssh_tunnel_manager import TunnelState
 class _Req:
     """Request stub mirroring aiohttp's mapping surface (see the capabilities tests)."""
 
-    def __init__(self, state, instance_id, identity):
+    def __init__(self, state, instance_id, identity, body=None):
         self.app = {"state": state}
         self.match_info = {"id": instance_id}
         self.headers: dict[str, str] = {}
         self.query: dict[str, str] = {}
         self._attrs = identity
+        self._body = body
+        self.can_read_body = body is not None
+
+    async def json(self):
+        if isinstance(self._body, Exception):
+            raise self._body
+        return self._body
 
     def get(self, key, default=""):
         return self._attrs.get(key, default)
@@ -44,8 +51,8 @@ class _Req:
         return self._attrs[key]
 
 
-def _request(state, instance_id="nobita", app="", user="local-app"):
-    return _Req(state, instance_id, {"user": user, "app": app})
+def _request(state, instance_id="nobita", app="", user="local-app", body=None):
+    return _Req(state, instance_id, {"user": user, "app": app}, body)
 
 
 def _enable_instances(monkeypatch):
@@ -303,6 +310,7 @@ def _manager(tmp_path, versions=("0.9.0", "0.9.1"), *, verify_secs=0.0):
     mgr.peer_capability = _peer_capability
     mgr._remote_update_verify_secs = verify_secs
     mgr._remote_update_verify_interval_secs = 0.0
+    mgr._remote_update_idle_poll_secs = 0.0
     mgr.version_reads = reads
     return reg, mgr
 
@@ -314,10 +322,18 @@ class _Runner:
     observes the job mid-run, released by the test, never by a sleep.
     """
 
-    def __init__(self, *answers, hold: asyncio.Event | None = None):
+    def __init__(
+        self,
+        *answers,
+        hold: asyncio.Event | None = None,
+        hold_restart: asyncio.Event | None = None,
+    ):
         self.answers = list(answers)
         self.calls: list[tuple[str, dict]] = []
         self.hold = hold
+        # Held on the idle-gated restart that answers idle (the last answer), so
+        # a test reads the waiting phase before the job moves past it.
+        self.hold_restart = hold_restart
         self.entered = asyncio.Event()
 
     async def ssh(self, host, sub, **kwargs):
@@ -325,6 +341,8 @@ class _Runner:
         self.entered.set()
         if self.hold is not None and sub == "update":
             await self.hold.wait()
+        if self.hold_restart is not None and sub == _WHEN_IDLE and len(self.answers) == 1:
+            await self.hold_restart.wait()
         return self.answers.pop(0)
 
     async def ssm(self, target, sub, **kwargs):
@@ -337,6 +355,24 @@ def _patch_runner(monkeypatch, runner):
 
     monkeypatch.setattr(stm, "run_remote_kirocrew", runner.ssh)
     monkeypatch.setattr(stm, "run_remote_kirocrew_ssm", runner.ssm)
+
+
+#: The idle-gated restart the job runs in place of a bare ``restart``.
+_WHEN_IDLE = "restart --when-idle --max-wait 0"
+
+
+def _busy(turns: int, background: int) -> tuple[int, str]:
+    """What the crew's ``restart --when-idle`` answers while work is in flight."""
+    return 75, f"kirocrew-restart-busy turns={turns} background={background}"
+
+
+async def _phase(mgr, iid, phase):
+    from kiro_crew.testing.wait import async_wait_until
+
+    await async_wait_until(
+        lambda: (mgr.remote_update_job(iid) or {}).get("phase") == phase,
+        describe=lambda: mgr.remote_update_job(iid),
+    )
 
 
 async def _finished(mgr, iid):
@@ -365,7 +401,7 @@ class TestUpdateJob:
         job = await _finished(mgr, "box")
         assert job["state"] == "succeeded" and job["phase"] == "done"
         assert (job["version_before"], job["version_after"]) == ("0.9.0", "0.9.1")
-        assert [sub for sub, _ in runner.calls] == ["update", "restart"]
+        assert [sub for sub, _ in runner.calls] == ["update", _WHEN_IDLE]
         update_kwargs = runner.calls[0][1]
         assert update_kwargs["host"] == "box-alias"
         assert update_kwargs["timeout_secs"] == REMOTE_UPDATE_TIMEOUT_SECS
@@ -373,6 +409,127 @@ class TestUpdateJob:
         assert update_kwargs["marker_port"] == 5476
         # The restart is the same call restart_remote makes: no update budget.
         assert "timeout_secs" not in runner.calls[1][1]
+        assert job["code"] == "" and job["force"] is False
+        await mgr.shutdown()
+
+    async def test_a_busy_crew_is_waited_on_then_restarted(self, tmp_path, monkeypatch):
+        """The restart waits while the crew reports work in flight."""
+        reg, mgr = _manager(tmp_path)
+        reg.add(name="Box", ssh_host="box-alias", instance_id="box")
+        hold = asyncio.Event()
+        runner = _Runner((0, ""), _busy(2, 1), _busy(0, 1), (0, ""), hold_restart=hold)
+        _patch_runner(monkeypatch, runner)
+
+        await mgr.start_remote_update("box")
+        await _phase(mgr, "box", "waiting_for_idle")
+        waiting = mgr.remote_update_job("box")
+        hold.set()
+        job = await _finished(mgr, "box")
+
+        assert waiting["state"] == "running"
+        assert waiting["waiting"] in ({"turns": 2, "background": 1}, {"turns": 0, "background": 1})
+        assert job["state"] == "succeeded"
+        # Every ask was the idle-gated restart; nothing restarted the crew while busy.
+        assert [sub for sub, _ in runner.calls] == ["update", _WHEN_IDLE, _WHEN_IDLE, _WHEN_IDLE]
+        await mgr.shutdown()
+
+    async def test_a_crew_still_busy_at_the_ceiling_is_never_restarted(self, tmp_path, monkeypatch):
+        reg, mgr = _manager(tmp_path)
+        mgr._remote_update_idle_wait_secs = 0.0
+        reg.add(name="Box", ssh_host="box-alias", instance_id="box")
+        runner = _Runner((0, ""), _busy(1, 3))
+        _patch_runner(monkeypatch, runner)
+
+        await mgr.start_remote_update("box")
+        job = await _finished(mgr, "box")
+
+        assert job["state"] == "failed" and job["code"] == "still_busy"
+        assert job["phase"] == "waiting_for_idle"
+        assert job["waiting"] == {"turns": 1, "background": 3}
+        assert [sub for sub, _ in runner.calls] == ["update", _WHEN_IDLE]
+        await mgr.shutdown()
+
+    async def test_restart_now_skips_the_update_and_the_wait(self, tmp_path, monkeypatch):
+        reg, mgr = _manager(tmp_path)
+        reg.add(name="Box", ssh_host="box-alias", instance_id="box")
+        runner = _Runner((0, ""))
+        _patch_runner(monkeypatch, runner)
+
+        started = await mgr.start_remote_update("box", force=True)
+        job = await _finished(mgr, "box")
+
+        assert started["job"]["force"] is True
+        assert job["state"] == "succeeded"
+        # The update already ran in the job that stopped short of its restart.
+        assert [sub for sub, _ in runner.calls] == ["restart"]
+        await mgr.shutdown()
+
+    @pytest.mark.parametrize(
+        "answer",
+        [
+            (2, "kirocrew: error: unrecognized arguments: --when-idle --max-wait 0"),
+            (69, "kirocrew-restart-gate-unsupported"),
+        ],
+        ids=["old-cli", "old-gateway"],
+    )
+    async def test_an_old_crew_is_refused_and_not_restarted(self, tmp_path, monkeypatch, answer):
+        reg, mgr = _manager(tmp_path)
+        reg.add(name="Box", ssh_host="box-alias", instance_id="box")
+        runner = _Runner((0, ""), answer)
+        _patch_runner(monkeypatch, runner)
+
+        await mgr.start_remote_update("box")
+        job = await _finished(mgr, "box")
+
+        assert job["state"] == "failed" and job["code"] == "peer_cannot_wait"
+        assert "Update it from its own dashboard" in job["error"]
+        assert [sub for sub, _ in runner.calls] == ["update", _WHEN_IDLE]
+        await mgr.shutdown()
+
+    async def test_restart_remote_refuses_a_busy_crew_and_force_restarts(
+        self, tmp_path, monkeypatch
+    ):
+        reg, mgr = _manager(tmp_path)
+        reg.add(name="Box", ssh_host="box-alias", instance_id="box")
+        runner = _Runner(_busy(1, 2), (0, ""))
+        _patch_runner(monkeypatch, runner)
+
+        busy = await mgr.restart_remote("box")
+        forced = await mgr.restart_remote("box", force=True)
+
+        assert busy["ok"] is False and busy["code"] == "busy"
+        assert (busy["turns"], busy["background"]) == (1, 2)
+        assert forced["ok"] is True
+        assert [sub for sub, _ in runner.calls] == [_WHEN_IDLE, "restart"]
+        await mgr.shutdown()
+
+    async def test_a_crew_that_cannot_check_its_work_offers_restart_now(
+        self, tmp_path, monkeypatch
+    ):
+        reg, mgr = _manager(tmp_path)
+        reg.add(name="Box", ssh_host="box-alias", instance_id="box")
+        refusal = (78, "boom | stdout tail: Not restarted ... kirocrew-restart-gate-refused")
+        runner = _Runner((0, ""), refusal, refusal)
+        _patch_runner(monkeypatch, runner)
+
+        await mgr.start_remote_update("box")
+        job = await _finished(mgr, "box")
+        restart = await mgr.restart_remote("box")
+
+        assert job["state"] == "failed" and job["code"] == "idle_check_failed"
+        assert restart["ok"] is False and restart["code"] == "idle_check_failed"
+        assert [sub for sub, _ in runner.calls] == ["update", _WHEN_IDLE, _WHEN_IDLE]
+        await mgr.shutdown()
+
+    async def test_restart_remote_refuses_an_old_crew(self, tmp_path, monkeypatch):
+        reg, mgr = _manager(tmp_path)
+        reg.add(name="Box", ssh_host="box-alias", instance_id="box")
+        _patch_runner(monkeypatch, _Runner((2, "usage: kirocrew ...")))
+
+        out = await mgr.restart_remote("box")
+
+        assert out["ok"] is False and out["code"] == "peer_cannot_wait"
+        assert "Restart it from its own dashboard" in out["message"]
         await mgr.shutdown()
 
     async def test_a_failed_update_never_restarts_and_keeps_the_runner_tail(
@@ -509,7 +666,7 @@ class TestUpdateJob:
             "message": "Box is already updating",
         }
         assert job["state"] == "succeeded"
-        assert [sub for sub, _ in runner.calls] == ["update", "restart"]
+        assert [sub for sub, _ in runner.calls] == ["update", _WHEN_IDLE]
         await mgr.shutdown()
 
     async def test_ssm_rides_the_ssm_runner(self, tmp_path, monkeypatch):
@@ -530,7 +687,7 @@ class TestUpdateJob:
         assert job["state"] == "succeeded"
         assert [(sub, kw["target"]) for sub, kw in runner.calls] == [
             ("update", "i-0abc123456789def0"),
-            ("restart", "i-0abc123456789def0"),
+            (_WHEN_IDLE, "i-0abc123456789def0"),
         ]
         await mgr.shutdown()
 
@@ -738,9 +895,11 @@ class _UpdateMgr:
         self.result = result or {"ok": True, "job": {"state": "running"}}
         self.job = job
         self.started: list[str] = []
+        self.forced: list[bool] = []
 
-    async def start_remote_update(self, iid):
+    async def start_remote_update(self, iid, *, force=False):
         self.started.append(iid)
+        self.forced.append(force)
         return self.result
 
     def remote_update_job(self, iid):
@@ -765,6 +924,30 @@ class TestUpdateRoutes:
         assert resp.status == 202
         assert (await _body(resp))["job"]["state"] == "running"
         assert mgr.started == ["nobita"]
+        assert mgr.forced == [False]
+
+    async def test_restart_now_sends_force(self, monkeypatch):
+        _enable_instances(monkeypatch)
+        mgr = _UpdateMgr()
+
+        resp = await hi.api_instances_update_remote(
+            _request(_update_state(mgr), body={"force": True})
+        )
+
+        assert resp.status == 202
+        assert mgr.forced == [True]
+
+    @pytest.mark.parametrize(
+        "body", [{"force": "yes"}, {"force": True, "cmd": "rm"}, [], ValueError("bad json")]
+    )
+    async def test_a_malformed_body_is_refused_before_anything_runs(self, monkeypatch, body):
+        _enable_instances(monkeypatch)
+        mgr = _UpdateMgr()
+
+        resp = await hi.api_instances_update_remote(_request(_update_state(mgr), body=body))
+
+        assert resp.status == 400
+        assert mgr.started == []
 
     async def test_an_app_token_is_refused_before_anything_runs(self, monkeypatch):
         _enable_instances(monkeypatch)
@@ -856,3 +1039,74 @@ class TestUpdateRoutes:
         )
 
         assert resp.status == 403
+
+
+def test_the_wait_ceiling_is_the_gateways_mandatory_deferral_ceiling():
+    from kiro_crew.instances.remote_update import REMOTE_UPDATE_IDLE_WAIT_SECS
+    from kiro_crew.slack.gateway import GatewayOrchestrator
+
+    assert REMOTE_UPDATE_IDLE_WAIT_SECS == GatewayOrchestrator._MANDATORY_UPDATE_MAX_DEFER_SECS
+
+
+def test_the_gate_answers_match_what_the_cli_prints():
+    from kiro_crew import cli_restart_idle as cli
+    from kiro_crew.instances import remote_update as ru
+
+    assert ru._GATE_EXIT_BUSY == cli.EXIT_BUSY
+    assert ru._GATE_EXIT_UNSUPPORTED == cli.EXIT_GATE_UNSUPPORTED
+    line = f"{cli.BUSY_MARKER} turns=4 background=7"
+    assert ru.read_gate_answer(cli.EXIT_BUSY, line) == ru.GateAnswer("busy", 4, 7)
+    unsupported = ru.read_gate_answer(cli.EXIT_GATE_UNSUPPORTED, cli.UNSUPPORTED_MARKER)
+    assert unsupported.outcome == "unsupported"
+    assert ru.read_gate_answer(1, "boom").outcome == "failed"
+    # A busy exit without its marker line is not trusted as busy.
+    assert ru.read_gate_answer(cli.EXIT_BUSY, "").outcome == "failed"
+    assert ru._GATE_EXIT_REFUSED == cli.EXIT_GATE_REFUSED
+    assert ru._GATE_REFUSED_MARKER == cli.REFUSED_MARKER
+    refused = ru.read_gate_answer(cli.EXIT_GATE_REFUSED, f"x | stdout tail: {cli.REFUSED_MARKER}")
+    assert refused.outcome == "refused"
+    # The refused exit without its marker is an ordinary failure.
+    assert ru.read_gate_answer(cli.EXIT_GATE_REFUSED, "").outcome == "failed"
+    assert ru.RESTART_WHEN_IDLE_SUBCOMMAND == _WHEN_IDLE
+
+
+def test_a_login_banner_filling_stderr_cannot_hide_the_busy_marker():
+    """The runner keeps the head of stderr and the tail of stdout; the marker is in the latter."""
+    from kiro_crew.instances import remote_update as ru
+    from kiro_crew.instances.token_mint import _with_stdout_tail
+
+    banner = ("Authorized use only. " * 30)[:300]
+    err = _with_stdout_tail(banner, "Not restarted ... kirocrew-restart-busy turns=2 background=1")
+
+    assert ru.read_gate_answer(75, err) == ru.GateAnswer("busy", 2, 1)
+
+
+@pytest.mark.asyncio
+async def test_the_idle_gated_restart_asks_for_the_stdout_tail(tmp_path, monkeypatch):
+    reg, mgr = _manager(tmp_path)
+    reg.add(name="Box", ssh_host="box-alias", instance_id="box")
+    runner = _Runner((0, ""))
+    _patch_runner(monkeypatch, runner)
+
+    await mgr.restart_remote("box")
+
+    assert runner.calls[0][0] == _WHEN_IDLE
+    assert runner.calls[0][1]["stdout_tail"] is True
+    await mgr.shutdown()
+
+
+@pytest.mark.parametrize(
+    ("body", "force"),
+    [(None, False), ({}, False), ({"force": False}, False), ({"force": True}, True)],
+)
+def test_the_force_body_reads_only_a_boolean(body, force):
+    from kiro_crew.instances.remote_update import read_force_flag
+
+    assert read_force_flag(body) is force
+
+
+@pytest.mark.parametrize("body", [{"force": 1}, {"force": True, "x": 1}, [], "force"])
+def test_any_other_force_body_is_malformed(body):
+    from kiro_crew.instances.remote_update import read_force_flag
+
+    assert read_force_flag(body) is None
