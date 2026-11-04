@@ -121,6 +121,8 @@ export const PANEL_TAB_MAP: Record<string, PanelTarget> = {
   'DisplayPanel.tsx': 'display',
   // The Theme page's per-part Experience toggles, mounted by DisplayPanel.
   'ThemeExperienceSettings.tsx': { tab: 'display', params: { sub: 'theme' } },
+  // The Theme page's schedule rows, mounted by DisplayPanel under the Mode picker.
+  'ThemeScheduleSettings.tsx': { tab: 'display', params: { sub: 'theme' } },
   'BrowserPanel.tsx': 'browser',
   // The Browser tab's sections (RFC browser-live-harness section 8), each mounted
   // by BrowserPanel: the live-view and Advanced controls, and the Preview tab's
