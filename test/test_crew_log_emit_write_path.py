@@ -254,6 +254,25 @@ def test_a_storage_layer_that_raises_never_breaks_a_caller(monkeypatch):
     emit.on_compaction_applied(SESSION, pct_before=0.9, pct_after=0.2)
     emit.on_turn_completed(SESSION, 1, stop_reason="end_turn")
     emit.on_session_closed(SESSION, "reset")
+    # A storage failure is retried, not lost: every entry stays buffered.
+    assert emit.dropped_writes() == 0
+    assert emit.buffered_writes() == 9
+    # Once storage works again, the buffered entries land in order.
+    monkeypatch.delitem(emit._open, SESSION)
+    assert emit.flush()
+    assert emit.buffered_writes() == 0
+    assert [entry["type"] for entry in _body()] == [
+        "session/opened",
+        "turn/started",
+        "tool/called",
+        "tool/completed",
+        "approval/requested",
+        "approval/decided",
+        "model/selected",
+        "compaction/applied",
+        "turn/completed",
+        "session/closed",
+    ]
 
 
 def test_a_failed_turn_start_leaves_later_entries_unthreaded(monkeypatch):
