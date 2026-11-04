@@ -162,14 +162,15 @@ export interface BotChannelSpec {
   /**
    * Optional reasoning toggle. Present only for a channel that can render a
    * collapsed quote after the answer; a channel that omits it never sends the
-   * field, so its save payload is unchanged.
+   * field, so its save payload is unchanged. `description` goes in the info
+   * tip; the optional `summary` is the short line shown on the row.
    */
-  showThinking?: { label: string; description: string }
+  showThinking?: { label: string; description: string; summary?: string }
   /**
    * Optional spoken-answer toggle. Present only for a channel that can upload
    * synthesized audio; a channel that omits it never sends the field.
    */
-  voiceReplies?: { label: string; description: string }
+  voiceReplies?: { label: string; description: string; summary?: string }
   /** Optional shared-thread allow-list rendered below user access controls. */
   threadAllowlist?: {
     label: string
@@ -602,7 +603,7 @@ export function BotChannelPanel({ spec }: { spec: BotChannelSpec }) {
         <SettingsCard index={1}>
           <SettingsToggle
             label={i18nT('pages.settings.botChannelPanel.enable', { channel: spec.name })}
-            description={i18nT('pages.settings.botChannelPanel.start_the_channel_at_gateway_startup', { channel: spec.name })}
+            hint={i18nT('pages.settings.botChannelPanel.start_the_channel_at_gateway_startup', { channel: spec.name })}
             checked={draft.enabled}
             onChange={v => upd({ enabled: v })}
             disabled={ro}
@@ -713,7 +714,7 @@ export function BotChannelPanel({ spec }: { spec: BotChannelSpec }) {
             <div className="border-t border-border mt-4 pt-4">
               <SettingsToggle
                 label={spec.sharedChannels.autoThreadLabel}
-                description={spec.sharedChannels.autoThreadDescription}
+                hint={spec.sharedChannels.autoThreadDescription}
                 configKey={spec.sharedChannels.autoThreadConfigKey}
                 checked={draft.auto_thread}
                 onChange={v => upd({ auto_thread: v })}
@@ -826,7 +827,7 @@ export function BotChannelPanel({ spec }: { spec: BotChannelSpec }) {
             <>
               <SettingsToggle
                 label={spec.progressDisplay.reactionsLabel}
-                description={spec.progressDisplay.reactionsDescription}
+                hint={spec.progressDisplay.reactionsDescription}
                 configKey={spec.progressDisplay.reactionsConfigKey}
                 checked={draft.reactions_enabled}
                 onChange={v => upd({ reactions_enabled: v })}
@@ -834,7 +835,7 @@ export function BotChannelPanel({ spec }: { spec: BotChannelSpec }) {
               />
               <SettingsToggle
                 label={spec.progressDisplay.thinkingLabel}
-                description={spec.progressDisplay.thinkingDescription}
+                hint={spec.progressDisplay.thinkingDescription}
                 configKey={spec.progressDisplay.thinkingConfigKey}
                 checked={draft.show_thinking}
                 onChange={v => upd({ show_thinking: v })}
@@ -846,7 +847,8 @@ export function BotChannelPanel({ spec }: { spec: BotChannelSpec }) {
             <div className="border-t border-border mt-4 pt-4">
               <SettingsToggle
                 label={spec.showThinking.label}
-                description={spec.showThinking.description}
+                description={spec.showThinking.summary}
+                hint={spec.showThinking.description}
                 checked={draft.show_thinking}
                 onChange={v => upd({ show_thinking: v })}
                 disabled={ro}
@@ -857,7 +859,8 @@ export function BotChannelPanel({ spec }: { spec: BotChannelSpec }) {
             <div className="border-t border-border mt-4 pt-4">
               <SettingsToggle
                 label={spec.voiceReplies.label}
-                description={spec.voiceReplies.description}
+                description={spec.voiceReplies.summary}
+                hint={spec.voiceReplies.description}
                 checked={draft.voice_replies}
                 onChange={v => upd({ voice_replies: v })}
                 disabled={ro}
@@ -869,7 +872,7 @@ export function BotChannelPanel({ spec }: { spec: BotChannelSpec }) {
           <div className="border-t border-border mt-4 pt-4">
             <SettingsToggle
               label={i18nT('pages.settings.botChannelPanel.file_sessions_in_folder')}
-              description={i18nT('pages.settings.botChannelPanel.file_sessions_in_folder_desc', { channel: spec.name })}
+              hint={i18nT('pages.settings.botChannelPanel.file_sessions_in_folder_desc', { channel: spec.name })}
               checked={draft.session_folder_on}
               onChange={v => upd({ session_folder_on: v })}
               disabled={ro}
@@ -878,7 +881,7 @@ export function BotChannelPanel({ spec }: { spec: BotChannelSpec }) {
               <div className="mt-4">
                 <SettingsInput
                   label={i18nT('pages.settings.botChannelPanel.session_folder_name')}
-                  description={i18nT('pages.settings.botChannelPanel.session_folder_name_desc')}
+                  hint={i18nT('pages.settings.botChannelPanel.session_folder_name_desc')}
                   value={draft.session_folder}
                   onChange={v => upd({ session_folder: v })}
                   placeholder={spec.name}

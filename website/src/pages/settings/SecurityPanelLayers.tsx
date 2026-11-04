@@ -144,11 +144,8 @@ function FeatureRow({ feature }: { feature: SecurityFeature }) {
 /* ── Defense-in-depth section ── */
 export function LayersSection() {
   return (
-    <SettingsSection title={i18nT('pages.settings.securityPanel.defense_in_depth_architecture')}>
+    <SettingsSection title={i18nT('pages.settings.securityPanel.defense_in_depth_architecture')} hint={i18nT('pages.settings.securityPanel.kirocrew_implements_6_security_layers_each_layer')}>
       <SettingsCard>
-        <div className="text-[12px] text-muted mb-3 leading-relaxed">
-          {i18nT('pages.settings.securityPanel.kirocrew_implements_6_security_layers_each_layer')}
-        </div>
         <div className="divide-y divide-border">
           {FEATURES.map(f => <FeatureRow key={f.key} feature={f} />)}
         </div>

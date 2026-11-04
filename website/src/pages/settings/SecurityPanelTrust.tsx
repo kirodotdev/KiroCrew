@@ -192,7 +192,7 @@ export function ThirdPartyAppsCard() {
         ) : (
           <SettingsToggle
             label={i18nT('pages.settings.securityPanel.trustedApps.allow_all_label')}
-            description={i18nT('pages.settings.securityPanel.trustedApps.allow_all_description')}
+            description={i18nT('pages.settings.securityPanel.trustedApps.allow_all_description_summary')} hint={i18nT('pages.settings.securityPanel.trustedApps.allow_all_description')}
             checked={ta?.allowAll === true}
             onChange={onTrustAllToggle}
             disabled={!ta}

@@ -150,7 +150,7 @@ export function DecisionsPointPanel({
       {row.id === 'browser.step' && scopeOffered && scopeGranted && (
         <SettingsToggle
           label={i18nT('pages.developer.featurePreviewsTab.decisions_browser_images')}
-          description={i18nT('pages.developer.featurePreviewsTab.decisions_browser_images_desc')}
+          description={i18nT('pages.developer.featurePreviewsTab.decisions_browser_images_desc_summary')} hint={i18nT('pages.developer.featurePreviewsTab.decisions_browser_images_desc')}
           checked={browserImages}
           onChange={onBrowserImagesChange}
           disabled={scopeDisabled}
@@ -207,7 +207,7 @@ export function DecisionsPointPanel({
           )}
           <SettingsSelect
             label={i18nT('pages.developer.featurePreviewsTab.decisions_judge_provider')}
-            description={i18nT(
+            hint={i18nT(
               'pages.developer.featurePreviewsTab.decisions_judge_provider_desc',
             )}
             configKey={DECISIONS_NUDGE_WAKE_PROVIDER_PATH}
@@ -219,7 +219,7 @@ export function DecisionsPointPanel({
           />
           <SettingsSelect
             label={i18nT('pages.developer.featurePreviewsTab.decisions_judge_model')}
-            description={i18nT('pages.developer.featurePreviewsTab.decisions_judge_model_desc')}
+            hint={i18nT('pages.developer.featurePreviewsTab.decisions_judge_model_desc')}
             configKey={DECISIONS_NUDGE_WAKE_MODEL_PATH}
             value={judgeModel}
             options={judgeModelOptions}
