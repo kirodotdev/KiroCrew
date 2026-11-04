@@ -150,8 +150,9 @@ def _persist_worker_response(
     record = envelope.get("record")
     if not isinstance(record, dict):
         return None, "worker response record must be an object"
-    if record.get("change_id") != change_id:
-        return None, "worker response record names a different change"
+    # Shape before identity: a record carrying no change id of its own is not
+    # naming a DIFFERENT change, so the operator gets the list of fields the
+    # worker left out rather than a mix-up to go hunting for.
     errors = results.validate_result(record)
     if errors:
         # The validator interpolates the record's own key names (phase1.<k>,
@@ -159,6 +160,8 @@ def _persist_worker_response(
         # This string is surfaced and logged, so it goes through the same
         # scrub every other boundary carrying model-written text uses.
         return None, store.redact_text("worker response record is invalid: " + "; ".join(errors))
+    if record.get("change_id") != change_id:
+        return None, "worker response record names a different change"
     if base_record is not None:
         if envelope.get("base_digest") != _record_digest(base_record):
             return None, "worker follow-up is not bound to the first-pass record"

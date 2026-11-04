@@ -9,7 +9,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from sage_lib.review_driver import build_review_task  # noqa: E402
+from sage_lib import results  # noqa: E402
+from sage_lib.review_driver import (  # noqa: E402
+    build_review_followup_task,
+    build_review_task,
+)
 
 _SKILL = (Path(__file__).resolve().parents[1]
           / "skills" / "sage-review" / "SKILL.md")
@@ -94,6 +98,29 @@ class TestGateTaskPromptCarriesDesignLenses(unittest.TestCase):
     def test_prompt_keeps_block_design_only(self):
         # Deep reasoning must not weaken the block rule: BLOCK stays design-only.
         self.assertIn("BLOCK is ONLY for a genuine DESIGN defect", self.prompt)
+
+    def test_prompt_spells_out_the_identity_the_record_must_carry(self):
+        # `results.REQUIRED_TOP` is what the driver refuses a record over, so the
+        # prompt has to name every key in it rather than show `record` as `{...}`.
+        prompt = build_review_task(
+            "https://github.com/o/r/pull/1", change_id="GH-o-r-1", capability="t")
+        for key in results.REQUIRED_TOP:
+            self.assertIn(key, prompt)
+        self.assertIn(
+            '{"schema": "' + results.RESULT_SCHEMA + '", "version": '
+            + str(results.RESULT_VERSION) + ', "change_id": "GH-o-r-1", '
+            '"platform": "...", "repo_identity": "...", "revision": "..."',
+            prompt,
+        )
+
+    def test_followup_prompt_asks_for_the_same_identity(self):
+        # The follow-up record is validated the same way, so a coverage pass that
+        # drops the metadata loses the first pass too.
+        prompt = build_review_followup_task(
+            "https://github.com/o/r/pull/1", change_id="GH-o-r-1", capability="t")
+        for key in ("schema", "version", "change_id", "platform", "repo_identity",
+                    "revision"):
+            self.assertIn("`" + key + "`", prompt)
 
 
 if __name__ == "__main__":

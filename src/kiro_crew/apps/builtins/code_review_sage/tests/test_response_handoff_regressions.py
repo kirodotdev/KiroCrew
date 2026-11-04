@@ -233,3 +233,92 @@ def test_write_result_bytes_match_indented_dumps(tmp_path):
     record["counts"] = {"red": 1, "yellow": 0}
     path = results.write_result(record, tmp_path / "app", "same-bytes")
     assert path.read_bytes() == json.dumps(record, indent=2).encode("utf-8")
+
+
+def _content_only_record():
+    """The record a reviewer returns when it writes only the review content.
+
+    Every key here came back from a real run against
+    https://github.com/SkyrunAI/rookery2/pull/328: the envelope named the change
+    correctly and the record inside it carried no identity at all.
+    """
+    return {
+        "phase1": {"gate_verdict": "PASS", "design_risk": "low", "criticality": "critical"},
+        "blast_radius": {"rating": "SMALL", "signals": {}},
+        "counts": {"red": 0, "yellow": 0},
+        "findings": [],
+        "deep_reviewed": True,
+        "files_covered": ["CHANGELOG.md"],
+        "coverage_complete": True,
+        "ship_summary": "no blocking issues",
+    }
+
+
+def _envelope(record, change_id="GH-SkyrunAI-rookery2-328"):
+    return json.dumps(
+        {
+            "schema": D._RESPONSE_SCHEMA,
+            "version": D._RESPONSE_VERSION,
+            "capability": "issued-token",
+            "change_id": change_id,
+            "record": record,
+        }
+    )
+
+
+def test_a_record_without_its_own_identity_names_the_fields_it_left_out(tmp_path):
+    accepted, error = D._persist_worker_response(
+        _envelope(_content_only_record()),
+        change_id="GH-SkyrunAI-rookery2-328",
+        capability="issued-token",
+        root=tmp_path / "app",
+        run_id="content-only",
+    )
+
+    assert accepted is None
+    assert error == (
+        "worker response record is invalid: missing top-level key: schema; "
+        "missing top-level key: version; missing top-level key: change_id; "
+        "missing top-level key: platform; missing top-level key: repo_identity"
+    )
+
+
+def test_the_same_review_is_kept_once_the_record_carries_its_identity(tmp_path):
+    record = _content_only_record() | {
+        "schema": results.RESULT_SCHEMA,
+        "version": results.RESULT_VERSION,
+        "change_id": "GH-SkyrunAI-rookery2-328",
+        "platform": "github",
+        "repo_identity": "github.com/SkyrunAI/rookery2",
+        "revision": "7f0e6ca9b1d24c8e5a3b0f1d2e4c6a8b0d1f3e5a",
+    }
+    root = tmp_path / "app"
+
+    accepted, error = D._persist_worker_response(
+        _envelope(record),
+        change_id="GH-SkyrunAI-rookery2-328",
+        capability="issued-token",
+        root=root,
+        run_id="complete",
+    )
+
+    assert error == ""
+    assert accepted == record
+    assert results.read_result("GH-SkyrunAI-rookery2-328", root, "complete") == record
+
+
+def test_a_record_naming_another_change_is_still_refused(tmp_path):
+    record = _record("CR-OTHER")
+    root = tmp_path / "app"
+
+    accepted, error = D._persist_worker_response(
+        _envelope(record),
+        change_id="GH-SkyrunAI-rookery2-328",
+        capability="issued-token",
+        root=root,
+        run_id="wrong-change",
+    )
+
+    assert accepted is None
+    assert error == "worker response record names a different change"
+    assert results.read_result("GH-SkyrunAI-rookery2-328", root, "wrong-change") is None

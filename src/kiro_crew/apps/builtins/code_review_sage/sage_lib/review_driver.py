@@ -493,7 +493,22 @@ def build_review_task(change_link: str, *, change_id: str = "", capability: str 
         + '", "change_id": "'
         + change_id
         + '", "record": {...}}. The exact capability and change_id above are '
-        "driver-issued and must be echoed exactly. Put the complete result record in `record`: "
+        "driver-issued and must be echoed exactly.\n"
+        "     `record` carries its OWN copy of the change's identity, and the driver "
+        "throws the whole review away when any of it is missing, so write it first: "
+        '{"schema": "'
+        + results.RESULT_SCHEMA
+        + '", "version": '
+        + str(results.RESULT_VERSION)
+        + ', "change_id": "'
+        + change_id
+        + '", "platform": "...", "repo_identity": "...", "revision": "...", "url": "...", '
+        '"title": "...", "target_branch": "...", "is_fix": false, ...}. The `change_id` '
+        "inside `record` is that same driver-issued string — copy it, never shorten or "
+        "reformat it. Take `platform`, `repo_identity`, `revision`, `url`, `title`, "
+        "`target_branch` and `is_fix` from the `target` that step 3's `prepare` returned; "
+        "`revision` is the head commit sha every posted comment is anchored to.\n"
+        "     Then the review itself: "
         "phase1 (gate_verdict, design_risk, criticality, design_headline, problem, "
         "why_it_matters, solution_assessment) + blast_radius; `findings` (each with "
         "file, line, severity 🔴/🟡, dimension, headline, observation, consequence, "
@@ -563,8 +578,10 @@ def build_review_followup_task(
         "conclusion in ONE sentence under about 100 characters; recompute `counts` "
         "{red,yellow} over "
         "the FULL list; refresh `ship_summary`; extend `files_covered` to include "
-        "every changed file and set `coverage_complete=true`; preserve every first-pass "
-        "metadata field, including revision. You MUST NOT call any comment tool.\n"
+        "every changed file and set `coverage_complete=true`. Copy `schema`, `version`, "
+        "`change_id`, `platform`, `repo_identity` and `revision` into your `record` "
+        "verbatim from the prior-record JSON above — the driver rejects a record that "
+        "drops any of them. You MUST NOT call any comment tool.\n"
         "  6. Your final response MUST be one JSON object and nothing else (no Markdown "
         'fence or prose): {"schema": "'
         + _RESPONSE_SCHEMA

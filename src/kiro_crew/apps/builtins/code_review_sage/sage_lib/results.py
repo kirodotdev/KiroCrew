@@ -27,6 +27,10 @@ except ImportError:  # pragma: no cover - standalone fallback
 # entries. The write itself is atomic; this guards the read+merge before it.
 _REVIEWED_LOCK = threading.Lock()
 
+# The record's own identity, which a worker must write into `record` itself. The
+# reviewer prompt quotes these, so the contract and the prompt cannot drift apart.
+RESULT_SCHEMA = "code-review-sage-result"
+RESULT_VERSION = 1
 REQUIRED_TOP = ("schema", "version", "change_id", "platform", "repo_identity", "phase1")
 REQUIRED_PHASE1 = ("gate_verdict", "design_risk", "criticality")
 VALID_VERDICTS = {"PASS", "CONCERNS", "BLOCK"}
