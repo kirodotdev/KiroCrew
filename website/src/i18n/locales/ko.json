@@ -15218,6 +15218,7 @@
       "details_runs_loading": "실행 내용을 읽는 중…",
       "details_runs_failed": "실행 내용을 읽을 수 없습니다.",
       "details_runs_cut": "일부가 너무 길어 표시할 수 없습니다.",
+      "handoff_hint_staged_edits": "에이전트에게 질문하려면 MCP 서버 변경 사항을 적용하거나 버리세요.",
       "why_direct": "채팅마다 자체 복사본을 시작합니다. 복사본 하나를 쓰려면 공유를 켜세요.",
       "why_stub_off": "공유가 켜져 있습니다. MCP 공유를 켜면 적용됩니다.",
       "why_private_backend": "env가 볼트 시크릿을 참조하므로 채팅마다 자체 복사본을 유지합니다.",

@@ -7250,6 +7250,7 @@
       "details_runs_loading": "Reading what it runs…",
       "details_runs_failed": "Could not read what it runs.",
       "details_runs_cut": "Part of it is too long to show.",
+      "handoff_hint_staged_edits": "Apply or discard your MCP server edits to ask the agent.",
       "why_direct": "Each chat starts its own copy. Turn on Share to use one copy.",
       "why_stub_off": "Share is on. It takes effect when MCP sharing is on.",
       "why_private_backend": "Its env names a vault secret, so each chat keeps its own copy.",

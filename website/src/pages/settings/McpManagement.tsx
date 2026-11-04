@@ -57,7 +57,7 @@ import {
 } from './McpManagementLaunchReview'
 import { AssessmentView } from './McpManagementAssessment'
 import { ApprovalCard, ConfirmReload, type ReviewItem, ReviewApprovalsDialog, SharingHero } from './McpManagementHero'
-import { useMcpHandoffWouldLoseEdits } from '../connections/mcpStagedEditsContext'
+import { useMcpHandoffHint, useMcpHandoffWouldLoseEdits } from '../connections/mcpStagedEditsContext'
 import { isPermanentRefusal } from '../overview/McpShareRefusedNotice'
 import { retryPolicy } from '../../api/queryClient'
 
@@ -103,6 +103,7 @@ export function McpManagement({
   // the affordance is withheld until they are applied or discarded. `false`
   // outside the Customize → Connections panel's provider.
   const handoffWouldLoseEdits = useMcpHandoffWouldLoseEdits()
+  const handoffHint = useMcpHandoffHint()
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   // A change that waits for a restart is information, not a failure.
@@ -589,14 +590,16 @@ export function McpManagement({
       <ErrorNotice
         message={statusQ.isError ? i18nT('pages.mcpManagement.status_failed') : null}
         askAgent={!handoffWouldLoseEdits}
+        handoffHint={handoffHint}
       />
       {/* Page-wide, not inside Advanced: a failed server list disables the
           hero switch, so its reason must show while Advanced is closed. */}
       <ErrorNotice
         message={serversQ.isError ? i18nT('pages.mcpManagement.servers_failed') : null}
         askAgent={!handoffWouldLoseEdits}
+        handoffHint={handoffHint}
       />
-      <ErrorNotice message={error} askAgent={!handoffWouldLoseEdits} onDismiss={() => setError(null)} />
+      <ErrorNotice message={error} askAgent={!handoffWouldLoseEdits} handoffHint={handoffHint} onDismiss={() => setError(null)} />
       {restartNotice && (
         <div
           role="status"
@@ -931,7 +934,7 @@ export function McpManagement({
                 {resolveNotice}
               </p>
             )}
-            <ErrorNotice variant="inline" className="mt-2" message={resolveError} askAgent={!handoffWouldLoseEdits} />
+            <ErrorNotice variant="inline" className="mt-2" message={resolveError} askAgent={!handoffWouldLoseEdits} handoffHint={handoffHint} />
           </div>
           <button
             type="button"
@@ -1024,6 +1027,7 @@ function ConfirmSharing({
   onConfirm: () => void
 }) {
   const handoffWouldLoseEdits = useMcpHandoffWouldLoseEdits()
+  const handoffHint = useMcpHandoffHint()
   // Built on the repo's Radix Dialog rather than a bare `<div role="dialog">`:
   // that primitive owns the focus trap, initial focus, Escape-to-dismiss and
   // focus return. Hand-rolling the markup looked identical but let a keyboard
@@ -1060,6 +1064,7 @@ function ConfirmSharing({
                 : null
             }
             askAgent={!handoffWouldLoseEdits}
+            handoffHint={handoffHint}
           />
           {skipped.length > 0 && (
             <p className="mt-1 break-words text-[12.5px] text-muted [overflow-wrap:anywhere]">

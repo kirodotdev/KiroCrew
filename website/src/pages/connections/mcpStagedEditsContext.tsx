@@ -1,5 +1,7 @@
 import { createContext, useContext, useMemo, useState, type ReactNode } from 'react'
 
+import { i18nT } from '../../i18n/t'
+
 /**
  * Shared "the MCP Servers list has unapplied scope/tool edits" signal for the
  * Customize → Connections · MCP Servers panel (#24920).
@@ -45,6 +47,15 @@ export function McpStagedEditsProvider({ children }: { children: ReactNode }) {
  */
 export function useMcpHandoffWouldLoseEdits(): boolean {
   return useContext(McpStagedEditsContext).staged
+}
+
+/**
+ * The visible line MCP Management's notices show in place of the withheld
+ * "Ask the agent" (`ErrorNotice`'s `handoffHint`): what gets it back. Undefined
+ * while nothing is staged, so the notice is exactly what it was.
+ */
+export function useMcpHandoffHint(): string | undefined {
+  return useMcpHandoffWouldLoseEdits() ? i18nT('pages.mcpManagement.handoff_hint_staged_edits') : undefined
 }
 
 /** The setter the MCP Servers list uses to publish its staged-edit state. */
