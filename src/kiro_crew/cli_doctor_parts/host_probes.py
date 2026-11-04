@@ -357,12 +357,19 @@ def _venv_deps_ok(venv_py: Path) -> bool:
     return proc.returncode == 0
 
 
-def _report_node(issues: list[str]) -> None:
+def _report_node(
+    issues: list[str], *, bundle_route: bool = False, bundle_node_version: str | None = None
+) -> None:
     """Print the ``node:`` line, judging the full version against ``MIN_NODE_VERSION``.
 
     A Node below the floor is a failure recorded in *issues*: it lacks APIs the
     code needs. The same constant drives the startup warning in ``cli.py``. An
     unreadable version is shown as present rather than guessed at.
+
+    On the KAS bundle route (*bundle_route*) the engine runs the Node its bundle
+    ships, so a missing ``node`` on PATH is not a gap for the selected backend and
+    the install advice is not printed. A Node that IS on PATH is still judged
+    against the floor: other tools run on it.
     """
     node = shutil.which("node")
     if node:
@@ -391,6 +398,9 @@ def _report_node(issues: list[str]) -> None:
                 issues.append("node")
         except Exception:
             print(f"  node:        ✅ {node}")
+    elif bundle_route:
+        own = f"Node {bundle_node_version}" if bundle_node_version else "Node"
+        print(f"  node:        ⏭  not on PATH; not needed (KAS runs its engine bundle's own {own})")
     else:
         floor = format_node_version(MIN_NODE_VERSION)
         print(f"  node:        ⚠️  not found (Kiro Crew needs Node v{floor}+)")

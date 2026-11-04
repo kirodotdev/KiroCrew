@@ -1075,3 +1075,28 @@ def test_bundle_mode_exits_one_when_the_bundle_cannot_be_written(host, capsys, m
         "     Check that ~/.kiro/crew is writable and has free space.\n"
     )
     assert code == 1
+
+
+def test_bundle_route_without_node_on_path_reads_the_bundles_node(
+    host, capsys, monkeypatch
+) -> None:
+    """The node row on the KAS bundle route names the engine's own Node, not an install."""
+    _ready(host)
+    host.kiro = None
+    del host.which["node"]
+    monkeypatch.setattr(cli_doctor.kas_bundle, "kas_bundle_route", lambda: True)
+    monkeypatch.setattr(
+        cli_doctor.kas_bundle,
+        "installed_bundle",
+        lambda: SimpleNamespace(node_version="22.23.3"),
+    )
+    monkeypatch.setattr(cli_doctor.kas_bundle, "installed_engine_label", lambda: "KAS 0.66.33")
+
+    out, code = host.run(capsys)
+
+    assert (
+        "  node:        ⏭  not on PATH; not needed "
+        "(KAS runs its engine bundle's own Node 22.23.3)\n"
+    ) in out
+    assert "Fix: install Node.js" not in out
+    assert "node" not in (out.rsplit("Fix these issues:", 1)[1] if code else "")

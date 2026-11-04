@@ -678,7 +678,17 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
     else:
         print("  git:         ⏭  not found (not needed: this install updates without git)")
 
-    _report_node(issues)
+    # On the bundle route the engine runs the Node its bundle ships, so the row
+    # names that one; an unreadable install record only drops the version.
+    bundle_node_version: str | None = None
+    if bundle_route:
+        try:
+            installed_engine = kas_bundle.installed_bundle()
+        except Exception:
+            installed_engine = None
+        if installed_engine is not None:
+            bundle_node_version = installed_engine.node_version or None
+    _report_node(issues, bundle_route=bundle_route, bundle_node_version=bundle_node_version)
 
     # venv detection — used by the runtime section below. Windows venvs put the
     # interpreter under .venv\Scripts\python.exe, not .venv/bin/python3, so a
