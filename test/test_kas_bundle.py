@@ -864,8 +864,11 @@ class TestOldGlibcRefusal:
     def test_old_glibc_refuses_before_download_naming_the_reason(self, source_dir, tmp_path):
         root = tmp_path / "root"
         with _patch_glibc((2, 26)):
-            with pytest.raises(kas_bundle.KasBundleError) as exc:
+            with pytest.raises(kas_bundle.KasHostUnsupported) as exc:
                 _install(source_dir, root)
+        # A host that cannot run the engine is its own class, so callers can
+        # leave out "retry" advice; it is still a KasBundleError for the rest.
+        assert isinstance(exc.value, kas_bundle.KasBundleError)
         msg = str(exc.value)
         assert "2.26" in msg and "2.28" in msg and "onnxruntime" in msg
         # Nothing downloaded, extracted or published.

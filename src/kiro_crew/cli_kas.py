@@ -26,7 +26,7 @@ from kiro_crew.agent_sdk.kas_bundle import (
     pinned_version,
 )
 
-__all__ = ["add_kas_parser", "kas_cmd"]
+__all__ = ["HOST_UNSUPPORTED_EXIT", "add_kas_parser", "kas_cmd"]
 
 
 def add_kas_parser(parser: argparse.ArgumentParser) -> None:
@@ -202,10 +202,21 @@ def _install(args: argparse.Namespace) -> int:
     return _install_optional(args)
 
 
+#: ``kirocrew kas install``'s exit code when this host cannot run the engine at
+#: all, so a retry cannot help. The installer scripts read it to leave out
+#: their "retry when online" advice; every other failure exits 1.
+HOST_UNSUPPORTED_EXIT = 3
+
 #: The line an optional refresh ends with when it did not install the engine.
 _OPTIONAL_RETRY_LINE = (
     "⚠  The KAS engine for this release was not installed; agent.kas_bundle is off, "
     "so the update goes on. Retry with: kirocrew kas install"
+)
+
+#: The line an optional refresh ends with when this host cannot run the engine.
+_OPTIONAL_UNSUPPORTED_LINE = (
+    "⚠  This host cannot run the KAS engine (see above); agent.kas_bundle is off, "
+    "so the update goes on."
 )
 
 
@@ -259,7 +270,10 @@ def _install_optional(args: argparse.Namespace) -> int:
         timer.cancel()
     if rc == 0:
         return 0
-    print(_OPTIONAL_RETRY_LINE, file=sys.stderr)
+    if rc == HOST_UNSUPPORTED_EXIT:
+        print(_OPTIONAL_UNSUPPORTED_LINE, file=sys.stderr)
+    else:
+        print(_OPTIONAL_RETRY_LINE, file=sys.stderr)
     return release_apply.ENGINE_OPTIONAL_FAILED_EXIT
 
 
@@ -359,6 +373,9 @@ def _install_now(args: argparse.Namespace, *, deadline: float | None = None) -> 
         installed = kas_bundle.install_bundle(
             manifest, source=source, force=args.force, on_progress=on_progress
         )
+    except kas_bundle.KasHostUnsupported as exc:
+        print(f"❌ {exc}", file=sys.stderr)
+        return HOST_UNSUPPORTED_EXIT
     except kas_bundle.KasBundleError as exc:
         print(f"❌ {exc}", file=sys.stderr)
         return 1

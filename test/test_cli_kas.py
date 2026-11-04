@@ -246,6 +246,23 @@ class TestInstallFromDir:
         assert "❌ node did not run: exit 127" in err
         assert "Traceback" not in err
 
+    def test_a_host_that_cannot_run_the_engine_exits_the_unsupported_code(
+        self, cfg, host, local_source, monkeypatch, capsys
+    ):
+        """The installer scripts read this code to leave out "retry when online"."""
+
+        def old_glibc(*a, **k):
+            raise kas_bundle.KasHostUnsupported(
+                "this host's glibc (2.17) is older than KAS requires"
+            )
+
+        monkeypatch.setattr(kas_bundle, "install_bundle", old_glibc)
+        assert cli_kas.HOST_UNSUPPORTED_EXIT == 3
+        assert cli_kas.kas_cmd(self._args(local_source)) == cli_kas.HOST_UNSUPPORTED_EXIT
+        err = capsys.readouterr().err
+        assert "❌ this host's glibc (2.17)" in err
+        assert "Traceback" not in err
+
 
 class TestInstallFromUrl:
     def _args(self, **over) -> argparse.Namespace:
@@ -647,6 +664,26 @@ class TestInstallIfInUse:
         err = capsys.readouterr().err
         assert "HTTP 403" in err
         assert "Retry with: kirocrew kas install" in err
+
+    def test_an_optional_refresh_on_a_host_that_cannot_run_it_offers_no_retry(
+        self, cfg, host, tmp_path, monkeypatch, capsys
+    ):
+        from kiro_crew.platform.release_apply import ENGINE_OPTIONAL_FAILED_EXIT
+
+        monkeypatch.setattr(cli_kas, "_bundle_switch_on", lambda: False)
+        monkeypatch.setattr(kas_bundle, "installed_versions", lambda: ["0.66.33"])
+        monkeypatch.setattr(kas_bundle, "kas_engines_root", lambda: tmp_path / "engines")
+
+        def old_glibc(*_a, **_k):
+            raise kas_bundle.KasHostUnsupported(
+                "this host's glibc (2.17) is older than KAS requires"
+            )
+
+        monkeypatch.setattr(kas_bundle, "fetch_manifest", old_glibc)
+        assert cli_kas.kas_cmd(self._args()) == ENGINE_OPTIONAL_FAILED_EXIT
+        err = capsys.readouterr().err
+        assert "This host cannot run the KAS engine" in err
+        assert "Retry with" not in err
 
     def test_a_failed_install_on_the_bundle_route_still_fails(
         self, cfg, host, tmp_path, monkeypatch, capsys
