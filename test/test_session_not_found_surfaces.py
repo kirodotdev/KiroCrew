@@ -38,11 +38,8 @@ def _lost() -> AcpError:
 def _credential_dead() -> AcpError:
     """The answer a stale-credential backend gives, raised through the real path.
 
-    The Claude-on-Bedrock process answered, but the AWS credentials it cached
-    cannot be loaded any more -- so a retry on THIS process draws the answer
-    again and the remedy is the same fresh process a lost session gets. Built
-    through ``_raise_acp_error`` because that is the path ``AcpClient`` raises
-    the real frame through; the fakes here stand in for that client.
+    The process's cached AWS credentials fail to load, so only a fresh process helps.
+    Built through ``_raise_acp_error``, the path ``AcpClient`` raises the real frame through.
     """
     from kiro_crew.acp.transport_errors import _raise_acp_error
 
@@ -177,12 +174,8 @@ async def test_slack_lost_after_output_is_not_replayed():
 async def test_slack_stale_credential_error_recycles_and_replays_once():
     """``cloud_credential_error`` rides the same replace-the-process seam.
 
-    The process is alive but its credential cache is stale: the tag
-    (``AcpError.credential_reload``, set from the structured frame field)
-    routes through ``acp_error_is_session_not_found``, so the binding is
-    dropped once and the replay's claim spawns a fresh process, which loads
-    fresh credentials and answers. One replay, never a loop -- a second
-    failure ends the turn on the give-up text.
+    ``AcpError.credential_reload`` routes through ``acp_error_is_session_not_found``, so the
+    binding drops once and the replay spawns a fresh process. A second failure gives up.
     """
     from test_slack_handler import FakeSessionManager, MockSlackClient, _visible_texts
 

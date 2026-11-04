@@ -1,12 +1,7 @@
 """Tests for session manager.
 
-The SessionManager core: ``get_or_create`` create and reuse under the per-key semaphore, the
-reinjection and first-turn-history flags, the overflow recycle, the warm pool and the background
-session's first use, and the stateless pool and heartbeat keys. More SessionManager tests sit beside
-it in test_session_get_or_create.py, test_session_turn_control.py,
-test_session_ending_verbs.py, test_session_compaction.py, test_session_pool_and_sweeps.py,
-test_session_shared_runtimes.py, test_session_parent_end_verbs.py and
-test_session_parent_end_teardown.py; the fixtures and doubles they share are in session_helpers.py.
+The SessionManager core; more tests sit in the other test_session_*.py files, and their
+shared fixtures and doubles are in session_helpers.py.
 """
 
 from __future__ import annotations
@@ -191,11 +186,8 @@ class TestSessionManager:
     async def test_recycle_does_not_mark_reinjection(self, cfg):
         """A recycle reports success=True but is NOT a compaction.
 
-        Recycling destroys the session; its successor cold-starts and gets the
-        index through the normal new-session context. The dangerous case is
-        `_recycle_held`'s "entry already replaced" branch: without the guard the
-        mark would land on the fresh replacement via `_sessions.get(key)`,
-        making an un-compacted session re-inject a redundant index.
+        In `_recycle_held`'s "entry already replaced" branch the mark would otherwise land
+        on the fresh replacement, which then re-injects a redundant index.
         """
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
         await mgr.get_or_create("thread1")
@@ -221,11 +213,8 @@ class TestSessionManager:
     async def test_overflow_recycle_preserves_channel_binding(self, cfg):
         """A context-overflow recycle is housekeeping, so it must not unlink.
 
-        Dropping the whole session-map entry takes the mirror binding with it: a
-        Discord conversation resumed into that session loses its binding, and
-        later inbound messages from that channel fork into a new conversation.
-        Only the resume sid may go — the overflowed native conversation must not
-        be resumed.
+        Dropping the entry loses the mirror binding, so later Discord messages fork into a
+        new conversation. Only the resume sid goes.
         """
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
         await mgr.get_or_create("dashboard:chat-1")
@@ -345,17 +334,10 @@ class TestSessionManager:
 
     @pytest.mark.asyncio
     async def test_held_session_does_not_block_other_sessions(self, cfg):
-        """A SAME-KEY second acquirer parked on session A's held semaphore must
-        NOT block get_or_create for a DIFFERENT session B. This is the actual
-        lock-ordering freeze: the fast path acquired the per-session semaphore
-        while holding the global self._lock, so a second caller for A — wedged
-        on A's semaphore — pinned self._lock and froze EVERY other session.
+        """A second caller parked on session A's semaphore must not block session B.
 
-        This test FAILS on the pre-fix code (B hangs); it only passes because
-        the fast path now claims under the lock and acquires the semaphore
-        after releasing it. The earlier version of this test parked the second
-        caller on a *different* key, so it never pinned the lock and passed even
-        on the buggy code — it did not guard the fix."""
+        The fast path must acquire the semaphore after releasing self._lock. The parked
+        caller must use the SAME key as A, or it never pins the lock."""
         mgr = SessionManager(cfg, provider_factory=_alive_provider_factory())
 
         # Caller 1 holds A's semaphore (a turn in flight, not yet released).
@@ -380,16 +362,10 @@ class TestSessionManager:
 
     @pytest.mark.asyncio
     async def test_cold_start_race_loser_does_not_block_other_sessions(self, cfg):
-        """The cold-start variant of the lock-ordering freeze (Concern #1).
+        """The cold-start variant of the lock-ordering freeze.
 
-        Two callers cold-start the SAME new key concurrently. The race loser
-        hits the 'another task won the race' branch and must NOT acquire the
-        winner's held semaphore while holding self._lock — doing so pins the
-        global lock and freezes every other session, exactly like the fast-path
-        bug but in a branch the original CR diff never touched.
-
-        FAILS on the pre-fix cold-start path (a different key hangs while the
-        loser is wedged under the lock)."""
+        The race loser on the SAME new key must not take the winner's semaphore while
+        holding self._lock, or every other session freezes."""
         start_gate = asyncio.Event()
 
         def factory(session_key=None, agent=None, channel_id=None, **kwargs):
@@ -550,11 +526,8 @@ class TestWarmPool:
     def _gated_bg_factory(monkeypatch, gates):
         """A factory whose ``_bg`` providers block in ``start`` on ``gates[i]``.
 
-        Returns ``(factory, starts, started)``: ``starts`` lists each ``_bg``
-        provider as its start begins, ``started[i]`` is set when the i-th start
-        begins. ``warm_agent_specs`` is stubbed so the path to ``start`` stays on
-        the loop, and yielding the loop is enough for a second caller to reach
-        its own start if nothing serializes it.
+        Returns ``(factory, starts, started)``. ``warm_agent_specs`` is stubbed so the path
+        to ``start`` stays on the loop and a yield lets an unserialized caller reach it.
         """
         import kiro_crew.session_background as session_background
 
@@ -654,14 +627,11 @@ class TestWarmPool:
 
     @pytest.mark.asyncio
     async def test_a_cold_start_captures_the_store_it_supersedes(self, cfg):
-        """The crew log a cold-started session supersedes is captured by the
-        allocation itself -- inside the registration's critical section, before the
-        new sid is mapped -- and read back after the claim. A caller reading the
-        mapping around its own ``get_or_create`` can be suspended inside the
-        allocation while a concurrent turn allocates and recycles an intermediate
-        session, and would then cite the store before that one. The capture reads
-        the mapping's live id or the stash a recycle leaves, follows every cold start,
-        and is what a warm claim reads back too."""
+        """The superseded crew log is captured inside the allocation, before the new sid
+        is mapped.
+
+        A caller reading the mapping around ``get_or_create`` could miss an intermediate
+        session a concurrent turn allocated and recycled."""
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
         await mgr.start_pool()
         key = "discord:kirocrew:direct:7:gen1"
@@ -880,12 +850,8 @@ class TestWorkflowPoolStateless:
 class TestHeartbeatStateless:
     """``_hb`` must be treated as stateless alongside ``_bg``.
 
-    Heartbeat's published contract (``config/prompt.md``) is "fresh context
-    each cycle", and every entry is re-read from ``HEARTBEAT.md`` each cycle,
-    so a resumed transcript supplies nothing the next cycle depends on while
-    costing input tokens on every tick. Resuming is also actively wrong: for a
-    watch task the external system is the source of truth, and unrelated
-    queued tasks would inherit each other's reasoning.
+    Heartbeat promises "fresh context each cycle" (``config/prompt.md``); resuming would
+    cost tokens every tick and let unrelated queued tasks inherit each other's reasoning.
     """
 
     @pytest.mark.parametrize(

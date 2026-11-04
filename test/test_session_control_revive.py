@@ -1,20 +1,13 @@
 """Session control: reviving an archived session -- the mirror of close.
 
-Organized like ``test_session_control.py``: every refusal is asserted against
-the REAL slot objects and the REAL history metadata, because ``revive_session``
-reads ``workspace`` / ``app`` / ``created_by`` off the persisted metadata line
-and a permissive double would let a dead guard look alive. The happy path goes
-end to end through the real close (``close_target``) and the real resume core
-(``resume_slot_from_history``), so the round trip a person expects -- close a
-tab, revive it, find the transcript -- is what is exercised.
+Refusals use the real slots and real history metadata, because ``revive_session`` reads
+``workspace`` / ``app`` / ``created_by`` off the persisted line and a permissive double
+would let a dead guard look alive. The happy path runs the real ``close_target`` and
+``resume_slot_from_history``.
 
-``test_session_control_revive_containment_hook.py`` holds the tests that drive
-``resume_slot_from_history`` through its ``containment`` hook and ``final_check``, the
-History click's own refusals, and the revive cases filed beside them: the global cap at
-the hook, the ineligible caller's single answer, live targets authorized before they are
-named, and channel links recorded during the deferred clear or the transcript read. Both
-files import the autouse fixtures and the ``_slot``, ``_archive``, ``_revive`` and
-``_folder`` helpers from ``session_control_revive_helpers.py``.
+The ``containment`` hook and ``final_check`` tests live in
+``test_session_control_revive_containment_hook.py``; shared helpers in
+``session_control_revive_helpers.py``.
 """
 
 from __future__ import annotations
@@ -66,13 +59,9 @@ def test_a_revive_in_the_close_clock_reading_keeps_the_marker(tmp_path, monkeypa
     """A revive that starts in the same clock reading as the close is refused,
     and the session stays archived.
 
-    The resume's compare-and-clear keeps any ``closed`` stamped at or after the
-    moment the resume started. Inside one clock reading it cannot tell the close
-    it read from a new close that landed just after, so keeping the marker is
-    the safe answer. The clock is frozen here so the tie happens on every OS; on
-    Windows CPython 3.12 ``time.time()`` moves every ~15.6 ms, so an unfrozen
-    close and revive tie there by themselves, which is why ``_archive`` backdates
-    the close for every other test in this file."""
+    Within one clock reading the compare-and-clear cannot tell the close it read from
+    a newer one, so it keeps the marker. Windows ``time.time()`` ticks every ~15.6 ms,
+    which is why ``_archive`` backdates the close for the other tests."""
     frozen = [time.time()]
     monkeypatch.setattr(time, "time", lambda: frozen[0])
     state = _make_state(tmp_path)
@@ -524,12 +513,8 @@ def test_unfenced_caller_does_not_consult_the_lineage(tmp_path, monkeypatch):
 def _drift_in_window(monkeypatch, mutate):
     """Run *mutate(built_slot)* inside the resume's pre-publish window.
 
-    The resume core hands the built, still-unpublished slot to the caller's
-    ``containment`` hook; wrapping that hook is how a test models a change that
-    lands after the transcript read and before the publish -- a metadata line
-    rewritten, a link or mirror recorded, a caller losing eligibility, a cap
-    crossed. Also asserts what the core promises for that window: the built slot
-    is not resolvable and never in the live table while the hook awaits."""
+    Wraps the ``containment`` hook, which sees the built, unpublished slot after the
+    transcript read. Also asserts the slot is not resolvable or live while it awaits."""
     from kiro_crew.dashboard import chat_handlers
 
     original = chat_handlers.resume_slot_from_history
@@ -1352,12 +1337,8 @@ def test_the_session_store_probes_run_off_the_event_loop(tmp_path, monkeypatch):
     a disk write; the revive path must reach them only through
     ``asyncio.to_thread``, on both sides of the resume.
 
-    The sidebar broadcast the publish schedules (``push_slots_update`` ->
-    ``serialize_slots`` -> ``_slot_links``) reads the same getters on the loop
-    for EVERY slot; that is main's own projection, shared with the History click,
-    and whether its coalesced frame fires before ``asyncio.run`` returns is a
-    platform timing detail (it did on the Windows shard). It is silenced here so
-    the assertion is about the revive path alone."""
+    The sidebar broadcast (``push_slots_update`` -> ``_slot_links``) also reads them on
+    the loop, at a platform-dependent time, so it is silenced to test the revive path."""
     import threading
 
     state = _make_state(tmp_path)
