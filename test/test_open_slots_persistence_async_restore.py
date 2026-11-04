@@ -344,12 +344,9 @@ def test_suspend_slots_push_no_push_means_no_broadcast(tmp_path, monkeypatch):
 
 # ── The deferred restore must not let a flush truncate the snapshot ──
 #
-# start_flush_loop() is running (every 5s) BEFORE the startup restore. While the
-# restore was synchronous it starved that timer, so a flush could never land
-# mid-restore. Now that the restore yields per tab, one can — and
-# _flush_dirty_slots calls _persist_open_slots, which would overwrite the very
-# file being restored FROM with a half-populated slot set. Reproduced at real
-# scale before the guard: 77 tabs collapsed to 70.
+# start_flush_loop() runs every 5s before the startup restore, and the restore
+# yields per tab, so a flush can land mid-restore and overwrite the file being
+# restored FROM with a half-populated slot set.
 
 
 def test_flush_during_async_restore_does_not_truncate_snapshot(tmp_path, monkeypatch):
@@ -438,7 +435,7 @@ def test_restoring_flag_cleared_even_if_restore_raises(tmp_path, monkeypatch):
 
 
 def _record_restore_threads(monkeypatch, state):
-    """Instrument one state's restore so each half's thread is observable.
+    """Record the thread each restore step runs on, wrapping the real implementations.
 
     Returns a dict of thread-name lists:
 
@@ -861,7 +858,7 @@ def test_a_never_persisted_key_is_not_treated_as_a_deletion(tmp_path, monkeypatc
 
 
 def test_a_tab_closed_during_the_open_slot_read_is_not_restored(tmp_path, monkeypatch):
-    """The open-tab driver needs the SAME tombstone re-check as its siblings.
+    """The open-tab driver consults the close tombstone after its thread hop.
 
     The close records the tombstone at once but persists ``closed`` only after its
     awaits, so a mid-flight metadata read still says open. Restoring from it would
