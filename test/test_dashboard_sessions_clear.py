@@ -6,8 +6,7 @@ included. The handler is history-only — it skips:
 - any slot currently open in the sidebar (pinned or not, running or idle),
 - any session whose on-disk metadata has ``pinned=True``.
 
-Bulk-archiving *open* unpinned/idle sessions is out of scope and is
-tracked separately by (Clean Up button).
+Bulk-archiving *open* unpinned/idle sessions belongs to the Clean Up button.
 """
 
 from __future__ import annotations
@@ -66,14 +65,8 @@ def _make_request(
 ) -> tuple[web.Request, MagicMock, list[str]]:
     """Build a minimal ``web.Request`` with a fake ``conversation_log`` + ``_slots``.
 
-    Returns (request, state, deleted_keys) where ``deleted_keys`` is populated
-    by ``delete_session`` so tests can assert exactly which keys were removed.
-
-    Args:
-        unreadable_keys: Keys for which get_metadata_status returns ({}, False)
-            simulating a transient read failure (Windows indexer/AV hold).
-        raising_keys: Keys for which get_metadata_status raises an exception
-            simulating corrupt metadata.
+    Returns (request, state, deleted_keys). ``unreadable_keys`` read as ({}, False), a
+    transient Windows indexer/AV hold; ``raising_keys`` raise, as corrupt metadata.
     """
     deleted_keys: list[str] = []
     metadata = metadata or {}
@@ -401,13 +394,10 @@ async def test_all_failed_returns_ok_false() -> None:
 
 @pytest.mark.asyncio
 async def test_skips_both_candidate_transcripts_of_a_channel_shaped_slot() -> None:
-    """Clear All must not depend on provenance resolving correctly.
+    """Clear All protects both candidate transcripts of an unmarked channel tab.
 
-    A legacy channel tab carries no persisted marker, so it restores as an
-    ordinary dashboard slot writing ``dashboard:<stem>`` while the conversation
-    on screen still lives in the channel transcript. Protecting only the write
-    target would delete what the tab is displaying, so BOTH candidates are
-    protected -- the worst case is skipping a transcript nobody is reading.
+    Such a tab writes ``dashboard:<stem>`` but displays the channel transcript, so
+    protecting only the write target would delete what is on screen.
     """
     stem = "slack_1783733803.877979"
     other = _history_key_for("chat-9-1")
@@ -426,12 +416,8 @@ async def test_skips_both_candidate_transcripts_of_a_channel_shaped_slot() -> No
 async def test_skips_the_transcript_an_unbound_channel_tab_is_reading() -> None:
     """An open channel tab's transcript must survive Clear All.
 
-    A channel tab the session map could not resolve carries no
-    ``linked_session_key``, so it RUNS under ``dashboard:<stem>`` while its
-    conversation lives in the channel transcript, listed as the bare stem. A
-    protection set built from the session key contributes two names matching no
-    file and leaves the real transcript unprotected, so Clear All permanently
-    deletes the conversation the open tab is displaying.
+    With no ``linked_session_key`` the tab runs under ``dashboard:<stem>`` while its
+    transcript is listed as the bare stem, which a key-based protection set misses.
     """
     stem = "slack_1783733803.877979"
     other = _history_key_for("chat-9-1")
@@ -488,12 +474,8 @@ async def test_skips_legacy_bare_transcript_of_open_bound_slack_tab() -> None:
 async def test_skips_session_with_transient_unreadable_metadata() -> None:
     """A session whose metadata is transiently unreadable is SKIPPED, not deleted.
 
-    Regression test for data-loss bug: get_metadata() returns {} on transient
-    read failure (Windows indexer/AV holding the file) WITHOUT raising, so
-    {}.get("pinned") is falsy and a PINNED session gets permanently deleted.
-
-    The fix is to use get_metadata_status() which returns (meta, readable=False)
-    on transient failure, and skip when not readable.
+    get_metadata() returns {} on a transient read failure (Windows indexer/AV) without
+    raising, which would read a pinned session as unpinned; get_metadata_status() says so.
     """
     k_pinned = _history_key_for("chat-pinned")
     k_normal = _history_key_for("chat-normal")

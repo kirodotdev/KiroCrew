@@ -1,10 +1,8 @@
 """Nested shapes for agentic dashboard fields: declared, checked at load, enforced on write.
 
-A field's top-level ``type`` alone let a Needs-you card written as ``{title, detail}``
-land as "an array" while the page, which reads ``text``, dropped every row of it. These
-cases pin the four places that close that gap: the manifest declares the shape, the
-write is checked against it, ``dashboard_fields`` hands the shape and the current value
-back, and the crewmate's turn names the page and its writable fields.
+A top-level ``type`` alone accepts ``{title, detail}`` rows a page reading ``text`` drops.
+Pinned: the manifest declares the shape, writes are checked, ``dashboard_fields`` returns
+shape and value, and the crewmate's turn names the page and its writable fields.
 """
 
 from __future__ import annotations
@@ -213,12 +211,8 @@ class TestTheWriteChecksTheShape:
     def test_the_shape_is_asked_again_about_the_value_that_actually_lands(self) -> None:
         """The STORED value is the scrubbed one, so the shape has to hold for THAT.
 
-        The shape check runs before the scrub, and the scrub rewrites strings. A choice
-        that is itself credential-shaped therefore passes the check and then becomes a
-        placeholder that is outside the declared choices -- so the cell ends up holding
-        a value the page's own Model says cannot be there, and nothing said so. Asking
-        only whether the cleaned value is still a `string` does not catch it: the
-        placeholder is a perfectly good string.
+        A credential-shaped choice passes the check, then the scrub turns it into a
+        placeholder outside the declared choices; a plain `string` check would miss it.
         """
         secret = "ghp_" + "A" * 36
         manifest = parse_manifest(_raw(type="string", enum=[secret, "ok"]))

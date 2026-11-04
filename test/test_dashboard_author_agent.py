@@ -1,19 +1,11 @@
 """Tests for the kirocrew-dashboard-author managed crewmate.
 
 ``kirocrew-dashboard-author`` authors one dashboard template and lands it as a pull
-request. Its charter ships as the ``dashboard-template`` skill's ``agent-spec.md``, and
-until it is wired through the installer, the owned-files list and an eager install call,
-nothing writes the spec to ``~/.kiro/agents/`` -- so ``session_create`` cannot resolve
-the name and the crewmate can never be selected.
-
-These tests pin the registration (the filename is owned), the materialization (a rebuild
-writes a loadable spec), the charter the spec carries (the author writes files and drives
-git, so it mounts ``fs_write`` and ``execute_bash`` but never auto-approves them, and
-auto-approves only the reading core verbs its skill names), and PROVENANCE: the spec at
-the owned filename is attributed by an INSTALLER-RECORDED OWNERSHIP DIGEST in the
-``agent_state`` sidecar (the SHA-256 of the exact bytes the installer last wrote there),
-so the installer rewrites its own file but never overwrites a user file -- or a copy of
-another owned agent -- hand-placed at the once-user-creatable stem.
+request. Pinned: the filename is owned, a rebuild writes a loadable spec, the charter
+mounts ``fs_write`` and ``execute_bash`` without auto-approving them, and ownership is the
+SHA-256 of the installer's last write, recorded in the ``agent_state`` sidecar. So the
+installer rewrites its own file but never a user file (or a copy of another owned agent)
+at the stem.
 """
 
 from __future__ import annotations
@@ -142,8 +134,8 @@ def test_the_prompt_and_description_come_from_the_shipped_spec(
 
 
 # --------------------------------------------------------------------------- #
-# Digest provenance (GPT 6.1 F1, maintainer ruling): ownership is an
-# installer-recorded digest of the last managed write, NOT a content mark.
+# Digest provenance: ownership is an installer-recorded digest of the last managed
+# write, NOT a content mark.
 # --------------------------------------------------------------------------- #
 
 
@@ -170,11 +162,8 @@ def test_the_recorded_digest_is_of_the_bytes_the_governed_write_lands(
 ) -> None:
     """A ceiling that moves while the install runs cannot split the bytes from their record.
 
-    The ceiling is read when the shared tail runs at the write, so the pending digest
-    must be taken after that pass. Here the ceiling starts withholding ``tool_search``
-    the moment the writer is entered: the landed spec loses the grant, and the
-    recorded digest must still be that spec's, or every later rebuild would read the
-    file as foreign and stop re-filtering it.
+    The pending digest is taken after the ceiling pass at the write; otherwise later
+    rebuilds read the file as foreign and stop re-filtering it.
     """
     from kiro_crew.agent_materialization import auto_approve
 
@@ -275,13 +264,10 @@ def test_a_non_regular_pre_existing_file_is_left_untouched(
 def test_an_install_failure_runs_independent_repairs_then_fails_the_rebuild(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """GPT 6.1 F2: an author-spec install failure must NOT be swallowed. The independent
-    repairs (fork refresh, hook repair) still run -- so an unrelated installer's failure
-    cannot skip them -- but the rebuild then PROPAGATES the failure instead of reporting
-    success. This is what keeps a ceiling-tightening rebuild whose governed spec rewrite
-    failed from being recorded as projected: ``rebuild_agent_config_reporting`` does not
-    report a write, so ``reproject_for_ceiling_change`` leaves its memo behind and the next
-    poll retries rather than leaving forbidden auto-approvals live."""
+    """An author-spec install failure is not swallowed.
+
+    Independent repairs still run, then the rebuild propagates the failure, so
+    ``reproject_for_ceiling_change`` keeps its memo and the next poll retries."""
     _Rig(tmp_path, monkeypatch)  # pins the private agents dir and inputs
 
     def _boom() -> None:
@@ -337,12 +323,10 @@ def test_the_reporting_wrapper_does_not_report_a_write_on_install_failure(
 def test_repair_pass_sweeps_the_dashboard_author_stem_on_the_plain_owned_terms(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """FP item 4 subtraction: the hook-repair sweep carries NO dashboard-author special
-    case. The stem is swept exactly like every other owned name -- a legacy hook key is
-    stripped from a file at the stem whatever its other content. The once-user-creatable
-    protection lives in the install gate alone (it never overwrites a user file with the
-    managed spec); the hook sweep only normalizes recognized hook keys, so there is no
-    overwrite for a per-file content gate to prevent here."""
+    """The hook-repair sweep has no dashboard-author special case.
+
+    A legacy hook key is stripped whatever the file's content; user-file protection lives
+    in the install gate, and the sweep only normalizes recognized hook keys."""
     rig = _Rig(tmp_path, monkeypatch)
     target = rig.agents / DASHBOARD_AUTHOR_AGENT_FILENAME
     # A file at the stem with no recorded ownership digest, carrying the legacy hook key.
@@ -411,11 +395,10 @@ def test_reset_model_on_the_managed_spec_keeps_it_attributable(
 def test_reset_model_does_not_stamp_a_user_file_at_the_stem(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """GPT 6.1 / Opus 5.5 F1 (security): a user authored their own spec at the once-user-
-    creatable stem (NO recorded digest, so the installer refuses to touch it). They run
-    reset-model on it. The reset must NOT record the managed digest for the user's bytes --
-    doing so would make the next rebuild overwrite their charter. The gate: renew the digest
-    only when the PRE-edit content was already our confirmed managed write."""
+    """Reset-model on a user spec at the stem records no managed digest for its bytes.
+
+    Security: a recorded digest would let the next rebuild overwrite the user's charter.
+    The digest renews only when the pre-edit content was a confirmed managed write."""
     rig = _Rig(tmp_path, monkeypatch)
     target = rig.agents / DASHBOARD_AUTHOR_AGENT_FILENAME
     user = {
@@ -442,11 +425,10 @@ def test_reset_model_does_not_stamp_a_user_file_at_the_stem(
 def test_hook_sweep_does_not_stamp_a_user_file_carrying_a_stale_digest(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """GPT 6.1 / Opus 5.5 F1 (security), hook-sweep arm: a stale ownership digest exists for
-    the stem (from a managed install the user later REPLACED with their own file). The sweep
-    strips a legacy hook key from the user's file, but must NOT re-record the digest for the
-    user's bytes -- the renewal is gated on the PRE-sweep file already reproducing the
-    recorded digest, not merely on 'a digest exists'."""
+    """The hook sweep does not re-record a stale digest for a user's replacement file.
+
+    Security: renewal requires the pre-sweep file to reproduce the recorded digest, not
+    merely that a digest exists."""
     rig = _Rig(tmp_path, monkeypatch)
     target = rig.agents / DASHBOARD_AUTHOR_AGENT_FILENAME
     # A user file at the stem carrying a legacy hook key.
@@ -472,7 +454,7 @@ def test_hook_sweep_does_not_stamp_a_user_file_carrying_a_stale_digest(
 
 
 # --------------------------------------------------------------------------- #
-# GPT 6.1 install-gate branches (maintainer ruling): absent -> install; present +
+# Install-gate branches: absent -> install; present +
 # digest reproduces -> refresh; present not reproducing OR read-fails -> untouched.
 # The installer-recorded digest is the recorded provenance.
 # --------------------------------------------------------------------------- #
@@ -509,11 +491,9 @@ def test_a_present_file_reproducing_the_digest_is_refreshed(
 def test_a_forgery_not_reproducing_the_digest_is_left_untouched(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """GPT 6.1 F1 -- the core of the digest model. A hand-built spec that reuses the agent
-    name and mounts ``kirocrew-core`` -- a forgery the OLD content-mark model would have read
-    as the managed spec and overwritten -- does NOT reproduce the installer-recorded digest
-    (none is recorded, and its bytes differ from any managed write), so it is left UNTOUCHED.
-    Content marks are forgeable; the recorded digest is not."""
+    """A spec reusing the name and ``kirocrew-core`` mount is left untouched.
+
+    It does not reproduce the recorded digest; content marks are forgeable, the digest is not."""
     rig = _Rig(tmp_path, monkeypatch)
     target = rig.agents / DASHBOARD_AUTHOR_AGENT_FILENAME
     forged = {
@@ -537,12 +517,10 @@ def test_a_forgery_not_reproducing_the_digest_is_left_untouched(
 def test_a_conductor_duplicate_renamed_to_the_stem_is_not_overwritten(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """GPT 6.1 F1 -- the duplicate the content-mark discriminator could not catch. A copy of
-    ANOTHER owned agent (a conductor narrows its servers too, so it has the name, a
-    ``kirocrew-core`` reference AND no ``kirocrew-cron`` mount) renamed to this stem would
-    forge every content mark. It does NOT reproduce the installer-recorded digest, so it is
-    read as a user file and left UNTOUCHED -- its custom charter is never silently
-    overwritten. This is the whack-a-mole the digest closes once for every owned agent."""
+    """A conductor copy renamed to this stem is read as a user file and left untouched.
+
+    It has the name, a ``kirocrew-core`` reference and no ``kirocrew-cron`` mount, so it
+    matches every content mark, but not the recorded digest."""
     rig = _Rig(tmp_path, monkeypatch)
     target = rig.agents / DASHBOARD_AUTHOR_AGENT_FILENAME
     conductor_dup = {
@@ -593,7 +571,7 @@ def test_a_present_file_whose_read_fails_is_left_untouched(
     it is left untouched -- never overwritten on a failed read. A None from the capped
     reader is NOT treated as 'ours to write'. The install now RAISES (fail-closed) rather
     than returning, so the rebuild cannot report success without rewriting the governed spec
-    (GPT 6.1: an unreadable present spec must not be recorded as projected)."""
+    (an unreadable present spec must not be recorded as projected)."""
     import kiro_crew.agent_materialization.worker_agent as wa
 
     rig = _Rig(tmp_path, monkeypatch)
@@ -611,7 +589,7 @@ def test_a_present_file_whose_read_fails_is_left_untouched(
 def test_a_user_markdown_spec_at_the_stem_blocks_the_install(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """GPT 6.1: both the ``.json`` and ``.md`` candidates are checked before the name is
+    """Both the ``.json`` and ``.md`` candidates are checked before the name is
     claimed. kiro-cli reads ``<stem>.json`` and the v3 engine also reads ``<stem>.md``, and
     a ``.json`` written beside a user's ``.md`` would SHADOW that markdown spec. So a user
     ``kirocrew-dashboard-author.md`` (which the installer never writes -- it only writes the
@@ -635,7 +613,7 @@ def test_a_user_markdown_spec_at_the_stem_blocks_the_install(
 
 
 # --------------------------------------------------------------------------- #
-# GPT 6.1 / Opus 5.5 F1 (on f6290180a9): a rebuild of a CONFIRMED managed spec
+# A rebuild of a CONFIRMED managed spec
 # must preserve the user's explicitly-pinned model and skill mappings while
 # regenerating governed grants -- it must not silently reset them to defaults.
 # --------------------------------------------------------------------------- #
@@ -705,7 +683,7 @@ def test_a_rebuild_does_not_carry_a_pinned_model_from_an_unconfirmed_file(
 
 
 # --------------------------------------------------------------------------- #
-# GPT 6.1 F1/F2 (on b59007de01): the skill-URI migration is a managed writer and
+# The skill-URI migration is a managed writer and
 # must renew the digest for a confirmed spec; resources preservation must mirror
 # the key exactly (empty carried, absent removes the inherited default).
 # --------------------------------------------------------------------------- #
@@ -714,7 +692,7 @@ def test_a_rebuild_does_not_carry_a_pinned_model_from_an_unconfirmed_file(
 def test_the_skill_uri_migration_renews_the_digest_for_a_confirmed_spec(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """GPT 6.1 F1 (security): ``migrate_relocated_skill_uris`` rewrites the dashboard-author
+    """Security: ``migrate_relocated_skill_uris`` rewrites the dashboard-author
     spec to point a relocated skill at its new path. It is a managed writer, so it must renew
     the ownership digest for a CONFIRMED managed spec -- otherwise the installer reads its own
     migrated spec as foreign and stops re-filtering grants against a tightened ceiling."""
@@ -751,7 +729,7 @@ def test_the_skill_uri_migration_renews_the_digest_for_a_confirmed_spec(
 def test_a_rebuild_preserves_an_explicitly_empty_resources_selection(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """GPT 6.1 F2: an explicit remove-all-skills PATCH leaves ``resources`` present as ``[]``.
+    """An explicit remove-all-skills PATCH leaves ``resources`` present as ``[]``.
     A rebuild must carry that empty selection through, not re-inherit a mapping from the
     build default -- the user's removal must stick."""
     rig = _Rig(tmp_path, monkeypatch)
@@ -771,7 +749,7 @@ def test_a_rebuild_preserves_an_explicitly_empty_resources_selection(
 
 
 # --------------------------------------------------------------------------- #
-# GPT 6.1 F1 (on 99a0563711): a .md sibling must block only a FIRST-TIME install.
+# A .md sibling must block only a FIRST-TIME install.
 # A confirmed managed .json is still refreshed despite the sibling, so a grant the
 # ceiling has revoked does not stay executable; the .md is left untouched.
 # --------------------------------------------------------------------------- #
@@ -780,12 +758,10 @@ def test_a_rebuild_preserves_an_explicitly_empty_resources_selection(
 def test_a_confirmed_json_is_refreshed_despite_a_markdown_sibling(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """GPT 6.1 F1 (security): once the ``.json`` is our confirmed managed write, a user
-    adding a same-stem ``.md`` must NOT freeze it. If the rebuild skipped the rewrite, a
-    revoked auto-approval (the ceiling now denies ``@kirocrew-core/skill_search``) would stay
-    in the on-disk ``allowedTools`` and execute without PreToolUse enforcement for later
-    sessions. The confirmed ``.json`` is refreshed in place -- the stale grant is filtered
-    out -- and the user's ``.md`` is left untouched."""
+    """A same-stem ``.md`` does not freeze a confirmed managed ``.json``.
+
+    Security: skipping the rewrite would keep a revoked ``allowedTools`` grant executable
+    without PreToolUse enforcement. The ``.md`` is left untouched."""
     rig = _Rig(tmp_path, monkeypatch)
     target = rig.agents / DASHBOARD_AUTHOR_AGENT_FILENAME
     # A confirmed managed spec carrying a now-revoked auto-approval.
@@ -835,7 +811,7 @@ def test_a_markdown_sibling_still_blocks_a_first_time_install(
 
 
 # --------------------------------------------------------------------------- #
-# GPT 6.1 (on 15f0c5084d): a managed write interrupted between the file replace
+# A managed write interrupted between the file replace
 # and the digest finalize must NOT freeze the spec -- the file reproduces the
 # PENDING digest, so a rebuild still confirms and refreshes it.
 # --------------------------------------------------------------------------- #
@@ -844,11 +820,9 @@ def test_a_markdown_sibling_still_blocks_a_first_time_install(
 def test_a_spec_left_pending_after_an_interrupted_write_is_still_refreshed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """GPT 6.1 (security): a managed writer records the new bytes' digest as PENDING, writes
-    the file, then finalizes. If the process dies between the write and finalize, the file
-    holds the new bytes and only the pending digest is recorded. The next rebuild must still
-    recognise the file as ours (bytes reproduce the pending digest) and refresh it -- a stale
-    grant from a since-tightened ceiling is filtered out, not frozen in place forever."""
+    """A file matching only the PENDING digest is still ours and gets refreshed.
+
+    Security: a crash between write and finalize must not freeze a stale grant in place."""
     rig = _Rig(tmp_path, monkeypatch)
     target = rig.agents / DASHBOARD_AUTHOR_AGENT_FILENAME
     agent.rebuild_agent_config()
@@ -872,7 +846,7 @@ def test_a_spec_left_pending_after_an_interrupted_write_is_still_refreshed(
 
 
 # --------------------------------------------------------------------------- #
-# GPT 6.1 (on 81536c69a2): the hook-repair sweep must not FOLLOW a symlink at an
+# The hook-repair sweep must not FOLLOW a symlink at an
 # owned stem -- adding the dashboard-author name to OWNED_KIRO_AGENT_FILES must
 # not turn the sweep into a reader of an arbitrary symlink target.
 # --------------------------------------------------------------------------- #
@@ -881,10 +855,10 @@ def test_a_spec_left_pending_after_an_interrupted_write_is_still_refreshed(
 def test_the_hook_sweep_does_not_follow_a_symlink_at_an_owned_stem(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """GPT 6.1 (security): a symlink planted at the dashboard-author stem, pointing at a file
-    OUTSIDE the agents dir (standing in for a credential file), must be refused by the sweep
-    -- not stat-followed, not read through, not written back. The ``_spec_path_is_safe`` fence
-    the sweep now applies refuses the symlink before any read."""
+    """The sweep refuses a symlink at the stem pointing outside the agents dir.
+
+    Security: ``_spec_path_is_safe`` refuses it before any read, so a credential file is
+    never read through or written back."""
     rig = _Rig(tmp_path, monkeypatch)
     target = rig.agents / DASHBOARD_AUTHOR_AGENT_FILENAME
     secret = tmp_path / "outside" / "config.json"
@@ -904,7 +878,7 @@ def test_the_hook_sweep_does_not_follow_a_symlink_at_an_owned_stem(
 
 
 # --------------------------------------------------------------------------- #
-# GPT 6.1 (on 2505dcf9f7): an author-install write failure must set the hold
+# An author-install write failure must set the hold
 # flag so priming/maintenance retain the governance retry rather than marking
 # the ceiling as projected.
 # --------------------------------------------------------------------------- #
@@ -913,12 +887,10 @@ def test_the_hook_sweep_does_not_follow_a_symlink_at_an_owned_stem(
 def test_an_author_install_write_failure_sets_the_hold_flag(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """GPT 6.1 (security): a transient write failure on a confirmed managed spec (Windows
-    sharing violation, spec-lock timeout) must set ``_conductor_spec_held`` so
-    ``prime_ceiling_projection`` does not seed the ceiling as projected, and
-    ``retry_held_conductor_specs`` retries the rewrite on the next maintenance poll. Without
-    the hold, a tightened ceiling whose author-spec rewrite failed at boot leaves revoked
-    auto-approvals live for the process lifetime with no recovery path."""
+    """A transient write failure on a managed spec sets ``_conductor_spec_held``.
+
+    Security: then ``prime_ceiling_projection`` does not mark the ceiling projected and
+    ``retry_held_conductor_specs`` retries, so revoked auto-approvals do not stay live."""
     _Rig(tmp_path, monkeypatch)
 
     def _boom() -> None:
@@ -938,7 +910,7 @@ def test_an_author_install_write_failure_sets_the_hold_flag(
 
 
 # --------------------------------------------------------------------------- #
-# Opus 5.5 / Design Review (on 2505dcf9f7): a user file at the dashboard-author
+# A user file at the dashboard-author
 # stem must NOT crash the rebuild / kirocrew setup / gateway boot.
 # --------------------------------------------------------------------------- #
 
@@ -946,11 +918,9 @@ def test_an_author_install_write_failure_sets_the_hold_flag(
 def test_a_user_file_at_the_stem_does_not_crash_the_rebuild(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Opus 5.5 / Design Review: a user-authored spec at the ``kirocrew-dashboard-author``
-    stem must be left untouched **and the rebuild returns normally** (the install is skipped,
-    not crashed). A raise here would make ``kirocrew setup`` abort before PATH shim/MCP purge,
-    and gateway boot would skip first-run setup on every restart until the user deletes their
-    own file."""
+    """A user spec at the stem is left untouched and the rebuild returns normally.
+
+    A raise would abort ``kirocrew setup`` and skip first-run setup on every boot."""
     rig = _Rig(tmp_path, monkeypatch)
     target = rig.agents / DASHBOARD_AUTHOR_AGENT_FILENAME
     user = {"name": "user-template", "prompt": "keep me"}
@@ -965,8 +935,7 @@ def test_a_user_file_at_the_stem_does_not_crash_the_rebuild(
 def test_a_lost_digest_does_not_crash_the_rebuild(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Opus 5.5 / Design Review: a managed spec whose ownership digest was lost (sidecar
-    pruned, corrupted) should skip the install, not crash the rebuild."""
+    """A managed spec whose ownership digest was lost skips the install without crashing."""
     rig = _Rig(tmp_path, monkeypatch)
     target = rig.agents / DASHBOARD_AUTHOR_AGENT_FILENAME
     # First, install normally.
@@ -981,7 +950,7 @@ def test_a_lost_digest_does_not_crash_the_rebuild(
 
 
 # --------------------------------------------------------------------------- #
-# Design Review (watch): every writer of kirocrew-dashboard-author.json goes
+# Every writer of kirocrew-dashboard-author.json goes
 # through the two-phase digest-renewing write.
 # --------------------------------------------------------------------------- #
 
@@ -990,11 +959,9 @@ def test_every_managed_writer_calls_begin_and_finalize(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Design Review (watch): ownership depends on every current and future writer of the
-    dashboard-author spec going through ``begin_managed_write``/``finalize_managed_write``.
-    This test pins that invariant: it patches the two-phase helpers to record calls, runs
-    each writer, and asserts both were called. A writer that forgets turns the managed spec
-    foreign with no signal."""
+    """Every dashboard-author writer calls ``begin_managed_write``/``finalize_managed_write``.
+
+    A writer that skips them turns the managed spec foreign with no signal."""
     rig = _Rig(tmp_path, monkeypatch)
     target = rig.agents / DASHBOARD_AUTHOR_AGENT_FILENAME
     # Install once to seed the confirmed managed spec.

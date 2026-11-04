@@ -98,12 +98,8 @@ def test_a_page_may_carry_a_script(tmp_path):
 def test_a_non_utf8_page_is_refused_as_a_manifest_error(tmp_path):
     """So ONE bad directory isolates itself instead of taking the registry down.
 
-    The scanner's whole posture is that a template it cannot load is skipped and the
-    others still load. A bare ``UnicodeDecodeError`` defeats that: it is a
-    ``ValueError``, so it is neither an ``OSError`` nor a ``JSONDecodeError``, and it
-    travels past the scanner's guard and out of the registry read -- which answers
-    500 for every built-in dashboard too, none of which has anything to do with the
-    one unreadable file.
+    ``UnicodeDecodeError`` is a ``ValueError``, neither ``OSError`` nor
+    ``JSONDecodeError``, so unguarded it would 500 the whole registry read.
     """
     (tmp_path / "manifest.json").write_text(json.dumps(_raw()))
     # Windows-1252, which a template edited on a non-UTF-8 host is saved as.
@@ -130,11 +126,8 @@ def test_a_non_utf8_manifest_is_refused_as_a_manifest_error(tmp_path):
 def test_a_trailing_newline_cannot_pass_an_id_a_field_or_a_path():
     """``\\Z``, not ``$``: Python's ``$`` also matches before a trailing newline.
 
-    An id becomes a user-template DIRECTORY name and a registry key, so ``"report\\n"``
-    passing would put a second template beside ``report`` that looks identical to a
-    reader and collides with nothing. A field name becomes a DOM attribute and a path
-    is walked key by key, so the same hole is worth closing on all three rather than
-    on the one an importer happens to reach first.
+    ``"report\\n"`` would make a directory and registry key that looks like ``report``.
+    Ids, field names and paths are all checked.
     """
     from kiro_crew.dashboard_templates.manifest import _FIELD, _ID, _PATH
 

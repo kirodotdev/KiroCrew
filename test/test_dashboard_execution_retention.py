@@ -157,18 +157,10 @@ async def test_close_releases_only_own_live_execution(tmp_path, monkeypatch, mod
 async def test_a_non_destructive_close_keeps_a_persistent_sessions_vouch(
     tmp_path, monkeypatch, path
 ):
-    # Driven through the real close paths rather than the release helper, because the
-    # question is WHICH sessions a close releases; a test calling the helper directly
-    # would pass whichever answer the close path gave.
-    #
-    # Both paths are non-destructive: the conversation is saved and recreated from the
-    # warm pool when the tab is resumed, and the turn-start rebind publishes nothing
-    # when the selection is unchanged. A close that withdrew the vouch would therefore
-    # leave the resumed session unvouched and refuse its own-store dispatch until a
-    # gate-verified admission re-vouches it, charging a restart's refusal to closing a
-    # tab. The
-    # count cap bounds the retained entry instead, and evicts it before a live one
-    # because eviction follows use.
+    # Driven through the real close paths, since the question is WHICH sessions a close
+    # releases. Both closes are non-destructive (the tab resumes from the warm pool), so
+    # withdrawing the vouch would refuse the resumed session's dispatch. The count cap
+    # bounds the retained entry instead, evicting it before a live one.
     from test_slot_close_recreation_race import _Req
 
     from kiro_crew.dashboard.chat_handlers import api_chat_slots_cleanup

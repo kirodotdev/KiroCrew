@@ -216,16 +216,8 @@ class TestApiChatMemoryModeForwarding:
 class TestApiChatModeForwarding:
     """api_chat propagates a validated body.mode to the auto-created slot.
 
-    An app's worker slot (created under the app-worker mode its built-in registers
-    through ``apps/seams.py``) lives only in gateway memory. After a
-    gateway restart the app's next send() recreates the slot through this
-    auto-create path; without mode forwarding the slot is reborn with mode="" —
-    it then serializes surface="" and passes the chat sidebar's surface
-    allowlist, leaking the throwaway worker session into the user's chat list.
-    Mirrors TestApiChatMemoryModeForwarding above.
-
-    The worker mode here is a fixture registered on the facade for each post, so
-    these rows hold whichever built-ins ship one.
+    After a restart an app's next send() recreates its worker slot here; with mode=""
+    the worker session would leak into the user's chat list.
     """
 
     async def _post_chat(self, state, body):

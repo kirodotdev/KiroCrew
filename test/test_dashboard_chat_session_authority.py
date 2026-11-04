@@ -145,11 +145,8 @@ class TestInMemoryAuthority:
     def test_append_only_colliding_ts_no_duplicate(self, tmp_path, monkeypatch):
         """Colliding timestamps must not duplicate a genuine message on disk.
 
-        A coarse system clock (notably Windows' ~15ms tick) can stamp a burst of
-        rapid appends with an IDENTICAL ``datetime.now().isoformat()``. The
-        append-safe save must still match each on-disk window-region line to its
-        own window entry one-for-one — never mis-classifying a real window line
-        as a phantom "foreign append" and duplicating it.
+        Windows' ~15ms clock tick can give a burst of appends one identical ts; the save
+        must still match window lines one-for-one, not as phantom foreign appends.
         """
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         # Freeze history.py's clock so every on-disk append shares ONE ts,
@@ -196,17 +193,11 @@ class TestInMemoryAuthority:
         assert contents == [f"old msg {i}" for i in range(8)] + ["brand new msg"]
 
     def test_append_only_colliding_ts_edit_preserves_foreign(self, tmp_path, monkeypatch):
-        """Colliding ts + in-place edit + foreign append must NOT drop the
-        foreign line.
+        """Colliding ts + in-place edit + foreign append must NOT drop the foreign line.
 
-        The on-disk window region holds, sharing ONE coarse-clock ts: unchanged
-        ``A``, an acknowledged cross-process foreign append ``X``, and the
-        pre-edit copy of ``B`` — in that adversarial order (foreign BEFORE the
-        pre-edit copy). Memory holds ``A`` and the EDITED ``B'``. A greedy
-        ts-only match would consume ``X`` as if it were ``B``'s in-place edit and
-        silently DROP the acknowledged foreign append. The ambiguity guard must
-        instead preserve ``X`` (favouring a rare stale duplicate over
-        irreversible data loss).
+        Disk holds ``A``, foreign ``X``, old ``B`` on one ts; memory holds ``A`` and ``B'``.
+        A ts-only match would take ``X`` as ``B``'s edit, so the guard keeps ``X`` and
+        accepts a rare stale duplicate over data loss.
         """
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         import json as _json
@@ -396,13 +387,10 @@ class TestInMemoryAuthority:
             assert frozen not in content
 
     def test_flush_then_finalized_reply_persists(self, tmp_path, monkeypatch):
-        """#1: a mid-turn flush past a stop_event must not lose the later reply.
+        """A mid-turn flush past a stop_event must not lose the later reply.
 
-        Repro of the boundary-asymmetry bug: a stop happens mid-turn, the 5s
-        flush persists the window ending in the stop_event, then _flush_segment
-        finalizes the assistant reply and moves the stop_event AFTER it. The
-        finalized reply must end up on disk (the old position-counter model
-        committed past the stop_event and dropped the later assistant line).
+        The 5s flush persists a window ending in the stop_event, then _flush_segment
+        moves the stop_event after the finalized reply; that reply must reach disk.
         """
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         import json
@@ -853,14 +841,9 @@ class TestSessionReload:
 class TestCloseBroadcastDurability:
     """A slot-list frame must never omit a slot that is coming back.
 
-    Clients treat a frame omitting a slot as licence to drop that slot's cached
-    per-slot state, including follow-up and folder-suggestion cards that only
-    ever exist in the browser and are never re-sent. So the close may only
-    broadcast once the history save is durable: past that point no rollback can
-    put the slot back, and the omission can never be retracted.
-
-    Every test records the ORDER of the close steps, because asserting only that
-    a broadcast happened passes against any placement and proves nothing.
+    Clients drop a missing slot's browser-only cards, so the close broadcasts only after
+    the history save is durable. Tests record the ORDER of steps, since "a broadcast
+    happened" passes against any placement.
     """
 
     @staticmethod

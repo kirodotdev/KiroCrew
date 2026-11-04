@@ -13,11 +13,8 @@ from chat_test_helpers import _make_app, _make_state
 async def _seed_metadata(log, key: str, fields: dict) -> None:
     """Seed a session's metadata the way an async gateway caller must.
 
-    ``update_metadata`` ends in ``atomic_write.replace_with_retry``, which makes a
-    single rename attempt on the event-loop thread by design, so a Windows
-    sharing violation on the transcript the test just appended to fails the
-    setup outright. Offloading it, as ``history_offload`` tells async callers
-    to, runs the write on a worker that keeps the bounded retry.
+    ``atomic_write.replace_with_retry`` makes one attempt on the loop thread, so a
+    Windows sharing violation fails setup; a worker thread keeps the bounded retry.
     """
     await asyncio.to_thread(log.update_metadata, key, fields)
 

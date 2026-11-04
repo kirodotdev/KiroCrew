@@ -4,13 +4,7 @@
 machine namespaces. Both serve the same pane and both are opt-in, so they are
 tested together.
 
-The sidebar's Older-sessions pane renders the complement of the open tabs listed
-above it. The endpoint listed every session file on disk, so every open tab was
-repeated in that pane — the newest one, the conversation the user is in, always
-landing at its top.
-
-The exclusion is opt-in, applied server-side, and counted before pagination.
-Each of those three is load-bearing and has a test here:
+The Older-sessions pane shows the complement of the open tabs. Each property has a test:
 
 - opt-in, because the full inventory is what memory consolidation and the
   command palette's recents read;
@@ -197,13 +191,10 @@ async def test_last_filtered_page_reports_no_more() -> None:
 
 @pytest.mark.asyncio
 async def test_user_only_drops_the_machine_namespaces() -> None:
-    """The defect: a titleless subagent transcript renders its own key as a row.
+    """A titleless subagent transcript must not render its own key as a row.
 
-    ``wf-worker_`` rides along to pin a sibling the telemetry registry never registered,
-    which is why this list is spelled literally rather than derived. ``secretary_`` and
-    ``channel_`` are here so that every member of the tuple is covered by some assertion:
-    an unasserted member can be deleted without any test noticing, and the failure mode
-    that leaves is silent — its rows simply come back.
+    Spelled literally: ``wf-worker_`` is not in the telemetry registry, and every tuple
+    member is asserted so none can be deleted unnoticed.
     """
     sessions = [
         {"key": "dashboard_chat-1"},
@@ -346,9 +337,8 @@ async def test_user_only_keeps_a_taskrunner_row_as_the_declared_residual() -> No
     The namespace holds both runs (``taskrunner:run:<spec stem>``) and real
     conversations: ``POST /api/taskrunner/{id}/to-chat`` opens a titled chat slot on
     ``taskrunner:<task_id>:chat:<token>``. The key cannot reliably separate them once
-    ``_safe_key`` has folded every ``:``, so the whole namespace stays listed. Showing
-    a machine row costs less than hiding a conversation, and this test is what stops a
-    later edit from quietly taking the other side of that trade.
+    ``_safe_key`` has folded every ``:``, so the whole namespace stays listed: a machine
+    row costs less than a hidden conversation.
     """
     sessions = [
         {"key": "taskrunner_5f2a_chat_3f9c1a24e8b7455da0c6ef1290bd7c58"},

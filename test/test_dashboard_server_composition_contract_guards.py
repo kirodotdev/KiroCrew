@@ -31,15 +31,9 @@ SHARED_FACADE_CHECKS = ("the_globstar_matcher_reads_patterns_as_the_reviewers_do
 # ── the guards keep their reach ───────────────────────────────────────────────
 
 #: Constructs repository guards read by path, with the count each guard asserts and
-#: the file that holds each (``server`` is ``dashboard/server.py``, the other stems are
-#: its ``server_runtime`` owners and its two pure-data modules): the strict
-#: internal-path literal, the single heap-trim maintainer after the serving bind, the
-#: diag recorder's off switch, the channel manager's broadcast hand-off, the
-#: inherited-trust teardown and its wiring, the crew-log drain, both
-#: runner constructions, both Kiro prerequisite seeds, both skill-read observers, the
-#: migrated-builtin sweep, the per-boot secret mint, the
-#: dashboard contributor seam and both cron-folder loads. Each guard reads the file
-#: named here, so a construct that moved anywhere else would leave the guard's sight.
+#: the file that holds each (``server`` is ``dashboard/server.py``; other stems are its
+#: ``server_runtime`` owners and pure-data modules). Each guard reads only the file
+#: named here, so a construct moved elsewhere would leave the guard's sight.
 _GUARDED_CONSTRUCTS = (
     (r"^_STRICT_INTERNAL_API_PATHS = frozenset\($", 1, {"server_internal_paths": 1}),
     (r"platform_compat\.HeapTrimMaintainer\(\)", 1, {"server": 1}),

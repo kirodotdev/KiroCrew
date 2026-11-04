@@ -527,11 +527,8 @@ class TestBulkApproveBroadcast:
     async def test_slot_scoped_trust_leaves_other_slots_pending(self, tmp_path, monkeypatch):
         """A slot-scoped ``trust`` must NOT sweep other slots' pending approvals.
 
-        Regression: bulk auto-approve iterated EVERY slot regardless of scope, so
-        trusting one chat resolved the pending approval card in unrelated chats
-        (making them LOOK approved) while their ``_trust`` flag stayed False — so
-        their next tool call prompted again. Scope the sweep to the target
-        session; other slots keep their pending future AND their untrusted state.
+        Sweeping every slot would make other chats look approved while their ``_trust``
+        stays False. Other slots keep their pending future and their untrusted state.
         """
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         monkeypatch.setattr("kiro_crew.dashboard.chat.sel", lambda: MagicMock())

@@ -584,13 +584,8 @@ class TestRunChatRefusalFallbackSwap:
     ):
         """A pick landing INSIDE the restore's ``set_model`` await must win.
 
-        The epoch snapshot is read once before the await, so without
-        serialization an alias pick that lands while the restore's RPC is in
-        flight is applied first and then silently overwritten when the
-        restore's ``set_model(primary)`` completes LAST. The restore now
-        holds the session-scoped switch lock across the whole
-        check-and-restore, so the pick (which takes the same lock) is
-        strictly ordered after it and its choice stands.
+        The restore holds the session switch lock across check-and-restore, so a pick
+        (same lock) lands after ``set_model(primary)`` instead of being overwritten.
         """
         import asyncio as _asyncio
 
@@ -651,14 +646,8 @@ class TestRunChatRefusalFallbackSwap:
     async def test_pick_during_swap_set_model_await_is_not_reverted(self, tmp_path, monkeypatch):
         """A pick landing INSIDE the swap's ``set_model`` await must survive.
 
-        The swap snapshots the client pick epoch AFTER its await, so without
-        the session lock an alias pick landing while the swap's RPC is in
-        flight is folded into the snapshot — the restore's alias-pick guard
-        then reads equal and restores the primary over the user's choice.
-        The swap now holds the session-scoped switch lock across the await
-        and the snapshot (same order as the restore), so the pick is
-        strictly ordered after the snapshot and the restore drops its
-        record instead of touching the model.
+        The epoch snapshot follows the await, so without the lock a mid-RPC pick would
+        fold into it and the restore would overwrite the user's choice.
         """
         import asyncio as _asyncio
 

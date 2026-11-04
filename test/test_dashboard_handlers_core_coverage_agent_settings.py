@@ -4,12 +4,7 @@ The agent-settings PUT (``/api/config/kirocrew``) validators, the PATCH validato
 editable-field table does not reach, and the session sub-agent list / result routes
 with their path-id validation.
 
-Style and isolation follow ``test_dashboard_handlers_core_coverage.py``: direct
-handler calls against a ``MagicMock(spec=web.Request)``, a real aiohttp ``TestClient``
-where the handler needs a genuine request body or streaming response, and every write
-under the autouse-isolated ``KIROCREW_HOME`` from ``conftest.py``; nothing here touches
-the network, downloads a model, or spawns a process. Shared stubs and fixtures come
-from ``dashboard_handlers_core_coverage_helpers.py``.
+Shared stubs and fixtures come from ``dashboard_handlers_core_coverage_helpers.py``.
 """
 
 from __future__ import annotations
@@ -245,13 +240,9 @@ class TestAgentSettingsPut:
 
 
 class TestAgentSettingsPutLockOffload:
-    """Regression tests for the locked + offloaded read-modify-write path.
+    """The PUT write goes through ``update_config_locked`` under ``_get_config_lock``.
 
-    Before the fix the PUT handler called ``path.read_text`` / ``os.replace``
-    directly on the event loop, racing concurrent writers (lost-write) and
-    blocking the loop.  After the fix the write goes through
-    ``update_config_locked`` under ``_get_config_lock``, making two
-    concurrent PUTs serialize rather than clobber each other.
+    Off the event loop, so two concurrent PUTs serialize rather than lose a write.
     """
 
     @pytest.mark.asyncio
@@ -643,15 +634,9 @@ class TestSessionAgentRoutes:
 class TestSessionAgentPathIdValidation:
     """A malformed path id must answer 400, not crash with a 500.
 
-    ``session_workspace`` validates both ids with ``_validate_id``, which RAISES
-    ``ValueError``. These three handlers called into it with no ``try``, so an id
-    outside ``^[a-zA-Z0-9_.:-]+$`` -- or the literal ``..`` -- escaped as an
-    unhandled exception. Every other test in this file monkeypatches
-    ``list_results`` / ``read_result`` / ``result_path``, so the real validator
-    never ran and the gap stayed invisible; nothing here patches them.
-
-    ``messaging.py`` is the in-tree pattern for the same seam: ``read_state``
-    wraps ``_agent_dir`` in ``try/except ValueError`` and answers ``None``.
+    ``_validate_id`` raises ``ValueError`` for ids outside ``^[a-zA-Z0-9_.:-]+$`` or ``..``.
+    Nothing here patches ``list_results`` / ``read_result`` / ``result_path``, so the real
+    validator runs.
     """
 
     #: Rejected by ``_validate_id``: a space is outside the charset, and ``..``

@@ -682,12 +682,8 @@ class TestStopHistoryBanner:
 class TestStopDuringSessionPrep:
     """A Stop pressed while the turn is still being prepared must not open it.
 
-    During ``get_or_create``'s cold start the session is not registered yet,
-    so ``SessionManager.stop_turn`` answers ``"idle"`` and the stop resolves
-    without cancelling anything. The dispatch gate in ``_run_chat`` is what
-    honors that stop: it compares ``slot._stop_generation`` against the
-    turn-entry snapshot and refuses to open the turn ([Stopped] card
-    shown while the response streams to completion).
+    During cold start ``stop_turn`` answers ``"idle"``, so ``_run_chat`` compares
+    ``slot._stop_generation`` with its turn-entry snapshot and refuses to open the turn.
     """
 
     def _make_state_and_slot(self, tmp_path):
@@ -727,11 +723,8 @@ class TestStopDuringSessionPrep:
     async def test_stop_during_get_or_create_aborts_dispatch(self, tmp_path: Path) -> None:
         """Stop lands mid-cold-start → the turn never opens, nothing streams.
 
-        The stop is simulated exactly as the /stop handler leaves it for this
-        race: ``_stop_state`` flips idle → soft_pending (bumping
-        ``_stop_generation``) and, because ``stop_turn`` found no session and
-        answered "idle", snaps straight back to idle. A point-in-time state
-        check at dispatch sees nothing — only the generation delta survives.
+        ``_stop_state`` goes idle → soft_pending → idle, as /stop leaves it here, so only
+        the ``_stop_generation`` delta survives to dispatch.
         """
         state, slot, _run_chat = self._make_state_and_slot(tmp_path)
         stream_calls: list[str] = []

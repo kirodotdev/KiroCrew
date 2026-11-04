@@ -91,14 +91,9 @@ class TestTheThreeCasesThatDecideIt:
 class TestTheProfileIsAskedTooNotJustThePolicy:
     """THE CEILING IS THE OUTER BOUND, NOT THE ANSWER.
 
-    A profile narrows what the policy permits, and the two come apart in the ordinary
-    case: an open policy with a profile that restricts ``network.egress`` is an agent
-    whose real egress is restricted. Reading the ceiling alone called that agent
-    unrestricted and handed its page ``allow-scripts``, so the page could navigate its
-    own frame -- carrying the crewmate's fold values -- to a host the profile forbids.
-
-    Asked through ``governance_permits``, the one place ceiling and profile are
-    intersected, so this is not a second resolver with its own answer.
+    An open policy with a profile restricting ``network.egress`` is a restricted agent;
+    ``allow-scripts`` would let its page carry fold values to a forbidden host. Asked
+    through ``governance_permits``, the one place ceiling and profile intersect.
     """
 
     def test_an_open_policy_with_a_restricting_profile_gets_NO_scripts(self, ceiling) -> None:
@@ -230,11 +225,8 @@ class TestTheProfileIsAskedTooNotJustThePolicy:
     ) -> None:
         """EVERY SURFACE THIS PAGE CAN RUN ON, not just the one named today.
 
-        The resolver is asked for the active scope and answers with whatever profile is
-        bound -- a dashboard-bound one, or a default with no bind at all. Either way an
-        open policy plus a restricting profile is a restricted agent, so the grant is
-        withheld; the test is parameterised so adding a surface does not quietly leave
-        one of them ungoverned.
+        Whatever profile is bound (dashboard-bound or default), a restricting profile
+        withholds the grant; parameterised so a new surface is not left ungoverned.
         """
         from kiro_crew.platform import governance_profiles as profiles_mod
 
