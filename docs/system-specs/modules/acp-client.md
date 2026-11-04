@@ -3284,7 +3284,7 @@ reference is withheld, because the KAS environment also holds credentials such a
 the CLI's `KIRO_API_KEY`.
 
 A server Crew did not author also keeps each literal `env` value that is exactly
-`true` or `false` (case-insensitive, trimmed; `kas_agents._relayable_literal`), so
+`true` or `false` (case-insensitive, trimmed; `kas_env_literals._relayable_literal`), so
 a server that takes boolean feature flags from `env` starts with them on KAS as it
 does on kiro-cli, which reads the spec off disk. No secret is a boolean, so the
 rule needs no guess about which names or shapes carry one. A boolean is still
