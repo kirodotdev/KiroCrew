@@ -364,31 +364,18 @@ class CrewStore:
     def _writer_lock(self) -> Iterator[None]:
         """Serialise one read-modify-write against every other process's.
 
-        :meth:`publish` replaces the whole document, so a write is only safe if
-        the read it was computed from is still current when it lands. Without
-        this lock it is not: the lane has TWO writers by design -- the gateway
-        serving the owner's clicks, and a ``kirocrew cloud`` launch or teardown
-        running from a terminal in its own interpreter, which also sweeps every
-        other crew's wall as it goes -- and an atomic rename makes each write
-        indivisible without making the pair of them ordered. Two concurrent
-        passes both read
-        the same document, each adds its own change, and the second rename
-        discards the first. What it discards is a crew's row, and with it the
-        secret reference and crew name a turn to it needs: the VM keeps running
-        and billing, and nothing can address it.
+        :meth:`publish` replaces the whole document, and the lane has TWO writers
+        (the gateway and a terminal ``kirocrew cloud`` run, which also sweeps other
+        crews' walls). Without the lock, two passes read the same document and the
+        second rename drops the first's row: the VM keeps billing and nothing can
+        address it.
 
-        ``platform_lock_compat.file_lock``, for the same reason
-        :func:`launch_state._writer_lock` uses it: ``kirocrew cloud`` runs on the
-        owner's own machine, Windows included, and the ``flock_compat`` shim is a
-        no-op there. The lock lives in a sibling ``.lock`` file rather than on the
-        document, because the Windows path locks a byte of the file it is given
-        and the document is replaced by rename underneath it.
-
-        A lock that cannot be taken RAISES, which is what ``file_lock`` already
-        does and is the right direction here: every caller of a write is a
-        provisioning step, a teardown or a wall sweep, each of which reports its
-        own failure, so a refusal costs one pass and an unserialised write costs
-        a crew.
+        ``platform_lock_compat.file_lock`` because ``kirocrew cloud`` runs on
+        Windows too, where the ``flock_compat`` shim is a no-op. The lock is a
+        sibling ``.lock`` file because Windows locks a byte of the file it is given,
+        and the document is replaced by rename. A lock that cannot be taken RAISES:
+        every writer reports its own failure, so a refusal costs one pass while an
+        unserialised write costs a crew.
         """
         lock_path = self._path.with_name(self._path.name + ".lock")
         lock_path.parent.mkdir(parents=True, exist_ok=True)
@@ -426,21 +413,13 @@ class CrewStore:
         caller holds resources at that point -- a VM, a registered node -- and
         refusing is what tells it to clean them up instead of recording them.
 
-        Why this exists beside :meth:`put`. A provisioning step reads a record,
-        then WAITS: ``RunMicrovm`` is answered long before the guest registers, and
-        the online poll runs for minutes. ``put`` writes the record whole, so a
-        caller that evolves the object it read before the wait writes every field
-        back as it was -- including a ``state`` a teardown moved to ``terminated``
-        while it waited. The VM is gone and the row says running, which is a crew
-        the sweeper keeps reporting and nothing can reach.
+        A provisioning step reads a record and then waits minutes for the guest.
+        :meth:`put` would write back every field as read, including a ``state`` a
+        teardown moved to ``terminated`` meanwhile. So the changes are applied to the
+        record ON DISK, inside the writer lock, like :meth:`apply_event`.
 
-        So the changes are applied to the record as it is ON DISK, inside the
-        writer lock, exactly as :meth:`apply_event` computes its transition there.
-        The caller's own copy supplies the new facts and never the old ones.
-
-        The generation is the discriminator a state check alone does not give:
-        tear a crew down and launch the same tag again, and the row is live and
-        non-terminal while belonging to a different VM.
+        The generation tells a relaunch of the same tag (live, non-terminal, a
+        different VM) from the crew the caller is acting for.
         """
         with self._writer_lock():
             records = self.load_for_write()
@@ -456,19 +435,12 @@ class CrewStore:
     def apply_event(self, tag: str, event: str, **changes: Any) -> CrewRecord:
         """Move one crew through :func:`states.transition` and store the result.
 
-        The state and the facts that came with it are written in ONE publish.
-        Writing the state first and the facts second leaves a window where a
-        gateway restart keeps the new state and loses what came with it, and a
-        state whose own facts are missing is a crew the next reader cannot act on.
+        The state and its facts are written in ONE publish, so a gateway restart
+        cannot keep the new state and lose its facts. Raises
+        :class:`states.IllegalTransition` for an event the table has no row for.
 
-        Raises :class:`states.IllegalTransition` for an event the table has no row
-        for, which is a caller bug and must not be stored as a state.
-
-        The transition is computed INSIDE the writer lock, not only written there.
-        The event's legality depends on the state the record is in, so a read
-        outside the lock decides against a state another writer may already have
-        moved on from -- and the publish would then store a state no edge of the
-        table ever allowed.
+        The transition is computed INSIDE the writer lock: its legality depends on
+        the current state, which another writer may have moved.
         """
         with self._writer_lock():
             records = self.load_for_write()
