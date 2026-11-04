@@ -778,4 +778,12 @@ def _handle_app(args: argparse.Namespace) -> None:
         print(f"   kirocrew app install {app_dir}")
 
     else:
-        print("Usage: kirocrew app {install|list|enable|update|disable|uninstall|info|init}")
+        # No sub-action (the subparser is not `required`, matching every CLI
+        # subparser) or an unknown one: a usage error. Print to stderr and exit
+        # 2, the argparse convention, so `kirocrew app && …` stops instead of
+        # proceeding on a 0 after a typo.
+        print(
+            "Usage: kirocrew app {install|list|enable|update|disable|uninstall|info|init}",
+            file=sys.stderr,
+        )
+        sys.exit(2)

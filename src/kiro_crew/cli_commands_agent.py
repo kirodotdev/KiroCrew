@@ -471,7 +471,14 @@ def _handle_agent(args: argparse.Namespace) -> None:
         _agent_reset_model(args)
 
     else:
-        print("Usage: kirocrew agent {list|create|update|delete|reset-model}")
+        # No sub-action or an unknown one: a usage error. Print to stderr and
+        # exit 2, the argparse convention, so a script does not read 0 after a
+        # typo.
+        print(
+            "Usage: kirocrew agent {list|create|update|delete|reset-model}",
+            file=sys.stderr,
+        )
+        sys.exit(2)
 
 
 #: How a failed teardown step names what it could not remove.

@@ -1,4 +1,5 @@
 """Tests for the `kirocrew app` CLI subcommand."""
+
 from __future__ import annotations
 
 import json
@@ -46,14 +47,14 @@ def app_env(tmp_path, monkeypatch):
     kiro_agents = tmp_path / "kiro-agents"
     kiro_agents.mkdir()
     import kiro_crew.apps.bridges as bridges_mod
+
     monkeypatch.setattr(bridges_mod, "KIRO_AGENTS_DIR", kiro_agents)
-    monkeypatch.setattr(
-        "kiro_crew.apps.execution.third_party_execution_allowed", lambda: True
-    )
+    monkeypatch.setattr("kiro_crew.apps.execution.third_party_execution_allowed", lambda: True)
     return {"home": home, "kiro_agents": kiro_agents}
 
 
 # _handle_app unit tests (call the function directly, not subprocess)
+
 
 class TestHandleApp:
     """Test _handle_app by simulating argparse Namespace objects."""
@@ -69,6 +70,7 @@ class TestHandleApp:
         _handle_app(ns)  # should not raise
 
         from kiro_crew.apps.manager import list_apps
+
         apps = list_apps()
         assert len(apps) == 1
         assert apps[0]["name"] == "cli-test-app"
@@ -84,6 +86,7 @@ class TestHandleApp:
         ns = argparse.Namespace(app_action="enable", name="cli-test-app")
         _handle_app(ns)
         from kiro_crew.apps.manager import _read_installed
+
         meta = _read_installed("cli-test-app")
         assert meta is not None
         assert meta.enabled is True
@@ -119,9 +122,7 @@ class TestHandleApp:
         data_file = app_env["home"] / "apps" / "cli-test-app" / "data" / "state.json"
         data_file.write_text('{"saved": true}')
 
-        ns = argparse.Namespace(
-            app_action="uninstall", name="cli-test-app", purge_data=False
-        )
+        ns = argparse.Namespace(app_action="uninstall", name="cli-test-app", purge_data=False)
         _handle_app(ns)
 
         from kiro_crew.apps.manager import get_app
@@ -139,9 +140,7 @@ class TestHandleApp:
         app_dir = app_env["home"] / "apps" / "cli-test-app"
         (app_dir / "data" / "state.json").write_text('{"saved": true}')
 
-        ns = argparse.Namespace(
-            app_action="uninstall", name="cli-test-app", purge_data=True
-        )
+        ns = argparse.Namespace(app_action="uninstall", name="cli-test-app", purge_data=True)
         _handle_app(ns)
 
         assert not app_dir.exists()
@@ -158,12 +157,18 @@ class TestHandleApp:
     def test_no_action_prints_usage(self, app_env, capsys):
         import argparse
 
+        import pytest
+
         from kiro_crew.cli_commands import _handle_app
 
         ns = argparse.Namespace(app_action=None)
-        _handle_app(ns)
+        # A missing sub-action is a usage error: usage line to stderr, exit 2
+        # (argparse convention), not a 0 on stdout a script would read as success.
+        with pytest.raises(SystemExit) as exited:
+            _handle_app(ns)
+        assert exited.value.code == 2
         captured = capsys.readouterr()
-        assert "Usage" in captured.out
+        assert "Usage" in captured.err
 
 
 class TestFileOnlyInstallRegistration:
@@ -240,9 +245,7 @@ class TestEnableWarnsHooksNeedRestart:
 
         _handle_app(argparse.Namespace(app_action="enable", name="cli-test-app"))
 
-    def test_enable_warns_when_the_app_declares_backend_hooks(
-        self, tmp_path, app_env, capsys
-    ):
+    def test_enable_warns_when_the_app_declares_backend_hooks(self, tmp_path, app_env, capsys):
         install_app(_make_app_source(tmp_path, hooks=self.HOOKS))
 
         self._enable()
@@ -264,9 +267,7 @@ class TestEnableWarnsHooksNeedRestart:
         meta = _read_installed("cli-test-app")
         assert meta is not None and meta.enabled is True
 
-    def test_enable_says_nothing_for_an_app_without_hooks(
-        self, tmp_path, app_env, capsys
-    ):
+    def test_enable_says_nothing_for_an_app_without_hooks(self, tmp_path, app_env, capsys):
         """No hooks means nothing in-process can be stale -- stay quiet."""
         install_app(_make_app_source(tmp_path))
 
@@ -276,9 +277,7 @@ class TestEnableWarnsHooksNeedRestart:
         assert "backend hooks" not in out
         assert "restart" not in out
 
-    def test_notice_helper_tolerates_a_malformed_backend_block(
-        self, tmp_path, app_env
-    ):
+    def test_notice_helper_tolerates_a_malformed_backend_block(self, tmp_path, app_env):
         """A hand-edited app.json must not turn the notice into a crash.
 
         ``backend`` and ``backend.hooks`` are user-editable JSON, so either can
