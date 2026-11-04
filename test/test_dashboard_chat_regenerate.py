@@ -22,7 +22,11 @@ class TestRegenerateAndVariants:
         slot.append("user", "hi")
         slot.append("assistant", "hello v1")
         turn_stats = {"model": "model-a", "credits": 0.25, "elapsed_ms": 1200}
+        secret = "AKIAIOSFODNN7EXAMPLE"
         slot.messages[-1]["meta"] = {"turn_stats": turn_stats}
+        slot.messages[-1]["variants"] = [
+            {"content": "older variant", "ts": "t0", "turn_stats": {"model": secret}}
+        ]
         slot.drain()
         captured = []
 
@@ -35,9 +39,58 @@ class TestRegenerateAndVariants:
                 assert resp.status == 200
                 await asyncio.sleep(0)
         assert [m["role"] for m in slot.messages] == ["user"]
+        assert len(captured) == 2
+        assert captured[0]["content"] == "older variant"
+        assert secret not in repr(captured[0]["turn_stats"])
+        assert captured[1]["content"] == "hello v1"
+        assert captured[1]["turn_stats"] == turn_stats
+
+    @pytest.mark.asyncio
+    async def test_regenerate_backfills_stats_on_existing_current_variant(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("s1")
+        slot.append("user", "hi")
+        slot.append("assistant", "current reply")
+        stats = {"model": "model-a", "credits": 0.25}
+        slot.messages[-1]["meta"] = {"turn_stats": stats}
+        slot.messages[-1]["variants"] = [{"content": "current reply", "ts": "t1"}]
+        slot.messages[-1]["variant_idx"] = 0
+        captured = []
+        captured_event = asyncio.Event()
+
+        async def _capture(*a, **kw):
+            captured.extend(list(slot._pending_variants))
+            captured_event.set()
+
+        with patch("kiro_crew.dashboard.chat_regenerate._run_chat", new=_capture):
+            async with TestClient(TestServer(_make_app(state))) as client:
+                resp = await client.post("/api/chat/slots/s1/regenerate")
+                assert resp.status == 200
+                await asyncio.wait_for(captured_event.wait(), timeout=5)
+
         assert len(captured) == 1
-        assert captured[0]["content"] == "hello v1"
-        assert captured[0]["turn_stats"] == turn_stats
+        assert captured[0]["turn_stats"] == stats
+
+    def test_variant_stats_are_redacted_when_stashed_or_adopted(self):
+        from kiro_crew.dashboard.chat_utils_display import (
+            adopt_variant_text,
+            variant_from_row,
+            with_redacted_turn_stats,
+        )
+
+        secret = "AKIAIOSFODNN7EXAMPLE"
+        stats = {"model": f"provider-{secret}", "details": {"label": secret}}
+        stashed = variant_from_row({"content": "reply", "meta": {"turn_stats": stats}})
+        assert secret not in repr(stashed["turn_stats"])
+
+        row = {}
+        adopt_variant_text(row, {"content": "reply", "turn_stats": stats})
+        assert secret not in repr(row["meta"]["turn_stats"])
+        malformed = with_redacted_turn_stats({"content": "reply", "turn_stats": secret})
+        assert "turn_stats" not in malformed
 
     @pytest.mark.asyncio
     async def test_regenerate_rejects_when_running(self, tmp_path, monkeypatch):
@@ -106,6 +159,32 @@ class TestRegenerateAndVariants:
             assert resp.status == 200
         assert slot.messages[-1]["content"] == "v1"
         assert slot.messages[-1]["meta"]["turn_stats"] == old_stats
+
+    @pytest.mark.asyncio
+    async def test_switch_variant_redacts_stats_and_backfills_leaving_variant(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("s1")
+        slot.append("assistant", "v2")
+        row = slot.messages[-1]
+        secret = "AKIAIOSFODNN7EXAMPLE"
+        row["meta"] = {"turn_stats": {"model": secret, "credits": 1.5}}
+        row["variants"] = [
+            {"content": "v1", "ts": "t1", "turn_stats": {"model": secret, "credits": 0.25}},
+            {"content": "v2", "ts": "t2"},
+        ]
+        row["variant_idx"] = 1
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post("/api/chat/slots/s1/switch-variant", json={"index": 0})
+            assert resp.status == 200
+
+        assert row["variants"][1]["turn_stats"]["credits"] == 1.5
+        assert row["meta"]["turn_stats"]["credits"] == 0.25
+        assert secret not in repr(row["variants"])
+        assert secret not in repr(row["meta"])
 
     @pytest.mark.asyncio
     async def test_switch_variant_without_legacy_turn_stats_drops_stale_stats(
@@ -350,16 +429,21 @@ class TestRegenerateAndVariants:
 
     @pytest.mark.asyncio
     async def test_save_slot_redacts_variants(self, tmp_path, monkeypatch):
-        """Variants written to disk must have credentials/exfil URLs redacted."""
+        """Variant content and statistics written to disk must be redacted."""
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
         slot = state.get_or_create_slot("s1")
         slot.append("user", "hi")
         slot.append("assistant", "safe content")
         # Plant a fake credential inside a variant
+        secret = "AKIAIOSFODNN7EXAMPLE"
         slot.messages[-1]["variants"] = [
-            {"content": "AKIAIOSFODNN7EXAMPLE secret stuff", "ts": "t1"},
-            {"content": "safe content", "ts": "t2"},
+            {
+                "content": f"{secret} secret stuff",
+                "ts": "t1",
+                "turn_stats": {"model": secret},
+            },
+            {"content": "safe content", "ts": "t2", "turn_stats": {"model": "safe-model"}},
         ]
         slot.messages[-1]["variant_idx"] = 1
         slot.drain()
@@ -370,9 +454,8 @@ class TestRegenerateAndVariants:
         persisted = state.conversation_log.read_messages(key)
         ai = [m for m in persisted if m.get("role") == "assistant"][0]
         assert "variants" in ai
-        # The AKIA key must not appear in either variant after redaction
         for v in ai["variants"]:
-            assert "AKIAIOSFODNN7EXAMPLE" not in v.get("content", "")
+            assert secret not in repr(v)
 
     @pytest.mark.asyncio
     async def test_switch_variant_rejects_when_running(self, tmp_path, monkeypatch):
@@ -606,23 +689,24 @@ class TestRegenerateAndVariants:
         ), "pending variants must be cleared when task is cancelled"
 
     @pytest.mark.asyncio
-    async def test_prepare_messages_redacts_variant_content(self, tmp_path, monkeypatch):
-        """Variant content exposed via API must have credentials redacted."""
+    async def test_prepare_messages_redacts_variant_content_and_stats(self, tmp_path, monkeypatch):
+        """Variant content and statistics exposed via API must be redacted."""
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
         slot = state.get_or_create_slot("s1")
         slot.append("user", "hi")
         slot.append("assistant", "safe")
+        secret = "AKIAIOSFODNN7EXAMPLE"
         slot.messages[-1]["variants"] = [
-            {"content": "AKIAIOSFODNN7EXAMPLE leaked key", "ts": "t1"},
-            {"content": "safe", "ts": "t2"},
+            {"content": f"{secret} leaked key", "ts": "t1", "turn_stats": {"model": secret}},
+            {"content": "safe", "ts": "t2", "turn_stats": {"model": "safe-model"}},
         ]
         from kiro_crew.dashboard.chat import _prepare_messages
 
         prepared = _prepare_messages(slot.messages, False, live_child="")
         ai = [m for m in prepared if m.get("role") == "assistant"][0]
         for v in ai["variants"]:
-            assert "AKIAIOSFODNN7EXAMPLE" not in v.get("content", "")
+            assert secret not in repr(v)
 
     @pytest.mark.asyncio
     async def test_switch_variant_corrupt_entry(self, tmp_path, monkeypatch):

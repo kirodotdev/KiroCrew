@@ -27,6 +27,7 @@ from kiro_crew.dashboard.chat_utils import (
     drop_records_without_placeholders,
     redact_display_content,
     with_bounded_redaction_records,
+    with_redacted_turn_stats,
 )
 from kiro_crew.history import PROVENANCE_FIELDS, carry_provenance
 
@@ -164,10 +165,12 @@ def _attach_variants(slot: _ChatSlot, m: dict) -> None:
     if m.get("variants"):
         slot.messages[-1]["variants"] = [  # type: ignore[assignment]
             with_bounded_redaction_records(
-                {
-                    **v,
-                    "content": redact_display_content(v.get("content", "")),
-                }
+                with_redacted_turn_stats(
+                    {
+                        **v,
+                        "content": redact_display_content(v.get("content", "")),
+                    }
+                )
             )
             for v in m["variants"]
             if isinstance(v, dict)
@@ -312,6 +315,7 @@ def _build_message_entry_uncached(
             # through their bounded constructors, and they are dropped when that
             # text holds no placeholder to explain.
             drop_records_without_placeholders(v_entry, vc)
+            v_entry = with_redacted_turn_stats(v_entry)
             v_entry = with_bounded_redaction_records(v_entry)
             redacted_variants.append(v_entry)
         entry["variants"] = redacted_variants

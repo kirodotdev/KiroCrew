@@ -15,9 +15,11 @@ from kiro_crew.dashboard.chat_runner import _run_chat, _start_next_queued_turn
 from kiro_crew.dashboard.chat_utils import (
     adopt_variant_text,
     effective_session_key,
+    redact_turn_stats,
     reject_if_slot_under_construction,
     slot_history_key,
     variant_from_row,
+    with_redacted_turn_stats,
 )
 from kiro_crew.dashboard.kiro_readiness import reject_if_kiro_unverified
 from kiro_crew.dashboard.relay_archive import relay_archive_refusal
@@ -186,10 +188,33 @@ async def api_chat_slot_regenerate(request: web.Request) -> web.Response:
 
         ai_msg = msgs[ai_idx]
         _rv = ai_msg.get("variants")
-        variants: list[dict] = list(_rv) if isinstance(_rv, list) else []  # type: ignore[arg-type]
+        variants: list[dict] = (
+            [with_redacted_turn_stats(v) for v in _rv if isinstance(v, dict)]
+            if isinstance(_rv, list)
+            else []
+        )
         current_entry = variant_from_row(ai_msg)
-        if not any(v.get("content") == current_entry["content"] for v in variants):
+        current_idx = ai_msg.get("variant_idx")
+        matching_idx = (
+            current_idx
+            if isinstance(current_idx, int)
+            and 0 <= current_idx < len(variants)
+            and variants[current_idx].get("content") == current_entry["content"]
+            else next(
+                (
+                    i
+                    for i in range(len(variants) - 1, -1, -1)
+                    if variants[i].get("content") == current_entry["content"]
+                ),
+                None,
+            )
+        )
+        if matching_idx is None:
             variants.append(current_entry)
+        elif isinstance(current_entry.get("turn_stats"), dict):
+            # The current reply may already be in the list without stats: turn
+            # stats live on the assistant row until it is switched or regenerated.
+            variants[matching_idx]["turn_stats"] = current_entry["turn_stats"]
         if len(variants) > _MAX_VARIANTS:
             variants = _cap_keeping_shown(
                 variants, current_entry["content"], ai_msg.get("variant_idx")
@@ -351,11 +376,10 @@ async def api_chat_slot_switch_variant(request: web.Request) -> web.Response:
         if target is None:
             return web.json_response({"error": "no variants", "code": "no_variants"}, status=400)
         raw_target_variants = target.get("variants")
-        variants: list[dict] = (
-            list(raw_target_variants)  # type: ignore[arg-type]
-            if isinstance(raw_target_variants, list)
-            else []
-        )
+        raw_variants = raw_target_variants if isinstance(raw_target_variants, list) else []
+        variants = [with_redacted_turn_stats(v) if isinstance(v, dict) else v for v in raw_variants]
+        target_dict: dict = target
+        target_dict["variants"] = variants
         if idx < 0 or idx >= len(variants):
             return web.json_response(
                 {"error": "index out of range", "code": "index_out_of_range"}, status=400
@@ -366,20 +390,19 @@ async def api_chat_slot_switch_variant(request: web.Request) -> web.Response:
             return web.json_response(
                 {"error": "corrupt variant entry", "code": "variant_corrupt"}, status=400
             )
-        target_dict: dict = target
-        # The reply being left keeps its own stats: a variant stashed without
-        # them would otherwise lose the row's stats to the restore below.
+        # Preserve the reply being left before restoring another variant. Stats
+        # may come from a transcript row, so sanitize both existing and copied values.
         leaving_idx = target_dict.get("variant_idx")
         row_meta = target_dict.get("meta")
         row_stats = row_meta.get("turn_stats") if isinstance(row_meta, dict) else None
         if isinstance(leaving_idx, int) and 0 <= leaving_idx < len(variants):
             leaving = variants[leaving_idx]
-            if (
-                isinstance(leaving, dict)
-                and isinstance(row_stats, dict)
-                and not isinstance(leaving.get("turn_stats"), dict)
-            ):
-                leaving["turn_stats"] = dict(row_stats)
+            if isinstance(leaving, dict):
+                leaving_stats = leaving.get("turn_stats")
+                if not isinstance(leaving_stats, dict):
+                    leaving_stats = row_stats
+                if isinstance(leaving_stats, dict):
+                    leaving["turn_stats"] = redact_turn_stats(leaving_stats)
         adopt_variant_text(target_dict, chosen)
         slot.invalidate_source_links()
         target_dict["variant_idx"] = idx

@@ -91,7 +91,7 @@ def variant_from_row(row: dict) -> dict:
     if isinstance(meta, dict):
         turn_stats = meta.get("turn_stats")
         if isinstance(turn_stats, dict):
-            entry["turn_stats"] = dict(turn_stats)
+            entry["turn_stats"] = redact_turn_stats(turn_stats)
         # Bounded here, at retention: the row's meta was read off a transcript
         # line, and a variant list outlives the render that would bound it later.
         for key, (bound, _tags) in REDACTION_RECORD_FIELDS.items():
@@ -142,7 +142,7 @@ def _variant_for_emit(variant: dict) -> dict:
     display-redacted text, and its redaction records rebuilt through their
     bounded constructors. Runs inside the same allowed-host scope as the row it
     belongs to, so a variant shows the links its row shows."""
-    bounded = with_bounded_redaction_records(variant)
+    bounded = with_redacted_turn_stats(with_bounded_redaction_records(variant))
     text = bounded.get("content", "")
     if isinstance(text, str) and "blocked_links" in bounded:
         text, left = restore_allowed_links(
@@ -179,7 +179,7 @@ def adopt_variant_text(row: dict, variant: dict) -> None:
         if not isinstance(meta, dict):
             meta = {}
             row["meta"] = meta
-        meta["turn_stats"] = dict(turn_stats)
+        meta["turn_stats"] = redact_turn_stats(turn_stats)
     elif isinstance(meta, dict):
         meta.pop("turn_stats", None)
     for key, (bound, _tags) in REDACTION_RECORD_FIELDS.items():
@@ -201,7 +201,7 @@ def adopt_variant_text(row: dict, variant: dict) -> None:
 
 
 def _redact_meta(meta: dict) -> dict:
-    """Recursively redact string values in meta dict.
+    """Recursively redact meta values and string keys inside turn stats.
 
     Iterates a SNAPSHOT of the dict, never the live object. ``_redact_meta`` is
     reached from ``_save_slot_to_history``, which runs in the flush executor
@@ -214,7 +214,48 @@ def _redact_meta(meta: dict) -> dict:
     A shallow copy per level suffices: the copy's key set is stable, and nested
     containers get their own snapshot from the recursive call.
     """
-    return {k: _redact_value(v) for k, v in list(meta.items())}
+    return {key: _redact_meta_value(key, value) for key, value in list(meta.items())}
+
+
+def _redact_meta_value(key: Any, value: Any) -> Any:
+    """Use the stats-specific key scrubber at every meta nesting level."""
+    if key == "turn_stats" and isinstance(value, dict):
+        return redact_turn_stats(value)
+    return _redact_value(value)
+
+
+def _redact_turn_stats_value(value: Any) -> Any:
+    """Recursively redact turn-stat values and string mapping keys."""
+    if isinstance(value, str):
+        return _redact_for_display(value)
+    if isinstance(value, dict):
+        return _redact_turn_stats_mapping(value)
+    if isinstance(value, (list, tuple)):
+        return [_redact_turn_stats_value(item) for item in list(value)]
+    return value
+
+
+def _redact_turn_stats_mapping(turn_stats: dict) -> dict:
+    """Snapshot a stats mapping while redacting both keys and nested values."""
+    return {
+        _redact_for_display(key) if isinstance(key, str) else key: _redact_turn_stats_value(value)
+        for key, value in list(turn_stats.items())
+    }
+
+
+def redact_turn_stats(turn_stats: dict) -> dict:
+    """Return a recursively redacted copy of a turn-statistics mapping."""
+    return _redact_turn_stats_mapping(turn_stats)
+
+
+def with_redacted_turn_stats(variant: dict) -> dict:
+    """Return ``variant`` with valid turn stats redacted and malformed stats removed."""
+    if "turn_stats" not in variant:
+        return variant
+    turn_stats = variant["turn_stats"]
+    if not isinstance(turn_stats, dict):
+        return {key: value for key, value in variant.items() if key != "turn_stats"}
+    return {**variant, "turn_stats": redact_turn_stats(turn_stats)}
 
 
 def _redact_meta_for_role(role: str, meta: dict) -> dict:
@@ -267,10 +308,14 @@ def _redact_meta_for_role(role: str, meta: dict) -> dict:
                 safe_scheme = lower.startswith("https://") or lower.startswith("http://")
                 out[k] = v if (safe_scheme and not oauth_url_contains_credential(v)) else ""
             else:
-                out[k] = _redact_value(v)
+                out[k] = _redact_meta_value(k, v)
         out.update({k: v for k, v in validated_records.items() if v})
         return out
-    out = {k: _redact_value(v) for k, v in list(meta.items()) if k not in REDACTION_RECORD_FIELDS}
+    out = {
+        k: _redact_meta_value(k, v)
+        for k, v in list(meta.items())
+        if k not in REDACTION_RECORD_FIELDS
+    }
     out.update({k: v for k, v in validated_records.items() if v})
     if role == "user" and isinstance(meta.get("quote"), dict):
         # The whole-message quote record (``chat_delivery.quote_meta``) must

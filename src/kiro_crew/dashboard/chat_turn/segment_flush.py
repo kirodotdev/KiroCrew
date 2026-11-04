@@ -35,6 +35,7 @@ from kiro_crew.dashboard.chat_utils import (
     should_continue_after_compaction,
     tool_calls_are_read_only_preparation,
     with_bounded_redaction_records,
+    with_redacted_turn_stats,
 )
 from kiro_crew.dashboard.recovery_replays import replays_of
 from kiro_crew.dashboard.state import chat_message_note, row_mid
@@ -842,7 +843,7 @@ def _flush_segment(
             # reached here unredacted must not be stored that way.
             v_text, _ = redact_exfiltration_urls(v.get("content", ""))
             entry = with_bounded_redaction_records({**v, "content": redact_credentials(v_text)[0]})
-            pending_list.append(entry)
+            pending_list.append(with_redacted_turn_stats(entry))
         newest: dict = {"content": redacted, "ts": last_msg.get("ts", "")}
         if blocked_links:
             newest["blocked_links"] = blocked_links

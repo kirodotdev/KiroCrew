@@ -1132,6 +1132,21 @@ if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-n0"]))
 
 
+class TestVariantStatsAreRedacted:
+    def test_turn_stats_redact_credentials_in_keys_and_nested_values(self) -> None:
+        from kiro_crew.dashboard.chat_utils import redact_turn_stats
+
+        secret = "AKIAIOSFODNN7EXAMPLE"
+        stats = {secret: {secret: [secret]}}
+
+        cleaned = redact_turn_stats(stats)
+        row_meta = _redact_meta_for_role("assistant", {"turn_stats": stats})
+
+        assert secret not in json.dumps(cleaned)
+        assert secret not in json.dumps(row_meta)
+        assert secret in stats
+
+
 class TestEveryRetentionPointIsBounded:
     """Records read off a transcript line are bounded where the slot KEEPS them.
 
@@ -1170,14 +1185,24 @@ class TestEveryRetentionPointIsBounded:
             messages: list[dict] = [{"role": "assistant", "content": "c"}]
 
         slot = _Slot()
+        secret = "AKIAIOSFODNN7EXAMPLE"
         chat_persistence._attach_variants(
             slot,  # type: ignore[arg-type]
-            {"variants": [{"content": "v", "ts": "t", "blocked_links": self._many()}]},
+            {
+                "variants": [
+                    {
+                        "content": "v",
+                        "ts": "t",
+                        "blocked_links": self._many(),
+                        "turn_stats": {"model": secret},
+                    }
+                ]
+            },
         )
 
-        assert len(slot.messages[-1]["variants"][0]["blocked_links"]) == (
-            exfil.MAX_BLOCKED_LINKS_PER_MESSAGE
-        )
+        variant = slot.messages[-1]["variants"][0]
+        assert len(variant["blocked_links"]) == exfil.MAX_BLOCKED_LINKS_PER_MESSAGE
+        assert secret not in repr(variant["turn_stats"])
 
     def test_each_retention_site_uses_the_bounded_helper(self) -> None:
         # Source guard over the sites that retain transcript data in the slot:
@@ -1186,7 +1211,7 @@ class TestEveryRetentionPointIsBounded:
         import inspect
         import pkgutil
 
-        from kiro_crew.dashboard import chat_persistence_parts, chat_runner
+        from kiro_crew.dashboard import chat_persistence_parts, chat_regenerate, chat_runner
 
         # The two rehydrate appends run on the facade from its composed parts.
         parts = [
@@ -1197,11 +1222,18 @@ class TestEveryRetentionPointIsBounded:
         persistence = "".join(inspect.getsource(module) for module in (chat_persistence, *parts))
         assert 'meta=(m["meta"] if' not in persistence
         assert persistence.count('with_bounded_redaction_records(m["meta"])') == 2
-        assert "with_bounded_redaction_records(" in inspect.getsource(
-            chat_persistence._attach_variants
-        )
+        attach_variants = inspect.getsource(chat_persistence._attach_variants)
+        assert "with_bounded_redaction_records(" in attach_variants
+        assert "with_redacted_turn_stats(" in attach_variants
+        save_entry = inspect.getsource(chat_persistence._build_message_entry_uncached)
+        assert "with_redacted_turn_stats(" in save_entry
         stash = inspect.getsource(chat_runner._flush_segment)
         assert "with_bounded_redaction_records({**v" in stash
+        assert "with_redacted_turn_stats(" in stash
+        regenerate = inspect.getsource(chat_regenerate.api_chat_slot_regenerate)
+        assert "with_redacted_turn_stats(" in regenerate
+        switch_variant = inspect.getsource(chat_regenerate.api_chat_slot_switch_variant)
+        assert "with_redacted_turn_stats(" in switch_variant
 
 
 class TestAVariantsRecordsAreCheckedOnServe:

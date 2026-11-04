@@ -664,6 +664,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _redact_meta_for_role,
         _redact_value,
         _redacted_preview,
+        redact_turn_stats,
         _remember_preview,
         _remember_redacted,
         _variant_for_emit,
@@ -673,6 +674,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         variant_from_row,
         with_allowed_links_restored,
         with_bounded_redaction_records,
+        with_redacted_turn_stats,
         without_unknown_row_fields,
     )
     from kiro_crew.dashboard.chat_utils_injected_rows import (  # noqa: F401
