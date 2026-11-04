@@ -1134,7 +1134,9 @@ def _scoped_entries(
             # A key read resolves to the winning copy, so a selected losing
             # copy is read by its own path, fenced to the narrowest admitted
             # root that holds it.
-            target = os.path.realpath(entry.path)
+            target = sk.validate_file_path(str(entry.path))
+            if target is None:
+                continue
             admitted = max(
                 (root for root in admitted_copy_roots if sk._within_any(target, (root,))),
                 key=len,

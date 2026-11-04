@@ -114,6 +114,36 @@ def test_a_mapped_copy_the_path_screen_refuses_is_not_served(tmp_path, opened, m
     assert loader.read_scoped_skill("code/implementation", only=[str(mapped)]) is None
 
 
+def test_a_cached_losing_copy_is_screened_before_resolution(tmp_path, opened, monkeypatch):
+    from kiro_crew import skills as sk
+    from kiro_crew.skill_runtime import catalog
+
+    winner = tmp_path / "upstream" / "skills"
+    loser = tmp_path / "consumer" / "skills"
+    upstream = _write(winner)
+    mapped = _write(loser)
+    loader = _loader(tmp_path, [winner, loser], opened)
+    # Simulate cached rows surviving a link swap after the catalog walk.
+    rows = [("code/implementation", upstream, None), ("code/implementation", mapped, None)]
+    monkeypatch.setattr(catalog, "_iter_rows", lambda _loader, _project: rows)
+    monkeypatch.setattr(loader, "_snapshot_admitted_roots", lambda: (str(winner), str(loser)))
+    screen = sk.validate_file_path
+    monkeypatch.setattr(
+        sk, "validate_file_path", lambda raw: None if Path(raw) == mapped else screen(raw)
+    )
+    realpath = catalog.os.path.realpath
+
+    def guarded_realpath(path, **kwargs):
+        assert Path(path) != mapped, "a refused cached copy must not reach raw realpath"
+        return realpath(path, **kwargs)
+
+    # The ordinary file is inside an admitted root; raw containment would accept it.
+    assert sk._within_any(realpath(mapped), (realpath(loser),))
+    monkeypatch.setattr(catalog.os.path, "realpath", guarded_realpath)
+
+    assert loader._scoped_entries(None, [str(mapped)]) == []
+
+
 def test_the_disabled_app_filter_keeps_a_confined_row_confined(tmp_path, opened, monkeypatch):
     from kiro_crew.skill_runtime import catalog
 
