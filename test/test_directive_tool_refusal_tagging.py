@@ -346,6 +346,8 @@ _HOSTILE_CALLS: dict[str, dict] = {
     # chat_tag: an unknown tag id is the cheapest deterministic
     # refusal — it fails validation before any grant or persistence path.
     "chat_tag": {"add": ["definitely-not-a-vocabulary-tag-xyz"]},
+    # chat_bookmark: an unknown field on an entry fails the schema gate.
+    "chat_bookmark": {"add": [{"url": "https://example.com", "bogus": "x"}]},
 }
 
 

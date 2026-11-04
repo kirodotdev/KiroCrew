@@ -409,6 +409,14 @@ export function useWebSocket() {
             if (slotKey) invalidateChatPins(queryClient, slotKey)
             break
           }
+          case 'bookmarks_changed': {
+            // Same shape as pins_changed: slot_key only, refetch that session's list.
+            const slotKey = (data as { slot_key?: string }).slot_key
+            if (slotKey) {
+              queryClient.invalidateQueries({ queryKey: ['chat-bookmarks', slotKey] })
+            }
+            break
+          }
           case 'crew_steer_unrecorded': {
             // Owner-only frame: a steer into a Crew Mode worker was delivered but
             // its background ledger record failed. Same note a receipt's
