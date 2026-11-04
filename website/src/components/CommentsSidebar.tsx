@@ -657,7 +657,9 @@ export const CommentsSidebar = memo(function CommentsSidebar(props: CommentsSide
             onClick={() => setShowResolved(v => !v)}
             className="w-full inline-flex items-center justify-center gap-1 text-[11px] text-muted hover:text-text bg-transparent border-none cursor-pointer py-1.5 transition-colors"
           >
-            <CheckCircle2 size={12} /> {showResolved ? i18nT('components.commentsSidebar.hide') : i18nT('components.commentsSidebar.show')} {resolvedCount} {i18nT('components.commentsSidebar.resolved')}
+            <CheckCircle2 size={12} /> {showResolved
+              ? i18nT('components.commentsSidebar.hide_resolved_count', { count: resolvedCount })
+              : i18nT('components.commentsSidebar.show_resolved_count', { count: resolvedCount })}
           </button>
         )}
       </div>

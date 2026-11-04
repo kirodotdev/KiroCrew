@@ -222,7 +222,7 @@ export const CsvViewer = memo(function CsvViewer({ content, filePath }: { conten
           ))}
         </tbody>
       </table>
-      {body.length > 500 && <div className="text-center text-muted text-[11px] py-2">{i18nT('components.fileRenderers.showing_500_of')} {body.length} {i18nT('components.fileRenderers.rows')}</div>}
+      {body.length > 500 && <div className="text-center text-muted text-[11px] py-2">{i18nT('components.fileRenderers.showing_first_rows', { shown: 500, count: body.length })}</div>}
     </div>
   )
 })
@@ -309,7 +309,7 @@ function JsonNode({ value, depth }: { value: unknown; depth: number }) {
   return (
     <span>
       <button className="text-muted hover:text-text cursor-pointer bg-transparent border-none font-mono text-sm" onClick={() => setOpen(!open)}>
-        {open ? '▼' : '▶'} {bracket[0]}{!open && <span className="text-muted"> {entries.length} {i18nT('components.fileRenderers.items')} {bracket[1]}</span>}
+        {open ? '▼' : '▶'} {bracket[0]}{!open && <span className="text-muted"> {i18nT('components.fileRenderers.items_count', { count: entries.length })} {bracket[1]}</span>}
       </button>
       {open && (
         <div style={{ paddingLeft: 16 }}>
@@ -320,7 +320,7 @@ function JsonNode({ value, depth }: { value: unknown; depth: number }) {
               <JsonNode value={v} depth={depth + 1} />
             </div>
           ))}
-          {entries.length > 200 && <div className="text-muted">… {entries.length - 200} {i18nT('components.fileRenderers.more')}</div>}
+          {entries.length > 200 && <div className="text-muted">… {i18nT('components.fileRenderers.more_count', { count: entries.length - 200 })}</div>}
         </div>
       )}
       {open && <span className="text-muted">{bracket[1]}</span>}
@@ -347,7 +347,7 @@ export const JsonlViewer = memo(function JsonlViewer({ content }: { content: str
 
   return (
     <div ref={containerRef} onScroll={onScroll} className="h-full overflow-auto p-3 bg-bg-elevated border border-border rounded-md space-y-2">
-      <div className="text-muted text-[11px]">{lines.length} {i18nT('components.fileRenderers.lines')}</div>
+      <div className="text-muted text-[11px]">{i18nT('components.fileRenderers.lines_count', { count: lines.length })}</div>
       {lines.slice(0, visible).map((line, i) => (
         <div key={i} className="border-b border-border/50 pb-2">
           <JsonViewer content={line} />

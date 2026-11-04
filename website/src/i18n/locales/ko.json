@@ -2314,7 +2314,6 @@
           "dismissed_a_review": "리뷰를 철회했습니다",
           "draft": "초안",
           "expand_comment": "댓글 펼치기",
-          "failing": "실패",
           "files": "파일",
           "from": "출발:",
           "into": "대상:",
@@ -2345,7 +2344,6 @@
           "open": "열림",
           "opened": "열었습니다",
           "opened_2": "열린 시각",
-          "passed": "통과",
           "referenced_this_in": "이 항목을 참조한 위치:",
           "refresh_details": "{{subject}} 세부 정보 새로 고침",
           "removed_the": "제거함:",
@@ -2353,14 +2351,17 @@
           "requested_changes": "변경을 요청했습니다",
           "reviewed": "리뷰했습니다",
           "reviewers": "리뷰어",
-          "running": "실행 중",
           "show_less": "간략히 보기",
           "show_more": "더 보기",
           "showing_the_last_successful_read": "마지막으로 성공한 읽기 결과를 표시합니다 — 새로 고침 실패: {{error}}",
           "timeline": "타임라인",
           "unassigned": "할당 해제함",
           "unknown_branches": "알 수 없는 브랜치",
-          "updated": "업데이트됨"
+          "updated": "업데이트됨",
+          "failing_count_other": "{{count}}개 실패",
+          "running_count_other": "{{count}}개 실행 중",
+          "passed_count_other": "{{count}}개 통과",
+          "skipped_count_other": "{{count}}개 건너뜀"
         },
         "prFiltersSection": {
           "assigned_to_me": "나에게 할당됨",
@@ -6760,7 +6761,6 @@
       "edit_comment": "댓글 편집…",
       "edit_comment_2": "댓글 편집",
       "failed_to_sync_to_provider": "공급자로 동기화하지 못했습니다",
-      "hide": "숨기기",
       "no_comments_yet_select_text_in_the_content_to_an": "아직 댓글이 없습니다. 콘텐츠에서 텍스트를 선택해 댓글을 고정하거나 아래의 ‘댓글 추가’를 사용하세요.",
       "pending_sync_to_provider": "공급자로 동기화 대기 중",
       "refresh_comments": "댓글 새로 고침",
@@ -6771,17 +6771,17 @@
       "reply_2": "답글",
       "resolve": "해결",
       "resolve_human_only": "해결 (사람 전용)",
-      "resolved": "해결됨",
       "review": "리뷰",
       "save": "저장",
       "scroll_to_the_highlighted_text": "강조 표시된 텍스트로 스크롤",
       "shared_comment": "공유 댓글",
       "to_send": "보낼 예정",
       "to_send_hint": "아직 보내지 않았습니다. 제출하면 이 댓글이 채팅으로 전송됩니다.",
-      "show": "표시",
       "unknown": "알 수 없음",
       "draft_a_prompt_in_chat": "채팅에서 프롬프트 초안 작성",
-      "draft_a_prompt_in_chat_hint": "이 댓글에 대한 프롬프트를 입력란에 넣은 채 채팅을 엽니다. 직접 보내기 전에는 아무것도 전송되지 않습니다."
+      "draft_a_prompt_in_chat_hint": "이 댓글에 대한 프롬프트를 입력란에 넣은 채 채팅을 엽니다. 직접 보내기 전에는 아무것도 전송되지 않습니다.",
+      "show_resolved_count_other": "해결됨 {{count}}개 표시",
+      "hide_resolved_count_other": "해결됨 {{count}}개 숨기기"
     },
     "computerUseLiveView": {
       "close": "닫기",
@@ -6995,12 +6995,9 @@
       "empty_file": "빈 파일",
       "html_preview": "HTML 미리보기",
       "invalid_json": "잘못된 JSON:",
-      "items": "항목",
       "json_string_show_all_other": "전체 보기({{count}}자)",
       "json_string_show_less": "간략히 보기",
-      "lines": "줄",
       "media_preview_failed": "재생에 실패했습니다. 브라우저가 이 파일을 디코딩할 수 없습니다.",
-      "more": "더 보기",
       "null": "null",
       "office_download_hint": "이 파일은 미리보기를 사용할 수 없습니다. 다운로드하여 Word, Excel, PowerPoint 또는 호환 뷰어에서 여세요.",
       "office_download_original": "원본 다운로드",
@@ -7012,7 +7009,6 @@
       "pdf_preview": "PDF 미리보기",
       "pptx_outline_notice": "텍스트 개요만 표시됩니다. 슬라이드 레이아웃, 이미지, 차트는 이 패널에 표시되지 않습니다. 슬라이드를 보려면 프레젠테이션 앱에서 파일을 열어 주세요.",
       "pptx_slide_label": "슬라이드 {{n}}",
-      "rows": "행",
       "scroll_for_more_count": "스크롤하여 더 보기… ({{count}}개 남음)",
       "sheet_cols_truncated": "추가 열은 표시되지 않음",
       "sheet_empty": "빈 시트",
@@ -7021,7 +7017,6 @@
       "sheet_preview_failed": "미리보기에 실패했습니다.",
       "sheet_showing_rows": "처음 {{shown}}개 행 표시 중",
       "sheet_tabs_truncated": "전체 {{total}}개 중 {{shown}}개 시트 표시 중",
-      "showing_500_of": "500개 표시 / 전체",
       "showing_raw_content_count": "원본 콘텐츠 표시 ({{count}}자)",
       "showing_raw_content_truncated_count": "원본 콘텐츠 표시 ({{count}}자 중 처음 {{shown}}자 표시)",
       "slide_load_failed": "슬라이드 {{n}}을(를) 불러오지 못했습니다. 렌더링 이후 파일이 변경되었거나, 렌더링된 슬라이드가 캐시에서 제거되었습니다.",
@@ -7042,7 +7037,11 @@
       "slides_truncated": "슬라이드가 {{n}}번째에서 상한에 도달했습니다. 나머지는 표시되지 않습니다.",
       "light_background": "밝은 배경",
       "dark_background": "어두운 배경",
-      "sheet_tabs_label": "시트"
+      "sheet_tabs_label": "시트",
+      "showing_first_rows_other": "전체 {{count}}행 중 {{shown}}행 표시",
+      "items_count_other": "항목 {{count}}개",
+      "lines_count_other": "{{count}}줄",
+      "more_count_other": "{{count}}개 더"
     },
     "folderColorNames": {
       "amber": "호박색",
@@ -11932,8 +11931,8 @@
         "retry": "다시 시도",
         "search_failed_for_query": "‘{{query}}’ 지식 검색 실패",
         "searching_knowledge_for_query": "‘{{query}}’ 지식 검색 중…",
-        "selected": "선택됨 ·",
-        "tokens": "토큰"
+        "selected_count_other": "{{count}}개 선택됨",
+        "tokens_count_other": "토큰 {{count}}개"
       },
       "mcpInfoButton": {
         "agent_loads_only_its_own_mcp_servers": "에이전트 ‘{{name}}’은(는) 자신의 MCP 서버만 불러옵니다.",
@@ -14824,11 +14823,9 @@
         "untitled": "제목 없음"
       },
       "knowledgeGraph": {
-        "edges": "에지",
         "ingest_documents_to_build_the_entity_graph": "문서를 수집하여 엔터티 그래프를 구축합니다",
         "loading_graph": "그래프를 불러오는 중…",
         "no_graph_data_yet": "아직 그래프 데이터 없음",
-        "nodes": "노드,",
         "all_sources": "모든 소스",
         "filter_by_source": "소스별 필터",
         "recenter": "다시 가운데로",
@@ -14837,7 +14834,10 @@
         "graph_region_label": "지식 엔티티 그래프",
         "load_failed": "지식 그래프를 불러올 수 없습니다",
         "load_failed_unknown": "이유 없이 읽기에 실패했습니다.",
-        "retry": "다시 시도"
+        "retry": "다시 시도",
+        "nodes_count_other": "노드 {{count}}개",
+        "edges_count_other": "에지 {{count}}개",
+        "graph_counts": "{{nodes}}, {{edges}}"
       },
       "sourceGroup": {
         "items_added_directly": "직접 추가한 항목",
@@ -15035,14 +15035,14 @@
       "latest_last": "최신: 마지막",
       "live_logs": "실시간 로그",
       "log_level": "로그 레벨:",
-      "matches": "일치",
       "matches_only": "일치 항목만",
       "real_time_application_output": "실시간 애플리케이션 출력",
       "tail_off": "테일: 끔",
       "tail_on": "테일: 켬",
       "wrap_off": "줄 바꿈: 끔",
       "wrap_on": "줄 바꿈: 켬",
-      "level_change_failed": "로그 레벨을 변경하지 못했습니다"
+      "level_change_failed": "로그 레벨을 변경하지 못했습니다",
+      "matches_count_other": "{{count}}개 일치"
     },
     "mcpGatewayCard": {
       "backends": "백엔드",
