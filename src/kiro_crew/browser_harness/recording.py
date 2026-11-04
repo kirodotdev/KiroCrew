@@ -45,7 +45,7 @@ import shutil
 import threading
 import time
 from collections import deque
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -700,13 +700,27 @@ class RecordingStore:
                 info.truncated = True
                 self._write_meta(sdir, info)
 
-    def delete_session(self, session_key: str) -> bool:
-        """Remove every recording of *session_key*. Returns whether any existed."""
+    def delete_session(self, session_key: str, keep: Collection[str] | None = None) -> bool:
+        """Remove the recordings of *session_key*. Returns whether any existed.
+
+        *keep*: turn ids to leave alone, so a chat that reopens this key while the
+        deletion runs keeps its own replay. It is read once the store lock is held,
+        so an id added until then counts. ``None`` removes everything.
+        """
         if not session_key:
             return False
         sdir = session_dirname(session_key)
         with self._lock:
             index = self._loaded()
+            turns = index.get(sdir, {})
+            kept = frozenset(keep or ())
+            if any(turn_id in kept for turn_id in turns):
+                gone = [turn_id for turn_id in turns if turn_id not in kept]
+                for turn_id in gone:
+                    turns.pop(turn_id)
+                    self._live.discard((sdir, turn_id))
+                    shutil.rmtree(self._turn_dir(sdir, turn_id), ignore_errors=True)
+                return bool(gone)
             existed = sdir in index
             index.pop(sdir, None)
             self._live = {(s, t) for s, t in self._live if s != sdir}
@@ -862,6 +876,8 @@ class LiveRecorder:
         self._clock_ms = clock_ms
         #: Per-slot writer state (not the session registry: no crumbs live here).
         self._recs: dict[str, _SessionRec] = {}
+        #: Per key with a deletion in flight: the turns started since it began.
+        self._successors: dict[str, set[str]] = {}
 
     @property
     def enabled(self) -> bool:
@@ -926,6 +942,9 @@ class LiveRecorder:
         rec = self._rec(session_key)
         if rec.turn_id and rec.turn_id != turn_id:
             self._close(session_key, rec)
+        successors = self._successors.get(session_key)
+        if successors is not None:
+            successors.add(turn_id)
         rec.turn_id = turn_id
         rec.last_kept_ms = -(10**12)
         rec.last_digest = b""
@@ -1152,15 +1171,27 @@ class LiveRecorder:
     # ── deletion ───────────────────────────────────────────────────────────
 
     async def delete_session(self, session_key: str) -> bool:
-        """Forget the session and remove its recordings, after its queued writes."""
-        rec = self._recs.pop(session_key, None)
-        if rec is not None:
-            rec.turn_id = ""
-            rec.pending = None
-            rec.jobs.clear()
-            if rec.worker is not None and not rec.worker.done():
-                await asyncio.wait({rec.worker})
-        return await asyncio.to_thread(self.store.delete_session, session_key)
+        """Forget the session and remove its recordings, after its queued writes.
+
+        A turn that starts for this key while the deletion runs is a successor's: its
+        replay stays.
+        """
+        successors = self._successors.get(session_key)
+        owned = successors is None
+        if successors is None:
+            successors = self._successors[session_key] = set()
+        try:
+            rec = self._recs.pop(session_key, None)
+            if rec is not None:
+                rec.turn_id = ""
+                rec.pending = None
+                rec.jobs.clear()
+                if rec.worker is not None and not rec.worker.done():
+                    await asyncio.wait({rec.worker})
+            return await asyncio.to_thread(self.store.delete_session, session_key, successors)
+        finally:
+            if owned:
+                self._successors.pop(session_key, None)
 
 
 #: Where a URL starts inside free text: a scheme and a colon with no space after it.

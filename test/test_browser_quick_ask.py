@@ -177,14 +177,18 @@ class FakePage:
             self._ctx[ctx] = params["frameId"]
             return {"executionContextId": ctx}
         if method == "Runtime.evaluate":
+            world_frame = self._ctx.get(params.get("contextId", -1))
             if "contextId" in params and "__kcRefs" in params["expression"]:
-                # A same-process frame's walker world (frames.WALKER_WORLD).
-                ref = re.search(r"get\('(e\d+)'\)", params["expression"])
-                node = self.world_refs.get(ref.group(1)) if ref else None
-                if node is None or self._ctx.get(params["contextId"]) != self.nodes[node]["frame"]:
-                    return {"result": {"type": "object", "subtype": "null"}}
-                return {"result": {"objectId": f"m:{node}"}}
-            if "contextId" in params:  # the sign-in takeover's region read
+                if world_frame in self.frames and not self.frames[world_frame]["session"]:
+                    # A same-process frame's walker world (frames.WALKER_WORLD).
+                    ref = re.search(r"get\('(e\d+)'\)", params["expression"])
+                    node = self.world_refs.get(ref.group(1)) if ref else None
+                    if node is None or world_frame != self.nodes[node]["frame"]:
+                        return {"result": {"type": "object", "subtype": "null"}}
+                    return {"result": {"objectId": f"m:{node}"}}
+                # Else the top document's walker world, or a child session's: the
+                # refs the walker made there (the same map the tests fill in).
+            elif "contextId" in params:  # the sign-in takeover's region read
                 return {"result": {"value": {"region": self.region, "vw": 1280, "vh": 800}}}
             ref = re.search(r"get\('(e\d+)'\)", params["expression"])
             refs = self.child_refs.get(session_id or "", {}) if child else self.refs

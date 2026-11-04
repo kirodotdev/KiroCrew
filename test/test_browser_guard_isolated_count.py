@@ -663,7 +663,7 @@ async def test_select_and_copy_chords_are_refused_on_a_filled_secret_field(
             return 0
         if name == "current_tab":
             return {"url": "https://example.com/"}
-        if name == "js" and ".activeField(" in kw["expression"]:
+        if name in ("js", "js_isolated") and ".activeField(" in kw["expression"]:
             return {"password": False, "asked": False, "tag": "input", **active}
         return None
 
@@ -692,7 +692,7 @@ async def test_copy_chords_are_refused_while_a_closed_root_holds_a_secret_field(
             return closed
         if name == "current_tab":
             return {"url": "https://example.com/"}
-        if name == "js" and ".activeField(" in kw["expression"]:
+        if name in ("js", "js_isolated") and ".activeField(" in kw["expression"]:
             return {
                 "focused": focused,  # a closed root on the body reads as nothing focused
                 "password": False,

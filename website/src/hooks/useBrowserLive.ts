@@ -616,7 +616,11 @@ class BrowserLiveStore {
     const v = this.effectiveVisible(s)
     if (s.reportedVisible === v) return
     s.reportedVisible = v
-    quiet(this.writes.visibility(sessionKey, v))
+    // A write the gateway did not take was not heard: forget it, so the next report
+    // sends this value again instead of being skipped as already sent.
+    this.writes.visibility(sessionKey, v).catch(() => {
+      if (s.reportedVisible === v) s.reportedVisible = null
+    })
   }
 
   /** Re-post `visible: true` for every session the person holds on screen; stops

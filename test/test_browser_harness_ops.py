@@ -132,8 +132,11 @@ def test_walker_source_is_one_iife_the_ops_call_methods_on() -> None:
 def test_every_page_side_call_goes_through_the_walker(fake: FakeBrowser) -> None:
     fake.page["snapshot"] = {"url": "u", "title": "t", "nodes": []}
     run(ops.run_op("snapshot", {}, fake.ctx()))
-    (expr,) = [kw["expression"] for h, kw in fake.calls if h == "js"]
+    (expr,) = [kw["expression"] for h, kw in fake.calls if h == "js_isolated"]
     assert expr == ops.WALKER_SOURCE + ".snapshot()"
+    # Only the console hook and the navigation stamp are read in the page's own world.
+    (page_expr,) = [kw["expression"] for h, kw in fake.calls if h == "js"]
+    assert page_expr == ops.WALKER_SOURCE + ".consoleMessages(0)"
 
 
 # --- dispatch ------------------------------------------------------------------
@@ -281,7 +284,7 @@ def test_back_uses_history_and_waits_for_commit(fake: FakeBrowser) -> None:
     out = run(ops.run_op("back", {}, fake.ctx()))
     assert out["ok"] is True and out["url"] == "https://prev.example/"
     assert fake.page_methods()[:3] == ["stamp", "state", "back"]
-    assert all(h == "js" for h in fake.helper_names())
+    assert fake.helper_names()[:3] == ["js", "js", "js_isolated"]
 
 
 @pytest.mark.parametrize(
