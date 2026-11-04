@@ -806,7 +806,14 @@ def main() -> None:
                 )
                 _platform_boot_error = exc
             else:
-                raise
+                # Still fail-closed: the command never runs. The error already
+                # names what failed and how (e.g. "unknown governed key
+                # 'sandbox.enabeld' (fail-closed)"), so print it on one line
+                # and exit 1 instead of a traceback; doctor shows the detail.
+                logging.getLogger("kiro_crew").debug("platform composition failed", exc_info=True)
+                print(f"❌ {exc}", file=sys.stderr)
+                print("   Run `kirocrew doctor` for details.", file=sys.stderr)
+                raise SystemExit(1) from None
         else:
             # Standalone boot never raises; only genuinely-unexpected errors
             # reach here, and the standalone edition must not break on a corrupt

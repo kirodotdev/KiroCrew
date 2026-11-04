@@ -729,7 +729,10 @@ behavior is unchanged because each Default adapter delegates to that same global
 Wired sites:
 
 - `cli.py:main` / `slack/gateway_runtime/process_entry.py:run_gateway` — `boot_platform(cfg)` once at
-  startup (gateway raises fail-closed; cli is defensive — standalone never raises).
+  startup (gateway raises fail-closed; cli is defensive — standalone never raises). A
+  `PlatformCompositionError` in `cli.main` still stops every command except `doctor` and the
+  sign-in verbs, but as one `❌ <error>` line plus a `kirocrew doctor` hint and exit 1, not a
+  traceback (an enterprise build's policy refusal exits through `refuse_policy_boot` first).
 - `slack/gateway_runtime/service_boot.py` gateway boot — `AgentRuntime.run_first_run_setup()` through
   `safe_context_call`. Previously this imported `agent.run_first_run_setup`
   directly, bypassing the seam; routing it through the context makes first-run
