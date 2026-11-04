@@ -24,27 +24,18 @@ logger = logging.getLogger("kiro_crew.taskq.adapters.runner")
 class RunnerLane:
     """FIFO execution gate whose bound is the LIVE effective cap.
 
-    ``cap`` is the ceiling source -- a callable read on every decision (the
-    manager's ``max_concurrent``, which the adaptive controller already
-    clamps), or a constant. Reading it live is not a WAKE: a waiter parked
-    while the bound was ``0`` holds no slot, so no :meth:`release` of its own
-    will ever come. :meth:`pump` is the raise EDGE, and the cap's owner rings
-    it (``SubagentManager.set_cap_raise_listener``). ``set_effective_cap`` is a
-    lane-LOCAL override that also pumps: ``None`` removes it, ``0`` pauses new
-    grants (in-flight work finishes; nothing is cancelled).
-    ``mode`` (callable or constant) selects ``fixed``, which pins the bound
-    at ``pinned`` (or the ceiling) whatever the controller says -- the one
-    config flip that turns the adaptive lane back into a plain semaphore.
+    ``cap`` is a callable read on every decision (the manager's clamped
+    ``max_concurrent``) or a constant. Reading it live does not wake anyone, so
+    the cap's owner calls :meth:`pump` on a raise
+    (``SubagentManager.set_cap_raise_listener``). ``set_effective_cap`` is a
+    lane-local override that also pumps: ``None`` removes it, ``0`` pauses new
+    grants without cancelling in-flight work. ``mode`` ``fixed`` pins the bound
+    at ``pinned`` (or the ceiling), making the lane a plain semaphore.
 
-    No asyncio primitive is created at import or construction: every waiter
-    is a future minted on the loop that called :meth:`acquire`.
-
-    The lane also knows WHICH rows hold its slots (:attr:`holders`), which is
-    what lets :meth:`acquire` refuse a self-blocking wait instead of parking on
-    it -- see :class:`RunnerLaneSelfBlocked`. A caller that passes no ``task_id``
-    holds an UNTRACKED slot, so it can never be named as somebody's blocker; the
-    refusal therefore requires every held slot to be accounted for, because an
-    untracked holder is one nothing proves is an ancestor.
+    Waiter futures are created on the loop that called :meth:`acquire`, never at
+    import or construction. :attr:`holders` lets :meth:`acquire` refuse a
+    self-blocking wait (:class:`RunnerLaneSelfBlocked`); a slot taken with no
+    ``task_id`` is untracked, so it blocks that refusal.
     """
 
     def __init__(
@@ -176,18 +167,10 @@ class RunnerLane:
         """The holders of EVERY slot when they are all this row's ancestors, else
         empty.
 
-        Non-empty is the exact statement "no release can come from outside this
-        row's own ancestry": the lane is full and each slot belongs to an
-        ancestor. One non-ancestor holder answers empty, because that holder
-        will free a slot the FIFO queue then hands on. A bound of ``0`` also
-        answers empty: that is a deliberate PAUSE which grants nothing to
-        anyone and which :meth:`pump` ends, never a block to refuse.
-
-        An UNACCOUNTED slot answers empty too, and that is the fail-safe
-        direction: a slot taken with no ``task_id`` is held by nobody this lane
-        can name, so it cannot be shown to be an ancestor's, and refusing on a
-        set that does not cover every holder would refuse a wait some untracked
-        holder is about to end.
+        Non-empty means no release can come from outside the row's ancestry.
+        Empty when any holder is not an ancestor, when the bound is ``0`` (a pause
+        :meth:`pump` ends), or when an untracked slot exists (fail-safe: it cannot
+        be shown to be an ancestor's).
         """
         wanted = frozenset(ancestors)
         if not wanted or not self._holders or self.effective <= 0:
@@ -209,19 +192,10 @@ class RunnerLane:
     def pump(self) -> int:
         """Grant slots to the oldest waiters while the bound allows; returns grants.
 
-        Also the point where a waiter that became self-blocking AFTER it parked
-        is refused: the bound can fall (an adaptive squeeze) so that a release
-        frees nothing, which would leave that waiter on its own ancestry with no
-        further edge to wake it.
-
-        Judging only the head is not enough, because a waiter ahead of it can be
-        one the same ancestry blocks: an ordinary root queued in front of a
-        self-blocked descendant is served only by the ancestor releasing, so
-        neither ever wakes and the queue stalls behind a head that is not itself
-        refusable. So every parked waiter is judged while the lane is at its
-        bound. Refusing one cannot disturb FIFO for the rest -- it leaves the
-        queue, it does not overtake -- and the scan runs only on the saturated
-        edge.
+        Also refuses a waiter that became self-blocking after it parked (the bound
+        can fall so a release frees nothing). Every parked waiter is judged on a
+        saturated lane, not only the head: a non-refusable head can be stuck
+        behind the same ancestry. A refused waiter leaves the queue, so FIFO holds.
         """
         granted = 0
         while self._waiters:

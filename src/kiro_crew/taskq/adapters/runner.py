@@ -502,29 +502,17 @@ class RunnerAdmission:
         A row cancelled while it waited raises :class:`RunnerTaskCancelled`.
         Without a store the lane slot is the whole admission.
 
-        A CALLER cancel delivered while this waits -- the pressure sleep, the
-        lane slot, a deferred row's re-check -- is this method's to clean up
-        (:meth:`_end_row_on_cancel` plus the lane slot). Nothing else would: the
-        runner kinds have no dispatcher, so a row left claimable here holds a
-        queue place for as long as the store lives.
+        A caller cancel during any wait here is cleaned up here
+        (:meth:`_end_row_on_cancel` plus the lane slot): runner kinds have no
+        dispatcher, so a row left claimable would hold a queue place forever.
 
-        A row whose own ANCESTRY holds every slot on the lane is refused
-        (:class:`RunnerLaneSelfBlocked`) and ended, rather than parked on a
-        release only that ancestry can make. The ancestor set is read only when
-        the lane is already saturated, so an idle lane costs no store read; a
-        lane that fills across that read leaves the descendant parked, which is
-        the same wait it would have had anyway, never a refusal it did not earn.
-        The fence sees the parentage the STORE recorded, so a nested entry
-        accepted with no ``parent_id`` is outside it.
+        A row whose own ancestry (as the store recorded it) holds every lane slot
+        is refused with :class:`RunnerLaneSelfBlocked` and ended, since only that
+        ancestry could release a slot. Ancestors are read only on a saturated lane.
 
-        Every store touch here goes through :meth:`_db`: the lane slot, the
-        futures and the handle stay on the loop, the SQLite calls do not.
-
-        A terminal write an earlier unit's :meth:`Admitted.settle` kept
-        (:meth:`defer_terminal_write`) is replayed FIRST, because this is the
-        runner's own next store touch and a kept write that nothing replays
-        leaves a finished unit's row ``running`` and leased for the life of the
-        process, which the next boot then reconciles as an interrupted run.
+        Store calls go through :meth:`_db`; lane slot, futures and handle stay on
+        the loop. A terminal write kept by :meth:`defer_terminal_write` is replayed
+        first, else a finished unit's row stays ``running`` and leased.
         """
         self._refuse_if_store_required()
         store = self.store
@@ -704,17 +692,11 @@ class RunnerAdmission:
         ``await`` inside an ``except CancelledError`` arm can be interrupted
         before the write is submitted.
 
-        Two rows are this call's to end and no others. One it CLAIMED itself,
-        where *generation* fences the write against any later owner; and one
-        still ``queued`` and unleased, which no ``claim`` ever touched -- and
-        that one is cancelled ``only_from=UNCLAIMED`` under the generation the
-        read returned, never on the read alone, because a row another admission
-        claimed between the two is a row with a live executor on it.
-        ``retry_wait`` and ``recovering`` are deliberately excluded: the first
-        can carry the operator's persisted answer and the second an attempt
-        count, and ``accept`` re-attaches both when the run resumes, so ending
-        one here would make the resumed step ask again or restart its recovery
-        ladder from zero.
+        It ends only a row it claimed itself (fenced by *generation*) or one still
+        ``queued`` and unleased, cancelled ``only_from=UNCLAIMED`` under the read's
+        generation so a row another admission just claimed is never ended.
+        ``retry_wait`` and ``recovering`` are excluded: they carry the persisted
+        answer or the attempt count that ``accept`` re-attaches on resume.
         """
         reason = why or "admission cancelled before the row started"
         try:
@@ -1128,18 +1110,11 @@ class RunnerAdmission:
         """The operator answer persisted on the row's latest ``wake`` event, if
         the step has not consumed it yet.
 
-        ``answer_input`` writes the answer INTO the wake event before waking
-        anything, so a crash between the answer and the re-admission keeps
-        it: a rebuilt step (a new incarnation re-dispatching the ``retry_wait``
-        row) reads it from here instead of from the RAM the crash lost. An
-        answer is consumed once the step records it (:meth:`consume_answer`,
-        an ``input_consumed`` event); a wake older than that marker is not an
-        answer for the current turn.
-
-        A copy the durable bound CUT (:data:`ANSWER_TRUNCATED`) is refused, not
-        returned: the step then asks again, where handing back the fragment
-        would feed the model something the operator never wrote, with nothing on
-        the record saying it had been cut.
+        ``answer_input`` stores the answer on the wake event, so a step rebuilt
+        after a crash reads it here. A wake older than the latest
+        ``input_consumed`` event (:meth:`consume_answer`) is not for this turn.
+        A truncated copy (:data:`ANSWER_TRUNCATED`) returns None so the step asks
+        again rather than feeding the model a fragment.
         """
         store = self.store
         if store is None:
@@ -1190,19 +1165,10 @@ class RunnerAdmission:
     def answer_input(self, task_id: str, answer: str, *, generation: int | None = None) -> bool:
         """Deliver the user's answer to a row in ``waiting_input``; wakes it.
 
-        False when the store refused the wake, and the refusal is the STORE's,
-        under the same two fences :meth:`cancel_wait` uses: ``only_from`` is
-        ``waiting_input`` ALONE, and *generation* when the caller read one. An
-        answer answers ONE question, so a row that has moved to another wait
-        (``waiting_dependency`` / ``waiting_children``) between a caller's read
-        and this call is refused rather than having that other wait ended by an
-        answer to a question already over -- which would leave the row claimable
-        with its dependency still unmet. A caller holding only an id fences on
-        the state alone.
-
-        The answer is recorded on the wake event, so a crash between this write
-        and the re-admission does not lose it; the row is claimable
-        (``retry_wait``) until the lane is granted again.
+        False when the store refused the wake. Like :meth:`cancel_wait`, the store
+        fences on ``only_from=waiting_input`` and on *generation* when given, so a
+        row that moved to another wait is not woken with its dependency unmet.
+        The answer is recorded on the wake event so a crash does not lose it.
         """
         store = self.store
         woke = True
@@ -1232,19 +1198,10 @@ class RunnerAdmission:
         """End the wait of a PARKED row without an answer: the row is cancelled,
         the coroutine resumes. False when the store refused the cancel.
 
-        The refusal is the point, and it is the STORE's: a row is cancellable
-        here only from :data:`model.PARKED`, and only under *generation* when the
-        caller read one, so the state test and the write share one transaction.
-        A row a concurrent admission took to ``starting`` / ``running`` between a
-        caller's read and this call is therefore never cancelled under its live
-        executor -- which the generation bump would then fence out of its own
-        settlement, leaving work running that nothing settles. A caller with a
-        row in hand passes its generation; one holding only an id fences on the
-        state alone.
-
-        No cancel, no wake: the wake this method delivers ENDS a wait (the
-        resumed coroutine re-reads the row and stops), so sending it for a
-        refused cancel would end a wait this call did not end.
+        The store cancels only from :data:`model.PARKED` (and under *generation*
+        when given) in one transaction, so a row a concurrent admission started is
+        never cancelled under its live executor. A refused cancel sends no wake,
+        because the wake ends the wait.
         """
         store = self.store
         if store is not None:
@@ -1276,20 +1233,12 @@ class AdoptReport:
     lost_owner_limit: list[str] = field(default_factory=list)
 
 
-#: Rows per page of the orphan sweep, never a ceiling on what it settles: the sweep
-#: PAGES until a kind is drained. A cap on the total would leave every row past it
-#: ``queued`` with no dispatcher and no reconciler (``queued`` is not ``ACTIVE``),
-#: so one restart behind a large backlog would strand accepted work permanently --
-#: the loss this store exists to prevent.
+#: Rows per page of the orphan sweep, not a total cap: the sweep pages until a
+#: kind is drained, since a capped row would stay ``queued`` with nothing to settle it.
 _ADOPT_SCAN_PAGE = 1000
-#: Passes over one kind's ``queued`` rows. More than one because the pages are
-#: read by OFFSET while a live gateway is claiming rows, and every claim shifts
-#: the rows behind it under the cursor (see :func:`_orphaned_queued_rows`); a
-#: bound because each pass can also see rows a concurrent ``accept`` ADDED, so an
-#: "until nothing is new" loop with no ceiling would not be guaranteed to end,
-#: and a boot sweep that does not end is a boot that does not finish. A row a
-#: still-churning store displaces past the last pass stays ``queued`` for the
-#: next boot's sweep -- the same bounded cost a requeued container row carries.
+#: Passes over one kind's ``queued`` rows: several because concurrent claims shift
+#: the OFFSET cursor, bounded because concurrent accepts add rows and the boot must
+#: finish. A row displaced past the last pass waits for the next boot's sweep.
 _ADOPT_SCAN_PASSES = 4
 
 _NEVER_STARTED = "never started: the gateway restarted before the row was claimed"
@@ -1298,26 +1247,12 @@ _NEVER_STARTED = "never started: the gateway restarted before the row was claime
 def _orphaned_queued_rows(store: TaskStore, wanted: frozenset[str]) -> list[TaskRecord]:
     """``queued`` rows of *wanted* kinds whose accepting incarnation is gone.
 
-    ``params.accepted_by`` is the owner test, and it has to be: a queued row
-    has never been claimed, so it carries no lease for the ACTIVE-row guard to
-    read, and a claimable row this incarnation just accepted is waiting for a
-    lane slot inside a live ``admit``.
+    ``params.accepted_by`` is the owner test because a queued row has no lease.
+    ``retry_wait`` and ``recovering`` are not swept: they hold the persisted
+    answer or an attempt count that ``accept`` re-attaches on resume.
 
-    ``retry_wait`` and ``recovering`` -- the other two claimable states -- are
-    deliberately not swept: the first can hold the operator's persisted answer,
-    the second an attempt count, and both are re-attached by ``accept`` when the
-    owning run resumes. A ``recovering`` row is also ACTIVE, so the boot
-    reconciler already sees it; ``queued`` is the one state no sweep reaches.
-
-    **A row a page skipped is found by a later pass, because OFFSET alone
-    cannot promise it was read.** This sweep runs BESIDE a live gateway, which
-    claims ``queued`` rows of these kinds through ``accept`` + ``admit``, and one
-    claim between two pages shifts every row behind it one place under the
-    cursor -- so the row that lands where the cursor already is is never
-    examined, and it would stay ``queued`` with nothing that ever looks at it
-    again. The pass therefore repeats while it discovers ids it had not read,
-    which the shift cannot hide (the displaced row is EARLIER than the cursor,
-    so the next pass reads it), de-duping by id so a row is judged once.
+    A live gateway claims rows between pages, shifting later rows behind the
+    OFFSET cursor, so the pass repeats while it finds unread ids (de-duped by id).
     """
     rows: list[TaskRecord] = []
     for kind in sorted(wanted):
@@ -1368,28 +1303,16 @@ def adopt_orphaned_rows(
 ) -> AdoptReport:
     """Settle every runner row a dead incarnation left behind.
 
-    The boot reconciler leaves a kind it has no adapter for untouched except
-    for dropping the lease and stamping ``awaiting_adapter``; legacy
-    ``runs.json`` imports arrive as ``recovering``. This is that adapter:
+    This is the adapter for kinds the boot reconciler only unleases and stamps
+    ``awaiting_adapter`` (legacy ``runs.json`` imports arrive ``recovering``):
 
-    * an unleased ACTIVE row (``starting``/``running``/``waiting_*``) or a
-      ``recovering`` row whose step is :func:`is_safe_retry` is handed to
-      *resume* (the runner's checkpoint restart); a resume that returns True
-      leaves the row claimable for the runner's own ``admit``. Each gateway
-      life that resumes a row spends one of its lost-owner recoveries, the
-      reconciler's ``RECOVERY_MAX_ATTEMPTS``; a row that has spent them ends
-      ``failed`` with the reason instead of being resumed again;
-    * one that is NOT safe to retry becomes ``unknown_side_effect`` -- the
-      run stays paused for a human, and nothing is re-run blind;
-    * a ``queued`` row of these kinds whose accepting incarnation is gone
-      (:func:`_orphaned_queued_rows`) is ``cancelled``: it was accepted, never
-      claimed, and these kinds have NO dispatcher, so nothing would ever pick
-      it up. Nothing ran under it either, which is why the verdict is
-      ``cancelled`` and not ``unknown_side_effect``. This is the sweep's own
-      half of the job -- the boot reconciler stays ACTIVE-only, because it is
-      kind-agnostic and a claimable ``subagent`` row is legitimately its
-      dispatcher's;
-    * a row still leased by THIS incarnation is live and skipped.
+    * an unleased ACTIVE or ``recovering`` row that :func:`is_safe_retry` goes
+      to *resume*; True leaves it claimable for ``admit``. Each resume spends one
+      of ``RECOVERY_MAX_ATTEMPTS``; a row past them ends ``failed``;
+    * one not safe to retry becomes ``unknown_side_effect`` for a human;
+    * an orphaned ``queued`` row (:func:`_orphaned_queued_rows`) is
+      ``cancelled``: these kinds have no dispatcher and nothing ran under it;
+    * a row still leased by this incarnation is live and skipped.
     """
     ts = store.now() if now is None else now
     wanted = frozenset(kinds)
