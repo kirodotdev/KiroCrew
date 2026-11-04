@@ -12,6 +12,10 @@ counter                                        one increment per
 ``kirocrew.channel.message.received``          inbound channel message, once
                                                admission has decided
 ``kirocrew.ui.control.clicked``                click on an agent-rendered control
+``kirocrew.tips.feedback``                     saved reaction to a feature tip
+                                               (``action``, ``source``, ``feature``)
+``kirocrew.feature_video.status``              saved feature-video status
+                                               (``status``, ``feature``)
 =============================================  ====================================
 
 **Every attribute value is closed.** Each list is a tuple below, and each
@@ -50,6 +54,8 @@ SKILL_LAZY_LOAD_COUNT = "kirocrew.skill.lazy_load.count"
 APP_TASK_COMPLETED = "kirocrew.app.task.completed"
 CHANNEL_MESSAGE_RECEIVED = "kirocrew.channel.message.received"
 UI_CONTROL_CLICKED = "kirocrew.ui.control.clicked"
+TIPS_FEEDBACK = "kirocrew.tips.feedback"
+FEATURE_VIDEO_STATUS = "kirocrew.feature_video.status"
 
 OTHER = "other"
 BOOL_VALUES: tuple[str, ...] = ("true", "false")
@@ -57,6 +63,11 @@ BOOL_VALUES: tuple[str, ...] = ("true", "false")
 
 def _bool(value: object) -> str:
     return "true" if value else "false"
+
+
+def _closed(value: object, values: tuple[str, ...]) -> str:
+    """*value* when it is one of *values*, else ``other``."""
+    return value if isinstance(value, str) and value in values else OTHER
 
 
 def _emit(name: str, attrs: dict[str, str | int | bool | float]) -> None:
@@ -318,3 +329,100 @@ def ui_control_label(control: object) -> str:
 def record_ui_control_clicked(control: object) -> None:
     """One click on an agent-rendered control."""
     _emit(UI_CONTROL_CLICKED, {"control": ui_control_label(control)})
+
+
+# -- tips.feedback ------------------------------------------------------------
+
+#: The ``POST /api/tips/feedback`` actions, the same list the route accepts.
+TIP_ACTION_VALUES: tuple[str, ...] = (
+    "shown",
+    "ack",
+    "dismiss",
+    "snooze",
+    "helpful",
+    "optout",
+    "optin",
+    OTHER,
+)
+
+#: Where the tip came from: a hand-authored tip shipped in ``tips_curated.json``,
+#: a catalog tip built from a shipped doc, a tip the model wrote, or ``other``
+#: when the id matches none of them (an opt-out carries no tip id at all).
+TIP_SOURCE_VALUES: tuple[str, ...] = ("curated", "catalog", "generated", OTHER)
+
+
+def tip_feature_label(doc: object) -> str:
+    """*doc* when it is a doc in ``TIP_DOC_ALLOWLIST``, else ``other``.
+
+    The allowlist is the set of shipped, user-facing feature docs, so a value it
+    admits names a public doc and nothing the user wrote.
+    """
+    from kiro_crew.tips_allowlist import TIP_DOC_ALLOWLIST
+
+    return doc if isinstance(doc, str) and doc in TIP_DOC_ALLOWLIST else OTHER
+
+
+def record_tip_feedback(action: object, source: object, feature: object) -> None:
+    """One saved tip reaction. Never raises."""
+    try:
+        _emit(
+            TIPS_FEEDBACK,
+            {
+                "action": _closed(action, TIP_ACTION_VALUES),
+                "source": _closed(source, TIP_SOURCE_VALUES),
+                "feature": tip_feature_label(feature),
+            },
+        )
+    except Exception:
+        logger.debug("tips feedback counter failed", exc_info=True)
+
+
+# -- feature_video.status -----------------------------------------------------
+
+#: ``feature_videos.VALID_STATUSES`` plus ``other``.
+VIDEO_STATUS_VALUES: tuple[str, ...] = ("seen", "dismissed", OTHER)
+
+#: The Explore panel's feature rows (``milestones.feature_rows()``). Spelled out
+#: so labelling reads no catalog; a test holds it equal to the live rows.
+EXPLORE_FEATURE_IDS: tuple[str, ...] = (
+    "widgets",
+    "scheduled-task",
+    "mate",
+    "parallel-chats",
+    "slack",
+    "pr-watch",
+    "crew-mode",
+)
+
+
+def video_feature_label(feature: object) -> str:
+    """A feature video's ``feature`` key when it names a shipped feature, else ``other``.
+
+    A key is kept when it is an Explore feature id, a doc in ``TIP_DOC_ALLOWLIST``,
+    or the stem of one (``monitor-loops`` for ``monitor-loops.md``, which is how
+    the video catalog names its features). A hosted manifest is publisher data,
+    so any other key is one bucket.
+    """
+    from kiro_crew.tips_allowlist import TIP_DOC_ALLOWLIST
+
+    if not isinstance(feature, str) or not feature:
+        return OTHER
+    if feature in EXPLORE_FEATURE_IDS or feature in TIP_DOC_ALLOWLIST:
+        return feature
+    if f"{feature}.md" in TIP_DOC_ALLOWLIST:
+        return feature
+    return OTHER
+
+
+def record_feature_video_status(status: object, feature: object) -> None:
+    """One saved feature-video status. Never raises."""
+    try:
+        _emit(
+            FEATURE_VIDEO_STATUS,
+            {
+                "status": _closed(status, VIDEO_STATUS_VALUES),
+                "feature": video_feature_label(feature),
+            },
+        )
+    except Exception:
+        logger.debug("feature video counter failed", exc_info=True)

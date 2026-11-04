@@ -79,8 +79,28 @@ _INVENTORY = frozenset(
     }
 )
 
+# In-product recommendations: feature tips, the Explore panel (milestones.py)
+# and feature videos -- are they used, and does a recommended feature get used.
+# Every attribute value is closed at its emit site: tip and video features are
+# shipped doc names or Explore ids, milestone values are catalog keys, and
+# milestone.reached{recommended_by} is one of tip / explore / video / several /
+# none. No tip id, video id or timestamp is an attribute.
+_RECOMMENDATIONS = frozenset(
+    {
+        "kirocrew.tips.feedback",
+        "kirocrew.feature_video.status",
+        "kirocrew.milestone.panel_opened",
+        "kirocrew.milestone.starter_clicked",
+        "kirocrew.milestone.reached",
+        "kirocrew.milestone.skipped",
+        "kirocrew.milestone.mark_all_done",
+        "kirocrew.milestone.notice_shown",
+        "kirocrew.milestone.features_completed",
+    }
+)
+
 #: The v1 export allowlist: every metric a product destination may receive.
-PRODUCT_METRICS: "frozenset[str]" = _SESSIONS | _FEATURES | _INVENTORY
+PRODUCT_METRICS: "frozenset[str]" = _SESSIONS | _FEATURES | _INVENTORY | _RECOMMENDATIONS
 
 # PENDING -- reviewed for export but NOT exportable yet. Each one joins
 # PRODUCT_METRICS in the change that clears its reason, not before.

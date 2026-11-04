@@ -29,6 +29,7 @@ from kiro_crew.memory_stores import DEFAULT_MEMORY_STORE
 from kiro_crew.platform import PROFILE_STANDALONE, current_context, safe_context_call
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.tips_allowlist import TIP_DOC_ALLOWLIST
+from kiro_crew.tips_metrics import record_tip_feedback_metric, tip_metric_labels
 
 # Re-exported: ``tips.CatalogEntry`` is the historical import path, and the
 # dataclass moved to the import-light ``tips_pool`` so an edition composition
@@ -1457,6 +1458,9 @@ async def api_tips_feedback(request: web.Request) -> web.Response:
     now = time.time()
 
     async with cache._lock:
+        # Labelled BEFORE the action mutates state: "shown" and "ack" clear the
+        # offered tip, which is one of the places the doc is read from.
+        tip_source, tip_doc = tip_metric_labels(cache, st, tip_id)
         if action == "shown":
             # Display-time signal: start cadence + release the offered slot, but
             # keep the tip eligible (NOT dismissed) for future re-selection.
@@ -1532,4 +1536,5 @@ async def api_tips_feedback(request: web.Request) -> web.Response:
 
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, _save_state, st)
+    record_tip_feedback_metric(action, tip_source, tip_doc)
     return web.json_response({"ok": True})
