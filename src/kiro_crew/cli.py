@@ -305,9 +305,9 @@ def main() -> None:
     """Entry point — parse args and dispatch to the appropriate subcommand."""
     # On Windows, force stdout/stderr to UTF-8 BEFORE anything prints — KiroCrew's
     # non-ASCII output otherwise raises UnicodeEncodeError under the cp1252
-    # default when stdout is a pipe (detached gateway, KiroCrewHub client). No-op
-    # on POSIX. Must be the first statement: the KIROCREW_PORT error below prints
-    # non-ASCII glyphs.
+    # default when stdout is a pipe (detached gateway, KiroCrewHub client). On
+    # POSIX, an ASCII-only stdout replaces glyphs instead of raising. Must be the
+    # first statement: the KIROCREW_PORT error below prints non-ASCII glyphs.
     platform_compat.ensure_utf8_console()
 
     # Clear any INHERITED sandbox-active marker before any argv-wrapping path
