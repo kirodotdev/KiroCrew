@@ -88,7 +88,7 @@ class TestFdRealPathHome:
 
     def test_resolves_an_open_descriptor_to_its_real_path(self, tmp_path: Path):
         target = tmp_path / "witness.txt"
-        target.write_text("x")
+        target.write_text("x", encoding="utf-8")
         fd = os.open(target, os.O_RDONLY)
         try:
             got = pinned_fs.fd_real_path(fd)

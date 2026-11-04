@@ -361,7 +361,9 @@ class TestSnapshotQueryRatchet:
     """
 
     def test_ingest_file_body_has_no_source_snapshot(self):
-        tree = ast.parse((_KNOWLEDGE_SRC / "ingestion.py").read_text(errors="replace"))
+        tree = ast.parse(
+            (_KNOWLEDGE_SRC / "ingestion.py").read_text(errors="replace", encoding="utf-8")
+        )
         hits = _count_snapshot_literals(_find_def(tree, "_ingest_file_body"))
         assert hits == [], (
             f"_ingest_file_body reads the source's full item-id set again at "
@@ -372,7 +374,9 @@ class TestSnapshotQueryRatchet:
         )
 
     def test_ingest_text_has_no_on_loop_group_read(self):
-        tree = ast.parse((_KNOWLEDGE_SRC / "ingestion.py").read_text(errors="replace"))
+        tree = ast.parse(
+            (_KNOWLEDGE_SRC / "ingestion.py").read_text(errors="replace", encoding="utf-8")
+        )
         hits = _count_snapshot_literals(_find_def(tree, "ingest_text"))
         assert hits == [], (
             f"ingest_text contains '{_SNAPSHOT_QUERY}' literals at lines "
@@ -383,7 +387,9 @@ class TestSnapshotQueryRatchet:
         )
 
     def test_ingest_file_has_no_on_loop_group_read(self):
-        tree = ast.parse((_KNOWLEDGE_SRC / "ingestion.py").read_text(errors="replace"))
+        tree = ast.parse(
+            (_KNOWLEDGE_SRC / "ingestion.py").read_text(errors="replace", encoding="utf-8")
+        )
         hits = _count_snapshot_literals(_find_def(tree, "ingest_file"))
         assert hits == [], (
             f"ingest_file contains '{_SNAPSHOT_QUERY}' literals at lines "
@@ -394,7 +400,9 @@ class TestSnapshotQueryRatchet:
         )
 
     def test_resolver_is_the_single_group_read(self):
-        tree = ast.parse((_KNOWLEDGE_SRC / "ingestion.py").read_text(errors="replace"))
+        tree = ast.parse(
+            (_KNOWLEDGE_SRC / "ingestion.py").read_text(errors="replace", encoding="utf-8")
+        )
         hits = _count_snapshot_literals(_find_def(tree, "_resolve_old_item_ids"))
         assert len(hits) == 1, (
             f"_resolve_old_item_ids contains {len(hits)} '{_SNAPSHOT_QUERY}' "
@@ -404,7 +412,9 @@ class TestSnapshotQueryRatchet:
         )
 
     def test_ingest_artifact_has_no_source_snapshot(self):
-        tree = ast.parse((_KNOWLEDGE_SRC / "artifact_ingest.py").read_text(errors="replace"))
+        tree = ast.parse(
+            (_KNOWLEDGE_SRC / "artifact_ingest.py").read_text(errors="replace", encoding="utf-8")
+        )
         hits = _count_snapshot_literals(_find_def(tree, "ingest_artifact"))
         assert hits == [], (
             f"ingest_artifact reads the source's full item-id set again at "

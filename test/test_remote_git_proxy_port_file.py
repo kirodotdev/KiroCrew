@@ -52,7 +52,7 @@ async def test_two_launches_in_one_guest_keep_separate_git_proxy_port_files(tmp_
     try:
         parent_file = await started(parent)
         child_file = await started(child)
-        assert parent_file.read_text() != child_file.read_text()
+        assert parent_file.read_text(encoding="utf-8") != child_file.read_text(encoding="utf-8")
         await child.stop_git_proxy()
         await async_wait_until(
             lambda: not child_file.exists(),
@@ -93,8 +93,8 @@ def test_the_tool_server_routes_git_through_its_own_port_file(tmp_path, monkeypa
         listener.listen()
         port = listener.getsockname()[1]
         mine, other = tmp_path / "mine.port", tmp_path / "other.port"
-        mine.write_text(f"{port}\n")
-        (tmp_path / "mine.port.lend").write_text(f"{port} github.com\n")
+        mine.write_text(f"{port}\n", encoding="utf-8")
+        (tmp_path / "mine.port.lend").write_text(f"{port} github.com\n", encoding="utf-8")
         ws = workspace_tools.Workspace(str(tmp_path), str(mine), git_proxy_secret="a" * 64)
         assert "guest output" in ws.run_command("env")
         ws = workspace_tools.Workspace(str(tmp_path), str(other))

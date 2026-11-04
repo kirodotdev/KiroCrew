@@ -25,7 +25,7 @@ def _exe(tmp_path: Path, name: str) -> str:
     """A real resolvable absolute command, so resolution is not the thing failing."""
     path = tmp_path / "bin" / name
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("#!/bin/sh\n")
+    path.write_text("#!/bin/sh\n", encoding="utf-8")
     path.chmod(0o755)
     return str(path)
 

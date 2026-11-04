@@ -759,7 +759,7 @@ class TestRetireAutoRegisteredFolders:
         """
         folder = tmp_path / "legacy"
         folder.mkdir()
-        (folder / "note.md").write_text("# legacy\n\nbody\n" * 40)
+        (folder / "note.md").write_text("# legacy\n\nbody\n" * 40, encoding="utf-8")
         sid = self._add(store, {"auto_added": True}, uri=str(folder))
         fw = self._watcher(store)._folder_watcher
         fw._do_scan = AsyncMock()  # type: ignore[method-assign]

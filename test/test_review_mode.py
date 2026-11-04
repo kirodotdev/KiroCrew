@@ -928,7 +928,8 @@ class TestHandleReviewEditSubmit:
                     "bind": {"type": "surface", "id": "host"},
                     "channels": {"members": {"mode": "allow", "allow": ["discord"]}},
                 }
-            )
+            ),
+            encoding="utf-8",
         )
         _review_drafts_set("C1|ts1|abc", "original", REQUESTER_ID)
         payload = _make_payload(

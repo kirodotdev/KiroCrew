@@ -597,7 +597,7 @@ async def test_pooled_stubs_get_the_backends_instructions_after_a_respawn_too(
         assert served_by != dead, "a stub after the respawn was replayed the dead backend's result"
         assert served_by in backends, (served_by, backends)
         fallback = home / "logs" / "stub_fallback.jsonl"
-        assert not fallback.exists(), fallback.read_text()
+        assert not fallback.exists(), fallback.read_text(encoding="utf-8")
     finally:
         await _reap(procs)
         stop.set()

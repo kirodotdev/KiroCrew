@@ -943,7 +943,7 @@ class TestATerminalOutcomeSurvivesALaterWrite:
         return agent_root / agent_id
 
     def tombstone(self, agent_root, agent_id: str) -> dict:
-        return json.loads((agent_root / agent_id / "tombstone.json").read_text())
+        return json.loads((agent_root / agent_id / "tombstone.json").read_text(encoding="utf-8"))
 
     def test_a_delivered_write_after_a_stop_keeps_the_stop(self, agent_root):
         self.folder(agent_root, "keep111")
@@ -983,7 +983,7 @@ class TestElapsedMeasuresTheRunNotTheDeliveryWait:
     """
 
     def tombstone(self, agent_root, agent_id: str) -> dict:
-        return json.loads((agent_root / agent_id / "tombstone.json").read_text())
+        return json.loads((agent_root / agent_id / "tombstone.json").read_text(encoding="utf-8"))
 
     def test_a_later_write_does_not_move_a_recorded_ending(self, agent_root):
         moment = time.time()
@@ -1083,7 +1083,9 @@ class TestElapsedMeasuresTheRunNotTheDeliveryWait:
         mark_delivered("read111")
         assert len(reads) == 1, f"the acknowledgement did not take the carry read: {reads}"
         assert (
-            json.loads((agent_root / "read111" / "tombstone.json").read_text())["outcome"]
+            json.loads((agent_root / "read111" / "tombstone.json").read_text(encoding="utf-8"))[
+                "outcome"
+            ]
             == "failed"
         )
 
@@ -1110,14 +1112,16 @@ class TestADetachedSettleBatchSurvivesCancellation:
             write_record(agent_root, agent_id, tombstone_cause=None)
         settle_delivered_batch(tuple(self.delivery(agent_id) for agent_id in ids))
         for agent_id in ids:
-            data = json.loads((agent_root / agent_id / "tombstone.json").read_text())
+            data = json.loads(
+                (agent_root / agent_id / "tombstone.json").read_text(encoding="utf-8")
+            )
             assert data["cause"] == "delivered", f"{agent_id} was not settled"
 
     def test_the_batch_carries_each_runs_terminal_usage(self, agent_root):
         """Offloading the write must not cost the tombstone its elapsed and credits."""
         write_record(agent_root, "usage11", tombstone_cause=None)
         settle_delivered_batch((self.delivery("usage11", elapsed=12.5, credits=3.25),))
-        data = json.loads((agent_root / "usage11" / "tombstone.json").read_text())
+        data = json.loads((agent_root / "usage11" / "tombstone.json").read_text(encoding="utf-8"))
         assert data["cause"] == "delivered"
         assert data["elapsed"] == 12.5, "the held member's runtime did not reach its tombstone"
         assert data["credits"] == 3.25, "the held member's credits did not reach its tombstone"
@@ -1134,7 +1138,9 @@ class TestADetachedSettleBatchSurvivesCancellation:
             )
         )
         for agent_id in ("batch444", "batch555"):
-            data = json.loads((agent_root / agent_id / "tombstone.json").read_text())
+            data = json.loads(
+                (agent_root / agent_id / "tombstone.json").read_text(encoding="utf-8")
+            )
             assert data["cause"] == "delivered", f"{agent_id} was stranded"
 
     def test_a_cancelled_waiter_still_leaves_the_whole_batch_written(self, agent_root):
@@ -1173,7 +1179,9 @@ class TestADetachedSettleBatchSurvivesCancellation:
 
         asyncio.run(drive())
         for agent_id in ids:
-            data = json.loads((agent_root / agent_id / "tombstone.json").read_text())
+            data = json.loads(
+                (agent_root / agent_id / "tombstone.json").read_text(encoding="utf-8")
+            )
             assert data["cause"] == "delivered", (
                 f"{agent_id} lost its delivered tombstone when the waiter was cancelled, "
                 "so restart reconciliation would replay it as a duplicate completion"

@@ -45,7 +45,9 @@ def _seed(state, key: str, turns: int) -> None:
 
 
 def _write_snapshot(tmp_path, keys: list[str]) -> None:
-    (tmp_path / "open_slots.json").write_text(json.dumps({"keys": keys, "ts": 0.0}))
+    (tmp_path / "open_slots.json").write_text(
+        json.dumps({"keys": keys, "ts": 0.0}), encoding="utf-8"
+    )
 
 
 def _count_full_reads(monkeypatch, conv_log) -> list[str]:

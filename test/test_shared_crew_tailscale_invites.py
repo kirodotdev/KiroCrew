@@ -193,7 +193,9 @@ def fake(monkeypatch: pytest.MonkeyPatch):
 @pytest.fixture
 def config_file(monkeypatch: pytest.MonkeyPatch, tmp_path):
     path = tmp_path / "config.json"
-    path.write_text(json.dumps({"dashboard": {"tailscale": {"allowed_logins": []}}}))
+    path.write_text(
+        json.dumps({"dashboard": {"tailscale": {"allowed_logins": []}}}), encoding="utf-8"
+    )
     import kiro_crew.config.loader as loader
 
     monkeypatch.setattr(loader, "config_path", lambda: path)
@@ -201,7 +203,7 @@ def config_file(monkeypatch: pytest.MonkeyPatch, tmp_path):
 
 
 def _logins(path) -> list[str]:
-    return json.loads(path.read_text())["dashboard"]["tailscale"]["allowed_logins"]
+    return json.loads(path.read_text(encoding="utf-8"))["dashboard"]["tailscale"]["allowed_logins"]
 
 
 def _active_members() -> dict[str, Any]:
@@ -367,7 +369,7 @@ async def test_key_never_leaves_the_vault(fake: FakeTailscale, caplog) -> None:
     caplog.set_level(logging.DEBUG)
     view = await invites.connect(KEY, "owner")
     assert KEY not in json.dumps(view)
-    state_text = (store.root() / store.STATE_FILE).read_text()
+    state_text = (store.root() / store.STATE_FILE).read_text(encoding="utf-8")
     assert KEY not in state_text and "Zz9yYxXwWvV" not in state_text
     for path in store.root().rglob("*"):
         if path.is_file():
@@ -444,7 +446,7 @@ async def test_accept_adds_login_to_allowlist_and_binds_alias_by_user_id(fake, c
         avatar,
     )
     assert _logins(config_file) == [OWNER_LOGIN, "ann@example.com"]
-    cfg = json.loads(config_file.read_text())["dashboard"]["tailscale"]
+    cfg = json.loads(config_file.read_text(encoding="utf-8"))["dashboard"]["tailscale"]
     assert cfg["trust_identity"] is True and cfg["enabled"] is True
     assert tailnet.login_allowed("ann@example.com", (OWNER_LOGIN,)) is True
     view = await invites.status_view()
