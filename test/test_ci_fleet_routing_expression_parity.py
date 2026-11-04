@@ -26,23 +26,12 @@ _WORKFLOWS_DIR = _REPO_ROOT / ".github" / "workflows"
 _FAST_GATE_PUSH_SKIP_CLAUSE = "github.event_name != 'push' || vars.MERGE_QUEUE_ENABLED != 'true'"
 
 _ACTOR_PREDICATE = "contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id)"
-# A route that the fleet did not admit falls back TWICE, and both branches are
-# load-bearing. A run EXECUTING in this repository takes the `kirocrew-runners`
-# group's own runner label, which keeps it off the standard pool whose
-# concurrency is shared enterprise-wide. A run executing anywhere else -- a fork
-# running one of these workflows on its own `main` -- cannot reach an
-# organization runner group at all, so it stays on the hosted image: a label no
-# runner there carries would leave the job queued until GitHub cancelled it,
-# which is worse than the shared pool, not better.
-#
-# The repository test appears twice in the full expression for different
-# reasons. The first is ANDed into fleet eligibility alongside the actor and
-# event tests; this one decides only which non-fleet destination is reachable,
-# so neither can be derived from the other.
-#
-# Every ROUTING constant carries this tail. The resolver-consumer constants do
-# not, for an unrelated reason: an EMPTY resolver output means the resolver did
-# not run, and hosted is the only safe answer there.
+# A route the fleet did not admit falls back TWICE. In this repository it takes the
+# `kirocrew-runners` group label, off the enterprise-shared standard pool. A fork cannot
+# reach an org runner group, so it stays hosted; a label no runner carries would queue
+# until GitHub cancelled the job. The repository test here is separate from the one in
+# fleet eligibility. Resolver-consumer constants skip this tail: an EMPTY resolver
+# output means the resolver did not run, and hosted is the only safe answer.
 _GROUP_THEN_HOSTED_TAIL = (
     "|| github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' "
     "|| 'ubuntu-latest' }}"
@@ -156,12 +145,9 @@ _PERMANENT_EXCEPTIONS = {
     ("fork-pr-description.yml", "describe"),
     ("fork-workflow-guard.yml", "guard"),
     ("fork-workflow-guard.yml", "strip-stale-override"),
-    # The merge-path utility lanes, with `disposition-deferral-check` above
-    # already a member. Each is seconds of work whose wall clock is almost all
-    # queue wait, and each sits where a human is waiting to merge, so they moved
-    # to the larger-runner group for queue position. Membership here is what
-    # lets the pin below exist: a runner may only be pinned for a job this set
-    # names.
+    # The merge-path utility lanes (with `disposition-deferral-check` above): seconds of
+    # work where a human waits to merge, so they run on the larger-runner group for
+    # queue position. A runner may only be pinned for a job this set names.
     ("issue-gate.yml", "issue-gate"),
     ("pr-size-override.yml", "record"),
     ("sensitive-change-review-comment.yml", "rerun"),
@@ -192,18 +178,12 @@ _PERMANENT_EXCEPTIONS = {
     ("release.yml", "record-stable-promotion"),
 }
 
-# A permanent exception stays OFF the CodeBuild fleet; it does not have to stay
-# on the shared standard runner. These lanes moved to the `kirocrew-runners`
-# larger-runner group (with a hosted fork fallback where pinned below), still
-# GitHub-hosted Ubuntu VMs with the same filesystem layout and no fleet
-# credentials, so every isolation contract above
-# still holds. Pinned per job rather than waived: a lane that drifts to some
-# third runner must still fail this check.
+# A permanent exception stays OFF the CodeBuild fleet but may run on the
+# `kirocrew-runners` group: GitHub-hosted Ubuntu VMs with no fleet credentials, so the
+# isolation contracts above hold. Pinned per job so drift to a third runner fails.
 #
-# Two spellings reach the same group. `group:` resolves only inside the owning
-# organization, so a fork running its own copy of the workflow finds no runner
-# and the job waits forever; the LABEL spelling carries its own fork fallback in
-# the `||` leg. A lane a fork never runs may use either, so both appear here.
+# `group:` resolves only inside the org, so a fork's copy waits forever; the LABEL
+# spelling carries a fork fallback in its `||` leg. A lane a fork never runs may use either.
 _GROUP_LABEL_EXPR = (
     "${{ github.repository == 'kirodotdev/KiroCrew' && "
     "'kirocrew-linux-4-core' || 'ubuntu-latest' }}"
@@ -282,13 +262,9 @@ _HOSTED_EXCEPTION_RUNNERS: dict[tuple[str, str], object] = {
         "${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' "
         "|| 'ubuntu-latest' }}"
     ),
-    # The same-repo scope lane's three non-matrix jobs. They keep their place in
-    # _PERMANENT_EXCEPTIONS because none of them takes a fleet route, and a group
-    # label is not a fleet route. `generate` has its own documented reason to
-    # stay off the fleet, which its comment in the workflow states; the other two
-    # are simply not argued onto it. The label form rather than `group:` is
-    # required because the workflow fires on `pull_request`, so a contributor's
-    # own fork runs it where an organization group is unreachable.
+    # The same-repo scope lane's three non-matrix jobs: a group label is not a fleet
+    # route. The label form, not `group:`, because the workflow fires on `pull_request`
+    # and a contributor's fork cannot reach an org group.
     ("security-scope-review.yml", "generate"): (
         "${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}"
     ),
@@ -349,21 +325,13 @@ _READINESS_WORKFLOWS = {"pr-readiness.yml"}
 _DISPATCH_MERGE_GROUP_WORKFLOWS = {"main-ratchet-audit.yml"}
 # The fleet-routed workflows that declare a `merge_group` trigger.
 _MERGE_GROUP_WORKFLOWS = {"ci.yml", "fast-gate.yml", "build.yml"}
-# Fleet-routed `workflow_call` callees that take the SAME expression without
-# declaring any trigger of their own. A callee's `github.event_name` is the
-# caller's, so its event set is the caller's: internal-content-scan-gate.yml
-# fires on merge_group, pull_request and push, which is exactly the merge-group
-# routing policy. Kept apart from the set above because the trigger-parity check
-# reads declared triggers, and a callee declares none.
+# Fleet-routed `workflow_call` callees that take the merge-group expression: a callee's
+# `github.event_name` is its caller's. Kept apart because the trigger-parity check reads
+# declared triggers, and a callee declares none.
 _MERGE_GROUP_CALLEE_WORKFLOWS = {"internal-content-scan.yml"}
-# merge_group-triggered workflows with no fleet route of their own: the queue's
-# required check (a poll), the OIDC content scan's caller and the Python client
-# suite. "No fleet route IN THIS FILE" is what this list means, and it is the
-# only thing it means. The poll and the client suite both carry the
-# `kirocrew-runners` group's label in this repository, so a group label does not
-# remove an entry. The content scan's caller is a bare `uses:` job with no
-# `runs-on` at all; the route for that lane lives in the callee it names, which
-# _MERGE_GROUP_CALLEE_WORKFLOWS pins.
+# merge_group-triggered workflows with no fleet route IN THIS FILE; a group label does
+# not remove an entry. The content scan's caller is a bare `uses:` job; its route lives
+# in the callee, which _MERGE_GROUP_CALLEE_WORKFLOWS pins.
 _MERGE_GROUP_HOSTED_WORKFLOWS = {
     "merge-queue-readiness.yml",
     "internal-content-scan-gate.yml",
@@ -589,20 +557,11 @@ def test_ci_resolvers_share_actor_policy_and_emit_large_labels() -> None:
         script = step["run"]
         assert 'if [ "$ELIGIBLE" = "true" ]; then' in script
         assert f'echo "{output}=$LABEL instance-size:large"' in script
-        # Both resolvers carry the SAME three branches, and all three must
-        # exist on each. A run executing in this repository takes its
-        # platform's larger-runner label, keeping the matrix off the
-        # enterprise-shared standard pool. A run executing anywhere else -- a
-        # fork's own CI -- cannot reach an organization group, so it must stay
-        # on the hosted image rather than request a label no runner carries.
-        # Pinned together because dropping the third branch strands every
-        # consumer in every fork, which no other check in this file would
-        # catch.
-        #
-        # Each platform names its OWN group's runner by LABEL. The label form
-        # matters beyond fork reachability: a bare `group:` dispatches to any
-        # member, so one group holding both platforms would let a Linux
-        # consumer land on Windows. Two groups plus two labels cannot.
+        # Both resolvers carry the same three branches: fleet, in-repo group label,
+        # hosted. A fork cannot reach an org group, so dropping the hosted branch
+        # strands every consumer in every fork. Each platform names its OWN group by
+        # LABEL: a bare `group:` dispatches to any member, so a mixed group could put
+        # a Linux consumer on Windows.
         group_label, hosted = {
             "linux": ("kirocrew-linux-4-core", "ubuntu-latest"),
             "windows": ("kirocrew-windows-4-core", "windows-latest"),
@@ -650,19 +609,10 @@ def test_build_desktop_routes_only_the_x64_leg_through_the_shared_policy() -> No
 def test_both_ci_label_matrix_lanes_route_each_leg_to_its_own_group() -> None:
     """`backend-test-ipv6` and `new-test-stability` share ONE routing string.
 
-    Both run a Linux and a Windows leg off `matrix.os` and reach the two
-    larger-runner groups by LABEL inside a `github.repository` conditional, so a
-    fork running its own copy -- which cannot reach an organization group --
-    degrades to the hosted image instead of queueing until the 24-hour cancel.
-
-    Pinned as one shared string across both jobs because the lanes are not
-    equally protected on their own: `test_ci_ipv6_routing.py` pins
-    `backend-test-ipv6`, while nothing else reads `new-test-stability`'s line.
-    The trailing `|| matrix.os` makes a dropped arm quiet rather than fatal --
-    the leg still runs, just back on the enterprise-shared pool -- and dropping
-    the Windows arm on `new-test-stability` alone would otherwise let
-    `New-test stability (windows-latest)` keep reporting green with no check
-    saying it had moved.
+    Both reach the larger-runner groups by LABEL inside a `github.repository`
+    conditional, so a fork degrades to hosted instead of queueing until the 24-hour
+    cancel. The trailing `|| matrix.os` makes a dropped arm quiet, and nothing else
+    reads `new-test-stability`'s line.
     """
     workflow = yaml.safe_load((_WORKFLOWS_DIR / "ci.yml").read_text(encoding="utf-8"))
     expected = (
@@ -715,10 +665,8 @@ def test_merge_queue_readiness_budget_covers_ci_critical_path() -> None:
         strategy = spec.get("strategy") or {}
         matrix = strategy.get("matrix")
         cap = strategy.get("max-parallel")
-        # CodeBuild-routed jobs use a conditional expression; on the hosted
-        # fallback the expression evaluates to the `|| N` value.  Use that
-        # fallback for worst-case round counting so the budget test guards
-        # the hosted path.
+        # A CodeBuild-routed cap is a conditional; use its hosted `|| N` fallback,
+        # the worst case.
         if isinstance(cap, str):
             m = re.search(r"\|\|\s*(\d+)\s*\}\}", cap)
             cap = int(m.group(1)) if m else None
