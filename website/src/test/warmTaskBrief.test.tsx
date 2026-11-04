@@ -115,7 +115,7 @@ describe('warm task brief transcript rows', () => {
     const b = warmBriefOf(brief({ asked: 'Fix the test', now: 'PR is open.', needs_you: ['Approve'], next: ['Merge'] }))!
     expect(b).toEqual({
       status: null, headline: 'PR is open.', asked: 'Fix the test', remaining: '',
-      done: [], needsYou: ['Approve'], next: ['Merge'], extra: [], body: '', waiting: [], waitingTotal: 0, widget: '', links: [],
+      done: [], needsYou: ['Approve'], next: ['Merge'], extra: [], body: '', waiting: [], waitingTotal: 0, widget: '', links: [], asks: [],
     })
     render(<WarmBriefCard brief={b} />)
     expect(screen.queryByTestId('warm-brief-status')).toBeNull()
@@ -135,7 +135,7 @@ const FULL = {
 
 const EMPTY: WarmBrief = {
   status: null, headline: 'PR is open.', asked: '', remaining: '',
-  done: [], needsYou: [], next: [], extra: [], body: '', waiting: [], waitingTotal: 0, widget: '', links: [],
+  done: [], needsYou: [], next: [], extra: [], body: '', waiting: [], waitingTotal: 0, widget: '', links: [], asks: [],
 }
 
 describe('WarmBriefCard', () => {
@@ -589,6 +589,41 @@ describe('the waiting cards', () => {
     const shownCount = (container.textContent ?? '').toLowerCase().split(term).length - 1
     expect(shownCount).toBeGreaterThan(0)
     expect(searchableText(m).toLowerCase().split(term).length - 1).toBe(shownCount)
+  })
+})
+
+describe('structured asks', () => {
+  const ASK = {
+    what: 'Push the fix',
+    why: 'Only you can approve a push',
+    options: [
+      { label: 'Push now', consequence: 'CI reruns' },
+      { label: 'Wait for CI', consequence: '' },
+    ],
+    recommended: 'Push now',
+    recommended_why: 'The fix is tested',
+  }
+
+  it('draws why, each consequence and the recommendation as text, and search reads them', () => {
+    const m = brief({ headline: 'Back.', status: 'needs_you', asks: [ASK] })
+    render(<WarmBriefCard brief={warmBriefOf(m)!} />)
+    const ask = screen.getByTestId('warm-brief-ask')
+    expect(ask.textContent).toContain('Why: Only you can approve a push')
+    expect(ask.textContent).toContain('Push now: CI reruns')
+    expect(screen.getByTestId('warm-brief-recommended').textContent).toBe('Recommended: Push now (The fix is tested)')
+    expect(ask.querySelector('[data-recommended]')?.textContent).toBe('Push now: CI reruns')
+    expect(ask.querySelectorAll('button, a')).toHaveLength(0)
+    for (const term of ['why: only you', 'push now: ci reruns', 'wait for ci', 'the fix is tested']) {
+      expect(searchableText(m).toLowerCase()).toContain(term)
+    }
+  })
+
+  it('drops a recommendation outside the labels and asks without a what', () => {
+    const m = brief({ headline: 'Back.', status: 'needs_you', asks: [{ ...ASK, recommended: 'Merge' }, { why: 'x' }, 'text'] })
+    const b = warmBriefOf(m)!
+    expect(b.asks).toHaveLength(1)
+    expect(b.asks[0].recommended).toBe('')
+    expect(b.asks[0].recommendedWhy).toBe('')
   })
 })
 

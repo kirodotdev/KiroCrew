@@ -5983,13 +5983,15 @@
       "more_waiting": "Mais {{count}}",
       "needs_you": "Precisa de você",
       "next": "Próximos passos",
+      "recommended": "Recomendado",
       "remaining": "Falta",
       "show_fewer": "Mostrar menos",
       "status_blocked": "Travado",
       "status_done": "Concluído",
       "status_needs_you": "Esperando você",
       "status_on_track": "No caminho certo",
-      "unlisted": "Mais {{count}} não listadas"
+      "unlisted": "Mais {{count}} não listadas",
+      "why": "Por quê"
     },
     "voicePlaybackNotice": {
       "failed": "Não foi possível usar “{{speak}}”. Verifique as configurações de texto para fala e tente novamente.",

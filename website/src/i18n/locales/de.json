@@ -5829,13 +5829,15 @@
       "more_waiting": "{{count}} weitere",
       "needs_you": "Braucht dich",
       "next": "Als Nächstes",
+      "recommended": "Empfohlen",
       "remaining": "Offen",
       "show_fewer": "Weniger anzeigen",
       "status_blocked": "Blockiert",
       "status_done": "Fertig",
       "status_needs_you": "Wartet auf dich",
       "status_on_track": "Läuft nach Plan",
-      "unlisted": "{{count}} weitere nicht aufgeführt"
+      "unlisted": "{{count}} weitere nicht aufgeführt",
+      "why": "Warum"
     },
     "voicePlaybackNotice": {
       "failed": "„{{speak}}“ ist fehlgeschlagen. Prüfe die Text-zu-Sprache-Einstellungen und versuche es erneut.",

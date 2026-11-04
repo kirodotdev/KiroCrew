@@ -5675,13 +5675,15 @@
       "more_waiting": "还有 {{count}} 件",
       "needs_you": "需要你处理",
       "next": "下一步",
+      "recommended": "建议",
       "remaining": "还剩",
       "show_fewer": "收起",
       "status_blocked": "卡住了",
       "status_done": "已完成",
       "status_needs_you": "等你处理",
       "status_on_track": "进展顺利",
-      "unlisted": "还有 {{count}} 件未列出"
+      "unlisted": "还有 {{count}} 件未列出",
+      "why": "原因"
     },
     "voicePlaybackNotice": {
       "failed": "{{speak}}失败。请检查文字转语音设置后重试。",

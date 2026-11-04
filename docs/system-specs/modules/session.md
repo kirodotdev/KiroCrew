@@ -256,11 +256,22 @@ left (each fact with source and time), numbered asks (what, why only the
 owner, every option with its consequence, the recommendation and why), problems
 that do not need the owner, and what runs next. It returns one JSON object:
 `status` (`on_track`, `needs_you`, `blocked` or `done`; anything else reads as
-`needs_you` when `needs_you` has items, else `on_track`, and `on_track` or
-`done` beside `needs_you` items reads as `needs_you`), `headline` (at most
-240 characters), `needs_you` (at most four items of 200) and a markdown
-`body` (kept as source, defanged, trailing whitespace dropped, 6,000
-characters, 160 lines; the model's output budget is 40 KiB). Markdown images
+`needs_you` when an ask or waiting item exists, else `on_track`, and
+`on_track` or `done` beside one reads as `needs_you`), `headline` (at most
+240 characters), `asked` (the owner's request restated in one line, 160
+characters; the payload's `owner_request` is its source, and the gateway's
+quote fills it only when there is no `body`), `asks` (at most four, each
+`what`, `why`, `source`, `options` of `label` and `consequence`,
+`recommended` and `recommended_why`; texts 200 characters, a consequence
+160) and a markdown `body` (kept as source, defanged, trailing whitespace
+dropped, 6,000 characters, 160 lines; the model's output budget is 72 KiB).
+An ask's option labels come only from the `waiting_on_you` entry its
+`source` names, at most six: a renamed, added or dropped label keeps the
+source labels and drops the consequences and recommendation, an ask with no
+valid `source` keeps no options, and a recommendation outside the labels is
+dropped. Asks replace the older `needs_you` list (four items of 200), which
+is still read when a reply has no `asks`. In `content`, the asks pass
+through the same inert-body transform as the body. Markdown images
 and `<img>` tags outside a widget or code fence draw as their alt text only
 (a widget frame allows no remote image). The secret and grounding
 scans run last, after every transform, on the exact strings the row would

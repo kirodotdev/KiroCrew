@@ -6137,13 +6137,15 @@
       "more_waiting": "Ещё {{count}}",
       "needs_you": "Нужно от тебя",
       "next": "Дальше",
+      "recommended": "Совет",
       "remaining": "Осталось",
       "show_fewer": "Свернуть",
       "status_blocked": "Застряло",
       "status_done": "Готово",
       "status_needs_you": "Ждёт тебя",
       "status_on_track": "По плану",
-      "unlisted": "Ещё {{count}} не показано"
+      "unlisted": "Ещё {{count}} не показано",
+      "why": "Почему"
     },
     "voicePlaybackNotice": {
       "failed": "Не удалось выполнить «{{speak}}». Проверь настройки преобразования текста в речь и попробуй снова.",

@@ -5983,13 +5983,15 @@
       "more_waiting": "{{count}} de plus",
       "needs_you": "À toi de jouer",
       "next": "Ensuite",
+      "recommended": "Recommandé",
       "remaining": "Reste",
       "show_fewer": "Afficher moins",
       "status_blocked": "Bloqué",
       "status_done": "Terminé",
       "status_needs_you": "Attend ton retour",
       "status_on_track": "Dans les temps",
-      "unlisted": "{{count}} de plus non listées"
+      "unlisted": "{{count}} de plus non listées",
+      "why": "Pourquoi"
     },
     "voicePlaybackNotice": {
       "failed": "« {{speak}} » a échoué. Vérifie les paramètres de synthèse vocale et réessaie.",

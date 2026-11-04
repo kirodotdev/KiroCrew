@@ -566,7 +566,8 @@ normal mate message roles and classes; older builds also wrote a deterministic
 opener row (`warm_task_brief_preparing`), which still reads as a brief row. The
 result row's `meta.brief` holds the validated, redacted fields (`status`,
 `headline`, `asked`, `remaining`, `done`, `needs_you`, `next`, `extra`, `body`,
-an optional HTML `widget`, and the goal-scoped `progress`; an older row holds `asked`, `now`, `needs_you` and `next`) that the
+`asks` (each `what`, `why`, `options` of `label` and `consequence`,
+`recommended`, `recommended_why`), an optional HTML `widget`, and the goal-scoped `progress`; an older row holds `asked`, `now`, `needs_you` and `next`) that the
 transcript draws as a fixed card; its `content` is the same brief as plain
 text, for export and any reader without the card.
 Their metadata marks them only for fingerprint and model-input

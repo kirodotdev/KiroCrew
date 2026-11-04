@@ -5829,13 +5829,15 @@
       "more_waiting": "{{count}} और",
       "needs_you": "तुमसे चाहिए",
       "next": "आगे",
+      "recommended": "सुझाव",
       "remaining": "बाकी",
       "show_fewer": "कम दिखाएँ",
       "status_blocked": "अटका है",
       "status_done": "पूरा हुआ",
       "status_needs_you": "तुम्हारा इंतज़ार",
       "status_on_track": "ठीक चल रहा है",
-      "unlisted": "{{count}} और सूची में नहीं"
+      "unlisted": "{{count}} और सूची में नहीं",
+      "why": "क्यों"
     },
     "voicePlaybackNotice": {
       "failed": "“{{speak}}” नहीं चल सका। टेक्स्ट-टू-स्पीच सेटिंग जाँचो और फिर कोशिश करो।",
