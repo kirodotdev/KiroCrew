@@ -57,6 +57,30 @@ function styleOf(el: Element): CSSStyleDeclaration | null {
   return view ? view.getComputedStyle(el) : null
 }
 
+/**
+ * Marks host-only content: shown to the person (and to assistive technology)
+ * but never part of the text a message action, app or copy of the message
+ * reads. The owner's reveal of a removed credential carries it, so a revealed
+ * value cannot ride a message action into an app.
+ */
+export const HOST_ONLY_ATTR = 'data-host-only'
+
+/**
+ * Whether any range of `sel` reaches host-only content anywhere in the page.
+ * The whole document is searched, not just `container`: a multi-range
+ * selection (Firefox Ctrl-drag) can start in one reply and add a range in
+ * another, and every range feeds the selection's text.
+ */
+export function selectionTouchesHostOnly(sel: Selection, container: Element): boolean {
+  const marked = container.ownerDocument.querySelectorAll(`[${HOST_ONLY_ATTR}]`)
+  if (marked.length === 0) return false
+  for (let i = 0; i < sel.rangeCount; i++) {
+    const range = sel.getRangeAt(i)
+    for (const el of Array.from(marked)) if (range.intersectsNode(el)) return true
+  }
+  return false
+}
+
 function hiddenFromReader(el: Element, style: CSSStyleDeclaration | null): boolean {
   if (el.hasAttribute('hidden') || el.getAttribute('aria-hidden') === 'true' || el.classList.contains('sr-only')) return true
   return !!style && (style.display === 'none' || style.visibility === 'hidden')
@@ -76,6 +100,7 @@ function walk(node: Node, out: Token[], pre: boolean): void {
   }
   if (node.nodeType !== 1) return
   const el = node as Element
+  if (el.hasAttribute(HOST_ONLY_ATTR)) return
   const code = codeText.get(el)
   if (code !== undefined) {
     out.push(BREAK, { kind: 'kept', text: code }, BREAK)

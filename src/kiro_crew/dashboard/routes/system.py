@@ -223,6 +223,7 @@ def register(app: web.Application) -> None:
     # legitimate caller is the owner's browser.
     app.router.add_get("/api/security/credential-redaction", handlers.api_credential_redaction_get)
     app.router.add_put("/api/security/credential-redaction", handlers.api_credential_redaction_put)
+    app.router.add_post("/api/security/redacted-value", handlers.api_owner_value_reveal)
     app.router.add_get("/api/approvals", handlers.api_approvals)
     app.router.add_post("/api/approvals/{id}/{action}", handlers.api_approval_resolve)
 
