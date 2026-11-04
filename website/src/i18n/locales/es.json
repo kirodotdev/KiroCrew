@@ -15916,6 +15916,7 @@
       "details_runs_loading": "Leyendo lo que ejecuta…",
       "details_runs_failed": "No se pudo leer lo que ejecuta.",
       "details_runs_cut": "Una parte es demasiado larga para mostrarla.",
+      "handoff_hint_staged_edits": "Aplica o descarta tus cambios en los servidores MCP para preguntar al agente.",
       "why_direct": "Cada chat inicia su propia copia. Activa Compartir para usar una sola copia.",
       "why_stub_off": "Compartir está activado. Funciona cuando el uso compartido de MCP está activado.",
       "why_private_backend": "Su entorno nombra un secreto del vault, así que cada chat conserva su propia copia.",

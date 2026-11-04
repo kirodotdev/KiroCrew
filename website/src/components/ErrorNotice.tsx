@@ -138,6 +138,7 @@ export default function ErrorNotice({
   messageTooltip,
   testId,
   showIcon = true,
+  handoffHint,
 }: {
   /** DOM id for controls, including menu hand-offs, that describe themselves with this alert. */
   id?: string
@@ -291,6 +292,15 @@ export default function ErrorNotice({
    * off changes nothing for assistive tech; `role="alert"` stays. On by default.
    */
   showIcon?: boolean
+  /**
+   * A short visible line saying what gets the hand-off back, shown in its place
+   * while `askAgent` is off -- for a notice whose hand-off is withheld only for
+   * now (a sibling list holds unapplied edits the navigation would drop). A
+   * withheld button with no word about it reads as a missing feature. Muted, not
+   * the alert's colour: it is a next step, not a second failure. Ignored while
+   * `askAgent` is on; unset, nothing renders.
+   */
+  handoffHint?: string
 } & ErrorNoticeNoHandoff) {
   // Subscribes to language switches: a parent compiled by the React Compiler
   // caches this element while its props are unchanged, so without its own
@@ -325,6 +335,9 @@ export default function ErrorNotice({
             onStage={onStage}
             label={askAgentLabel}
           />
+        )}
+        {!askAgent && handoffHint && (
+          <span className="min-w-0 text-[11px] font-normal text-muted" data-testid="error-notice-handoff-hint">{handoffHint}</span>
         )}
         {onDismiss && (
           <button
@@ -387,6 +400,9 @@ export default function ErrorNotice({
           ? <span className={`${messageBelow ? 'block text-[12px] font-normal text-danger-text' : ''} ${messageClassName}${scrollMessage ? ' min-h-0 overflow-y-auto' : ''}`} title={messageTooltip}>{withOriginLink(message)}</span>
           : withOriginLink(message)}
         {footer && <div className="mt-1 font-normal">{footer}</div>}
+        {!askAgent && handoffHint && (
+          <div className="mt-1 text-[12px] font-normal text-muted" data-testid="error-notice-handoff-hint">{handoffHint}</div>
+        )}
         {askAgent && actionPlacement === 'below' && (
           <div className={`mt-1.5${scrollMessage ? ' shrink-0' : ''}`}>
             <AskAgentButton

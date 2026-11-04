@@ -15916,6 +15916,7 @@
       "details_runs_loading": "Lecture de ce qu’il lance…",
       "details_runs_failed": "Impossible de lire ce qu’il lance.",
       "details_runs_cut": "Une partie est trop longue pour être affichée.",
+      "handoff_hint_staged_edits": "Applique ou abandonne tes modifications des serveurs MCP pour demander à l’agent.",
       "why_direct": "Chaque chat lance sa propre copie. Active Partage pour utiliser une seule copie.",
       "why_stub_off": "Le partage est activé. Il prend effet quand le partage MCP est activé.",
       "why_private_backend": "Son environnement nomme un secret du coffre, donc chaque chat garde sa propre copie.",

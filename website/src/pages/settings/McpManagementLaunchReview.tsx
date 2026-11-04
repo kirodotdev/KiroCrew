@@ -24,7 +24,7 @@ import {
   launchIsApprovable,
   type McpRowState,
 } from './mcpManagementModel'
-import { useMcpHandoffWouldLoseEdits } from '../connections/mcpStagedEditsContext'
+import { useMcpHandoffHint, useMcpHandoffWouldLoseEdits } from '../connections/mcpStagedEditsContext'
 
 /** The id of a row's Details sub-row, so its toggle can point at it. */
 export function detailsRowId(name: string): string {
@@ -140,6 +140,7 @@ function LaunchBlock({
  */
 function PreviewLaunch({ name }: { name: string }) {
   const handoffWouldLoseEdits = useMcpHandoffWouldLoseEdits()
+  const handoffHint = useMcpHandoffHint()
   const q = useQuery({
     queryKey: ['mcpGatewayLaunchPreview', name],
     queryFn: () => api.mcpGatewayLaunchPreview(name),
@@ -150,7 +151,7 @@ function PreviewLaunch({ name }: { name: string }) {
     return <p className="m-0 text-[12px]">{i18nT('pages.mcpManagement.details_runs_loading')}</p>
   }
   if (q.isError) {
-    return <ErrorNotice variant="inline" message={i18nT('pages.mcpManagement.details_runs_failed')} askAgent={!handoffWouldLoseEdits} />
+    return <ErrorNotice variant="inline" message={i18nT('pages.mcpManagement.details_runs_failed')} askAgent={!handoffWouldLoseEdits} handoffHint={handoffHint} />
   }
   return (
     <LaunchBlock
