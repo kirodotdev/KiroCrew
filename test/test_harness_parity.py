@@ -1387,6 +1387,13 @@ _DECLARED_IDENTITY_TESTS: dict[tuple[str, str], str] = {
     "not author. KAS has its own narrower arm: it moves only an ``auto`` default its "
     "own ``model`` select does not list, onto an id that select does list.",
     (
+        "src/kiro_crew/acp/session_handle_model_selection.py",
+        "store_session_config",
+    ): "KAS sends no ``models`` object, so its ``model`` select's ``currentValue`` is "
+    "the only place it names the model a session runs. It stays out of "
+    "``ACP_BACKENDS_ADVERTISED_MODEL_SELECTION`` because that select is its catalog, "
+    "not its advertised list, so only the current value is adopted, and only here.",
+    (
         "src/kiro_crew/acp/session_handle_compaction.py",
         "_kas_compact_request",
     ): "``_kiro/session/compact`` is KAS's own extension verb, advertised in its "
