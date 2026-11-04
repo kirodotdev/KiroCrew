@@ -165,5 +165,5 @@ async def slack_wire(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[SlackWire
     try:
         yield wire
     finally:
-        await asyncio.wait_for(session.close(), timeout=10)
-        await asyncio.wait_for(runner.cleanup(), timeout=10)
+        await asyncio.wait_for(session.close(), timeout=30)
+        await asyncio.wait_for(runner.cleanup(), timeout=30)

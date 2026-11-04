@@ -308,6 +308,6 @@ class TestAckHandlers:
             orch.slack = wire.client
             await ix._handle_subagent_ack(_payload(), {}, "C1", "m1")
         # The visual ack happens before the early return.
-        assert [(u.get("channel"), u.get("ts"), u.get("text")) for u in wire.sent("chat.update")] == [
-            ("C1", "m1", "✅ Acknowledged")
-        ]
+        assert [
+            (u.get("channel"), u.get("ts"), u.get("text")) for u in wire.sent("chat.update")
+        ] == [("C1", "m1", "✅ Acknowledged")]

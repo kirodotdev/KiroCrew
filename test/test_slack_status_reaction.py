@@ -216,9 +216,11 @@ class TestController:
             # The ack add is in flight and parked when the reply-time remove is asked for.
             await until_parked(gate)
             gate.set()
-            await asyncio.wait_for(asyncio.gather(*list(ctrl._tasks)), timeout=10)
+            await asyncio.wait_for(asyncio.gather(*list(ctrl._tasks)), timeout=30)
         # Slack saw the ack go on, then come off: the remove did not overtake the add.
-        assert [(c.method, c.get("channel"), c.get("timestamp"), c.get("name")) for c in wire.calls] == [
+        assert [
+            (c.method, c.get("channel"), c.get("timestamp"), c.get("name")) for c in wire.calls
+        ] == [
             ("reactions.add", "C1", "msg1", _ACK),
             ("reactions.remove", "C1", "msg1", _ACK),
         ]

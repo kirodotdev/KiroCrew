@@ -178,9 +178,7 @@ class TestSafeUpdates:
         assert (update.get("channel"), update.get("ts")) == ("C1", "m1")
         # Every overflow part is still attempted after the primary update failed.
         posts = wire.posts()
-        assert posts and all(
-            (p.get("channel"), p.get("thread_ts")) == ("C1", "t1") for p in posts
-        )
+        assert posts and all((p.get("channel"), p.get("thread_ts")) == ("C1", "t1") for p in posts)
         sent_text = update.get("text") + "".join(p.get("text") for p in posts)
         assert sent_text.count("z") == 8000
 

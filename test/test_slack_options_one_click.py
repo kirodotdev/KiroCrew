@@ -249,9 +249,7 @@ class TestReviewEdges:
         ]
 
     @pytest.mark.asyncio
-    async def test_send_on_a_pre_upgrade_checkbox_card_is_told_it_expired(
-        self, world, monkeypatch
-    ):
+    async def test_send_on_a_pre_upgrade_checkbox_card_is_told_it_expired(self, world, monkeypatch):
         orch, sent = world
         payload = _card_payload(["A", "B"])
         payload["actions"] = [{"action_id": "options_submit", "type": "button"}]
