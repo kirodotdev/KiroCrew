@@ -90,13 +90,8 @@ def test_provision_refuses_an_unusable_size(monkeypatch) -> None:
 def test_an_interactive_tier_key_resolves_to_the_ladders_own_shape(tier_key: str) -> None:
     """The three EC2 tier keys are accepted here, mapped from ``sizes.py``.
 
-    A caller who never asked for Fargate carries one of these, and
-    ``sizes.DEFAULT_TIER_KEY`` is one of them -- so the key refused by a lane that
-    did not map them is the one a caller gets by not choosing.
-
-    The expectation is DERIVED from the ladder, not written out: a raised ladder
-    must reach this lane, and a second table here would keep asserting the
-    retired shape while agreeing with itself.
+    ``sizes.DEFAULT_TIER_KEY`` is one of them, so it is what a caller gets by not choosing.
+    The expectation is derived from the ladder, so a raised ladder must reach this lane.
     """
     tier = sizes.get_tier(tier_key)
     parsed = fargate_engine._parse_size(tier_key)
@@ -150,12 +145,8 @@ def test_a_refusal_names_the_key_the_caller_passed() -> None:
 def test_a_refusal_for_a_tier_names_the_tier_the_caller_passed(monkeypatch) -> None:
     """Not the pair it was respelled into.
 
-    A tier key cannot fail on today's ladder -- the test above asserts all three
-    are legal -- so the only way to exercise this is to move the ladder, which is
-    a thing that has happened. With a tier whose derived shape leaves Fargate's
-    table, the caller must read back the word they typed: a message naming
-    ``64000/256000/80`` for someone who wrote ``power`` sends them looking for a
-    value they never wrote.
+    No tier key fails on today's ladder, so the ladder is moved here. The caller must read
+    back ``power``, not ``64000/256000/80``.
     """
     real_get_tier = sizes.get_tier
 
@@ -255,11 +246,8 @@ def _our_task(status: str = "RUNNING") -> dict:
 def test_the_stamp_the_writer_sends_is_the_one_teardown_classifies_by(monkeypatch) -> None:
     """The value provision stamps is the value teardown hands the classifier, per launch.
 
-    The classifier's `started_by` must identify ONE launch. A launcher-wide value
-    would make two coexisting launches classify each other MISLABELLED, so every
-    teardown would refuse to confirm while a sibling launch is up. This reads the
-    `startedBy` actually sent to RunTask rather than restating the prefix, so a
-    writer that changed the format or dropped the tag from it fails here.
+    `started_by` must identify ONE launch: a launcher-wide value makes two live launches
+    classify each other MISLABELLED. It reads the `startedBy` actually sent to RunTask.
     """
     double = _EcsDouble()
     _patch_aws(monkeypatch, double)
@@ -427,15 +415,10 @@ def test_teardown_refuses_an_unmarked_task_we_started(monkeypatch) -> None:
 
 
 def test_teardown_refuses_a_mislabelled_task_and_says_which_one(monkeypatch, caplog) -> None:
-    """A marked task this launcher started whose launch tag names another launch is
-    refused, and the refusal NAMES it.
+    """A marked task we started under another launch's tag is refused, and the log names it.
 
-    ``LaunchEngine.teardown`` returns a bool, so the plan's warning has exactly one
-    way out of the engine. ``launch_job`` turns the False into "it may still be
-    running and billing", which tells the operator to look but not where, and an
-    operator who cannot tell an unclaimable task from one of their own that is
-    wrongly tagged cannot take either next step. This fails if the engine goes back
-    to discarding ``TeardownPlan.warning``.
+    ``LaunchEngine.teardown`` returns a bool, so the log is the only way the plan's warning
+    tells the operator which task to look at.
     """
     double = _EcsDouble()
     double.tasks_for_teardown = [
@@ -458,21 +441,14 @@ def test_teardown_refuses_a_mislabelled_task_and_says_which_one(monkeypatch, cap
     assert OTHER_ARN in emitted, "the refusal must name the task the operator has to look at"
 
 
-# ── Criterion 4: nothing above LaunchEngine branches on backend ──────────────
+# ── Nothing above LaunchEngine branches on backend ───────────────────────────
 
 
 class _Ec2ShapedEngine:
     """A conforming engine standing in for the EC2 lane, for the comparison.
 
-    ``RealLaunchEngine`` needs AWS to provision, so a byte-comparison of the two
-    real engines is not what this asserts. The RFC's criterion is that nothing
-    ABOVE the ``LaunchEngine`` boundary branches on backend: the orchestrator and
-    the rollback path must treat any conforming engine identically. So the
-    comparison drives the SAME orchestrator over two engines and asserts the same
-    observable provision and teardown outcomes. Only provision and teardown, per
-    the amended RFC section 8: registry visibility is out of this phase and only
-    the EC2 engine produces a registry record, so register is deliberately not
-    compared.
+    ``RealLaunchEngine`` needs AWS, so the same orchestrator drives two conforming engines.
+    Only provision and teardown are compared (RFC section 8): only EC2 writes a registry row.
     """
 
     def preflight(self, profile: str, region: str) -> None:
@@ -493,14 +469,9 @@ class _Ec2ShapedEngine:
 
 
 def _run_through_engine(engine, store_root):
-    """Resolve one engine through the real ``_engine`` seam and drive provision +
-    teardown through it, returning the observable outcomes.
+    """Resolve one engine through the real ``_engine`` seam; return provision and teardown.
 
-    Provision and teardown ONLY, per the amended RFC section 8: signin and
-    register are out of this phase's comparison (only the EC2 engine produces a
-    registry record). The launch job is created through the real store so the
-    ``size_key`` and ``tag`` a provision reads come from the same orchestration
-    state both engines see.
+    The job comes from the real store, so both engines read the same ``size_key`` and ``tag``.
     """
     from kiro_crew.dashboard import handlers_cloud
 
@@ -537,10 +508,7 @@ def test_both_engines_are_observably_identical_for_provision_and_teardown(
     """The same seam, resolving the EC2-shaped engine and the real Fargate engine,
     produces identical provision and teardown outcomes.
 
-    The Fargate engine's AWS chokepoint is scripted; the EC2-shaped one returns
-    directly. If anything above ``LaunchEngine`` branched on backend, one of these
-    two observations would differ. Register is not compared: only the EC2 engine
-    produces a registry record and registry visibility is out of this phase.
+    The Fargate engine's AWS chokepoint is scripted; the EC2-shaped one returns directly.
     """
     double = _EcsDouble()
     double.tasks_for_teardown = [_our_task()]
@@ -558,13 +526,9 @@ def test_both_engines_are_observably_identical_for_provision_and_teardown(
 
 
 def test_mutation_managed_gate_is_value_not_key_presence(monkeypatch) -> None:
-    """Loosening the managed-tag gate from ``== "true"`` to mere key presence must
-    turn a test red.
+    """The managed-tag gate checks ``== "true"``, not mere key presence.
 
-    A task whose ``kirocrew:managed`` holds anything other than ``"true"`` — here
-    the launch tag written into the marker — is UNMARKED and is never stopped. If
-    the gate degraded to key presence, this task would classify OURS and teardown
-    would stop it, so this assertion fails, which is the point.
+    Here the marker holds the launch tag, so the task is UNMARKED and never stopped.
     """
     double = _EcsDouble()
     double.tasks_for_teardown = [
@@ -585,13 +549,9 @@ def test_mutation_managed_gate_is_value_not_key_presence(monkeypatch) -> None:
 
 
 def test_mutation_teardown_returns_the_plan_confirmation(monkeypatch) -> None:
-    """Making ``teardown`` return ``True`` on an unconfirmed plan must turn a test
-    red.
+    """``teardown`` returns the plan's ``confirmed=False`` unchanged.
 
-    An unmarked running task this launcher started yields ``confirmed=False``, and
-    teardown must return that unchanged. Hard-coding ``True`` here would report
-    billing stopped when a task may still be running; this assertion is what
-    catches that.
+    An unmarked running task we started may still bill, so ``True`` would be a lie.
     """
     double = _EcsDouble()
     double.tasks_for_teardown = [
@@ -610,12 +570,9 @@ class TestTheCredentialRecipientIsConfirmed:
     """A launch delivers the model credential into a container ``cloud.json`` names, so the
     operator confirms WHICH container before it is handed over.
 
-    This is what makes the file safe to leave as an ordinary file. Every alternative defends
-    the file itself -- a read-only seal, a hidden mount, an alias check -- and each of those
-    is a protection over a NAME that has to be complete across every platform and every way a
-    name can be aliased. The confirmation comes from the launch request instead, so no
-    filesystem property is load-bearing and rewriting the file produces a refusal that names
-    both values rather than a launch nobody was asked about.
+    The confirmation comes from the launch request, so the file can stay an ordinary file:
+    no filesystem protection is load-bearing, and a rewritten file yields a refusal naming
+    both values.
     """
 
     def test_an_unconfirmed_launch_is_refused_and_shows_the_recipient(self, monkeypatch):
@@ -629,12 +586,8 @@ class TestTheCredentialRecipientIsConfirmed:
         # The refusal has to SHOW the recipient, or the operator cannot confirm it: the
         # value they must supply is derived from a file they may not have written.
         assert credential_recipient(_IMAGE, (_secret(),)) in str(exc.value)
-        # And it must be THIS refusal, not the mismatch one. An empty confirmation also
-        # fails the mismatch comparison, so the two checks overlap and nothing unconfirmed
-        # gets through either way -- but an operator who confirmed nothing needs to be told
-        # to confirm, not told that their confirmation disagrees with the file. Asserting
-        # only "some ValueError naming the recipient" cannot tell the two apart, and a
-        # mutation that deletes this branch then survives.
+        # It must be THIS refusal: an empty confirmation also fails the mismatch check, but
+        # an operator who confirmed nothing must be told to confirm.
         assert "nothing in the request confirmed" in str(exc.value), str(exc.value)
         assert double.ops == [], "an unconfirmed launch reached AWS"
 
@@ -687,10 +640,8 @@ class TestTheCredentialRecipientIsConfirmed:
     def test_the_check_runs_before_every_other_refusal_provision_makes(self):
         """Ordered FIRST, pinned structurally.
 
-        The tag and architecture checks refuse too, and a recipient check sitting after them
-        would let a launch with a malformed tag report the tag and never mention that its
-        credential recipient was also unconfirmed -- so an operator fixing the tag would meet
-        the real refusal only on the second attempt.
+        Placed after the tag check, a malformed tag would hide the unconfirmed recipient until
+        the operator's second attempt.
         """
         import ast
         import inspect

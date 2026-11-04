@@ -309,14 +309,8 @@ CALLER_OWNED_ENV = {
 def _container_env_names() -> set[str]:
     """Every ``SMC_`` variable the CONTAINER reads, from its own config source.
 
-    Read from ``load()``, which is the container's one place for turning the
-    environment into settings, so this set is the container's to grow and not
-    this module's to remember.
-
-    Parsed as a file rather than imported, for the same reason the credential
-    derivation is: importing the container into this lane makes coverage.py
-    measure it here, where these tests exercise a fraction of its lines, and its
-    own suite runs in a job that does not feed the combined report.
+    Read from ``load()``, so the set is the container's to grow. Parsed, not imported:
+    an import makes coverage.py measure the container in this lane.
     """
     source = (
         pathlib.Path(__file__).resolve().parents[1]
@@ -348,11 +342,8 @@ def _container_env_names() -> set[str]:
 def test_every_variable_the_container_reads_is_classified():
     """A name added to the container must be decided before it can arrive.
 
-    This is the test that stops the fifth round of the same defect. Each of the
-    previous four closed one variable through which a caller could contradict the
-    spec; a name the container gains that is neither derived, refused, nor
-    deliberately left to the caller fails here rather than shipping as an open
-    channel nobody has reviewed.
+    A name that is neither derived, refused, nor left to the caller fails here instead
+    of shipping as an unreviewed channel for a caller to contradict the spec.
     """
     classified = rt.DERIVED_ENV | rt.REFUSED_ENV | set(CALLER_OWNED_ENV)
     container = _container_env_names()
@@ -629,9 +620,7 @@ DERIVED_IN_PAYLOAD = frozenset(
 def test_every_caller_supplied_field_has_a_disposition():
     """The enumeration is checked against the code, so a new field must be placed.
 
-    This is the anti-drift half of the list in the PR description: adding a
-    parameter or a dataclass field without deciding whether it is derived, closed
-    or the caller's fails here.
+    A parameter or dataclass field not marked derived, closed or the caller's fails here.
     """
     declared: set[tuple[str, str]] = set()
     for name, obj in (
@@ -655,8 +644,7 @@ def test_a_correlation_value_outside_the_api_charset_is_refused(value):
     """Refused here rather than at launch, where the reason is harder to read.
 
     Both fields are free text a caller chooses, and the API takes letters, digits,
-    hyphen and underscore. Leaving it to AWS is the reasoning that produced several
-    earlier findings.
+    hyphen and underscore.
     """
     with pytest.raises(DocumentRefused, match="hyphen and underscore"):
         request(started_by=value)
@@ -667,13 +655,8 @@ def test_a_correlation_value_outside_the_api_charset_is_refused(value):
 def _managed_value_the_codebase_filters_on() -> set[str]:
     """The marker VALUE other modules match, read from their own source.
 
-    ``cloud/ec2.py`` is the working precedent: it tags ``kirocrew:managed=true`` and
-    discovers with ``Key=kirocrew:managed,Values=true``. Read rather than restated,
-    so a change there fails here instead of silently making this module's tasks
-    invisible to whatever looks for them.
-
-    Parsed as a file, not imported: importing it would make coverage.py measure it
-    in this lane, where these tests exercise none of it.
+    ``cloud/ec2.py`` tags and discovers by ``kirocrew:managed=true``; a change there would
+    make these tasks invisible. Parsed, not imported, to keep coverage.py off it here.
     """
     source = pathlib.Path(__file__).resolve().parents[1] / "src" / "kiro_crew" / "cloud" / "ec2.py"
     assert source.is_file(), f"ec2 module moved: {source}"
@@ -931,16 +914,9 @@ def _scalars_in(payload: object) -> set:
 def test_every_constant_a_consumer_must_import_is_on_the_package_surface():
     """A name a consumer cannot import is a name it will re-spell, and re-spelling silently broke teardown.
 
-    A launch engine that wrote its own ``"kirocrew:task"`` rather than importing
-    ``LAUNCH_TAG_KEY`` classified every managed task as foreign, so its teardown
-    planner returned an empty delete set and reported success while every task kept
-    running. Absent from the export list read as a value.
-
-    So this derives the requirement instead of listing it, on the two limbs the
-    package docstring states: a caller cannot build an acceptable input without the
-    constant (it is named inside a refusal), or cannot interpret a produced payload
-    without it (its value appears in one). Either way the next constant added is
-    covered before a consumer trips over it.
+    A re-spelled ``LAUNCH_TAG_KEY`` makes every managed task look foreign, so teardown
+    stops nothing and reports success. Derived, not listed: a constant named in a
+    refusal or whose value appears in a payload must be exported.
     """
     package_dir = pathlib.Path(ident.__file__).parent
     produced = _scalars_in(td.task_definition_document(TASKDEF)) | _scalars_in(request())
@@ -994,11 +970,8 @@ def test_execute_command_is_enabled_so_the_task_is_reachable(shape):
 def test_execute_command_is_a_request_field_not_a_task_override(shape):
     """It belongs beside ``cluster``, NOT inside ``overrides``.
 
-    Placement is the whole point: ``TASK_OVERRIDE_KEYS`` governs ``overrides`` and
-    nothing else, so putting this key there would be refused by
-    ``_refuse_keys_outside`` -- and adding it to that allowlist to make it fit
-    would widen the set that keeps ``executionRoleArn`` and ``taskRoleArn`` out.
-    Asserted as ABSENT from the override so a later move fails here.
+    Adding it to ``TASK_OVERRIDE_KEYS`` would widen the allowlist that keeps
+    ``executionRoleArn`` and ``taskRoleArn`` out, so it is asserted ABSENT there.
     """
     produced = request(**shape)
     assert "enableExecuteCommand" not in produced["overrides"]

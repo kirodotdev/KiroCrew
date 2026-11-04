@@ -1,21 +1,9 @@
 """The codex backend offers, and is held to, the model list codex-acp advertises.
 
-Three seams, one failure they closed together. codex-acp advertises its models
-only as a ``configOptions`` ``model`` select on ``session/new``, and that list is
-the ONLY vocabulary ``session/set_config_option("model", ...)`` accepts. Before
-these changes:
-
-* the capture skipped the select (codex was not an
-  ``ACP_BACKENDS_ADVERTISED_MODEL_SELECTION`` member), so no codex session ever
-  learned what it could run;
-* ``GET /api/models`` fell through to kiro-cli's ``--list-models`` catalog, so the
-  picker offered kiro ids (``gpt-5.6-sol``, ``claude-opus-5``) codex has never
-  heard of;
-* a pick from that catalog reached the wire at startup, codex answered a bare
-  ``{"code": -32602, "message": "Invalid params"}``, and the push helper -- which
-  only knew claude-agent-acp's worded rejection -- re-raised it as a protocol
-  failure. Session init died, three times, and the user saw
-  ``JSON-RPC error: {'code': -32602, 'message': 'Invalid params'}``.
+codex-acp advertises its models only as a ``configOptions`` ``model`` select on
+``session/new``, and that list is the ONLY vocabulary
+``session/set_config_option("model", ...)`` accepts. A kiro-cli id sent instead gets a
+bare ``-32602`` "Invalid params" that must not kill session init.
 """
 
 from __future__ import annotations
@@ -505,7 +493,6 @@ async def test_handle_persist_offloads_only_when_changed(monkeypatch) -> None:
     assert calls == [1]
 
 
-# ---------------------------------------------------------------------------
 # Native display labels survive to the cold picker path.
 #
 # With no live session, the claude_code picker reads the advertised snapshot
@@ -513,7 +500,6 @@ async def test_handle_persist_offloads_only_when_changed(monkeypatch) -> None:
 # ``name``/``description`` in ``_ADVERTISED_META``, and ``advertised_model_rows``
 # serves them to that cold path, so the picker shows the backend's own names
 # (``Sonnet 5``) rather than raw ids (``claude-sonnet-5``).
-# ---------------------------------------------------------------------------
 
 
 def _rich_rows() -> list[dict]:
