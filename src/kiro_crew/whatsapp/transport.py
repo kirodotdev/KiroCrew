@@ -188,6 +188,30 @@ def _group_allowlists(groups: list[dict]) -> dict[str, frozenset[str]]:
     return {jid: allowed for jid, allowed in per_group.items() if allowed is not None}
 
 
+#: Submessages whose ``contextInfo`` can carry an @-mention or a quote: typed
+#: text, and the caption a user types on a photo, video or file.
+_CONTEXT_FIELDS = ("extendedTextMessage", "imageMessage", "videoMessage", "documentMessage")
+
+
+def _context_infos(message: Any) -> list[Any]:
+    """Every ``contextInfo`` on *message*'s text or media submessage.
+
+    All are returned rather than the first found: on a real protobuf an absent
+    submessage still reads as a default instance with an empty ``contextInfo``,
+    so stopping at the first would let an empty text context hide a caption's
+    mention.
+    """
+    if not message:
+        return []
+    out = []
+    for name in _CONTEXT_FIELDS:
+        sub = getattr(message, name, None)
+        ctx = getattr(sub, "contextInfo", None) if sub is not None else None
+        if ctx is not None:
+            out.append(ctx)
+    return out
+
+
 class WhatsAppTransport(MessagingTransport):
     """WhatsApp personal-account transport (see module docstring)."""
 
@@ -751,20 +775,17 @@ class WhatsAppTransport(MessagingTransport):
         """
         if sender_is_operator:
             return True
-        extended = getattr(message, "extendedTextMessage", None) if message else None
-        ctx = getattr(extended, "contextInfo", None) if extended is not None else None
-        if ctx is None:
-            return False
         me = self._client.me
-        for mentioned in getattr(ctx, "mentionedJID", []) or []:
-            if me.matches(str(mentioned)):
-                return True
-        participant = str(getattr(ctx, "participant", "") or "")
-        stanza_id = str(getattr(ctx, "stanzaID", "") or "")
-        if participant and me.matches(participant):
-            return True  # replying to one of the agent's/operator's messages
-        if stanza_id and chat and self.echo.is_own_echo(chat, stanza_id):
-            return True  # quoted message ID is one we sent
+        for ctx in _context_infos(message):
+            for mentioned in getattr(ctx, "mentionedJID", []) or []:
+                if me.matches(str(mentioned)):
+                    return True
+            participant = str(getattr(ctx, "participant", "") or "")
+            stanza_id = str(getattr(ctx, "stanzaID", "") or "")
+            if participant and me.matches(participant):
+                return True  # replying to one of the agent's/operator's messages
+            if stanza_id and chat and self.echo.is_own_echo(chat, stanza_id):
+                return True  # quoted message ID is one we sent
         return False
 
     # -- Configured outbound targets ----------------------------------------
