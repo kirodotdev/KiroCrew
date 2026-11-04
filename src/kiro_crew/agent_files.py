@@ -1,16 +1,11 @@
 """Canonical filenames of the agent configs KiroCrew generates.
 
-Single source of truth for the on-disk names KiroCrew writes into
-``~/.kiro/agents/`` (kiro specs). This is a **leaf module** (no intra-package
-imports) so both
-``agent.py`` (which writes these files) and ``browser/setup.py`` (whose
-Playwright convergence sweep must touch only KiroCrew-owned files) can import it
-without an import cycle — ``agent.py`` imports ``converge_playwright_servers``
-from ``browser/setup.py``, so ``browser/setup.py`` cannot import ``agent.py``.
+Single source of truth for the names KiroCrew writes into ``~/.kiro/agents/``.
+A **leaf module** (no intra-package imports): ``agent.py`` imports
+``converge_playwright_servers`` from ``browser/setup.py``, so ``browser/setup.py``
+cannot import ``agent.py`` and reads the names from here instead.
 
-Keeping the names here — rather than duplicating them as a literal in each
-consumer — means adding a new managed agent spec is a one-line change in ONE
-place: add its filename to ``OWNED_KIRO_AGENT_FILES`` and every consumer
+A new managed spec is added to ``OWNED_KIRO_AGENT_FILES`` and every consumer
 (including the boot-time self-heal sweep) picks it up.
 """
 
@@ -26,22 +21,18 @@ LITE_AGENT_FILENAME = "kirocrew-lite.json"
 GUEST_AGENT_FILENAME = "kirocrew-guest.json"
 CONDUCTOR_AGENT_FILENAME = "kirocrew-conductor.json"
 PIPELINE_CONDUCTOR_AGENT_FILENAME = "kirocrew-pipeline-conductor.json"
-# The goal conductor's work-ledger variant, and a SEPARATE spec rather than a flag
-# on ``kirocrew-conductor``. The ledger flow inverts that agent's dispatch order
-# (bind before seed) and replaces its patrol cycle (a ledger read instead of a
-# transcript read), so mounting it on the shipped conductor would move every
-# existing conductor user onto a different procedure without their asking. Same
-# installer and the same no-file-write properties; what differs is the
-# ``kirocrew-work`` mount and the prompt that drives it.
+# The goal conductor's work-ledger variant: a SEPARATE spec, not a flag on
+# ``kirocrew-conductor``, because the ledger flow inverts its dispatch order (bind
+# before seed) and patrols the ledger instead of transcripts; a flag would move
+# every existing conductor user onto a different procedure. It differs only in
+# the ``kirocrew-work`` mount and its prompt.
 LEDGER_CONDUCTOR_AGENT_FILENAME = "kirocrew-ledger-conductor.json"
 SECURITY_CONDUCTOR_AGENT_FILENAME = "kirocrew-security-conductor.json"
 WORKER_AGENT_FILENAME = "kirocrew-worker.json"
 # The mate conductor: the agent a crewmate's own chat runs on. Derived from the
-# default template (same prompt, tools and mcpServers), so today it is behaviour-
-# identical to `kirocrew.json` -- only its definition now has its own name in
-# source rather than being an alias for the shared default. See
-# docs/request-for-change/rfc-mate-owned-agent-config.md, migration step 1: this
-# spec intentionally does not yet read or write `~/.kiro/mates/agents/` (step 3).
+# default template (same prompt, tools and mcpServers), so it behaves like
+# `kirocrew.json` under its own name. It does not read or write
+# `~/.kiro/mates/agents/` (docs/request-for-change/rfc-mate-owned-agent-config.md).
 MATE_CONDUCTOR_AGENT_FILENAME = "kirocrew-mate-conductor.json"
 # The mate worker: the agent a crewmate's worker sessions run on (the session a
 # crewmate's own chat opens with ``session_create``). Source-defined like the
@@ -65,34 +56,24 @@ def is_mate_service_agent(name: object) -> bool:
 
 
 # The dashboard-author crewmate: authors ONE dashboard template and lands it as a
-# pull request, writing no runtime code. Its own file because it is a dispatched,
-# worker-shaped agent with its own charter and tool surface -- it writes files and
-# drives git, but mounts neither the work-ledger set nor the publication surface, so
-# it is neither the default-mirroring worker nor a conductor. Its system prompt and
-# tool charter are the shipped ``dashboard-template/agent-spec.md`` (parsed at install);
-# its installer lives in ``worker_agent.py`` beside the other dispatched-agent installer.
+# pull request. Its own file because its tool surface fits neither the worker nor a
+# conductor: it writes files and drives git, but mounts neither the work-ledger set
+# nor the publication surface. Prompt and charter come from the shipped
+# ``dashboard-template/agent-spec.md``; the installer is in ``worker_agent.py``.
 DASHBOARD_AUTHOR_AGENT_FILENAME = "kirocrew-dashboard-author.json"
 KNOWLEDGE_AGENT_FILENAME = "kirocrew-knowledge.json"
 RESEARCH_AGENT_FILENAME = "kirocrew-research.json"
-# The team lead: owns a goal and does the focused work on it itself (running a
-# goal as a team is a planned follow-up). A DEFAULT agent beside research rather
-# than a kind of its own -- it derives the same ceiling, is written by the same
-# install sequence and is overwritten on every boot, so an operator who wants a
-# customized copy makes one under a different name.
+# The team lead: owns a goal and does the focused work on it itself. A DEFAULT
+# agent like research: same ceiling, same install sequence, overwritten on every
+# boot, so a customized copy needs a different name.
 TEAM_LEAD_AGENT_FILENAME = "kirocrew-team-lead.json"
 HEARTBEAT_AGENT_FILENAME = "kirocrew-heartbeat.json"
 DASHBOARD_MANAGER_AGENT_FILENAME = "kirocrew-dashboard-manager.json"
 
-# The dashboard manager's agent NAME, derived from its filename rather than spelled
-# a second time. kiro-cli resolves an agent by reading ``<agents dir>/<name>.json``,
-# so the two are the same string by construction -- and this one is also a wire
-# string in the member base prompt, which routes a crewmate's page work to it. A
-# name that drifts from the filename routes the member to an agent that does not
-# resolve, which fails the turn rather than the feature.
-#
-# It lives HERE, with the filenames, because this module imports nothing from the
-# package: ``context_assembly.member`` needs the name for the prompt it builds, and
-# reading it off ``agent.py`` would close an import cycle at module scope.
+# The dashboard manager's agent NAME, derived from its filename: kiro-cli resolves
+# ``<agents dir>/<name>.json``, and the member base prompt routes page work to this
+# name, so a drifted name would fail the turn. It lives here because
+# ``context_assembly.member`` needs it and importing ``agent.py`` would be a cycle.
 DASHBOARD_MANAGER_AGENT_NAME = DASHBOARD_MANAGER_AGENT_FILENAME[: -len(".json")]
 # The config key of the first crewmate every install creates once (shown as
 # Mate). An ordinary crewmate on the ordinary crewmate template: renameable,
@@ -104,21 +85,13 @@ ASSISTANT_DEFAULT_DISPLAY_NAME = "Mate"
 
 
 #: Agent names a chat session treats as "the kirocrew default" for context
-#: assembly, never as a hand-written custom agent. ``context_assembly`` guards
-#: workspace identity, the docs pointer and steering re-injection behind an
-#: ``is_custom`` check whose question is "did a user replace the default
-#: agent", so it is keyed on NAME EQUALITY to ``AGENT_FILENAME``'s stem
-#: (``"kirocrew"``) rather than on content. A mate's own chat runs on
-#: ``kirocrew-mate-conductor`` -- a Crew-owned spec byte-identical to the
-#: default template, not a user's custom agent -- so it belongs in this set:
-#: without it, a crewmate's chat loses its workspace identity block and docs
-#: pointer purely because its spec has its own filename. The crewmate's worker,
-#: ``kirocrew-mate-worker``, is the same kind of spec and is in the set for the
-#: same reason: its sessions keep the workspace identity and docs pointer a
-#: crewmate's hand-off sessions always had. The
-#: ``kirocrew-research``/``kirocrew-worker``/``kirocrew-team-lead`` service and
-#: dispatch specs do NOT join this set: they are backend loops with their own
-#: context rules.
+#: assembly. ``context_assembly`` guards workspace identity, the docs pointer and
+#: steering re-injection behind an ``is_custom`` check ("did a user replace the
+#: default agent"), keyed on NAME, not content. The mate conductor and mate
+#: worker are Crew-owned copies of the default template, so they are in the set;
+#: otherwise a crewmate's sessions would lose those blocks just for having their
+#: own filename. ``kirocrew-research``/``kirocrew-worker``/``kirocrew-team-lead``
+#: are backend loops with their own context rules and stay out.
 KIROCREW_DEFAULT_AGENT_NAMES = frozenset(
     {
         AGENT_FILENAME[: -len(".json")],
@@ -131,10 +104,8 @@ KIROCREW_DEFAULT_AGENT_NAMES = frozenset(
 def is_kirocrew_default_agent(agent: object) -> bool:
     """Whether *agent* is one of :data:`KIROCREW_DEFAULT_AGENT_NAMES`.
 
-    The single predicate every ``is_custom`` check in ``context.py`` and
-    ``context_assembly/`` should read instead of repeating the name-equality
-    literal -- so a future name joining the set is a one-line change here,
-    not a hunt across four call sites.
+    Every ``is_custom`` check in ``context.py`` and ``context_assembly/`` reads
+    this instead of repeating the name literal.
     """
     return agent in KIROCREW_DEFAULT_AGENT_NAMES
 
