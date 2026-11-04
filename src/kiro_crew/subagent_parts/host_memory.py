@@ -497,6 +497,19 @@ def _cgroup_available_gb() -> float:
 def _container_cgroup_available_gb() -> float:
     """Tightest visible cgroup headroom (GB), or -1.0 if unlimited/unknown.
 
+    The headroom half of :func:`_container_cgroup_reading`.
+    """
+    return _container_cgroup_reading()[1]
+
+
+def _container_cgroup_reading() -> tuple[int | None, float]:
+    """Tightest visible cgroup memory limit (bytes) and headroom (GB) under it.
+
+    ``(None, -1.0)`` when no level carries a finite limit. Spawn admission reads
+    the headroom (:func:`_container_cgroup_available_gb`); the dashboard shows the
+    limit and the headroom as its memory total and free figure, so the two
+    surfaces read one walk.
+
     Reads cgroup v2 (``memory.max``/``memory.current``) then v1
     (``memory.limit_in_bytes``/``memory.usage_in_bytes``) at the process's
     cgroup and its visible ancestors. Each limit is paired with usage at the
@@ -507,6 +520,7 @@ def _container_cgroup_available_gb() -> float:
     records :data:`MEMORY_CAUSE_CGROUP_USAGE_UNREADABLE` so a deferral can say
     the headroom is unknown rather than exhausted.
     """
+    tightest: int | None = None
     available = -1.0
     for leaf, mount, v2 in _cgroup_memory_roots():
         limit_name = "memory.max" if v2 else "memory.limit_in_bytes"
@@ -531,10 +545,11 @@ def _container_cgroup_available_gb() -> float:
                         headroom = 0.0
                         _memory_check_cause.value = MEMORY_CAUSE_CGROUP_USAGE_UNREADABLE
                     available = headroom if available < 0 else min(available, headroom)
+                    tightest = limit if tightest is None else min(tightest, limit)
             if directory == mount:
                 break
             directory = directory.parent
-    return available
+    return tightest, available
 
 
 def _agents_slice_available_gb() -> float:

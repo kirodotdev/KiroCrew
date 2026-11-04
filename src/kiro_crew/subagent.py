@@ -315,6 +315,7 @@ from kiro_crew.subagent_parts.host_memory import (  # noqa: F401
     _cgroup_memory_roots,
     _configured_max_subagents,
     _container_cgroup_available_gb,
+    _container_cgroup_reading,
     _host_available_gb,
     _host_mem_term,
     _macos_available_memory_gb,

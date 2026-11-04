@@ -44,6 +44,17 @@ from kiro_crew import platform_compat
 from kiro_crew.dashboard import handlers_system
 
 _GIB_KB = 1024 * 1024
+
+
+@pytest.fixture(autouse=True)
+def _no_container_ceiling(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The fabricated /proc/meminfo is the whole reading: the runner's own cgroup
+    must not bound it."""
+    monkeypatch.setattr(
+        handlers_system, "_container_memory_ceiling", lambda: (None, None), raising=False
+    )
+
+
 _MEM_KEYS = ("mem_total_gb", "mem_used_gb", "mem_free_gb")
 
 _HEALTHY = (

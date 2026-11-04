@@ -292,7 +292,11 @@ figure and the unreadable-host fallback), dispatched per operating system (see
   `deferred_low_memory` SEL row carries `cause: cgroup_usage_unreadable`
   (`MEMORY_CAUSE_CGROUP_USAGE_UNREADABLE`). Measured zero usage retains the full
   limit as headroom. Missing discovery retains the conventional root-path
-  fallback; ancestors hidden above a mount cannot be measured. Usage at every
+  fallback; ancestors hidden above a mount cannot be measured. The walk is
+  `_container_cgroup_reading()`, which also returns the tightest finite limit;
+  `_container_cgroup_available_gb()` is its headroom half, and the dashboard's
+  `/api/system` memory figures show the limit and headroom from the same walk.
+  Usage at every
   level is the working set: `memory.current` (v1 `memory.usage_in_bytes`)
   minus the group's clean page cache (`active_file + inactive_file -
   file_dirty - file_writeback` in v2 `memory.stat`, the `total_` keys in v1),

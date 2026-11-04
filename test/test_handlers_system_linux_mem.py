@@ -33,12 +33,18 @@ def _fake_open_for_meminfo(meminfo_text: str):
     return _fake_open
 
 
-def _collect_with_meminfo(meminfo_text: str) -> dict:
-    """Run _collect_system_metrics hermetically with an injected /proc/meminfo."""
+def _collect_with_meminfo(
+    meminfo_text: str, ceiling: tuple[int | None, int | None] = (None, None)
+) -> dict:
+    """Run _collect_system_metrics hermetically with an injected /proc/meminfo and
+    container ceiling (none by default, so the runner's own cgroup never applies)."""
     handlers_system._metrics_cache = {}
     handlers_system._metrics_cache_ts = 0.0
     with (
         patch("sys.platform", "linux"),
+        patch.object(
+            handlers_system, "_container_memory_ceiling", return_value=ceiling, create=True
+        ),
         patch.object(handlers_system, "_get_static_system_info", return_value={}),
         patch.object(handlers_system, "_system_cpu_pct_from_proc_stat", return_value=5.0),
         patch("builtins.open", side_effect=_fake_open_for_meminfo(meminfo_text)),
@@ -87,3 +93,33 @@ class TestLinuxMemAvailable:
         assert data["mem_total_gb"] == 100.0
         assert data["mem_free_gb"] == 67.0
         assert data["mem_used_gb"] == 33.0
+
+
+class TestContainerCeiling:
+    """Inside a memory-limited container the figures are the container's, not the VM's."""
+
+    _VM = f"MemTotal:       {16 * _GIB_KB} kB\nMemAvailable:   {12 * _GIB_KB} kB\n"
+
+    def test_the_container_limit_is_the_total_and_bounds_free(self) -> None:
+        gib = 1 << 30
+        data = _collect_with_meminfo(self._VM, (8 * gib, 3 * gib))
+        assert data["mem_total_gb"] == 8.0
+        assert data["mem_free_gb"] == 3.0
+        assert data["mem_used_gb"] == 5.0
+
+    def test_a_limit_above_the_vm_leaves_the_vm_figures(self) -> None:
+        gib = 1 << 30
+        data = _collect_with_meminfo(self._VM, (32 * gib, 30 * gib))
+        assert data["mem_total_gb"] == 16.0
+        assert data["mem_free_gb"] == 12.0
+
+    def test_the_ceiling_is_the_reading_spawn_admission_uses(self, monkeypatch) -> None:
+        import kiro_crew.subagent as subagent
+        from kiro_crew import platform_compat
+
+        gib = 1 << 30
+        monkeypatch.setattr(platform_compat, "IS_LINUX", True)
+        monkeypatch.setattr(subagent, "_container_cgroup_reading", lambda: (8 * gib, 3.0))
+        assert handlers_system._container_memory_ceiling() == (8 * gib, 3 * gib)
+        monkeypatch.setattr(subagent, "_container_cgroup_reading", lambda: (None, -1.0))
+        assert handlers_system._container_memory_ceiling() == (None, None)

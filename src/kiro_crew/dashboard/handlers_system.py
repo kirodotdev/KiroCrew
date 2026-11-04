@@ -310,6 +310,24 @@ async def api_status(request: web.Request) -> web.Response:
     return web.json_response(data)
 
 
+def _container_memory_ceiling() -> tuple[int | None, int | None]:
+    """This process's cgroup memory limit and the headroom under it, in bytes.
+
+    ``/proc/meminfo`` reports the VM or node a container runs on, so inside a
+    memory-limited container the memory figures are the cgroup's: the same walk
+    spawn admission sizes against (``subagent._container_cgroup_reading``).
+    ``(None, None)`` off Linux or with no finite limit.
+    """
+    if not platform_compat.IS_LINUX:
+        return None, None
+    from kiro_crew import subagent
+
+    limit, headroom_gb = subagent._container_cgroup_reading()
+    if limit is None:
+        return None, None
+    return limit, int(headroom_gb * 1024**3)
+
+
 def _get_static_system_info() -> dict[str, object]:
     global _STATIC_SYSTEM_INFO
     if _STATIC_SYSTEM_INFO is not None:
@@ -356,8 +374,11 @@ def _get_static_system_info() -> dict[str, object]:
             with open("/proc/meminfo") as f:
                 for line in f:
                     if line.startswith("MemTotal:"):
-                        kb = int(line.split()[1])
-                        info["mem_total_gb"] = round(kb / (1024**2), 1)
+                        total_bytes = int(line.split()[1]) * 1024
+                        limit, _headroom = _container_memory_ceiling()
+                        if limit is not None:
+                            total_bytes = min(total_bytes, limit)
+                        info["mem_total_gb"] = round(total_bytes / (1024**3), 1)
                         break
                 else:
                     logger.warning("/proc/meminfo has no MemTotal line; mem_total_gb unavailable")
@@ -658,17 +679,13 @@ def _collect_system_metrics() -> dict[str, object]:
                 # with large dentry/inode caches). Fall back to the estimate
                 # (now including SReclaimable) on kernels without MemAvailable.
                 if "MemAvailable" in meminfo:
-                    mem_free = round(meminfo["MemAvailable"] / (1024**2), 1)
+                    free_kb = meminfo["MemAvailable"]
                 else:
-                    mem_free = round(
-                        (
-                            meminfo.get("MemFree", 0)
-                            + meminfo.get("Buffers", 0)
-                            + meminfo.get("Cached", 0)
-                            + meminfo.get("SReclaimable", 0)
-                        )
-                        / (1024**2),
-                        1,
+                    free_kb = (
+                        meminfo.get("MemFree", 0)
+                        + meminfo.get("Buffers", 0)
+                        + meminfo.get("Cached", 0)
+                        + meminfo.get("SReclaimable", 0)
                     )
                 # A /proc/meminfo with no MemTotal line is a probe that read
                 # nothing usable, not a 0 GB host, and a total defaulted to 0
@@ -677,7 +694,13 @@ def _collect_system_metrics() -> dict[str, object]:
                 # tolerates the absent shape) and say so.
                 total_kb = meminfo.get("MemTotal", 0)
                 if total_kb > 0:
-                    mem_total = round(total_kb / (1024**2), 1)
+                    total_bytes, free_bytes = total_kb * 1024, free_kb * 1024
+                    limit, headroom = _container_memory_ceiling()
+                    if limit is not None and headroom is not None:
+                        total_bytes = min(total_bytes, limit)
+                        free_bytes = min(free_bytes, headroom, total_bytes)
+                    mem_total = round(total_bytes / (1024**3), 1)
+                    mem_free = round(free_bytes / (1024**3), 1)
                     data["mem_total_gb"] = mem_total
                     data["mem_free_gb"] = mem_free
                     data["mem_used_gb"] = round(mem_total - mem_free, 1)
