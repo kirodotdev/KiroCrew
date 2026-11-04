@@ -743,11 +743,13 @@ def _cron_dispatch(args: argparse.Namespace) -> None:
                 svc.raise_if_store_unreadable()
                 if svc.get_job(args.job_id) is None:
                     _cron_update_not_found(args.job_id)
-            print("Provide at least one field to update")
-            return
+            # Nothing is written, so exit 1 on stderr like the other update
+            # refusals: `cron update x && next` must not read it as success.
+            print("Provide at least one field to update", file=sys.stderr)
+            sys.exit(1)
         if "every_secs" in kwargs and "cron_expr" in kwargs:
-            print("Provide --every or --cron, not both")
-            return
+            print("Provide --every or --cron, not both", file=sys.stderr)
+            sys.exit(1)
         try:
             updated = svc.update_job(args.job_id, **kwargs)
         except ValueError as e:
