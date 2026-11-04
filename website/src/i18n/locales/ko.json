@@ -13050,6 +13050,22 @@
         "title_named_resolved": "{{who}}이(가) 질문했어요",
         "title_resolved": "도구가 질문했어요",
         "url_hint": "링크를 열어 거기서 마친 뒤 돌아와 “끝냈어요”를 누르세요."
+      },
+      "initialPrompt": {
+        "copied": "복사됨",
+        "copy_failed": "프롬프트를 복사하지 못했습니다",
+        "copy_failed_detail": "브라우저가 클립보드 접근을 차단했습니다. 위의 텍스트를 선택해 직접 복사하세요.",
+        "copy_prompt": "프롬프트 복사",
+        "initial_prompt": "첫 프롬프트",
+        "load_failed": "첫 프롬프트를 불러오지 못했습니다",
+        "load_failed_detail": "세션 기록을 읽지 못했습니다. 세션 자체에는 영향이 없습니다.",
+        "loading": "첫 프롬프트를 불러오는 중…",
+        "new_session_failed": "새 세션을 시작하지 못했습니다",
+        "new_session_failed_detail": "세션이 만들어지지 않았습니다. 프롬프트는 여기에서 계속 복사할 수 있습니다.",
+        "new_session_from_prompt": "이 프롬프트로 새 세션 초안 만들기",
+        "no_prompt_yet": "이 세션에서는 아직 보낸 프롬프트가 없습니다.",
+        "retry": "다시 시도",
+        "starting": "새 초안 세션을 여는 중…"
       }
     },
     "chatPage": {

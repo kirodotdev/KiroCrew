@@ -13638,6 +13638,22 @@
         "title_named_resolved": "{{who}} t'a posé une question",
         "title_resolved": "Un outil t'a posé une question",
         "url_hint": "Ouvre le lien, termine là-bas, puis reviens appuyer sur « J'ai terminé »."
+      },
+      "initialPrompt": {
+        "copied": "Copié",
+        "copy_failed": "Impossible de copier le prompt",
+        "copy_failed_detail": "Ton navigateur a bloqué l’accès au presse-papiers. Sélectionne le texte ci-dessus et copie-le à la main.",
+        "copy_prompt": "Copier le prompt",
+        "initial_prompt": "Prompt initial",
+        "load_failed": "Impossible de charger le prompt initial",
+        "load_failed_detail": "L’historique de la session n’a pas pu être lu. La session elle-même n’est pas affectée.",
+        "loading": "Chargement du prompt initial…",
+        "new_session_failed": "Impossible de démarrer une nouvelle session",
+        "new_session_failed_detail": "Aucune session n’a été créée. Le prompt reste ici pour être copié.",
+        "new_session_from_prompt": "Préparer une nouvelle session avec ce prompt",
+        "no_prompt_yet": "Aucun prompt n’a encore été envoyé dans cette session.",
+        "retry": "Réessayer",
+        "starting": "Ouverture d’une nouvelle session brouillon…"
       }
     },
     "chatPage": {

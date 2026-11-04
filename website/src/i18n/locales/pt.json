@@ -13638,6 +13638,22 @@
         "title_named_resolved": "{{who}} perguntou a você",
         "title_resolved": "Uma ferramenta perguntou a você",
         "url_hint": "Abra o link, conclua lá e volte para clicar em “Terminei”."
+      },
+      "initialPrompt": {
+        "copied": "Copiado",
+        "copy_failed": "Não foi possível copiar o prompt",
+        "copy_failed_detail": "Seu navegador bloqueou o acesso à área de transferência. Selecione o texto acima e copie-o à mão.",
+        "copy_prompt": "Copiar prompt",
+        "initial_prompt": "Prompt inicial",
+        "load_failed": "Não foi possível carregar o prompt inicial",
+        "load_failed_detail": "Não foi possível ler o histórico da sessão. A sessão em si não foi afetada.",
+        "loading": "Carregando o prompt inicial…",
+        "new_session_failed": "Não foi possível iniciar uma nova sessão",
+        "new_session_failed_detail": "Nenhuma sessão foi criada. O prompt continua aqui para copiar.",
+        "new_session_from_prompt": "Preparar uma nova sessão com este prompt",
+        "no_prompt_yet": "Nenhum prompt foi enviado nesta sessão ainda.",
+        "retry": "Tentar novamente",
+        "starting": "Abrindo uma nova sessão de rascunho…"
       }
     },
     "chatPage": {

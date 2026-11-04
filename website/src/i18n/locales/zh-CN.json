@@ -13050,6 +13050,22 @@
         "title_named_resolved": "{{who}} 问过你",
         "title_resolved": "工具问过你",
         "url_hint": "打开链接，在那边完成后回来点“我已完成”。"
+      },
+      "initialPrompt": {
+        "copied": "已复制",
+        "copy_failed": "无法复制提示词",
+        "copy_failed_detail": "浏览器阻止了剪贴板访问。请选中上方的文本并手动复制。",
+        "copy_prompt": "复制提示词",
+        "initial_prompt": "初始提示词",
+        "load_failed": "无法加载初始提示词",
+        "load_failed_detail": "无法读取该会话的历史记录。会话本身不受影响。",
+        "loading": "正在加载初始提示词…",
+        "new_session_failed": "无法开始新会话",
+        "new_session_failed_detail": "未创建任何会话。提示词仍在此处，可以复制。",
+        "new_session_from_prompt": "用此提示词起草新会话",
+        "no_prompt_yet": "此会话中尚未发送任何提示词。",
+        "retry": "重试",
+        "starting": "正在打开新的草稿会话…"
       }
     },
     "chatPage": {

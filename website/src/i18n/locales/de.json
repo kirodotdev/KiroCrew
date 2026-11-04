@@ -13344,6 +13344,22 @@
         "title_named_resolved": "{{who}} hat dich gefragt",
         "title_resolved": "Ein Tool hat dich gefragt",
         "url_hint": "Öffne den Link, erledige es dort und drücke dann hier „Ich bin fertig“."
+      },
+      "initialPrompt": {
+        "copied": "Kopiert",
+        "copy_failed": "Prompt konnte nicht kopiert werden",
+        "copy_failed_detail": "Dein Browser hat den Zugriff auf die Zwischenablage blockiert. Markiere den Text oben und kopiere ihn von Hand.",
+        "copy_prompt": "Prompt kopieren",
+        "initial_prompt": "Erster Prompt",
+        "load_failed": "Erster Prompt konnte nicht geladen werden",
+        "load_failed_detail": "Der Verlauf der Sitzung konnte nicht gelesen werden. Die Sitzung selbst ist nicht betroffen.",
+        "loading": "Erster Prompt wird geladen…",
+        "new_session_failed": "Neue Sitzung konnte nicht gestartet werden",
+        "new_session_failed_detail": "Es wurde keine Sitzung erstellt. Der Prompt steht hier weiter zum Kopieren bereit.",
+        "new_session_from_prompt": "Neue Sitzung mit diesem Prompt entwerfen",
+        "no_prompt_yet": "In dieser Sitzung wurde noch kein Prompt gesendet.",
+        "retry": "Erneut versuchen",
+        "starting": "Neue Entwurfssitzung wird geöffnet…"
       }
     },
     "chatPage": {
