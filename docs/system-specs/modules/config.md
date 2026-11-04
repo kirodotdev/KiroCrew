@@ -1703,6 +1703,9 @@ degraded set. `data` is the read stage's output, not raw file content: the
 overlay is merged, the read-stage repairs are applied (a quoted `"false"` on an
 agent off-switch reads as `false`; an unreadable source leaves
 `skills.project_skills_enabled` off), and the document is validated and clamped.
+Any other boolean field holding a quoted boolean (`"false"`, `"on"`, `"1"`) is
+still refused and reads as its default; its type-mismatch warning adds that a
+quoted boolean is ignored and should be written without quotes.
 When nothing loaded it is `{}` or carries only that project-skills marker. A cache
 hit carries no adoption and no stamp, because a load that did not read the base
 must not decide one. A document is single-use: building normalizes `data` in
