@@ -585,9 +585,9 @@ export default function FileBrowserRail({ projectDir, onFileOpen, onAddToContext
     }
   }
 
-  // The grip sits on the rail's LEFT edge, so the hook negates the drag delta
-  // (edge: 'left'): dragging left grows the rail. Clamping and the persisted
-  // width key are unchanged from the hand-rolled block this replaces.
+  // The rail sits LEFT of the editor (split view: tree | editor), so its grip
+  // is on the rail's RIGHT edge and dragging right grows it (edge: 'right').
+  // Clamping and the persisted width key are unchanged.
   const rail = useColumnResize(
     RAIL_W_KEY,
     () => {
@@ -598,7 +598,7 @@ export default function FileBrowserRail({ projectDir, onFileOpen, onAddToContext
     RAIL_MAX_W,
     undefined,
     undefined,
-    'left',
+    'right',
   )
 
   const segBtn = (on: boolean) =>
@@ -631,14 +631,15 @@ export default function FileBrowserRail({ projectDir, onFileOpen, onAddToContext
           role="separator"
           aria-orientation="vertical"
           aria-label={t('pages.chat.fileBrowserRail.resize')}
-          className="w-1 shrink-0 cursor-col-resize bg-transparent hover:bg-accent/40 active:bg-accent/60 transition-colors"
+          // -order-1: after the rail (-order-2), before the editor (order 0).
+          className="w-1 shrink-0 -order-1 cursor-col-resize bg-transparent hover:bg-accent/40 active:bg-accent/60 transition-colors"
           style={{ touchAction: 'none' }}
         />
       )}
       <div
         {...dropTargetProps}
         style={fill ? undefined : { width: rail.width }}
-        className={cn('relative min-h-0 flex flex-col', fill ? 'flex-1 min-w-0' : 'shrink-0 border-l border-border')}
+        className={cn('relative min-h-0 flex flex-col', fill ? 'flex-1 min-w-0' : 'shrink-0 -order-2 border-r border-border')}
       >
         <ChatDropOverlay active={dragOver} label={t('pages.chat.fileBrowserRail.drop_to_upload', { folder: rootName })} />
         <div className="flex items-center gap-1.5 px-2 h-[40px] shrink-0 border-b border-border">

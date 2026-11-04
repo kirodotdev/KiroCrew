@@ -1457,7 +1457,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
             same tree, same state, just taken out of flow. */}
         {!fullscreen && railOpen && browserRail && (
           railNarrow
-            ? <div className="absolute inset-y-0 right-0 z-20 flex max-w-full bg-bg shadow-[-8px_0_16px_-8px_rgba(0,0,0,0.45)]">{browserRail}</div>
+            ? <div className="absolute inset-y-0 left-0 z-20 flex max-w-full bg-bg shadow-[8px_0_16px_-8px_rgba(0,0,0,0.45)]">{browserRail}</div>
             : browserRail
         )}
       </div>
