@@ -35,17 +35,13 @@ STATUS_CANCELLED = "cancelled"
 ACTIVE_STATUSES = frozenset({STATUS_RUNNING, STATUS_PAUSED})
 _TERMINAL_EVENT_TYPES = frozenset({"run_finished", "run_failed", "run_cancelled"})
 
-# Hard caps on the retained fallback-slot fields. A field the run RETAINS must
-# be bounded where it is stored, not only where it is displayed: the MCP tool
-# bounds the title, but a direct POST /api/workflows/run can forward an
-# unbounded body value, and that string would otherwise live in memory, in
-# every checkpoint, and in compact run-list poll responses. The title cap
-# matches the delivery-time cleaner; the folder-id cap comfortably holds a
-# 12-hex sidebar folder id with margin while refusing a megabyte string.
-# FALLBACK_TITLE_MAX is public and is the ONE source of the title cap: the
-# injector's cleaner call and the WORKFLOW_RUN_SCHEMA ``title`` field both
-# import it, so a single change moves every bound that retains the title
-# together (the ``a-bound-bounds-every-field-it-retains`` rule).
+# Hard caps on the retained fallback-slot fields, applied where they are stored:
+# a direct POST /api/workflows/run can bypass the MCP tool's bound, and the value
+# would otherwise live in memory, every checkpoint and every run-list poll. The
+# folder-id cap holds a 12-hex sidebar folder id with margin. FALLBACK_TITLE_MAX
+# is the one source of the title cap: the injector's cleaner and the
+# WORKFLOW_RUN_SCHEMA ``title`` field import it
+# (the ``a-bound-bounds-every-field-it-retains`` rule).
 FALLBACK_TITLE_MAX = 200
 _FALLBACK_FOLDER_ID_MAX = 64
 
@@ -239,35 +235,24 @@ class RunHandle:
             snap["error_code"] = "workflow_checkpoint_failed"
         if include_result:
             snap["result"] = self.result
-        # Work that outlived a run which ENDED WITHOUT a usable return value
-        # (ceiling / cancel / crash). Keyed on STATUS, not on ``result is None``:
-        # a run can finish and legitimately return None (a script with no return,
-        # or whose last statement is a failed agent call), and a still-running run
-        # has no result yet — neither lost anything, so reporting partials for them
-        # would both mislead the reader and re-send every payload on every poll.
-        # The COUNTS ride in the compact view so a completion message can say the
-        # work survived; the payloads themselves ride only in the detail view.
+        # Partials are work that outlived a run which ENDED WITHOUT a usable return
+        # value (ceiling / cancel / crash). Keyed on STATUS, not ``result is None``:
+        # a finished run may legitimately return None, and an active run has no
+        # result yet. Counts ride in the compact view, payloads only in detail.
         ended_without_result = self.status not in ACTIVE_STATUSES | {STATUS_FINISHED}
-        # A failed call keeps its slot in agent_results, the resume cache, but it
-        # settled nothing worth preserving and its reason is under agent_errors. So the
-        # partial count and payload cover only the calls with no recorded failure, and
-        # the "preserved" count never includes a call the failed count also names. A
-        # finished run's agent_results below stays a record of every call.
+        # A failed call keeps its agent_results slot (the resume cache) but its
+        # reason is under agent_errors, so partials cover only calls with no
+        # recorded failure and never double-count one.
         preserved = {k: v for k, v in self.agent_results.items() if k not in self.agent_errors}
         partials = preserved if ended_without_result else {}
         if partials:
             snap["partial_result_count"] = len(partials)
         if self.agent_errors:
             snap["agent_error_count"] = len(self.agent_errors)
-        # Settled per-call outputs of a FINISHED run. ``partial_results`` above is
-        # the channel for runs that ended WITHOUT a usable result
-        # (failed/cancelled); a finished run exposes its per-call outputs here
-        # instead — the COUNT in the compact view, the payloads only in the FULL
-        # detail view (mirroring result/events/partial_results). An active run
-        # omits both (still accumulating, so reporting would re-send churning
-        # state every poll), and a failed/cancelled run keeps partial_results (no
-        # double report). This is a factual record of the calls that settled, NOT
-        # a claim the run produced a validated business artifact.
+        # Settled per-call outputs of a FINISHED run: the count in the compact
+        # view, payloads only in detail. An active run omits them (still churning)
+        # and a failed/cancelled run reports partial_results instead. A record of
+        # settled calls, not a claim the run produced a validated artifact.
         finished_results = self.agent_results if self.status == STATUS_FINISHED else {}
         if finished_results:
             snap["agent_result_count"] = len(finished_results)
@@ -753,15 +738,10 @@ class RunRegistry:
             if handle is None:
                 continue
             loaded += 1
-            # Idempotent restart writeback: a record stored as "running" is
-            # demoted to failed by from_store_json (it cannot resume in a new
-            # process). Persist the corrected state so the durable record
-            # matches memory and an external reader does not keep seeing
-            # "running". Only running->failed writes; an already-terminal
-            # record is left untouched, so repeated restarts converge.
-            # to_store_json carries the full record, so payloads
-            # (agent_results / agent_errors), source, provenance and args
-            # survive the writeback.
+            # from_store_json demoted a stored "running" record to failed; persist
+            # that so the durable record matches memory. Only running->failed
+            # writes, so repeated restarts converge, and to_store_json carries the
+            # full record so nothing is lost in the writeback.
             if obj.get("status") == STATUS_RUNNING:
                 self._persist(handle)
                 self._ended_by_restart.append(handle)

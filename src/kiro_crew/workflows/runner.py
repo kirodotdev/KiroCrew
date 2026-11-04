@@ -299,12 +299,10 @@ class RunResult:
     result: Any
     events: list[WorkflowEvent]
     error: Optional[str] = None
-    # Per-agent-call results (call_index → result), so a resume/restart-subtree
-    # can replay the unchanged prefix. Populated on EVERY terminal path —
-    # success, ceiling, cancel, budget, and script crash — so an interrupted run
-    # still hands back the work it already finished. ``result`` is the script's own
-    # return value and stays None when the script never got to return one; these
-    # are the parts, not the whole.
+    # Per-agent-call results (call_index → result) for resume/restart-subtree.
+    # Populated on EVERY terminal path (success, ceiling, cancel, budget, crash),
+    # so an interrupted run still hands back finished work even when ``result``
+    # stays None.
     agent_results: dict = field(default_factory=dict)
     # call_index → bounded, redacted reason a call failed (see
     # ``describe_agent_error``). Empty for runs where every call succeeded.
@@ -321,16 +319,13 @@ class RunResult:
 # plumbing. ``on_progress(msg)`` lets authoring stream human-readable progress.
 AuthorFn = Callable[..., Awaitable[dict]]
 
-# Signature of the per-call checkpoint hook, mirroring how ``on_source`` publishes
-# the authored script mid-run:
+# Signature of the per-call checkpoint hook:
 #   on_agent_result(call_index: int, *, result: Any, ok: bool, error: str,
 #                   fingerprint: str) -> None
-# Called as soon as EACH agent call settles, so the host can persist that payload
-# before the run reaches a terminal state. Without it, results would live only in
-# process memory until the run finished, and any interruption would throw them away.
-# ``fingerprint`` is the call's identity for replay (see ``_call_fingerprint``, ""
-# when it has none); it lands with the result, so a record that holds a result
-# also holds what a rerun needs to replay it.
+# Called as soon as EACH agent call settles, so the host can persist it before the
+# run ends and an interruption does not lose it. ``fingerprint`` (see
+# ``_call_fingerprint``, "" when it has none) lands with the result, so a record
+# holding a result also holds what a rerun needs to replay it.
 AgentResultFn = Callable[..., None]
 
 
