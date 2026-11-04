@@ -14,6 +14,7 @@ from __future__ import annotations
 import contextlib
 import os
 import sqlite3
+import stat
 import sys
 from pathlib import Path
 
@@ -179,6 +180,102 @@ def test_existing_pod_files_are_not_clobbered(tmp_path: Path, host_home: Path) -
     _stage_runtime_auth_store(os_home, _kiro_mapping(host_home))
 
     assert (target / "data.sqlite3").read_text() == "pod's own refreshed token"
+
+
+def _mode(path: Path) -> int:
+    return stat.S_IMODE(path.lstat().st_mode)
+
+
+@requires_pinned_walk
+def test_an_owner_executable_store_file_stays_runnable(tmp_path: Path, host_home: Path) -> None:
+    """kiro-cli runs its engine straight from the staged store, so ``node`` must stay executable.
+
+    The host ships ``node`` as 0o755. Staging it at 0o600 is what made every pod's
+    kiro-cli exit at boot with "failed to spawn the v3 engine". Owner execute is
+    kept, and group and other bits are still dropped on both kinds of file.
+    """
+    store = host_home / ".local" / "share" / "kiro-cli"
+    (store / "node").write_bytes(b"\x7fELF engine")
+    (store / "node").chmod(0o755)
+    (store / "tui.js").chmod(0o644)
+    os_home = tmp_path / "pod" / "os-home"
+    os_home.mkdir(parents=True)
+
+    _stage_runtime_auth_store(os_home, _kiro_mapping(host_home))
+
+    target = os_home / ".local" / "share" / "kiro-cli"
+    assert _mode(target / "node") == 0o700
+    assert (target / "node").read_bytes() == b"\x7fELF engine"
+    assert _mode(target / "tui.js") == 0o600
+
+
+@requires_pinned_walk
+def test_a_copy_an_earlier_boot_left_at_0600_gets_owner_exec_back(
+    tmp_path: Path, host_home: Path
+) -> None:
+    """A restart reuses the pod's os-home, and staging is create-only.
+
+    Without a repair, a ``node`` that an earlier boot staged at 0o600 stays
+    unrunnable on every later boot of that pod. The repair adds owner execute
+    only. It does not replace the pod's bytes.
+    """
+    store = host_home / ".local" / "share" / "kiro-cli"
+    (store / "node").write_bytes(b"host engine")
+    (store / "node").chmod(0o755)
+    os_home = tmp_path / "pod" / "os-home"
+    target = os_home / ".local" / "share" / "kiro-cli"
+    target.mkdir(parents=True)
+    (target / "node").write_bytes(b"engine staged by an earlier boot")
+    (target / "node").chmod(0o600)
+
+    _stage_runtime_auth_store(os_home, _kiro_mapping(host_home))
+
+    assert _mode(target / "node") == 0o700
+    assert (target / "node").read_bytes() == b"engine staged by an earlier boot"
+
+
+@requires_pinned_walk
+def test_the_exec_repair_changes_only_a_plain_0600_copy(tmp_path: Path, host_home: Path) -> None:
+    """The repair never follows a link, never changes a hardlinked inode, and keeps other modes.
+
+    It also needs a source that staging would copy: a host executable with a second
+    link, or a FIFO, causes no repair of the pod's copy.
+    """
+    store = host_home / ".local" / "share" / "kiro-cli"
+    for name in ("linked", "aliased", "own-mode", "plain-source", "linked-source"):
+        (store / name).write_bytes(b"host executable")
+        (store / name).chmod(0o755)
+    os.link(store / "linked-source", tmp_path / "second-host-link")
+    os.mkfifo(store / "fifo-source", 0o700)
+    os_home = tmp_path / "pod" / "os-home"
+    target = os_home / ".local" / "share" / "kiro-cli"
+    target.mkdir(parents=True)
+    outside = tmp_path / "outside-the-pod"
+    outside.write_bytes(b"not the pod's file")
+    outside.chmod(0o600)
+    (target / "linked").symlink_to(outside)
+    alias_twin = tmp_path / "alias-twin"
+    alias_twin.write_bytes(b"one inode, two names")
+    alias_twin.chmod(0o600)
+    os.link(alias_twin, target / "aliased")
+    (target / "own-mode").write_bytes(b"pod chose this mode")
+    (target / "own-mode").chmod(0o400)
+    (store / "plain-source").chmod(0o644)
+    (target / "plain-source").write_bytes(b"not executable on the host")
+    (target / "plain-source").chmod(0o600)
+    for name in ("linked-source", "fifo-source"):
+        (target / name).write_bytes(b"copy from an earlier boot")
+        (target / name).chmod(0o600)
+
+    _stage_runtime_auth_store(os_home, _kiro_mapping(host_home))
+
+    assert _mode(outside) == 0o600
+    assert (target / "linked").is_symlink()
+    assert _mode(alias_twin) == 0o600
+    assert _mode(target / "own-mode") == 0o400
+    assert _mode(target / "plain-source") == 0o600
+    assert _mode(target / "linked-source") == 0o600
+    assert _mode(target / "fifo-source") == 0o600
 
 
 def test_the_mapping_set_is_derived_from_the_store_table(
