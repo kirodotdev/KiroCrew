@@ -22,6 +22,13 @@ inject_on_trigger: false
 | `kirocrew update approve` | Approve a pending in-app update armed from the dashboard |
 | `kirocrew update --force` | Discard local commits when a git checkout has diverged from upstream (git installs only) |
 | `kirocrew --version` | Print installed version |
+| `kirocrew kas install` | Download this release's pinned KAS engine + Node runtime, so no kiro-cli is needed (`--force`; another `--version` also needs `--unpinned`) |
+| `kirocrew kas status` | Show the pinned engine, what is installed, and the route |
+| `kirocrew kas remove` | Delete installed engine versions (`--version`, `--yes`) |
+| `kirocrew kas login` | Sign Kiro Crew's own vault in with a device code (no browser needed on this machine) |
+| `kirocrew kas whoami` | Show which Kiro identity the vault is signed in as |
+| `kirocrew kas logout` | Remove every Kiro identity from Kiro Crew's vault |
+| `kirocrew kas route` | Print which program owns the Kiro sign-in here: `kas-bundle` or `kiro-cli` |
 | `kirocrew sandbox status` | Report whether this launch is covered by the userns AppArmor profile |
 | `kirocrew sandbox install-profile` | Attach the profile to this app (sudo; `--path P` for an explicit executable) |
 | `kirocrew sandbox remove-profile` | Unload and remove the profile (sudo) |
@@ -55,6 +62,7 @@ which would over-grant.
 | `kirocrew stop --port 9999` | Stop gateway on specific port |
 | `kirocrew restart` | Restart gateway (service-aware) |
 | `kirocrew status` | Show runtime stats (uptime, sessions, crons, lessons) |
+| `kirocrew gateway-pid` | Print the PID holding this home's gateway lock (JSON) |
 
 The token in a `--json-ready` line grants dashboard access for up to 20 hours, so
 captured stdout from a test harness is a credential: keep it out of logs and
@@ -91,6 +99,7 @@ Scheduler. `<wt>` is a worktree name
 | `kirocrew pod token <wt>` | (Re)mint a dashboard token for a running pod |
 | `kirocrew pod url <wt>` | Print the pod's base URL |
 | `kirocrew pod logs <wt> -n N` | Tail the pod's journal |
+| `kirocrew pod restart <wt>` | Restart a pod in place, keeping its HOME (applies new `--memory`/`--cpu`) |
 | `kirocrew pod down <wt>` | Evict the pod and delete its isolated HOME |
 | `kirocrew pod prune` | Bulk-reclaim orphaned pod HOMEs (`--older-than 3d` by default, `--all`, `--dry-run`, `--json`) |
 | `kirocrew pod scenarios` | List the seed scenarios `pod up --seed <scenario>` accepts (`--json`) |
@@ -118,6 +127,8 @@ Override with `PORT=` in `~/.kiro/crew/pods/<name>.env`.
 | `kirocrew logout` | Revoke all active dashboard sessions |
 | `kirocrew manifest` | Generate Slack app manifest with your alias |
 | `kirocrew manifest --url` | Print one-click Slack app creation URL |
+| `kirocrew open [SESSION]` | Open the desktop app on a session through its `kirocrew://` URL (no session brings the app forward; `--print` writes the URL instead). Needs the desktop app |
+| `kirocrew desktop tunnel --host H --local-port N --remote-port N` | Keep the desktop app's SSH forward to a remote crew alive (client-only mode) |
 
 ## Chat
 
@@ -237,6 +248,8 @@ leftover prefix without touching it.
 | `kirocrew memory carve --store <name>` | Filter or count a crew store's memory by carve facets (`--scope`, `--surface`, `--crew`, `--session-key`) |
 | `kirocrew memory retired [--restore ID]` | List episodes a semantic write superseded, and restore one |
 | `kirocrew memory show [preferences\|projects\|history]` | Show the markdown memory layer (default: all three; `--format md\|json`, `--since YYYY-MM-DD` for history) |
+| `kirocrew memory forget KEY` | Delete one semantic memory key after you confirm it (owner only; needs a terminal and the running gateway; not on native Windows) |
+| `kirocrew knowledge stats` | Count sources, documents and items in the knowledge library (read-only; `--json`) |
 | `kirocrew knowledge dedup` | Preview cross-source duplicate knowledge documents (dry-run) |
 | `kirocrew knowledge dedup --apply` | Actually collapse the duplicates |
 | `kirocrew consolidate` | List sessions with unconsolidated messages |
@@ -302,6 +315,8 @@ keystone paths are still refused). The CLI is the stricter of the two.
 | `kirocrew app disable NAME` | Disable an installed app |
 | `kirocrew app uninstall NAME` | Uninstall an app and preserve its data directory |
 | `kirocrew app uninstall NAME --purge-data` | Uninstall and explicitly delete the app data directory |
+| `kirocrew app update NAME` | Update an installed app to its newest published version (needs a running gateway) |
+| `kirocrew app import SOURCE` | Convert a manifest-declared plugin package into an app directory (`--out`, `--name`, `--install`) |
 | `kirocrew app info NAME` | Show app details |
 | `kirocrew app init NAME` | Scaffold a new app (kebab-case name) |
 | `kirocrew app init NAME --backend --ui --cron` | Scaffold with backend, UI, and sample cron |
@@ -350,6 +365,7 @@ already-running app record -- restart it.
 |---------|-------------|
 | `kirocrew secrets import` | Dry-run the migration of plaintext `.env` credentials into the encrypted vault |
 | `kirocrew secrets import --apply` | Store the secrets and rewrite `.env` to `secret://` refs |
+| `kirocrew secrets authorize NAME ORIGIN` | Authorize a Custom secret for one exact https origin, for agent write requests (`--header`, `--remove`, `--reset`) |
 | `kirocrew telemetry status` | Show exactly what the anonymous beacon sends, and whether it will |
 | `kirocrew telemetry disable` | Turn the anonymous beacon off permanently |
 | `kirocrew telemetry enable` | Turn the anonymous beacon back on |
