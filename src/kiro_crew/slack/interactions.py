@@ -971,6 +971,7 @@ _sys.modules[__name__].__class__ = _facade_mirror.MirroredModule
 __all__ = sorted(n for n in set(globals()) | set(_EXPORTS) if not n.startswith("_"))
 # isort: off
 if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and IDEs
+    from kiro_crew.messaging.link import is_channel_session_key  # noqa: F401
     from kiro_crew.slack.interactions_context import VIEW_REGISTRY  # noqa: F401
     from kiro_crew.slack.interactions_context import ViewHandler  # noqa: F401
     from kiro_crew.slack.interactions_context import _probe_tracked_channel_scope  # noqa: F401
