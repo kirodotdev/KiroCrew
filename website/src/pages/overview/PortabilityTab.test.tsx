@@ -431,6 +431,13 @@ describe('PortabilityTab chat history', () => {
     await screen.findByText('Archive contents:')
   }
 
+  it('labels archive file sizes with the shared byte formatter', async () => {
+    await preview({ 'config.json': 2_000, 'memory.db': 1_500_000, 'crons.json': 512 })
+    expect(screen.getByText(/Config: 2kB/)).toBeTruthy()
+    expect(screen.getByText('Memory DB: 1.5MB')).toBeTruthy()
+    expect(screen.getByText(/Crons: 512B/)).toBeTruthy()
+  })
+
   it('shows a busy line while the chosen archive is checked, and clears it after', async () => {
     let answer: (resp: Response) => void = () => {}
     vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>(resolve => { answer = resolve })))

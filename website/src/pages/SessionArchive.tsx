@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { Trans } from 'react-i18next'
 
 import { i18nT } from '../i18n/t'
+import { fmtBytes } from '../i18n/format'
 import { api, type ArchiveEntry } from '../api/client'
 import { reportForError, type ErrorReport } from '../utils/errorReport'
 import { SettingRef } from '../components/settingRef/SettingRef'
@@ -76,8 +77,6 @@ export default function SessionArchive() {
   const fmtStamp = (s: string) =>
     s.length === 15 ? `${s.slice(0, 4)}-${s.slice(4, 6)}-${s.slice(6, 8)} ${s.slice(9, 11)}:${s.slice(11, 13)}:${s.slice(13, 15)}` : s
 
-  const fmtSize = (n: number) => n < 1024 ? `${n}B` : n < 1024 * 1024 ? `${(n / 1024).toFixed(1)}KB` : `${(n / 1024 / 1024).toFixed(2)}MB`
-
   return (
     <div className="flex gap-4 h-full text-sm">
       <div className="w-1/3 flex flex-col border border-border rounded p-2 overflow-hidden">
@@ -101,7 +100,7 @@ export default function SessionArchive() {
               className={`cursor-pointer px-2 py-1 rounded hover:bg-bg-hover ${selected === a.name ? 'bg-bg-elevated' : ''}`}
             >
               <div className="text-[13px] font-mono truncate" title={a.key}>{a.key}</div>
-              <div className="text-[13px] text-muted flex justify-between"><span>{fmtStamp(a.stamp)}</span><span>{fmtSize(a.size)}</span></div>
+              <div className="text-[13px] text-muted flex justify-between"><span>{fmtStamp(a.stamp)}</span><span>{fmtBytes(a.size)}</span></div>
             </div>
           ))}
         </div>

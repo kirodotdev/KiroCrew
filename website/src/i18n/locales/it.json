@@ -12231,7 +12231,8 @@
         "fork_in_progress": "Diramazione in corso…",
         "fork_other_in_progress": "È in corso un'altra diramazione.",
         "copy_failed": "Copia non riuscita",
-        "quote_message": "Cita messaggio"
+        "quote_message": "Cita messaggio",
+        "turn_credits": "{{credits}} crediti"
       },
       "browserLiveCard": {
         "allow_asked_once": "Lo chiede una sola volta; {{productName}} tocca solo le schede che apre da sé.",
@@ -16392,7 +16393,6 @@
         "importing": "Importazione in corso...",
         "checking_archive": "Verifica dell'archivio... Un file grande può richiedere alcuni minuti.",
         "invalid_archive": "Archivio non valido",
-        "kb": "KB",
         "memory_db": "DB della memoria:",
         "merge": "Unisci",
         "mode": "Modalità",
@@ -17100,11 +17100,9 @@
       "keeps": "· mantiene",
       "memory": "Memoria",
       "memory_developer_link": "Grafo della memoria e dettagli interni",
-      "messages": "messaggi",
       "overview": "Panoramica",
       "reconnecting": "Riconnessione…",
       "semantic_memory_active": "· memoria semantica attiva",
-      "sessions": "sessioni ·",
       "stat_cron_jobs": "Job cron",
       "stat_lessons": "Lezioni",
       "stat_messages": "Messaggi",
@@ -17112,8 +17110,6 @@
       "stat_subagents": "Subagenti",
       "stat_uptime": "Tempo di attività",
       "summarizes_chats_into_memory_after": "Riepiloga le chat nella memoria dopo",
-      "today": "Oggi:",
-      "tokens": "token",
       "up": "Su",
       "usage": "Utilizzo",
       "usage_tracking_is_not_available_for": "Il monitoraggio dell'utilizzo non è disponibile per",
@@ -17121,7 +17117,17 @@
       "view_details": "Visualizza i dettagli",
       "wakatime": "WakaTime",
       "wakatime_last_7_days": "Ultimi 7 giorni",
-      "wakatime_not_connected": "Non connesso"
+      "wakatime_not_connected": "Non connesso",
+      "today_line": "Oggi: {{summary}}",
+      "today_sessions_one": "{{amount}} sessione",
+      "today_sessions_many": "{{amount}} sessioni",
+      "today_sessions_other": "{{amount}} sessioni",
+      "today_messages_one": "{{amount}} messaggio",
+      "today_messages_many": "{{amount}} messaggi",
+      "today_messages_other": "{{amount}} messaggi",
+      "today_tokens_one": "{{amount}} token",
+      "today_tokens_many": "{{amount}} token",
+      "today_tokens_other": "{{amount}} token"
     },
     "performanceTab": {
       "builder_mcp_procs": "Builder MCP",

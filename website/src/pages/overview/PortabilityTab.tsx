@@ -6,6 +6,7 @@ import ErrorNotice from '../../components/ErrorNotice'
 import { useConfirm } from '../../components/ConfirmDialog'
 
 import { i18nT } from '../../i18n/t'
+import { fmtBytes } from '../../i18n/format'
 import { noteStaleOwnerResponse } from '../../api/staleOwnerSignal'
 import { uiLocation } from '../../uiLocations/uiLocation'
 import { adoptHostUiPrefsOnNextLoad, pauseUiPrefsSync, resumeUiPrefsSync } from '../../lib/uiPrefs'
@@ -699,9 +700,9 @@ export default function PortabilityTab() {
           return (
           <div className="mt-3 p-3 rounded-lg bg-bg-elevated border border-border text-[12px] font-mono space-y-1">
             <div className="font-semibold text-text mb-1">{i18nT('pages.overview.portabilityTab.archive_contents')}</div>
-            {preview.contents['config.json'] != null && <div className={outside}>{i18nT('pages.overview.portabilityTab.config')} {(preview.contents['config.json'] / 1024).toFixed(1)} {i18nT('pages.overview.portabilityTab.kb')}{skipped}</div>}
-            {preview.contents['memory.db'] != null && <div>{i18nT('pages.overview.portabilityTab.memory_db')} {(preview.contents['memory.db'] / 1024).toFixed(1)} {i18nT('pages.overview.portabilityTab.kb')}</div>}
-            {preview.contents['crons.json'] != null && <div className={outside}>{i18nT('pages.overview.portabilityTab.crons')} {(preview.contents['crons.json'] / 1024).toFixed(1)} {i18nT('pages.overview.portabilityTab.kb')}{skipped}</div>}
+            {preview.contents['config.json'] != null && <div className={outside}>{i18nT('pages.overview.portabilityTab.config')} {fmtBytes(preview.contents['config.json'])}{skipped}</div>}
+            {preview.contents['memory.db'] != null && <div>{i18nT('pages.overview.portabilityTab.memory_db')} {fmtBytes(preview.contents['memory.db'])}</div>}
+            {preview.contents['crons.json'] != null && <div className={outside}>{i18nT('pages.overview.portabilityTab.crons')} {fmtBytes(preview.contents['crons.json'])}{skipped}</div>}
             {preview.contents.workspace_files != null && (
               <div>
                 {previewMemoryOnly
