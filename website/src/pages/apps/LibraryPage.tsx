@@ -572,6 +572,9 @@ export default function LibraryPage() {
             <LayoutGroup id="library-tiles">
             <div
               className="flex flex-col gap-8"
+              // A group, so the label is announced: assistive tech ignores
+              // aria-label on a div that has no role.
+              role="group"
               aria-label={i18nT('pages.libraryPage.installed_apps')}
               {...uiLocation('apps.library.app-list')}
             >
