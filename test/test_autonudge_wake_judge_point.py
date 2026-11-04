@@ -1069,6 +1069,28 @@ class TestEmptyDelta:
         )
         assert dropped >= 2, "both targets past the cap are counted"
 
+    def test_a_message_naming_more_sessions_than_the_cap_is_not_quiet(self) -> None:
+        """The cap's drop count must survive the real path: parse, collect, judge.
+
+        With no ``targets`` list the sessions come from the loop's message. If parsing
+        cuts that list at the cap, the collector never sees the overflow, reports zero
+        dropped, and a calm reading of the first sessions suppresses the turn the last
+        one asked for.
+        """
+        sessions = [f"chat-w{n}-1" for n in range(judge.MAX_TARGETS + 1)]
+        message = "Patrol these workers and wake me on BLOCKED: " + " ".join(sessions)
+        targets = judge.parse_targets({}, message)
+
+        async def read_session(target: str, since: int) -> tuple[list[dict], int, int | None]:
+            return [], since, since
+
+        _, dropped = asyncio.run(
+            judge.collect_evidence(targets, cursors={}, read_session=read_session, read_pr=None)
+        )
+        assert dropped == 1, f"targets={targets!r} dropped={dropped}: the last session was lost"
+        verdict = asyncio.run(point.judge_tick(message, evidence=[], dropped=dropped))
+        assert verdict.outcome is Outcome.FALLBACK
+
     def test_a_dropped_target_is_fallback_not_quiet(self) -> None:
         verdict = asyncio.run(point.judge_tick("watch", evidence=[], dropped=1))
         assert verdict.outcome is Outcome.FALLBACK
