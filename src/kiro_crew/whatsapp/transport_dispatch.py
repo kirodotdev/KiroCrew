@@ -89,14 +89,11 @@ GUEST_SCOPE_SEGMENT = "guest"
 #: The receipt a sender gets while a reply is still streaming into their chat.
 BUSY_NOTE = "Still working on the last message; please resend shortly."
 
-#: Phase reactions placed on the OPERATOR'S OWN inbound message, which is the
-#: same affordance Slack draws with its status reactions. Reacting to their
-#: message rather than to ours is deliberate: whether a linked device may react
-#: to a message the account itself sent is not something this repo could verify,
-#: and this direction needs no such assumption.
+#: Phase reactions placed on the OPERATOR'S OWN inbound message, like Slack's
+#: status reactions. Not on ours: whether a linked device may react to a message
+#: the account itself sent is unverified.
 #:
-#: These are chat content, not dashboard UI, so the no-emoji-in-UI rule does not
-#: reach them; they live here as the owning module's constants rather than inline.
+#: Chat content, not dashboard UI, so the no-emoji-in-UI rule does not apply.
 REACTION_WORKING = "\N{HOURGLASS WITH FLOWING SAND}"
 REACTION_DONE = "\N{WHITE HEAVY CHECK MARK}"
 REACTION_FAILED = "\N{WARNING SIGN}"
@@ -297,11 +294,9 @@ class WhatsAppDispatcher:
     async def _handle_stop(self, scope: str) -> None:
         """Cooperative cancel, then report which of the two things happened.
 
-        With no buttons this is the channel's ONLY cancel affordance, so the
-        distinction matters to the operator: a running turn was interrupted, or
-        there was nothing running and the queue was cleared. Reporting "stopped"
-        for both would leave them unsure whether the reply they were waiting on
-        is still coming.
+        This is the channel's ONLY cancel affordance, so it says whether a running
+        turn was interrupted or nothing was running: "stopped" for both would leave
+        the operator unsure whether the reply they wait on is still coming.
         """
         session_key = self._live_session_key(scope)
         # A repeat within the window after a declined stop is the second press
@@ -339,12 +334,10 @@ class WhatsAppDispatcher:
         """In-place ACP ``/compact`` on this conversation's current session.
 
         Serialized against the turn semaphore with ``try_acquire``: compacting
-        while a turn is mutating the same session interleaves JSON-RPC on one
-        provider and races the transcript. A refused acquire is two different
-        situations to the operator -- a turn holds the session (ask again) or
-        there is no session at all (nothing to compact) -- and telling them the
-        wrong one leaves them waiting for a compaction that will never happen.
-        Whatever is acquired is always released.
+        while a turn mutates the same session interleaves JSON-RPC on one provider
+        and races the transcript. A refused acquire is answered as either "busy,
+        ask again" or "nothing to compact", whichever is true. Whatever is
+        acquired is always released.
         """
         session_key = self._live_session_key(scope)
         if not await self.sessions.try_acquire(session_key):
@@ -360,10 +353,9 @@ class WhatsAppDispatcher:
             if provider is None:
                 await self._say(scope, COMPACT_NOTHING_TEXT)
                 return
-            # Capability gate (mirroring the dashboard's gate): a
-            # backend that cannot serve a manual /compact treats the prompt as
-            # ordinary text and never answers, so dispatching would strand the
-            # unbounded wait below. Informational, never an error.
+            # Capability gate (as on the dashboard): a backend that cannot serve
+            # a manual /compact treats the prompt as text and never answers,
+            # stranding the wait below. Informational, never an error.
             unsupported = compact_unsupported_backend(provider)
             if unsupported:
                 logger.debug("whatsapp: manual /compact declined — %s compacts itself", unsupported)
@@ -553,11 +545,8 @@ class WhatsAppDispatcher:
         )
         if unprompted and renderer.delivered:
             transport.group_gate.record_unprompted_reply(scope)
-        # The OUTCOME, which is not the complement of "something reached the
-        # chat": a failed turn delivers the apology notice, so ``delivered`` is
-        # True there too and reading it alone stamps a failed turn with the
-        # success marker. On a phone the reaction is the compact signal the
-        # operator scans, so a wrong one is worse than none.
+        # The OUTCOME, not "something reached the chat": a failed turn delivers
+        # the apology notice, so ``delivered`` alone would mark it a success.
         succeeded = renderer.delivered and not renderer.failed
         await self._react(
             inbound,
@@ -661,11 +650,9 @@ class WhatsAppDispatcher:
           now, rather than waiting for the backend threshold, which sits higher;
         * past ``whatsapp.soft_threshold_pct`` the operator is nudged once.
 
-        The reading and the compaction are session hygiene and run whatever the
-        conversation is, because a window that overflows costs the operator the
-        conversation. Only the TEXT is conditional, on the same two rules
-        ``_react`` carries: an unprompted group turn may still be choosing
-        silence, and a muted conversation is one the operator switched off.
+        The reading and the compaction always run, because an overflowing window
+        costs the conversation. Only the TEXT follows ``_react``'s two rules: no
+        message on an unprompted group turn or a muted conversation.
         """
         pct = self.sessions.check_context_usage(session_key, provider)
         may_speak = not unprompted and not delivery_is_muted(self.sessions, session_key, "whatsapp")
@@ -731,12 +718,9 @@ class WhatsAppDispatcher:
     async def _say(self, chat_jid: str, text: str) -> bool:
         """Send one out-of-band message; did it land?
 
-        Most callers ignore the answer -- a command ack is cosmetic beside the
-        command's effect. One does not: the compaction decline arms an escalation
-        that resets the session on the next press, and the only thing that makes
-        that press informed is this text arriving. A missing transport and a
-        swallowed send error both return ``False`` so that escalation stays
-        unarmed.
+        The compaction decline reads the answer: it arms an escalation that
+        resets the session on the next press, only once this warning arrived. A
+        missing transport and a swallowed send error both return ``False``.
         """
         if self.transport is None:
             return False

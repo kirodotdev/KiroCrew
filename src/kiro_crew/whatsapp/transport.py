@@ -45,16 +45,12 @@ Cloud API does not; media rides the shared ingest and upload paths; reactions
 carry phase receipts. ``max_buttons=0``, and unlike the other zero-widget channels
 this renderer does not fall back to a numbered list: ``turn_renderer._strip_options``
 removes a COMPLETE ``[OPTIONS:]`` trailer from the reply, so a question whose
-choices live only there reaches the user without them. A tool approval is
-unaffected -- ``on_prompt_choice`` builds its own numbered prompt. Declaring no
-widget is a deliberately conservative choice, NOT a platform ceiling: the pinned
-wheel ships a complete interactive-message builder and a poll builder, and what is
-unverified is whether a recipient's client renders a native-flow message sent from
-a PERSONAL linked device rather than a Business account. Recording it as impossible
-would close the door on every future picker here, so it is recorded as unverified.
-Losing the list is a gap rather than a position; ``docs/channel-capabilities.md``
-records it for a reader. Unlike
-the Business Cloud API there is no 24-hour window, so
+choices live only there reaches the user without them (``docs/channel-capabilities.md``
+records the gap). A tool approval is unaffected -- ``on_prompt_choice`` builds its
+own numbered prompt. No widget is declared because support is unverified, not
+impossible: the pinned wheel ships interactive-message and poll builders, but
+whether a recipient renders a native-flow message from a PERSONAL linked device is
+unknown. There is no 24-hour window as on the Business Cloud API, so
 ``supports_proactive_send=True`` and reminders work.
 """
 
@@ -136,19 +132,16 @@ WHATSAPP_CAPABILITIES = TransportCapabilities(
     files_inbound=True,
     # The renderer runs the shared outbound extractor at the seal and uploads
     # each raster through client.send_image_bytes; a refusal is reported rather
-    # than dropped. Inbound stays False until the download half lands.
+    # than dropped.
     files_outbound=True,
     rich_blocks=False,
     threads=False,
     max_message_chars=WHATSAPP_CHUNK_LIMIT,
     max_buttons=0,
     supports_proactive_send=True,
-    # Declared explicitly rather than left to the default. Inbound builds a
-    # session key from the chat JID and never resolves a dashboard mirror
-    # binding, so a connect from the dashboard is outbound-only; claiming
-    # otherwise would promise a two-way link whose replies land in a different
-    # session. Spelling it out is also what puts this channel under
-    # test_capability_ledger's roster instead of silently outside it.
+    # Inbound builds a session key from the chat JID and never resolves a
+    # dashboard mirror binding, so a connect from the dashboard is outbound-only.
+    # Declared explicitly so test_capability_ledger's roster covers this channel.
     supports_session_resume=False,
 )
 
@@ -222,7 +215,6 @@ class WhatsAppTransport(MessagingTransport):
         """The low-level client (dashboard pairing handlers read state/QR)."""
         return self._client
 
-    # -- Live config ---------------------------------------------------------
     def __init__(
         self,
         client: WhatsAppClient,
@@ -267,11 +259,10 @@ class WhatsAppTransport(MessagingTransport):
         #: others, so it rides here rather than widening the shared contract.
         self.pending_message_id: dict[int, str] = {}
         #: ``(text as the user sent it, media count)`` captured BEFORE ingestion
-        #: rewrites ``msg.text`` with attachment context and temp paths. The
-        #: durable inbound spool quotes the spooled text back to the
-        #: user in a restart notice, and the ingested form would quote on-disk
-        #: paths to files that do not survive the restart. Same keying and lifetime as the
-        #: three tables above.
+        #: rewrites ``msg.text`` with attachment context and temp paths: the
+        #: inbound spool quotes it back in a restart notice, and the ingested form
+        #: would name temp files that do not survive the restart. Same keying and
+        #: lifetime as the three tables above.
         self.pending_original: dict[int, tuple[str, int]] = {}
         client.on_message = self.receive
 
@@ -734,8 +725,7 @@ class WhatsAppTransport(MessagingTransport):
             # is a guarantee that silently does not hold.
             msg.attachments = list(temp_paths)
         elif skipped_note:
-            # Seen and skipped, said out loud: silence reads as the agent
-            # ignoring a photo the user believes it received.
+            # Seen and skipped, said out loud for the same reason.
             msg.text = f"{msg.text}\n\n{skipped_note}".strip() if msg.text else skipped_note
 
         if verdict is not None:
@@ -768,10 +758,9 @@ class WhatsAppTransport(MessagingTransport):
         always 'addressed'.
 
         Takes the UNWRAPPED message, not the envelope: ``contextInfo`` carries the
-        mention list, and it is invisible when the message arrived inside an
-        ephemeral or view-once carrier. Reading the envelope made an @-mention in
-        a disappearing group message read as "not addressed", so the agent stayed
-        silent exactly when it was called on.
+        mention list, and it is invisible inside an ephemeral or view-once
+        carrier, so an @-mention in a disappearing group message would read as
+        "not addressed".
         """
         if sender_is_operator:
             return True

@@ -88,18 +88,14 @@ def default_db_path(home: str | os.PathLike[str]) -> Path:
 def _image_thumbnail(data: bytes) -> bytes:
     """A small JPEG preview of *data*, or ``b""`` when one cannot be made.
 
-    BLOCKING: a full raster decode plus a rescale and a JPEG encode, on inputs up
-    to this channel's per-file ceiling. Callers hand it to a worker thread, since
-    doing it inline stalls every other channel, every live turn and the liveness
-    heartbeat on the one gateway event loop.
+    BLOCKING (a full raster decode, rescale and JPEG encode): callers run it on a
+    worker thread so the one gateway event loop is not stalled.
 
     Best-effort: a missing preview costs a grey placeholder until the recipient
     taps the picture, while raising would cost the whole reply.
 
-    Pillow is imported here rather than at module scope, matching the discipline
-    the rest of this module keeps for neonize: ``whatsapp`` is reachable from the
-    gateway's import graph, so a top-level import lands on every operator's boot
-    path whether or not this channel is enabled.
+    Pillow is imported lazily, like neonize, so the gateway boot path does not
+    load it when this channel is disabled.
     """
     try:
         from PIL import Image
@@ -120,15 +116,11 @@ def _image_thumbnail(data: bytes) -> bytes:
 def _wav_seconds(data: bytes) -> int:
     """Whole seconds of PCM WAV in *data*, or 0 when it is not readable WAV.
 
-    WhatsApp draws a voice note's duration from ``AudioMessage.seconds`` and
-    labels it ``0:00`` without one. neonize derives that figure by shelling out to
-    ``ffmpeg``, which this channel cannot require, so the one container the
-    bundled speech synthesis emits is read from its own header instead: the
-    system engine writes PCM WAV, and frames divided by the frame rate is the whole answer.
-    Any other container (a Polly MP3) answers 0, which costs the label alone.
-
-    A header parse over an in-memory buffer, so it holds no descriptor and does
-    no I/O.
+    WhatsApp labels a voice note ``0:00`` without ``AudioMessage.seconds``.
+    neonize derives it by shelling out to ``ffmpeg``, which this channel cannot
+    require, so the PCM WAV the system speech engine writes is read from its own
+    header instead. Any other container (a Polly MP3) answers 0, which costs the
+    label alone.
     """
     try:
         with wave.open(BytesIO(data), "rb") as handle:
@@ -287,11 +279,9 @@ class WhatsAppClient:
         # directory is actually locked down.
         await asyncio.to_thread(self._restrict_session_store)
 
-        # Loading neonize means a ~19 MB ctypes.CDLL plus dozens of protobuf
-        # descriptor modules, all synchronous. On the gateway's single event loop
-        # that stalls every other channel, every live turn and the liveness
-        # heartbeat for the duration, so it is done on a worker thread. Still
-        # LAZY (never at module import) so a missing extra cannot break boot.
+        # Loading neonize (a ~19 MB ctypes.CDLL plus protobuf modules) is
+        # synchronous and would stall the gateway's single event loop, so it runs
+        # on a worker thread, still lazily so a missing extra cannot break boot.
         NewAClient, events = await asyncio.to_thread(_load_neonize)
         ConnectedEv = events["ConnectedEv"]
         DisconnectedEv = events["DisconnectedEv"]
@@ -311,13 +301,9 @@ class WhatsAppClient:
         client = NewAClient(self.db_path)
         self._client = client
 
-        # QR does NOT travel on the numbered event stream, so it cannot be
-        # registered with `client.event(...)`: `Event.execute` only dispatches
-        # INT_TO_EVENT codes into `list_func`, and QR is never one of them. The Go
-        # core delivers each rotating code by calling `NewAClient.__onQr`, which
-        # invokes `client.event._qr` directly, and `Event.__init__` pre-seeds that
-        # slot with a default that renders the code to a terminal — which a
-        # gateway started from a desktop launcher has no reader for. `client.qr()`
+        # QR does NOT travel on the numbered event stream (`Event.execute` only
+        # dispatches INT_TO_EVENT codes), so `client.event(...)` cannot catch it;
+        # the default handler renders it to a terminal nobody reads. `client.qr()`
         # is the supported registration, and it hands over ONE code as bytes per
         # emission rather than a batch carrying `.Codes`.
         async def _on_qr(_client: Any, data_qr: Any) -> None:
@@ -608,10 +594,8 @@ class WhatsAppClient:
     ) -> str:
         """Send audio BYTES as a voice note (push-to-talk) and return its id.
 
-        The channel transcribes an inbound voice note, so being unable to send
-        one is an asymmetry the operator feels: they talk to the agent and it
-        cannot answer in kind. ``PTT=True`` is what makes the recipient's client
-        draw a play button and a waveform instead of a file attachment.
+        ``PTT=True`` is what makes the recipient's client draw a play button and
+        a waveform instead of a file attachment.
 
         *mimetype* is required, not sniffed: audio has no signature table this
         repo carries, and the caller minted these bytes so it knows the container.
@@ -718,14 +702,12 @@ class WhatsAppClient:
     async def edit_text(self, jid_str: str, message_id: str, text: str) -> bool:
         """Replace the body of a message this channel already sent.
 
-        WhatsApp allows an edit for :data:`EDIT_WINDOW_S` after the original send
-        and the server refuses a later one, so a long turn eventually has to stop
-        editing and open a new bubble instead. That decision belongs to the
-        caller, which knows when the bubble was sent; this only reports failure.
+        The server refuses an edit after :data:`EDIT_WINDOW_S`; the caller, which
+        knows when the bubble was sent, decides when to open a new one.
 
-        Returns False instead of raising: a refused edit is a cosmetic loss (the
-        reader keeps the previous text and the final send still lands), and it
-        must never fail the turn that was merely trying to show progress.
+        Returns False instead of raising: a refused edit is cosmetic (the reader
+        keeps the previous text and the final send still lands) and must never
+        fail the turn.
         """
         if self._client is None:
             return False

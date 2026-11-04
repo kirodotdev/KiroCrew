@@ -80,11 +80,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-#: Refresh cadence for the composing indicator. Neither whatsmeow nor neonize
-#: documents or enforces a presence TTL, and no authoritative WhatsApp figure was
-#: sourced, so this is a chosen cadence rather than a measured expiry: it is
-#: frequent enough that the indicator does not visibly lapse, and the state is
-#: always cleared explicitly when the turn ends.
+#: Refresh cadence for the composing indicator. No presence TTL is documented,
+#: so this is a chosen cadence, frequent enough that the indicator does not
+#: visibly lapse; the state is always cleared explicitly when the turn ends.
 _TYPING_REFRESH_S = 8.0
 
 #: Minimum seconds between edits of the live bubble. Chosen for send-rate safety
@@ -105,7 +103,7 @@ def _strip_options(text: str) -> str:
 
 
 class WhatsAppRenderer(Renderer):
-    """Buffers a turn; emits once on completion (see module docstring)."""
+    """Streams a turn into edited bubbles (see module docstring)."""
 
     channel_type = "whatsapp"
 
@@ -153,19 +151,13 @@ class WhatsAppRenderer(Renderer):
         #: to skip cooldown recording and history persistence of the sentinel.
         self.suppressed = False
         #: True once a reply actually reached the chat. The group cooldown is
-        #: gated on THIS rather than on ``not suppressed``, because a muted
-        #: conversation never runs this renderer at all: ``drive_turn``
-        #: substitutes ``SilentRenderer`` into its LOCAL name, so ``on_done``
-        #: and ``close`` are called on that object and ``suppressed`` stays
-        #: False here. Reading it would then start a cooldown for a reply
-        #: nobody received, silencing the next unprompted turn that had
-        #: something to say. A failed send lands in the same place, correctly.
+        #: gated on THIS rather than on ``not suppressed``: a muted conversation
+        #: runs ``SilentRenderer`` instead, so ``suppressed`` stays False here and
+        #: would start a cooldown for a reply nobody received.
         self.delivered = False
-        #: True when the turn ended on an error, which is NOT the complement of
-        #: ``delivered``: an errored turn delivers the apology notice, so that
-        #: flag is True by the time the dispatcher reads it. The phase reaction
-        #: needs the OUTCOME, and only this renderer sees the stop reason, so it
-        #: is recorded here rather than re-derived from what reached the chat.
+        #: True when the turn ended on an error. NOT the complement of
+        #: ``delivered``: an errored turn delivers the apology notice. Only this
+        #: renderer sees the stop reason, so the phase reaction reads it here.
         self.failed = False
         #: Index of the earliest chunk a STREAMING send failed to place, or None.
         #: The count still advances past a failure so the flush loop terminates: a
@@ -220,11 +212,9 @@ class WhatsAppRenderer(Renderer):
     def _schedule_flush(self) -> None:
         """Arm one coalescing flush. Single-flight by construction.
 
-        A live task is left alone rather than replaced: it will pick up whatever
-        the buffer holds when its throttle elapses, so a burst of chunks costs one
-        edit instead of one each. Replacing it would either cancel work already in
-        flight or stack a task per chunk, which is the per-token edit storm the
-        module docstring exists to prevent.
+        A live task is left alone rather than replaced: it picks up whatever the
+        buffer holds when its throttle elapses, so a burst of chunks costs one
+        edit instead of one each.
         """
         if self._finalized or self._unprompted:
             # An unprompted group turn may end up choosing silence, and a
@@ -376,12 +366,9 @@ class WhatsAppRenderer(Renderer):
         """Leave *text* on screen, and report whether it actually got there.
 
         THE answer to "is this visible", and the only thing a caller may advance
-        ``_sealed_count`` on. Three call sites reached the same wrong conclusion
-        independently -- a closed edit window, a refused streaming edit, and a
-        refused final edit each counted a chunk that never arrived -- because each
-        decided delivery from its own local branch. There is exactly one branchy
-        fact here (an edit can be refused, and a refusal closes the bubble), so it
-        is answered once, here.
+        ``_sealed_count`` on. An edit can be refused, and a refusal closes the
+        bubble; a caller deciding delivery from its own branch would count a chunk
+        that never arrived, so the question is answered once, here.
 
         Three placements, in order of preference: edit the live bubble; past the
         edit window, or after a refusal, open a fresh one. A fresh bubble repeats
@@ -554,8 +541,7 @@ class WhatsAppRenderer(Renderer):
         if self._unprompted and (not body or body == SILENCE_SENTINEL):
             # The model chose silence (or produced nothing): deliver nothing.
             # Nothing was streamed either: _schedule_flush never arms for an
-            # unprompted turn, precisely because a streamed prefix cannot be
-            # unsent once the model turns out to have chosen silence.
+            # unprompted turn.
             self.suppressed = True
             logger.debug("whatsapp: unprompted group turn suppressed")
             return
@@ -751,8 +737,8 @@ class WhatsAppRenderer(Renderer):
     async def _pause_typing(self) -> None:
         """Drop the indicator, keeping the turn alive. The waiting-on-you state.
 
-        Distinct from :meth:`_stop_typing` only in intent, which is why they share
-        the teardown: this one is expected to be followed by ``_resume_typing``.
+        Same teardown as :meth:`_stop_typing`; this one is expected to be
+        followed by ``_resume_typing``.
         """
         await self._stop_typing()
 
