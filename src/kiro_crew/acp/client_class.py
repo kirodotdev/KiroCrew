@@ -526,6 +526,9 @@ class AcpClient:
         # Keeps _model / _resolved_model_id in step with a fallback the ENGINE
         # made mid-turn (acp/engine_fallback.py).
         self._engine_fallback = EngineFallbackTracker()
+        # The model the last prompt response reported serving its turn
+        # (``parse_prompt_turn_model``); "" until a turn reports one.
+        self.turn_model: str = ""
         # The model a ``_kiro.dev/agent/switched`` frame says the session now
         # runs, waiting to be judged by ``_judge_activated_model`` before the next
         # prompt. ``""`` = nothing to judge. See ``_note_agent_switched``.

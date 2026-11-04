@@ -716,6 +716,9 @@ class AcpSessionHandle:
         # Keeps the two fields above in step with a fallback the ENGINE made
         # mid-turn (acp/engine_fallback.py).
         self._engine_fallback = EngineFallbackTracker()
+        # The model the last prompt response reported serving its turn
+        # (mirrors AcpClient.turn_model); "" until a turn reports one.
+        self.turn_model: str = ""
         # True after set_mode switched a live session's agent, until the model
         # kiro-cli reported for that activation has been judged against the
         # served list (see _served_default_after_set_mode).

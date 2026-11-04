@@ -6548,7 +6548,18 @@
       "composer_action_footer_host": "{{productName}} 检查了草稿。{{app}} 仍然看不到它。",
       "composer_action_needs_empty": "{{app}} 只能插入到空消息中。请先清空草稿。",
       "composer_action_would_resolve": "{{app}} 的文本以 /、! 或 @ 开头，或包含 $skill、文件或图片，因此会被执行而不是作为文本发送。没有插入。",
-      "composer_action_footer": "{{app}} 看不到你的草稿。它的文字按原样插入，是否发送由你决定。"
+      "composer_action_footer": "{{app}} 看不到你的草稿。它的文字按原样插入，是否发送由你决定。",
+      "agent_backend": "代理运行框架",
+      "gateway_tools": "{{productName}} 工具",
+      "gateway_tools_connected": "可用",
+      "gateway_tools_failed": "{{productName}} 工具未能在此会话中启动。请新建会话后重试。",
+      "gateway_tools_sent": "已发送，未确认",
+      "gateway_tools_not_sent": "{{productName}} 工具未发送到此会话。请在 自定义 → 自定义代理 中把 @kirocrew-core 添加到此代理的工具里，然后新建会话。",
+      "gateway_tools_no_tools": "{{productName}} 工具已在此会话中启动，但没有提供任何工具，通常是因为另一个服务器使用了相同的工具名称。请关闭那个服务器，然后新建会话。",
+      "gateway_tools_pending": "尚未报告",
+      "gateway_tools_missing": "此会话没有 {{productName}} 工具",
+      "gateway_tools_missing_short": "无 {{productName}} 工具",
+      "model_selected": "已选：{{name}}"
     },
     "chatPane": {
       "agent_list": "代理列表",

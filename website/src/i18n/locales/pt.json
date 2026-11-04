@@ -6878,7 +6878,18 @@
       "composer_action_footer_host": "O {{productName}} verificou o rascunho. {{app}} continua sem vê-lo.",
       "composer_action_needs_empty": "{{app}} só pode inserir em uma mensagem vazia. Esvazie o rascunho primeiro.",
       "composer_action_would_resolve": "O texto de {{app}} começa com /, ! ou @, ou contém um $skill, um arquivo ou uma imagem, então seria executado em vez de enviado como texto. Não foi inserido.",
-      "composer_action_footer": "{{app}} não vê seu rascunho. O texto dele entra como está, e você decide se envia."
+      "composer_action_footer": "{{app}} não vê seu rascunho. O texto dele entra como está, e você decide se envia.",
+      "agent_backend": "Harness do agente",
+      "gateway_tools": "Ferramentas do {{productName}}",
+      "gateway_tools_connected": "Disponíveis",
+      "gateway_tools_failed": "As ferramentas do {{productName}} não iniciaram nesta sessão. Inicie uma nova sessão para tentar novamente.",
+      "gateway_tools_sent": "Enviadas, não confirmadas",
+      "gateway_tools_not_sent": "As ferramentas do {{productName}} não foram enviadas a esta sessão. Adicione @kirocrew-core às ferramentas deste agente em Personalizar → Agentes personalizados e depois inicie uma nova sessão.",
+      "gateway_tools_no_tools": "As ferramentas do {{productName}} iniciaram nesta sessão, mas não forneceram nenhuma ferramenta, muitas vezes porque outro servidor usa os mesmos nomes de ferramenta. Desative esse servidor e depois inicie uma nova sessão.",
+      "gateway_tools_pending": "Ainda sem relatório",
+      "gateway_tools_missing": "Esta sessão não tem as ferramentas do {{productName}}",
+      "gateway_tools_missing_short": "Sem ferramentas do {{productName}}",
+      "model_selected": "Selecionado: {{name}}"
     },
     "chatPane": {
       "agent_list": "Lista de agentes",

@@ -5956,7 +5956,7 @@
   },
   "components": {
     "mateWorkers": {
-      "approvals_label": "Approbations d'outils des sessions de ce coéquipier\u202f: {{n}}",
+      "approvals_label": "Approbations d'outils des sessions de ce coéquipier : {{n}}",
       "trust": "Faire confiance à cette session",
       "trust_hint": "Approuve ceci et laisse cette session utiliser des outils sans demander jusqu'au redémarrage de {{productName}}.",
       "questions_label": "Questions des sessions de ce coéquipier",
@@ -6878,7 +6878,18 @@
       "composer_action_footer_host": "{{productName}} a vérifié le brouillon. {{app}} ne le voit toujours pas.",
       "composer_action_needs_empty": "{{app}} ne peut insérer que dans un message vide. Vide d'abord le brouillon.",
       "composer_action_would_resolve": "Le texte de {{app}} commence par /, ! ou @, ou contient un $skill, un fichier ou une image : il s'exécuterait au lieu d'être envoyé comme texte. Il n'a pas été inséré.",
-      "composer_action_footer": "{{app}} ne voit pas ton brouillon. Son texte est inséré tel quel, et c'est toi qui choisis de l'envoyer."
+      "composer_action_footer": "{{app}} ne voit pas ton brouillon. Son texte est inséré tel quel, et c'est toi qui choisis de l'envoyer.",
+      "agent_backend": "Harness de l’agent",
+      "gateway_tools": "Outils de {{productName}}",
+      "gateway_tools_connected": "Disponibles",
+      "gateway_tools_failed": "Les outils de {{productName}} n’ont pas démarré dans cette session. Démarre une nouvelle session pour réessayer.",
+      "gateway_tools_sent": "Envoyés, non confirmés",
+      "gateway_tools_not_sent": "Les outils de {{productName}} n’ont pas été envoyés à cette session. Ajoute @kirocrew-core aux outils de cet agent dans Personnaliser → Agents personnalisés, puis démarre une nouvelle session.",
+      "gateway_tools_no_tools": "Les outils de {{productName}} ont démarré dans cette session mais ne lui ont fourni aucun outil, souvent parce qu’un autre serveur utilise les mêmes noms d’outils. Désactive ce serveur, puis démarre une nouvelle session.",
+      "gateway_tools_pending": "Pas encore signalés",
+      "gateway_tools_missing": "Cette session n’a pas les outils de {{productName}}",
+      "gateway_tools_missing_short": "Aucun outil de {{productName}}",
+      "model_selected": "Sélectionné : {{name}}"
     },
     "chatPane": {
       "agent_list": "Liste des agents",
