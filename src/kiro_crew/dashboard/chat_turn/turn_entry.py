@@ -608,6 +608,9 @@ async def _turn_open(turn: _ChatTurn) -> _Flow | None:
     # tool_call_id -> what the call's PostToolUse SPEC hooks match on
     # (``spec_hooks.PostToolIdentity``), only where Crew fires them.
     turn._pending_tool_ids = {}
+    # tool_call_id -> the call's parsed arguments, handed to its PostToolUse
+    # hooks as ``tool_input`` (PreToolUse gets the same object).
+    turn._pending_tool_inputs = {}
     # The `ts` of every row ALREADY in this slot when the turn began, so a row
     # this turn appended can be told from one that predates it.
     #

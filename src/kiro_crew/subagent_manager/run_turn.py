@@ -530,10 +530,18 @@ async def _run_inner_impl(
     # Mirrors kiro_crew.dashboard.chat_runner._pending_tools.
     _pending_tools: dict[str, str] = {}
     # tool_call_id -> the tool id the call's PostToolUse spec hooks match on.
-    from kiro_crew.agent_sdk.spec_hooks import PostToolIdentity, post_tool_identity
+    from kiro_crew.agent_sdk.drivers.acp_vocab import EVENT_TOOL_CALL_UPDATE
+    from kiro_crew.agent_sdk.spec_hooks import (
+        PostToolIdentity,
+        post_tool_identity,
+        remember_tool_input,
+    )
     from kiro_crew.hooks import pre_tool_match_names
+    from kiro_crew.platform.context import redact_via_context
 
     _pending_tool_ids: dict[str, PostToolIdentity] = {}
+    # tool_call_id -> the call's parsed arguments, for its PostToolUse ``tool_input``.
+    _pending_tool_inputs: dict[str, dict[str, Any]] = {}
     # The subagent's OWN spec hooks, when its OWN backend never receives them:
     # keyed on this run's agent and provider, never the parent's, so a
     # kiro-cli subagent (whose harness runs the field) gets none from Crew.
@@ -1132,6 +1140,7 @@ async def _run_inner_impl(
                 )
                 if _named is not None:
                     _pending_tool_ids[event.tool_call_id] = _named
+                remember_tool_input(_pending_tool_inputs, event, scrub=redact_via_context)
             _ask = tool_permission.Ask(event, _wire, session_key)
             # A run that is being stopped bails every request as ``stopped``
             # before any grant or person is consulted: audited, and rejected
@@ -1327,6 +1336,7 @@ async def _run_inner_impl(
                     _pending_tool_ids.pop(event.tool_call_id, None)
                 else:
                     _pending_tool_ids[event.tool_call_id] = _named
+                remember_tool_input(_pending_tool_inputs, event, scrub=redact_via_context)
             # A gated turn runs PreToolUse hooks on the permission request
             # instead (see hooks.permission_pre_tool_block); firing here too
             # would run each twice.
@@ -1339,6 +1349,10 @@ async def _run_inner_impl(
                     parent_session_key=info.parent_session_key or None,
                     agent_role=info.agent or None,
                 )
+        elif event.kind == EVENT_TOOL_CALL_UPDATE:
+            # A backend whose call frame streamed empty arguments sends them
+            # here; the call's PostToolUse hands them on as ``tool_input``.
+            remember_tool_input(_pending_tool_inputs, event, scrub=redact_via_context)
         elif event.kind == EVENT_TOOL_RESULT:
             # A FINAL result means the tool is done: drop the attribution
             # snapshot so a later idle stretch is not judged against a
@@ -1358,10 +1372,12 @@ async def _run_inner_impl(
                 try:
                     _tool_name = _pending_tools.pop(event.tool_call_id, "")
                     _named = _pending_tool_ids.pop(event.tool_call_id, None)
+                    _input = _pending_tool_inputs.pop(event.tool_call_id, None)
                     _out = _redact((event.tool_output or "")[:2000])
                     await self._manager.hook_store.fire(
                         HOOK_EVENT_POST_TOOL_USE,
                         tool_name=_tool_name,
+                        tool_input=_input,
                         tool_response={"output": _out},
                         # This child's own key, for per-session attribution;
                         # parent_session_key below names who spawned it.

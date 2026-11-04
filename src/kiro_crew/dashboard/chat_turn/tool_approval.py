@@ -9,7 +9,7 @@ import time
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, Literal
 
-from kiro_crew.agent_sdk.spec_hooks import post_tool_identity
+from kiro_crew.agent_sdk.spec_hooks import post_tool_identity, remember_tool_input
 from kiro_crew.dashboard.chat_utils import _broadcast_auto_tool, open_construct_at_end
 from kiro_crew.dashboard.deny_override import (
     DENY_OVERRIDE_META_KEY,
@@ -39,6 +39,7 @@ from kiro_crew.hooks import (
 )
 from kiro_crew.name_grant import log_decline, shell_command_for_event, should_log_decline
 from kiro_crew.permission_floor import OUTCOME_REJECTED_TRANSPORT_FLOOR
+from kiro_crew.platform.context import redact_via_context
 from kiro_crew.security.deny_waiver import deny_key_description
 from kiro_crew.security.readonly_bash import command_invokes_git, is_read_only_bash
 from kiro_crew.tool_gate_busy import hook_gate_busy
@@ -446,6 +447,7 @@ async def _on_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CONTIN
         )
         if _post_identity is not None:
             turn._pending_tool_ids[event.tool_call_id] = _post_identity
+        remember_tool_input(turn._pending_tool_inputs, event, scrub=redact_via_context)
     if turn.assistant_text and not open_construct_at_end(turn.assistant_text):
         slot._owed_segment_cut = functools.partial(_pay_permission_cut, turn)
     try:
