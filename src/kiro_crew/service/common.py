@@ -64,22 +64,15 @@ def systemctl_user_env() -> dict[str, str]:
     """Environment for ``systemctl --user``, with the session-bus pointers
     backfilled when absent.
 
-    ``systemctl --user`` finds the per-user systemd instance through
-    ``XDG_RUNTIME_DIR`` + ``DBUS_SESSION_BUS_ADDRESS``. A process launched from
-    a systemd SYSTEM unit — which is how ``kirocrew service install`` runs the
-    gateway — inherits no login-session environment and therefore neither
-    variable, so a ``systemctl --user`` spawned from it dies with "Failed to
-    connect to bus: No medium found" even though the bus socket is present and
-    the unit it asks about is running. Every ``systemctl --user`` this codebase
-    spawns — the pod runtime's and the service module's user-scope verbs — reads
-    a bus failure as a verdict about the host, so every one of them resolves its
-    environment here: an "unreachable" reading is never an artifact of the
-    spawning shell's missing variables.
+    ``systemctl --user`` finds the per-user instance through ``XDG_RUNTIME_DIR``
+    + ``DBUS_SESSION_BUS_ADDRESS``. A gateway started by a systemd SYSTEM unit
+    inherits neither, so a bare ``systemctl --user`` fails with "Failed to
+    connect to bus" even while the bus and the unit are up. Every
+    ``systemctl --user`` this codebase spawns reads a bus failure as a verdict
+    about the host, so each one resolves its environment here.
 
-    Only ever ADDS: an explicitly-set value always wins, so a caller that has
-    deliberately pointed at another bus is left untouched. The socket must exist
-    before we name it — if ``systemd --user`` genuinely is not running we want
-    systemctl's own diagnostic, not a failure against a path we invented.
+    Only ever ADDS: an explicitly-set value wins. The bus is named only when its
+    socket exists, so a stopped ``systemd --user`` gets systemctl's own diagnostic.
     """
     env = {**os.environ}
     runtime_dir = session_runtime_dir()
@@ -94,23 +87,14 @@ def systemctl_user_env() -> dict[str, str]:
 def launchd_live_program() -> "os.PathLike[str]":
     """Stable path the launchd agent's ``ProgramArguments[0]`` points at.
 
-    The agent is deliberately installed with this indirection instead of the
-    resolved binary, so the running gateway can be repointed at a different
-    checkout (Dev Fleet's "Make live") without rewriting the plist.
+    The indirection lets the running gateway be repointed at another checkout
+    (Dev Fleet's "Make live") without rewriting the plist. launchd re-reads a
+    plist only on ``bootout`` + ``bootstrap``, and ``bootout`` kills the process
+    that would run the ``bootstrap``; rewriting THIS file plus a restart avoids that.
 
-    Rewriting ``ProgramArguments`` cannot work from inside the gateway: launchd
-    only re-reads a plist on ``bootout`` + ``bootstrap`` (``kickstart`` restarts
-    the in-memory job definition), and ``bootout`` kills the very process that
-    would have to run the ``bootstrap``. The gateway would stop and never come
-    back. Rewriting THIS file plus a restart signal leaves nothing for a dying
-    process to do.
-
-    It is a generated launcher SCRIPT rather than a symlink to the binary
-    because a cutover must also move the working directory and put the target
-    checkout's venv first on ``PATH`` — exactly what the systemd drop-in sets
-    alongside ``ExecStart``. A bare symlink can only change which binary runs,
-    which would leave PATH-resolved subprocesses re-invoking the OLD install
-    while the gateway ran the new one.
+    It is a launcher SCRIPT, not a symlink, because a cutover must also move the
+    working directory and put the target venv first on ``PATH`` (as the systemd
+    drop-in does); a symlink would leave PATH-resolved subprocesses on the OLD install.
     """
     return (
         Path.home() / "Library" / "Application Support" / "KiroCrew"
@@ -124,21 +108,15 @@ def kirocrew_bin() -> str:
     Used by both the systemd unit and the launchd plist as ``ExecStart`` /
     ``ProgramArguments``. Resolution order:
 
-    1. ``KIROCREW_SERVICE_BIN`` if set — an explicit operator override. This
-       lets a launcher the resolver can't discover (a wrapper script, a venv
-       entry point not on the global PATH) be pinned as the service Program,
-       rather than silently falling back to whatever ``kirocrew`` happens to be
-       first on ``$PATH``. Resolved to an absolute path: the launchd/systemd
-       manager has no meaningful working directory, so a relative override
-       would produce an invalid ``ExecStart`` / ``ProgramArguments`` and the
-       service would fail to start.
-    2. The ``kirocrew`` console script beside the running interpreter — the
-       install doing the installing. ``~/.local/bin/kirocrew`` is a shared,
-       mutable name that any other install (a source clone's ``install.sh`` or
-       ``kirocrew setup``) may repoint later; a service that persisted it would
-       silently start running that other install on its next restart. Skipped
-       when it lies in a linked git worktree or an AppImage runtime mount,
-       which are reaped out from under a persisted path.
+    1. ``KIROCREW_SERVICE_BIN`` if set — an operator override for a launcher
+       the resolver can't discover (a wrapper script, an off-PATH venv entry
+       point). Made absolute: the service manager has no meaningful working
+       directory, so a relative path would fail to start.
+    2. The ``kirocrew`` console script beside the running interpreter.
+       ``~/.local/bin/kirocrew`` is a shared name another install may repoint
+       later, which would switch the service's install on its next restart.
+       Skipped inside a linked git worktree or an AppImage runtime mount, which
+       are reaped out from under a persisted path.
     3. ``shutil.which("kirocrew")`` — the installed console script, for an
        install whose console script does not sit beside its interpreter.
     4. ``sys.argv[0]`` — for development installs where ``kirocrew`` isn't on
@@ -186,51 +164,24 @@ def _running_install_bin() -> str | None:
 def service_environment(home: str) -> "dict[str, str]":
     """Build the environment baked into the installed service.
 
-    launchd and systemd start a service with a minimal, non-login
-    environment, so anything the gateway (or a subprocess it spawns) relies on
-    must be captured explicitly at install time. This is the single source of
-    truth for both the launchd plist ``EnvironmentVariables`` and the systemd
-    unit ``Environment=`` lines, so the two managers can never drift.
+    launchd and systemd start a service with a minimal, non-login environment,
+    so everything the gateway relies on is captured at install time. One source
+    for the plist ``EnvironmentVariables`` and the unit ``Environment=`` lines,
+    so the two managers cannot drift.
 
     Keys:
 
-    * ``HOME`` / ``PATH`` — always set. ``PATH`` snapshots the installer's
-      ``$PATH`` (see :func:`service_path`).
-    * ``LANG`` / ``LC_ALL`` — pinned to a fixed UTF-8 locale so that a
-      subprocess reading a non-ASCII file does not crash under the default
-      ``US-ASCII`` codec (Python raises ``UnicodeDecodeError`` / tools report
-      "invalid byte sequence in US-ASCII"). launchd sets no locale at all, so
-      without this a gateway that shells out to a locale-sensitive tool fails
-      only under the service and not from an interactive shell.
-
-      The value is a fixed, platform-appropriate UTF-8 locale, NOT the
-      installer's own. The installer environment is *not* trusted because: (1) a
-      non-UTF-8 installer locale (a bare ``LANG=C`` / ``POSIX`` under SSH without
-      locale forwarding, minimal containers, ``su``-invoked installs) would bake
-      a non-UTF-8 value in and, because ``LC_ALL`` is then explicitly set,
-      suppress CPython's PEP 538 coercion — reintroducing the exact ASCII-codec
-      crash this env exists to prevent; (2) even a *UTF-8-named* installer
-      locale can be one the target host never generated (e.g. an SSH-forwarded
-      ``LC_ALL=zz_ZZ.UTF-8``), where ``setlocale`` still falls back to C.
-
-      The concrete locale differs by platform because there is no single name
-      valid on both: ``C.UTF-8`` is the always-present UTF-8 locale on modern
-      glibc/musl (Linux/systemd) but is **not** a valid BSD-libc locale on
-      macOS — a launchd service pinned to ``C.UTF-8`` would leave kiro-cli /
-      node and other libc consumers with an invalid locale that degrades to
-      ASCII. macOS ships ``en_US.UTF-8`` in its base locale set, so Darwin uses
-      that. The install host's platform is the service host's platform, so
-      keying off :data:`sys.platform` at render time is correct.
-    * ``KIROCREW_KIRO_BIN`` — propagated only when the installer already has it
-      set, resolved to an absolute path (a relative pin is meaningless once the
-      service runs from a different working directory). The readiness ``whoami``
-      probe's real-home fallback keys off this pin; capturing it keeps a
-      ``service install`` from dropping it and regressing the gateway to a
-      not-signed-in state.
+    * ``HOME`` / ``PATH`` — always set; ``PATH`` per :func:`service_path`.
+    * ``LANG`` / ``LC_ALL`` — a fixed UTF-8 locale, so a subprocess reading a
+      non-ASCII file does not fail under ``US-ASCII`` (launchd sets no locale).
+      Not the installer's own: a ``LANG=C`` install would bake a non-UTF-8
+      ``LC_ALL`` that also blocks PEP 538 coercion, and a UTF-8-named installer
+      locale may not exist on the host. ``C.UTF-8`` on Linux; macOS BSD libc
+      has no ``C.UTF-8``, so Darwin uses ``en_US.UTF-8``.
+    * ``KIROCREW_KIRO_BIN`` — only when the installer sets it, made absolute.
+      The readiness ``whoami`` probe's real-home fallback keys off it; dropping
+      it would leave the gateway not signed in.
     """
-    # macOS BSD libc has no C.UTF-8; en_US.UTF-8 is always in its base set.
-    # Linux glibc/musl always has C.UTF-8 (and a minimal host may lack
-    # en_US.UTF-8). Pick per platform so the baked-in locale is always valid.
     utf8_locale = "en_US.UTF-8" if sys.platform == "darwin" else "C.UTF-8"
     env = {
         "HOME": home,
@@ -245,19 +196,12 @@ def service_environment(home: str) -> "dict[str, str]":
     kiro_bin = os.environ.get("KIROCREW_KIRO_BIN", "").strip()
     if kiro_bin:
         env["KIROCREW_KIRO_BIN"] = os.path.abspath(kiro_bin)
-    # KIROCREW_PORT is the ONLY input DASHBOARD_PORT reads, so a service that
-    # cannot carry it can only ever bind the default 5476 — broken by
-    # construction on a host where that port is already taken. Propagated the
-    # same way KIROCREW_KIRO_BIN is:
-    # captured from the installer's environment, so
+    # KIROCREW_PORT is the only input DASHBOARD_PORT reads, so without it the
+    # service can only bind the default 5476. Captured from the installer:
     # `KIROCREW_PORT=5477 kirocrew service install` bakes 5477 into the unit.
-    #
-    # No validation here on purpose. `cli.py`'s main() already rejects a
-    # KIROCREW_PORT that is not an integer in 1-65535 before any subcommand
-    # runs, install included, so a check here could only become a second policy
-    # that drifts from the first. It must reject rather than silently drop an
-    # out-of-range value: dropping would install the DEFAULT port while the
-    # operator believes they set theirs.
+    # Not validated here: `cli.py`'s main() already rejects a bad value before
+    # any subcommand runs, and a second check would drift from it. Rejecting
+    # (not dropping) matters: a dropped value would install the default port.
     port = os.environ.get("KIROCREW_PORT", "").strip()
     if port:
         env["KIROCREW_PORT"] = port
@@ -292,30 +236,19 @@ def api_key_will_be_dropped(environ: "Mapping[str, str] | None" = None) -> bool:
 def headless_auth_warning(environ: "Mapping[str, str] | None" = None) -> str:
     """Return a warning when API-key auth will not survive ``service install``.
 
-    ``kiro-cli`` accepts a model credential through ``KIRO_API_KEY`` as an
-    alternative to a ``kiro-cli login`` credential store, and the readiness
-    probe forwards that variable to its ``whoami`` stage — but only from the
-    GATEWAY's own environment. launchd and systemd start the service with a
-    minimal, non-login environment, so a key exported in the shell that ran
-    ``kirocrew service install`` is not there when the service starts: the probe
-    sees no credential, and unless a ``kiro-cli login`` credential store under
-    the baked ``HOME`` supplies one instead, readiness latches
-    ``authenticated=False`` and the dashboard asks for a sign-in the operator has
-    already done.
+    The readiness probe forwards ``KIRO_API_KEY`` to ``whoami`` only from the
+    GATEWAY's environment, and the service starts with a minimal one, so a key
+    exported in the installing shell is lost. Unless a ``kiro-cli login`` store
+    under the baked ``HOME`` covers it, the dashboard then asks for a sign-in.
 
-    The variable is deliberately NOT added to :func:`service_environment`. Both
-    baked locations are readable by every local user — the systemd unit lives in
-    ``/etc/systemd/system`` and the operator-editable override file is installed
-    mode ``0644`` — so baking a credential there would trade a silent
-    misconfiguration for a durable disclosure. ``~/.kiro/crew/.env`` is the
-    supported home: ``load_credentials()`` reads EVERY key from that file (not
-    just the channel-credential allowlist) into the gateway's environment at
-    boot, and enforces ``0600`` on it first.
+    The key is NOT added to :func:`service_environment`: the unit in
+    ``/etc/systemd/system`` and the ``0644`` override file are readable by every
+    local user. ``~/.kiro/crew/.env`` is the supported home:
+    ``load_credentials()`` reads every key from it at boot and enforces ``0600``.
 
-    Every character of the returned text comes from the module-level variable
-    NAME or the ``.env`` path — never from the credential's value, which this
-    function does not read at all (see :func:`api_key_will_be_dropped`). Returns
-    an empty string when there is nothing to warn about.
+    The returned text is built only from the variable NAME and the ``.env``
+    path, never the value (see :func:`api_key_will_be_dropped`). Empty when
+    there is nothing to warn about.
     """
     if not api_key_will_be_dropped(environ):
         return ""
@@ -337,18 +270,13 @@ def headless_auth_warning(environ: "Mapping[str, str] | None" = None) -> str:
             ],
             environ,
         )
-    # The append must never be the step that CREATES the file: under a standard
-    # 022 umask a fresh .env is born 0644, and load_credentials() only tightens
-    # it the next time it reads it — so the key would sit world-readable until
-    # then. Pre-create and chmod first, which also repairs an already-loose file.
+    # The append must never CREATE the file: under a 022 umask a fresh .env is
+    # 0644 until load_credentials() next tightens it. Pre-create and chmod first,
+    # which also repairs an already-loose file.
     #
-    # shlex.quote because this line is copy-pasted verbatim: a crew home with a
-    # space word-splits an unquoted path, so `touch` makes the wrong files,
-    # `chmod` fails on a path that does not exist, and the redirect lands the
-    # credential in a different 0644 file that load_credentials() never visits
-    # to tighten — reintroducing the exposure the chmod ordering exists to
-    # prevent. Simple paths are returned unquoted, so the common case is
-    # unchanged.
+    # shlex.quote because the line is pasted verbatim: an unquoted path with a
+    # space word-splits, and the redirect would land the key in a different
+    # 0644 file that load_credentials() never tightens.
     target = shlex.quote(str(dotenv))
     remedy = (
         f"touch {target} && chmod 600 {target}\n"
@@ -387,18 +315,14 @@ def _names_defined_in_env_file(path: Path) -> "set[str]":
     """Return the variable names a ``.env`` file assigns a NON-BLANK value.
 
     Mirrors ``load_credentials()``'s parse (strip, skip blanks and ``#``
-    comments, split on the first ``=``) so this agrees with what the gateway
-    will actually resolve — including its ``if not v: continue`` guard, which
-    means a bare ``NAME=`` never reaches ``os.environ``. Counting such a name as
-    configured would silence the warning while the failure it warns about
-    persists, so a blank value is treated as absent.
+    comments, split on the first ``=``), including its skip of a blank value:
+    a bare ``NAME=`` never reaches ``os.environ``, so it counts as absent.
 
-    Values are compared for emptiness and otherwise discarded: nothing here
-    returns, logs, or echoes one. An unreadable or absent file yields an empty
-    set, which makes the caller warn — the safe direction, since a missed
-    warning is the defect being fixed. A UTF-16 or UTF-32 file raises
+    Values are checked for emptiness and otherwise discarded. An unreadable or
+    absent file yields an empty set, so the caller warns (the safe direction).
+    A UTF-16 or UTF-32 file raises
     :class:`~kiro_crew.config.loader.EnvFileWideEncodingError` instead, because
-    its remedy is a re-save and not the append the empty-set warning gives.
+    its remedy is a re-save, not an append.
     """
     try:
         raw = loader.read_env_text(path, encoding="utf-8")
@@ -421,21 +345,15 @@ def _names_defined_in_env_file(path: Path) -> "set[str]":
 def service_path(home: str) -> str:
     """Build the PATH for the gateway's service environment.
 
-    Snapshots the installer's current ``$PATH`` so subprocesses spawned
-    by the gateway (git, node, etc.) resolve the same way they did in the
-    interactive shell that ran ``kirocrew service install``. Common
-    user-local bin dirs (``~/.local/bin``) and POSIX defaults are
-    prepended in case the installer's ``$PATH`` is missing them.
-    Duplicates are removed while preserving order.
+    Snapshots the installer's ``$PATH`` so the gateway's subprocesses resolve
+    as they did in the installing shell, with ``~/.local/bin`` and the POSIX
+    defaults prepended and duplicates removed in order.
 
-    On Linux the mise shims dir (:func:`_mise_shims_dir`) is also required,
-    right after ``~/.local/bin`` and ahead of the system dirs. The unit keeps
-    this PATH until the next ``service install``, so a Node that mise
-    installs or re-pins later is found only through the shims; without them a
-    ``#!/usr/bin/env node`` adapter runs the system Node. A shims dir the
-    installer's ``$PATH`` lists behind ``/usr/bin`` moves up to that slot,
-    which is the order ``mise activate`` gives an interactive shell. A missing
-    dir on PATH is harmless. launchd's PATH is left as it was.
+    On Linux the mise shims dir (:func:`_mise_shims_dir`) follows
+    ``~/.local/bin``, ahead of the system dirs: the unit keeps this PATH until
+    the next install, so a Node mise installs later is found only through the
+    shims; without them ``#!/usr/bin/env node`` runs the system Node. That is
+    also the order ``mise activate`` gives a shell. launchd's PATH is unchanged.
     """
     required = [f"{home}/.local/bin"]
     if sys.platform.startswith("linux") and (shims := _mise_shims_dir(home)):
@@ -498,46 +416,27 @@ def current_platform() -> Platform:
 def restart_command_hint() -> str:
     """Return the shell command that actually restarts the installed gateway.
 
-    The correct command depends on how the service is installed, and the
-    scopes are not interchangeable — printing the wrong one sends the user
-    down a dead end:
+    The scopes are not interchangeable, so the wrong one is a dead end:
 
-    * ``SYSTEMD`` with ONLY the **system** unit file present
-      (:data:`kiro_crew.service.linux.UNIT_PATH`, what ``service install``
-      writes) — the unit is system-level; ``systemctl --user`` fails on AL2 (no
-      per-user systemd manager) and addresses the wrong manager everywhere
-      else, so the working command needs sudo: ``sudo systemctl restart
-      kirocrew``.
-    * ``SYSTEMD`` with ONLY the **per-user** unit file at the remedy's location
-      (:func:`kiro_crew.service.linux.user_unit_file_path`) — the SELinux
-      remedy's gateway runs in the account's own manager, where the system
-      command answers ``Unit kirocrew.service not found``: ``systemctl --user
+    * ``SYSTEMD`` with ONLY the **system** unit file
+      (:data:`kiro_crew.service.linux.UNIT_PATH`) — ``systemctl --user`` fails
+      on AL2 and addresses the wrong manager elsewhere: ``sudo systemctl
       restart kirocrew``.
-    * Anything else — ``LAUNCHD``, ``UNSUPPORTED``, a systemd host with
-      neither file (a foreground ``kirocrew gateway``), or one with BOTH (a
-      stale system unit beside the remedy's user unit, where a file says
-      nothing about which scope is running and the wrong pick would restart a
-      dead unit or start a competitor) — defer to the service-aware
-      ``kirocrew restart`` CLI, which reads both managers and acts on the
-      scope that runs the unit.
+    * ``SYSTEMD`` with ONLY the **per-user** unit file
+      (:func:`kiro_crew.service.linux.user_unit_file_path`, the SELinux
+      remedy's) — the system command answers ``Unit kirocrew.service not
+      found``: ``systemctl --user restart kirocrew``.
+    * Anything else — launchd, unsupported, neither file (a foreground
+      gateway), or BOTH files (which says nothing about which scope runs) —
+      ``kirocrew restart``, which reads both managers.
 
-    Decided by two stats, never by spawning ``systemctl``: this string is built
-    inside the gateway's own update path and at install time. The user location
-    resolves against the calling process's home, so under ``sudo -H`` it is
-    root's and the user file is simply not found — the answer is then the CLI,
-    never a command for the wrong account's manager. Cheap is not the same as
-    non-blocking: that home can be a network mount, and a stat against a
-    disconnected mount waits for as long as the mount does, so this is a
-    SYNCHRONOUS call for a thread that may block — the gateway's async
-    update-failure handler awaits it through ``asyncio.to_thread`` rather than
-    calling it on the event loop, where the wait would freeze chat and the
-    liveness heartbeat together. Centralised so the update
-    path, the Slack restart-failure hint and the install-time credential
-    warning share one source of truth and cannot drift back to a fixed
-    ``systemctl --user`` — or a fixed ``sudo systemctl`` — for a unit that lives
-    in the other scope. The two locations stay in the Linux module, which owns
-    every other systemd path and whose ``UNIT_PATH`` is the binding its tests
-    patch; it is imported at call time because that module imports this one.
+    Decided by two stats, never by spawning ``systemctl``, because it runs in
+    the gateway's update path and at install time. Under ``sudo -H`` the user
+    file resolves against root's home and is not found, so the answer is the
+    CLI. A stat can still block on a disconnected network home, so the async
+    update-failure handler calls this through ``asyncio.to_thread``, never on
+    the event loop. The paths live in the Linux module (its tests patch
+    ``UNIT_PATH``), imported at call time because it imports this module.
     """
     if current_platform() is Platform.SYSTEMD:
         from kiro_crew.service import (  # circular import: linux imports this module at load
@@ -557,11 +456,9 @@ def system_restart_command_hint() -> str:
     """The command that restarts the SYSTEM systemd unit by hand — the string
     :func:`restart_command_hint` answers on a systemd host, spelled once.
 
-    Unconditional on purpose: :mod:`kiro_crew.service.linux` reports a system
-    unit's refused restart with this command and is, by construction, only ever
-    driving systemd — so its report must not turn into ``kirocrew restart``
-    because the process that built it (a test on another platform) is not on a
-    systemd host, which is what a platform-switched helper would do.
+    Unconditional on purpose: :mod:`kiro_crew.service.linux` only ever drives
+    systemd, so its report must not become ``kirocrew restart`` just because the
+    process building it (a test on another platform) is not on a systemd host.
     """
     return f"sudo systemctl restart {SERVICE_NAME}"
 
@@ -569,26 +466,19 @@ def system_restart_command_hint() -> str:
 def user_restart_command_hint() -> str:
     """The command that restarts the PER-USER systemd unit by hand.
 
-    The user-scope sibling of :func:`restart_command_hint`: the SELinux remedy's
-    unit lives in the calling account's own manager, so the command for it is
-    ``systemctl --user restart kirocrew`` — under ``sudo`` it would address
-    root's manager and fail with ``Unit kirocrew.service not found``, the exact
-    dead end the restart verb's hint exists to prevent. Spelled once here so the
-    restart report and the remedy text cannot drift.
+    The SELinux remedy's unit lives in the calling account's own manager; under
+    ``sudo`` the command would address root's and fail with ``Unit
+    kirocrew.service not found``. Spelled once so the restart report and the
+    remedy text cannot drift.
     """
     return f"systemctl --user restart {SERVICE_NAME}"
 
 
-# The three ways one scope's restart fails — :attr:`ScopeRestart.kind` — and
-# they call for three different remedies, which is why the report keeps them
-# apart instead of collapsing to a bool. REFUSED: the manager did not run the
-# restart, the unit is as it was (an unprivileged caller and a system unit,
-# a bus the shell cannot reach), so the same command with the right privilege,
-# from the right shell, is the remedy. NOT_UP: the manager ran it and the
-# gateway is not up afterwards — it exits on start, or the start job itself
-# failed — so a hand-run restart fails the same way and the journal is the
-# remedy. UNCONFIRMED: the manager stopped answering while the unit was being
-# re-read, so its health is unknown, neither "restarted" nor "exiting".
+# The three ways one scope's restart fails (:attr:`ScopeRestart.kind`), kept
+# apart because each has its own remedy. REFUSED: the manager did not run it
+# (no privilege, unreachable bus); rerun with the right privilege or shell.
+# NOT_UP: it ran and the gateway is not up; read the journal. UNCONFIRMED: the
+# manager stopped answering mid-restart, so the unit's health is unknown.
 RESTART_REFUSED = "refused"
 RESTART_NOT_UP = "not-up"
 RESTART_UNCONFIRMED = "unconfirmed"

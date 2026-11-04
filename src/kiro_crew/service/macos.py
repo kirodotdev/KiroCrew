@@ -165,21 +165,13 @@ class ServiceInstallError(RuntimeError):
 def _write_plist_atomic(contents: str) -> None:
     """Write the plist atomically.
 
-    Delegates to :func:`kiro_crew.atomic_write.atomic_write`: it writes a
-    sibling temp file in the same directory, then ``os.replace``s it into
-    place. ``os.replace`` is atomic on POSIX when source and destination are
-    on the same filesystem, so a SIGINT or crash never leaves a partial XML
-    document that ``launchctl load`` would reject: the final path holds the old
-    plist before the rename, the new one after it, or nothing where there was no
-    plist to begin with. The shared helper also cleans the temp file up on
-    ``BaseException`` (so that SIGINT leaves no scratch file) and retries the
-    rename past a Windows sharing violation. ``fsync`` is off.
+    Via :func:`kiro_crew.atomic_write.atomic_write` (same-directory temp file,
+    then ``os.replace``), so a SIGINT or crash never leaves a partial XML
+    document that ``launchctl load`` would reject. ``fsync`` is off.
 
-    ``mode=0o600`` has to be explicit: with no *mode*, ``atomic_write`` applies
-    the umask default, so the plist's permissions would follow the operator's
-    umask — world-readable under a common ``022``, owner-only only if they happen
-    to run something as tight as ``077``. launchd loads the agent as the owning
-    user, so nothing else needs to read it.
+    ``mode=0o600`` must be explicit: without it the umask decides, which is
+    world-readable under a common ``022``. launchd loads the agent as the owning
+    user, so nobody else needs to read it.
     """
     atomic_write(PLIST_PATH, contents, mode=0o600)
 
@@ -230,21 +222,13 @@ def render_live_program(target_bin: str, *, working_dir: str | None = None,
 def write_live_program(contents: str, path: Path | None = None) -> None:
     """Write the live-gateway launcher atomically and make it executable.
 
-    *path* defaults to :data:`LIVE_PROGRAM`. Dev Fleet's backend passes the path
-    it reports as the live program, so the writer and the reader can never
-    disagree about which file is authoritative.
+    *path* defaults to :data:`LIVE_PROGRAM`; Dev Fleet passes the path it reports
+    as the live program, so writer and reader agree on the file.
 
-    Atomic because the agent may be kickstarted at any moment: a partially
-    written launcher would exec a truncated script.
-    :func:`kiro_crew.atomic_write.atomic_write` applies *mode* to the
-    descriptor before any content reaches it, so the file is never visible at
-    the final path without its exec bit — and never visible anywhere with
-    content but a wider mode. It also cleans the temp file up on
-    ``BaseException``.
-
-    ``0o700``, not ``0o755``: launchd runs the agent as the owning user, so
-    nobody else needs to read or execute it, and it lives in that user's own
-    application-support directory.
+    Atomic because the agent may be kickstarted at any moment and would exec a
+    truncated script. ``atomic_write`` sets *mode* before any content is
+    written, so the file never appears without its exec bit or with a wider mode.
+    ``0o700``, not ``0o755``: launchd runs the agent as the owning user.
     """
     dest = path or LIVE_PROGRAM
     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -255,20 +239,15 @@ def write_live_program(contents: str, path: Path | None = None) -> None:
 def _repairer_bin() -> str:
     """The executable of the install performing the repair.
 
-    Resolution is deliberately narrow: an explicit ``KIROCREW_SERVICE_BIN``, else
-    the ``kirocrew`` console script sitting beside the running interpreter. There
-    is no ``PATH`` fallback, because ``PATH`` cannot answer the question being
-    asked — "which install is running" — and an unrelated or older ``kirocrew``
-    earlier on the inherited PATH would be baked into the agent, so the gateway
-    would come back as a DIFFERENT install than the one that repaired it. That is
-    a quieter form of the very mismatch this repair exists to end.
+    ``KIROCREW_SERVICE_BIN``, else the ``kirocrew`` console script beside the
+    running interpreter. No ``PATH`` fallback: an unrelated ``kirocrew`` earlier
+    on ``PATH`` would be baked in, and the gateway would come back as a
+    different install than the one that repaired it.
 
-    Raises ``OSError`` when neither resolves, or when what resolves is not an
-    executable file. Refusing beats guessing: nothing is written, so the launcher
-    stays absent and a later run can still fix it, whereas a wrong or
-    unexecutable target would leave launchd unable to spawn the agent AND — since
-    the file would now exist — suppress every later repair, cementing the
-    failure. The caller logs the reason.
+    Raises ``OSError`` when neither resolves to an executable file. Refusing
+    writes nothing, so a later run can still repair; a wrong target would leave
+    launchd unable to spawn the agent and, since the file then exists, suppress
+    every later repair. The caller logs the reason.
     """
     override = os.environ.get("KIROCREW_SERVICE_BIN", "").strip()
     if override:
@@ -308,27 +287,15 @@ def _is_executable_file(path: Path) -> bool:
 def ensure_live_program() -> bool:
     """Restore a missing launcher without touching the plist. True if written.
 
-    The launcher is a derived artifact that lives OUTSIDE the install, under
-    Application Support, and the plist's ``ProgramArguments[0]`` executes it. If
-    it goes missing the agent stays loaded with nothing to run: launchd exits it
-    ``EX_CONFIG``, stops retrying, and nothing on screen explains why the
-    gateway never comes up. ``install`` repairs it only as a side effect of
-    rewriting the whole plist, which discards operator-added
-    ``EnvironmentVariables`` (a non-default ``KIROCREW_PORT``, for instance), so
-    reconciling this half alone is what keeps a customized agent intact.
+    The plist's ``ProgramArguments[0]`` runs the launcher under Application
+    Support; without it launchd exits the agent ``EX_CONFIG`` and stops retrying,
+    silently. ``install`` would also restore it, but rewriting the plist drops
+    operator-added ``EnvironmentVariables`` (e.g. ``KIROCREW_PORT``).
 
-    Deliberately narrow: it acts only when an agent is installed AND indirected
-    through the launcher. Writing the file where no plist exists, or where the
-    plist executes a binary directly, would leave a script nothing ever runs.
-
-    The restored launcher targets the install running right now. A previous
-    Dev Fleet cutover recorded its worktree and venv-first PATH inside the very
-    file that was lost, so that pointer cannot be recovered here -- but the
-    caller performing the repair is itself a working install, and Make live can
-    re-target the agent afterwards. A dead agent has no such recovery.
-
-    Callers are responsible for the platform check, matching every other
-    function in this module.
+    Acts only when the installed plist runs the launcher; otherwise the file
+    would be a script nothing runs. The restored launcher targets the running
+    install: a Dev Fleet cutover's worktree and PATH were in the lost file, and
+    Make live can re-target it. Callers do the platform check.
     """
     if LIVE_PROGRAM.exists():
         return False
@@ -412,26 +379,18 @@ def _bootout(*, wait: bool) -> bool:
 def install() -> None:
     """Write the plist and bootstrap the agent into ``gui/<uid>``.
 
-    Idempotent — boots out an already-loaded agent first (from either domain an
-    older ``load -w`` could have used) so the new plist takes effect without
-    leaving the prior agent stale. Also (re)writes
-    :data:`LIVE_PROGRAM`: the plist executes that launcher, so an absent or
-    non-executable one would leave the agent with nothing to run. Re-running
-    ``service install`` is therefore also the documented repair for a deleted
-    application-support directory.
+    Idempotent: boots out a loaded agent first (from either domain a legacy
+    ``load -w`` used) so the new plist takes effect. Also rewrites
+    :data:`LIVE_PROGRAM`, which the plist executes, so re-running ``service
+    install`` repairs a deleted application-support directory.
 
-    The domain is explicit, so an install from SSH lands where ``restart``
-    and ``stop`` address it (``is_active`` and ``status`` read the caller's
-    domain and do not see it from SSH). When ``gui/<uid>`` does
-    not exist (SSH with nobody logged in at the desktop) the agent goes into
-    ``user/<uid>`` instead, where a legacy ``load -w`` put it, and the domain
-    used is logged. ``enable`` stands in for
-    ``load -w``'s clearing of a persistent disabled override (which an older
-    ``uninstall``'s ``unload -w`` wrote).
+    The domain is explicit so an SSH install lands where ``restart`` and ``stop``
+    address it. Without ``gui/<uid>`` (SSH, nobody at the desktop) it falls back
+    to ``user/<uid>`` and logs that. ``enable`` clears a persistent disabled
+    override that a legacy ``unload -w`` wrote.
 
-    Raises :class:`ServiceInstallError` with a human-readable message if
-    ``launchctl bootstrap`` fails. The CLI catches this and prints the message
-    instead of letting a CalledProcessError surface.
+    Raises :class:`ServiceInstallError` with a readable message if ``launchctl
+    bootstrap`` fails; the CLI prints it.
     """
     PLIST_DIR.mkdir(parents=True, exist_ok=True)
     LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -569,21 +528,16 @@ def is_loaded() -> bool:
 def restart() -> bool:
     """Restart the running agent. Returns True iff the restart was accepted.
 
-    Uses ``launchctl kickstart -k <domain>/<label>``: launchd performs the kill
-    and the respawn ITSELF, so this is safe to call from inside the process being
-    restarted. Tries ``gui/<uid>`` then ``user/<uid>``, the domains
-    :func:`install` can bootstrap into, so an agent installed over SSH with
-    nobody at the desktop is reached too.
+    ``launchctl kickstart -k <domain>/<label>``: launchd does the kill and the
+    respawn itself, so this is safe from inside the process being restarted.
+    Tries ``gui/<uid>`` then ``user/<uid>``, the domains :func:`install` uses.
 
-    ``unload`` + ``load`` cannot: run from the gateway, the ``unload`` half
-    SIGTERMs the caller, so the ``load`` half never executes and the agent stays
-    down — which is what makes Dev Fleet's Restart unimplementable that way on
-    macOS. ``launchctl restart`` is deprecated and behaves like ``stop``;
-    ``KeepAlive`` immediately respawns the loaded job definition rather than
-    re-reading anything.
+    Not ``unload`` + ``load``: from the gateway, ``unload`` SIGTERMs the caller
+    before ``load`` runs, leaving the agent down. ``launchctl restart`` is
+    deprecated and acts like ``stop``, and ``KeepAlive`` respawns the loaded job
+    without re-reading anything.
 
-    Returns False when the plist is absent or launchd rejects the kickstart, so
-    callers never report a restart that never happened.
+    False when the plist is absent or the kickstart is rejected.
     """
     if not PLIST_PATH.exists():
         return False
