@@ -7,10 +7,9 @@ import { ALL_UNAVAILABLE } from '../../../api/sharedCrewUi'
 import UserMessage from '../UserMessage'
 import { QueuedSendLabel, queuedChatTurn } from './QueuedSendLabel'
 import { SessionCollabStrip } from './SessionCollabStrip'
-import { PresenceChips } from './PresenceChips'
-import { DecisionAttributionList, involvesOthers, visibleDecisions } from './DecisionAttributionList'
+import { PresenceChips, SessionPresence } from './PresenceChips'
 import { refusalMessage, queuedReason } from './overloadCopy'
-import { alreadyResolvedDecision, resolvedByLine, settledElsewhereLine, waitingLine } from '../../../components/chat-input/sharedDecision'
+import { alreadyResolvedDecision, resolvedByLine, settledElsewhereLine } from '../../../components/chat-input/sharedDecision'
 import { readSendReceipt } from '../../../utils/sendDelivery'
 
 vi.mock('../../../api/client', () => ({
@@ -72,34 +71,16 @@ describe('above the composer', () => {
     await waitFor(() => expect(api.sharedCrewPresence).toHaveBeenCalled())
     await new Promise(r => setTimeout(r, 0))
     expect(screen.queryByTestId('work-status-list')).toBeNull()
-    expect(screen.queryByTestId('session-collab-strip')).toBeNull()
     expect(screen.queryByRole('button')).toBeNull()
     expect(container).toBeEmptyDOMElement()
   })
 
-  it('draws no strip when only the viewer is present', async () => {
-    const me = { id: 'p_me', kind: 'human', display: { name: 'Me', login: '', captured_at: null } }
+  it('draws nothing of its own while others are present: presence lives in the context row', async () => {
+    const me = person('p_me', 'Me')
     vi.mocked(api.sharedCrewViewer).mockResolvedValue(me as never)
-    vi.mocked(api.sharedCrewPresence).mockResolvedValue({ entries: [{ principal: me, session_key: 's1', activity: 'viewing', connections: 1, expires_at: 0 }] } as never)
+    vi.mocked(api.sharedCrewPresence).mockResolvedValue({ entries: [{ principal: person('p_bob', 'Bob'), session_key: 's1', activity: 'typing', connections: 1, expires_at: 0 }] } as never)
     const { container } = mount(<SessionCollabStrip sessionKey="s1" />)
     await waitFor(() => expect(api.sharedCrewPresence).toHaveBeenCalled())
-    await waitFor(() => expect(api.sharedCrewViewer).toHaveBeenCalled())
-    await new Promise(r => setTimeout(r, 0))
-    expect(screen.queryByTestId('session-collab-strip')).toBeNull()
-    expect(container).toBeEmptyDOMElement()
-  })
-
-  it('shows no presence chip while the viewer read is still pending', async () => {
-    const me = { id: 'p_me', kind: 'human', display: { name: 'Me', login: '', captured_at: null } }
-    let resolveViewer: (v: unknown) => void = () => {}
-    vi.mocked(api.sharedCrewViewer).mockImplementation(() => new Promise(r => { resolveViewer = r }) as never)
-    vi.mocked(api.sharedCrewPresence).mockResolvedValue({ entries: [{ principal: me, session_key: 's1', activity: 'viewing', connections: 1, expires_at: 0 }] } as never)
-    const { container } = mount(<SessionCollabStrip sessionKey="s1" />)
-    await waitFor(() => expect(api.sharedCrewPresence).toHaveBeenCalled())
-    await new Promise(r => setTimeout(r, 0))
-    expect(screen.queryByTestId('presence-chips')).toBeNull()
-    expect(container).toBeEmptyDOMElement()
-    resolveViewer(me)
     await new Promise(r => setTimeout(r, 0))
     expect(container).toBeEmptyDOMElement()
   })
@@ -137,7 +118,7 @@ describe('queued send on its bubble', () => {
     workRead.mockResolvedValue({ items: [work({ reason: 'principal_active_limit' })] } as never)
     mount(<QueuedSendLabel slotKey="s1" />)
     expect(await screen.findByText('Queued')).toBeInTheDocument()
-    await waitFor(() => expect(screen.getByText('Queued').closest('[title]')?.getAttribute('title')).toMatch(/your personal limit/))
+    await waitFor(() => expect(screen.getByText('Queued').closest('[title]')?.getAttribute('title')).toBe('Waiting on your limit'))
     expect(screen.getByRole('button', { name: 'Cancel this queued message' })).toBeInTheDocument()
   })
 
@@ -168,8 +149,35 @@ describe('queued send on its bubble', () => {
     cancel.mockResolvedValue({ ok: false, conflict: true, current: work({ state: 'running', revision: 5 }), code: 'stale_revision' })
     const { qc } = mount(<QueuedSendLabel slotKey="s1" />)
     fireEvent.click(await screen.findByRole('button', { name: 'Cancel this queued message' }))
-    expect(await screen.findByText(/changed before the cancel landed/)).toBeInTheDocument()
+    expect(await screen.findByText('Not cancelled: it already started.')).toBeInTheDocument()
     expect((qc.getQueryData(['shared-crew', 'work', 's1']) as { items: AcceptedWork[] }).items[0].revision).toBe(5)
+  })
+
+  it.each(['admitted', 'running', 'cancelling', 'reconciling'] as const)('a stale cancel that finds the work %s says it already started', async (state) => {
+    workRead.mockResolvedValue({ items: [work({ revision: 1 })] } as never)
+    cancel.mockResolvedValue({ ok: false, conflict: true, current: work({ state, revision: 2 }), code: 'stale_revision' })
+    mount(<QueuedSendLabel slotKey="s1" />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Cancel this queued message' }))
+    expect(await screen.findByText('Not cancelled: it already started.')).toBeInTheDocument()
+  })
+
+  it.each(['expired', 'completed', 'failed'] as const)('a stale cancel that finds the work %s says it ended, never that it started', async (state) => {
+    workRead.mockResolvedValue({ items: [work({ revision: 1 })] } as never)
+    cancel.mockResolvedValue({ ok: false, conflict: true, current: work({ state, revision: 2 }), code: 'stale_revision' })
+    mount(<QueuedSendLabel slotKey="s1" />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Cancel this queued message' }))
+    expect(await screen.findByText('Not cancelled: it already ended.')).toBeInTheDocument()
+    expect(screen.queryByText('Not cancelled: it already started.')).toBeNull()
+  })
+
+  it('a stale cancel on work someone else already cancelled does not claim it started', async () => {
+    workRead.mockResolvedValue({ items: [work({ revision: 1 })] } as never)
+    cancel.mockResolvedValue({ ok: false, conflict: true, current: work({ state: 'cancelled', revision: 2 }), code: 'stale_revision' })
+    mount(<QueuedSendLabel slotKey="s1" />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Cancel this queued message' }))
+    await waitFor(() => expect(cancel).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(screen.queryByTestId('queued-send')).toBeNull())
+    expect(screen.queryByText('Not cancelled: it already started.')).toBeNull()
   })
 
   it('rides only the bubble the transcript flags, running turn or not', async () => {
@@ -190,25 +198,113 @@ describe('PresenceChips', () => {
   const entry = (id: string, name: string, activity: PresenceEntry['activity'], connections = 1): PresenceEntry =>
     ({ principal: person(id, name), session_key: 's1', activity, connections, expires_at: 0 })
 
-  it('shows one chip per person, leaves the viewer out, and names who types', () => {
+  it('shows one chip per person and leaves the viewer out', () => {
     mount(<PresenceChips viewer={person('p_me', 'Me')} entries={[
       entry('p_me', 'Me', 'typing', 3),
       entry('p_bob', 'Bob Example', 'typing', 4),
       entry('p_ann', 'Ann', 'viewing'),
     ]} />)
     expect(screen.getAllByRole('listitem')).toHaveLength(2)
-    expect(screen.getByTestId('presence-typing').textContent).toBe('Bob Example is typing')
+  })
+
+  it('names each chip by the person, with the name as its hover title and no text beside it', () => {
+    mount(<PresenceChips viewer={person('p_me', 'Me')} entries={[entry('p_bob', 'Bob Example', 'viewing')]} />)
+    const chip = screen.getByLabelText('Bob Example')
+    expect(chip).toHaveAttribute('title', 'Bob Example')
+    expect(chip.textContent).toBe('BE')
+    expect(chip).toHaveAttribute('tabindex', '0')
+  })
+
+  it('folds everyone past the third into +N', () => {
+    mount(<PresenceChips viewer={person('p_me', 'Me')} entries={[
+      entry('p_a', 'Ann', 'viewing'), entry('p_b', 'Bob', 'viewing'), entry('p_c', 'Cy', 'viewing'), entry('p_d', 'Di', 'viewing'), entry('p_e', 'Ed', 'viewing'),
+    ]} />)
+    expect(screen.getAllByRole('listitem')).toHaveLength(4)
+    const more = screen.getByText('+2').closest('li')
+    expect(more).toHaveAttribute('title', 'Di, Ed')
+    expect(more).toHaveAttribute('tabindex', '0')
+    expect(screen.queryByLabelText('Di')).toBeNull()
+  })
+
+  it('exactly three people draw three chips and no overflow', () => {
+    mount(<PresenceChips viewer={null} entries={[entry('p_a', 'Ann', 'viewing'), entry('p_b', 'Bob', 'viewing'), entry('p_c', 'Cy', 'viewing')]} />)
+    expect(screen.getAllByRole('listitem')).toHaveLength(3)
+    expect(screen.queryByText(/^\+/)).toBeNull()
+  })
+
+  it('never says who is typing: the locked composer says it once', () => {
+    mount(<PresenceChips viewer={person('p_me', 'Me')} entries={[entry('p_bob', 'Bob Example', 'typing')]} />)
+    expect(screen.getByLabelText('Bob Example')).toBeInTheDocument()
+    expect(document.body.textContent).not.toMatch(/typing/i)
+    expect(document.body.innerHTML).not.toMatch(/typing/i)
   })
 
   it('handles a long name and an Unattributed person without breaking', () => {
     const long = 'A'.repeat(200)
     mount(<PresenceChips viewer={null} entries={[entry('p_l', long, 'viewing'), { ...entry('p_unknown', '', 'viewing'), principal: { id: 'p_unknown', kind: 'unknown', display: { name: '', login: '', captured_at: null } } }]} />)
-    expect(screen.getByLabelText(`${long} is here`)).toBeInTheDocument()
-    expect(screen.getByLabelText('Unattributed is here')).toBeInTheDocument()
+    expect(screen.getByLabelText(long)).toBeInTheDocument()
+    expect(screen.getByLabelText('Unattributed')).toBeInTheDocument()
   })
 
   it('renders nothing when nobody else is here', () => {
     const { container } = mount(<PresenceChips viewer={person('p_me', 'Me')} entries={[entry('p_me', 'Me', 'viewing')]} />)
+    expect(container).toBeEmptyDOMElement()
+  })
+})
+
+// The chips wait on capabilities, then mode and people, then the viewer and presence:
+// each hop is its own query, so the waits that sit behind that chain get a longer bound.
+const CHAIN_TIMEOUT_MS = 5000
+
+describe('SessionPresence', () => {
+  const bob = person('p_bob', 'Bob')
+  const here = (p: ReturnType<typeof person>, activity: PresenceEntry['activity'] = 'viewing') =>
+    ({ principal: p, session_key: 's1', activity, connections: 1, expires_at: 0 })
+  const team = () => {
+    vi.mocked(api.sharedCrewCapabilities).mockResolvedValue({ ...ALL_UNAVAILABLE, presence: 'available', attribution: 'available', shared_crew_preview: true })
+    vi.mocked(api.sharedCrewMode).mockResolvedValue({ schema_version: 1, mode: 'network', crew_id: 'c1' } as never)
+    vi.mocked(api.sharedCrewPeople).mockResolvedValue({ schema_version: 1, directory: { state: 'unavailable' }, people: [{ principal: bob, sources: ['observed'], is_viewer: false }] } as never)
+    vi.mocked(api.sharedCrewViewer).mockResolvedValue(person('p_me', 'Me') as never)
+  }
+
+  it('draws one chip row for a teammate, however they are active', async () => {
+    team()
+    vi.mocked(api.sharedCrewPresence).mockResolvedValue({ entries: [here(person('p_me', 'Me')), here(bob, 'typing')] } as never)
+    mount(<SessionPresence sessionKey="s1" />)
+    const chips = await screen.findByTestId('presence-chips', {}, { timeout: CHAIN_TIMEOUT_MS })
+    expect(chips.querySelectorAll('li')).toHaveLength(1)
+    expect(screen.getAllByTestId('presence-chips')).toHaveLength(1)
+  })
+
+  it('draws nothing in a solo session, where only the viewer is present', async () => {
+    team()
+    vi.mocked(api.sharedCrewPresence).mockResolvedValue({ entries: [here(person('p_me', 'Me'))] } as never)
+    const { container, qc } = mount(<SessionPresence sessionKey="s1" />)
+    await waitFor(() => expect(qc.getQueryData(['shared-crew', 'presence', 's1'])).toBeDefined(), { timeout: CHAIN_TIMEOUT_MS })
+    await waitFor(() => expect(qc.getQueryData(['shared-crew', 'viewer'])).toBeDefined(), { timeout: CHAIN_TIMEOUT_MS })
+    expect(container).toBeEmptyDOMElement()
+  })
+
+  it('draws nothing while the viewer read is pending, so the viewer never flashes as a teammate', async () => {
+    team()
+    const me = person('p_me', 'Me')
+    let resolveViewer: (v: unknown) => void = () => {}
+    vi.mocked(api.sharedCrewViewer).mockImplementation(() => new Promise(r => { resolveViewer = r }) as never)
+    vi.mocked(api.sharedCrewPresence).mockResolvedValue({ entries: [here(me)] } as never)
+    const { container, qc } = mount(<SessionPresence sessionKey="s1" />)
+    await waitFor(() => expect(qc.getQueryData(['shared-crew', 'presence', 's1'])).toBeDefined(), { timeout: CHAIN_TIMEOUT_MS })
+    expect(container).toBeEmptyDOMElement()
+    resolveViewer(me)
+    await waitFor(() => expect(qc.getQueryData(['shared-crew', 'viewer'])).toBeDefined())
+    expect(container).toBeEmptyDOMElement()
+  })
+
+  it('draws nothing while the Shared Crew preview is off', async () => {
+    team()
+    vi.mocked(api.sharedCrewCapabilities).mockResolvedValue({ ...ALL_UNAVAILABLE, presence: 'available', attribution: 'available', shared_crew_preview: false })
+    vi.mocked(api.sharedCrewPresence).mockResolvedValue({ entries: [here(bob)] } as never)
+    const { container, qc } = mount(<SessionPresence sessionKey="s1" />)
+    await waitFor(() => expect(qc.getQueryData(['shared-crew', 'presence', 's1'])).toBeDefined(), { timeout: CHAIN_TIMEOUT_MS })
     expect(container).toBeEmptyDOMElement()
   })
 })
@@ -219,30 +315,7 @@ describe('shared decisions', () => {
     initiator: person('p_a', 'Alice'), responder: state === 'resolved' ? person('p_b', 'Bob') : null,
     outcome, resolved_at: state === 'resolved' ? 10 : null,
   })
-
-  it('names the person who settled it in one sentence, with no requester tail', () => {
-    mount(<DecisionAttributionList items={[decision('resolved', 'approved')]} />)
-    expect(screen.getByText('Bob approved')).toBeInTheDocument()
-    expect(screen.queryByText(/Alice|asked during|requested/)).toBeNull()
-  })
-
-  it('lets a long responder name shrink on its one row', () => {
-    mount(<DecisionAttributionList items={[decision('resolved', 'approved')]} />)
-    const head = screen.getByText('Bob approved')
-    expect(head).toHaveClass('truncate', 'min-w-0')
-    expect(head).not.toHaveClass('shrink-0')
-    expect(head).toHaveAttribute('title', 'Bob approved')
-  })
-
   const question = (state: SharedDecision['state'], outcome = ''): SharedDecision => ({ ...decision(state, outcome), kind: 'question' })
-
-  it('names whose turn a pending decision waits on, and reads the viewer as you', () => {
-    expect(waitingLine(decision('pending'))).toBe("Alice's action awaits approval")
-    expect(waitingLine(question('pending'))).toBe("Kiro is waiting for Alice's answer")
-    expect(waitingLine(decision('pending'), 'p_a')).toBe('Your action awaits approval')
-    expect(waitingLine(question('pending'), 'p_a')).toBe('Kiro is waiting for your answer')
-    expect(waitingLine(decision('pending'), 'p_other')).toBe("Alice's action awaits approval")
-  })
 
   it('reads every settled verdict, for a person and for the viewer', () => {
     expect(resolvedByLine(decision('resolved', 'approved'))).toBe('Bob approved')
@@ -251,32 +324,6 @@ describe('shared decisions', () => {
     expect(resolvedByLine(decision('resolved', 'approved'), 'p_b')).toBe('You approved')
     expect(resolvedByLine(decision('resolved', 'rejected'), 'p_b')).toBe('You rejected')
     expect(resolvedByLine(question('resolved', 'answered'), 'p_b')).toBe('You answered')
-  })
-
-  it('renders a pending row as the waiting sentence', () => {
-    mount(<DecisionAttributionList items={[decision('pending'), question('pending')].map((d, i) => ({ ...d, decision_id: `d${i}` }))} viewerId="p_a" />)
-    expect(screen.getByText('Your action awaits approval')).toBeInTheDocument()
-    expect(screen.getByText('Kiro is waiting for your answer')).toBeInTheDocument()
-  })
-
-  it('never lists a decision the gateway settled by its approval mode', () => {
-    const host: SharedDecision = { ...decision('resolved', 'approved'), settled_by: 'host', responder: null }
-    expect(visibleDecisions([host])).toEqual([])
-    const { container } = mount(<DecisionAttributionList items={[host]} viewerId="p_a" />)
-    expect(container).toBeEmptyDOMElement()
-    const person: SharedDecision = { ...decision('resolved', 'approved'), decision_id: 'd2', settled_by: 'person' }
-    expect(visibleDecisions([host, person]).map(d => d.decision_id)).toEqual(['d2'])
-  })
-
-  it('counts a session as shared only when a decision involves someone other than the viewer', () => {
-    expect(involvesOthers([decision('pending')], 'p_a')).toBe(false)
-    expect(involvesOthers([decision('resolved', 'approved')], 'p_a')).toBe(true)
-    expect(involvesOthers([decision('pending')], 'p_x')).toBe(true)
-    expect(involvesOthers([decision('pending')], '')).toBe(false)
-    const unknown = { id: 'p_unknown', kind: 'unknown' as const, display: { name: '', login: '', captured_at: null } }
-    expect(involvesOthers([{ ...decision('pending'), initiator: unknown }], 'p_a')).toBe(false)
-    const host: SharedDecision = { ...decision('resolved', 'approved'), settled_by: 'host' }
-    expect(involvesOthers([host], 'p_x')).toBe(false)
   })
 
   it('reads a lost race as the winning decision, not a failure', () => {
@@ -290,92 +337,9 @@ describe('shared decisions', () => {
 
   const local = (name: string) => person('p_local', name)
   const byLocal = (name: string): SharedDecision => ({ ...decision('resolved', 'approved'), initiator: local(name), responder: local(name) })
-  const mode = (m: 'personal' | 'network') => ({ schema_version: 1, mode: m, crew_id: 'c1' }) as never
-  // The strip reads capabilities first; only then are the mode, viewer and
-  // decisions queries enabled. Waits that span that chain get this ceiling.
-  const CHAIN_TIMEOUT_MS = 5000
-
-  it('shows no attribution line in a personal Crew', async () => {
-    vi.mocked(api.sharedCrewMode).mockResolvedValue(mode('personal'))
-    vi.mocked(api.sharedCrewDecisions).mockResolvedValue({ items: [byLocal('local-app')] } as never)
-    const { qc } = mount(<SessionCollabStrip sessionKey="s1" />)
-    await waitFor(() => expect(qc.getQueryData(['shared-crew', 'mode'])).toBeDefined(), { timeout: CHAIN_TIMEOUT_MS })
-    await waitFor(() => expect(qc.getQueryData(['shared-crew', 'decisions', 's1'])).toBeDefined(), { timeout: CHAIN_TIMEOUT_MS })
-    expect(screen.queryByTestId('decision-attribution')).toBeNull()
-    expect(screen.queryByText(/local-app/)).toBeNull()
-  })
-
-  const pendingFrom = (p: ReturnType<typeof person>): SharedDecision => ({ ...decision('pending'), initiator: p })
-
-  it('shows nothing for a solo session: only the viewer is in its decisions', async () => {
-    vi.mocked(api.sharedCrewMode).mockResolvedValue(mode('network'))
-    vi.mocked(api.sharedCrewViewer).mockResolvedValue(local('local-app') as never)
-    vi.mocked(api.sharedCrewDecisions).mockResolvedValue({ items: [byLocal('local-app'), pendingFrom(local('local-app'))] } as never)
-    const { qc } = mount(<SessionCollabStrip sessionKey="s1" />)
-    await waitFor(() => expect(qc.getQueryData(['shared-crew', 'decisions', 's1'])).toBeDefined(), { timeout: CHAIN_TIMEOUT_MS })
-    await waitFor(() => expect(qc.getQueryData(['shared-crew', 'viewer'])).toBeDefined(), { timeout: CHAIN_TIMEOUT_MS })
-    expect(screen.queryByTestId('session-collab-strip')).toBeNull()
-    expect(screen.queryByTestId('decision-attribution')).toBeNull()
-  })
-
-  /** The Shared Crew preview on and Bob joined: the state the strip shows in. */
-  const sharedAndJoined = () => {
-    vi.mocked(api.sharedCrewCapabilities).mockResolvedValue({ ...ALL_UNAVAILABLE, presence: 'available', attribution: 'available', queueing: 'available', shared_crew_preview: true })
-    vi.mocked(api.sharedCrewPeople).mockResolvedValue({ schema_version: 1, directory: { state: 'unavailable' }, people: [{ principal: person('p_b', 'Bob'), sources: ['observed'], is_viewer: false }] } as never)
-  }
-
-  it('shows the lines once a decision involves another person, and reads the viewer as you', async () => {
-    sharedAndJoined()
-    vi.mocked(api.sharedCrewMode).mockResolvedValue(mode('network'))
-    vi.mocked(api.sharedCrewViewer).mockResolvedValue(local('local-app') as never)
-    const mine: SharedDecision = { ...byLocal('local-app'), decision_id: 'd1', responder: person('p_b', 'Bob') }
-    vi.mocked(api.sharedCrewDecisions).mockResolvedValue({ items: [mine, { ...pendingFrom(local('local-app')), decision_id: 'd2' }] } as never)
-    mount(<SessionCollabStrip sessionKey="s1" />)
-    expect(await screen.findByText('Bob approved', {}, { timeout: CHAIN_TIMEOUT_MS })).toBeInTheDocument()
-    expect(screen.getByText('Your action awaits approval')).toBeInTheDocument()
-    expect(screen.queryByText(/local-app/)).toBeNull()
-  })
-
-  it('shows the lines when another person is present, even if every decision is the viewer\'s', async () => {
-    sharedAndJoined()
-    vi.mocked(api.sharedCrewMode).mockResolvedValue(mode('network'))
-    vi.mocked(api.sharedCrewViewer).mockResolvedValue(local('local-app') as never)
-    vi.mocked(api.sharedCrewPresence).mockResolvedValue({ entries: [{ principal: person('p_b', 'Bob'), session_key: 's1', activity: 'viewing', connections: 1, expires_at: 0 }] } as never)
-    vi.mocked(api.sharedCrewDecisions).mockResolvedValue({ items: [pendingFrom(local('local-app'))] } as never)
-    mount(<SessionCollabStrip sessionKey="s1" />)
-    expect(await screen.findByText('Your action awaits approval', {}, { timeout: CHAIN_TIMEOUT_MS })).toBeInTheDocument()
-  })
-
-  it.each([
-    ['the Shared Crew preview is off', false, ['observed']],
-    ['nobody besides the owner joined', true, ['session_creator']],
-  ] as const)('shows no chips or lines while %s', async (_why, preview, sources) => {
-    vi.mocked(api.sharedCrewCapabilities).mockResolvedValue({ ...ALL_UNAVAILABLE, presence: 'available', attribution: 'available', queueing: 'available', shared_crew_preview: preview })
-    vi.mocked(api.sharedCrewPeople).mockResolvedValue({ schema_version: 1, directory: { state: 'unavailable' }, people: [{ principal: person('p_b', 'Bob'), sources: [...sources], is_viewer: false }] } as never)
-    vi.mocked(api.sharedCrewMode).mockResolvedValue(mode('network'))
-    vi.mocked(api.sharedCrewViewer).mockResolvedValue(local('local-app') as never)
-    vi.mocked(api.sharedCrewPresence).mockResolvedValue({ entries: [{ principal: person('p_b', 'Bob'), session_key: 's1', activity: 'viewing', connections: 1, expires_at: 0 }] } as never)
-    const mine: SharedDecision = { ...byLocal('local-app'), decision_id: 'd1', responder: person('p_b', 'Bob') }
-    vi.mocked(api.sharedCrewDecisions).mockResolvedValue({ items: [mine] } as never)
-    const { qc } = mount(<SessionCollabStrip sessionKey="s1" />)
-    await waitFor(() => expect(qc.getQueryData(['shared-crew', 'presence', 's1'])).toBeDefined(), { timeout: CHAIN_TIMEOUT_MS })
-    expect(screen.queryByTestId('session-collab-strip')).toBeNull()
-    expect(screen.queryByText('Bob approved')).toBeNull()
-  })
-
-  it('shows no empty band when every decision was settled by the host', async () => {
-    vi.mocked(api.sharedCrewMode).mockResolvedValue(mode('network'))
-    vi.mocked(api.sharedCrewViewer).mockResolvedValue(local('local-app') as never)
-    vi.mocked(api.sharedCrewPresence).mockResolvedValue({ entries: [{ principal: person('p_b', 'Bob'), session_key: 's1', activity: 'viewing', connections: 1, expires_at: 0 }] } as never)
-    vi.mocked(api.sharedCrewDecisions).mockResolvedValue({ items: [{ ...byLocal('local-app'), settled_by: 'host' as const }] } as never)
-    const { qc } = mount(<SessionCollabStrip sessionKey="s1" />)
-    await waitFor(() => expect(qc.getQueryData(['shared-crew', 'decisions', 's1'])).toBeDefined(), { timeout: CHAIN_TIMEOUT_MS })
-    expect(screen.queryByTestId('decision-attribution')).toBeNull()
-  })
 
   it.each(['local-app', 'local-startup'])('never names the local token subject %s', (name) => {
     expect(resolvedByLine(byLocal(name))).toBe('Crew owner approved')
-    expect(waitingLine({ ...byLocal(name), state: 'pending' })).toBe("Crew owner's action awaits approval")
     expect(resolvedByLine(byLocal(name), 'p_local')).toBe('You approved')
   })
 
@@ -391,15 +355,12 @@ describe('shared decisions', () => {
 })
 
 describe('overload copy', () => {
-  it('separates a personal limit from a Crew-wide one and keeps the draft promise', () => {
+  it('separates a personal limit from a Crew-wide one and says the draft is kept', () => {
     const mine = refusalMessage({ code: 'principal_active_limit', capacity: capacity('principal') })
     const crew = refusalMessage({ code: 'crew_active_limit', capacity: capacity('crew') })
-    expect(mine).toMatch(/personal limit \(2 of 2 running\)/)
-    expect(crew).toMatch(/limit for everyone \(8 of 8 running\)/)
-    for (const s of [mine, crew]) {
-      expect(s).toMatch(/still in the composer/)
-      expect(s).not.toMatch(/second|minute/i)
-    }
+    expect(mine).toBe("You're at your limit (2 of 2 running). Your draft is kept. Try again soon.")
+    expect(crew).toBe('Crew is at its limit (8 of 8 running). Your draft is kept. Try again soon.')
+    for (const s of [mine, crew]) expect(s).not.toMatch(/second|minute/i)
   })
 
   it('leaves non Shared Crew refusals to the caller', () => {
@@ -408,8 +369,8 @@ describe('overload copy', () => {
   })
 
   it('falls back to the reason when no capacity is known', () => {
-    expect(queuedReason('crew_queue_full', null)).toMatch(/shared limit/)
-    expect(queuedReason(null, null)).toBe('waiting for its turn')
+    expect(queuedReason('crew_queue_full', null)).toBe('Waiting on the Crew limit')
+    expect(queuedReason(null, null)).toBe('Waiting')
   })
 })
 

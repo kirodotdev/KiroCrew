@@ -12,7 +12,7 @@ import { stubStripHeights } from './stripHeights'
 import { LAZY_COMPOSER_MOUNT } from './lazyComposerReady'
 import { TREE_ENTRY_DRAG_TYPE, encodeTreeEntry } from '../lib/treeEntryDrag'
 
-const LOCK = { holderName: 'Alice', holderInitials: 'A' }
+const LOCK = { holderName: 'Alice' }
 
 /** Let the providers' own async first reads land inside a barrier. */
 const settle = () => act(async () => { await new Promise(resolve => setTimeout(resolve, 0)) })
@@ -31,7 +31,6 @@ describe('ChatInput typing lock', () => {
     const banner = screen.getByTestId('composer-typing-lock')
     expect(banner).toHaveAttribute('role', 'status')
     expect(banner).toHaveTextContent('Alice is typing…')
-    expect(banner).toHaveTextContent('A')
     const box = screen.getByLabelText('Message input') as HTMLTextAreaElement
     expect(box.value).toBe('my own draft')
     expect(box.readOnly).toBe(true)
@@ -43,10 +42,14 @@ describe('ChatInput typing lock', () => {
     expect(onChange).not.toHaveBeenCalled()
   })
 
-  it('names the holder in the placeholder of an empty locked box', async () => {
+  it('says who is typing once: the empty locked box carries no second copy', async () => {
     renderWithProviders(<ChatInput value="" onChange={vi.fn()} onSend={vi.fn()} typingLock={LOCK} />)
     await settle()
-    expect(screen.getByLabelText('Message input')).toHaveAttribute('placeholder', 'Alice is typing…')
+    expect(screen.getByLabelText('Message input')).toHaveAttribute('placeholder', '')
+    expect(screen.getAllByText(/Alice is typing/)).toHaveLength(1)
+    expect(document.body.innerHTML.match(/Alice is typing/g)).toHaveLength(1)
+    expect(screen.queryByText(/type again/i)).toBeNull()
+    expect(screen.queryByText(/draft stays with them/)).toBeNull()
   })
 
   it('unlocks in place with focus kept when the lease ends', async () => {
@@ -192,8 +195,9 @@ describe('ChatInput typing lock', () => {
     const onChange = vi.fn()
     renderWithProviders(<ChatInput value="my own draft" onChange={onChange} onSend={vi.fn()} typingLock={{ ...LOCK, onTakeOver }} />)
     await settle()
-    const button = screen.getByRole('button', { name: 'Take over typing from Alice. Their draft stays with them.' })
+    const button = screen.getByRole('button', { name: "Take over to type. Alice's draft stays with them." })
     expect(button).toHaveTextContent('Take over')
+    expect(screen.getByTestId('composer-typing-lock')).toHaveTextContent("Alice's draft stays with them.")
     fireEvent.click(button)
     expect(onTakeOver).toHaveBeenCalledTimes(1)
     expect(onChange).not.toHaveBeenCalled()
@@ -205,7 +209,7 @@ describe('ChatInput typing lock', () => {
     await settle()
     const banner = screen.getByTestId('composer-typing-lock')
     expect(banner).toHaveTextContent('Alice took over typing')
-    expect(banner).toHaveTextContent('Your draft is kept.')
+    expect(banner).not.toHaveTextContent(/draft/i)
     const box = screen.getByLabelText('Message input') as HTMLTextAreaElement
     expect(box.value).toBe('half a thought')
     expect(box.readOnly).toBe(true)

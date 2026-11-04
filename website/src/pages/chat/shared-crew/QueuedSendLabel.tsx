@@ -19,6 +19,9 @@ import { useSessionWork, useSharedCrewCapabilities, useSharedCrewCapacity } from
 import { i18nT } from '../../../i18n/t'
 import { queuedReason } from './overloadCopy'
 
+const STARTED: ReadonlySet<string> = new Set(['admitted', 'running', 'cancelling', 'reconciling'])
+const ENDED: ReadonlySet<string> = new Set(['completed', 'failed', 'expired', 'rejected', 'unknown_outcome'])
+
 /** The newest chat turn of the session that is waiting for capacity, if any. */
 export function queuedChatTurn(items: readonly AcceptedWork[]): AcceptedWork | null {
   for (let i = items.length - 1; i >= 0; i--) {
@@ -62,7 +65,11 @@ export function QueuedSendLabel({ slotKey }: { slotKey: string }) {
       } else {
         void queryClient.invalidateQueries({ queryKey: sharedCrewKeys.work(slotKey) })
       }
-      if (!result.ok) setNotice(i18nT('sharedCrew.cancel_conflict'))
+      // The notice names what the other side did: started, or ended without running. Work someone else cancelled just leaves the queue.
+      if (!result.ok && next) {
+        if (STARTED.has(next.state)) setNotice(i18nT('sharedCrew.cancel_conflict'))
+        else if (ENDED.has(next.state)) setNotice(i18nT('sharedCrew.cancel_conflict_ended'))
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : i18nT('sharedCrew.cancel_failed'))
     } finally {

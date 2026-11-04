@@ -16,6 +16,7 @@ import { PeoplePanel } from '../pages/settings/PeoplePanel'
 import { InviteEntry, sharedCrewAccessKey, tailscaleInvitesKey } from '../pages/settings/TailscaleInvites'
 import { CreatorFilterBar, CreatorFilteredSessions, useSharedCrewListView } from '../pages/chat-sidebar/CreatorFilter'
 import { SessionCollabStrip } from '../pages/chat/shared-crew/SessionCollabStrip'
+import { SessionPresence } from '../pages/chat/shared-crew/PresenceChips'
 import { MessageByline } from '../pages/chat/shared-crew/MessageByline'
 import { QueuedSendLabel } from '../pages/chat/shared-crew/QueuedSendLabel'
 import { useComposerTypingLock } from '../pages/chat/shared-crew/useComposerTypingLock'
@@ -161,7 +162,7 @@ function Lock() {
   return <span data-testid="lock">{lock?.holderName}</span>
 }
 function Chat() {
-  return <><SessionCollabStrip sessionKey="s1" /><Lock />{[1, 2, 3].map(id => <MessageByline key={id} meta={{ author: person('p_other') }} />)}<MessageByline meta={{ author: person('p_me') }} /></>
+  return <><SessionCollabStrip sessionKey="s1" /><SessionPresence sessionKey="s1" /><Lock />{[1, 2, 3].map(id => <MessageByline key={id} meta={{ author: person('p_other') }} />)}<MessageByline meta={{ author: person('p_me') }} /></>
 }
 
 describe('Shared Crew failure owners', () => {
@@ -197,20 +198,20 @@ describe('Shared Crew failure owners', () => {
 
   it.each(reads)('chat reports $method once and keeps cached attribution and typing state', async read => {
     const { qc } = mount(<Chat />)
-    const strip = await screen.findByTestId('session-collab-strip')
+    const chips = await screen.findByTestId('presence-chips')
     expect(screen.getAllByTestId('message-byline')).toHaveLength(3)
     expect(screen.getByTestId('lock')).toHaveTextContent('p_other')
     vi.mocked(api[read.method]).mockRejectedValue(new Error('chat read failed'))
     await refresh(qc, read.key)
     expect(await screen.findByRole('alert')).toHaveTextContent('chat read failed')
     expect(screen.getAllByRole('alert')).toHaveLength(1)
-    expect(screen.getByTestId('session-collab-strip')).toBe(strip)
+    expect(screen.getByTestId('presence-chips')).toBe(chips)
     expect(screen.getAllByTestId('message-byline')).toHaveLength(3)
     expect(screen.getByTestId('lock')).toHaveTextContent('p_other')
     vi.mocked(api[read.method]).mockResolvedValue(read.data as never)
     await refresh(qc, read.key)
     await waitFor(() => expect(screen.queryByRole('alert')).toBeNull())
-    expect(screen.getByTestId('session-collab-strip')).toBe(strip)
+    expect(screen.getByTestId('presence-chips')).toBe(chips)
   })
 
   it.each(reads)('chat reports an initial $method failure without a sidebar', async read => {

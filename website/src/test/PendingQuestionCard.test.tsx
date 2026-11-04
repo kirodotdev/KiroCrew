@@ -39,6 +39,8 @@ vi.mock('framer-motion', async () => {
   }
 })
 
+// The raised-by label reads the Shared Crew decisions; this file is about the card's own answers.
+vi.mock('../pages/chat/shared-crew/useRaisedBy', () => ({ useRaisedBy: () => '' }))
 import PendingQuestionCard from '../components/PendingQuestionCard'
 import { createTestStore } from './helpers'
 import { ApiError } from '../api/client'
