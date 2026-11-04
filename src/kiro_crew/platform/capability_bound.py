@@ -95,47 +95,6 @@ def market_install_id(item: object) -> Optional[str]:
     return ident
 
 
-def _audit_theme_ceiling(outcome: str, decision: object, reason: str = "") -> None:
-    """SEL row for the theme-install decision, as the Themes page writes it. Never raises."""
-    try:
-        from kiro_crew.sel import sel
-
-        sel().log_governance_decision(
-            session_key="",
-            tool_name="capability_market_apply",
-            scope="capabilities.theme_install",
-            outcome=outcome,
-            rule=getattr(decision, "rule", ""),
-            layer=getattr(decision, "layer", ""),
-            reason=reason or getattr(decision, "reason", ""),
-        )
-    except Exception:  # pragma: no cover - an audit failure never changes the outcome
-        pass
-
-
-def _theme_install_denied() -> Optional[str]:
-    """Why ``capabilities.theme_install`` refuses a theme, or ``None``. Fail-closed.
-
-    The same decision ``dashboard/handlers/themes.py`` asks before a pack install;
-    an evaluation error denies. Reads the profile store: call it off the loop.
-    """
-    try:
-        from kiro_crew.platform.governance_profiles import governance_permits
-
-        decision = governance_permits(
-            "capabilities.theme_install", "", log_warning=False, fail_closed=True
-        )
-        permitted = bool(getattr(decision, "permitted", False))
-        _audit_theme_ceiling("allowed" if permitted else "denied", decision)
-        if permitted:
-            return None
-        return str(getattr(decision, "reason", "") or "theme installation disabled by policy")
-    except Exception:
-        reason = "theme installation blocked (governance unavailable)"
-        _audit_theme_ceiling("denied", None, reason=reason)
-        return reason
-
-
 def _refused(reason: str) -> "CapabilityResult":
     """The result an op returns when governance refuses it (``extension_governance``).
 
@@ -317,7 +276,7 @@ class BoundedCapabilityManager:
         # (alone or bundled) answers to the same capabilities.theme_install
         # ceiling as a theme installed from the Themes page.
         if any(isinstance(i, dict) and i.get("kind") == "theme" for i in items):
-            denied = await _off_loop(_theme_install_denied)
+            denied = await _off_loop(_gov.theme_install_denied, "capability_market_apply")
             if denied:
                 return _refused(denied)
         for item in items:

@@ -4588,7 +4588,7 @@
         "commands_meaning": "Runs these programs when an agent uses the item that declares them. A version in a command is that program's own version, not the listing's.",
         "network_meaning": "Can connect to these hosts.",
         "files_meaning": "Can read or change these files.",
-        "secrets_meaning": "Nothing is read until you set these yourself, for example in your shell. An item reads them only while an agent uses it, and Kiro Crew does not store them.",
+        "secrets_meaning": "Nothing is read until you set these yourself, for example in your shell. An item reads them only while an agent uses it, and {{productName}} does not store them.",
         "kind_skill": "Skill",
         "kind_mcp": "MCP server",
         "kind_theme": "Theme",

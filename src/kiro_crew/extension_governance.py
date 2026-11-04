@@ -26,7 +26,7 @@ the profiles directory, so an async caller runs it off the event loop.
 from __future__ import annotations
 
 import logging
-from typing import Optional
+from typing import Callable, Optional
 
 from kiro_crew import edition
 
@@ -111,6 +111,64 @@ def extensions_off(action: str) -> Optional[str]:
     The ``extensions`` list is not asked: uninstall only narrows what is installed.
     """
     return _denied(EXTENSIONS_SCOPE, "", action=action)
+
+
+THEME_INSTALL_SCOPE = "capabilities.theme_install"
+_THEME_GOVERNANCE_UNAVAILABLE = "theme installation blocked (governance unavailable)"
+
+
+def audit_theme_install(tool_name: str, outcome: str, decision: object, reason: str = "") -> None:
+    """SEL row for a theme-install admission decision. Never raises.
+
+    Both outcomes are recorded: a theme install ingests third-party content and
+    serves sandboxed JS into the dashboard, so an ``allowed`` admission belongs in
+    the audit trail as much as a ``denied`` one.
+    """
+    try:
+        from kiro_crew.sel import sel
+
+        sel().log_governance_decision(
+            session_key="",
+            tool_name=tool_name,
+            scope=THEME_INSTALL_SCOPE,
+            outcome=outcome,
+            rule=getattr(decision, "rule", ""),
+            layer=getattr(decision, "layer", ""),
+            reason=reason or getattr(decision, "reason", ""),
+        )
+    except Exception:
+        # An audit failure must never wedge an install.
+        pass
+
+
+def theme_install_denied(
+    tool_name: str, *, audit: "Callable[..., None] | None" = None
+) -> Optional[str]:
+    """Why ``capabilities.theme_install`` refuses a theme install, or ``None``. Fail-closed.
+
+    The one decision every theme install asks: the Themes page and a marketplace
+    listing that carries a theme. An evaluation error denies. *audit* replaces
+    :func:`audit_theme_install` (called as ``audit(outcome, decision, reason)``)
+    for a caller that keeps its own audit hook. Reads the profile store: an async
+    caller runs it off the event loop.
+    """
+    record = audit or (
+        lambda outcome, decision, reason="": audit_theme_install(
+            tool_name, outcome, decision, reason
+        )
+    )
+    try:
+        from kiro_crew.platform.governance_profiles import governance_permits
+
+        decision = governance_permits(THEME_INSTALL_SCOPE, "", log_warning=False, fail_closed=True)
+        permitted = getattr(decision, "permitted", False)
+        record("allowed" if permitted else "denied", decision)
+        if permitted:
+            return None
+        return getattr(decision, "reason", "theme installation disabled by policy")
+    except Exception:
+        record("denied", None, reason="governance unavailable (fail-closed)")
+        return _THEME_GOVERNANCE_UNAVAILABLE
 
 
 def app_version_denied(name: str, version: str) -> Optional[str]:

@@ -3260,8 +3260,10 @@ a sibling `capabilities.theme_install` `SCOPE_CATALOG` capability row
 (`capability_default=True`, same data-only shape — no `CONTRACT_VERSION` or
 evaluator change). Standalone it defaults to allow; a managed-fleet POLICY can
 ban pack installation wholesale. Consulted in `api_themes_install`
-(`handlers/themes.py`, via `governance_permits("capabilities.theme_install",
-"", fail_closed=True)`) **before any fetch/clone**; a denying policy — or a
+(`handlers/themes.py`, via `extension_governance.theme_install_denied`, which
+asks `governance_permits("capabilities.theme_install", "", fail_closed=True)`
+and is the same check a marketplace `market_apply` asks for a listing theme)
+**before any fetch/clone**; a denying policy — or a
 governance-evaluation error (admission chokepoint fails closed) — returns `403`
 and ingests nothing.
 

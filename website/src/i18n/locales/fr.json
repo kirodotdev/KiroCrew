@@ -6693,7 +6693,7 @@
         "commands_meaning": "Exécute ces programmes quand un agent utilise l’élément qui les déclare. La version dans une commande est celle du programme lui-même, pas celle de la fiche.",
         "network_meaning": "Peut se connecter à ces hôtes.",
         "files_meaning": "Peut lire ou modifier ces fichiers.",
-        "secrets_meaning": "Rien n’est lu tant que tu ne définis pas ces valeurs toi-même, par exemple dans ton shell. Un élément les lit seulement quand un agent l’utilise, et Kiro Crew ne les enregistre pas.",
+        "secrets_meaning": "Rien n’est lu tant que tu ne définis pas ces valeurs toi-même, par exemple dans ton shell. Un élément les lit seulement quand un agent l’utilise, et {{productName}} ne les enregistre pas.",
         "kind_skill": "Compétence",
         "kind_mcp": "Serveur MCP",
         "kind_theme": "Thème",

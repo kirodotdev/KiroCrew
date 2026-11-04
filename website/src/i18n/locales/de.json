@@ -6520,7 +6520,7 @@
         "commands_meaning": "Führt diese Programme aus, wenn ein Agent das Element nutzt, das sie angibt. Eine Version in einem Befehl ist die des Programms selbst, nicht die des Eintrags.",
         "network_meaning": "Kann sich mit diesen Hosts verbinden.",
         "files_meaning": "Kann diese Dateien lesen oder ändern.",
-        "secrets_meaning": "Gelesen wird nichts, bis du diese Werte selbst setzt, zum Beispiel in deiner Shell. Ein Element liest sie nur, während ein Agent es nutzt, und Kiro Crew speichert sie nicht.",
+        "secrets_meaning": "Gelesen wird nichts, bis du diese Werte selbst setzt, zum Beispiel in deiner Shell. Ein Element liest sie nur, während ein Agent es nutzt, und {{productName}} speichert sie nicht.",
         "kind_skill": "Skill",
         "kind_mcp": "MCP-Server",
         "kind_theme": "Design",
