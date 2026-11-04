@@ -83,6 +83,7 @@ class _ChatTurn:
     _responsive_protected: "bool"
     _directive_user_origin: "bool"
     _turn_provenance_restored: "bool"
+    _turn_start_background: "bool"
     _directive_self_wake: "bool"
     _directive_loop_id: "str"
     _directive_loop_gen: "int"
@@ -332,6 +333,7 @@ class _ChatTurn:
         _responsive_protected: "bool",
         _directive_user_origin: "bool",
         _turn_provenance_restored: "bool",
+        _turn_start_background: "bool",
         _directive_self_wake: "bool",
         _directive_loop_id: "str",
         _directive_loop_gen: "int",
@@ -364,6 +366,7 @@ class _ChatTurn:
         self._responsive_protected = _responsive_protected
         self._directive_user_origin = _directive_user_origin
         self._turn_provenance_restored = _turn_provenance_restored
+        self._turn_start_background = _turn_start_background
         self._directive_self_wake = _directive_self_wake
         self._directive_loop_id = _directive_loop_id
         self._directive_loop_gen = _directive_loop_gen

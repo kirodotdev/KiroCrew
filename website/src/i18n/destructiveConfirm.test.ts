@@ -281,6 +281,9 @@ export const CONFIRM_OPERAND_KEY_EXEMPTIONS: Record<string, string> = {
     + 'link_open_confirm_title, so it cannot carry a space or a quote',
   'components.redaction.link_open_confirm_body':
     'the {{chars}} operand is a non-negative integer character count, never user text',
+  'pages.chatSidebar.resume_all_confirm_body':
+    'the {{limit}} operand is RESUME_ALL_MAX_RUNNING, a positive integer constant in code, '
+    + 'never user text',
   'components.awsConsentGate.confirmed_on':
     'not a confirmation prompt: a past-tense receipt fragment whose only operand is a '
     + 'machine-formatted date from fmtDate, never user-supplied text',

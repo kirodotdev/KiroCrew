@@ -14,7 +14,6 @@ import { offlineProps } from '../../utils/offline'
 import { sessionRefBlockReason } from '../../utils/sessionRefs'
 import { crewOf } from '../../hooks/useInstanceSessions'
 import { switchSlot, selectSidebarWorkflowActive, selectAutomationForSlot } from '../../store/chatSlice'
-import { slotIsRemoteBound } from '../../store/dashboardSlice'
 import { api } from '../../api/client'
 import { recencyTintShadow } from '../../utils/recencyTint'
 import { resolveSessionColor } from '../../utils/sessionColors'
@@ -63,6 +62,7 @@ import { crewWaitingApprovals, openedSessionRunning } from '../chat/command-cent
 import ErrorNotice from '../../components/ErrorNotice'
 import { MemberRowHead } from './MemberRowFace'
 import { useCrewMode } from '../../hooks/usePreviewFlag'
+import { useInterruptedRowLabel } from './interruptedRowLabel'
 import { SessionCreatorByline } from './SessionCreatorByline'
 
 /** A row's slot-scoped live facts, read in ONE subscription. Flat, so the
@@ -353,6 +353,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
   // the crew card: ghost badge, gradient eyebrow and its workers' summary. Only a
   // local row: a peer row's stamps describe another gateway's tree.
   const crewRoot = useCrewMode() && !!s.crew_mode_root && !s.peer_id
+  const interruptedLabel = useInterruptedRowLabel(s)
   const conductor = view.conductor
   // An ADOPTED remote-crew row (a local slot that mirrors a peer session) has a ✕
   // that removes only this machine's copy — the session stays live on its peer,
@@ -988,28 +989,15 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
         // `turnNeedsAttention`, and goal loops retain their cycle-specific row.
         key: 'interrupted',
         when: turnNeedsAttention,
-        build: () => {
-          // A crew-bound row must not name Resume: the composer offers no such
-          // control there (`selectContinuable` mirrors the server's
-          // `relay_archive_read_only` refusal), so the instruction would point
-          // at a button that is not on screen. The interruption is still real and
-          // still needs the marker — only the instruction is dropped.
-          //
-          // Shares `slotIsRemoteBound` with the composer deliberately: this row
-          // and that gate answer the SAME question, so one spelling keeps the
-          // label from drifting if the server's refusal is ever keyed elsewhere.
-          // The crew chip below stays inline because it answers a different
-          // question — which crew a row runs on, not whether an action is refused.
-          const label = slotIsRemoteBound(s)
-            ? i18nT('pages.chat.recoveryCard.turn_interrupted')
-            : `${i18nT('pages.chat.recoveryCard.turn_interrupted')} · ${i18nT('components.chatInput.resume')}`
-          return (
-            <div className={ROW_STATUS_LINE_CLS} title={label}>
-              <TriangleAlert size={ROW_ICON_PX} className="shrink-0 text-danger" aria-hidden />
-              <span className="truncate font-medium text-danger">{label}</span>
-            </div>
-          )
-        },
+        // The label's words are `useInterruptedRowLabel`'s. The crew chip below
+        // stays inline because it answers a different question — which crew a
+        // row runs on, not whether an action is refused.
+        build: () => (
+          <div className={ROW_STATUS_LINE_CLS} title={interruptedLabel}>
+            <TriangleAlert size={ROW_ICON_PX} className="shrink-0 text-danger" aria-hidden />
+            <span className="truncate font-medium text-danger">{interruptedLabel}</span>
+          </div>
+        ),
       },
       {
         // A dynamic-workflow run launched from this session is still executing

@@ -19,6 +19,7 @@ import asyncio
 import logging
 import re
 import uuid
+import weakref
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
@@ -1200,6 +1201,22 @@ TURN_ACTOR_META_KEY = "turnActor"
 #: carries it turns a command into prose and nothing more -- the opposite of the
 #: provenance flags, which grant authority and are therefore never persisted.
 COMMANDS_OFF_META_KEY = "commands_off"
+
+#: Entry meta key asking for a BACKGROUND cold start for the turn the entry runs as,
+#: whoever's provenance it carries. The bulk Resume stamps it on every entry it
+#: queues: its request answers at once, so no person waits on any one of those
+#: starts. The drain honours it only when every consumed entry carries it, so a
+#: typed message drained beside it keeps its FOREGROUND start. A ``meta`` key, so
+#: the durable copy keeps it; like ``COMMANDS_OFF_META_KEY`` it only ever REMOVES
+#: something (a place in the person-only start reserve).
+START_BACKGROUND_META_KEY = "start_background"
+
+#: The turn tasks the queue drain started from entries that ALL carried
+#: ``START_BACKGROUND_META_KEY``: a bulk Resume's own turns and the retries they
+#: queue for themselves. A bulk Resume reads it to keep its place in its bound
+#: while a turn of its own hands over to such a retry; a turn started from a
+#: person's message is never in it. Weak, so a finished task leaves on its own.
+BACKGROUND_START_TASKS: "weakref.WeakSet[asyncio.Task[Any]]" = weakref.WeakSet()
 
 
 def queue_for_next_turn(
