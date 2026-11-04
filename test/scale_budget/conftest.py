@@ -6,9 +6,10 @@ counts are taken over without a seeder subprocess or a real home:
 
 * transcripts are written with ``Path.write_text`` and stamped with an explicit
   ``os.utime`` in the past, so no listing treats them as too young to trust;
-* slots come from :func:`seed_slots`, which holds ``push_slots_update`` for the
-  whole seed and broadcasts once (one ``get_or_create_slot`` per slot without the
-  hold re-serializes the whole list each time, O(N^2));
+* slots come from the shared ``slot_scale_helpers.seed_slots``, which holds
+  ``push_slots_update`` for the whole seed and broadcasts once (one
+  ``get_or_create_slot`` per slot without the hold re-serializes the whole list
+  each time, O(N^2)); :func:`seed_slots` here adds transcript rows to each;
 * :func:`budget_state` is a ``DashboardState`` over a real ``SessionMap``, because a
   ``MagicMock`` session manager turns the slot-row link memo off;
 * :class:`FakeClock` is patched into every coalescing clock that exists on the
@@ -33,6 +34,7 @@ from typing import Any, Callable, Iterator
 from unittest.mock import MagicMock
 
 import pytest
+from slot_scale_helpers import seed_slots as _seed_plain_slots
 
 #: Seeded files are stamped this far in the past. Older than every "too young to
 #: trust" window the listing code has (a few seconds), so the counts measure the
@@ -513,17 +515,21 @@ def add_socket(state: Any, ws: FakeWs) -> FakeWs:
     return ws
 
 
-def seed_slots(state: Any, n: int, *, prefix: str = "chat", rows: int = 2) -> list[Any]:
-    """Create *n* slots with *rows* transcript rows each, broadcasting once at the end."""
-    out = []
+def seed_slots(state: Any, n: int, *, rows: int = 2) -> list[Any]:
+    """:func:`slot_scale_helpers.seed_slots` with *rows* transcript rows per slot.
+
+    The slots themselves come from the shared helper, the one definition of a
+    seeded slot. The rows give the push budgets something to summarize and
+    redact, so a link or redaction budget cannot pass on empty transcripts.
+    The nested suspension keeps the whole seed to one slot-list broadcast.
+    """
     with state.suspend_slots_push():
-        for i in range(n):
-            slot = state.get_or_create_slot(f"{prefix}-{i}")
+        slots = _seed_plain_slots(state, n)
+        for i, slot in enumerate(slots):
             for r in range(rows):
                 role = "user" if r % 2 == 0 else "assistant"
                 slot.append(role, f"{role} row {r} of slot {i}", "msg")
-            out.append(slot)
-    return out
+    return slots
 
 
 @pytest.fixture
