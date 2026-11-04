@@ -15,6 +15,7 @@ import pytest
 from test_warm_task_brief import _arm_model, _claimed, _foreground_slot, _snapshot, _State
 
 from kiro_crew.dashboard import warm_task_brief
+from kiro_crew.dashboard import warm_task_brief_facts as facts
 from kiro_crew.dashboard import warm_task_brief_inputs as inputs
 
 _OURS = inputs.PrRef("kirodotdev/KiroCrew", 12)
@@ -42,11 +43,11 @@ def _entry(ref: inputs.PrRef, checked: bool = True) -> dict:
 
 def test_only_prs_read_live_get_a_link_once_each():
     live = (_entry(_OURS), _entry(_OURS), _entry(inputs.PrRef("kirodotdev/KiroCrew", 13), False))
-    assert warm_task_brief._live_links(live) == (_OURS,)
+    assert facts.live_links(live) == (_OURS,)
 
 
 def test_the_same_number_in_two_repos_gets_two_links_each_labelled_with_its_repo():
-    brief = replace(_brief(), links=warm_task_brief._live_links((_entry(_OURS), _entry(_THEIRS))))
+    brief = replace(_brief(), links=facts.live_links((_entry(_OURS), _entry(_THEIRS))))
     assert brief.as_meta()["links"] == [_OURS.url, _THEIRS.url]
     assert warm_task_brief._brief_text(brief, "en").endswith(
         "kirodotdev/KiroCrew#12 · acme/other#12"
@@ -54,7 +55,7 @@ def test_the_same_number_in_two_repos_gets_two_links_each_labelled_with_its_repo
 
 
 def test_no_row_without_a_live_read():
-    brief = replace(_brief(), links=warm_task_brief._live_links(()))
+    brief = replace(_brief(), links=facts.live_links(()))
     assert "links" not in brief.as_meta()
     assert warm_task_brief._brief_text(brief, "en") == "On track: Back.\n#12 is green."
 
@@ -89,10 +90,12 @@ async def test_a_posted_brief_keeps_the_body_as_written_and_links_only_the_live_
             },
         ),
     )
-    body = "#12 is mergeable.\n\n```\nPR #12\n```"
+    # The picture is kept as written; the typed line cites the live read (M11).
+    body = "```\nPR #12\n```"
+    line = {"text": "#12 is mergeable.", "kind": "pr", "facts": ["f1"]}
 
     async def run_model(*args, **kwargs):
-        return json.dumps({"headline": "Back.", "body": body})
+        return json.dumps({"headline": "Back.", "lines": [line], "body": body})
 
     _arm_model(monkeypatch, slot, [base, _claimed(base), _claimed(base)], run_model)
     await warm_task_brief._prepare_warm_task_brief(state, slot)

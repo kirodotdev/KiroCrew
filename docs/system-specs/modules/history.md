@@ -567,7 +567,9 @@ opener row (`warm_task_brief_preparing`), which still reads as a brief row. The
 result row's `meta.brief` holds the validated, redacted fields (`status`,
 `headline`, `asked`, `remaining`, `done`, `needs_you`, `next`, `extra`, `body`,
 `asks` (each `what`, `why`, `options` of `label` and `consequence`,
-`recommended`, `recommended_why`), an optional HTML `widget`, and the goal-scoped `progress`; an older row holds `asked`, `now`, `needs_you` and `next`) that the
+`recommended`, `recommended_why`), `checked` (the facts the gateway read,
+each `id`, `kind`, `label`, `values`, `source`, `read_at`), `lines` (the kept
+typed lines, each `text`, `kind`, `facts`), an optional HTML `widget`, and the goal-scoped `progress`; an older row holds `asked`, `now`, `needs_you` and `next`) that the
 transcript draws as a fixed card; its `content` is the same brief as plain
 text, for export and any reader without the card.
 Their metadata marks them only for fingerprint and model-input
