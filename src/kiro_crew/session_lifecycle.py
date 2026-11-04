@@ -79,6 +79,7 @@ from kiro_crew.session_lifecycle_parts.parked_queue import (  # noqa: F401
     allocation_identity,
     force_stop_keeping_others,
     hand_queue_to_successor,
+    take_live_entries,
     take_parked_queue,
 )
 from kiro_crew.session_lifecycle_parts.stop_decline import (  # noqa: F401
@@ -172,6 +173,7 @@ class _SessionEntry(Protocol):
     first_turn: object
     provider_switch_replay: bool
     retire_on_identity_change: bool
+    retire_on_arm: bool
     prev_turn_cancelled: bool
 
 
@@ -228,6 +230,9 @@ class SessionLifecycleOwner(Protocol):
 
     _compact_cooldown_until: MutableMapping[str, float]
     _compact_pending_verdict: MutableMapping[str, float]
+
+    def _allocation_boundary(self) -> Any: ...
+
     _cleanup_task: asyncio.Task[Any] | None
     _background_tasks: set[asyncio.Task[Any]]
 

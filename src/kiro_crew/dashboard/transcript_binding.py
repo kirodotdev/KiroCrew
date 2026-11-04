@@ -204,3 +204,17 @@ def seed_project_from_disk(state: Any, slot: Any, value: str) -> None:
     slot.project = value
     if shared and changed:
         _reset_if_running(state, slot)
+
+
+def restore_cleared(state: Any, slot: Any) -> None:
+    """Mark *slot*'s empty project as a clear read from disk or copied from a fork's parent.
+
+    The setter cannot record it, because "" over "" chooses nothing (:func:`write_project`).
+    A live alias's directory outranks it, as it outranks a disk seed.
+    """
+    binding = getattr(slot, "_binding", None)
+    if not isinstance(binding, TranscriptBinding) or binding.project:
+        return
+    if live_project_outranks_disk(state, slot):
+        return
+    binding.assigned = True

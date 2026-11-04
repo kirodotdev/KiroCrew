@@ -577,6 +577,9 @@ class SessionManager:
     set_lifecycle_turn_active = _claims.set_lifecycle_turn_active
     mark_lifecycle_lease = _claims.mark_lifecycle_lease
     has_session = _claims.has_session
+    supersede_arm_for_new_slot = _claims.supersede_arm_for_new_slot
+    transfer_retire_arm = _claims.transfer_retire_arm
+    withdraw_retire_arm = _claims.withdraw_retire_arm
     get_provider = _claims.get_provider
     session_generation = _claims.session_generation
     _advance_session_generation = _claims._advance_session_generation
@@ -1084,11 +1087,13 @@ class SessionManager:
         sid = getattr(client, "_session_id", None)
         if not isinstance(sid, str) or not sid:
             return False
+        # An arm-marked session keeps the landed SID but not its directory, which the arm moved.
+        retiring = getattr(session, "retire_on_arm", False) is True
         self._session_map.set(
             folded,
             sid,
             provider=_provider_label(session.provider),
-            cwd=session.provider.cwd,
+            cwd="" if retiring else session.provider.cwd,
         )
         session.provider_switch_replay = False
         return True
