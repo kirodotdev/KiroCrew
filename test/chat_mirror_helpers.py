@@ -88,15 +88,8 @@ def _fake_transport(
 def _real_caps_transport(channel_type: str):
     """A fake transport carrying the channel's SHIPPED ``TransportCapabilities``.
 
-    The proactive gate is a capability read, so a test that hands it a
-    hand-built ``SimpleNamespace`` pins the fake and not the declaration:
-    flipping ``WECOM_CAPABILITIES.supports_proactive_send`` left the refusal
-    green while the endpoint began accepting a channel that cannot send. Only
-    the network methods stay faked.
-
-    Copied rather than aliased: ``TransportCapabilities`` is a MUTABLE dataclass
-    and the module-level object is shared process-wide, so a test that tweaked a
-    field in place would silently rewrite every later test's idea of the channel.
+    A hand-built ``SimpleNamespace`` would pin the fake, not the declaration. Copied, not
+    aliased: ``TransportCapabilities`` is a MUTABLE dataclass shared process-wide.
     """
     return _fake_transport(
         channel_type, capabilities=dataclasses.replace(_mirror_gate_capabilities()[channel_type])

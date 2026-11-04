@@ -61,12 +61,8 @@ def _prewarmed_member_state(tmp_path, monkeypatch, *, sid: str | None):
 async def test_new_chat_member_pick_binds_private_memory_over_a_prewarm(tmp_path, monkeypatch, sid):
     """ "+ New conversation" then picking a member must bind its private store.
 
-    Regression test. A pre-warm's surviving resume pointer is not V1 context:
-    the chat has never been sent a message, so the pick is granted and the turn
-    runs on the member's private store instead of reporting no verified private
-    assignment while the member's name is displayed. Both parametrizations
-    assert the same outcome, so the pre-warm is what varies and the binding is
-    what does not.
+    A pre-warm's resume pointer is not V1 context: the chat has had no message. Only the
+    pre-warm varies across the parametrizations; the binding does not.
     """
     state, store = await asyncio.to_thread(_prewarmed_member_state, tmp_path, monkeypatch, sid=sid)
     async with TestClient(TestServer(as_owner(_make_app_with_agent_routes(state)))) as client:
@@ -148,13 +144,8 @@ async def test_restricted_member_session_persists_transcript_but_no_owner_record
 ):
     """A restricted member chat keeps its transcript and survives a restart.
 
-    The line records the restricted mode and the member's name, and NO memory
-    store: with no execution carrier written for a restricted session, a store
-    name would read back as a legacy owner claim and the restart would refuse
-    the chat as a member record with no identity. Left out, the restart reads
-    the session as unbound and the next turn re-selects the member from
-    ``agent`` under the retained mode -- the same live-only carrier the session
-    ran under before the restart.
+    The line has NO memory store: without a carrier a store name reads back as a legacy
+    owner claim and the restart refuses the chat. The next turn re-selects from ``agent``.
     """
     from kiro_crew.dashboard.chat_persistence import restore_recent_sessions
     from kiro_crew.execution_context import _LIVE_EXECUTIONS, _live_key

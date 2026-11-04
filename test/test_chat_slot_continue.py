@@ -552,14 +552,9 @@ class TestChatSlotContinue:
     async def test_not_readiness_gated(self, _patched):
         """A not-ready readiness service must not refuse Continue.
 
-        Continue is an ordinary send: it queues one synthetic message and lets the
-        runner dispatch it, so the ACP attempt is its authority and a signed-out
-        install reports ``AcpAuthRequired`` in the transcript. The gate that used
-        to sit here authorized on a re-probe of ``kiro-cli`` whose TIMEOUT reads as
-        signed-out, so on a host with a slow probe every press answered 503
-        ``kiro_prerequisite_required`` while typing the same request by hand
-        worked. The service is wired both ways ``kiro_readiness._service`` resolves
-        it, so re-adding the gate fails here rather than in production.
+        Continue is an ordinary send, so the ACP attempt decides; a ``kiro-cli`` probe
+        timeout would read as signed-out and answer 503. The service is wired both ways
+        ``kiro_readiness._service`` resolves it.
         """
         service = MagicMock()
         service.session_ready = AsyncMock(return_value=False)

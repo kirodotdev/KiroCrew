@@ -131,11 +131,8 @@ def test_folder_sample_titles_without_conversation_log() -> None:
 def test_archived_scan_excludes_private_sessions(mode: str) -> None:
     """A filed temporary/incognito session's title must never ground the prompt.
 
-    INCOGNITO_MEMORY_MODES is documented as "never
-    searchable/listable/summarizable"; sampling a title to ground a folder pick
-    ships it to a remote model, which is exactly that. A temporary session CAN be
-    filed — api_chat_slot_folder does not gate on memory_mode — so the folder
-    filter alone would not stop it.
+    INCOGNITO_MEMORY_MODES are "never searchable/listable/summarizable", and such a session
+    CAN be filed, so the folder filter alone would ship its title to a remote model.
     """
     sessions = [
         {"folder_id": "a", "title": "SECRET private topic", "memory_mode": mode},
