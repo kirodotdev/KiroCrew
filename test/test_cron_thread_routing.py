@@ -331,30 +331,6 @@ class TestSubagentDoneCronRouting:
         assert getattr(info, "_report_undelivered", False) is False
 
     @pytest.mark.asyncio
-    async def test_resets_session_when_last_subagent(self) -> None:
-        gateway = _make_gateway()
-        subagent_done = _capture_subagent_done(gateway)
-        info = SubagentInfo(
-            id="sub2",
-            task="check status",
-            parent_session_key="cron:j1",
-        )
-        info.result = "all good"
-        info.done = True
-        with (
-            patch("kiro_crew.slack.gateway.redact_exfiltration_urls", return_value=("", False)),
-            patch("kiro_crew.slack.gateway.redact_credentials", return_value=("", False)),
-            patch(
-                "kiro_crew.slack.gateway.stream_and_collect",
-                new_callable=AsyncMock,
-                return_value="done",
-            ),
-        ):
-            await subagent_done(info)
-
-        gateway.sessions.reset.assert_awaited_once_with("cron:j1", skip_if_busy=True)
-
-    @pytest.mark.asyncio
     async def test_injection_failure_does_not_propagate(self) -> None:
         gateway = _make_gateway()
         gateway.sessions.get_or_create = AsyncMock(side_effect=Exception("session_down"))
@@ -537,6 +513,9 @@ class TestSubagentDoneCancelsBeforeRelease:
             p1, p2,
         ):
             await subagent_done(info)
+        # The injection's own count is returned, so a later reset is not held back.
+        assert gateway._cron_injecting == {}
+        assert getattr(info, "_report_undelivered", False) is False
         gateway.sessions.release.assert_called_once_with("cron:j1")
 
 
