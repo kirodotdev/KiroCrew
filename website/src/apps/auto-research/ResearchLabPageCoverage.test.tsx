@@ -17,6 +17,9 @@
  *   - Wizard branches: execution-mode choice, manual sub-question add / edit /
  *     remove, the max-cycles suggestion and its "user touched it" latch,
  *     parallel-worker clamping, the Back step, and both async failure paths.
+ *   - A ready campaign's Start: the request, the re-reads around it, the
+ *     one-campaign-at-a-time block (including one the list had not seen yet),
+ *     and a refused start.
  *   - Detail branches: paused controls, the stagnation banner's own actions,
  *     nudge dismissal, closing the delete dialog with Escape, the SSE message
  *     and error handlers, and the forked-from breadcrumb.
@@ -55,6 +58,7 @@ vi.mock('../../api/client', () => ({
 }))
 
 import { api } from '../../api/client'
+import { newQueryClient } from '../../api/queryClient'
 import ResearchLabPage from './ResearchLabPage'
 
 // Controllable stand-in for the browser's EventSource. The page opens one per
@@ -73,10 +77,9 @@ class FakeEventSource {
   close() { this.closed = true }
 }
 
-function renderPage() {
-  const queryClient = new QueryClient({
-    defaultOptions: { queries: { retry: false, gcTime: 0 } },
-  })
+function renderPage(queryClient = new QueryClient({
+  defaultOptions: { queries: { retry: false, gcTime: 0 } },
+})) {
   return render(
     <QueryClientProvider client={queryClient}>
       <Provider store={store}>
@@ -401,6 +404,121 @@ describe('ResearchLabPage — root list and wizard branches', () => {
     await waitFor(() => expect(vi.mocked(api.researchCreate)).toHaveBeenCalled())
     expect(vi.mocked(api.researchAction)).not.toHaveBeenCalled()
     expect(screen.getByRole('button', { name: /Start Campaign/i })).toBeInTheDocument()
+  })
+})
+
+describe('ResearchLabPage — a ready campaign', () => {
+  // Created but never started: through the API, or a create or fork whose start
+  // failed. The backend accepts only `start` from ready, so Start is the one
+  // control that moves it on.
+  const READY = {
+    id: 'dddd4444', name: 'Unstarted campaign', question: 'Which queueing designs survive a regional outage?',
+    sub_questions: '[]', sources: '["web"]', max_cycles: 30, idle_secs: 60,
+    status: 'ready', total_cycles: 0, findings: [],
+  }
+
+  it('offers Start, not Resume, and says it has not started', async () => {
+    vi.mocked(api.researchCampaigns).mockResolvedValue([READY])
+    vi.mocked(api.researchCampaign).mockResolvedValue(READY)
+    const user = userEvent.setup()
+    renderPage()
+    await openDetail(user, READY)
+    expect(await screen.findByRole('button', { name: 'Start Campaign' })).toBeEnabled()
+    expect(screen.getByText('Not started yet.')).toBeInTheDocument()
+    expect(screen.queryByText(/First cycle in progress/)).not.toBeInTheDocument()
+    for (const name of ['Resume', 'Pause', 'Stop', 'Nudge']) {
+      expect(screen.queryByRole('button', { name })).not.toBeInTheDocument()
+    }
+  })
+
+  it('starts it once, stays disabled until the campaign and the list are re-read, and Back lists it as active', async () => {
+    const running = { ...READY, status: 'running' }
+    let finishStart: (value: unknown) => void = () => {}
+    let finishReread: (value: unknown) => void = () => {}
+    vi.mocked(api.researchAction).mockImplementation(() => new Promise(resolve => { finishStart = resolve }))
+    vi.mocked(api.researchCampaigns).mockResolvedValue([READY])
+    vi.mocked(api.researchCampaign).mockResolvedValue(READY)
+    const user = userEvent.setup()
+    renderPage()
+    await openDetail(user, READY)
+    const start = await screen.findByRole('button', { name: 'Start Campaign' })
+    await user.click(start)
+    await waitFor(() => expect(vi.mocked(api.researchAction)).toHaveBeenCalledWith('dddd4444', 'start'))
+    // A second click while the start is in flight sends nothing.
+    expect(start).toBeDisabled()
+    expect(start).toHaveTextContent('Starting...')
+    await user.click(start)
+    expect(vi.mocked(api.researchAction)).toHaveBeenCalledTimes(1)
+
+    // Accepted, but the campaign's re-read has not landed: Start stays disabled.
+    const listReads = vi.mocked(api.researchCampaigns).mock.calls.length
+    const campaignReads = vi.mocked(api.researchCampaign).mock.calls.length
+    vi.mocked(api.researchCampaigns).mockResolvedValue([running])
+    vi.mocked(api.researchCampaign).mockImplementation(() => new Promise(resolve => { finishReread = resolve }))
+    await act(async () => { finishStart({ id: READY.id, status: 'running' }) })
+    await waitFor(() => expect(vi.mocked(api.researchCampaign).mock.calls.length).toBeGreaterThan(campaignReads))
+    await waitFor(() => expect(vi.mocked(api.researchCampaigns).mock.calls.length).toBeGreaterThan(listReads))
+    expect(start).toBeDisabled()
+    await act(async () => { finishReread(running) })
+    expect(await screen.findByRole('button', { name: 'Pause' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Start Campaign' })).not.toBeInTheDocument()
+    expect(screen.getByText(/First cycle in progress/)).toBeInTheDocument()
+
+    // The list polls only while a campaign is active, so without the re-read it
+    // would still show this campaign under History with New Campaign enabled.
+    await user.click(screen.getByRole('button', { name: /Back/ }))
+    await waitFor(() => expect(screen.getByRole('button', { name: /New Campaign/ })).toBeDisabled())
+    expect(screen.getByText('ACTIVE')).toBeInTheDocument()
+    expect(screen.queryByText('HISTORY')).not.toBeInTheDocument()
+  })
+
+  it('waits while another campaign is active, and says why', async () => {
+    vi.mocked(api.researchCampaigns).mockResolvedValue([ACTIVE, READY])
+    vi.mocked(api.researchCampaign).mockResolvedValue(READY)
+    const user = userEvent.setup()
+    renderPage()
+    await openDetail(user, READY)
+    const start = await screen.findByRole('button', { name: 'Start Campaign' })
+    expect(start).toBeDisabled()
+    expect(start).toHaveAccessibleDescription('One campaign at a time — research benefits from focused depth.')
+    await user.click(start)
+    expect(vi.mocked(api.researchAction)).not.toHaveBeenCalled()
+  })
+
+  it('re-reads the list before starting, and sends nothing when a campaign started elsewhere', async () => {
+    vi.mocked(api.researchCampaigns).mockResolvedValue([READY])
+    vi.mocked(api.researchCampaign).mockResolvedValue(READY)
+    const user = userEvent.setup()
+    // The app's own client: it never treats a cached read as stale, so the
+    // re-read has to force its request.
+    renderPage(newQueryClient())
+    await openDetail(user, READY)
+    const start = await screen.findByRole('button', { name: 'Start Campaign' })
+    expect(start).toBeEnabled()
+    // The list on screen polls only while a campaign is active, so it has not
+    // seen this one, started through the API after the page loaded.
+    vi.mocked(api.researchCampaigns).mockResolvedValue([ACTIVE, READY])
+    await user.click(start)
+    await waitFor(() => expect(start).toHaveAccessibleDescription('One campaign at a time — research benefits from focused depth.'))
+    await waitFor(() => expect(start).toHaveTextContent('Start Campaign'))
+    expect(start).toBeDisabled()
+    expect(vi.mocked(api.researchAction)).not.toHaveBeenCalled()
+  })
+
+  it('shows the gateway\'s reason when it refuses the start, and re-reads the campaign', async () => {
+    vi.mocked(api.researchAction).mockRejectedValue(new Error("Cannot start a campaign in 'running' state"))
+    vi.mocked(api.researchCampaigns).mockResolvedValue([READY])
+    vi.mocked(api.researchCampaign).mockResolvedValue(READY)
+    const user = userEvent.setup()
+    renderPage()
+    await openDetail(user, READY)
+    const start = await screen.findByRole('button', { name: 'Start Campaign' })
+    const campaignReads = vi.mocked(api.researchCampaign).mock.calls.length
+    await user.click(start)
+    expect(await screen.findByText(/Cannot start a campaign in 'running' state/)).toBeInTheDocument()
+    await waitFor(() => expect(vi.mocked(api.researchCampaign).mock.calls.length).toBeGreaterThan(campaignReads))
+    await waitFor(() => expect(start).toBeEnabled())
+    expect(start).toHaveTextContent('Start Campaign')
   })
 })
 
