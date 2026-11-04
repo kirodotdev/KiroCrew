@@ -16,26 +16,18 @@ from typing import IO, Any
 
 from kiro_crew.history_cache import FileStamp
 
-#: Every projection reader decodes one ``.jsonl`` line at a time and then reads a
-#: field off it. ``json.JSONDecodeError`` covers the line that will not parse;
-#: it does NOT cover a line that parses to something other than an object
-#: (``[]``, ``"text"``, ``12``, ``null``), which reaches ``.get`` and raises
-#: ``AttributeError`` -- abandoning the read, and every valid row after the bad
-#: one, on an error none of these callers expect. So a decode is followed by a
-#: shape check, exactly as ``read_file_change_messages`` already does for the
-#: same rows of the same files.
+#: Projection readers decode one ``.jsonl`` line, then read a field off it. A
+#: line that parses to a non-object (``[]``, ``"text"``, ``null``) would raise
+#: ``AttributeError`` at ``.get`` and abandon every valid row after it, so each
+#: decode is followed by a shape check, as in ``read_file_change_messages``.
 _HISTORY_LOGGER = logging.getLogger("kiro_crew.history")
 
 #: What :meth:`TranscriptReadProjection.metadata_line_state` answers about a
-#: transcript's first line. ``get_metadata_status`` folds the last two into one
-#: ``readable=False``, which is the right answer for every READER (a line whose
-#: contract cannot be seen is refused either way) but not for a WRITER: a
-#: ``transient`` failure (the file could not be opened or decoded as UTF-8 after
-#: the bounded retries) clears on its own and the write is deferred, while a
-#: ``corrupt`` line (bytes on disk that are not JSON) never will, so a writer
-#: that keeps deferring on it never persists another row. The two-tuple API is
-#: kept for readers; writers ask this companion only once the tuple says
-#: unreadable.
+#: transcript's first line. ``get_metadata_status`` folds the last two into
+#: ``readable=False``, which suits readers. Writers need the split: a
+#: ``transient`` failure (open or UTF-8 decode failed after retries) clears on its
+#: own, so the write is deferred, but a ``corrupt`` line never does, and a writer
+#: deferring on it would never persist another row.
 METADATA_LINE_READABLE = "readable"
 METADATA_LINE_TRANSIENT = "transient"
 METADATA_LINE_CORRUPT = "corrupt"
@@ -135,31 +127,16 @@ def drop_persisted_tail_prefix(
 ) -> list[dict]:
     """`tail` minus whatever of its head `full_disk` already ends with.
 
-    Two callers, one shape: a corpus read from disk, followed by rows that MAY
-    already be in it.
+    Callers: a fork rebuild appending the slot's unflushed tail (decided against
+    an earlier read, so a save in between puts rows in both lists), and
+    ``read_messages_chained_full`` joining a rotated archive to its live file (a
+    crash between writing the archive and rewriting the live head leaves rows in
+    both). A duplicate row shifts every pagination cursor and fork index above it.
 
-    A fork rebuild appends the slot's unflushed tail onto a freshly read disk
-    corpus. "Unflushed" was decided against an EARLIER read, so a save landing
-    between the two reads leaves those rows in both lists.
-
-    ``read_messages_chained_full`` concatenates a key's rotated archive with its
-    live file. Rotation writes the archive first and rewrites the live file's head
-    second, so a crash between those two steps leaves the rotated rows in both
-    files permanently.
-
-    In both cases appending blind duplicates rows, and a duplicated row is not
-    cosmetic here: this is the index space pagination cursors and fork indices
-    resolve against, so one extra row shifts every index above it.
-
-    Rows are matched by their stable id (``meta.mid``) when BOTH carry one. That
-    id is what ``history`` assigns per row, so it is the only identity that
-    cannot collide. Without it the fallback requires ``(ts, role, content)`` to
-    all match: ``(ts, role)`` alone is a spot-check elsewhere, but here a match
-    DELETES a row, and two distinct rows can share a second and a role (the same
-    speaker twice inside one second, or two processes stamping the same ts), so
-    dropping on that alone would remove a genuinely unpersisted message. The
-    longest overlap wins, so a partially-written duplication is handled as well as
-    a whole one: both producers persist a PREFIX, never an interior slice.
+    Rows match by ``meta.mid`` when both carry one. Otherwise all of
+    ``(ts, role, content)`` must match: a match deletes a row, and two real rows
+    can share a second and a role. The longest overlap wins, because both
+    producers persist a prefix, never an interior slice.
     """
     if not full_disk or not tail:
         return tail

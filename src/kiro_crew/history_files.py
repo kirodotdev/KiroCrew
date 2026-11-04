@@ -246,23 +246,14 @@ def _cleanup_old_archives(retention_days: int | None = None, base: Path | None =
 def _cleanup_expired_crew_logs(retention_days: int, now: float) -> None:
     """Expire closed the sessions' logs, best-effort, never at the transcript's cost.
 
-    Off the event loop, which is what makes the added filesystem work safe rather
-    than merely cheap: the only caller is ``_cleanup_old_archives``, reached from
-    ``_archive_lines`` on the rotation path, and that path runs in the dashboard's
-    flush executor thread (see ``chat_persistence``, which documents
-    ``_save_slot_to_history`` running there) or on the shutdown save. The sweep
-    reads a header and a bounded tail per closed unit, inside the hourly throttle
-    the archive cleanup already has, so the cost is once an hour in a worker rather
-    than per delete on the loop.
+    Runs off the event loop: the only caller, ``_cleanup_old_archives``, is
+    reached from ``_archive_lines`` in the dashboard's flush executor thread or
+    the shutdown save, inside the archive cleanup's hourly throttle.
 
-    Imported lazily and swallowed on failure for one reason each. Lazily because
-    this module is imported on every startup while the crew log store is only
-    reachable behind ``KIROCREW_CREW_LOG``, and a launch with the flag off
-    should not pay for the import. Swallowed because the caller is on the
-    transcript ARCHIVE path: a crew log tree that cannot be swept is a disk-space
-    problem, and letting it raise here would turn that into a failure to archive
-    the transcript, which loses history rather than retaining too much of it. The
-    sweep logs its own counts.
+    Imported lazily so a launch without ``KIROCREW_CREW_LOG`` skips the import.
+    Failures are swallowed because this is the transcript archive path: an
+    unsweepable crew log tree is a disk-space problem, and raising would fail
+    the archive and lose history. The sweep logs its own counts.
     """
     try:
         from kiro_crew.crew_log.store import sweep_expired
