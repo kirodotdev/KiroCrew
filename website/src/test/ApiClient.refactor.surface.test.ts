@@ -76,7 +76,7 @@ const API_KEY_ORDER = [
   'createWorktree', 'recentProjects', 'favoriteProjects', 'addFavoriteProject',
   'removeFavoriteProject', 'projectAwsProfile', 'setProjectAwsProfile', 'browseDirs', 'browseDrives',
   'browseFiles', 'projectGit', 'projectGitStatus', 'projectGitLog', 'projectGitRepos',
-  'projectTree', 'workspaces', 'createWorkspace', 'updateWorkspace',
+  'projectTree', 'sessionFiles', 'sessionFileDiff', 'workspaces', 'createWorkspace', 'updateWorkspace',
   'deleteWorkspace', 'crons', 'createCron', 'deleteCron',
   'batchDeleteCron', 'updateCron', 'runCron', 'cronSecretsGrant',
   'cancelCron', 'cronToChat', 'toggleCron', 'cronHistory',

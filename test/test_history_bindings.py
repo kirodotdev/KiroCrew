@@ -165,6 +165,7 @@ _MEMBERS: dict[str, tuple[str, str, str]] = {
     "read_messages_chained_full": ("function", "d4d3f09b758c", "history"),
     "read_messages_chained_page": ("function", "053fbeec09b6", "history"),
     "read_messages_chained_tail": ("function", "ce37b325fd52", "history"),
+    "read_rotated_messages": ("function", "d4d3f09b758c", "history"),
     "read_rotated_messages_chained": ("function", "d4d3f09b758c", "history"),
     "read_threads": ("function", "fc4954d3d484", "history_threads"),
     "recent": ("function", "3151c6bfcca2", "history"),

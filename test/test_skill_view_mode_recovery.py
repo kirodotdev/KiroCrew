@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import gc
 import json
+import threading
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -109,6 +110,12 @@ def _pre_ledger_backlog(agents, project, count, spec=None):
     views = [prepared.agent("custom") for prepared in held]
     del held
     gc.collect()
+    # A dropped projection's lease ends on the reaper thread, later. Wait for the
+    # ends just queued (the reaper runs them in order) so no view is still leased
+    # when a drain starts and takes it in an extra batch.
+    reached = threading.Event()
+    projection._COLLECTED_ENDS.put(reached.set)
+    assert reached.wait(30), "the reaper did not end the dropped projections"
     metadata = projection._projection_metadata_dir()
     (metadata / projection._VIEW_LEDGER_NAME).unlink()
     projection._VIEW_SOURCES.clear()
@@ -131,6 +138,10 @@ def test_the_boot_drain_records_a_backlog_in_one_ledger_write(native_tree, monke
 
     monkeypatch.setattr(projection, "_record_view_ledger_entries", counted)
     monkeypatch.setattr(projection, "_DRAIN_BATCH_PAUSE_SECS", 0)
+    # The write count is the subject, not the time budget: a loaded runner that
+    # spends the per-batch budget splits the work into an extra batch and write.
+    monkeypatch.setattr(projection, "_PRUNE_MAX_SECONDS_PER_RUN", 3600.0)
+    assert not list(projection._projection_lease_dir().iterdir()), "a view is still leased"
 
     assert projection.drain_stale_aliases() == 3
     assert not any((metadata / f"{view}.json").exists() for view in views)

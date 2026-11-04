@@ -28,6 +28,7 @@ import { cn } from '../../lib/utils'
 import { useColumnResize } from '../../hooks/useColumnResize'
 import { PierreWorkspaceTree, type TreeReveal } from '../../pierre/tree'
 import { mergeTreeMatches } from '../../lib/treeSearchMatches'
+import { treeIsPartial } from '../../pierre/treeFolderListings'
 import { findReport, reportForError } from '../../utils/errorReport'
 import { errMessage } from '../../utils/thunkError'
 import { pathBasename, relativeToRoot, stripTrailingSeparators } from '../../utils/pathBasename'
@@ -624,7 +625,7 @@ export default function FileBrowserRail({ projectDir, onFileOpen, onAddToContext
   const contentMode = searchMode === 'content'
   // The tree filter finds only what the tree holds. Past its cap the name query
   // goes to the filename search instead.
-  const treeTruncated = treeData?.truncated === true
+  const treeTruncated = treeIsPartial(treeData)
   const nameSearch = !contentMode && !changedMode && treeTruncated
     && query.trim().length >= NAME_SEARCH_MIN_CHARS
   const projectRoot = (treeData?.root ?? projectDir).replace(/[/\\]+$/, '')

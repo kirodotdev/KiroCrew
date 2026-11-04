@@ -21,6 +21,7 @@ import {
   type SearchErrorCause,
 } from '../../lib/searchErrorCause'
 import { PierreWorkspaceTree } from '../../pierre/tree'
+import { treeIsPartial } from '../../pierre/treeFolderListings'
 import { useTreeState, useTreeQuery } from './FileBrowserRail'
 import { pathBasename, stripTrailingSeparators } from '../../utils/pathBasename'
 import { mergeTreeMatches } from '../../lib/treeSearchMatches'
@@ -176,7 +177,7 @@ export default function FolderPanel({ path, projectDir, onClose, onFileOpen, onA
   // the recursive search only while the payload is whole. A truncated payload
   // (the server capped its rows) sends the query to the search instead, which
   // reaches the whole project.
-  const treeFiltersLocally = treeMode && treeData?.truncated !== true
+  const treeFiltersLocally = treeMode && !treeIsPartial(treeData)
 
   // A different query is a different search: expansion applies to the result set
   // the user was looking at, not to whatever they type next. Also covers

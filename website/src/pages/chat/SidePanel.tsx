@@ -1130,6 +1130,9 @@ export default function SidePanel({
                 <FilesHomePanel
                   active={isActive && !panelHidden}
                   projectDir={projectDir ?? ''}
+                  // The confirmed key only: an unconfirmed one may name another
+                  // session (see `persistSlot`), whose edits are not this chat's.
+                  slot={(persistSlot !== undefined ? persistSlot : slot) || null}
                   title={viewTitles?.files}
                   // A diff open from the Changed segment opens the working-tree
                   // diff as its OWN tab (coexisting with any plain file tab for
@@ -1140,6 +1143,9 @@ export default function SidePanel({
                     if (diff && onOpenWorkingTreeDiff) { onOpenWorkingTreeDiff(abs); return }
                     onFileOpen?.(abs, { diffMode: diff, line: opts?.line })
                   }}
+                  // An Edited row's Show changes: the chat's recorded edit, in
+                  // the same diff tab the transcript's change card opens.
+                  onOpenDiff={tabsCtl.openDiff}
                   onAddToContext={onAddToContext}
                   // Withheld, not disabled, when the terminal feature is off or
                   // the host withdraws the terminal view — the same withdrawal

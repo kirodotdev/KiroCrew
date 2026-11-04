@@ -565,6 +565,8 @@ describe('every api method issues one well-formed /api request', () => {
     'favoriteProjects',
     'projectAwsProfile',
     'projectTree',
+    'sessionFiles',
+    'sessionFileDiff',
   ])
   const CALLER_SIGNAL = new AbortController().signal
 
