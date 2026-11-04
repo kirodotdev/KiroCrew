@@ -74,23 +74,15 @@ _POOLING_TYPE_LAST = 3
 # llama.cpp's `enum llama_pooling_type` values for the poolings a model can ask for.
 _POOLING_TYPES = {"mean": 1, "cls": 2, "last": _POOLING_TYPE_LAST}
 # Architectures the vendored llama.cpp runs WITHOUT a KV cache (the `res =
-# nullptr` cases of llama_model::create_memory in src/llama-model.cpp, plus the
-# t5encoder encoder-only path). llama_decode() routes them through encode(),
-# which aborts unless one physical micro-batch holds every input token, whatever
-# the GGUF says about causality. Keep this list a verbatim mirror of that switch
-# whenever the vendored runtime is bumped: test/test_encoder_architecture_mirror.py
-# requires every name here to be spelled by every vendored libllama binary, so a
-# removed or renamed architecture fails the test unless its name is the suffix
-# of another listed name (`bert` inside `modern-bert`: GNU ld tail-merges the
-# strings, so only the terminating NUL can be required and the longer name still
-# satisfies the check), while an ADDED cache-less architecture is invisible to it
-# and must be re-mirrored by hand (see the bump procedure in _vendor/README.md).
-# Membership decides only the micro-batch shape (see _model_context_policy);
-# pooling comes from the model's id (see model_pooling_type).
-# Non-causal models that DO keep a KV cache (llama-embed, or any decoder family
-# re-tagged bidirectional) are not named here: they declare
-# `<architecture>.attention.causal = false` and _model_context_policy() reads
-# that key directly.
+# nullptr` cases of llama_model::create_memory in src/llama-model.cpp, plus
+# t5encoder). llama_decode() routes them through encode(), which aborts unless one
+# micro-batch holds every input token. Mirror that switch verbatim on every runtime
+# bump: test/test_encoder_architecture_mirror.py catches a removed or renamed name
+# (except a suffix of another, e.g. `bert` in `modern-bert`, which ld tail-merges),
+# but an ADDED architecture must be mirrored by hand (_vendor/README.md).
+# Membership decides only the micro-batch shape; pooling comes from the model id.
+# Non-causal models that keep a KV cache declare `.attention.causal = false`,
+# which _model_context_policy() reads directly.
 _ENCODER_ARCHITECTURES = frozenset(
     {
         "bert",
@@ -110,17 +102,11 @@ _ENCODER_ARCHITECTURES = frozenset(
         "wavtokenizer-dec",
     }
 )
-# Context window for the embedding pass. Episodic memories are capped at
-# 2000 chars and knowledge chunks are bounded by the chunker (~512 tokens +
-# overlap, ≈5.8k chars max), so 2048 tokens covers both. Kept deliberately
-# small: KV-cache size scales linearly with n_ctx (~115KB/token for this
-# model) and the embedder may load in more than one process (gateway +
-# kirocrew-core MCP server — the GGUF weights themselves are mmap'd and
-# physically shared, the KV buffers are not). The logical batch still covers
-# the complete input for last-token pooling; llama.cpp may split that work into
-# smaller physical micro-batches without changing the resulting vector. This is
-# the ceiling: a model trained for fewer positions is sized to its own count
-# instead (see _model_context_policy).
+# Context window ceiling for the embedding pass. Memories (2000 chars) and
+# knowledge chunks (~5.8k chars max) both fit in 2048 tokens. Kept small because
+# the KV cache costs ~115KB/token and is not shared between the processes that
+# may load the embedder (the mmap'd weights are). A model trained for fewer
+# positions is sized to its own count (_model_context_policy).
 _N_CTX = 2048
 # Physical decode micro-batch. Keeping this below the logical batch bounds the
 # compute scratch arena and llama.cpp's per-token output buffer (one row per
@@ -179,36 +165,17 @@ _LARGE_HOST_EMBED_THREADS = 6
 _MAX_PENDING_EMBEDS = 8
 _INTERACTIVE_QUEUE_RESERVE = 2
 _MAX_EMBED_BATCH_TEXTS = 8
-# Bulk corpus loops (the post-migration re-embed sweep above all) run for as long
-# as the corpus takes: measured 429 ms/row at 4 threads on ~500-character rows,
-# so a 3,000-row migrated memory is ~21 minutes at a SUSTAINED 3.7 cores. That is
-# indistinguishable from a runaway process to the user — laptop fans spin up and
-# stay up — even though every row is legitimate work.
+# Bulk corpus loops (the post-migration re-embed sweep above all) would run a
+# 3,000-row memory at a sustained 3.7 cores for ~21 minutes, which looks like a
+# runaway process. Nobody waits on it: a NULL-embedding row is already keyword
+# searchable. So the defaults aim to stay invisible: one thread at a 20% duty
+# cycle is ~0.2 of a core (~7 s/row); the sweep is idempotent and resumes across
+# restarts, so it converges over several sessions.
 #
-# Nobody is waiting on that work. A row with a NULL embedding is still FTS5
-# keyword-searchable the moment it lands; the sweep only adds SEMANTIC reach over
-# memories the user imported from a previous install. So the sweep is optimized
-# for staying invisible, not for finishing early, and the defaults below are
-# deliberately slow: one thread at a 20% duty cycle is ~0.2 of a core, which no
-# fan reacts to. On the measured host that is ~7 s/row, so a 3,000-row backlog
-# takes hours — and that is fine. It is idempotent and resumes across restarts
-# (an unfinished row stays NULL and the next boot picks it up), so a machine that
-# is never on long enough to finish still converges over several sessions.
-#
-# Two independent dials for a deployment that wants it faster (a server, or a
-# user who wants semantic search over old memories today):
-#
-#   * ``memory.embedding_bulk_threads`` — threads for BULK jobs only, so raising
-#     it never slows a query the user is waiting on. 0 means "inherit
-#     ``embedding_threads``".
-#   * ``memory.embedding_bulk_duty`` — the fraction of wall time the loop may
-#     spend computing. 1.0 runs flat out.
-#
-# Total CPU work is unchanged either way (measured 1.39–1.57 CPU-seconds per row
-# across 1/2/4 threads); what changes is how thinly it is spread. Fans respond to
-# sustained load, so spreading it is the whole point. The one cost of spreading
-# is that the ~700MB model stays resident while the sweep runs, which is why the
-# sweep still probes for pending rows BEFORE loading anything.
+# To go faster: ``memory.embedding_bulk_threads`` (BULK jobs only; 0 inherits
+# ``embedding_threads``) and ``memory.embedding_bulk_duty`` (1.0 runs flat out).
+# Total CPU work is the same either way; only its spread changes. The sweep probes
+# for pending rows BEFORE loading, since the ~700MB model stays resident meanwhile.
 _DEFAULT_BULK_THREADS = 1
 _DEFAULT_BULK_DUTY = 0.2
 # Floor on the duty cycle. A typo of 0.001 would otherwise turn a multi-hour
@@ -338,31 +305,19 @@ def embedding_weight_repack() -> bool:
 def _embed_threads() -> int:
     """Thread count for llama.cpp's embedding compute pools.
 
-    Read from the RAW ``memory`` config section for the same reason the rest of
-    this module does: the download thread and the backend factory must not pull
-    in the full config dataclass import graph.
+    Read from the RAW ``memory`` section to avoid the config dataclass imports.
+    CPUs come from :func:`kiro_crew.cpu_affinity.affinity_cpu_count`, which honours
+    a CPU-set restriction that ``os.cpu_count`` ignores.
 
-    The count comes from :func:`kiro_crew.cpu_affinity.affinity_cpu_count`, not
-    ``os.cpu_count``: under a CPU-set restriction (``--cpuset-cpus``, ``taskset``)
-    the latter reports the host's cores, so the cap below would compute from 64 on
-    a 2-core allowance and answer four threads where two is the whole allowance.
+    An operator value other than :data:`_DEFAULT_EMBED_THREADS` is honoured up to
+    that count. The default is capped one core below it, so a small host keeps a
+    core for the event loop; a process with :data:`_LARGE_HOST_MIN_CORES` or more
+    CPUs defaults to :data:`_LARGE_HOST_EMBED_THREADS`.
 
-    An operator value OTHER than the declared :data:`_DEFAULT_EMBED_THREADS` is
-    honoured up to that count. Default policy caps the default one core BELOW it
-    instead, so a 2-vCPU host keeps a core for the event loop rather than handing
-    llama.cpp the whole box. It is a ceiling on the default, not a replacement
-    for it. A process that may use :data:`_LARGE_HOST_MIN_CORES` or more CPUs
-    defaults to :data:`_LARGE_HOST_EMBED_THREADS` instead: a 16-core host
-    answers 6, an 8-core laptop 4.
-
-    A raw value EQUAL to the default is default policy, not operator intent.
-    ``MemoryConfig.embedding_threads`` is a dataclass field defaulting to 4 and
-    ``KiroCrewConfig.save()`` publishes every field, so a fresh install's
-    ``config.json`` carries a 4 nobody typed; reading that as a choice would
-    hand the whole box to exactly the hosts this cap protects. The cost is that
-    4 cannot be pinned where the process may use 4 or fewer CPUs, or
-    :data:`_LARGE_HOST_MIN_CORES` or more (there it runs
-    :data:`_LARGE_HOST_EMBED_THREADS`) -- any other number can.
+    A raw value EQUAL to the default counts as default policy, because
+    ``KiroCrewConfig.save()`` writes the field's default 4 into every
+    ``config.json``. So 4 cannot be pinned on hosts where the policy picks another
+    number; any other value can.
     """
     raw = _read_memory_config().get("embedding_threads")
     cores = affinity_cpu_count()
@@ -401,21 +356,13 @@ def bulk_duty_cycle() -> float:
     :data:`_MAX_BULK_PACE_SLEEP`, so a row slow enough to ask for more idle than
     that runs at a higher effective duty than configured.
 
-    1.0 disables pacing (the pre-existing behaviour). Anything else is clamped to
-    ``[_MIN_BULK_DUTY, 1.0]``, so a typo cannot stretch a sweep to the point
-    where it looks stalled. Bools are rejected before ``isinstance(x, int)`` can
-    accept ``True`` as 1.
+    1.0 disables pacing. Anything else is clamped to ``[_MIN_BULK_DUTY, 1.0]`` so
+    a typo cannot make a sweep look stalled. Bools are rejected first, since
+    ``True`` is an int.
 
-    Non-finite values are rejected explicitly rather than left to the clamp. This
-    reads the RAW config section — the loader's ``_safe_float`` guard is NOT in
-    the path — and ``json.load`` accepts the ``NaN`` literal, which compares
-    false against every bound and would slip through ``max()`` unchanged.
-
-    ``float()`` itself can raise: ``json.load`` yields arbitrary-precision ints,
-    and one wider than a double (a 309-digit integer) raises ``OverflowError``.
-    That would propagate out through ``bulk_pace_delay`` into the sweep and abort
-    it, leaving every pending row NULL — a config typo must degrade to the
-    default, never stop the sweep.
+    The RAW section skips the loader's ``_safe_float`` guard, so ``NaN`` (which
+    slips through ``max()``) and an int too wide for ``float()`` (``OverflowError``)
+    are handled here: a config typo degrades to the default, never aborts the sweep.
     """
     raw = _read_memory_config().get("embedding_bulk_duty")
     if isinstance(raw, bool) or not isinstance(raw, (int, float)):

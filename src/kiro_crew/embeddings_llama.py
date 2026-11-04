@@ -86,21 +86,14 @@ def _caller_may_wait_for_load() -> bool:
 def _install_metadata_kv_clear(llm: object) -> bool:
     """Make the loaded context's KV clear reset cell metadata without zeroing.
 
-    ``Llama.embed`` clears the KV cache before every decode and again after it,
-    and the binding's ``kv_cache_clear`` passes ``data=True``, which memsets the
-    whole KV buffer (224 MiB for the shipped model at 2,048 context tokens) each
-    time. Embedding never reads a cell that the current decode did not write:
-    clearing with ``data=False`` drops every cell's position and sequence ids,
-    so the attention mask excludes all stale cells, and the stale contents are
-    finite values a previous decode produced. The vectors are byte-identical;
-    only the two memsets go. The buffer is zero-filled once when llama.cpp
-    allocates it, so the first decode sees no uninitialised memory either.
+    ``Llama.embed`` clears the KV cache around every decode with ``data=True``,
+    a memset of the whole KV buffer (224 MiB for the shipped model at 2,048
+    tokens). ``data=False`` drops cell positions and sequence ids, so the mask
+    excludes every stale cell: vectors stay byte-identical, only the memsets go.
 
-    Installed on the context instance (the vendored binding stays upstream's),
-    and only when the native symbol resolves. The context is held weakly so the
-    override does not keep a freed context alive through a reference cycle, and
-    a closed context (``ctx`` cleared, ``memory`` left dangling) is a no-op.
-    Returns True when the override was installed.
+    Installed on the context instance, only when the native symbol resolves. The
+    context is held weakly so no reference cycle keeps a freed one alive; a closed
+    context is a no-op. Returns True when installed.
     """
     ctx = getattr(llm, "_ctx", None)
     if ctx is None or not callable(getattr(ctx, "kv_cache_clear", None)):
@@ -131,35 +124,21 @@ def _install_metadata_kv_clear(llm: object) -> bool:
 def _install_bounded_decode(llm: object) -> bool:
     """Cap the tokens one native decode handles at the context's physical micro-batch.
 
-    In embedding mode llama.cpp makes every token of a batch an output and
-    reserves ``n_vocab + n_embd`` floats per output -- the logits are reserved
-    and computed although nothing here reads them -- in a buffer that grows to
-    the largest batch ever decoded and is never shrunk: 610,772 bytes per token
-    for the shipped model, 1.19 GB after one 2,048-token input, held until the
-    model unloads. The vendored ``Llama.embed`` is told to decode a longer batch
-    as consecutive slices of at most ``n_ubatch`` tokens (its
-    ``kiro_crew_max_decode_tokens`` divergence), so the buffer never holds more
-    than ``n_ubatch`` rows: 75 MiB for the shipped model's 128.
+    In embedding mode llama.cpp reserves ``n_vocab + n_embd`` floats per token of
+    a batch in a buffer that only grows: 1.19 GB after one 2,048-token input for
+    the shipped model, held until unload. The vendored ``Llama.embed`` decodes a
+    longer batch as slices of at most ``n_ubatch`` tokens (its
+    ``kiro_crew_max_decode_tokens`` divergence): 75 MiB for the shipped 128.
 
-    ``n_ubatch`` and not anything smaller, because a unified-cache decode splits a
-    batch into consecutive ``n_ubatch`` slices in batch order (``split_simple``):
-    each bounded call is then exactly one of the micro-batches the single call
-    runs -- the same tokens, positions and cache contents, in the same order -- so
-    every backend runs the same kernels on the same inputs and the vectors are
-    byte-identical by construction, not by a measurement on one platform.
+    Exactly ``n_ubatch``, because a unified-cache decode already splits a batch
+    into ``n_ubatch`` slices in order (``split_simple``), so each bounded call is
+    one of those micro-batches and the vectors are byte-identical by construction.
 
-    Set only for a context that decodes causally through a KV cache, where the
-    cache carries the earlier slices; ``Llama.embed`` itself slices only under
-    last-token pooling. A cache-less encoder, or a GGUF declaring
-    ``<architecture>.attention.causal = false``, needs every token of an input in
-    one micro-batch. ``_model_context_policy`` already gives such a file
-    ``n_ubatch == n_batch``, which no batch can exceed -- but only when its own
-    bounded header parser reads the file. A header it refuses and llama.cpp
-    loads (over ``_GGUF_MAX_METADATA_ITEMS`` entries, an array over
-    ``_GGUF_MAX_ARRAY_ITEMS``, a captured string over
-    ``_GGUF_MAX_DECODED_STRING_BYTES``) gets the decoder sizes whatever the model
-    is, so this reads the loaded runtime's own view instead: its ``memory``
-    handle and the metadata llama.cpp parsed. A context whose shape cannot be
+    Set only for a causal context with a KV cache, which carries the earlier
+    slices. An encoder or a ``.attention.causal = false`` GGUF needs every token in
+    one micro-batch. ``_model_context_policy`` cannot be relied on for that when
+    its bounded header parser refused the file, so this reads llama.cpp's own
+    ``memory`` handle and parsed metadata instead. A context whose shape cannot be
     read keeps the single decode. Returns True when set.
     """
     ctx = getattr(llm, "_ctx", None)
@@ -282,22 +261,15 @@ def _emit_embed_timing(
 class EmbeddingBackend(abc.ABC):
     """Abstract embedding runtime.
 
-    The swap seam for future runtimes (Ollama again, a remote endpoint, ONNX)
-    and for user-defined models. Consumers (vector memory, knowledge library)
-    depend only on this surface; everything llama.cpp-specific lives in
-    :class:`LlamaCppEmbedder`. To swap runtimes: implement this ABC and return
-    it from :func:`get_shared_embedder`.
+    Consumers (vector memory, knowledge library) depend only on this surface. To
+    swap runtimes, implement it and return it from :func:`get_shared_embedder`.
 
     Contract:
 
-    - ``embed``/``embed_batch`` return ``None`` on ANY failure — callers treat
-      ``None`` as "no embedding available" and degrade to keyword search.
-    - ``model_id`` + ``dim`` identify the vector space. Vectors produced under
-      a different ``model_id`` or ``dim`` are incomparable — a swap requires
-      re-embedding stored vectors (the knowledge library's sig-gated rebuild
-      keys off :func:`kiro_crew.knowledge.embedder.embed_signature`, which is
-      built on :func:`embedding_space_signature` and so folds BOTH in; vector
-      memory re-embeds via ``migrate``).
+    - ``embed``/``embed_batch`` return ``None`` on ANY failure; callers then
+      degrade to keyword search.
+    - ``model_id`` + ``dim`` identify the vector space; changing either requires
+      re-embedding (both are folded into :func:`embedding_space_signature`).
     - Implementations must be thread-safe (callers invoke from worker threads).
     """
 
@@ -364,28 +336,17 @@ class _InferJob:
 class LlamaCppEmbedder(EmbeddingBackend):
     """Serialized in-process embedder over the vendored llama.cpp runtime.
 
-    The underlying ``Llama`` object is NOT thread-safe, so every load and
-    inference call is serialized behind ``_lock``. All failures return
-    ``None`` (graceful degradation) — callers already treat ``None`` as
-    "no embedding available".
+    The ``Llama`` object is NOT thread-safe, so every load and inference call is
+    serialized behind ``_lock``. All failures return ``None``.
 
-    Inference does not run on the caller's thread. llama.cpp builds a compute
-    thread pool (``n_threads_batch``, which defaults to the CPU count) the
-    first time a GIVEN thread runs inference, and that pool lives as long as
-    its calling thread does. Embed calls arrive on long-lived executor threads
-    (``mc-embed``, asyncio's default executor, cron, maintenance), so running
-    inference inline would accumulate one CPU-count-sized pool per caller
-    thread (a busy gateway can reach dozens of pools and well over a thousand
-    threads within an hour). Every call is therefore forwarded to ONE owned
-    daemon thread (``kc-embed-infer``), so the process holds exactly one
-    compute pool no matter how many threads embed. ``_lock`` already serializes
-    inference, so the hand-off adds no extra queueing.
+    Inference runs on ONE owned daemon thread (``kc-embed-infer``), not the
+    caller's: llama.cpp builds a CPU-count-sized compute pool per calling thread
+    that lives as long as the thread, and embed calls arrive on many long-lived
+    executor threads, which can add up to over a thousand threads in an hour.
 
     With ``memory.embedding_child_process`` on, the published model is a
-    :class:`~kiro_crew.embeddings_child.ChildLlama`:
-    the model itself lives in a child process and ``kc-embed-infer`` only waits
-    on a pipe, so inference runs outside this process's GIL. Queueing,
-    priorities, pacing and eviction are unchanged and stay here.
+    :class:`~kiro_crew.embeddings_child.ChildLlama` running in a child process, so
+    inference runs outside this process's GIL; queueing and eviction stay here.
     """
 
     def __init__(
@@ -610,25 +571,15 @@ class LlamaCppEmbedder(EmbeddingBackend):
                 # From the model's id, passed for every file: a model whose id
                 # was recorded under last-token keeps it whatever the file says.
                 pooling_type=self._pooling_type,
-                # n_batch == n_ctx so the logical batch always covers the whole
-                # input in one go, which last-token pooling needs. In embedding mode
-                # the vendored constructor skips the ~1.24 GB per-token logits
-                # buffer this would otherwise size (see the `n_score_rows`
-                # divergence comment in src/kiro_crew/_vendor/llama_cpp/llama.py),
-                # and _install_bounded_decode below keeps llama.cpp's own output
-                # buffer at its load size, so n_batch does not trade memory
-                # against input length. Both are
-                # clamped to the trained position count the GGUF declares, at
-                # most 2,048 (see _model_context_policy). Decoder models keep the
-                # lower-RSS 128-token micro-batch, bounded by that batch; non-causal
-                # models (cache-less encoder architectures, or a GGUF declaring
-                # `.attention.causal = false`) need one physical micro-batch to
-                # hold every token, so all three coincide. So does any model
-                # running mean or CLS pooling: llama.cpp pools each micro-batch on
-                # its own and keeps only the last one's result, which would store
-                # the mean, or the first token, of a longer input's tail. The
-                # token last-token pooling reads is always in the last micro-batch,
-                # so only a last-token decoder keeps the 128.
+                # n_batch == n_ctx so one logical batch covers the whole input, as
+                # last-token pooling needs. Memory does not grow with it: the vendored
+                # constructor skips the per-token logits buffer (`n_score_rows` in
+                # _vendor/llama_cpp/llama.py) and _install_bounded_decode caps the
+                # output buffer. Both clamp to the GGUF's trained positions, at most
+                # 2,048 (_model_context_policy). Only a last-token decoder keeps the
+                # 128-token micro-batch: a non-causal model needs every token in one
+                # micro-batch, and mean/CLS pooling keeps only the last micro-batch's
+                # result, so for those n_ubatch == n_batch.
                 n_ctx=policy.n_ctx,
                 n_batch=policy.n_batch,
                 n_ubatch=(
@@ -679,19 +630,10 @@ class LlamaCppEmbedder(EmbeddingBackend):
             # load instead, with the number the operator has to fix.
             actual_dim = self._probe_dim(llm)
             if self._dim <= 0:
-                # ADOPT mode (dim<=0): the caller does not yet know the width and
-                # wants the model to report it — used by the dashboard's model
-                # change, which must learn the width from the model itself
-                # WITHOUT loading it a second time just to ask. Boot still uses a
-                # concrete configured dim, so the loud mismatch refusal below is
-                # unchanged for every non-adopt caller.
-                #
-                # A width we could NOT read is a failed load, never a published
-                # model: dim 0 would be written nowhere (the config writer skips
-                # non-positive), set_embedding_dim(0) is refused, and embed_batch
-                # would then reject every vector it produced against an expected
-                # width of zero — reconciliation having already cleared the old
-                # ones. Fail loudly instead of adopting an unknown width.
+                # ADOPT mode (dim<=0): the dashboard's model change learns the width
+                # from this load instead of loading twice. An unreadable width is a
+                # failed load: dim 0 cannot be saved, and embed_batch would reject
+                # every vector after reconciliation already cleared the old ones.
                 if actual_dim is None or actual_dim <= 0:
                     logger.error(
                         "Embedding model %s did not report an embedding width — "
@@ -789,22 +731,13 @@ class LlamaCppEmbedder(EmbeddingBackend):
     def _infer_loop(self, jobs: "queue.PriorityQueue[tuple[int, int, _InferJob | None]]") -> None:
         """Worker body: run queued ``create_embedding`` calls, one at a time.
 
-        ``jobs`` is passed in rather than read from ``self`` so this worker is
-        bound for life to the queue it was started with. That is what makes a
-        straggler harmless: it can only ever drain — and exit on the sentinel
-        from — its own queue, never one feeding a later worker.
+        ``jobs`` is passed in so a straggler worker can only drain its own queue,
+        never one feeding a later worker. Every job is completed even on failure,
+        so no caller waits on ``job.done`` forever. ``None`` is the shutdown
+        sentinel from :meth:`close`; exiting releases llama.cpp's compute pool.
 
-        Every job is completed even on failure, so a caller can never be left
-        waiting on ``job.done``. ``None`` is the shutdown sentinel from
-        :meth:`close`; exiting the thread is what releases llama.cpp's compute
-        pool.
-
-        This worker — NOT the caller — holds ``_lock`` across inference. That is
-        what lets the queue's priority mean anything: while the caller held it,
-        every other caller blocked *before* it could enqueue, so at most one job
-        was ever queued and there was nothing to order. Serialization is
-        unchanged, because a single owner thread running under ``_lock`` is
-        strictly no more concurrent than a single caller holding it was.
+        This worker, not the caller, holds ``_lock`` across inference, so callers
+        can enqueue while a job runs and the queue's priority has jobs to order.
         """
         while True:
             prio, _seq, job = self._next_infer_job(jobs)
