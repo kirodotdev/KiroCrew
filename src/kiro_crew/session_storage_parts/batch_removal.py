@@ -164,13 +164,9 @@ def _approve_emptied_batch(
     try:
         parsed = _read_manifest(batch, dir_fd=root_fd, expect_ino=scanned_ino)
     except UnicodeDecodeError:
-        # `_read_manifest` reports an unreadable manifest as None, but it DECODES strictly,
-        # so bytes that are not UTF-8 raise instead - and a ValueError, which neither its own
-        # `except OSError` nor anything between here and the caller catches. Reached when the
-        # file is corrupted after the by-path pre-screen read it, which is the very race this
-        # pinned re-read exists for. A manifest that cannot be decoded cannot identify the
-        # batch, so it withholds the removal like any other unreadable one instead of
-        # aborting a restore that has already moved the user's files back.
+        # `_read_manifest` decodes strictly, so non-UTF-8 bytes raise this ValueError
+        # rather than return None. An undecodable manifest withholds the removal like any
+        # unreadable one, instead of aborting a restore that already moved files back.
         logger.warning("keeping trash batch %r: its manifest is not valid UTF-8", batch.name)
         return SKIP_UNREADABLE
     if parsed is None:
@@ -461,23 +457,15 @@ def staged_targets(
     refuses it as a skip; a named selection holding one raises here instead.
     """
     with _mutation_lock():
-        # Explicit ids go through the SAME resolver every other caller uses, before
-        # anything is filtered. Filtering alone silently dropped an id that is not a
-        # batch - a typo, or one already emptied - so the worker received an empty
-        # list and reported success for a delete the user asked for and did not get.
-        # This keeps the guard `empty_trash` has always applied through `_batch_dir`,
-        # which the filter had quietly taken over from.
+        # Explicit ids go through `_batch_dir`, the resolver `empty_trash` uses, before
+        # anything is filtered, so a malformed id raises instead of being dropped.
         for batch_id in batch_ids or []:
             _batch_dir(batch_id)
         wanted = None if batch_ids is None else set(batch_ids)
         chosen = [batch for batch in list_trash() if wanted is None or batch.batch_id in wanted]
         if wanted is not None:
-            # A well-formed id whose batch is not staged - already emptied, or never
-            # existed - passes `_batch_dir`, which does not require the directory to
-            # exist. Filtering it out silently turned "destroy this" into a zero-byte
-            # success. It is a refusal: the caller named something that is not there,
-            # and on the pre-snapshot path the batch would at least have reported an
-            # unreadable-batch skip once it reached the delete.
+            # A well-formed id with no staged batch passes `_batch_dir`; it is a refusal,
+            # not a zero-byte success.
             missing = wanted - {batch.batch_id for batch in chosen}
             if missing:
                 raise SessionStorageError(
@@ -537,10 +525,8 @@ def empty_trash(
     calling thread. They are advisory: a caller that passes neither gets exactly the
     behaviour it always had, and nothing here waits on or trusts a callback.
 
-    ``on_skip`` exists because keeping a batch is a REFUSAL a person needs told.
-    Returning only the bytes freed made a batch that was deliberately kept
-    indistinguishable from an empty one — "0 bytes freed, success" — with the reason
-    reaching a log the user cannot read.
+    ``on_skip`` exists because keeping a batch is a REFUSAL the user must be told; bytes
+    alone cannot tell a kept batch from an empty one.
 
     ``expect`` maps a batch id to the ``(st_dev, st_ino)`` :func:`staged_targets` saw
     under the lock. A batch whose opened descriptor does not match is kept, because the
