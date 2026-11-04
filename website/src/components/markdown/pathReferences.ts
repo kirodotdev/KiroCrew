@@ -222,6 +222,29 @@ function classifyPathShape(s: string): boolean {
 }
 
 /**
+ * Does a link destination name a FILE on disk rather than an in-app dashboard
+ * route? Path candidacy (`isPathCandidate`) does not settle this: a multi-segment
+ * route (`/settings/security/rules`) is a candidate too, yet the dashboard serves
+ * it as a page. A file reference carries a file extension on its last segment, or
+ * is relative or `~`-rooted (a route is always `/`-rooted with no extension):
+ *
+ *   - `/tmp/x.md`, `/abs/notes.md` — rooted WITH an extension: a file;
+ *   - `src/a.ts`, `notes/guide.md`, `~/notes.md` — relative or home-rooted: a file;
+ *   - `/schedule`, `/settings/security/rules` — rooted, NO extension: a route.
+ *
+ * A rooted, extension-less destination reads as a route. A missing directory of
+ * that shape is indistinguishable from a route, so it reads as one.
+ *
+ * `raw` carries no `:line` suffix (the probe subject `splitLineRef(...).path`),
+ * so the extension is read off the filename.
+ */
+export function isFileLinkDest(raw: string): boolean {
+  if (!raw) return false
+  if (raw.startsWith('~') || !raw.startsWith('/')) return true
+  return EXT_RE.test(basenameOf(raw))
+}
+
+/**
  * A trailing source location: `:447`, or `:447:12` for line-and-column.
  *
  * Capped at 7 digits so a long digit run (a hash fragment, an id) is not read as
