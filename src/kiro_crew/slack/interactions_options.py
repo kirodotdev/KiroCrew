@@ -242,11 +242,27 @@ class ChannelAgentMismatchError(Exception):
     """The thread's channel is served by a different agent than the import's slot."""
 
 
+IMPORT_CODE_CHANNEL_NOTICE = (
+    "This thread is a Slack code channel's own session, so it cannot be imported"
+    " into another dashboard session. Open the code channel's session instead."
+)
+
+IMPORT_NOT_READY_NOTICE = "Slack code channels are still loading. Try the import again in a moment."
+
 IMPORT_AGENT_MISMATCH_NOTICE = (
     "This channel is served by its own agent, so its threads cannot be imported"
     " into a dashboard session on another agent. Open a dashboard session on this"
     " channel's agent and link it from there."
 )
+
+
+def import_refusal(exc: Exception) -> tuple[str, str]:
+    """``(notice, audit reason)`` for an import refused by an anchor or agent guard."""
+    if isinstance(exc, ChannelAgentMismatchError):
+        return IMPORT_AGENT_MISMATCH_NOTICE, "channel_agent_mismatch"
+    if getattr(exc, "reason", "") == "not_ready":
+        return IMPORT_NOT_READY_NOTICE, "code_channel_not_ready"
+    return IMPORT_CODE_CHANNEL_NOTICE, "code_channel_anchor"
 
 
 async def _import_thread_to_slot(slack: Any, ds: Any, channel: str, thread_ts: str) -> Any:
@@ -300,6 +316,14 @@ async def _import_thread_to_slot(slack: Any, ds: Any, channel: str, thread_ts: s
     truncated = len(msgs) > 50
     if truncated:
         msgs = msgs[-50:]
+    # A code channel's anchor thread is its binding's own session: never
+    # imported into a new slot (``link_slack`` would refuse it after the slot
+    # exists). The store is loaded off the loop, and the check, the agent
+    # re-check below and the link then run with no await between them.
+    from kiro_crew.slack.code_channels.binding import check_anchor_handoff, load_store_for_links
+
+    await load_store_for_links("slack.import_thread")
+    check_anchor_handoff(thread_ts, "", require_loaded=True)
     # The thread fetch awaited: read the channel's agent again before any slot.
     if channel_agent_mismatch(channel, "", "") is not None:
         raise ChannelAgentMismatchError(channel)
