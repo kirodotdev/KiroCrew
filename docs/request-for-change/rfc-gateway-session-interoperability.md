@@ -7,7 +7,7 @@ last-audited: 2026-10-23
 audited-at: 33cdb8f1ee68
 doc-pr:
 implementation-prs: []
-tracking-issues: [16891]
+tracking-issues: [16891, 29483]
 supersedes: []
 superseded-by: []
 ---
@@ -63,7 +63,7 @@ through the server and typed-client phases; a protocol adapter that proposes
 enabling it by default needs its own compatibility decision.
 
 Phase 1 has a hard external prerequisite: a separate managed-execution
-containment RFC must be accepted and implemented first. That decision owns the
+containment RFC must be accepted and implemented first (tracked in #29483). That decision owns the
 system-wide process-isolation mechanism and its compatibility, performance, and
 failure analysis; this RFC specifies only the attestation properties the local
 client contract consumes. The initial contract is Linux-only when the prerequisite reports an eligible
