@@ -27,14 +27,9 @@ _FROZEN_NOW = 1_000_000.0
 def _freeze_clock(monkeypatch) -> None:
     """Pin ``autonudge``'s clock so a deadline-anchored first delay is exact.
 
-    ``add()`` anchors ``next_due_ts = now + idle_secs``, then AWAITS an fsync of
-    the state file before ``_arm_from_deadline`` re-reads ``time.time()`` to
-    derive ``remaining``. Unfrozen, the first delay comes out short by however
-    long that write took (2.4s on a loaded Windows shard), so any tolerance on it
-    is really asserting that the runner never stalls between two statements.
-    Frozen, ``remaining`` is exactly ``idle_secs``, so every assertion below can
-    be exact -- a tolerance there would only hide a regression that reintroduces
-    the wall-clock dependency.
+    ``add()`` AWAITS an fsync between setting ``next_due_ts`` and
+    ``_arm_from_deadline`` re-reading ``time.time()``, so unfrozen the first delay
+    comes out short by the write time (2.4s on a loaded Windows shard).
     """
     monkeypatch.setattr(_an.time, "time", lambda: _FROZEN_NOW)
 
@@ -421,14 +416,9 @@ def test_is_channel_key():
 def test_proactive_channel_namespaces_are_channel_keys(key):
     """Every transport that CAN send unattended classifies as a channel session.
 
-    ``is_channel_key`` selects the re-arm strategy and the expiry-notification
-    metadata: a channel loop self-re-arms, while a dashboard loop waits for
-    ``notify_turn_complete``, which never fires for a channel key. Leaving
-    webex/teams/weixin/imessage out therefore made those sessions structurally
-    unrunnable rather than merely unsupported — misread as dashboard slots they
-    would stall with no armed timer and carry a ``dashboard:<namespace>:<id>``
-    jump link pointing at no slot — even though each of those transports declares
-    ``supports_proactive_send=True``.
+    A channel loop self-re-arms, while a dashboard loop waits for
+    ``notify_turn_complete``, which never fires for a channel key: a misread key
+    stalls with no armed timer.
     """
     from kiro_crew.autonudge import is_channel_key
 
@@ -438,16 +428,8 @@ def test_proactive_channel_namespaces_are_channel_keys(key):
 def test_wecom_is_classified_because_it_gained_a_proactive_send_path():
     """The classifier and the capability are asserted TOGETHER so they cannot drift.
 
-    WeCom was excluded while its reply was bound to the inbound request's own reply
-    token: a nudge cycle there would wake, spend a turn and have nowhere to put the
-    answer. The channel has a proactive path over its long connection, which
-    flipped the capability, so the exclusion's own stated condition fired and the
-    namespace is now classified like every other channel.
-
-    Keeping both halves in one test is the point. Either alone can go stale
-    silently: a classifier entry for a channel that cannot send unattended arms
-    loops with nowhere to deliver, and a flipped capability with no entry leaves a
-    channel that CAN be nudged unreachable.
+    A classifier entry for a channel that cannot send unattended arms loops with
+    nowhere to deliver; a capability with no entry leaves a nudge-able channel unreachable.
     """
     from kiro_crew.autonudge import is_channel_key
     from kiro_crew.wecom.transport import WECOM_CAPABILITIES
@@ -459,20 +441,11 @@ def test_wecom_is_classified_because_it_gained_a_proactive_send_path():
 def test_channel_key_prefixes_mirror_the_shipped_namespaces():
     """The tuple is spelled out in ``autonudge``, so pin it against drift.
 
-    Deriving it would make ``autonudge`` — imported at module scope by
-    ``mcp_core`` (every MCP server process) and by the dashboard chat layer —
-    name ``kiro_crew.messaging.link``, whose package ``__init__`` pulls the
-    driver/renderer/transport layer and with it the ACP client, agent, hooks,
-    artifacts, metrics and sqlite: 48 extra ``kiro_crew`` modules to obtain one
-    tuple of string literals. This assertion buys the drift protection that
-    import would have bought, at no import cost.
+    Deriving it would make ``autonudge`` import ``kiro_crew.messaging.link``, which
+    pulls 48 extra ``kiro_crew`` modules into every MCP server process.
 
-    Equality, not containment: a namespace added to ``CHANNEL_SESSION_NAMESPACES``
-    must be classified here too, with no escape hatch for "excluded on purpose".
-    The exclusion that looks tempting — a channel nothing can currently deliver a
-    nudge to — is precisely the misclassification this guards against, because an
-    unlisted key reads as a dashboard slot and stops being re-armed silently.
-    Undeliverability belongs to the ladder; see ``_CHANNEL_KEY_PREFIXES``.
+    Equality, not containment: an unlisted key reads as a dashboard slot and stops
+    being re-armed. Undeliverability belongs to the ladder; see ``_CHANNEL_KEY_PREFIXES``.
     """
     from kiro_crew.autonudge import _CHANNEL_KEY_PREFIXES
     from kiro_crew.messaging.link import CHANNEL_SESSION_NAMESPACES
@@ -484,12 +457,8 @@ def test_channel_key_prefixes_mirror_the_shipped_namespaces():
 async def test_unrouted_channel_namespace_degrades_instead_of_raising(svc, monkeypatch):
     """A classified namespace with no fire route degrades; it never raises.
 
-    ``whatsapp`` is in the prefix tuple but has no transport package in this fork
-    at all, so the gateway's ``_fire`` dispatcher reaches its "unsupported channel
-    key" arm: it logs the reason, removes the loop and returns False. The service
-    must treat that as a TERMINAL non-delivery — no backoff re-arm, no
-    resurrection, no exception escaping the timer — so classifying a namespace can
-    never turn an undeliverable session into a loop that hot-polls forever.
+    ``whatsapp`` has no transport package, so ``_fire`` removes the loop and returns
+    False. That is a TERMINAL non-delivery: no backoff re-arm and no exception.
     """
     import asyncio as _asyncio
 
@@ -535,16 +504,9 @@ async def test_unrouted_channel_namespace_degrades_instead_of_raising(svc, monke
 async def test_cross_surface_ladder_still_refuses_unroutable_channels(tmp_path):
     """The delivery ladder, not the key classifier, is the enforcement point.
 
-    Membership in ``_CHANNEL_KEY_PREFIXES`` asserts "this key names a
-    conversation", never "a send will succeed", so the fail-closed ladder
-    ``chat_runner._resolve_channel_target`` (defined in
-    ``dashboard/chat_turn/recipient.py``: governance → a REGISTERED transport →
-    ``supports_proactive_send``) has to keep refusing on its own. Both of its
-    transport arms are pinned here: a namespace with no
-    registered transport (``whatsapp``) and a registered transport that declares
-    no proactive send (a SYNTHETIC capability — every shipped channel now declares
-    True, and the arm still has to refuse). Each logs its reason and degrades to a
-    no-op rather than raising into the turn.
+    A key in ``_CHANNEL_KEY_PREFIXES`` names a conversation, never "a send will
+    succeed". Both transport arms of ``chat_runner._resolve_channel_target`` are pinned:
+    no registered transport, and one declaring no proactive send. Each degrades to a no-op.
     """
     from types import SimpleNamespace
     from unittest.mock import AsyncMock, MagicMock
@@ -564,10 +526,8 @@ async def test_cross_surface_ladder_still_refuses_unroutable_channels(tmp_path):
     assert state.get_channel_transport("whatsapp") is None
     await _deliver_cross_surface_reply(state, "whatsapp:kirocrew:direct:15550100", "cycle 1 output")
 
-    # (b) Registered, but declaring no unattended send — the
-    # ``supports_proactive_send`` arm. SYNTHETIC on purpose: every shipped channel
-    # declares True now, and this arm must keep refusing regardless, or a future
-    # transport that cannot send unattended would be handed a nudge to deliver.
+    # (b) Registered, but declaring no unattended send. SYNTHETIC on purpose: every
+    # shipped channel declares True, and this arm must still refuse.
     bound = SimpleNamespace(
         channel_type="telegram",
         capabilities=TransportCapabilities(supports_proactive_send=False),
@@ -584,12 +544,8 @@ async def test_cross_surface_ladder_still_refuses_unroutable_channels(tmp_path):
 def test_binding_key_for_does_not_widen_with_the_classifier():
     """Classifying a namespace must NOT make it armable ahead of its arm path.
 
-    ``binding_key_for`` is the "may this session be armed?" answer, and honouring
-    it additionally needs an ownership check in ``autonudge_authz`` and a fire
-    route in the gateway's ``_fire`` dispatcher. Passing weixin/teams/imessage
-    through here ahead of those two would arm a loop that the chokepoint denies (or
-    that is removed on its first fire), which is strictly worse than the clean "not
-    supported from this session type" refusal it replaces.
+    Arming also needs an ownership check in ``autonudge_authz`` and a ``_fire`` route;
+    without them a loop is denied or removed on its first fire.
     """
     from kiro_crew.autonudge import binding_key_for, is_channel_key
 
@@ -682,13 +638,7 @@ async def test_dashboard_loop_does_not_self_rearm(svc, monkeypatch):
 
 
 def test_a_webex_session_is_nudge_able():
-    """Webex is in both rosters because it now has the two things that matter.
-
-    A fire adapter (``_fire_webex_nudge``) and an authorization branch in
-    ``autonudge_authz``. Listing a channel without both arms a loop that is then
-    denied or deleted on its first cycle while reporting itself healthy — which is
-    exactly why these rosters are narrow.
-    """
+    """Webex is in both rosters: it has ``_fire_webex_nudge`` and an ``autonudge_authz`` branch."""
     from kiro_crew.autonudge import binding_key_for, is_channel_key
 
     key = "webex:kirocrew:direct:kyle@example.com"
@@ -702,11 +652,8 @@ def test_the_channels_without_a_fire_adapter_stay_excluded():
     wecom / teams / weixin / imessage have no ``_fire_*_nudge`` and no authz
     branch, so a loop bound there could never deliver.
 
-    Asserted on ``binding_key_for`` (may this be ARMED?) and not on
-    ``is_channel_key``, which answers the different question of whether the key
-    names a conversation rather than a chat slot — every channel namespace is a
-    channel key, deliberately, so that a loop whose transport is momentarily
-    absent is not misread as a dashboard slot and silently stops re-arming.
+    Asserted on ``binding_key_for`` (may this be ARMED?), not ``is_channel_key``, which
+    is true for every channel namespace so a loop is never misread as a dashboard slot.
     """
     from kiro_crew.autonudge import binding_key_for, is_channel_key
 
@@ -731,9 +678,8 @@ def test_a_unified_scope_key_is_never_bindable():
 def test_every_nudge_able_channel_has_a_fire_adapter():
     """The roster and the adapters cannot drift apart.
 
-    This is the invariant the first version of this change got wrong: ``webex:``
-    was added to ``binding_key_for`` while ``_fire`` still handled only slack and
-    discord, so an armed Webex loop was DELETED on its first cycle.
+    A prefix ``binding_key_for`` accepts with no ``_fire_*_nudge`` adapter gets its
+    armed loop DELETED on its first cycle.
     """
     from kiro_crew.slack.gateway import GatewayOrchestrator
 
@@ -748,11 +694,8 @@ async def test_structural_terminal_stop_from_on_fire_does_not_rearm(tmp_path):
     structural-terminal guard does: ``update(active=False, ...)`` then returns
     a refused/undelivered result), ``_run_fire_cycle`` must NOT re-arm it.
 
-    This is the end-to-end contract behind the malformed-storm fix. The gateway
-    guard refuses to dispatch a nudge whose prior delivered turn was rejected as
-    malformed and stops the loop; the service must honour that stop instead of
-    treating an undelivered cycle as a transient failure to retry. Otherwise the
-    loop would back off and fire again -- the very storm the guard exists to end.
+    Treating that undelivered cycle as a transient failure would back off and fire
+    again, the malformed-turn storm the guard exists to end.
     """
     fired: list[NudgeLoop] = []
 
@@ -802,15 +745,9 @@ def test_structural_terminal_reason_is_replaceable():
 async def test_structural_stop_does_not_overwrite_a_manual_pause(tmp_path):
     """A structural stop landing AFTER a manual pause must not clobber it.
 
-    Race: the user pauses a loop (update active=False -> "manual") while a nudge
-    cycle is in flight; that cycle then hits the malformed rejection and the fire
-    path calls update(active=False, stopped_reason="structural_terminal"). If
-    structural_terminal were NOT a terminal-bound reason, that second update
-    would OVERWRITE the manual pause with a REPLACEABLE reason, so a later
-    directive could revive a loop the user explicitly paused. Membership in
-    _TERMINAL_BOUND_REASONS makes update's already-inactive no-op branch preserve
-    the manual pause instead. (A manual pause is NOT replaceable, so the loop
-    stays paused until the user acts.)
+    Race: the user pauses while a cycle is in flight, then the cycle's structural
+    stop lands. Membership in _TERMINAL_BOUND_REASONS keeps the second update a no-op,
+    or a REPLACEABLE reason would let a later directive revive a paused loop.
     """
     service = AutoNudgeService(base_dir=tmp_path)
     loop = NudgeLoop(id="loop-race", slot_key="chat-1-123", message="m", idle_secs=30)

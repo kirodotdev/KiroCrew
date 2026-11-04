@@ -1,10 +1,8 @@
 """Coverage for ``kiro_crew.autonudge_authz`` guard clauses and audit fallbacks.
 
-``test/test_workflows_nudge_wiring.py`` already pins the happy path and the
-headline Discord/dashboard denials. This file targets the remaining rejection
-branches of BOTH chokepoints — the ones an attacker or a broken caller reaches
-first — plus the two "auditing must never break the flow" fallbacks and the
-``svc`` failure paths, where a swallowed exception would hide a security event.
+The happy path lives in ``test/test_workflows_nudge_wiring.py``. This file covers the
+other rejection branches of BOTH chokepoints, the "auditing must never break the flow"
+fallbacks, and the ``svc`` failure paths, where a swallowed exception hides a security event.
 
 Every test patches ``sel`` so nothing is written to the real security event log.
 """
