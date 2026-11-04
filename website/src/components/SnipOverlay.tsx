@@ -120,7 +120,7 @@ export default function SnipOverlay({ frame, onComplete, onCancel, onError }: Pr
       role="dialog"
       aria-modal="true"
       aria-label={i18nT('components.snipOverlay.crop_screen_capture')}
-      className="fixed inset-0 z-[200] bg-black/50 flex flex-col items-center justify-center gap-4"
+      className="fixed inset-0 z-[200] bg-black/50 flex flex-col items-center justify-center gap-4 p-safe"
     >
       {/* Freeform pointer-drag crop region (like macOS Cmd+Shift+4). There is no
           ARIA role that models "drag a rectangle to select", and there is no

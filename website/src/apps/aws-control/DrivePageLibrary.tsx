@@ -928,7 +928,7 @@ function AddFromArtifactsDialog({ account, onClose }: { account: string; onClose
     // anyway because focus never lands there -- Escape (above) is the keyboard
     // route. Same shape as UpdateFoundModal.
     <div
-      className="fixed inset-0 z-50 flex items-start justify-center bg-black/40 p-4 sm:p-8"
+      className="fixed inset-0 z-50 flex items-start justify-center bg-black/40 p-safe-or-4 sm:p-safe-or-8"
       data-testid="library-add-dialog"
       role="presentation"
       /* Dismiss only when the press both started and ended on the scrim: a drag

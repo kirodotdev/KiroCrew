@@ -86,7 +86,7 @@ export default function RemoteUpdateOffer() {
       // column, so on a short phone screen the header and Dismiss stay on
       // screen and only the body below them scrolls -- several failed updates
       // with their error tails would otherwise push the card off the top.
-      className="fixed bottom-safe-offset-4 right-safe-offset-4 z-40 flex flex-col w-[min(420px,calc(100vw-2rem))] max-h-[calc(100dvh_-_2rem_-_var(--safe-area-top,env(safe-area-inset-top))_-_env(safe-area-inset-bottom))] bg-bg-elevated border border-border rounded-lg shadow-lg p-3 animate-rise"
+      className="fixed bottom-safe-offset-4 right-safe-offset-4 z-40 flex flex-col w-[min(420px,calc(100vw-2rem-var(--safe-area-x)-var(--safe-area-x)))] max-h-[calc(100dvh_-_2rem_-_var(--safe-area-top,env(safe-area-inset-top))_-_env(safe-area-inset-bottom))] bg-bg-elevated border border-border rounded-lg shadow-lg p-3 animate-rise"
     >
       <div className="flex items-start gap-2 shrink-0">
         <div className="flex-1 min-w-0">
