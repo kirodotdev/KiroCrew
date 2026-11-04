@@ -207,87 +207,48 @@ def pod_context(cfg: PodConfig, name: str) -> tuple[Path, dict[str, str]]:
     return bin_path, env
 
 
-# `pod exec` forwards to a real kirocrew, so it inherits the WHOLE CLI — including
-# verbs that manage the HOST rather than any one instance. This is an ALLOWLIST
-# rather than a denylist because the set of host-scoped verbs is open-ended (a
-# by-name denylist repeatedly missed verbs — `stop`, then `restart`, then
-# `service`): every verb below acts only on `KIROCREW_HOME` state, which
-# `pod exec` has already pointed at the pod.
-# Anything else — present or newly added — is refused until it is deliberately
-# listed, so the failure mode of drift is "temporarily unavailable" rather than
-# "silently operated on the user's live machine".
+# `pod exec` forwards to a real kirocrew, so it inherits the WHOLE CLI, including
+# verbs that manage the HOST rather than one instance. This is an ALLOWLIST because
+# the set of host-scoped verbs is open-ended: an unlisted verb is refused, so drift
+# fails as "unavailable" rather than "operated on the user's live machine".
 #
-# Deliberately EXCLUDED, with the reason each is host-scoped, not pod-scoped:
+# A verb qualifies only if BOTH hold:
+#   (a) every path it writes IMPLICITLY (anywhere the user did not name as a
+#       destination) is inside `config_dir()`; and
+#   (b) it deletes nothing outside `config_dir()`.
+# An explicitly named output (`memory export -o FILE`) is fine.
+#
+# Deliberately EXCLUDED, with the host-scoped effect of each:
 #   setup, update  — rewrite the install and the ~/.local/bin launcher
-#   app            — `apps/bridges_mcp.py` edits `~/.kiro/settings/mcp.json`, the
-#                    HOST registry, which is NOT covered by KIROCREW_HOME or
-#                    KIRO_HOME. (The app agent JSONs it symlinks now follow
-#                    `kiro_agents_dir()`, so those land under the pod's own
-#                    KIRO_HOME — but the settings registry still does not, so a
-#                    pod install/uninstall would still mutate host state.)
-#   stop, restart  — service-aware: `cli_server._stop` short-circuits to
-#                    systemctl when no explicit --port is passed, so they hit the
-#                    LIVE gateway; and `restart` additionally leaves a DETACHED
+#   app            — `apps/bridges_mcp.py` edits the HOST `~/.kiro/settings/mcp.json`,
+#                    which neither KIROCREW_HOME nor KIRO_HOME covers
+#   stop, restart  — `cli_server._stop` goes to systemctl when no --port is passed,
+#                    so they hit the LIVE gateway; `restart` also leaves a DETACHED
 #                    replacement that `pod down` cannot stop
 #   service        — installs/removes the machine-wide systemd unit
 #   gateway        — would race a second gateway against the pod's own unit
-#   pod            — pod management from inside a pod (a nested `pod down` would
-#                    tear down its own supervisor)
+#   pod            — a nested `pod down` would tear down its own supervisor
 #   cloud          — provisions resources in the user's AWS account
 #   browse         — writes browser auth state outside KIROCREW_HOME
 #   manifest       — emits a Slack app manifest tied to the real identity
-#   run            — `task_reporter.save_progress` writes `TASK_PROGRESS.md`
-#                    "next to the spec file" (`Path(run.spec_path).parent`), so
-#                    `run /host/TASK.md` writes `/host/TASK_PROGRESS.md`. An
-#                    IMPLICIT write outside the pod, derived from a path the user
-#                    supplied as an input rather than a destination.
-#   snapshot       — its destination is CONFIGURABLE (`snapshot_dir`, or a
-#                    positional dir) and `--keep N` DELETES older archives beyond
-#                    N. `sanitized_seed_config` only forces tunnel/telegram/wecom
-#                    off, so a pod seeded from the live config inherits the user's
-#                    real backup directory — `snapshot --keep 1` from a pod would
-#                    prune live backups. Destructive and cross-plane.
-#   doctor         — NOT read-only: `cli_doctor._doctor_mcp_tools` does
-#                    `atomic_write(agent_path, ...)` where `agent_path` is
-#                    `_agents_dir() / AGENT_FILENAME` (in `cli_doctor._doctor`), i.e. under the
-#                    real HOME. It auto-adds missing MCP servers, so a pod
-#                    `doctor` rewrites the LIVE agent configuration.
-#   tui, chat      — `cli_chat._tui` resolves its port as
-#                    `getattr(args, "port", None) or cfg…get("port", 5476)` — the
-#                    CONFIG dashboard port, falling back to literal 5476, never
-#                    `KIROCREW_PORT`. A pod's config names no dashboard port, so it
-#                    lands on the LIVE gateway. `chat` is excluded too because
-#                    `chat --tui` branches straight into `_tui` (cli.py:1818), so
-#                    excluding only `tui` left the same hole open. Every OTHER
-#                    client verb (`status`, `logout`, and the credential verb) goes
-#                    through `port_resolution.resolve_client_port`, which DOES honour
-#                    `KIROCREW_PORT` — so this hazard is confined to `_tui`.
-#   logs           — `cli_server._logs_cmd` runs `journalctl -u <SERVICE_NAME>`,
-#                    the HOST service unit, so inside a pod it would show the LIVE
-#                    gateway's journal while appearing to show the pod's. Wrong
-#                    answer rather than damage, but a confidently wrong one.
-#                    `kirocrew pod logs NAME` reads the pod's own unit.
+#   run            — `task_reporter.save_progress` writes `TASK_PROGRESS.md` next to
+#                    the spec file, an implicit write derived from an INPUT path
+#   snapshot       — the destination is configurable (`snapshot_dir`) and `--keep N`
+#                    deletes older archives, so a pod seeded from the live config
+#                    could prune live backups
+#   doctor         — `cli_doctor._doctor_mcp_tools` rewrites the agent file under the
+#                    real HOME (it auto-adds missing MCP servers)
+#   tui, chat      — `cli_chat._tui` takes its port from config or literal 5476, never
+#                    `KIROCREW_PORT`, so it lands on the LIVE gateway; `chat --tui`
+#                    branches into `_tui`. Other client verbs use
+#                    `port_resolution.resolve_client_port`, which honours it.
+#   logs           — `cli_server._logs_cmd` reads the HOST unit's journal while looking
+#                    like the pod's; `kirocrew pod logs NAME` reads the pod's own unit
 #   mcp-*          — stdio server entrypoints, not user-facing commands
 #
-# `agent` and `workspace` ARE listed: both dispatchers were checked and operate
-# only on `config_dir()` state (the config.json agents/workspaces maps), never on
-# `~/.kiro/agents`. `workspace` is safe specifically because it asserts every
-# source and destination `is_relative_to(config_dir())`; without that guard it
-# would belong with `snapshot`. `restore` is listed because although its SOURCE
-# archive path is arbitrary, that is a read — everything it writes lands in
-# `config_dir()`.
-#
-# The inclusion test, stated once so it does not have to be rediscovered. A verb
-# qualifies only if BOTH hold:
-#   (a) every path it writes IMPLICITLY — anywhere the user did not name as a
-#       destination — is inside `config_dir()`; and
-#   (b) it deletes nothing outside `config_dir()`.
-# An explicitly-named output destination is fine (`memory export -o FILE` writes
-# where the user pointed it, no differently from shell redirection). What fails is
-# an implicit write derived from an INPUT path (`run` → `TASK_PROGRESS.md` beside
-# the spec), a host registry (`app`), a host service (`service`, `stop`,
-# `restart`), a deletion driven by config (`snapshot --keep`), or a host-scoped
-# read that merely LOOKS pod-scoped (`logs`).
+# `agent` and `workspace` act only on `config_dir()` state; `workspace` is safe because
+# it asserts every source and destination `is_relative_to(config_dir())`. `restore`
+# reads an arbitrary archive but writes only into `config_dir()`.
 _POD_SAFE_VERBS = frozenset(
     {
         "agent",
@@ -401,11 +362,9 @@ def _run_in_pod_as_child(bin_path: Path, argv: list[str], env: dict[str, str]) -
             continue
 
 
-# --------------------------------------------------------------------------- #
 # Boot — the ExecStart body. Re-entered as ``kirocrew pod _run <name>`` by the
 # systemd unit. Reads the PINNED checkout (never shells git), then exec()s the
 # worktree's own gateway with an isolated HOME; never returns on success.
-# --------------------------------------------------------------------------- #
 def target_supports_flag(checkout: Path, flag: str) -> bool:
     """Whether the gateway in *checkout* will accept *flag* on its argv.
 
@@ -414,34 +373,24 @@ def target_supports_flag(checkout: Path, flag: str) -> bool:
     via ``%i``), but the gateway that argv reaches is the TARGET WORKTREE's own
     binary. The two are independent checkouts, so an updated control plane can
     hand a flag to a gateway too old to declare it -- argparse exits 2, and
-    ``Restart=on-failure`` + ``RestartSec=5`` (the unit carries no
-    ``RestartPreventExitStatus``) turns that into a restart loop every 5s rather
-    than a visible failure. Dev Fleet's whole point is worktrees at different
-    commits, so this is the ordinary case and not an exotic one.
+    ``Restart=on-failure`` + ``RestartSec=5`` turns that into a 5s restart loop.
+    Worktrees at different commits are the ordinary case.
 
-    Read from the checkout's own ``cli.py`` rather than by running
-    ``gateway --help``: the source IS what will execute (provisioning installs the
-    checkout editable), and a subprocess on every pod boot costs an interpreter
-    start for a question a string search answers.
+    Read from the checkout's own ``cli.py`` (installed editable, so the source IS
+    what will execute) rather than spawning ``gateway --help`` on every boot.
 
-    Unreadable source answers False -- the flag is DROPPED, not forced. Refusing
-    to boot would be the fail-closed instinct, but here it is strictly worse: with
-    no ``RestartPreventExitStatus`` a refusal is itself the 5s restart loop this
-    exists to prevent, while dropping the flag leaves that pod at exactly the
-    guarantee it had before this flag existed (the seeded ``tunnel.enabled=False``)
-    -- no regression, just no improvement. The caller says so out loud.
+    Unreadable source answers False: the flag is DROPPED, not forced, because a
+    refusal would itself be the restart loop, while dropping it leaves the seeded
+    ``tunnel.enabled=False`` guarantee in place. The caller says so out loud.
     """
     try:
         src = (checkout / "src" / "kiro_crew" / "cli.py").read_text(encoding="utf-8")
     except OSError:
         return False
-    # Comment lines do not declare anything, and a checkout that only MENTIONS the
-    # flag in prose would otherwise pass the probe and then argparse-exit on it --
-    # the exact restart loop this exists to prevent. The real declaration is a bare
-    # quoted literal on its own line inside ``add_argument(...)``, so matching the
-    # quoted form (rather than ``add_argument("--flag"``) is what keeps this working
-    # against the repo's actual formatting; ``test_the_probe_accepts_this_very_repo``
-    # is the ratchet that catches a refactor moving the declaration elsewhere.
+    # Comment lines are skipped so a checkout that only MENTIONS the flag fails the
+    # probe. The declaration is a bare quoted literal on its own line inside
+    # ``add_argument(...)``; ``test_the_probe_accepts_this_very_repo`` catches a
+    # refactor that moves it.
     for line in src.splitlines():
         stripped = line.strip()
         if stripped.startswith("#"):
@@ -466,21 +415,14 @@ def _probe_pod_child_bootstrap(pod_env: dict[str, str]) -> None:
     whose child cannot start never reaches health 200 and systemd does not
     restart into the same failure every 5s.
 
-    **Why this exists.** The pod remaps the child's ``HOME`` so its OAuth grants
-    die with the pod, and that remap broke every ACP spawn in a pod for a whole
-    revision while ``/health`` answered 200 the entire time: the failure surfaced
-    only as ``agent_unreachable`` on each provider's Connect/Test, which reads as
-    a Connections bug rather than a boot failure. A pod that cannot run an agent
-    turn is not a working pod, so it must fail at ``pod up``, loudly, with the
-    reason recorded where ``kirocrew pod status`` shows it.
+    A pod remaps the child's ``HOME``, and a child that cannot start still leaves
+    ``/health`` at 200, surfacing only as ``agent_unreachable`` on Connect/Test. A
+    pod that cannot run an agent turn must fail at ``pod up``, recorded where
+    ``kirocrew pod status`` shows it.
 
-    **The probe is the real spawn path, not an approximation.** It resolves the
-    executable the same way and passes it through
-    ``acp.client.apply_pod_bundle_spawn``, so the bundle-binary substitution the
-    pod child depends on is what gets exercised. Anything cheaper (a bare
-    ``--version``) short-circuits before the harness bootstraps and would have
-    reported the broken revision as healthy -- that is precisely the mistake an
-    earlier round's component test made.
+    The probe is the real spawn path (through
+    ``acp.client.apply_pod_bundle_spawn``), because a bare ``--version`` exits
+    before the harness bootstraps and would report a broken child as healthy.
 
     Three outcomes, and only one refuses:
 
@@ -533,41 +475,17 @@ def boot(cfg: PodConfig, name: str) -> int:
     on success and does not return, while on Windows — which has no ``exec`` — it
     supervises the gateway and returns its exit code once it ends.
 
-    **This wrapper is the class closure for "a refusal that escapes the boot path
-    with a non-terminal exit".** Two narrower guards do not cover the class: routing
-    the explicit ``return`` sites through :func:`_refuse` misses a ``raise``, and an
-    AST guard over those returns misses it for the same reason -- a ``raise
-    PodError`` is neither a bare return nor visible to a scan over returns. Such a
-    raise escapes to the CLI's generic handler, which exits 1, a code NOT in
-    :data:`TERMINAL_BOOT_EXIT_CODES`, so systemd retries it and launchd's KeepAlive
-    restarts it every ``ThrottleInterval``: the exact restart loop the terminal-exit
-    contract exists to prevent, reached by the one shape a return-shaped guard
-    cannot see.
+    A ``PodError`` that escaped would reach the CLI's generic handler and exit 1, a
+    code NOT in :data:`TERMINAL_BOOT_EXIT_CODES`, so systemd and launchd would
+    restart into it forever. ``PodError`` is raised from dozens of sites reachable
+    from here, so the conversion is structural: the body cannot raise ``PodError``
+    past this frame. On Windows the body returns the supervised gateway's own exit
+    code, which flows out untranslated.
 
-    Enumerating raises does not close it either. ``PodError`` is raised from roughly
-    forty sites under ``pod/``, many of them transitively reachable from here
-    (``validate_name``, ``read_env_file``, ``write_pod_config``,
-    ``seed_home_from_scenario``, ``_ensure_pod_dir``, the whole ``pinned_fs``
-    refusal surface), and any future one joins them silently. So the conversion is
-    structural instead: the body cannot raise ``PodError`` past this frame, and a
-    refusal added tomorrow is recorded and given a terminal code without anyone
-    remembering to route it.
-
-    ``execve`` replaces the process on the POSIX success path, so nothing after the
-    body can run and the wrapper costs the happy path nothing. On Windows the body
-    returns the supervised gateway's own exit code instead; that code is not in
-    :data:`TERMINAL_BOOT_EXIT_CODES`, so it flows out untranslated and the wrapper
-    still only ever converts refusals.
-
-    **Name validation happens BEFORE the guard, deliberately.** The wrapper records
-    every refusal it catches, and ``_record_refusal`` derives its path from *name* --
-    so catching a NAME-validation failure turned the refusal machinery into a
-    host-write primitive: ``pod _run /tmp/important`` would have written
-    ``/tmp/important.refused`` outside the pod plane. There is no legitimate pod to
-    record against when the name itself is rejected, so that failure exits with the
-    honest error and writes nothing. The guard therefore only ever sees a validated
-    name, which is also what lets ``_record_refusal`` treat a path-shaped name as
-    unreachable rather than merely unlikely.
+    **Name validation happens BEFORE the guard.** ``_record_refusal`` derives its
+    path from *name*, so recording a NAME failure would write outside the pod plane
+    (``pod _run /tmp/important`` -> ``/tmp/important.refused``). That failure exits
+    with the error and writes nothing.
     """
     try:
         runtime.validate_name(name)
