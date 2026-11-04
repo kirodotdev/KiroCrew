@@ -730,6 +730,7 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         _feature_previews,
         _folder_sort_from,
         _jira_auth_entry,
+        _load_background_hold_secs,
         _load_idle_exempt_keys,
         _log_config_clamp_event,
         _member_remap_logged,

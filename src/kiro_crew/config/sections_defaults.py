@@ -67,6 +67,9 @@ class SectionReader:
 
 DEFAULT_MODEL = "auto"
 DEFAULT_SESSION_TIMEOUT = 3600  # 60 min
+# ``session.harness_background_hold_secs``: how long after a harness launches
+# background work the idle sweep and the RSS recycle still keep its session.
+DEFAULT_HARNESS_BACKGROUND_HOLD_SECS = 3600
 # Auto-compaction threshold, as a percentage of the context window. Named
 # because two code paths need it — the dataclass field default (used only when
 # there is no config file) and the dict-load fallback in ``load()`` (used when

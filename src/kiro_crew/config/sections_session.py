@@ -12,6 +12,7 @@ from typing import Any
 from kiro_crew.config.fields import _meta
 from kiro_crew.config.sections_defaults import (
     DEFAULT_AUTOCOMPACT_PCT,
+    DEFAULT_HARNESS_BACKGROUND_HOLD_SECS,
     DEFAULT_POOL_SIZE,
     DEFAULT_RECONCILE_MAX_KILLS,
     DEFAULT_SESSION_TIMEOUT,
@@ -205,6 +206,19 @@ class SessionConfig:
             "this many MiB (default 4096). 0 disables; the internal background "
             "runtime recycles at 1536 MiB, or at this value when it is lower. Busy sessions (turn in "
             "flight) are never recycled.",
+        ),
+    )
+    harness_background_hold_secs: int = field(
+        default=DEFAULT_HARNESS_BACKGROUND_HOLD_SECS,
+        metadata=_meta(
+            "Background Work Hold (seconds)",
+            "On the Claude backend, how long after the agent starts background work "
+            "(a Workflow or a backgrounded command) the idle timeout and the Watchdog "
+            "RSS Limit still leave its session running (default 3600, 300-86400). "
+            "Claude Code does not report when that work ends, so after this time the "
+            "work is treated as finished and the session can be ended; the chat then "
+            "says the work may have been stopped. Raise it for work that runs longer. "
+            "Twice the Watchdog RSS Limit still ends a session inside the hold.",
         ),
     )
     reconcile_max_kills: int = field(
