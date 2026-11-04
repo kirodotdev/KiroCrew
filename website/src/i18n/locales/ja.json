@@ -1647,7 +1647,7 @@
         "add_screens": "スクリーンを追加",
         "add_screenshots_or_paste_a_link_first": "先にスクリーンショットを追加するか、リンクを貼り付けてください",
         "clear_all": "すべてクリア",
-        "critique_this_flow_count_screens": "Critique this flow · {{count}} screens",
+        "critique_this_flow_count_screens_other": "このフローを批評 · スクリーン {{count}} 件",
         "critique_this_screen": "Critique this screen",
         "drop_screenshots_or_click_to_browse": "スクリーンショットをドラッグするか、クリックして参照",
         "fix_my_access": "アクセスを修正",
@@ -1778,7 +1778,7 @@
         "page_label": "Design Critique"
       },
       "scopingPicker": {
-        "critique_this_flow_count_screens": "Critique this flow · {{count}} screens",
+        "critique_this_flow_count_screens_other": "このフローを批評 · スクリーン {{count}} 件",
         "critique_this_screen": "Critique this screen",
         "drag_to_reorder": "ドラッグして並び替え",
         "move_earlier": "前に移動",

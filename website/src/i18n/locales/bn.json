@@ -1624,7 +1624,8 @@
         "add_screens": "স্ক্রিন যোগ করুন",
         "add_screenshots_or_paste_a_link_first": "আগে স্ক্রিনশট যোগ করো বা একটি লিংক পেস্ট করো",
         "clear_all": "সব মুছুন",
-        "critique_this_flow_count_screens": "Critique this flow · {{count}} screens",
+        "critique_this_flow_count_screens_one": "এই ফ্লোর ক্রিটিক করো · {{count}}টি স্ক্রিন",
+        "critique_this_flow_count_screens_other": "এই ফ্লোর ক্রিটিক করো · {{count}}টি স্ক্রিন",
         "critique_this_screen": "Critique this screen",
         "drop_screenshots_or_click_to_browse": "স্ক্রিনশট ড্রপ করুন — বা ব্রাউজ করতে ক্লিক করুন",
         "fix_my_access": "আমার অ্যাক্সেস ঠিক করো",
@@ -1755,7 +1756,8 @@
         "page_label": "Design Critique"
       },
       "scopingPicker": {
-        "critique_this_flow_count_screens": "Critique this flow · {{count}} screens",
+        "critique_this_flow_count_screens_one": "এই ফ্লোর ক্রিটিক করো · {{count}}টি স্ক্রিন",
+        "critique_this_flow_count_screens_other": "এই ফ্লোর ক্রিটিক করো · {{count}}টি স্ক্রিন",
         "critique_this_screen": "Critique this screen",
         "drag_to_reorder": "ক্রম পাল্টাতে টেনে আনুন",
         "move_earlier": "আগে সরান",

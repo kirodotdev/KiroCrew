@@ -1689,7 +1689,9 @@
         "add_screens": "Adicionar telas",
         "add_screenshots_or_paste_a_link_first": "Primeiro adicione capturas de tela ou cole um link",
         "clear_all": "Limpar tudo",
-        "critique_this_flow_count_screens": "Critique this flow · {{count}} screens",
+        "critique_this_flow_count_screens_one": "Criticar este fluxo · {{count}} tela",
+        "critique_this_flow_count_screens_many": "Criticar este fluxo · {{count}} telas",
+        "critique_this_flow_count_screens_other": "Criticar este fluxo · {{count}} telas",
         "critique_this_screen": "Critique this screen",
         "drop_screenshots_or_click_to_browse": "Solte as capturas de tela — ou clique para procurar",
         "fix_my_access": "Corrigir meu acesso",
@@ -1820,7 +1822,9 @@
         "configuration_1": "Adicione capturas de tela para uma análise sem configuração ou forneça um arquivo do Figma, repositório, pasta local ou URL já em execução; fontes privadas do GitHub podem exigir gh auth login."
       },
       "scopingPicker": {
-        "critique_this_flow_count_screens": "Critique this flow · {{count}} screens",
+        "critique_this_flow_count_screens_one": "Criticar este fluxo · {{count}} tela",
+        "critique_this_flow_count_screens_many": "Criticar este fluxo · {{count}} telas",
+        "critique_this_flow_count_screens_other": "Criticar este fluxo · {{count}} telas",
         "critique_this_screen": "Critique this screen",
         "drag_to_reorder": "Arraste para reordenar",
         "move_earlier": "Mover antes",

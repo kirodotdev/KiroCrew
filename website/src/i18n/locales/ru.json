@@ -1754,7 +1754,10 @@
         "add_screens": "Добавить экраны",
         "add_screenshots_or_paste_a_link_first": "Сначала добавь скриншоты или вставь ссылку",
         "clear_all": "Очистить всё",
-        "critique_this_flow_count_screens": "Critique this flow · {{count}} screens",
+        "critique_this_flow_count_screens_one": "Разобрать этот сценарий · {{count}} экран",
+        "critique_this_flow_count_screens_few": "Разобрать этот сценарий · {{count}} экрана",
+        "critique_this_flow_count_screens_many": "Разобрать этот сценарий · {{count}} экранов",
+        "critique_this_flow_count_screens_other": "Разобрать этот сценарий · {{count}} экрана",
         "critique_this_screen": "Critique this screen",
         "drop_screenshots_or_click_to_browse": "Перетащите скриншоты — или нажмите для выбора",
         "fix_my_access": "Исправить доступ",
@@ -1885,7 +1888,10 @@
         "page_label": "Design Critique"
       },
       "scopingPicker": {
-        "critique_this_flow_count_screens": "Critique this flow · {{count}} screens",
+        "critique_this_flow_count_screens_one": "Разобрать этот сценарий · {{count}} экран",
+        "critique_this_flow_count_screens_few": "Разобрать этот сценарий · {{count}} экрана",
+        "critique_this_flow_count_screens_many": "Разобрать этот сценарий · {{count}} экранов",
+        "critique_this_flow_count_screens_other": "Разобрать этот сценарий · {{count}} экрана",
         "critique_this_screen": "Critique this screen",
         "drag_to_reorder": "Перетащите для изменения порядка",
         "move_earlier": "Переместить раньше",

@@ -1559,7 +1559,7 @@
         "add_screens": "添加界面",
         "add_screenshots_or_paste_a_link_first": "先添加截图或粘贴链接",
         "clear_all": "全部清除",
-        "critique_this_flow_count_screens": "Critique this flow · {{count}} screens",
+        "critique_this_flow_count_screens_other": "评审此流程 · {{count}} 个界面",
         "critique_this_screen": "Critique this screen",
         "drop_screenshots_or_click_to_browse": "拖入截图，或点击浏览",
         "fix_my_access": "修复我的访问权限",
@@ -1690,7 +1690,7 @@
         "page_label": "Design Critique"
       },
       "scopingPicker": {
-        "critique_this_flow_count_screens": "Critique this flow · {{count}} screens",
+        "critique_this_flow_count_screens_other": "评审此流程 · {{count}} 个界面",
         "critique_this_screen": "Critique this screen",
         "drag_to_reorder": "拖动重新排序",
         "move_earlier": "前移",

@@ -966,7 +966,8 @@
         "add_screens": "Add screens",
         "add_screenshots_or_paste_a_link_first": "Add screenshots or paste a link first",
         "clear_all": "Clear all",
-        "critique_this_flow_count_screens": "Critique this flow · {{count}} screens",
+        "critique_this_flow_count_screens_one": "Critique this flow · {{count}} screen",
+        "critique_this_flow_count_screens_other": "Critique this flow · {{count}} screens",
         "critique_this_screen": "Critique this screen",
         "drop_screenshots_or_click_to_browse": "Drop screenshots — or click to browse",
         "fix_my_access": "Fix my access",
@@ -1055,7 +1056,8 @@
         "configuration_1": "Drop in screenshots for zero-setup review, or provide a Figma file, repository, local folder, or already-running URL; private GitHub sources may require gh auth login."
       },
       "scopingPicker": {
-        "critique_this_flow_count_screens": "Critique this flow · {{count}} screens",
+        "critique_this_flow_count_screens_one": "Critique this flow · {{count}} screen",
+        "critique_this_flow_count_screens_other": "Critique this flow · {{count}} screens",
         "critique_this_screen": "Critique this screen",
         "drag_to_reorder": "Drag to reorder",
         "move_earlier": "Move earlier",

@@ -1624,7 +1624,8 @@
         "add_screens": "स्क्रीन जोड़ें",
         "add_screenshots_or_paste_a_link_first": "पहले स्क्रीनशॉट जोड़ो या लिंक चिपकाओ",
         "clear_all": "सभी हटाएँ",
-        "critique_this_flow_count_screens": "Critique this flow · {{count}} screens",
+        "critique_this_flow_count_screens_one": "इस फ़्लो की समीक्षा करो · {{count}} स्क्रीन",
+        "critique_this_flow_count_screens_other": "इस फ़्लो की समीक्षा करो · {{count}} स्क्रीन",
         "critique_this_screen": "Critique this screen",
         "drop_screenshots_or_click_to_browse": "स्क्रीनशॉट यहाँ छोड़ें — या ब्राउज़ करने के लिए क्लिक करें",
         "fix_my_access": "मेरी पहुँच ठीक करो",
@@ -1755,7 +1756,8 @@
         "page_label": "Design Critique"
       },
       "scopingPicker": {
-        "critique_this_flow_count_screens": "Critique this flow · {{count}} screens",
+        "critique_this_flow_count_screens_one": "इस फ़्लो की समीक्षा करो · {{count}} स्क्रीन",
+        "critique_this_flow_count_screens_other": "इस फ़्लो की समीक्षा करो · {{count}} स्क्रीन",
         "critique_this_screen": "Critique this screen",
         "drag_to_reorder": "क्रम बदलने के लिए खींचें",
         "move_earlier": "पहले ले जाएँ",

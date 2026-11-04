@@ -1647,7 +1647,7 @@
         "add_screens": "화면 추가",
         "add_screenshots_or_paste_a_link_first": "먼저 스크린샷을 추가하거나 링크를 붙여넣으세요",
         "clear_all": "모두 지우기",
-        "critique_this_flow_count_screens": "Critique this flow · {{count}} screens",
+        "critique_this_flow_count_screens_other": "이 플로 비평 · 화면 {{count}}개",
         "critique_this_screen": "Critique this screen",
         "drop_screenshots_or_click_to_browse": "스크린샷을 끌어다 놓거나 클릭해서 찾아보세요",
         "fix_my_access": "내 액세스 수정",
@@ -1778,7 +1778,7 @@
         "page_label": "Design Critique"
       },
       "scopingPicker": {
-        "critique_this_flow_count_screens": "Critique this flow · {{count}} screens",
+        "critique_this_flow_count_screens_other": "이 플로 비평 · 화면 {{count}}개",
         "critique_this_screen": "Critique this screen",
         "drag_to_reorder": "끌어서 순서 변경",
         "move_earlier": "앞으로 이동",
