@@ -20,6 +20,8 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from real_dashboard_state import _settle_real_dashboard_states  # noqa: F401
+from real_dashboard_state import drain, open_feed, real_dashboard_state
 from slack_gateway_helpers import _restore_update_check_cache  # noqa: F401
 from slack_gateway_helpers import (
     _git_exec_fake,
@@ -187,7 +189,7 @@ class TestAutoApplyUpdateResetPath:
         raise AssertionError(f"unexpected spawn on the git update path: {argv!r}")
 
     @pytest.mark.asyncio
-    async def test_reset_then_frontend_then_pip(self):
+    async def test_reset_then_frontend_then_pip(self, tmp_path):
         """A CLEAN checkout resets, then frontend build + pip install run.
 
         Public OSS flow (no internal workspace sync or toolbox step): branch → fetch →
@@ -200,7 +202,8 @@ class TestAutoApplyUpdateResetPath:
         of this flow.
         """
         orch = _make_orchestrator()
-        ds = _mock_dashboard_state()
+        ds = real_dashboard_state(tmp_path)
+        feed = open_feed(ds)
         orch.dashboard_state = ds
         orch.sessions = _mock_sessions()
 
@@ -219,8 +222,11 @@ class TestAutoApplyUpdateResetPath:
 
         # Frontend build+stage runs, and the package is reinstalled.
         mock_build.assert_awaited()
-        ds.push_update_progress.assert_any_call("building", "Building frontend…")
-        ds.push_update_progress.assert_any_call("building", "Rebuilding package…")
+        sent = [
+            (e["step"], e["detail"]) for e in drain(feed) if e.get("_type") == "update_progress"
+        ]
+        assert ("building", "Building frontend…") in sent
+        assert ("building", "Rebuilding package…") in sent
 
     @pytest.mark.asyncio
     async def test_the_kas_bundle_route_skips_the_kiro_cli_update_and_says_why(

@@ -46,6 +46,8 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from real_dashboard_state import _settle_real_dashboard_states  # noqa: F401
+from real_dashboard_state import notes, real_dashboard_state
 
 from kiro_crew.acp.types import AcpEvent
 from kiro_crew.autonudge import (
@@ -375,10 +377,10 @@ class TestDeliverResultRouting:
     """Background-result routing for the Slack and no-dashboard arms."""
 
     @pytest.mark.asyncio
-    async def test_default_deliver_lookup_failure_falls_through(self):
+    async def test_default_deliver_lookup_failure_falls_through(self, tmp_path):
         orch = _make_orchestrator()
         orch.slack = None
-        ds = _mock_dashboard_state()
+        ds = real_dashboard_state(tmp_path)
         orch.dashboard_state = ds
         with patch.object(gw.KiroCrewConfig, "load", side_effect=RuntimeError("no config")) as load:
             await orch._deliver_result("Title", "task", "result", "")
@@ -387,8 +389,8 @@ class TestDeliverResultRouting:
             await orch._deliver_result("Title", "task", "result", "")
         assert load.call_count == 2
         # The failed lookup keeps the tagless default arm: a bell, no new slot.
-        ds.notify.assert_called_once_with("heartbeat", "Title", "task\n\nresult")
-        ds.get_or_create_slot.assert_not_called()
+        assert notes(ds) == [("heartbeat", "Title", "task\n\nresult")]
+        assert list(ds._slots) == []
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
@@ -449,18 +451,18 @@ class TestDeliverResultRouting:
         assert ds.notify.call_args.args[0] == "heartbeat"
 
     @pytest.mark.asyncio
-    async def test_slack_channel_arm_with_empty_channel_falls_back_to_dm(self):
+    async def test_slack_channel_arm_with_empty_channel_falls_back_to_dm(self, tmp_path):
         # A truncated tag ("slack:") has no channel to post to: posting to ""
         # would raise inside the swallowed except and lose the report, so the
         # owner-DM leg still covers it.
         orch = _make_orchestrator()
-        ds = _mock_dashboard_state()
+        ds = real_dashboard_state(tmp_path)
         orch.dashboard_state = ds
         orch.slack = _mock_slack(dm="D7")
         await orch._deliver_result("Title", "task", "result", "slack:")
         orch.slack.open_dm.assert_awaited_once_with("U_OWNER")
         assert orch.slack.post_message.await_args.args[0] == "D7"
-        ds.notify.assert_called_once()
+        assert notes(ds) == [("heartbeat", "Title", "task\n\nresult")]
 
     @pytest.mark.asyncio
     async def test_default_arm_notifies_even_when_dm_unavailable(self):
