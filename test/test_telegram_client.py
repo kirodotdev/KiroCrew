@@ -952,6 +952,9 @@ class TestClientHealth:
 
         client.on_status = _boom
         client._notify_status(False, "x")  # must not raise
+        # The transition is still recorded, so a failing callback is not re-run
+        # on every later poll that reports the same state.
+        assert client._last_status is False
 
     def test_polling_loop_reports_persistent_failure_and_recovery(self, monkeypatch) -> None:
         """3 consecutive getUpdates failures -> unhealthy; next success -> healthy."""
