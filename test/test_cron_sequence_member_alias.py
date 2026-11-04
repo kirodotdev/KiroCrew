@@ -624,6 +624,45 @@ async def test_sequence_steps_build_context_from_their_dispatched_template(monke
     assert seen == ["beta-mode", "alpha-mode"]
 
 
+@pytest.mark.asyncio
+async def test_each_sequence_step_hands_the_gate_its_alias_not_its_template(monkeypatch):
+    """The governance gate looks a task profile up by the agent it is given, so
+    each step names its alias, as a chat turn on that agent does, not the
+    template it dispatches."""
+    from kiro_crew.slack import gateway
+
+    write_member_home(config_dir(), "alpha", "beta")
+    loader._invalidate_config_cache()
+    cfg = KiroCrewConfig.load()
+    cfg.agents["beta"].kiro_agent = "beta-mode"
+    cfg.agents["alpha"].kiro_agent = "alpha-mode"
+    gw, callback = await _cron_callback(monkeypatch, cfg)
+    _let_sequence_complete(monkeypatch, gw)
+    gate_identity = []
+
+    async def stream(_client, _message, **kw):
+        gate_identity.append((kw.get("session_key"), kw.get("agent"), kw.get("unattended")))
+        return "done", 0
+
+    monkeypatch.setattr(gateway, "_cron_stream_with_posttoken_resume", stream)
+    captured = ExecutionContext(
+        "alpha", MemoryStoreRef("member-alpha", "alpha"), "member", "alpha", "persistent", "app"
+    )
+    job = CronJob(
+        id="seq-gate",
+        name="sequence gate",
+        message="task",
+        agent_sequence=["beta", "alpha"],
+        execution_context=captured.to_record(),
+    )
+
+    assert await callback(job) == "done"
+    assert gate_identity == [
+        ("cron:seq-gate:beta", "beta", True),
+        ("cron:seq-gate:alpha", "alpha", True),
+    ]
+
+
 @pytest.mark.parametrize(
     ("agent_id", "member", "expected"),
     [
