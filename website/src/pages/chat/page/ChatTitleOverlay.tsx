@@ -132,7 +132,8 @@ export default function ChatTitleOverlay({
             worker this is and the way back are always on screen. */}
         {currentCrewRoot && currentSlot && (
           <div className={`relative pr-4 ${!isMobile && embedMode !== 'chat' && filteredSlots.length > 0 && !sidebarOpen ? 'pl-[60px]' : 'pl-4'} pt-[9px] pb-2 flex items-center bg-bg border-b border-border`} data-testid="crew-worker-header">
-            <CrewWorkerBreadcrumb root={currentCrewRoot} worker={currentSlot} />
+            {/* Keyed by member: a reopen-failed notice belongs to the member it was about. */}
+            <CrewWorkerBreadcrumb key={currentSlot.key} root={currentCrewRoot} worker={currentSlot} />
             {/* The panel's open control, which the title row carries and the
                 breadcrumb replaces: with the panel closed, one click brings the
                 Workers list back beside the worker. */}

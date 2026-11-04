@@ -9956,7 +9956,6 @@
       "flow_needs_you": "내 결정 필요",
       "eyebrow": "Ultra Mode",
       "composer_chip_label": "이 채팅에서 Ultra Mode가 켜져 있습니다",
-      "breadcrumb_label": "크루원",
       "back_to_main_chat": "메인 채팅으로 돌아가기",
       "parent_row_hint": "이 채팅의 크루 멤버를 보는 중",
       "steer_too_long": "{{name}}에게 보내는 메시지는 최대 {{max}}자까지입니다. 줄여서 보내세요.",
@@ -10051,7 +10050,9 @@
       "ultra_done_line_green_other": "PR {{count}}개가 모두 검사를 통과하면 완료됩니다.",
       "ultra_done_line_green_rest_other": "PR {{count}}개가 모두 검사를 통과하고 나머지를 승인하면 완료됩니다.",
       "ultra_done_line_files_other": "파일 검사 {{count}}개가 모두 통과하면 완료됩니다.",
-      "ultra_done_line_files_rest_other": "파일 검사 {{count}}개가 모두 통과하고 나머지를 승인하면 완료됩니다."
+      "ultra_done_line_files_rest_other": "파일 검사 {{count}}개가 모두 통과하고 나머지를 승인하면 완료됩니다.",
+      "breadcrumb_nav_label": "이동 경로",
+      "breadcrumb_back_to": "{{t}}(으)로 돌아가기"
     },
     "guideLayer": {
       "region_label": "가이드",

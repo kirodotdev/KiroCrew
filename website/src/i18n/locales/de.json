@@ -10170,7 +10170,6 @@
       "flow_needs_you": "Braucht dich",
       "eyebrow": "Ultra Mode",
       "composer_chip_label": "Ultra Mode ist für diesen Chat an",
-      "breadcrumb_label": "Crew-Mitglied",
       "back_to_main_chat": "Zurück zum Hauptchat",
       "parent_row_hint": "Zeigt eines seiner Crew-Mitglieder",
       "steer_too_long": "Eine Nachricht an {{name}} darf höchstens {{max}} Zeichen lang sein. Kürze sie zum Senden.",
@@ -10277,7 +10276,9 @@
       "ultra_done_line_files_one": "Erledigt, wenn {{count}} Dateiprüfung bestanden ist.",
       "ultra_done_line_files_other": "Erledigt, wenn alle {{count}} Dateiprüfungen bestanden sind.",
       "ultra_done_line_files_rest_one": "Erledigt, wenn {{count}} Dateiprüfung bestanden ist und du den Rest freigibst.",
-      "ultra_done_line_files_rest_other": "Erledigt, wenn alle {{count}} Dateiprüfungen bestanden sind und du den Rest freigibst."
+      "ultra_done_line_files_rest_other": "Erledigt, wenn alle {{count}} Dateiprüfungen bestanden sind und du den Rest freigibst.",
+      "breadcrumb_nav_label": "Brotkrümelnavigation",
+      "breadcrumb_back_to": "Zurück zu {{t}}"
     },
     "guideLayer": {
       "region_label": "Anleitung",

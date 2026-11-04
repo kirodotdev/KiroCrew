@@ -10384,7 +10384,6 @@
       "flow_needs_you": "Precisa de você",
       "eyebrow": "Ultra Mode",
       "composer_chip_label": "O Ultra Mode está ativado neste chat",
-      "breadcrumb_label": "Membro da equipe",
       "back_to_main_chat": "Voltar ao chat principal",
       "parent_row_hint": "Mostrando um dos membros da equipe",
       "steer_too_long": "Uma mensagem para {{name}} pode ter no máximo {{max}} caracteres. Encurte-a para enviar.",
@@ -10503,7 +10502,9 @@
       "ultra_done_line_files_other": "Concluído quando todas as {{count}} verificações de arquivos passarem.",
       "ultra_done_line_files_rest_one": "Concluído quando {{count}} verificação de arquivo passar e você aprovar o resto.",
       "ultra_done_line_files_rest_many": "Concluído quando todas as {{count}} verificações de arquivos passarem e você aprovar o resto.",
-      "ultra_done_line_files_rest_other": "Concluído quando todas as {{count}} verificações de arquivos passarem e você aprovar o resto."
+      "ultra_done_line_files_rest_other": "Concluído quando todas as {{count}} verificações de arquivos passarem e você aprovar o resto.",
+      "breadcrumb_nav_label": "Trilha de navegação",
+      "breadcrumb_back_to": "Voltar para {{t}}"
     },
     "guideLayer": {
       "region_label": "Guia",

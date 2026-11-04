@@ -9956,7 +9956,6 @@
       "flow_needs_you": "要判断",
       "eyebrow": "Ultra Mode",
       "composer_chip_label": "このチャットでは Ultra Mode がオンです",
-      "breadcrumb_label": "クルーメンバー",
       "back_to_main_chat": "メインチャットに戻る",
       "parent_row_hint": "このチャットのクルーメンバーを表示中",
       "steer_too_long": "{{name}} へのメッセージは {{max}} 文字までです。短くしてから送信してください。",
@@ -10051,7 +10050,9 @@
       "ultra_done_line_green_other": "{{count}} 件の PR がすべてチェックに合格すると完了します。",
       "ultra_done_line_green_rest_other": "{{count}} 件の PR がすべてチェックに合格し、残りを承認すると完了します。",
       "ultra_done_line_files_other": "{{count}} 件のファイルチェックがすべて合格すると完了します。",
-      "ultra_done_line_files_rest_other": "{{count}} 件のファイルチェックがすべて合格し、残りを承認すると完了します。"
+      "ultra_done_line_files_rest_other": "{{count}} 件のファイルチェックがすべて合格し、残りを承認すると完了します。",
+      "breadcrumb_nav_label": "パンくずリスト",
+      "breadcrumb_back_to": "{{t}} に戻る"
     },
     "guideLayer": {
       "region_label": "ガイド",
