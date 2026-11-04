@@ -169,9 +169,11 @@ from kiro_crew.agent_parts.spec_lookup import (
     markdown_spec_for_agent,
 )
 from kiro_crew.agent_parts.spec_prompts import (
+    _CONDUCTOR_PROMPT_SECTIONS,
     _CONDUCTOR_SYSTEM_PROMPT,
     _CONDUCTOR_WORK_LEDGER_PROTOCOL,
     _DASHBOARD_MANAGER_SYSTEM_PROMPT,
+    _LEDGER_CONDUCTOR_RULES,
     _PIPELINE_CONDUCTOR_SYSTEM_PROMPT,
     _SECURITY_CONDUCTOR_SYSTEM_PROMPT,
     _TEAM_LEAD_SYSTEM_PROMPT,
