@@ -226,11 +226,15 @@
       // one reads its reports) makes an open report STUCK too, as the Crew panel does.
       // A value without them keeps the old rule: an item that last reported progress
       // is working.
+      // The host's `awaits_person`, when it sent one, is the Board's own test: it also
+      // drops an ask a person already answered (a decision, a steer, an approval
+      // answered in the worker's chat). A value without it keeps the old rule.
       function view(it) {
         var state = text(it.state) || 'unknown';
         if (state !== 'open') return state;
-        if ((it.status === 'question' || it.status === 'blocked') &&
-          (it.reason === 'approval' || it.reason === 'needs_human')) return 'needs_you';
+        if (typeof it.awaits_person === 'boolean' ? it.awaits_person :
+          ((it.status === 'question' || it.status === 'blocked') &&
+          (it.reason === 'approval' || it.reason === 'needs_human'))) return 'needs_you';
         if (it.worker === 'running') return 'working';
         if (it.orphaned === true && (it.status === 'progress' || it.status === 'blocked' ||
           it.status === 'question')) return 'stuck';

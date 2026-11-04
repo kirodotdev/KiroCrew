@@ -407,8 +407,12 @@ def _alive_of(state: DashboardState, worker_key: str) -> str:
 
 
 def with_worker_facts(value: Any, state: Any, conductor: str = "") -> Any:
-    """*value* with each LOCAL work item stamped ``worker``, ``stale`` and, when
-    *conductor* names the board's slot, ``orphaned``.
+    """*value* with each LOCAL work item stamped ``worker``, ``stale``, ``awaits_person``
+    and, when *conductor* names the board's slot, ``orphaned``.
+
+    ``awaits_person`` is :func:`awaits_person` over the item's own event tail, the one
+    test the Board and the sidebar count read, so goal-board's "needs you" agrees with
+    them and clears when a person's answer lands on the item.
 
     The page may not see ``worker_session_key`` (``member_dashboard._page_safe`` drops
     it), yet whether that worker is mid-turn is what tells "working" from "waiting".
@@ -455,6 +459,10 @@ def with_worker_facts(value: Any, state: Any, conductor: str = "") -> Any:
             item, worker_running=running, worker_closed=closed, worker_looping=looping
         )
         facts["worker"] = _alive_of(state, item.worker_session_key or "")
+        events = raw.get("events")
+        facts["awaits_person"] = not item.is_terminal and awaits_person(
+            item, [e for e in events if isinstance(e, dict)] if isinstance(events, list) else []
+        )
         out.append({**raw, **facts})
     return out
 
