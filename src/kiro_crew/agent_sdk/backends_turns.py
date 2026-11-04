@@ -717,4 +717,4 @@ ACP_BACKENDS_REPORT_USAGE = frozenset(
 # slot until the stale-turn gate or the prompt timeout, so it stays out until its
 # end signal is known.
 # See docs/request-for-change/rfc-agent-started-turns.md.
-ACP_BACKENDS_AGENT_STARTED_TURNS = frozenset({ACP_BACKEND_CLAUDE})
+ACP_BACKENDS_AGENT_STARTED_TURNS = frozenset({ACP_BACKEND_CLAUDE, ACP_BACKEND_PI})

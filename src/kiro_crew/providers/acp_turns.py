@@ -175,6 +175,16 @@ async def stream(
             yield self._to_llm_event(e)
 
 
+async def stream_unsolicited(self: AcpProvider) -> AsyncIterator[LLMEvent]:
+    """Consume one ACP agent-started turn without sending a prompt."""
+    await self._ready_confirmed_session()
+    if not isinstance(self._client, AcpClient):
+        return
+    async with aclosing(self._client.stream_unsolicited()) as events:
+        async for event in events:
+            yield self._to_llm_event(event)
+
+
 async def stream_command(self: AcpProvider, command: str) -> AsyncIterator[LLMEvent]:
     # _kiro.dev/commands/execute is a kiro extension, so only
     # ACP_BACKENDS_KIRO_SLASH_COMMANDS members can be sent it. Everyone else

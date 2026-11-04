@@ -222,6 +222,7 @@ def init_turns_fields(self: _ChatSlot) -> None:
     self._task = None
     # A send reserved the next turn and is between admission and dispatch.
     self._turn_admission_reserved = False
+    self._agent_started_pending = False
     # Monotonic publication history for turn ownership. ``task`` returns to
     # None after teardown, so consumers that span awaits cannot distinguish
     # "stayed idle" from "ran and finished" by comparing task references.

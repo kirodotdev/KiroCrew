@@ -556,6 +556,16 @@ def _expand_dollar_skills(
 
 async def _turn_build_prompt(turn: _ChatTurn) -> None:
     """Build the prompt the turn sends: a slash command's, the context builder's or the bare message."""
+    if turn._agent_started:
+        # No prompt is sent for an autonomous ACP turn. In particular, do not
+        # replay history or consume the session's replay lease here.
+        turn.full_message = ""
+        turn._trusted_prompt_tail = None
+        turn._first_turn_history_assembled = False
+        turn._interrupted_turn_preamble = ""
+        turn._needs_reinjection = False
+        turn.slot_ctx_omitted = {}
+        return
     _trusted_prompt_tail: str | None
     slot_ctx_omitted: dict[str, dict[str, Any]]
     _context_is_new = turn._context_is_new

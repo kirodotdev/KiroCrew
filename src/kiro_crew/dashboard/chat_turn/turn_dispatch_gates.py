@@ -79,6 +79,32 @@ async def _turn_dispatch_prep(turn: _ChatTurn) -> None:
     session_key = turn.session_key
     slot = turn.slot
     state = turn.state
+    if turn._agent_started:
+        # Consume already-produced ACP events without treating this as a new
+        # user prompt: do not consume one-shot context, build history replay,
+        # expand skills, or attribute empty prompt text to the user.
+        turn._user_msg_for_mirror = message
+        turn._jev_route_text = message
+        turn.slot_ctx_blocks = {}
+        turn.slot_ctx_phase = ""
+        turn.slot_ctx_omitted = {}
+        turn._user_prepend_offset = 0
+        turn._user_span = []
+        turn._span_probe = ""
+        turn._span_base_len = -1
+        turn._trusted_prompt_tail = None
+        turn._todo_sync_rendered = ()
+        turn._todo_recovery_carried = False
+        turn._interrupted_turn_preamble = ""
+        _provider_has_history = resumed
+        if turn._replay_pending:
+            _provider_has_history = False
+        elif not _provider_has_history and getattr(
+            getattr(client, "client", None), "resumed", None
+        ) is True:
+            _provider_has_history = True
+        turn._provider_has_history = _provider_has_history
+        return
     if not is_slash and (_responsive_human or _responsive_recovery):
         _request_prefix_context = await asyncio.to_thread(
             responsive_chat.prompt_context, _responsive_recovery
@@ -276,12 +302,15 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
     turn_exit = turn.turn_exit
     user_typed_len = turn.user_typed_len
     user_typed_message = turn.user_typed_message
-    if is_new:
+    if turn._agent_started:
+        spawn_injected = []
+        injected = []
+    elif is_new:
         spawn_injected = await _fire(turn, HOOK_EVENT_AGENT_SPAWN, session_key)
+        injected = await _fire(turn, HOOK_EVENT_USER_PROMPT_SUBMIT, message)
     else:
         spawn_injected = []
-
-    injected = await _fire(turn, HOOK_EVENT_USER_PROMPT_SUBMIT, message)
+        injected = await _fire(turn, HOOK_EVENT_USER_PROMPT_SUBMIT, message)
     all_injected = spawn_injected + injected
     if all_injected:
         hook_ctx = "\n\n".join(all_injected)
@@ -321,7 +350,7 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
     # the person ticked in the pill since its last snapshot (todo_sync_prompt),
     # which is how a click reaches a live agent instead of being reverted by
     # its next full snapshot.
-    if not is_slash:
+    if not is_slash and not turn._agent_started:
         full_message, _todo_sync_rendered, _todo_recovery_carried = await _checklist_resync(
             slot,
             full_message,

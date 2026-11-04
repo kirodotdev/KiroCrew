@@ -556,6 +556,10 @@ class ScriptedProvider(LLMProvider):
         self.record("stream_command", command)
         return self._events()
 
+    def stream_unsolicited(self) -> AsyncIterator[AcpEvent]:
+        self.record("stream_unsolicited")
+        return self._events()
+
     async def approve_tool(self, request_id: str | int, *, always: bool = False) -> bool:
         self.record("approve_tool", request_id)
         return True

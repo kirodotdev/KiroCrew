@@ -30,6 +30,7 @@ from kiro_crew.acp.types import (
 from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_KIRO,
+    ACP_BACKEND_PI,
     ACP_BACKENDS_AGENT_STARTED_TURNS,
 )
 from kiro_crew.testing.wait import async_wait_until, await_until
@@ -89,7 +90,17 @@ def _usage(origin: dict | None = None) -> dict:
     return _update(update)
 
 
+def _pi_running(running: bool) -> dict:
+    return _update(
+        {
+            "sessionUpdate": "session_info_update",
+            "_meta": {"piAcp": {"queueDepth": 0, "running": running}},
+        }
+    )
+
+
 _AUTONOMOUS_END = _usage({"kind": "task-notification", "producer": "session-task", "runId": "r"})
+_PI_AUTONOMOUS_END = _pi_running(False)
 _HUMAN_END = _usage({"kind": "human"})
 _SESSION_INFO = _update({"sessionUpdate": "session_info_update", "title": "probe"})
 _PERMISSION = {
@@ -166,6 +177,19 @@ def test_each_activity_kind_starts_a_turn(kind: str) -> None:
 )
 def test_each_autonomous_origin_ends_the_turn(kind: str) -> None:
     assert _ends_agent_started_turn(JsonRpcMessage.from_dict(_usage({"kind": kind})))
+
+
+def test_pi_idle_settled_frame_ends_an_agent_started_turn() -> None:
+    assert _ends_agent_started_turn(JsonRpcMessage.from_dict(_PI_AUTONOMOUS_END))
+
+
+def test_pi_running_frame_does_not_end_an_agent_started_turn() -> None:
+    assert not _ends_agent_started_turn(JsonRpcMessage.from_dict(_pi_running(True)))
+
+
+def test_pi_is_the_only_new_agent_started_backend() -> None:
+    assert ACP_BACKEND_PI in ACP_BACKENDS_AGENT_STARTED_TURNS
+    assert ACP_BACKENDS_AGENT_STARTED_TURNS == frozenset({ACP_BACKEND_CLAUDE, ACP_BACKEND_PI})
 
 
 @pytest.mark.parametrize("frame", [_SESSION_INFO, _AUTONOMOUS_END, _HUMAN_END])

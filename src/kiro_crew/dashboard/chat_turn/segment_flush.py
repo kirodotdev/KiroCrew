@@ -1218,7 +1218,8 @@ async def _turn_settle_answer(turn: _ChatTurn) -> None:
         _recovering_compaction = True
         turn._recovering_compaction = _recovering_compaction
     elif (
-        _stop_reason != STOP_REASON_CANCELLED
+        not turn._agent_started
+        and _stop_reason != STOP_REASON_CANCELLED
         and not turn._produced_visible_output
         and not turn._terminal_directive_applied
         and not _refusal_reasons
@@ -1428,6 +1429,20 @@ async def _turn_settle_answer(turn: _ChatTurn) -> None:
             _empty_activity.had_tools,
             _empty_activity.had_thinking,
             _empty_activity.billed,
+        )
+    if (
+        turn._agent_started
+        and not turn._produced_visible_output
+        and not turn._terminal_directive_applied
+        and not _refusal_reasons
+    ):
+        # A wake that produced no deliverable result must not re-run a prompt or
+        # synthesize user text: doing so could duplicate completed tool effects.
+        slot.append(
+            "notice",
+            "The agent-started turn ended without a report.",
+            "msg msg-info",
+            meta={"kind": EMPTY_TURN_NOTICE_KIND},
         )
     # Diagnostic-only drift sensor: exact matching stays the replay authority,
     # while a blocker-adjacent near miss after proven read-only Kiro work is

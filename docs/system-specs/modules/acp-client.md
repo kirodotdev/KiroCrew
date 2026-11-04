@@ -2209,16 +2209,18 @@ The session MCP report carries `restart_to_load`: failed servers whose reason re
 
 ### Idle reader and agent-started turns (`AcpClient`)
 
-On a backend in `ACP_BACKENDS_AGENT_STARTED_TURNS` (claude), Claude Code can
-start a turn by itself after a prompt's turn has ended, for example when a
-`run_in_background` command exits, and claude-agent-acp writes that turn to
-stdout while no request waits. Design record:
-`docs/request-for-change/rfc-agent-started-turns.md`.
+On a backend in `ACP_BACKENDS_AGENT_STARTED_TURNS` (claude and Pi), the agent
+can start a turn by itself after a prompt's turn has ended. Claude Code can do
+this when a `run_in_background` command exits; Pi ACP emits its own activity
+when an asynchronous subagent completes. Design records:
+`docs/request-for-change/rfc-agent-started-turns.md` and
+`docs/request-for-change/rfc-pi-subagent-completion-wake.md`.
 
-- **Bound by the claude adapter.** `ClaudeLaunch.resolve_spawn`
-  (`acp/harness/claude.py`) calls `_install_idle_reader()` on the session it
-  launches when its backend is in `ACP_BACKENDS_AGENT_STARTED_TURNS`; a respawn
-  calls it again and it binds nothing twice. On that instance it wraps
+- **Bound by the supported adapters.** `ClaudeLaunch.resolve_spawn`
+  (`acp/harness/claude.py`) and `PiLaunch` (`acp/harness/pi.py`) call
+  `_install_idle_reader()` on the session they launch when their backend is in
+  `ACP_BACKENDS_AGENT_STARTED_TURNS`; a respawn calls it again and it binds
+  nothing twice. On that instance it wraps
   `ensure_ready`, `_initialize_session`, `_wait_for_response`,
   `_drain_notifications`, `wait_for_compaction`,
   `_drain_post_compaction_metadata`, `_read_steer_answers` and `_prompt_loop`
@@ -2292,8 +2294,17 @@ stdout while no request waits. Design record:
   a prompt inside an open `stream_unsolicited()` loop: the prompt waits for that
   stream to close, so the two wait on each other.
 
-No production caller registers `on_agent_turn`; until one does, the reader
-never starts.
+- **Dashboard owner callback.** `chat_turn/turn_admission.py` binds
+  `on_agent_turn` to the exact ACP provider, slot and session being admitted.
+  The callback validates that ownership again at delivery, reserves the normal
+  slot turn-admission fence, and starts a guarded prompt-less `_run_chat` with
+  `_agent_started=True`. It emits no synthetic user row or prompt; unsolicited
+  ACP events pass through the ordinary dispatch, policy and persistence path.
+  An already-running owner is awaited before the wake claims the slot, while
+  queued user work remains subject to the normal queue cycle. Stop-generation,
+  slot closure, session replacement and gateway shutdown suppress stale delivery.
+  `slot._agent_started_pending` is also observed by queue drain/cycle so queued
+  user work cannot overtake a pending autonomous wake.
 
 ## Key APIs
 

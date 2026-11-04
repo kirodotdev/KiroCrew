@@ -1109,6 +1109,7 @@ class AcpProvider(LLMProvider):
     _to_llm_event = staticmethod(_acp_turns._to_llm_event)
     _ready_confirmed_session = _acp_turns._ready_confirmed_session
     stream = _acp_turns.stream
+    stream_unsolicited = _acp_turns.stream_unsolicited
     stream_command = _acp_turns.stream_command
     compact = _acp_turns.compact
     cancel = _acp_turns.cancel

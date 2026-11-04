@@ -165,9 +165,19 @@ def _ends_agent_started_turn(msg: JsonRpcMessage) -> bool:
     if msg.method is None and msg.id is not None:
         return True
     kind, update = _session_update_kind(msg)
+    meta = update.get("_meta")
+    if (
+        kind == "session_info_update"
+        and isinstance(meta, dict)
+        and isinstance(meta.get("piAcp"), dict)
+        and meta["piAcp"].get("running") is False
+    ):
+        # pi-acp publishes this state transition when its autonomous cycle settles.
+        # This predicate is only consulted after activity was observed, so a normal
+        # between-turn status frame cannot terminate or start a turn on its own.
+        return True
     if kind != UPDATE_USAGE:
         return False
-    meta = update.get("_meta")
     origin = meta.get("_claude/origin") if isinstance(meta, dict) else None
     return isinstance(origin, dict) and origin.get("kind") in _CLAUDE_AUTONOMOUS_ORIGIN_KINDS
 

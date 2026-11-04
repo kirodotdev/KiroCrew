@@ -222,6 +222,12 @@ async def _finish_queue_cycle(
     a cycle of local commands and cancelled replays has no reply to title and
     no remote work to re-read."""
 
+    if slot._agent_started_pending:
+        # The buffered ACP frames own the next provider read. Do not start
+        # synthesis or drain a queued user prompt ahead of their consumer.
+        allow_automatic_successor = False
+        drain = False
+
     will_synthesize = False
     verdict = SYNTHESIS_HELD
     if (

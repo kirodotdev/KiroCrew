@@ -109,6 +109,38 @@ class TestTheRecord:
         assert record.then is None
 
     @pytest.mark.asyncio
+    async def test_agent_started_turn_consumes_events_without_prompt_or_user_row(self) -> None:
+        record = await run_turn(
+            TurnScript(
+                events=[_REPLY, _DONE],
+                message="",
+                user_row=False,
+                run_kwargs={"_agent_started": True, "_turn_actor": "agent"},
+            )
+        )
+        assert record.calls("stream") == []
+        assert record.calls("stream_unsolicited")
+        assert record.rows("user") == []
+        assert [row["content"] for row in record.rows("assistant")] == ["the reply"]
+        assert record.stop_reason == STOP_REASON_END_TURN
+
+    @pytest.mark.asyncio
+    async def test_empty_agent_started_turn_is_not_replayed_as_a_prompt(self) -> None:
+        record = await run_turn(
+            TurnScript(
+                events=[_DONE],
+                message="",
+                user_row=False,
+                run_kwargs={"_agent_started": True, "_turn_actor": "agent"},
+            )
+        )
+        assert record.calls("stream") == []
+        assert record.calls("stream_unsolicited")
+        assert record.successors == ()
+        assert record.rows("user") == []
+        assert any("ended without a report" in row["content"] for row in record.rows("notice"))
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize(
         ("user_row", "priority"),
         [(True, StartPriority.FOREGROUND), (False, StartPriority.BACKGROUND)],

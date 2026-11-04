@@ -95,6 +95,7 @@ class _ChatSlot:
         "total_messages",
         "_task",
         "_turn_admission_reserved",
+        "_agent_started_pending",
         "_turn_generation",
         "_wake_starting_task",
         "_chunk_seq",
@@ -460,6 +461,7 @@ class _ChatSlot:
     segment_message_id: str
     _task: asyncio.Task[Any] | None
     _turn_admission_reserved: bool
+    _agent_started_pending: bool
     _turn_generation: int
     _wake_starting_task: asyncio.Task[Any] | None
     _chunk_seq: int

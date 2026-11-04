@@ -815,6 +815,7 @@ async def _run_chat(
     _on_irreversibly_consumed: "Callable[[], Awaitable[None] | None] | None" = None,
     monitor_completion: MonitorCompletionHook | None = None,
     _current_message: dict | None = None,
+    _agent_started: bool = False,
 ) -> None:
     """Stream LLM response into *slot*.  Survives browser disconnect."""
     turn = _ChatTurn(
@@ -846,6 +847,7 @@ async def _run_chat(
         _on_irreversibly_consumed=_on_irreversibly_consumed,
         monitor_completion=monitor_completion,
         _current_message=_current_message,
+        _agent_started=_agent_started,
     )
     _flow = await _turn_open(turn)
     if _flow is _Flow.END:
@@ -889,7 +891,10 @@ async def _run_chat(
         _todo_recovery_carried = turn._todo_recovery_carried
         _todo_sync_rendered = turn._todo_sync_rendered
         full_message = turn.full_message
-        event_stream = client.stream_command(message) if is_slash else client.stream(full_message)
+        if turn._agent_started:
+            event_stream = client.stream_unsolicited()
+        else:
+            event_stream = client.stream_command(message) if is_slash else client.stream(full_message)
         async for event in event_stream:
             if (_todo_sync_rendered or _todo_recovery_carried) and (
                 event.kind in _TODO_BLOCK_READ_EVENT_KINDS

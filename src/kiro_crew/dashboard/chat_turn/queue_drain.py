@@ -444,6 +444,11 @@ async def _start_next_queued_turn(
     # history save keeps it for the next start, as the parked drain already does.
     if _gateway_shutdown_requested(state):
         return False
+    # An ACP autonomous turn already has frames buffered in the owning client's
+    # stdout. Do not dispatch a queued prompt first: it would claim that stream
+    # and misattribute the autonomous output to the user's prompt.
+    if slot._agent_started_pending:
+        return False
 
     # A drain that follows a turn's end marks that end before it writes anything:
     # the drop notices, the held-note flush and the cancellation notices below

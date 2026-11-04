@@ -51,6 +51,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_NODE_ADAPTER_PACKAGES,
     ACP_BACKEND_PI,
     ACP_BACKEND_PROCESS_NAMES,
+    ACP_BACKENDS_AGENT_STARTED_TURNS,
     NODE_ADAPTER_ENTRY_SEGMENTS,
 )
 from kiro_crew.config.paths import config_dir
@@ -1039,6 +1040,8 @@ class PiLaunch(ProcessAdapter):
                 )
             except acp_tool_gate.ToolGateUnroutable as exc:
                 raise AcpToolGateUnroutable(str(exc)) from None
+        if self.backend in ACP_BACKENDS_AGENT_STARTED_TURNS:
+            session._install_idle_reader()
         return SpawnPlan(
             argv=argv,
             spawn_label=spawn_label,

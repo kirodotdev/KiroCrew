@@ -1236,6 +1236,9 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
     # (the dashboard steer handler) can reach the running session's client
     # to inject a mid-turn steer. Cleared in _turn_release_handles (chat_turn/turn_entry.py).
     slot._acp_client = getattr(client, "client", None)
+    from kiro_crew.dashboard.chat_turn.agent_started import wire_agent_started_turn
+
+    wire_agent_started_turn(state, slot, client, session_key)
     # Billing stats as they stand BEFORE this turn's prompt is sent. The
     # runtime installs a fresh per-turn stats object only inside the dispatch
     # in _run_chat; a turn that dies before that (expired credential, broken pipe)
