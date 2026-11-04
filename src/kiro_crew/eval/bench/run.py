@@ -58,22 +58,14 @@ from .safepath import (
 def _environment_identity() -> dict[str, str]:
     """The measuring environment, as far as it can change a retrieval number.
 
-    Deliberately a short list rather than the whole dependency set. Every entry is
-    here because it can alter ranking or tokenization:
+    Each entry can alter ranking or tokenization: ``python`` (full patch version),
+    ``platform`` (the vendored llama.cpp payload and BLAS differ per architecture),
+    ``sqlite`` (the FTS5 tokenizer scores the keyword fallback), ``numpy`` (cosine
+    arithmetic and its BLAS).
 
-    * ``python`` -- full patch version; dict/set iteration and float formatting are
-      stable within a patch but the interpreter is the substrate for everything else.
-    * ``platform`` -- OS and machine; the vendored llama.cpp payload differs per
-      architecture, and so does BLAS.
-    * ``sqlite`` -- the FTS5 tokenizer lives here, and the keyword fallback path is
-      scored by it.
-    * ``numpy`` -- the cosine path's arithmetic, including which BLAS it binds.
-
-    Pinning the full dependency set would be stricter and, with no lockfile in this
-    repo, would refuse comparisons for upgrades that cannot touch the numbers. The
-    residual risk is a package outside this list changing ranking; that is a real
-    gap, and the honest mitigation is that the corpus fingerprint plus these four
-    make the common causes visible rather than silent.
+    The full dependency set is not pinned: with no lockfile it would refuse
+    comparisons across upgrades that cannot touch the numbers. A package outside
+    this list changing ranking is a known gap.
     """
     import platform
     import sqlite3
@@ -541,25 +533,17 @@ def write_report(
 def _measurable_count(metrics: dict, field: str, k: int) -> int | None:
     """Read a per-cut-off count, or ``None`` when it is absent OR unusable.
 
-    The ONE place a count crosses from JSON into arithmetic. `int(raw)` on a value
-    that came out of a file raises, and this function is called from the comparison
-    path, where a traceback is the wrong output: `bench compare` exists to say
-    whether two runs are comparable, and "this report is malformed" is an answer it
-    should give rather than crash on. Absent and malformed collapse to the same
-    ``None`` deliberately — a caller that cannot get a trustworthy count must take
-    the not-comparable branch either way.
+    The one place a count crosses from JSON into arithmetic. `bench compare` must
+    answer "not comparable" for a malformed report rather than crash, so absent and
+    malformed both give ``None`` and take the not-comparable branch.
 
-    Strict about the type on purpose. `int(12.5)` succeeds and silently truncates to
-    12, so a float would be accepted as a slightly different count and compared
-    against a real one; this harness always writes these fields as integers, so a
-    float means the file came from somewhere else. `bool` is excluded because it is
-    an `int` subclass and `True` would read as a count of one.
+    Only a real `int` is accepted: `int(12.5)` would silently truncate, and the
+    harness always writes integers, so a float came from elsewhere. `bool` is an
+    `int` subclass and `True` would read as one.
 
-    The container goes through `_section` for the same reason the leaf does:
-    `metrics.get(field, {})` defaults only when the key is MISSING, so a report
-    carrying `"session_measurable": null` handed back `None` and the next `.get`
-    raised `AttributeError` -- a traceback out of the one command whose job is to
-    answer whether two runs are comparable.
+    The container also goes through `_section`: `metrics.get(field, {})` defaults
+    only on a missing key, so `"session_measurable": null` would raise
+    `AttributeError` on the next `.get`.
     """
     raw = _section(metrics, field).get(str(k))
     if isinstance(raw, bool) or not isinstance(raw, int):
@@ -704,25 +688,15 @@ def compare_reports(baseline: dict, candidate: dict, *, k: int = 5) -> str:
     b_sess = _section(baseline, "metrics", "session")
     c_sess = _section(candidate, "metrics", "session")
 
-    # Two ways a cut-off can be incomparable, each of which a naive read prints a
-    # number for.
-    #
-    # 1. ABSENT ON ONE SIDE. A cut-off the retrieval window never exposed is omitted
-    #    from the metric dict (that is what makes an unmeasurable k visible rather
-    #    than falsely low). A `name in b or name in c` test paired with
-    #    `.get(name, 0.0)` turns "the baseline could not measure this" into "the
-    #    baseline scored zero", manufacturing an exact-looking improvement of the full
-    #    candidate value — the measurability filter's own omitted keys are what make
-    #    that reachable, so a default here is a new way to be wrong.
-    #
-    # 2. DIFFERENT POPULATIONS. Even present on both sides, the two means can be over
-    #    different query sets: measured on LoCoMo, @5 is measurable for 1977 queries
-    #    with the decay neutralised and only 746 with it active. Differencing those is
-    #    not a paired comparison, and the closing note below would call it exact.
-    # Routed through one reader so a malformed count cannot reach arithmetic. It
-    # returns None for absent AND for unusable, which the branch below already
-    # handles as "not comparable" -- the only honest answer when the denominator
-    # cannot be trusted.
+    # A cut-off is incomparable in two ways a naive read still prints a number for:
+    # 1. Absent on one side: an unmeasurable k is omitted from the metric dict, and
+    #    `.get(name, 0.0)` would turn "could not measure" into "scored zero", a fake
+    #    improvement of the full candidate value.
+    # 2. Different populations: measured on LoCoMo, @5 is measurable for 1977
+    #    queries with decay neutralised and only 746 with it active; differencing
+    #    those is not a paired comparison.
+    # `_measurable_count` returns None for absent or unusable counts, which the
+    # branch below treats as not comparable.
     bn = _measurable_count(_section(baseline, "metrics"), "session_measurable", k)
     cn = _measurable_count(_section(candidate, "metrics"), "session_measurable", k)
 

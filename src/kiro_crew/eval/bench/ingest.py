@@ -78,41 +78,28 @@ DEFAULT_EMBED_TIMEOUT_S = 900.0
 class IngestConfig:
     """Every input that can move a score, in one recordable object.
 
-    ``granularity`` — ``"turn"`` writes one episodic fragment per utterance,
-    ``"session"`` writes one per session (the whole transcript concatenated).
-    Turn-level is the default because it is the only granularity at which
-    turn-level recall means anything, and because it is the harder, more honest
-    retrieval task: the store must find one utterance among thousands rather than
-    one document among forty. Note that NEITHER matches what production
-    consolidation writes — production writes LLM-summarized fragments.
+    ``granularity``: ``"turn"`` writes one episodic fragment per utterance,
+    ``"session"`` one per whole session. Turn is the default: only there does
+    turn-level recall mean anything, and finding one utterance among thousands is
+    the harder task. Neither matches production, which writes LLM-summarized
+    fragments.
 
-    ``timeline`` — see the module docstring. ``"anchored"`` preserves the corpus's
-    relative time structure while placing its most recent session at "now", which
-    exercises the decay term the way a real user's memory would without the
-    absolute-age underflow that ``"literal"`` produces on a 2023 corpus.
-    ``"now"`` flattens every fragment to the same instant, making the decay factor
-    a constant and thereby isolating pure semantic ranking — the right mode for
-    attributing a retrieval change to embedding/ranking rather than to recency.
+    ``timeline`` (see the module docstring): ``"anchored"`` keeps relative time but
+    puts the newest session at "now", exercising decay without the age underflow
+    ``"literal"`` gives a 2023 corpus. ``"now"`` makes decay a constant, isolating
+    semantic ranking from recency.
 
-    ``dedup_threshold`` defaults to the store's own production value. It is
-    exposed, not hidden, because dedup can silently eat gold turns. Two caveats
-    that took a real run to establish, and that bound what raising it can buy you:
+    ``dedup_threshold`` defaults to the store's production value and is exposed
+    because dedup can silently eat gold turns. Raising it above 1.0 disables only
+    *near*-duplicate rejection, and only where FAISS is present:
 
-    * ``write_episodic`` *also* rejects any text whose lowercased first 80
-      characters already exist (``LOWER(SUBSTR(text, 1, 80))``), unconditionally
-      and without consulting this threshold at all. Byte-identical fragments are
-      therefore always dropped, at any threshold.
-    * the cosine near-duplicate check is gated on a live FAISS index
-      (``self._faiss_index.ntotal > 0``), so on a host where ``faiss`` is not
-      importable this threshold is **inert in both directions** — near-duplicates
-      are never rejected, and raising it changes nothing.
+    * ``write_episodic`` always rejects text whose lowercased first 80 characters
+      already exist (``LOWER(SUBSTR(text, 1, 80))``), at any threshold;
+    * the cosine check is gated on a live FAISS index (``self._faiss_index.ntotal
+      > 0``), so without ``faiss`` this threshold is inert.
 
-    So raising it above 1.0 disables *near*-duplicate rejection only, and only
-    where FAISS is present.
-
-    ``speaker_prefix`` — LoCoMo's speaker is a person's name and many of its
-    questions are about *who* said or did something, so dropping the attribution
-    would make a whole category unanswerable for reasons unrelated to memory.
+    ``speaker_prefix``: many LoCoMo questions ask *who* said or did something, so
+    dropping the speaker name would make a whole category unanswerable.
     """
 
     granularity: Granularity = "turn"
@@ -445,19 +432,12 @@ def ingest_instance(
                     continue
                 report.attempted += 1
                 if len(text) > _EPISODIC_TEXT_MAX:
-                    # Systematic, not incidental: the ingest strategy is producing text
-                    # of a shape this store cannot hold, so the haystack would not be
-                    # the corpus. MEASURED on LoCoMo: `--granularity session` puts 249
-                    # of 272 fragments (91.5%) over this limit, while turn granularity
-                    # puts 0 of 5882 over it. A run that continued would publish recall
-                    # over the 8.5% that happened to fit.
-                    #
-                    # UNDERSIZED text is deliberately not refused: two LoCoMo turns fall
-                    # below the store's floor, and those are counted in
-                    # `dropped_fragments`, named in `dropped_gold`, and already carry a
-                    # report warning that recall cannot reach 1.0 for the affected
-                    # queries. That is a data property, reported honestly; refusing the
-                    # whole run over 0.03% of the corpus would buy no extra honesty.
+                    # Oversized text is systematic: MEASURED on LoCoMo, session
+                    # granularity puts 249 of 272 fragments (91.5%) over the limit,
+                    # turn granularity 0 of 5882. Continuing would publish recall over
+                    # the 8.5% that fit. Undersized text (two LoCoMo turns, 0.03%) is
+                    # not refused: it is counted in `dropped_fragments`, named in
+                    # `dropped_gold`, and the report warns that recall cannot reach 1.0.
                     raise IngestError(
                         f"fragment of {len(text)} characters exceeds the store's "
                         f"{_EPISODIC_TEXT_MAX}-character limit, so `write_episodic` "
@@ -475,16 +455,11 @@ def ingest_instance(
                 first_seen = text in text_to_turn
                 embedding = embed_fn(text)
                 if embedding is None:
-                    # Empty and whitespace-only text was already skipped above, so a
-                    # None here is an INFERENCE failure, not a benign empty input.
-                    # Storing the row anyway leaves a NULL vector that search_episodic
-                    # can only reach through the FTS5 keyword fallback, while the
-                    # report still presents its recall as a semantic measurement.
-                    # Counting it and carrying on would surface a warning, and a
-                    # warning does not stop the headline number from being published;
-                    # this harness refuses rather than annotates. `prepare_embedder`
-                    # makes that trade at startup, so a mid-run failure has to make it
-                    # too, or the guarantee covers only the first fragment.
+                    # Blank text was skipped above, so None is an inference failure.
+                    # A NULL vector is reachable only via the FTS5 keyword fallback,
+                    # yet the report would call it semantic recall. Refuse, as
+                    # `prepare_embedder` does at startup; a warning would not stop the
+                    # headline number from being published.
                     raise IngestError(
                         "the embedder returned no vector for a non-empty fragment "
                         f"after readiness was confirmed ({report.attempted} fragments "
