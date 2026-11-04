@@ -977,9 +977,9 @@ describe('CrewEditorNextDialog — General edits, footer, danger', () => {
     const dialog = await openNew()
     fireEvent.click(within(dialog).getByTestId('next-rail-danger'))
     const pane = await within(dialog).findByTestId('next-pane-danger')
-    expect(pane).toHaveTextContent('memory store and past transcripts are kept, and a new crewmate can start from that memory later')
+    expect(pane).toHaveTextContent('memory and past chats are kept, and a new mate can start from that memory later')
     fireEvent.click(within(dialog).getByTestId('next-delete-crew'))
-    expect(pane).toHaveTextContent('a new crewmate can start from its memory later')
+    expect(pane).toHaveTextContent('a new mate can start from its memory later')
   })
 
   it('cancels the armed danger delete', async () => {

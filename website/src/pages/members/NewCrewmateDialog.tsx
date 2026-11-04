@@ -65,6 +65,7 @@ import CrewAvatar, { type CrewAvatarOverride } from '../../components/CrewAvatar
 import { lookSeed, defaultLookFor } from '../../lib/avatarPoses'
 import CrewAvatarBuilder from '../../components/CrewAvatarBuilder'
 import ErrorNotice from '../../components/ErrorNotice'
+import SimpleSelect from '../../components/SimpleSelect'
 import { InstantTip, useInstantTip } from '../../components/InstantTip'
 import { Btn, Input } from '../../components/ui'
 import { api } from '../../api/client'
@@ -427,16 +428,17 @@ export default function NewCrewmateDialog({
   })
   const { data: availableModels, error: modelsError } = useAvailableModelsQuery({ enabled: open })
   // Kept memory a deleted crewmate left behind. Re-read on every open, like the
-  // catalog. The field only shows when there is something to offer, so a failed
-  // read shows nothing extra: the default (a fresh memory) is unaffected.
-  const { data: keptMemory, refetch: refetchKeptMemory } = useQuery({
+  // catalog. The field only shows when there is something to offer; a failed
+  // read is said in the same notice as the other lists, so it never passes for
+  // "nothing kept". The default (a fresh memory) is unaffected.
+  const { data: keptMemory, refetch: refetchKeptMemory, error: keptMemoryError } = useQuery({
     queryKey: ['memory-ownerless-stores'],
     queryFn: () => api.memoryOwnerlessStores(),
     enabled: open,
     staleTime: 0,
   })
   const keptStores = Array.isArray(keptMemory?.stores) ? keptMemory.stores : []
-  const optionsError = workspacesError ?? modelsError
+  const optionsError = workspacesError ?? modelsError ?? keptMemoryError
 
   // The look shown and stored when the user has not picked one: a name-seeded
   // icon (pose + colour both follow the name). Never null, so the create flow
@@ -868,7 +870,9 @@ export default function NewCrewmateDialog({
               message={t('pages.membersPage.create_options_failed', {
                 list: workspacesError
                     ? t('pages.kiroCrewAgentsPage.workspace_2')
-                    : t('pages.kiroCrewAgentsPage.model'),
+                    : modelsError
+                      ? t('pages.kiroCrewAgentsPage.model')
+                      : t('pages.membersPage.create_memory'),
               })}
               variant="inline"
               testId="crewmate-create-options-error"

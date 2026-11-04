@@ -90,7 +90,7 @@ class TestAdoptingAnOwnerlessStore:
             assert body["memory_store"] == store
             assert body["member_id"] == member_id
 
-            # Once owned, it is no longer on offer.
+            # Once owned, it is not on offer.
             relisted = await client.get("/api/memory/ownerless-stores")
             assert (await relisted.json())["stores"] == []
 
@@ -125,6 +125,35 @@ class TestAdoptingAnOwnerlessStore:
             assert (await _create(client, "scout", adopt_memory_store=store)).status == 200
         binding = read_dm_binding(slug)
         assert binding is not None and binding["member"] == "scout"
+
+    @pytest.mark.asyncio
+    async def test_a_live_thread_of_the_deleted_crewmate_opens_as_the_new_one(
+        self, tmp_path
+    ) -> None:
+        from chat_test_helpers import _make_state
+        from members_dm_thread_helpers import _make_members_app
+
+        from kiro_crew.members import DM_SLOT_MODE, write_dm_binding
+
+        state = _make_state(tmp_path)
+        app = _make_members_app(state)
+        for route in _app().router.routes():
+            app.router.add_route(route.method, route.resource.canonical, route.handler)
+        async with TestClient(TestServer(app)) as client:
+            created = await _create(client, "reviewer")
+            body = await created.json()
+            store, slug = body["memory_store"], body["member_id"]
+            key = member_slot_key(slug, store)
+            write_dm_binding(slug, member="reviewer", slot_key=key, memory_store=store)
+            # The deleted crewmate's thread is still open in this gateway.
+            state.get_or_create_slot(key, agent="reviewer", mode=DM_SLOT_MODE)
+            assert (await client.delete("/api/agents/reviewer")).status == 200
+
+            assert (await _create(client, "scout", adopt_memory_store=store)).status == 200
+            opened = await client.post(f"/api/members/{slug}/thread")
+            assert opened.status == 200, await opened.text()
+        slot = state.get_slot(key)
+        assert slot is not None and slot.agent == "scout"
 
     @pytest.mark.asyncio
     async def test_a_same_named_create_without_asking_still_starts_fresh(self) -> None:

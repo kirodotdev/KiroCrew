@@ -796,6 +796,12 @@ async def _api_kirocrew_agents_create(request: web.Request) -> web.Response:
     # create over the copy. A copy that does not land leaves ``kiro_agent``
     # pointing at the source template (the pre-RFC shared-pointer model), and the
     # grant below then skips (``mate_file_missing``) rather than minting a fork.
+    if adopt_store:
+        # The adopted thread key is the deleted crewmate's; a slot still live
+        # there is pinned to that name and would refuse the new crewmate.
+        from kiro_crew.dashboard.handlers.members_thread import retire_stale_member_slot
+
+        await retire_stale_member_slot(request.app.get("state"), cfg, name)
     mate_copy = await _eager_copy_mate_config(name)
     logger.info("new crewmate %s: mate-owned config %s", name, mate_copy)
     # A template without the crewmate's own tools gets them on the member's OWNED

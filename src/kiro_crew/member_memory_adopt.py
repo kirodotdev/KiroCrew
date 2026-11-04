@@ -85,8 +85,8 @@ def ownerless_member_stores(config) -> list[dict[str, str]]:
 
     Each row is ``{"name": <store>, "former_owner": <owner_member>}``. The
     former owner is the display name the record last carried, shown so a person
-    can tell the stores apart; it is never used to pick one. A store whose
-    directory is gone is left out, since there is nothing to give back.
+    can tell the stores apart; it never picks one. A store whose directory is
+    gone is left out, since there is nothing to give back.
     """
     rows = []
     for store in sorted(config.memory_stores):

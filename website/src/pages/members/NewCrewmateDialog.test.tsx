@@ -474,8 +474,17 @@ describe('NewCrewmateDialog', () => {
     it('offers nothing extra when no memory was kept', async () => {
       vi.mocked(api.memoryOwnerlessStores).mockResolvedValue({ stores: [] })
       renderWithProviders(<NewCrewmateDialog open startExpanded {...props} />)
-      await screen.findByRole('combobox', { name: 'Built from' })
+      await screen.findByTestId('crewmate-create-form')
       await waitFor(() => expect(api.memoryOwnerlessStores).toHaveBeenCalled())
+      expect(screen.queryByRole('combobox', { name: 'Memory' })).toBeNull()
+    })
+
+    it('says the kept-memory list failed to load instead of offering nothing', async () => {
+      vi.mocked(api.memoryOwnerlessStores).mockRejectedValue(new Error('boom'))
+      renderWithProviders(<NewCrewmateDialog open startExpanded {...props} />)
+      expect(await screen.findByTestId('crewmate-create-options-error')).toHaveTextContent(
+        "Couldn't load the Memory choices",
+      )
       expect(screen.queryByRole('combobox', { name: 'Memory' })).toBeNull()
     })
 

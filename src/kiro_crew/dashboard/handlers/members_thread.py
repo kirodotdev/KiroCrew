@@ -109,6 +109,44 @@ async def _bind_member_workspace(
     state.push_slots_update()
 
 
+async def retire_stale_member_slot(state: DashboardState | None, cfg, member: str) -> None:
+    """Close a live DM slot on *member*'s thread key that is pinned to someone else.
+
+    A crewmate that adopts a kept memory store derives the same thread key as
+    the deleted crewmate that left it (same slug, same store). A slot still live
+    under that key keeps the deleted name as its agent, and the thread open
+    refuses a pin that names anyone but the crewmate being opened. Closing it the
+    way the tab close does saves the conversation to history as closed and
+    takes the slot out of the live set; the next open rehydrates it from that
+    history and pins it through the binding, which names *member*.
+
+    Never raises: the crewmate already exists, so a slot that cannot be closed
+    now is logged and left for the open to refuse, as before.
+    """
+    if state is None or member not in cfg.agents:
+        return
+    agent = cfg.agents[member]
+    try:
+        key = members_mod.member_slot_key(agent.member_id, agent.memory_store)
+    except (MemberSlugError, ValueError):
+        return
+    slot = state.get_slot(key)
+    if slot is None or slot.mode != members_mod.DM_SLOT_MODE or slot.agent in ("", member):
+        return
+    from kiro_crew.dashboard.chat_api.slot_lifecycle import close_slot
+
+    try:
+        await close_slot(state, slot, key)
+    except Exception:
+        logger.warning(
+            "crewmate %s: could not close the live thread pinned to %r; "
+            "opening the thread is refused until it is closed",
+            member,
+            slot.agent,
+            exc_info=True,
+        )
+
+
 async def _guard_and_pin_private_store(
     state: "DashboardState",
     slug_owners: list[str],
