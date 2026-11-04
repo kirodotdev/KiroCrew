@@ -1184,11 +1184,8 @@ def _find_with_live(query: str, lang: str | None, surface: str | None) -> dict[s
 def _with_live(d: dict[str, Any], *, obs: dict[str, Any] | None = None) -> dict[str, Any]:
     """Add ``live`` to each search result: what the user's tab shows right now.
 
-    One bounded ask of the gateway for the curated ids among the results; the
-    gateway asks one tab and answers within the wait or not at all. A result
-    the tab did not answer for (no tab, a late reply, another build, an id no
-    tab can observe) is ``live: {status: not_observed}``. Never fails the
-    search: the static answer stands either way.
+    One bounded ask of the gateway, which asks one tab. A result the tab did not
+    answer for is ``live: {status: not_observed}``; the search never fails on it.
 
     A result whose plan the tab's state blocks also carries ``blocker``:
     ``gate_off`` (a gate on the path is off, with the ``setting_id`` that turns
