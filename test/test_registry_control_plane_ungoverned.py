@@ -10,6 +10,9 @@ stays a plain local server; any doubt keeps the marker a governed account needs.
 
 from __future__ import annotations
 
+import asyncio
+import threading
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -236,3 +239,110 @@ class TestReachabilityProbe:
         db.write_bytes(b"x")
         assert kiro_cli._sign_in_fingerprint(tmp_path, {}) != before
         assert kiro_cli._sign_in_fingerprint(tmp_path, {"KIRO_API_KEY": "set"})[1] is True
+
+
+class TestProbeOnEventLoop:
+    """``whoami`` can take seconds under a process-wide lock, and spec writers are
+    reached from coroutines through many synchronous helpers. On a thread running
+    an event loop the probe must never run it, never wait for that lock, and never
+    answer anything but a cached verdict or doubt."""
+
+    WARM_THREAD = "kirocrew-registry-probe"
+
+    @pytest.fixture(autouse=True)
+    def _signals(self, _floor_monkeypatch):
+        from kiro_crew.atomic_write import on_event_loop
+        from kiro_crew.cloud import login_target
+
+        self.fingerprint = ["store-v1"]
+        self.whoami_threads: list[bool] = []
+        self.asked = threading.Event()
+
+        def fake_whoami(kiro_bin=None):
+            self.whoami_threads.append(on_event_loop())
+            self.asked.set()
+            return PERSONAL
+
+        _floor_monkeypatch.setattr(kiro_cli, "_governance_unreachable_cache", None)
+        _floor_monkeypatch.setattr(kiro_cli, "_governance_warm_running", False)
+        _floor_monkeypatch.setattr(kiro_cli, "mcp_governance_may_apply", lambda: False)
+        _floor_monkeypatch.setattr(kiro_cli, "_data_home_api_key_may_be_set", lambda: False)
+        _floor_monkeypatch.setattr(kiro_cli, "_sign_in_fingerprint", lambda: self.fingerprint[0])
+        _floor_monkeypatch.setattr(login_target, "pin_kiro_cli", lambda: (PINNED, False))
+        _floor_monkeypatch.setattr(login_target, "discover_local_identity", fake_whoami)
+        yield
+        self._join_warm()
+
+    @staticmethod
+    def _on_loop(fn):
+        async def _call():
+            return fn()
+
+        return asyncio.run(_call())
+
+    def _join_warm(self) -> None:
+        for thread in threading.enumerate():
+            if thread.name == self.WARM_THREAD:
+                thread.join(timeout=10)
+                assert not thread.is_alive(), "the warm-up thread did not finish"
+
+    def _wait_for_warm(self) -> None:
+        assert self.asked.wait(timeout=10), "the warm-up never asked whoami"
+        self._join_warm()
+
+    def test_whoami_never_runs_on_a_running_event_loop(self):
+        assert self._on_loop(real_probe) is False, "a cold probe on the loop is doubt"
+        self._wait_for_warm()
+        assert self.whoami_threads == [False], "whoami ran on the event loop thread"
+        assert self._on_loop(real_probe) is True
+        assert self.whoami_threads == [False]
+
+    def test_the_loop_never_takes_the_probe_lock(self, monkeypatch):
+        """An off-loop probe holds this lock for the whole ``whoami``."""
+
+        class _UntouchableLock:
+            def __enter__(self):
+                raise AssertionError("the probe lock was taken on the event loop thread")
+
+            def __exit__(self, *exc):
+                return False
+
+            acquire = __enter__
+
+        monkeypatch.setattr(kiro_cli, "_governance_unreachable_lock", _UntouchableLock())
+        monkeypatch.setattr(
+            kiro_cli, "_governance_unreachable_cache", (time.monotonic(), "store-v1", True)
+        )
+        assert self._on_loop(real_probe) is True
+        assert self.whoami_threads == []
+
+    def test_a_sign_in_change_on_the_loop_is_doubt(self, monkeypatch):
+        monkeypatch.setattr(
+            kiro_cli, "_governance_unreachable_cache", (time.monotonic(), "store-v1", True)
+        )
+        self.fingerprint[0] = "store-v2"
+        assert self._on_loop(real_probe) is False
+        self._wait_for_warm()
+        assert self.whoami_threads == [False]
+
+    def test_an_aged_answer_is_reused_and_refreshed_off_the_loop(self, monkeypatch):
+        aged = time.monotonic() - kiro_cli._GOVERNANCE_UNREACHABLE_TTL_SECS - 1
+        monkeypatch.setattr(kiro_cli, "_governance_unreachable_cache", (aged, "store-v1", True))
+        assert self._on_loop(real_probe) is True
+        self._wait_for_warm()
+        assert self.whoami_threads == [False]
+        assert kiro_cli._governance_unreachable_cache[0] > aged
+
+    def test_a_spec_write_on_the_loop_keeps_the_marker_until_known(self, monkeypatch):
+        from kiro_crew.agent_materialization import managed_mcp
+
+        monkeypatch.setattr(kiro_cli, "registry_governance_known_unreachable", real_probe)
+        assert self._on_loop(lambda: managed_mcp._registry_marker_for("kirocrew-core", True))
+        self._wait_for_warm()
+        assert self.whoami_threads == [False]
+        assert not self._on_loop(lambda: managed_mcp._registry_marker_for("kirocrew-core", True))
+
+    def test_off_the_loop_the_probe_still_asks_inline(self):
+        assert real_probe() is True
+        assert self.whoami_threads == [False]
+        assert not any(t.name == self.WARM_THREAD for t in threading.enumerate())
