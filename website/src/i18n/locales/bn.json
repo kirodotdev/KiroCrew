@@ -6752,6 +6752,8 @@
       "alt_action_hint_steers": "{{chord}} এই বার্তা দিয়ে বরং এখনই স্টিয়ার করে",
       "project_switch_applies_next_turn": "তোমার পরের মেসেজ তোমার বেছে নেওয়া প্রজেক্টে চলবে। এই উত্তরটি {{project}}-এ শেষ হবে।",
       "project_switch_links_follow_pick": "এই উত্তরের লিংকগুলো তোমার বেছে নেওয়া প্রজেক্টে খুলবে।",
+      "project_switch_pending": "তোমার পরের মেসেজ থেকে {{project}}-এ বদলাবে।",
+      "project_pending_badge": "পরের মেসেজ",
       "project_locked_while_subagents_run": "সাব-এজেন্ট চলার সময় প্রজেক্ট বদলানো যায় না।",
       "switching_project": "প্রজেক্ট বদলানো হচ্ছে…",
       "steer_act_on_this_right_away_desc": "এটি নিয়ে এখনই কাজ করো",

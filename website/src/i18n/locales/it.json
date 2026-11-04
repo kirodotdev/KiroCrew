@@ -6932,6 +6932,8 @@
       "alt_action_hint_steers": "{{chord}} guida con questo messaggio invece",
       "project_switch_applies_next_turn": "Il tuo prossimo messaggio viene eseguito nel progetto che scegli. Questa risposta finisce in {{project}}.",
       "project_switch_links_follow_pick": "I link di questa risposta si apriranno nel progetto che scegli.",
+      "project_switch_pending": "Passaggio a {{project}} dal tuo prossimo messaggio.",
+      "project_pending_badge": "Prossimo messaggio",
       "project_locked_while_subagents_run": "Il progetto non può cambiare mentre ci sono subagenti in corso.",
       "switching_project": "Cambio progetto in corso…",
       "steer_act_on_this_right_away_desc": "Intervieni subito",

@@ -22,6 +22,7 @@ import { safeGetItem, safeSetItem } from '../utils/safeStorage'
 import { savePrefExplicitly } from '../lib/uiPrefs'
 import { offlineProps } from '../utils/offline'
 import { pathBasename, stripTrailingSeparators } from '../utils/pathBasename'
+import { ProjectPendingBadge, useStagedProject } from './chat-input/stagedProject'
 import { motion, AnimatePresence } from 'framer-motion'
 import { COMPOSER_ROW_SPRING, ComposerSizer } from './chat-input/ComposerSizer'
 import { useReducedMotion } from '../hooks/useReducedMotion'
@@ -481,32 +482,11 @@ function ChatInput({
       ? `${base}\n${i18nT('components.chatInput.detached_head_at', { branch: projectBranch })}`
       : `${base}\n${i18nT('components.chatInput.branch', { branch: projectBranch })}`
   }, [projectProp, projectBranch, projectDetached])
-  // The project this reply started in. A pick made while it runs updates
-  // `project` at once (the chip shows the next turn's project), but the reply
-  // itself keeps its start-of-turn directory, so the mid-turn tooltip names
-  // this snapshot. Captured when a response starts, and adjusted during
-  // render rather than in an effect so the first running frame is right.
-  // Re-taken when the composer moves to another chat as well: the composer is
-  // not remounted per chat, so going from one running chat to another keeps
-  // `isRunning` true and would otherwise name the previous chat's project.
-  const [turnStartProject, setTurnStartProject] = useState(projectProp)
-  const [sawRunning, setSawRunning] = useState(isRunning)
-  const [sawSlot, setSawSlot] = useState(slotId)
-  if (slotId !== sawSlot) {
-    setSawSlot(slotId)
-    setSawRunning(isRunning)
-    setTurnStartProject(projectProp)
-  } else if (isRunning !== sawRunning) {
-    setSawRunning(isRunning)
-    if (isRunning) setTurnStartProject(projectProp)
-  }
-  const midTurnProjectNote = useMemo(() => {
-    if (!isRunning) return ''
-    const name = turnStartProject
-      ? pathBasename(stripTrailingSeparators(turnStartProject)) || turnStartProject
-      : i18nT('components.chatInput.project')
-    return `${i18nT('components.chatInput.project_switch_applies_next_turn', { project: name })}\n${i18nT('components.chatInput.project_switch_links_follow_pick')}`
-  }, [isRunning, turnStartProject])
+  // A pick made while the composer is busy is staged: the chip names it at
+  // once, marks it pending, and the tooltip names the running reply's project.
+  const stagedProject = useStagedProject(projectProp, isRunning, slotId)
+  const midTurnProjectNote = stagedProject.midTurnNote
+  const lockedProjectNote = [stagedProject.pendingNote, i18nT('components.chatInput.project_locked_while_subagents_run')].filter(Boolean).join('\n')
   const { ctxPopoverOpen, setCtxPopoverOpen, ctxWrapRef } = useContextPopover()
   // The project chip opens its picker on the mouse press (usePressActivation);
   // keyboard and touch stay on click. ProjectPicker's outside-press dismiss
@@ -1934,8 +1914,8 @@ function ChatInput({
                armed while children share the runtime, so a pick there would
                not land at the next turn. */
             disabled={projectLocked}
-            title={projectLocked ? `${projectChipTitle}\n${i18nT('components.chatInput.project_locked_while_subagents_run')}` : isRunning ? `${projectChipTitle}\n${midTurnProjectNote}` : projectChipTitle}
-            aria-label={projectLocked ? `${projectChipTitle}\n${i18nT('components.chatInput.project_locked_while_subagents_run')}` : isRunning ? `${projectChipTitle}\n${midTurnProjectNote}` : projectChipTitle}
+            title={projectLocked ? `${projectChipTitle}\n${lockedProjectNote}` : isRunning ? `${projectChipTitle}\n${midTurnProjectNote}` : projectChipTitle}
+            aria-label={projectLocked ? `${projectChipTitle}\n${lockedProjectNote}` : isRunning ? `${projectChipTitle}\n${midTurnProjectNote}` : projectChipTitle}
             /* A pick waits on the turn-preparation lock, which a cold spawn
                holds for seconds: the spinner says the pick was taken, the
                same signal as the memory-mode chip (#20351). */
@@ -1952,6 +1932,7 @@ function ChatInput({
                 alone, so both segments still shrink below these caps on a
                 narrow window. */}
             {!shelfCompact && <span className="truncate max-w-[160px]">{projectSwitching ? i18nT('components.chatInput.switching_project') : project ? (pathBasename(stripTrailingSeparators(project)) || project) : i18nT('components.chatInput.project')}</span>}
+            {stagedProject.pending && !projectSwitching && <ProjectPendingBadge compact={shelfCompact} />}
           </button>
           {!shelfCompact && !!projectBranch && (
             <>
@@ -1968,7 +1949,7 @@ function ChatInput({
             </>
           )}
           {!!project && <ProjectAwsProfileStatus project={project} shelfCompact={shelfCompact} />}
-          <span role="status" className="sr-only" data-testid="composer-project-switch-status">{projectSwitching ? i18nT('components.chatInput.switching_project') : ''}</span>
+          <span role="status" className="sr-only" data-testid="composer-project-switch-status">{projectSwitching ? i18nT('components.chatInput.switching_project') : stagedProject.pendingNote}</span>
           </div>
           )}
           </div>
