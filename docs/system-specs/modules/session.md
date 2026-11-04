@@ -2375,14 +2375,16 @@ against sweep completeness, and are torn down at `close_all`.
   `dashboard/state.wire_session_recycle_callback()` from both `server.py`
   start paths to post a user-visible "session recycled" notice into
   `dashboard:` slots, tagged `meta={"kind": "compaction"}` so the [OPTIONS:]
-  backward scan skips it). Idle/orphan sweeps do NOT fire the recycle
-  callback. Linux sums the `/proc` tree; Windows uses
+  backward scan skips it). Idle/orphan sweeps fire the recycle callback only
+  for a session whose harness launched background work past the hold (see
+  "Harness background work" below). Linux sums the `/proc` tree; Windows uses
   `platform_compat.proc_rss_tree_mb_for_pid`; macOS sums each process's
   footprint over libproc's live child lists (`platform_compat.darwin_footprint_tree_mb`).
   Any other host reads 0 and logs one warning that the ceiling cannot measure.
   On macOS the background runtime's 1536 MiB fallback ceiling applies too.
 - **Harness background work** (`CleanupDeps.provider_background_launch`,
-  `HARNESS_BACKGROUND_WORK_HOLD_SECS` = 3600 s,
+  `session.harness_background_hold_secs`, default
+  `session_background_hold.HARNESS_BACKGROUND_WORK_HOLD_SECS` = 3600 s,
   `HARNESS_BACKGROUND_WORK_HARD_CEILING_FACTOR` = 2): a free semaphore only proves Kiro
   Crew's own prompt returned. Claude Code runs a backgrounded Bash command or a
   Workflow in the session's process tree after the prompt answers `end_turn`,
@@ -2425,6 +2427,18 @@ against sweep completeness, and are torn down at `close_all`.
   notice still names the work. The idle sweep is not memory-driven, so its hold
   has no such ceiling. The probe is not fail-closed: a missing or unreadable
   answer is "nothing launched".
+  The hold's length is `session.harness_background_hold_secs`, read at every
+  RSS tick and idle sweep through `session_background_hold.background_hold_secs`
+  (so a config edit applies at the next one). The loader clamps it to
+  `HARNESS_BACKGROUND_HOLD_SECS_MIN`-`_MAX` (300-86400) and logs a warning when it
+  does; the reader applies the same bounds again and reads a non-number as the
+  default. When the idle sweep does reset a session whose newest launch is past
+  the hold, on either axis, it logs a warning naming the launch, its age and the
+  hold (`hold_expired_reason`), and after a successful `reset` fires the recycle
+  callback with that reason, so the chat says the work may have been stopped. An
+  expiry with no recorded launch, or a declined reset, stays silent as before.
+  The RSS recycle past the hold keeps the plain memory-limit notice: there the
+  memory ceiling, not the hold, is the stated cause.
 
 ## APIs
 

@@ -52,10 +52,8 @@ from kiro_crew.acp._dispatch import (
 )
 from kiro_crew.acp.client import AcpClient
 from kiro_crew.acp.types import ACP_BACKEND_CLAUDE, JsonRpcMessage
-from kiro_crew.session_cleanup import (
-    HARNESS_BACKGROUND_WORK_HARD_CEILING_FACTOR,
-    HARNESS_BACKGROUND_WORK_HOLD_SECS,
-)
+from kiro_crew.session_background_hold import HARNESS_BACKGROUND_WORK_HOLD_SECS
+from kiro_crew.session_cleanup import HARNESS_BACKGROUND_WORK_HARD_CEILING_FACTOR
 
 # --------------------------------------------------------------------------- #
 # Captured frames (claude-agent-acp 0.84.0; ids and paths shortened)
@@ -672,3 +670,197 @@ class TestIdleSweepHonoursHarnessWork:
         assert manager.reset.await_args.args[0] == "dashboard:x"
         own = [r.getMessage() for r in caplog.records if r.name == "kiro_crew.session"]
         assert "Expiring idle session: dashboard:x" in own
+
+
+# --------------------------------------------------------------------------- #
+# session.harness_background_hold_secs
+# --------------------------------------------------------------------------- #
+
+#: The reported case: a workflow still running 67 minutes after its launch.
+_SIXTY_SEVEN_MIN = (67 * 60.0, 'workflow "long-run"')
+
+
+def _manager_with_hold(hold_secs: object, rss_max_mb: int = 0):
+    manager = _make_manager(rss_max_mb=rss_max_mb)
+    manager._cfg.session.harness_background_hold_secs = hold_secs
+    return manager
+
+
+class TestTheHoldIsConfigurable:
+    def test_the_default_is_still_one_hour(self) -> None:
+        from kiro_crew.config.loader_builders import _build_session_config
+        from kiro_crew.config.sections import SessionConfig
+        from kiro_crew.session_background_hold import background_hold_secs
+
+        assert HARNESS_BACKGROUND_WORK_HOLD_SECS == 3600.0
+        assert SessionConfig().harness_background_hold_secs == 3600
+        assert _build_session_config({}).harness_background_hold_secs == 3600
+        # A config object with no readable value (the MagicMock managers above).
+        assert background_hold_secs(MagicMock()) == 3600.0
+
+    def test_a_value_in_range_loads_as_written(self) -> None:
+        from kiro_crew.config.loader_builders import _build_session_config
+
+        cfg = _build_session_config({"harness_background_hold_secs": 7200})
+        assert cfg.harness_background_hold_secs == 7200
+
+    @pytest.mark.parametrize(
+        ("raw", "loaded"),
+        [(0, 300), (-5, 300), (299, 300), (86401, 86400), (10**9, 86400)],
+    )
+    def test_an_out_of_range_value_is_not_taken(self, raw: int, loaded: int, caplog) -> None:
+        from kiro_crew.config.loader_builders import _build_session_config
+
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.config.loader"):
+            cfg = _build_session_config({"harness_background_hold_secs": raw})
+
+        assert cfg.harness_background_hold_secs == loaded
+        assert any(
+            f"session.harness_background_hold_secs={raw} is outside 300-86400" in m
+            for m in caplog.messages
+        )
+
+    @pytest.mark.parametrize("raw", ["abc", True, 12.5, None])
+    def test_a_value_that_is_not_an_int_loads_as_the_default(self, raw: object) -> None:
+        from kiro_crew.config.loader_builders import _build_session_config
+
+        assert (
+            _build_session_config(
+                {"harness_background_hold_secs": raw}
+            ).harness_background_hold_secs
+            == 3600
+        )
+
+    @pytest.mark.parametrize(("raw", "read"), [(0, 300.0), (10**9, 86400.0), (True, 3600.0)])
+    def test_the_sweep_reapplies_the_bounds(self, raw: object, read: float) -> None:
+        from kiro_crew.session_background_hold import background_hold_secs
+
+        cfg = MagicMock()
+        cfg.session.harness_background_hold_secs = raw
+        assert background_hold_secs(cfg) == read
+
+    @pytest.mark.asyncio
+    async def test_a_longer_hold_keeps_an_idle_session_past_one_hour(self, caplog) -> None:
+        manager = _manager_with_hold(7200)
+        sess = _session_with_launch(_SIXTY_SEVEN_MIN)
+        sess.last_used = time.monotonic() - 10_000
+        manager._sessions["dashboard:x"] = sess
+        manager.reset = AsyncMock(return_value=True)
+
+        with caplog.at_level(logging.INFO, logger="kiro_crew.session"):
+            await manager._expire_idle(timeout_secs=1)
+
+        manager.reset.assert_not_awaited()
+        assert any(
+            m.startswith("Idle sweep: dashboard:x looks idle but its harness launched")
+            for m in caplog.messages
+        )
+
+    @pytest.mark.asyncio
+    async def test_the_default_hold_still_lets_that_session_expire(self) -> None:
+        """The control for the case above: the same session on the default hold."""
+        manager = _make_manager(rss_max_mb=0)
+        sess = _session_with_launch(_SIXTY_SEVEN_MIN)
+        sess.last_used = time.monotonic() - 10_000
+        manager._sessions["dashboard:x"] = sess
+        manager.reset = AsyncMock(return_value=True)
+
+        await manager._expire_idle(timeout_secs=1)
+
+        manager.reset.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    @pytest.mark.usefixtures("_proc_route")
+    async def test_a_longer_hold_also_holds_the_rss_recycle(self) -> None:
+        manager = _manager_with_hold(7200, rss_max_mb=1000)
+        manager._sessions["dashboard:x"] = _session_with_launch(_SIXTY_SEVEN_MIN)
+        manager.reset = AsyncMock(return_value=True)
+        manager.get_pid = MagicMock(return_value=4242)
+
+        await _rss_tick(manager, rss=1500)
+
+        manager.reset.assert_not_awaited()
+
+
+class TestExpiryPastTheHoldIsAnnounced:
+    @pytest.mark.asyncio
+    async def test_the_chat_and_the_log_are_told(self, caplog) -> None:
+        manager = _make_manager(rss_max_mb=0)
+        sess = _session_with_launch(_SIXTY_SEVEN_MIN)
+        sess.last_used = time.monotonic() - 10_000
+        manager._sessions["dashboard:x"] = sess
+        manager.reset = AsyncMock(return_value=True)
+        notices: list[tuple[str, str]] = []
+        manager.set_recycle_callback(_notice_recorder(notices))
+
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.session"):
+            await manager._expire_idle(timeout_secs=1)
+
+        manager.reset.assert_awaited_once()
+        assert notices == [
+            (
+                "dashboard:x",
+                'idle; its agent started background work 67 min ago (workflow "long-run"), '
+                "longer than the 60 min hold set by session.harness_background_hold_secs, "
+                "so that work may have been stopped",
+            )
+        ]
+        assert any(
+            m.startswith("Idle sweep: dashboard:x idle; its agent started background work")
+            for m in caplog.messages
+        )
+
+    @pytest.mark.asyncio
+    async def test_an_expiry_with_no_launch_stays_silent(self) -> None:
+        manager = _make_manager(rss_max_mb=0)
+        sess = _session_with_launch(None)
+        sess.last_used = time.monotonic() - 10_000
+        manager._sessions["dashboard:x"] = sess
+        manager.reset = AsyncMock(return_value=True)
+        notices: list[tuple[str, str]] = []
+        manager.set_recycle_callback(_notice_recorder(notices))
+
+        await manager._expire_idle(timeout_secs=1)
+
+        manager.reset.assert_awaited_once()
+        assert notices == []
+
+    @pytest.mark.asyncio
+    async def test_a_declined_reset_announces_nothing(self) -> None:
+        manager = _make_manager(rss_max_mb=0)
+        sess = _session_with_launch(_SIXTY_SEVEN_MIN)
+        sess.last_used = time.monotonic() - 10_000
+        manager._sessions["dashboard:x"] = sess
+        manager.reset = AsyncMock(return_value=False)
+        notices: list[tuple[str, str]] = []
+        manager.set_recycle_callback(_notice_recorder(notices))
+
+        await manager._expire_idle(timeout_secs=1)
+
+        assert notices == []
+
+    @pytest.mark.asyncio
+    async def test_a_closed_tab_names_the_tab_not_the_clock(self, caplog) -> None:
+        manager = _make_manager(rss_max_mb=0)
+        sess = _session_with_launch(_SIXTY_SEVEN_MIN)
+        sess.last_used = time.monotonic()
+        manager._sessions["dashboard:x"] = sess
+        manager.reset = AsyncMock(return_value=True)
+        manager.set_active_dashboard_slots({"dashboard:x"})
+        manager.set_active_dashboard_slots({"dashboard:other"})
+
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.session"):
+            await manager._expire_idle(timeout_secs=9999)
+
+        manager.reset.assert_awaited_once()
+        assert any(
+            m.startswith("Idle sweep: dashboard:x tab closed; its agent started background work")
+            for m in caplog.messages
+        )
+
+
+def test_a_launch_just_past_the_hold_never_reads_as_equal_to_it() -> None:
+    from kiro_crew.session_background_hold import hold_expired_reason
+
+    reason = hold_expired_reason((3601.0, "command"), 3600.0, orphaned=False)
+    assert "started background work 61 min ago (command), longer than the 60 min hold" in reason

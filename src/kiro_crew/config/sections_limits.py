@@ -259,6 +259,11 @@ KAS_DELETE_DELAY_SECS_MAX = 86400
 # per-entry cost ``POOL_SIZE_MAX`` bounds for the warm pool, so the count shares that ceiling.
 IDLE_EXEMPT_KEYS_MAX = POOL_SIZE_MAX
 IDLE_EXEMPT_KEY_MAX_CHARS = 512
+# Load-only bounds on ``session.harness_background_hold_secs``. The floor keeps a
+# hand-edited 0 from turning the hold off; the ceiling of one day bounds how long one
+# launch can keep a session past its idle timeout. The RSS hard ceiling still applies.
+HARNESS_BACKGROUND_HOLD_SECS_MIN = 300
+HARNESS_BACKGROUND_HOLD_SECS_MAX = 86400
 # Ceiling on ``session.reconcile_max_kills``, equal to the arm's own shipped budget
 # (``runtime_reconcile.DEFAULT_MAX_KILLS``, pinned equal by
 # ``test_the_configured_ceiling_cannot_exceed_the_shipped_budget``). Equal rather

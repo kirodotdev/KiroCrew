@@ -955,6 +955,27 @@ def _load_idle_exempt_keys(raw: object) -> list[str]:
     return idle_exempt_keys
 
 
+def _load_background_hold_secs(section: _sections.SectionReader) -> int:
+    """``session.harness_background_hold_secs``, clamped to its range with a warning.
+
+    A value outside the range is not taken as written: a 0 would turn the hold off and
+    a huge one would keep a launching session past its idle timeout for days. It is
+    clamped to the nearest bound, like the other session ints, and the log says so.
+    """
+    lo, hi = _sections.HARNESS_BACKGROUND_HOLD_SECS_MIN, _sections.HARNESS_BACKGROUND_HOLD_SECS_MAX
+    loaded = section.read("harness_background_hold_secs", _safe_int)
+    clamped = min(max(loaded, lo), hi)
+    if clamped != loaded:
+        logger.warning(
+            "session.harness_background_hold_secs=%d is outside %d-%d; using %d",
+            loaded,
+            lo,
+            hi,
+            clamped,
+        )
+    return clamped
+
+
 def _build_session_config(session_data: dict) -> SessionConfig:
     section = _sections.SectionReader(SessionConfig, session_data)
     return SessionConfig(
@@ -1019,6 +1040,7 @@ def _build_session_config(session_data: dict) -> SessionConfig:
             _sections.KAS_DELETE_DELAY_SECS_MAX,
         ),
         watchdog_rss_max_mb=section.read("watchdog_rss_max_mb", _safe_int),
+        harness_background_hold_secs=_load_background_hold_secs(section),
         # Clamped HERE as well as in the `_SECURITY_BOUNDED_FIELDS` sweep, for the
         # reason `_safe_int` states: that sweep runs over the raw dict and skips
         # non-int values, so a numeric STRING passes it and coerces here.

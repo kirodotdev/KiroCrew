@@ -1864,6 +1864,7 @@
         "file_changes_keep_turns": 0,
         "kas_delete_delay_secs": 0,
         "watchdog_rss_max_mb": 4096,
+        "harness_background_hold_secs": 3600,
         "reconcile_max_kills": 5
       }
     },
@@ -2091,6 +2092,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 4096
+    },
+    {
+      "path": "session.harness_background_hold_secs",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Background Work Hold (seconds)",
+      "help": "On the Claude backend, how long after the agent starts background work (a Workflow or a backgrounded command) the idle timeout and the Watchdog RSS Limit still leave its session running (default 3600, 300-86400). Claude Code does not report when that work ends, so after this time the work is treated as finished and the session can be ended; the chat then says the work may have been stopped. Raise it for work that runs longer. Twice the Watchdog RSS Limit still ends a session inside the hold.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 3600
     },
     {
       "path": "session.reconcile_max_kills",
