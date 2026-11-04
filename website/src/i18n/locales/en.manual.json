@@ -4144,7 +4144,6 @@
       "flow_needs_you": "Needs you",
       "eyebrow": "Ultra Mode",
       "composer_chip_label": "Ultra Mode is on for this chat",
-      "breadcrumb_label": "Crew member",
       "back_to_main_chat": "Back to main chat",
       "parent_row_hint": "Showing one of its crew members",
       "steer_too_long": "A message to {{name}} can be at most {{max}} characters. Shorten it to send.",
@@ -4251,7 +4250,9 @@
       "ultra_done_line_files_one": "Done when {{count}} file check passes.",
       "ultra_done_line_files_other": "Done when all {{count}} file checks pass.",
       "ultra_done_line_files_rest_one": "Done when {{count}} file check passes and you approve the rest.",
-      "ultra_done_line_files_rest_other": "Done when all {{count}} file checks pass and you approve the rest."
+      "ultra_done_line_files_rest_other": "Done when all {{count}} file checks pass and you approve the rest.",
+      "breadcrumb_nav_label": "Breadcrumb",
+      "breadcrumb_back_to": "Back to {{t}}"
     },
     "guideLayer": {
       "region_label": "Guide",

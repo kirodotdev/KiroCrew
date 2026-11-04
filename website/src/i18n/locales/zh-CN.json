@@ -9962,7 +9962,6 @@
       "flow_needs_you": "需要你",
       "eyebrow": "Ultra Mode",
       "composer_chip_label": "这个对话已开启 Ultra Mode",
-      "breadcrumb_label": "团队成员",
       "back_to_main_chat": "返回主聊天",
       "parent_row_hint": "正在查看它的一位团队成员",
       "steer_too_long": "发给 {{name}} 的消息最多 {{max}} 个字符。请缩短后再发送。",
@@ -10057,7 +10056,9 @@
       "ultra_done_line_green_other": "完成标准：{{count}} 个 PR 检查全部通过。",
       "ultra_done_line_green_rest_other": "完成标准：{{count}} 个 PR 检查全部通过，其余由你批准。",
       "ultra_done_line_files_other": "当全部 {{count}} 项文件检查通过后完成。",
-      "ultra_done_line_files_rest_other": "当全部 {{count}} 项文件检查通过且你批准其余部分后完成。"
+      "ultra_done_line_files_rest_other": "当全部 {{count}} 项文件检查通过且你批准其余部分后完成。",
+      "breadcrumb_nav_label": "面包屑导航",
+      "breadcrumb_back_to": "返回 {{t}}"
     },
     "guideLayer": {
       "region_label": "引导",

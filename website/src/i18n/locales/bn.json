@@ -10178,7 +10178,6 @@
       "flow_needs_you": "তোমাকে দরকার",
       "eyebrow": "Ultra Mode",
       "composer_chip_label": "এই চ্যাটে Ultra Mode চালু আছে",
-      "breadcrumb_label": "দলের সদস্য",
       "back_to_main_chat": "মূল চ্যাটে ফিরে যাও",
       "parent_row_hint": "এর একজন ক্রু সদস্যকে দেখানো হচ্ছে",
       "steer_too_long": "{{name}}-কে পাঠানো বার্তা সর্বোচ্চ {{max}} অক্ষরের হতে পারে। পাঠাতে এটি ছোট করো।",
@@ -10285,7 +10284,9 @@
       "ultra_done_line_green_other": "সব {{count}}টি PR চেক পাস করলে শেষ হবে।",
       "ultra_done_line_green_rest_other": "সব {{count}}টি PR চেক পাস করলে এবং তুমি বাকিগুলো অনুমোদন করলে শেষ হবে।",
       "ultra_done_line_files_other": "সব {{count}}টি ফাইল চেক পাস করলে শেষ হবে।",
-      "ultra_done_line_files_rest_other": "সব {{count}}টি ফাইল চেক পাস করলে এবং তুমি বাকিগুলো অনুমোদন করলে শেষ হবে।"
+      "ultra_done_line_files_rest_other": "সব {{count}}টি ফাইল চেক পাস করলে এবং তুমি বাকিগুলো অনুমোদন করলে শেষ হবে।",
+      "breadcrumb_nav_label": "ব্রেডক্রাম্ব",
+      "breadcrumb_back_to": "{{t}}-এ ফিরে যাও"
     },
     "guideLayer": {
       "region_label": "গাইড",

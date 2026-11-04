@@ -5969,7 +5969,7 @@
   },
   "components": {
     "mateWorkers": {
-      "approvals_label": "Approbations d'outils des sessions de ce coéquipier\u202f: {{n}}",
+      "approvals_label": "Approbations d'outils des sessions de ce coéquipier : {{n}}",
       "trust": "Faire confiance à cette session",
       "trust_hint": "Approuve ceci et laisse cette session utiliser des outils sans demander jusqu'au redémarrage de {{productName}}.",
       "questions_label": "Questions des sessions de ce coéquipier",
@@ -10394,7 +10394,6 @@
       "flow_needs_you": "À toi",
       "eyebrow": "Ultra Mode",
       "composer_chip_label": "Ultra Mode est activé pour cette discussion",
-      "breadcrumb_label": "Membre de l’équipe",
       "back_to_main_chat": "Revenir au chat principal",
       "parent_row_hint": "Affiche l’un de ses membres d’équipe",
       "steer_too_long": "Un message pour {{name}} peut compter au plus {{max}} caractères. Raccourcis-le pour l'envoyer.",
@@ -10513,7 +10512,9 @@
       "ultra_done_line_files_other": "Terminé quand les {{count}} vérifications de fichiers réussissent.",
       "ultra_done_line_files_rest_one": "Terminé quand {{count}} vérification de fichier réussit et que tu approuves le reste.",
       "ultra_done_line_files_rest_many": "Terminé quand les {{count}} vérifications de fichiers réussissent et que tu approuves le reste.",
-      "ultra_done_line_files_rest_other": "Terminé quand les {{count}} vérifications de fichiers réussissent et que tu approuves le reste."
+      "ultra_done_line_files_rest_other": "Terminé quand les {{count}} vérifications de fichiers réussissent et que tu approuves le reste.",
+      "breadcrumb_nav_label": "Fil d'Ariane",
+      "breadcrumb_back_to": "Revenir à {{t}}"
     },
     "guideLayer": {
       "region_label": "Guide",
