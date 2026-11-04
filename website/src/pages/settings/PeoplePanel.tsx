@@ -3,12 +3,11 @@
  *  and, when the Crew can tell, how much work that person has active and queued.
  *
  *  Access to a Crew is decided by the network and the sign-in in front of it.
- *  The in-Crew control is the owner's Tailscale invite card
- *  (`TailscaleInvites.tsx`), which shares this machine through Tailscale and
- *  admits the login that accepted. Tailscale access rules decide direct-link
- *  access, and people are managed (and removed) in Tailscale.
- *  Each section keeps a heading and at most one short line; longer
- *  explanations sit in the ⓘ beside the heading.
+ *  The in-Crew control is the owner's one Invite… entry
+ *  (`InviteEntry` in `TailscaleInvites.tsx`), which shares this machine through
+ *  Tailscale and admits the login that accepted. Tailscale access rules decide
+ *  direct-link access, and people are managed (and removed) in Tailscale.
+ *  Each section keeps a heading and at most one short line.
  *  There is no role or admin control, and no
  *  management URL is ever taken from a peer or from config. An enterprise Crew
  *  points to its console only when its capabilities say one is configured.
@@ -28,8 +27,8 @@ import { capabilityUsable, membershipPointer, principalInitials, principalName, 
 import { SharedAccessSetup } from './SharedAccessSetup'
 import { ConsoleAccess, TeamConfigInvalid } from './PeopleModes'
 import { PeopleAdvanced } from './PeopleAdvanced'
-import { PeopleList, ShareHero, useCanInvite } from './PeopleCrew'
-import { TailscaleInvites } from './TailscaleInvites'
+import { PeopleList, PersonalWaiting, ShareHero, useCanInvite } from './PeopleCrew'
+import { InviteEntry } from './TailscaleInvites'
 import { avatarUrl } from '../../api/sharedCrewInvites'
 import { effectiveMode } from '../../api/sharedCrewMode'
 import { useSharedCrewCapabilities, useSharedCrewMode, useSharedCrewPeople } from '../../hooks/sharedCrew/useSharedCrew'
@@ -126,7 +125,8 @@ function PeopleContent({ capabilities, data, modeData }: {
     return (
       <div className="flex flex-col gap-4" data-testid="people-personal">
         <SharedAccessSetup capabilities={capabilities} />
-        <TailscaleInvites />
+        <InviteEntry />
+        <PersonalWaiting />
         {canInvite && <PeopleAdvanced />}
       </div>
     )
@@ -176,18 +176,16 @@ function PeopleContent({ capabilities, data, modeData }: {
     )
   }
   const usageAvailable = !!data.usage_available
-  // The list's own notes, in the ⓘ beside its heading.
-  const tipExtra = [
-    !usageAvailable && i18nT('sharedCrew.usage_unavailable'),
-    attributionReason === 'daemon_not_found' && i18nT('sharedCrew.people_daemon_not_found'),
-  ].filter(Boolean).join(' ')
   return (
     <div className="flex flex-col gap-4" data-testid="people-panel">
       {hero}
       <PeopleList
         people={data.people}
         usageAvailable={usageAvailable}
-        tipExtra={tipExtra}
+        notes={[
+          !usageAvailable && i18nT('sharedCrew.usage_unavailable'),
+          attributionReason === 'daemon_not_found' && i18nT('sharedCrew.people_daemon_not_found'),
+        ].filter((n): n is string => !!n)}
         footer={pointer === 'console' && (
           <p className="text-[13px] text-muted pt-1" data-testid="console-pointer">{i18nT('sharedCrew.access_console')}</p>
         )}

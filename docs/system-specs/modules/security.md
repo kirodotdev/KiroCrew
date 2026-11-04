@@ -1005,7 +1005,7 @@ Security properties:
   under the `.env` lock); a refused `.env` write restores the vault entry it
   replaced, by compare-and-swap under the vault's store lock, so a value
   another writer stored since is kept.
-- **Tailscale invite key.** The Shared Crew invite card's Tailscale API access key
+- **Tailscale invite key.** The Shared Crew invite dialog's Tailscale API access key
   is a user-owned key that acts as its creator (an Owner, Admin or IT admin) and can
   share this machine. It lives in its own `SecretVault` at
   `.vault/shared-crew-tailscale/` (`shared_crew.tailscale_invite_store`), apart from
