@@ -9,7 +9,7 @@ import ChatInput from '../components/ChatInput'
 import { api, ApiError } from '../api/client'
 import { i18nT } from '../i18n/t'
 import type { RootState } from '../store'
-import { reconcileGoneSubagent } from '../store/chatSlice'
+import { reconcileGoneSubagent, sseChatMessage } from '../store/chatSlice'
 
 vi.mock('../api/client', () => {
   // Declared INSIDE the factory: vi.mock is hoisted above module-level
@@ -144,6 +144,36 @@ describe('ChatInput approval flow', () => {
     fireEvent.click(screen.getByText('Allow once'))
     await waitFor(() => {
       expect(api.resolveApproval).toHaveBeenCalledWith('ap-123', 'approve', undefined, expect.stringMatching(/^r_/))
+    })
+    expect(api.approveChatSlot).not.toHaveBeenCalled()
+  })
+
+  it('Allow once on a card row decides on the slot route with that row', async () => {
+    // Request ids recur across sessions: the decide must not reach another
+    // session's request that holds the same id.
+    const state = stateWithApproval()
+    const card = (state.chat!.messages as { meta?: Record<string, unknown> }[])[1]
+    card.meta = { ...card.meta, mid: 'mid-7' }
+    const store = createTestStore(state)
+    renderWithProviders(<ChatInput {...defaultProps} />, { store })
+    fireEvent.click(screen.getByText('Allow once'))
+    await waitFor(() => {
+      expect(api.approveChatSlot).toHaveBeenCalledWith('slot-1', 'approved', {
+        request_id: 'ap-123', response_id: expect.stringMatching(/^r_/), origin: 'native', request_mid: 'mid-7',
+      })
+    })
+    expect(api.resolveApproval).not.toHaveBeenCalled()
+  })
+
+  it('a coordinator card keeps the id route even with a card row', async () => {
+    const state = stateWithApproval()
+    const card = (state.chat!.messages as { meta?: Record<string, unknown> }[])[1]
+    card.meta = { ...card.meta, mid: 'mid-7', registry: 'coordinator' }
+    const store = createTestStore(state)
+    renderWithProviders(<ChatInput {...defaultProps} />, { store })
+    rejectVia('Reject once')
+    await waitFor(() => {
+      expect(api.resolveApproval).toHaveBeenCalledWith('ap-123', 'reject_once', undefined, expect.stringMatching(/^r_/))
     })
     expect(api.approveChatSlot).not.toHaveBeenCalled()
   })
@@ -545,7 +575,8 @@ describe('ChatInput orphaned approval (404)', () => {
       outcome: 'approved', resolved_at: 10,
     }
     let reject: (e: unknown) => void = () => {}
-    vi.mocked(api.resolveApproval).mockImplementationOnce(() => new Promise((_, r) => { reject = r }))
+    // A card with a row decides on the slot route, naming that row.
+    vi.mocked(api.approveChatSlot).mockImplementationOnce(() => new Promise((_, r) => { reject = r }))
     const base = stateWithApproval()
     const first = base.chat!.messages[1]
     const store = createTestStore({ ...base, chat: { ...base.chat!, messages: [base.chat!.messages[0], { ...first, meta: { ...first.meta, mid: 'm-old' } }] } })
@@ -577,6 +608,29 @@ describe('ChatInput orphaned approval (404)', () => {
     await waitFor(() => {
       expect(screen.getByRole('status')).toHaveTextContent(/expired/i)
     })
+  })
+
+  it('a 404 on a row-scoped Allow once retires only the clicked row, not a newer one reusing its id', async () => {
+    let rejectCall: (e: unknown) => void = () => {}
+    vi.mocked(api.approveChatSlot).mockImplementationOnce(() => new Promise((_res, rej) => { rejectCall = rej }))
+    const state = stateWithApproval()
+    const card = (state.chat!.messages as { meta?: Record<string, unknown> }[])[1]
+    card.meta = { ...card.meta, mid: 'mid-1' }
+    const store = createTestStore(state)
+    renderWithProviders(<ChatInput {...defaultProps} />, { store })
+    fireEvent.click(screen.getByText('Allow once'))
+    await waitFor(() => expect(api.approveChatSlot).toHaveBeenCalledTimes(1))
+    // A replacement request reuses the id with a new card row before the reply.
+    const first = store.getState().chat.messages.find(m => m.meta?.mid === 'mid-1')!
+    store.dispatch(sseChatMessage({ slot: 'slot-1', role: 'permission', content: first.content, meta: { ...first.meta, mid: 'mid-2' } }))
+    rejectCall(notFound())
+    await waitFor(() => {
+      const rows = store.getState().chat.messages.filter(m => m.meta?.approval_id === 'ap-123')
+      expect(rows.find(m => m.meta?.mid === 'mid-1')?.meta?.resolved).toBe('stale')
+    })
+    const replacement = store.getState().chat.messages.find(m => m.meta?.mid === 'mid-2')
+    expect(replacement).toBeTruthy()
+    expect(replacement?.meta?.resolved).toBeUndefined()
   })
 
   it('keeps the bar up on a non-404 failure so the user can retry', async () => {
