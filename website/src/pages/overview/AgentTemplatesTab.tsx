@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { FileCode2, MessageSquare, UserPlus, Copy, Trash2, Lock, Plus, X, MoreHorizontal, ToggleLeft, ToggleRight, Star } from 'lucide-react'
@@ -323,6 +323,10 @@ export default function AgentTemplatesTab() {
 
   const [filter, setFilter] = useState('')
   const [selectedName, setSelectedName] = useState<string | null>(null)
+  // The live selection, for the delete's completion: it lands after an await,
+  // by which point the user may have opened another template.
+  const selectedNameRef = useRef(selectedName)
+  useEffect(() => { selectedNameRef.current = selectedName }, [selectedName])
   const [draft, setDraft] = useState<Draft | null>(null)
   const [baseline, setBaseline] = useState<Draft | null>(null)
   const [notice, setNotice] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null)
@@ -457,9 +461,14 @@ export default function AgentTemplatesTab() {
       // The deleted template may have been dirty: drop its draft so the
       // auto-select guard lets the list pick a row again, and leave the detail
       // pane -- on a narrow viewport it would otherwise stay open over a
-      // hidden list with nothing selected and no Back control.
-      setDraft(null); setBaseline(null); setSaveError(null)
-      setSelectedName(null); setNotice(null); closeDetail(); invalidate()
+      // hidden list with nothing selected and no Back control. A template
+      // opened while the delete was in flight is the user's now: its draft
+      // and detail pane stay.
+      if (selectedNameRef.current === name) {
+        setDraft(null); setBaseline(null); setSaveError(null)
+        setSelectedName(null); setNotice(null); closeDetail()
+      }
+      invalidate()
       // One line of closure, in the slot the save bar uses; the list picks the
       // next row and this rides over its (clean) detail for a few seconds, so
       // it names what went, not the row now on screen.

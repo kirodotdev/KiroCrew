@@ -730,6 +730,27 @@ describe('AgentTemplatesTab actions', () => {
     expect(screen.queryByRole('option', { name: /^reviewer/ })).toBeNull()
   })
 
+  it('a template opened and edited while a delete is in flight keeps its draft when the delete lands', async () => {
+    const OTHER = row({ name: 'writer', filename: 'writer.json', description: 'Writer' })
+    mockApi.agentTemplates.mockResolvedValue({ templates: [FREE, OTHER] })
+    renderTab()
+    await waitFor(() => expect(mockApi.agentDetail).toHaveBeenCalledWith('reviewer'), EDITOR_CHAIN)
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    let land!: (v: { ok: boolean }) => void
+    mockApi.agentTemplateDelete.mockImplementation(() => new Promise(resolve => { land = resolve }))
+    const items = await openMore()
+    fireEvent.click(items.find(i => i.textContent === 'Delete')!)
+    await waitFor(() => expect(mockApi.agentTemplateDelete).toHaveBeenCalledWith('reviewer'))
+
+    fireEvent.click(option('writer'))
+    await waitFor(() => expect(screen.getByRole('textbox', { name: 'Prompt' })).toHaveValue('prompt of writer'), EDITOR_CHAIN)
+    fireEvent.change(screen.getByRole('textbox', { name: 'Prompt' }), { target: { value: 'dirty' } })
+
+    mockApi.agentTemplates.mockResolvedValue({ templates: [OTHER] })
+    await act(async () => { land({ ok: true }) })
+    expect(screen.getByRole('textbox', { name: 'Prompt' })).toHaveValue('dirty')
+  })
+
   it('returns to the list after deleting a dirty template on a narrow viewport', async () => {
     mobile = true
     mockApi.agentTemplates.mockResolvedValue({ templates: [FREE, PKG, RUNTIME, COPY] })
