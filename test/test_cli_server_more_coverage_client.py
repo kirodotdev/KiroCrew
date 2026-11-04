@@ -353,9 +353,9 @@ class TestPortOwnershipGuard:
         with pytest.raises(SystemExit) as exc:
             cli_server._logout(5476)
         assert exc.value.code == 1
-        out = capsys.readouterr().out
-        assert "ownership not verified" in out
-        assert "Gateway not running" not in out
+        err = capsys.readouterr().err
+        assert "ownership not verified" in err
+        assert "Gateway not running" not in err
 
     def test_shutdown_never_consults_ownership_and_reaches_the_secret(self, monkeypatch) -> None:
         # The authenticated-shutdown fallback applies no port-lookup pre-check
@@ -474,7 +474,7 @@ class TestPortOwnershipGuard:
         with pytest.raises(SystemExit) as exc:
             cli_server._logout(5476)
         assert exc.value.code == 1
-        assert "Gateway not running" in capsys.readouterr().out
+        assert "Gateway not running" in capsys.readouterr().err
 
     def test_ok_response_reports_success(self, monkeypatch, secret_home, capsys) -> None:
         monkeypatch.setattr(cli_server, "loopback_urlopen", lambda *a, **k: _Resp(b'{"ok": true}'))
@@ -490,7 +490,7 @@ class TestPortOwnershipGuard:
         with pytest.raises(SystemExit) as exc:
             cli_server._logout(5476)
         assert exc.value.code == 1
-        assert "store locked" in capsys.readouterr().out
+        assert "store locked" in capsys.readouterr().err
 
     def test_http_error_reports_status_code(self, monkeypatch, secret_home, capsys) -> None:
         def boom(*a, **k):
@@ -500,7 +500,7 @@ class TestPortOwnershipGuard:
         with pytest.raises(SystemExit) as exc:
             cli_server._logout(5476)
         assert exc.value.code == 1
-        assert "HTTP 403" in capsys.readouterr().out
+        assert "HTTP 403" in capsys.readouterr().err
 
     def test_connection_refused_reports_gateway_down(
         self, monkeypatch, secret_home, capsys
@@ -512,7 +512,7 @@ class TestPortOwnershipGuard:
         with pytest.raises(SystemExit) as exc:
             cli_server._logout(5476)
         assert exc.value.code == 1
-        assert "Gateway not running" in capsys.readouterr().out
+        assert "Gateway not running" in capsys.readouterr().err
 
     def test_timeout_reports_busy_not_down(self, monkeypatch, secret_home, capsys) -> None:
         def boom(*a, **k):
@@ -522,9 +522,26 @@ class TestPortOwnershipGuard:
         with pytest.raises(SystemExit) as exc:
             cli_server._logout(5476)
         assert exc.value.code == 1
-        out = capsys.readouterr().out
-        assert "busy" in out
-        assert "Gateway not running" not in out
+        err = capsys.readouterr().err
+        assert "busy" in err
+        assert "Gateway not running" not in err
+
+    def test_logout_failure_writes_only_to_stderr(self, monkeypatch, secret_home, capsys) -> None:
+        # The error stream contract: a failed `kirocrew logout` prints its reason
+        # to stderr and leaves stdout empty, so `kirocrew logout >/dev/null`
+        # still shows the reason and a script reading stdout never parses a
+        # refusal as a result. The success line ("revoked") is the only thing
+        # stdout carries, pinned by test_ok_response_reports_success above.
+        def boom(*a, **k):
+            raise urllib.error.URLError("refused")
+
+        monkeypatch.setattr(cli_server, "loopback_urlopen", boom)
+        with pytest.raises(SystemExit) as exc:
+            cli_server._logout(5476)
+        assert exc.value.code == 1
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert "Gateway not running" in captured.err
 
 
 # _owner_verified_secret_urlopen — the secret rides a proof-bound transport
