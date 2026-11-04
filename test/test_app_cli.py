@@ -7,9 +7,7 @@ import pytest
 
 from kiro_crew.apps.manager import APP_MANIFEST_FILENAME, install_app
 
-# ---------------------------------------------------------------------------
 # Fixtures
-# ---------------------------------------------------------------------------
 
 
 def _make_app_source(tmp_path, name="cli-test-app", crons=None, hooks=None, permissions=None):
@@ -55,9 +53,7 @@ def app_env(tmp_path, monkeypatch):
     return {"home": home, "kiro_agents": kiro_agents}
 
 
-# ---------------------------------------------------------------------------
 # _handle_app unit tests (call the function directly, not subprocess)
-# ---------------------------------------------------------------------------
 
 class TestHandleApp:
     """Test _handle_app by simulating argparse Namespace objects."""
@@ -227,13 +223,9 @@ class TestFileOnlyInstallRegistration:
 class TestEnableWarnsHooksNeedRestart:
     """CLI `app enable` states how a backend-hook change reaches a gateway.
 
-    Hooks are Python modules imported INTO the gateway process, and only the
-    gateway loads them (``on_app_enable`` -> ``register_app_routes`` ->
-    ``load_app_module``). The CLI is a separate process, so it cannot load them
-    directly -- but the gateway's hook reconciler (``apps/hook_reconcile.py``)
-    picks up the on-disk change within a poll interval, and a stopped gateway
-    loads it on next start. Printing only "enabled <app>" reads as though the new
-    code were already live; the notice states the actual timing.
+    Only the gateway imports hooks (``load_app_module``); the CLI is a separate process.
+    The hook reconciler (``apps/hook_reconcile.py``) picks up the change within a poll
+    interval, or a stopped gateway loads it on start, and the notice says so.
     """
 
     HOOKS = {
@@ -307,12 +299,9 @@ class TestEnableWarnsHooksNeedRestart:
 class TestEnableRegistersCrons:
     """CLI `app enable` must promote manifest crons into the scheduler store.
 
-    The HTTP enable route promotes app crons into the running CronService via
-    ``hooks_integration.on_app_enable``; the CLI runs in a separate process, so
-    it must write the jobs through the shared on-disk store instead (the
-    gateway's timer tick re-syncs the store by content digest and picks up
-    externally-added jobs). Without that write, an app enabled from the CLI
-    has its crons lie dormant until the next gateway restart.
+    The CLI cannot reach the running CronService, so it writes the shared on-disk store,
+    which the gateway's timer tick re-syncs by content digest. Without that the crons lie
+    dormant until a restart.
     """
 
     CRONS = [{"name": "poller", "every": 900, "message": "poll things", "silent": True}]
@@ -362,11 +351,8 @@ class TestEnableRegistersCrons:
     def test_concurrent_registration_persists_single_job(self, tmp_path, app_env):
         """Two registrars with stale absent-snapshots must not persist duplicates.
 
-        Reproduces the CLI-enable-vs-gateway-boot race at the primitive the
-        bridge now routes through: two store-backed services both see the name
-        absent, then add concurrently. ``add_job_if_absent_async`` (name check
-        + append under one store lock) must let exactly one win — with the old
-        snapshot-then-``add_job_async`` path this persists two jobs.
+        The CLI-enable-vs-gateway-boot race: both services see the name absent, then add.
+        ``add_job_if_absent_async`` checks and appends under one store lock, so one wins.
         """
         import asyncio
 

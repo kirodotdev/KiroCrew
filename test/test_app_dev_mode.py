@@ -97,9 +97,7 @@ def _make_web_app():
     return app
 
 
-# ---------------------------------------------------------------------------
 # set_dev_mode / is_dev_mode
-# ---------------------------------------------------------------------------
 
 
 def test_set_dev_mode_toggles_installed_json(tmp_path, monkeypatch):
@@ -126,8 +124,8 @@ def test_set_dev_mode_not_installed(tmp_path, monkeypatch):
 def test_set_dev_mode_rejects_traversal(tmp_path, monkeypatch):
     """Path-traversal app names must be rejected before any filesystem op.
 
-    Regression guard for the HIGH finding: unchecked names like ``../../x``
-    would escape ~/.kirocrew/apps/ and read/overwrite an external installed.json.
+    Unchecked names like ``../../x`` would escape ~/.kirocrew/apps/ and read or
+    overwrite an external installed.json.
     """
     _setup_env(tmp_path, monkeypatch)
     for bad in ("../../project", "..", "a/b", "a\\b", "../evil"):
@@ -167,11 +165,8 @@ def test_set_dev_mode_rejects_builtin(tmp_path, monkeypatch):
 def test_concurrent_toggles_do_not_clobber_sentinel(tmp_path, monkeypatch):
     """Concurrent set_dev_mode calls must not drop each other's sentinel entries.
 
-    Regression guard for the HIGH finding: without a cross-process lock around
-    the sentinel read-modify-write, threads that read the same state, mutate
-    private copies, and write back last-writer-wins, silently dropping apps from
-    the watched/no-store set. The lock serializes RMW so every enabled app
-    survives.
+    Without a cross-process lock around the sentinel read-modify-write, the last writer
+    wins and silently drops apps from the watched/no-store set.
     """
     import threading
 
@@ -198,18 +193,9 @@ def test_concurrent_toggles_do_not_clobber_sentinel(tmp_path, monkeypatch):
 def test_set_dev_mode_writes_metadata_under_lock(tmp_path, monkeypatch):
     """set_dev_mode re-reads + writes installed.json INSIDE the sentinel lock.
 
-    The installed.json write runs inside ``with _sentinel_lock():`` so two
-    concurrent toggles cannot interleave (write-meta A, write-meta B, sentinel B,
-    sentinel A) and leave installed.json ``dev: true`` while the sentinel excludes
-    the app. Keeping the read → mutate → write inside the lock also means a
-    metadata change that races in while we wait for the lock is preserved,
-    because meta is re-read under the lock rather than reusing the stale copy
-    read during validation.
-
-    Simulate that race with a lock wrapper that mutates installed.json on lock
-    entry (i.e. after set_dev_mode's outer validation read). If the write were
-    outside the lock (or reused the stale meta), the concurrent field change
-    would be clobbered.
+    Outside the lock two toggles can interleave and leave installed.json ``dev: true``
+    while the sentinel excludes the app. The lock wrapper below mutates installed.json on
+    entry; reusing the stale meta read during validation would clobber that change.
     """
     from contextlib import contextmanager
 
@@ -244,8 +230,8 @@ def test_set_dev_mode_writes_metadata_under_lock(tmp_path, monkeypatch):
 def test_uninstall_clears_dev_sentinel(tmp_path, monkeypatch):
     """Uninstalling a dev-mode app removes it from the sentinel (+ cache).
 
-    Regression guard for the MEDIUM finding: a stale sentinel entry would make a
-    different app reinstalled under the same name inherit dev-mode serving.
+    A stale sentinel entry would make a different app reinstalled under the same
+    name inherit dev-mode serving.
     """
     from kiro_crew.apps.manager import uninstall_app
 
@@ -284,9 +270,7 @@ def test_load_dev_apps_filters_stale_entries(tmp_path, monkeypatch):
     assert dev_mode._load_dev_apps() == {"dev-mode-app"}
 
 
-# ---------------------------------------------------------------------------
 # UI serving: dev mode -> no-store
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -304,9 +288,7 @@ async def test_ui_file_no_store_in_dev_mode(tmp_path, monkeypatch):
         assert resp.headers.get("Cache-Control") == "no-store"
 
 
-# ---------------------------------------------------------------------------
 # POST /api/apps/{name}/dev endpoint
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -328,9 +310,7 @@ async def test_dev_endpoint_toggles_and_validates(tmp_path, monkeypatch):
         assert resp.status == 404
 
 
-# ---------------------------------------------------------------------------
 # Watch scan helper
-# ---------------------------------------------------------------------------
 
 
 def test_scan_ui_mtimes_detects_edit_add_delete(tmp_path):
@@ -365,11 +345,8 @@ def test_scan_ui_mtimes_detects_edit_add_delete(tmp_path):
 def test_scan_ui_mtimes_detects_edit_with_older_mtime(tmp_path):
     """A file rewritten with an mtime BELOW the tree's max must still be seen.
 
-    Regression guard for the GPT 5.6 MEDIUM: a ``(count, max-mtime)`` signature
-    missed edits when the touched file's new mtime stayed under another file's
-    mtime (``cp -p``/``rsync -a`` of an older bundle, clock skew, a future-dated
-    pin). The per-file digest folds each file's own mtime + size, so the change
-    registers regardless of where it sits relative to the max.
+    A ``(count, max-mtime)`` signature misses that (``cp -p``, clock skew); the per-file
+    digest folds each file's own mtime + size.
     """
     import os
 
@@ -412,28 +389,16 @@ def test_scan_ui_mtimes_follows_symlink(tmp_path):
     assert digest != 0
 
 
-# ---------------------------------------------------------------------------
 # Watch loop: offloaded filesystem IO still detects edits and broadcasts
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
 async def test_watch_loop_broadcasts_reload_on_edit(tmp_path, monkeypatch):
     """_watch_loop must detect a ui/ edit and broadcast app_reload.
 
-    Regression guard for the offloaded filesystem IO: the sentinel stat, the
-    sentinel read, and _scan_ui_mtimes() all run via asyncio.to_thread, and the
-    path must still seed state on first tick (no reload storm) and fire exactly
-    on change.
-
-    Progress is measured by counting completed ui/ scans rather than by sleeping a
-    fixed span: one tick is a sentinel stat plus a tree scan, each a separate
-    ``to_thread`` hop, and two hops cost well over the 20ms cadence on a loaded
-    Windows box (~15.6ms timer granularity, measured 25-35ms per tick). A fixed
-    100ms window is therefore not reliably two ticks, and the edit could land
-    before the state the watcher compares against had ever been seeded — the
-    watcher then treats the edited tree as its own first observation and correctly
-    stays silent, so the test failed on a real machine while the product was fine.
+    Progress is counted in completed ui/ scans, not a fixed sleep: on a loaded Windows box
+    one tick takes 25-35ms, so an edit landing before the first scan is seen as the
+    watcher's first observation and correctly stays silent.
     """
     import asyncio
 
@@ -498,12 +463,8 @@ async def test_watch_loop_broadcasts_reload_on_edit(tmp_path, monkeypatch):
 async def test_stop_dev_mode_watcher_awaits_cancellation(tmp_path, monkeypatch):
     """stop_dev_mode_watcher cancels the watcher task and awaits its teardown.
 
-    Regression guard for the GPT 5.6 MEDIUM / Long-Term Impact BLOCK item: the
-    watcher started at gateway startup was never stopped on shutdown, leaking
-    the module-global task (holding a stale broadcast_ws) across an in-process
-    restart. stop_dev_mode_watcher is now async — it must cancel the task, await
-    it fully unwound, and clear the module global so a fresh init can start
-    cleanly.
+    It must also clear the module global, so an in-process restart does not keep a task
+    holding a stale broadcast_ws.
     """
     import kiro_crew.apps.dev_mode as dev_mode
 
@@ -530,10 +491,8 @@ async def test_stop_dev_mode_watcher_awaits_cancellation(tmp_path, monkeypatch):
 async def test_watch_loop_no_ui_walk_when_no_dev_apps(tmp_path, monkeypatch):
     """Cost model: with zero dev apps the watcher must never walk any ui/ tree.
 
-    Regression guard for the Long-Term Impact finding — the watcher must not
-    make every always-on production gateway pay for a dev-only feature. When
-    no app is in dev mode the steady state is a single sentinel stat() per
-    tick: _scan_ui_mtimes must not be invoked at all.
+    An always-on gateway must not pay for a dev-only feature: with no dev app the
+    steady state is one sentinel stat() per tick, and _scan_ui_mtimes never runs.
     """
     import asyncio
 
@@ -629,22 +588,14 @@ async def test_watch_loop_picks_up_out_of_process_toggle(tmp_path, monkeypatch):
     assert events[0][1]["app"] == "dev-mode-app"
 
 
-# ---------------------------------------------------------------------------
 # update_app preserves the dev flag (and all other persisted fields)
-# ---------------------------------------------------------------------------
 
 
 def test_update_app_preserves_dev_flag(tmp_path, monkeypatch):
-    """Updating a dev-mode app must NOT silently reset ``dev`` — or ANY other
-    persisted field — to its default.
+    """Updating a dev-mode app must NOT reset ``dev``, or ANY other persisted field.
 
-    Regression guard for the GPT 5.6 MEDIUM / Long-Term Impact BLOCK item 1:
-    update_app() rebuilt InstalledApp field-by-field and omitted ``dev`` (and
-    other newer fields), so an app developer updating the very app they were
-    iterating on in dev mode had ``installed.json`` flip to ``dev: false`` —
-    and at the next sentinel reconcile/restart the app dropped out of live
-    reload. dataclasses.replace now carries every persisted field forward, so
-    this asserts the full field set survives, not just ``dev``.
+    An update that rebuilds InstalledApp field by field drops newer fields, and a dropped
+    ``dev`` takes the app out of live reload, so the full field set is asserted.
     """
     _setup_env(tmp_path, monkeypatch)
     src = _make_app_source(tmp_path)
@@ -690,9 +641,7 @@ def test_update_app_preserves_dev_flag(tmp_path, monkeypatch):
     assert meta.migratedTo == "standalone:dev-mode-app"
 
 
-# ---------------------------------------------------------------------------
 # Sentinel reconciliation makes installed.json authoritative at startup
-# ---------------------------------------------------------------------------
 
 
 def test_scan_installed_dev_apps_reads_from_installed_json(tmp_path, monkeypatch):
@@ -709,12 +658,8 @@ def test_scan_installed_dev_apps_reads_from_installed_json(tmp_path, monkeypatch
 def test_reconcile_sentinel_adds_missing_entry(tmp_path, monkeypatch):
     """A ``dev: true`` written to installed.json out-of-band is honored on reconcile.
 
-    Regression guard for the Long-Term Impact BLOCK item 2: _load_dev_apps only
-    ever FILTERS the sentinel and can never ADD an entry, so a dev flag set via
-    snapshot restore / hand-edit / a crash between the metadata and sentinel
-    writes left the documented contract field saying ``dev: true`` while the
-    watcher never engaged. Reconciling from installed.json at startup makes the
-    documented field authoritative.
+    _load_dev_apps can only FILTER the sentinel, so a flag set by snapshot restore,
+    hand-edit or a crash between the two writes would otherwise never engage the watcher.
     """
     _setup_env(tmp_path, monkeypatch)
     install_app(str(_make_app_source(tmp_path)))
@@ -750,21 +695,9 @@ def test_reconcile_sentinel_drops_stale_entry(tmp_path, monkeypatch):
 def test_reconcile_scans_inside_lock_preserves_racing_toggle(tmp_path, monkeypatch):
     """Reconcile runs its installed.json scan INSIDE the sentinel lock.
 
-    The authoritative scan runs INSIDE ``with _sentinel_lock():``. A scan before
-    the lock strands the reconcile: a concurrent ``set_dev_mode`` toggle
-    (which holds the lock) could land between the scan and the lock acquisition
-    — the toggle writes installed.json ``dev: true`` and adds the app to the
-    sentinel, then reconcile takes the lock with its STALE scan (missing that
-    app), sees a divergence, and rewrites the sentinel to exclude it, silently
-    dropping the just-toggled app from the watched/no-store set until the next
-    restart. Moving the scan inside the lock makes scan → compare → write → cache
-    atomic against toggles.
-
-    Simulate the race with a lock wrapper that enables dev mode for the app on
-    lock entry (i.e. after any pre-lock scan would have already run). With the
-    scan inside the lock the wrapper's dev flag is visible to the scan, so the
-    app is kept; if the scan ran before the lock it would see dev:false and drop
-    the app.
+    A scan before the lock can miss a toggle that lands in between, and the reconcile then
+    rewrites the sentinel without that app. The lock wrapper below enables dev mode on
+    lock entry, so only a scan inside the lock sees it.
     """
     from contextlib import contextmanager
 
@@ -796,11 +729,9 @@ def test_reconcile_scans_inside_lock_preserves_racing_toggle(tmp_path, monkeypat
     assert is_dev_mode_cached("dev-mode-app") is True
 
 
-# ---------------------------------------------------------------------------
 # Operator grant record — the authorization half the reconcile never
 # writes. These lock in that a forged installed.json `dev: true` gains WATCHING
 # at most across a restart, never `dev_mode_granted_root`.
-# ---------------------------------------------------------------------------
 
 
 def test_set_dev_mode_writes_and_revokes_the_grant(tmp_path, monkeypatch):
@@ -827,12 +758,9 @@ def test_set_dev_mode_writes_and_revokes_the_grant(tmp_path, monkeypatch):
 def test_reconcile_never_launders_a_forged_dev_flag_into_a_grant(tmp_path, monkeypatch):
     """A forged ``dev: true`` flag is closed at the root.
 
-    An app writes ``dev: true`` to its OWN ``installed.json`` (app-writable)
-    and waits for a gateway restart. The startup reconcile rebuilds the WATCH
-    sentinel from that metadata — documented behavior, kept — but must not
-    thereby authorize the app: ``dev_mode_granted_root`` reads the separate
-    grant record the reconcile never creates, so the forged flag buys watching
-    and no-store serving at most, never an out-of-install ui root.
+    The startup reconcile rebuilds the WATCH sentinel from app-writable metadata, but
+    ``dev_mode_granted_root`` reads a separate grant record the reconcile never creates,
+    so the forged flag buys watching and no-store serving, never an out-of-install ui root.
     """
     import kiro_crew.apps.dev_mode as dev_mode
     from kiro_crew.apps.manager import _write_installed
@@ -860,13 +788,8 @@ def test_reconcile_prunes_grants_for_absent_apps_but_keeps_live_ones(
 ):
     """Remove-only grant maintenance at startup, keyed on VALID metadata.
 
-    A crash between an uninstall and ``remove_dev_app``'s revoke can leave a
-    grant for an app that is gone; a later reinstall under the same name must
-    not inherit it. The prune tests ``_read_installed`` rather than the
-    directory's existence because an uninstall with ``keep_data`` leaves (or
-    recreates) the directory for preserved data while ``installed.json`` is
-    gone — the ghost here has exactly that shape. A grant whose app still
-    exists survives.
+    The prune checks ``_read_installed``, not the directory: an uninstall with
+    ``keep_data`` leaves the directory with no ``installed.json``, the ghost's shape here.
     """
     import os
 
@@ -909,13 +832,9 @@ def test_uninstall_revokes_the_grant(tmp_path, monkeypatch):
 def test_disable_revokes_the_grant_FIRST(tmp_path, monkeypatch):
     """Crash-ordering on disable fails CLOSED.
 
-    The grant is the authorization, so on disable it must be the FIRST write:
-    a crash after any prefix of the toggle's writes then leaves watching
-    without authorization (harmless), never a live grant on a still-installed
-    app — which the reconcile would never expire, and which the app could
-    re-arm by forging ``dev: true`` back into its own metadata. Simulated by
-    making the metadata write (the SECOND step) blow up and checking the
-    grant is already gone.
+    The grant is revoked FIRST, so a crash mid-toggle leaves watching without
+    authorization, never a live grant the app could re-arm by forging ``dev: true``.
+    The metadata write (the SECOND step) is made to fail below.
     """
     import kiro_crew.apps.dev_mode as dev_mode
 
@@ -968,13 +887,8 @@ def test_enable_refuses_to_bind_a_sensitive_escaping_root(tmp_path, monkeypatch)
 def test_a_refused_reenable_preserves_prior_dev_state(tmp_path, monkeypatch):
     """A refusal validates BEFORE writing, so prior state survives it.
 
-    An app already in dev mode (contained root, valid grant) repoints ``ui``
-    to a sensitive root; the operator re-toggles enable and is refused. The
-    refusal must be a pure no-op on the prior state: metadata still says
-    dev, the sentinel still carries the name (watching continues), and the
-    prior grant — bound to the approved root — is untouched. The
-    earlier shape wrote metadata/sentinel first and "rolled back" by
-    unconditionally disabling, silently tearing down working dev mode.
+    An app in dev mode repoints ``ui`` to a sensitive root and the re-enable is refused:
+    metadata, sentinel and the prior grant must all be untouched.
     """
     import shutil
 
@@ -1032,9 +946,7 @@ def test_enable_refuses_a_root_CONTAINING_sensitive_leaves(tmp_path, monkeypatch
     assert is_dev_mode("dev-mode-app") is False
 
 
-# ---------------------------------------------------------------------------
 # Out-of-install grants require explicit operator confirmation
-# ---------------------------------------------------------------------------
 
 
 def _repoint_ui_outside(tmp_path, dirname="external-src"):
@@ -1055,11 +967,8 @@ def _repoint_ui_outside(tmp_path, dirname="external-src"):
 def test_enable_out_of_install_root_requires_confirmation(tmp_path, monkeypatch):
     """The remaining self-grant surface, closed.
 
-    An out-of-install (non-sensitive) root is not granted unaided: the
-    toggle fails closed without the explicit host-boundary confirmation — the
-    refusal names the CLI command — and, like every validate-before-write
-    refusal, leaves no state behind. With the confirmation it binds the grant
-    to the escaped root as before.
+    An out-of-install (non-sensitive) root needs the explicit host-boundary confirmation;
+    without it the toggle is refused, naming the CLI command, and leaves no state behind.
     """
     import os
 
@@ -1090,12 +999,8 @@ def test_enable_out_of_install_root_requires_confirmation(tmp_path, monkeypatch)
 def test_out_of_install_confirmation_decisions_are_SEL_audited(tmp_path, monkeypatch):
     """Both outcomes of the out-of-install permission decision hit the SEL.
 
-    The grant relaxes the unauthenticated UI route's root containment, so the
-    decision is an authority change the security event log must record: the
-    unconfirmed refusal emits a denial, and a confirmed enable emits a granted
-    event only AFTER the grant record is written (the event asserts a change
-    that actually happened). An in-install enable emits nothing — no authority
-    beyond the normal dev-mode shape changed.
+    The refusal emits a denial; a confirmed enable emits a granted event only AFTER the
+    grant record is written. An in-install enable emits nothing.
     """
     from types import SimpleNamespace
 
@@ -1186,15 +1091,11 @@ def test_an_unconfirmed_refusal_preserves_prior_dev_state(tmp_path, monkeypatch)
 
 @pytest.mark.asyncio
 async def test_dev_endpoint_never_confirms_out_of_install_roots(tmp_path, monkeypatch):
-    """The HTTP route is not a confirmation surface — pinned as a contract.
+    """The HTTP route is not a confirmation surface, pinned as a contract.
 
-    App UI bundles run as same-origin modules with the dashboard's own
-    credentials, so a request-body flag is app-controllable data, never
-    operator attestation. Enabling dev mode on an out-of-install root over
-    HTTP must answer 400 whether or not the caller supplies a
-    ``confirmOutOfInstallRoot`` flag — an app POSTing to its own toggle can
-    never mint the grant. (Confirmation is CLI-only: the host process
-    boundary is what proves the operator.)
+    App UI bundles run same-origin with the dashboard's credentials, so a
+    ``confirmOutOfInstallRoot`` body flag is app-controllable: the answer is 400 either
+    way. Confirmation is CLI-only.
     """
     import kiro_crew.apps.dev_mode as dev_mode
 
@@ -1223,20 +1124,15 @@ async def test_dev_endpoint_never_confirms_out_of_install_roots(tmp_path, monkey
         assert dev_mode.dev_mode_granted_root("dev-mode-app") is None
 
 
-# ---------------------------------------------------------------------------
 # Runtime human-vs-agent check on the confirmation flag
-# ---------------------------------------------------------------------------
 
 
 def test_confirm_flag_refused_from_agent_sandboxed_process(tmp_path, monkeypatch):
-    """The confirmation flag is operator ATTESTATION, refused at runtime from
-    a process carrying the agent-sandbox marker.
+    """The confirmation flag is refused at runtime from an agent-sandboxed process.
 
-    The deny-list tiers stop an agent SPELLING the flag; this check stops an
-    agent RUNNING it — the escalation the text tiers cannot close (a command
-    can synthesize the flag at runtime, ``$(printf ...)``, so no command-text
-    scan sees it). Like every validate-before-write refusal it leaves no
-    state behind, and the denial is SEL-audited naming the evidence.
+    The deny-list stops an agent SPELLING the flag; this stops one RUNNING it, since a
+    command can synthesize the flag (``$(printf ...)``). No state is left, and the denial
+    is SEL-audited.
     """
     from types import SimpleNamespace
 
@@ -1295,14 +1191,10 @@ def test_confirm_flag_refused_when_kernel_reports_confinement(tmp_path, monkeypa
     reason="write-denial probe needs a non-root POSIX process",
 )
 def test_confirm_flag_refused_when_grant_record_sealed(tmp_path, monkeypatch):
-    """The structural tier: a write-denied grant record refuses the flag even
-    when every environment signal was stripped.
+    """A write-denied grant record refuses the flag even with every env signal stripped.
 
-    In production the denial comes from the OS sandbox — the record is in
-    ``sandbox._CREW_READONLY_LEAVES``, so Seatbelt/namespace confinement
-    denies the open regardless of what the command looked like or what its
-    environment says. Simulated here with a permission-sealed file, which
-    exercises the identical ``open(O_WRONLY)`` failure path.
+    In production the record is in ``sandbox._CREW_READONLY_LEAVES`` and the OS sandbox
+    denies the open; a permission-sealed file hits the same ``open(O_WRONLY)`` failure.
     """
     import os
 
@@ -1335,14 +1227,10 @@ def test_confirm_flag_refused_when_grant_record_sealed(tmp_path, monkeypatch):
     reason="write-denial probe needs a non-root POSIX process",
 )
 def test_sealed_grant_record_refuses_every_toggle_atomically(tmp_path, monkeypatch):
-    """Validate-before-write for the seal itself: when the grant record is
-    not writable, ANY grant-touching toggle (an ordinary in-install enable
-    included) is refused up front — never half-applied.
+    """An unwritable grant record refuses ANY grant-touching toggle up front.
 
-    Without the upfront probe, an enable would write ``installed.json`` and
-    the sentinel and then fail at the (deliberately last) grant write,
-    leaving dev metadata asserting a state the authorization record never
-    granted. The refusal is SEL-audited.
+    Without the upfront probe an enable would write ``installed.json`` and the sentinel,
+    then fail at the (last) grant write. The refusal is SEL-audited.
     """
     import os
     from types import SimpleNamespace

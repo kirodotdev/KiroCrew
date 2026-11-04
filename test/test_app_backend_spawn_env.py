@@ -245,22 +245,16 @@ class TestBootAdmissionRevet:
         assert "boom-app" not in result
 
 
-# =============================================================================
 # KIROCREW_DEVFLEET_REPO forwarding (silent-empty-fleet fix)
-# =============================================================================
 
 
 def test_devfleet_repo_survives_the_app_backend_env_allowlist(monkeypatch):
     """The documented dev-fleet repo override must be ABLE to reach the backend.
 
-    The dev-fleet backend runs as a separate process started with
-    ``apps.registry.minimal_env()``, which passes only a fixed safe-key set.
-    ``KIROCREW_DEVFLEET_REPO`` is dev-fleet's highest-priority repo discovery
-    hint, but unless the backend forwards it as a host-grant variable the allowlist
-    strips it — the operator sets the documented override, the backend never
-    sees it, and the fleet silently renders empty (the remaining hints are
-    ``KIROCREW_PROJECT_DIR``, which packaged installs point at the app bundle
-    with no ``.git``, and a hardcoded ``~/kirocrew`` fallback).
+    The backend starts with ``apps.registry.minimal_env()``, so unless
+    ``KIROCREW_DEVFLEET_REPO`` is forwarded as a host-grant variable it is stripped and
+    the fleet silently renders empty (``KIROCREW_PROJECT_DIR`` has no ``.git`` on
+    packaged installs).
     """
     from pathlib import Path
 
@@ -304,19 +298,10 @@ def test_devfleet_repo_env_wins_repo_discovery(monkeypatch, tmp_path):
 class TestGatewayOriginInjection:
     """Bound-port-gated gateway-origin/proof injection into entryPoint app backends.
 
-    The gateway hands each entryPoint child two generic variables so the child
-    can call BACK to this gateway (for example POST /api/notifications/push on a
-    declared channel): ``KIROCREW_GATEWAY_ORIGIN`` (where the gateway listens)
-    and ``KIROCREW_GATEWAY_ORIGIN_PROOF`` (an HMAC that lets the child confirm
-    the origin came from the gateway that alone holds its secret). The origin is
-    injected ONLY from hard evidence of the port the gateway ACTUALLY bound --
-    the exported ``KIROCREW_BOUND_PORT``, required to be numeric and in
-    1..65535. There is no fallback to an inherited ``KIROCREW_PORT``, the app's
-    own ``PORT``, a config value, or a default: without bound-port evidence the
-    origin (and therefore the proof) is omitted and a backend that needs a
-    callback base fails closed (dormant). The proof additionally requires the
-    app's ``.app_secret``; a secret-less backend gets the origin only. No
-    app-specific variable is ever injected.
+    ``KIROCREW_GATEWAY_ORIGIN`` is injected ONLY from a numeric ``KIROCREW_BOUND_PORT``
+    in 1..65535, with no fallback to ``KIROCREW_PORT``, ``PORT``, config or a default;
+    without it the backend fails closed. ``KIROCREW_GATEWAY_ORIGIN_PROOF`` (an HMAC) also
+    needs the app's ``.app_secret``. No app-specific variable is ever injected.
     """
 
     _SECRET = "test-app-secret-0123456789abcdef"
@@ -405,14 +390,9 @@ class TestGatewayOriginInjection:
     def test_specific_interface_bind_omits_the_origin(self, tmp_path, app_env, monkeypatch):
         """A specific-interface KIROCREW_BOUND_HOST omits the origin (fail closed).
 
-        A backend's callback carries no Origin header, and the gateway's CSRF
-        barrier trusts an Origin-less mutating request only from a loopback
-        peer — so an origin pointing at a specific interface (10.0.0.7,
-        fd00::7) would have every mutating callback refused at the barrier.
-        Injecting it produces a half-alive backend; omitting it is the same
-        designed dormancy as missing port evidence. The v6-loopback marker
-        ("::1") still injects, bracketed per RFC 3986, and absent evidence
-        stays loopback (the wildcard/loopback bind shapes).
+        The CSRF barrier trusts an Origin-less mutating callback only from a loopback peer,
+        so an origin on 10.0.0.7 would yield a half-alive backend. "::1" still injects,
+        bracketed per RFC 3986, and absent evidence stays loopback.
         """
         name = self._install_backend_app(tmp_path)
         self._write_secret(name)
@@ -642,11 +622,9 @@ class TestGatewayOriginInjection:
 class TestTheCacheOnlyChildCanSeeTheCacheItMustBootFrom:
     """``policy_cache`` is bind-mount-hidden in every sandbox tier.
 
-    That is deliberate — it keeps the AGENT's own subprocesses from reading or rewriting
-    the ceiling — but an app backend in cache-only mode resolves the fleet ceiling FROM
-    that file and FAILS CLOSED without it. Without the visibility carve-out the two
-    controls contradict each other and every app backend on a centrally-governed host
-    exits at boot.
+    A cache-only app backend resolves the fleet ceiling FROM that file and fails closed
+    without it, so without the visibility carve-out every backend on a centrally-governed
+    host exits at boot.
     """
 
     def test_the_spawn_passes_the_cache_as_a_visible_dir(self, app_env, tmp_path, monkeypatch):
@@ -817,13 +795,10 @@ class TestTheCacheOnlyChildCanSeeTheCacheItMustBootFrom:
 class TestTheMdNotebookBackendCanSeeItsOwnStateFiles:
     """The md-notebook spawn's isolated startup, which rides with its mask carve-out.
 
-    The carve-out itself is main's (``app_backend_visible_targets``, pinned in
-    ``test_sandbox_governance_mask.py``). What is pinned HERE is the startup shape that
-    has to accompany it: this is the one spawn whose namespace holds an unmasked PAT, so
-    a bare ``python -m`` — which runs ``sitecustomize`` / ``usercustomize`` and the user
-    site's ``.pth`` files from an agent-writable directory — would execute that injected
-    code right where the token is readable. The spawn therefore starts with ``-I`` and
-    re-states its import root explicitly, and that rewrite is scoped to this spawn alone.
+    The carve-out (``app_backend_visible_targets``) is pinned in
+    ``test_sandbox_governance_mask.py``. This spawn's namespace holds an unmasked PAT, so
+    a bare ``python -m`` would run ``sitecustomize`` and ``.pth`` files from an
+    agent-writable directory; it starts with ``-I``, scoped to this spawn alone.
     """
 
     @staticmethod
