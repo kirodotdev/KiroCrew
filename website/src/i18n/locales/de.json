@@ -11535,6 +11535,7 @@
       "installed_app_find_in_library_and_enable": "{{name}} installiert. Aktiviere die App in der Bibliothek.",
       "synced_from_its_source_directory": "{{name}} aus dem Quellverzeichnis synchronisiert.",
       "updated_from_the_registry": "{{name}} aus der Registry aktualisiert.",
+      "update_needs_trust": "{{name}} braucht dein Vertrauen für das Update. Nutze die eigene Schaltfläche „Aktualisieren“, um die Berechtigung zu prüfen und Vertrauen zu gewähren.",
       "updated_needs_session_approval_consent": "{{name}} ist deaktiviert, weil die App neu darum bittet, deine Chats zu steuern. Prüfe die Berechtigung in den App-Details und aktiviere sie dann.",
       "refresh_store": "Store aktualisieren",
       "refreshing_store": "Store wird aktualisiert…"

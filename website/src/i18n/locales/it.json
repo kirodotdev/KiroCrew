@@ -11786,6 +11786,7 @@
       "installed_app_find_in_library_and_enable": "{{name}} installato. Abilitalo nella Libreria.",
       "synced_from_its_source_directory": "{{name}} sincronizzata dalla sua directory di origine.",
       "updated_from_the_registry": "{{name}} aggiornata dal registro.",
+      "update_needs_trust": "{{name}} ha bisogno della tua fiducia per aggiornarsi. Usa il suo pulsante Aggiorna per controllare l’autorizzazione e concederla.",
       "updated_needs_session_approval_consent": "{{name}} è disattivata perché ora chiede di controllare le tue chat. Controlla l’autorizzazione nei dettagli dell’app, poi attivala.",
       "refresh_store": "Aggiorna lo store",
       "refreshing_store": "Aggiornamento dello store…"

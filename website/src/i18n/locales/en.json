@@ -6657,6 +6657,7 @@
       "try_a_different_search_or_category": "Try a different search or category.",
       "uninstall_app_title": "Uninstall “{{name}}”?",
       "uninstall": "Uninstall",
+      "update_needs_trust": "{{name}} needs trust to update. Use its own Update button to review and grant trust.",
       "v": "v",
       "installed_app_find_in_library_and_enable": "Installed {{name}}. Enable it in Library.",
       "synced_from_its_source_directory": "Synced {{name}} from its source directory.",
