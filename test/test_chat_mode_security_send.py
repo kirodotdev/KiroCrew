@@ -270,6 +270,8 @@ _TURN_ONLY_BODY_KEYS = frozenset(
         # (which only turns steering off). Neither changes a slot setting.
         "base_revision",
         "send_now",
+        # A display label for this send's row; the slot keeps nothing.
+        "banner",
     }
 )
 _SETTINGS_BODY_KEYS: dict[str, object] = {

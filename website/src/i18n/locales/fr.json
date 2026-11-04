@@ -13061,6 +13061,8 @@
         "steer_unsend": "Annuler l’envoi",
         "steer_edit": "Modifier dans la zone de message",
         "steer_queue_instead": "Mettre en file d’attente",
+        "show_full_message": "Afficher le message complet",
+        "hide_full_message": "Masquer le message complet",
         "steer_take_back_more": "Modifier ou annuler l’envoi",
         "steer_unsend_in_flight": "Annulation de l’envoi…",
         "steer_edit_in_flight": "Remise dans ta zone de message…",

@@ -16,6 +16,7 @@ if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_handlers import (
         _CREATABLE_MODES,
         _SSE_WRITE_DEADLINE_SECS,
+        CHAT_BANNER_META_KEY,
         HUMAN_TURN_META_KEY,
         RESERVED_ROW_META_KEYS,
         STEER_AUTO,
@@ -559,6 +560,16 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
             user_meta.update(bounded_quote)
         if not user_meta:
             user_meta = None
+    # A short display label for the transcript row; the row's content and the
+    # turn's input stay the full message. Same validator as a monitor loop's
+    # banner, so the cap and the credential redaction are shared.
+    from kiro_crew.autonudge_authz import normalize_banner
+
+    banner, banner_err = normalize_banner(body.get("banner"), absent_ok=True)
+    if banner_err is not None:
+        return web.json_response({"error": banner_err, "code": "invalid_banner"}, status=400)
+    if banner:
+        user_meta = {**(user_meta or {}), CHAT_BANNER_META_KEY: banner}
     theme_consent = body.get("theme_consent") is True
     # Content-bound persona consent: the sha256 hex the user
     # granted in the consent modal. Injection is gated on this matching the
@@ -1195,6 +1206,7 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
                 # manual steer, which is what keeps that row byte-identical.
                 decision_strip=_auto_strip,
                 attachments=user_meta,
+                banner=banner,
                 **_responsive_steer_kwargs,
             )
             if _crew_owns_hold and outcome not in (STEER_STEERED, STEER_REQUEUED):
@@ -1275,6 +1287,7 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
             send_id=normalize_send_id(user_meta.get("sendId")) if user_meta else None,
             attachments=attachment_meta(user_meta),
             quote=quote_meta(user_meta).get("quote"),
+            banner=banner,
             # The receipt travels whichever way the send went, including the one
             # case where the two disagree: `auto` answered steer and the steer was
             # UNAVAILABLE, so this path runs with a record saying steer. That is the
@@ -1356,6 +1369,8 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
         _hold_attachments = attachment_meta(user_meta)
         _hold_meta.update(_hold_attachments)
         _hold_meta.update(quote_meta(user_meta))
+        if banner:
+            _hold_meta[CHAT_BANNER_META_KEY] = banner
         if request_app or cron_creator or _agent_origin:
             # Same reason as the busy-slot queue above: this entry is drained
             # later, so only its meta can name the actor. One stamp for all,
@@ -1404,6 +1419,8 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
             _hold_push.setdefault("meta", {})["sendId"] = _hold_sid
         if _hold_meta.get("quote"):
             _hold_push.setdefault("meta", {})["quote"] = _hold_meta["quote"]
+        if banner:
+            _hold_push.setdefault("meta", {})[CHAT_BANNER_META_KEY] = banner
         state.broadcast_ws("queue_push", _hold_push)
         if _teardown_hold:
             # Deduped, so this only matters when no decline armed one: the retry

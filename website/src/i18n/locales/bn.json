@@ -12770,6 +12770,8 @@
         "steer_unsend": "ফিরিয়ে নাও",
         "steer_edit": "বার্তা বাক্সে সম্পাদনা করো",
         "steer_queue_instead": "পরিবর্তে সারিতে রাখো",
+        "show_full_message": "পুরো বার্তা দেখাও",
+        "hide_full_message": "পুরো বার্তা লুকাও",
         "steer_take_back_more": "সম্পাদনা করো বা ফিরিয়ে নাও",
         "steer_unsend_in_flight": "ফিরিয়ে নেওয়া হচ্ছে…",
         "steer_edit_in_flight": "আবার তোমার বার্তা বাক্সে ফিরিয়ে আনা হচ্ছে…",

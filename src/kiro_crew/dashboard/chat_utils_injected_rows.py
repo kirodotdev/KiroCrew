@@ -514,6 +514,10 @@ def carries_attachments(item: dict) -> bool:
     # and a merged row would open with another entry's text instead.
     if isinstance(meta.get("quote"), dict) and meta.get("quote"):
         return True
+    # A display label (``meta.banner``) stands for one entry's text, so a merged
+    # row would show it over every other entry's words.
+    if isinstance(meta.get("banner"), str) and meta.get("banner"):
+        return True
     return any(isinstance(meta.get(k), list) and meta.get(k) for k in ATTACHMENT_META_KEYS)
 
 

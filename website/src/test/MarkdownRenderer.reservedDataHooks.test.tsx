@@ -24,6 +24,7 @@ describe('MarkdownRenderer reserves the transcript data-message-* hooks', () => 
       '<div data-message-actions>y</div>',
       '<b data-Message-Edit>z</b>',
       '<i data-message-body>w</i>',
+      '<span data-message-search-skip>v</span>',
     ].join(' ')
     const { container } = render(<MarkdownRenderer content={md} />)
     // The renderer's own root is the one `data-message-body` (what a message
@@ -39,6 +40,7 @@ describe('MarkdownRenderer reserves the transcript data-message-* hooks', () => 
     expect(container.querySelector('[data-message-editing]')).toBeNull()
     expect(container.querySelector('[data-message-actions]')).toBeNull()
     expect(container.querySelector('[data-message-edit]')).toBeNull()
+    expect(container.querySelector('[data-message-search-skip]')).toBeNull()
     // Nor any other casing or dash placement the serializer could hand back
     // as one of the hooks.
     const leaked = Array.from(container.querySelectorAll('*')).flatMap(el =>

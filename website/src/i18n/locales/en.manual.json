@@ -5841,6 +5841,8 @@
         "steer_unsend": "Unsend",
         "steer_edit": "Edit in message box",
         "steer_queue_instead": "Queue instead",
+        "show_full_message": "Show full message",
+        "hide_full_message": "Hide full message",
         "steer_take_back_more": "Edit or unsend",
         "steer_unsend_in_flight": "Unsending…",
         "steer_edit_in_flight": "Moving it back to your message box…",
