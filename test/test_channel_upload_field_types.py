@@ -132,6 +132,80 @@ async def test_an_empty_description_of_any_type_still_delivers(tmp_path, outbox_
 
 
 @pytest.mark.asyncio
+async def test_a_description_at_the_cap_reaches_the_transport_in_full(tmp_path, outbox_file):
+    """A description at the channel leg's ceiling reaches the transport in full.
+
+    Telegram's caption cap is 1024; a description of exactly 1024 fits, so it is
+    not refused and the whole caption reaches ``send_document``."""
+    from kiro_crew.telegram.client import TELEGRAM_MAX_CAPTION
+
+    caption = "x" * TELEGRAM_MAX_CAPTION
+    payload = {"file_path": str(outbox_file), "filename": "report.txt", "description": caption}
+    transport = _transport()
+    status, body = await _post_channel(tmp_path, outbox_file, payload, transport)
+    assert status == 200 and body["delivered"] is True, body
+    kwargs = transport.send_document.call_args.kwargs
+    assert kwargs["caption"] == caption, "the whole caption must reach the transport"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("channel_type,limit", [("telegram", 1024), ("discord", 2000)])
+async def test_the_channel_leg_refuses_a_description_over_its_cap(
+    tmp_path, outbox_file, channel_type, limit
+):
+    """A preamble over the leg's caption cap gets a 400 ``too_long_for_channel``,
+    naming the channel and the number -- not a silent slice on the way out."""
+    caption = "x" * (limit + 1)
+    payload = {"file_path": str(outbox_file), "filename": "report.txt", "description": caption}
+    transport = _transport()
+    with (
+        patch(
+            "kiro_crew.dashboard.chat_runner._resolve_mirror_target",
+            return_value=(ChannelLink(channel_type=channel_type, channel_id="42"), transport),
+        ),
+        patch("kiro_crew.config.loader.outbox_dir", return_value=outbox_file.parent),
+        patch("kiro_crew.config.loader.workspace_root", return_value=tmp_path),
+    ):
+        async with TestClient(TestServer(_channel_app())) as client:
+            resp = await client.post(
+                "/api/channel/upload-file",
+                json=payload,
+                headers={"X-Session-Key": f"{channel_type}:1"},
+            )
+            status, body = resp.status, _json_or_text(await resp.text())
+    assert status == 400, body
+    assert body["code"] == "too_long_for_channel", body
+    assert str(limit) in body["error"], body
+    assert transport.send_document.call_count == 0, "the file must not ship when the caption is refused"
+
+
+@pytest.mark.asyncio
+async def test_wecom_is_uncapped_so_a_long_caption_delivers(tmp_path, outbox_file):
+    """WeCom pushes the caption as follow-on text and chunks it, so a long
+    preamble is NOT refused on that leg -- the file ships with its full caption."""
+    from kiro_crew.wecom.client import WECOM_SAFE_REPLY_CHARS
+
+    caption = "x" * (WECOM_SAFE_REPLY_CHARS + 500)
+    payload = {"file_path": str(outbox_file), "filename": "report.txt", "description": caption}
+    transport = _transport()
+    with (
+        patch(
+            "kiro_crew.dashboard.chat_runner._resolve_mirror_target",
+            return_value=(ChannelLink(channel_type="wecom", channel_id="42"), transport),
+        ),
+        patch("kiro_crew.config.loader.outbox_dir", return_value=outbox_file.parent),
+        patch("kiro_crew.config.loader.workspace_root", return_value=tmp_path),
+    ):
+        async with TestClient(TestServer(_channel_app())) as client:
+            resp = await client.post(
+                "/api/channel/upload-file", json=payload, headers={"X-Session-Key": "wecom:1"}
+            )
+            status, body = resp.status, _json_or_text(await resp.text())
+    assert status == 200 and body["delivered"] is True, body
+    assert transport.send_document.call_args.kwargs["caption"] == caption
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("field", ["file_path", "filename"])
 @pytest.mark.parametrize("value", _NOT_STRINGS)
 async def test_the_slack_leg_refuses_a_non_string_path_or_name(tmp_path, outbox_file, field, value):

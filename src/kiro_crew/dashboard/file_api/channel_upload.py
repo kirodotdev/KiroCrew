@@ -38,6 +38,62 @@ def is_tracked_channel(channel_id: str) -> bool:
     return probe(channel_id)
 
 
+def _description_too_long(leg: str, description: str, channel_type: str) -> web.Response | None:
+    """Refuse a preamble too long for its destination with a 400, not a silent slice.
+
+    The schema caps ``description`` at a generous floor (:data:`MAX_MEDIUM_STRING`),
+    so a real preamble passes the boundary. This is where the per-leg ceiling is
+    enforced, because the transport is known only here. Each leg's cap is read from
+    its OWN transport constant, so it cannot drift from the renderer that actually
+    caps it:
+
+    * Slack  -> :data:`slack.format.SLACK_MSG_LIMIT` (the message the ``initial_comment``
+      posts with the file).
+    * Telegram / Discord -> their transport's caption cap.
+    * WeCom  -> uncapped: it pushes the caption as follow-on text and CHUNKS it, so
+      nothing is sliced; capping here would reject text the transport would otherwise
+      deliver in pieces.
+
+    Returns a 400 ``too_long_for_channel`` naming the channel and the number, or
+    ``None`` when the preamble fits. An empty preamble never fails.
+    """
+    if not description:
+        return None
+    cap: int | None = None
+    if leg == "slack":
+        from kiro_crew.slack.format import SLACK_MSG_LIMIT
+
+        cap = SLACK_MSG_LIMIT
+    else:
+        # The channel leg: read the cap from the transport that actually enforces
+        # it, keyed by the resolved channel_type. WeCom has no cap (chunked push).
+        if channel_type == "telegram":
+            from kiro_crew.telegram.client import TELEGRAM_MAX_CAPTION
+
+            cap = TELEGRAM_MAX_CAPTION
+        elif channel_type == "discord":
+            from kiro_crew.discord.client import DISCORD_MAX_TEXT
+
+            cap = DISCORD_MAX_TEXT
+        if cap is None:
+            return None  # uncapped leg (WeCom), or a channel with no caption cap
+    if len(description) > cap:
+        _audit_file_send(
+            leg=leg,
+            outcome="denied",
+            error="too_long_for_channel",
+            downstream=channel_type,
+        )
+        return web.json_response(
+            {
+                "error": f"description exceeds the {channel_type} caption cap of {cap} characters",
+                "code": "too_long_for_channel",
+            },
+            status=400,
+        )
+    return None
+
+
 def _gate_upload_file(
     file_path: str, filename: str, *, tool_kind: str
 ) -> tuple[web.Response | None, Path | None, bytes | None]:
@@ -286,6 +342,25 @@ async def api_slack_upload_file(request: web.Request) -> web.Response:
     assert body is not None  # read_bounded_json returns (dict, None) on success
     file_path_raw = body.get("file_path", "")
     filename = body.get("filename", "")
+    # The preamble, posted WITH the file as its Slack ``initial_comment`` (one chat
+    # item, not two). The SAME ``description`` field the non-Slack leg feeds its
+    # ``send_document`` caption, so the two legs cannot drift. Redacted like the
+    # ``send_message`` text leg — the display-form floor catches a secret split
+    # across markdown markup — so a report's preamble cannot carry a credential or
+    # an exfiltration URL to a Slack audience. Absent or empty leaves the upload
+    # comment-less, the legacy call the voice-reply leg still makes.
+    raw_description = body.get("description") or ""
+    if raw_description and not isinstance(raw_description, str):
+        # An empty value of any type reads as no description, as it always has; a
+        # non-empty non-string would reach redact_for_display() and raise. The
+        # channel leg guards the same field by this same name (main #29021), so
+        # mirror it here: one field, one status, the legs cannot drift.
+        _audit_file_send(leg="slack", outcome="denied", error="invalid_field_type")
+        return web.json_response(
+            {"error": "description must be a string", "code": "invalid_field_type"},
+            status=400,
+        )
+    initial_comment = redact_for_display(raw_description, redact)[0] if raw_description else None
     # Off-loop: the gate reads up to MAX_FILE_BYTES and regex-scans the content
     # (no-blocking-call-on-event-loop).
     error_resp, resolved, raw = await asyncio.to_thread(
@@ -327,6 +402,9 @@ async def api_slack_upload_file(request: web.Request) -> web.Response:
     if isinstance(destination, upload_destination.Skip):
         _audit_file_send(leg="slack", outcome="skipped", error=destination.reason)
         return web.json_response({"ok": True, "skipped": destination.reason})
+    too_long = _description_too_long("slack", initial_comment or "", "slack")
+    if too_long is not None:
+        return too_long
     try:
         # The filename was already cleared by the shared admission gate above —
         # same predicate, same value, strictly earlier in this function — so the
@@ -338,6 +416,7 @@ async def api_slack_upload_file(request: web.Request) -> web.Response:
             str(resolved),
             filename,
             filename,
+            initial_comment=initial_comment,
         )
         _audit_file_send(
             leg="slack",
@@ -430,6 +509,9 @@ async def api_channel_upload_file(request: web.Request) -> web.Response:
     # renderer sink applies (``redact_for_display``) before text reaches a
     # transport.
     description, _ = redact_for_display(raw_description or "", redact)
+    too_long = _description_too_long("channel", description, link.channel_type)
+    if too_long is not None:
+        return too_long
     outbound = OutboundFile(
         path=str(resolved),
         data=raw,
