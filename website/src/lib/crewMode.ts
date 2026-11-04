@@ -156,6 +156,7 @@ export const CREW_APPROVAL_SURFACES = [
   'worker_split_pane',    // the worker's composer in a Split View pane
   'conductor_side_panel', // the conductor side panel's Approvals and attention tab
   'session_dashboards',   // All Dashboards' Needs you section
+  'sidebar_hover_card',   // the Sessions sidebar's needs-me hover card
 ] as const
 export type CrewApprovalSurface = typeof CREW_APPROVAL_SURFACES[number]
 

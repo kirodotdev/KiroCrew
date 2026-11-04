@@ -16,18 +16,26 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 import { AnimatePresence, motion } from 'framer-motion'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
+import { useImeGuard } from '../../hooks/useImeGuard'
 import { ArrowUp, Check, FileText, MessageCircleQuestionMark, Reply, ShieldCheck, X } from 'lucide-react'
-import { useAppDispatch, useAppSelector } from '../../store'
-import { resolveByApprovalId } from '../../store/chatSlice'
+import { store, useAppDispatch, useAppSelector } from '../../store'
+import { capturePendingAskId, resolveByApprovalId } from '../../store/chatSlice'
+import { resolveAskAfterSend } from '../../lib/resolveAskAfterSend'
 import { api, ApiError } from '../../api/client'
-import { OverlayPortal } from '../../components/overlayRoot'
+import { OverlayPortal, useCloseWhenCrewHidden } from '../../components/overlayRoot'
 import ErrorNotice from '../../components/ErrorNotice'
 import { Btn } from '../../components/ui'
-import { sendTurn } from '../../chat-core/transport/sendTurn'
+import { mintSendId, sendTurn } from '../../chat-core/transport/sendTurn'
+import { adoptSendRaceRevision, baseRevisionFor, isSendRaceConflict, sendIdempotencyKey } from '../../api/sendRace'
+import { baseRevisionForPress } from '../../hooks/sharedCrew/sendRevisionSeed'
+import { ROW_META_CLS, ROW_STATUS_CLS } from '../../components/listShell'
 import { alreadyResolvedDecision, decisionVerdict, mintResponseId } from '../../components/chat-input/sharedDecision'
 import { sessionDisplayTitle } from '../../utils/sessionDisplayTitle'
+import { isPeerRow, sessionRowIdentity } from './rowIdentity'
 import type { ChatSlot } from '../../types'
-import { approvalKey, collectAsks, pickRecap, slotNeedsMe, type CardQuestion, type NeedsMeAsk } from './needsMeCard'
+import { crewApprovalDecidableHere } from '../../lib/crewMode'
+import { replyOptions } from '../chat/command-center/model'
+import { approvalKey, collectAsks, lastAssistantText, pickRecap, slotNeedsMe, type CardQuestion, type NeedsMeAsk } from './needsMeCard'
 
 /** The pointer must rest this long on a row before the card opens. */
 export const OPEN_DELAY_MS = 350
@@ -45,10 +53,18 @@ function finePointer(): boolean {
 
 const NO_QUESTIONS: readonly CardQuestion[] = []
 
-type Outcome = 'pending' | 'approved' | 'denied' | 'expired' | 'elsewhere' | 'error'
+/** What the quick reply shows. A send in flight resolves to the one it ends in. */
+type ReplyState = { kind: 'idle' | 'sending' | 'sent' | 'queued' | 'unconfirmed' } | { kind: 'error'; reason?: string }
+
+type Outcome = 'pending' | 'approved' | 'denied' | 'expired' | 'elsewhere_approved' | 'elsewhere_denied' | 'error'
 
 export default function NeedsMeHoverLayer({ rootRef }: { rootRef: RefObject<HTMLElement | null> }) {
   const [target, setTarget] = useState<{ key: string; row: HTMLElement; focusReply: boolean } | null>(null)
+  // Unsent replies, per row: the card unmounts when its last ask settles or the
+  // pointer leaves, and a reply the person was typing must come back with it.
+  const drafts = useRef(new Map<string, string>())
+  // A send in flight per row; a reply mounted mid-send waits on it to settle.
+  const inFlight = useRef(new Map<string, Promise<ReplyState>>())
   const openTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const cardRef = useRef<HTMLDivElement | null>(null)
@@ -81,14 +97,20 @@ export default function NeedsMeHoverLayer({ rootRef }: { rootRef: RefObject<HTML
     const root = rootRef.current
     if (!root) return
     const rowAt = (el: EventTarget | null): { key: string; row: HTMLElement } | null => {
+      // The ORIGIN-QUALIFIED identity, never the raw slot key: a peer crew's row can
+      // carry a key a local slot also has, and must not open the local card.
       const row = (el as HTMLElement | null)?.closest?.('[data-session-row]') as HTMLElement | null
-      const key = row?.closest('[data-slot-key]')?.getAttribute('data-slot-key')
+      const key = row?.getAttribute('data-session-row')
       return row && key ? { key, row } : null
     }
     const onOver = (e: PointerEvent) => {
       if (e.pointerType === 'touch' || !finePointer()) return
       const hit = rowAt(e.target)
-      if (!hit) { if (targetRef.current) scheduleClose(); return }
+      if (!hit) {
+        if (openTimer.current) { clearTimeout(openTimer.current); openTimer.current = null }
+        if (targetRef.current) scheduleClose()
+        return
+      }
       if (targetRef.current?.key === hit.key) { if (closeTimer.current) { clearTimeout(closeTimer.current); closeTimer.current = null } return }
       if (closeTimer.current) { clearTimeout(closeTimer.current); closeTimer.current = null }
       if (openTimer.current) clearTimeout(openTimer.current)
@@ -124,6 +146,8 @@ export default function NeedsMeHoverLayer({ rootRef }: { rootRef: RefObject<HTML
     }
   }, [rootRef, close, scheduleClose])
 
+  // Stand down when the local Crew is hidden, as every overlay layer does.
+  useCloseWhenCrewHidden(!!target, close)
   useEffect(() => {
     if (!target) return
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape' && !cardRef.current?.contains(document.activeElement)) close() }
@@ -133,11 +157,14 @@ export default function NeedsMeHoverLayer({ rootRef }: { rootRef: RefObject<HTML
 
   return (
     <OverlayPortal>
-      <AnimatePresence>
+      {/* `wait`: the exiting card unmounts before the next mounts, so only one holds `cardRef`. */}
+      <AnimatePresence mode="wait">
         {target && (
           <NeedsMeCard
             key={target.key}
-            slotKey={target.key}
+            identity={target.key}
+            drafts={drafts.current}
+            inFlight={inFlight.current}
             row={target.row}
             focusReply={target.focusReply}
             cardRef={cardRef}
@@ -152,8 +179,10 @@ export default function NeedsMeHoverLayer({ rootRef }: { rootRef: RefObject<HTML
   )
 }
 
-function NeedsMeCard({ slotKey, row, focusReply, cardRef, draftRef, onPointerEnter, onPointerLeave, onClose }: {
-  slotKey: string
+function NeedsMeCard({ identity, drafts, inFlight, row, focusReply, cardRef, draftRef, onPointerEnter, onPointerLeave, onClose }: {
+  identity: string
+  drafts: Map<string, string>
+  inFlight: Map<string, Promise<ReplyState>>
   row: HTMLElement
   focusReply: boolean
   cardRef: MutableRefObject<HTMLDivElement | null>
@@ -165,9 +194,12 @@ function NeedsMeCard({ slotKey, row, focusReply, cardRef, draftRef, onPointerEnt
   const { t } = useTranslation()
   const dispatch = useAppDispatch()
   const queryClient = useQueryClient()
-  const slot = useAppSelector(s => s.dashboard.slots.find(x => x.key === slotKey)) as ChatSlot | undefined
-  const questions = useAppSelector(s => s.chat.pendingQuestions?.[slotKey]?.questions) ?? NO_QUESTIONS
+  // Local slots only: a peer row's identity names no local slot, so it gets no card.
+  const slot = useAppSelector(s => s.dashboard.slots.find(x => !isPeerRow(x as { peer_id?: string }) && sessionRowIdentity(x) === identity)) as ChatSlot | undefined
+  const slotKey = slot?.key ?? ''
+  const questions = useAppSelector(s => (slotKey ? s.chat.pendingQuestions?.[slotKey]?.questions : undefined)) ?? NO_QUESTIONS
   const needsMe = !!slot && slotNeedsMe(slot, questions.length > 0)
+  const options = useMemo(() => (slot ? replyOptions(slot) : []), [slot])
 
   const summary = useQuery({
     queryKey: ['session-summary', slotKey],
@@ -177,25 +209,28 @@ function NeedsMeCard({ slotKey, row, focusReply, cardRef, draftRef, onPointerEnt
   const detail = useQuery({
     queryKey: ['needs-me-asks', slotKey, slot?.messages ?? 0, !!slot?.pending_approval],
     queryFn: () => api.chatSlotDetail(slotKey, 80),
-    enabled: needsMe && !!slot?.pending_approval, staleTime: 0, retry: false,
+    // Also for an options reply: the row only carries a short preview of it.
+    enabled: needsMe && (!!slot?.pending_approval || options.length > 0), staleTime: 0, retry: false,
   })
 
   const [outcomes, setOutcomes] = useState<Record<string, Outcome>>({})
   const settled = useMemo(() => new Set(Object.keys(outcomes)), [outcomes])
-  const lastReply = slot && !slot.running && slot.has_options ? (slot.last_message ?? '') : ''
+  const reply = useMemo(() => options.length ? { text: lastAssistantText(detail.data?.messages ?? []), options } : undefined, [options, detail.data])
+  // The one crew rule: a Crew Mode worker's approval is decided on its conductor's card only.
+  const decidable = crewApprovalDecidableHere(slot, 'sidebar_hover_card')
   const asks = useMemo(
-    () => collectAsks(detail.data?.messages ?? [], questions, { settled, lastReply }),
-    [detail.data, questions, settled, lastReply],
+    () => collectAsks(detail.data?.messages ?? [], questions, { settled, reply }),
+    [detail.data, questions, settled, reply],
   )
-  const recap = pickRecap(summary.data, lastReply ? undefined : slot?.last_message)
-  const openApproval = asks.some(a => a.kind === 'approval' && !outcomes[approvalKey(a.requestId, a.requestMid)] && !a.resolved)
+  const recap = pickRecap(summary.data, reply ? undefined : slot?.last_message)
+  const openApproval = decidable && asks.some(a => a.kind === 'approval' && !outcomes[approvalKey(a.requestId, a.requestMid)] && !a.resolved)
 
   const decide = useCallback((a: Extract<NeedsMeAsk, { kind: 'approval' }>, approve: boolean) => {
     if (!a.requestMid) return
     const k = approvalKey(a.requestId, a.requestMid)
     setOutcomes(o => ({ ...o, [k]: 'pending' }))
     const set = (v: Outcome) => setOutcomes(o => ({ ...o, [k]: v }))
-    const decision = approve ? 'approved' : 'rejected'
+    const decision = approve ? 'approved' : 'rejected_once'
     api.approveChatSlot(slotKey, decision, {
       request_id: a.requestId, request_mid: a.requestMid, origin: 'native', response_id: mintResponseId(),
     }).then(() => {
@@ -204,7 +239,7 @@ function NeedsMeCard({ slotKey, row, focusReply, cardRef, draftRef, onPointerEnt
     }).catch((err: unknown) => {
       const elsewhere = alreadyResolvedDecision(err)
       if (elsewhere) {
-        set('elsewhere')
+        set(decisionVerdict(elsewhere) === 'approved' ? 'elsewhere_approved' : 'elsewhere_denied')
         dispatch(resolveByApprovalId({ id: a.requestId, slot: slotKey, decision: decisionVerdict(elsewhere), mid: a.requestMid }))
       } else if (err instanceof ApiError && err.status === 404) {
         set('expired')
@@ -227,8 +262,11 @@ function NeedsMeCard({ slotKey, row, focusReply, cardRef, draftRef, onPointerEnt
     }
     place()
     window.addEventListener('resize', place)
-    return () => window.removeEventListener('resize', place)
-  }, [row, cardRef, asks.length, recap?.text, outcomes])
+    // The card grows as its reads land (a long reply, a notice): keep it on screen.
+    const ro = typeof ResizeObserver === 'function' && cardRef.current ? new ResizeObserver(place) : null
+    if (ro && cardRef.current) ro.observe(cardRef.current)
+    return () => { window.removeEventListener('resize', place); ro?.disconnect() }
+  }, [row, cardRef, asks.length, recap?.text, outcomes, detail.isError, summary.isError])
 
   const replyRef = useRef<HTMLTextAreaElement | null>(null)
   const hasAsks = asks.length > 0
@@ -236,7 +274,9 @@ function NeedsMeCard({ slotKey, row, focusReply, cardRef, draftRef, onPointerEnt
     if (focusReply && hasAsks) replyRef.current?.focus()
   }, [focusReply, hasAsks])
 
-  if (!slot || !needsMe || asks.length === 0) return null
+  // A draft keeps the card up after its last ask settles, so the text is not lost.
+  const holdsDraft = !!drafts.get(identity)?.trim()
+  if (!slot || (!needsMe && !holdsDraft) || (asks.length === 0 && !detail.isError && !holdsDraft)) return null
   const title = sessionDisplayTitle(slot)
 
   return (
@@ -255,7 +295,9 @@ function NeedsMeCard({ slotKey, row, focusReply, cardRef, draftRef, onPointerEnt
       onPointerEnter={onPointerEnter}
       onPointerLeave={onPointerLeave}
       onKeyDown={e => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); onClose(true) } }}
-      onBlur={e => { if (!e.currentTarget.contains(e.relatedTarget as Node | null) && e.relatedTarget !== row) onClose() }}
+      // Close only when focus lands on a real element elsewhere. A click on the card's
+      // own text (no tabIndex) blurs to nothing, and must not throw away a half-typed reply.
+      onBlur={e => { const to = e.relatedTarget as Node | null; if (to && !e.currentTarget.contains(to) && to !== row) onClose() }}
     >
       <span aria-hidden className="absolute -left-[6px] w-[10px] h-[10px] rotate-45 bg-card border-l border-b border-border" style={{ top: pos?.nub ?? 22 }} />
       <div className="px-3.5 pt-3 pb-2.5 border-b border-border shrink-0">
@@ -263,69 +305,79 @@ function NeedsMeCard({ slotKey, row, focusReply, cardRef, draftRef, onPointerEnt
       </div>
 
       <section className="px-3.5 py-2.5 border-b border-border shrink-0" aria-labelledby="needs-me-recap">
-        <div id="needs-me-recap" className="text-[10px] leading-[12px] font-semibold uppercase tracking-[.06em] text-muted mb-1.5">{t('pages.chatSidebar.needsMeCard.recap')}</div>
+        <div id="needs-me-recap" className={`${ROW_META_CLS} font-semibold uppercase tracking-[.06em] text-muted mb-1.5`}>{t('pages.chatSidebar.needsMeCard.recap')}</div>
+        {/* No hand-off: the card's quick-reply draft sits below this notice. */}
+        {summary.isError && <ErrorNotice variant="inline" message={t('pages.chatSidebar.needsMeCard.recap_failed')} className="mb-1" />}
         {recap
           ? <p className={`m-0 text-[12px] leading-[18px] line-clamp-3 ${recap.fromSummary ? 'text-text' : 'text-muted'}`} data-testid="needs-me-recap">{recap.text}</p>
           : <p className="m-0 text-[12px] leading-[18px] text-muted" data-testid="needs-me-recap">{t('pages.chatSidebar.needsMeCard.recap_none')}</p>}
       </section>
 
       <section className="px-3.5 py-2.5 border-b border-border min-h-0 flex flex-col" aria-labelledby="needs-me-asks">
-        <div id="needs-me-asks" className="text-[10px] leading-[12px] font-semibold uppercase tracking-[.06em] text-muted mb-1.5 shrink-0">{t('pages.chatSidebar.needsMeCard.needs_you')}</div>
+        <div id="needs-me-asks" className={`${ROW_META_CLS} font-semibold uppercase tracking-[.06em] text-muted mb-1.5 shrink-0`}>{t('pages.chatSidebar.needsMeCard.needs_you')}</div>
+        {openApproval && <p className={`m-0 mb-1.5 ${ROW_STATUS_CLS} text-muted shrink-0`} data-testid="needs-me-decision-hint">{t('pages.chatSidebar.needsMeCard.decision_hint')}</p>}
+        {/* No hand-off: the card's quick-reply draft sits below this notice. */}
+        {detail.isError && <ErrorNotice variant="inline" message={t('pages.chatSidebar.needsMeCard.asks_failed')} className="mb-1.5" />}
         <ul className="list-none m-0 p-0 flex flex-col gap-1.5 overflow-y-auto min-h-0" data-testid="needs-me-asks">
           {asks.map((a, i) => (
             <AskRow key={a.kind === 'approval' ? approvalKey(a.requestId, a.requestMid) : `${a.kind}-${i}`} ask={a}
               outcome={a.kind === 'approval' ? outcomes[approvalKey(a.requestId, a.requestMid)] : undefined}
-              onDecide={decide} />
+              decidable={decidable} onDecide={decide} />
           ))}
         </ul>
       </section>
 
-      <QuickReply slotKey={slotKey} title={title} replyRef={replyRef} draftRef={draftRef} openApproval={openApproval} />
+      <QuickReply slotKey={slotKey} title={title} replyRef={replyRef} draftRef={draftRef} drafts={drafts} inFlight={inFlight} identity={identity} openApproval={openApproval} />
     </motion.div>
   )
 }
 
 const PILL_CLS = 'inline-flex items-center gap-1 shrink-0 rounded-full px-1.5 text-[10px] leading-[14px] font-semibold'
 
-function KindPill({ kind }: { kind: NeedsMeAsk['kind'] }) {
+function KindPill({ kind, muted = false }: { kind: NeedsMeAsk['kind']; muted?: boolean }) {
   const { t } = useTranslation()
-  if (kind === 'approval') return <span className={`${PILL_CLS} text-warn bg-warn-subtle`}><ShieldCheck size={10} aria-hidden />{t('pages.chatSidebar.needsMeCard.kind_approval')}</span>
-  if (kind === 'question') return <span className={`${PILL_CLS} text-info bg-info-subtle`}><MessageCircleQuestionMark size={10} aria-hidden />{t('pages.chatSidebar.needsMeCard.kind_question')}</span>
-  if (kind === 'form') return <span className={`${PILL_CLS} text-info bg-info-subtle`}><FileText size={10} aria-hidden />{t('pages.chatSidebar.needsMeCard.kind_form')}</span>
+  if (kind === 'approval') return <span className={`${PILL_CLS} ${muted ? 'text-muted bg-bg' : 'text-warn-text bg-warn-subtle'}`}><ShieldCheck size={10} aria-hidden />{t('pages.chatSidebar.needsMeCard.kind_approval')}</span>
+  if (kind === 'question') return <span className={`${PILL_CLS} text-info-text bg-info-subtle`}><MessageCircleQuestionMark size={10} aria-hidden />{t('pages.chatSidebar.needsMeCard.kind_question')}</span>
+  if (kind === 'form') return <span className={`${PILL_CLS} text-info-text bg-info-subtle`}><FileText size={10} aria-hidden />{t('pages.chatSidebar.needsMeCard.kind_form')}</span>
   return <span className={`${PILL_CLS} text-accent bg-accent-subtle`}><Reply size={10} aria-hidden />{t('pages.chatSidebar.needsMeCard.kind_reply')}</span>
 }
 
-function AskRow({ ask, outcome, onDecide }: {
+function AskRow({ ask, outcome, decidable, onDecide }: {
   ask: NeedsMeAsk
+  decidable: boolean
   outcome: Outcome | undefined
   onDecide: (a: Extract<NeedsMeAsk, { kind: 'approval' }>, approve: boolean) => void
 }) {
   const { t } = useTranslation()
   const box = 'rounded-lg bg-bg-hover px-2 py-[7px] text-[12px] leading-[16px]'
   if (ask.kind === 'approval') {
-    const done = outcome && outcome !== 'pending' && outcome !== 'error' ? outcome : ask.resolved ? 'elsewhere' : undefined
+    const tool = ask.tool || t('pages.chatSidebar.needsMeCard.unknown_tool')
+    const done = outcome && outcome !== 'pending' && outcome !== 'error' ? outcome
+      : ask.resolved ? (ask.resolved === 'stale' ? 'expired' : ask.resolved.startsWith('approved') ? 'elsewhere_approved' : 'elsewhere_denied') : undefined
     return (
       <li className={box} data-testid="needs-me-ask" data-kind="approval">
-        <div className="flex items-center gap-2 min-w-0"><KindPill kind="approval" /><span className="font-medium text-text-strong truncate">{ask.tool}</span></div>
-        <pre className="mt-1.5 mb-0 px-2 py-1.5 rounded-md border border-border bg-bg font-mono text-[11px] leading-[16px] text-text-strong whitespace-pre-wrap break-all" data-testid="needs-me-command">{ask.command || t('pages.chatSidebar.needsMeCard.no_arguments')}</pre>
-        <div className="mt-1.5 flex items-center justify-end gap-1.5 min-h-6" aria-live="polite">
-          {done === 'approved' && <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-ok"><Check size={12} aria-hidden />{t('pages.chatSidebar.needsMeCard.approved')}</span>}
-          {done === 'denied' && <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-danger"><X size={12} aria-hidden />{t('pages.chatSidebar.needsMeCard.denied')}</span>}
+        <div className="flex items-center gap-2 min-w-0"><KindPill kind="approval" muted={!!done} /><span className="font-medium text-text-strong truncate">{tool}</span></div>
+        {ask.purpose && <div className="mt-1.5 text-text whitespace-pre-wrap break-words" data-testid="needs-me-purpose">{ask.purpose}</div>}
+        <pre className={`mt-1.5 mb-0 px-2 py-1.5 rounded-md border border-border bg-bg font-mono ${ROW_STATUS_CLS} text-text-strong whitespace-pre-wrap break-all`} data-testid="needs-me-command">{ask.command || t('pages.chatSidebar.needsMeCard.no_arguments')}</pre>
+        <div className="mt-1.5 flex flex-wrap items-center justify-end gap-1.5 min-h-6" aria-live="polite">
+          {done === 'approved' && <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-ok-text"><Check size={12} aria-hidden />{t('pages.chatSidebar.needsMeCard.approved')}</span>}
+          {done === 'denied' && <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-danger-text"><X size={12} aria-hidden />{t('pages.chatSidebar.needsMeCard.denied')}</span>}
           {done === 'expired' && <span className="text-[11px] font-semibold text-muted">{t('pages.chatSidebar.needsMeCard.expired')}</span>}
-          {done === 'elsewhere' && <span className="text-[11px] font-semibold text-muted">{t('pages.chatSidebar.needsMeCard.answered_elsewhere')}</span>}
-          {!done && ask.requestMid && (
+          {done === 'elsewhere_approved' && <span className="text-[11px] font-semibold text-muted">{t('pages.chatSidebar.needsMeCard.approved_elsewhere')}</span>}
+          {done === 'elsewhere_denied' && <span className="text-[11px] font-semibold text-muted">{t('pages.chatSidebar.needsMeCard.denied_elsewhere')}</span>}
+          {!done && ask.requestMid && decidable && (
             <>
               {/* No hand-off: the card's quick-reply draft sits below this notice. */}
-              {outcome === 'error' && <ErrorNotice variant="inline" message={t('pages.chatSidebar.needsMeCard.decision_failed')} className="mr-auto min-w-0" />}
+              {outcome === 'error' && <ErrorNotice variant="inline" message={t('pages.chatSidebar.needsMeCard.decision_failed')} className="basis-full min-w-0" />}
               <Btn danger type="button" disabled={outcome === 'pending'} className="px-2.5 py-0.5 text-[11px] font-semibold"
-                aria-label={t('pages.chatSidebar.needsMeCard.deny_aria', { tool: ask.tool })}
+                aria-label={t('pages.chatSidebar.needsMeCard.deny_aria', { tool })}
                 onClick={() => onDecide(ask, false)}>{t('pages.chatSidebar.needsMeCard.deny')}</Btn>
               <Btn type="button" disabled={outcome === 'pending'} className="px-2.5 py-0.5 text-[11px] font-semibold bg-ok text-ok-fg border-ok hover:bg-ok hover:brightness-110"
-                aria-label={t('pages.chatSidebar.needsMeCard.approve_aria', { tool: ask.tool })}
+                aria-label={t('pages.chatSidebar.needsMeCard.approve_aria', { tool })}
                 onClick={() => onDecide(ask, true)}><Check size={12} aria-hidden />{t('pages.chatSidebar.needsMeCard.approve')}</Btn>
             </>
           )}
-          {!done && !ask.requestMid && <span className="text-[11px] text-muted">{t('pages.chatSidebar.needsMeCard.answer_in_session')}</span>}
+          {!done && (!ask.requestMid || !decidable) && <span className="text-[11px] text-muted">{t(decidable ? 'pages.chatSidebar.needsMeCard.answer_in_session' : 'pages.chatSidebar.needsMeCard.decide_on_conductor')}</span>}
         </div>
       </li>
     )
@@ -372,33 +424,89 @@ function AskRow({ ask, outcome, onDecide }: {
   return (
     <li className={box} data-testid="needs-me-ask" data-kind="reply">
       <KindPill kind="reply" />
-      <div className="mt-1.5 text-text-strong whitespace-pre-wrap break-words">{ask.text}</div>
+      {ask.text && <div className="mt-1.5 text-text-strong whitespace-pre-wrap break-words">{ask.text}</div>}
+      {ask.options.length > 0 && (
+        <ul className="mt-1 mb-0 pl-4 text-[11px] text-muted list-disc">
+          {ask.options.map((o, j) => <li key={j}>{o}</li>)}
+        </ul>
+      )}
     </li>
   )
 }
 
-function QuickReply({ slotKey, title, replyRef, draftRef, openApproval }: {
+function QuickReply({ slotKey, title, replyRef, draftRef, drafts, inFlight, identity, openApproval }: {
   slotKey: string
+  drafts: Map<string, string>
+  inFlight: Map<string, Promise<ReplyState>>
+  identity: string
   title: string
   replyRef: MutableRefObject<HTMLTextAreaElement | null>
   draftRef: { current: string }
   openApproval: boolean
 }) {
   const { t } = useTranslation()
-  const [text, setText] = useState('')
-  const [state, setState] = useState<{ kind: 'idle' | 'sending' | 'sent' | 'queued' } | { kind: 'error'; reason?: string }>({ kind: 'idle' })
+  const ime = useImeGuard()
+  const dispatch = useAppDispatch()
+  const [text, setTextState] = useState(() => drafts.get(identity) ?? '')
+  const setText = (v: string) => { setTextState(v); if (v) drafts.set(identity, v); else drafts.delete(identity) }
+  // A send outlives the card: reopening mid-send must not allow a second submit.
+  const [state, setState] = useState<ReplyState>(() => (inFlight.has(identity) ? { kind: 'sending' } : { kind: 'idle' }))
   draftRef.current = text
+  // Mounted mid-send (the card was closed and reopened): settle when that send does.
+  useEffect(() => {
+    const pending = inFlight.get(identity)
+    if (!pending) return
+    let live = true
+    // The outcome travels with the promise, so a refusal or an unconfirmed
+    // delivery shows here too, not only in the card that sent it.
+    void pending.then(outcome => {
+      if (!live) return
+      setTextState(drafts.get(identity) ?? '')
+      setState(outcome)
+    })
+    return () => { live = false }
+  }, [inFlight, drafts, identity])
   const send = async () => {
     const message = text.trim()
-    if (!message || state.kind === 'sending') return
+    if (!message || state.kind === 'sending' || inFlight.has(identity)) return
     setState({ kind: 'sending' })
-    const receipt = await sendTurn({ message, slot: slotKey })
-    if (receipt.status === 'refused' || receipt.status === 'transport-error') {
-      setState({ kind: 'error', reason: receipt.status === 'refused' ? receipt.reason : undefined })
-      return
+    let settle: (outcome: ReplyState) => void = () => {}
+    inFlight.set(identity, new Promise<ReplyState>(r => { settle = r }))
+    const outcome = await deliver(message)
+    inFlight.delete(identity)
+    settle(outcome)
+    setState(outcome)
+  }
+  const deliver = async (message: string): Promise<ReplyState> => {
+    // As the composer does: a reply answers the open question card, so capture it now.
+    const askAtSend = capturePendingAskId(store.getState().chat.pendingQuestions, slotKey)
+    // First submit wins, as in the composer: the revision is read at the press.
+    const baseAtPress = baseRevisionFor(slotKey)
+    const baseRevision = await baseRevisionForPress(slotKey, baseAtPress)
+    const receipt = await sendTurn({ message, slot: slotKey, race: { baseRevision, idempotencyKey: sendIdempotencyKey(mintSendId()) } })
+      .then(r => {
+        // An accepted send clears its own text from the shared draft before a
+        // remounted reply reads it.
+        if ((r.status === 'dispatched' || r.status === 'queued' || r.status === 'unknown') && drafts.get(identity)?.trim() === message) drafts.delete(identity)
+        return r
+      })
+    if (receipt.status === 'refused' && isSendRaceConflict(receipt.body)) {
+      // Adopt the gateway's revision so the next send is current. No composer
+      // notice: its retry would send the composer's draft, not this reply.
+      adoptSendRaceRevision(slotKey, receipt.body)
+      return { kind: 'error', reason: t('pages.chatSidebar.needsMeCard.send_race') }
     }
-    setText('')
-    setState({ kind: receipt.status === 'queued' ? 'queued' : 'sent' })
+    if (receipt.status === 'refused' || receipt.status === 'transport-error') {
+      return { kind: 'error', reason: receipt.status === 'refused' ? receipt.reason : undefined }
+    }
+    // No receipt in time: delivery is unknown, so the text stays for the person to check.
+    if (receipt.status === 'response-late') return { kind: 'unconfirmed' }
+    if (askAtSend) void resolveAskAfterSend(receipt.body, askAtSend, dispatch, slotKey)
+    // Clear only what was sent: text typed while the send was in flight stays.
+    // The shared draft was settled above, so it is cleared even when the card
+    // closed before the receipt arrived.
+    setTextState(prev => (prev.trim() === message ? '' : prev))
+    return { kind: receipt.status === 'queued' ? 'queued' : 'sent' }
   }
   return (
     <div className="px-3.5 py-2.5 shrink-0">
@@ -408,8 +516,9 @@ function QuickReply({ slotKey, title, replyRef, draftRef, openApproval }: {
           rows={1}
           value={text}
           onChange={e => { setText(e.target.value); if (state.kind !== 'sending') setState({ kind: 'idle' }) }}
+          {...ime.bindComposition()}
           onKeyDown={e => {
-            if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); void send() }
+            if (e.key === 'Enter' && !e.shiftKey) { if (ime.claimEnter(e)) void send() }
           }}
           placeholder={t('pages.chatSidebar.needsMeCard.reply_placeholder')}
           aria-label={t('pages.chatSidebar.needsMeCard.reply_aria', { title })}
@@ -424,8 +533,9 @@ function QuickReply({ slotKey, title, replyRef, draftRef, openApproval }: {
         </Btn>
       </div>
       <div className="mt-1.5 text-[10px] leading-[14px] text-muted" aria-live="polite">
-        {state.kind === 'sent' && <span className="text-ok">{t('pages.chatSidebar.needsMeCard.sent')}</span>}
-        {state.kind === 'queued' && <span className="text-ok">{t('pages.chatSidebar.needsMeCard.queued')}</span>}
+        {state.kind === 'sent' && <span className="text-ok-text">{t('pages.chatSidebar.needsMeCard.sent')}</span>}
+        {state.kind === 'queued' && <span className="text-ok-text">{t('pages.chatSidebar.needsMeCard.queued')}</span>}
+        {state.kind === 'unconfirmed' && <span className="text-warn-text">{t('pages.chatSidebar.needsMeCard.unconfirmed')}</span>}
         {(state.kind === 'idle' || state.kind === 'sending') && (openApproval ? t('pages.chatSidebar.needsMeCard.reply_not_approval') : t('pages.chatSidebar.needsMeCard.reply_keys'))}
       </div>
       {state.kind === 'error' && (
