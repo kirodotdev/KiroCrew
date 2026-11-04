@@ -1,28 +1,11 @@
 """Channel-side delivery of the spawn-approval prompt on Discord.
 
-The host spawn gate's own surfaces are a Slack owner DM and the dashboard, so a
-spawn parented on a Discord conversation reaches neither and is refused fast
-(``no_approval_surface``) unless this channel offers the prompt itself. This
-suite covers Discord's implementation of the channel-neutral delivery seam the
-host gate consults FIRST, over the same Approve/Deny buttons and nonce guard the
-main-agent tool ladder already uses here.
+The host gate's own surfaces (Slack owner DM, dashboard) never reach a Discord
+conversation, so it consults this channel's delivery hook first.
 
-What is pinned:
-
-* the SAFETY BOUNDARY — a channel with no registered hook still fails fast:
-  the seam answers ``None`` and ``SpawnApprovalUnreachable`` is raised;
-* FALL THROUGH, NEVER DENY, whenever the prompt did not reach anyone: a send
-  that raises, a send this client refuses by returning no message id, a
-  destination whose authorization was withdrawn, and a channel the operator's
-  channels ceiling denies all answer ``None`` (the gate can still offer the spawn
-  on Slack/dashboard) rather than ``False`` (a decision nobody made). The armed
-  nonce is retired in each case;
-* ROUTING — a thread route prompts in the thread, a direct route opens the peer's
-  DM channel, and a key this channel cannot address falls through;
-* RESOLUTION — Approve resolves ``True`` and Deny ``False`` through the existing
-  ``on_interaction`` ``a:`` path, under the key a press recomputes.
-
-All Discord client I/O is faked; nothing touches the network.
+Whenever the prompt reached nobody (failed send, withdrawn authorization, denied
+channels ceiling) the hook answers ``None`` so the gate can fall through, never
+``False``, a decision nobody made. All Discord client I/O is faked.
 """
 
 from __future__ import annotations
@@ -85,11 +68,8 @@ def _clean_seam():
 def _governance_permits(monkeypatch):
     """Default premise for every test here: the channels ceiling permits Discord.
 
-    The real check hops to a thread pool, so leaving it in place would couple
-    these tests to an executor round-trip instead of to the delivery behaviour
-    they are about. Patched in BOTH namespaces that read it -- the seam, which
-    gates entry into any hook, and this dispatcher, which re-reads across the DM
-    open -- because a test that reaches the send has to pass both.
+    Patched in BOTH namespaces that read it: the seam gates entry into any hook,
+    and the dispatcher re-reads across the DM open.
     """
 
     async def _permitted(_channel: str) -> bool:
@@ -247,13 +227,10 @@ async def test_egress_revocation_falls_through_unposted() -> None:
 
 @pytest.mark.asyncio
 async def test_a_governance_denied_channel_never_reaches_this_hook(monkeypatch) -> None:
-    """Entry is the seam's gate, and a deny there must not reach this dispatcher.
+    """A channel the ceiling denies is answered ``None`` before this hook runs at all.
 
-    The seam reads the operator's ceiling once before it invokes any hook, so a
-    denied channel is answered ``None`` without this hook running at all: no nonce
-    armed, no DM channel opened, nothing posted. Pinned THROUGH the seam rather
-    than by calling the hook directly, because calling it directly would test a
-    state the seam does not allow.
+    Driven through the seam: calling the hook directly would test a state the seam
+    does not allow.
     """
     d, cli, _ = _dispatcher({"u1"})
     seam.register_channel_delivery("discord", d.deliver_spawn_approval)
@@ -281,15 +258,11 @@ async def test_a_governance_denied_channel_never_reaches_this_hook(monkeypatch) 
 
 @pytest.mark.asyncio
 async def test_a_ceiling_closed_during_the_dm_open_falls_through_unposted(monkeypatch) -> None:
-    """This dispatcher re-reads the ceiling across the one gap the seam cannot see.
+    """This dispatcher re-reads the ceiling after the DM open, a gap the seam cannot see.
 
-    The seam's read happens before the hook is entered. Opening the peer's DM
-    channel is a full round trip INSIDE the hook, so the ceiling can close across
-    it while the seam's answer is already spent. A preview posted then reaches a
-    channel the ceiling has switched off, and the Approve press that would answer
-    it is dropped there, so the wait would deny-by-default. From the re-read to the
-    send nothing suspends, which is what makes it the latest point a read can speak
-    for.
+    The ceiling can close during that round trip; an Approve press would then be
+    dropped and the wait would deny-by-default. Nothing suspends between the
+    re-read and the send.
     """
     d, cli, _ = _dispatcher({"u1"})
     key = d._session_key("u1")
@@ -320,11 +293,8 @@ async def test_a_ceiling_closed_during_the_dm_open_falls_through_unposted(monkey
 async def test_a_press_landing_before_the_waiter_exists_is_still_honoured() -> None:
     """A press during the post resolves the wait instead of reporting "expired".
 
-    The nonce is armed when the prompt is BUILT, but the future only registers
-    when the caller starts awaiting, and the post in between suspends. A press
-    that lands in that gap finds no future, so dropping it would deny-by-default
-    at the timeout and tell a user who pressed Approve that the approval had
-    expired. The decision is held under the same key and consumed by the waiter.
+    The nonce is armed when the prompt is built but the future registers only once
+    the caller awaits, so a press in that gap is held under the key for the waiter.
     """
     d, cli, _ = _dispatcher({"u1"})
     key = d._session_key("u1")
@@ -448,11 +418,8 @@ async def test_the_task_preview_cannot_break_out_of_its_code_block() -> None:
 async def test_a_credential_split_by_invisible_characters_is_not_displayed() -> None:
     """The preview is cleared in the form Discord renders, not in the form it arrives.
 
-    A zero-width character between two halves of a key breaks every literal scan
-    while rendering as nothing, so the upstream pass leaves it intact and the
-    reader sees a whole secret. The assertion is made on the canonicalized text
-    for the same reason: the literal message never contains the secret as one
-    string, so checking the literal would pass with no redaction at all.
+    A zero-width character breaks literal scans but renders as nothing. The check
+    reads the canonicalized text, since the literal never holds the secret whole.
     """
     d, cli, _ = _dispatcher({"u1"})
     key = d._session_key("u1")
@@ -525,14 +492,10 @@ def test_a_foreign_surface_is_refused_by_the_reverse_lookup_itself() -> None:
 
 
 def test_the_reverse_lookup_refuses_every_shape_it_cannot_place() -> None:
-    """The rest of the case list, each answered rather than guessed at.
+    """An unknown chat_type or a scope deeper than one segment is refused, not guessed.
 
-    A chat_type this channel does not mint, and a scope deeper than the one
-    segment it does mint, are both unaddressable: there is no single conversation
-    to put a task preview in. Neither is reachable from this channel's own
-    builder today, which is the reason to pin them — a future route that starts
-    minting either shape should have to come back here rather than silently
-    resolve to the first segment.
+    Neither shape is minted today; a route that starts minting one must come back
+    here rather than resolve silently to the first segment.
     """
     d, _cli, _ = _dispatcher({"u1"})
     assert d._spawn_chat_target("discord:kirocrew:channel:c1") is None, "unknown chat_type"
@@ -582,11 +545,8 @@ async def test_deny_resolves_false_through_the_existing_press_path() -> None:
 async def test_the_arming_turns_end_does_not_close_the_spawn_window() -> None:
     """The prompt outlives the turn that asked for the spawn, so the sweep spares it.
 
-    The gate awaits the approval in its own task and the agent is told to end its
-    turn, so the turn's end runs while the user is still looking at the prompt.
-    Closing the window there drops the nonce, and the press is then answered with
-    an expiry the window had not reached while the wait spends its whole timeout
-    and hands the gate a refusal nobody pressed.
+    The agent ends its turn while the user still sees the prompt; dropping the nonce
+    then would answer the press "expired" and hand the gate a refusal nobody pressed.
     """
     d, cli, _ = _dispatcher({"u1"})
     key = d._session_key("u1")
@@ -626,11 +586,8 @@ async def test_the_turns_end_still_closes_an_ordinary_tool_window() -> None:
 async def test_a_consumed_early_press_stops_exempting_its_key() -> None:
     """The exemption ends with the window it was granted for.
 
-    A press landing during the post is consumed on the adopting path, which
-    retires the key. Its detached mark goes with it, because a mark outliving its
-    key exempts that key from every later sweep for the life of the process: the
-    next prompt on it is an ordinary tool approval, awaited inside its own turn,
-    and that one must still be swept when the turn ends.
+    A mark outliving its key would exempt that key from every later sweep, so a
+    later turn-owned tool approval on the same key would never be swept.
     """
     d, cli, _ = _dispatcher({"u1"})
     key = d._session_key("u1")
@@ -711,15 +668,9 @@ async def test_a_press_after_a_generation_rotation_resolves_nothing() -> None:
 
 # ── An unpressed wait after authorization ended mid-wait ───────────────────
 #
-# The checks before the post cover only the moment the prompt goes out. The wait
-# that follows lasts minutes, and three authorities can end inside it: the
-# operator's channels ceiling (``on_interaction`` then drops every press but an
-# explicit reject), the peer roster (checked first for EVERY press, no
-# exemption), and the thread roster (a guild press outside it is dropped). Once
-# any of them ends, no press can resolve the prompt, so its wait elapses -- and a
-# bare ``False`` there is a refusal the operator never made. The shared seam's
-# ``unpressed_wait_answer`` defines what an unpressed wait means, and the Telegram
-# hook follows it; these pin the same contract on Discord's hook.
+# The channels ceiling, peer roster or thread roster can end during the wait, and
+# then no press can resolve the prompt. A bare ``False`` there is a refusal nobody
+# made; the seam's ``unpressed_wait_answer`` defines the answer, as for Telegram.
 
 
 @pytest.fixture

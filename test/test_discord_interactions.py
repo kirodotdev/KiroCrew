@@ -154,13 +154,10 @@ class TestInteractions:
 
     @pytest.mark.asyncio
     async def test_a_reject_press_still_lands_after_a_withdrawal(self) -> None:
-        """A REJECT is a denial, which is what a withdrawal wants. Dropping it would
-        strand the pending approval until it times out.
+        """A REJECT still resolves after a withdrawal, but its verdict edit is withheld.
 
-        Its CONFIRMATION is a different thing: an outbound write into the channel.
-        The reject reaches the resolution without the re-read the sibling branch does,
-        and the edit may serve no wait at all, in which case the ladder's own re-check
-        never runs and nothing else judges it. So the verdict is withheld.
+        Dropping the denial would strand the approval until timeout. The confirmation
+        is an outbound write, and nothing else re-checks it on this path.
         """
         d, cli, _ = _dispatcher({"u1"})
         key = DiscordApprovalDecider.key(d._session_key("u1"), "r1")
@@ -227,13 +224,10 @@ class TestInteractions:
     async def test_a_ceiling_denied_channel_keeps_its_card_exactly_as_posted(
         self, tmp_path, monkeypatch
     ) -> None:
-        """The reverse of the verdict-lands case: with the ceiling withdrawn, the press
-        writes NOTHING into the channel -- not the verdict, not a component strip.
+        """With the ceiling withdrawn, the press writes NOTHING: no verdict, no button strip.
 
-        The card is an ordinary channel message posted while the channel was still
-        permitted, so writing nothing leaves it in exactly that state. Asserted as the
-        fold of everything sent and every edit applied, not merely as an empty edit
-        list, because a component-only edit would also change what the channel shows.
+        Component edits are checked too, because a component-only edit would also
+        change what the channel shows.
         """
         from kiro_crew.platform import governance_profiles as gp
 
@@ -314,12 +308,9 @@ class TestInteractions:
         """An APPROVE press reads the ceiling twice: once before it resolves, once
         before it writes.
 
-        Carrying the first answer forward would be a value taken before a suspension,
-        which is the defect class this change exists to close. Pinned by answering
-        `permitted` to the first read and `denied` to the second, which no reuse of a
-        single answer can satisfy. Both entry points share one answering function
-        because the reads are on opposite sides of the resolve and read opposite
-        directions: the press arriving is inbound, the verdict written is outbound.
+        The first read answers `permitted` and the second `denied`, which no reuse of
+        one answer across the suspension can satisfy. One function answers both the
+        inbound (press) and outbound (verdict) entry points.
         """
         d, cli, _ = _dispatcher({"u1"})
         answers = [True, False]
@@ -347,12 +338,8 @@ class TestInteractions:
         """The verdict edit is a write this process makes, so the OUTBOUND ceiling
         decides it.
 
-        Both entry points read the same `channels` allowlist, so a test that only
-        watched the verdict could not tell them apart. Pinned by answering permitted
-        inbound and denied OUTBOUND: the press resolves, because the inbound gate let
-        it through, and the edit is still withheld, which only a gate reading the
-        outbound entry point can do. Filing an egress refusal under an ingress name
-        leaves an operator asking why a message did not go out reading the wrong row.
+        Inbound answers permitted and OUTBOUND denied: the press resolves and the edit
+        is withheld, which only a gate reading the outbound entry point can do.
         """
         d, cli, _ = _dispatcher({"u1"})
         read: list[str] = []
@@ -973,11 +960,8 @@ class TestModelPicker:
 class TestCommandSurfaceParity:
     """Every catalogued command must actually do something on BOTH surfaces.
 
-    This is the drift guard the two-surface design needs: adding a row to
-    ``COMMAND_SPEC`` publishes it to Discord's menu, so a row with no handler
-    ships a visible command that silently does nothing. Walking the catalogue
-    rather than a hand-written list is the point, since the hand-written list is
-    what goes stale.
+    A ``COMMAND_SPEC`` row is published to Discord's menu, so a row with no handler
+    ships a command that silently does nothing. The test walks the catalogue itself.
     """
 
     @pytest.mark.asyncio

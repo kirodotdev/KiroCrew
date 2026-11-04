@@ -1,26 +1,15 @@
 """A Discord message into a BUSY resumed dashboard session reaches that slot's own
 mid-turn machinery instead of a refusal.
 
-A DM bound to a dashboard session (``!sessions`` or the dashboard mirror menu)
-cannot use the Discord-side mid-turn machinery while the dashboard is driving:
-the Discord queue drains only at the tail of a Discord-driven turn and its replay
-skips resume routing, so a message queued there would run in the NATIVE session.
-The dashboard slot has its own steer path and its own queue, drained by the
-dashboard turn loop; these tests pin that the resumed branch hands the message to
-THOSE, records the same audience fence the peer-steer path records, confirms in
-the channel, and keeps the refusal for the cases the slot cannot take.
+The Discord-side queue would replay the message in the NATIVE session, so the resumed
+branch hands it to the slot's own steer path and queue, records the peer-steer audience
+fence, confirms in the channel, and refuses what the slot cannot take.
 
-The dashboard state is the real ``DashboardState`` with a real slot, because the
-hand-off writes the slot's queue, its pending-steer bookkeeping and its audience
-fences -- a hand-rolled fake would let the routing decision pass against a slot
-shape production never has.
+A real ``DashboardState`` and slot: the hand-off writes the slot's queue, steer
+bookkeeping and fences, which a fake would not shape like production.
 
-The hand-off's later life -- the drop notice a DM gets when the drain drops its
-queued entry, the recovery requeues that keep or refuse that address, the bounded
-fence set, a handler cancelled inside the steer RPC, the channel origin a later
-directive carries, a close racing the steer, and the live queue's bound -- is pinned
-in ``test_discord_resumed_busy_after_handoff.py``. The builders both modules use live
-in ``discord_resumed_busy_helpers.py``.
+The hand-off's later life is pinned in ``test_discord_resumed_busy_after_handoff.py``;
+shared builders live in ``discord_resumed_busy_helpers.py``.
 """
 
 from __future__ import annotations
@@ -133,11 +122,8 @@ async def test_a_refused_steer_queues_and_releases_the_audience_record(tmp_path)
 async def test_an_unsteerable_backend_leaves_no_fence_behind(tmp_path) -> None:
     """A pre-RPC refusal leaves no fence on the slot.
 
-    A backend outside the steer-capable set answers ``STEER_UNAVAILABLE`` before
-    any RPC; the text takes the queue arm. A fence kept for that admission would
-    stay for the whole turn and withhold the dashboard turn's cross-surface leg
-    as soon as a mirror is bound -- for a message the turn never received -- so
-    the admission's hold is released and the record goes with it.
+    ``STEER_UNAVAILABLE`` sends the text to the queue. A fence kept for it would
+    withhold the turn's cross-surface leg for a message the turn never received.
     """
     client_no_steer = MagicMock()
     client_no_steer.supports_steer = False
@@ -185,12 +171,9 @@ async def test_a_declined_steer_keeps_a_fence_a_landed_sibling_holds(tmp_path) -
 async def test_a_steer_that_wakes_in_the_next_turn_leaves_that_turns_fence_alone(tmp_path) -> None:
     """The release is bound to the turn the steer was admitted to.
 
-    Steer A is suspended across turn N's teardown, which requeues A's text and
-    clears both fence maps. Turn N+1 starts and steer B is admitted under the
-    same audience key -- the key is deterministic, so B's record is identical to
-    the one A held. A then wakes as ``STEER_REQUEUED``. An unbound release would
-    take B's hold, pop B's admission and let N+1 publish B's leg to a mirror
-    bound after B was admitted; bound to A's turn generation, A releases nothing.
+    Steer A sleeps across turn N's teardown; steer B lands in N+1 under the same
+    (deterministic) audience key. When A wakes as ``STEER_REQUEUED`` it must not
+    release B's hold, or N+1 would publish B's leg.
     """
     steer_client = _steerable()
     dispatcher, client, sessions, state, slot, _ = await _bound_to_busy_dashboard(
@@ -260,12 +243,9 @@ async def test_a_requeued_steer_releases_its_hold(tmp_path) -> None:
 async def test_queue_mode_lands_the_message_in_the_slot_queue(tmp_path, how) -> None:
     """Queue mode, ``!queue``, and an unavailable steer all reach the SLOT's queue.
 
-    That queue is drained by the dashboard turn loop, so ordering is the
-    dashboard's; the Discord-side ``_drain_queue`` never sees the entry. The entry
-    carries the drain's admission stamp and BOTH provenance marks a channel
-    human's text carries on the Slack linked-thread path: user origin (the
-    session's own human typed it) and channel origin (channel authority is the
-    narrower credential boundary).
+    The Discord-side ``_drain_queue`` never sees the entry. It carries the admission
+    stamp and both provenance marks, as on the Slack linked-thread path: user origin
+    and channel origin (the narrower credential boundary).
     """
     steer_client: MagicMock | None = _steerable()
     if how == "no-steer-client":
@@ -308,10 +288,8 @@ async def test_a_queued_handoff_entry_is_turn_content_never_a_dashboard_command(
     """``!queue /clear`` during a dashboard turn queues the WORDS "/clear", stamped so
     the drain never reads them as the command that wipes the session.
 
-    The channel's own queue already replays every entry with command interpretation
-    off; this entry crosses into the slot's queue in its place and keeps that rule.
-    The directive prefix is stripped before the hand-off, so the text alone cannot
-    tell the drain -- the entry's meta does.
+    The ``!queue`` prefix is stripped before the hand-off, so only the entry's meta
+    can tell the drain to keep commands off.
     """
     dispatcher, client, sessions, state, slot, enqueued = await _bound_to_busy_dashboard(
         tmp_path, steer_client=None
@@ -469,12 +447,8 @@ async def test_a_recovery_requeue_keeps_the_commands_off_stamp(tmp_path, monkeyp
 async def test_a_message_with_attachments_is_never_steered(tmp_path) -> None:
     """Attachments keep the queue-only rule's half that holds: no steer.
 
-    ``_session/steer`` carries text only, and the dashboard slot's queue cannot
-    carry Discord attachment material either (it is downloaded into temp files
-    owned by the consuming turn, which the dashboard drain has no hook to own).
-    So the message is refused with wording that names the attachments and the
-    remedy -- the files stay with the user instead of being dropped on the floor
-    or answered without.
+    ``_session/steer`` is text only, and the slot's queue cannot own the temp files
+    attachments download into, so the refusal names the attachments and the remedy.
     """
     steer_client = _steerable()
     dispatcher, client, sessions, state, slot, enqueued = await _bound_to_busy_dashboard(
@@ -501,10 +475,8 @@ async def test_a_message_with_attachments_is_never_steered(tmp_path) -> None:
 async def test_an_incognito_target_takes_the_steer_path(tmp_path) -> None:
     """A restricted (incognito/temporary) slot is taken like any other.
 
-    Those modes keep their transcript and queue in History and withhold only what
-    is derived from the chat; the steer row and the queue entry are the records
-    the slot's own composer writes in that mode, so a restricted slot persists
-    them and takes the same steer/queue path.
+    Those modes withhold only chat-derived data; the slot's own composer writes the
+    same steer row and queue entry in that mode.
     """
     steer_client = _steerable()
     dispatcher, client, sessions, state, slot, enqueued = await _bound_to_busy_dashboard(
@@ -541,10 +513,8 @@ async def test_a_temporary_target_takes_the_queue_path(tmp_path) -> None:
 async def test_a_slot_that_is_not_driving_the_turn_is_still_refused(tmp_path) -> None:
     """The lease is held, but not by the dashboard turn loop.
 
-    A Discord-driven turn on the resumed key holds ``is_busy`` while the slot is
-    idle: it has no client to steer into and no drain coming, and the queue-or-run
-    admission would START a second turn against the held lease. The slot's
-    machinery cannot take the message, so the refusal stands.
+    A Discord-driven turn holds ``is_busy`` while the slot is idle: nothing to steer
+    into, no drain coming, and queue-or-run would START a second turn on the lease.
     """
     dispatcher, client, sessions, state, slot, enqueued = await _bound_to_busy_dashboard(
         tmp_path, steer_client=_steerable()
@@ -593,11 +563,10 @@ async def test_a_resumed_key_with_no_open_slot_is_still_refused(tmp_path) -> Non
 
 @pytest.mark.asyncio
 async def test_a_discord_native_busy_session_keeps_handle_busy(tmp_path) -> None:
-    """Unbound DM, busy native session: today's ``_handle_busy`` path, unchanged.
+    """Unbound DM, busy native session: the ``_handle_busy`` path.
 
-    The native provider in this harness does not support steer, so the message
-    takes the Discord-side queue with its receipt -- and none of the resumed
-    path's wording appears.
+    This harness's native provider cannot steer, so the message takes the
+    Discord-side queue, with none of the resumed path's wording.
     """
     dispatcher, client, sessions = _dispatcher({"u1"}, _log())
     dispatcher._session_resume.dashboard_state = _make_state(tmp_path)
@@ -619,10 +588,8 @@ async def test_a_discord_native_busy_session_keeps_handle_busy(tmp_path) -> None
 async def test_a_channel_steer_keeps_the_display_redaction_on_its_row_and_card(tmp_path) -> None:
     """The steer carries user provenance, but a channel author is not the reader.
 
-    The session's own human's composer steer is stored and shown as typed; a
-    channel human's is stored sanitized and pushed display-redacted -- the same
-    rule ``queue_entry_is_user_origin`` applies to a queue entry carrying both
-    stamps -- while the row still carries the human-turn marker.
+    A channel human's steer is stored sanitized and pushed display-redacted, as
+    ``queue_entry_is_user_origin`` rules for queue entries, and keeps the human-turn marker.
     """
     steer_client = _steerable()
     dispatcher, client, sessions, state, slot, _ = await _bound_to_busy_dashboard(
@@ -662,11 +629,8 @@ async def test_a_slot_replaced_under_the_steer_rpc_is_refused_not_queued_onto_th
 ) -> None:
     """The steer RPC suspends; a close-and-recreate under the same key lands inside it.
 
-    The key still resolves -- to a fresh object -- while the steer was handed to
-    the old one. A fallback append would land on the detached slot, which no
-    drain reaches, and the DM would be told the message was queued. Compared by
-    object identity, as ``send_to_target`` re-gates its own fallback, and refused
-    with the remedy instead.
+    A fallback append would land on the detached slot no drain reaches. Compared by
+    object identity, as ``send_to_target`` does, and refused with the remedy.
     """
     steer_client = _steerable(accepted=False)
     dispatcher, client, sessions, state, slot, enqueued = await _bound_to_busy_dashboard(
@@ -695,11 +659,9 @@ async def test_a_slot_replaced_under_the_steer_rpc_is_refused_not_queued_onto_th
 async def test_a_requeue_onto_a_replaced_slot_is_reported_not_yet_saved(tmp_path) -> None:
     """``STEER_REQUEUED`` onto the handed-to object while a fresh object holds the key.
 
-    The handed-to slot is judged first: its queue carries the delivery, and the
-    persistence witness says that queue is not on disk, so the honest answer is
-    the not-yet-saved refusal -- never "queued for that session" (no drain reaches
-    the detached queue) and never "NOT delivered" (the human would resend text the
-    archive may still carry).
+    The handed-to queue holds the delivery but is not on disk, so the answer is the
+    not-yet-saved refusal: not "queued" (no drain reaches it), not "NOT delivered"
+    (the human would resend text the archive may carry).
     """
     steer_client = _steerable()
     dispatcher, client, sessions, state, slot, _ = await _bound_to_busy_dashboard(
