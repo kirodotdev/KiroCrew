@@ -118,6 +118,15 @@ the work and its context. That freedom includes a theme, atmosphere and
 visual metaphor, as well as an abstract design. Let that character reach
 across the page rather than stop at a heading or an icon.
 
+**Themed pages are an option.** `THEMES.md` beside this file holds
+whole-page theme ideas, such as an arcade cabinet, a cork board or a
+departure board. When the person leaves the style open, you may pick one
+that suits the work; most people do not know a theme is possible. When they
+ask what looks are possible, name two or three. A clean, plain page is just
+as correct, and a theme is never required. When one is used, it changes
+only the look: every value stays bound to its fold and every link keeps
+working.
+
 **Give the whole page visual depth.** Backgrounds, wallpaper, pattern,
 texture, expressive frames and layered surfaces are welcome parts of the
 design. Their purpose can be atmosphere rather than measurement. Give the
