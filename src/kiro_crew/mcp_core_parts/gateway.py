@@ -27,18 +27,13 @@ from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 def _resolve_api_port() -> tuple[int, str]:
     """Resolve the gateway API port a callback should aim at.
 
-    Delegates to :func:`kiro_crew.port_resolution.resolve_client_port_src`, the
-    same precedence every client CLI command applies: ``KIROCREW_PORT``, then a
-    port **explicitly written** in ``dashboard.url``, then the sole
-    gateway-owned run-marker, then the documented default. The marker step is
-    what keeps a portless ``dashboard.url`` from collapsing to the default
-    port while a live gateway is bound elsewhere — ``parse_dashboard_url``
-    substitutes the default for the *server's* benefit (it must bind
-    something), which is exactly the wrong guess for a client callback.
+    Same precedence as every client CLI command
+    (:func:`kiro_crew.port_resolution.resolve_client_port_src`). The marker step
+    keeps a portless ``dashboard.url`` from collapsing to the default port while
+    a live gateway is bound elsewhere.
 
-    Returns ``(port, source)`` — the source string names the chain step that
-    produced the port (``"env"`` / ``"bound"`` / ``"config"`` / ``"marker"`` /
-    ``"default"``), because the caching rule below differs by source.
+    Returns ``(port, source)``; the source (``"env"`` / ``"bound"`` /
+    ``"config"`` / ``"marker"`` / ``"default"``) decides whether it may be cached.
     """
     return resolve_client_port_src(None)
 
@@ -52,16 +47,11 @@ def _resolve_api_port() -> tuple[int, str]:
 _STABLE_PORT_SOURCES = frozenset({"cli", "env", "bound", "config"})
 
 
-# Lazily-resolved caches for the gateway API port, base URL, and unix-socket
-# path. ``None`` means "not resolved yet"; the getters below fill them on
-# first use (tests may pre-seed any of them with a concrete value).
-# Deliberately NOT computed at import: resolution reads config and the
-# gateway's live run-marker, both of which can change between process start
-# and the first gateway call — an import-time snapshot froze a wrong guess
-# for the whole process lifetime. A REQUEST derives its URL and socket path
-# from one resolution (``_resolve_api_target``), so the two transports of an
-# attempt can never name different gateways; these caches hold that pair only
-# for the stable sources that are safe to pin.
+# Lazy caches for the gateway port, base URL and unix-socket path; ``None`` means
+# not resolved yet (tests may pre-seed them). Not computed at import: config and
+# the run-marker can change before the first gateway call. They hold a pair only
+# for stable sources; a request derives both from one resolution
+# (``_resolve_api_target``) so its two transports never name different gateways.
 _API_PORT: int | None = None
 
 
@@ -184,15 +174,9 @@ def _resolve_api_target() -> tuple[str, str]:
     """
     global _API, _API_UNIX_SOCKET
     if _API is not None and _API_UNIX_SOCKET is not None:
-        # Both memos populated: hand back exactly what the standalone getters
-        # would answer. The condition is deliberately NOT also `_API_PORT is not
-        # None`. `_api_base` / `_api_unix_socket` return a populated memo
-        # whatever the port cache holds, and tests pre-seed these two directly
-        # (the cache comment above documents that) -- requiring the port here
-        # made this resolver discard a seeded pair and re-resolve, which is the
-        # very drift between `_send` and the getters this function exists to
-        # remove. In production the two are written together and
-        # `_invalidate_api_base` clears them together, so they stay consistent.
+        # Answer exactly what the standalone getters would. Do not also require
+        # `_API_PORT`: the getters return a populated memo whatever the port cache
+        # holds, and tests pre-seed these two directly.
         return _API, _API_UNIX_SOCKET
     port = _api_port()
     base = f"http://127.0.0.1:{port}"
@@ -475,27 +459,18 @@ def _transport_failure(message: str, mark: bool) -> dict:
     return out
 
 
-# Extra attempts a REFUSED target gets, and the pause before each.
-#
-# A refusal is the one failure where nothing reached the gateway, so re-dialling
-# the identical request cannot double-execute a verb — that invariant is what
-# makes this retry legal (see ``_retry_refused`` inside :func:`_send`). Two extra
-# dials, pausing ~250ms then ~500ms, cover the sub-second window in which a
-# restarting gateway is rebinding its port, without making a genuinely-down
-# gateway feel hung.
+# Pause before each extra attempt a REFUSED target gets. A refusal means nothing
+# reached the gateway, so re-dialling cannot double-execute a verb (see
+# ``_retry_refused`` in :func:`_send`). The pauses cover a restarting gateway
+# rebinding its port without making a down gateway feel hung.
 _REFUSED_RETRY_BACKOFFS: tuple[float, ...] = (0.25, 0.5)
 
 
 def _refused_message(refused_base: str, exc: BaseException) -> str:
     """Actionable text for a base that refused every attempt.
 
-    A bare ``<urlopen error [Errno 61] Connection refused>`` tells the caller
-    nothing it can act on, so name the address that was dialled and the likely
-    reason (the gateway is down, or restarting) together with the advice that
-    follows from it. The raw error is appended so the original diagnostic
-    survives for a bug report.
-
-    The address comes from the base that was actually refused; re-resolving here
+    Names the dialled address and the likely reason, and appends the raw error
+    for bug reports. The address comes from the refused base; re-resolving here
     would name a port nobody dialled.
     """
     host = refused_base.split("//", 1)[-1].rstrip("/") or refused_base
@@ -531,10 +506,8 @@ def _http_error_body(exc: urllib.error.HTTPError) -> dict:
             parsed = json.loads(raw)
             if isinstance(parsed, dict) and "error" in parsed:
                 message = str(parsed["error"])
-                # Preserve api_spawn's "this rejection was already counted"
-                # marker (wave-liveness reconcile) — it must survive the
-                # error-body flattening or spawn_run would double-reconcile
-                # in-process rejections and close waves early.
+                # Keep api_spawn's "already counted" marker, or spawn_run
+                # double-reconciles in-process rejections and closes waves early.
                 counted = bool(parsed.get("counted"))
                 # Preserve the backend's machine-readable error code (e.g.
                 # ``unknown_session`` from DELETE /api/lessons) so callers can

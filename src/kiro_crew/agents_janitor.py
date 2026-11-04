@@ -37,12 +37,8 @@ sweep is deliberately narrow and fail-open:
 * a failure on any one entry (unreadable, vanished mid-sweep, permission
   denied) is tolerated and the sweep continues.
 
-It is intentionally isolated in its own module with a small, side-effect-free
-surface so it can be wired into ``kirocrew doctor`` and gateway boot in one or
-two lines each. The same write-temp-then-rename residue exists in other
-data-home directories too; the agents directory is swept first because it is the
-*shared*, foreign-writer directory that grows fastest, and a general residue
-sweep across the other single-writer directories is left as follow-up.
+Its small, side-effect-free surface is wired into ``kirocrew doctor`` and
+gateway boot.
 """
 
 from __future__ import annotations
