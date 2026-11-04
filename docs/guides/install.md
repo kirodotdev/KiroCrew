@@ -556,6 +556,20 @@ and it runs from a randomized temporary mount, so it carries the manual
 sandbox-profile step and the move-breaks-it caveat documented in the
 [sandbox section](#linux-the-agent-sandbox-and-unprivileged-user-namespaces).
 
+On first launch, the AppImage installs its freedesktop launcher and hicolor
+icons under your XDG data directory. Later launches repair Kiro Crew-managed
+files after an update or AppImage move. Repair requires a filesystem that
+supports Linux write leases. If your XDG data directory is on NFS, FUSE, or
+another filesystem that rejects leases, Kiro Crew leaves managed files
+untouched and defers repair. Keep the AppImage at its prior path or use a desktop
+package on that host.
+
+A launcher or icon that existed before this feature, or whose contents or
+metadata you changed, remains user-owned and is not replaced. Deleting a managed
+launcher causes the next AppImage launch to restore it. To keep launching the
+AppImage without desktop integration, set
+`KIROCREW_DISABLE_DESKTOP_INTEGRATION=1` in its launch environment.
+
 All three Linux formats are built from the same glibc floor as the build runner.
 Verified requirement at the time of writing is **glibc 2.34**, which covers
 Ubuntu 22.04+, Debian 12+, Fedora, CentOS Stream 9 and Amazon Linux 2023, and
@@ -1319,6 +1333,60 @@ Delete the AppImage file wherever you placed it:
 ```bash
 rm -f ~/Applications/KiroCrew-x86_64.AppImage   # or wherever you saved it
 ```
+
+The launcher the AppImage installed carries a `TryExec` key, so desktop menus
+hide it once the AppImage is gone. To remove the launcher and icons as well,
+run the script below. It reads the integration's manifest and deletes only the
+files Kiro Crew created: a launcher or icon is removed only while its content
+still matches what Kiro Crew wrote, so a file you replaced or edited is kept.
+It then removes the manifest directory. For the nightly build, set
+`APP=kirocrew-desktop-nightly`.
+
+```bash
+APP=kirocrew-desktop
+STATE="${XDG_CONFIG_HOME:-$HOME/.config}/$APP/linux-desktop-integration"
+python3 - "$STATE/state.json" <<'EOF'
+import hashlib, json, os, sys
+for path, rec in json.load(open(sys.argv[1]))["artifacts"].items():
+    try:
+        digest = hashlib.sha256(open(path, "rb").read()).hexdigest()
+        if digest in rec.get("owned", []):
+            os.unlink(path)
+            print("removed", path)
+        else:
+            print("kept (not Kiro Crew's)", path)
+    except FileNotFoundError:
+        pass
+    pending = rec.get("pending") or {}
+    sides = [(rec.get("anchorPath"), rec.get("owned", []), None),
+             (pending.get("tempPath"), [pending.get("hash")], pending.get("ino"))]
+    for group in (rec.get("recovery"), pending.get("previous")):
+        group = group or {}
+        sides += [(p, [group.get("hash")], group.get("ino"))
+                  for p in group.get("paths", [])]
+    for side, hashes, ino in sides:
+        if not side or not side.startswith(
+                (path + ".tmp-", path + ".kirocrew-displaced-")):
+            continue
+        try:
+            same_inode = ino is None or os.lstat(side).st_ino == ino
+            digest = hashlib.sha256(open(side, "rb").read()).hexdigest()
+            if same_inode and digest in hashes:
+                os.unlink(side)
+            else:
+                print("kept (changed since Kiro Crew wrote it)", side)
+        except FileNotFoundError:
+            pass
+EOF
+rm -rf "$STATE"
+```
+
+The side files the script removes are the `.tmp-` and `.kirocrew-displaced-`
+copies the repair logic keeps next to a managed file. Each one is removed only
+while its content, and its inode where the manifest records one, still match
+what Kiro Crew wrote. Setting
+`KIROCREW_DISABLE_DESKTOP_INTEGRATION=1` stops future repairs without removing
+anything.
 
 ### Windows (NSIS installer)
 
