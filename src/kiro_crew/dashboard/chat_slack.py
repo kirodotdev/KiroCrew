@@ -457,6 +457,25 @@ async def link_slot_to_slack(
             if not permitted:
                 raise SlackLinkError(403, "channel_not_permitted", "channel is not permitted")
 
+        # A code channel IS one session: its binding names it, and Stop and
+        # button answers follow the binding. Moving the channel's anchor link to
+        # another slot would split the channel between two conversations, so
+        # that handoff is refused (re-linking the binding's own session is fine).
+        # The binding names its session by SLOT key (routing.record_binding), not
+        # by the session-map key above, so the owner is compared in that namespace.
+        from kiro_crew.slack.code_channels.binding import code_channel_anchor_owner
+
+        if existing_thread and code_channel_anchor_owner(channel, existing_thread) not in (
+            None,
+            slot.key,
+        ):
+            raise SlackLinkError(
+                409,
+                "code_channel_anchor",
+                "This thread is a Slack code channel's own session; open that session "
+                "instead of linking another one to it.",
+            )
+
         # A link hands the thread's replies to this slot, whether it binds an
         # existing thread or posts a new anchor. A channel pinned to an agent
         # may only be served by that agent, so refuse a slot running any other
