@@ -7976,7 +7976,11 @@
       "copied": "Copié",
       "copy_url": "Copier l’URL",
       "copy_url_of": "Copier l’URL de {{name}}",
-      "load_failed": "Impossible de charger cet aperçu."
+      "load_failed": "Impossible de charger cet aperçu.",
+      "failed_timeout": "L’app a mis trop de temps à charger cet aperçu.",
+      "failed_app": "L’app a rencontré une erreur et n’a pas pu afficher cet aperçu.",
+      "failed_unavailable": "L’app de cet aperçu n’est pas disponible.",
+      "retry": "Réessayer"
     },
     "linkedSurfacesSection": {
       "connect_failed": "Impossible de se connecter à {{label}} : {{reason}}",

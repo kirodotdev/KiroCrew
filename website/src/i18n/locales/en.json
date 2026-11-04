@@ -6323,7 +6323,11 @@
       "title": "Run this yourself"
     },
     "linkPreview": {
-      "load_failed": "Couldn't load this preview."
+      "load_failed": "Couldn't load this preview.",
+      "failed_timeout": "The app took too long to load this preview.",
+      "failed_app": "The app hit an error and couldn't show this preview.",
+      "failed_unavailable": "The app for this preview isn't available.",
+      "retry": "Retry"
     },
     "messageActions": {
       "popover_label": "{{app}}: {{title}}",

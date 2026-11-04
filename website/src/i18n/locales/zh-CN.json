@@ -7590,7 +7590,11 @@
       "copied": "已复制",
       "copy_url": "复制网址",
       "copy_url_of": "复制 {{name}} 的网址",
-      "load_failed": "无法加载此预览。"
+      "load_failed": "无法加载此预览。",
+      "failed_timeout": "应用加载此预览超时。",
+      "failed_app": "应用出错，无法显示此预览。",
+      "failed_unavailable": "此预览所属的应用不可用。",
+      "retry": "重试"
     },
     "linkedSurfacesSection": {
       "connect_failed": "无法连接到 {{label}}：{{reason}}",

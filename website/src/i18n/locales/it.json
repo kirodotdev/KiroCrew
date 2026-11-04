@@ -7976,7 +7976,11 @@
       "copied": "Copiato",
       "copy_url": "Copia URL",
       "copy_url_of": "Copia URL di {{name}}",
-      "load_failed": "Impossibile caricare questa anteprima."
+      "load_failed": "Impossibile caricare questa anteprima.",
+      "failed_timeout": "L’app ha impiegato troppo tempo a caricare questa anteprima.",
+      "failed_app": "L’app ha avuto un errore e non ha potuto mostrare questa anteprima.",
+      "failed_unavailable": "L’app di questa anteprima non è disponibile.",
+      "retry": "Riprova"
     },
     "linkedSurfacesSection": {
       "connect_failed": "Impossibile connettersi a {{label}}: {{reason}}",

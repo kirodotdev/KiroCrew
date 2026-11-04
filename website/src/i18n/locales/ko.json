@@ -7590,7 +7590,11 @@
       "copied": "복사됨",
       "copy_url": "URL 복사",
       "copy_url_of": "{{name}}의 URL 복사",
-      "load_failed": "이 미리보기를 불러올 수 없습니다."
+      "load_failed": "이 미리보기를 불러올 수 없습니다.",
+      "failed_timeout": "앱이 이 미리보기를 불러오는 데 너무 오래 걸렸습니다.",
+      "failed_app": "앱에 오류가 발생해 이 미리보기를 표시할 수 없습니다.",
+      "failed_unavailable": "이 미리보기의 앱을 사용할 수 없습니다.",
+      "retry": "다시 시도"
     },
     "linkedSurfacesSection": {
       "connect_failed": "{{label}}에 연결할 수 없습니다: {{reason}}",
