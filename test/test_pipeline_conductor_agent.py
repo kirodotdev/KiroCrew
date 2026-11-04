@@ -20,6 +20,7 @@ import json
 import os
 from pathlib import Path
 
+import conductor_agent_checks
 from pipeline_conductor_agent_helpers import FleetProbeHarness
 
 from kiro_crew import agent
@@ -50,7 +51,10 @@ def _pin_spec_permissions_cli(monkeypatch, which):
     monkeypatch.setattr("kiro_crew.kiro_cli.installed_kiro_cli_version", lambda: version)
 
 
-class TestPipelineConductorInstaller:
+class TestPipelineConductorInstaller(
+    conductor_agent_checks.PromptDoesNotCarryTheRetiredVerbosityToken,
+    conductor_agent_checks.PromptDrivesPatrolWithMonitorStartNotWait,
+):
     def _install(self, tmp_path, monkeypatch, *, may_auto_approve=None, cli_version="accepts"):
         monkeypatch.setattr(agent, "kiro_agents_dir_path", lambda: tmp_path)
         _pin_spec_permissions_cli(monkeypatch, cli_version)
@@ -90,18 +94,6 @@ class TestPipelineConductorInstaller:
         """The convergence sweep rewrites only OWNED files; a generated spec
         missing from that allowlist silently rots when Playwright servers move."""
         assert PIPELINE_CONDUCTOR_AGENT_FILENAME in OWNED_KIRO_AGENT_FILES
-
-    def test_prompt_does_not_carry_the_retired_verbosity_token(self, tmp_path, monkeypatch):
-        data = self._install(tmp_path, monkeypatch)
-        # Reply style now arrives as session-context chrome for every
-        # agent; a token left here would reach the model as a literal.
-        assert "{{VERBOSITY_BLOCK}}" not in data["prompt"]
-
-    def test_prompt_drives_patrol_with_monitor_start_not_wait(self, tmp_path, monkeypatch):
-        data = self._install(tmp_path, monkeypatch)
-        prompt = " ".join(data["prompt"].split())
-        assert "Patrol with `monitor_start`, never with `wait`" in prompt
-        assert "autonudge_stop" in prompt
 
     def test_prompt_names_the_tools_and_scripts_it_runs_on(self, tmp_path, monkeypatch):
         """The charter mounts whole servers; the prompt must name what each job
