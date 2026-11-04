@@ -1117,6 +1117,8 @@ function ChatEmbed({
       setDraft('')
       closePickers()
       pastes.install([])
+      // The Send button disables once the draft empties, which would drop focus to the body.
+      textareaRef.current?.focus()
     }
     // A fresh id and the slot the send belongs to: the yardstick for "did the
     // poll show THIS send", and the address a receipt is delivered to if this
@@ -1158,7 +1160,7 @@ function ChatEmbed({
       before,
     }])
     sendMutation.mutate({ msg, meta, files, resized, sentPastes, draftText, override: override != null, sendId, slot: slotKey, ...(hostBaseline ? { hostProof: { text: msg, slot: slotKey, ...hostBaseline } } : {}) })
-  }, [draft, setDraft, sendMutation, slotKey, onSend, serverMessages, shown, running, attachments, closePickers, pastes])
+  }, [draft, setDraft, sendMutation, slotKey, onSend, serverMessages, shown, running, attachments, closePickers, pastes, textareaRef])
 
   const pickerLabel = attachments.uploading
     ? i18nT('appSdk.chatEmbed.uploading_files')
@@ -1561,7 +1563,9 @@ function ChatEmbed({
               onDragOver={attachments.onDragOver}
               onDrop={attachments.onDrop}
               placeholder={running ? i18nT('appSdk.chatEmbed.agent_is_working') : (placeholder || i18nT('appSdk.chatEmbed.message'))}
-              disabled={sendMutation.isPending}
+              // Read-only, not disabled: a browser drops focus from a control that becomes disabled.
+              readOnly={sendMutation.isPending}
+              aria-disabled={sendMutation.isPending || undefined}
             />
             {pastes.blocks.length > 0 && (
               <PasteHoverLayer

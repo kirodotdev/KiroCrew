@@ -185,7 +185,7 @@ describe('ChatEmbed', () => {
       expect(input.value).toBe('')
     })
 
-    it('disables input while sending', async () => {
+    it('makes input read-only while sending', async () => {
       // Make post hang so sending stays true
       let resolvePost: () => void = () => {}
       mockPost.mockReturnValue(new Promise<void>(r => { resolvePost = r }))
@@ -203,8 +203,10 @@ describe('ChatEmbed', () => {
         fireEvent.click(screen.getByLabelText('Send message'))
       })
 
-      // While sending, input is disabled
-      expect(input).toBeDisabled()
+      // While sending, input takes no typing but stays focusable
+      expect(input).not.toBeDisabled()
+      expect(input).toHaveAttribute('readonly')
+      expect(input).toHaveAttribute('aria-disabled', 'true')
 
       // Resolve the hanging promise
       await act(async () => {
@@ -215,7 +217,8 @@ describe('ChatEmbed', () => {
         vi.advanceTimersByTime(100)
       })
 
-      expect(input).not.toBeDisabled()
+      expect(input).not.toHaveAttribute('readonly')
+      expect(input).not.toHaveAttribute('aria-disabled')
     })
 
     it('sends message with correct params via API', async () => {
@@ -570,7 +573,32 @@ describe('ChatEmbed', () => {
         vi.advanceTimersByTime(100)
       })
 
-      expect((screen.getByLabelText('Chat message') as HTMLInputElement).disabled).toBe(false)
+      expect(screen.getByLabelText('Chat message')).not.toHaveAttribute('readonly')
+    })
+
+    it.each([
+      ['Enter', () => fireEvent.keyDown(screen.getByLabelText('Chat message'), { key: 'Enter' })],
+      ['the Send button', () => { const b = screen.getByLabelText('Send message'); b.focus(); fireEvent.click(b) }],
+    ])('keeps focus in the composer after a send with %s', async (_how, submit) => {
+      let resolvePost: () => void = () => {}
+      mockPost.mockReturnValue(new Promise<void>(r => { resolvePost = r }))
+
+      await act(async () => {
+        renderWithProviders(<ChatEmbed slotKey="slot-1" />)
+      })
+      const input = screen.getByLabelText('Chat message') as HTMLTextAreaElement
+      input.focus()
+      await act(async () => {
+        fireEvent.change(input, { target: { value: 'hello' } })
+      })
+
+      await act(async () => { submit() })
+      expect(mockPost).toHaveBeenCalled()
+      expect(document.activeElement).toBe(input)
+
+      await act(async () => { resolvePost() })
+      await act(async () => { vi.advanceTimersByTime(100) })
+      expect(document.activeElement).toBe(input)
     })
   })
 })
