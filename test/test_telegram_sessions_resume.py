@@ -28,6 +28,7 @@ from telegram_sessions_helpers import (
     _picker_button,
     _topic,
 )
+from telegram_wire_helpers import telegram_wire
 from test_telegram import _origin
 
 from kiro_crew.dashboard.channel_handoff import (
@@ -136,18 +137,30 @@ class TestTelegramInboundResumeRouting:
         assert len(client.sent) > sent_before
         assert not any("NOT processed" in text for text, _ in client.sent[sent_before:])
 
-    @pytest.mark.parametrize("command", ["/help", "/status", "/new", "/unlink"])
+    @pytest.mark.parametrize(
+        ("command", "native_reply"),
+        [
+            pytest.param("/help", "🦞 Kiro Crew — Telegram\n", id="/help"),
+            pytest.param("/status", "uptime ", id="/status"),
+            pytest.param("/new", "✅ New conversation started.", id="/new"),
+            pytest.param("/unlink", "This conversation wasn't linked.", id="/unlink"),
+        ],
+    )
     @pytest.mark.asyncio
     async def test_commands_remain_native_and_recovery_commands_bypass_refusals(
-        self, tmp_path: Any, command: str
+        self, tmp_path: Any, monkeypatch: Any, command: str, native_reply: str
     ) -> None:
         dispatcher, _, _, _ = _dispatcher(tmp_path)
         dispatcher._session_resume.route = AsyncMock(
             return_value=RoutingDecision(refusal="must not run")
         )
 
-        await dispatcher.handle_message(_dm(command))
+        async with telegram_wire(monkeypatch) as wire:
+            dispatcher.client = wire.client
+            await dispatcher.handle_message(_dm(command))
 
+        texts = [call.get("text") for call in wire.messages()]
+        assert len(texts) == 1 and texts[0].startswith(native_reply), texts
         dispatcher._session_resume.route.assert_not_awaited()
 
     @pytest.mark.asyncio
