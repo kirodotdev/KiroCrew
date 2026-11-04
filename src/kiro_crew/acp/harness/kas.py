@@ -231,7 +231,12 @@ def resolve_projected_spec(
         # carries them from its installer, so it comes back unchanged).
         from kiro_crew.template_mcp_additions import merge_at_spawn
 
-        spec = merge_at_spawn(agent, kas_agents_mod.load_agent_spec(agents_dir, agent))
+        # ``prefer_newest``: KAS runs this projection, not a file it finds itself,
+        # so the newest of several differing same-name specs is safe to choose
+        # here (``kas_agents.load_agent_spec``).
+        spec = merge_at_spawn(
+            agent, kas_agents_mod.load_agent_spec(agents_dir, agent, prefer_newest=True)
+        )
         # A user-level custom agent gets Crew's default servers, through the helper
         # the kiro-cli skill view applies too, so the two paths cannot drift.
         return with_default_crew_servers(agent, spec), agents_dir
@@ -263,7 +268,9 @@ def resolve_projected_spec(
 
     if not declared:
         try:
-            spec = merge_at_spawn(agent, kas_agents_mod.load_agent_spec(agents_dir, agent))
+            spec = merge_at_spawn(
+                agent, kas_agents_mod.load_agent_spec(agents_dir, agent, prefer_newest=True)
+            )
             return with_default_crew_servers(agent, spec), agents_dir
         except KasAgentTranslationError as exc:
             # Asked again after the read failed, so a spec that appeared meanwhile

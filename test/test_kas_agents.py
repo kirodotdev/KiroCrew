@@ -15,6 +15,8 @@ builder both test files import.
 from __future__ import annotations
 
 import json
+import logging
+import os
 import types
 from pathlib import Path
 
@@ -965,28 +967,10 @@ class TestSpecLookup:
 
         assert spec["description"] == "what the reader vetted"
 
-    def test_two_differing_specs_declaring_one_name_are_refused(self, tmp_path):
-        """`agent_spec_path` refuses this ambiguity because which spec is live is
-        undefined. Picking one here would project an agent the operator did not
-        name, with its tools and its prompt, and say nothing about it.
-        """
-        self._write(tmp_path, "AlphaPackage-kirocrew.json", description="alpha")
-        self._write(tmp_path, "BetaPackage-kirocrew.json", description="beta")
-
-        with pytest.raises(KasAgentTranslationError) as exc:
-            load_agent_spec(tmp_path, "kirocrew")
-
-        message = str(exc.value)
-        assert "AlphaPackage-kirocrew.json" in message
-        assert "BetaPackage-kirocrew.json" in message
-
-    def test_the_refusal_names_every_claimant_and_how_to_repair_it(self, tmp_path):
-        """Three installed packages each vend their own spec under one name.
-        The refused session start is all the user sees, so it names every file
-        with its full path and says the repair that works: keep one, delete
-        the others or change their declared ``name``. Renaming a file is not a
-        repair, because the scan matches the declared name, and the message
-        says so."""
+    def test_differing_same_name_specs_are_refused_without_prefer_newest(self, tmp_path):
+        """Readers other than the KAS harness feed surfaces a kiro-cli session
+        uses too, and kiro-cli picks its own file, so for them the set stays
+        refused. The refusal names every file and the repair that works."""
         for package in ("AlphaPackage", "BetaPackage", "GammaPackage"):
             self._write(tmp_path, f"{package}-kirocrew.json", description=package)
 
@@ -998,8 +982,56 @@ class TestSpecLookup:
         for package in ("AlphaPackage", "BetaPackage", "GammaPackage"):
             assert repr(str(tmp_path / f"{package}-kirocrew.json")) in message
         assert "keep exactly one: delete the others" in message
-        assert 'change the "name" field inside all but one' in message
-        assert "Renaming a file alone does not help" in message
+
+    def test_the_newest_of_differing_same_name_specs_is_projected(self, tmp_path, caplog):
+        """Three installed packages each vend their own spec under one name, and
+        the user needs every package. The projection is what KAS runs, so it can
+        choose: the newest file wins, whatever its name sorts as, and a warning
+        names every file and the one chosen."""
+        for offset, package in ((300, "AlphaPackage"), (100, "GammaPackage"), (200, "BetaPackage")):
+            path = self._write(tmp_path, f"{package}-kirocrew.json", description=package)
+            os.utime(
+                path, ns=(1_700_000_000_000_000_000 + offset, 1_700_000_000_000_000_000 + offset)
+            )
+
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.agent_discovery"):
+            spec = load_agent_spec(tmp_path, "kirocrew", prefer_newest=True)
+
+        assert spec["description"] == "AlphaPackage"
+        warning = caplog.text
+        assert "3 specs declare the name 'kirocrew' with differing content" in warning
+        assert f"Using the newest, {str(tmp_path / 'AlphaPackage-kirocrew.json')!r}" in warning
+        for package in ("BetaPackage", "GammaPackage"):
+            assert f"{package}-kirocrew.json" in warning
+
+    def test_a_tie_on_modification_time_goes_to_the_first_by_filename(self, tmp_path):
+        """Files an installer writes in one pass can share a timestamp. The
+        choice must still be one answer on every scan, not directory order."""
+        stamp = 1_700_000_000_000_000_000
+        for package in ("GammaPackage", "AlphaPackage", "BetaPackage"):
+            path = self._write(tmp_path, f"{package}-kirocrew.json", description=package)
+            os.utime(path, ns=(stamp, stamp))
+
+        assert (
+            load_agent_spec(tmp_path, "kirocrew", prefer_newest=True)["description"]
+            == "AlphaPackage"
+        )
+
+    def test_an_update_to_an_older_spec_makes_it_the_choice(self, tmp_path):
+        """A package update rewrites its file, which makes it the newest; the
+        next projection picks it up without a restart."""
+        alpha = self._write(tmp_path, "AlphaPackage-kirocrew.json", description="alpha")
+        beta = self._write(tmp_path, "BetaPackage-kirocrew.json", description="beta")
+        os.utime(alpha, ns=(1_700_000_000_000_000_000, 1_700_000_000_000_000_000))
+        os.utime(beta, ns=(1_700_000_000_100_000_000, 1_700_000_000_100_000_000))
+        assert load_agent_spec(tmp_path, "kirocrew", prefer_newest=True)["description"] == "beta"
+
+        self._write(tmp_path, "AlphaPackage-kirocrew.json", description="alpha v2")
+        os.utime(alpha, ns=(1_700_000_000_200_000_000, 1_700_000_000_200_000_000))
+
+        assert (
+            load_agent_spec(tmp_path, "kirocrew", prefer_newest=True)["description"] == "alpha v2"
+        )
 
     def test_two_identical_specs_declaring_one_name_are_projected(self, tmp_path):
         """A package installer that flattens dependencies writes the same spec
@@ -1032,20 +1064,19 @@ class TestSpecLookup:
         spec["tools"].append("shell")
         assert load_agent_spec(tmp_path, "kirocrew")["tools"] == ["read"]
 
-    def test_a_direct_file_does_not_settle_a_duplicate_declared_name(self, tmp_path):
-        """Two specs declaring the id are refused even when `<agent_id>.json`
-        exists: which of the two is live is undefined, and a misnamed direct
-        file is not a tie-breaker between them. `agent_spec_path` refuses the
-        same input."""
-        self._write(tmp_path, "kirocrew.json", name="other", description="misnamed")
-        self._write(tmp_path, "AlphaPackage-kirocrew.json", description="alpha")
-        self._write(tmp_path, "BetaPackage-kirocrew.json", description="beta")
+    def test_a_misnamed_direct_file_is_not_a_candidate_among_declared_ones(self, tmp_path):
+        """A `<agent_id>.json` that declares some other agent is never projected
+        under this id, even as the newest file in the directory: only specs
+        declaring the id compete."""
+        alpha = self._write(tmp_path, "AlphaPackage-kirocrew.json", description="alpha")
+        beta = self._write(tmp_path, "BetaPackage-kirocrew.json", description="beta")
+        misnamed = self._write(tmp_path, "kirocrew.json", name="other", description="misnamed")
+        for offset, path in ((0, alpha), (100, beta), (200, misnamed)):
+            os.utime(
+                path, ns=(1_700_000_000_000_000_000 + offset, 1_700_000_000_000_000_000 + offset)
+            )
 
-        with pytest.raises(KasAgentTranslationError) as exc:
-            load_agent_spec(tmp_path, "kirocrew")
-
-        assert "AlphaPackage-kirocrew.json" in str(exc.value)
-        assert "BetaPackage-kirocrew.json" in str(exc.value)
+        assert load_agent_spec(tmp_path, "kirocrew", prefer_newest=True)["description"] == "beta"
 
     def test_an_unsearchable_dir_is_a_translation_error_at_the_direct_read(
         self, tmp_path, monkeypatch

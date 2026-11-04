@@ -1300,14 +1300,21 @@ def to_client_custom_agent(
 _SPEC_SCAN_MEMO: AgentsDirMemo[dict[str, Any] | None] = AgentsDirMemo()
 
 
-def _declared_spec(agents_dir: Path, agent_id: str) -> dict[str, Any] | None:
+def _declared_spec(
+    agents_dir: Path, agent_id: str, *, prefer_newest: bool = False
+) -> dict[str, Any] | None:
     """The spec that declares *agent_id*, memoised; the one directory scan both
-    :func:`load_agent_spec` and :func:`agent_spec_absent` read."""
+    :func:`load_agent_spec` and :func:`agent_spec_absent` read. The pick and the
+    refusal are different answers, so each is memoised under its own key."""
     return _SPEC_SCAN_MEMO.get(
         agents_dir,
-        agent_id,
+        f"{agent_id}\0newest" if prefer_newest else agent_id,
         lambda: spec_by_declared_name(
-            agents_dir, agent_id, operation="kas_agent_projection", source="unknown"
+            agents_dir,
+            agent_id,
+            operation="kas_agent_projection",
+            source="unknown",
+            prefer_newest=prefer_newest,
         ),
     )
 
@@ -1332,7 +1339,9 @@ def agent_spec_absent(agents_dir: Path, agent_id: str) -> bool:
     return declared is None
 
 
-def load_agent_spec(agents_dir: Path, agent_id: str) -> dict[str, Any]:
+def load_agent_spec(
+    agents_dir: Path, agent_id: str, *, prefer_newest: bool = False
+) -> dict[str, Any]:
     """Read a materialized agent spec.
 
     Takes the directory explicitly rather than resolving it here so this module
@@ -1348,11 +1357,16 @@ def load_agent_spec(agents_dir: Path, agent_id: str) -> dict[str, Any]:
     convention use, and it is what keeps a misnamed ``<agent_id>.json`` that
     declares some other agent from being projected under this id, with that
     other agent's tools and prompt, while the spec that does declare the id
-    sits beside it unread. Two DIFFERING specs declaring *agent_id* are
-    refused, as :func:`kiro_crew.agent.agent_spec_path` refuses them: which is
-    live is undefined, and picking either would project an agent the operator
-    did not name. Two identical ones are one spec, and the scan projects it:
-    whichever the backend runs, the projection is the same.
+    sits beside it unread. Several DIFFERING specs declaring *agent_id* are
+    refused, as :func:`kiro_crew.agent.agent_spec_path` refuses them, unless
+    *prefer_newest* is set: then the newest by modification time is returned
+    and a warning names every file and the one chosen. Only the KAS harness
+    sets it, because the KAS engine runs the projection it is handed and not a
+    file it finds on its own, so the choice cannot disagree with what runs.
+    Other readers of this function feed surfaces a kiro-cli session also uses,
+    and kiro-cli picks its own file, so they keep the refusal. Several
+    installed packages each vending their own copy of one agent is the usual
+    cause. Identical specs are one spec, and the scan returns it.
 
     The scan's parsed spec is what the projection uses: it was read under the hardened
     reader's guards, labelled ``kas_agent_projection`` so a denial is
@@ -1391,7 +1405,7 @@ def load_agent_spec(agents_dir: Path, agent_id: str) -> dict[str, Any]:
     candidates = agent_spec_candidates(agents_dir, agent_id)
     path = candidates[0]
     try:
-        declared = _declared_spec(agents_dir, agent_id)
+        declared = _declared_spec(agents_dir, agent_id, prefer_newest=prefer_newest)
     except AmbiguousAgentSpecError as exc:
         raise KasAgentTranslationError(str(exc)) from exc
     except OSError as exc:

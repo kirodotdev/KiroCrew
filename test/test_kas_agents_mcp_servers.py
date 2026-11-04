@@ -984,7 +984,9 @@ class TestRuntimeSuppliesTheStubbedSet:
         # The projection is handed the spec the harness read under the gate, so the read
         # is the harness's own and is stubbed here rather than inside the builder.
         monkeypatch.setattr(
-            kas_agents_mod, "load_agent_spec", lambda _dir, agent: {"name": agent, "prompt": "p"}
+            kas_agents_mod,
+            "load_agent_spec",
+            lambda _dir, agent, **_kw: {"name": agent, "prompt": "p"},
         )
 
         def _capture(
