@@ -102,10 +102,15 @@ async def _cron_run_sequence(
     # use one runtime identity. Keep a list parallel to ``agents``:
     # duplicate aliases are separate steps sharing one stable key.
     steps: list[_SequenceStep] = []
+    # The job's own project directory is one per job, so every
+    # step runs in it; a job without one keeps each step's own workspace.
+    from kiro_crew.cron_service.fields import cron_session_cwd
+
     for agent in agents:
         _seq_kagent, _seq_cwd, _seq_crew = self._resolve_cron_agent(
             cron_execution, agent, sequence_step=True
         )
+        _seq_cwd = await asyncio.to_thread(cron_session_cwd, job, _seq_cwd)
         steps.append(
             _SequenceStep(
                 alias=agent,
@@ -542,6 +547,11 @@ async def _cron_run_single(
         _single_kagent, _single_cwd, _single_crew = self._resolve_cron_agent(
             cron_execution, cron_agent or None, template_namespace=_default_substituted
         )
+        # A job's own project directory outranks the agent's workspace;
+        # a job without one keeps the cwd resolved above.
+        from kiro_crew.cron_service.fields import cron_session_cwd
+
+        _single_cwd = await asyncio.to_thread(cron_session_cwd, job, _single_cwd)
         _dispatch_agent = _single_kagent or cron_agent or None
         # ── Retained-session agent guard (every single-agent job) ──
         # The key is the stable f"cron:{job.id}", and the run's `finally`

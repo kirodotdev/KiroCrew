@@ -241,6 +241,15 @@ Examples:
         "The CLI does not create folders — create them in the dashboard's Schedule page.",
     )
     cron_add.add_argument(
+        "--project-path",
+        dest="project_path",
+        default="",
+        metavar="DIR",
+        help="Run the job's agent session in this project directory, so that "
+        "repo's own .kiro/steering/ and AGENTS.md load (absolute path to an "
+        "existing directory; agent jobs only). Omit to keep today's directory.",
+    )
+    cron_add.add_argument(
         "--approval-mode",
         dest="approval_mode",
         choices=["auto"],
@@ -291,6 +300,14 @@ Examples:
         default=None,
         help="New agent name (empty string resets to agent.default_agent, "
         "or the kirocrew agent when that is unset or not eligible)",
+    )
+    cron_update.add_argument(
+        "--project-path",
+        dest="project_path",
+        default=None,
+        metavar="DIR",
+        help="New project directory for the job's agent session (empty string "
+        "clears it, back to the default directory)",
     )
     cron_update.add_argument(
         "--approval-mode",
