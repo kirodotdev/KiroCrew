@@ -52,49 +52,17 @@ from kiro_crew.snapshot_restore import _install_locked_document, _lock_down_rest
 def _copy_notifications(src_path: Path, dst_path: Path) -> None:
     """Install the snapshot's notification records, ordered against the live writer.
 
-    Refuses outright where ``O_NOFOLLOW`` does not exist -- see below. The refusal is
-    made HERE, before the executor is acquired and before anything is opened, because
-    it is a question about the platform rather than about this source.
+    The body runs on the dashboard's notification worker when one exists, so a row the
+    gateway delivers mid-restore cannot be ordered ahead of the archive's and dropped by
+    the reader's positional cap (see :func:`_serialise_with_notification_writes`). A
+    restore briefly blocks notification writes; a lost notification is silent.
 
-    The whole body runs on the dashboard's notification worker when one exists, so a
-    row the gateway delivers during the restore cannot be ordered ahead of the
-    archive's and dropped by the reader's positional cap. See
-    :func:`_serialise_with_notification_writes` for why ``O_APPEND`` alone was not
-    enough, and note the cost: a restore briefly blocks notification writes. A
-    restore is rare and user-initiated; a lost notification is silent and permanent.
-
-    WHY A MISSING ``O_NOFOLLOW`` REFUSES INSTEAD OF FALLING BACK. The predecessor
-    checked ``pinned_fs.is_reparse_point(src_path)`` by NAME and then opened the same
-    NAME. Against an adversary that is not a floor, it is a check-to-open window: the
-    threat model this function is written for -- stated in ``_install_notifications``
-    and demonstrated by the revision review blocked -- is a concurrent agent replacing
-    the extracted file, and such an agent chooses the timing. The descriptor check does
-    not save it either: ``fstat`` asserts ``S_ISREG``, and a reparse point resolving to
-    a regular ``.env`` passes ``S_ISREG``. So on a platform with no ``O_NOFOLLOW`` there
-    is no sequence of by-name checks that makes this safe, and the honest move is to not
-    do it.
-
-    The alternative -- a ctypes ``CreateFileW`` with ``FILE_FLAG_OPEN_REPARSE_POINT`` --
-    is declined elsewhere in this repo: ``kiro_crew/eval/bench/safepath.py`` records that
-    it "is not worth considering here: it would buy the same property exclusive creation
-    already has, at the price of security code that cannot be exercised on the machine
-    this harness is developed on", and ``skill_trust.py`` records that Python "does not expose
-    an equivalent handle-relative, no-reparse walk on Windows". Both decline the capable
-    route, which means this repo has already chosen less capability on that platform over
-    a hand-rolled walk. Refusing extends those two decisions; falling back contradicts
-    them.
-
-    The cost is not symmetric, which is what makes the trade easy. Refusing loses
-    notification HISTORY on one platform for one operation -- the records remain in the
-    snapshot and nothing is destroyed. Falling back can put attacker-chosen bytes, a
-    credentials file among them, into a location the agent then reads. Snapshot restore
-    validates what it installs so that it never installs unvalidated bytes: a remaining
-    path that installs attacker-chosen bytes is that same defect, closed everywhere
-    except where it is hardest.
-
-    The refusal is LOUD and the callers report the skip. A silent skip would be the same
-    class of bug as installing unvalidated bytes, so the message names the platform, the missing
-    primitive, and what was not imported.
+    Refuses LOUDLY, before anything is opened, where ``O_NOFOLLOW`` does not exist. A
+    by-name reparse-point check then a by-name open is a window a concurrent agent can
+    time, and ``fstat``'s ``S_ISREG`` passes a reparse point to a regular ``.env``. The
+    repo already declines a ctypes ``CreateFileW`` walk (``eval/bench/safepath.py``,
+    ``skill_trust.py``). Refusing only loses notification history, which stays in the
+    snapshot; falling back could install attacker-chosen bytes.
     """
     if not getattr(os, "O_NOFOLLOW", 0):
         raise NotificationCopyUnsupported(
@@ -113,18 +81,11 @@ def _do_merge(
     snap: Path, mc: Path, components: list[str] | None, *, allow_unpinned: bool = False
 ) -> None:
     facade = _facade()
-    # BOTH restore modes refuse an unsafe destination tree root up front, and merge needs
-    # it for the same reason replace does: a merge that silently omits a tree is still a
-    # merge that claims to have imported it. Skipping the tree and returning 0 is the worst
-    # available outcome -- the operator is told the import succeeded while the notes they
-    # were importing are not there.
-    # REPLACE ONLY, from the shape of the data: an artifact is a DIRECTORY whose files
-    # describe each other, and a slug comes from the artifact's NAME, so a per-file
-    # no-overwrite merge either tops one artifact up out of another's generation or needs a
-    # rule for when two artifacts are the same artifact. Replace needs neither.
-    #
-    # Refused when that is all the operator asked for, skipped with a notice otherwise: a
-    # run that imports nothing and reports success is the failure this component removes.
+    # BOTH restore modes refuse an unsafe destination tree root up front: a merge that
+    # silently skips a tree would report an import that did not happen.
+    # REPLACE ONLY components: an artifact is a directory whose files describe each other,
+    # so a per-file no-overwrite merge would mix generations. Refused when that is all the
+    # operator asked for, skipped with a notice otherwise.
     replace_only = [c for c in _REPLACE_ONLY_COMPONENTS if _want(components, c)]
     if replace_only and components is not None and not set(components) - set(replace_only):
         raise ComponentRefused(
@@ -178,19 +139,10 @@ def _do_merge(
             sd = snap / tree
             if sd.is_dir():
                 dd = mc / tree
-                # RE-CHECKED here, not only in the pre-flight at the top of this function.
-                # The pre-flight clears the same set moments earlier, so a root that fails
-                # now failed AFTER it -- something moved under us mid-run. Replace already
-                # refuses that; merge did not, and the gap was reachable: with `workspace`
-                # swapped for an external link straight after the pre-flight, this loop's
-                # `mkdir(parents=True)` created the tree THROUGH the link and the copy wrote
-                # the operator's memory files into an attacker-chosen directory outside the
-                # data home -- four of them, with the run printing "Merge complete."
-                #
-                # The per-file screens cannot see it: each final component is a fresh regular
-                # file, and a by-name open does not check its ancestors. Refusing on the root
-                # is what closes it. Merge is additive, so a component already merged stays
-                # merged -- nothing is destroyed by stopping here, unlike carrying on.
+                # RE-CHECKED after the pre-flight: `workspace` swapped for a link mid-run
+                # would make `mkdir(parents=True)` and the copy write outside the data home,
+                # and per-file screens do not check ancestors. Merge is additive, so
+                # stopping here destroys nothing.
                 if safe_tree_root(dd, what="destination root", home=mc) is None:
                     raise UnsafeComponentRoot(
                         f"memory:{tree} stopped resolving inside the data home after the "
