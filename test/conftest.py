@@ -590,6 +590,7 @@ def _registry_governance_reachability_unknown(_floor_monkeypatch):
 
     _floor_monkeypatch.setattr(kiro_cli, "registry_governance_known_unreachable", lambda: False)
     _floor_monkeypatch.setattr(kiro_cli, "_governance_unreachable_cache", None)
+    _floor_monkeypatch.setattr(kiro_cli, "_governance_warm_running", False)
 
 
 @pytest.fixture
