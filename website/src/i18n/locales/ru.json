@@ -1748,7 +1748,8 @@
         "ask_about_this": "Спросить об этом",
         "close": "Закрыть",
         "remove_this_annotation": "Удалить эту пометку",
-        "thinking": "Думаю…"
+        "thinking": "Думаю…",
+        "question_label": "Твой вопрос об этом разборе"
       },
       "composer": {
         "add_screens": "Добавить экраны",
@@ -1948,7 +1949,8 @@
         "looking": "Поиск…",
         "preview_from_disk_instead": "Вместо этого показать с диска",
         "url_placeholder": "http://localhost:5173",
-        "use": "Использовать"
+        "use": "Использовать",
+        "url_label": "URL сервера разработки"
       },
       "layout": {
         "drag_to_resize": "Потяните, чтобы изменить размер"
@@ -2002,7 +2004,8 @@
         "path_placeholder": "/path/to/your/app",
         "previewing_from": "Предпросмотр из {{url}}",
         "remove_from_list": "Убрать из списка",
-        "select_app": "Выберите веб-приложение…"
+        "select_app": "Выберите веб-приложение…",
+        "path_label": "Путь к папке проекта"
       },
       "requests": {
         "archive_to_history": "Архивировать в историю",

@@ -389,7 +389,8 @@
         "looking": "Looking…",
         "preview_from_disk_instead": "Preview from disk instead",
         "url_placeholder": "http://localhost:5173",
-        "use": "Use"
+        "use": "Use",
+        "url_label": "Dev server URL"
       },
       "layout": {
         "drag_to_resize": "Drag to resize"
@@ -443,7 +444,8 @@
         "path_placeholder": "/path/to/your/app",
         "previewing_from": "Previewing from {{url}}",
         "remove_from_list": "Remove from list",
-        "select_app": "Select a web app…"
+        "select_app": "Select a web app…",
+        "path_label": "Project folder path"
       },
       "requests": {
         "archive_to_history": "Archive to History",

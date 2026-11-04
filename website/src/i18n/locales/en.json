@@ -960,7 +960,8 @@
         "ask_about_this": "Ask about this",
         "close": "Close",
         "remove_this_annotation": "Remove this annotation",
-        "thinking": "Thinking…"
+        "thinking": "Thinking…",
+        "question_label": "Your question about this critique"
       },
       "composer": {
         "add_screens": "Add screens",

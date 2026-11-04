@@ -76,6 +76,11 @@ describe('PetdexImporter installed pets', () => {
 })
 
 describe('PetdexImporter fetch by name or link', () => {
+  it('ties the name field to its visible label', async () => {
+    await renderImporter()
+    expect(screen.getByRole('textbox', { name: i18nT('apps.mochi.petdex.by_name') })).toBeTruthy()
+  })
+
   it('keeps Fetch disabled until a non-blank name is typed', async () => {
     await renderImporter()
     const btn = screen.getByRole('button', { name: FETCH }) as HTMLButtonElement

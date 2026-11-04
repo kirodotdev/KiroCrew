@@ -1618,7 +1618,8 @@
         "ask_about_this": "इस बारे में पूछें",
         "close": "बंद करें",
         "remove_this_annotation": "यह एनोटेशन हटाएँ",
-        "thinking": "सोच रहे हैं…"
+        "thinking": "सोच रहे हैं…",
+        "question_label": "इस समीक्षा के बारे में तुम्हारा सवाल"
       },
       "composer": {
         "add_screens": "स्क्रीन जोड़ें",
@@ -1814,7 +1815,8 @@
         "looking": "ढूँढा जा रहा है…",
         "preview_from_disk_instead": "इसके बजाय डिस्क से पूर्वावलोकन करें",
         "url_placeholder": "http://localhost:5173",
-        "use": "उपयोग करें"
+        "use": "उपयोग करें",
+        "url_label": "डेव सर्वर URL"
       },
       "layout": {
         "drag_to_resize": "आकार बदलने के लिए खींचें"
@@ -1868,7 +1870,8 @@
         "path_placeholder": "/path/to/your/app",
         "previewing_from": "{{url}} से पूर्वावलोकन हो रहा है",
         "remove_from_list": "सूची से हटाएँ",
-        "select_app": "कोई वेब ऐप चुनें…"
+        "select_app": "कोई वेब ऐप चुनें…",
+        "path_label": "प्रोजेक्ट फ़ोल्डर का पाथ"
       },
       "requests": {
         "archive_to_history": "इतिहास में आर्काइव करें",

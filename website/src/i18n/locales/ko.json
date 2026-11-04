@@ -1641,7 +1641,8 @@
         "ask_about_this": "이 부분에 대해 질문하기",
         "close": "닫기",
         "remove_this_annotation": "이 주석 삭제",
-        "thinking": "생각하는 중…"
+        "thinking": "생각하는 중…",
+        "question_label": "이 비평에 대한 질문"
       },
       "composer": {
         "add_screens": "화면 추가",
@@ -1819,7 +1820,8 @@
         "looking": "찾는 중…",
         "preview_from_disk_instead": "대신 디스크에서 미리보기",
         "url_placeholder": "http://localhost:5173",
-        "use": "사용"
+        "use": "사용",
+        "url_label": "개발 서버 URL"
       },
       "layout": {
         "drag_to_resize": "드래그하여 크기 조절"
@@ -1873,7 +1875,8 @@
         "path_placeholder": "/path/to/your/app",
         "previewing_from": "{{url}}에서 미리보는 중",
         "remove_from_list": "목록에서 제거",
-        "select_app": "웹 앱 선택…"
+        "select_app": "웹 앱 선택…",
+        "path_label": "프로젝트 폴더 경로"
       },
       "requests": {
         "archive_to_history": "기록으로 보관",
