@@ -270,6 +270,37 @@ class TestObservePersistence:
         ctx = h.context_for("C1")
         assert "good" in ctx
 
+    def test_a_line_cut_mid_character_is_skipped(self, tmp_path):
+        """A crash mid-append can leave a partial UTF-8 sequence: skip that line."""
+        path = tmp_path / "C1.jsonl"
+        now = time.time()
+        good = json.dumps({"user": "bob", "text": "good", "thread_ts": None, "ts": now})
+        cut = json.dumps({"user": "eve", "text": "caf\u00e9", "ts": now}, ensure_ascii=False)
+        path.write_bytes(good.encode() + b"\n" + cut.encode()[:-5][:-1] + b"\xc3")
+
+        h = ChannelHistory(history_dir=tmp_path)
+        h.set_observe("C1")
+
+        assert h.entry_count("C1") == 1
+        assert "good" in h.context_for("C1")
+
+    def test_a_line_whose_ts_is_not_a_number_is_skipped(self, tmp_path):
+        """A ts of the wrong type must not stop the rest of the file loading."""
+        path = tmp_path / "C1.jsonl"
+        now = time.time()
+        with path.open("w", encoding="utf-8") as f:
+            f.write(json.dumps({"user": "eve", "text": "odd", "ts": "yesterday"}) + "\n")
+            f.write(json.dumps({"user": "eve", "text": "odd2", "ts": True}) + "\n")
+            f.write(
+                json.dumps({"user": "bob", "text": "good", "thread_ts": None, "ts": now}) + "\n"
+            )
+
+        h = ChannelHistory(history_dir=tmp_path)
+        h.set_observe("C1")
+
+        assert h.entry_count("C1") == 1
+        assert "good" in h.context_for("C1")
+
     def test_unset_observe_removes_file(self, tmp_path):
         """unset_observe deletes the JSONL file."""
         h = ChannelHistory(history_dir=tmp_path)
