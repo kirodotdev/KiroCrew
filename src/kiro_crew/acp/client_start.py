@@ -52,6 +52,7 @@ from kiro_crew.acp.client_spawn_env import (
     kiro_cli_not_found_message,
 )
 from kiro_crew.acp.client_timeouts import _ACP_RESPAWN_BACKOFF_S, _INIT_TIMEOUT
+from kiro_crew.acp.continue_only import SessionStartRefused, refuses_start
 from kiro_crew.acp.harness import process_adapter_for
 from kiro_crew.acp.harness.base import SpawnContext, SpawnPlan
 from kiro_crew.acp.launch import LaunchRequest, launch
@@ -1032,6 +1033,13 @@ async def _initialize_session(self: AcpClient) -> None:
     # sessionId; _new_session_following_substitution adopts the substitute
     # model and re-issues once so a real session is actually created.
     if not self._session_id:
+        if refuses_start(self):
+            # The load or fork did not restore the session a ``continue_only``
+            # prompt continues, and this would open a new one in its place.
+            raise SessionStartRefused(
+                "the session this prompt continues could not be restored; not opening "
+                "a new one for it"
+            )
         # Capture the requested model before the helper runs. The helper resets
         # self._last_substitution_model = None on every return path, so we can't
         # use it to detect whether substitution happened. Comparing self._model
@@ -1262,6 +1270,12 @@ async def ensure_ready(self: AcpClient) -> None:
             # prompt) is judged here, before the next prompt goes out.
             await self._judge_activated_model()
         return
+    if refuses_start(self) and not (self._resume_session_id or self._fork_request):
+        # The prompt may only continue the live session (``continue_only``), and with
+        # nothing of its own to restore a spawn could only open a new one.
+        raise SessionStartRefused(
+            "the session this prompt continues has ended; not starting a new one for it"
+        )
 
     # Telemetry (kirocrew.session.startup.duration): time the cold-start work
     # below (spawn + session init) and emit in the finally so every exit path
@@ -1302,6 +1316,13 @@ async def ensure_ready(self: AcpClient) -> None:
 
                 _startup_outcome = "ready"
                 return
+            except SessionStartRefused:
+                # ``_initialize_session`` refused a new session for a client named by
+                # ``continue_only``: the child spawned for it is ended, and a respawn
+                # would meet the same refusal, so nothing is retried.
+                await self._cleanup_failed_live_spawn()
+                self._reset_state()
+                raise
             except AcpToolGateUnroutable:
                 # Non-retryable BY CONSTRUCTION (see the class docstring): the
                 # refusal is a configuration fact, so a respawn re-reads the same

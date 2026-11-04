@@ -485,6 +485,8 @@ class TestCronSubagentInjection:
         gw._cfg = MagicMock()
         gw._cfg.agent.max_subagents = 5
         gw.sessions.get_or_create = AsyncMock(return_value=(MagicMock(), True, False))
+        # The cron parent's live session, the only one a completion may claim.
+        gw.sessions.claim_existing = AsyncMock(return_value=(MagicMock(), False, False))
         gw.sessions.release = MagicMock()
         gw.sessions.reset = AsyncMock()
         gw.sessions.cancel_current = AsyncMock()
@@ -547,10 +549,38 @@ class TestCronSubagentInjection:
         with p1, p2, p3:
             asyncio.run(done_cb(info))
 
-        gw.sessions.get_or_create.assert_awaited_once_with("cron:daily-prep")
+        gw.sessions.claim_existing.assert_awaited_once_with("cron:daily-prep")
+        gw.sessions.get_or_create.assert_not_awaited()
         gw.sessions.release.assert_called_once_with("cron:daily-prep")
         gw.sessions.reset.assert_awaited_once_with("cron:daily-prep", skip_if_busy=True)
         assert gw._cron_injecting == {}
+
+    def test_cron_injection_with_no_live_parent_starts_nothing(self) -> None:
+        """A cron parent with no session gets the bell alone: no claim, no prompt, no reset."""
+        from kiro_crew.subagent import SubagentInfo
+
+        gw = self._build_gw()
+        done_cb = self._init_and_get_done_cb(gw)
+        gw.sessions.claim_existing = AsyncMock(return_value=None)
+
+        info = SubagentInfo(
+            id="s1",
+            task="search emails",
+            result="found 3 threads",
+            parent_session_key="cron:daily-prep",
+        )
+
+        stream = AsyncMock(return_value="compiled report")
+        _p1, p2, p3 = self._patches()
+        with patch("kiro_crew.slack.gateway.stream_and_collect", stream), p2, p3:
+            asyncio.run(done_cb(info))
+
+        gw.sessions.get_or_create.assert_not_awaited()
+        stream.assert_not_awaited()
+        gw.sessions.release.assert_not_called()
+        gw.sessions.reset.assert_not_awaited()
+        assert gw._cron_injecting == {}
+        assert info._report_undelivered is True
 
     def test_cron_injection_defers_reset_when_others_running(self) -> None:
         """Session is NOT reset when other subagents are still running."""
@@ -643,13 +673,13 @@ class TestCronSubagentInjection:
         # This run's own count is returned; the other injection's stays.
         assert gw._cron_injecting == {"cron:daily-prep": 1}
 
-    def test_cron_injection_get_or_create_failure_no_release(self) -> None:
-        """When get_or_create fails, release is NOT called but counter is cleaned up."""
+    def test_cron_injection_claim_failure_no_release(self) -> None:
+        """When the claim fails, release is NOT called but counter is cleaned up."""
         from kiro_crew.subagent import SubagentInfo
 
         gw = self._build_gw()
         done_cb = self._init_and_get_done_cb(gw)
-        gw.sessions.get_or_create = AsyncMock(side_effect=RuntimeError("no session"))
+        gw.sessions.claim_existing = AsyncMock(side_effect=RuntimeError("no session"))
 
         info = SubagentInfo(
             id="s1",

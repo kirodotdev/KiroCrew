@@ -108,8 +108,12 @@ class _Done:
 
         self.client = MagicMock(name="client")
         self.clients: list[Any] = [self.client]
+        #: Whether the parent's session is registered. ``claim_existing`` hands it out
+        #: only then, as the real verb does; otherwise it refuses and starts nothing.
+        self.parent_live = True
         sessions = MagicMock(name="sessions")
         sessions.get_or_create = AsyncMock(side_effect=self._get_or_create)
+        sessions.claim_existing = AsyncMock(side_effect=self._claim_existing)
         sessions.reset = AsyncMock(side_effect=self._reset)
         sessions.cancel_current = AsyncMock(
             side_effect=lambda key, **_kw: self.calls.append(("cancel", key))
@@ -191,6 +195,12 @@ class _Done:
         self.calls.append(("acquire", key))
         client = self.clients.pop(0) if len(self.clients) > 1 else self.clients[0]
         return client, True, False
+
+    async def _claim_existing(self, key: str, **_kw: Any) -> tuple[Any, bool, bool] | None:
+        if not self.parent_live:
+            self.calls.append(("refused", key))
+            return None
+        return await self._get_or_create(key)
 
     def _slot_for_parent(self, _state: Any, _key: str) -> Any:
         slot = self.bound_slots.pop(0) if self.bound_slots else self.bound_slot

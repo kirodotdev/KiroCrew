@@ -46,6 +46,8 @@ def _make_gateway():
     gateway.subagent_mgr.queued_count_for = MagicMock(return_value=0)
     gateway.subagent_mgr.queued_count_for_async = AsyncMock(return_value=0)
     gateway.sessions.get_or_create = AsyncMock(return_value=(MagicMock(), True, False))
+    # The cron parent's live session, the only one a completion may claim.
+    gateway.sessions.claim_existing = AsyncMock(return_value=(MagicMock(), False, False))
     gateway.sessions.release = MagicMock()
     gateway.sessions.reset = AsyncMock()
     gateway.sessions.cancel_current = AsyncMock()
@@ -321,14 +323,15 @@ class TestSubagentDoneCronRouting:
         ):
             await subagent_done(info)
 
-        gateway.sessions.get_or_create.assert_awaited_once_with("cron:j1")
+        gateway.sessions.claim_existing.assert_awaited_once_with("cron:j1")
+        gateway.sessions.get_or_create.assert_not_awaited()
         gateway.sessions.release.assert_called_once_with("cron:j1")
         assert getattr(info, "_report_undelivered", False) is False
 
     @pytest.mark.asyncio
     async def test_injection_failure_does_not_propagate(self) -> None:
         gateway = _make_gateway()
-        gateway.sessions.get_or_create = AsyncMock(side_effect=Exception("session_down"))
+        gateway.sessions.claim_existing = AsyncMock(side_effect=Exception("session_down"))
         subagent_done = _capture_subagent_done(gateway)
         info = SubagentInfo(
             id="sub3",

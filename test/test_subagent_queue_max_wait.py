@@ -898,6 +898,8 @@ def _through_the_gateway(h: _Harness, stream: Any = None) -> Any:
     orch = _make_orchestrator()
     orch.sessions = _mock_sessions()
     orch.sessions.get_or_create = AsyncMock(return_value=(MagicMock(), False, False))
+    # A cron parent's live session, the only one its completion may claim.
+    orch.sessions.claim_existing = AsyncMock(return_value=(MagicMock(), False, False))
     orch.sessions.cancel_current = AsyncMock()
     orch.ctx_builder = MagicMock()
     orch.ctx_builder.hooks = MagicMock()

@@ -3997,10 +3997,37 @@ when the parent's own call already returned every member it carries:
   - any other turn holds it, on a tab that shows the job or a person's own: that
     turn keeps the session, left to the idle sweep, and the key is retired;
   - a reset that raises leaves the key registered, so the reaper can still
-    target the session.
+    target the session;
+  - the delivery found no session to claim (below): no reset is aimed at the
+    key, since whatever it holds now is not the session the delivery was for,
+    and the key is retired.
 
   The channel route resets only an injection attempt that timed out, after it
   claimed the session itself.
+- **A cron completion never starts its parent's session.** The cron route claims
+  the parent with `SessionManager.claim_existing`, never `get_or_create`, and
+  `_inject_with_retry` does not answer a `cron:` parent's session-not-found with
+  its reset-and-reclaim reload. A `cron:` key is stateless, so a session started
+  for a completion would hold none of the orchestration that spawned the worker
+  and would act on the result as a new, unattended agent, outside any run record.
+  The injection's prompts run under `continue_only` (through the ACP driver,
+  `agent_sdk.drivers.acp`) for the claimed client, so a direct client whose process exits after the claim raises
+  `SessionStartRefused` (an `AcpProcessDied`) instead of opening a new session for
+  them
+  ([acp-client](acp-client.md), *A prompt that may only continue*).
+  A completion whose claim is refused (the parent's session gone, replaced, dead
+  or fenced), or whose parent's backend lost the session, is therefore delivered
+  by the bell alone: no prompt, no session, no failure text queued for a later
+  prompt (`notify_injection_failed` is not called), and `_report_undelivered`
+  set, so no `delivered` tombstone is written and restart reconciliation still
+  finds the folder. A parent process that dies after the claim takes the
+  injection's existing `AcpProcessDied` arm instead (a reset of its own runtime,
+  then `notify_injection_failed`), and still starts no session. A cron turn that fails ends its
+  conversation before it releases the session, stopping its runs
+  ([learn-cron-dashboard](learn-cron-dashboard.md), the deferred reset), so a
+  completion already waiting on that permit is refused too. The tab route of a
+  job whose tab is open still allocates through dashboard turn admission; it is
+  outside this rule.
 - **Residual:** each of these plays one duplicate turn and never loses a
   result: a mark processed after its spawning attempt ended; a member spawned
   while no prompt of its turn was in flight; a queued member whose carried

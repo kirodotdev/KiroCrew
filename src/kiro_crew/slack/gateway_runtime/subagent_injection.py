@@ -39,6 +39,7 @@ if TYPE_CHECKING:
         build_options_blocks,
         build_timing_footer,
         channel_namespace_of,
+        continue_only,
         dashboard_slot_key,
         drain_idle_parent_queue_for_stall,
         extract_options,
@@ -1247,7 +1248,12 @@ async def _finish_subagent_cron_or_notify(
 
     A parent with no conversation to inject into is delivered by the bell alone,
     and an announce whose every carried member the parent's blocking spawn tool
-    returned in a turn that has landed is not injected again. One whose turn
+    returned in a turn that has landed is not injected again. A cron parent is
+    claimed only while its session is still registered (``claim_existing``): a
+    ``cron:`` key is stateless, so a session started here would hold none of the
+    orchestration and would act on the result as a new agent outside any run. A
+    refused claim leaves the result undelivered (``_report_undelivered``) and rings
+    the bell, and the cleanup after the last sub-agent resets no session. One whose turn
     still holds the session is parked until that turn releases it
     (``_inline_verdict``). ``injection_counted`` says the caller already counted
     this injection in ``_cron_injecting`` (a parked completion re-routed at its
@@ -1274,6 +1280,7 @@ async def _finish_subagent_cron_or_notify(
             self._cron_injecting[parent_key] = self._cron_injecting.get(parent_key, 0) + 1
         assert self.sessions is not None
         acquired = False
+        refused = False
         cron_response: str | None = None
         # Asked before the claim, so a result already returned starts no session,
         # and again after it, when a mark landed while the claim waited out the
@@ -1285,13 +1292,25 @@ async def _finish_subagent_cron_or_notify(
         try:
             if not collected:
                 _memory_store = await session_store_for_turn(self.ctx_builder, parent_key)
-                client, is_new, _resumed = await self.sessions.get_or_create(parent_key)
-                acquired = True
-                collected = (
-                    _inline_verdict(self.subagent_mgr, self.sessions, carried)[0]
-                    == INLINE_CONFIRMED
+                claim = await self.sessions.claim_existing(parent_key)
+                if claim is None:
+                    refused = True
+                else:
+                    client, is_new, _resumed = claim
+                    acquired = True
+                    collected = (
+                        _inline_verdict(self.subagent_mgr, self.sessions, carried)[0]
+                        == INLINE_CONFIRMED
+                    )
+            if refused:
+                logger.warning(
+                    "Subagent %s: cron parent %s has no live session; result kept for the "
+                    "bell, not injected",
+                    info.id,
+                    parent_key,
                 )
-            if collected:
+                info._report_undelivered = True
+            elif collected:
                 logger.info(
                     "Subagent %s: skipping cron injection (already collected inline by "
                     "spawn_sub_agents)",
@@ -1319,10 +1338,14 @@ async def _finish_subagent_cron_or_notify(
                     )
                 else:
                     msg = announce
-                cron_response = await asyncio.wait_for(
-                    self._inject_with_retry(info, client, msg, parent_key, "cron"),
-                    timeout=INJECTION_TIMEOUT,
-                )
+                # The claim found the session live, but its process can still exit
+                # before or between the prompts: a direct client would then open a
+                # new session for the prompt, which ``continue_only`` refuses.
+                with continue_only(client):
+                    cron_response = await asyncio.wait_for(
+                        self._inject_with_retry(info, client, msg, parent_key, "cron"),
+                        timeout=INJECTION_TIMEOUT,
+                    )
         except asyncio.TimeoutError:
             logger.error(
                 "Subagent %s: cron injection timed out after %.0fs",
@@ -1387,7 +1410,7 @@ async def _finish_subagent_cron_or_notify(
                     "Subagent %s: failed to deliver cron response",
                     info.id,
                 )
-        await self._reset_cron_parent_when_idle(info, parent_key)
+        await self._reset_cron_parent_when_idle(info, parent_key, reset_session=not refused)
 
     # Dashboard notification
     if self.dashboard_state and not info.silent:
@@ -1406,13 +1429,16 @@ async def _finish_subagent_cron_or_notify(
 
 
 async def _reset_cron_parent_when_idle(
-    self: GatewayOrchestrator, info: SubagentInfo, parent_key: str
+    self: GatewayOrchestrator, info: SubagentInfo, parent_key: str, *, reset_session: bool = True
 ) -> None:
     """Reset a cron parent's session once nothing is left to deliver into it.
 
     The cleanup a cron turn's ``finally`` deferred while sub-agents ran, were
     queued or were being delivered: the last delivery into the session runs it,
     whether the cron route injected it or a tab showing the job took it.
+    ``reset_session=False`` is a delivery that found no session to claim: it only
+    retires the finished run's key, since whatever the key holds now is not the
+    session this delivery was for.
     """
     assert self.sessions is not None
     # Reset only when no subagents running or QUEUED AND no
@@ -1428,6 +1454,10 @@ async def _reset_cron_parent_when_idle(
         or await _subagent_queued_count(self.subagent_mgr, parent_key) > 0
     )
     still_injecting = self._cron_injecting.get(parent_key, 0) > 0
+    if not still_running and not still_injecting and not reset_session:
+        logger.info("Cron session %s: last subagent done with no session to reset", parent_key)
+        _retire_finished_cron_key(getattr(self, "cron_svc", None), parent_key)
+        return
     if not still_running and not still_injecting:
         try:
             # Never under a live turn: a completion can land while the cron
@@ -1468,20 +1498,25 @@ async def _reset_cron_parent_when_idle(
             # ownership. A failed reset raises past this, so it leaves the key
             # registered (the ephemeral session may still be alive — the reaper
             # must be able to target it).
-            # parent_key is "cron:{job_id}" (persistent) or
-            # "cron:{job_id}:{run_id}" (ephemeral); job_id is the
-            # second colon-separated segment in both cases. Exact-key
-            # tracking means an older deferred reset removes only its
+            # Exact-key tracking means an older deferred reset removes only its
             # own key even after a newer run registers another one, and a
             # stable key the job's live run registered again (waiting for
             # the permit, or holding it) stays with that run, so the
             # reaper/ownership fence is never stripped from either. A key
             # the live run itself is done with (``finish_session_key``, set
             # as its engine released the session) is retired here.
-            cron_svc = getattr(self, "cron_svc", None)
-            if cron_svc is not None:
-                parts = parent_key.split(":", 2)
-                if len(parts) >= 2:
-                    cron_svc.retire_finished_session_key(parts[1], parent_key)
+            _retire_finished_cron_key(getattr(self, "cron_svc", None), parent_key)
         except Exception:
             logger.exception("Cron session %s: reset failed after last subagent", parent_key)
+
+
+def _retire_finished_cron_key(cron_svc: Any, parent_key: str) -> None:
+    """Retire *parent_key* from its job's registration once its run is done with it.
+
+    ``parent_key`` is ``cron:{job_id}`` (persistent) or ``cron:{job_id}:{run_id}``
+    (ephemeral); the job id is its second colon-separated segment either way.
+    """
+    if cron_svc is not None:
+        parts = parent_key.split(":", 2)
+        if len(parts) >= 2:
+            cron_svc.retire_finished_session_key(parts[1], parent_key)

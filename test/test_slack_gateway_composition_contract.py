@@ -753,7 +753,7 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         (
             "_reset_cron_parent_when_idle",
             "async method",
-            "(self, info: 'SubagentInfo', parent_key: 'str') -> 'None'",
+            "(self, info: 'SubagentInfo', parent_key: 'str', *, reset_session: 'bool' = True) -> 'None'",
         ),
     ),
     "runtime_charge": (

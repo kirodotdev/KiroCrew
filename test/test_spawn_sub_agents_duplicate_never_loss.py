@@ -564,7 +564,9 @@ async def test_a_mark_that_lands_while_the_claim_waits_is_honoured(
         _confirmed(info)
         return await claim(key, **kw)
 
+    # A cron parent is claimed only as the live session it is (``claim_existing``).
     done.sessions.get_or_create = AsyncMock(side_effect=_claim_while_the_turn_returns)
+    done.sessions.claim_existing = done.sessions.get_or_create
 
     await done.done(info)
 
@@ -758,8 +760,11 @@ async def _drive_cron_turn(*, ending: str, children: int = 1) -> dict[str, Any]:
     * ``lands`` -- the stream returns a synthesized answer;
     * ``deadline`` -- cancelled, as the job's deadline ``wait_for`` cancels ``_execute``;
     * ``failure`` -- the stream raises after the write (kiro-cli died mid-answer);
-    * ``reap`` -- the reaper resets the run's session, then cancels the task, as
+    * ``reap`` -- the reaper ends the run's conversation, then cancels the task, as
       ``run_kill._end_run_sessions`` and ``finish_taken`` do.
+
+    ``seen["started"]`` is every provider the manager started: the cron turn's own
+    session is the first.
     """
     from test_subagent_injection_live_turn import _provider_factory
 
@@ -768,10 +773,22 @@ async def _drive_cron_turn(*, ending: str, children: int = 1) -> dict[str, Any]:
     from kiro_crew.session import SessionManager
 
     key = "cron:j1:r1"
-    sessions = SessionManager(KiroCrewConfig(), provider_factory=_provider_factory())
+    factory, started = _provider_factory(), []
+
+    def counting_factory(*args: Any, **kwargs: Any) -> Any:
+        started.append(factory(*args, **kwargs))
+        return started[-1]
+
+    sessions = SessionManager(KiroCrewConfig(), provider_factory=counting_factory)
     infos = [_returned_child(f"child-{i}", key) for i in range(children)]
     orch = _cron_orchestrator(sessions, infos)
-    seen: dict[str, Any] = {"injected": [], "infos": infos, "sessions": sessions, "orch": orch}
+    seen: dict[str, Any] = {
+        "injected": [],
+        "infos": infos,
+        "sessions": sessions,
+        "orch": orch,
+        "started": started,
+    }
 
     async def inject(i: Any, _client: Any, _msg: Any, parent: str, _label: str) -> str:
         seen["injected"].append(i.id)
@@ -820,7 +837,7 @@ async def _drive_cron_turn(*, ending: str, children: int = 1) -> dict[str, Any]:
         run = asyncio.create_task(callback(_cron_job()))
         await asyncio.wait_for(answering.wait(), 30)
         if ending == "reap":
-            await sessions.reset(key)  # the reaper ends the run's session first
+            await sessions.reset(key, ends_conversation=True)  # the reaper ends the run first
         if ending in ("deadline", "reap"):
             run.cancel()
         with contextlib.suppress(asyncio.CancelledError, Exception):
@@ -831,15 +848,12 @@ async def _drive_cron_turn(*, ending: str, children: int = 1) -> dict[str, Any]:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("ending", ["deadline", "failure", "reap"])
-async def test_a_cron_turn_that_does_not_land_still_delivers_the_returned_result(
-    ending: str,
-) -> None:
+async def test_a_cron_turn_that_does_not_land_still_delivers_the_returned_result() -> None:
     """GPT 6.1's BLOCK (comment 6036084771). The turn's reply was written, but the
-    deadline, a failure or a reap ends the turn before it lands. The completion is
-    neither acknowledged nor tombstoned while the turn is live, returns from
-    ``_on_done`` at once, and is injected once after the turn's release."""
-    seen = await _drive_cron_turn(ending=ending)
+    deadline ends the turn before it lands. The completion is neither acknowledged
+    nor tombstoned while the turn is live, returns from ``_on_done`` at once, and is
+    injected once after the turn's release."""
+    seen = await _drive_cron_turn(ending="deadline")
     (info,) = seen["infos"]
 
     assert seen["acked_while_live"] is False, (
@@ -859,19 +873,39 @@ async def test_a_cron_turn_that_does_not_land_still_delivers_the_returned_result
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("ending", ["deadline", "failure"])
-async def test_a_re_routed_cron_completion_injects_into_the_turns_own_session(
-    ending: str,
-) -> None:
+async def test_a_re_routed_cron_completion_injects_into_the_turns_own_session() -> None:
     """The release counts the re-routed completion before the cron ``finally``
     decides its reset, so the reset is deferred and the injection continues the
     same conversation; the completion's own cleanup then resets it once."""
-    seen = await _drive_cron_turn(ending=ending)
+    seen = await _drive_cron_turn(ending="deadline")
     sessions = seen["sessions"]
 
     assert seen["inject_session"] is seen["turn_session"], "the injection cold-started"
     assert "cron:j1:r1" not in sessions._sessions, "nothing reset the session after"
     seen["cron_svc"].retire_finished_session_key.assert_called_once_with("j1", "cron:j1:r1")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("ending", ["failure", "reap"])
+async def test_a_returned_result_of_a_run_that_ended_starts_no_session(ending: str) -> None:
+    """A failure or a reap ends the run, and its conversation with it, before the
+    turn lands. A ``cron:`` key is stateless, so a session started for the parked
+    completion would hold none of that orchestration and act on the result as a
+    new agent. The completion starts nothing and plays no turn; it is neither
+    acknowledged nor tombstoned, so reconciliation still finds it."""
+    seen = await _drive_cron_turn(ending=ending)
+    (info,) = seen["infos"]
+    orch = seen["orch"]
+
+    assert seen["routes_returned_while_live"], "the route waited inside _on_done"
+    assert seen["injected"] == [], "a result reached a session started after the run ended"
+    assert len(seen["started"]) == 1, "a session was started for the ended run's completion"
+    assert "cron:j1:r1" not in seen["sessions"]._sessions
+    assert info._report_delivered is False
+    assert info._report_undelivered is True
+    orch.subagent_mgr.settle_queued_delivery.assert_not_awaited()
+    assert orch._cron_injecting == {}
+    assert orch._inline_parked == {}
 
 
 @pytest.mark.asyncio

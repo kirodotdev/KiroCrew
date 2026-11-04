@@ -58,6 +58,7 @@ def _gateway() -> Any:
     gateway = gw.GatewayOrchestrator.__new__(gw.GatewayOrchestrator)
     sessions = MagicMock()
     sessions.get_or_create = AsyncMock(return_value=(MagicMock(), False, True))
+    sessions.claim_existing = AsyncMock(return_value=(MagicMock(), False, True))
     sessions.release = MagicMock()
     sessions.reset = AsyncMock()
     sessions.cancel_current = AsyncMock()

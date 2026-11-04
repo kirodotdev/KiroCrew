@@ -157,7 +157,9 @@ async def _end_run_processes(
     HELD at the door of ``get_or_create`` -- it lands once the fence lifts,
     under a key whose run is recorded, so a sub-agent completion that races
     the reap is delivered after the record, never dropped and never into a
-    key that is neither being ended nor recorded -- and an allocation
+    key that is neither being ended nor recorded; a cron parent's completion
+    claims through ``claim_existing`` instead, which the fence refuses, so it
+    starts no session for the run being ended -- and an allocation
     already in flight when it went up -- a late sub-agent completion
     cold-starting the parent key again, caught inside ``provider.start()``
     with nothing published yet that any snapshot could see -- is

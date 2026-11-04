@@ -192,6 +192,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "capability_runtime_view": ("function", False, "de139dca2f5d", "claims"),
     "channel_key_for_stem": ("function", False, "99b8e84a3315", "links"),
     "check_context_usage": ("function", False, "52ae9aeaa52b", "turn_context"),
+    "claim_existing": ("function", True, "32ffd897f983", "claims"),
     "clear_mirror_link": ("function", False, "e17394b73cfb", "links"),
     "clear_mirror_link_if": ("function", False, "1dd34978d404", "links"),
     "clear_mirror_links_at": ("function", False, "daeb9edbe83d", "links"),
