@@ -644,6 +644,18 @@ def test_a_publication_does_not_vouch_unless_it_asks(members):
     assert execution.read_vouched_session_execution(asked).member_id == alice.member_id
 
 
+def test_a_fork_source_vouch_agrees_only_for_the_same_memory_mode(members):
+    # The fork's vouch check compares the memory mode, as the restart self-heal
+    # does. Only a persistent session is ever vouched, so a child asking under
+    # another mode gets no vouch from it.
+    source = "dashboard:persistent-source"
+    alice = execution.resolve_member_execution(members, "alice")
+    execution.bind_session_execution(source, alice, vouch=True)
+
+    assert execution.source_vouch_agrees(source, alice) is True
+    assert execution.source_vouch_agrees(source, alice.with_mode("incognito")) is False
+
+
 def test_old_close_cannot_clear_reused_session_identity(members):
     old = execution.resolve_member_execution(members, "alice", memory_mode="incognito")
     new = execution.resolve_member_execution(members, "bob", memory_mode="incognito")
