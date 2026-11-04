@@ -1369,7 +1369,8 @@ work behind either did not happen.
 the scheduler. Its directory is resolved once by `prepare()`: usable means history
 is fully on, unusable means the store constructs with `enabled` False, where every
 read returns empty and every write is dropped. History readers skip malformed JSONL
-lines and valid JSON values that are not record objects; pagination totals count
+lines (including one nested past the recursion limit, whose `json.loads` raises
+`RecursionError`) and valid JSON values that are not record objects; pagination totals count
 only readable records. Deleting a job drops invalid index rows while preserving
 other jobs' valid records. Usability is decided by the syscalls
 the store's own paths issue — an `os.stat` of the directory plus the lock-file
