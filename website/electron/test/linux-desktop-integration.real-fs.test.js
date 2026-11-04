@@ -20,6 +20,8 @@ const {
   fakeWorkerFactory,
   WORKER_DEPS,
   writeLeaseUnavailable,
+  managedLauncherSnapshot,
+  assertPublishDeferred,
 } = require("./linux-desktop-integration-test-helpers");
 
 test("real filesystem keeps managed metadata stable and detects chmod", LINUX_FILESYSTEM_ONLY, (t) => {
@@ -155,20 +157,25 @@ test("real helper treats a filesystem without xattr support as an empty selected
   assert.equal(record.pending, undefined);
 
   // A later managed update runs the lease-held publish path, whose fd-based
-  // xattr comparison must also read the unsupported filesystem as empty.
+  // xattr comparison must also read the unsupported filesystem as empty. A
+  // host that refuses the write lease must instead defer it untouched.
   const noLease = writeLeaseUnavailable(root);
-  if (noLease) {
-    t.skip(noLease);
-    return;
-  }
+  const before = managedLauncherSnapshot(launcher, statePath);
+  const logs = [];
   const moved = integrateLinuxDesktop({
     ...deps,
     env: { ...deps.env, APPIMAGE: realPath.join(root, "Moved.AppImage") },
     version: "0.6.0",
+    log: (m) => logs.push(m),
   });
+  if (noLease) {
+    t.diagnostic(noLease);
+    assertPublishDeferred({ result: moved, launcher, statePath, before, runs: helperRuns, logs });
+    return;
+  }
+  const publishes = helperRuns.filter((r) => r.mode === "publish");
   assert.equal(moved.installed, true, JSON.stringify(moved));
   assert.match(realFs.readFileSync(launcher, "utf8"), /Moved\.AppImage/);
-  const publishes = helperRuns.filter((r) => r.mode === "publish");
   assert.ok(publishes.length > 0);
   for (const r of publishes) {
     assert.equal(r.status, 0, r.stderr);
@@ -199,10 +206,6 @@ test("real publication and cleanup defer while their inode has an open descripto
   const root = realFs.mkdtempSync(realPath.join(realOs.tmpdir(), "kirocrew-ldi-lease-"));
   t.after(() => realFs.rmSync(root, { recursive: true, force: true }));
   const noLease = writeLeaseUnavailable(root);
-  if (noLease) {
-    t.skip(noLease);
-    return;
-  }
   const home = realPath.join(root, "home");
   const appDir = realPath.join(root, "appdir");
   const dataDir = realPath.join(root, "data");
@@ -220,17 +223,26 @@ test("real publication and cleanup defer while their inode has an open descripto
     realPath.join(appDir, "usr", "share", "icons", "hicolor", "16x16", "apps", "kirocrew-desktop.png"),
     "REAL PNG"
   );
+  const helperRuns = [];
+  const spawnSync = (python, args, options) => {
+    const result = realChildProcess.spawnSync(python, args, options);
+    helperRuns.push({ mode: args[3], status: result.status,
+      stdout: String(result.stdout || "").trim(), stderr: String(result.stderr || "") });
+    return result;
+  };
   const deps = {
     fs: realFs, path: realPath, os: realOs, platform: "linux", installKind: "appimage",
     env: { APPIMAGE: realPath.join(root, "KiroCrew.AppImage"), APPDIR: appDir, HOME: home,
       XDG_DATA_HOME: dataDir },
     version: "0.5.0", stateDir,
     uid: typeof process.geteuid === "function" ? process.geteuid() : undefined,
-    run: () => {}, log: () => {}, spawnSync: realChildProcess.spawnSync, resourcesPath,
+    run: () => {}, log: () => {}, spawnSync, resourcesPath,
   };
   assert.equal(integrateLinuxDesktop(deps).installed, true);
   const launcher = realPath.join(dataDir, "applications", "kirocrew-desktop-appimage.desktop");
+  const statePath = realPath.join(stateDir, "linux-desktop-integration", "state.json");
   const originalBody = realFs.readFileSync(launcher, "utf8");
+  const before = managedLauncherSnapshot(launcher, statePath);
   const currentFd = realFs.openSync(launcher, "r+");
   try {
     const deferred = integrateLinuxDesktop({
@@ -243,6 +255,26 @@ test("real publication and cleanup defer while their inode has an open descripto
   } finally {
     realFs.closeSync(currentFd);
   }
+  if (noLease) {
+    // With the descriptor closed the lease is still refused, so every later
+    // launch keeps deferring and leaves the launcher and its anchor as they
+    // were; no recovery name ever exists to clean up.
+    t.diagnostic(noLease);
+    for (let launch = 0; launch < 2; launch += 1) {
+      helperRuns.length = 0;
+      const logs = [];
+      const result = integrateLinuxDesktop({
+        ...deps,
+        env: { ...deps.env, APPIMAGE: realPath.join(root, "Moved.AppImage") },
+        version: "0.6.0",
+        log: (m) => logs.push(m),
+      });
+      assertPublishDeferred({ result, launcher, statePath, before, runs: helperRuns, logs });
+      const record = JSON.parse(realFs.readFileSync(statePath, "utf8")).artifacts[launcher];
+      assert.equal(record.recovery, undefined);
+    }
+    return;
+  }
   const published = integrateLinuxDesktop({
     ...deps,
     env: { ...deps.env, APPIMAGE: realPath.join(root, "Moved.AppImage") },
@@ -250,7 +282,6 @@ test("real publication and cleanup defer while their inode has an open descripto
   });
   assert.equal(published.installed, true, JSON.stringify(published));
   assert.match(realFs.readFileSync(launcher, "utf8"), /Moved\.AppImage/);
-  const statePath = realPath.join(stateDir, "linux-desktop-integration", "state.json");
   const recovery = JSON.parse(realFs.readFileSync(statePath, "utf8")).artifacts[launcher].recovery;
   const fd = realFs.openSync(recovery.paths[0], "r+");
   try {
