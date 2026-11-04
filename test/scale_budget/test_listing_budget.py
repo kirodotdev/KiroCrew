@@ -135,11 +135,6 @@ def test_first_user_only_listing_reads_each_transcript_at_most_twice(seeded) -> 
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="scale-F1: main re-reads every untitled transcript's head on each user_only listing",
-)
 def test_second_user_only_listing_reads_no_transcripts(seeded) -> None:
     """The second listing with nothing changed: 0 opens, 0 locks, 0 uncached message reads."""
     reads = _count_has_messages(seeded.monkeypatch, uncached=True)
