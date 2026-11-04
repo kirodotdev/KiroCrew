@@ -49,6 +49,9 @@ from kiro_crew.subprocess_utf8 import UTF8_TEXT
 # no literal can narrow which files it parses.
 pytestmark = pytest.mark.xdist_group(name="tree_scan_dashboard_files_composition_contract")
 
+SHARED_FACADE_CHECKS = ("the_globstar_matcher_reads_patterns_as_the_reviewers_do",)
+
+
 _FACADE = files.__name__
 _FACADE_PATH = Path(files.__file__).resolve()
 _OWNER_PACKAGE = file_api.__name__
@@ -1537,13 +1540,6 @@ def _autosde_rules() -> list[dict]:
         for name in ("AUTOSDE.yaml", "website/AUTOSDE.yaml")
         for rule in yaml.safe_load((root / name).read_text(encoding="utf-8"))["custom-rules"]
     ]
-
-
-def test_the_globstar_matcher_reads_patterns_as_the_reviewers_do() -> None:
-    assert _globstar("src/a/**/*.py").match("src/a/b.py")
-    assert _globstar("src/a/**/*.py").match("src/a/x/y/b.py")
-    assert not _globstar("src/a/*.py").match("src/a/x/b.py")
-    assert _globstar("src/a/**").match("src/a/x/b.py")
 
 
 def test_every_review_rule_on_the_facade_also_covers_its_owners() -> None:

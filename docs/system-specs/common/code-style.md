@@ -255,8 +255,8 @@ layering, manifest and logger scans) is written once in `test/test_facade_shared
 and parametrized per module: a facade test file names the ones it needs in a module-level
 `SHARED_FACADE_CHECKS` tuple instead of copying their bodies, and keeps only the checks
 particular to its facade. The same holds for a composed class's contract file
-(`test_*composition*.py`): the owner-layering, bound-member and class-body checks it shares
-with the other composed classes are opt-ins too.
+(`test_*composition*.py`) and a parts package's file (`test_*_parts*.py`): the
+owner-layering, bound-member, class-body and package-shape checks they share are opt-ins too.
 
 **A large class keeps one class body**, in the facade or in one home module that sets
 `__module__` to the facade when a pickle, repr or test reads it. Members move to owners as
