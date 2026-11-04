@@ -127,13 +127,9 @@ class TestRegistry:
     def test_a_second_writer_cannot_read_between_a_read_and_its_write(self, tmp_path):
         """An interleaved second registry must not drop the first's record.
 
-        The writing thread is held inside its own write and the second thread is
-        released to add a different instance. Both records have to survive: a
-        reader admitted before the first write lands sees the pre-add document
-        and persists it back without that record.
-
-        Both waits are bounded, so the serialised case simply times out and
-        proceeds rather than hanging.
+        The first writer is held inside its write while a second adds another instance;
+        both records must survive. Both waits are bounded, so the serialised case
+        times out and proceeds rather than hanging.
         """
         from kiro_crew.instances.registry import InstancesRegistry
 
@@ -172,12 +168,8 @@ class TestRegistry:
 class TestValidatorsRejectEmbeddedNewlines:
     """Every anchored validator in this package must use ``\\Z``, not ``$``.
 
-    Python's ``$`` also matches just BEFORE a trailing newline, so a value like
-    ``"20h\\n"`` passes a ``$``-anchored check and then reaches an ssh/ssm
-    argument list carrying an embedded newline. Every regex here guards a value
-    that ends up on such a command line, so this is one bug class rather than one
-    regex — a ratchet is the only thing that keeps a future edit from
-    reintroducing it.
+    Python's ``$`` also matches before a trailing newline, so ``"20h\\n"`` would reach
+    an ssh/ssm argument list. A ratchet over every regex keeps the class closed.
     """
 
     def test_no_anchored_pattern_uses_a_dollar_anchor(self):
@@ -207,11 +199,8 @@ class TestValidatorsRejectEmbeddedNewlines:
     def test_a_trailing_newline_never_survives_validation(self, tmp_path):
         """Two safe answers, and every guard must give one of them.
 
-        ``validation.py`` SANITIZES — it strips before matching and returns the
-        cleaned value, so a newline cannot reach the argument list it guards. The
-        registry and the ttl check REJECT, because they persist what they are
-        given. What must not happen is a guard accepting the value and passing the
-        newline through unchanged.
+        ``validation.py`` strips and returns the cleaned value; the registry and the ttl
+        check REJECT because they persist input. No guard may pass the newline through.
         """
         from kiro_crew.instances import validation
         from kiro_crew.instances.registry import (
