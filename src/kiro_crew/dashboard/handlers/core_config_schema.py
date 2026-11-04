@@ -411,11 +411,12 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     # the loader accepts rather than a second copy. Without the Feature preview
     # the gateway reads every one of these as its default
     # (``shared_crew.preview``), so a stored value waits for the preview.
-    # ``tailnet_direct`` takes effect on the next gateway start. ``hard_limits``
-    # and ``containment_enabled`` stay config-file-only: they refuse work or
+    # ``tailnet_direct``, ``ssm`` and ``ssm_port`` take effect on the next gateway start.
+    # ``hard_limits`` and ``containment_enabled`` stay config-file-only: they refuse work or
     # start per-person cgroup slices, which this surface does not offer.
     "dashboard.shared_crew.admission_enabled": {"type": "bool"},
     "dashboard.shared_crew.tailnet_direct": {"type": "bool"},
+    "dashboard.shared_crew.ssm": {"type": "bool"},
     "dashboard.shared_crew.principal_concurrency": {
         "type": "int",
         "min": SHARED_CREW_BOUNDS["principal_concurrency"][0],
@@ -425,6 +426,11 @@ _EDITABLE_CONFIG: dict[str, dict] = {
         "type": "int",
         "min": SHARED_CREW_BOUNDS["crew_concurrency"][0],
         "max": SHARED_CREW_BOUNDS["crew_concurrency"][1],
+    },
+    "dashboard.shared_crew.ssm_port": {
+        "type": "int",
+        "min": SHARED_CREW_BOUNDS["ssm_port"][0],
+        "max": SHARED_CREW_BOUNDS["ssm_port"][1],
     },
     "dashboard.shared_crew.typing_idle_seconds": {
         "type": "int",

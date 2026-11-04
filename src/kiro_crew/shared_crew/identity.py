@@ -17,6 +17,7 @@ Evidence, strongest first:
   (``tailscale_serve``), already resolved and allowlisted by the middleware;
 * a tailnet peer the direct tailnet listener admitted through its access set
   (``tailscale_listener``);
+* a person the SSM listener admitted by a Crew invite (``ssm_invite``);
 * a tailnet peer connected to the gateway's tailnet address directly, resolved
   here through the daemon's ``whois`` of the socket address
   (``tailscale_direct``, attribution only);
@@ -38,6 +39,7 @@ from typing import TYPE_CHECKING, Any
 
 from kiro_crew.shared_crew.contracts import (
     ACTOR_REQUEST_KEY,
+    SSM_GUEST_REQUEST_KEY,
     ActorContext,
     AuthSnapshot,
     DisplaySnapshot,
@@ -62,6 +64,8 @@ PROVIDER_TAILSCALE = "tailscale"
 TAILNET_ISSUER = "tailnet"
 PROVIDER_LOCAL = "local"
 LOCAL_ISSUER = "crew"
+PROVIDER_SSM = "ssm"
+SSM_ISSUER = "crew"
 
 #: The system component every internal-secret caller (kiro-cli, MCP, doctor) is
 #: attributed to. The secret proves the call came from inside, not which person
@@ -133,6 +137,25 @@ def direct_principal(peer: DirectPeer) -> Principal:
         Provenance.TAILSCALE_LISTENER,
         display_name=peer.display_name,
         tagged=peer.tagged,
+    )
+
+
+def ssm_principal(invite_id: str, alias: str = "") -> Principal:
+    """The principal of a person who entered through an SSM invite.
+
+    Keyed by the invite id alone: AWS Systems Manager port forwarding reaches
+    the gateway as a plain loopback connection, so nothing about the AWS
+    caller is visible here. The alias is a label the owner typed.
+    """
+    subject = invite_id.strip()
+    return Principal(
+        id=principal_id_for(PROVIDER_SSM, SSM_ISSUER, subject),
+        kind=PrincipalKind.HUMAN,
+        provider=PROVIDER_SSM,
+        issuer=SSM_ISSUER,
+        subject=subject,
+        provenance=Provenance.SSM_INVITE,
+        display=DisplaySnapshot(name=(alias.strip() or subject)[:128], login=""),
     )
 
 
@@ -284,6 +307,19 @@ async def _derive_actor(
     from kiro_crew.dashboard.tailnet_direct import DIRECT_PEER_REQUEST_KEY, DirectPeer
 
     app = str(request.get("app") or "")
+    guest = request.get(SSM_GUEST_REQUEST_KEY)
+    if not internal and not app and guest is not None:
+        # The SSM listener's gate already admitted this invite; an SSM request
+        # is never derived from its loopback address or a token subject.
+        request[DEVICE_REQUEST_KEY] = f"ssm:{guest.invite_id}"
+        request_id = uuid.uuid4().hex
+        return ActorContext(
+            principal=ssm_principal(guest.invite_id, guest.alias),
+            request_id=request_id,
+            transport=_transport_of(request),
+            correlation_id=_correlation_of(request, request_id),
+            auth=_auth_snapshot(request, ""),
+        )
     verified = request.get(DIRECT_PEER_REQUEST_KEY)
     if not internal and not app and isinstance(verified, DirectPeer):
         principal = direct_principal(verified)

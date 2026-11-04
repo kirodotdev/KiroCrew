@@ -487,6 +487,7 @@ if TYPE_CHECKING:
         SubagentManager,
         TaskRunner,
     )
+    from kiro_crew.dashboard.ssm_gate import GateRef as SsmGateRef
     from kiro_crew.dashboard.tailnet_direct import DirectGate, GateRef  # noqa: F401
     from kiro_crew.kiro_prerequisite import KiroPrerequisiteService
 
@@ -1081,8 +1082,15 @@ async def start_dashboard(
         # empty holder for the direct tailnet listener's gate (off by default);
         # the daemon read that fills it runs after the bind.
         _direct: GateRef | None = None
+        _ssm_ref: SsmGateRef | None = None
         if _shared_crew_preview:
             from kiro_crew.dashboard import tailnet_direct_listener
+
+            if _cfg.dashboard.shared_crew.ssm:
+                # Only an SSM-enabled launch loads the SSM modules before the bind.
+                from kiro_crew.dashboard import ssm_gate
+
+                _ssm_ref = ssm_gate.GateRef()
 
             _direct = tailnet_direct_listener.prepare_at_start(
                 _cfg, host=_tailnet_host, trust=_tailnet_trust, local_only=local_only
@@ -1169,6 +1177,7 @@ async def start_dashboard(
             configured_host=configured_host,
             dashboard_url=dashboard_url,
             tailnet_direct=_direct,
+            ssm_gate=_ssm_ref,
         )
 
         # Register only after the final allowed-origin set is selected.  The startup
@@ -1304,6 +1313,13 @@ async def start_dashboard(
 
         await tailnet_direct_listener.start_after_bind(
             app, runner, _bound_port, _cfg, _direct, local_only=local_only
+        )
+    # The SSM site, on its own loopback port; nothing when it is off.
+    if _ssm_ref is not None:
+        from kiro_crew.dashboard import ssm_gate
+
+        await ssm_gate.start_after_bind(
+            app, runner, _cfg.dashboard.shared_crew, _bound_port, _ssm_ref
         )
 
     # Port bind succeeded — now safe to write the secret file. Offloaded:

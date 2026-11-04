@@ -35,6 +35,21 @@ from kiro_crew.shared_crew.codec import (
 
 #: aiohttp request key under which the trusted actor is published to handlers.
 ACTOR_REQUEST_KEY = "shared_crew_actor"
+#: Request keys the SSM listener's gate sets on a request it admitted
+#: (``dashboard.ssm_gate``). A forwarded SSM connection arrives from loopback,
+#: so every "is this machine's own user" test must read these before it trusts
+#: the peer address (``origin.is_ssm_request``).
+SSM_REQUEST_KEY = "auth_ssm"
+SSM_GUEST_REQUEST_KEY = "auth_ssm_guest"
+
+
+@dataclass(frozen=True)
+class SsmGuest:
+    """The Crew invite that admitted a request on the SSM listener."""
+
+    invite_id: str
+    alias: str
+
 
 #: Session metadata key that holds the :class:`SessionAttribution` object. It
 #: is deliberately not ``created_by``, which already names the creating slot key.
@@ -70,6 +85,9 @@ class Provenance(str, enum.Enum):
     #: Tailscale daemon ``whois`` of a peer the direct tailnet listener admitted
     #: through its access set (``tailnet_direct.DirectGate``): a verified member.
     TAILSCALE_LISTENER = "tailscale_listener"
+    #: A person holding a Crew invite who arrived on the SSM listener
+    #: (``dashboard.ssm_gate``). The invite names them; the transport proves nothing.
+    SSM_INVITE = "ssm_invite"
     #: The single local operator: a loopback or owner-minted dashboard token.
     LOCAL_OPERATOR = "local_operator"
     #: Server-internal automation with a named owner component.

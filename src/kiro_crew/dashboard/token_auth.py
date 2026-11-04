@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     # The direct tailnet listener is preview-only: its module is imported at
     # request time, and only once a gate exists (no-new-work-on-gateway-boot-path).
+    import kiro_crew.dashboard.ssm_gate as ssm_gate_types
     import kiro_crew.dashboard.tailnet_direct as tailnet_direct_types
 
 from aiohttp import web
@@ -139,6 +140,7 @@ def token_auth_middleware(
     spa_shell_handler: Callable[..., Any] | None = None,
     tailnet_trust: TailnetTrust | None = None,
     tailnet_direct: tailnet_direct_types.DirectGate | tailnet_direct_types.GateRef | None = None,
+    ssm_gate: ssm_gate_types.GateRef | None = None,
 ) -> Callable[..., Any]:
     """Factory returning aiohttp middleware for token-based dashboard auth.
 
@@ -176,6 +178,12 @@ def token_auth_middleware(
     ``tailscale serve`` alike, runs the token flow unchanged. A
     :class:`~kiro_crew.dashboard.tailnet_direct.GateRef` is read per request,
     so the gateway can fill it in after the bind.
+
+    *ssm_gate* is the holder of the SSM listener's gate
+    (:mod:`kiro_crew.dashboard.ssm_gate`). A request whose local socket is the
+    SSM port is decided there, by a Crew invite alone, and never enters the token
+    flow: a forwarded connection looks like a loopback one, so the port, not the
+    request, says it is not the owner.
     """
 
     # NOTE: the signing-secret and revoked-nonce singletons are NOT warmed
@@ -317,6 +325,18 @@ def token_auth_middleware(
 
     @web.middleware
     async def middleware(request: web.Request, handler: object) -> web.StreamResponse:
+        ssm = ssm_gate.gate if ssm_gate is not None else None
+        if ssm is not None and ssm.owns(request):
+            from kiro_crew.dashboard import ssm_gate as ssm_gate_module
+
+            return await ssm_gate_module.admit(
+                request,
+                handler,  # type: ignore[arg-type]
+                strict_internal=internal_path_matches(request.path, internal_paths)
+                and not internal_path_matches(request.path, mixed_internal_paths),
+                log_auth=_log_auth,
+                publish=lambda req: publish_actor(req, trust=tailnet_trust, serve_peer=None),
+            )
         gate = _current_direct_gate()
         if gate is not None and gate.owns(request):
             response, handler = await _direct_tailnet_gate(request, handler, gate)

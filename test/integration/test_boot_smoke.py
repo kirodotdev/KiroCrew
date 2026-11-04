@@ -460,6 +460,9 @@ _KNOWN_SECOND_BOOT_CHANGES: dict[tuple[str, str], str] = {
     # When the shared-crew admission service last read its config: a monotonic
     # stamp the harness zeroes and each boot sets again when it builds its service.
     ("kiro_crew.shared_crew.admission_gate", "_last_config_at"): "clock",
+    # The SSM listener's last answer: every boot replaces it with a new value from its
+    # own config (off, or the port it bound), so no earlier boot's answer carries over.
+    ("kiro_crew.shared_crew.ssm", "_listener"): "rebuilt by each boot",
     # When telemetry consent was last re-read, and whether a re-read is in
     # flight: a boot that outlasts the recheck window starts one. The consent
     # itself (``_built_consent``) does not change here.

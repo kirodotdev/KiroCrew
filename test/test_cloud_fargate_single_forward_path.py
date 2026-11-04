@@ -123,8 +123,12 @@ def test_the_gated_spawner_has_exactly_the_two_ec2_callers():
     }
 
 
-def test_the_argv_builder_has_exactly_the_two_known_callers():
+def test_the_argv_builder_has_exactly_the_known_callers():
     """One argv builder serves both lanes, so neither can drift on the document.
+
+    ``shared_crew/ssm.py`` is the third caller: it prints the command a teammate
+    runs on their own machine for a Shared Crew SSM invite, and swaps in a bare
+    ``aws`` head because the resolved path belongs to this machine.
 
     This is the census that covers the instances layer's supervised forwarder: it
     composes no argv of its own but delegates here, so a third caller means a
@@ -133,6 +137,7 @@ def test_the_argv_builder_has_exactly_the_two_known_callers():
     assert _call_census("build_port_forward_argv") == {
         ("cloud/ssm.py", "open_port_forward"),
         ("instances/ssh_tunnel_manager_child_text.py", "_build_ssm_tunnel_argv"),
+        ("shared_crew/ssm.py", "start_session_args"),
     }
 
 

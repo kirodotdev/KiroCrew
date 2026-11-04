@@ -198,6 +198,7 @@ def build_port_forward_argv(
     local_port: int,
     profile: str = "",
     region: str = "",
+    document: str = "",
 ) -> list[str]:
     """Build the ``aws ssm start-session`` port-forward argv (testable).
 
@@ -212,6 +213,10 @@ def build_port_forward_argv(
     never a host the caller names, so the tunnel cannot be pointed at a third
     machine the target happens to be able to reach.
 
+    *document* names a custom Session document whose ``portNumber`` is fixed (a
+    Shared Crew owner scoping IAM to one port); it then takes ``localPortNumber``
+    alone. Empty is the AWS-managed document above.
+
     The CLI head is resolved absolutely through the deploy engine's shared
     resolver so a GUI-launched gateway's minimal PATH still finds it.
     """
@@ -222,9 +227,13 @@ def build_port_forward_argv(
         "--target",
         target,
         "--document-name",
-        _PORT_FORWARD_DOC,
+        document or _PORT_FORWARD_DOC,
         "--parameters",
-        f"portNumber={remote_port},localPortNumber={local_port}",
+        (
+            f"localPortNumber={local_port}"
+            if document
+            else f"portNumber={remote_port},localPortNumber={local_port}"
+        ),
     ]
     if region:
         argv += ["--region", region]

@@ -393,6 +393,20 @@ Request flow:
 8. Publish the Shared Crew actor (`shared_crew.identity.publish_actor`) under `request[ACTOR_REQUEST_KEY]`, after every decision above and before the handler, on each path that admits a request: the internal-secret grant, both mixed-internal cookie branches and the main path. It is attribution only. It runs only for an admitted request, never raises (a failure publishes the Unknown principal), and its daemon lookup for a directly connected tailnet peer (`tailnet.resolve_direct_peer`) is not consulted by the pin or the allowlist, so it can neither admit nor refuse anything. Bypassed routes publish no actor and read as Unknown. Derivation rules are in [shared-crew.md](shared-crew.md) section 2.
 9. Return 403 with JSON for `/api/*`, HTML for pages — **except** non-API `GET`/`HEAD` navigations, which are served the public SPA shell (see below)
 
+#### SSM listener: a Crew invite instead of a token
+
+A request whose LOCAL socket is the loopback SSM port (`ssm_gate.SsmGate.owns`;
+the listener exists only while `dashboard.shared_crew.ssm` is on, default off) is
+decided by `token_auth_middleware(ssm_gate=...)` before any other step, and never
+enters the token flow. The only credential is a Crew invite
+(`shared_crew.ssm_invites`), presented once as `?ssm_invite=<id>.<secret>` and kept
+in an `HttpOnly`, `SameSite=Lax` cookie. A dashboard token, an app token and
+`X-Internal-Secret` are ignored or refused, strict internal paths are refused, and
+the request is the dashboard user `ssm:<invite id>` with `auth_ssm` set, so
+`is_owner_dashboard_request` is false and `origin.is_direct_local_request` is false
+for it. It cannot mint a bearer link (`_caller_bounds` lends it no lifetime). A
+revoked invite fails the next request, and an open response is closed within 15 s.
+
 #### Direct tailnet listener: daemon identity instead of a token
 
 A request whose LOCAL socket address is one of this machine's tailnet addresses

@@ -60,6 +60,7 @@ from kiro_crew.dashboard.urls import (  # noqa: F401
     should_canonicalize_host,
 )
 from kiro_crew.shared_crew import access
+from kiro_crew.shared_crew.contracts import SSM_GUEST_REQUEST_KEY, SSM_REQUEST_KEY, SsmGuest
 
 if TYPE_CHECKING:  # aiohttp is needed for annotations only
     import asyncio
@@ -92,6 +93,20 @@ _PROXY_FORWARD_HEADERS = (
 )
 
 
+def is_ssm_request(request: web.Request) -> bool:
+    """Whether the SSM listener admitted *request*.
+
+    An AWS Systems Manager port forward reaches the gateway as a loopback
+    connection with no forwarding header, the exact shape of the machine's own
+    user. The listener marks what it admits, and no peer-address test may trust
+    such a request as local.
+    """
+    read = getattr(request, "get", None)
+    if read is None:
+        return False
+    return read(SSM_REQUEST_KEY) is True or isinstance(read(SSM_GUEST_REQUEST_KEY), SsmGuest)
+
+
 def is_direct_local_request(request: web.Request) -> bool:
     """Return ``True`` only for a request made directly from this machine.
 
@@ -102,7 +117,8 @@ def is_direct_local_request(request: web.Request) -> bool:
     ``Forwarded``/``X-Forwarded-*``/``X-Real-IP`` headers; a browser talking
     to localhost directly never does. So: loopback peer AND no forwarding
     headers ⇒ direct local. Anything else is treated as remote (fail-closed
-    for the secret-reveal and config-write gates).
+    for the secret-reveal and config-write gates). A request the SSM listener
+    admitted is never direct local (:func:`is_ssm_request`).
 
     Known limits: an SSH port-forward (``ssh -L``), socat relay, or a proxy
     that strips all forwarding headers is indistinguishable from a local
@@ -115,7 +131,7 @@ def is_direct_local_request(request: web.Request) -> bool:
     headers. Hosted/multi-user deployments should force read-only via a
     server-side policy regardless of request origin.
     """
-    if not is_loopback(request.remote or ""):
+    if is_ssm_request(request) or not is_loopback(request.remote or ""):
         return False
     return not any(h in request.headers for h in _PROXY_FORWARD_HEADERS)
 
@@ -400,6 +416,22 @@ def _log_origin_refusal(request: web.Request, reason: str, origin_base: str) -> 
     )
 
 
+def _ssm_origins_for(request: web.Request) -> set[str]:
+    """The SSM listener's own origins, only for a request that arrived on its port.
+
+    They are deliberately NOT in the shared ``allowed_origins``: that set is read by
+    every listener, so a local process squatting the same port on the other loopback
+    family would otherwise pass the dashboard's own CSRF check.
+    """
+    holder = request.app.get("ssm_gate_ref")
+    gate = getattr(holder, "gate", None)
+    if gate is None or getattr(holder, "withdrawn", False) or not gate.owns(request):
+        return set()
+    from kiro_crew.dashboard import ssm_gate
+
+    return ssm_gate.origins(gate.port)
+
+
 def check_origin(
     request: web.Request,
     *,
@@ -417,6 +449,7 @@ def check_origin(
     also logged here (see :func:`_log_origin_refusal`).
     """
     allowed: set[str] = request.app["allowed_origins"]
+    allowed = allowed | _ssm_origins_for(request) if "ssm_gate_ref" in request.app else allowed
     origin = request.headers.get("Origin") or ""
     if not origin and fallback_header:
         origin = request.headers.get(fallback_header, "")
@@ -579,6 +612,43 @@ def withdraw_refused_origins(app: web.Application, loop: asyncio.AbstractEventLo
         # ``kept`` again on the loop: tailnet recovery adds its origin there one step
         # before it records the host, so the read above can trail the set.
         loop.call_soon_threadsafe(lambda: allowed.difference_update(refused - kept()))
+    _withdraw_ssm_origins(app, loop)
+
+
+def _withdraw_ssm_origins(app: web.Application, loop: asyncio.AbstractEventLoop) -> None:
+    """Stop trusting the SSM listener's origins once the live policy refuses them.
+
+    They are never in ``allowed_origins`` (see :func:`_ssm_origins_for`), so the set
+    withdrawal above cannot reach them. Asked as it is: the first ask is a pure read,
+    and only a refusal is audited. The gate itself stays, so a request on the SSM port
+    is still judged by it; what ends is the origin trust and the management routes.
+    One way: a widened policy adds nothing until a restart.
+
+    Every way the SSM origins are trusted, so none is missed: ``check_origin`` (its only
+    reader of them, called by the CSRF middleware, the dashboard, STT and terminal
+    WebSockets, auth refresh and logout, and mobile auth and connect) reads ``withdrawn``
+    through :func:`_ssm_origins_for`; the three owner routes read it through
+    ``routes_ssm.governed``; and the bind-time check in ``ssm_gate.resolve`` only decides
+    whether the listener starts.
+    """
+    holder = app.get("ssm_gate_ref")
+    gate = getattr(holder, "gate", None)
+    if gate is None or holder.withdrawn:
+        return
+    from kiro_crew.dashboard import ssm_gate
+
+    refused = sorted(
+        o
+        for o in ssm_gate.origins(gate.port)
+        if not origin_permitted(o) and not origin_permitted(o, audit_tool="ssm_listener")
+    )
+    if refused:
+        logger.warning(
+            "ssm listener origins no longer permitted by governance (dashboard_origins), "
+            "withdrawn: %s",
+            ", ".join(refused),
+        )
+        loop.call_soon_threadsafe(setattr, holder, "withdrawn", True)
 
 
 # ---------------------------------------------------------------------------

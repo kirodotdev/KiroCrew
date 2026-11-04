@@ -12,6 +12,7 @@ import { InviteEntry, InviteRow, inviteErrorText, tailscaleInvitesKey } from './
 vi.mock('../../api/client', () => ({
   api: {
     tailscaleInvites: vi.fn(),
+    sharedCrewSsm: vi.fn(),
     tailscaleConnect: vi.fn(),
     tailscaleDisconnect: vi.fn(),
     tailscaleCreateInvites: vi.fn(),
@@ -66,7 +67,7 @@ async function mount(qc?: QueryClient) {
   return view
 }
 
-beforeEach(() => { vi.resetAllMocks(); accessRead.mockResolvedValue(null); copy.mockResolvedValue(true) })
+beforeEach(() => { vi.resetAllMocks(); accessRead.mockResolvedValue(null); copy.mockResolvedValue(true); vi.mocked(api.sharedCrewSsm).mockResolvedValue(null) })
 
 describe('InviteEntry and its dialog', () => {
   it('without a key: shows the admin-console share path and the one-time key form', async () => {

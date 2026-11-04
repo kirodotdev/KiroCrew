@@ -11,7 +11,7 @@ import { sharedCrewKeys } from '../../hooks/sharedCrew/sharedCrewSocket'
 import { tailscaleInvitesKey } from './TailscaleInvites'
 
 vi.mock('../../api/client', () => ({
-  api: { sharedCrewPeople: vi.fn(), sharedCrewCapabilities: vi.fn(), sharedCrewMode: vi.fn(), tailscaleInvites: vi.fn(), tailscaleRevokeInvite: vi.fn(), sharedCrewSetPersonDisplay: vi.fn(), kirocrewConfig: vi.fn(), patchConfig: vi.fn() },
+  api: { sharedCrewPeople: vi.fn(), sharedCrewCapabilities: vi.fn(), sharedCrewMode: vi.fn(), tailscaleInvites: vi.fn(), sharedCrewSsm: vi.fn(), tailscaleRevokeInvite: vi.fn(), sharedCrewSetPersonDisplay: vi.fn(), kirocrewConfig: vi.fn(), patchConfig: vi.fn() },
 }))
 vi.mock('../../components/settingRef/useConfigSchema', () => {
   const schema = new Map([
@@ -588,7 +588,7 @@ describe('PeoplePanel connect card, owner rows and Advanced', () => {
     expect(screen.getAllByTestId('share-hero-invite')).toHaveLength(1)
     expect(screen.getByTestId('share-hero-manage')).toBeInTheDocument()
     expect(screen.getByTestId('share-hero-link')).toHaveValue('http://100.64.0.1:5476/')
-    expect(screen.getByTestId('share-hero-copy-message')).toHaveTextContent('Copy invite message')
+    expect(screen.getByTestId('share-hero-copy-message')).toHaveTextContent('Copy Tailscale invite')
     expect(screen.queryByTestId('share-hero-copy')).toBeNull()
     // No numbered steps and no step prose.
     expect(hero.querySelector('ol')).toBeNull()
@@ -670,6 +670,18 @@ describe('PeoplePanel connect card, owner rows and Advanced', () => {
     expect(screen.queryByTestId('people-advanced')).toBeNull()
   })
 
+  it('keeps Advanced reachable for an owner whose only answered read is SSM, still switched off', async () => {
+    caps.mockResolvedValue({ ...SHARED, attribution: 'available' })
+    people.mockResolvedValue({ ...EMPTY, people: [row('p_o', 'Mac Studio', { is_owner: true, is_viewer: true })] })
+    modeApi.mockResolvedValue(modeBody('personal'))
+    invitesApi.mockResolvedValue(null as never)
+    vi.mocked(api.sharedCrewSsm).mockResolvedValue({ state: 'off', reason: 'disabled', port: 5477, target: null, command: '', local_url: '', invites: [] } as never)
+    mount()
+    // The switch that turns SSM on lives in Advanced, so it must show before SSM is on.
+    expect(await screen.findByTestId('people-advanced', {}, { timeout: OWNER_CHAIN_TIMEOUT_MS })).toBeInTheDocument()
+    expect(screen.queryByTestId('share-hero-invite')).toBeNull()
+  })
+
   it('offers Advanced to the owner only, collapsed, and writes each field to its dashboard.shared_crew path', async () => {
     await mountOwner()
     const advanced = await screen.findByTestId('people-advanced') as HTMLDetailsElement
@@ -681,6 +693,10 @@ describe('PeoplePanel connect card, owner rows and Advanced', () => {
     fireEvent.click(screen.getByRole('switch', { name: 'Direct tailnet link' }))
     await waitFor(() => expect(patchApi).toHaveBeenCalledWith('dashboard.shared_crew.tailnet_direct', true))
     expect(advanced).toHaveTextContent('changes need a restart')
+    // The SSM switch names its outcome and says where the result shows up.
+    expect(advanced).toHaveTextContent("Restart to turn this on. Invite then has an AWS SSM tab.")
+    fireEvent.click(screen.getByRole('switch', { name: 'Let teammates join over AWS SSM' }))
+    await waitFor(() => expect(patchApi).toHaveBeenCalledWith('dashboard.shared_crew.ssm', true))
     const writeNumber = (testId: string, value: string) => {
       const input = screen.getByTestId(testId)
       fireEvent.change(input, { target: { value } })
