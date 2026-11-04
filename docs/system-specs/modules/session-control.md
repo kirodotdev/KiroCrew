@@ -1296,9 +1296,14 @@ A private member store is reachable on two authorities and no others:
   caller's own claim. The vouched identity is written only by
   `bind_session_execution`, which no session can reach, and only when the store it
   publishes was established independently of that record — a publication that
-  carries the owner over FROM the record, as a provider template switch or a
-  dashboard fork does, does not vouch for it, because vouching a value the session
-  chose would make the two sources one. Claiming it is OPT-IN: the default is not to
+  carries the owner over FROM the record, as a provider template switch does, does
+  not vouch for it, because vouching a value the session chose would make the two
+  sources one. A dashboard fork also copies its child's identity from the source's
+  record, so it vouches only on this gateway's own word about the source:
+  `source_vouch_agrees` answers yes when the source's in-memory vouch, or after a
+  restart its durable vouch copy while config still gives that member that store,
+  names the same member and store the child copied. A source record rewritten to a
+  peer's store disagrees with that word, so its fork publishes unvouched. Claiming it is OPT-IN: the default is not to
   vouch, so a binder that says nothing about provenance publishes the record and
   claims no authority, and a caller that should have claimed it fails loudly at a
   refused dispatch rather than quietly widening access. An owner's pick of a member

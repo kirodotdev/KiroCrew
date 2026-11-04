@@ -765,6 +765,55 @@ def _revouch_from_durable_record(
         return _VOUCHED_EXECUTIONS.get(_live_key(verified_session_key)) is not None
 
 
+def source_vouch_agrees(source_key: str, execution: ExecutionContext, config: Any = None) -> bool:
+    """Whether this gateway already vouches *source_key* for *execution*'s member and store.
+
+    Read-only: it vouches for nothing. A fork asks it before binding its child,
+    because the identity a fork copies comes from the source session's own record,
+    which that session writes, so the copy may only carry own-store authority the
+    gateway itself already gave the source. Without it every fork of a member
+    conversation is published unvouched, and its own-store ``session_create`` is
+    refused for the child's whole life: no restart re-vouches it (its ``chat-`` key
+    names no member and it has no durable copy) and no agent re-pick can reach it
+    (a conversation with messages cannot be re-pinned).
+
+    The gateway's word is the in-memory vouch, or after a restart or a cap eviction
+    the durable copy ``bind_session_execution`` wrote when it vouched. A durable copy
+    counts only while config still gives its member that store, the same check the
+    restart self-heal applies, so a member deleted or re-pointed since carries
+    nothing. *config* is loaded only for that fallback when the caller passes none.
+
+    A source whose record was rewritten to name a peer's store copies that peer's
+    store into *execution*, and neither source of the gateway's word names it, so
+    the answer is False and the child is published unvouched, as before.
+    """
+    if execution.member_id is None:
+        return False
+    with _EXECUTION_LOCK:
+        vouched = _VOUCHED_EXECUTIONS.get(_live_key(source_key))
+    if vouched is None:
+        from kiro_crew._durable_vouch import read_durable_vouch
+
+        record = read_durable_vouch(source_key)
+        if record is None:
+            return False
+        try:
+            vouched = execution_from_record({EXECUTION_CONTEXT_KEY: record})
+            if vouched.member_id is None:
+                return False
+            if config is None:
+                from kiro_crew.config.loader import KiroCrewConfig
+
+                config = KiroCrewConfig.load()
+            alias, _ = member_config_for_id(config, vouched.member_id)
+            canonical = resolve_member_execution(config, alias)
+        except Exception:
+            return False
+        if canonical.store.store_id != vouched.store.store_id:
+            return False
+    return vouched.member_id == execution.member_id and vouched.store == execution.store
+
+
 def read_live_session_execution(session_key: str) -> ExecutionContext | None:
     """Snapshot the live carrier for generation-safe restricted-session cleanup."""
     with _EXECUTION_LOCK:
