@@ -161,8 +161,14 @@ class SlackClientOps(ABC):
         file: str,
         filename: str,
         title: str,
+        initial_comment: str | None = None,
     ) -> None:
-        """Upload a file to a Slack thread."""
+        """Upload a file to a Slack thread.
+
+        *initial_comment* is an optional message posted with the file as its
+        Slack ``initial_comment``; ``None`` (the default) carries no comment, so
+        callers that have none (voice replies, the outbox copy) are unchanged.
+        """
 
     @abstractmethod
     async def open_dm(self, user_id: str) -> str:
@@ -643,17 +649,23 @@ class RealSlackClient(SlackClientOps):
         file: str,
         filename: str,
         title: str,
+        initial_comment: str | None = None,
     ) -> None:
         require_channel(channel)
         if turn_muted(channel, thread_ts):
             return
-        await self._web.files_upload_v2(
-            channel=channel,
-            thread_ts=thread_ts,
-            file=file,
-            filename=filename,
-            title=title,
-        )
+        upload_kwargs = {
+            "channel": channel,
+            "thread_ts": thread_ts,
+            "file": file,
+            "filename": filename,
+            "title": title,
+        }
+        # Sent only when present: an empty/absent comment must not change the
+        # files_upload_v2 call the comment-less callers (voice replies) rely on.
+        if initial_comment:
+            upload_kwargs["initial_comment"] = initial_comment
+        await self._web.files_upload_v2(**upload_kwargs)
 
     async def open_dm(self, user_id: str) -> str:
         resp = await self._web.conversations_open(users=[user_id])

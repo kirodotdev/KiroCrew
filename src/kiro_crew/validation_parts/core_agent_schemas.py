@@ -331,7 +331,21 @@ FILE_SEND_SCHEMA = ToolSchema(
     tool_name="file_send",
     fields=[
         FieldSpec("path", str, required=True, max_len=MAX_SHORT_STRING),
-        FieldSpec("description", str, max_len=MAX_SHORT_STRING),
+        # The file's preamble. ONE field, served to every leg as the caption of
+        # the one chat item the upload makes. On the Slack leg it is the file's
+        # ``initial_comment``; on the non-Slack leg it is the ``send_document``
+        # caption the channel already accepted. Each leg redacts it like outbound
+        # text.
+        #
+        # The cap here is a generous FLOOR, not the per-leg ceiling: a caller may
+        # pass a real preamble (a paragraph, a signature, a request to review), so
+        # the boundary lets it through. The per-leg ceiling is enforced where the
+        # transport is known -- the Slack leg against its message limit, the
+        # channel leg against its transport's caption cap -- which answers 400
+        # ``too_long_for_channel`` naming the channel and the number, instead of
+        # silently slicing it on the leg that would. WeCom is the exception: it
+        # pushes the caption as follow-on text and chunks it, so it is uncapped.
+        FieldSpec("description", str, max_len=MAX_MEDIUM_STRING),
         FieldSpec("channel", str, max_len=MAX_SHORT_STRING),
     ],
 )

@@ -449,6 +449,12 @@ logger = logging.getLogger(__name__)
 # function-local one from ``kiro_crew.slack.handler``.
 is_tracked_channel = _owner_channel_upload.is_tracked_channel
 
+# The per-leg caption-ceiling refusal shared by the two upload legs, defined in the
+# ``channel_upload`` owner. Bound by attribute so the composed endpoints (which run
+# on this module's namespace, not the owner's) can call it by name -- the same reason
+# ``is_tracked_channel`` is bound above.
+_description_too_long = _owner_channel_upload._description_too_long
+
 
 def _subagent_parent_session_key(state: DashboardState, session_key: str) -> str:
     """The parent session key of the sub-agent running under *session_key*, or ``""``.
