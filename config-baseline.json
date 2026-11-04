@@ -9318,20 +9318,6 @@
       "defaultValue": false
     },
     {
-      "path": "dashboard.feature_previews.crewmate_harness",
-      "kind": "core",
-      "type": "boolean",
-      "required": false,
-      "deprecated": false,
-      "sensitive": false,
-      "tags": [],
-      "label": "Feature preview: crewmate_harness",
-      "help": "Turn on the 'crewmate_harness' feature preview.",
-      "hasChildren": false,
-      "enumValues": null,
-      "defaultValue": false
-    },
-    {
       "path": "dashboard.feature_previews.explore",
       "kind": "core",
       "type": "boolean",
