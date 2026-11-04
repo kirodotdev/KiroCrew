@@ -207,9 +207,12 @@ Then take the first rule that holds:
 
 1. The human said stop → `stopped`.
 2. Every critic reviewed the current version and nothing is open → `stable`.
-3. No open blocking, no new blocking, and the new objections are wording only
-   → finish: the proposers fix the wording and write their finals; the critics
-   write theirs against the finals. No new critique round.
+3. No open blocking, no new blocking, and every open point is wording or a
+   small fix → `wrap up`. A small fix changes a few lines, adds no mechanism
+   and changes no need's answer. Each proposer folds those fixes straight into
+   its final file and lists them; each critic verifies them in its own final
+   file. No extra round is opened. A wrap-up fix a critic verified counts as
+   reviewed under Finishing.
 4. `hard_rounds` reached or budget spent → ask the human. No round starts
    without their answer.
 5. Churn, drift over half, or cost over budget → ask the human, naming it.
@@ -244,7 +247,8 @@ Read the message and act on it:
   after the last critique is listed as unreviewed, and the outcome cannot be
   `stable`.
 - Each critic writes its final file: its last verdict and every objection's
-  end state.
+  end state. After a `wrap up`, it also says whether each folded fix is
+  correct. A fix it rejects stays open and goes to the human for a ruling.
 - Accept each item when its file exists. Close it with a decision whose first
   line is the outcome and the note path:
   `OUTCOME: stable note: <path>`, `OUTCOME: ruled open=<ids> note: <path>` or

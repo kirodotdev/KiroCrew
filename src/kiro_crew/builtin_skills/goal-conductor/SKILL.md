@@ -116,8 +116,11 @@ Independent above, and the ledger carries only a short summary and the path to
 the debate note.
 
 **Offer a debate for a costly, contested choice.** Offer one when the owner
-asks for it. Offer one unasked only when the task is a complex analysis: two
-or more plausible approaches, AND a wrong choice is costly. Costly means it
+asks for it. When the owner says "discuss", "debate", "讨论" or "grill" and it
+is unclear whether they want a debate or one worker proposing a solution, ask
+them in one sentence, as your plan's one question, before you dispatch
+anyone. Offer one unasked only when the task is a complex analysis: two or
+more plausible approaches, AND a wrong choice is costly. Costly means it
 crosses a security, data, approval or trust boundary, changes a contract
 others depend on, or follows a prior failed attempt or a design block from a
 reviewer. Size alone
