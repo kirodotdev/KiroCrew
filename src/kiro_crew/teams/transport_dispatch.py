@@ -197,12 +197,9 @@ _RELEASE_FAILURE = (
 #: never collide with the entry's other payload (``attachments``).
 _ORIGIN_PREFIX = "teams_"
 
-#: This channel's name in the shared queue-drain contract
-#: (``messaging/queue_drain.py``). ONE constant, used both to tag the entries this
-#: dispatcher produces and to register its drain, because a tag that does not match the
-#: registration cannot be woken for its own entries. The neutral key those entries carry
-#: it under is defined in that module, not here: a per-module copy of the string fails
-#: silently, making this channel's entries unowned to every drain.
+#: This channel's name in the shared queue-drain contract (``messaging/queue_drain.py``).
+#: ONE constant both tags this dispatcher's entries and registers its drain: a tag that
+#: does not match the registration is never woken for its own entries.
 _CHANNEL = "teams"
 
 #: Teams admits PERSONAL scope only (``TeamsTransport.receive`` drops every other
@@ -397,10 +394,8 @@ class TeamsDispatcher:
         # the single collapsing receipt bubble the shared module implements.
         self._queue = ReceiptQueue()
         # Publish this drain so a peer transport that set aside one of THIS channel's
-        # entries can wake it. Required for the set-aside to be a deferral rather than
-        # an indefinite wait: a drain otherwise runs only from the tail of its own
-        # channel's turn, so an entry another channel put back waited for this one to
-        # finish some unrelated turn, and waited forever if the user went quiet here.
+        # entries can wake it. Otherwise the drain runs only at the tail of a Teams turn,
+        # and an entry put back by another channel waits until the user writes here again.
         register_drain(_CHANNEL, self._drain_queue)
         # Live renderer per session, so a card click can settle the prompt it
         # answered and resolve an option chip against the labels that turn
@@ -688,11 +683,10 @@ class TeamsDispatcher:
         key resolved at admission rather than re-enter ``handle_message``.
         """
         assert self.client is not None, "TeamsDispatcher.client must be set"
-        # Attachments are downloaded HERE -- after the governance gate, after the
-        # command intercept, and after the busy check -- so nothing is fetched for a
-        # message that ends up queued, and the temp files are unlinked by the same
-        # frame that awaits the turn reading them. ``temp_paths`` therefore outlive
-        # their only reader and never outlive it.
+        # Attachments are downloaded HERE, after the governance gate, command intercept
+        # and busy check, so nothing is fetched for a message that ends up queued, and
+        # the frame that awaits the turn reading the temp files is the one that unlinks
+        # them.
         temp_paths: list[str] = []
         if inbound.attachments and TEAMS_CAPABILITIES.files_inbound:
             result = await process_teams_attachments(self.client, inbound.attachments)
@@ -725,11 +719,7 @@ class TeamsDispatcher:
         resumed_key: str | None = None,
         option_session_key: str | None = None,
     ) -> None:
-        """Rotate, build the renderer, drive one turn, then drain what arrived.
-
-        Split out of :meth:`handle_message` only so the attachment temp-path cleanup
-        can wrap the whole turn in one ``finally`` without indenting it.
-        """
+        """Rotate, build the renderer, drive one turn, then drain what arrived."""
         assert self.client is not None
         conversation_id = inbound.conversation_id
         service_url = inbound.service_url
@@ -774,17 +764,13 @@ class TeamsDispatcher:
             decider=decider,
         )
 
-        # The turn skeleton (acquire -> identity -> context -> TurnDriver ->
-        # guarded post-turn -> finally close/release) lives once in
-        # messaging.dispatch. Only the teams-specific pieces are injected.
-        # NOTE: ChannelTurn.conversation_id is the SESSION-attribution id
-        # (``teams:{email}``, what sessions.* has always been given here), not
-        # ``inbound.conversation_id`` -- the Teams platform conversation id the
-        # renderer replies into. The two are deliberately different; passing the
-        # platform id would silently repoint every existing Teams session.
-        # Immediately surface a newly-created channel session in the dashboard
-        # (feature: don't wait for the ~30s reconciler). Circular import —
-        # dashboard boot imports channel packages — so import lazily.
+        # The turn skeleton lives once in messaging.dispatch; only the Teams pieces
+        # are injected. ChannelTurn.conversation_id is the SESSION-attribution id
+        # (``teams:{email}``), not ``inbound.conversation_id`` -- the platform id the
+        # renderer replies into. Passing the platform id would repoint every existing
+        # Teams session.
+        # Surface a new channel session in the dashboard now rather than at the ~30s
+        # reconciler. Imported lazily: dashboard boot imports channel packages.
         async def _surface_new_session() -> None:
             from kiro_crew.dashboard.channel_slots import surface_dispatcher_session
 
@@ -853,14 +839,10 @@ class TeamsDispatcher:
             decider.discard_reservations()
             # A Trust click is granted by the decider the moment it resolves, so
             # the rest of THIS turn stops prompting. Nothing to promote here.
-            # A renderer that posted [OPTIONS:] chips must OUTLIVE its turn: the
-            # chips are posted at on_done and tapped whenever the user gets to
-            # them, so retiring the renderer here would make every chip resolve
-            # against nothing and answer "those choices are from an earlier reply"
-            # -- an advertised capability that never works. Bounded: the entry is
-            # one renderer per session and the next turn's assignment replaces it.
-            # An approval card needs no such reprieve; it resolves while the turn
-            # is still blocked on the decider.
+            # A renderer that posted [OPTIONS:] chips must OUTLIVE its turn: the chips
+            # are tapped after on_done, and without the renderer every tap reads as
+            # stale. Bounded: one renderer per session, replaced by the next turn.
+            # An approval card resolves while the turn still waits on the decider.
             if not renderer.has_pending_choices:
                 self._active_renderers.pop(session_key, None)
 
@@ -934,20 +916,13 @@ class TeamsDispatcher:
                 outcome.reason,
             )
             if outcome.reason in (REFUSED_IDLE, REFUSED_NO_SLOT):
-                # No dashboard turn is in progress to join -- the slot is idle, or
-                # the key resolves to no open tab at all (a Teams-driven resumed turn
-                # needs none): either the turn ended between this dispatcher's busy
-                # check and the hand-off's own read, or the lease is held by Teams's
-                # own turn on the resumed key. Both are what the channel's busy path
-                # already handles -- a
-                # free lease runs the message as a fresh turn; a held one steers it
-                # or queues it with a receipt, and Teams's drain replays into the
-                # resumed key -- so the message takes that path, as it did before
-                # this hand-off existed, instead of a refusal. The fresh turn is
-                # pinned to the key resolved at admission: activities run as
-                # concurrent tasks and `/unlink` is resume-exempt (the refusal even
-                # names it), so a re-entry through `handle_message` could resolve
-                # the binding afresh and land this message in the native session.
+                # No dashboard turn to join: the slot is idle or has no open tab, so
+                # either the turn just ended or Teams's own turn holds the lease. The
+                # channel's busy path handles both (a free lease runs a fresh turn; a
+                # held one steers or queues, and the drain replays into the resumed
+                # key). The fresh turn is pinned to the key resolved at admission:
+                # `/unlink` is resume-exempt and activities run concurrently, so a
+                # re-entry through `handle_message` could land it in the native session.
                 async def _pinned_turn() -> None:
                     await self._run_admitted(
                         inbound,
@@ -1134,10 +1109,9 @@ class TeamsDispatcher:
                 identity,
                 inbound.conversation_id,
                 inbound.service_url,
-                # The card's id, not the submit's: a submit activity has its own
-                # `id`, and `replyToId` is what points back at the picker it came
-                # from. Passing `activity_id` here made every real press look like a
-                # press on a different posting, so it always answered "expired".
+                # The card's id, not the submit's: a submit activity has its own `id`,
+                # and only `replyToId` points back at the picker. The submit's id would
+                # make every real press answer "expired".
                 inbound.reply_to_id or inbound.activity_id,
                 payload["nonce"],
                 int(payload["index"]),
@@ -1294,11 +1268,9 @@ class TeamsDispatcher:
         since that drain takes its own lock and runs a whole turn. See
         ``messaging/queue_drain.py`` for why the cascade terminates.
         """
-        # Channels whose entries this pump set aside, so they can be woken after it.
-        # The sequence -- pump, then wake outside the queue lock but INSIDE this
-        # channel's active marker, then pump again for any wake a peer could not deliver
-        # back here -- lives in the shared module, because all four drains need exactly
-        # it and getting the order wrong has no local symptom.
+        # Pump, wake peers outside the queue lock but INSIDE this channel's active
+        # marker, then pump again: the sequence lives in the shared module because all
+        # four drains need exactly it, and a wrong order has no local symptom.
         await drain_until_quiet(
             channel=_CHANNEL,
             session_key=session_key,
@@ -1327,9 +1299,8 @@ class TeamsDispatcher:
         itself and everything behind it, so FIFO stays exact and the outer loop drains
         it next as its own turn under its own envelope.
 
-        Split out from :meth:`_drain_queue` so the peer wake has ONE exit point to run
-        after: this loop returns from several places, and a wake that some of them
-        skipped is the defect it exists to close.
+        Split out from :meth:`_drain_queue` so the peer wake runs after ONE exit point,
+        though this loop returns from several places.
         """
         while True:
             texts: list[str] = []
@@ -1411,12 +1382,8 @@ class TeamsDispatcher:
                         remainder.append(item)
                 # Re-enqueue the surplus IN ORIGINAL ORDER (the queue is empty
                 # now, so re-adding preserves FIFO) to drain after the next turn.
-                #
-                # ``own_deferred`` and NOT ``len(remainder)``: that also counts entries
-                # from a DIFFERENT sender and entries another TRANSPORT recorded, each
-                # of which drains in its own turn in its own chat. Showing those in this
-                # sender's receipt would promise them a follow-up for messages they
-                # never sent.
+                # ``own_deferred``, not ``len(remainder)``: the remainder also holds other
+                # senders' and other transports' entries, which drain in their own chats.
                 own_deferred = 0
                 for msg_ts, queued_text, kwargs in remainder:
                     r_origin = _queued_origin(kwargs)
@@ -1469,11 +1436,9 @@ class TeamsDispatcher:
             # drain=False keeps the pump in THIS loop instead of nesting a drain
             # inside the replayed turn.
             await self.handle_message(replay, interpret_commands=False, drain=False)
-            # Loop rather than return: messages that arrived DURING the combined
-            # turn join this same FIFO pump, as do messages this iteration deferred
-            # because they came from someone else. The only exit is the empty-queue
-            # check above, so nothing is left waiting for unrelated future user
-            # input, and every iteration drains at least one message.
+            # Loop rather than return: messages that arrived DURING the combined turn,
+            # and ones deferred as another sender's, join this FIFO pump. The only exit
+            # is the empty-queue check above, and every iteration drains at least one.
 
     # ── /stop ──────────────────────────────────────────────────────────────
 
@@ -1691,12 +1656,9 @@ class TeamsDispatcher:
             new_session_key,
             channel_type="Teams",
         )
-        # Retire the OLD generation's renderer here. A renderer kept alive for
-        # outstanding chips is keyed by the pre-bump session key, and the next turn
-        # assigns under the new one -- so nothing else ever pops this entry, and each
-        # retained renderer holds a whole answer buffer for the process lifetime.
-        # Those chips are unreachable now regardless: `/new` cleared the session they
-        # belonged to.
+        # Retire the OLD generation's renderer here: it is keyed by the pre-bump
+        # session key, so nothing else pops it and it would hold its answer buffer for
+        # the process lifetime. Its chips are unreachable once `/new` cleared the session.
         self._active_renderers.pop(session_key, None)
         message = "✅ Started a fresh conversation."
         if left_resumed is not None:
@@ -1839,9 +1801,8 @@ class TeamsDispatcher:
                 await self._reply(inbound, context_recycle_warning("`/new`"))
             return
         if pct >= soft:
-            # Capability gate: no forced compaction to run and the
-            # soft nudge's /compact advice cannot work — the backend compacts
-            # on its own as context fills.
+            # Capability gate: this backend compacts on its own, so there is no forced
+            # compaction to run and the /compact advice cannot work.
             unsupported = compact_unsupported_backend(provider)
             if unsupported:
                 logger.debug("Teams: context notice skipped — %s compacts itself", unsupported)
