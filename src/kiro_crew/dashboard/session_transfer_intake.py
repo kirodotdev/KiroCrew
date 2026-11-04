@@ -597,9 +597,13 @@ def _disk_full_response() -> web.Response:
 
 
 async def _stalling_chunks(
-    request: web.Request, stall: asyncio.Timeout, loop: asyncio.AbstractEventLoop
+    request: Any, stall: asyncio.Timeout, loop: asyncio.AbstractEventLoop
 ) -> AsyncIterator[bytes]:
     """Yield the request body in chunks, moving *stall* ahead on each one.
+
+    *request* is anything with a ``content`` stream: the arriving
+    ``web.Request``, or the peer's ``ClientResponse`` when this hub fetches a
+    session itself (:func:`install_peer_export`).
 
     Each chunk that arrives is progress, so the deadline is always
     :data:`DEFAULT_SESSION_TRANSFER_TIMEOUT_SECS` past the last one; a sender
@@ -610,7 +614,7 @@ async def _stalling_chunks(
         yield chunk
 
 
-async def _stream_request_to_file(request: web.Request, dst: Path) -> tuple[bool, int]:
+async def _stream_request_to_file(request: Any, dst: Path) -> tuple[bool, int]:
     """Stream the request body to *dst* in chunks. Returns ``(is_gzip, bytes_written)``.
 
     Reads ``request.content`` (the raw ``StreamReader``) and NEVER
@@ -675,7 +679,7 @@ async def _stream_request_to_file(request: web.Request, dst: Path) -> tuple[bool
 
 
 async def _read_bundle_body(
-    request: web.Request, keep: contextlib.AsyncExitStack
+    request: web.Request, keep: contextlib.AsyncExitStack, *, source: Any = None
 ) -> tuple[Any, web.Response | None]:
     """Read the request body as a bundle document. Returns ``(body, error)``.
 
@@ -716,6 +720,10 @@ async def _read_bundle_body(
     Args:
         request: the arriving request; its body stream is read once.
         keep: the arrival's own stack, which the arrival permit is entered on.
+        source: where the bytes come from when they are not *request*'s own
+            body -- the peer's export response on a fetch. Same stream, same
+            admissions, same temp files: a fetched session is an arrival like
+            any other.
     """
     # The upload slot bounds how many staging descriptors arrivals hold; it is
     # taken before the file is opened and released when the stream ends.
@@ -744,7 +752,9 @@ async def _read_bundle_body(
     try:
         try:
             with upload_slot:
-                is_gzip, _total = await _stream_request_to_file(request, raw_path)
+                is_gzip, _total = await _stream_request_to_file(
+                    request if source is None else source, raw_path
+                )
         except _DiskFull:
             return None, _disk_full_response()
         except Exception:
