@@ -473,14 +473,21 @@ def facts_of(response: object) -> dict[str, Any] | None:
             checks[check.state] += 1
     # A check read that did not finish says nothing about green or red.
     complete = bool(getattr(response, "checks_complete", True))
+    # A closed or merged PR's checks are not reported; an open one whose check
+    # read did not finish says so in words, which survive the None-dropping in
+    # read_live_prs.
+    reported: dict[str, int] | str | None
+    if response.state != "open":
+        reported = None
+    elif complete:
+        reported = checks
+    else:
+        reported = CHECKS_NOT_READ
     return {
         "state": "draft" if response.state == "open" and response.draft else response.state,
         "review": response.review_decision or "",
         "mergeable": response.mergeability or "",
-        # A closed or merged PR's checks are not reported; an open one whose
-        # check read did not finish says so in words, which survive the
-        # None-dropping in read_live_prs.
-        "checks": ((checks if complete else CHECKS_NOT_READ) if response.state == "open" else None),
+        "checks": reported,
     }
 
 

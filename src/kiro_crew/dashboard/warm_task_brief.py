@@ -1545,15 +1545,17 @@ def _unbacked_facts(posted: str, grounding: str, clocks: set[str]) -> list[str]:
 def _gateway_only(brief: "Brief", language: str) -> "Brief":
     """The brief with every model field dropped: the gateway's waiting cards
     and one line saying the summary could not be written (section 3.9.6)."""
+    # The model's own asks are gone, so only the gateway's list can owe the
+    # owner something; a "blocked" read is kept rather than shown on track.
+    if brief.waiting_total:
+        status = "needs_you"
+    elif brief.status == "blocked":
+        status = "blocked"
+    else:
+        status = "on_track"
     return replace(
         brief,
-        # The model's own asks are gone, so only the gateway's list can owe the
-        # owner something; a "blocked" read is kept rather than shown on track.
-        status=(
-            "needs_you"
-            if brief.waiting_total
-            else ("blocked" if brief.status == "blocked" else "on_track")
-        ),
+        status=status,
         headline=_FAILURE_TEXT[language],
         asked="",
         remaining="",
