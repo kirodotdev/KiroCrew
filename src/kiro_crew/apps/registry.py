@@ -810,6 +810,7 @@ if _typing.TYPE_CHECKING:
         _fetch_app_manifest,
         _merge_manifest,
         _resolve_manifest,
+        loads_user_json,
         official_catalog,
         sanitize_links,
     )

@@ -55,6 +55,7 @@ from kiro_crew.apps.manifest import (
 )
 from kiro_crew.platform_compat import first_linked_ancestor, is_link_or_junction
 from kiro_crew.terminal_safe import safe_terminal_line
+from kiro_crew.user_json import loads_user_json
 
 # The manifest file name is the same in both discovery families.
 MANIFEST_FILENAME = "plugin.json"
@@ -358,7 +359,7 @@ def _read_json_object(path: Path, what: str) -> dict[str, Any]:
         # unreadable in the only sense this converter cares about.
         raise PluginImportError("manifest_unreadable", f"{what} is not valid UTF-8: {exc}") from exc
     try:
-        data = json.loads(raw)
+        data = loads_user_json(raw)
     except ValueError as exc:
         # ValueError, not JSONDecodeError. JSONDecodeError SUBCLASSES ValueError, so
         # this arm still answers a syntax error the same way, and it also catches the
@@ -442,7 +443,7 @@ def _is_schema_qualified(path: Path) -> bool:
         # is taken whole in one call, so a check afterwards has already paid for it.
         if path.stat().st_size > MAX_MANIFEST_BYTES:
             return False
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = loads_user_json(path.read_text(encoding="utf-8"))
     except (OSError, ValueError, UnicodeDecodeError, RecursionError):
         # ValueError, not JSONDecodeError, for the reason _read_json_object gives:
         # JSONDecodeError subclasses it, and the parser also raises a PLAIN
