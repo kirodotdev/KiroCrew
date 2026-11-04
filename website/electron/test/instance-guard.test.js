@@ -203,6 +203,21 @@ test("older current-bundle gateways require a warning before reuse", () => {
   }
 });
 
+test("a bundle version, when given, is what the stale check compares", () => {
+  const health = { app: "kirocrew", version: "0.12.0.3" };
+  const opts = { localOwner: "service", bundledGateway: true };
+  assert.equal(decideGatewayAction("0.12.0-rc.5", health, opts).action, "reuse",
+    "the release version alone does not rank above the build number");
+  assert.deepEqual(decideGatewayAction("0.12.0-rc.5", health, { ...opts, bundleVersion: "0.12.0.4" }), {
+    action: "warn-stale", oldVersion: "0.12.0.3", reason: "same-family",
+  });
+  assert.equal(decideGatewayAction("0.12.0-rc.5", health, { ...opts, bundleVersion: "0.12.0.3" }).action, "reuse");
+  assert.equal(decideGatewayAction("0.12.0-rc.5", health, { ...opts, bundleVersion: "0.12.0.2" }).action, "reuse");
+  assert.equal(decideGatewayAction("0.12.0-rc.5", health, {
+    localOwner: "service", bundledGateway: false, bundleVersion: "0.12.0.4",
+  }).action, "reuse", "still needs a proven bundle");
+});
+
 test("stale warnings require a proven local bundle and a strictly newer same-family app", () => {
   const cases = [
     ["foreign", true, "0.7.0"], ["none", true, "0.7.0"], ["unknown", true, "0.7.0"],

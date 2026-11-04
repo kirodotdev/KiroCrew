@@ -624,6 +624,11 @@ function resolveChannel(stamped, preference, required = "") {
  * stays loadable outside an Electron runtime; a stubbed/absent semver yields
  * null (fail-open) rather than throwing.
  *
+ * A packager can number its builds with a fourth part (`0.12.0.3`, then
+ * `0.12.0.4`). semver has no fourth part and coerces both to `0.12.0`, so when
+ * the first three parts tie the fourth decides; a version without one counts
+ * as `.0`.
+ *
  * @param {string} candidate
  * @param {string} current
  * @returns {boolean|null}
@@ -640,10 +645,17 @@ function isNewerVersion(candidate, current) {
   const b = semver.valid(current) || semver.valid(semver.coerce(current));
   if (!a || !b) return null;
   try {
+    if (semver.eq(a, b)) return fourthVersionPart(candidate) > fourthVersionPart(current);
     return semver.gt(a, b);
   } catch {
     return null;
   }
+}
+
+// The fourth part of a four-part build number (`0.12.0.4` -> 4), else 0.
+function fourthVersionPart(version) {
+  const match = /^v?\d+\.\d+\.\d+\.(\d+)$/.exec(String(version).trim());
+  return match ? Number(match[1]) : 0;
 }
 
 /**

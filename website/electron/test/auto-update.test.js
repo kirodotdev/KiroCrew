@@ -308,6 +308,24 @@ test("isNewerVersion understands the prerelease stamps this app ships", () => {
   assert.strictEqual(isNewerVersion("0.5.0-nightly.20260801t000000", "0.3.0"), true);
 });
 
+test("isNewerVersion ranks a fourth build-number part when the first three tie", () => {
+  assert.strictEqual(isNewerVersion("0.12.0.4", "0.12.0.3"), true);
+  assert.strictEqual(isNewerVersion("0.12.0.3", "0.12.0.4"), false);
+  assert.strictEqual(isNewerVersion("0.12.0.4", "0.12.0.4"), false);
+  assert.strictEqual(isNewerVersion("0.12.0.10", "0.12.0.9"), true, "numeric, not text");
+  assert.strictEqual(isNewerVersion("0.12.0.4", "0.12.0"), true, "a missing fourth part counts as .0");
+  assert.strictEqual(isNewerVersion("0.12.0", "0.12.0.4"), false);
+  assert.strictEqual(isNewerVersion("0.12.0.0", "0.12.0"), false);
+  // The first three parts still decide whenever they differ.
+  assert.strictEqual(isNewerVersion("0.11.0.3", "0.10.0.3"), true);
+  assert.strictEqual(isNewerVersion("0.12.1", "0.12.0.9"), true);
+  assert.strictEqual(isNewerVersion("0.12.0.9", "0.12.1"), false);
+  // A prerelease of the same core is unchanged: the release core is newer.
+  assert.strictEqual(isNewerVersion("0.12.0.4", "0.12.0-rc.5"), true);
+  assert.strictEqual(isNewerVersion("0.12.0-rc.5", "0.12.0.3"), false);
+  assert.strictEqual(isNewerVersion("0.12.0-rc.6", "0.12.0-rc.5"), true);
+});
+
 test("isNewerVersion: unrankable input is null (fail-open, never a false 'not newer')", () => {
   assert.strictEqual(isNewerVersion("", "1.0.0"), null);
   assert.strictEqual(isNewerVersion("1.0.0", undefined), null);
