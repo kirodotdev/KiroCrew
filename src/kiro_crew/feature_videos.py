@@ -1042,26 +1042,16 @@ async def api_feature_videos_status(request: web.Request) -> web.Response:
     and to show whether the hosted library has finished arriving.
 
     ``downloading`` is the in-flight clip's catalog id and ``downloading_title``
-    its manifest title (``None`` when nothing is in flight or the manifest gave
-    no title). The title is what the panel shows; the id stays on the wire so a
-    client can still tell which clip is moving.
+    its manifest title (``None`` when nothing is in flight or there is no title).
 
-    ``state`` keeps its original meaning — the ``{<id>: {"status", "ts"}}``
-    engagement map — and the transfer's own step is reported separately as
-    ``download_state``. Renaming would have been the smaller diff here and the
-    larger break: ``state`` is what the settings panel already reads.
+    ``state`` is the ``{<id>: {"status", "ts"}}`` engagement map the settings
+    panel reads; the transfer's step is ``download_state``.
 
-    Only ``state`` is history. It is gated by ``_blocks_reads_session`` rather
-    than ``_is_restricted_session``: that is the product's own read/write split,
-    not a looser gate — incognito withholds WRITES, and a temporary session
-    withholds reads as well. ``/library`` uses the broader predicate because reaching
-    it leads to a permanent write, while this route only reads, so an incognito
-    session still renders its own settings panel and only a read-blocking session
-    is served an empty map.
-
-    Every other field is instance configuration or cache bookkeeping, reported
-    truthfully to every session: withholding them would make the panel claim the
-    feature is off, or that nothing has downloaded.
+    Only ``state`` is history, gated by ``_blocks_reads_session`` rather than
+    ``_is_restricted_session``: incognito withholds writes, a temporary session
+    withholds reads too, and this route only reads. Every other field is instance
+    configuration or cache bookkeeping, reported to every session so the panel
+    does not claim the feature is off.
     """
     state: DashboardState = request.app["state"]
     loop = asyncio.get_running_loop()
@@ -1095,19 +1085,12 @@ async def api_feature_videos_feedback(request: web.Request) -> web.Response:
 
     Body: ``{"id": <catalog id>, "status": "seen" | "dismissed"}``.
 
-    Both statuses are terminal: there is no snooze, so a recorded video is never
-    offered again. The id must name a known clip (:func:`known_video_ids`, the union
-    of the static catalog and the current manifest) OR one ``/library`` offered
-    recently (:data:`_issued_ids`) — an id from neither is a client bug, and
-    accepting it would let an unbounded set of keys accumulate in the state file
-    forever. Those two checks together are the only id validation, and both are
-    strictly tighter than any length or shape bound.
-
-    The second check exists because the catalog can change under an open card: a
-    background manifest refresh replaces it, and without this check the
-    user's verdict on the clip in front of them would 400 and be discarded — after
-    which the clip comes back, which is the one thing a permanent verdict promises
-    it will not do.
+    Both statuses are terminal: a recorded video is never offered again. The id
+    must name a known clip (:func:`known_video_ids`, catalog plus current manifest)
+    or one ``/library`` offered recently (:data:`_issued_ids`); anything else is
+    refused so the state file's keys stay bounded. The second set covers a
+    manifest refresh that replaces the catalog under an open card, which would
+    otherwise discard the user's verdict and bring the clip back.
     """
     state: DashboardState = request.app["state"]
 
