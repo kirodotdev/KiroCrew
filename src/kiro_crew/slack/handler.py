@@ -61,8 +61,10 @@ from kiro_crew.config.loader import (  # noqa: F401 - read by the owners
     KIRO_CLI_BUILTIN_AGENTS,
     ConfigReadError,
     KiroCrewConfig,
+    config_local_path,
     config_path,
     read_config_text,
+    read_merged_config_files,
     update_config_locked,
 )
 from kiro_crew.config.paths import kiro_agents_dir, peek_data_home

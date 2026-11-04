@@ -196,6 +196,30 @@ def read_config_text(path: Path) -> str:
     return strip_utf8_bom(path.read_text(encoding="utf-8"))
 
 
+def read_merged_config_files(*paths: Path) -> dict:
+    """The config documents at *paths*, each merged over the one before. Never raises.
+
+    The raw counterpart of the loader's overlay for a reader that must stay off the
+    config dataclass graph: callers pass ``config.json`` then ``config.local.json``
+    (from their own path helpers, so a test patching those still reaches the read),
+    and the whole documents merge with :func:`~kiro_crew.config.resolution._deep_merge`
+    BEFORE any section is read, as the loader does, so an overlay ``"x": null``
+    replaces the base section. A file that is absent, unreadable or not an object
+    contributes nothing.
+    """
+    from kiro_crew.config.resolution import _deep_merge
+
+    merged: dict = {}
+    for path in paths:
+        try:
+            document = json.loads(read_config_text(path))
+        except (OSError, ValueError):
+            continue
+        if isinstance(document, dict):
+            merged = _deep_merge(merged, document)
+    return merged
+
+
 def overlay_pins(*key_path: str) -> bool:
     """Whether ``config.local.json`` sets the key at *key_path*.
 
