@@ -1,6 +1,6 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Zap } from 'lucide-react'
+import { Check, Zap } from 'lucide-react'
 import { api } from '../api/client'
 import { ApiError } from '../api/apiError'
 import { Btn, Input, SendBtn } from './ui'
@@ -794,8 +794,8 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
         </div>
       </>) : (
         <div className="flex gap-2 items-center flex-wrap">
-          <Input placeholder={i18nT('components.jobForm.job_name')} value={name} onChange={e => setName(e.target.value)} />
-          <Input placeholder={i18nT('components.jobForm.message_task')} style={{ flex: 2 }} value={msg} onChange={e => setMsg(e.target.value)} />
+          <Input aria-label={i18nT('components.jobForm.name')} placeholder={i18nT('components.jobForm.job_name')} value={name} onChange={e => setName(e.target.value)} />
+          <Input aria-label={i18nT('components.jobForm.message')} placeholder={i18nT('components.jobForm.message_task')} style={{ flex: 2 }} value={msg} onChange={e => setMsg(e.target.value)} />
           {locked
             ? <LockedAgentValue name={locked} member={memberNoun} hint={lockedAgentHint} />
             : runsAsField ?? <AgentSelector agents={agents} defaultAgent={defaultAgent} value={agent} onChange={(name) => setAgent(name)} rosterFailure={rosterFailure} modal />}
@@ -807,7 +807,7 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
             clearLabel={i18nT('components.jobForm.model_inherit')}
             aria-label={i18nT('components.jobForm.model')}
           />
-          <Input placeholder={i18nT('components.jobForm.channel_id_optional')} style={{ flex: '0 0 170px' }} value={channel} onChange={e => setChannel(e.target.value)} />
+          <Input aria-label={i18nT('components.jobForm.channel_id')} placeholder={i18nT('components.jobForm.channel_id_optional')} style={{ flex: '0 0 170px' }} value={channel} onChange={e => setChannel(e.target.value)} />
           <SimpleSelect
             aria-label={i18nT('components.jobForm.approval')}
             options={['auto']}
@@ -870,7 +870,7 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
           {...uiLocation('schedule.edit-when')}
         />
         {schedMode === 'interval' ? (<>
-          <Input type="number" min={1} style={{ flex: '0 0 70px' }} value={intVal} onChange={e => setIntVal(Math.max(1, parseInt(e.target.value) || 1))} />
+          <Input type="number" min={1} aria-label={i18nT('components.jobForm.interval_count')} style={{ flex: '0 0 70px' }} value={intVal} onChange={e => setIntVal(Math.max(1, parseInt(e.target.value) || 1))} />
           <SimpleSelect
             aria-label={i18nT('components.jobForm.every_interval')}
             options={['minutes', 'hours', 'days']}
@@ -879,14 +879,20 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
             onChange={v => setIntUnit(v as 'minutes' | 'hours' | 'days')}
           />
         </>) : schedMode === 'weekly' ? (<>
-          <div className="flex gap-1 flex-wrap">{dayNames().map((d, i) => (
-            <button key={d} type="button" onClick={() => toggleDay(i + 1)} className={`px-2 py-1 rounded-md text-[12px] font-medium border cursor-pointer transition-all ${weekDays.includes(i + 1) ? 'bg-accent text-accent-fg border-accent' : 'bg-bg-elevated text-muted border-border hover:border-border-strong'}`}>{d}</button>
-          ))}</div>
+          {/* Each day is a toggle: aria-pressed carries the state to assistive
+              tech, and the check mark carries it to a reader who cannot tell the
+              accent fill from the plain one. */}
+          <div role="group" aria-label={i18nT('components.jobForm.days_of_week')} className="flex gap-1 flex-wrap">{dayNames().map((d, i) => {
+            const on = weekDays.includes(i + 1)
+            return (
+              <button key={d} type="button" aria-pressed={on} onClick={() => toggleDay(i + 1)} className={`inline-flex items-center gap-0.5 px-2 py-1 rounded-md text-[12px] font-medium border cursor-pointer transition-all ${on ? 'bg-accent text-accent-fg border-accent' : 'bg-bg-elevated text-muted border-border hover:border-border-strong'}`}>{on && <Check aria-hidden="true" size={11} strokeWidth={3} />}{d}</button>
+            )
+          })}</div>
           <span className="text-muted text-[13px]">{i18nT('components.jobForm.at')}</span>
-          <Input type="time" style={{ flex: '0 0 100px' }} value={weekTime} onChange={e => setWeekTime(e.target.value)} />
+          <Input type="time" aria-label={i18nT('components.jobForm.time_of_day')} style={{ flex: '0 0 100px' }} value={weekTime} onChange={e => setWeekTime(e.target.value)} />
           {tzSelect}
         </>) : (<>
-          <Input value={cronExpr} onChange={e => setCronExpr(e.target.value)} placeholder="0 9 * * 1-5" />
+          <Input aria-label={i18nT('components.jobForm.cron_expression')} value={cronExpr} onChange={e => setCronExpr(e.target.value)} placeholder="0 9 * * 1-5" />
           {tzSelect}
         </>)}
         </>)}
