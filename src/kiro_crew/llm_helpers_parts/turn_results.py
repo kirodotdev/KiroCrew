@@ -57,11 +57,10 @@ def _extract_json_of_type(
         try:
             data, end = _JSON_DECODER.raw_decode(text, i)
         except RecursionError:
-            # Deep nesting ("[" * 100_000) overflows the recursive decoder, and
-            # callers of this untrusted text handle only JSONDecodeError, so the
-            # error must not escape. Fail the WHOLE scan closed: a truncated
-            # scan cannot certify a preferred match as unambiguous. Callers
-            # already recover from None (schema retry, the spine's re-emit).
+            # Deep nesting ("[" * 100_000) overflows the decoder, and callers
+            # handle only JSONDecodeError. Fail the WHOLE scan closed: a truncated
+            # scan cannot prove a preferred match unambiguous. Callers recover
+            # from None.
             return None
         except json.JSONDecodeError:
             i += 1
@@ -168,27 +167,21 @@ async def save_conversation_turn_off_loop(
 ) -> str | None:
     """Save a turn without blocking (or fail-fast-dropping on) the event loop.
 
-    Returns the ``ts`` of this turn's last row, read INSIDE the atomic hold: the
-    session permit is released before the caller continues, so a re-read of the
-    tail afterwards could return a queued second turn's position instead.
+    Returns the ``ts`` of this turn's last row, read INSIDE the atomic hold; a
+    re-read afterwards could see a queued second turn's row instead.
 
-    Each ``ConversationLog.append`` takes a cross-process flock and writes to
-    disk (~12 ms on a large transcript). On a running loop ``_locked`` makes one
-    NON-blocking acquire and raises
+    On a running loop ``_locked`` makes one NON-blocking acquire and raises
     :class:`~kiro_crew.history.HistoryLockTimeout` on any concurrent holder,
-    which most callers swallow, dropping the durable copy. Off the loop the same
-    primitive polls to its deadline. Every async caller goes through here, so
-    the offload cannot be forgotten at a new call site.
+    dropping the durable copy; off the loop it polls to its deadline. Every async
+    caller goes through here so a new call site cannot forget the offload.
 
-    Unlike :func:`~kiro_crew.history.append_off_loop`, this **awaits** the
-    write: callers go on to refresh a dashboard tab or hand the session to
-    consolidation, both of which read the transcript back.
+    Unlike :func:`~kiro_crew.history.append_off_loop`, this **awaits** the write:
+    callers read the transcript back next (a dashboard refresh, consolidation).
 
     The whole turn is written under one
     :meth:`~kiro_crew.history.ConversationLog.atomic_appends` hold. ``append``
-    locks per ROW, so two concurrent offloaded turns could otherwise interleave
-    into ``user_A, user_B, assistant_A, assistant_B``, which no timestamp order
-    can repair since each row's ``ts`` is correct.
+    locks per ROW, so two concurrent turns could otherwise interleave into
+    ``user_A, user_B, assistant_A, assistant_B``, which no ``ts`` sort repairs.
     """
 
     def _write() -> str | None:
