@@ -26,6 +26,7 @@ from subagent_scale_helpers import (  # noqa: F401 -- the autouse fixture regist
 
 from kiro_crew.subagent import SubagentInfo, SubagentManager
 from kiro_crew.subagent_scale import SubagentEventCoalescer
+from kiro_crew.testing.wait import await_until
 
 # ``SubagentManager.spawn`` refuses -- registering no task -- while the host
 # looks short of memory, which is the runner's state, not this test's input.
@@ -46,6 +47,17 @@ def _coalescer(active: int, tick: float = 0.02):
         tick_secs=tick,
     )
     return c, all_frames, sub_frames
+
+
+async def _wait_for_tick_flush(c: SubagentEventCoalescer) -> None:
+    """Wait until the coalescer's scheduled tick has run its flush.
+
+    Awaits the tick task itself, so a slow runner waits as long as the flush
+    takes instead of reading the frame lists after a fixed delay.
+    """
+    task = c._tick_task
+    assert task is not None, "no flush tick was scheduled"
+    await await_until(task, what="coalescer flush tick")
 
 
 class TestCoalescer:
@@ -75,9 +87,7 @@ class TestCoalescer:
         c, all_frames, _ = _coalescer(active=50)
         c.handle("subagent_retrying", {"id": "a1", "slot": "s", "attempt": 1})
         c.handle("subagent_tool", {"id": "a1", "slot": "s", "tool": "Read", "tool_count": 2})
-        # flake-ok: pre-existing 60 ms wait past the 20 ms flush tick -- moved verbatim; tracked for a de-flake pass
-        # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing 60 ms wait past the 20 ms flush tick moved verbatim
-        await asyncio.sleep(0.06)
+        await _wait_for_tick_flush(c)
         ((etype, data),) = all_frames
         entry = data["updates"][0]
         assert entry["tool"] == "Read"
@@ -100,9 +110,7 @@ class TestCoalescer:
             is True
         )
         assert all_frames == []  # nothing until the tick
-        # flake-ok: pre-existing 60 ms wait past the 20 ms flush tick -- moved verbatim; tracked for a de-flake pass
-        # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing 60 ms wait past the 20 ms flush tick moved verbatim
-        await asyncio.sleep(0.06)
+        await _wait_for_tick_flush(c)
         assert len(all_frames) == 1
         etype, data = all_frames[0]
         assert etype == "subagent_batch_update"
@@ -115,9 +123,7 @@ class TestCoalescer:
         c, all_frames, sub_frames = _coalescer(active=50)
         assert c.handle("subagent_chunk", {"id": "a1", "slot": "s", "text": "hello "}) is True
         assert c.handle("subagent_chunk", {"id": "a1", "slot": "s", "text": "world"}) is True
-        # flake-ok: pre-existing 60 ms wait past the 20 ms flush tick -- moved verbatim; tracked for a de-flake pass
-        # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing 60 ms wait past the 20 ms flush tick moved verbatim
-        await asyncio.sleep(0.06)
+        await _wait_for_tick_flush(c)
         assert all_frames == []
         assert len(sub_frames) == 1
         etype, data = sub_frames[0]
