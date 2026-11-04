@@ -176,18 +176,14 @@ def open_default_store(
     file cannot be opened; a failure in any of the three later phases is logged,
     never fatal, because a store that opens can still accept new work.
 
-    The two sweeps run ONCE here and the store this returns carries no record of
-    what they could not settle, so the rows they refused are named in the log
-    (:func:`_log_unsettled`): nothing in the process re-examines a row a boot
-    sweep failed on -- the pump's repeated sweep reads wait DEADLINES alone -- so
-    the log is the only place an operator can learn which row waits for the next
-    restart. (A legacy-import error is different: the import is keyed and
-    idempotent, so the next boot retries the row, and ``import_legacy`` counts
-    its own.)
+    The two sweeps run ONCE here and nothing re-examines a row they refused
+    (the pump's sweep reads wait deadlines alone), so :func:`_log_unsettled`
+    names those rows: the log is the only place an operator learns which row
+    waits for the next restart. Legacy-import errors are retried by the next
+    boot, since the import is keyed.
 
-    TaskRunner keeps ``runs.json`` in its own work directory, which only the
-    runner resolves, so its path is a parameter rather than a guess; ``None``
-    imports subagent folders only. ``journal_mode`` is
+    Only TaskRunner resolves its ``runs.json`` path, so it is a parameter;
+    ``None`` imports subagent folders only. ``journal_mode`` is
     ``agent.task_store_journal_mode``: ``auto`` detects a network filesystem
     and picks DELETE there (WAL otherwise); ``wal`` / ``delete`` force one.
     """

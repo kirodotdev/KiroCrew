@@ -107,26 +107,18 @@ def wake_wait(
 ) -> int | None:
     """End a wait under generation+1; returns the new generation.
 
-    ``to`` is where the row goes: ``running`` ONLY when the caller holds
-    the lane slot and the runtime is resident (admission's ``resume_grant``,
-    called after the pump granted the slot); every other wake -- a runner
-    coroutine that still has to reacquire its lane, a parked row whose run
-    is gone, an answer delivered to a ``waiting_input`` row -- lands in
-    ``retry_wait`` with ``next_run_at = now`` and no lease: claimable at
-    once, so the dispatcher / the runner's re-admission claims it and writes
-    ``running`` only when capacity was actually granted. A crash in that
-    gap leaves a claimable row, not a ``running`` row with a dead owner
-    that reconciles to ``unknown_side_effect``.
+    ``to`` is ``running`` ONLY when the caller holds the lane slot and the
+    runtime is resident (admission's ``resume_grant``). Every other wake lands
+    in ``retry_wait`` with ``next_run_at = now`` and no lease, so a claimer
+    writes ``running`` only once capacity is granted, and a crash in that gap
+    leaves a claimable row, not a dead-owner ``running`` row that reconciles to
+    ``unknown_side_effect``.
 
-    ``only_from`` narrows the default fence -- any state in
-    :data:`model.WAITING` -- to the wait the caller's wake ANSWERS, exactly
-    as :meth:`cancel`'s does for a cancel: a wake carries the answer to ONE
-    question, and ``waiting_input`` / ``waiting_dependency`` /
-    ``waiting_children`` are different questions, so a caller that read one
-    of them names it here and a row that moved to another between the read
-    and this call is refused instead of having the wrong wait ended. The
-    refusal is the ``rejected_transition`` the default fence already
-    records, and the predicate is tested in THIS transaction.
+    ``only_from`` narrows the default fence (any :data:`model.WAITING` state)
+    to the wait this wake answers, as :meth:`cancel`'s does: a row that moved
+    to a different wait since the caller read it is refused (the usual
+    ``rejected_transition``) instead of having the wrong wait ended. The check
+    runs in THIS transaction.
 
     The bump is the re-admission fence (RFC §14.2): callbacks issued during
     the wait carry the old generation and are rejected as ``stale_result``.

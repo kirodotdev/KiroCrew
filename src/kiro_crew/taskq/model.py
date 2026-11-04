@@ -241,26 +241,16 @@ def check_transition(old: str, new: str) -> None:
 def steps_to(old: str, new: str) -> tuple[str, ...]:
     """The table's OWN path from *old* to *new*, at most one state long.
 
-    ``(new,)`` when the table has that edge. ``(starting, new)`` when it does
-    not but the skipped ``starting`` step reaches it -- ``admitted -> starting
-    -> running`` is the case this exists for: a caller whose earlier
-    ``starting`` write never committed (a locked database) would otherwise ask
-    for an edge the table forbids and be refused for good, leaving a LIVE row
-    in ``admitted``. ``()`` when there is no such path, when a name is unknown,
-    or when *old* is already *new* -- the table has no self-edges, so an
-    identity is never a write.
+    ``(new,)`` when the table has that edge; ``(starting, new)`` when the
+    skipped ``starting`` step reaches it (``admitted -> starting -> running``
+    after a ``starting`` write that never committed, which would otherwise
+    leave a LIVE row stuck in ``admitted``); ``()`` when there is no such path,
+    a name is unknown, or *old* is *new* (the table has no self-edges).
 
-    ``starting`` is the ONLY intermediate this helper will insert, and the
-    restriction is the safety property, not an implementation limit: a
-    ``starting`` write lost between the claim and the first mark is the one
-    missed step a live row can carry, while every other pair the table joins in
-    two steps walks a live row BACKWARDS into a state a dispatcher may take
-    (``running -> retry_wait -> queued``, ``running -> recovering ->
-    admitted``) -- the re-dispatch-after-work class the callers of this helper
-    exist to close. Direction is therefore the HELPER's to enforce, never a
-    docstring asking callers not to ask: the dangerous move is not expressible.
-    The intermediate is also never TERMINAL (``starting`` is not), so no replay
-    routes a live row through an outcome, and every element is an edge
+    ``starting`` is the ONLY intermediate, and that is the safety property:
+    every other two-step pair walks a live row BACKWARDS into a dispatchable
+    state (``running -> retry_wait -> queued``), so re-dispatch after work is
+    not expressible. ``starting`` is not terminal and every element is an edge
     ``check_transition`` accepts, so this widens nothing.
     """
     if old not in STATES or new not in STATES or old == new:

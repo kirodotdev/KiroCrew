@@ -614,12 +614,10 @@ class WaitLedger:
         * a non-terminal child whose parent is terminal is cancelled: nothing
           will ever collect its result.
 
-        Every half and every row is settled on its own, and a refusal is named
-        in ``report.errors`` rather than raised: this pass is the only one that
-        wakes a restored parent or cancels an orphan -- the pump's repeated
-        sweep reads deadlines alone -- so an all-or-nothing pass would strand
-        every row behind the first refusal until the next restart. Idempotent: a
-        second call finds nothing to do.
+        Each half and row is settled on its own and a refusal goes to
+        ``report.errors``, not raised: only this pass wakes a restored parent or
+        cancels an orphan (the pump's sweep reads deadlines alone), so one
+        refusal must not strand the rest until the next restart. Idempotent.
         """
         ts = self.now() if now is None else now
         report = RebuildReport()
