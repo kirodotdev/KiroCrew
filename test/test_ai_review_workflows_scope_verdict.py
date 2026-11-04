@@ -39,12 +39,9 @@ from named_cases_helpers import named_cases
 def _scope_candidates():
     """Load `scripts/scope_candidates.py` for its `_VALIDATE_REFUSALS` table.
 
-    Read from the module the fork lane actually runs, so a rename of a dict key
-    is caught rather than mirrored in a second copy of the names here. Registered
-    in `sys.modules` before exec because the script's dataclasses resolve their
-    own annotations through it. `deny_diff.py` sits beside it and is imported by
-    path at load time, so both modules must be reachable -- they are, as siblings
-    under `scripts/`.
+    Read from the module the fork lane runs, so a renamed key is caught. Registered
+    in `sys.modules` before exec because the script's dataclasses resolve their own
+    annotations through it.
     """
     path = ROOT / "scripts" / "scope_candidates.py"
     spec = importlib.util.spec_from_file_location("scope_candidates_for_workflow_tests", path)
@@ -58,12 +55,8 @@ def _scope_candidates():
 class TestTheScopeSurfaceIsResolvedOnce:
     """Both scope lanes ask "is this in scope?" of ONE list, and skip green.
 
-    The surface was already spelled twice before this lane existed
-    (``denial-differential.yml``'s ``on.paths`` and the same-repo lane's resolve
-    step) with nothing pinning them equal. A third copy in the fork lane would be
-    the one that matters most: it is the copy that decides whether a FORK pull
-    request is reviewed at all, so a list that drifts short there skips the review
-    silently, on exactly the changes nobody in this repository wrote.
+    A copy in the fork lane would decide whether a fork pull request is reviewed at
+    all, so a list that drifts short there skips the review silently.
     """
 
     SENTINELS = ("SCOPE-SURFACE-BEGIN", "SCOPE-SURFACE-END")
@@ -109,29 +102,19 @@ class TestTheScopeSurfaceIsResolvedOnce:
         # An unreadable label list buys the expensive answer, never the cheap one.
         assert 'echo "in_scope=true" >> "$GITHUB_OUTPUT"' in script
 
-    #: Both scope lanes, because this property is the one the fail-closed ruling
-    #: rests on and it was pinned on the fork lane alone for eleven rounds.
-    #: ``_UNSETTLED_CONCLUSION = "error"`` is defensible only because an
-    #: off-surface pull request never reaches the model at all -- otherwise a
-    #: Bedrock outage would red a PR this lane would not have judged, which is the
-    #: cost `docs/ci/ci-and-reviews.md` says the ruling does NOT pay. One lane
-    #: keeping the gate while its twin lost it would make the doc true of half the
-    #: PRs and silently false of the other half.
+    #: Both scope lanes. ``_UNSETTLED_CONCLUSION = "error"`` is defensible only because
+    #: an off-surface pull request never reaches the model; otherwise a Bedrock outage
+    #: would red a PR this lane would not have judged (see `docs/ci/ci-and-reviews.md`).
     OUT_OF_SCOPE_GATED_LANES = ("security-scope-review.yml", "fork-security-scope-review.yml")
 
     def test_both_floor_reads_ask_for_every_check_run_not_just_the_latest(self) -> None:
         """`GET /commits/{ref}/check-runs` defaults to `filter=latest`.
 
-        `latest` is one check-run PER NAME, and while the floor step runs, that one is
-        this run's OWN in-progress check-run -- so the default returns a listing with
-        no prior in it, every prior reads as "never judged", and the floor silently
-        holds nothing. A resampled clean re-run then publishes success over a
-        confirmed regression, which is the single thing the floor exists to stop.
-        The gate was inert exactly this way until it was measured.
+        `latest` is one check-run per name, which during the floor step is this run's
+        own in-progress one, so no prior is seen and the floor holds nothing.
 
-        Both lanes, and only these two reads: a check-runs read whose purpose is the
-        CURRENT state (pr-readiness) is correct on the default, so this is not a
-        repo-wide rule about the parameter -- it is a rule about a read of history.
+        Only these two reads of history: a read of the current state (pr-readiness)
+        is correct on the default.
         """
         for lane, job, step in (
             ("security-scope-review.yml", "publish", "Enforce the per-head monotonic floor"),
@@ -174,12 +157,9 @@ class TestTheScopeSurfaceIsResolvedOnce:
     def test_the_fork_scope_step_runs_where_its_two_inputs_exist(self) -> None:
         """Order is a correctness input here, and both ways of getting it wrong are silent.
 
-        The step diffs ``base...head``, and a fork head is reachable only through
-        ``refs/pull/N/head`` -- so before the fetch step there is no head object,
-        the diff resolves empty, and EVERY fork pull request reads as touching
-        nothing: a global skip of a blocking lane, reported as a pass. And the
-        contract step is gated on this step's output, so ahead of it that gate
-        reads an unset value and the contract is never extracted at all.
+        Before the fetch of ``refs/pull/N/head`` there is no head object, so every fork
+        pull request reads as touching nothing. The contract step is gated on this
+        step's output, so ahead of it the gate reads an unset value.
         """
         doc = yaml.safe_load(_workflow("fork-security-scope-review.yml"))
         names = [
@@ -219,14 +199,9 @@ class TestTheScopeSurfaceIsResolvedOnce:
 class TestBothScopeLanesTolerateAnIndentedVerdictHeader:
     """The contract DISPLAYS the header indented, so both captures must accept it.
 
-    ``.github/review-prompts/security-scope.md`` shows ``Scope-Verdict:`` indented
-    four spaces inside its output-contract block. A model that copies that
-    indentation writes a header an anchored ``^Scope-Verdict:`` grep cannot see, and
-    the lane then reads ``UNKNOWN`` on a clean, fully-adjudicated review -- the fork
-    lane turns that into ``conclusion=failure``. Fail-closed, so not a hole, but it
-    is this lane over-refusing a legitimate outcome, which is the failure class the
-    lane exists to catch. The two lanes must answer identically, so the pin runs one
-    input through each lane's OWN expression.
+    ``.github/review-prompts/security-scope.md`` indents ``Scope-Verdict:`` four
+    spaces; an anchored ``^Scope-Verdict:`` grep misses a copied header and reads
+    ``UNKNOWN`` on a clean review. One input runs through each lane's own expression.
     """
 
     @staticmethod
@@ -335,17 +310,11 @@ class TestBothScopeLanesTolerateAnIndentedVerdictHeader:
     ) -> None:
         """An empty capture is an ANSWER, and must not be an abort.
 
-        Each lane keeps a fallback one line under its capture -- ``UNKNOWN`` for the
-        same-repo lane, a ``[ -n ]`` test for the fork lane -- so a review that names
-        no verdict has a defined, fail-closed outcome. A ``run:`` block with no
-        ``shell:`` key runs under ``bash -e``, and these steps add ``pipefail``, so a
-        capture whose status is non-zero dies ABOVE that fallback: the lane writes no
-        verdict output at all, its status step reads an empty verdict, and the comment
-        that would have named the cause is never posted. A red either way, but one of
-        them tells nobody why.
+        Each lane keeps a fail-closed fallback one line under its capture. Under the
+        runner's ``bash -e`` plus ``pipefail``, a non-zero capture dies above that
+        fallback, and the comment naming the cause is never posted.
 
-        The status assertion is the whole point. Asserting only the value passes an
-        expression that returns the right value and takes the step down anyway.
+        The status assertion is the point: a right value can still take the step down.
         """
         bash = _bash()
         if bash is None:
@@ -388,19 +357,9 @@ class TestBothScopeLanesTolerateAnIndentedVerdictHeader:
 class TestTheScopeLanesKeepTheirCopiedBlocksEqual:
     """The four blocks the fork lane keeps as COPIES of the same-repo lane's.
 
-    The surface list is the one block the fork lane reads out of the same-repo lane
-    at run time (`TestTheScopeSurfaceIsResolvedOnce`). These four stay copies, for
-    the reason written at each fork copy: read out of that file, the model call's
-    arguments would follow the pull request's base checkout, the probe and the
-    header capture would be shell run as read, and the two comment bodies differ by
-    design around the one stamp they share.
-
-    A copy drifts, and a pin written per invariant catches only the drift someone
-    thought to pin. So each test compares the WHOLE block across the two lanes and
-    names every lane-native difference: a difference not listed here fails, the
-    unforeseen ones included. When the two lanes stamp a body is run per lane in
-    `test_ai_review_workflows_verdict_publication.py`; what is held here is that
-    the stamp is one spelling.
+    Each fork copy says why it is a copy. Each test compares the whole block and
+    lists every lane-native difference, so an unlisted difference fails. When each
+    lane stamps is run in `test_ai_review_workflows_verdict_publication.py`.
     """
 
     SAME_REPO = "security-scope-review.yml"
@@ -569,20 +528,8 @@ class TestTheForkLaneNamesARemedyThatClearsAForkPullRequest:
 class TestTheTwoSecurityGatesScopeOneSurface:
     """`SCOPE-SURFACE` and `denial-differential.yml`'s `paths:` share a core.
 
-    Both same-repo gates answer a question about the same thing -- a tightened deny
-    rule -- from different sides: the differential gates the committed corpus, the
-    scope review probes the boundary it does not cover yet. Each carries its own
-    hand-written list of the files that make a change a security change, and they
-    overlap on seven entries with nothing holding those seven equal. A file added to
-    one list and not the other is a change one gate measures and the other skips,
-    which reads as a gate that passed rather than a gate that never ran.
-
-    Pinned rather than merged into one file: each list has entries the other must
-    NOT carry (each names its own workflow, and the scope lane also names the model
-    prompt and the two scripts only it runs), so a single shared list would need a
-    per-gate exclusion mechanism to express what two literals already say. The pin
-    reads one workflow to hold another, the same idiom the fork lane uses to read
-    this very array out of the same-repo lane at the base ref.
+    A file in one list and not the other is a change one gate skips, which reads as
+    a pass. Pinned rather than merged: each list has entries the other must not carry.
     """
 
     #: Entries each gate carries alone, with the reason it is not shared.
@@ -662,16 +609,9 @@ class TestTheTwoSecurityGatesScopeOneSurface:
 class TestAnUnmeasuredScopeNeverPassesTheRequiredStatus:
     """`in_scope` is a TRI-STATE, and the gate that carries the check name reads it.
 
-    `generate` writes that output in ONE step, `Resolve review scope`. Anything
-    failing before it -- the runner hardening, the checkout, the resolver itself --
-    leaves the output EMPTY, and a `!= "true"` test reads empty as "measured, and
-    there was nothing to scope". The required status then exits 0 with no model call
-    and no differential: an infrastructure failure publishes a green gate over a
-    change nobody measured, on the one lane whose whole purpose is to refuse that.
-
-    So the skip is bought by the resolver's own literal `false` and by nothing else.
-    The step is executed here rather than grepped, because what matters is the exit
-    code each value produces -- it shells out to nothing, so it runs as written.
+    A failure before `Resolve review scope` leaves the output empty, and a
+    `!= "true"` test would read that as "nothing to scope" and pass unmeasured. Only
+    the resolver's literal `false` buys the skip. The step is run, not grepped.
     """
 
     STEP = ("security-scope-review.yml", "publish", "Security scope status")
@@ -736,11 +676,8 @@ class TestAnUnmeasuredScopeNeverPassesTheRequiredStatus:
     def test_neither_lane_decides_a_skip_on_not_true(self, workflow: str) -> None:
         """The CLASS, not the site. Both lanes, every step that binds the output.
 
-        A tri-state read as a boolean is what this closes, so the pin is on the
-        spelling that does it -- `!= "true"` on a variable fed from
-        `needs.<job>.outputs.in_scope` -- rather than on the one step that was
-        reported. The fork lane's `Decide the lane's conclusion` already matches the
-        literal `false`; this keeps both from drifting back.
+        The pin is on the spelling: `!= "true"` on a variable fed from
+        `needs.<job>.outputs.in_scope` reads a tri-state as a boolean.
         """
         for job_id, job in (yaml.safe_load(_workflow(workflow)).get("jobs") or {}).items():
             for index, step in enumerate(job.get("steps") or []):
@@ -763,15 +700,10 @@ class TestAnUnmeasuredScopeNeverPassesTheRequiredStatus:
 
 
 class TestScopeConclusionLadderLivesInOnePlace:
-    """The scope-review conclusion ladder -- fold result x model header x marker x
-    platform gap -> lane conclusion -- was a ~40-line shell `case`/`if` block
-    hand-copied into BOTH lanes, and the two copies had already diverged on the
-    platform-gap source. It now lives once, in `scripts/scope_candidates.py
-    conclude`, and each lane only normalizes its signals, calls the script, and
-    maps the returned word to its surface. These tests fail if a shell ladder
-    reappears in either workflow -- the whole point of the collapse is that they
-    cannot drift again. Same shape as the credential-scrub pins above: read one
-    workflow to hold another to a contract.
+    """The scope conclusion ladder lives once, in `scripts/scope_candidates.py conclude`.
+
+    Each lane only normalizes its signals, calls the script and maps the returned
+    word, so two shell copies cannot drift apart.
     """
 
     SAME_REPO = "security-scope-review.yml"
@@ -806,9 +738,8 @@ class TestScopeConclusionLadderLivesInOnePlace:
             ("pass", "PASS", "success"),
             ("nothing-new", "NOTHING-NEW", "neutral"),
             ("block", "BLOCK", "failure"),
-            # The conclusion table is staged from the BASE commit, so until this
-            # contract is on the base it can still answer `concerns`. There is no
-            # soft tier any more: that is a PASS, never "no verdict".
+            # The table is staged from the BASE commit, which can still answer
+            # `concerns`; that maps to a PASS, never "no verdict".
             ("concerns", "PASS", "success"),
             ("error", "UNKNOWN", "failure"),
         ],
@@ -843,9 +774,8 @@ class TestScopeConclusionLadderLivesInOnePlace:
 
     def test_same_repo_keeps_no_shell_conclusion_ladder(self) -> None:
         run = _step_script(_workflow(self.SAME_REPO), "Post the scope verdict")
-        # The model-verdict `case` was the heart of the old shell ladder; it may
-        # not live in the lane again. (Normalizing $FOLDED to the table's
-        # vocabulary is not a ladder -- it hands a signal to the script.)
+        # No model-verdict `case` in the lane. (Normalizing $FOLDED to the table's
+        # vocabulary is not a ladder: it hands a signal to the script.)
         assert 'case "$model" in' not in run
         # The mapping's own decisions -- BLOCK-from-gap, the CONCERNS downgrade --
         # must not be re-derived in shell here.
@@ -856,15 +786,14 @@ class TestScopeConclusionLadderLivesInOnePlace:
     def test_fork_keeps_no_shell_conclusion_ladder(self) -> None:
         run = _step_script(_workflow(self.FORK), "Decide the lane's conclusion")
         assert 'case "${MODEL_VERDICT' not in run
-        # The fork's old single-source gap flag and its BLOCK branch are gone.
+        # No single-source gap flag and no BLOCK branch in shell.
         assert 'gap="yes"' not in run
         assert 'title="BLOCK ' not in run
         assert "scripts/scope_candidates.py conclude " in run
 
     def test_both_lanes_feed_both_gap_sources_to_the_table(self) -> None:
-        # The divergence that motivated the collapse was the fork reading the
-        # script's gap alone. Both lanes must now compute BOTH the script gap
-        # (NO VERDICT) and the model-prose gap (UNADJUDICATED:) and hand them over.
+        # Both lanes compute BOTH the script gap (NO VERDICT) and the model-prose
+        # gap (UNADJUDICATED:) and hand them over.
         for name, step in (
             (self.SAME_REPO, "Post the scope verdict"),
             (self.FORK, "Decide the lane's conclusion"),
@@ -905,17 +834,9 @@ class TestScopeConclusionLadderLivesInOnePlace:
         assert "corpus-uncheckable" not in run
 
     def test_the_emitted_refusal_codes_are_exactly_the_tables_keys(self) -> None:
-        # The one live coupling nothing else pins: `validate` writes a bare string
-        # (`rc=corpus-credential`), the fork lane hands it to `conclude --refusal`,
-        # and the table names a cause ONLY on an exact key match against
-        # `_VALIDATE_REFUSALS` -- an unrecognized code falls through to the generic
-        # "no leg reported" sentence. So a rename on either side, the emitted string
-        # or the dict key, silently regresses a named refusal to that generic
-        # sentence with no other test failing. Match the two SETS both ways: every
-        # code the workflow emits must be a table key (or it explains nothing), and
-        # every table key must be emitted by some `validate` branch (or it is a dead
-        # entry no run can reach). Read the dict from the module the lane runs, not
-        # a second copy of the names here, which would be one more thing to drift.
+        # The table names a cause only on an exact key match against
+        # `_VALIDATE_REFUSALS`; an unknown code falls to the generic "no leg
+        # reported" sentence. So the emitted codes and the keys must match both ways.
         emitted = set(
             re.findall(
                 r'echo "rc=(corpus-[a-z-]+)" >> "\$GITHUB_OUTPUT"',
@@ -1095,7 +1016,7 @@ class TestPerHeadMonotonicFloor:
     model-sampled, so a confirmed row is not guaranteed to be re-proposed, and
     without this floor a clean re-run replaces a prior BLOCK. State is the lane's
     OWN completed check-run conclusion for the head, read from the Checks API.
-    Both lanes, because a fix in one is the failure mode this change closes.
+    Both lanes.
     """
 
     def _stub_dir(
@@ -1315,10 +1236,9 @@ class TestPerHeadMonotonicFloor:
         assert out.get("conclusion") == "success", out
 
     def test_fork_a_prior_unsettled_flake_clears_on_a_clean_rerun(self, tmp_path: Path) -> None:
-        # THE fix: a prior fork run that could not measure marked its own check-run
-        # unsettled (a [scope-floor:unsettled] title prefix). It reds its own run,
-        # but sets no floor, so this clean re-run publishes clean -- a flake no
-        # longer reds the head forever.
+        # A prior fork run that could not measure marked its check-run unsettled (a
+        # [scope-floor:unsettled] title prefix). That reds its own run but sets no
+        # floor, so a flake cannot red the head forever.
         flake = json.dumps(
             {
                 "total_count": 1,
@@ -1340,8 +1260,7 @@ class TestPerHeadMonotonicFloor:
 
     def test_fork_a_prior_confirmed_block_still_floors_a_clean_rerun(self, tmp_path: Path) -> None:
         # A confirmed block carries NO unsettled marker, so it still holds the head
-        # across a re-run the model does not re-propose -- the defect the floor was
-        # added for stays closed.
+        # across a re-run the model does not re-propose.
         block = json.dumps(
             {
                 "total_count": 1,
@@ -1359,7 +1278,7 @@ class TestPerHeadMonotonicFloor:
         assert rc == 0, log
         assert out.get("conclusion") == "failure", out
 
-    # ---- static contract pins ------------------------------------------------
+    # static contract pins
 
     def test_the_fork_lane_marks_an_unsettled_run_on_its_own_check_run(self) -> None:
         # The fork lane can carry the settled/unsettled distinction because it
@@ -1525,13 +1444,10 @@ class TestPerHeadMonotonicFloor:
 
 
 class TestTheForkScopeCommentGetsTheFinalScrub:
-    """The fork lane scrubs its WHOLE composed comment before posting, as the same-repo
-    lane does, and a missing or failing scrubber stops the post.
+    """The fork lane scrubs its whole composed comment before posting, and fails closed.
 
-    Each input the fork lane folds into its comment is scrubbed on its own, but the
-    composed body is fork-derived text bound for a public PR comment. The same-repo
-    lane runs one last ``--mode text`` pass over its composed body; these pins hold
-    the fork lane to the same pass, ahead of the post, and fail closed.
+    Each input is scrubbed on its own, but the composed body is fork-derived text
+    bound for a public comment, so it gets the same-repo lane's final ``--mode text`` pass.
     """
 
     FORK = "fork-security-scope-review.yml"

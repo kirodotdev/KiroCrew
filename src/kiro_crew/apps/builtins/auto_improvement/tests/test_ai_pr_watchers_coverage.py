@@ -1,15 +1,9 @@
 """Per-PR watcher coverage — the nudge loop, clone isolation, and the helper surface.
 
-The auto-improvement app ships its own watcher suite
-(``src/kiro_crew/apps/builtins/auto_improvement/tests/test_pr_watchers.py``), but CI
-deselects it: those tests drive a REAL ``git`` through the OS sandbox, which the hosted
-runners cannot provide. Everything the deselected file guards is therefore unmeasured on
-every shard, and the module's loop body, its isolation control, and most of its helpers
-sit at zero coverage.
-
-This file re-covers that surface with the subprocess boundary stubbed out instead of
-exercised, so it runs everywhere the backend runs — Linux, macOS, Windows, 3.10 through
-3.13 — with no ``git``, no ``gh``, no network, and no writes outside ``tmp_path``:
+CI deselects the app's own watcher suite
+(``src/kiro_crew/apps/builtins/auto_improvement/tests/test_pr_watchers.py``): it drives a
+REAL ``git`` through the OS sandbox, which hosted runners lack. This file covers the same
+surface with no ``git``, no ``gh``, no network, and no writes outside ``tmp_path``:
 
 * ``pr_watchers._git`` / ``pr_watchers._gh`` are replaced module-wide by recording fakes
   (:class:`FakeGit`), so a test asserts on the argv a code path *would* run rather than
@@ -51,14 +45,9 @@ WAIT_S = 10.0
 class FakeGit:
     """Stands in for ``pr_watchers._git`` / ``_gh``: records argv, runs nothing.
 
-    ``rule`` registers argv WORDS that must all appear in a call for it to be answered with
-    the given ``CompletedProcess``; the first matching rule wins, and anything unmatched
-    succeeds with empty output. ``raise_on`` makes a matching call raise, which is how the
-    callers' own ``except (OSError, SubprocessError)`` branches are reached.
-
-    Matching is per-argument rather than a substring of the joined command line, because
-    ``tmp_path`` embeds the test's own name: a test named ``..._checkout_...`` would
-    otherwise have every git call in it match a ``checkout`` rule through its paths.
+    ``rule`` answers a call holding all the given argv WORDS (first match wins; unmatched
+    calls succeed empty); ``raise_on`` makes a match raise. Matching is per-argument
+    because ``tmp_path`` embeds the test name, which could match a word like ``checkout``.
     """
 
     def __init__(self) -> None:

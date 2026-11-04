@@ -500,14 +500,9 @@ def test_a_replay_carrying_the_authorized_tree_is_published(tmp_path, git):
 def test_a_replay_whose_attribution_differs_is_not_published(tmp_path, git):
     """A replay writes a NEW commit, and git takes its committer from configuration.
 
-    Author and message carry over, but the committer does not, so a process able to write the
-    repository's config -- the reviewing agent's shell, whose git denylist covers only `push`
-    and `remote set-url` -- chooses who the published commit says committed it. The retry pins
-    the replay's committer to the identity the authorized object already holds, and this is the
-    check behind that pin: the ``GIT_COMMITTER_*`` environment outranks a ``-c`` override, so
-    the published object's attribution is compared against the authorized one rather than
-    assumed. Content passing every other gate is exactly the case this catches -- the tree
-    matches here, so nothing else in the path objects.
+    The reviewing agent's shell can write repo config (its denylist covers only `push` and
+    `remote set-url`), so the published committer is compared against the authorized one. The
+    tree matches here, so nothing else in the path objects.
     """
     git.script("push", (1, "", "non-fast-forward"), (0, "", ""))
     git.script("rebase", 0)
@@ -858,11 +853,8 @@ def test_direct_push_records_a_failed_push(tmp_path, git):
 def test_direct_push_reports_the_sha_that_actually_landed(tmp_path, git):
     """The sha recorded must be the object the push transferred.
 
-    `_push_with_rebase` reports the revision it sent, and the ledger follows that rather than
-    a post-push `rev-parse HEAD`: reading HEAD after the push would name whatever HEAD points
-    at by then, so a concurrent move could put an unrelated commit in the ledger for a change
-    that really did land. `rev-parse HEAD` is deliberately scripted to a DIFFERENT value here,
-    so a regression to reading the ref reddens.
+    A post-push `rev-parse HEAD` could name a commit a concurrent move put there, so
+    `rev-parse HEAD` is scripted to a DIFFERENT value here.
     """
     git.script("rev-parse HEAD", (0, "someotherhead\n", ""))
     git.script("push", 0)
@@ -1046,19 +1038,10 @@ def test_restore_branch_undoes_the_promotion_when_the_checkout_fails(tmp_path, g
 def test_a_failed_rollback_quarantines_the_clone_so_a_later_run_cannot_adopt_it(tmp_path, git):
     """THE GUARD MUST OUTLIVE THE PROCESS, because the thing it guards does.
 
-    `_rollback_failed` stops the run it is set in, but the un-rolled-back commit is on DISK and
-    the clone is REUSED: a later run starts with a clear latch on a clone that still carries the
-    refused commit, commits the next winner on top, and publishes an ancestor its single-revision
-    scan never looked at. An in-memory guard is checking something shorter-lived than the hazard.
-
-    This crosses the boundary that matters rather than re-proving the in-run halt: it fails a
-    rollback, then asserts the predicate a LATER run's clone setup branches on. Reuse in
-    `clone_setup._setup_safe_clone` hinges on the canonical `<dest>/.git` being a directory, so
-    once retirement has renamed the clone aside, the next run cannot adopt it and clones fresh.
-    A fresh Driver on the same path is built to make the point explicit: its latch is clear, and
-    that is exactly why the protection cannot live there. Raised by the GPT review of this branch;
-    quarantine was the conductor's choice over a persisted latch, whose clearing condition would
-    itself have to be got right."""
+    The refused commit is on DISK and the clone is REUSED, so a later run with a clear latch
+    would publish it as an ancestor. `clone_setup._setup_safe_clone` reuses only a canonical
+    `<dest>/.git` directory, so renaming the clone aside forces a fresh clone. The fresh Driver
+    shows the latch is clear, which is why the protection cannot live there."""
     d = _make(tmp_path)
     clone = tmp_path / "clone"
     (clone / ".git").mkdir(parents=True, exist_ok=True)
@@ -1132,14 +1115,10 @@ def test_a_successful_rollback_reports_success_and_does_not_halt(tmp_path, git):
 def test_a_failed_rollback_stops_every_further_winner_before_any_push(tmp_path, git, caplog):
     """The halt has to be UNCONDITIONAL, and the publish gate alone is not enough.
 
-    `_apply_bug_winner` calls `pr_pipeline.emit_bug` BEFORE `_direct_push`, and that path reaches
-    `pr_recipe._push_fix_branch`, which pushes `HEAD:refs/heads/<branch>` and knows nothing about
-    the latch. So a second bug winner in the SAME cycle would publish the un-rolled-back commit
-    through the PR branch before the direct-push gate was ever consulted. Guarded at the top of
-    both winner-applying methods, which is upstream of every push either one can reach.
-
-    The control is structural: `archive.save_candidate` is the first thing both methods do, so a
-    double that raises proves the guard returned before any work -- and reddens if it is removed.
+    `_apply_bug_winner` reaches `pr_recipe._push_fix_branch` via `pr_pipeline.emit_bug` BEFORE
+    `_direct_push`, so the guard sits at the top of both winner-applying methods.
+    `archive.save_candidate` is the first thing both do, so a double that raises proves the
+    guard returned before any work.
     """
     d = _make(tmp_path)
     d._rollback_failed = True

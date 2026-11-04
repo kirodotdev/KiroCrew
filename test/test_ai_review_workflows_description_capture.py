@@ -31,24 +31,13 @@ from ai_review_workflows_helpers import (
     _workflow,
 )
 
-# --------------------------------------------------------------------------
 # Description provenance: one capture, one digest, one stamp.
 #
-# A review lane that judges the author's stated intent has two ways to get the
-# description, and they are not equivalent. A grant that lets the MODEL fetch it
-# leaves the verdict with no revision to name: the model picks the moment, so the
-# verdict answers for whatever the text said then, and a reader cannot tell a
-# current verdict from one whose description-derived finding the author has since
-# corrected. A workflow step that captures it ONCE gives the verdict a single,
-# nameable input, and the digest of those bytes is what the verdict carries.
-#
-# The grant is also a live redirect. `--allowedTools` Bash grants are
-# PREFIX-matched, so `Bash(gh pr view:*)` equally admits
-# `gh pr view ... > <path>`: text injected into a diff can overwrite the lane's
-# own input files. These pins hold both properties at once, and they enumerate
-# every workflow from disk rather than a list, so a lane added later is covered
-# the day it lands.
-# --------------------------------------------------------------------------
+# A workflow step captures the description ONCE so the verdict names one input by its
+# digest; a model fetch would leave no revision to name. The model also gets no
+# `gh pr view` grant: Bash grants are PREFIX-matched, so `Bash(gh pr view:*)` admits
+# `gh pr view ... > <path>`, a redirect over the lane's own input files.
+# Workflows are enumerated from disk so a lane added later is covered.
 
 #: The marker a published verdict carries to name the description it read.
 STAMP_MARKER = "[DESCRIPTION-READ]"
@@ -96,23 +85,10 @@ def _stamp_block(name: str) -> list[str]:
 class TestBothBodyReadersShareOneRead:
     """The two readers of the PR's mutable text read it ONCE per job.
 
-    Two independent fetches, in adjacent steps of one job, are the hazard:
-    pr-attachment-evidence.sh collects the description's attachments and
-    pr-description-capture.sh captures its prose. A description edited between
-    two such reads pairs the OLD attachments with the NEW prose, and the
-    manifest digest the lane publishes is taken over that pair -- a composite
-    revision that never existed, which a reader recomputing it reads as a match.
-    Nothing corrects it afterwards either, because the lanes fire on
-    `opened, synchronize, reopened` and a description edit starts no run.
-
-    The window was ordinary rather than adversarial: pushing a commit starts the
-    run, and pasting a screenshot or rewording the body in the next minute lands
-    inside it.
-
-    pr-body-snapshot.sh holds one fetch of both fields for the whole job. These
-    cases pin that structurally -- neither consumer calls the API itself -- and
-    then EXECUTE both consumers over a body that changes between them, which is
-    the only way to show the two halves name one revision.
+    pr-attachment-evidence.sh and pr-description-capture.sh read one snapshot from
+    pr-body-snapshot.sh. Two fetches would pair OLD attachments with NEW prose under
+    one digest, and a description edit starts no run to correct it. The cases run
+    both consumers over a body that changes between them.
     """
 
     def _job(self, tmp_path: Path) -> dict[str, str]:
@@ -244,17 +220,10 @@ class TestBothBodyReadersShareOneRead:
         assert "no second API read" in capture.stdout, capture.stdout
 
     def test_a_host_without_jq_fails_closed_instead_of_reading_twice(self, tmp_path: Path) -> None:
-        """Splitting one response needs a standalone `jq`, so a host without one
-        has to say so rather than quietly fall back.
+        """Splitting one response needs a standalone `jq`; without one the snapshot fails.
 
-        The fallback that is NOT allowed is the defect: two `gh api --jq` reads
-        are two revisions however adjacent they are. A reader with no title and
-        no body is a visible failure the lane reports; a reader with a matching
-        pair drawn from two revisions is not. The review lanes run on
-        ubuntu-latest, where `jq` is present; the case that meets this branch in
-        practice is a Windows test shard, whose Git Bash keeps `jq` outside the
-        Unix default directories -- which is why every harness here resolves the
-        host's real `jq` onto the child PATH instead of assuming `/usr/bin`.
+        Falling back to two `gh api --jq` reads would be two revisions. Windows Git
+        Bash keeps `jq` outside the Unix defaults, so harnesses resolve the real one.
         """
         env = self._job(tmp_path)
         (tmp_path / "body.in").write_text("prose\n", encoding="utf-8", newline="\n")
@@ -304,13 +273,10 @@ class TestBothBodyReadersShareOneRead:
         ids=["plain", "empty", "one-nl", "two-nl", "punctuation"],
     )
     def test_the_captured_bytes_match_the_old_single_read(self, body: str, tmp_path: Path) -> None:
-        """A digest published BEFORE the snapshot must still recompute to the
-        same value, or every stamp already on an open PR silently becomes a
-        mismatch -- which reads as "the description moved", the one thing the
-        stamp exists to report. Command substitution dropped the old `--jq`
-        template's trailing newline and drops `jq -r`'s here, so the composed
-        bytes are unchanged; these cases check that where the two forms could
-        differ, which is a body's trailing newlines.
+        """The snapshot composes the same bytes as a single `--jq` read did.
+
+        Otherwise every stamp on an open PR would read as "the description moved".
+        Trailing newlines are where the two forms could differ.
         """
         env = self._job(tmp_path)
         (tmp_path / "body.in").write_text(body, encoding="utf-8", newline="")
@@ -367,12 +333,8 @@ class TestBothBodyReadersShareOneRead:
 class TestNoLaneGrantsALiveDescriptionRead:
     """No `--allowedTools` line anywhere grants a live description fetch.
 
-    `Bash(gh pr view:*)` is prefix-matched, so it admits every `gh pr view`
-    spelling including one that redirects its output over a file the job wrote.
-    A lane that needs the description reads it from the shared capture instead.
-
-    Scans every workflow rather than a named set: the grant is wrong in any lane,
-    including one that does not exist yet.
+    `Bash(gh pr view:*)` is prefix-matched, so it admits a redirect over a file the
+    job wrote. Lanes read the shared capture instead.
     """
 
     def test_no_workflow_grants_gh_pr_view(self) -> None:
@@ -392,21 +354,11 @@ class TestNoLaneGrantsALiveDescriptionRead:
         assert offenders == [], offenders
 
     def test_no_workflow_grants_any_bash_at_all(self) -> None:
-        """The invariant is about the MATCHER, not the verb.
+        """No lane grants any Bash: prefix matching is a property of `--allowedTools`.
 
-        Stating it as "no `Bash(gh pr view:*)`" was too narrow, because prefix
-        matching is a property of `--allowedTools` and not of the command named:
-        `Bash(git diff:*)` equally admits `git diff ... > pr-intent.txt`, and the
-        description digest is computed at capture time, so an overwrite AFTER
-        capture leaves the stamp naming the original bytes while a reader who
-        recomputes it is told the verdict is current.
-
-        No narrower grant closes that. Without `:*` a lane cannot pass a range,
-        and any form that accepts arguments accepts shell text; `--disallowedTools`
-        denies TOOLS rather than command substrings, so it cannot express "no
-        redirect" at all. The primitive therefore goes away with the last Bash
-        grant, not with a better one -- which is why every review lane reads its
-        diff from a data file instead.
+        `Bash(git diff:*)` equally admits `git diff ... > pr-intent.txt`, an overwrite
+        after capture that the stamp cannot see. `--disallowedTools` denies tools, not
+        substrings, so no narrower grant closes it; lanes read the diff from a file.
         """
         offenders = []
         granting = 0
@@ -422,19 +374,11 @@ class TestNoLaneGrantsALiveDescriptionRead:
         assert offenders == [], offenders
 
     def test_every_lane_that_reviews_a_diff_is_handed_one(self) -> None:
-        """Dropping the grant must not leave a lane with no diff at all.
+        """A lane whose prompt names a patch file has a fail-closed step that writes it.
 
-        Removing Bash and forgetting the prefetch would give the reviewer nothing
-        to review while every grant assertion still passed, so the two halves are
-        pinned together: a lane whose prompt names a patch data file must also
-        contain the step that writes one, and that step must fail closed.
-
-        The SIZE cap is asserted only where a lane states one.
-        `first-principles-review.yml` prefetches and fails closed on an empty diff
-        but sets no cap, which predates this change; asserting a cap everywhere
-        would impose a uniformity this change did not create and cannot verify.
-        Where a cap exists it must be the 1 MB one and must fail closed, so a
-        lane cannot acquire a cap that silently truncates instead.
+        The size cap is checked only where a lane states one
+        (`first-principles-review.yml` sets none); a stated cap must be 1 MB and fail
+        closed rather than truncate.
         """
         checked = capped = 0
         for name in _capture_lanes():
@@ -456,17 +400,9 @@ class TestNoLaneGrantsALiveDescriptionRead:
     def test_a_capped_lane_measures_this_change_not_the_base_branch(self, name: str) -> None:
         """A size cap must be measured against the merge ref's own first parent.
 
-        `github.event.pull_request.base.sha` is fixed when the pull request
-        opens and does not track the base branch, while the checkout is a merge
-        ref minted at push time. Diffing one against the other counts every
-        commit the base gained in between, so on a busy base the cap fires on
-        other people's work and the reviewer reads the base's history as the
-        change under review. The first parent of the merge ref IS the base tip
-        it was minted against, which makes the diff the change itself.
-
-        Pinned on the two lanes that carry both a cap and a merge-ref checkout.
-        The fork lanes take the same shape from their own trigger and are not
-        this case's subject.
+        `github.event.pull_request.base.sha` is fixed at open and does not track the
+        base, so diffing against it counts every commit the base gained since. The
+        merge ref's first parent is the base tip it was minted against.
         """
         workflow = _workflow(name)
         # The shallow checkout's merge-base step picks the base: the merge
@@ -502,12 +438,8 @@ class TestStampFollowsTheSharedCapture:
     def test_every_capture_lane_reads_the_shared_script_and_no_copy(self) -> None:
         """No lane carries its own copy of the read, the strip or the cap.
 
-        Two implementations would make one digest mean two different things, so a
-        reader recomputing it could get a mismatch from a description nobody had
-        touched. The distinctive lines of the capture therefore appear in the
-        script and in no workflow -- and the READ's distinctive line lives one
-        level further down still, in the snapshot both body readers share, which
-        is what keeps the evidence half and the prose half on one revision.
+        Two implementations would make one digest mean two things. The read itself
+        lives in the snapshot both body readers share.
         """
         owners = {
             CAPTURE_SCRIPT.read_text(encoding="utf-8"): (
@@ -537,11 +469,8 @@ class TestStampFollowsTheSharedCapture:
 class TestStampIsWorkflowWrittenAndGatedOnARealVerdict:
     """The digest reaches the comment from the capture step, never from the model.
 
-    Three properties, one per way the stamp could lie. It is gated on a parsed
-    verdict, so a "could not complete" notice cannot claim to have read a
-    description. It is written after the redaction pass, so that pass cannot
-    rewrite the digest into something a reader cannot reproduce. And its value
-    comes from the capture step's own output, so the model cannot supply it.
+    Gated on a parsed verdict (a "could not complete" notice claims nothing), written
+    after the redaction pass (which could rewrite it), valued from the capture output.
     """
 
     @pytest.mark.parametrize("name", _capture_lanes())
@@ -580,19 +509,9 @@ class TestStampIsWorkflowWrittenAndGatedOnARealVerdict:
 class TestStampBlockIsByteIdenticalAcrossLanes:
     """Lanes that cover the same thing publish the same stamp, down to the bytes.
 
-    A reader learns one shape and a verifier parses one shape. Only the comment
-    file each lane appends to differs, so compare the emitted lines and not the
-    redirect.
-
-    There are exactly TWO shapes, and the split is the point rather than drift: a
-    lane whose verdict reads only the prose names the prose, and a lane whose
-    verdict also reads the evidence downloaded from the description names that
-    evidence too. Collapsing them would force one of the two to lie -- either the
-    prose-only lanes claim coverage they do not have, or the evidence lanes send
-    a reader to recompute over inputs that are not what was judged. What this
-    forbids is a THIRD shape: within each class the bytes must match, so no
-    single lane can drift into bespoke wording, and both classes must be
-    non-empty so a shape cannot quietly lose all its members.
+    Only the emitted lines are compared, not each lane's redirect. There are exactly
+    two shapes, prose-only and prose-plus-evidence, so neither claims coverage it
+    lacks; a third shape is the failure, and both classes must be non-empty.
     """
 
     def test_emitted_lines_match_within_each_coverage_class(self) -> None:
@@ -624,12 +543,9 @@ class TestStampBlockIsByteIdenticalAcrossLanes:
 class TestCaptureDigestNamesTheModelsInput:
     """Execute the shared capture and check what its digest covers.
 
-    The digest is only worth publishing if it names the bytes the model was
-    given. So it must equal the hash of the intent file as written -- after the
-    media strip and the cap -- and it must move when that file moves and hold
-    still when it does not. A digest taken over the raw API body instead would
-    report an image-URL swap as a description the verdict never saw, which is the
-    same false confidence in the other direction.
+    The digest is the hash of the intent file as written, after the media strip and
+    the cap. A digest over the raw API body would move on an image-URL swap the
+    model never saw.
     """
 
     def _capture(
@@ -646,11 +562,8 @@ class TestCaptureDigestNamesTheModelsInput:
         if bash is None:
             pytest.skip("the capture is Bash; skip where Bash is absent")
         tmp_path.mkdir(parents=True, exist_ok=True)
-        # The capture reaches the API through pr-body-snapshot.sh, which fetches
-        # the whole PR object ONCE and splits the title and the description out
-        # of it, so the stub answers with that object. The composed bytes are
-        # identical to what the old single `--jq` template returned, which is
-        # what keeps a digest published before the snapshot reproducible.
+        # pr-body-snapshot.sh fetches the whole PR object once and splits title and
+        # body out of it, so the stub answers with that object.
         reply = tmp_path / "api-reply.json"
         reply.write_text(
             json.dumps({"title": "t", "body": body}) + "\n", encoding="utf-8", newline="\n"
@@ -748,14 +661,10 @@ class TestCaptureDigestNamesTheModelsInput:
         assert first != second, first
 
     def test_a_stripped_image_does_not_move_the_digest(self, tmp_path: Path) -> None:
-        """What the strip erases cannot change the model's input, so it cannot
-        change the digest -- IN A LANE THAT READS PROSE ONLY, which is what
-        passing no evidence list models here. Two bodies differing only in an
-        image URL the strip replaces therefore hash the same, and a reader
-        recomputing after such an edit is told the verdict is current, which in
-        that lane it is. A lane whose verdict also reads what those URLs resolved
-        to hands over an evidence list and is covered by the pins below, because
-        there the same edit DOES change what was judged.
+        """In a prose-only lane (no evidence list), a stripped image URL cannot move it.
+
+        Lanes that also read the resolved attachments hand over an evidence list; the
+        pins below cover them.
         """
         one, _, wrote_one = self._capture(
             tmp_path / "a", "prose\n\n![shot](https://example.com/one.png)\n"
@@ -768,12 +677,10 @@ class TestCaptureDigestNamesTheModelsInput:
         assert one == two, (one, two)
 
     def test_the_digest_is_bare_hex_when_the_path_needs_escaping(self, tmp_path: Path) -> None:
-        """`sha256sum <file>` escapes a name holding a backslash and prefixes the
-        whole line with one, so reading the hash off that line yields `\\<hex>`:
-        a stamp no reader can reproduce. A Windows path is all backslashes, so
-        the shard reproduced it and this board could not. A backslash is a legal
-        POSIX filename character, so digesting one here makes the class visible
-        wherever the suite runs, not only where the OS forces it.
+        """`sha256sum <file>` on a name with a backslash prints `\\<hex>`, unreproducible.
+
+        A backslash is a legal POSIX filename character, so this shows the Windows-path
+        failure on every OS.
         """
         reported, outputs, written = self._capture(tmp_path / "a\\b", "a plain description")
         assert reported == hashlib.sha256(written).hexdigest(), (reported, written)
@@ -782,10 +689,9 @@ class TestCaptureDigestNamesTheModelsInput:
         assert f"description_digest={reported}" in outputs, outputs
 
     def test_an_unusable_digest_fails_the_step_closed(self, tmp_path: Path) -> None:
-        """The guard is a shape assertion, not an emptiness one. `\\<64 hex>` is
-        non-empty, so a guard testing only for empty publishes it; the step must
-        refuse anything that is not exactly 64 hex characters, because a stamp a
-        reader cannot reproduce is worse than no stamp at all.
+        """The guard refuses anything but exactly 64 hex characters.
+
+        `\\<64 hex>` is non-empty, so an emptiness check would publish it.
         """
         script = CAPTURE_SCRIPT.read_text(encoding="utf-8")
         guard = script[script.index("INTENT_DIGEST=") :]
@@ -794,20 +700,10 @@ class TestCaptureDigestNamesTheModelsInput:
         assert guard.count("exit 1") >= 2, guard[:600]
 
     def test_the_digest_reads_stdin_and_falls_back_to_shasum(self) -> None:
-        """Two portability properties of EVERY digest command in the script.
+        """Every digest site reads stdin and falls back to `shasum`.
 
-        Reading stdin keeps a filename out of the output, so no path can escape
-        into the hash. The `shasum` fallback lets a reader on a Mac reproduce the
-        stamp by hand, which the verdict explicitly invites -- macOS ships no
-        `sha256sum`, and this repository already picks between the two the same
-        way in `cli.sh` and `ensure-node.sh`.
-
-        The property is per-SITE, not a count. The script takes more than one
-        digest -- the captured description, and the manifest that folds in a
-        lane's evidence -- and a count assertion fails on a new site that holds
-        the property just as loudly as on one that breaks it. So every site is
-        checked, with a lower bound as the control so an over-narrow filter
-        matching nothing cannot pass vacuously.
+        Stdin keeps a filename out of the output; macOS ships no `sha256sum` (same
+        choice as `cli.sh` and `ensure-node.sh`). Checked per site, not by count.
         """
         script = CAPTURE_SCRIPT.read_text(encoding="utf-8")
         code = [ln for ln in script.splitlines() if not ln.lstrip().startswith("#")]
@@ -817,20 +713,16 @@ class TestCaptureDigestNamesTheModelsInput:
             assert " < " in line, line
         assert "shasum -a 256" in "\n".join(code), digest
         assert any("command -v sha256sum" in ln for ln in code), digest
-        # The bare `sha256sum "$INTENT"` spelling is the one whose escaped output
-        # produced a stamp no reader could reproduce; it must appear nowhere. The
-        # same goes for any other digest taken over a PATH rather than stdin.
+        # No digest may be taken over a path: its output can be escaped.
         assert not any('sha256sum "$INTENT"' in ln for ln in code), digest
         hashed_paths = [ln for ln in code if "_kc_sha" in ln and "cut" in ln and " < " not in ln]
         assert hashed_paths == [], hashed_paths
 
     def test_evidence_the_verdict_read_moves_the_digest(self, tmp_path: Path) -> None:
-        """The defect this closes: the media strip replaces every attachment URL
-        with the same placeholder, so in a lane whose verdict also reads what
-        those URLs resolved to, swapping one attachment for another leaves the
-        captured prose byte-identical. A digest over the prose alone reports a
-        match on a verdict formed from other evidence. Same body, different
-        evidence bytes, so only the evidence can account for the difference.
+        """Swapping an attachment moves the digest though the stripped prose is identical.
+
+        The strip gives every attachment URL the same placeholder, so only the
+        evidence bytes can differ here.
         """
         one, _, wrote_one = self._capture(tmp_path / "a", "same prose", evidence=[b"pixels-A"])
         two, _, wrote_two = self._capture(tmp_path / "b", "same prose", evidence=[b"pixels-B"])
@@ -838,19 +730,12 @@ class TestCaptureDigestNamesTheModelsInput:
         assert one != two, one
 
     def test_no_evidence_list_keeps_the_intent_only_digest(self, tmp_path: Path) -> None:
-        """The other direction, which is why the coverage is per-lane and not
-        global: a lane that judges prose only must keep naming the prose alone,
-        or a media-only edit it provably never saw would be reported as a
-        description that changed -- the same false confidence inverted.
-        """
+        """A prose-only lane names the prose alone, so a media-only edit leaves it."""
         reported, _, written = self._capture(tmp_path, "prose only")
         assert reported == hashlib.sha256(written).hexdigest(), reported
 
     def test_the_manifest_names_ordinals_not_paths(self, tmp_path: Path) -> None:
-        """A runner temp path is per-run, so digesting it would move the stamp on
-        a re-run that read byte-identical evidence and tell a reader the verdict
-        was stale. Identical bytes under different names must hash the same.
-        """
+        """Identical bytes under different names hash the same; temp paths are per-run."""
         one, _, _ = self._capture(
             tmp_path / "a", "same prose", evidence=[b"same"], evidence_names=["first.bin"]
         )
@@ -867,10 +752,7 @@ class TestCaptureDigestNamesTheModelsInput:
         assert one != two, one
 
     def test_an_unreadable_listed_evidence_file_fails_closed(self, tmp_path: Path) -> None:
-        """A stamp must never overstate its coverage. If the lane named evidence
-        the capture cannot read, silently hashing the rest would publish a digest
-        claiming to cover what it never saw, so the capture fails instead.
-        """
+        """Listed evidence the capture cannot read fails it, so no stamp overstates."""
         code, outputs, stderr = self._capture(
             tmp_path, "prose", evidence=[b"present"], list_missing=True
         )
@@ -878,18 +760,10 @@ class TestCaptureDigestNamesTheModelsInput:
         assert "description_digest=" not in outputs, outputs
 
     def test_every_lane_reading_attachment_evidence_names_it_in_the_digest(self) -> None:
-        """Enumerated from source, because a named site is a sample. A lane whose
-        model is pointed at the evidence downloaded from the description must
-        hand that evidence to the capture, or its stamp names less than its
-        verdict read. The predicate is sourcing the attachment-evidence script:
-        that is what downloads the bytes, and every lane that does it feeds them
-        to its model either as images or as the rendered-evidence manifest.
+        """A lane sourcing the attachment-evidence script hands that evidence to capture.
 
-        The check is STRUCTURAL -- the capture step's own `env` must carry the
-        key -- not a substring search of the file. A substring is satisfied by a
-        mention in a comment, and by a renamed key: `EVIDENCE_LIST_DISABLED`
-        contains `EVIDENCE_LIST`, so a lane that had stopped handing its evidence
-        over would still read as covered.
+        Checked on the capture step's own `env`, not by substring: a comment or a
+        key like `EVIDENCE_LIST_DISABLED` would satisfy a substring search.
         """
         offenders = []
         covered = 0
@@ -911,23 +785,17 @@ class TestCaptureDigestNamesTheModelsInput:
                         named = True
             if not named:
                 offenders.append(name)
-        # A control: zero matches would pass the assertion vacuously, and the
-        # count is the census this pin exists to hold -- four lanes download
-        # attachment evidence AND capture the description.
+        # Control: four lanes download attachment evidence AND capture the description.
         assert covered == 4, covered
         assert offenders == [], offenders
 
     def test_a_list_file_holding_a_non_path_line_does_not_fail_the_capture(
         self, tmp_path: Path
     ) -> None:
-        """A UX lane hands over `ux-screenshots.txt`, whose lines are NOT all
-        paths: a `TRUNCATED: more than N images` prose notice is appended to it
-        when the cap drops evidence. Passing that prose as an evidence path trips
-        the capture's fail-closed readability guard, and the lane goes red on any
-        PR carrying more than the cap -- a guard firing correctly on input that
-        was never a path. So a lane lists the list FILE as content and only those
-        of its lines that are really files; this pin holds the capture's half of
-        that contract by proving a prose-bearing list file is digestible.
+        """A list file carrying a `TRUNCATED: ...` prose line is digested as content.
+
+        Read as a path, that notice would trip the fail-closed readability guard on
+        every PR over the image cap.
         """
         reported, outputs, _ = self._capture(
             tmp_path,
@@ -944,15 +812,10 @@ class TestCaptureDigestNamesTheModelsInput:
         assert f"description_digest={reported}" in outputs, outputs
 
     def test_a_dropped_evidence_notice_moves_the_digest(self, tmp_path: Path) -> None:
-        """Digesting the list file as CONTENT is what makes the truncation notice
-        load-bearing: an edit that changes WHICH evidence a cap drops changes that
-        list's bytes even when no kept file changed, so the verdict's stamp moves.
-        Filtering the notice out and digesting only real paths would lose this.
+        """A change in which evidence the cap drops moves the digest.
 
-        Held in the `pathlist:` form, which is what the four lanes list. The
-        notice does not start with `/`, so normalizing to basenames leaves it
-        whole and this property survives that change -- which is the point of
-        pinning it here rather than on the plain form.
+        Held in the `pathlist:` form the lanes use: the notice does not start with
+        `/`, so basename normalizing leaves it whole.
         """
         kept = b"/x/_temp/shots/shot-01.png\n"
         one, _, _ = self._capture(
@@ -972,18 +835,10 @@ class TestCaptureDigestNamesTheModelsInput:
         assert one != two, one
 
     def test_a_marked_lists_temp_root_stays_out_of_the_digest(self, tmp_path: Path) -> None:
-        """The screenshot list holds `"$DEST_DIR/$name"` lines and $DEST_DIR is
-        under `runner.temp`, so digesting its BYTES puts a per-run directory
-        inside the stamp: a re-run that read byte-identical evidence publishes a
-        different digest, and a reader recomputing is told a sound verdict is
-        stale. That is the same defect the manifest's ordinal labels exist to
-        prevent, one level down -- in a listed file's contents rather than in its
-        label. The `pathlist:` form reduces every line starting with `/` to its
-        basename, so the same evidence under two temp roots hashes the same.
+        """`pathlist:` reduces each `/`-line to its basename, so `runner.temp` stays out.
 
-        The two renderings are asserted DIFFERENT first. Without that the pin
-        would also pass on a harness that fed identical bytes twice, which is how
-        an invariance test passes while measuring nothing.
+        The two inputs are asserted different first, or the invariance would also
+        hold on identical bytes and pin nothing.
         """
         one_bytes = b"/home/runner/work/_temp/ux-shots/shot-01.png\n"
         two_bytes = b"/mnt/other/_work/_temp/ux-shots/shot-01.png\n"
@@ -997,12 +852,10 @@ class TestCaptureDigestNamesTheModelsInput:
         assert one == two, (one, two)
 
     def test_a_marked_map_still_moves_when_an_attachment_is_swapped(self, tmp_path: Path) -> None:
-        """Normalizing must drop the directory and nothing else. The origin map is
-        `<opaque name>\\t<origin>` and does not start with `/`, so it survives
-        whole -- which is what keeps a swapped attachment nameable. The strip
-        replaces both URLs with the same placeholder, so the captured prose is
-        byte-identical across this edit and the map is the only thing that moves.
-        Had normalizing reduced the map too, the swap would go unstamped.
+        """Normalizing drops the directory only; the origin map survives whole.
+
+        The map (`<opaque name>\\t<origin>`) is the only thing that moves when an
+        attachment is swapped, since the strip makes the prose identical.
         """
         one, _, _ = self._capture(
             tmp_path / "a",
@@ -1026,15 +879,10 @@ class TestCaptureDigestNamesTheModelsInput:
         assert "description_digest=" not in outputs, outputs
 
     def test_every_lane_marks_the_path_lists_it_hands_over(self) -> None:
-        """Enumerated from source, because a named site is a sample. Two shapes
-        carry absolute paths in their own bytes: the screenshot list a UX lane
-        hands over directly, and the rendered-evidence manifest a design lane
-        hands over, which embeds that list with `cat`. Each must be listed
-        `pathlist:` or this run's temp directory enters the stamp.
+        """Path lists (UX screenshot list, design manifest) are marked `pathlist:`.
 
-        The converse is pinned in the same pass: a line appending ONE image must
-        NOT be marked. Those bytes are the evidence, and normalizing a PNG would
-        hash a reading of its lines instead of its content.
+        The converse holds too: a single image is never marked, since normalizing a
+        PNG would hash its lines instead of its content.
         """
         source_line = '. "$GITHUB_WORKSPACE/.github/scripts/pr-description-capture.sh"'
         marker = "printf 'pathlist:%s\\n'"
@@ -1069,20 +917,13 @@ class TestCaptureDigestNamesTheModelsInput:
                             offenders.append((name, job_id, "byte evidence marked", stripped))
                     if appends == 0:
                         offenders.append((name, job_id, "no append line found", ""))
-        # Control: exactly four lanes hand evidence to the capture -- two UX and
-        # two design. The two first-principles lanes read prose plus the diff and
-        # set no EVIDENCE_LIST, so a count other than four means this walk stopped
-        # matching the lanes rather than that they are clean.
+        # Control: two UX and two design lanes hand evidence over; the first-principles
+        # lanes set no EVIDENCE_LIST.
         assert covered == 4, covered
         assert offenders == [], offenders
 
     def test_every_ux_lane_covers_its_recording_list(self) -> None:
-        """The recording list is named in each UX lane's prompt as a data file the
-        model reads, so a recording-only description edit must move the digest. A
-        lane that hands over its images and map but not its recordings publishes a
-        stamp claiming coverage it lost. Enumerated from source: the predicate is
-        the lane naming a recordings file at all.
-        """
+        """A UX lane's model reads its recording list, so the list goes to the capture."""
         offenders = []
         covered = 0
         for name in _every_workflow():
@@ -1109,11 +950,7 @@ class TestCaptureDigestNamesTheModelsInput:
         assert offenders == [], offenders
 
     def test_no_lane_pipes_a_whole_list_file_into_the_evidence_list(self) -> None:
-        """The defect this forbids, stated structurally: `cat "$SHOTS" >>
-        "$EVIDENCE_LIST"` copies every line of a list file in as a path, and that
-        list carries prose. A lane must filter to real files instead, which is
-        what the `[ -f ` test below is.
-        """
+        """A lane filters list lines with `[ -f ` instead of `cat`-ing them in as paths."""
         offenders = []
         for name in _every_workflow():
             text = _workflow(name)
@@ -1126,11 +963,10 @@ class TestCaptureDigestNamesTheModelsInput:
         assert offenders == [], offenders
 
     def test_a_lane_that_names_evidence_says_so_where_the_verdict_is_read(self) -> None:
-        """A reader recomputes over whatever the stamp's sentence names. A lane
-        folding evidence in while still printing the description-only sentence
-        would send that reader to recompute over the description alone, get a
-        mismatch, and read a sound verdict as stale -- a false alarm the fix
-        itself manufactured. So the sentence must branch on the count.
+        """The stamp sentence branches on the evidence count.
+
+        A reader recomputes over what the sentence names, so a description-only
+        sentence on an evidence lane would read a sound verdict as stale.
         """
         offenders = []
         for name in _every_workflow():
@@ -1145,25 +981,10 @@ class TestCaptureDigestNamesTheModelsInput:
 class TestASourcedScriptNeverRunsWithCredentialsLive:
     """Every sourced script in a review lane runs before that lane's credentials.
 
-    The invariant, as one sentence: in any workflow that both sources a script
-    from `.github/scripts/` and assumes a role, every source must appear before
-    every assume. It is stated over the WHOLE file rather than per lane, because
-    the reason is not local -- a session assumed once persists for every later
-    step in the job, so "before the model call" is not the same bar as "before
-    any credentials exist".
-
-    On a same-repo pull request the checkout is the PR's merge ref, so a sourced
-    script is the PR's own editable copy; running it after an assume executes
-    PR-authored shell with Bedrock credentials in its environment. The fork lanes
-    check out base_sha and so are not exposed today, but they are held to the same
-    order deliberately: an exception resting on which ref a lane checks out breaks
-    silently the day that ref changes, and this pin is what makes the property
-    independent of it.
-
-    `design-review.yml` documents this ordering in prose. Prose is not a gate: it
-    describes an order without holding it, and an order that must hold in six
-    lanes at once needs something that fails when one of them drifts. That is
-    what this test is.
+    Checked over the whole file: an assumed session persists for every later step.
+    On a same-repo PR a sourced script is the PR's own copy, so running it after an
+    assume runs PR-authored shell with Bedrock credentials. Fork lanes check out
+    base_sha but are held to the same order so the rule does not rest on the ref.
     """
 
     #: A run: step's shell is the workflow's own code, so an `aws` call inside one
@@ -1209,12 +1030,8 @@ class TestASourcedScriptNeverRunsWithCredentialsLive:
 class TestCaptureLanesKeepTheirTriggerSet:
     """Capturing a description does not earn a lane an `edited` trigger.
 
-    A fresh reading of the description and a re-roll of the whole verdict are
-    different things. `edited` buys the first by paying for the second: with
-    `cancel-in-progress`, a body edit on an unchanged head discards the verdict
-    the lane already published and replaces it with another roll of a
-    non-deterministic reviewer. The stamp gives a reader the freshness signal
-    without that trade, so the trigger sets stay as they are.
+    With `cancel-in-progress`, a body edit would discard the published verdict for
+    another roll of a non-deterministic reviewer; the stamp shows freshness instead.
     """
 
     @pytest.mark.parametrize("name", _capture_lanes())
