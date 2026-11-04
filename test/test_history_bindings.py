@@ -75,6 +75,8 @@ _MEMBERS: dict[str, tuple[str, str, str]] = {
     "_deletes_in_flight_guard": ("data", "", ""),
     "_dir_write_epoch": ("function", "fa6cfecd5574", "history"),
     "_dir_write_epochs": ("data", "", ""),
+    "_dir_bumped_stems": ("data", "", ""),
+    "_dir_bump_floors": ("data", "", ""),
     "_file_lock": ("function", "bc31c6c18d74", "history_locks"),
     "_file_locks": ("data", "", ""),
     "_file_locks_guard": ("data", "", ""),
@@ -143,6 +145,7 @@ _MEMBERS: dict[str, tuple[str, str, str]] = {
     "get_unconsolidated": ("function", "4c402cd67e6f", "history"),
     "has_log": ("function", "1eda252b53bd", "history"),
     "has_messages": ("function", "1eda252b53bd", "history"),
+    "listing_has_messages": ("function", "1eda252b53bd", "history"),
     "init": ("function", "b60c5fea256e", "history"),
     "invalidate_tab_id_cache": ("function", "b60c5fea256e", "history"),
     "last_message_info": ("function", "5ce93cd5cafb", "history"),
@@ -150,6 +153,7 @@ _MEMBERS: dict[str, tuple[str, str, str]] = {
     "last_row_ts": ("function", "4b576121a346", "history"),
     "last_speech_info": ("function", "5c2c36671674", "history"),
     "list_sessions": ("function", "32c901f96e6a", "history"),
+    "list_sessions_indexed": ("function", "3b4687b0c546", "history"),
     "list_sessions_status": ("function", "5af52b05ca7f", "history"),
     "locked_stems": ("function", "dfeef8bbc1c0", "history_locks"),
     "mark_consolidated": ("function", "82b842603c08", "history_marker"),
@@ -187,6 +191,7 @@ _MEMBERS: dict[str, tuple[str, str, str]] = {
     "unconsolidated_count": ("function", "028659ce42ac", "history_marker"),
     "update_metadata": ("function", "5e1ab1217b61", "history"),
     "update_metadata_if": ("function", "316452efe533", "history"),
+    "warm_listing_index": ("function", "a0bbc81108fa", "history"),
     "warm_search": ("function", "b60c5fea256e", "history"),
 }
 
