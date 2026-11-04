@@ -191,7 +191,7 @@ class TestWorkflowRunIntegration:
         delete_link = AsyncMock()
         persist = AsyncMock()
 
-        async def cancel_after_link(run) -> None:
+        async def cancel_after_link(run, **_kw) -> None:
             run.workflow_run_id = "wf-partial"
             raise asyncio.CancelledError()
 
