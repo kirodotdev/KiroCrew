@@ -316,11 +316,9 @@ def test_checks_finishing_on_a_pr_waiting_on_something_else_still_wake() -> None
 def test_a_deleted_account_does_not_silence_person_wakes() -> None:
     """One unattributable comment must not blank the whole activity digest.
 
-    A comment whose author is null (a deleted account) used to fail the page's
-    author read and drop the digest to "" on every later read, so a real
-    person's later comment could never wake. The unattributable comment is
-    fingerprinted instead, so the digest stays defined and a new person's
-    comment still moves it.
+    A comment with a null author still contributes a fixed-width activity
+    fingerprint, so the digest remains defined and later comments from people
+    can move it and wake the session.
     """
     deleted_first = {
         "comments": {
