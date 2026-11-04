@@ -126,6 +126,30 @@ describe('useSessionGrid — seedFromSession', () => {
     expect(result.current.paneCount).toBe(1)
   })
 
+  it('stacks the fresh placeholder below the current session when seeded down', () => {
+    const { result } = renderHook(() => useSessionGrid(null))
+
+    act(() => result.current.seedFromSession('slot-1', 'down'))
+
+    const root = asSplit(result.current.tree)
+    expect(root.dir).toBe('row')
+    expect(root.sizes).toEqual([0.5, 0.5])
+    const [current, blank] = root.children.map(asLeaf)
+    expect(current.slot).toBe('slot-1')
+    expect(blank.kind).toBe('placeholder')
+    expect(result.current.focusedId).toBe(blank.id)
+  })
+
+  it('seeds side by side when the direction is right or omitted', () => {
+    const { result } = renderHook(() => useSessionGrid(null))
+
+    act(() => result.current.seedFromSession('slot-1', 'right'))
+    expect(asSplit(result.current.tree).dir).toBe('col')
+
+    act(() => result.current.seedFromSession('slot-1'))
+    expect(asSplit(result.current.tree).dir).toBe('col')
+  })
+
   it('generates ids without crypto.randomUUID', () => {
     vi.stubGlobal('crypto', {})
     try {

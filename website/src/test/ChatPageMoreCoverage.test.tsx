@@ -137,10 +137,14 @@ vi.mock('../components/FlyingQuote', async () => {
 
 // The split grid is stubbed to a prop recorder: what matters here is the
 // `openSideChat` capability ChatPage hands its panes (and when it withholds
-// it), not the grid's own layout, which SessionGridView's suite covers.
+// it) and the seed it opens the grid with, not the grid's own layout, which
+// SessionGridView's suite covers.
 interface GridProps {
   openSideChat?: (slot: string) => boolean | void | Promise<boolean | void>
   onCollapse?: (slot: string, anchorTs?: string, anchorMid?: string, gesture?: boolean) => void
+  seedSlot?: string | null
+  seedDir?: 'right' | 'down'
+  onClose?: () => void
 }
 let gridProps: GridProps | null = null
 vi.mock('../components/SessionGridView', async () => {
@@ -778,6 +782,35 @@ describe('ChatPage row callbacks — quote and ask', () => {
     await act(async () => { release({ ...OTHER_SLOT, key: 'chat-new', title: 'new' }); await pending })
     expect(store.getState().chat.activeSlot).toBe('chat-2')
     expect(screen.getByTestId('session-grid')).toBeTruthy()
+  })
+})
+
+describe('ChatPage split view entry direction', () => {
+  // The session menu reads the folder list while open; the default `{}` stub is not a list.
+  beforeEach(() => { apiSpy('chatFolders').mockResolvedValue([]) })
+  async function openSessionMenu(grid: boolean) {
+    apiSpy('dashboardConfig').mockResolvedValue({ session_grid: grid })
+    await renderTurn({ slots: [SLOT, OTHER_SLOT] })
+    const trigger = await screen.findByRole('button', { name: 'Session options' })
+    fireEvent.pointerDown(trigger, { button: 0, ctrlKey: false })
+    fireEvent.click(trigger)
+  }
+
+  it('seeds the first split below from the session menu, and the next button entry beside', async () => {
+    await openSessionMenu(true)
+    expect(screen.queryByRole('menuitem', { name: 'Split right' })).toBeNull()
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Split down' }))
+    await waitFor(() => expect(gridProps?.seedDir).toBe('down'))
+    expect(gridProps?.seedSlot).toBe('chat-1')
+    act(() => { gridProps!.onClose!() })
+    fireEvent.click(await screen.findByRole('button', { name: 'Enter split view' }))
+    await waitFor(() => expect(gridProps?.seedDir).toBe('right'))
+  })
+
+  it('offers no Split down row while the split feature is off', async () => {
+    await openSessionMenu(false)
+    await screen.findAllByRole('menuitem')
+    expect(screen.queryByRole('menuitem', { name: 'Split down' })).toBeNull()
   })
 })
 
