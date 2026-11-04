@@ -94,8 +94,8 @@ the form open with its entered name and selected template intact.
 
 `GET /api/agents/catalog` lists configured members and discovered shared templates
 without enrolling, pruning or allocating a member. Its one write is the owner's:
-the owner's own fetch runs `refresh_materialized_agents(heal_default=True)`,
-which may reset a `default_agent` whose template is gone. Any other caller's
+the owner's own fetch runs `reset_dangling_default_agent()` over a complete
+snapshot, which may reset a `default_agent` whose template is gone. Any other caller's
 fetch never writes config. Each row carries an explicit
 `selection_kind` (`member` or `template`); a member and template with the same name
 remain separate choices. This projection grants no execution or memory authority.
