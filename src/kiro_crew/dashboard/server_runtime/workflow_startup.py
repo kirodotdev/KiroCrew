@@ -104,9 +104,13 @@ async def _initialize_workflow_service(state: DashboardState) -> None:
         _wf_concurrency = 4
         # The run ceiling is unaffected by that and IS config-driven.
         _wf_timeout_secs: int | None = None
+        _wf_max_depth: int | None = None
+        _wf_max_nested_runs: int | None = None
         try:
             cfg = await asyncio.to_thread(KiroCrewConfig.load)
             _wf_timeout_secs = int(cfg.agent.workflow_run_timeout_secs)
+            _wf_max_depth = int(cfg.agent.workflow_max_depth)
+            _wf_max_nested_runs = int(cfg.agent.workflow_max_nested_runs)
         except Exception:
             logger.debug("workflow run-ceiling config unavailable; using default", exc_info=True)
 
@@ -127,6 +131,9 @@ async def _initialize_workflow_service(state: DashboardState) -> None:
                 logger.info("workflow ctx.nudge not armed for %s: %s", slot_key, error)
             return error
 
+        from kiro_crew.dashboard.workflow_lineage import lineage_lookups
+
+        parent_session_of, run_of_session = lineage_lookups(state)
         service = await WorkflowService.create(
             sessions=state.sessions,
             context_builder=state.context_builder,
@@ -137,6 +144,10 @@ async def _initialize_workflow_service(state: DashboardState) -> None:
             nudge_authorizer=_wf_nudge_authorizer,
             session_port=WorkflowSessionPort(state),
             timeout_secs=_wf_timeout_secs,
+            max_nesting_depth=_wf_max_depth,
+            max_nested_runs=_wf_max_nested_runs,
+            parent_session_of=parent_session_of,
+            run_of_session=run_of_session,
         )
         # Cancellation cannot stop a to_thread worker. Even if the factory
         # finishes while shutdown drains it, its result must remain unpublished.

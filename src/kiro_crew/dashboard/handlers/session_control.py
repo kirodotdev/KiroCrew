@@ -442,6 +442,20 @@ def _counted(op: str) -> Callable[[_Route], _Route]:
     return decorate
 
 
+def _inherit_workflow_lineage(state: DashboardState, caller: str, slot_key: str) -> None:
+    """Record *slot_key* as working for the workflow run its creator works for.
+
+    A run started from the new session then counts against that run's nesting
+    caps, as one started from the creator would.
+    """
+    workflows = getattr(state, "workflow_service", None)
+    if workflows is None or not slot_key:
+        return
+    run_id = workflows.nesting.parent_run_of(caller)
+    if run_id:
+        workflows.nesting.bind_session(slot_key, run_id)
+
+
 @_counted("create")
 async def api_session_control_create(request: web.Request) -> web.Response:
     """POST /api/session-control/create — open a session this caller will own."""
@@ -506,6 +520,10 @@ async def api_session_control_create(request: web.Request) -> web.Response:
         )
     except sc.SessionControlError as exc:
         return _refusal(exc)
+    if not dry_run and isinstance(result, dict):
+        _inherit_workflow_lineage(
+            state, _read_session_key(request), str(result.get("target") or "")
+        )
     if first_message is not None and not dry_run and isinstance(result, dict):
         result = {
             **result,

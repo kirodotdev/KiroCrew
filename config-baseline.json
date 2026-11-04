@@ -99,6 +99,8 @@
         "interactive_command_policy": "cancel",
         "workflow_run_timeout_secs": 3600,
         "kas_workflows": false,
+        "workflow_max_depth": 4,
+        "workflow_max_nested_runs": 3,
         "subagent_mem_buffer_pct": 20,
         "chat_turn_timeout_secs": 14400,
         "session_start_timeout_secs": 90,
@@ -1589,6 +1591,34 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false
+    },
+    {
+      "path": "agent.workflow_max_depth",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Workflow Max Nesting Depth",
+      "help": "Deepest dynamic-workflow run that workflow_run may start, counting a run started outside any run as depth 1. A run started from a run's agent session, or from a subagent that session spawned, is one level deeper. A start past the cap is refused with an error, not queued. Clamped to 1..16.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 4
+    },
+    {
+      "path": "agent.workflow_max_nested_runs",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Workflow Max Nested Runs",
+      "help": "How many runs one dynamic-workflow run may have in flight at once that were started from inside it. A start past the cap is refused with an error, not queued. Clamped to 1..32.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 3
     },
     {
       "path": "agent.subagent_mem_buffer_pct",

@@ -58,14 +58,15 @@ intra-package imports per module, so the direction cannot drift:
 
 ```
 __init__, validate, dsl, schema, events, registry, store,
-agent_exec, agent_pool, preview   (leaves: no sibling imports, or __init__ only)
+agent_exec, agent_pool, preview,
+nesting                         (leaves: no sibling imports, or __init__ only)
 library                         (definition persistence; may import store)
     ↑
 context      (may import: __init__, validate)
     ↑
 runner       (may import: __init__, validate, dsl, events, context, schema, registry)
     ↑
-service      (may import: validate, registry, runner, agent_exec, agent_pool, store, library, events)
+service      (may import: validate, registry, runner, agent_exec, agent_pool, store, library, events, nesting)
 ```
 
 The scan counts only relative sibling imports (`from .sib import …`, level 1).
@@ -692,6 +693,72 @@ None-guard, and `validate` rejects the inline unguarded dereference.
 | Schema re-asks | `schema.DEFAULT_SCHEMA_RETRIES` | 2 | result is `None` |
 | Tracked runs in memory | `registry.DEFAULT_MAX_RUNS` | 200 | oldest **terminal** run evicted; a running run is never evicted |
 | Persisted agent-error text | `runner.MAX_AGENT_ERROR_CHARS` | 500 | truncated after redaction |
+| Nesting depth | `agent.workflow_max_depth` | 4 | the start returns `error_code="workflow_nesting_depth"`; no run is registered |
+| Nested runs in flight per run | `agent.workflow_max_nested_runs` | 3 | the start returns `error_code="workflow_nested_runs"`; no run is registered |
+
+### Nested runs
+
+`workflows/nesting.py::NestingLedger` caps runs started from inside other runs.
+A run started from a session that belongs to no run is depth 1. A run started
+from one of run R's worker sessions (`wf:`, `wf-pool:`, `wf-unpooled:` and
+`wf-worker:<R>:...`, the `nesting.WORKER_KEY_PREFIXES`) or from its authoring
+session (`wf-author:<R>:a<n>`) is `depth(R) + 1`, and
+so is a run started from a step session (`taskrunner:<task_id>:...`) of a task
+whose shared run is R (`WorkflowService(run_of_session=...)`, which the gateway
+wires to the task runner's runs). A run started from a dashboard session that R
+opened is `depth(R) + 1` as well: `WorkflowSessionPort.open_session` calls
+`NestingLedger.bind_session` with the new slot key, and a `session_create` from a
+session that already works for R binds the session it creates to R
+(`handlers/session_control.py::_inherit_workflow_lineage`).
+`workflow_startup.workflow_run_of_session` maps such a session's history key to
+its slot key before the lookup. A
+`subagent:<id>` caller is followed through its recorded `parent_session_key`
+(`WorkflowService(parent_session_of=...)`, which the gateway wires to the
+subagent manager) until a worker key or a non-subagent key is reached, so
+`run -> step -> spawn_run -> workflow_run` is one level deeper, as `run -> step
+-> workflow_run` is. The walk stops after 64 hops, so a cycle in recorded
+parents reads as no parent.
+
+`start`, `start_from_intent` and `rerun_subtree` call `NestingLedger.admit`
+just before `run_background`, with the caller's key (`caller_session` for a
+rerun). `start_definition` checks a saved task plan before it reaches the task
+runner: the task runner allocates the shared run id, so the reservation is made
+under a placeholder and `NestingLedger.rename` moves it onto the returned id.
+`api_taskrunner_start`, which `task_run` reaches, checks the caller the same way
+before `TaskRunner.start_background` runs, through
+`WorkflowService.reserve_nested_start` and `settle_nested_start`.
+`begin_host_run` calls `NestingLedger.record`, which tracks a host run under its
+parent without checking the caps, so a task started on a path that is not
+checked (a dashboard Run button, a resume) still keeps its depth and fan-out
+for the runs its steps start.
+For a checked start, the caller passes its placeholder down as
+`nesting_reservation` (`TaskRunner.start_background` or
+`start_workflow_definition`, then `plan` and `_workflow_begin`, then
+`begin_host_run`), and `record` renames exactly that placeholder onto the host
+run, so a task holds one fan-out slot while `start_background` is still running,
+whichever of two concurrent starts registers its host run first.
+`settle_nested_start` then settles the host run, even when the start fails after
+the host run was registered. `admit` resolves the parent run, refuses a depth past
+`agent.workflow_max_depth` or a parent with `agent.workflow_max_nested_runs`
+children still in flight, and otherwise reserves the run under its parent. The
+check and the reservation run without a yield, so two starts cannot both take
+the last slot. A child counts as in flight while it is reserved and not yet
+registered, or while its registry status is in `ACTIVE_STATUSES`. `settle`
+drops the reservation once `run_background` returns; a start that produced no
+run is also removed from its parent. A refusal is a returned error, never a
+queued start, so the HTTP handlers answer 400 and the `workflow_run` tool
+reports `workflow_run failed: ...`.
+
+Lineage is held in process memory only. Runs do not survive a gateway restart.
+A parent run the ledger does not know counts as depth 1, so a run started from
+it is depth 2.
+
+Starts the ledger does not trace back to a run count as root runs: a run a cron
+job or webhook session starts, and a run started from a subagent whose ancestor
+record the subagent manager has already evicted. Both caps are
+bound live (`live.bind`) and clamped to 1..16 and 1..32 (`config.sections_defaults`
+owns the defaults and ceilings); a start is checked against the values in force
+when it is admitted.
 
 `clamp_run_timeout(value, default=...)` is the one door to the wall-clock ceiling.
 `None`, non-numeric, and non-positive input fall back to the default, so a bad or
@@ -1810,6 +1877,8 @@ call site safe without a try/except at each one.
 | Key | Default | Meaning |
 |-----|---------|---------|
 | `agent.workflow_run_timeout_secs` | 3600 | default wall-clock ceiling per run; clamped to 60..21600 by `clamp_run_timeout`, so it can be raised for long multi-phase investigations but never disabled |
+| `agent.workflow_max_depth` | 4 | deepest run `workflow_run` may start, a run started outside any run being depth 1; clamped to 1..16 (see [Nested runs](#nested-runs)) |
+| `agent.workflow_max_nested_runs` | 3 | runs one run may have in flight that were started from inside it; clamped to 1..32 |
 
 Workflow agent concurrency is **not** configurable: it is pinned at 4 in
 `dashboard/server_runtime/workflow_startup.py` for the pool-bound reason above.

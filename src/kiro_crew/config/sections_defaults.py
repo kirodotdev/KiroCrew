@@ -87,6 +87,14 @@ class SectionReader:
 
 
 DEFAULT_MODEL = "auto"
+# agent.workflow_max_depth / agent.workflow_max_nested_runs: the caps on runs
+# started from inside runs (workflows/nesting.py). The loader clamps on-disk
+# values to these bands and the live-bound setters clamp to the same ones. The
+# fan-out default matches the subagent manager's default concurrency.
+WORKFLOW_MAX_DEPTH_DEFAULT = 4
+WORKFLOW_MAX_DEPTH_CEILING = 16
+WORKFLOW_MAX_NESTED_RUNS_DEFAULT = 3
+WORKFLOW_MAX_NESTED_RUNS_CEILING = 32
 DEFAULT_SESSION_TIMEOUT = 3600  # 60 min
 # ``session.harness_background_hold_secs``: how long after a harness launches
 # background work the idle sweep and the RSS recycle still keep its session.

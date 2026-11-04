@@ -1926,6 +1926,12 @@ created, and refuses a mode above that session's current mode or above the
 launching session's own posture, judged again after the write. The rest
 is in [workflows](workflows.md) (ports native to Kiro Crew).
 
+A session a run opens works for that run: `open_session` binds the new slot to
+the run (`NestingLedger.bind_session`), and `api_session_control_create` binds a
+session it creates to the run its caller already works for
+(`_inherit_workflow_lineage`), so a workflow started from either counts against
+the run's nesting caps (see [workflows: Nested runs](workflows.md#nested-runs)).
+
 ### Owner-DM channel callers: the audience predicate
 
 The caller-side channel refusals (`linked_session_caller`, `mirrored_caller`) and

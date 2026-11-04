@@ -57,6 +57,8 @@ from kiro_crew.config.sections import (
     SUBAGENT_MAX_TURNS_CEILING,
     TOOL_APPROVAL_TIMEOUT_MAX,
     TOOL_APPROVAL_TIMEOUT_MIN,
+    WORKFLOW_MAX_DEPTH_CEILING,
+    WORKFLOW_MAX_NESTED_RUNS_CEILING,
     AgentConfig,
     DashboardConfig,
     ExternalRegistryConfig,
@@ -912,6 +914,12 @@ def _build_agent_config(agent_data: dict) -> AgentConfig:
         # hand-edited file and the live-bound setter agree.
         workflow_run_timeout_secs=section.read("workflow_run_timeout_secs", _safe_int, 60, 21600),
         kas_workflows=section.read("kas_workflows", _safe_bool),
+        workflow_max_depth=section.read(
+            "workflow_max_depth", _safe_int, 1, WORKFLOW_MAX_DEPTH_CEILING
+        ),
+        workflow_max_nested_runs=section.read(
+            "workflow_max_nested_runs", _safe_int, 1, WORKFLOW_MAX_NESTED_RUNS_CEILING
+        ),
         subagent_cwd_allowed_roots=(
             [r for r in _roots if isinstance(r, str)]
             if isinstance(_roots := agent_data.get("subagent_cwd_allowed_roots"), list)
