@@ -87,6 +87,7 @@ jobs:
       only_frontend: ${{ steps.decide.outputs.only_frontend }}
       linux_packaging: ${{ steps.filter.outputs.linux_packaging }}
       wheel_closure: ${{ steps.filter.outputs.wheel_closure }}
+      render_bench: ${{ steps.filter.outputs.render_bench }}
       leaf_tests: ${{ steps.leaf.outputs.leaf_tests }}
       leaf_targets: ${{ steps.leaf.outputs.leaf_targets }}
       leaf_gates: ${{ steps.leaf.outputs.leaf_gates }}
@@ -235,6 +236,18 @@ jobs:
               - 'setup.cfg'
               - 'pyproject.toml'
               - 'scripts/ci/install_requires_closure.py'
+            # Independent of the buckets above: the files that can change what
+            # the render benchmark counts (the SPA source, the store seam it
+            # hooks into, its own scripts, budgets and build config).
+            render_bench:
+              - 'website/src/**'
+              - 'website/scripts/bench-render.mjs'
+              - 'website/scripts/lib/**'
+              - 'website/scripts/vite.profiling.config.mjs'
+              - 'website/vite.config.ts'
+              - 'website/perf-budgets.json'
+              - 'website/package-lock.json'
+              - '.github/workflows/ci.yml'
 
       - name: Decide surface
         id: decide
@@ -4105,6 +4118,68 @@ jobs:
         # tree; it reads no production build.
         working-directory: website
         run: npm run i18n:render
+
+  # React render counts for four replayed websocket scenarios against the
+  # budgets in website/perf-budgets.json (website/docs/testing.md, "Render
+  # benchmark"). It gates counts rather than milliseconds, but the number of
+  # React commits still depends on how fast the runner drains frames, so the
+  # job is pinned to one runner class instead of the fleet resolver: the
+  # organization's larger-runner group serves one image, and the budgets were
+  # measured on it. A fork running its own CI has no such runner and no
+  # matching budgets, so the job runs in this repository only.
+  #
+  # continue-on-error: this REPORTS while the budgets are new. A budget
+  # overrun turns this job's own check red, but not the CI run that PR
+  # Readiness reads, so it blocks no merge. Dropping continue-on-error is the
+  # follow-up once the budgets have held on main.
+  bench-render:
+    name: Render Benchmark (counter budgets)
+    needs: [changes, await-fast-gate, lint-gate]
+    if: ${{ !cancelled() && github.repository == 'kirodotdev/KiroCrew' && needs.lint-gate.result == 'success' && needs.changes.outputs.render_bench == 'true' }}
+    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}
+    continue-on-error: true
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/seed-node-tool-cache
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: website/package-lock.json
+
+      - name: Install frontend deps
+        working-directory: website
+        run: npm ci --no-audit --no-fund
+
+      # Same browser location as `i18n-render` and `e2e`, set per step because
+      # a job-level env cannot read runner.temp.
+      - name: Install Playwright browser (Chromium)
+        timeout-minutes: 6
+        working-directory: website
+        env:
+          PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/ms-playwright
+        run: npx playwright install chromium
+
+      - name: Build the profiling bundle and check render budgets
+        working-directory: website
+        env:
+          PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/ms-playwright
+        run: npm run bench:render -- --out "$RUNNER_TEMP/bench-render"
+
+      # The per-run counts are what a budget change is measured from, so keep
+      # the report on a failure too.
+      - name: Upload render benchmark report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: bench-render-report
+          path: ${{ runner.temp }}/bench-render/bench-render.json
+          if-no-files-found: warn
+          retention-days: 14
 
   # The browser gate runs on the CodeBuild fleet. The one step that needed a
   # user namespace -- the real private-workflow MCP run -- moved to
