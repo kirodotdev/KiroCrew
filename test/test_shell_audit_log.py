@@ -275,6 +275,7 @@ def _service(shutdown: _Shutdown, rotate: Any, pool: ThreadPoolExecutor) -> Any:
         build_child_map=dict,
         rss_mb_from_tree=lambda pid, child_map: 0,
         get_session_rss_mb=lambda pid: 0,
+        get_session_handle_peak=lambda pid: None,
         is_windows=lambda: False,
         getpid=lambda: 1,
         monotonic=lambda: 0.0,

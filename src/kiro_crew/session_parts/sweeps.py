@@ -93,6 +93,7 @@ from kiro_crew.session_pid import (
     _rss_mb_from_tree,
     cleanup_orphaned_session_roots,
     find_orphan_mcp_candidates,
+    get_session_handle_peak,
     get_session_rss_mb,
     kill_orphan_mcps,
 )
@@ -154,6 +155,7 @@ def _cleanup_deps(self: SessionManager) -> CleanupDeps:
         build_child_map=lambda: _build_child_map(),
         rss_mb_from_tree=lambda pid, child_map: _rss_mb_from_tree(pid, child_map),
         get_session_rss_mb=lambda pid: get_session_rss_mb(pid),
+        get_session_handle_peak=lambda pid: get_session_handle_peak(pid),
         is_windows=lambda: platform_compat.IS_WINDOWS,
         getpid=lambda: os.getpid(),
         monotonic=lambda: time.monotonic(),

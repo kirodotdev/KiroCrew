@@ -115,7 +115,10 @@ def _gateway_memory_lines() -> list[str]:
             )
     try:
         pid = cli_doctor._read_gateway_pid()
-        if pid is None and _gateway_lock_indeterminate():
+        indeterminate = pid is None and _gateway_lock_indeterminate()
+        if indeterminate and cli_doctor.platform_compat.IS_WINDOWS:
+            pid = _windows_recorded_gateway_pid()
+        if pid is None and indeterminate:
             # ``_read_gateway_pid`` folds "the probe could not answer" into the
             # same None as "nobody holds the lock". On Windows a serving
             # gateway holds its lock file under a mandatory lock, so the pid
@@ -134,8 +137,61 @@ def _gateway_memory_lines() -> list[str]:
                 lines.append(f"  gateway rss:     ⚠️  pid {pid} alive but RSS unreadable")
             else:
                 lines.append(f"  gateway rss:     {rss // (1024 * 1024)} MiB (pid {pid})")
+            if cli_doctor.platform_compat.IS_WINDOWS:
+                lines.extend(_windows_tree_usage_lines(pid))
     except Exception:
         lines.append("  gateway rss:     ⚠️  could not determine (probe failed)")
+    return lines
+
+
+def _windows_recorded_gateway_pid() -> int | None:
+    """A serving Windows gateway's pid from its own run record, or None.
+
+    The gateway keeps its lock file under a mandatory lock, so the lock probe
+    is indeterminate on Windows' normal serving path and names no pid. The
+    gateway also records its pid and start token in ``run/gateway-<port>.pid``;
+    ``_recorded_gateway_pid`` returns that pid only while the token still
+    matches the live process, so a crash-left pid recycled onto another process
+    is not measured. Nothing is signalled here: the pid only picks which tree
+    the memory lines read.
+    """
+    from kiro_crew.cli_server_peer import _recorded_gateway_pid
+    from kiro_crew.port_resolution import resolve_client_port
+
+    try:
+        return _recorded_gateway_pid(resolve_client_port(None))
+    except Exception:
+        return None
+
+
+def _windows_tree_usage_lines(pid: int) -> list[str]:
+    """Committed memory and the busiest handle count over the gateway's tree.
+
+    Windows only; the caller gates on the platform. Working set is the number a
+    Windows host reports as RSS, but a leaked commit is what exhausts its commit
+    charge while that figure stays small, so both are printed. The handle count
+    is the MAX over the tree because handles belong to one process; above the
+    warning threshold the line says what the consequence is, not just the number.
+    """
+    from kiro_crew.constants import WINDOWS_HANDLE_WARN_THRESHOLD
+
+    lines: list[str] = []
+    private_mb = cli_doctor.platform_compat.proc_private_tree_mb_for_pid(pid)
+    if private_mb is None:
+        lines.append("  gateway private: ⚠️  tree committed memory unreadable")
+    else:
+        lines.append(f"  gateway private: {private_mb:,.0f} MiB committed across the tree")
+    handles = cli_doctor.platform_compat.proc_handle_tree_max_for_pid(pid)
+    if handles is None:
+        lines.append("  gateway handles: ⚠️  tree handle count unreadable")
+    elif handles > WINDOWS_HANDLE_WARN_THRESHOLD:
+        lines.append(
+            f"  gateway handles: ⚠️  {handles:,} in its busiest process, above the "
+            f"{WINDOWS_HANDLE_WARN_THRESHOLD:,} warning threshold — a process leaking handles can "
+            "exhaust the host while its memory figures stay small"
+        )
+    else:
+        lines.append(f"  gateway handles: ✅ {handles:,} in its busiest process")
     return lines
 
 

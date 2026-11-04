@@ -1583,6 +1583,11 @@ WINDOWS_DEVICE_STEMS = frozenset(
     | {f"lpt{n}" for n in range(1, 10)}
 )
 
+# A Windows process holding more handle entries than this is named as leaking.
+# Handles are a fixed host resource; a watcher that opens one per directory can
+# reach hundreds of thousands while every memory metric stays small.
+WINDOWS_HANDLE_WARN_THRESHOLD = 50_000
+
 # AWS named-profile name shape — the SINGLE SOURCE OF TRUTH. Hand-copying the
 # charset into separate compiled patterns reintroduced the missing-'+' defect
 # twice, so every in-package
