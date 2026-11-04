@@ -125,6 +125,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import tomllib
 from pathlib import Path
 from typing import Any
 
@@ -165,29 +166,52 @@ _SQLITE_HOME_ENV = SQLITE_HOME_ENV
 _CODEX_HOME_ENV = "CODEX_HOME"
 
 
-def _read_codex_mcp_server_names(config_file: Path) -> list[str]:
-    """Return ``mcp_servers`` names from a codex ``config.toml``, or ``[]``.
+#: Inert transport values for a disable entry. codex parses every
+#: ``mcp_servers`` entry with ``TryFrom<RawMcpServerConfig>``, which needs exactly
+#: one of ``command`` (stdio) or ``url`` (streamable HTTP) and fails the whole
+#: ``thread/start`` with ``invalid transport`` otherwise. codex re-reads
+#: ``config.toml`` on every ``thread/start`` while ``CODEX_CONFIG`` is fixed for
+#: the adapter's lifetime, so a server removed or renamed after the spawn leaves
+#: the override standing alone. Carrying the transport key the server had at spawn
+#: keeps that orphan a valid, disabled entry. Over a live entry it only replaces
+#: the command or URL of a server that ``enabled = false`` stops codex starting.
+_DISABLED_STDIO_COMMAND = "true"
+_DISABLED_HTTP_URL = "http://127.0.0.1/"
 
-    Parsed with stdlib ``tomllib``. Names come back in config.toml order. A
-    missing, unreadable or malformed file yields ``[]``, so the caller injects
-    no override. Blocking file I/O: call it through ``asyncio.to_thread``.
+
+def _read_codex_mcp_disable_overrides(config_file: Path) -> dict[str, dict[str, Any]]:
+    """Return one ``enabled = false`` entry per ``mcp_servers`` server, or ``{}``.
+
+    Each entry also carries a placeholder for the transport key the server
+    uses (``command`` or ``url``), so it still parses if the server is gone
+    from ``config.toml`` by the time codex reads it. A server with neither key
+    is left out: codex already rejects it without this override. Parsed with
+    stdlib ``tomllib``, in config.toml order. A missing, unreadable or
+    malformed file yields ``{}``, so the caller injects no override. Blocking
+    file I/O: call it through ``asyncio.to_thread``.
     """
-    import tomllib
-
     try:
         if not config_file.is_file():
-            return []
+            return {}
         text = config_file.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
-        return []
+        return {}
     try:
         data = tomllib.loads(text)
     except tomllib.TOMLDecodeError:
-        return []
+        return {}
     servers = data.get("mcp_servers", {})
-    if isinstance(servers, dict):
-        return list(servers)
-    return []
+    if not isinstance(servers, dict):
+        return {}
+    overrides: dict[str, dict[str, Any]] = {}
+    for name, entry in servers.items():
+        if not isinstance(entry, dict):
+            continue
+        if "command" in entry:
+            overrides[name] = {"enabled": False, "command": _DISABLED_STDIO_COMMAND}
+        elif "url" in entry:
+            overrides[name] = {"enabled": False, "url": _DISABLED_HTTP_URL}
+    return overrides
 
 
 def _sandbox_wrapper_generations(sandbox_mode: str) -> int:
@@ -328,7 +352,7 @@ class CodexHarness(MembershipHarness):
         # configured MCP server via CODEX_CONFIG.  codex starts a per-session
         # fleet (~44 processes) from config.toml for each session/new; session/close
         # evicts the session but never terminates those children.  Injecting
-        # CODEX_CONFIG = {"mcp_servers": {<name>: {"enabled": false}, ...}} makes
+        # CODEX_CONFIG = {"mcp_servers": {<name>: {"enabled": false, ...}}} makes
         # codex skip initializing every server (McpServerConfig.enabled, documented
         # in codex-rs/config/src/mcp_types.rs:234).  CODEX_HOME stays shared and
         # untouched; only the child's environment gains the override.
@@ -343,18 +367,29 @@ class CodexHarness(MembershipHarness):
         # after the full env (including agent.env) is assembled, so it can see
         # whether CODEX_CONFIG is already set and leave an existing value alone.
         #
-        # Known residual: names are read once from CODEX_HOME/config.toml at
-        # spawn.  Project-level .codex/config.toml overrides are not covered;
-        # servers they add would still start a fleet per background session.
+        # Names are read once, at spawn, while codex re-reads config.toml on
+        # every thread/start. Each entry therefore carries its own transport
+        # placeholder (see _DISABLED_STDIO_COMMAND), so a server removed or
+        # renamed later, or one read from a CODEX_HOME that agent.env then
+        # replaces, is an orphan that still parses instead of failing every
+        # background session/new.
+        #
+        # Known residuals: a server renamed after spawn starts its fleet again
+        # under the new name until the runtime recycles, and one that switches
+        # between command and url under the same name conflicts with the
+        # placeholder until then. Project-level .codex/config.toml overrides
+        # are not covered. A session/new that carries mcpServers replaces the
+        # whole mcp_servers table in codex-acp's createSessionConfig, dropping
+        # this override for any session that mounts servers that way.
         self._bg_codex_config = ""
         if is_background:
             _codex_home = Path(ctx.environ.get(_CODEX_HOME_ENV) or str(ctx.home / ".codex"))
-            _names = await asyncio.to_thread(
-                _read_codex_mcp_server_names, _codex_home / "config.toml"
+            _overrides = await asyncio.to_thread(
+                _read_codex_mcp_disable_overrides, _codex_home / "config.toml"
             )
-            if _names:
+            if _overrides:
                 self._bg_codex_config = json.dumps(
-                    {"mcp_servers": {n: {"enabled": False} for n in _names}},
+                    {"mcp_servers": _overrides},
                     separators=(",", ":"),
                 )
 
