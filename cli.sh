@@ -1342,9 +1342,17 @@ _KAS_RETRY="$BIN/kirocrew kas install"
 if [ "$INSTALL_KAS" = "1" ]; then
   echo ""
   echo "Downloading the built-in KAS engine (kirocrew kas install; skip with --no-kas) ..."
-  if [ -x "$BIN/kirocrew" ] && "$BIN/kirocrew" kas install; then
-    :
+  # Exit 3 is `kas install`'s "this host cannot run the engine" (cli_kas.py
+  # HOST_UNSUPPORTED_EXIT): it already printed why, and a retry cannot help.
+  _kas_rc=0
+  if [ -x "$BIN/kirocrew" ]; then
+    "$BIN/kirocrew" kas install || _kas_rc=$?
   else
+    _kas_rc=1
+  fi
+  if [ "$_kas_rc" -eq 3 ]; then
+    echo "NOTE: this host cannot run the built-in KAS engine (see above); Kiro Crew is installed without it." >&2
+  elif [ "$_kas_rc" -ne 0 ]; then
     echo "WARNING: could not download the built-in KAS engine; Kiro Crew is installed without it." >&2
     echo "Retry when online: $_KAS_RETRY" >&2
   fi
