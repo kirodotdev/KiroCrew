@@ -4036,16 +4036,24 @@ runs the agent it recorded. A `template` record (a worker included) stays exact
   ledger keeps the text above unchanged, and no loop is taught. The mate
   conductor maps the `goal-conductor` skill (so `patrol_budget.py` is in its
   skill scope) and the `dashboard` skill its prompt names only when its spec
-  passes the same check after the governance ceiling. That mapping is ADDED
-  to the trees the conductor inherits (`~/.kiro/skills` and a trusted
-  workspace `.kiro/skills`), never put in their place. The rule lives in one
-  function, `skill_scope.mate_conductor_scope`: `agent_skill_globs` returns
-  through it on every path whatever `inherit_defaults` its caller passes (the
-  session scope, the injection plan, the per-turn triggered-skill filter), and
-  KAS's `deny skill` rule (`acp/kas_skill_scope._spec_globs`) calls it too, so
-  the user's own skills stay offered on both harnesses; without it the spec
-  maps no skill and keeps the skills it inherits (`test_crewmate_prompts.py`,
-  `test_mate_conductor_agent.py`).
+  passes the same check after the governance ceiling. The intended scope is
+  those mapped skills alone, as on the Ultra Mode conductor. For one release
+  `skill_scope.MATE_CONDUCTOR_INHERITS_USER_SKILLS` stays on: the mapping is
+  ADDED to the user's `~/.kiro/skills` and a trusted workspace `.kiro/skills`
+  through `skill_scope.mate_conductor_scope`, which `agent_skill_globs` returns
+  through on every caller (the session scope, the injection plan, the per-turn
+  triggered-skill filter) and KAS's `deny skill` rule
+  (`acp/kas_skill_scope._spec_globs`) calls too. On each new session whose
+  conductor loads such a skill, the crewmate's next reply names it and points to
+  the crewmate's Abilities or to asking the crewmate: the guidance is queued as
+  that turn's pending context, because the crewmate chat draws messages only; a
+  `notice` row with the same text shows on the Sessions page
+  (`chat_turn/turn_spec_hooks._notice_inherited_conductor_skills`). The next
+  release turns the flag off and removes it. Without the
+  ledger the spec maps no skill and keeps the skills it inherits
+  (`test_crewmate_prompts.py`, `test_mate_conductor_agent.py`). Who gets which
+  MCP servers and skills is summed up in
+  [Agent MCP servers and skills](../../architecture/agent-mcp-and-skill-reach.md).
 - **The worker**, `kirocrew-mate-worker`, is what the conductor hands work to:
   its `session_create` opens the worker template on the crewmate's own
   workspace, store and member identity whatever `agent` it names, because the
