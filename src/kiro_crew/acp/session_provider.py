@@ -47,6 +47,7 @@ from kiro_crew.acp.runtime import (
 )
 from kiro_crew.acp.session_handle import WatchdogSettings
 from kiro_crew.acp.types import (
+    ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
     ACP_BACKENDS_COMPACT,
     ACP_BACKENDS_CONTEXT_RECYCLE,
@@ -1313,6 +1314,21 @@ class AcpSessionProvider(LLMProvider):
         if not isinstance(backend, str) or backend not in ACP_BACKENDS_HARNESS_MANAGED:
             return None
         return backend
+
+    @property
+    def harness_compact_verb_advertised(self) -> bool:
+        """Whether the KAS engine serving this session listed its compaction verb.
+
+        Identity is positive: only a KAS session asks its handle
+        (``AcpSessionHandle._kas_compact_advertised``, which fails closed on a
+        missing ``initialize`` record). Every other backend answers ``False``, the
+        ABC default. Only a literal ``True`` passes, so a mocked handle never
+        reads as advertised.
+        """
+        if self.backend == ACP_BACKEND_KAS:
+            probe = getattr(self._handle, "_kas_compact_advertised", None)
+            return callable(probe) and probe() is True
+        return False
 
     @property
     def compaction_unmanaged_backend(self) -> str | None:

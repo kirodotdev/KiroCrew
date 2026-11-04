@@ -731,6 +731,18 @@ class AcpProvider(LLMProvider):
         return backend
 
     @property
+    def harness_compact_verb_advertised(self) -> bool:
+        """Whether the engine advertised the compaction verb Crew sends for ``/compact``.
+
+        Answered by the inner session provider (``AcpSessionProvider``, from the
+        KAS session handle's ``initialize`` record). Before startup
+        ``self._client`` is the placeholder ``AcpClient``, which has no such
+        attribute, so this reads False. Only a literal ``True`` passes, so a mock
+        never reads as advertised.
+        """
+        return getattr(self._client, "harness_compact_verb_advertised", False) is True
+
+    @property
     def compaction_unmanaged_backend(self) -> str | None:
         """Backend id when neither Crew nor the harness compacts, else ``None``.
 

@@ -99,6 +99,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "disown_work_dir": ("function", False, "b60c5fea256e", "acp_lifecycle"),
     "exit_code": ("property", False, "8dc15be1dfda", "acp"),
     "get_valid_effort_levels": ("function", False, "6806e867af4e", "acp"),
+    "harness_compact_verb_advertised": ("property", False, "a6632a57e602", "acp"),
     "harness_managed_compaction_backend": ("property", False, "f21e39ec5ffb", "acp"),
     "has_active_turn": ("function", False, "a6632a57e602", "acp"),
     "has_unfinished_turn": ("function", False, "a6632a57e602", "acp"),

@@ -88,7 +88,8 @@ export function createChatSlotSettingsEndpoints({ get, post, put, j, jfetch: fet
     /** This slot's auto-compact threshold override (null = follows a default:
      *  `agent_pct` when the session's agent declares one, else `global_pct`).
      *  `harness_managed` names the backend when the session compacts on its
-     *  own (KAS), where this threshold does not apply. */
+     *  own (KAS); there the global threshold is left to the backend, and an
+     *  override or agent default compacts sooner. */
     chatSlotAutocompact: (slot: string) =>
       fetch('/api/chat/slots/' + encodeURIComponent(slot) + '/autocompact').then(j) as Promise<{ pct: number | null; global_pct: number; agent_pct?: number | null; agent?: string | null; harness_managed?: string | null; min: number; max: number }>,
     /** Set (number) or clear (null) this slot's auto-compact threshold override. */

@@ -1760,8 +1760,8 @@ against sweep completeness, and are torn down at `close_all`.
   normal Stop, user-follow-up, pending-steer, approval/refusal,
   and one-shot gates remain unchanged; trusted or global auto-approve sessions
   retain the existing notice-only downgrade.
-- **Compaction threshold precedence** (`SessionManager.effective_autocompact_pct`): the session's own override (the context popover slider, `set_autocompact_pct`), else the default the session's crew member declares (`agents.<name>.autocompact_pct`; 0 or a negative value inherits, a positive value is held to the global's 5–90 range at load), else the global `session.autocompact_pct`. The crew is the identity the allocation resolved (`_Session.capability_member`), read against the manager's live `_cfg`, so a config edit reaches running sessions on their next reading and a session with no crew follows the global. The value cannot live in the kiro agent JSON, which kiro-cli rejects on any unknown field. `GET/POST /api/chat/slots/{slot}/autocompact` report it as `agent_pct` with the crew's redacted name as `agent` (both null when none is declared; a slot with no live session answers for the crew its next session starts under) so the popover shows which default a cleared slider returns to. GET also reports `harness_managed`: the backend id when the session compacts on its own (a member of `ACP_BACKENDS_HARNESS_MANAGED_COMPACTION`, KAS), else null, read off the live provider's `harness_managed_compaction_backend` or, with no live session, from `select_provider_backend` for the session's next start. The popover then shows a note that the threshold does not apply there, because the turn-end gate declines Crew's `/compact` for such a backend at any reading. The `kirocrew chat` REPL compacts at the same number for the crew its run resolves to.
-- **Crossing the threshold mid-turn** (`SessionManager.compaction_due_after_turn`, `chat_turn.recovery._notice_compaction_after_turn`): compaction still runs only after a turn ends. A dashboard turn whose reading crosses the effective threshold while it is still working gets, ONCE per turn, at the first tool-result boundary where every tool row above is done and no text segment is pending, one `kind="compaction"` row marked `meta.notice="compact_after_turn"` ("Context at N% (limit M%) — will compact after this turn", rendered by `CompactionCard` from the catalog as a calm info row with a clock glyph). It is a display row only: the model is not told anything and the turn runs on unchanged. `compaction_due_after_turn` reads the gate's own side-effect-free rungs (`CompactionCoordinator._gate_rung`, which `_compaction_gate_decision` delegates to after settling a pending verdict) and changes nothing; it is False while a pending verdict waits (its settlement can arm a cooldown) and on the recycle arm (a restart, not a compaction), so Claude-Code, harness-managed and uncompactable backends, an unconfirmed reading, a compaction in flight and an active cooldown get no row. Slash-command turns are skipped. The threshold and the end-of-turn trigger are unchanged.
+- **Compaction threshold precedence** (`SessionManager.effective_autocompact_pct`): the session's own override (the context popover slider, `set_autocompact_pct`), else the default the session's crew member declares (`agents.<name>.autocompact_pct`; 0 or a negative value inherits, a positive value is held to the global's 5–90 range at load), else the global `session.autocompact_pct`. The crew is the identity the allocation resolved (`_Session.capability_member`), read against the manager's live `_cfg`, so a config edit reaches running sessions on their next reading and a session with no crew follows the global. The value cannot live in the kiro agent JSON, which kiro-cli rejects on any unknown field. `GET/POST /api/chat/slots/{slot}/autocompact` report it as `agent_pct` with the crew's redacted name as `agent` (both null when none is declared; a slot with no live session answers for the crew its next session starts under) so the popover shows which default a cleared slider returns to. GET also reports `harness_managed`: the backend id when the session compacts on its own (a member of `ACP_BACKENDS_HARNESS_MANAGED_COMPACTION`, KAS), else null, read off the live provider's `harness_managed_compaction_backend` or, with no live session, from `select_provider_backend` for the session's next start. Only while the session follows the global (no override and no agent default, `harnessManagedNoteBackend`), the popover shows a note that the backend compacts on its own and that setting a threshold there compacts sooner, because the turn-end gate declines Crew's `/compact` for such a backend at the global threshold and honours an explicit one. The `kirocrew chat` REPL compacts at the same number for the crew its run resolves to.
+- **Crossing the threshold mid-turn** (`SessionManager.compaction_due_after_turn`, `chat_turn.recovery._notice_compaction_after_turn`): compaction still runs only after a turn ends. A dashboard turn whose reading crosses the effective threshold while it is still working gets, ONCE per turn, at the first tool-result boundary where every tool row above is done and no text segment is pending, one `kind="compaction"` row marked `meta.notice="compact_after_turn"` ("Context at N% (limit M%) — will compact after this turn", rendered by `CompactionCard` from the catalog as a calm info row with a clock glyph). It is a display row only: the model is not told anything and the turn runs on unchanged. `compaction_due_after_turn` reads the gate's own side-effect-free rungs (`CompactionCoordinator._gate_rung`, which `_compaction_gate_decision` delegates to after settling a pending verdict) and changes nothing; it is False while a pending verdict waits (its settlement can arm a cooldown) and on the recycle arm (a restart, not a compaction), so Claude-Code backends, harness-managed backends at the global threshold, uncompactable backends, an unconfirmed reading, a compaction in flight and an active cooldown get no row. Slash-command turns are skipped. The threshold and the end-of-turn trigger are unchanged.
 - **Context compaction**: at ≥ configured threshold (`session.autocompact_pct`, default 70%, valid 5–90), compacts **in place** on a member of
   `ACP_BACKENDS_COMPACT` — kiro-cli, claude, codex, opencode, goose, pi and copilot, plus KAS,
   whose harness-managed case is the first bullet below. They divide by WHERE
@@ -1800,12 +1800,30 @@ against sweep completeness, and are torn down at `close_all`.
   accident:
 
   - `ACP_BACKENDS_HARNESS_MANAGED_COMPACTION` (KAS) is **declined** at the
-    threshold (`"compact_unsupported"`, see the gate ladder below), read through
-    `harness_managed_compaction_backend`. KAS is also in `ACP_BACKENDS_COMPACT`,
-    so a user's manual `/compact` is served (the session handle sends KAS's
-    `_kiro/session/compact` verb), but Crew's own threshold leaves it alone: it
-    summarizes on its own initiative and its `summarization_completed` frame
-    resets the meter, so declining leaves nothing unmanaged.
+    global threshold (`"compact_unsupported"`, see the gate ladder below), read
+    through `harness_managed_compaction_backend`. KAS is also in
+    `ACP_BACKENDS_COMPACT`, so a user's manual `/compact` is served (the session
+    handle sends KAS's `_kiro/session/compact` verb), but at the global
+    `session.autocompact_pct` Crew leaves it alone: it summarizes on its own
+    initiative and its `summarization_completed` frame resets the meter, so
+    declining leaves nothing unmanaged. An EXPLICIT threshold changes that
+    (`CompactionCoordinator.crew_compacts_harness_managed`): when the session has
+    a per-session override (`pct_overrides`, the slider) or its agent declares
+    `autocompact_pct`, and the backend is also in `ACP_BACKENDS_COMPACT`, the gate
+    does not decline. The reading goes on to the `unconfirmed`, `in_progress` and
+    `cooldown` rungs, and Crew compacts at that threshold through
+    `_compact_session` and `_compact_in_place` like any member backend. The
+    explicit-threshold path also requires the provider's
+    `harness_compact_verb_advertised` (the engine listed `_kiro/session/compact`
+    at `initialize`); without it the reading is declined as at the global
+    threshold. While that compaction runs the key is in `compacting`, so a
+    reading taken meanwhile, including one after a summarization KAS ran itself,
+    is answered `in_progress`. A `/compact` that fails on this path (KAS refuses
+    the verb while its own summarization runs) is not recycled: the failure
+    cooldown is armed and the callback reports `success=False`, because KAS's
+    own summarization still bounds the context. A harness-managed backend
+    outside `ACP_BACKENDS_COMPACT` stays declined, with or without an explicit
+    threshold.
   - `ACP_BACKENDS_CONTEXT_RECYCLE` (deepseek) is **recycled**. Its ACP surface
     carries no compaction of any kind, so declining bounded nothing and the
     context grew toward the harness's own window. `_recycle_unmanaged` reaches
