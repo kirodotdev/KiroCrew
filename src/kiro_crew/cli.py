@@ -83,6 +83,7 @@ from kiro_crew.platform import (  # noqa: F401
     boot_platform,
     current_context,
 )
+from kiro_crew.platform_compat_offloop_spawn import gateway_loop_factory
 from kiro_crew.preflight import run_preflight_checks
 from kiro_crew.project_dir import PROJECT_MARKERS, detect_project_dir
 from kiro_crew.seed import seed_cmd
@@ -914,7 +915,8 @@ def main() -> None:
             # attempt may find cleared, so it keeps the restartable exit 1.
             sys.exit(LIVE_HOLDER_EXIT_CODE if exc.live_holder else 1)
         try:
-            asyncio.run(_gateway(**gw_kwargs))
+            # Windows: every spawn on this loop builds its child off-loop.
+            asyncio.run(_gateway(**gw_kwargs), loop_factory=gateway_loop_factory())
         finally:
             _gw_lock.release()
     elif args.command == "setup":

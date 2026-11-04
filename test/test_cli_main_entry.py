@@ -22,6 +22,7 @@ from cli_helpers import (  # noqa: F401 -- the autouse fixture registers by impo
 )
 
 from kiro_crew import platform_compat
+from kiro_crew.platform_compat_offloop_spawn import gateway_loop_factory
 
 
 class TestPortEnvValidatedAtEntry:
@@ -278,7 +279,7 @@ class TestSeedDispatch:
         seed_args = mock_seed.call_args.args[0]
         assert (seed_args.seed, seed_args.seed_replace) == ("demo", expect_replace)
         mock_gateway.assert_called_once()
-        mock_run.assert_called_once_with(gateway_call)
+        mock_run.assert_called_once_with(gateway_call, loop_factory=gateway_loop_factory())
 
     def test_seed_nonzero_exits(self, monkeypatch):
         """When seed_cmd returns non-zero, CLI should sys.exit with that code."""
@@ -307,7 +308,7 @@ class TestSeedDispatch:
             main()
         mock_seed.assert_not_called()
         mock_gateway.assert_called_once()
-        mock_run.assert_called_once_with(gateway_call)
+        mock_run.assert_called_once_with(gateway_call, loop_factory=gateway_loop_factory())
 
 
 class TestGatewayLockRefusalExit:
