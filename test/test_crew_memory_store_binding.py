@@ -100,11 +100,8 @@ class TestTheBindingPredicate:
     def test_it_delegates_every_rule_to_the_name_predicate(self) -> None:
         """No second copy of the shape rule.
 
-        A restated rule is how a write boundary comes to accept a name the
-        resolvers refuse to compose a path for, so the binding predicate must
-        answer identically to the name predicate everywhere the one exception
-        does not apply — including the reason text, which is what the surfaces
-        show the author.
+        A restated rule could accept a name the resolvers refuse, so the answers, reason
+        text included, must match outside the one exception.
         """
         for value in [*MALFORMED, *NON_STRINGS, "work", DEFAULT_MEMORY_STORE, "a-b-9"]:
             assert memory_store_binding_defect(value) == memory_store_name_defect(value), value
@@ -163,12 +160,8 @@ class TestTheDashboardRefusesAMalformedBinding:
     ) -> None:
         """The whole request is a no-op on disk, not just the offending field.
 
-        A rejected store cannot smuggle a workspace rebind through with it. What
-        this pins is the PERSISTED outcome, deliberately: the refusal returns
-        before the config save, so moving the check after the in-memory field
-        assignments would leave this assertion true. Pinning the assignment order
-        instead would need to observe the un-saved config object, and the property
-        that matters to a user is that a 400 changes nothing they can later read.
+        A rejected store cannot carry a workspace rebind with it. This pins the persisted
+        outcome only: a check moved after the in-memory assignments would still pass.
         """
         async with TestClient(TestServer(_crud_app())) as client:
             resp = await client.put(

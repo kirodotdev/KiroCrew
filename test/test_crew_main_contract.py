@@ -197,9 +197,7 @@ def _reply(**data: str) -> str:
     return json.dumps({"html": LAYOUT, "data": data})
 
 
-# --------------------------------------------------------------------------
 # the provider is TOTAL: no branch can leave a field unanswered
-# --------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("unreadable", [(), *[(name,) for name in FOLD_NAMES], FOLD_NAMES])
@@ -272,9 +270,7 @@ def test_the_state_says_which_thing_is_open(lifecycle: str, state: str) -> None:
     assert build_crew_main(_reads(status=status))["state"] == state
 
 
-# --------------------------------------------------------------------------
 # absence is three-state, in words
-# --------------------------------------------------------------------------
 
 
 def test_an_unread_fold_and_an_empty_one_read_differently() -> None:
@@ -406,9 +402,7 @@ def test_a_credit_charge_is_shown_to_two_places_and_never_rounded_to_zero() -> N
     assert "e-" not in tiny
 
 
-# --------------------------------------------------------------------------
 # the model cannot reach a number
-# --------------------------------------------------------------------------
 
 
 def test_the_merge_ignores_a_derived_key_even_when_one_reaches_it() -> None:
@@ -551,9 +545,7 @@ def test_every_field_name_is_one_the_host_accepts() -> None:
         assert _FIELD_NAME.fullmatch(field), field
 
 
-# --------------------------------------------------------------------------
 # the same values as phrases, for the dashboard to render in its language
-# --------------------------------------------------------------------------
 
 _PHRASE_CASES: list[dict] = json.loads(
     (Path(__file__).parent / "fixtures" / "crew_main_phrases.json").read_text(encoding="utf-8")
@@ -662,9 +654,7 @@ def test_the_prompt_puts_the_layouts_labels_in_the_cards_language() -> None:
     assert "every label the HTML shows in ONE language" in " ".join(_ROOT_PROMPT.split())
 
 
-# --------------------------------------------------------------------------
 # whose card this is
-# --------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -696,9 +686,7 @@ def test_a_slot_with_no_local_crew_log_gets_no_card(kwargs: dict) -> None:
     assert _lifecycle()._eligible(_slot("s", **kwargs)) is False
 
 
-# --------------------------------------------------------------------------
 # root means no parent edge, and there are two places an edge can live
-# --------------------------------------------------------------------------
 
 
 class _Node:
@@ -821,9 +809,7 @@ def test_the_root_test_does_no_file_io(monkeypatch) -> None:
     assert is_root_session(_slot("tab", created_by="")) is True
 
 
-# --------------------------------------------------------------------------
 # end to end: the generator, the refresher and the worker
-# --------------------------------------------------------------------------
 
 
 def _wire(monkeypatch, reads: dict, replies: list[str]):

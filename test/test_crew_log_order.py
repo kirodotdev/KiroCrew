@@ -103,12 +103,9 @@ def _state_and_slot(tmp_path: Path, events, *, raises: BaseException | None = No
 async def test_text_the_model_spoke_before_a_tool_call_lands_before_it(tmp_path):
     """The common turn shape: the model narrates, then calls a tool.
 
-    The narration is flushed by ``_flush_segment``, which is what appends this
-    turn's ``message/sent`` -- so emitting ``tool/called`` before that flush put the
-    call at a LOWER seq than the text that preceded it. A fold reading in seq order
-    then sees the narration after the call and reads it as the call's result. The
-    narration's last word waits at the call and follows as its own entry (the next
-    test); the row's entry is the one that lands first.
+    ``_flush_segment`` appends the narration's ``message/sent``, so ``tool/called``
+    must come after that flush. Otherwise a seq-order fold reads the narration as the
+    call's result.
     """
     state, slot = _state_and_slot(
         tmp_path,
@@ -233,13 +230,9 @@ async def test_a_stream_that_dies_mid_turn_still_closes_the_turn(tmp_path):
 async def test_a_recovery_path_records_the_partial_reply_it_persists(tmp_path, exc_name):
     """A turn that died still has to say what it had produced.
 
-    Seven recovery handlers persist the partial reply straight through
-    ``slot.append`` rather than ``_flush_segment``, because they purge the chunk
-    rows and must not broadcast a segment. They reach the log through one shared
-    helper, so the transcript cannot hold text the user watched stream while the
-    crew log carries a turn closer and nothing else -- a closer asserting an end for
-    output the record never mentions. The body is written with ``interrupted`` and
-    BEFORE the closers, which is the order it happened.
+    Recovery handlers persist the partial reply through ``slot.append``, not
+    ``_flush_segment``, and record it via one shared helper. The body is written with
+    ``interrupted`` and BEFORE the closers, the order it happened.
     """
     import kiro_crew.acp.client as _acp
 
@@ -312,13 +305,9 @@ async def test_a_failed_turn_closer_follows_the_text_it_closes_over(tmp_path):
 def test_no_recovery_handler_persists_a_partial_reply_without_recording_it():
     """The claim that a new handler cannot forget the log, tested structurally.
 
-    Seven handlers persist a partial reply, in two spellings, and a per-handler test
-    cannot pin them -- each branch needs its own error class, retry counter and depth
-    to reach. So the invariant is asserted over the source: the only place that purges
-    chunk rows and appends the assistant's partial text is the one helper that also
-    records it.
-
-    Mutation guard: re-inlining any of those blocks reddens this.
+    Each handler branch needs its own error class, retry counter and depth to reach,
+    so this checks the source: only the recording helper purges chunk rows and appends
+    the partial text.
     """
     from kiro_crew.dashboard import chat_runner
 
@@ -354,12 +343,8 @@ def test_no_recovery_handler_persists_a_partial_reply_without_recording_it():
 async def test_the_input_is_recorded_before_what_was_derived_from_it(tmp_path):
     """`request/configured` and `context/composed` are derived FROM the message.
 
-    A reader folds on seq. With them first, the fold sees a derived fact before its
-    cause -- a request configured, and context assembled, for a message the log has
-    not yet admitted arrived. All three are written at one site in the order input,
-    configuration, composition; this pins the two a turn always produces, since
-    `context/composed` writes nothing when no blocks were injected and is the literal
-    next call after `request/configured`.
+    A seq-order fold must see the cause first. This pins the two a turn always
+    produces; `context/composed` writes nothing when no blocks were injected.
     """
     state, slot = _state_and_slot(tmp_path, [AcpEvent(kind=EVENT_TEXT_CHUNK, text="ok")])
 
@@ -397,14 +382,9 @@ async def test_message_received_records_entry_text_before_prompt_expansion(tmp_p
 def test_the_model_recorded_is_the_one_the_session_runs_on():
     """`slot.model` is the configured pin and can name a model never used.
 
-    A withheld pin is KEPT on the slot on purpose -- the composer chip still shows
-    it, and clearing it would delete the user's setting from one session's advertised
-    list -- while the session runs on the backend default. Writing that pin into an
-    append-only entry states a model the session did not run, in a file nothing
-    rewrites. `served_model` is the session fact, empty when the backend serves its
-    own default, and the crew log records that emptiness rather than naming a model.
-
-    Mutation guard: reading `slot.model` at either site reddens this.
+    A withheld pin stays on the slot (the composer chip shows it) while the session
+    runs on the backend default. The log records `served_model`, empty when the backend
+    serves its own default.
     """
     from kiro_crew.dashboard.chat_runner import _crew_log_model
 
@@ -428,14 +408,8 @@ def test_the_model_recorded_is_the_one_the_session_runs_on():
 async def test_an_accepted_attachment_is_named_in_the_message_entry(tmp_path):
     """A turn's input includes what was attached to it.
 
-    `on_message_received` has always accepted the ids; the call site did not pass
-    them, so a message whose whole point was a file left the crew log describing text
-    alone and a reader could not tell why the turn did what it did. The ids come from
-    the site that ACCEPTED them -- the handler, or the queue drain for a row that
-    waited -- rather than being read back off the slot's last user row, which would
-    hand a synthetic or recovery turn the previous turn's files.
-
-    Mutation guard: dropping the argument at the emit site reddens this.
+    The ids come from the site that ACCEPTED them (the handler or the queue drain), not
+    from the slot's last user row, which would hand a recovery turn the previous files.
     """
     state, slot = _state_and_slot(tmp_path, [AcpEvent(kind=EVENT_TEXT_CHUNK, text="ok")])
 
@@ -468,18 +442,9 @@ async def test_a_turn_with_no_attachment_says_nothing_about_attachments(tmp_path
 def test_a_segment_cut_by_a_steer_is_recorded_as_interrupted():
     """The one fact the cut site can prove about a steer.
 
-    The vocabulary carries no steer type, because whether a turn CONSUMED the steer is
-    knowable only from the backend echo, and the text the steer cut off is logged
-    from a different coroutine -- neither site can order the two. But the site that
-    cuts the segment knows something it needs no agreement about: it is cutting
-    because a steer arrived, so this reply was interrupted rather than finished.
-
-    Without the mark, an interrupted reply and a completed one are the same line in
-    the log. This is most of what a steer entry would have said, recorded from a
-    site that owns the fact outright.
-
-    Mutation guard: dropping the argument at either the cut site or the flush makes
-    the entry indistinguishable from a completed reply.
+    There is no steer type: whether the steer was consumed is known only from the
+    backend echo, on another coroutine. The cut site does know the reply was cut, so it
+    marks it interrupted; without the mark it reads as a completed reply.
     """
     import inspect
 
@@ -526,18 +491,11 @@ def test_an_ordinary_segment_is_not_marked_interrupted():
 async def test_the_turn_ordinal_keeps_rising_past_the_message_cap(tmp_path, monkeypatch):
     """A long session's turns must not collapse into one.
 
-    The ordinal is the absolute durable position, not the length of `slot.messages`,
-    which is front-trimmed at `_MAX_SLOT_MESSAGES`. Past that cap the length stops
-    growing, so turns drawn from it repeat an ordinal -- and the emitter, seeing an
-    ordinal it has already recorded, reads the new turn as a RETRY and increments
-    `attempt`, merging a session's whole tail into one turn in a file nothing
-    rewrites.
+    The ordinal is the absolute durable position, not `len(slot.messages)`, which stops
+    growing at `_MAX_SLOT_MESSAGES`; a repeated ordinal is filed as a retry.
 
-    BOTH turns run with the window already AT the cap, which is what makes this pin
-    the defect: with the old expression each of them reads the same clamped length,
-    so the ordinals collide. The cap is patched low so the trim really runs.
-
-    Mutation guard: restoring `len(slot.messages)` makes the two ordinals equal.
+    Both turns run with the window already AT the cap (patched low so the trim runs),
+    so a length-based ordinal would collide.
     """
     from kiro_crew.dashboard import state as state_mod
 
@@ -578,16 +536,9 @@ async def test_the_turn_ordinal_keeps_rising_past_the_message_cap(tmp_path, monk
 async def test_the_turn_ordinal_continues_from_a_restored_window_base(tmp_path):
     """A resumed session must not restart its turn numbering.
 
-    A resume rebuilds the slot with only the newest window in memory and the count of
-    what came before in `_disk_older_durable_count`. An ordinal read from the window
-    alone would restart near 1 and collide with turns the file already records --
-    which the emitter reads as retries, so a resumed session's first turns are filed
-    as further attempts at turns that ended long ago.
-
-    The base is what carries the history, so the ordinal is taken from base + window.
-
-    Mutation guard: dropping the base from the expression makes this turn number in
-    the low single digits and reddens the comparison.
+    A resume keeps only the newest window, with the earlier count in
+    `_disk_older_durable_count`. The ordinal is base + window; the window alone would
+    restart near 1 and be filed as retries of old turns.
     """
     state, slot = _state_and_slot(tmp_path, [AcpEvent(kind=EVENT_TEXT_CHUNK, text="ok")])
     # What a restore leaves: a window holding only the recent rows, and a base saying
@@ -611,15 +562,9 @@ async def test_the_turn_ordinal_continues_from_a_restored_window_base(tmp_path):
 async def test_a_rerun_after_the_window_is_truncated_keeps_the_same_ordinal(tmp_path):
     """Regenerate and rewind re-run a turn, and the log has to say so.
 
-    Both truncate the message window back to the point being re-run and dispatch
-    again. That is what makes the ordinal repeat, and a repeated ordinal is exactly
-    what the emitter records as another `attempt` of one turn rather than as a new
-    turn. If the ordinal did NOT repeat -- if it came from a counter that only ever
-    went up -- a regenerate would look like a fresh turn and the two answers to one
-    question would be unrelated entries.
-
-    Mutation guard: an ordinal that ignores the window length (a monotonic counter)
-    makes the second run report a different turn and reddens the equality.
+    Both truncate the window and dispatch again, so the ordinal repeats and the emitter
+    records another `attempt`. A monotonic counter would make the two answers to one
+    question unrelated turns.
     """
     state, slot = _state_and_slot(tmp_path, [AcpEvent(kind=EVENT_TEXT_CHUNK, text="ok")])
     await _run_chat(state, slot, "first ask")
@@ -650,18 +595,11 @@ async def test_a_rerun_after_the_window_is_truncated_keeps_the_same_ordinal(tmp_
 async def test_the_turn_ordinal_keeps_rising_across_a_native_clear(tmp_path):
     """The first turn after a native clear must not reuse an ordinal.
 
-    A confirmed `/clear` empties `slot.messages`. The ordinal is `base + durable rows
-    in the window`, so unless the clear advances the durable base by the rows it
-    evicts -- the way the trim path and every restore path do -- the next turn reads
-    an almost-empty window and draws an ordinal an earlier turn already wrote. The
-    emitter then files two unrelated turns as one turn with contradictory entries,
-    which no reader can tell from a genuine retry.
+    A confirmed `/clear` empties `slot.messages`, so it must advance the durable base
+    by the rows it evicts, as trim and restore do. Otherwise the next turn reuses an
+    ordinal and is filed as a retry.
 
-    Three turns: an ordinary one, the clear itself, and the first turn afterwards.
-    The last must number strictly above the clear turn and must not be a retry.
-
-    Mutation guard: dropping the base advance at the clear site makes the third
-    ordinal fall back to the low single digits and reddens both assertions.
+    Three turns: an ordinary one, the clear, and the first turn afterwards.
     """
     from chat_test_helpers import pin_kiro_cli_harness
 
@@ -737,11 +675,9 @@ async def test_a_process_death_closer_names_the_exception_it_caught(tmp_path):
 async def test_a_status_only_result_keeps_the_output_an_earlier_frame_persisted(tmp_path):
     """A terminal frame with no output states a STATUS, not an empty output.
 
-    An output-less terminal frame now produces a result event so the outcome is
-    recorded rather than swept as ``unknown``. That event carries no output, so
-    persisting it over a tool row that already holds one would leave the inline
-    detail panel empty for a tool whose output this process did see -- and the
-    panel is the only place a reader can look after a reload.
+    An output-less terminal frame yields a result event so the outcome is not swept as
+    ``unknown``. It must not overwrite stored output, or the detail panel goes empty
+    after a reload.
     """
     call = "call_status_only"
     state, slot = _state_and_slot(
