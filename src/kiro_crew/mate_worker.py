@@ -18,6 +18,7 @@ above POLICY ∩ PROFILE. Stateless.
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Iterable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -717,6 +718,39 @@ def _revoked_or_refuse(member_id: str, file_id: str) -> list[str]:
         ) from exc
 
 
+#: A dashboard chat slot's own name (``chat-7``, ``chat-7-1785396512``), the
+#: part of its session key after ``dashboard:``.
+_BARE_DASHBOARD_SLOT = re.compile(r"chat-[0-9]+(?:-[0-9]+)?")
+
+
+def _worker_scope_key(session_key: str) -> str:
+    """*session_key* as the worker's execution record is filed under.
+
+    A worker's record is bound under its ``dashboard:<slot>`` session key
+    (``session_create``), so a bare slot name finds no record and the worker's
+    skill scope is refused (#29821). Only the exact bare-slot shape is mapped, and
+    only when it names no record of its own; every other key is returned
+    unchanged and still has to name a record. Blocking.
+    """
+    if not session_key or not _BARE_DASHBOARD_SLOT.fullmatch(session_key):
+        return session_key
+    # A record filed under the bare name itself is that session's own, so it is
+    # kept; no binder writes one today (``session_create`` binds dashboard:).
+    from kiro_crew.execution_context import read_session_execution
+
+    try:
+        if read_session_execution(session_key) is not None:
+            return session_key
+    except Exception:  # noqa: BLE001 - the seam below refuses an unreadable record itself
+        return session_key
+    # Which caller sends the bare name is not known (#29821); name it when it does.
+    logger.warning(
+        "worker session %s: bare slot name, read as dashboard:%s", session_key, session_key,
+        stack_info=True,
+    )
+    return f"dashboard:{session_key}"
+
+
 def mate_service_scope_spec(agent: str, session_key: str) -> tuple[dict | None, Path] | None:
     """``(spec or None when unreadable, path)`` the crewmate conductor's or worker's
     skill scope and Crew-fired spec hooks read, else ``None``: their specs live in
@@ -839,6 +873,9 @@ def worker_session_spec(
     from kiro_crew.execution_context import read_session_execution
 
     member_id: str | None = None
+    # Every reader of the worker's spec (skill scope, spec hooks, KAS, the MCP
+    # projection) comes through here, so one mapping keeps them on one record.
+    session_key = _worker_scope_key(session_key)
     try:
         execution = read_session_execution(session_key) if session_key else None
     except Exception as exc:  # noqa: BLE001 - any unreadable record refuses
