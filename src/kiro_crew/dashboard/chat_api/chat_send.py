@@ -1609,10 +1609,13 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
             target=str(_user_row.get("meta", {}).get("mid") or ""),
         )
         _user_mid = _user_row.get("meta", {}).get("mid")
-        if not may_configure or (ws_mode and user_meta and user_meta.get("sendId")):
+        if not may_configure or not ws_mode or (user_meta and user_meta.get("sendId")):
             # Raw user content belongs on the per-client slot-authorized WS path.
-            # The global SSE queues have no slot gate. In-band sends keep
-            # their existing stream contract and must not gain an extra WS echo.
+            # The global SSE queues have no slot gate. The one send left out is a
+            # `?ws=1` send with no `sendId`: a composer may have drawn that row and
+            # could not match an echo to it. No dashboard composer sends on the
+            # bare SSE endpoint, so no open tab drew a row sent there, and its
+            # stream to the caller is unchanged: the echo goes to WS clients only.
             # An app's turn on a user's session always reaches the user's open tabs,
             # whose composer never drew it.
             state.broadcast_ws(

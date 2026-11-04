@@ -2515,6 +2515,11 @@ An immediate dashboard send with `ws=1` and `meta.sendId` emits its persisted
 `user` row before the reply task starts, supplying a bubble skipped by a stale
 busy snapshot. The canonical `chat_message_frame` uses the slot-authorized
 `broadcast_ws` path; this user echo never enters the global `/api/stream` queues.
+A send on the bare SSE endpoint (`POST /api/chat` without `ws=1`) emits the same
+echo, `sendId` or not: no dashboard composer sends there, so no open tab drew
+the row, and the caller's own stream is unchanged. The one immediate send with
+no echo is a `ws=1` send without `sendId`, whose composer could not match an
+echo to a bubble it drew (`test/test_chat_send_echo_scope.py`).
 Both composers reconcile by `sendId`/server `mid`, demote an optimistic Steer
 accepted as a new turn, and preserve render identity through `meta.clientTs`.
 They retain `sendId` so a confirmed echo prevents a later HTTP timeout/reset
