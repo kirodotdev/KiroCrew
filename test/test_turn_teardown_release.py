@@ -23,9 +23,18 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from chat_test_helpers import _make_state
+from real_session_manager import fake_provider, real_sessions
 
 from kiro_crew.acp.client import AcpAuthRequired
 from kiro_crew.dashboard.chat_runner import _run_chat
+
+
+def _real_state_and_slot(tmp_path: Path):
+    """The same turn, run on a real ``SessionManager`` whose child is a stand-in."""
+    state, slot, _client = _state_and_slot(tmp_path)
+    client = fake_provider()
+    state.sessions = real_sessions(client)
+    return state, slot, client
 
 
 def _state_and_slot(tmp_path: Path):
@@ -82,7 +91,7 @@ class TestTurnTeardownRelease:
         raises nothing and silently lets two turns run concurrently. Guard
         against a fix that hands the permit back twice.
         """
-        state, slot, client = _state_and_slot(tmp_path)
+        state, slot, client = _real_state_and_slot(tmp_path)
 
         async def _empty(msg):
             return
@@ -93,17 +102,21 @@ class TestTurnTeardownRelease:
 
         await _run_chat(state, slot, "test message")
 
-        assert state.sessions.release.call_count == 1
+        key = f"dashboard:{slot.key}"
+        assert state.sessions.has_session(key)
+        assert not state.sessions.is_busy(key)
 
     @pytest.mark.asyncio
     async def test_release_still_runs_when_reset_raises_normally(self, tmp_path) -> None:
-        state, slot, client = _state_and_slot(tmp_path)
+        state, slot, client = _real_state_and_slot(tmp_path)
         _stream_raises(client, AcpAuthRequired("kiro-cli is not logged in."))
         state.sessions.reset = AsyncMock(side_effect=RuntimeError("reset exploded"))
 
         await _run_chat(state, slot, "test message")
 
-        state.sessions.release.assert_called_once()
+        key = f"dashboard:{slot.key}"
+        assert state.sessions.has_session(key)
+        assert not state.sessions.is_busy(key)
 
     @pytest.mark.asyncio
     async def test_no_release_when_the_permit_was_never_acquired(self, tmp_path) -> None:

@@ -15,6 +15,7 @@ import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from real_session_manager import open_session, real_sessions
 from dashboard_approval_helpers import (
     _answer_approval,
     _complete_event,
@@ -693,24 +694,30 @@ class TestApprovalModes:
 
 
 class TestTrustYoloPropagation:
-    """Trust/YOLO mode propagates approval policy to session manager."""
+    """Trust/YOLO mode leaves its approval policy on the real session."""
+
+    @staticmethod
+    def _real_state(tmp_path):
+        state, client = _make_state(tmp_path, context_builder=_context_builder())
+        state.sessions = real_sessions(client)
+        return state, client
 
     @pytest.mark.asyncio
     async def test_run_chat_propagates_trust_to_session(self, tmp_path):
         """When slot has _trust=True, _run_chat sets session approval policy to auto."""
-        state, client = _make_state(tmp_path, context_builder=_context_builder())
+        state, client = self._real_state(tmp_path)
         slot = _make_slot(trust=True)
         _set_stream(client, [_complete_event()])
 
         with _patch_stats():
             await _run_chat(state, slot, "hello")
 
-        state.sessions.set_approval_policy.assert_called_with(f"dashboard:{slot.key}", "auto")
+        assert state.sessions.get_approval_policy(f"dashboard:{slot.key}") == "auto"
 
     @pytest.mark.asyncio
     async def test_run_chat_propagates_yolo_to_session(self, tmp_path):
         """When state._yolo=True, _run_chat sets session approval policy to auto."""
-        state, client = _make_state(tmp_path, context_builder=_context_builder())
+        state, client = self._real_state(tmp_path)
         state.enable_yolo()
         slot = _make_slot()
         _set_stream(client, [_complete_event()])
@@ -718,20 +725,23 @@ class TestTrustYoloPropagation:
         with _patch_stats():
             await _run_chat(state, slot, "hello")
 
-        state.sessions.set_approval_policy.assert_called_with(f"dashboard:{slot.key}", "auto")
+        assert state.sessions.get_approval_policy(f"dashboard:{slot.key}") == "auto"
 
     @pytest.mark.asyncio
     @pytest.mark.xdist_group(name="serial")
     async def test_run_chat_no_propagation_without_trust_or_yolo(self, tmp_path):
-        """Without trust or YOLO, set_approval_policy clears to default."""
-        state, client = _make_state(tmp_path, context_builder=_context_builder())
+        """Without trust or YOLO, a session left on auto is cleared to default."""
+        state, client = self._real_state(tmp_path)
         slot = _make_slot()
+        key = f"dashboard:{slot.key}"
+        await open_session(state.sessions, key)
+        state.sessions.set_approval_policy(key, "auto")
         _set_stream(client, [_complete_event()])
 
         with _patch_stats():
             await _run_chat(state, slot, "hello")
 
-        state.sessions.set_approval_policy.assert_called_once_with(f"dashboard:{slot.key}", "")
+        assert state.sessions.get_approval_policy(key) == ""
 
 
 class TestResolveApprovalSlotFallback:

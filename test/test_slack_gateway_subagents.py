@@ -11,6 +11,7 @@ import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from real_session_manager import open_session, real_sessions
 from slack_gateway_helpers import _restore_update_check_cache  # noqa: F401
 from slack_gateway_helpers import (
     _make_orchestrator,
@@ -645,10 +646,10 @@ class TestSynthesisAfterAOneTurnBatch:
 class TestSubagentDone:
     """Subagent completion routing."""
 
-    def _setup_orch_with_subagent_mgr(self):
+    def _setup_orch_with_subagent_mgr(self, sessions=None):
         """Create orchestrator with subagent manager initialized."""
         orch = _make_orchestrator()
-        orch.sessions = _mock_sessions()
+        orch.sessions = _mock_sessions() if sessions is None else sessions
         orch.ctx_builder = _mock_context_builder()
         orch.ctx_builder.hooks = MagicMock()
         orch.ctx_builder.build_message = MagicMock(return_value=("msg", None))
@@ -761,7 +762,8 @@ class TestSubagentDone:
     @pytest.mark.asyncio
     async def test_cron_parent_injects_result(self):
         """Subagent done → cron parent → injects into session."""
-        orch, mock_sm = self._setup_orch_with_subagent_mgr()
+        orch, mock_sm = self._setup_orch_with_subagent_mgr(real_sessions())
+        await open_session(orch.sessions, "cron:job1")
         on_done = mock_sm.call_args[1]["on_done"]
         orch.subagent_mgr.running = []
 
@@ -785,8 +787,8 @@ class TestSubagentDone:
             await on_done(info)
 
         mock_stream.assert_awaited_once()
-        # The last sub-agent's cleanup never resets under a live turn.
-        orch.sessions.reset.assert_awaited_with("cron:job1", skip_if_busy=True)
+        # The last sub-agent's cleanup retires the idle cron session.
+        assert not orch.sessions.has_session("cron:job1")
         orch.dashboard_state.notify.assert_called_once()
         assert orch.dashboard_state.notify.call_args.args[0] == "subagent"
         assert "llm response" in orch.dashboard_state.notify.call_args.args[2]
