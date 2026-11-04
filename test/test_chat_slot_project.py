@@ -36,8 +36,6 @@ def _mock_state(slot: _ChatSlot | None = None) -> DashboardState:
     state.sessions.session_keys = MagicMock(return_value=frozenset())
     state.sessions.resumable_hint = MagicMock(return_value=False)
     state.file_indexes = MagicMock()
-    state.file_indexes.acquire = AsyncMock()
-    state.file_indexes.release = AsyncMock()
     return state
 
 
