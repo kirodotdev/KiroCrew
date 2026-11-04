@@ -173,6 +173,7 @@ if TYPE_CHECKING:
         api_sessions_restart,
     )
     import kiro_crew.dashboard.handlers as _h  # noqa: F401
+    from kiro_crew import agent_spec_pins  # noqa: F401
     from kiro_crew import hooks  # noqa: F401
     from kiro_crew import session_directive  # noqa: F401
     from kiro_crew.agent_discovery import AgentsDirMemo  # noqa: F401
@@ -188,6 +189,7 @@ if TYPE_CHECKING:
     from kiro_crew.agent_spec_format import agent_spec_candidates  # noqa: F401
     from kiro_crew.agent_spec_format import is_markdown_spec  # noqa: F401
     from kiro_crew.agent_spec_format import iter_agent_spec_files  # noqa: F401
+    from kiro_crew.agent_spec_pins import pinned_memo_key  # noqa: F401
     from kiro_crew.channel_transcript_migration import _orphan_target_stem  # noqa: F401
     from kiro_crew.cloud.login_target import parse_whoami_output  # noqa: F401
     from kiro_crew.config.paths import kiro_agents_dir  # noqa: F401

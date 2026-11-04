@@ -283,10 +283,23 @@ def _terminal_error_meta(exc: BaseException) -> dict[str, object] | None:
     The eighth, ``kiro_cli_missing``, is set where the kiro-cli binary is not
     found at spawn (``AcpKiroCliMissing`` on the runtime path, ``AcpError`` on the
     dedicated client); its row lets a feature-request chat offer the form.
+
+    Ahead of all but the entitlement verdict, a start the declared-name resolver
+    refused over contested specs (an ``AmbiguousAgentSpecError`` anywhere in the
+    cause chain) carries ``agent_spec_ambiguous`` with the agent and its files
+    (:func:`kiro_crew.agent_spec_pin_ops.ambiguity_meta`), for the chooser card.
     """
     unentitled = _model_unentitled_meta(exc)
     if unentitled is not None:
         return unentitled
+    # A start refused because several specs declare the agent's name and no pin
+    # chooses one (or the pin is broken): the row carries the files, and the card
+    # offers to pin one and start again. A retry without a pin repeats the refusal.
+    from kiro_crew.agent_spec_pin_ops import ambiguity_meta
+
+    contested = ambiguity_meta(exc)
+    if contested is not None:
+        return contested
     if getattr(exc, "auth_required", False):
         return {"kind": AUTH_REQUIRED_KIND}
     if getattr(exc, "usage_limit", False):

@@ -12263,7 +12263,19 @@
         "repair_images_done_not_resumed": "Bilder repariert. Drücke auf Fortsetzen, um die Antwort fortzusetzen.",
         "repair_images_failed": "Bilder können in einem Chat nicht zweimal repariert werden. Starte eine neue Sitzung, um fortzufahren — dieser Chat bleibt in deiner Liste, und der Assistent macht anhand einer Zusammenfassung weiter.",
         "repair_images_not_persistent": "In einem Inkognito- oder temporären Chat können Bilder nicht repariert werden, weil ein Neuladen seinen Verlauf löscht. Starte eine neue Sitzung, um fortzufahren.",
-        "repair_images_retry_hint": "Diesmal ist etwas schiefgelaufen, daher wurde deine eine Reparatur nicht verbraucht — du kannst es erneut versuchen."
+        "repair_images_retry_hint": "Diesmal ist etwas schiefgelaufen, daher wurde deine eine Reparatur nicht verbraucht — du kannst es erneut versuchen.",
+        "spec_choice_title": "Mehrere installierte Pakete liefern je einen Agenten namens {{agent}}, und sie unterscheiden sich. Wähle den, der verwendet werden soll.",
+        "spec_choice_broken": "Die für {{agent}} gewählte Datei {{file}} fehlt oder ist jetzt ein anderer Agent. Wähle den, der verwendet werden soll.",
+        "spec_choice_use": "Diese verwenden",
+        "spec_choice_use_label": "{{file}} für {{agent}} verwenden",
+        "spec_choice_package": "Paket: {{package}}",
+        "spec_choice_package_unknown": "Paket unbekannt",
+        "spec_choice_modified": "Geändert {{date}}",
+        "spec_choice_differs": "Unterscheidet sich von den anderen in: {{fields}}",
+        "spec_choice_more": "{{count}} weitere Dateien deklarieren {{agent}} und werden nicht aufgeführt. Lege eine davon fest mit: kirocrew agent pin {{agent}} <file>",
+        "spec_choice_done_resuming": "Ab jetzt wird {{file}} für {{agent}} verwendet. Die Sitzung wird neu gestartet. Ändern kannst du das später mit kirocrew agent pin.",
+        "spec_choice_done": "Ab jetzt wird {{file}} für {{agent}} verwendet. Sende deine Nachricht erneut, um zu starten. Ändern kannst du das später mit kirocrew agent pin.",
+        "spec_choice_failed": "Die Auswahl konnte nicht gespeichert werden"
       },
       "folderPanel": {
         "clear_search": "Suche löschen",

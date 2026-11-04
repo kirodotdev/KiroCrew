@@ -255,6 +255,57 @@ def _project_spec_for_agent(
         return None
 
 
+def _pinned_overlay(overlay_dir: Path, agent: str) -> tuple[bool, dict[str, Any] | None]:
+    """Whether ``agent.spec_pins`` pins *agent*, and the pinned file's overlay.
+
+    The rewriter writes every overlay, from a ``.json`` or a ``.md`` source alike,
+    as ``<source stem>.json``, so the pinned file's overlay is
+    ``<overlay_dir>/<pin stem>.json``, used only when it declares *agent*. With a
+    pin the answer is that overlay or ``None`` (missing, unreadable, declares
+    another name): another overlay that declares *agent* belongs to a file the
+    session does not run, so it is never consulted. ``(False, None)`` means the pin
+    does not choose: there is none, or it names the only file in the user agents
+    directory that declares *agent*, so the session runs that file
+    (:func:`kiro_crew.agent_discovery.declared_spec_claim`) and the plain lookup finds
+    its overlay.
+    """
+    from kiro_crew import agent_spec_pins
+    from kiro_crew.agent import kiro_agents_dir_path
+    from kiro_crew.agent_discovery import AmbiguousAgentSpecError, declared_spec_claim
+
+    if agent_spec_pins.spec_pin_for(agent) is None:
+        return False, None
+    try:
+        claim = declared_spec_claim(
+            kiro_agents_dir_path(), agent, operation="mcp_overlay_pin", source="unknown"
+        )
+    except AmbiguousAgentSpecError:
+        # A broken pin or an unpinned contest: the session start is refused, so no
+        # other claimant's overlay is offered in its place.
+        return True, None
+    if claim is None or not claim.pinned:
+        return False, None
+    pin = claim.path.name
+    path = overlay_dir / f"{Path(pin).stem}.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        data = None
+    except (OSError, ValueError):
+        logger.warning("MCP-gateway: cannot read the pinned overlay spec %s", path, exc_info=True)
+        data = None
+    if isinstance(data, dict) and data.get("name") == agent:
+        return True, data
+    logger.info(
+        "MCP-gateway: agent.spec_pins pins %r to %r, and %s is not an overlay declaring "
+        "that name, so no overlay is pooled for it",
+        agent,
+        pin,
+        path,
+    )
+    return True, None
+
+
 def _load_overlay_for_agent(
     overlay_dir: Path,
     agent: str,
@@ -317,6 +368,9 @@ def _load_overlay_for_agent(
             overlay_dir,
         )
         return None
+    has_pin, pinned = _pinned_overlay(overlay_dir, agent)
+    if has_pin:
+        return pinned
     direct = overlay_dir / f"{agent}.json"
     try:
         return json.loads(direct.read_text(encoding="utf-8"))

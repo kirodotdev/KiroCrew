@@ -31,13 +31,16 @@ import logging
 import os
 import re
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from kiro_crew.context_assembly import sections as _sections
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
+    from typing import Any
+
     from kiro_crew.context import _ReadingT
 
 logger = logging.getLogger("kiro_crew.context")
@@ -136,7 +139,7 @@ def _load_steering_resources() -> str:
         return ""
 
 
-def _read_include_crew_context(agent: str) -> bool:
+def _read_include_crew_context(agent: str, pins: Mapping[str, str] | None = None) -> bool:
     """Read ``includeCrewContext`` from *agent*'s materialized JSON. True on any miss.
 
     Reuses ``_load_agent_prompt``'s sensitive-path-gated scan: skip ``._`` macOS
@@ -146,36 +149,41 @@ def _read_include_crew_context(agent: str) -> bool:
     ``false`` — an absent flag, a non-boolean value, a missing/unreadable spec, or a
     directory error all default to injecting, reproducing the pre-opt-out behavior.
     """
+    from kiro_crew import agent_spec_pins
     from kiro_crew import context as ctx  # circular import: the facade imports this owner
 
     try:
         candidates = ctx.iter_agent_spec_files(ctx.kiro_agents_dir(), ordered=False)
     except OSError:
         return True
-    for f in candidates:
-        if f.name.startswith("._"):
-            continue
-        try:
-            resolved = f.resolve(strict=True)
-        except OSError:
-            continue
-        if ctx.is_sensitive_path(str(resolved)):
-            continue
-        try:
-            # Read through the guarded reader (not resolved.read_text): it
-            # re-resolves, refuses a sensitive target, and opens O_NOFOLLOW —
-            # closing the TOCTOU where the final path component is swapped to a
-            # symlink into ~/.aws etc. AFTER the is_sensitive_path check above.
-            data = ctx.parse_agent_spec_text(ctx.safe_read_file(str(f)), f)
-            if not isinstance(data, dict):
+
+    def rows() -> Iterator[tuple[Any, Path]]:
+        for f in candidates:
+            if f.name.startswith("._"):
                 continue
-            if data.get("name") == agent or f.stem == agent:
-                val = data.get("includeCrewContext", True)
-                # Honor only an explicit boolean; anything else defaults to inject.
-                return val if isinstance(val, bool) else True
-        except (OSError, ValueError):
-            continue
-    return True
+            try:
+                resolved = f.resolve(strict=True)
+            except OSError:
+                continue
+            if ctx.is_sensitive_path(str(resolved)):
+                continue
+            try:
+                # Read through the guarded reader (not resolved.read_text): it
+                # re-resolves, refuses a sensitive target, and opens O_NOFOLLOW —
+                # closing the TOCTOU where the final path component is swapped to a
+                # symlink into ~/.aws etc. AFTER the is_sensitive_path check above.
+                yield ctx.parse_agent_spec_text(ctx.safe_read_file(str(f)), f), f
+            except (OSError, ValueError):
+                continue
+
+    # The first spec declaring or named after *agent*, or the pinned claimant when
+    # ``agent.spec_pins`` chooses among several (``pick_spec_row``).
+    data = agent_spec_pins.pick_spec_row(rows(), agent, pins)
+    if data is None:
+        return True
+    val = data.get("includeCrewContext", True)
+    # Honor only an explicit boolean; anything else defaults to inject.
+    return val if isinstance(val, bool) else True
 
 
 def _read_prompt_file(pp: Path) -> str:

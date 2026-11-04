@@ -14,8 +14,9 @@ from __future__ import annotations
 import errno
 import logging
 import os
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Iterator, Sequence
+from typing import Any, Callable, Iterator, Mapping, Sequence
 
 from kiro_crew import hooks, platform_compat
 from kiro_crew.agent_spec_format import (
@@ -557,8 +558,9 @@ class AmbiguousAgentSpecError(ValueError):
 
     Which of them is live is undefined, so a resolver that picked one would
     hand the caller an agent the operator did not name, with that agent's tools
-    and prompt. Every declared-name resolver refuses instead; the message names
-    each file so the operator can remove or rename one. A reader of parsed
+    and prompt. Every declared-name resolver refuses instead, unless
+    ``agent.spec_pins`` pins the name to one of them; the message names each file
+    and the ``kirocrew agent pin`` command that chooses it. A reader of parsed
     content (:func:`spec_by_declared_name`) raises this only when the
     claimants' content differs: identical files answer the same question
     whichever is live, so it hands back that one answer instead. A writer
@@ -570,16 +572,78 @@ class AmbiguousAgentSpecError(ValueError):
     crosses the wire into a model-visible refusal, and the message's full
     paths disclose the account name and on-disk layout there. Empty when the
     raiser did not supply them; the message is then the only record.
+
+    ``agent`` is the declared name the files share, and ``packages`` maps each
+    path to the package that installed it (``agent_spec_pins.spec_package``), or
+    ``None``: the dashboard's chooser shows both. ``summaries`` maps each path to
+    the fields of its parse the chooser compares (``agent_spec_pins.SHOWN_FIELDS``),
+    so the chooser never reopens the files. ``pin`` is the pinned file name when a
+    pin is in force and broken (:class:`AgentSpecPinError`), else ``None``.
     """
 
-    def __init__(self, message: str, *, paths: Sequence[Path] = ()) -> None:
+    pin: str | None = None
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        paths: Sequence[Path] = (),
+        agent: str = "",
+        packages: Mapping[Path, str | None] | None = None,
+        summaries: Mapping[Path, dict[str, Any]] | None = None,
+    ) -> None:
         super().__init__(message)
         self.paths: tuple[Path, ...] = tuple(paths)
+        self.agent = agent
+        self.packages: dict[Path, str | None] = dict(packages or {})
+        self.summaries: dict[Path, dict[str, Any]] = dict(summaries or {})
 
 
 # Named by the path callers import it from: a traceback or a log line renders the
 # raised class as ``module.qualname``, so the owner module must not leak into it.
 AmbiguousAgentSpecError.__module__ = "kiro_crew.agent_discovery"
+
+
+class AgentSpecPinError(AmbiguousAgentSpecError):
+    """``agent.spec_pins`` pins a name to a file that none of its claimants is.
+
+    The pinned file is missing, unreadable, or declares another name, while two or
+    more specs declare the name. Every resolver refuses: falling back to another
+    claimant would run a file the operator did not choose. A subclass, so every
+    caller that refuses an ambiguous name refuses this too.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        pin: str,
+        paths: Sequence[Path] = (),
+        agent: str = "",
+        packages: Mapping[Path, str | None] | None = None,
+        summaries: Mapping[Path, dict[str, Any]] | None = None,
+    ) -> None:
+        super().__init__(message, paths=paths, agent=agent, packages=packages, summaries=summaries)
+        self.pin = pin
+
+
+AgentSpecPinError.__module__ = "kiro_crew.agent_discovery"
+
+
+@dataclass(frozen=True)
+class DeclaredSpecClaim:
+    """What :func:`declared_spec_claim` resolved a declared name to.
+
+    ``path`` and ``spec`` are the file that runs and its parse; ``claimants`` every
+    file that declares the name, in walk order; ``divergent`` whether their parses
+    differ; ``pinned`` whether ``agent.spec_pins`` chose ``path`` among several.
+    """
+
+    path: Path
+    spec: dict[str, Any]
+    claimants: tuple[Path, ...]
+    divergent: bool
+    pinned: bool
 
 
 def spec_by_declared_name(
@@ -588,6 +652,7 @@ def spec_by_declared_name(
     *,
     operation: str,
     source: str,
+    pins: Mapping[str, str] | None = None,
 ) -> dict[str, Any] | None:
     """Return the parsed spec in *agents_dir* whose declared ``name`` is *agent_id*.
 
@@ -599,8 +664,8 @@ def spec_by_declared_name(
     find no ``<agent_id>.json``: the KAS projection that starts a session
     (:func:`kiro_crew.acp.kas_agents.load_agent_spec`) and the tool-policy read
     that session's managed MCP servers then make, so those two agree on which
-    file an id means. Other surfaces still carry their own inline
-    ``data.get("name") == agent`` scans; routing them here is tracked, not done.
+    file an id means. Every reader of the file a session runs follows the same
+    rule, ``agent.spec_pins`` included (:func:`declared_spec_claim`).
 
     Reads go through :func:`_read_agent_spec`, the one hardened reader, so a
     scan of a user-writable directory applies the same guards as the listing
@@ -647,7 +712,7 @@ def spec_by_declared_name(
     The cache also hands out its own rows to be treated as read-only, where
     this returns a parse the caller owns.
     """
-    entry = declared_spec_entry(agents_dir, agent_id, operation=operation, source=source)
+    entry = declared_spec_entry(agents_dir, agent_id, operation=operation, source=source, pins=pins)
     return None if entry is None else entry[1]
 
 
@@ -658,41 +723,127 @@ def declared_spec_entry(
     operation: str,
     source: str,
     fence: Callable[[Path], bool] | None = None,
+    pins: Mapping[str, str] | None = None,
 ) -> tuple[Path, dict[str, Any]] | None:
     """:func:`spec_by_declared_name` with the listed path of the first claimant.
 
     *fence* is handed to :func:`_read_agent_spec` for every scanned entry, so a
     caller can hold followed links to its own policy. The path names the entry
-    as listed and is never reopened by this scan.
+    as listed and is never reopened by this scan. *pins* is a snapshot of
+    ``agent.spec_pins``, for a caller that keys a memo by the same snapshot.
     """
+    claim = declared_spec_claim(
+        agents_dir, agent_id, operation=operation, source=source, fence=fence, pins=pins
+    )
+    return None if claim is None else (claim.path, claim.spec)
+
+
+def declared_spec_claim(
+    agents_dir: Path,
+    agent_id: str,
+    *,
+    operation: str,
+    source: str,
+    fence: Callable[[Path], bool] | None = None,
+    pins: Mapping[str, str] | None = None,
+    parsed_rows: Sequence[tuple[dict[str, Any], Path]] | None = None,
+) -> DeclaredSpecClaim | None:
+    """The one declared-name resolver, with ``agent.spec_pins`` applied.
+
+    Walks *agents_dir* through :func:`_read_agent_spec` and collects every spec
+    that declares *agent_id*. With one claimant, or several identical ones and no
+    pin, the first is the answer, as :func:`spec_by_declared_name` documents.
+    When two or more declare it, the pin for *agent_id* (:mod:`kiro_crew.agent_spec_pins`,
+    read at call time unless *pins* is given) decides:
+
+    * the pinned file is a claimant: it is the answer, ``pinned`` is set;
+    * a pin naming none of them: :class:`AgentSpecPinError`, never another file;
+    * no pin and differing content: :class:`AmbiguousAgentSpecError`, whose
+      message lists each file and the ``kirocrew agent pin`` command for it.
+
+    A pin naming the only claimant is ignored; a pin naming none of the claimants
+    is refused however many are left. Only the first
+    match and the pinned match are held; every other parse is dropped as the walk
+    moves on. Snapshot readers may pass *parsed_rows* from the hardened
+    :func:`parsed_agent_specs` cache to select without reopening unchanged files.
+    They retain the snapshot's freshness and attribution contract. A consumer
+    *fence* requires a fresh read and cannot be combined with cached rows.
+    """
+    if parsed_rows is not None and fence is not None:
+        raise TypeError("parsed_rows and fence cannot be combined")
+    # Call-time: the pin store is not part of this family, so the facade serves no
+    # binding of it.
+    from kiro_crew import agent_spec_pins
+
     match: dict[str, Any] | None = None
+    pin = agent_spec_pins.spec_pin_for(agent_id, pins)
+    pinned_spec: dict[str, Any] | None = None
+    pinned_path: Path | None = None
     match_paths: list[Path] = []
+    packages: dict[Path, str | None] = {}
+    summaries: dict[Path, dict[str, Any]] = {}
     divergent = False
-    for path in iter_agent_spec_files(agents_dir):
-        spec = _read_agent_spec(path, operation=operation, source=source, fence=fence)
+    rows = (
+        parsed_rows
+        if parsed_rows is not None
+        else (
+            (_read_agent_spec(path, operation=operation, source=source, fence=fence), path)
+            for path in iter_agent_spec_files(agents_dir)
+        )
+    )
+    for spec, path in rows:
         if isinstance(spec, dict) and spec.get("name") == agent_id:
             if match is None:
                 match = spec
             elif not strict_json_equal(spec, match):
                 divergent = True
+            if pin is not None and path.name == pin and pinned_spec is None:
+                pinned_spec, pinned_path = spec, path
             match_paths.append(path)
+            packages[path] = agent_spec_pins.spec_package(spec)
+            summaries[path] = {key: spec.get(key) for key in agent_spec_pins.SHOWN_FIELDS}
+    if match is None:
+        if pin is not None:
+            # Pinned, but no file declares the name: not "no spec", which would let
+            # a filename fallback run some other file. The pin is broken.
+            raise AgentSpecPinError(
+                agent_spec_pins.broken_pin_message(agent_id, pin, []),
+                pin=pin,
+                agent=agent_id,
+            )
+        return None
+    decision, _pin = agent_spec_pins.pin_decision(
+        agent_id, [path.name for path in match_paths], {} if pin is None else {agent_id: pin}
+    )
+    file_names = [path.name for path in match_paths]
+    if decision == "broken":
+        assert pin is not None
+        raise AgentSpecPinError(
+            agent_spec_pins.broken_pin_message(agent_id, pin, file_names),
+            pin=pin,
+            paths=match_paths,
+            agent=agent_id,
+            packages=packages,
+            summaries=summaries,
+        )
+    if decision == "use" and pinned_spec is not None and pinned_path is not None:
+        return DeclaredSpecClaim(pinned_path, pinned_spec, tuple(match_paths), divergent, True)
     if len(match_paths) > 1:
         # Paths are repr'd: a filename in this user-writable, tool-shared
         # directory is untrusted input, and both texts reach a terminal.
-        names = ", ".join(repr(str(path)) for path in match_paths)
         if divergent:
-            # The message is what a refused KAS session start shows the user,
-            # so it names every file and the one repair that works: the scan
-            # matches the declared ``name``, so renaming a file changes nothing.
+            # The message is what a refused session start shows the user, so it
+            # names every file and the command that picks one of them.
             raise AmbiguousAgentSpecError(
-                f"{len(match_paths)} specs declare the name {agent_id!r} with differing "
-                f"content: {names}. Kiro Crew will not pick one, because each can "
-                "carry its own tools and prompt. To fix it, keep exactly one: delete "
-                'the others, or change the "name" field inside all but one. Renaming '
-                'a file alone does not help, because agents are matched by the "name" '
-                "they declare.",
+                agent_spec_pins.ambiguous_message(
+                    agent_id, [str(path) for path in match_paths], file_names
+                ),
                 paths=match_paths,
+                agent=agent_id,
+                packages=packages,
+                summaries=summaries,
             )
+        names = ", ".join(repr(str(path)) for path in match_paths)
         # The name and the filenames are untrusted input from a user-writable
         # directory and this line persists in gateway.log: the same log-egress
         # redaction every other operational line carrying foreign text applies
@@ -705,7 +856,7 @@ def declared_spec_entry(
             redact_log_via_context(repr(agent_id)),
             redact_log_via_context(names),
         )
-    return None if match is None else (match_paths[0], match)
+    return DeclaredSpecClaim(match_paths[0], match, tuple(match_paths), divergent, False)
 
 
 def iter_declared_specs(

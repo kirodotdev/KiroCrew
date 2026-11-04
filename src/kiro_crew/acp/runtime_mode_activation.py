@@ -479,6 +479,7 @@ async def _refuse_over_ceiling_mode(
             # is ""), so the check runs: the fail-closed answer.
             getattr(self, "_acp_backend", ""),
             launch_name=launch_name,
+            work_dir=getattr(self, "_work_dir", None),
         )
     except agent_mod.SharedTemplateOverCeiling as exc:
         await self.terminate_session(session_id)

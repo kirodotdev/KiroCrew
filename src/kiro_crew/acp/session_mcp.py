@@ -106,10 +106,10 @@ from kiro_crew.acp.session_mcp_settings_read import (  # noqa: F401 -- re-export
 )
 from kiro_crew.agent import (
     _mcp_registry_mode,
-    agent_spec_path,
     ensure_agent_materialized,
     managed_mcp_spec_entry,
     require_fresh_derived_spec,
+    session_agent_spec_path,
 )
 from kiro_crew.agent_discovery import _read_agent_spec, project_agent_files, project_agent_name
 from kiro_crew.agent_sdk.mcp_refs import parse_tools_refs
@@ -689,10 +689,12 @@ def _with_restrictions(
 def _user_agent_spec(agent: str) -> dict[str, Any] | None:
     """The user-level spec for *agent*, or ``None`` when absent, ambiguous or unreadable."""
     try:
-        path = agent_spec_path(agent)
+        # The pinned claimant when ``agent.spec_pins`` chooses among several.
+        path = session_agent_spec_path(agent)
     except ValueError:
-        # Two specs declare this name, so which one is live is undefined. No
-        # answer is the honest one; the control plane still loads below.
+        # Two specs declare this name and no pin chooses one, so which one is
+        # live is undefined. No answer is the honest one; the control plane
+        # still loads below.
         logger.warning("session MCP: ambiguous agent spec for %r", agent, exc_info=True)
         return None
     if path is None:

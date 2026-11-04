@@ -12522,7 +12522,19 @@
         "repair_images_done_not_resumed": "Imágenes reparadas. Pulsa Reanudar para continuar la respuesta.",
         "repair_images_failed": "Las imágenes no se pueden reparar dos veces en un mismo chat. Inicia una sesión nueva para continuar — este chat permanece en tu lista y el asistente continúa a partir de un resumen.",
         "repair_images_not_persistent": "Las imágenes no se pueden reparar en un chat de incógnito o temporal, porque recargarlo borra su historial. Inicia una sesión nueva para continuar.",
-        "repair_images_retry_hint": "Algo salió mal esta vez, así que tu única reparación no se usó — puedes volver a intentarlo."
+        "repair_images_retry_hint": "Algo salió mal esta vez, así que tu única reparación no se usó — puedes volver a intentarlo.",
+        "spec_choice_title": "Varios paquetes instalados incluyen un agente llamado {{agent}}, y son distintos. Elige el que quieres usar.",
+        "spec_choice_broken": "El archivo elegido para {{agent}}, {{file}}, falta o ahora es otro agente. Elige el que quieres usar.",
+        "spec_choice_use": "Usar este",
+        "spec_choice_use_label": "Usar {{file}} para {{agent}}",
+        "spec_choice_package": "Paquete: {{package}}",
+        "spec_choice_package_unknown": "Paquete desconocido",
+        "spec_choice_modified": "Modificado {{date}}",
+        "spec_choice_differs": "Se diferencia de los demás en: {{fields}}",
+        "spec_choice_more": "Otros {{count}} archivos declaran {{agent}} y no se muestran. Elige uno con: kirocrew agent pin {{agent}} <file>",
+        "spec_choice_done_resuming": "A partir de ahora {{agent}} usa {{file}}. Iniciando la sesión de nuevo. Puedes cambiarlo después con kirocrew agent pin.",
+        "spec_choice_done": "A partir de ahora {{agent}} usa {{file}}. Envía tu mensaje de nuevo para empezar. Puedes cambiarlo después con kirocrew agent pin.",
+        "spec_choice_failed": "No se pudo guardar la elección"
       },
       "folderPanel": {
         "clear_search": "Borrar búsqueda",

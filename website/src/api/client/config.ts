@@ -196,6 +196,9 @@ export function createConfigEndpoints({ post, put, j, jfetch: fetch }: ClientTra
      *  names which the caller means when a template and a crewmate share a name. */
     setDefaultAgent: (agent: string, agent_kind?: 'member' | 'template') =>
       put('/api/config/default-agent', { agent, ...(agent_kind ? { agent_kind } : {}) }).then(j),
+    /** Pin which file a contested agent name runs (`agent.spec_pins`). Owner-only. */
+    setAgentSpecPin: (agent: string, file: string) =>
+      put('/api/agent-spec-pins/' + encodeURIComponent(agent), { file }).then(j) as Promise<{ ok: boolean; agent: string; file: string }>,
     kirocrewConfig: () => fetch('/api/config/kirocrew').then(j),
     saveKirocrewConfig: (agent: object) => put('/api/config/kirocrew', { agent }).then(j) as Promise<{ ok?: boolean; restart_required?: boolean; error?: string }>,
     patchConfig: (path: string, value: unknown, opts?: { ifUnset?: boolean }) => fetch('/api/config/kirocrew', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path, value, ...(opts?.ifUnset ? { if_unset: true } : {}) }) }).then(j),

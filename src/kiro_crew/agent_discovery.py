@@ -132,7 +132,9 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _FENCE_PROBE_BYTES,
         _KIRO_AGENTS_DIR,
         _WINDOWS,
+        AgentSpecPinError,
         AmbiguousAgentSpecError,
+        DeclaredSpecClaim,
         SensitiveAgentSpecPathError,
         _audit_denied,
         _fence_refuses,
@@ -146,6 +148,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _warn_on_systematic_scan_failure,
         agent_spec_stems,
         apple_double_sidecar,
+        declared_spec_claim,
         declared_spec_entry,
         iter_declared_specs,
         plain_markdown_document,
@@ -182,7 +185,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     import time  # noqa: F401
     from dataclasses import asdict, dataclass, field  # noqa: F401
     from pathlib import Path  # noqa: F401
-    from typing import Any, Callable, Generic, Iterator, Sequence, TypeVar  # noqa: F401
+    from typing import Any, Callable, Generic, Iterator, Mapping, Sequence, TypeVar  # noqa: F401
 
     from kiro_crew.agent_files import (  # noqa: F401
         KIROCREW_DEFAULT_AGENT_NAMES,

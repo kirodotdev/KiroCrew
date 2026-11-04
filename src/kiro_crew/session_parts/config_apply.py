@@ -64,6 +64,9 @@ _FACTORY_CONFIG_PATHS: tuple[str, ...] = (
     # The warm pool's agent is `session.pool_agent or agent.default_agent`, and
     # WarmPoolState.agent is captured once, so the default is a factory input.
     "agent.default_agent",
+    # A pin picks which file a pooled provider of a contested name runs, so a
+    # warm provider started under the previous pin is retired, not claimed.
+    "agent.spec_pins",
     "session.pool_size",
     "session.pool_agent",
     "session.pool_ttl_secs",

@@ -324,6 +324,59 @@ def project_agent_view(
     return view, search, None
 
 
+def _contested_names(directory: Path) -> frozenset[str]:
+    """The declared names two or more specs in *directory* claim, from the parsed-spec
+    snapshot (stat-revalidated, so no extra read of an unchanged directory)."""
+    from kiro_crew.agent_discovery import parsed_agent_specs
+
+    counts: dict[str, int] = {}
+    try:
+        rows = parsed_agent_specs(directory, operation="native_skill_projection", source="acp")
+    except OSError:
+        return frozenset()
+    for data, _path in rows:
+        name = data.get("name") if isinstance(data, dict) else None
+        if isinstance(name, str):
+            counts[name] = counts.get(name, 0) + 1
+    return frozenset(name for name, count in counts.items() if count > 1)
+
+
+def _has_spec_pin(name: str) -> bool:
+    """Whether ``agent.spec_pins`` pins *name* (read at call time)."""
+    from kiro_crew import agent_spec_pins
+
+    return agent_spec_pins.spec_pin_for(name) is not None
+
+
+def _pinned_source(
+    directory: Path, name: str, errors: dict[str, str], refusals: dict[str, ValueError]
+) -> str | None:
+    """The file name *name*'s view is built from when several specs declare it.
+
+    ``""`` keeps the roster's file (identical claimants, no pin); the pinned file's
+    name when ``agent.spec_pins`` chooses; ``None`` when the resolver refuses
+    (differing claimants with no pin, or a broken pin), with the refusal recorded
+    in *errors* so the name gets no view, and the resolver's exception in *refusals*
+    so the start's error still carries the claimants the file chooser lists.
+    """
+    from kiro_crew.agent_discovery import AmbiguousAgentSpecError, declared_spec_claim
+
+    try:
+        claim = declared_spec_claim(
+            directory, name, operation="native_skill_projection", source="acp"
+        )
+    except AmbiguousAgentSpecError as exc:
+        errors[name] = str(exc)
+        refusals[name] = exc
+        return None
+    except OSError as exc:
+        errors[name] = f"the agents directory could not be read ({exc})"
+        return None
+    if claim is None:
+        return ""
+    return claim.path.name if claim.pinned else ""
+
+
 def prepare_native_skill_projection(
     work_dir: Path,
     *,
@@ -471,6 +524,7 @@ def prepare_native_skill_projection(
     specs: dict[str, dict[str, Any]] = {}
     sources: dict[str, str] = {}
     errors: dict[str, str] = {}
+    refusals: dict[str, ValueError] = {}
     search_agents: set[str] = set()
     display_sizes: dict[str, tuple[int, str]] = {}
     # The skill trees an unmapped custom agent inherits. Crew supplies them through
@@ -484,6 +538,11 @@ def prepare_native_skill_projection(
     # A crew-bound spec's view carries only the grants the governance ceiling
     # permits: kiro-cli runs the view, not the authored file, which is never written.
     governed_names = agent_mod.governed_view_names()
+    # Names two or more user-level specs declare. ``list_agents`` keeps one row per
+    # name, so for these the view's source is the declared-name resolver's answer
+    # (``agent.spec_pins`` applied), and a name it refuses gets no view: kiro-cli is
+    # never handed a name whose file it would choose itself.
+    contested = _contested_names(directory)
 
     for agent in list_agents(project_dir=str(work_dir)):
         if not agent.filename:
@@ -491,7 +550,15 @@ def prepare_native_skill_projection(
         source_dir = (
             project_agents_dir(str(work_dir)) if agent.scope == SCOPE_PROJECT else directory
         )
-        source = source_dir / agent.filename
+        filename = agent.filename
+        # A pinned name goes through the resolver even with one file left: the pin
+        # may name a file that is gone, which refuses rather than view another one.
+        if agent.scope != SCOPE_PROJECT and (agent.name in contested or _has_spec_pin(agent.name)):
+            chosen = _pinned_source(directory, agent.name, errors, refusals)
+            if chosen is None:
+                continue
+            filename = chosen or filename
+        source = source_dir / filename
         spec = _read_agent_spec(source, operation="native_skill_projection", source="acp")
         if spec is None:
             # A spec ``list_agents`` yielded but the reader refuses here changed
@@ -664,6 +731,7 @@ def prepare_native_skill_projection(
                         specs,
                         errors,
                         search_agents,
+                        refusals=refusals,
                     )
                     _remember_view_sources(aliases)
                     # Releases the lease and prunes this home's unleased views

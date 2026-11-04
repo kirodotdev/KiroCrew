@@ -322,6 +322,7 @@ async def _refuse_over_ceiling_start(self: AcpRuntime, active_agent: str | None)
             active_agent,
             getattr(self, "_acp_backend", ""),
             launch_name=self._start_launch_name(active_agent),
+            work_dir=getattr(self, "_work_dir", None),
         )
     except agent_mod.SharedTemplateOverCeiling as exc:
         raise AcpRuntimeError(str(exc)) from exc

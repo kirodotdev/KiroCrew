@@ -12,6 +12,7 @@ from collections.abc import Mapping, MutableMapping
 from datetime import datetime, timezone
 
 from kiro_crew import platform_compat
+from kiro_crew.agent_spec_pins import coerce_spec_pins
 from kiro_crew.config import sections as _sections
 from kiro_crew.config.loader_document import (
     _raw_agent_section,
@@ -663,6 +664,7 @@ def _build_agent_config(agent_data: dict) -> AgentConfig:
         role_models=coerce_role_models(section.get("role_models")),
         role_efforts=coerce_role_efforts(section.get("role_efforts")),
         model_context_tokens=section.get("model_context_tokens"),
+        spec_pins=coerce_spec_pins(section.get("spec_pins")),
         fallback_model=coerce_fallback_model(section.get("fallback_model")),
         refusal_fallback_model=_sections.coerce_refusal_fallback_model(
             section.get("refusal_fallback_model")

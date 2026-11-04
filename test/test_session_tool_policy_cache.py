@@ -198,10 +198,12 @@ def test_an_edit_during_the_read_is_not_memoized(
     real_read = sessions_mod._read_managed_tool_policy_uncached
     uncached_calls = 0
 
-    def read_while_editing(agents_dir: Path, agent_name: str) -> dict[str, Any] | None:
+    def read_while_editing(
+        agents_dir: Path, agent_name: str, pins: Any = None
+    ) -> dict[str, Any] | None:
         nonlocal uncached_calls
         uncached_calls += 1
-        policy = real_read(agents_dir, agent_name)
+        policy = real_read(agents_dir, agent_name, pins)
         if uncached_calls == 1:
             _write_spec(spec, {"name": AGENT, "managedToolPolicy": new_policy})
             _bump_mtime(spec, 5)
@@ -420,9 +422,9 @@ def test_the_walk_keeps_no_more_policies_than_the_memo_can_store(
     real_uncached = sessions_mod._read_managed_tool_policy_uncached
     uncached_names: list[str] = []
 
-    def recording_uncached(agents_dir: Path, agent_name: str) -> Any:
+    def recording_uncached(agents_dir: Path, agent_name: str, pins: Any = None) -> Any:
         uncached_names.append(agent_name)
-        return real_uncached(agents_dir, agent_name)
+        return real_uncached(agents_dir, agent_name, pins)
 
     monkeypatch.setattr(sessions_mod, "_read_managed_tool_policy_uncached", recording_uncached)
     assert sessions_mod._read_managed_tool_policy_sync(tmp_path, left_out[0]) == {}

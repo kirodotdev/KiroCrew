@@ -12522,7 +12522,19 @@
         "repair_images_done_not_resumed": "Images réparées. Appuie sur Reprendre pour continuer la réponse.",
         "repair_images_failed": "Les images ne peuvent pas être réparées deux fois dans une même conversation. Démarre une nouvelle session pour continuer — cette conversation est conservée, et l'assistant reprend à partir d'un résumé.",
         "repair_images_not_persistent": "Les images ne peuvent pas être réparées dans une conversation incognito ou temporaire, car la recharger efface son historique. Démarre une nouvelle session pour continuer.",
-        "repair_images_retry_hint": "Quelque chose s'est mal passé cette fois, donc ta réparation unique n'a pas été utilisée — appuie sur « Répare les images et reprends » pour réessayer."
+        "repair_images_retry_hint": "Quelque chose s'est mal passé cette fois, donc ta réparation unique n'a pas été utilisée — appuie sur « Répare les images et reprends » pour réessayer.",
+        "spec_choice_title": "Plusieurs paquets installés fournissent chacun un agent nommé {{agent}}, et ils diffèrent. Choisis celui à utiliser.",
+        "spec_choice_broken": "Le fichier choisi pour {{agent}}, {{file}}, est introuvable ou correspond maintenant à un autre agent. Choisis celui à utiliser.",
+        "spec_choice_use": "Utiliser celui-ci",
+        "spec_choice_use_label": "Utiliser {{file}} pour {{agent}}",
+        "spec_choice_package": "Paquet : {{package}}",
+        "spec_choice_package_unknown": "Paquet inconnu",
+        "spec_choice_modified": "Modifié {{date}}",
+        "spec_choice_differs": "Diffère des autres par : {{fields}}",
+        "spec_choice_more": "{{count}} autres fichiers déclarent {{agent}} et ne sont pas listés. Choisis-en un avec : kirocrew agent pin {{agent}} <file>",
+        "spec_choice_done_resuming": "Désormais, {{agent}} utilise {{file}}. Redémarrage de la session. Tu peux le changer plus tard avec kirocrew agent pin.",
+        "spec_choice_done": "Désormais, {{agent}} utilise {{file}}. Renvoie ton message pour démarrer. Tu peux le changer plus tard avec kirocrew agent pin.",
+        "spec_choice_failed": "Le choix n’a pas pu être enregistré"
       },
       "folderPanel": {
         "clear_search": "Effacer la recherche",

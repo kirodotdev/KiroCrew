@@ -847,6 +847,18 @@ def register_agent_parser(sub: _Commands) -> None:
     )
     agent_delete = agent_sub.add_parser("delete", help="Delete a Kiro Crew agent")
     agent_delete.add_argument("name", help="Agent name to delete")
+    agent_pin = agent_sub.add_parser(
+        "pin",
+        help=(
+            "Choose which spec file an agent name runs when several declare it "
+            "(agent.spec_pins); with no arguments, list the pins"
+        ),
+    )
+    agent_pin.add_argument("name", nargs="?", help="Agent name the specs declare")
+    agent_pin.add_argument(
+        "file", nargs="?", help="Bare file name in the agents directory, e.g. PkgA-helper.json"
+    )
+    agent_pin.add_argument("--clear", action="store_true", help="Remove the pin for this name")
     agent_reset_model = agent_sub.add_parser(
         "reset-model",
         help="Clear an agent spec's pinned model so it tracks the shipped default again",

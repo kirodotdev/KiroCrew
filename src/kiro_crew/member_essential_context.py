@@ -12,7 +12,13 @@ from pathlib import Path
 from typing import Any
 
 from kiro_crew import agent as agent_mod
-from kiro_crew.agent_discovery import _read_agent_spec, declared_spec_entry, project_agent_files
+from kiro_crew import agent_spec_pins
+from kiro_crew.agent_discovery import (
+    AgentSpecPinError,
+    _read_agent_spec,
+    declared_spec_claim,
+    project_agent_files,
+)
 from kiro_crew.agent_sdk.drivers import acp as acp_driver
 from kiro_crew.config import KiroCrewConfig, config_dir
 from kiro_crew.config.loader import workspace_dir_for
@@ -829,9 +835,19 @@ def resolve_template_path(template: str, project: str | None = None) -> Path | N
                 if spec_path is not None:
                     raise MemberEssentialContextError(f"Ambiguous essential template {template!r}")
                 spec_path = path
+    user_refusal: ValueError | None = None
     if spec_path is None:
         try:
-            spec_path = agent_mod.agent_spec_path(template)
+            spec_path = agent_mod.session_agent_spec_path(template)
+        except AgentSpecPinError as exc:
+            if exc.paths:
+                raise MemberEssentialContextError(
+                    f"Essential template {template!r}: {exc}"
+                ) from exc
+            # The pin names a user-level file, and no user-level file declares the
+            # name: the template may be a crewmate's own, so the mate scope answers
+            # below, and this refusal stands if it does not.
+            user_refusal = exc
         except ValueError as exc:
             raise MemberEssentialContextError(f"Essential template {template!r}: {exc}") from exc
     if spec_path is None:
@@ -843,9 +859,21 @@ def resolve_template_path(template: str, project: str | None = None) -> Path | N
         from kiro_crew.config.paths import mate_agents_dir
 
         try:
-            spec_path = agent_mod.agent_spec_path(template, agents_dir=mate_agents_dir())
+            spec_path = agent_mod.session_agent_spec_path(template, agents_dir=mate_agents_dir())
+        except AgentSpecPinError as exc:
+            if exc.paths:
+                raise MemberEssentialContextError(
+                    f"Essential template {template!r}: {exc}"
+                ) from exc
+            # No crewmate file declares the name, so the mate scope has no answer:
+            # a user-level pin on a linked file is read by the linked reader below
+            # (``read_template_spec``), and a user-level refusal still stands.
         except ValueError as exc:
             raise MemberEssentialContextError(f"Essential template {template!r}: {exc}") from exc
+    if spec_path is None and user_refusal is not None:
+        raise MemberEssentialContextError(
+            f"Essential template {template!r}: {user_refusal}"
+        ) from user_refusal
     return spec_path
 
 
@@ -873,8 +901,8 @@ def linked_global_template_spec(
 ) -> tuple[Path, dict[str, Any]] | None:
     """The global spec declaring *template*, read through links in the agents directory.
 
-    For a template :func:`kiro_crew.agent.agent_spec_path` does not find: that
-    resolver serves spec writers and refuses links. Each entry is read by the
+    For a template :func:`kiro_crew.agent.session_agent_spec_path` does not find:
+    that path resolver shares the writer's no-link fence. Each entry is read by the
     hardened reader under :func:`_managed_template_target_refused`, so a target
     outside the agents directory and inside managed memory or member private
     state reads as unusable, and a managed root that cannot be verified refuses
@@ -886,13 +914,24 @@ def linked_global_template_spec(
     agents_dir = agent_mod.kiro_agents_dir_path()
     if not agents_dir.is_dir():
         return None
-    return declared_spec_entry(
+    claim = declared_spec_claim(
         agents_dir,
         template,
         operation=operation,
         source=source,
         fence=_managed_template_target_refused(agents_dir),
     )
+    pin = agent_spec_pins.spec_pin_for(template)
+    if pin is not None and (claim is None or claim.path.name != pin):
+        # The fence may have set the pinned claimant aside, leaving another file
+        # as the only one it admits. The session runs the pinned file, so a
+        # reader that cannot read it refuses rather than read a different one.
+        unfenced = declared_spec_claim(agents_dir, template, operation=operation, source=source)
+        if unfenced is not None and unfenced.pinned:
+            raise ValueError(
+                f"the pinned spec {pin!r} for {template!r} resolves into managed state"
+            )
+    return None if claim is None else (claim.path, claim.spec)
 
 
 def _managed_template_target_refused(agents_dir: Path) -> Callable[[Path], bool]:

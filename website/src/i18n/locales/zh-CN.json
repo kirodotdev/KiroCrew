@@ -12004,7 +12004,19 @@
         "repair_images_done_not_resumed": "图片已修复。按继续以继续回复。",
         "repair_images_failed": "同一聊天中的图片无法修复两次。请开始新的会话以继续 — 此聊天会保留，助手将从摘要处继续。",
         "repair_images_not_persistent": "隐身或临时聊天中的图片无法修复，因为重新加载会清除其历史记录。请开始新的会话以继续。",
-        "repair_images_retry_hint": "这次出了点问题，因此你的一次修复机会未被使用 — 按“修复图片并继续”重试。"
+        "repair_images_retry_hint": "这次出了点问题，因此你的一次修复机会未被使用 — 按“修复图片并继续”重试。",
+        "spec_choice_title": "已安装的多个包都带有名为 {{agent}} 的代理，且内容不同。请选择要使用的一个。",
+        "spec_choice_broken": "为 {{agent}} 选定的文件 {{file}} 已不存在，或已变成其他代理。请选择要使用的一个。",
+        "spec_choice_use": "使用此文件",
+        "spec_choice_use_label": "为 {{agent}} 使用 {{file}}",
+        "spec_choice_package": "软件包：{{package}}",
+        "spec_choice_package_unknown": "软件包未知",
+        "spec_choice_modified": "修改于 {{date}}",
+        "spec_choice_differs": "与其他文件不同之处：{{fields}}",
+        "spec_choice_more": "还有 {{count}} 个文件声明了 {{agent}}，未在此列出。可用以下命令选定其中一个：kirocrew agent pin {{agent}} <file>",
+        "spec_choice_done_resuming": "从现在起 {{agent}} 使用 {{file}}，正在重新启动会话。之后可用 kirocrew agent pin 更改。",
+        "spec_choice_done": "从现在起 {{agent}} 使用 {{file}}。请重新发送消息以启动。之后可用 kirocrew agent pin 更改。",
+        "spec_choice_failed": "无法保存所选文件"
       },
       "folderPanel": {
         "clear_search": "清除搜索",

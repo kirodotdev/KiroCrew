@@ -68,6 +68,10 @@ class NativeSkillProjection:
     #: vanished view fails closed). Never consumed; it describes a fixed launch
     #: fact, not a one-shot exemption. Empty until a spawn claims the projection.
     advertised_launch_name: str = ""
+    #: The resolver's own refusal for a name with no view because several specs
+    #: declare it (unpinned, or a broken pin). :meth:`agent` raises from it, so the
+    #: start's error keeps the claimant list the dashboard's file chooser reads.
+    refusals: dict[str, ValueError] = field(default_factory=dict, repr=False, compare=False)
     _lease_finalizer: Any = field(default=None, repr=False, compare=False)
     # Aliases an EARLIER projection of this process published, alias -> agent. The
     # host may still hold them (every alias it loaded at spawn, say), so inbound
@@ -133,7 +137,9 @@ class NativeSkillProjection:
             name = source
         if name not in self.aliases:
             if name in self.errors:
-                raise ValueError(f"Agent {name!r}: {self.errors[name]}")
+                raise ValueError(f"Agent {name!r}: {self.errors[name]}") from self.refusals.get(
+                    name
+                )
             raise ValueError(f"Agent {name!r} has no prepared skill discovery view")
         return self.aliases[name]
 

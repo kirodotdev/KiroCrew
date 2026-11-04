@@ -424,6 +424,7 @@ async def _refuse_over_ceiling_launch(self: AcpRuntime, launch_name: str | None)
             self._agent,
             ACP_BACKEND_KIRO,
             launch_name=launch_name,
+            work_dir=getattr(self, "_work_dir", None),
         )
     except agent_mod.SharedTemplateOverCeiling as exc:
         raise AcpRuntimeError(str(exc)) from exc
