@@ -151,6 +151,7 @@ from kiro_crew.apps.manifest_sections import (  # noqa: F401
     UISidebar,
     _granted_list,
     _l10n_quoted,
+    _sidebar_order,
     clamp_lifecycle_timeout,
     lifecycle_timeout_error,
     lifecycle_timeout_seconds,

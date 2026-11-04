@@ -44,9 +44,14 @@ def versions_compatible(local: str, peer: str) -> bool:
 def check_min_version(min_version: str) -> str | None:
     """Return an error string if the current KiroCrew version is too old.
 
-    Returns ``None`` if the version is sufficient or if parsing fails.
+    Returns ``None`` if the version is sufficient or if parsing fails. A bare
+    number (``"minKiroCrewVersion": 2``) is read as its string, the way
+    ``AppManifest.from_dict`` reads it, so the install preflight and the install
+    itself agree; any other non-string value is no minimum.
     """
-    if not min_version:
+    if isinstance(min_version, (int, float)) and not isinstance(min_version, bool):
+        min_version = str(min_version)
+    if not min_version or not isinstance(min_version, str):
         return None
     try:
         from kiro_crew import __version__ as current

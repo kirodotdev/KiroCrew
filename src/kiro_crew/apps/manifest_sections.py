@@ -340,8 +340,17 @@ class UISidebar:
     def from_dict(cls, data: dict[str, Any]) -> UISidebar:
         return cls(
             section=str(data.get("section", "Apps")),
-            order=int(data.get("order", 10)),
+            order=_sidebar_order(data.get("order", 10)),
         )
+
+
+def _sidebar_order(raw: Any) -> int:
+    """``ui.sidebar.order`` as an int; a value int() cannot take (``null``, ``"top"``,
+    NaN) keeps the default 10 instead of failing the whole manifest."""
+    try:
+        return int(raw)
+    except (TypeError, ValueError, OverflowError):
+        return 10
 
 
 @dataclass
