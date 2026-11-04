@@ -625,7 +625,7 @@ class MemberEventLogService:
         # :meth:`_migrate_legacy` for why the memo is per process and not a file.
         self._legacy_folded: set[str] = set()
 
-    # ---- wiring -----------------------------------------------------------
+    # Wiring
     def attach_broadcast(self, broadcast: Broadcast) -> None:
         self._broadcast = broadcast
 
@@ -706,7 +706,7 @@ class MemberEventLogService:
             out["name"] = name
         return out
 
-    # ---- internal plumbing ------------------------------------------------
+    # Internal plumbing
     def _log_path(self, slug: str) -> Path:
         """Where this member's log lives -- inside the fenced ``crew-log`` tree.
 
@@ -773,12 +773,8 @@ class MemberEventLogService:
         disagree for the life of the member, which is the one thing a savepoint may
         not do.
 
-        WHAT THIS SAVES, stated honestly: the FOLD, not the read. ``MemberLog``
-        materialises its event list on load, so the file is parsed either way; what
-        the watermark removes is one ``apply`` per definition per skipped event, which
-        with four registered units is the dominant cost of priming a long-lived
-        member. Removing the read cost too needs a windowed reader that starts at a
-        seq, which is a separate change to the log rather than to the fold.
+        This saves the FOLD, not the read: ``MemberLog`` parses the file on load
+        either way, and the watermark skips one ``apply`` per unit per event.
         """
         identity = log.checkpoint_identity()
         admit = log.checkpoint_admit(identity["first_seq"]) if identity is not None else None
@@ -791,16 +787,11 @@ class MemberEventLogService:
         witness: list = []
 
         def tail_from(watermark: int):
-            # ``prime_checkpointed`` calls this ONCE with the floor and then consumes
-            # what it returns, so this is the only moment that knows the floor and is
-            # still ahead of the pass -- and a witness is evidence only when it was
-            # read before the bytes were folded.
-            #
-            # A resume needs one whatever it intends to write: the restored state
-            # stands on a prefix this pass never revisits, so without a digest read
-            # here nothing afterwards can say that prefix is still in the file. A pass
-            # that resumed nothing asks only whether a write is owed, which keeps the
-            # boundary walk off the reads that could not spend it either way.
+            # ``prime_checkpointed`` calls this ONCE with the floor, before the pass,
+            # and a witness is evidence only when read before the bytes are folded.
+            # A resume always needs one, since the restored state stands on a prefix
+            # this pass never revisits; a pass that resumed nothing reads one only
+            # when a write may be owed.
             if watermark != EMPTY_WATERMARK or self._write_may_be_owed(log, watermark):
                 prefix = log.checkpoint_witness(log.last_seq())
                 if prefix is not None:
@@ -895,7 +886,7 @@ class MemberEventLogService:
                 continue
             store.save(slug, savepoint)
 
-    # ---- units ------------------------------------------------------------
+    # Units
     def ensure(self, slug: str, name: str, config=None) -> None:
         """Make sure *slug* has a log, and fold its legacy files in once.
 
@@ -917,16 +908,11 @@ class MemberEventLogService:
         with lock:
             log = self._get_log(slug)
             if log is None:
-                # Nothing on disk for this slug, and publishing it is what this call
-                # is for. The header is written ONCE, so this call decides what the
-                # log says it belongs to for life. A writer with no name in hand
-                # reaches here with the slug (``emit`` passes ``name or slug``), and
-                # the slug names nobody: the roster has to treat it as unnamed, which
-                # costs this log its collision check for good. Resolve the exact name
-                # from the roster instead, and use it for the migration below too,
-                # whose rules and binding reads are name-scoped. Only on this path,
-                # so a member's config is read once ever rather than on every
-                # message.
+                # The header is written ONCE, so this call fixes the log's owner for
+                # life. A nameless writer arrives with the slug (``emit`` passes
+                # ``name or slug``), which would cost the log its collision check for
+                # good, so resolve the exact name from the roster; the name-scoped
+                # migration below uses it too. Only here, so config is read once ever.
                 name = self._resolved_name(slug, name, config)
                 log = MemberLog(slug)
                 log.create(name)
@@ -939,17 +925,11 @@ class MemberEventLogService:
                 # projection of this member is published.
                 self._registry.prime(slug, log.iter_events())
 
-            # The HEADER decides who this log belongs to, not this call's argument.
-            # It is written once, so on an EXISTING log the argument is only whatever
-            # this writer happened to hold -- and ``emit`` passes ``name or slug``, so
-            # a nameless writer holds the slug. Taking that would overwrite the real
-            # name with a placeholder, and ``_names`` is what scopes the activity
-            # view, so the member's own entries (recorded under their real name)
-            # would be scoped out of their own projection. :meth:`_get_log` already
-            # answers this from the header; reading it here is the same answer, so
-            # the write path and the read path cannot disagree about one slug. The
-            # migration below takes it too: its rules and binding reads are
-            # name-scoped, and the header name is the name they are scoped by.
+            # The HEADER decides who this log belongs to, not this call's argument: a
+            # nameless writer holds the slug, and putting that in ``_names`` (which
+            # scopes the activity view) would scope the member's own entries out of
+            # their projection. :meth:`_get_log` reads the header the same way, so the
+            # write and read paths agree; the name-scoped migration below uses it too.
             header_name = (log.header or {}).get("name")
             if isinstance(header_name, str) and header_name:
                 name = header_name
@@ -1153,18 +1133,13 @@ class MemberEventLogService:
             )
             return _CLEAN_KEPT
         try:
-            # The absence is RE-DECIDED here, inside the hold, for the same reason
-            # ``remove_unit`` re-asks its guard there: the store answered ``absent``
-            # from an ``is_dir`` taken with no lease, and a peer holding neither can
-            # create the unit, fold this source into it and release inside the window
-            # that ends at the acquire above. A segment is what proves that happened
-            # -- the directory this method makes to carry the lease holds none -- and
-            # it is history, so removing the source now would leave the fold standing
-            # with no collector: the retention sweep ages session logs only. So
-            # nothing is touched, the lease and the directory are left exactly as the
-            # peer's unit needs them, and the caller re-runs ``remove_unit``, which
-            # now finds a unit to lease and removes the fold and the source inside one
-            # hold of its own.
+            # The absence is RE-DECIDED inside the hold, as ``remove_unit`` re-asks its
+            # guard: ``absent`` came from an unleased ``is_dir``, and a peer can create
+            # the unit, fold this source and release before the acquire above. A
+            # segment proves that (the lease directory holds none). Removing the source
+            # then would strand the fold with no collector (retention ages session logs
+            # only), so nothing is touched and the caller re-runs ``remove_unit``,
+            # which removes fold and source under one hold.
             if segment_paths(KIND_MEMBER, slug):
                 logger.info(
                     "crew log: %r was recreated while its removal decided absence; "
@@ -1243,23 +1218,13 @@ class MemberEventLogService:
                 logger.debug("legacy binding read failed for %r", slug, exc_info=True)
             else:
                 if binding is None and _legacy_binding_present(slug):
-                    # "Not bound" from a total reader, with a file sitting there, does
-                    # not say there is nothing to migrate -- it says this pass did not
-                    # read what is there. EVERY such answer holds the member open, and
-                    # that is wider than "the file is unreadable": the same None comes
-                    # back for a file whose `slot_key` is not canonical and for one
-                    # naming a member that slugifies elsewhere. A total reader cannot
-                    # report which of the three happened, and the one that must not be
-                    # mistaken for "nothing to migrate" is indistinguishable from the
-                    # other two here.
-                    #
-                    # The cost of being wide falls on that member alone: it keeps
-                    # paying the lease and the legacy reads on every ensure until the
-                    # file is repaired, which is what every member pays without this
-                    # memo. Reading the file a second time here to classify it is the
-                    # alternative, and it spends that read on every pass for every
-                    # member to serve the rare one. The source is never retired, so
-                    # the next pass finds it again.
+                    # "Not bound" with a file present means this pass did not read
+                    # what is there, so the member stays open. The same None comes back
+                    # for an unreadable file, a non-canonical `slot_key` and a member
+                    # that slugifies elsewhere, and a total reader cannot tell them
+                    # apart. Only that member pays (lease and legacy reads on every
+                    # ensure until repaired); classifying it would cost a second read on
+                    # every pass for every member. The source is never retired.
                     settled = False
             if binding is not None and binding.get("member") == name:
                 slot_key = binding.get("slot_key")
@@ -1278,19 +1243,12 @@ class MemberEventLogService:
                 self._append_locked(slug, log, types.MEMBER_RULES, {"text": text})
 
         # 3. activity.jsonl(.1) -> activity/record, oldest first.
-        # Read the legacy FILES directly: ``members.read_activity`` reads
-        # from this very log through ``history()``, which takes the per-slug
-        # lock the caller already holds. Going through it here deadlocks.
-        # Per ROW, not per type: a crash after the first append leaves the log
-        # holding one activity record, and skipping on "any record exists" would
-        # then drop every remaining legacy row for good. Keyed on the row's own
-        # canonical JSON, which is what the append stores, so a row already in the
-        # log matches itself exactly.
-        # Counted, NOT a set: legacy rows are not distinct. Two identical rows are
-        # an ordinary shape (one member, one second, the same via and project), so
-        # a set would let the single copy a crashed pass had already appended stand
-        # for every occurrence and silently drop the rest. Each legacy row consumes
-        # ONE recorded match, and a row with no match left is appended.
+        # Read the legacy FILES directly: ``members.read_activity`` goes through
+        # ``history()``, which takes the per-slug lock the caller holds (deadlock).
+        # Deduped per ROW, keyed on the canonical JSON the append stores, so a crash
+        # after the first append does not drop the remaining rows. Counted, NOT a
+        # set: identical legacy rows are ordinary, so each row consumes ONE recorded
+        # match and a row with no match left is appended.
         migrated: Counter[str] = Counter(
             _activity_key(e["data"])
             for e in log.iter_events()
@@ -1305,18 +1263,12 @@ class MemberEventLogService:
             self._append_locked(
                 slug, log, types.ACTIVITY_RECORD, {**row, LEGACY_PROVENANCE_KEY: True}
             )
-        # Retired whether or not the pass READ anything -- an empty or absent legacy
-        # file yields no rows, so a retirement gated on rows would leave that
-        # member's marker unwritten forever and the path open for whoever writes the
-        # file next. What the marker records is that the fold COMPLETED, not that it
-        # found something.
-        #
-        # But only when it did complete. A read the byte budget cut short, or one an
-        # OSError interrupted, has rows it never saw -- and retirement is one-way, so
-        # finalising an incomplete fold discards them permanently. An unretired
-        # source is re-read on the next ensure, which the counted dedupe above makes
-        # safe; an over-budget file stays unretired and is reported every pass, which
-        # is the correct outcome for a file too large to migrate.
+        # Retired whether or not any rows were read: the marker records that the
+        # fold COMPLETED, and gating on rows would leave an empty file's path open
+        # forever. But only on a complete read: retirement is one-way, so a read cut
+        # short (byte budget, OSError) stays unretired and is re-read next ensure,
+        # which the counted dedupe makes safe. An over-budget file is reported every
+        # pass.
         if legacy_complete and not _retire_legacy_activity(slug):
             settled = False
         return settled and legacy_complete
@@ -1324,20 +1276,13 @@ class MemberEventLogService:
     def logged_name(self, slug: str) -> str | None:
         """The EXACT member name this slug's log was created for, or None.
 
-        A slug is lossy -- ``slug_for_name`` says so, and `Review_Agent` and
-        `review-agent` both fold to `review-agent`. Colliding names are SUPPORTED
-        (each activity entry stores the exact name, which is what keeps attribution
-        working), so this is a query rather than a refusal: a caller that presents
-        per-member state has to know the log it is reading belongs to the member it
-        is rendering, and only the header can tell it.
+        A slug is lossy (`Review_Agent` and `review-agent` both fold to
+        `review-agent`) and colliding names are supported, so a caller rendering
+        per-member state asks the header whether the log belongs to that member.
 
-        One answer needs care at the CALLER: a header whose name IS the slug names no
-        member. ``ensure`` writes the header only while the log is fresh, so a writer
-        that does not know the name and passes the slug locks that placeholder in for
-        the log's whole life. It is reported as held, because it is what the header
-        holds, but a caller comparing it against a real name must not read it as a
-        second member -- a slug is a lossy fold, so the placeholder differs from
-        almost every real name.
+        A header whose name IS the slug is a placeholder that names no member:
+        ``ensure`` writes the header once, so a writer that passed the slug locks it
+        in. It is returned as held; a caller must not read it as a second member.
         """
         log = self._get_log(slug)
         if log is None or not isinstance(log.header, dict):
@@ -1357,7 +1302,7 @@ class MemberEventLogService:
 
         return unit_ids(KIND_MEMBER)
 
-    # ---- write ------------------------------------------------------------
+    # Write
     def append(self, slug: str, type: str, data: dict) -> Event:
         lock = self._slug_lock(slug)
         with lock:
@@ -1377,41 +1322,23 @@ class MemberEventLogService:
     ) -> Event | None:
         """Append a closer only while the projection still shows what it closes.
 
-        A closer is decided from a SNAPSHOT and written afterwards, and between those
-        two the state it describes can legitimately change: the startup reconcile runs
-        as a background task concurrent with the gateway going live, so a slot it read
-        as durably open can be reopened, or a patrol re-armed, by a live writer before
-        the closer lands. The log is append-only with no compaction, so a closer that
-        lands after a live open is a permanent regression of the projection -- and not
-        a self-correcting one, because a later restart's reconcile reads the state as
-        closed and has no reason to reopen it.
+        A closer is decided from a SNAPSHOT and written later. The startup reconcile
+        runs concurrently with live writers, so a slot can be reopened or a patrol
+        re-armed in between, and in an append-only log a closer landing after that
+        is a permanent regression no later reconcile undoes.
 
-        ``still_applies`` is therefore re-asked HERE, under the lock that writes, and
-        is handed the CURRENT projection values rather than the caller's snapshot.
-        ``_get_log`` has already folded anything a concurrent writer committed, so
-        those values include the live change the caller could not have seen. Returns
-        ``None`` when the closer does not apply, which is a normal outcome and not
-        a failure: it means the state closed itself while the reconcile was deciding.
+        So ``still_applies`` is re-asked HERE, under the writing lock, with the
+        CURRENT projection values (``_get_log`` has folded concurrent commits).
+        ``None`` means the closer does not apply now, a normal outcome.
 
-        It is handed ``observed`` -- the values the caller DECIDED on -- as a second
-        argument, because the current state alone cannot answer the question. The
-        state is not the episode: a patrol that stopped and was RE-ARMED in this
-        window reads ``armed`` exactly like the original episode the caller meant to
-        close, so a predicate that tests only the current state stamps the NEW
-        episode with the OLD one's closer, and the fresh patrol then reads as
-        stopped. Comparing against ``observed`` is what tells those two apart.
+        It also gets ``observed``, the values the caller decided on: a patrol
+        stopped and RE-ARMED in the window reads ``armed`` like the original, and
+        only ``observed`` tells the new episode from the old one.
 
-        Note what is deliberately NOT done: refusing whenever the projection sequence
-        advanced. ``snapshot`` reports one ``asOfSeq`` for the whole slug -- the max
-        across every projection cell -- and ``_get_log`` folds all pending commits
-        first, so ANY unrelated event on the member advances it and a closer gated on
-        it would essentially never fire. The comparison belongs on the projection
-        block the closer concerns, which is why the predicate makes it and not this
-        method.
-
-        This exists rather than a predicate on :meth:`append` because the predicate
-        must not re-enter the service to read state -- ``snapshot`` takes this same
-        non-reentrant lock, so a caller that reached for it would deadlock.
+        Not gated on ``asOfSeq``: that is the max across every cell, so any
+        unrelated event would advance it and the closer would never fire. The
+        predicate compares the block the closer concerns. It must not re-enter the
+        service (``snapshot`` takes this same non-reentrant lock).
 
         The predicate is asked against a state no foreign commit can have moved,
         and that guarantee comes from the store rather than from the per-slug lock
@@ -1467,15 +1394,10 @@ class MemberEventLogService:
                     # ``drive`` folds this event, which is the only new one.
                     self._registry.drive(slug, event)
                     return event
-            # Every attempt lost the same race. Declining is the safe direction --
-            # a closer not written is a normal outcome the next read re-decides,
-            # while one written against a state that moved is permanent.
-            # Warned rather than debugged, and raised rather than reported as a plain
-            # decline: the projection is left stale, which is the same silent
-            # wrongness the recheck exists to prevent, and a caller that runs ONCE
-            # cannot tell "does not apply" from "never got a clean window" without
-            # this. A floor that never reaches the tail would exhaust every closer
-            # for this member, and these two are where that becomes visible.
+            # Every attempt lost the race. Not writing is the safe direction (a
+            # closer written against moved state is permanent), but it leaves the
+            # projection stale, so this warns and raises: a caller that runs ONCE
+            # must be able to tell "does not apply" from "never got a clean window".
             logger.warning(
                 "closer for slug=%r type=%r lost the tail race on every attempt; "
                 "the projection stays stale until a caller re-decides",
@@ -1487,30 +1409,21 @@ class MemberEventLogService:
     def _fold_gap_locked(self, slug: str, log: MemberLog, *, below: int | None = None) -> None:
         """Fold events on disk that this process has not folded; caller holds the lock.
 
-        The gateway is not the log's only writer, so entries can be committed
-        between our loads. ``drive`` advances each cell's ``observed_seq`` and then
-        drops anything at or below it, so folding a newer event first would strand
-        the ones before it for good -- they would never appear in a projection or a
-        snapshot until a restart re-primed from the file.
+        Other processes write the log too, so entries can land between our loads.
+        ``drive`` drops anything at or below a cell's ``observed_seq``, so folding a
+        newer event first would strand the earlier ones until a restart re-primed.
 
-        ``below`` bounds the range when the caller is about to drive an event of
-        its own (the append path); a read passes nothing and folds to the end.
-        ``drive`` is idempotent per cell, so replaying a seq a cell already holds
-        costs it nothing.
+        ``below`` bounds the range when the caller is about to drive its own event
+        (the append path); a read folds to the end. ``drive`` is idempotent per cell.
         """
         floor = self._registry.observed_floor(slug)
         if floor < 0:
-            # Nothing is folded yet -- either no cell, or a cell a prime over an empty
-            # stream left at the empty watermark, which is the state a log with no
-            # events is in. Such a cell folds from init() over whatever it is first
-            # driven with, so a range cannot be driven at it. Prime over the same
-            # events instead: that is the form it accepts, and it reaches the state a
-            # cold fold reaches. Returning here is the one thing that does not work --
-            # the entries another process committed would stay unfolded, and the next
-            # append drives every cell past them, after which drive drops them.
-            #
-            # ``below`` still bounds it, so the append path's own ``drive`` remains the
-            # call that fires the change callbacks ``prime`` withholds.
+            # Nothing is folded yet (no cell, or one primed over an empty stream), and
+            # such a cell cannot be driven a range, so prime over the same events,
+            # which reaches the cold-fold state. Returning instead would leave other
+            # processes' entries unfolded, and the next append would drive past them.
+            # ``below`` still bounds it, so the append path's ``drive`` fires the change
+            # callbacks ``prime`` withholds.
             self._registry.prime(
                 slug,
                 (ev for ev in log.iter_events() if below is None or ev["seq"] < below),
@@ -1526,23 +1439,15 @@ class MemberEventLogService:
     def _append_locked(self, slug: str, log: MemberLog, type: str, data: dict) -> Event:
         """Append + fold; caller holds the per-slug lock."""
         event = log.append(type, data)
-        # `log.append` re-reads the file, so the seq it returns can sit ABOVE the
-        # one after what this process folded: the gateway is not the only writer
-        # (`kirocrew-core` runs as its own stdio subprocess and records member
-        # activity through this same service), so entries can be committed
-        # between our last load and this append. Driving only the returned event
-        # would advance every cell's `observed_seq` straight to it, and `drive`
-        # drops anything at or below that afterwards -- so those intervening
-        # seqs would never fold, and the pushed projection and `snapshot` would
-        # undercount them until a restart re-primed from the file.
-        #
-        # `drive` is idempotent per cell (it skips a seq that cell already has),
-        # so replaying the range costs a cell nothing it has seen.
+        # Another process (`kirocrew-core`) may have committed entries since our
+        # last load, so the returned seq can sit above our fold. Driving only this
+        # event would advance `observed_seq` past them and `drive` would then drop
+        # them for good, so fold the gap first. `drive` is idempotent per cell.
         self._fold_gap_locked(slug, log, below=event["seq"])
         self._registry.drive(slug, event)
         return event
 
-    # ---- removal ----------------------------------------------------------
+    # Removal
     def remove_unit(self, slug: str, *, still_unclaimed: Callable[[], bool]) -> str:
         """Remove *slug*'s crew log and forget it here. One of the ``REMOVE_*`` statuses.
 
@@ -1677,7 +1582,7 @@ class MemberEventLogService:
                     self._names.pop(slug, None)
         return status
 
-    # ---- read -------------------------------------------------------------
+    # Read
     def snapshot(self, slug: str) -> dict:
         lock = self._slug_lock(slug)
         with lock:
@@ -1757,28 +1662,17 @@ class MemberEventLogService:
     def close(self) -> None:
         """Retire this service: release every cached log's lease and break the cycle.
 
-        A ``MemberEventLogService`` is reachable through a reference cycle -- its
-        projection registry holds ``set_on_change(self._on_change)``, a bound method
-        back to the service -- so dropping the last external reference does NOT free
-        it by refcount; it waits for the cyclic collector, and with it the
-        ``weakref.finalize`` release of every :class:`CrewLog` lease its cached logs
-        hold. That deferral is invisible on POSIX but strands an open descriptor
-        under a torn-down directory on Windows, where the next write on the same
-        inherited process then fails -- which is the whole reason a retiring caller
-        must not depend on GC timing.
+        The registry holds a bound method back to the service, so the service is
+        freed only by the cyclic collector, and with it each :class:`CrewLog` lease.
+        On Windows that strands an open descriptor under a torn-down directory and
+        the next write fails, so a retiring caller must not depend on GC timing.
 
-        So this releases each cached log's write lease immediately, drops the caches,
-        and clears the registry's back-reference to sever the cycle. Idempotent and
-        best-effort: one log that refuses to close must not keep the rest holding
-        their leases. After it, the service answers reads as empty and holds no
-        lease, which is exactly what a fresh service does -- a caller that keeps
-        using it re-opens on demand rather than serving a released handle.
+        This releases every cached lease now, drops the caches and severs the cycle.
+        Idempotent and best-effort (one stuck log does not keep the rest leased);
+        afterwards the service behaves like a fresh one and re-opens on demand.
 
-        The single caller is service RETIREMENT: :func:`set_service` when it replaces
-        the singleton, and :func:`get_service` when a home change forces a rebuild.
-        Neither happens while an append is in flight on the same instance -- the home
-        moves only at a test boundary, never in production -- so nothing here races a
-        writer that still needs the lease.
+        Called only on retirement (:func:`set_service`, or :func:`get_service` on a
+        home change), never while an append is in flight on the instance.
         """
         with self._map_lock:
             logs = list(self._logs.values())
