@@ -9307,7 +9307,12 @@
       "loading_commands_ctrl_enter_held": "Chargement des commandes… — Ctrl+Enter n’envoie pas encore ; appuyez sur Esc, puis Ctrl+Enter envoie le message",
       "loading_commands_enter_held": "Chargement des commandes… — Enter n’envoie pas encore ; appuyez sur Esc, puis Enter envoie le message",
       "no_matching_commands_ctrl_enter_sends": "Aucune commande correspondante — Ctrl+Enter envoie le message",
-      "no_matching_commands_enter_sends": "Aucune commande correspondante — Enter envoie le message"
+      "no_matching_commands_enter_sends": "Aucune commande correspondante — Enter envoie le message",
+      "workflows_load_failed": "Impossible de charger les workflows enregistrés",
+      "workflows_load_failed_enter_sends": "Impossible de charger les workflows enregistrés — Enter envoie le message",
+      "workflows_load_failed_ctrl_enter_sends": "Impossible de charger les workflows enregistrés — Ctrl+Enter envoie le message",
+      "loading_workflows_enter_held": "Chargement des workflows enregistrés… — Enter n’envoie pas encore ; appuie sur Esc, puis Enter envoie le message",
+      "loading_workflows_ctrl_enter_held": "Chargement des workflows enregistrés… — Ctrl+Enter n’envoie pas encore ; appuie sur Esc, puis Ctrl+Enter envoie le message"
     },
     "slotTagPopover": {
       "assign_tags": "Attribuer des étiquettes",

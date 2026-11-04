@@ -9098,7 +9098,12 @@
       "loading_commands_ctrl_enter_held": "कमांड लोड हो रही हैं… — Ctrl+Enter अभी संदेश नहीं भेजेगा; Esc दबाएँ, फिर Ctrl+Enter संदेश भेज देगा",
       "loading_commands_enter_held": "कमांड लोड हो रही हैं… — Enter अभी संदेश नहीं भेजेगा; Esc दबाएँ, फिर Enter संदेश भेज देगा",
       "no_matching_commands_ctrl_enter_sends": "कोई मेल खाता कमांड नहीं — Ctrl+Enter संदेश भेज देगा",
-      "no_matching_commands_enter_sends": "कोई मेल खाता कमांड नहीं — Enter संदेश भेज देगा"
+      "no_matching_commands_enter_sends": "कोई मेल खाता कमांड नहीं — Enter संदेश भेज देगा",
+      "workflows_load_failed": "सहेजे गए वर्कफ़्लो लोड नहीं हो सके",
+      "workflows_load_failed_enter_sends": "सहेजे गए वर्कफ़्लो लोड नहीं हो सके — Enter संदेश भेज देगा",
+      "workflows_load_failed_ctrl_enter_sends": "सहेजे गए वर्कफ़्लो लोड नहीं हो सके — Ctrl+Enter संदेश भेज देगा",
+      "loading_workflows_enter_held": "सहेजे गए वर्कफ़्लो लोड हो रहे हैं… — Enter अभी संदेश नहीं भेजेगा; Esc दबाओ, फिर Enter संदेश भेज देगा",
+      "loading_workflows_ctrl_enter_held": "सहेजे गए वर्कफ़्लो लोड हो रहे हैं… — Ctrl+Enter अभी संदेश नहीं भेजेगा; Esc दबाओ, फिर Ctrl+Enter संदेश भेज देगा"
     },
     "slotTagPopover": {
       "assign_tags": "टैग असाइन करें",

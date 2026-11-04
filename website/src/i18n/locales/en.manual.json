@@ -3746,7 +3746,12 @@
       "desc_usage": "Show billing and usage information",
       "desc_workflow": "List or run a saved workflow by name",
       "no_matching_commands_ctrl_enter_sends": "No matching commands — Ctrl+Enter sends the message",
-      "no_matching_commands_enter_sends": "No matching commands — Enter sends the message"
+      "no_matching_commands_enter_sends": "No matching commands — Enter sends the message",
+      "workflows_load_failed": "Couldn't load saved workflows",
+      "workflows_load_failed_enter_sends": "Couldn't load saved workflows — Enter sends the message",
+      "workflows_load_failed_ctrl_enter_sends": "Couldn't load saved workflows — Ctrl+Enter sends the message",
+      "loading_workflows_enter_held": "Loading saved workflows… — Enter won’t send yet; press Esc, then Enter sends the message",
+      "loading_workflows_ctrl_enter_held": "Loading saved workflows… — Ctrl+Enter won’t send yet; press Esc, then Ctrl+Enter sends the message"
     },
     "privacyChapter": {
       "continue": "Continue",

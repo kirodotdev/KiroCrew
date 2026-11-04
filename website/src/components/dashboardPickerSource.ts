@@ -23,6 +23,13 @@ export const dashboardPickerSource: ComposerPickerSource = {
   fileSearch: (q, project, signal) => api.fileSearch(q, project, signal) as Promise<FileSearchResponse>,
   pathComplete: (project, dir, q, signal) => api.pathComplete(project, dir, q, signal),
   skills: (slotKey, agent, signal) => api.skills(slotKey, agent, signal),
+  // A getter for the same reason as `slashCommands`: without the endpoint the
+  // `/workflow ` menu simply lists nothing.
+  get workflows() {
+    return typeof api.workflowDefinitions === 'function'
+      ? () => api.workflowDefinitions()
+      : undefined
+  },
 }
 
 /** The host's source, or the dashboard's when no provider sits above. */

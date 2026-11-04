@@ -9307,7 +9307,12 @@
       "loading_commands_ctrl_enter_held": "Caricamento dei comandi… — Ctrl+Invio non invia ancora; premi Esc, poi Ctrl+Invio invia il messaggio",
       "loading_commands_enter_held": "Caricamento dei comandi… — Invio non invia ancora; premi Esc, poi Invio invia il messaggio",
       "no_matching_commands_ctrl_enter_sends": "Nessun comando corrispondente — Ctrl+Invio invia il messaggio",
-      "no_matching_commands_enter_sends": "Nessun comando corrispondente — Invio invia il messaggio"
+      "no_matching_commands_enter_sends": "Nessun comando corrispondente — Invio invia il messaggio",
+      "workflows_load_failed": "Impossibile caricare i workflow salvati",
+      "workflows_load_failed_enter_sends": "Impossibile caricare i workflow salvati — Invio invia il messaggio",
+      "workflows_load_failed_ctrl_enter_sends": "Impossibile caricare i workflow salvati — Ctrl+Invio invia il messaggio",
+      "loading_workflows_enter_held": "Caricamento dei workflow salvati… — Invio non invia ancora; premi Esc, poi Invio invia il messaggio",
+      "loading_workflows_ctrl_enter_held": "Caricamento dei workflow salvati… — Ctrl+Invio non invia ancora; premi Esc, poi Ctrl+Invio invia il messaggio"
     },
     "slotTagPopover": {
       "assign_tags": "Assegna tag",
