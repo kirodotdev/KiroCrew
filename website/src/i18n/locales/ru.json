@@ -18581,6 +18581,20 @@
       "confirm_delete_job": "Удалить?",
       "go_to_chat": "Перейти в чат",
       "create_your_first_job": "Создайте первую задачу",
+      "batchActions": {
+        "actions_for_selected": "Действия для отмеченных заданий",
+        "batch_failed_few": "Не удалось обновить {{failed}} из {{count}} заданий",
+        "batch_failed_many": "Не удалось обновить {{failed}} из {{count}} заданий",
+        "batch_failed_one": "Не удалось обновить {{failed}} из {{count}} задания",
+        "batch_failed_other": "Не удалось обновить {{failed}} из {{count}} задания",
+        "run_confirm_body": "Каждое задание сейчас начнёт новый запуск. Приостановленные и уже выполняющиеся задания пропускаются.",
+        "run_confirm_title_few": "Запустить {{count}} задания сейчас?",
+        "run_confirm_title_many": "Запустить {{count}} заданий сейчас?",
+        "run_confirm_title_one": "Запустить {{count}} задание сейчас?",
+        "run_confirm_title_other": "Запустить {{count}} задания сейчас?",
+        "strict_off": "Строгое расписание: выкл.",
+        "strict_on": "Строгое расписание: вкл."
+      },
       "cronFolders": {
         "batch_move_failed_few": "Не удалось переместить {{count}} из {{total}} заданий",
         "batch_move_failed_many": "Не удалось переместить {{count}} из {{total}} заданий",

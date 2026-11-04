@@ -21,7 +21,7 @@ import { i18nT } from '../i18n/t'
  * `Delete` deliberately does NOT move in: it is an arm→Confirm state machine on
  * the row button itself, and a menu that closes on select cannot host the armed
  * state. Folder moves are a SUBMENU rather than a reuse of `CronJobMoveMenu`,
- * which is a standalone dropdown (still used by the batch bar) and cannot nest.
+ * which is a standalone dropdown and cannot nest.
  */
 export default function CronRowActions({
   job, folders, running, cancelling, onRun, onCancelRun, onOpenInChat, onToggleEnabled,
