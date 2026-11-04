@@ -1,18 +1,11 @@
-"""On KAS, a dispatched worker and its conductor are told a work-tool name KAS resolves.
+"""Tool context follows active tool definitions and discovery results.
 
-KAS answers a model's tool call by the tool's id (``mcp_<server>_<tool>``) or its
-display name (``@<server>/<tool>``) and by nothing else; a bare ``work_report`` comes
-back as ``Tool "work_report" is not available.`` without reaching the server. Kiro
-Crew's prompts name the work tools bare, so these tests build the session context a
-KAS worker and a KAS conductor actually receive, collect every tool name it spells,
-and run each through a mirror of KAS's resolver over the work server's real tools.
-Without the ``[TOOL NAMES]`` block the context names the tools only bare and nothing
-resolves.
+Workers and conductors receive the same guidance at session start and after
+compaction. Bare work-tool names identify what to look up; they do not prescribe
+an execution ID. The native-name helpers remain covered for directly exposed tools.
 """
 
 from __future__ import annotations
-
-import re
 
 import pytest
 
@@ -71,17 +64,24 @@ def _kas_resolve(called: str, tools: list[tuple[str, str]]) -> tuple[str, str] |
     return None
 
 
-def _resolvable_names(context: str, tools: list[tuple[str, str]]) -> dict[str, str]:
-    """Every backticked name in *context* KAS would resolve, keyed by the tool it reaches."""
-    found: dict[str, str] = {}
-    for name in re.findall(r"`([^`\s]+)`", context):
-        hit = _kas_resolve(name, tools)
-        if hit is not None:
-            found.setdefault(hit[1], name)
-    return found
+def _assert_active_tool_guidance(context: str) -> str:
+    """Check the model-facing block rather than unrelated names in the agent prompt."""
+    assert "[TOOL NAMES]" in context
+    block = context.split("[TOOL NAMES]", 1)[1].split("[End of tool names]", 1)[0]
+    assert "call the exact name in its active tool definition" in block
+    assert "wait for the schema result before calling" in block
+    assert "pass its `tool_id` unchanged" in block
+    assert "Do not construct or rewrite that ID" in block
+    assert "schema-load result is still in context" in block
+    assert "check the current catalogue and the loader's recovery guidance" in block
+    assert "do not assume a name rewrite will fix it" in block
+    assert "mcp_<server>_<tool>" not in block
+    assert "including after tool_search loads it" not in block
+    assert "Retry the same call at once" not in block
+    return block
 
 
-class TestKasResolvesWhatTheContextTellsTheModel:
+class TestActiveToolContract:
     @pytest.mark.parametrize(
         ("agent", "needed"),
         [
@@ -89,15 +89,18 @@ class TestKasResolvesWhatTheContextTellsTheModel:
             ("kirocrew-conductor", ("work_ledger_record",)),
         ],
     )
-    def test_every_work_tool_the_session_needs_has_a_name_kas_resolves(
+    def test_needed_work_tools_are_lookup_hints_under_the_active_contract(
         self, tmp_path, agent, needed
     ):
         context = _builder(tmp_path).build_session_context(
             session_key="dashboard:chat-kas-1", agent=agent, provider_type=PROVIDER_LABEL_KAS
         )
-        resolvable = _resolvable_names(context, _work_tools())
-        missing = [tool for tool in needed if tool not in resolvable]
-        assert missing == [], f"no KAS-resolvable name for {missing} in the {agent} context"
+        block = _assert_active_tool_guidance(context)
+        for tool in needed:
+            assert (WORK, tool) in _work_tools()
+            assert f"`{tool}` on `{WORK}`" in block
+            assert f"`{kas_mcp_tool_id(WORK, tool)}`" not in block
+            assert f"`{kas_mcp_display_name(WORK, tool)}`" not in block
 
     def test_the_bare_name_the_prompts_use_is_not_one_kas_resolves(self):
         """Why the block exists: the spelling Crew's prompts use reaches nothing on KAS."""
@@ -111,7 +114,9 @@ class TestKasResolvesWhatTheContextTellsTheModel:
             provider_type=PROVIDER_LABEL_KAS,
             minimal_context=True,
         )
-        assert set(_resolvable_names(context, _work_tools())) >= {"work_brief", "work_report"}
+        block = _assert_active_tool_guidance(context)
+        for tool in ("work_brief", "work_report"):
+            assert f"`{tool}` on `{WORK}`" in block
 
     @pytest.mark.parametrize(
         ("backend", "expected"), [(ACP_BACKEND_KAS, True), (ACP_BACKEND_KIRO, False)]
@@ -164,11 +169,9 @@ class TestKasResolvesWhatTheContextTellsTheModel:
             context_provider=None,
             native_launch_sources=(),
         )
-        assert set(_resolvable_names("".join(parts), _work_tools())) >= {
-            "work_brief",
-            "work_report",
-            "work_ledger_record",
-        }
+        block = _assert_active_tool_guidance("".join(parts))
+        for tool in ("work_brief", "work_report", "work_ledger_record"):
+            assert f"`{tool}` on `{WORK}`" in block
 
 
 class TestOtherHarnessesAreUnchanged:
@@ -212,16 +215,17 @@ class TestKasNamingRule:
         assert kas_mcp_display_name("kirocrew-work", "work_report") == "@kirocrew-work/work_report"
 
     def test_every_crew_tool_id_is_under_the_cap(self):
-        """The block states the rule without the 64-char cut; that is exact only while
-        no Crew tool's id reaches the cap."""
+        """Direct Crew tool names fit without truncation in the native-name helper."""
         pairs = [(CORE, name) for name in build_tool_names()] + _work_tools()
         too_long = [p for p in pairs if len(kas_mcp_tool_id(*p)) >= KAS_MCP_TOOL_ID_MAX_LEN]
         assert too_long == []
 
-    def test_the_block_examples_follow_the_rule(self):
-        block = tool_names.tool_names_block(PROVIDER_LABEL_KAS)
+    def test_the_block_examples_are_lookup_pairs_not_execution_ids(self):
+        block = _assert_active_tool_guidance(tool_names.tool_names_block(PROVIDER_LABEL_KAS))
         for server, tool in tool_names._EXAMPLES:
-            assert f"`{kas_mcp_tool_id(server, tool)}`" in block
+            assert f"`{tool}` on `{server}`" in block
+            assert f"`{kas_mcp_tool_id(server, tool)}`" not in block
+            assert f"`{kas_mcp_display_name(server, tool)}`" not in block
 
     def test_the_unavailable_answer_names_the_called_tool(self):
         match = KAS_TOOL_UNAVAILABLE_RE.search('Tool "work_report" is not available.')

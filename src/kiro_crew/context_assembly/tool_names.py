@@ -1,33 +1,18 @@
-"""The ``[TOOL NAMES]`` block: how to call an MCP tool on a harness that resolves
-only qualified names.
+"""The ``[TOOL NAMES]`` block: follow the active tool-calling contract.
 
-KAS resolves a model's tool call by the tool's id (``mcp_<server>_<tool>``) or its
-display name (``@<server>/<tool>``) and by nothing else
-(:mod:`kiro_crew.agent_sdk.kas_tool_names`). Kiro Crew's instructions, skills and
-memory name its tools bare (``work_brief``, ``work_report``, ``memory_recall``), and
-KAS's own ``tool_search`` returns the bare ``tool_name`` with the advice to call
-exactly that. A model that follows either calls a name KAS answers with
-``Tool "work_report" is not available.``, and a dispatched worker that concludes the
-tool is broken never reports at all.
+Kiro Crew's instructions, skills and memory name MCP operations bare. A session
+may expose a tool directly or require a schema load followed by a separate
+executor. The live definitions and discovery results supply the callable names
+and IDs; a fixed spelling rule cannot cover both paths.
 
-Why the session context rather than the instructions or the harness:
-
-* Respelling the shipped prompts (``@kirocrew-work/work_report``) would change what
-  every other harness reads too. kiro-cli's own engine lists the bare name, claude
-  lists ``mcp__<server>__<tool>``, and none of them is KAS's id.
-* KAS has no alias seam: a tool call is matched against the tool list's ``id`` and
-  ``displayName`` only, so there is nothing a client can register to make the bare
-  name resolve.
-* The context is already built per harness (the steering gate reads the same
-  ``provider_type``), so this block reaches exactly the sessions KAS serves, every
-  MCP tool on every server, and is sent again after a compaction with the rest.
+This guidance belongs in the per-harness session context so the shared agent
+instructions keep their bare operation names. The provider-specific block reaches
+sessions at startup, including minimal runs, and is sent again after compaction.
 """
 
 from __future__ import annotations
 
-#: ``(server, tool)`` pairs the block spells out as examples. The work tools come
-#: first because a worker that cannot call them cannot report; ``memory_recall``
-#: shows the rule is per server, not per tool.
+#: Server/operation pairs help the model find a tool without inventing its ID.
 _EXAMPLES: tuple[tuple[str, str], ...] = (
     ("kirocrew-work", "work_brief"),
     ("kirocrew-work", "work_report"),
@@ -37,36 +22,31 @@ _EXAMPLES: tuple[tuple[str, str], ...] = (
 
 
 def _examples() -> str:
-    from kiro_crew.agent_sdk.kas_tool_names import kas_mcp_tool_id
-
-    spelled = [
-        f"`{tool}` on `{server}` is `{kas_mcp_tool_id(server, tool)}`" for server, tool in _EXAMPLES
-    ]
+    spelled = [f"`{tool}` on `{server}`" for server, tool in _EXAMPLES]
     return ", ".join(spelled[:-1]) + f", and {spelled[-1]}"
 
 
 def tool_names_block(provider_type: str | None) -> str:
-    """The block for a session served by *provider_type*, or ``""`` when it needs none.
-
-    Only KAS needs it today. Another harness that resolves an MCP call only by a
-    qualified name joins here with its own spelling, not by inheriting KAS's.
-    """
+    """The tool-calling guidance for the selected provider, otherwise ``""``."""
     from kiro_crew.agent_sdk.kas_tool_names import is_kas_provider_label
 
     if not is_kas_provider_label(provider_type):
         return ""
     return (
         "[TOOL NAMES]\n"
-        "On this harness an MCP tool is callable only by its qualified name. A bare "
-        "MCP tool name is never callable here, even when an instruction, a memory or "
-        "tool_search's `tool_name` spells it bare (built-in tools such as `shell` and "
-        "`tool_search` keep their own names).\n"
-        "- The qualified name is `mcp_<server>_<tool>`, lower-case, with each `-` in "
-        "the server name written as `_`; `@<server>/<tool>` also works. For example "
-        f"{_examples()}. Kiro Crew's instructions name its tools bare: call each one "
-        "this way, including after tool_search loads it.\n"
-        '- `Tool "<name>" is not available.` means the call used a bare name. Retry the '
-        "same call at once with the qualified name. It does not mean the tool is broken "
-        "or missing.\n"
+        "Kiro Crew's instructions, skills and memory use bare MCP operation names as "
+        "lookup hints. Use the callable names and IDs shown by the active tool "
+        "definitions and discovery results.\n"
+        "- For a directly exposed tool, call the exact name in its active tool definition.\n"
+        "- For a deferred tool, follow the available loader's instructions and wait for "
+        "the schema result before calling. Use the execution method that result specifies; "
+        "if it names `tool_call` as the executor, pass its `tool_id` unchanged. Do not "
+        "construct or rewrite that ID from a server name, tool name or display name. "
+        "Do not reload a tool whose schema-load result is still in context.\n"
+        f"- Lookup examples: {_examples()}. These pairs help find the matching catalogue "
+        "entry; they are not execution IDs.\n"
+        "- If a tool is unavailable, check the current catalogue and the loader's recovery "
+        "guidance. It may be missing or outside this session's scope; do not assume a "
+        "name rewrite will fix it or bypass restrictions.\n"
         "[End of tool names]\n\n"
     )
