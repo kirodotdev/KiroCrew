@@ -50,7 +50,7 @@ def _rotate_boot_logs(log_file: Path, live_size: int) -> tuple[OSError | None, l
        *n* one more than the largest kept (``cli_log_files.older_boot_logs``), so
        the name is free and order never depends on the clock. If it cannot move
        (a Windows reader holds it), stop: every file stays where it is and boot
-       appends to the live log, as before older boots were kept.
+       appends to the live log.
     2. ``gateway.log`` moves to the now free ``gateway.log.prev``. If it cannot
        move, stop the same way: the old ``.prev`` is already kept, so nothing is
        lost, and a ``gateway.log`` another process recreated meanwhile is never
@@ -67,8 +67,7 @@ def _rotate_boot_logs(log_file: Path, live_size: int) -> tuple[OSError | None, l
     """
     prev = log_file.with_name(log_file.name + ".prev")
     if boot_log_dir_is_linked(log_file):
-        # Never follow a link off the data home: keep one previous boot, as
-        # before older boots were kept, and say why.
+        # Never follow a link off the data home: keep only one previous boot and say why.
         try:
             log_file.replace(prev)
         except OSError as exc:
@@ -145,7 +144,7 @@ def _start_gateway_log_after_lock() -> None:
     The file handler's lock is held across the rotation, so its listener thread
     writes nothing meanwhile, and its stream is closed first: Windows cannot rename
     a file this process holds open. The next record reopens a fresh ``gateway.log``.
-    A failed rotation is logged and the gateway keeps appending, as before.
+    A failed rotation is logged and the gateway keeps appending to the live log.
     """
     global _GATEWAY_LOG_HANDLER
     fh = _GATEWAY_LOG_HANDLER
@@ -200,8 +199,7 @@ def _fd_targets_file(fd: int, path: Path) -> bool:
     redirects the child's stdout/stderr INTO ``gateway.log``, and from inside
     the child that redirect is only visible by comparing device/inode numbers.
     Any failure (fd closed, file missing, platform without usable inode
-    numbers) answers ``False`` — callers then keep the foreground behavior,
-    which is what a false negative degrades to today.
+    numbers) answers ``False``, so callers keep the foreground behavior.
     """
     try:
         st_fd = os.fstat(fd)
@@ -228,14 +226,11 @@ def _fd_is_regular_file(fd: int) -> bool:
 def _redirect_fds_to(path: Path, fds: tuple[int, ...] = (1, 2)) -> None:
     """Re-point raw *fds* at *path* (append mode) via ``dup2``.
 
-    After the boot rotation renames ``gateway.log`` → ``gateway.log.prev``,
-    a detach-spawned gateway's inherited stdout/stderr still reference the
-    RENAMED inode, so raw writes that bypass the logging module (uncaught
-    tracebacks, inherited child-process stderr) would land in the rotated
-    file instead of the live one. ``dup2`` swaps the descriptors in place;
-    ``sys.stdout``/``sys.stderr`` objects keep working because they address
-    the fd *number*, not the open file description. Best-effort: on failure
-    the fds keep pointing where they already were.
+    After a rename of ``gateway.log``, a detach-spawned gateway's inherited
+    stdout/stderr still reference the renamed inode, so raw writes (uncaught
+    tracebacks, child-process stderr) would land in the rotated file.
+    ``sys.stdout``/``sys.stderr`` keep working because they address the fd
+    *number*. Best-effort: on failure the fds keep pointing where they were.
     """
     try:
         sys.stdout.flush()
@@ -267,20 +262,14 @@ _LOG_ERROR_STREAK_LIMIT = 3
 class _FdTrackingRotatingFileHandler(_OwnerOnlyRotatingFileHandler):
     """RotatingFileHandler that re-points raw fds 1/2 after each rollover.
 
-    In detached mode ``_redirect_fds_to`` aims the process's raw
-    stdout/stderr at ``gateway.log`` so writes that bypass the logging module
-    (uncaught tracebacks, child-process stderr) stay captured. But a
-    size-based rollover RENAMES that file: the raw fds keep following the
-    renamed inode through ``.1`` → ``.2`` → ``.3`` → unlink, after which raw
-    stderr disappears from every retained log. Re-pointing the fds at the
-    freshly created ``gateway.log`` inside ``doRollover`` keeps raw-write
-    capture continuous across the file's whole retention lifecycle.
+    In detached mode raw stdout/stderr point at ``gateway.log``. A rollover
+    renames that file, so without the re-point the raw fds would follow the old
+    inode through ``.1`` .. ``.3`` to unlink and raw stderr would be lost.
 
-    If the reopen inside a rollover fails, the fds stay on the RENAMED file
-    and the stdlib ``handleError`` would print a traceback there for every
-    later record, escaping the size cap. So an OSError streak prints only its
-    first traceback, and while no file is open a non-retryable errno (or a
-    long streak) stops file logging: emit becomes a no-op and fds 1/2 move to
+    If the reopen inside a rollover fails, the fds stay on the renamed file and
+    a traceback per record would escape the size cap. So an OSError streak prints
+    only its first traceback, and while no file is open a non-retryable errno (or
+    a long streak) stops file logging: emit becomes a no-op and fds 1/2 move to
     ``os.devnull``.
     """
 
@@ -387,19 +376,14 @@ def _stop_log_queue_listener(timeout: float | None = None) -> None:
 async def drain_log_queue_before_hard_exit(timeout: float = 2.0) -> None:
     """Flush the queued ``gateway.log`` tail from an ``async`` hard-exit path.
 
-    ``os._exit`` runs no ``atexit`` handler, so the drain registered by
-    :func:`_setup_cli_logging` never fires on a path that hard-exits -- every
-    record still sitting in the queue is lost, including the ones logged
-    immediately before the exit, which are the most diagnostic ones a
-    post-mortem has.
+    ``os._exit`` runs no ``atexit`` handler, so without this every queued
+    record is lost, including the last ones before the exit, which a
+    post-mortem needs most.
 
-    :func:`_stop_log_queue_listener` is a *synchronous* bounded drain (it
-    joins the listener thread), so calling it inline from a coroutine would
-    park the event loop for up to ``timeout``. Offload it to
-    :func:`~kiro_crew.executors.subprocess_executor` -- the pool reserved for
-    teardown work that can block on a wedged resource -- under an outer
-    deadline, exactly as the restart path already does for the SEL flush. A
-    wedged disk therefore delays neither the loop nor the exit.
+    :func:`_stop_log_queue_listener` joins the listener thread, so it runs on
+    :func:`~kiro_crew.executors.subprocess_executor` (the pool for teardown work
+    that can block on a wedged resource) under an outer deadline: a wedged disk
+    delays neither the event loop nor the exit.
 
     Never raises: a hard exit must not be blocked, or replaced, by logging.
     """
@@ -419,16 +403,13 @@ async def drain_log_queue_before_hard_exit(timeout: float = 2.0) -> None:
 def _setup_cli_logging(command: str | None, verbose: int) -> None:
     """Configure console echo + persistent ``gateway.log`` logging.
 
-    Foreground invocations get the classic shape: ``basicConfig`` console
-    handler on the root logger (stderr) plus a rotating file handler on the
-    ``kiro_crew`` logger.
+    Foreground invocations get a ``basicConfig`` console handler on the root
+    logger (stderr) plus a file handler on the ``kiro_crew`` logger.
 
     A detach-spawned gateway (``_spawn_detached_gateway``) arrives with
-    stdout/stderr already redirected INTO ``gateway.log``. In that mode the
-    console handler would write a second, console-formatted copy (no [PID])
-    of every ``kiro_crew`` record into the SAME file the file handler writes
-    to — records propagate to root — doubling log volume and halving the
-    rotation window. Detected via device/inode comparison, and then:
+    stdout/stderr already redirected INTO ``gateway.log``, where a console
+    handler would write a second copy of every record. Detected via
+    device/inode comparison, and then:
 
     - the console echo is skipped entirely;
     - the file handler attaches to the ROOT logger instead, so third-party
@@ -444,7 +425,7 @@ def _setup_cli_logging(command: str | None, verbose: int) -> None:
     so no file I/O (rollover included) ever runs on the event-loop thread.
     Short-lived commands attach the file handler synchronously — they run no
     event loop, and several exec-over-self (skipping atexit), where a queued
-    tail would be lost. See the inline comment at the attach site.
+    tail would be lost.
 
     In every shape the ``kiro_crew`` logger is the SINGLE level gate: the file
     handler and the queue handler carry no level of their own, so a runtime
@@ -498,16 +479,9 @@ def _setup_cli_logging(command: str | None, verbose: int) -> None:
             pass  # config missing or corrupt — keep default WARNING
     logging.getLogger("kiro_crew").setLevel(level)
 
-    # Persistent file log — respects the configured log_level.
-    # Once it holds the gateway lock, the gateway rotates gateway.log →
-    # gateway.log.prev (older boots kept in logs/gateway-boots, see
-    # _start_gateway_log_after_lock) so a crash's final lines are never lost.
-    # encoding="utf-8" is REQUIRED on Windows: Kiro Crew logs non-ASCII glyphs and
-    # the default file encoding there is cp1252, so a RotatingFileHandler without
-    # it raises UnicodeEncodeError on the first non-ASCII log record (logging
-    # swallows it, but it spams "--- Logging error ---" tracebacks and drops the
-    # line). ensure_utf8_console() only fixes the console streams, not this file
-    # handler.
+    # encoding="utf-8" is REQUIRED on Windows: the default there is cp1252, and
+    # the first non-ASCII record would raise UnicodeEncodeError and drop the line.
+    # ensure_utf8_console() fixes only the console streams, not this file handler.
     #
     # The gateway does NOT rotate here: this runs before the gateway lock, and a
     # start the lock refuses must leave a running gateway's log where it is. Until
@@ -516,14 +490,6 @@ def _setup_cli_logging(command: str | None, verbose: int) -> None:
     global _GATEWAY_LOG_HANDLER, _GATEWAY_LOG_DETACHED
     _GATEWAY_LOG_HANDLER = None
     _GATEWAY_LOG_DETACHED = detached
-    # Detached mode uses the fd-tracking subclass: a size-based rollover
-    # renames gateway.log, and without re-pointing, the redirected raw fds
-    # would follow the renamed inode through .1 → .2 → .3 → unlink, losing
-    # later raw stderr from all retained logs.
-    #
-    # Only the gateway rotates gateway.log. Every other process appends one
-    # record at a time and holds no handle in between, because on Windows a
-    # handle held by any other process makes the gateway's rename fail.
     rotates = detached or command == "gateway"
     if detached:
         rotating_cls: type[RotatingFileHandler] = _FdTrackingRotatingFileHandler
@@ -564,12 +530,8 @@ def _setup_cli_logging(command: str | None, verbose: int) -> None:
         if command in _LONG_LIVED_COMMANDS:
             install_log_redaction([])
         return
-    # No level on the handler: every record that can reach it is already gated
-    # by a logger level -- kiro_crew records by the kiro_crew logger set above,
-    # third-party records (root attach, detached mode) by the root logger's
-    # WARNING. The logger level is the one level a runtime agent.log_level
-    # change moves, so keeping the handler at NOTSET is what lets a raised
-    # level reach gateway.log without a restart.
+    # No level on the handler: the loggers already gate every record, and a
+    # runtime agent.log_level change moves only the logger level.
     fh.setFormatter(
         logging.Formatter(
             "%(asctime)s %(levelname)s %(name)s [PID %(process)d]: %(message)s",
@@ -584,25 +546,12 @@ def _setup_cli_logging(command: str | None, verbose: int) -> None:
     else:
         target_logger = logging.getLogger("kiro_crew")
 
-    # Never run file-handler I/O on the caller's thread of a LONG-LIVED
-    # command: the gateway invokes this from the thread that will run the
-    # asyncio event loop, and an inline emit contends for Handler.lock with
-    # every worker thread — while a size-based rollover runs the WHOLE rename
-    # chain plus the dup2 fd re-point on the loop. Blocking past the
-    # loop-stall watchdog's ``exit_after`` hard-exits the gateway mid-turn
-    # and orphans every in-flight subagent. A QueueHandler makes emit a
-    # non-blocking put; the QueueListener's thread owns the file handler, so
-    # ALL file I/O — ``doRollover()`` and ``_redirect_fds_to()`` included —
-    # happens off the loop. Secret redaction is unaffected: it hooks the
-    # log-record FACTORY (creation time, producer thread), upstream of any
-    # handler.
-    #
-    # Short-lived commands keep the synchronous handler on purpose: none of
-    # them runs an event loop (nothing to stall), and several replace the
-    # process via ``os.exec*`` (``logs -f``, ``config edit``, ``pod exec``),
-    # which skips atexit — a queue there would strand its tail records, while
-    # a sync handler has already written them by the time exec runs. See
-    # ``_LONG_LIVED_COMMANDS``.
+    # A LONG-LIVED command calls this from the thread that will run the event
+    # loop. An inline emit (or a rollover's rename chain and fd re-point) could
+    # block past the loop-stall watchdog's ``exit_after``, which hard-exits the
+    # gateway mid-turn. So the queue handler makes emit a non-blocking put and
+    # the listener thread does all file I/O. Secret redaction is unaffected: it
+    # hooks the log-record FACTORY, upstream of any handler.
     if command in _LONG_LIVED_COMMANDS:
         global _LOG_QUEUE_LISTENER
         _stop_log_queue_listener()  # re-entrant call (tests): retire the old thread
