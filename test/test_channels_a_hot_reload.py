@@ -1,40 +1,24 @@
 """Config hot-reload across every channel, plus the Telegram / Discord / Webex specifics.
 
-Nine channels are asked the same questions with a different transport class, a
-different roster field name and different identity strings, so the channel is
-DATA: the shared suite here parametrizes over ``_hot_reload_helpers``'
-:class:`~_hot_reload_helpers.ChannelCase` table and each question is asked once.
+The shared suite parametrizes over :class:`~_hot_reload_helpers.ChannelCase`, so
+each question is asked once for every channel:
 
-* a reloaded ALLOW-LIST reaches the live transport, so an added id is authorized
-  and a removed one is refused without a restart;
-* a DEGRADED section, or a value of the wrong shape, keeps the PREVIOUS
-  authorization state -- these are fail-closed boundaries, and rebuilding them
-  from a document the loader could not parse would lock out every intended
-  sender or serve a room nobody approved;
-* a two-half group gate stays a CONJUNCTION across a reload, so neither half
-  alone admits a room;
-* every authorization change is SEL-audited by COUNT, and no identity reaches
-  either the audit row or the log;
-* a reloaded THRESHOLD is read at point of use with the loader's own clamp and
-  pair normalization re-run, so a reloaded value cannot make the soft nudge
-  unreachable;
-* ``messaging.dm_scope`` is read live but PINNED for the life of a generation,
-  so a flip cannot re-key a conversation that is already running.
+* a reloaded allow-list reaches the live transport without a restart;
+* a degraded section or wrong-shaped value keeps the previous authorization state
+  (fail-closed);
+* a two-half group gate stays a conjunction across a reload;
+* every authorization change is SEL-audited by count, with no identity in the row or log;
+* a reloaded threshold is re-clamped at point of use, so the soft nudge stays reachable;
+* ``messaging.dm_scope`` is pinned for the life of a generation.
 
-The channel-specific claims that are not a per-channel copy of anything stay in
-their own classes: Discord's runtime thread promotions must survive a reload
-(they are not in ``config.json``, and dropping them would strand every follow-up
-reply into a thread the bot just made), Webex's SECOND copy of the email roster
--- the card-press path, which does not flow through ``receive`` -- must follow the
-same reload as the first, and Telegram's callback surface and session-resume
-owner are two more holders of one roster. Teams / iMessage / WhatsApp are in
+Own classes cover Discord's runtime thread promotions (not in ``config.json``),
+Webex's second email roster on the card-press path, and Telegram's callback and
+session-resume rosters. Teams / iMessage / WhatsApp are in
 ``test_channels_b_hot_reload.py`` and WeCom / Weixin / Feishu in
 ``test_channels_c_hot_reload.py``.
 
-The appliers are driven both directly (a hand-built :class:`ConfigChange`, which
-is what a dispatcher's subscriber actually receives) and through
-``ConfigWatch.refresh_now()`` against a real temp config file, so the wiring from
-a file write to a transport's frozenset is covered end to end.
+Appliers are driven both with a hand-built :class:`ConfigChange` and through
+``ConfigWatch.refresh_now()`` against a real temp config file.
 """
 
 from __future__ import annotations
@@ -74,9 +58,7 @@ from kiro_crew.webex.transport import WebexTransport
 
 CASES = channel_cases()
 
-# ------------------------------------------------------------------
 # The reloaded allow-list
-# ------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("case", CASES, ids=lambda c: c.name)
@@ -168,9 +150,7 @@ def test_the_roster_normalizer_drops_unusable_entries(
     assert normalizer(raw) == expected
 
 
-# ------------------------------------------------------------------
 # The dispatcher's applier
-# ------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("case", CASES, ids=lambda c: c.name)
@@ -236,9 +216,7 @@ def test_the_dispatcher_subscribes_under_its_own_section(case: ChannelCase) -> N
     assert d._config_sub is subs[0]
 
 
-# ------------------------------------------------------------------
 # Point-of-use reads
-# ------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("soft_in,hard_in", [(40, 60), (0, 0), (999, 999), (95, 50)])
@@ -273,12 +251,9 @@ def test_an_unreadable_config_falls_back_to_the_boot_copy(case: ChannelCase, mon
 def test_dm_scope_is_boot_only(case: ChannelCase) -> None:
     """A dm_scope flip in ``config.json`` never re-keys a conversation.
 
-    dm_scope selects the session-key NAMESPACE, and every conversation's
-    generation counter is seeded from the namespace in force at boot. Adopting a
-    new value live -- even at a generation boundary -- would mint keys in the
-    other namespace with a counter seeded for this one, and could resume a stale
-    session persisted there. So the field is ``restart=True`` and the dispatchers
-    read the boot copy: a live change is invisible before AND after ``/new``.
+    Generation counters are seeded from the boot namespace, so a live value could mint
+    keys in the other namespace and resume a stale session. The field is
+    ``restart=True``; a live change is invisible before and after ``/new``.
     """
     from kiro_crew.config.schema import requires_restart
 
@@ -306,9 +281,7 @@ async def test_a_reloaded_hard_threshold_compacts_this_turn(case: ChannelCase) -
     assert provider.compacted
 
 
-# ------------------------------------------------------------------
 # End to end: a file write reaches each transport
-# ------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -331,9 +304,7 @@ async def test_a_config_file_write_reaches_the_transport(
     assert transport._allowed == case.expect_added
 
 
-# ------------------------------------------------------------------
 # Telegram
-# ------------------------------------------------------------------
 
 
 class TestTelegramAllowLists:
@@ -407,9 +378,7 @@ class TestTelegramDispatcherApplier:
         assert bool(d._live_cfg().telegram.show_thinking) is True
 
 
-# ------------------------------------------------------------------
 # Discord
-# ------------------------------------------------------------------
 
 
 class TestDiscordAllowLists:
@@ -536,9 +505,7 @@ class TestDiscordDispatcherApplier:
         assert d._render_config() == (False, True)
 
 
-# ------------------------------------------------------------------
 # Webex
-# ------------------------------------------------------------------
 
 
 class TestWebexAllowLists:

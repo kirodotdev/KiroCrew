@@ -1,10 +1,7 @@
 """Channel readiness: the roster-driven answer to "would this channel start".
 
-Before this the only channel any diagnostic knew about was Slack, so an operator
-with ``telegram.enabled: true`` and no token got a clean bill of health from
-``kirocrew doctor`` and a silent bot. The answer is derived from descriptor DATA
-rather than a branch per channel, so the tests here pin that shape — a new channel
-is covered by adding its descriptor, not by editing the diagnostic.
+Derived from descriptor DATA, not a branch per channel, so ``kirocrew doctor`` flags
+e.g. ``telegram.enabled: true`` with no token, and a new channel needs only a descriptor.
 """
 
 from __future__ import annotations
@@ -279,12 +276,8 @@ class TestRequiredConfig:
 def _credentials_the_gateway_requires() -> dict[str, set[str]]:
     """``channel -> {CRED_* names}`` its ``_<channel>_enabled`` expression requires.
 
-    DERIVED from the gateway rather than listed here, because a list is what went
-    wrong: Feishu's descriptor declared no credentials while its enablement required
-    two, so readiness reported "credentials present" for a channel the gateway then
-    silently skipped. Read statically — importing the orchestrator would pull in ten
-    vendor clients, and the channel that fails to import is the one whose gap would
-    go unnoticed.
+    DERIVED from the gateway, since a hand list can drift from the enablement. Read
+    statically so no vendor client is imported.
 
     Walks ``self._<ch>_enabled = bool(... self._x ... self._y ...)`` and maps each
     attribute it reads back to the ``creds.get(CRED_*)`` that assigned it.
@@ -337,11 +330,8 @@ class TestDescriptorsMatchWhatTheGatewayNeeds:
     def test_every_credential_the_enablement_requires_is_declared(self) -> None:
         """One direction only, and deliberately.
 
-        A credential the gateway REQUIRES must appear on the descriptor, or readiness
-        reports a channel as ready that then silently does not start. The converse is
-        not a defect: several channels gate on `cfg.<ch>.enabled` alone and check
-        their token inside `maybe_start_*`, so they legitimately declare more than
-        the enablement expression reads.
+        A REQUIRED credential must be declared, or readiness says ready for a channel
+        that never starts. Declaring more is fine: some check tokens in `maybe_start_*`.
         """
         import kiro_crew.config.loader as loader
 
@@ -363,14 +353,9 @@ class TestDescriptorsMatchWhatTheGatewayNeeds:
 class TestTheServicesPageCoversEveryChannel:
     """The dashboard's Services list walks its OWN label map, not the payload.
 
-    So a channel the backend grows without a label there is INVISIBLE on that page
-    even while connected or reporting an error. That has now happened twice —
-    WhatsApp, then Feishu — and both times the frontend's own test enumerated the
-    channels by hand, which is a list that fails OPEN in exactly the same way.
-
-    This is the cross-language chokepoint: the roster lives in Python and the map in
-    TypeScript, so nothing but a check spanning both can catch the omission. Read as
-    SOURCE, not imported, since there is no Python-side view of a TSX module.
+    A channel with no label there is INVISIBLE even when connected or failing. The
+    roster is Python and the map TypeScript, so only this check spans both; the TSX
+    is read as SOURCE.
     """
 
     @staticmethod

@@ -19,10 +19,8 @@ from kiro_crew.config.loader import KiroCrewConfig
 
 
 def test_slack_home_tab_sessions_per_kind_parsed_and_round_trips():
-    # Regression: slack.home_tab_sessions_per_kind was declared + consumed (the
-    # Slack Home Tab per-category cap) and emitted by to_dict(), but NOT parsed
-    # in load(), so an operator value was silently ignored (stuck at 5) and
-    # overwritten on the next save().
+    # load() must parse this Home Tab per-category cap that to_dict() emits, or an
+    # operator value is ignored and overwritten on the next save().
     loaded = _load_from_dict({"slack": {"home_tab_sessions_per_kind": 42}})
     assert loaded.slack.home_tab_sessions_per_kind == 42
     # Survives a to_dict() -> load() round-trip.
@@ -179,11 +177,8 @@ class TestAllowedEnterpriseIdsFiltering:
 class TestFeishuConfigCoercionFailsClosed:
     """A malformed feishu section must degrade to deny, never open a gate.
 
-    Two layers hold this: the schema type check rejects a wrong-typed value and
-    substitutes the field default, and the per-channel parse uses ``_safe_bool``
-    / ``_coerce_opaque_str_ids`` rather than raw ``bool()`` and comprehensions.
-    These tests pin the OBSERVABLE end state, so the guarantee survives either
-    layer being refactored.
+    The schema type check and the ``_safe_bool`` / ``_coerce_opaque_str_ids`` parse
+    both hold it; the tests pin the OBSERVABLE end state so either can be refactored.
     """
 
     def test_string_false_does_not_open_the_group_gate(self) -> None:

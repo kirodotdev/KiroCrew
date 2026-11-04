@@ -1,22 +1,13 @@
 """WeCom / Weixin / Feishu hot-reload claims that are not shared with any channel.
 
-The questions every channel is asked -- a reloaded roster reaching the live
-transport, a degraded document keeping the previous authorization state, the SEL
-audit by count, the point-of-use thresholds, the end-to-end file write -- are
-parametrized once over the whole channel table in
-``test_channels_a_hot_reload.py``. What is here is what those three channels
-claim on their own:
+Shared questions are parametrized in ``test_channels_a_hot_reload.py``. Here:
 
-* WeCom's ``allow_all_users`` is the widest grant any channel has -- the whole org
-  tenant -- so each flip is audited in its own right, in both directions;
-* WeCom answers a threshold from the config FILE when no watcher is armed yet,
-  which orders the fallback: the file is the truth and the boot copy is reached
-  only when the file cannot be read at all;
-* Weixin's ids are OPAQUE, so the roster is deduped and blank-stripped without
-  the digit coercion that would silently empty it, and an unknown DM policy keeps
-  the previous one rather than being adopted;
-* Feishu's group gate must leave a P2P turn alone, and its configured-target list
-  is a second reader of the same roster.
+* WeCom's ``allow_all_users`` grants the whole tenant, so each flip is audited;
+* with no watcher armed, WeCom reads thresholds from the FILE, and the boot copy
+  only when the file is unreadable;
+* Weixin ids are OPAQUE: deduped and blank-stripped with no digit coercion, and an
+  unknown DM policy keeps the previous one;
+* Feishu's group gate leaves P2P turns alone; its target list also reads the roster.
 """
 
 from __future__ import annotations
@@ -45,9 +36,7 @@ from kiro_crew.wecom.transport import WeComTransport
 from kiro_crew.wecom.transport_dispatch import WeComDispatcher
 from kiro_crew.weixin.transport import WeixinTransport
 
-# ------------------------------------------------------------------
 # WeCom: the allow-all flip and the file-over-boot fallback
-# ------------------------------------------------------------------
 
 
 class TestWeComAllowAll:
@@ -115,9 +104,7 @@ class TestWeComThresholds:
         assert self._dispatcher(soft=70, hard=90)._thresholds() == (33, 66)
 
 
-# ------------------------------------------------------------------
 # Weixin: opaque ids and a policy that keeps its previous value
-# ------------------------------------------------------------------
 
 
 class TestWeixinAllowListAndPolicy:
@@ -186,9 +173,7 @@ class TestWeixinAllowListAndPolicy:
         assert t._dm_policy == "allowlist"
 
 
-# ------------------------------------------------------------------
 # Feishu: the group gate leaves P2P alone
-# ------------------------------------------------------------------
 
 
 class TestFeishuAllowLists:

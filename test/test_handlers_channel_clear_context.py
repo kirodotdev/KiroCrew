@@ -162,11 +162,8 @@ class TestAClearInTheInterTurnWindowIsRefused:
     async def test_the_grace_observes_the_teardown_without_cancelling_it_again(self):
         """The grace must not interrupt the teardown's own cleanup.
 
-        `discard_conversation` releases the agent runtime from a `finally`, and that block's
-        first await is bounded far higher than this grace. Waiting on the teardown with
-        anything that CANCELS on timeout therefore lands a second cancellation inside that
-        `finally`, so the runtime is never released -- it survives holding a conversation the
-        user commanded cleared, and the clear still reports the member as done.
+        `discard_conversation` releases the runtime from a `finally` whose first await outlasts
+        this grace, so a wait that cancels on timeout would leave the runtime unreleased.
         """
         import kiro_crew.dashboard.handlers_channel as hc
 
@@ -220,15 +217,9 @@ class TestAClearInTheInterTurnWindowIsRefused:
     async def test_a_refused_member_is_not_discarded_after_the_answer(self):
         """The refusal and the teardown must not BOTH win.
 
-        The teardown is shielded so the deadline releases `_log_lock` without cancelling it,
-        and `discard_conversation` pops the session and clears the SID EARLY, before the slow
-        `provider.shutdown()`. So a member whose `wait_for` expires before its own pop is
-        reported busy -- "Nothing was cleared" -- and the shielded task then pops and clears
-        the SID anyway, discarding the session the API just said it had kept. The SID is
-        dropped rather than retained, so the next turn cold-starts with no history.
-
-        Reached by the shared deadline rather than by an extreme: an earlier member's slow
-        shutdown exhausts it, so a later member gets `timeout ~= 0`.
+        The teardown is shielded, so a member reported busy after its `wait_for` expired would
+        still have its session popped and SID cleared by the shielded task.
+        An earlier member's slow shutdown exhausts the shared deadline (`timeout ~= 0`).
         """
         import kiro_crew.dashboard.handlers_channel as hc
 
@@ -519,11 +510,8 @@ class TestAClearInTheInterTurnWindowIsRefused:
     async def test_a_raising_teardown_answers_instead_of_escaping_as_a_500(self):
         """A provider shutdown that raises must not abandon the request.
 
-        The SID is cleared before the shutdown is awaited, so by the time it can raise the
-        conversation is already gone. Letting the exception out answers 500 for a destructive
-        request that partly succeeded: a scope=all loop stops mid-iteration, no audit row is
-        written, and the caller is told nothing about what was destroyed. The handler
-        reconciles against the registry and the resume SID instead.
+        The SID is cleared before the shutdown raises, so a 500 would hide a partial clear.
+        The handler reconciles against the registry and the resume SID instead.
         """
         agents = {
             "a1": _make_agent("a1", "Researcher", "channel:ch1:a1"),
@@ -566,11 +554,8 @@ class TestAClearInTheInterTurnWindowIsRefused:
     async def test_a_cancelled_teardown_that_left_the_sid_refuses_instead_of_wiping(self):
         """A persisted-only member must not be reported cleared on a cancelled teardown.
 
-        The teardown clears the resume SID LATE, after awaiting the registry lock, so a
-        cancellation before that point leaves the conversation fully resumable. The live
-        registry cannot see it -- a member restored from disk is not in `_sessions` -- so
-        judging on the registry alone lands that member in `cleared`, and with nothing else
-        busy the handler goes on to wipe the shared log the member still refers to.
+        The resume SID is cleared late, so an early cancellation leaves it resumable, and a
+        member restored from disk is not in `_sessions`; the registry alone cannot judge it.
         """
         import kiro_crew.dashboard.handlers_channel as hc
 
@@ -765,13 +750,9 @@ class TestChannelClearContext:
     async def test_a_key_with_no_live_session_counts_as_cleared_not_busy(self):
         """A member with nothing registered must not be reported busy.
 
-        `discard_conversation` reports False ONLY for a `skip_if_busy` refusal over a LIVE
-        session -- an absent key takes the teardown path and answers True -- so a member with
-        nothing registered must answer 200 rather than 409. It is not credited to `cleared`
-        either: the real `SessionManager.has_session` is a plain `def` returning False for an
-        absent key, which is what the membership probe reads. That probe is stubbed here
-        because a bare AsyncMock attribute returns a truthy coroutine, which would satisfy
-        this assertion without the handler doing anything.
+        `discard_conversation` answers False only for a busy LIVE session, so this is 200, and
+        not credited to `cleared`. `has_session` is stubbed as a plain function because a bare
+        AsyncMock attribute returns a truthy coroutine and would pass without the handler.
         """
         agents = {"a1": _make_agent("a1", "Researcher", "channel:ch1:a1")}
         ch = _make_channel("ch1", agents)
@@ -806,12 +787,8 @@ class TestChannelClearContext:
     async def test_a_total_refusal_does_not_destroy_the_shared_message_log(self):
         """The 409 must be answered BEFORE the buffer wipe, not after it.
 
-        `scope="all"` on a channel where every member is mid-turn clears nothing, and
-        the wipe below the reset loop is SHARED channel state that `_save()` persists.
-        Answering 409 after running it destroyed the transcript the response reports as
-        untouched -- silent, irreversible, and the opposite of what the caller is told.
-        Asserts the buffers survive AND that nothing was persisted, since either alone
-        would pass while the other still lost the log.
+        The wipe is shared channel state that `_save()` persists. Asserts the buffers survive
+        AND nothing was persisted, since either alone would pass while the other lost the log.
         """
         agents = {
             "a1": _make_agent("a1", "Researcher", "channel:ch1:a1"),
@@ -944,14 +921,8 @@ class TestChannelClearContext:
     async def test_a_partial_clear_leaves_the_shared_log_the_busy_member_still_references(self):
         """A PARTIAL clear-all must not wipe shared state, only a fully clean one may.
 
-        The total refusal answers 409 above the wipe, and a fully clean clear reaches it
-        legitimately -- but the PARTIAL case fell through to the same unconditional wipe. The
-        busy member keeps the LLM context that quotes the shared transcript, so emptying it
-        strands that member: its in-flight reply appends to a log the rest of its context
-        still refers to, and no path restores what was lost.
-
-        The partial case answers 409 as well, because the only shipped caller discards the
-        body: an `ok: False` on a 200 reported a clear the refused member did not get.
+        The busy member's LLM context quotes the shared transcript, so emptying it strands
+        that member. The partial case answers 409 because the only caller ignores the body.
         """
         agents = {
             "a1": _make_agent("a1", "Researcher", "channel:ch1:a1"),
@@ -1022,11 +993,8 @@ class TestChannelClearContext:
     async def test_a_total_refusal_answers_409_not_a_false_success(self):
         """Reporting the refusal into a field nothing reads IS the silent no-op.
 
-        An earlier version answered 200 with a `busy` list and no reader, so the caller
-        rendered a clear that never happened -- a success signal that is not proof of
-        effect. When NOTHING cleared the endpoint now fails, which reaches the user through
-        the caller's existing error path. Declining the reset is still right: forcing it
-        would tear down a streaming reply.
+        A 200 with a `busy` list has no reader, so when nothing cleared the endpoint fails
+        through the caller's error path. Forcing the reset would tear down a streaming reply.
         """
         agents = {"a1": _make_agent("a1", "Researcher", "channel:ch1:a1")}
         ch = _make_channel("ch1", agents)
@@ -1055,10 +1023,7 @@ class TestChannelClearContext:
         """A destroyed conversation must be reported, live session or not.
 
         `has_session` sees only a LIVE session, but the discard also drops the persisted
-        resume SID -- the whole reason it is preferred over `reset`. A member restored from
-        disk therefore has its conversation pointer destroyed while the response says nothing
-        was cleared, and paired with one busy member that takes the total-refusal branch and
-        answers "Nothing was cleared" for a request that did destroy one.
+        resume SID, so a member restored from disk does lose its conversation.
         """
         agents = {"a1": _make_agent("a1", "Researcher", "channel:ch1:a1")}
         ch = _make_channel("ch1", agents)
@@ -1141,11 +1106,8 @@ class TestChannelClearContext:
     async def test_a_member_working_on_a_dequeued_message_refuses_before_the_wipe(self):
         """The window between dequeue and the turn being declared must still refuse.
 
-        `has_queued_work` reads the inbox DEPTH, which drops to zero the moment the message is
-        taken, while the active turn is declared later in the stream task. A clear arriving in
-        that window finds neither the queue nor an active turn, tears the session down, and --
-        for `scope=all` -- takes the shared transcript with it via `_save()`, which commits the
-        deletion with nothing to recover from. The member's own state is what covers it.
+        `has_queued_work` reads inbox depth, which hits zero before the turn is declared, so
+        in that window only the member's own state shows it is busy.
         """
         agent = _make_agent("a1", "Researcher", "channel:ch1:a1")
         agent.state = "working"
@@ -1176,13 +1138,8 @@ class TestChannelClearContext:
     async def test_a_member_whose_startup_is_in_flight_refuses_before_the_wipe(self):
         """A `pending` member's own allocation writes the resume SID back after the clear.
 
-        Every restored member enters `pending` at boot, and `run_channel_agent` re-enters it
-        before awaiting `get_or_create`, whose cold start reads the persisted resume SID and
-        re-registers it once the provider is up. Nothing is registered during that window, so
-        the discard finds no session and only drops the SID: the clear answers 200, wipes the
-        shared transcript, and then the allocation it raced writes the SID back, leaving the
-        pre-clear conversation live and resumable against a log that was already wiped.
-        Neither the queue nor an active turn can see this -- the member's state is what can.
+        During `get_or_create`'s cold start nothing is registered, so the discard only drops
+        the SID and the raced allocation writes it back. Only the member's state shows this.
         """
         agent = _make_agent("a1", "Researcher", "channel:ch1:a1")
         agent.state = "pending"
@@ -1215,13 +1172,8 @@ class TestChannelClearContext:
     async def test_a_wedged_member_does_not_refuse_the_clear_forever(self):
         """A terminal member keeps its inbox, so the queue alone refuses it for good.
 
-        When a member's turn cannot be recovered it goes to `failed` and stops listening. A
-        message that queued during that turn stays there, because `Channel.post` skips a
-        member in `done`/`failed` and nothing else drains it. Probing the queue without
-        checking liveness therefore answers 409 on every later request, and the wedge notice
-        the member posts tells the user to clear its context to recover -- a dead end. The
-        whole channel is stuck too: one such member keeps `busy` non-empty, which is what
-        gates the shared-log wipe.
+        Nothing drains a `failed` member's inbox, so probing the queue without liveness would
+        answer 409 forever, while the wedge notice tells the user to clear its context.
         """
         wedged = _make_agent("a1", "Worker", "channel:ch1:a1")
         wedged.state = "failed"
