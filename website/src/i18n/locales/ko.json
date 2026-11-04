@@ -17206,6 +17206,14 @@
       "confirm_delete_job": "삭제?",
       "go_to_chat": "채팅으로 이동",
       "create_your_first_job": "첫 작업 만들기",
+      "batchActions": {
+        "actions_for_selected": "선택한 작업에 대한 동작",
+        "batch_failed_other": "작업 {{count}}개 중 {{failed}}개를 업데이트하지 못했습니다",
+        "run_confirm_body": "각 작업이 지금 새 실행을 시작합니다. 일시 중지된 작업과 실행 중인 작업은 건너뜁니다.",
+        "run_confirm_title_other": "작업 {{count}}개를 지금 실행할까요?",
+        "strict_off": "엄격한 일정 끄기",
+        "strict_on": "엄격한 일정 켜기"
+      },
       "cronFolders": {
         "batch_move_failed_other": "{{total}}개 중 {{count}}개의 작업을 이동하지 못했습니다",
         "collapse_folder": "{{name}} 폴더 접기",

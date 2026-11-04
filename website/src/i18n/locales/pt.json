@@ -18123,6 +18123,18 @@
       "confirm_delete_job": "Excluir?",
       "go_to_chat": "Ir para o Chat",
       "create_your_first_job": "Crie seu primeiro job",
+      "batchActions": {
+        "actions_for_selected": "Ações para as tarefas marcadas",
+        "batch_failed_many": "Não foi possível atualizar {{failed}} de {{count}} tarefas",
+        "batch_failed_one": "Não foi possível atualizar {{failed}} de {{count}} tarefa",
+        "batch_failed_other": "Não foi possível atualizar {{failed}} de {{count}} tarefas",
+        "run_confirm_body": "Cada tarefa inicia uma nova execução agora. Tarefas pausadas ou já em execução são ignoradas.",
+        "run_confirm_title_many": "Executar {{count}} tarefas agora?",
+        "run_confirm_title_one": "Executar {{count}} tarefa agora?",
+        "run_confirm_title_other": "Executar {{count}} tarefas agora?",
+        "strict_off": "Agendamento rigoroso desativado",
+        "strict_on": "Agendamento rigoroso ativado"
+      },
       "cronFolders": {
         "batch_move_failed_many": "Não foi possível mover {{count}} de {{total}} tarefas",
         "batch_move_failed_one": "Não foi possível mover {{count}} de {{total}} tarefa",
