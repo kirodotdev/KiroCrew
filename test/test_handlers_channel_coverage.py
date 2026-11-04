@@ -235,8 +235,9 @@ async def test_wake_restarts_a_finished_agent_and_refuses_everything_else(manage
 
     agent.state = "failed"
     assert await _call(wake, _request(manager, id=channel.id, aid=agent.id)) == (200, {"ok": True})
-    assert agent.state == "listening"
-    status = {"channel_id": channel.id, "agent_id": agent.id, "state": "listening"}
+    # `pending`, as at boot: a clear that takes the lock before the task runs must refuse it.
+    assert agent.state == "pending"
+    status = {"channel_id": channel.id, "agent_id": agent.id, "state": "pending"}
     assert ("channel_agent_status", status) in events
     spawned.spawn.assert_called_once_with(agent, ("run", agent.id))
 

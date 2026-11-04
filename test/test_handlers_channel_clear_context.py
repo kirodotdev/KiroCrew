@@ -316,7 +316,9 @@ class TestAClearInTheInterTurnWindowIsRefused:
         sessions.has_session = MagicMock(return_value=True)
 
         request = _make_request("ch1", {"scope": "all"}, channel=ch, sessions=sessions)
-        with patch.object(hc, "_CLEAR_DISCARD_TIMEOUT_SECS", 0.01):
+        # Long enough that the first member is reached before the deadline on a coarse clock
+        # (Windows ticks in ~15 ms steps); the hanging teardown then spends all of it.
+        with patch.object(hc, "_CLEAR_DISCARD_TIMEOUT_SECS", 0.5):
             with patch(
                 "kiro_crew.dashboard.handlers_channel._mgr",
                 return_value=MagicMock(get=MagicMock(return_value=ch)),
