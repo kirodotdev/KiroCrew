@@ -72,6 +72,7 @@ from kiro_crew.dashboard.session_directive_apply_outcome import (
     _surface_arm_refusal,
 )
 from kiro_crew.dashboard.session_directive_apply_slot import (
+    _apply_chat_bookmark,
     _apply_chat_rename,
     _apply_chat_tag,
     _nothing_to_do,
@@ -370,6 +371,8 @@ async def apply_session_directive_outcome(
                 )
         elif kind == "chat_tag":
             result = await _apply_chat_tag(state, slot, session_key, args)
+        elif kind == "chat_bookmark":
+            result = await _apply_chat_bookmark(state, slot, args)
         elif kind == "chat_rename":
             result = await _apply_chat_rename(
                 state, slot, session_key, args, producer_turn_actor=producer_turn_actor
