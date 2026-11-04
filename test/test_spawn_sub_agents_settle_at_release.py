@@ -706,7 +706,7 @@ async def test_a_cut_cron_turns_tab_completion_holds_the_cron_reset_until_its_tu
     assert seen["counted_at_release"] == 1, "the cron turn's cleanup could reset under it"
     assert len(seen["chats"]) == 1
     assert done.orch._cron_injecting == {}
-    assert seen["resets"] == [("cron:j1", {"skip_if_busy": True})]
+    assert seen["resets"] == [("cron:j1", {"skip_if_busy": True, "skip_if_injecting": True})]
 
 
 @pytest.mark.asyncio
