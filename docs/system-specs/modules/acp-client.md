@@ -1481,11 +1481,23 @@ turn's refusal recovery carries it. A consumer that writes its OWN audit row whe
 `approve_tool` returns `False` (the dashboard chat path in
 `dashboard/chat_turn/tool_approval.py` and `permission_prompt.py`, the Slack
 ladder in `slack/handler_runtime/permission_ladder.py`) reads the kept reason
-back through `take_batch_refusal` and `batch_guard.refusal_outcome`, so that row
-records `rejected_batch_guard` (with `mechanism=batch_write_guard`) when the
-guard refused and keeps `rejected_transport_floor` only when the security floor
-did. The reason is taken once, so each refused request asks for it at exactly one
-such row.
+back and maps it through `batch_guard.refusal_outcome`, so that row records
+`rejected_batch_guard` (with `mechanism=batch_write_guard`) when the guard
+refused and keeps `rejected_transport_floor` only when the security floor did.
+`batch_guard.take_client_refusal(client, request_id)` is the one place the kept
+reason is asked of a client — the audit consumers and `tool_permission` all call
+it rather than repeat the getattr/take-once/string-check steps — and it takes the
+reason once, so each refused request reads it at exactly one site. Only the
+dashboard and Slack rows are routed this way. Every OTHER consumer that writes its
+own row when `approve_tool` returns `False` still labels a batch-guard refusal
+`rejected_transport_floor`, the same as a security-floor one: the CLI
+(`cli_chat.py`), the LLM-helpers transport (`llm_helpers_parts/tool_approval.py`),
+the eval runner (`eval/runner.py`), the dashboard hooks handler
+(`dashboard/handlers/hooks.py`), the channel and messaging transports
+(`channel.py`, `messaging/driver.py`) and the task planner (`task_planner.py`).
+The guard's own `source=batch_guard` row for the same `request_id` is still the
+one that names the cause there; relabelling those consumer rows is not part of this
+change.
 
 Coverage: the tables name kiro-cli and KAS built-ins and Kiro Crew's own MCP
 tools, so the guard is expected to work on the kiro-cli and KAS harnesses. On a

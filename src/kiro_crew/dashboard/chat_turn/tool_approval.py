@@ -93,14 +93,11 @@ def _audit_approve_refused(
     ``False``; ``client.take_batch_refusal`` tells the two apart (it is taken once),
     so the row says batch guard when the guard refused and transport floor otherwise.
     """
-    from kiro_crew.acp import batch_guard
+    from kiro_crew import agent_sdk
 
-    reason = None
-    take = getattr(client, "take_batch_refusal", None)
-    if take is not None:
-        maybe = take(event.request_id)
-        reason = maybe if isinstance(maybe, str) else None
-    outcome, metadata = batch_guard.refusal_outcome(reason)
+    outcome, metadata = agent_sdk.batch_guard_refusal_outcome(
+        agent_sdk.take_batch_guard_refusal(client, event.request_id)
+    )
     sel().log_tool_invocation(
         session_key=session_key,
         agent=agent or "kirocrew",

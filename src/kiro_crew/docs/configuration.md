@@ -732,8 +732,10 @@ edited on Settings → Browser and applies without a restart.
 
 ### Hooks
 
-The `hooks` section holds script-hook definitions; two keys there also surface in
-Settings, both off by default:
+The `hooks` section holds script-hook definitions; two keys there are declared on
+the config schema (like `hooks.confirm_tools`), so they are recognized config
+settings with defaults and help, editable in `config.json`. Both are off by
+default:
 
 - **`hooks.batch_write_guard`** (boolean, default `false`). When on, refuse a
   write-class tool call issued in the same parallel tool batch as a read-class

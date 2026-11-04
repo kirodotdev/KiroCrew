@@ -63,6 +63,7 @@ __all__ = [
     "guard_settings",
     "refusal_outcome",
     "screen_approval",
+    "take_client_refusal",
 ]
 
 READ = "read"
@@ -594,6 +595,23 @@ def take_refusal(transport: Any, request_id: Any) -> str | None:
     if not isinstance(kept, dict):
         return None
     reason = kept.pop(_refusal_key(request_id), None)
+    return reason if isinstance(reason, str) else None
+
+
+def take_client_refusal(client: Any, request_id: Any) -> str | None:
+    """This guard's reason for the approval of *request_id* ``client`` just refused,
+    taken once, or ``None``.
+
+    The single owner of asking a client for its kept reason: a provider that wraps
+    the transport forwards ``take_batch_refusal`` to the transport holding the
+    reason, a client without the method has nothing to say, and a non-string answer
+    is read as nothing. Both the audit consumers (through :func:`refusal_outcome`)
+    and ``tool_permission`` call this rather than repeat the steps.
+    """
+    take = getattr(client, "take_batch_refusal", None)
+    if take is None:
+        return None
+    reason = take(request_id)
     return reason if isinstance(reason, str) else None
 
 

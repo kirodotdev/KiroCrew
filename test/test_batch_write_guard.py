@@ -952,7 +952,7 @@ def test_a_kept_refusal_is_held_under_a_bounded_key(tmp_path, make_transport):
 
 def test_refusal_outcome_labels_a_guard_refusal_as_the_guard():
     # A consumer that writes its own SEL row for an approve_tool False reads the
-    # kept reason, then asks refusal_outcome how to label its row (#27138 item 1).
+    # kept reason, then asks refusal_outcome how to label its row.
     guard = _guard()
     from kiro_crew.permission_floor import OUTCOME_REJECTED_TRANSPORT_FLOOR
 

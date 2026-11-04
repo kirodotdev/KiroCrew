@@ -76,14 +76,11 @@ def _batch_refusal_outcome(client, request_id):
     ``False``: the batch write guard's own labels when it refused this request
     (``client.take_batch_refusal``, taken once), the transport-floor label
     otherwise. ``client`` may be ``None`` (no transport to ask)."""
-    from kiro_crew.acp import batch_guard
+    from kiro_crew import agent_sdk
 
-    reason = None
-    take = getattr(client, "take_batch_refusal", None)
-    if take is not None:
-        maybe = take(request_id)
-        reason = maybe if isinstance(maybe, str) else None
-    return batch_guard.refusal_outcome(reason)
+    return agent_sdk.batch_guard_refusal_outcome(
+        agent_sdk.take_batch_guard_refusal(client, request_id)
+    )
 
 
 def _should_auto_approve_spawn(context_builder, event) -> bool:

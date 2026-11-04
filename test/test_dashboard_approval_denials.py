@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import itertools
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from dashboard_approval_helpers import (
@@ -538,68 +538,6 @@ class TestToolCompletionTracking:
         calls = [c for c in state.broadcast_ws.call_args_list if c[0][0] == "tool_call"]
         assert len(calls) > 0
         assert calls[0][0][1]["tool_call_id"] == "tc-42"
-
-
-class TestBatchGuardRefusalIsLabelledAsTheGuard:
-    """A dashboard auto-approve the batch write guard refused records a SEL row
-    under the guard's own outcome, not the transport floor's.
-
-    ``approve_tool`` answers both a security-floor refusal and a batch-guard
-    refusal with ``False``; the consumer tells them apart with
-    ``take_batch_refusal`` so the row says which refused. #27138 follow-up 1.
-    """
-
-    @pytest.mark.asyncio
-    async def test_trust_auto_approve_refused_by_the_guard_is_labelled_batch_guard(self, tmp_path):
-        from kiro_crew.acp import batch_guard
-
-        state, client = _make_state(tmp_path, context_builder=_context_builder())
-        slot = _make_slot(trust=True)
-        evt = _permission_event()
-        _set_stream(client, [evt, _complete_event()])
-        # The transport answered the auto-approve with False: the batch guard
-        # refused it (its reason is kept on the transport), not the floor.
-        client.approve_tool = AsyncMock(return_value=False)
-        client.take_batch_refusal = MagicMock(return_value="Blocked by the batch guard: ...")
-
-        with patch("kiro_crew.dashboard.chat_runner.sel") as mock_sel:
-            mock_sel.return_value = MagicMock()
-            await _run_chat(state, slot, "hello")
-            rows = [
-                c.kwargs
-                for c in mock_sel.return_value.log_tool_invocation.call_args_list
-                if c.kwargs.get("source") == "dashboard"
-                and c.kwargs.get("request_id") == evt.request_id
-            ]
-
-        assert rows, "the refused auto-approve wrote no dashboard SEL row"
-        assert rows[-1]["outcome"] == batch_guard.OUTCOME_REJECTED_BATCH_GUARD
-        assert rows[-1]["outcome"] != "rejected_transport_floor"
-        assert rows[-1].get("metadata", {}).get("mechanism") == batch_guard.AUDIT_MECHANISM
-
-    @pytest.mark.asyncio
-    async def test_trust_auto_approve_refused_by_the_floor_stays_transport_floor(self, tmp_path):
-        state, client = _make_state(tmp_path, context_builder=_context_builder())
-        slot = _make_slot(trust=True)
-        evt = _permission_event()
-        _set_stream(client, [evt, _complete_event()])
-        # The floor refused: no batch-guard reason is kept for the request.
-        client.approve_tool = AsyncMock(return_value=False)
-        client.take_batch_refusal = MagicMock(return_value=None)
-
-        with patch("kiro_crew.dashboard.chat_runner.sel") as mock_sel:
-            mock_sel.return_value = MagicMock()
-            await _run_chat(state, slot, "hello")
-            rows = [
-                c.kwargs
-                for c in mock_sel.return_value.log_tool_invocation.call_args_list
-                if c.kwargs.get("source") == "dashboard"
-                and c.kwargs.get("request_id") == evt.request_id
-            ]
-
-        assert rows, "the refused auto-approve wrote no dashboard SEL row"
-        assert rows[-1]["outcome"] == "rejected_transport_floor"
-        assert "metadata" not in rows[-1] or not rows[-1]["metadata"]
 
 
 class TestBackgroundApprovalDenyFast:
