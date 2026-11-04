@@ -1,7 +1,7 @@
 ---
 name: feature-request
-description: Conversational workflow for gathering user feedback and filing GitHub Issues on the Kiro Crew repository. Load when the user clicks "Request a Feature", wants to report a bug, or suggest an improvement.
-triggers: request a feature, request feature, feature request, report a bug, bug report, file an issue, github issue, I have an idea, something's broken, suggestion
+description: Gathers a bug report, feature request or feedback in conversation and routes it to the in-app Report a Problem dialog, the public issue forms, or SECURITY.md for a vulnerability (never a public issue); load when the user wants to report a problem, send feedback or suggest an improvement.
+triggers: request a feature, request feature, feature request, report a bug, bug report, file an issue, github issue, I have an idea, something's broken, suggestion, report a problem, send feedback, submit feedback
 ---
 
 # Feature Request / Issue Report
@@ -9,8 +9,9 @@ triggers: request a feature, request feature, feature request, report a bug, bug
 Conversational workflow for gathering user feedback and creating GitHub Issues
 on the Kiro Crew repository.
 
-**Trigger:** User says "report a bug", "feature request", "I have an idea",
-"something's broken", or names `$feature-request`. The dashboard's "Request a
+**Trigger:** User says "report a bug", "report a problem", "feature request",
+"send feedback", "I have an idea", "something's broken", or names
+`$feature-request`. The dashboard's "Request a
 Feature" button does NOT load this skill: it seeds the self-contained prompt
 `FEATURE_REQUEST_PROMPT_FALLBACK` in `website/src/prompts/featureRequest.ts`,
 which must be kept in step with the workflow below.
@@ -20,6 +21,38 @@ which must be kept in step with the workflow below.
 ```
 https://github.com/kirodotdev/KiroCrew
 ```
+
+## Route it first
+
+Before gathering details, decide where the report belongs. Take the first case
+that fits:
+
+1. **A security vulnerability.** Do not draft it, search for it or file it.
+   Give the user the security policy and tell them to report it privately by
+   the email address that file lists, with the `[SECURITY]` subject prefix —
+   never in a public issue:
+
+   ```
+   https://github.com/kirodotdev/KiroCrew/blob/main/SECURITY.md
+   ```
+
+2. **Something broke on this install.** Point the user to the **Report a
+   Problem** dialog (Settings › About › Support › **Report a Problem**, or the
+   nav rail's **Report issue** link). It collects a redacted diagnostics bundle
+   and opens a pre-filled bug report on this install's tracker. Without the
+   dashboard, `kirocrew doctor --bundle` builds the same bundle and prints the
+   link. If the user would rather file it from this conversation, continue with
+   the workflow below as a bug report.
+
+3. **A question, or an idea not yet ready to be a request.** Point the user to
+   Discussions:
+
+   ```
+   https://github.com/kirodotdev/KiroCrew/discussions
+   ```
+
+4. **Anything else** — a feature request, a bug to file from this conversation,
+   or feedback. Continue with the workflow below.
 
 ## Shell safety (READ FIRST)
 
@@ -191,10 +224,12 @@ https://github.com/kirodotdev/KiroCrew/issues/new
 
 The user pastes the title and body into that form and submits. This needs only
 that they are signed in to GitHub in their own browser. You can also point them
-at the feature-request template form, whose only query parameter is short enough
+at the matching template form — the bug-report form for a defect, the
+feature-request form for a request — whose only query parameter is short enough
 to survive redaction:
 
 ```
+https://github.com/kirodotdev/KiroCrew/issues/new?template=bug_report.yml
 https://github.com/kirodotdev/KiroCrew/issues/new?template=feature_request.yml
 ```
 
