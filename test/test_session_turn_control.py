@@ -152,15 +152,14 @@ class TestStopTurn:
 
         provider.cancel = AsyncMock(return_value="timeout")
 
-        with patch.object(mgr, "_eager_respawn", new_callable=AsyncMock) as mock_respawn:
-            await mgr.stop_turn("key1")
-            # The respawn runs as a task stop_turn creates; wait until it has awaited the mock.
-            await async_wait_until(
-                lambda: mock_respawn.await_count,
-                describe=lambda: f"_eager_respawn await_count={mock_respawn.await_count}",
-            )
-            mock_respawn.assert_awaited_once_with("key1")
+        assert await mgr.stop_turn("key1") == "hard"
+        # The respawn runs as a task stop_turn keeps in _background_tasks.
+        await await_until(asyncio.gather(*list(mgr._background_tasks)), what="eager respawn")
 
+        respawned = mgr._sessions.get("key1")
+        assert respawned is not None, "the hard stop left no session behind"
+        assert respawned.provider is not provider
+        assert not respawned.semaphore.locked(), "the respawn kept the turn permit"
         await mgr.close_all()
 
     @pytest.mark.asyncio

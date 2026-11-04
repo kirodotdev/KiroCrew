@@ -624,28 +624,32 @@ class TestTheCleanupLoopRunsTheSweep:
         [hook] = [h for h in watchdog._hooks if h.name == "released_sessions"]
         return hook
 
-    @pytest.mark.asyncio
-    async def test_a_cleanup_tick_runs_the_sweep(self, monkeypatch):
+    def _sweepable(self, tmp_path, monkeypatch):
+        """A manager whose background session deletes on KAS, and one entry that is due."""
+        released_sessions.schedule(_SID, backend=ACP_BACKEND_KAS, delay_secs=0)
+        runtime = _runtime(tmp_path, ACP_BACKEND_KAS)
+        monkeypatch.setattr(runtime, "_send_and_await", AsyncMock(return_value={"success": True}))
         manager = self._manager()
         manager._cfg = SimpleNamespace(agent=SimpleNamespace(acp_backend=ACP_BACKEND_KAS))
-        sweep = AsyncMock(return_value=0)
-        monkeypatch.setattr(released_sessions, "sweep", sweep)
+        manager.get_bg_session = AsyncMock(return_value=_BgHandle(runtime))
+        return manager
+
+    @pytest.mark.asyncio
+    async def test_a_cleanup_tick_runs_the_sweep(self, tmp_path, monkeypatch):
+        manager = self._sweepable(tmp_path, monkeypatch)
 
         await self._hook(manager).run()
 
-        sweep.assert_awaited_once_with(manager, ACP_BACKEND_KAS)
+        assert _entries() == []
 
     @pytest.mark.asyncio
-    async def test_nothing_is_swept_while_admission_is_closed(self, monkeypatch):
-        manager = self._manager()
-        manager._cfg = SimpleNamespace(agent=SimpleNamespace(acp_backend=ACP_BACKEND_KAS))
+    async def test_nothing_is_swept_while_admission_is_closed(self, tmp_path, monkeypatch):
+        manager = self._sweepable(tmp_path, monkeypatch)
         manager._closing = True
-        sweep = AsyncMock(return_value=0)
-        monkeypatch.setattr(released_sessions, "sweep", sweep)
 
         await self._hook(manager).run()
 
-        sweep.assert_not_awaited()
+        assert [entry["session_id"] for entry in _entries()] == [_SID]
 
     def _starting(self):
         manager = self._manager()
