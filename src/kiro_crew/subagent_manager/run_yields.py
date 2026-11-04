@@ -293,17 +293,10 @@ async def _yield_for_dependency_impl(
     info._wait_failed = ""
     info._resume_event = asyncio.Event()
     now = time.time()
-    # The ``running`` mark and the coordinator's wait write are ONE unit on
-    # ONE thread: a provider error can land before the turn's first frame
-    # (the prompt itself was refused), and the session IS live -- the turn
-    # was issued -- so the row must be ``running`` before the wait is
-    # written or the wait is refused and the row parked instead.
-    #
-    # The same fact takes the run out of startup: the provider answered
-    # this session's prompt, so what follows is a wait for the dependency,
-    # bounded by the scope's own deadline and ending in its own error --
-    # never a start that is not starting for the startup watchdog to reap,
-    # and never a place in the in-startup bound while parked.
+    # The ``running`` mark and the wait write run on ONE thread: the error can
+    # land before the turn's first frame, and the row must be ``running`` before
+    # the wait is written or the wait is refused. The provider answered, so the
+    # run also leaves startup: the startup watchdog must not reap it while parked.
     self._manager._leave_startup(info)
     verdict = await self._dependency_verdict(coordinator, info, signal)
     if verdict.outcome != "wait":
