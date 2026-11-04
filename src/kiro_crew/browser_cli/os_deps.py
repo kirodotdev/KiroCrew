@@ -18,14 +18,25 @@ does not make Firefox or WebKit launch.
 
 The read blocks (the os-release file), so a caller on the event loop offloads
 them -- the same contract as the rest of this package.
+
+This module also owns the check that the downloaded browser can actually RESOLVE
+its libraries (:func:`missing_shared_libraries`), because Playwright's own host
+validation cannot be relied on to say so -- on linux-arm64 it scans a directory
+that does not exist and concludes the host is fine. See that function.
 """
 
 from __future__ import annotations
 
 import logging
+import os
 import platform
 import shutil
+import stat
+import struct
+from collections import deque
+from collections.abc import Iterable, Iterator
 from functools import lru_cache
+from pathlib import Path
 
 from kiro_crew import platform_compat
 
@@ -410,6 +421,492 @@ def host_deps_unsatisfied(text: str) -> bool:
 
     Read the exit code AND this, never the exit code alone -- see
     :data:`_HOST_VALIDATION_MARKERS` for the measurement.
+
+    NOT sufficient on its own either: Playwright's validation produces FALSE
+    NEGATIVES on linux-arm64, so a host with libraries missing can emit no
+    marker at all. :func:`missing_shared_libraries` is the check that does not
+    depend on Playwright noticing.
     """
     lowered = (text or "").lower()
     return any(marker in lowered for marker in _HOST_VALIDATION_MARKERS)
+
+
+#: ELF constants for reading a build's declared dependencies. Only what is used.
+_ELF_MAGIC = b"\x7fELF"
+_PT_LOAD = 1
+_PT_DYNAMIC = 2
+_DT_NULL = 0
+_DT_NEEDED = 1
+_DT_STRTAB = 5
+
+#: Ceilings applied to every count read out of the file being parsed. The files
+#: come from a writable cache, so each header field is hostile input until it has
+#: been checked: nothing is allocated or seeked from an unvalidated number.
+_MAX_PHNUM = 4096
+_MAX_DYN_ENTRIES = 100_000
+_MAX_SONAME_LEN = 4096
+
+#: Ceiling on entries VISITED while walking one cache directory. Bounds the walk
+#: itself rather than any field inside a file: the directory is writable, so its
+#: breadth is hostile input too, and a link or a deep tree planted there would
+#: otherwise drive an uncapped recursive scan during a privileged install.
+_MAX_WALK_ENTRIES = 20_000
+
+
+# Bounds the NUMBER of dependency names collected, in one file and in aggregate.
+# Each name comes out of a dynamic table in a writable cache, so the count is as
+# attacker-shaped as the walk's breadth was. MEASURED: chromium's build declares
+# 32 unique sonames across 9 candidates and firefox 50 across 24, so a real build
+# is two orders of magnitude below this. Truncating can only shorten a report --
+# a name never added cannot invent a missing library.
+_MAX_SONAMES = 4_000
+
+
+def _needed_sonames(path: Path) -> set[str]:
+    """Sonames *path* declares as dependencies, read WITHOUT executing it.
+
+    ``ldd`` cannot be used here. glibc's ``ldd`` is documented to execute the
+    binary it inspects, and a crafted ``PT_INTERP`` makes that arbitrary code:
+    the interpreter travels inside the ELF, so neither an absolute argv, nor a
+    scrubbed environment, nor an unexported search path prevents it. These files
+    come from a writable cache whose subdirectories are matched by name prefix,
+    so they must be treated as data, never as something to run.
+
+    So the dynamic table is read directly: ``PT_DYNAMIC`` gives the ``DT_NEEDED``
+    string-table offsets and ``DT_STRTAB`` gives the table's virtual address,
+    which is mapped back to a file offset through the ``PT_LOAD`` segment that
+    contains it.
+
+    An empty set means "declares nothing we can read" -- not a parseable ELF, a
+    static binary with no dynamic section, or a field that failed a bound. Never
+    raises: a file this cannot parse must not be able to fail an install.
+    """
+    try:
+        # Opened non-blocking and checked on the descriptor itself: the cache is
+        # writable, so a candidate checked as a regular file can be swapped for
+        # a FIFO before the open, and a blocking open of a FIFO waits for a
+        # writer forever, holding the install slot. `O_NOFOLLOW` refuses a link
+        # swapped in at the name.
+        fd = platform_compat.open_file_no_reparse(path, nonblocking=True)
+        try:
+            info = os.fstat(fd)
+        except OSError:
+            os.close(fd)
+            raise
+        if not stat.S_ISREG(info.st_mode):
+            os.close(fd)
+            return set()
+        size = info.st_size
+        with os.fdopen(fd, "rb") as fh:
+            ident = fh.read(16)
+            if len(ident) < 16 or ident[:4] != _ELF_MAGIC:
+                return set()
+            if ident[4] not in (1, 2) or ident[5] not in (1, 2):
+                return set()
+            is64 = ident[4] == 2
+            endian = "<" if ident[5] == 1 else ">"
+            ph_entry = 56 if is64 else 32
+
+            fh.seek(32 if is64 else 28)
+            raw = fh.read(8 if is64 else 4)
+            if len(raw) < (8 if is64 else 4):
+                return set()
+            phoff = struct.unpack(endian + ("Q" if is64 else "I"), raw)[0]
+            fh.seek(54 if is64 else 42)
+            raw = fh.read(4)
+            if len(raw) < 4:
+                return set()
+            phentsize, phnum = struct.unpack(endian + "HH", raw)
+
+            if phnum > _MAX_PHNUM or phentsize < ph_entry:
+                return set()
+            if phoff <= 0 or phoff + phnum * phentsize > size:
+                return set()
+
+            loads: list[tuple[int, int, int]] = []
+            dynamic: tuple[int, int] | None = None
+            for index in range(phnum):
+                fh.seek(phoff + index * phentsize)
+                hdr = fh.read(ph_entry)
+                if len(hdr) < ph_entry:
+                    return set()
+                if is64:
+                    p_type, _flags, p_off, p_vaddr, _paddr, p_filesz = struct.unpack(
+                        endian + "IIQQQQ", hdr[:40]
+                    )
+                else:
+                    p_type, p_off, p_vaddr, _paddr, p_filesz = struct.unpack(
+                        endian + "IIIII", hdr[:20]
+                    )
+                if p_type == _PT_LOAD:
+                    loads.append((p_vaddr, p_filesz, p_off))
+                elif p_type == _PT_DYNAMIC:
+                    dynamic = (p_off, p_filesz)
+
+            if dynamic is None:
+                return set()
+            dyn_off, dyn_size = dynamic
+            if dyn_off + dyn_size > size:
+                return set()
+
+            step = 16 if is64 else 8
+            entry_fmt = endian + ("Qq" if is64 else "Ii")
+            count = min(dyn_size // step, _MAX_DYN_ENTRIES)
+            fh.seek(dyn_off)
+            table = fh.read(count * step)
+            offsets: list[int] = []
+            strtab_vaddr: int | None = None
+            for index in range(len(table) // step):
+                tag, value = struct.unpack_from(entry_fmt, table, index * step)
+                if tag == _DT_NULL:
+                    break
+                if tag == _DT_NEEDED:
+                    offsets.append(value)
+                elif tag == _DT_STRTAB:
+                    strtab_vaddr = value
+            if strtab_vaddr is None or not offsets:
+                return set()
+
+            strtab_off: int | None = None
+            for vaddr, filesz, file_off in loads:
+                if vaddr <= strtab_vaddr < vaddr + filesz:
+                    strtab_off = file_off + (strtab_vaddr - vaddr)
+                    break
+            if strtab_off is None or strtab_off >= size:
+                return set()
+
+            names: set[str] = set()
+            # Each distinct offset is read once, and READS are capped, not only
+            # names: a table of 100,000 entries pointing at one string keeps the
+            # name set at one while costing 100,000 seeks per file.
+            for reads, relative in enumerate(dict.fromkeys(offsets)):
+                if reads >= _MAX_SONAMES or len(names) >= _MAX_SONAMES:
+                    # Bounded inside the file too, not only in aggregate: one file's
+                    # dynamic table is as attacker-shaped as a thousand of them, so
+                    # the cap has to hold before the set leaves this function.
+                    break
+                if relative < 0:
+                    continue
+                start = strtab_off + relative
+                if start >= size:
+                    continue
+                fh.seek(start)
+                raw = fh.read(_MAX_SONAME_LEN)
+                end = raw.find(b"\x00")
+                if end <= 0:
+                    continue
+                names.add(raw[:end].decode("ascii", errors="replace"))
+            return names
+    except (OSError, struct.error, ValueError):
+        return set()
+
+
+def _host_provided_sonames() -> set[str]:
+    """File names of shared objects this host provides, by directory listing.
+
+    Answers "can the host satisfy this soname" without asking the loader, which is
+    the whole point: asking the loader means running something.
+
+    Only the loader's own configured directories are listed --
+    :func:`platform_compat.system_library_dirs`. ``LD_LIBRARY_PATH`` is NOT read,
+    even though the loader honours it, because a directory named by process
+    environment is an environment-controlled path and listing one from a
+    privileged install is the security class this repository fences. The cost is a
+    host that supplies a library that way being named in the report; since the
+    report is advisory (see ``install._verify_browser_libraries``), that costs a
+    spurious muted line rather than a blocked install.
+
+    Matched by NAME alone. Architecture is deliberately not compared: a multiarch
+    host can carry one soname for several architectures, so a name match can in
+    principle be satisfied by the wrong one -- but that costs a report this check
+    would otherwise have made, and the report is advisory, so the cost is a missing
+    muted line. Comparing architectures means reading an ELF header for every
+    library the host provides: MEASURED at 962 extra file reads and 6x the runtime
+    on an arm64 host, to move the provided set from 970 names to 962 and change no
+    verdict.
+
+    Listing names rather than resolving them is the deliberate bias. A name that is
+    present but somehow unloadable reads as satisfied, so the check errs towards NOT
+    reporting: a false positive tells the operator to install a library they
+    already have, which costs more trust than the advisory earns.
+    """
+    names: set[str] = set()
+    for candidate in platform_compat.system_library_dirs():
+        try:
+            if not candidate.is_dir():
+                continue
+            for child in candidate.iterdir():
+                if ".so" in child.name:
+                    names.add(child.name)
+        except OSError:
+            continue
+    return names
+
+
+def _sonames_shipped_with_build(directories: Iterable[Path], budget: list[int]) -> set[str]:
+    """File names of shared objects the build carries itself.
+
+    The ONLY guard against reporting a bundled library as host-missing, and it is
+    enough because it does not depend on the loader: a library present in the tree
+    is the build's own, so naming it "missing on this host" is wrong regardless of
+    whether ``ldd`` managed to resolve it. That independence is what allowed the
+    ``LD_LIBRARY_PATH`` export to be removed -- it resolved exactly the libraries
+    this set already names, since both are built from the same ``.so`` walk, and
+    exporting it into a shell-script ``ldd`` was a code-execution path.
+
+    It also absorbs the loader quirks the search path never handled: ``$ORIGIN``
+    handling, or a nested layout the search path missed.
+
+    Bounded by :func:`_bounded_walk` like every other walk of a cache directory.
+    Every walk must share the ceiling: one uncapped walk over the same tree makes
+    the others' bound worth nothing, since the unbounded work happens either way.
+    """
+    names: set[str] = set()
+    for directory in directories:
+        for path in _bounded_walk(directory, budget, ".so"):
+            try:
+                if path.is_file():
+                    names.add(path.name)
+            except OSError:
+                continue
+    return names
+
+
+def _bounded_walk(
+    directory: Path, budget: list[int], suffix_match: str | None = None
+) -> Iterator[Path]:
+    """Entries under *directory*, stopping when the walk budget runs out.
+
+    *budget* is a ONE-ELEMENT list holding the work still allowed, shared by every
+    walk AND every parse in one probe, and it is REQUIRED. That sharing is the
+    point: a per-call ceiling is multiplied by however many directories the caller
+    passes, and the caller's list comes from a prefix match over a writable cache
+    (:func:`engine_build_dirs`), so its length is attacker-shaped too. A
+    default would silently hand the next caller the per-call ceiling this replaced,
+    so there is none.
+
+    Charges EVERY entry read and filters AFTER charging. A glob with a narrower
+    pattern still descends the entire tree but yields only MATCHES, so charging for
+    yields charges for the wrong thing: a cache of a million non-matching files is
+    traversed in full while the counter barely moves. The bound has to cover the
+    work, not the results.
+
+    The walk is LAZY down to the directory read: ``os.scandir`` yields entries as
+    it reads them, where ``Path.rglob`` lists each directory in full first and
+    ``sorted()`` would materialise the whole tree. Either would enforce the bound
+    only after doing the unbounded work.
+
+    The walk is breadth-first, so a truncated walk keeps the SHALLOW entries. A
+    browser's main executable sits at the top of its build directory, so it is
+    seen before the satellites. If the budget still runs out,
+    :func:`missing_shared_libraries` answers "cannot determine".
+
+    MEASURED for scale: chromium ships 14 ELF candidates and firefox 44, against a
+    ceiling of :data:`_MAX_WALK_ENTRIES`. It bounds a hostile tree, not a supported
+    one.
+    """
+    # `os.scandir` reads a directory incrementally, so each entry is charged as it
+    # is read. `Path.rglob` lists a whole directory before yielding its first
+    # entry, which would let one wide directory be read in full past the ceiling.
+    # Breadth-first: every entry of a directory is yielded before anything below
+    # it, which keeps the shallow entries on truncation. Every queued directory
+    # was charged when it was read, so the queue is bounded by the budget too.
+    pending: deque[Path] = deque([directory])
+    while pending:
+        current = pending.popleft()
+        try:
+            with os.scandir(current) as entries:
+                for entry in entries:
+                    if budget[0] <= 0:
+                        logger.warning("walk of %s stopped: entry budget spent", directory)
+                        # Negative marks "stopped with entries left unread", which
+                        # a walk that ended exactly at the ceiling is not.
+                        budget[0] = -1
+                        return
+                    budget[0] -= 1
+                    path = Path(entry.path)
+                    try:
+                        # Never descends into a symlink: see `_elf_candidates`.
+                        if entry.is_dir(follow_symlinks=False):
+                            pending.append(path)
+                    except OSError:
+                        pass
+                    if suffix_match is not None and suffix_match not in entry.name:
+                        continue
+                    yield path
+        except OSError:
+            continue
+
+
+def _elf_candidates(directory: Path, budget: list[int]) -> list[Path]:
+    """Executables and shared objects under *directory*, most-important first.
+
+    Bounded by :func:`_bounded_walk`, and symlinks are never descended into.
+
+    A symlink swapped in at the top of the walk can redirect it: this reads a path,
+    and a path is re-resolved on every use. The probe does not try to win that
+    race, because its output is ADVISORY (see
+    ``install._verify_browser_libraries``) -- the worst a won race yields is a
+    misleading warning, and nothing is executed or written either way.
+
+    Deliberately NOT pinned with :func:`platform_compat.pin_directory`: that
+    primitive's contract requires POSIX callers to use the returned descriptor for
+    their own opens, and a walk that goes by path string gets nothing from holding
+    it. A pin here would read as protection without being any, which is worse than
+    no pin at all, because it is believed.
+
+    The order puts an executable before a ``.so`` and a shallow path before a deep
+    one, so the main program is probed first.
+    """
+    found: list[Path] = []
+    for path in _bounded_walk(directory, budget):
+        try:
+            if path.is_symlink() or not path.is_file():
+                continue
+            is_executable = os.access(path, os.X_OK)
+            is_shared_object = ".so" in path.name
+            if is_executable or is_shared_object:
+                found.append(path)
+        except OSError:
+            continue
+    found.sort(key=lambda p: (not os.access(p, os.X_OK), len(p.parts), str(p)))
+    return found
+
+
+def missing_shared_libraries(directories: Iterable[Path]) -> set[str] | None:
+    """Sonames the downloaded browser needs that this host cannot resolve.
+
+    Exists because Playwright's own host validation CANNOT be trusted to notice.
+    MEASURED on Amazon Linux 2023 arm64: its registry declares the directory to
+    scan as ``chrome-linux``, while the arm64 build unpacks into
+    ``chrome-linux-arm64``, so it scans a path that does not exist, finds no
+    dependencies at all, concludes the host is fine and writes its
+    ``DEPENDENCIES_VALIDATED`` marker -- which then suppresses re-validation for
+    30 days. The marker was written 23 minutes BEFORE the libraries were
+    installed on that host. A false negative, not a missing warning: the
+    download reports success, ``browser_ok`` reports true, the panel goes green,
+    and the failure only arrives at the user's first browse as an opaque stack
+    trace.
+
+    So this reads the real files, and never hardcodes a build's subdirectory
+    name -- that assumption is the upstream bug being worked around.
+
+    It reads them as DATA. The dependency list comes from each ELF's own dynamic
+    table (:func:`_needed_sonames`) and the answer from a listing of the host's
+    library directories (:func:`_host_provided_sonames`); nothing is executed.
+    ``ldd`` cannot be used, because glibc's ``ldd`` runs the binary it inspects
+    and a crafted ``PT_INTERP`` turns that into arbitrary code -- and these files
+    live in a writable cache whose subdirectories are matched by name prefix, so a
+    planted ELF is reachable. The interpreter travels inside the file, so no
+    absolute argv, scrubbed environment or withheld search path prevents it.
+
+    Only libraries the HOST must provide are reported; the build's own bundled
+    ones are excluded by name (see :func:`_sonames_shipped_with_build`), because
+    reporting those would send the operator to install a library the build
+    already carries.
+
+    ``None`` means "cannot determine", NOT "nothing missing": off Linux, when no
+    directory exists, or when nothing readable declared a dependency at all.
+    Callers must not turn an unknown into a failed install -- an absent probe is
+    not evidence of a broken browser.
+    """
+    if not platform_compat.IS_LINUX:
+        return None
+    return _missing_in(list(directories), [_MAX_WALK_ENTRIES])
+
+
+def engine_build_dirs(cache: Path, engine: str, budget: list[int]) -> Iterator[Path]:
+    """Build directories for *engine* in the browser *cache*, read lazily.
+
+    Prefix-matched rather than composed from a revision, so the CHROMIUM entry
+    also picks up ``chromium_headless_shell-<rev>``. That is not a bonus: headless
+    is the default launch mode, so the headless shell is the binary a browse
+    actually starts, and a check that looked only at ``chromium-<rev>`` would
+    clear the build that is not the one being run.
+
+    A symlinked child is REFUSED, not followed: the yielded path anchors a
+    recursive walk, and this cache is writable, so a prefix-named link would aim
+    that walk at a tree of the planter's choosing. Playwright's own downloads are
+    real directories.
+
+    Every entry of the cache root is charged to *budget* as it is read, matching
+    or not, so a cache padded with prefix-named directories (or anything else)
+    spends the same bound as the walks below it.
+    """
+    try:
+        with os.scandir(cache) as entries:
+            for entry in entries:
+                if budget[0] <= 0:
+                    logger.warning("scan of %s stopped: entry budget spent", cache)
+                    budget[0] = -1
+                    return
+                budget[0] -= 1
+                try:
+                    if entry.name.startswith(engine) and entry.is_dir(follow_symlinks=False):
+                        yield Path(entry.path)
+                except OSError:
+                    continue
+    except OSError:
+        return
+
+
+def missing_engine_libraries(cache: Path | None, engine: str) -> set[str] | None:
+    """:func:`missing_shared_libraries` for every *engine* build in *cache*.
+
+    ONE budget covers the cache-root scan, every walk and every parse: a
+    per-directory ceiling is multiplied by the number of directories, and the
+    directories come from a prefix match over a writable cache, so their count is
+    attacker-shaped as surely as each tree's depth is.
+    """
+    if cache is None or not platform_compat.IS_LINUX:
+        return None
+    budget = [_MAX_WALK_ENTRIES]
+    return _missing_in(list(engine_build_dirs(cache, engine, budget)), budget)
+
+
+def _missing_in(dirs: list[Path], budget: list[int]) -> set[str] | None:
+    """The probe itself, over *dirs*, charging everything to *budget*."""
+    candidates: list[Path] = []
+    for directory in dirs:
+        try:
+            if directory.is_dir():
+                candidates.extend(_elf_candidates(directory, budget))
+        except OSError:
+            continue
+    if not candidates:
+        return None
+    shipped = _sonames_shipped_with_build(dirs, budget)
+    declared: set[str] = set()
+    for path in candidates:
+        if budget[0] <= 0:
+            # PARSING is charged to the same budget as walking. Reading a file's
+            # headers, program headers and string table is work, and a cache of
+            # files that each declare NOTHING never trips the name cap while still
+            # being parsed one by one. One budget covers every quantity this probe
+            # takes from the cache.
+            logger.warning("ELF parsing for %s stopped: work budget spent", candidates[0])
+            budget[0] = -1
+            break
+        budget[0] -= 1
+        declared |= _needed_sonames(path)
+        if len(declared) >= _MAX_SONAMES:
+            # The COUNT of names is bounded, not only each name's length and the
+            # number of files walked. Every dependency name comes out of a dynamic
+            # table in the writable cache, so a build with vast tables -- or many
+            # files each with a large one -- grows this set without a cap here.
+            # Truncating loses reports, never invents them: a name that would have
+            # been added can only have made the answer longer.
+            logger.warning("dependency names for %s truncated at %d", candidates[0], _MAX_SONAMES)
+            break
+    if not declared:
+        # Nothing readable declared a dependency. That is "cannot determine": a
+        # browser build always needs host libraries, so an empty answer here means
+        # the files could not be parsed, not that the host is complete.
+        return None
+    if budget[0] < 0:
+        # A walk or the parse loop stopped early, so the build's main binary may
+        # never have been read: shallow planted decoys sort ahead of it. A partial
+        # look must not read as "nothing missing".
+        return None
+    provided = _host_provided_sonames()
+    return {name for name in declared if name not in provided and name not in shipped}
