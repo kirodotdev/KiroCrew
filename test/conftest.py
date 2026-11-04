@@ -552,6 +552,21 @@ def _fresh_host_unservable_backends(_floor_monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _fresh_mcp_oauth_provenance(_floor_monkeypatch):
+    """Give every test its own record of the MCP sign-in links children sent.
+
+    ``mcp_oauth_provenance`` is process state that every emitted banner adds to,
+    and a read shows a banner's link only for a recorded URL. Rebound per test, so
+    a link one test emitted is not vouched for in the next.
+    """
+    from collections import OrderedDict
+
+    from kiro_crew.dashboard import mcp_oauth_provenance
+
+    _floor_monkeypatch.setattr(mcp_oauth_provenance, "_emitted", OrderedDict())
+
+
+@pytest.fixture(autouse=True)
 def _relay_unless_a_test_opens_the_kas_route(_floor_monkeypatch):
     """Start every test with KAS's automatic bundle switch closed and no install state.
 
