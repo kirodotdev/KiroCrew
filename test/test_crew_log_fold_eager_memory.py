@@ -38,23 +38,12 @@ from kiro_crew.crew_log.entry_types import RADAR_ENTRY_TYPE
 def test_a_closed_session_drops_the_slots_eager_memos():
     """``session/closed`` ends the reason to hold the slot warm -- for the EAGER folds.
 
-    Two things this pins beyond the drop itself.
+    The drop is scoped to the closing slot: a slot reset or one worker unit can close
+    while another board goes on, and that board's cell must stay. It walks
+    ``EAGER_FOLD_NAMES`` so a slot fold that goes back to lazy is not taken.
 
-    IT IS SCOPED TO THE CLOSING SLOT. A closer is not always the end of a board: a slot
-    reset, or one worker unit of a live crew, closes while the board goes on. Another
-    board's cells are not this closer's to drop, and the case below holds one to prove it.
-
-    The drop walks ``EAGER_FOLD_NAMES`` rather than passing a bare ``slot=``, and with
-    every slot fold eager (the default) those two now reach the same cells. The loop stays
-    because the RULE is "the closer drops what eager folding warmed", and a slot fold that
-    ever goes back to lazy must not be taken by it.
-
-    AND THE BYTE BUDGET IS NOT WHAT DOES IT. Eviction fires only once the ceiling is
-    exceeded; under it nothing is removed, ever, and a closed board's cell is never
-    re-stored so it never moves towards the back either. On any gateway holding less than
-    :func:`slot_fold_cache_bytes` of cells -- the ordinary case -- that cell would sit
-    there for the life of the process. The assertion below records how far under the
-    ceiling the table was when the drop happened, so the budget cannot be the cause.
+    The byte budget is not what does it: under :func:`slot_fold_cache_bytes` nothing is
+    evicted, so the assertion records the table was under the ceiling.
     """
     slot = WORK_SLOT
     handle = _slot_log("s-work-6", slot)
@@ -176,12 +165,8 @@ def _work_cell_ceiling(monkeypatch, cells: int) -> None:
 def test_the_byte_budget_evicts_back_to_a_cold_fold(monkeypatch):
     """Past the resident-byte ceiling the least recently stored memo goes.
 
-    The memos are an optimization with no answer of their own, so the budget is spent on
-    the slots being written now and an evicted one pays one refold.
-
-    IN BYTES, not in cells, because the cells are not comparable: a ``radar`` cell at its
-    declared caps is charged 24,402 MiB against a ``panel`` cell's 10.1 MiB, so a count
-    ceiling priced a resident total across orders of magnitude with no number moving.
+    An evicted memo costs one refold. The budget is in bytes, not cells: a ``radar``
+    cell at its caps is charged 24,402 MiB against a ``panel`` cell's 10.1 MiB.
     """
     # One SLOT's worth of memos, which is what a ``work/recorded`` entry stores: every
     # slot fold that declares the type gets a cell, so a ceiling of one ``work`` cell
@@ -216,11 +201,8 @@ def test_the_byte_budget_evicts_back_to_a_cold_fold(monkeypatch):
 def test_the_byte_budget_keeps_more_small_cells_than_large_ones(monkeypatch):
     """MUTATION-SENSITIVE: the charge follows each CELL's size, so cheap cells keep more.
 
-    This is the behaviour a count ceiling could not express and the whole reason for the
-    reversal. One budget, two kinds of cell: at a ceiling of four one-item ``work`` cells
-    the same bytes hold more one-document ``panel`` cells when a panel cell is charged
-    less, and fewer when it is charged more -- either way the counts DIFFER, where a
-    table charging every cell the same holds four of each.
+    At a ceiling of four one-item ``work`` cells, the count of ``panel`` cells kept must
+    differ from four; a table charging every cell the same would hold four of each.
     """
     work_cell = _one_item_cell_bytes("work")
     panel_cell = _one_item_cell_bytes("panel")
@@ -267,19 +249,11 @@ def test_the_byte_budget_keeps_more_small_cells_than_large_ones(monkeypatch):
 def test_an_advanced_cell_moves_to_the_back_and_outlives_an_older_neighbour(monkeypatch):
     """MUTATION-SENSITIVE: a stored cell moves to the back, so the NEXT eviction skips it.
 
-    The ceiling alone does not say this. At one cell every store evicts the other, so a
-    table that appended without moving a re-stored cell would pass that test and still
-    evict the cell most recently advanced -- which is the eviction order this change
-    declares and the eager worker depends on: a board being written now is stored on every
-    wake and must not be the one that goes.
+    A board written now is re-stored every wake and must not be the one evicted. Three
+    boards, two-cell budget: A is advanced after B is folded, so C's arrival must evict B.
 
-    Three boards at a budget of two cells, and the discriminating step is the middle one:
-    board A is advanced by a fresh entry AFTER B is folded, so with the move A sits behind
-    B and C's arrival evicts B. Without it A is still at the front and C's arrival evicts A.
-
-    The ceiling is A-after-its-second-item plus one one-item cell, because a cell is
-    charged what it holds: A grows when it is advanced, and a ceiling of two one-item
-    cells would then evict for size rather than for order.
+    The ceiling is A after its second item plus one one-item cell, so eviction happens
+    for order and not for size.
     """
     ceiling = _one_item_cell_bytes("work", items=2) + _one_item_cell_bytes("work")
     monkeypatch.setenv(crew_log.SLOT_FOLD_CACHE_BYTES_ENV, str(ceiling))
@@ -499,12 +473,8 @@ def _append_workstreams_task(handle: CrewLog, slot: str, index: int) -> None:
     """One ``workstreams`` task with every field this fold keeps at its clamp, plus
     the spender row and hourly buckets that task's own worker adds.
 
-    Several entries, because one cannot carry them all: the conductor's ``create``
-    and ``bind`` set the title and the worker key, the worker's ``report`` sets the
-    summary, and only the worker's own ``turn/completed`` can mint the spend row the
-    task is costed from. The item is the widest row this fold keeps -- narrower than
-    ``work``'s by the ``acceptance``, ``artifacts``, ``decision`` and event tail it
-    deliberately does not retain.
+    Several entries: ``create`` and ``bind`` set title and worker key, ``report`` sets
+    the summary, and only the worker's ``turn/completed`` mints the spend row.
     """
     worker = f"chat-{index:06d}-worker"
     base = {"slot": slot, "by": slot}
@@ -596,17 +566,13 @@ def _widest_radar_item(state: Mapping[str, Any]) -> int:
 def test_every_slot_folds_row_cost_is_derived_from_its_own_rows(name):
     """MUTATION-SENSITIVE: each recorded per-row charge is re-measured, not asserted.
 
-    The budget charges a cell ``(rows + 1) x`` its fold's row cost, so every figure in
-    ``_SLOT_FOLD_ROW_BYTES`` is load bearing: too low and the ceiling admits more bytes
-    than it says. The cost is the MARGINAL bytes per counted row of the fold's widest
-    kind, ``(bytes at N entries - bytes at 1) / (rows at N - rows at 1)``, with every text
-    field at the fold's own clamp; a clamp raised without re-measuring fails here.
+    A cell is charged ``(rows + 1) x`` its ``_SLOT_FOLD_ROW_BYTES`` figure. The cost is
+    marginal bytes per row of the widest kind,
+    ``(bytes at N entries - bytes at 1) / (rows at N - rows at 1)``, every text field at
+    its clamp.
 
-    Two bounds. The charge must be AT LEAST the measured cost, and a whole driven cell
-    must weigh no more than it is charged, or the budget is not a bound. And it must be
-    within 10x, so a figure left far above the truth after a clamp is LOWERED fails too:
-    one figure per fold covers its widest row kind, so an average over mixed kinds sits
-    below it by design (``radar``'s skip and event rows, ``work``'s event tail).
+    The charge must be at least the measured cost and within 10x of it, so a stale
+    figure fails after a clamp is raised or lowered.
     """
     slot = f"dashboard:row-{name}"
     unit = f"s-row-{name}"

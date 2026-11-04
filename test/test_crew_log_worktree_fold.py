@@ -191,13 +191,11 @@ def test_the_fold_is_lazy_with_a_stated_reason_and_no_warm_path() -> None:
 
 
 def test_a_block_can_bind_the_tree_by_name() -> None:
-    """THE GAP, closed: the binding gate admits the fold name.
+    """The binding gate admits the tree fold name.
 
-    ``manifest.PACKAGE_FOLD_NAMES`` is what decides whether a PACKAGE block's
-    ``source.fold`` validates, and it is the union of all three of the kernel's key-kind
-    sets. Before the tree set was in that union a tree block was refused however correct
-    ``fold_citations`` was. The template gate keeps only the two SCOPED families, because
-    that surface has no tree reader.
+    ``manifest.PACKAGE_FOLD_NAMES`` decides whether a package block's ``source.fold``
+    validates and is the union of the kernel's three key-kind sets. The template gate keeps
+    only the two scoped families, since templates have no tree reader.
     """
     assert FOLD in manifest.PACKAGE_FOLD_NAMES
     assert manifest.PACKAGE_FOLD_NAMES == (
@@ -264,16 +262,11 @@ def test_a_v3_package_block_binding_the_tree_validates() -> None:
 
 
 def test_the_template_catalogue_still_withholds_the_fold() -> None:
-    """The reason the flag is DERIVED, read in the direction that actually holds.
+    """The template catalogue still withholds the fold, by the derived flag.
 
-    ``advertised`` is what a composing agent reads to decide what it may bind, and the
-    generator computes it from two sets: the editorial one
-    (``INTERNAL_PROJECTION_NAMES``) and the mechanical one (``manifest.FOLD_NAMES``, the
-    set the save gate accepts a binding from). This catalogue belongs to the
-    ``dashboard-template`` skill, which scaffolds TEMPLATES, and a template has no tree
-    reader -- so the honest answer here is still "withheld", and it is withheld by the
-    same derived expression rather than by a hand edit. A package author reaches this
-    fold through the package gate, which is a different set and a different document.
+    ``advertised`` is computed from ``INTERNAL_PROJECTION_NAMES`` and ``manifest.FOLD_NAMES``.
+    The ``dashboard-template`` skill scaffolds templates, which have no tree reader, so the
+    fold is withheld here without a hand edit; package authors reach it via the package gate.
     """
     import json
     from pathlib import Path
@@ -397,21 +390,12 @@ _ROWS = 40
 
 @pytest.mark.parametrize("make,kind", [(_board_rows, "board"), (_owner_rows, "owner")])
 def test_the_tree_folds_row_cost_is_derived_from_its_own_rows(make, kind) -> None:
-    """MUTATION-SENSITIVE: the recorded charge is RE-MEASURED, not asserted.
+    """The recorded row charge is re-measured, not asserted.
 
-    This is the test the whole third key kind turns on. A key kind admitted with no
-    measured cost falls through to ``_UNMEASURED_ROW_BYTES`` -- 64 KiB a row -- and a
-    ceiling stated over that is not a bound. So the figure in ``_TREE_FOLD_ROW_BYTES``
-    is load bearing, and it is derived here the way the slot table's members are:
-    ``(bytes at N rows - bytes at 1 row) / (N - 1)``, every text field at the fold's own
-    clamp, in 4-byte UTF-8 characters.
-
-    TWO BOUNDS, both ways round. The charge must be at LEAST the measured cost of the
-    fold's widest kind, or the ceiling admits more bytes than it says; and a whole
-    driven cell must weigh no more than it is charged, or the charge is not an upper
-    bound at all. A clamp raised without re-measuring fails the first; a figure left far
-    above the truth after a clamp is LOWERED fails nothing here by design for the narrow
-    kind, which is why the 10x band is applied only to the widest one.
+    An unmeasured key kind falls back to ``_UNMEASURED_ROW_BYTES`` (64 KiB a row), so
+    ``_TREE_FOLD_ROW_BYTES`` is derived as ``(bytes at N rows - bytes at 1 row) / (N - 1)``,
+    text fields at their clamp in 4-byte UTF-8. The charge is at least the widest kind's
+    cost (10x band) and a driven cell weighs no more than its charge.
     """
     one = _state(make(1))
     many = _state(make(_ROWS))

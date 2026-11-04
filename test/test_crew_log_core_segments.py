@@ -35,7 +35,7 @@ from kiro_crew.session_ledger import _store_name
 _isolated_home = crew_log_core_helpers._isolated_home
 
 
-# --- containment ----------------------------------------------------------
+# containment
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX symlink semantics")
@@ -87,7 +87,7 @@ def test_an_existing_root_with_a_loose_mode_is_tightened(monkeypatch, tmp_path):
     assert stat.S_IMODE((home / "crew-log").stat().st_mode) == 0o700
 
 
-# --- sandbox disposition --------------------------------------------------
+# sandbox disposition
 
 
 def test_every_log_is_refused_to_the_agents_own_file_tools():

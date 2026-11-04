@@ -1,33 +1,17 @@
 """The crew container's own configuration must stay in step with the gateway.
 
-The container that a remote crew runs as serves exactly one caller: the customer's
-HTTP turn, through its front process. It has nobody to reach on a messaging channel,
-so it disables every transport before the backend starts -- by name in a config file
-it owns, and by refusing to pass a channel credential into the launch environment.
-It also states its agent posture there rather than inheriting one: which ACP backend
-owns the model credential, and what to do on a host that cannot sandbox the model
-subprocess. The gateway reads all of that from the same file, so the container writes
-it.
+The container serves only the customer's HTTP turn, so it disables every channel and
+strips every channel credential, and it writes its own sandbox posture into the config.
+Those name lists are compared against ``builtin_channel_descriptors()`` and
+``AgentConfig``'s ``sandbox*`` fields, so a new channel or knob fails here until the
+container decides what to do with it.
 
-All of that is lists of names, and a list of names is only as good as its last
-update. This file is what keeps them updated: it compares them against the
-gateway's own definitions -- ``builtin_channel_descriptors()`` for the channels and
-their credentials, ``AgentConfig``'s ``sandbox*`` fields for the sandbox settings. A
-channel or a sandbox knob added there reds this test until the container decides what
-to do about it, which is the difference between an isolation claim and an isolation
-that holds.
+``FORCED_AGENT_SETTINGS`` is the baseline, held universally protective.
+``INTERNAL_ONLY_AGENT_SETTINGS`` is the Fargate lane's exception, with its own additive
+rules, so the baseline rule never has to bend.
 
-The sandbox rule is in two halves, and the second exists so the first never has to
-bend. ``FORCED_AGENT_SETTINGS`` is the baseline every container gets and is held
-UNIVERSALLY protective. ``INTERNAL_ONLY_AGENT_SETTINGS`` is the named exception the
-internal-only Fargate lane needs, and its own rules -- containment in the baseline, only
-real sandbox keys, unreachable without the deployment's claim -- are additive. Nothing
-in the second half relaxes the first, which is the whole point of splitting them.
-
-The container's source is READ, never imported. ``crew/runtime/`` is a docker build
-context whose modules import each other as top-level ``container.*``, and
-``test_spawn_audit.py::test_container_image_assets_are_not_imported`` pins that the
-gateway never imports the tree. So the constants are pulled out of the file's AST.
+The container source is read via AST, never imported:
+``test_spawn_audit.py::test_container_image_assets_are_not_imported`` pins that.
 """
 
 from __future__ import annotations
@@ -101,11 +85,8 @@ def registry():
 def sandbox_keys() -> set[str]:
     """Every `agent` setting the gateway has whose name begins with ``sandbox``.
 
-    The rule is deliberately by PREFIX rather than a list of the three that exist
-    today. A sandbox knob added to `AgentConfig` then reds this test until the
-    container decides what to write for it, which is the only way a container that
-    states its sandbox posture stays truthful as the gateway grows more ways to be
-    less sandboxed.
+    By prefix, not a fixed list, so a new knob on `AgentConfig` fails these tests until
+    the container decides what to write for it.
     """
     import dataclasses
 
@@ -159,11 +140,8 @@ def test_the_container_strips_no_variable_the_gateway_never_reads(registry) -> N
 def test_the_container_forces_every_sandbox_setting_the_gateway_reads(sandbox_keys) -> None:
     """Each one changes how sandboxed the model subprocess is, so the container states it.
 
-    The gateway reads its sandbox mode and its fallback flags from `config.json`,
-    which arrives in the task from outside the container's code. Any of them left to
-    what a supplied file says makes the posture a property of that file rather than of
-    this container -- in either direction: a file could weaken a protection, or refuse
-    a fallback the deployment depends on.
+    `config.json` arrives from outside the container, so any setting left to it lets a
+    supplied file weaken a protection or refuse a fallback the deployment needs.
     """
     forced = set(_literal("FORCED_AGENT_SETTINGS"))
     missing = sorted(sandbox_keys - forced)
@@ -177,24 +155,9 @@ def test_the_container_forces_every_sandbox_setting_the_gateway_reads(sandbox_ke
 def test_no_sandbox_setting_is_forced_to_a_permissive_value(sandbox_keys) -> None:
     """Writing the key is half of it; the value has to be the protective one.
 
-    Stated UNIVERSALLY, over whatever ``sandbox*`` settings the gateway has, and not as
-    a table of per-key expectations in this file. A table would sit beside the values it
-    guards: relaxing a setting in ``FORCED_AGENT_SETTINGS`` and editing its row here
-    would leave CI green, which is the one thing this test exists to prevent. A ratchet
-    may only tighten, so the expectation has to come from somewhere the person relaxing
-    the setting is not already editing.
-
-    So each expectation is derived rather than declared:
-
-    * Every boolean ``sandbox*`` setting must be ``False``. Each one is a way to proceed
-      with less isolation than the host could provide, so a knob added to ``AgentConfig``
-      is covered the moment it exists, with nothing to add here.
-    * The non-boolean mode must not be the gateway's own disabling value, read from
-      ``JAIL_MODE_OFF`` rather than spelled here, and must be one the schema declares --
-      so a typo naming no real mode is caught as well.
-
-    Which settings are booleans is read from ``AgentConfig``'s own defaults, so this does
-    not need to know their names either.
+    Derived, not a per-key table: a table here could be edited alongside a relaxed value
+    and leave CI green. Every boolean ``sandbox*`` setting must be ``False``; the mode must
+    not be ``JAIL_MODE_OFF`` and must be one the schema declares.
     """
     from kiro_crew.config.sections import JAIL_MODE_OFF, AgentConfig
 
@@ -225,10 +188,7 @@ def test_no_sandbox_setting_is_forced_to_a_permissive_value(sandbox_keys) -> Non
 def _schema_enum(field_name: str) -> tuple:
     """The values ``AgentConfig`` declares for *field_name*, from its field metadata.
 
-    Read from the schema so a mode the gateway adds or renames is reflected without an
-    edit here. Falls back to refusing rather than to accepting: a field with no declared
-    enum yields an empty tuple, and the assertion above then fails, which is the right
-    direction for a security ratchet that cannot find its own reference.
+    No declared enum yields an empty tuple, so the check fails closed.
     """
     import dataclasses
 
@@ -243,10 +203,7 @@ def _schema_enum(field_name: str) -> tuple:
 def test_the_permissive_value_rule_has_something_to_stand_on(sandbox_keys) -> None:
     """Non-vacuity: the rule above must have a boolean to require and a mode to refuse.
 
-    A ratchet that cannot fail protects nothing, so the rule's own
-    anchors are checked rather than assumed. If the gateway stopped declaring a disabling
-    mode, or stopped having boolean sandbox settings, the rule would pass everything and
-    nothing else would say so.
+    Without a disabling mode or a boolean sandbox setting, the rule would pass everything.
     """
     import dataclasses
 
@@ -269,13 +226,8 @@ def test_the_permissive_value_rule_has_something_to_stand_on(sandbox_keys) -> No
 def test_the_guard_asserts_the_backend_environment_carries_no_credential() -> None:
     """The invariant ``build_backend_env`` maintains, checked where it is consumed.
 
-    Popping the credential is something the container controls, so a value in the
-    environment handed to the spawn is a broken invariant rather than a property of the
-    host -- and ``verify_sandbox`` refuses on it whatever the sandbox verdict is. Read
-    from the guard's own source, so deleting that check reds here.
-
-    Both credential shapes are required: covering one and not its sibling would leave
-    the same path open beside the guard.
+    ``verify_sandbox`` refuses a credential in the spawn environment whatever the sandbox
+    verdict. Both credential names are required, or the sibling path stays open.
     """
     guard = ast.parse(MAIN_SRC.read_text(encoding="utf-8"))
     for node in ast.walk(guard):
@@ -308,31 +260,14 @@ def test_the_container_forces_no_agent_setting_the_gateway_does_not_have() -> No
 
 # ── The internal-only exception, and why it is stated as a SECOND rule ──
 #
-# The Fargate lane is internal-only (RFC section 7): it runs the operator's own crews, and
-# the operator bears the risk of what those crews read, so an unsandboxed model subprocess
-# is accepted there. That is the one posture the container may loosen, and the rules below
-# are what keep it the only one.
-#
-# The ratchet above is deliberately NOT edited to accommodate it. Its universal
-# assertion -- every boolean `sandbox*` setting in `FORCED_AGENT_SETTINGS` is `False` --
-# still holds verbatim over the baseline every container gets, so relaxing a value there
-# reds exactly as it did before this exception existed. Rewriting that rule into "False,
-# or True when a flag is set" would have turned a universal property into an allowlist
-# whose entries are this change's own new code, which is the failure mode a ratchet
-# exists to prevent.
-#
-# So the exception lives in its own constant with its own rules, and those rules are
-# strictly ADDITIVE: the loosened set may only override a key the baseline already
-# decided protectively, may only name a real sandbox setting, and must be unreachable
-# without the deployment's claim. Nothing below weakens anything above.
+# The Fargate lane is internal-only (RFC section 7): the operator runs their own crews and
+# bears the risk, so an unsandboxed model subprocess is accepted there. The ratchet above
+# is not bent for it; the exception has its own additive rules: only override a key the
+# baseline decides, only real sandbox keys, unreachable without the deployment's claim.
 
 
 def _function_def(source: Path, name: str) -> ast.FunctionDef:
-    """The named module-level function, read from *source* rather than imported.
-
-    Same reason as everything else in this file: ``crew/runtime/`` is a docker build
-    context the gateway must never import.
-    """
+    """The named module-level function, read from *source* rather than imported."""
     tree = ast.parse(source.read_text(encoding="utf-8"))
     for node in ast.walk(tree):
         if isinstance(node, ast.FunctionDef) and node.name == name:
@@ -343,12 +278,8 @@ def _function_def(source: Path, name: str) -> ast.FunctionDef:
 def test_the_internal_only_loosening_names_only_real_sandbox_settings(sandbox_keys) -> None:
     """The exception may only relax a sandbox knob the gateway actually reads.
 
-    Two failures this catches. A typo naming no real setting would be written into
-    ``config.json`` and ignored, so the container would still refuse to start and the
-    constant would read as though it had done something. And a NON-sandbox agent setting
-    smuggled in here would be a posture change riding the sandbox exception -- the
-    `acp_backend` key one line up decides which process owns the model credential, and
-    the internal-only boundary says nothing about that.
+    Catches a typo that loosens nothing, and a non-sandbox setting (such as `acp_backend`,
+    which decides who owns the model credential) riding the sandbox exception.
     """
     loosened = set(_literal("INTERNAL_ONLY_AGENT_SETTINGS"))
     outside = sorted(loosened - sandbox_keys)
@@ -365,15 +296,7 @@ def test_the_internal_only_loosening_can_only_override_a_stated_protective_value
 ) -> None:
     """Every loosened key must ALSO be in the baseline, so the ratchet above covers it.
 
-    This is what keeps the two rules from having a gap between them. The universal
-    assertion reads ``FORCED_AGENT_SETTINGS``, so a key present ONLY here would have its
-    protective value stated nowhere and would never be judged by that rule at all --
-    the exception would be the only place it appears, and "is it False by default?"
-    would have no answer to check.
-
-    Requiring containment means the baseline still states the protective value for every
-    key this exception can touch, and this constant can only ever be an override of a
-    value the ratchet already guards.
+    A key only here would have no protective value stated for the universal rule to judge.
     """
     baseline = set(_literal("FORCED_AGENT_SETTINGS"))
     loosened = set(_literal("INTERNAL_ONLY_AGENT_SETTINGS"))
@@ -383,9 +306,7 @@ def test_the_internal_only_loosening_can_only_override_a_stated_protective_value
         "Add them to FORCED_AGENT_SETTINGS first, so the universal rule above judges "
         "their default and this constant is only ever an override of it."
     )
-    # And it must stay an EXCEPTION rather than become the posture: a set that grew to
-    # every sandbox key would leave the baseline's protective values unreachable in an
-    # internal-only task, which is a different design and not a wider exception.
+    # It must stay an exception: loosening every sandbox key is no posture at all.
     assert loosened < sandbox_keys, (
         f"the internal-only exception loosens every sandbox setting ({sorted(loosened)}). "
         "That is not an exception to the protective posture, it is the absence of one."
@@ -395,20 +316,9 @@ def test_the_internal_only_loosening_can_only_override_a_stated_protective_value
 def test_the_internal_only_loosening_is_unreachable_without_the_deployments_claim() -> None:
     """The constant must be applied ONLY under the flag, read from the source.
 
-    The behavioural half of this cannot be asserted here -- this file never imports the
-    container tree -- so the guard is structural and deliberately exact: the one place
-    ``INTERNAL_ONLY_AGENT_SETTINGS`` is read inside ``build_backend_config`` must sit
-    inside an ``if`` whose condition names ``internal_only``.
-
-    Checked structurally rather than by trusting the parameter's default, because a
-    default of ``False`` says what happens when a caller is silent and says nothing at
-    all about whether the branch is guarded. An edit that applied the constant
-    unconditionally would keep the parameter, keep its default, and hand every
-    container -- local hosts included -- the loosened posture.
-
-    ``container_tests/test_supervisor_backend.py`` asserts the resulting VALUES in both
-    directions against the real function. Both are needed: that one proves the behaviour
-    today, this one proves the guard is the reason.
+    Every read inside ``build_backend_config`` must sit in an ``if`` naming
+    ``internal_only``; a default of ``False`` alone does not prove the branch is guarded.
+    ``container_tests/test_supervisor_backend.py`` checks the resulting values.
     """
     fn = _function_def(BACKEND_SRC, "build_backend_config")
     args = {a.arg for a in fn.args.args} | {a.arg for a in fn.args.kwonlyargs}
@@ -436,8 +346,7 @@ def test_the_internal_only_loosening_is_unreachable_without_the_deployments_clai
         "deployment claiming the internal-only boundary. Every container would get it, "
         "including one on a local host."
     )
-    # Nowhere ELSE in the function, or the guarded branch above would be one of two
-    # application sites and the unguarded one would decide.
+    # Nowhere else in the function, or an unguarded second site would decide.
     reads_outside = [
         node
         for node in ast.walk(fn)
@@ -454,15 +363,9 @@ def test_the_internal_only_loosening_is_unreachable_without_the_deployments_clai
 def test_the_sandbox_guard_refuses_or_accepts_on_the_deployments_claim() -> None:
     """``verify_sandbox`` must read the claim, and its refusal must name the setting.
 
-    The guard is what turns the claim into a start, so a claim the guard does not read
-    is a setting that changes a config file and nothing else -- the container would
-    still refuse on Fargate while the whole chain above it looked wired.
-
-    And the refusal an operator meets when they have NOT claimed it has to name
-    ``SMC_INTERNAL_ONLY``. Before this existed the message ended in "run where
-    unprivileged user namespaces are permitted", which on Fargate is advice with no
-    action behind it: there is no such host in that lane. A refusal that names the
-    setting is the difference between a dead end and a decision.
+    Unread, the claim would change only a config file and Fargate would still refuse. The
+    refusal must name ``SMC_INTERNAL_ONLY``: Fargate has no host with user namespaces, so
+    "move to one" is no advice there.
     """
     fn = _function_def(MAIN_SRC, "verify_sandbox")
     attrs = {n.attr for n in ast.walk(fn) if isinstance(n, ast.Attribute)}
