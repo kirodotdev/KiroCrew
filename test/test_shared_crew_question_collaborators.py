@@ -183,7 +183,10 @@ async def test_the_losing_answer_is_audited_as_a_conflict(state, monkeypatch):
     await task
     while audit._pending_audits:
         await asyncio.gather(*list(audit._pending_audits))
-    rows = [(e.operation, e.outcome, e.metadata["responder"]["id"], e.resources) for e in events]
+    # Each audit is written by its own background task, so arrival order is unspecified.
+    rows = sorted(
+        (e.operation, e.outcome, e.metadata["responder"]["id"], e.resources) for e in events
+    )
     target = question_decision_id("q-race")
     # The replay of the winner adds nothing; the different losing answer is recorded.
     assert rows == [
