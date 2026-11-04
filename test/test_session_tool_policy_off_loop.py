@@ -364,6 +364,100 @@ async def test_two_identical_specs_declaring_the_agent_name_answer_their_one_pol
 
 
 @pytest.mark.asyncio
+async def test_differing_specs_with_one_policy_answer_that_policy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Several packages each vend their own copy of one agent, differing in
+    prompt but not in ``managedToolPolicy``. A KAS session runs the newest and a
+    kiro-cli session the first in directory order, and either way the policy is
+    this one, so the read answers it. A missing policy on both sides is one
+    policy too: the empty one."""
+    for package, prompt in (("Alpha", "a"), ("Beta", "b")):
+        (tmp_path / f"{package}-{AGENT}.json").write_text(
+            json.dumps(
+                {"name": AGENT, "prompt": prompt, "managedToolPolicy": {"exclude": ["shell"]}}
+            ),
+            encoding="utf-8",
+        )
+
+    response = await _call(monkeypatch, tmp_path)
+    assert response.status == 200
+    assert _body(response) == {"exclude": ["shell"]}
+
+    for package, prompt in (("Alpha", "a"), ("Beta", "b")):
+        (tmp_path / f"{package}-{AGENT}.json").write_text(
+            json.dumps({"name": AGENT, "prompt": prompt}), encoding="utf-8"
+        )
+    response = await _call(monkeypatch, tmp_path)
+    assert response.status == 200
+    assert _body(response) == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "policy, expected_status",
+    [
+        ({}, 200),
+        (None, 409),
+        (False, 409),
+        (0, 409),
+        (0.0, 409),
+        ("", 409),
+        ([], 409),
+        ({"honourToolRefs": None}, 409),
+        ({"honourToolRefs": 0}, 409),
+        ({"excludeServers": None}, 409),
+        ({"excludeServers": [1]}, 409),
+    ],
+)
+@pytest.mark.parametrize("absent_first", [True, False])
+async def test_absent_policy_agrees_only_with_an_empty_object(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    policy: Any,
+    expected_status: int,
+    absent_first: bool,
+) -> None:
+    """An absent policy is empty, but cannot mask a malformed twin in either order."""
+    specs = [{"name": AGENT}, {"name": AGENT, "managedToolPolicy": policy}]
+    if not absent_first:
+        specs.reverse()
+    for package, spec in zip(("Alpha", "Beta"), specs):
+        (tmp_path / f"{package}-{AGENT}.json").write_text(json.dumps(spec), encoding="utf-8")
+
+    response = await _call(monkeypatch, tmp_path)
+
+    assert response.status == expected_status
+    if expected_status == 200:
+        assert _body(response) == {}
+    else:
+        assert _body(response)["code"] == "policy_unreadable"
+
+
+@pytest.mark.asyncio
+async def test_one_policy_honouring_differing_tool_refs_is_still_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With ``honourToolRefs`` on, the answer's include list comes from the
+    spec's ``tools``, so equal policies over different grants are two answers.
+    Answering either would hide a tool the running copy grants, or show one it
+    does not, so the read refuses."""
+    policy = {"honourToolRefs": True}
+    for package, tool in (("Alpha", "learn_list"), ("Beta", "learn_add")):
+        (tmp_path / f"{package}-{AGENT}.json").write_text(
+            json.dumps(
+                {"name": AGENT, "tools": [f"@kirocrew-core/{tool}"], "managedToolPolicy": policy}
+            ),
+            encoding="utf-8",
+        )
+
+    response = await _call(monkeypatch, tmp_path)
+
+    assert response.status == 409
+    assert _body(response)["code"] == "policy_unreadable"
+
+
+@pytest.mark.asyncio
 async def test_the_declared_name_scan_also_runs_off_the_event_loop(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

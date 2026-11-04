@@ -216,6 +216,7 @@ def resolve_projected_spec(
     what is missing rather than quote a failed file open.
     """
     from kiro_crew.agent_files import is_mate_service_agent
+    from kiro_crew.agent_sdk.kas_spec_selection import load_kas_agent_spec
 
     if is_mate_service_agent(agent):
         # The mate conductor and worker are generated into the crewmate folder,
@@ -224,7 +225,7 @@ def resolve_projected_spec(
         # the one the gateway governs.
         service_dir = paths_mod.mate_agents_dir()
         if not kas_agents_mod.agent_spec_absent(service_dir, agent):
-            return kas_agents_mod.load_agent_spec(service_dir, agent), service_dir
+            return load_kas_agent_spec(service_dir, agent), service_dir
     if not kas_agents_mod.agent_spec_absent(agents_dir, agent):
         # A user-level template Crew does not own gets the servers the user approved
         # for it merged here, at spawn, and never written into its file
@@ -232,7 +233,7 @@ def resolve_projected_spec(
         # carries them from its installer, so it comes back unchanged).
         from kiro_crew.template_mcp_additions import merge_at_spawn
 
-        spec = merge_at_spawn(agent, kas_agents_mod.load_agent_spec(agents_dir, agent))
+        spec = merge_at_spawn(agent, load_kas_agent_spec(agents_dir, agent))
         # A user-level custom agent gets Crew's default servers, through the helper
         # the kiro-cli skill view applies too, so the two paths cannot drift.
         return with_default_crew_servers(agent, spec), agents_dir
@@ -249,7 +250,7 @@ def resolve_projected_spec(
     if not kas_agents_mod.agent_spec_absent(mate_dir, agent):
         from kiro_crew.mate_worker import drop_partial_platform_servers
 
-        mate_spec = kas_agents_mod.load_agent_spec(mate_dir, agent)
+        mate_spec = load_kas_agent_spec(mate_dir, agent)
         # A platform server switched on with no transport is never launched from
         # here: the gateway supplies that server.
         drop_partial_platform_servers(mate_spec)
@@ -264,7 +265,7 @@ def resolve_projected_spec(
 
     if not declared:
         try:
-            spec = merge_at_spawn(agent, kas_agents_mod.load_agent_spec(agents_dir, agent))
+            spec = merge_at_spawn(agent, load_kas_agent_spec(agents_dir, agent))
             return with_default_crew_servers(agent, spec), agents_dir
         except KasAgentTranslationError as exc:
             # Asked again after the read failed, so a spec that appeared meanwhile
@@ -763,6 +764,7 @@ class KasHarness(MembershipHarness):
         """
         from kiro_crew.acp.session_handle import AcpAgentUnavailable, AcpRuntimeError
         from kiro_crew.agent_sdk import kas_model_catalog
+        from kiro_crew.agent_sdk.kas_spec_selection import kas_projects_newest
 
         # The account this session's request will go out under: the engine takes
         # its credential from the vault per call, so the ``model`` select it
@@ -860,6 +862,10 @@ class KasHarness(MembershipHarness):
                     # answers ``{}`` for this host on the injection half for
                     # the same reason.
                     work_dir=None,
+                    prefer_newest=kas_projects_newest(agent),
+                    # A bound session subtracts its app's registered overlay,
+                    # the file ``bound`` above projects.
+                    kas_session_key=session_key,
                 )
             except Exception:
                 # Empty is the SAFE direction: it declares a stubbed server twice

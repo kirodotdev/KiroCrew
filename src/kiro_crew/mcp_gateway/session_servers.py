@@ -262,6 +262,8 @@ def _load_overlay_for_agent(
     markdown_specs: bool = False,
     dispatchable_only: bool = True,
     kas_worker_session_key: str | None = None,
+    prefer_newest: bool = False,
+    kas_session_key: str = "",
 ) -> dict[str, Any] | None:
     """Locate the rewritten overlay spec for *agent*, or ``None``.
 
@@ -272,6 +274,16 @@ def _load_overlay_for_agent(
     is the session's own crewmate's
     (:func:`kiro_crew.mcp_gateway.mate_overlays.worker_overlay_spec`). Without it
     -- every other host -- the lookup below runs exactly as before.
+
+    On KAS, *prefer_newest* opts into the shared ``kas_projects_newest``
+    predicate. Only its user-level picks resolve through ``declared_spec_entry``
+    and read that source stem's JSON overlay. A missing selected overlay stays
+    unpooled; another claimant's overlay must never substitute its backend.
+    Derived and mate service agents retain the canonical filename lookup.
+    Other hosts leave *prefer_newest* false. With it, a session *kas_session_key*
+    binds to an app's own agent reads the overlay of that app's registered file
+    (``kas_spec_selection.kas_bound_source_stem``), the file its projection
+    reads, before any newest pick.
 
     Package-installed agents are written to the overlay directory under a
     package-qualified filename (e.g. ``Pkg-gpu-dev.json``) while the session
@@ -317,6 +329,36 @@ def _load_overlay_for_agent(
             overlay_dir,
         )
         return None
+    from kiro_crew.agent_sdk.kas_spec_selection import kas_bound_source_stem, kas_projects_newest
+
+    # A session bound to an app's own agent runs the app's registered file, so
+    # its overlay is that file's, before any newest pick.
+    stem = kas_bound_source_stem(kas_session_key, agent) if prefer_newest else None
+    if stem is None and prefer_newest and kas_projects_newest(agent):
+        from kiro_crew.agent_discovery import declared_spec_entry
+        from kiro_crew.config.paths import kiro_agents_dir
+
+        try:
+            chosen = declared_spec_entry(
+                kiro_agents_dir(),
+                agent,
+                operation="mcp_overlay_selection",
+                source="unknown",
+                prefer_newest=True,
+            )
+        except (OSError, ValueError):
+            logger.warning("MCP-gateway: cannot read selected overlay for %r", agent, exc_info=True)
+            return None
+        stem = None if chosen is None else chosen[0].stem
+    if stem is not None:
+        # The rewriter keeps the source stem, even for markdown specs.
+        # Rank the sources, never the overlays' rewrite timestamps.
+        try:
+            data = json.loads((overlay_dir / f"{stem}.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            logger.warning("MCP-gateway: cannot read selected overlay for %r", agent, exc_info=True)
+            return None
+        return data if isinstance(data, dict) and data.get("name") == agent else None
     direct = overlay_dir / f"{agent}.json"
     try:
         return json.loads(direct.read_text(encoding="utf-8"))
@@ -412,6 +454,8 @@ def pooled_session_servers(
     markdown_specs: bool = False,
     dispatchable_only: bool = True,
     kas_worker_session_key: str | None = None,
+    prefer_newest: bool = False,
+    kas_session_key: str = "",
 ) -> list[dict[str, Any]]:
     """Return ACP ``session/new`` entries for *agent*'s broker stubs.
 
@@ -445,6 +489,10 @@ def pooled_session_servers(
     ignores it. KAS subtracts the names of exactly the entries this returns
     (``acp/harness/kas.py``), so the two sets come from this one lookup.
 
+    *prefer_newest* and *kas_session_key* opt into the KAS source selection
+    described by :func:`_load_overlay_for_agent`; other hosts keep the filename
+    lookup.
+
     Fail-soft by design: any unreadable or malformed overlay yields ``[]``, so a
     bad rewrite degrades to unpooled operation rather than breaking the spawn.
     """
@@ -457,6 +505,8 @@ def pooled_session_servers(
         markdown_specs,
         dispatchable_only,
         kas_worker_session_key,
+        prefer_newest,
+        kas_session_key,
     )
     if not isinstance(spec, dict):
         return []
@@ -494,6 +544,8 @@ def injection_server_names(
     work_dir: str | Path | None = None,
     markdown_specs: bool = False,
     dispatchable_only: bool = True,
+    prefer_newest: bool = False,
+    kas_session_key: str = "",
 ) -> frozenset[str]:
     """Return the set of server names that WILL be injected for *agent*.
 
@@ -510,8 +562,9 @@ def injection_server_names(
     one guard in :func:`_load_overlay_for_agent`, so passing it to one and not
     the other is the way to make them disagree.
 
-    This is deliberately cheap (one file read, no shaping) so it can be called
-    as a post-launch health check without adding latency to the session path.
+    This reads one overlay without shaping; *prefer_newest* and *kas_session_key*
+    additionally resolve the KAS source, exactly as :func:`pooled_session_servers`
+    does.
     It never answers for a crewmate's worker on KAS: that host subtracts the
     names of the entries :func:`pooled_session_servers` already returned for the
     session, so no second lookup can disagree with the first.
@@ -519,7 +572,13 @@ def injection_server_names(
     if not overlay_dir or not agent:
         return frozenset()
     spec = _load_overlay_for_agent(
-        Path(overlay_dir), agent, work_dir, markdown_specs, dispatchable_only
+        Path(overlay_dir),
+        agent,
+        work_dir,
+        markdown_specs,
+        dispatchable_only,
+        prefer_newest=prefer_newest,
+        kas_session_key=kas_session_key,
     )
     if not isinstance(spec, dict):
         return frozenset()

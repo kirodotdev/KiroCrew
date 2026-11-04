@@ -535,9 +535,10 @@ class TestProjectedSpawnSpecRead:
         monkeypatch.setattr(
             kas_agents_mod,
             "load_agent_spec",
-            lambda agents_dir, agent: (calls.append(f"load:{agent}"), {"tools": ["tool_search"]})[
-                1
-            ],
+            lambda agents_dir, agent, **_kw: (
+                calls.append(f"load:{agent}"),
+                {"tools": ["tool_search"]},
+            )[1],
         )
         rt = object.__new__(AcpRuntime)
         rt._agent = "kirocrew"
@@ -559,7 +560,7 @@ class TestProjectedSpawnSpecRead:
         monkeypatch.setattr(
             kas_agents_mod,
             "load_agent_spec",
-            lambda *a: (_ for _ in ()).throw(AssertionError("must not read")),
+            lambda *a, **_k: (_ for _ in ()).throw(AssertionError("must not read")),
         )
         rt = object.__new__(AcpRuntime)
         rt._agent = "kirocrew-worker"
@@ -574,7 +575,7 @@ class TestProjectedSpawnSpecRead:
         monkeypatch.setattr(
             kas_agents_mod,
             "load_agent_spec",
-            lambda *a: (_ for _ in ()).throw(FileNotFoundError("gone")),
+            lambda *a, **_k: (_ for _ in ()).throw(FileNotFoundError("gone")),
         )
         rt = object.__new__(AcpRuntime)
         rt._agent = "kirocrew"

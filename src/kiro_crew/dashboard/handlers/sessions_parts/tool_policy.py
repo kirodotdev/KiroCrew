@@ -331,6 +331,21 @@ def _policy_answer(
     return answer
 
 
+def _policy_inputs(spec: dict[str, Any]) -> list[Any]:
+    """Every part of *spec* that :func:`_policy_answer` reads.
+
+    ``managedToolPolicy`` always, defaulting only an absent policy to an empty
+    object as the reader does. Explicit null and other non-objects stay malformed.
+    The spec's ``tools`` count whenever the policy could turn on ``honourToolRefs``:
+    the per-tool include lists are derived from those grants. Anything but an
+    explicit ``False`` or an absent key counts, so a malformed opt-in compares
+    ``tools`` too rather than less.
+    """
+    policy = spec.get("managedToolPolicy", {})
+    opt_in = policy.get(HONOUR_TOOL_REFS_KEY, False) if isinstance(policy, dict) else None
+    return [policy, None if opt_in is False else spec.get("tools")]
+
+
 def _read_managed_tool_policy_sync(agents_dir: Path, agent_name: str) -> dict[str, Any] | None:
     """:func:`_read_managed_tool_policy_uncached`, answered from the memo while
     *agents_dir* is unchanged. Blocking; runs on a worker like the read it wraps.
@@ -427,12 +442,13 @@ def _read_managed_tool_policy_uncached(agents_dir: Path, agent_name: str) -> dic
     not answer it with the same empty body a policy-free agent gets.
 
     Propagates :class:`kiro_crew.agent_discovery.AmbiguousAgentSpecError` when
-    two specs declare *agent_name* with differing content: that is not "no
-    policy" either, and the caller records it as a denial rather than answering
-    it silently. Two IDENTICAL specs declaring the name are one policy, and the
-    scan answers it (see ``spec_by_declared_name``): a package installer that
-    flattens dependencies writes such twins, and whichever of them the session
-    runs, its policy is this one.
+    two specs declare *agent_name* and differ in what the answer reads
+    (:func:`_policy_inputs`): that is not "no policy" either, and the caller
+    records it as a denial rather than answering it silently. Specs declaring
+    the name that agree on those inputs give one answer, and the scan returns
+    it (see ``spec_by_declared_name``'s ``agree_on``), even when they differ
+    elsewhere: several installed packages can each vend their own copy of one
+    agent, and whichever of them the session runs, its policy is this one.
     """
     # The file the policy was read from, when it was a direct-filename read.
     # The declared-name scan returns a parse and not a path (see
@@ -441,8 +457,16 @@ def _read_managed_tool_policy_uncached(agents_dir: Path, agent_name: str) -> dic
     # only -- which identifies the spec, since exactly one declares that name.
     spec_path: Path | None = None
     try:
+        # ``agree_on``: a session may run any of several same-name specs (a
+        # KAS session the newest, a kiro-cli one the first in directory order),
+        # so the answer is safe only when every one of them yields the same
+        # answer; a set that differs in what the answer reads is still refused.
         config: Any = spec_by_declared_name(
-            agents_dir, agent_name, operation="session_tool_policy", source="dashboard"
+            agents_dir,
+            agent_name,
+            operation="session_tool_policy",
+            source="dashboard",
+            agree_on=_policy_inputs,
         )
         if config is None:
             # ``<name>.json`` then ``<name>.md``: beside a twin the JSON wins,

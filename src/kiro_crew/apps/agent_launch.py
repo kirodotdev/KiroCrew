@@ -516,6 +516,30 @@ def unbind_session_app_agent(session_key: str) -> None:
         _KAS_BINDINGS.pop(session_key, None)
 
 
+def bound_app_name(session_key: str, agent: str) -> str | None:
+    """The app whose registered spec *session_key*'s *agent* is bound to, or ``None``.
+
+    No filesystem I/O. :func:`bound_app_spec_path` names that file.
+    """
+    if not (session_key and agent):
+        return None
+    with _KAS_BINDING_LOCK:
+        bound = _KAS_BINDINGS.get(session_key)
+    if bound is None or bound[1] != agent:
+        return None
+    return bound[0]
+
+
+def bound_app_spec_path(session_key: str, agent: str) -> Path | None:
+    """The registered file *session_key*'s *agent* is bound to, or ``None`` when unbound.
+
+    The path :func:`read_bound_app_spec` reads, so a companion reader keyed by
+    the file's stem (the broker overlay) names the same file. No filesystem I/O.
+    """
+    app_name = bound_app_name(session_key, agent)
+    return None if app_name is None else registered_spec_path(app_name, agent)
+
+
 def read_bound_app_spec(session_key: str, agent: str) -> dict[str, Any] | None:
     """The registered spec *session_key*'s *agent* is bound to, or ``None`` when unbound.
 
@@ -524,13 +548,9 @@ def read_bound_app_spec(session_key: str, agent: str) -> dict[str, Any] | None:
     bound file is missing, unverifiable or declares another agent: the session must
     not start rather than run a checkout's same-named spec. Does filesystem I/O.
     """
-    if not (session_key and agent):
-        return None
-    with _KAS_BINDING_LOCK:
-        bound = _KAS_BINDINGS.get(session_key)
-    if bound is None or bound[1] != agent:
+    app_name = bound_app_name(session_key, agent)
+    if app_name is None:
         return None
     from kiro_crew.apps import bridges
 
-    app_name, _ = bound
     return _read_registered_spec(app_name, agent, bridges._kiro_agents_dir())

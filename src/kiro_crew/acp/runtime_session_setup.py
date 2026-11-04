@@ -164,6 +164,12 @@ def _pooled_session_servers_and_ref_spec(
         if session_key and backend == ACP_BACKEND_KAS
         else {}
     )
+    if backend == ACP_BACKEND_KAS:
+        from kiro_crew.agent_sdk.kas_spec_selection import kas_projects_newest
+
+        worker["prefer_newest"] = kas_projects_newest(agent)
+        # A session bound to an app's own agent pools that app's registered file.
+        worker["kas_session_key"] = session_key
     servers = pooled_session_servers(
         overlay, agent, **overlay_project_scope(backend, scope_dir), **worker
     )

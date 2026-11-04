@@ -109,6 +109,29 @@ validation strictness, whether bookkeeping may live in-spec, its
 shadowing/selection rules, its hook-event vocabulary, whether it can resolve an
 `"auto"` model, and its protocol-version shape.
 
+**KAS pooled overlays follow the projected source.** A session bound to an app's
+own agent (`apps.agent_launch.bind_session_app_agent`) runs that app's registered
+`<app>--<agent>.json`, read by its path, so its hook reads
+(`kas_spec_selection.kas_bound_app_spec`) and its overlay and subtraction
+(`kas_bound_source_stem`) take that file too, before any newest pick; a bound
+file that cannot be read fails the hook gate closed. For ordinary user-level
+specs declaring one name, KAS chooses the newest by source mtime, with equal mtimes
+keeping the first sorted filename. `agent_sdk.kas_spec_selection.kas_projects_newest`
+is the single scope predicate shared by projection, stub injection/subtraction,
+hook reads and the load-error probe. It excludes the freshness gate's derived
+agents (worker and heartbeat), mate service agents, and crewmate/project-only
+specs. The derived registry is read from `require_fresh_derived_spec`'s owner,
+not duplicated. Their overlays and hook reads keep the canonical filename;
+session start still projects the verified snapshot without reopening it.
+`declared_spec_entry` returns the ordinary user-level source path; its stem names
+the JSON overlay under the configured overlay directory (normally
+`<data home>/mcp-gateway/agents`). Overlay rewrite timestamps never choose the
+source. A missing or unreadable selected overlay yields no stubs rather than
+falling back to a different claimant. With no declared user-level source, the
+existing filename fallback stays in effect; crewmate workers keep their
+session-specific overlay. Non-KAS callers retain their lookup and ambiguity
+refusal.
+
 **A spec built for one session.** A crewmate's worker runs a spec built per
 session: the source-defined `kirocrew-mate-worker` base (generated, with the
 conductor, into `~/.kiro/mates/agents/`, which kiro-cli does not list) plus that crewmate's

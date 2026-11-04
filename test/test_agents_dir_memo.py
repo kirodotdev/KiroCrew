@@ -522,20 +522,34 @@ def test_kas_memoized_spec_is_a_copy(tmp_path: Path) -> None:
     assert second is not first
 
 
-def test_kas_refusals_are_re_derived_on_every_call(
+def test_kas_newest_pick_is_memoized_until_the_directory_changes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _write_spec(tmp_path / f"Alpha-{AGENT}.json", {"name": AGENT, "description": "alpha"})
-    _write_spec(tmp_path / f"Beta-{AGENT}.json", {"name": AGENT, "description": "beta"})
+    """The newest of differing same-name specs is a resolved answer: an
+    unchanged directory serves it from the memo, and an edit that makes another
+    file the newest is picked up on the next projection."""
+    alpha = tmp_path / f"Alpha-{AGENT}.json"
+    beta = tmp_path / f"Beta-{AGENT}.json"
+    _write_spec(alpha, {"name": AGENT, "description": "alpha"})
+    _write_spec(beta, {"name": AGENT, "description": "beta"})
+    # Past times, outside the racy window: a young entry is not memoized on
+    # every platform, and this test is about the memo hit.
+    _bump_mtime(alpha, -60)
+    _bump_mtime(beta, -30)
     reads = _count_spec_reads(monkeypatch)
 
-    with pytest.raises(kas_agents.KasAgentTranslationError):
-        kas_agents.load_agent_spec(tmp_path, AGENT)
-    assert reads
+    assert kas_agents.load_agent_spec(tmp_path, AGENT, prefer_newest=True)["description"] == "beta"
     reads.clear()
-    with pytest.raises(kas_agents.KasAgentTranslationError):
-        kas_agents.load_agent_spec(tmp_path, AGENT)
-    assert reads, "a refusal must not be served from the memo"
+    assert kas_agents.load_agent_spec(tmp_path, AGENT, prefer_newest=True)["description"] == "beta"
+    assert reads == [], "an unchanged directory is served from the memo"
+
+    _write_spec(alpha, {"name": AGENT, "description": "alpha v2"})
+    _bump_mtime(alpha, 10)
+
+    assert (
+        kas_agents.load_agent_spec(tmp_path, AGENT, prefer_newest=True)["description"] == "alpha v2"
+    )
+    assert reads, "the edited directory must be scanned again"
 
 
 def test_kas_direct_filename_fallback_is_not_memoized(

@@ -569,6 +569,8 @@ def spec_by_declared_name(
     *,
     operation: str,
     source: str,
+    prefer_newest: bool = False,
+    agree_on: Callable[[dict[str, Any]], Any] | None = None,
 ) -> dict[str, Any] | None:
     """Return the parsed spec in *agents_dir* whose declared ``name`` is *agent_id*.
 
@@ -608,13 +610,32 @@ def spec_by_declared_name(
     two packages vend; refusing them denied the agent its policy and its KAS
     session with no lasting repair. Equality is of the whole parse, not of the
     fields one caller reads: a pair that agrees on ``managedToolPolicy`` but
-    differs elsewhere is still two agents, and stays refused. Propagates
+    differs elsewhere is still two agents, and stays refused unless the caller
+    opts in through *agree_on* below. Propagates
     ``OSError`` from the directory walk itself; the per-file reads never raise.
 
-    Only the first matching spec is held; a later match is compared with it,
-    keeps its path, and its parse is dropped when the loop moves on. The reader
-    caps each file, so the parsed-spec memory this scan holds at its peak is a
-    constant few capped parses (the first match, the loop's last parse and the
+    Two opt-ins settle a differing set instead of refusing it, each for a caller
+    that knows the answer it hands on cannot disagree with what the session runs:
+
+    * *prefer_newest*: return the claimant with the newest modification time
+      (ties go to the first by sorted filename) and log which file was chosen.
+      Only a caller that hands the parse itself to the engine may ask for it,
+      because then the engine runs exactly the file chosen here. The KAS
+      projection is that caller. kiro-cli resolves ``--agent`` by name on its
+      own and runs the first same-name file in directory order, so a kiro-cli
+      spawn must never be handed this pick.
+    * *agree_on*: a caller that reads only part of a spec passes a function
+      returning that part, and gets the first claimant when the function
+      returns the same JSON value for every claimant. Whichever file a session
+      runs, the part the caller reads is then the same, so its answer is too.
+      A set that differs in that part is still refused. The function must
+      cover every field the caller's answer depends on.
+
+    Only the first matching spec is held, plus the newest one under
+    *prefer_newest*; a later match is compared with the first, keeps its path,
+    and its parse is dropped when the loop moves on. The reader caps each file,
+    so the parsed-spec memory this scan holds at its peak is a constant few
+    capped parses (the first match, the newest, the loop's last parse and the
     one being read), not one per same-name file; the paths themselves, one per
     candidate, are what the refusal message and the warning need and are all
     the scan keeps of the rest.
@@ -628,8 +649,23 @@ def spec_by_declared_name(
     The cache also hands out its own rows to be treated as read-only, where
     this returns a parse the caller owns.
     """
-    entry = declared_spec_entry(agents_dir, agent_id, operation=operation, source=source)
+    entry = declared_spec_entry(
+        agents_dir,
+        agent_id,
+        operation=operation,
+        source=source,
+        prefer_newest=prefer_newest,
+        agree_on=agree_on,
+    )
     return None if entry is None else entry[1]
+
+
+def _mtime_ns(path: Path) -> int:
+    """The modification time *prefer_newest* ranks by; an unstattable file ranks oldest."""
+    try:
+        return path.stat().st_mtime_ns
+    except OSError:
+        return -1
 
 
 def declared_spec_entry(
@@ -639,16 +675,25 @@ def declared_spec_entry(
     operation: str,
     source: str,
     fence: Callable[[Path], bool] | None = None,
+    prefer_newest: bool = False,
+    agree_on: Callable[[dict[str, Any]], Any] | None = None,
 ) -> tuple[Path, dict[str, Any]] | None:
-    """:func:`spec_by_declared_name` with the listed path of the first claimant.
+    """:func:`spec_by_declared_name` with the listed path of the claimant returned:
+    the first, or the newest under *prefer_newest*.
 
     *fence* is handed to :func:`_read_agent_spec` for every scanned entry, so a
     caller can hold followed links to its own policy. The path names the entry
     as listed and is never reopened by this scan.
     """
+    if prefer_newest and agree_on is not None:
+        # The pick would skip the field check that keeps a set differing in
+        # *agree_on* refused, so the two cannot be asked for together.
+        raise TypeError("prefer_newest and agree_on are mutually exclusive")
     match: dict[str, Any] | None = None
     match_paths: list[Path] = []
     divergent = False
+    field_divergent = False
+    newest: tuple[int, Path, dict[str, Any]] | None = None
     for path in iter_agent_spec_files(agents_dir):
         spec = _read_agent_spec(path, operation=operation, source=source, fence=fence)
         if isinstance(spec, dict) and spec.get("name") == agent_id:
@@ -656,11 +701,37 @@ def declared_spec_entry(
                 match = spec
             elif not strict_json_equal(spec, match):
                 divergent = True
+                if agree_on is not None and not strict_json_equal(agree_on(spec), agree_on(match)):
+                    field_divergent = True
+            if prefer_newest:
+                # Strictly newer replaces, so a tie keeps the first by sorted name.
+                mtime = _mtime_ns(path)
+                if newest is None or mtime > newest[0]:
+                    newest = (mtime, path, spec)
             match_paths.append(path)
     if len(match_paths) > 1:
         # Paths are repr'd: a filename in this user-writable, tool-shared
         # directory is untrusted input, and both texts reach a terminal.
         names = ", ".join(repr(str(path)) for path in match_paths)
+        if divergent and prefer_newest and newest is not None:
+            logger.warning(
+                "%d specs declare the name %s with differing content: %s. Using the newest, "
+                "%s. Keep one of them to choose another.",
+                len(match_paths),
+                redact_log_via_context(repr(agent_id)),
+                redact_log_via_context(names),
+                redact_log_via_context(repr(str(newest[1]))),
+            )
+            return newest[1], newest[2]
+        if divergent and agree_on is not None and not field_divergent:
+            logger.warning(
+                "%d specs declare the name %s with differing content but agree on what "
+                "this read answers: %s. That answer is used.",
+                len(match_paths),
+                redact_log_via_context(repr(agent_id)),
+                redact_log_via_context(names),
+            )
+            return None if match is None else (match_paths[0], match)
         if divergent:
             # The message is what a refused KAS session start shows the user,
             # so it names every file and the one repair that works: the scan

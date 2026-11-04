@@ -19,6 +19,7 @@ from kiro_crew.agent_sdk.spec_hooks import (
     session_agent,
     spec_hook_events,
     spec_hooks_run_nowhere,
+    spec_prefers_newest,
     spec_project_dir,
     spec_steering_read_nowhere,
     spec_steering_resources,
@@ -194,6 +195,7 @@ async def _prepare_spec_hooks(
                 spec_project_dir(client),
                 # Only KAS receives `toolsSettings` as `permissions` rules.
                 translates_tools_settings=capabilities_of(client).backend == ACP_BACKEND_KAS,
+                prefer_newest=spec_prefers_newest(client),
                 **by_session,
             )
         )
@@ -238,7 +240,12 @@ async def _prepare_spec_hooks(
         )
     if is_new:
         await _surface_overlong_hook_commands(
-            state, slot, agent, spec_project_dir(client), by_session.get("session_key", "")
+            state,
+            slot,
+            agent,
+            spec_project_dir(client),
+            by_session.get("session_key", ""),
+            prefer_newest=spec_prefers_newest(client),
         )
     if is_new:
         # A withheld project spec yields the user-level spec in its place, so
@@ -286,6 +293,8 @@ async def _surface_overlong_hook_commands(
     agent: str,
     project_dir: str | None,
     session_key: str,
+    *,
+    prefer_newest: bool = False,
 ) -> None:
     """One notice row naming the spec hooks dropped for a command over the length limit.
 
@@ -294,7 +303,13 @@ async def _surface_overlong_hook_commands(
     by_session = {"session_key": session_key} if session_key else {}
     try:
         hooks = await asyncio.to_thread(
-            functools.partial(overlong_spec_hook_commands, agent, project_dir, **by_session)
+            functools.partial(
+                overlong_spec_hook_commands,
+                agent,
+                project_dir,
+                prefer_newest=prefer_newest,
+                **by_session,
+            )
         )
     except Exception:  # noqa: BLE001 - an informational row must never fail a turn
         logger.debug("too-long spec hooks for %r could not be read", agent, exc_info=True)

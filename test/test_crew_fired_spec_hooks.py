@@ -859,3 +859,63 @@ def test_the_unread_steering_notice_redacts_an_entry_before_cutting_it(agents_di
     _prepare(_client(ACP_BACKEND_OPENCODE), "a1", is_new=True)
     (row,) = [t for t in notices if _UNREAD_STEERING in t]
     assert secret not in row
+
+
+# ── differing same-name user specs: KAS fires the newest, others refuse ──────
+
+
+def _write_claimants(agents_dir: Path) -> None:
+    """Two files declaring ``a1`` with different hooks; ``new-a1.json`` is newer."""
+    import os
+
+    for offset, (stem, command) in enumerate((("old-a1", "old.sh"), ("new-a1", "new.sh"))):
+        spec = {
+            "name": "a1",
+            "prompt": "p",
+            "hooks": {"preToolUse": [{"matcher": "execute_bash", "command": command}]},
+        }
+        path = agents_dir / f"{stem}.json"
+        path.write_text(json.dumps(spec), encoding="utf-8")
+        stamp = 1_700_000_000_000_000_000 + offset * 1_000_000_000
+        os.utime(path, ns=(stamp, stamp))
+
+
+def test_a_kas_session_fires_the_newest_of_differing_same_name_specs(agents_dir, notices):
+    _write_claimants(agents_dir)
+    hooks, unreadable, _ = _prepare(_client(ACP_BACKEND_KAS), "a1", is_new=True)
+    assert unreadable is False
+    assert [h.command for h in hooks if h.event == HOOK_EVENT_PRE_TOOL_USE] == ["new.sh"]
+
+
+def test_a_kas_subagent_turn_fires_the_newest_and_is_not_blocked(agents_dir):
+    _write_claimants(agents_dir)
+    out = asyncio.run(spec_hooks.turn_spec_hooks(_client(ACP_BACKEND_KAS), "a1"))
+    assert out.unreadable is False
+    assert [h.command for h in out.hooks if h.event == HOOK_EVENT_PRE_TOOL_USE] == ["new.sh"]
+
+
+def test_a_non_kas_session_still_refuses_differing_same_name_specs(agents_dir, notices):
+    _write_claimants(agents_dir)
+    assert _prepare(_client(ACP_BACKEND_GOOSE), "a1") == ([], True, None)
+    out = asyncio.run(spec_hooks.turn_spec_hooks(_client(ACP_BACKEND_GOOSE), "a1"))
+    assert out.unreadable is True
+
+
+def test_the_kas_staleness_read_takes_the_newest_spec(agents_dir, tmp_path, monkeypatch):
+    from kiro_crew.acp import kas_agents
+
+    store = ScriptHookStore(config_dir=tmp_path / "hooks")
+    monkeypatch.setattr(kas_agents, "get_global_hook_store", lambda: store)
+    monkeypatch.setattr(kas_agents, "user_hook_files", lambda: [])
+    _write_claimants(agents_dir)
+    live = SimpleNamespace(
+        capabilities=capabilities_for(ACP_BACKEND_KAS),
+        kas_auto_approved_capabilities=frozenset({"web_fetch"}),
+    )
+    # An unreadable spec answers True (re-project); the newest one covers only shell.
+    assert asyncio.run(spec_hooks.hook_projection_stale(live, "a1")) is False
+
+
+def test_the_kas_load_probe_accepts_differing_same_name_specs(agents_dir):
+    _write_claimants(agents_dir)
+    assert spec_hooks.kas_spec_load_error(agents_dir, "a1") is None

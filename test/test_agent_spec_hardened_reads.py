@@ -1444,6 +1444,7 @@ _EXPECTED_DECLARED_SPECS_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
 # deletes the row built from it; a spec that cannot be read as a spec refuses
 # the delete, so that read needs the failure to surface rather than fold to None.
 _EXPECTED_STRICT_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
+    "kiro_crew/agent_sdk/kas_spec_selection.py": [("kas_agent_projection", "unknown")],
     "kiro_crew/acp/kas_agents.py": [("kas_agent_projection", "unknown")],
     "kiro_crew/acp/managed_agent_shadow.py": [("managed_agent_shadow", "unknown")],
     "kiro_crew/agent_materialization/conductor_agents.py": [
@@ -1498,6 +1499,7 @@ _EXPECTED_LINKED_TEMPLATE_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
 _EXPECTED_DECLARED_ENTRY_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
     "kiro_crew/agent_discovery_parts/spec_reads.py": [("forward:operation", "forward:source")],
     "kiro_crew/member_essential_context.py": [("forward:operation", "forward:source")],
+    "kiro_crew/mcp_gateway/session_servers.py": [("mcp_overlay_selection", "unknown")],
 }
 
 

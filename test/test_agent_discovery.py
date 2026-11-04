@@ -1262,6 +1262,37 @@ class TestSpecByDeclaredName:
         assert "Alpha-kirocrew.json" in warning.getMessage()
         assert "Beta-kirocrew.json" in warning.getMessage()
 
+    def test_differing_specs_agreeing_on_the_read_log_only_that_agreement(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        for package, prompt in (("Alpha", "a"), ("Beta", "b")):
+            self._write(
+                tmp_path,
+                f"{package}-kirocrew.json",
+                prompt=prompt,
+                managedToolPolicy={"exclude": ["shell"]},
+            )
+
+        with caplog.at_level("WARNING", logger="kiro_crew.agent_discovery"):
+            spec = spec_by_declared_name(
+                tmp_path,
+                "kirocrew",
+                operation="t",
+                source="test",
+                agree_on=lambda spec: spec.get("managedToolPolicy", {}),
+            )
+
+        assert spec is not None and spec["managedToolPolicy"] == {"exclude": ["shell"]}
+        (warning,) = [
+            record
+            for record in caplog.records
+            if record.name == "kiro_crew.agent_discovery" and record.levelno == logging.WARNING
+        ]
+        assert "differing content but agree on" in warning.getMessage()
+        assert "identical specs" not in caplog.text
+        assert "Alpha-kirocrew.json" in warning.getMessage()
+        assert "Beta-kirocrew.json" in warning.getMessage()
+
     def test_the_twin_warning_redacts_a_credential_shaped_name(
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture
     ) -> None:

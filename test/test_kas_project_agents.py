@@ -10,6 +10,7 @@ and file loads never reach the session.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -314,3 +315,23 @@ async def test_a_binding_applies_only_to_the_agent_it_names(bound):
     [entry] = extras.custom_agents
     assert entry["prompt"] == "another agent"
     assert agent_launch.read_bound_app_spec("dashboard:app-slot", "other") is None
+
+
+def test_a_kas_session_runs_the_newest_of_differing_user_level_package_specs(layout):
+    """Several installed packages each vend their own copy of one agent at the
+    user level. KAS runs the projection it is handed, so the session starts on
+    the newest copy instead of refusing."""
+    user, checkout, _project_dir = layout
+    stamp = 1_700_000_000_000_000_000
+    for offset, package in ((200, "Alpha"), (0, "Beta"), (100, "Gamma")):
+        path = user / f"{package}Package-shared.json"
+        path.write_text(
+            json.dumps({"name": "shared", "description": package, "prompt": package}),
+            encoding="utf-8",
+        )
+        os.utime(path, ns=(stamp + offset, stamp + offset))
+
+    spec, anchor = resolve_projected_spec(user, "shared", checkout)
+
+    assert spec["description"] == "Alpha"
+    assert anchor == user

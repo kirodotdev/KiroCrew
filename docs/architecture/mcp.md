@@ -1570,7 +1570,7 @@ cover: the CLI runs it, not the stub.
 
 ### Overlay scope: user-level agents only
 
-The rewriter reads `~/.kiro/agents/` and writes one overlay per agent NAME, so the
+The rewriter reads `~/.kiro/agents/` and writes one JSON overlay per source stem, so the
 overlay directory describes user-level agents and nothing else. kiro-cli also
 resolves `--agent` against `<project>/.kiro/agents/`, which means a session can be
 running an agent of that same name from a different file. `session_servers`

@@ -156,7 +156,7 @@ async def test_an_unreadable_spec_keeps_the_translation_refusal(agents_dir, tmp_
     _install_app(enabled=False)
     monkeypatch.setattr(kas_agents_mod, "agent_spec_absent", lambda d, a: False)
 
-    def _unreadable(d, a):
+    def _unreadable(d, a, **_kw):
         raise kas_agents_mod.KasAgentTranslationError("agent spec x is not an object")
 
     monkeypatch.setattr(kas_agents_mod, "load_agent_spec", _unreadable)
