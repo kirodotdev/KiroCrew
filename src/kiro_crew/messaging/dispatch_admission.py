@@ -129,14 +129,11 @@ def hold_inbound_callback(
 #: Discord's ``!`` bang forms and WeCom's ``停止``), owned here because the
 #: governance exemption below is channel-neutral.
 #:
-#: This is a MIRROR of data that lives in the channel packages, so it cannot be
-#: kept correct by intention alone. A channel whose own table carries a spelling
-#: this set lacks (WeCom's ``停止``) leaves a denied conversation with no reachable
-#: off-switch in the language that channel exists for. Deriving the union here
-#: would mean the shared layer importing all nine channel packages, which
-#: inverts the dependency it exists to hold. So the tripwire lives in
-#: ``test_messaging_dispatch.py``, and it DISCOVERS the channel tables rather
-#: than listing them: a hand-picked list is blind to the channels it omits.
+#: A MIRROR of the channel packages' tables: a spelling this set lacks leaves a
+#: denied conversation with no reachable off-switch in that channel's language.
+#: Deriving it here would make the shared layer import every channel package,
+#: inverting the dependency, so ``test_messaging_dispatch.py`` holds the tripwire
+#: and DISCOVERS the channel tables (a hand-picked list misses what it omits).
 _CANCEL_ALIASES = frozenset(("/stop", "/cancel", "!stop", "!cancel", "停止"))
 
 

@@ -216,13 +216,10 @@ def build_directive_consumer(
             **wake,
         )
         result = outcome.text
-        # The channel surface never renders tool results, so the applier's
-        # confirmation has no user-facing sink here; this log is the operator's
-        # record (the applier itself SEL-audits every outcome). Failures log at
-        # WARNING because a silently dropped effect is the defect this consumer
-        # exists to remove. The string interpolates LLM-derived text (a stop
-        # reason, a rejected path, exception args), so scrub it like every
-        # other LLM-influenced output before it lands anywhere.
+        # A channel never renders tool results, so this log is the operator's record
+        # (the applier SEL-audits every outcome). Failures log at WARNING: a silently
+        # dropped effect is the defect this consumer exists to remove. The text holds
+        # LLM-derived strings, so scrub it like any LLM-influenced output.
         result, _ = redact_exfiltration_urls(result)
         result, _ = redact_credentials(result)
         log = logger.warning if result.startswith(("Error", "Failed")) else logger.info
@@ -245,20 +242,17 @@ def hook_auto_reply(ctx_builder: Any, text: str) -> str | None:
     both contradict the operator's rule and bill them for it.
 
     The text is redacted here because this path skips :class:`TurnDriver`, which
-    is what redacts everything else on its way to a channel. The pair applied is
-    the driver's own (exfiltration URLs, then credentials); mention syntax is
-    deliberately NOT defanged, because a hook reply is operator-authored config
-    rather than model or remote output, so an ``@name`` in it is intended.
+    redacts everything else on its way to a channel; the pair is the driver's own
+    (exfiltration URLs, then credentials). Mentions are NOT defanged: a hook reply
+    is operator-authored config, not model or remote output, so an ``@name`` in it
+    is intended.
 
-    Every lookup is defensive: the hook manager is optional on this seam, and a
-    channel that supplies a context builder without one must fall through to a
-    normal turn rather than fail the message.
+    Every lookup is defensive: the hook manager is optional, and a context builder
+    without one falls through to a normal turn rather than failing the message.
 
-    Asking the hooks here means ``build_message`` asks them again on the turn
-    path, which is what Slack does too and is safe because ``on_message`` is a
-    pure pattern match over the text. The alternative -- reading the hook result
-    ``build_message`` already returns -- is too late: by then the session has been
-    cold-started, which is the cost an auto-reply exists to avoid.
+    ``build_message`` asks the hooks again on the turn path; that is safe because
+    ``on_message`` is a pure pattern match. Reading its result instead is too late:
+    the session is cold-started by then, the cost an auto-reply exists to avoid.
     """
     hooks = getattr(ctx_builder, "hooks", None)
     on_message = getattr(hooks, "on_message", None)
@@ -270,13 +264,11 @@ def hook_auto_reply(ctx_builder: Any, text: str) -> str | None:
     return redact(str(getattr(result, "text", "") or ""))
 
 
-# Retries granted to a turn abandoned after a TRANSIENT compaction failure (a
-# throttled or 5xx'd summarization call). Per turn, so the budget is
-# the turn's own and a throttle that keeps firing costs a bounded number of
-# cold starts. Same count as the dashboard's _COMPACTION_FAILED_RETRIES and for
-# the same reason: a throttle still firing after two session resets is not
-# clearing inside this turn, and every attempt costs the summarization call
-# again.
+# Retries granted per turn to a turn abandoned after a TRANSIENT compaction failure
+# (a throttled or 5xx'd summarization call), so a throttle that keeps firing costs a
+# bounded number of cold starts. Matches the dashboard's _COMPACTION_FAILED_RETRIES:
+# a throttle still firing after two resets is not clearing inside this turn, and
+# every attempt pays for the summarization call again.
 _COMPACTION_FAILED_RETRIES = 2
 
 
@@ -291,20 +283,17 @@ class _TransientCompactionRetryGuard(Renderer):
     """The renderer the driver sees while :class:`ChannelTurns` may still retry.
 
     A turn abandoned after a transient compaction failure is replayed INSIDE the
-    same turn, into the same renderer: the shared pipeline has no queue of its
-    own to put the message back on (five of the channels riding it keep none),
-    and the channel's renderer is one message's output
-    surface that finalizes on its first DONE -- so a completion delivered for
-    the abandoned attempt would close the reply before the replay could write
-    it. This guard therefore holds that one DONE back, and only that one:
+    same turn, into the same renderer: the pipeline has no queue to put the message
+    back on, and the renderer finalizes on its first DONE, so a completion for the
+    abandoned attempt would close the reply before the replay could write it. This
+    guard holds that one DONE back, and only that one:
 
     * the completion must be ``STOP_REASON_COMPACTION_FAILED``;
     * nothing may have been emitted through the guard this turn -- verbatim
       replay is only safe before any text, tool call or permission prompt has
-      landed, exactly the guard the dashboard's transient siblings use. A
-      consumed mid-turn steer counts too: the backend folded a correction the
-      replayed ``user_text`` does not carry, so re-running the original prompt
-      would silently discard what the user was told was accepted;
+      landed. A consumed mid-turn steer counts too: the replayed ``user_text``
+      lacks the correction the backend folded in, so a replay would silently
+      discard what the user was told was accepted;
     * the provider must report ``last_compaction_transient`` as ``True`` --
       compared against ``True``, not read for truthiness, so a provider that
       never set the attribute (or exposes an auto-created stand-in for it)
@@ -314,12 +303,9 @@ class _TransientCompactionRetryGuard(Renderer):
     Every other event passes straight through, and a held DONE is released
     (``release_held``) when the pipeline decides not to replay after all.
 
-    Whole events are forwarded through the inner renderer's own ``dispatch``
-    rather than routed to its ``on_*`` handlers from here, so the bookkeeping
-    that method does on the way (``current_tool_name``) lands on the object
-    whose handlers read it. The ``on_*`` delegates below exist because the
-    contract declares them abstract; the driver itself reaches its renderer
-    through ``dispatch`` and ``on_turn_start`` only.
+    Events are forwarded through the inner renderer's own ``dispatch``, so its
+    bookkeeping (``current_tool_name``) lands on the object whose handlers read it.
+    The ``on_*`` delegates exist only because the contract declares them abstract.
     """
 
     def __init__(self, renderer: Any) -> None:
@@ -416,9 +402,9 @@ class ChannelTurns:
     Construction does no I/O and holds no per-message state, so a dispatcher may
     build one per gateway lifetime or one per message; ``sessions``,
     ``ctx_builder`` and ``conv_log`` are captured at construction, so a dispatcher
-    whose attributes may be reassigned after it was built builds one per message
-    (Discord's tests reassign them; its production code does not). ``dispatcher.approval_mode`` and the dashboard state are read on
-    EVERY call, so a live reload applies to the next message.
+    whose attributes may be reassigned after it was built builds one per message.
+    ``dispatcher.approval_mode`` and the dashboard state are read on EVERY call, so
+    a live reload applies to the next message.
 
     Adapters, all optional unless named:
 
@@ -665,12 +651,11 @@ class ChannelTurns:
         drift = self.drift
         recovery = Drift.NO_COMPACTION_RECOVERY not in drift
         session_key = asker.session_key
-        # Enforced governance backstop. Channels SHOULD gate earlier (before any
-        # side effect such as a command ack or a generation bump — see the weixin
-        # dispatcher, which checks before parse_command), but the pipeline rechecks
-        # so an adopter that forgets cannot execute a policy-denied turn. Denied
-        # messages are dropped silently, before the typing indicator and before any
-        # session is acquired.
+        # Enforced governance backstop. Channels SHOULD gate earlier (before any side
+        # effect such as a command ack or a generation bump), but the pipeline
+        # rechecks so an adopter that forgets cannot execute a policy-denied turn.
+        # Denied messages are dropped silently, before the typing indicator and
+        # before any session is acquired.
         if Drift.NO_GOVERNANCE_BACKSTOP not in drift and not await inbound_permitted(channel):
             return self._outcome(Verdict.DENIED, monitor)
         agent = asker.agent or self._agent()
@@ -708,10 +693,9 @@ class ChannelTurns:
                 return self._outcome(Verdict.TOOLLESS_REFUSED, monitor)
         _acquired = False
         # The provider THIS attempt acquired, for the failure handler's attribution
-        # question. Bound before the try so every handler can read it -- an
-        # attribution flag read on a path its assignment cannot reach is an
-        # UnboundLocalError inside an except arm, not a guard. Stays None when
-        # get_or_create never returned, and an unattributable death charges as before.
+        # question. Bound before the try so every except arm can read it. Stays None
+        # when get_or_create never returned; an unattributable death is then charged
+        # to this session.
         _turn_provider: object | None = None
         provider: Any = None
         is_new = False
@@ -778,20 +762,16 @@ class ChannelTurns:
         verdict = Verdict.FAILED
         try:
             # ── Hook auto-reply: answer and stop, without acquiring a session ──
-            # A ``HOOK_REPLY`` from the context builder's user-defined hooks
-            # short-circuits the turn exactly as it does on Slack: the canned reply
-            # goes out, the exchange is recorded, and no ACP session is started, so a
-            # message a hook already answers costs neither a cold start nor a
-            # billable turn. Enforced HERE rather than per channel for the same
-            # reason the governance gate is: a channel cannot honour a hook it never
-            # calls. A wake is generated text and already holds its claim, so it is
-            # never a hook's to answer.
+            # A ``HOOK_REPLY`` short-circuits the turn: the canned reply goes out,
+            # the exchange is recorded, and no ACP session is started (no cold start,
+            # no billable turn). Enforced HERE, like the governance gate, because a
+            # channel cannot honour a hook it never calls. A wake is generated text
+            # and already holds its claim, so it is never a hook's to answer.
             #
             # After the mute substitution so a disconnected conversation drops the
-            # write like any other output, and BEFORE ``on_turn_start`` so no typing
-            # indicator is opened for a turn that never runs. Inside the try so the
-            # ``finally`` still finalizes the renderer; nothing is acquired, so
-            # nothing is released.
+            # write, and BEFORE ``on_turn_start`` so no typing indicator opens. Inside
+            # the try so the ``finally`` still finalizes the renderer; nothing is
+            # acquired, so nothing is released.
             hook_reply = (
                 hook_auto_reply(ctx_builder, text)
                 if Drift.NO_HOOK_REPLY not in drift and monitor is None
@@ -901,13 +881,10 @@ class ChannelTurns:
                         **extra,
                     )
                     _acquired = True
-                    # Hold the provider this attempt obtained, for the failure
-                    # handler's attribution question. Captured HERE rather than looked
-                    # up when a failure is handled: the recovery paths replace a dead
-                    # session, so a lookup at failure time answers for the replacement
-                    # and the question silently becomes "was the NEW runtime shared".
-                    # Re-bound on every pass of the retry loop, so an attempt is never
-                    # judged by the runtime a previous attempt used.
+                    # Captured HERE, never looked up at failure time: recovery
+                    # replaces a dead session, so a later lookup would ask whether the
+                    # NEW runtime was shared. Re-bound on every retry pass, so an
+                    # attempt is never judged by a previous attempt's runtime.
                     _turn_provider = provider
                     if self._opens_crew_log(asker):
                         # The moment the allocation lands and before ANY further
@@ -959,12 +936,10 @@ class ChannelTurns:
                 # only a self-healing bind cannot leave a live conversation silently
                 # unmirrored.
                 #
-                # Guarded as a pair. An unbound conversation is a degraded turn -- the
-                # user still gets their answer here, they just lose the dashboard
-                # mirror -- whereas a raise on this line drops a turn they are waiting
-                # on. ``bind_origin_mirror`` promises not to raise, but that promise
-                # covers the ownership conflict it names, not a session accessor
-                # failing.
+                # Guarded as a pair: an unbound conversation only loses its dashboard
+                # mirror, while a raise here drops a turn the user is waiting on.
+                # ``bind_origin_mirror``'s no-raise promise covers its ownership
+                # conflict, not a failing session accessor.
                 if asker.origin is not None:
                     # Captured non-None for the closure: the ``is not None`` narrowing
                     # does not reach into the nested function.
@@ -978,9 +953,8 @@ class ChannelTurns:
                         # session's origin at whichever human spoke LAST, and a later
                         # notice (a cron result, a subagent completion) would be
                         # delivered into that person's chat regardless of whose turn
-                        # produced it. ``bind_origin_mirror`` already declines for
-                        # exactly this (link.py), so the sibling write must not be the
-                        # hole that reopens it.
+                        # produced it. ``bind_origin_mirror`` declines for this too,
+                        # so the sibling write must decline as well.
                         if channel_namespace_of(session_key) == DM_SCOPE_UNIFIED:
                             return
                         sessions.set_origin_link(session_key, location)
@@ -1120,10 +1094,8 @@ class ChannelTurns:
                     retry_guard.drop_held()
                 accumulated = await driver.run(full_message)
 
-                # Defensive lookup, like every other attribute read on this seam: a
-                # driver stand-in may predate this field. A missing reason means "no
-                # synthetic completion", never an AttributeError thrown at a real
-                # inbound message after the turn already ran.
+                # Defensive lookup: a driver stand-in may lack this field, and a
+                # missing reason means "no synthetic completion", not an error.
                 if (
                     retry_guard is None
                     or getattr(driver, "last_stop_reason", "") != STOP_REASON_COMPACTION_FAILED
@@ -1131,14 +1103,11 @@ class ChannelTurns:
                     break
                 # Synthetic completion: the backend abandoned the turn after a
                 # failed auto-compaction and never sent end_turn, so it still
-                # counts the prompt as in progress. Reset (mirrors the dashboard
-                # runner's needs_session_reset) or this channel's NEXT message
-                # collides with "prompt already in progress". Whether the abandoned
-                # message is then replayed is the guard's verdict, taken when the
-                # driver delivered the completion: a compaction that overflowed the
-                # window fails again identically, so replaying it only burns the
-                # budget, while a throttled or 5xx'd summarization call has nothing
-                # wrong with it and the very next attempt would clear it.
+                # counts the prompt as in progress. Reset, or this channel's NEXT
+                # message collides with "prompt already in progress". Whether the
+                # message is then replayed is the guard's verdict: an overflowed
+                # window fails again identically, while a throttled or 5xx'd
+                # summarization call is likely to clear on the next attempt.
                 if retry_guard.held:
                     # Opened BEFORE the reset pops the session: from that pop until
                     # the reacquire above, a Stop finds no session and would go
@@ -1306,11 +1275,9 @@ class ChannelTurns:
             # purpose would answer it after all. And it does not `record_failure`:
             # the session did not misbehave, the conversation reached a bound.
             #
-            # The notice IS the point. A refusal the user cannot see is the same
-            # silence the per-message echo guards already leave, so the text goes
-            # into this channel's own renderer (the mute substitute when muted),
-            # which also ends the stream: the `finally` below only tears the
-            # renderer down and flushes nothing.
+            # The notice IS the point: a refusal the user cannot see is silence. It
+            # goes into this channel's own renderer (the mute substitute when muted),
+            # which also ends the stream; the `finally` flushes nothing.
             logger.warning(
                 "%s: turn ceiling reached for %s -- conversation paused",
                 channel,
@@ -1320,15 +1287,10 @@ class ChannelTurns:
             verdict = Verdict.CEILING
         except SessionClosingError:
             # The gateway began shutting down between the claim and the dispatch, so
-            # this turn never opened. Terminal for the message, but NOT a fault of
-            # the session — which is why it is caught ahead of the generic handler
-            # below and deliberately skips `record_failure`: charging a restart to
-            # the circuit breaker would count toward tripping a reset on a session
-            # that never misbehaved, and `logger.exception` would file a routine
-            # shutdown as an error with a full traceback.
-            #
-            # The `finally` still runs, so the renderer is finalized (the user gets
-            # this channel's notice rather than silence) and the lease is released.
+            # this turn never opened. Not a session fault, so it is caught ahead of
+            # the generic handler and skips `record_failure`: a restart must not
+            # count toward the breaker, nor be logged as an error with a traceback.
+            # The `finally` still finalizes the renderer and releases the lease.
             logger.info(
                 "%s: aborting dispatch for %s — gateway is shutting down",
                 channel,
@@ -1338,20 +1300,15 @@ class ChannelTurns:
             # A wake is generated work whose own loop re-fires after the restart, so
             # spooling it would replay a check the loop is about to run again anyway.
             #
-            # Durability, at the ONE point where the payload is still in memory and
-            # the turn is provably unopened. Every other outcome of this dispatch is
-            # already recorded somewhere, which is why nothing is spooled on those
-            # paths and why a replay cannot double-answer. Best-effort by
-            # construction: the helper never raises, so a full disk degrades to
-            # today's loss rather than becoming the thing that fails shutdown.
-            # ``route.text`` and ONLY ``route.text`` -- never the prompt. The two
-            # differ wherever a channel transforms the prompt, and the difference is
-            # not cosmetic: WhatsApp's rules mode prepends the group's private
-            # operating rules to the model prompt, so spooling the turn text would
-            # quote those rules back into the group in the restart notice. NOT for a
-            # restricted session: an incognito or temporary conversation is a promise
-            # that nothing persists, and the spool is a durable file holding the
-            # message verbatim.
+            # Spooled here, the ONE point where the payload is still in memory and the
+            # turn is provably unopened; every other outcome is already recorded, so
+            # a replay cannot double-answer. The helper never raises, so a full disk
+            # loses the message rather than failing shutdown.
+            # ``route.text`` and ONLY ``route.text`` -- never the prompt: a channel
+            # may transform the prompt (WhatsApp's rules mode prepends the group's
+            # private rules), and spooling it would quote that back into the group.
+            # NOT for a restricted session: an incognito or temporary conversation
+            # promises nothing persists, and the spool holds the message verbatim.
             if monitor is None and not (
                 self._restricted is not None and await self._restricted(session_key)
             ):
@@ -1439,13 +1396,9 @@ class ChannelTurns:
             # semaphore was held. Only release if we actually acquired it.
             #
             # ``renderer.close()`` is best-effort and must NEVER prevent the release
-            # below. A renderer that fails to finalize -- a malformed vendor
-            # response, a dropped socket mid-flush -- would otherwise leave the
-            # semaphore held with no path to give it back. Because the semaphore is
-            # keyed by SESSION, that does not just lose this turn: every later
-            # message for that conversation blocks forever, and any queued turn
-            # never drains. The channel looks permanently busy until the gateway
-            # restarts.
+            # below. The semaphore is keyed by SESSION, so a close that raised and
+            # skipped the release would block every later message for that
+            # conversation until the gateway restarts.
             try:
                 await renderer.close()
             except Exception:

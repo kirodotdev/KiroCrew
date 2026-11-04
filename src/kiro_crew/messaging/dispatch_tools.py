@@ -36,11 +36,10 @@ logger = logging.getLogger("kiro_crew.messaging.dispatch")
 #: agent auto-approves. That is the only enforcement that holds on the stock kiro
 #: backend, where a tool named in ``allowedTools`` raises no permission request
 #: and therefore never reaches the driver's ``deny_all_tools`` branch. A spec of
-#: its own, not the background ``kirocrew-lite``: that helper may grow a tool one
-#: day and its empty prompt reads as "no user to address" on backends that need
-#: one, while this agent talks to a person. The spec pin in
-#: ``test_messaging_dispatch.py::TestToollessAgentSpecIsTheBoundary`` makes any
-#: drift loud.
+#: its own, not ``kirocrew-lite``: that helper may grow a tool, and its empty
+#: prompt reads as "no user to address" on some backends, while this agent talks
+#: to a person.
+#: ``test_messaging_dispatch.py::TestToollessAgentSpecIsTheBoundary`` pins it.
 TOOLLESS_TURN_AGENT = "kirocrew-guest"
 
 
@@ -114,7 +113,7 @@ def build_tool_gate(
     before the reject, so the model learns which rule blocked the call instead
     of reading kiro-cli's generic "User denied tool execution" -- the same
     attribute-on-a-callable shape ``ApprovalDecider.last_deny_cause`` uses. A
-    plain callable without the attribute is a deny with no reason, as before.
+    plain callable without the attribute is a deny with no reason.
 
     ``unattended`` marks the turn as one nobody is watching (a monitor wake):
     each consultation runs under ``hooks.unattended_turn``, so a governance
@@ -252,12 +251,10 @@ async def _refuse_unless_toolless(
     turn, warm or cold. Each refusal writes its SEL row first. A spec refusal
     also resets the session, so the process that loaded that spec is not reused.
     """
-    # The tool-less agent is a SPEC, and only a backend that mounts
-    # what the spec names honours it. On any other routing the
-    # harness keeps its own native tools, and one a project has
-    # pre-approved runs with no permission request for the driver to
-    # refuse -- so the turn is refused instead. Positive identity:
-    # the routing that holds, never the absence of another harness.
+    # Only a backend that mounts what the spec names honours the tool-less agent;
+    # elsewhere the harness keeps its native tools and a pre-approved one raises no
+    # permission request, so the turn is refused. Positive identity: the routing
+    # that holds, never the absence of another harness.
     backend = _provider_backend(provider)
     if backend is None or not toolless_turns_supported(backend):
         sel().log_api_access(

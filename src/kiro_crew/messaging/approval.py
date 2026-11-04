@@ -1,17 +1,12 @@
 """Tool approval by TYPED REPLY, for channels that have no interactive widget.
 
-This is the fallback ``transport.py`` and ``renderer.py`` both already promise:
-a channel declaring ``max_buttons=0`` renders no widget and strips the
-``[OPTIONS:]`` trailer, and both docstrings say the numbered-text form "lands
-with the approval-ladder work". This module is that work, and it is
-channel-neutral for the same reason the button cap is: a channel cannot forget
-what it does not implement itself.
+A channel declaring ``max_buttons=0`` renders no widget and strips the
+``[OPTIONS:]`` trailer; this module is its numbered-text approval form. It is
+channel-neutral so a channel cannot forget what it does not implement itself.
 
-Without it, a zero-widget channel is not merely less pretty -- it cannot run a
-tool at all. ``TurnDriver`` in ``interactive`` mode is deny-by-default with no
-decider (``driver.py``), so every permission request is refused, and nothing in
-the conversation says so. The operator sees an agent that answers questions and
-silently fails to act.
+Without it a zero-widget channel cannot run a tool at all: ``TurnDriver`` in
+``interactive`` mode is deny-by-default with no decider (``driver.py``), so every
+permission request is silently refused.
 
 **The security shape, which is the whole point of the module:**
 
@@ -31,13 +26,9 @@ silently fails to act.
   gates the decider's construction. This module never sees a user id, which
   keeps it from being the place someone accidentally makes approval
   world-readable.
-* **Trust reuses the session's own approval policy** rather than adding a
-  second trust store. ``slack/handler.py`` keeps an in-memory
-  ``_trusted_sessions`` set that ``dashboard/server_runtime/inherited_trust.py`` already
-  reaches across a circular-import boundary to clear; a third copy of "is this session
-  trusted" would be one more thing to keep in sync. ``SessionManager``'s
-  approval policy is durable, already SEL-audited on write, and already what
-  spawned subagents inherit.
+* **Trust reuses the session's own approval policy** rather than adding another
+  trust store that would have to be kept in sync. ``SessionManager``'s approval
+  policy is durable, SEL-audited on write, and what spawned subagents inherit.
 
 Dependency direction: stdlib only. No channel import, and nothing from
 ``slack``.
@@ -125,14 +116,12 @@ class PendingApproval:
     #: resolve a tool the operator was asked about somewhere else.
     conversation_id: str = ""
     tool_title: str = ""
-    #: Told by the renderer that the window closed, so the prompt still on the
-    #: operator's screen can be resolved where they are looking. Deny-on-silence
-    #: is otherwise INVISIBLE: the tool is refused, the turn moves on, and a live
-    #: -looking prompt sits in the chat that a later "1" cannot answer.
-    #: A callback rather than a transport because this module never learns what a
-    #: channel is; the renderer that posted the prompt is the only thing that
-    #: knows which bubble to edit. Awaited from :meth:`wait`, so it must not raise
-    #: -- it cannot change the verdict, and a failure to speak is not consent.
+    #: Tells the renderer the window closed, so the prompt still on the operator's
+    #: screen is resolved where they look; otherwise deny-on-silence is INVISIBLE
+    #: and a live-looking prompt sits there that a later "1" cannot answer. A
+    #: callback because only the renderer that posted the prompt knows which bubble
+    #: to edit. Awaited from :meth:`wait`, so it must not raise -- it cannot change
+    #: the verdict, and a failure to speak is not consent.
     on_timeout: Optional[Callable[[], Awaitable[None]]] = None
     #: Set by :meth:`wait` when the window closed with no answer. The verdict
     #: is still :data:`DENY` (the wire answer is the same), but the decider
@@ -204,8 +193,7 @@ def adoptable_reservation(
     a decision belongs to the turn that asked for it: a verdict recorded on a
     loop that has ended cannot answer a request made after it.
 
-    Lives here rather than in each channel because a reservation's adoption rule
-    is one rule. Three copies of it is how the per-channel registries diverged.
+    One adoption rule for every channel, so it lives here rather than per channel.
     """
     if pending is None:
         return None
@@ -345,12 +333,10 @@ def _screened(text: str) -> str:
 
     Both are agent-authored: the model chooses the tool name and writes the
     purpose, so either can carry a credential or an exfiltration URL, and this
-    prompt puts them straight into a chat message. Screening happens HERE rather
-    than being left to each caller because that is the whole reason this helper is
-    in the shared layer: a channel adopting the typed-reply ladder inherits the
-    guarantee instead of re-deriving it, and a caller that forgets leaks on a
-    security prompt of all places. A channel that screens again at its own sink is
-    merely redundant, which costs a regex pass on two short strings.
+    prompt puts them straight into a chat message. Screening happens HERE, not in
+    each caller, so a channel adopting the typed-reply ladder inherits the guarantee
+    and a caller that forgets cannot leak on a security prompt. Screening again at
+    a channel's own sink is harmless.
     """
     safe, _ = redact_for_display(text or "", _redact_all)
     return safe
@@ -488,8 +474,7 @@ class PendingApprovals:
     One instance per channel (as a module-level singleton in the channel's own
     package), so two channels cannot collide on a session key that happens to
     match. Instance state rather than class state for the same reason: a
-    class-level dict shared by subclasses is how the existing per-channel
-    copies became hard to reason about.
+    class-level dict would be shared by subclasses.
     """
 
     __slots__ = ("_channel_type", "_nonces", "_pending")
@@ -561,14 +546,11 @@ class PendingApprovals:
         reporting a decision that never reached the provider.
 
         *expected_nonce* is the WIDGET path's guard, and it is checked BEFORE
-        anything is resolved. That ordering is the whole point: a channel that
-        resolved first and validated after would have already approved the tool by
-        the time it decided the press was stale, and the only thing the guard
-        could still suppress is the confirmation message. Compared in constant
-        time against the nonce minted for THIS entry, so a press on a card whose
-        decision already resolved cannot answer a later prompt — which matters
-        because a platform that refuses to edit a message carrying an attachment
-        (Webex) leaves a resolved card's buttons clickable forever.
+        anything is resolved: validating after resolving would already have
+        approved the tool for a stale press. Compared in constant time against the
+        nonce minted for THIS entry, so a press on a card whose decision already
+        resolved cannot answer a later prompt — a platform that refuses to edit a
+        message carrying an attachment (Webex) leaves those buttons clickable forever.
 
         A typed answer passes no nonce (``""``) and skips the check: there is no
         widget to have gone stale, and the sender was authorized upstream.
@@ -606,9 +588,8 @@ class PendingApprovals:
         pending = self._pending.get(k)
         if pending is None or pending.done():
             self._pending[k] = asyncio.get_running_loop().create_future()
-        # The SHARED generator, not a second one. Upstream's own reasoning applies:
-        # every channel with a clickable approval mints one of these, and three
-        # independent copies is how one ends up with a weaker token.
+        # The SHARED generator, never a second one: every channel with a clickable
+        # approval mints these, and independent copies end up with a weaker token.
         nonce = self._nonces.get(k) or new_approval_nonce()
         self._nonces[k] = nonce
         return nonce

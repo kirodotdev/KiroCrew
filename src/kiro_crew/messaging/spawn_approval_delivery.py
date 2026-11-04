@@ -1,43 +1,35 @@
 """Channel-side delivery for the host spawn-approval prompt — one seam, every channel.
 
 The single host-wide ``SubagentManager`` owns ONE ``on_spawn_approval`` callback,
-built in ``slack/gateway_runtime/subagent_wiring.py``, whose own surfaces are a Slack
-owner DM and the dashboard. Neither one can be answered by the person who started a spawn from a
-Telegram (or any other) channel conversation, and the gate refuses such a spawn
-fast with ``no_approval_surface`` rather than parking it to the reaper's
-deadline. The prompt belongs on the ORIGINATING channel's own inline keyboard,
-which each channel already renders for mid-run tool prompts but which the host
-spawn gate cannot reach by itself — the driver's per-turn ``decider`` is wired to
-the main-agent tool ladder, not to this callback.
+built in ``slack/gateway_runtime/subagent_wiring.py``, whose own surfaces are a
+Slack owner DM and the dashboard. Neither can be answered by the person who started
+a spawn from another channel's conversation, and the gate refuses such a spawn fast
+with ``no_approval_surface``. The prompt belongs on the ORIGINATING channel's own
+inline keyboard, which the host spawn gate cannot reach by itself: the driver's
+per-turn ``decider`` is wired to the main-agent tool ladder, not to this callback.
 
-This module is that reach: a process-global registry a channel dispatcher
-registers a delivery hook into, keyed by the channel namespace it owns
-(``telegram``, ``slack``, …). The spawn-approval callback consults it FIRST,
-given the spawn's ``parent_session_key``, and:
+This module is that reach: a process-global registry of delivery hooks keyed by
+channel namespace (``telegram``, ``slack``, …). The spawn-approval callback
+consults it FIRST, given the spawn's ``parent_session_key``, and:
 
 * a hook returning ``True``/``False`` is the user's in-channel decision — run or
   reject — and the callback returns it verbatim;
 * a hook returning ``None`` means "this channel is registered but could not
   surface the prompt for THIS session" (an unroutable key, a send that failed),
-  so the callback falls through to the existing Slack-DM/dashboard path exactly
-  as before;
+  so the callback falls through to the Slack-DM/dashboard path;
 * no hook registered for the session's channel is the same fall-through.
 
-Why a registry keyed by channel namespace rather than by ``parent_session_key``:
-a channel runs one dispatcher for the whole process, and the session's channel is
-already recoverable from its key prefix (``messaging.link.channel_namespace_of``),
-which is the authoritative classifier the rest of the system uses. Keying by the
-full session key would need the gate to know every live session, which is exactly
-the coupling the seam exists to avoid.
+Keyed by namespace, not ``parent_session_key``: a channel runs one dispatcher per
+process, and the session's channel comes from its key prefix
+(``messaging.link.channel_namespace_of``), the authoritative classifier. Keying by
+session would make the gate know every live session, the coupling this seam avoids.
 
-In memory only, deliberately, and modelled on ``messaging/session_trust.py``: a
-delivery hook is a live object on a running dispatcher, so a registration that
-survived a restart would name a dispatcher that is already gone. The registry
-dies with the process; a channel re-registers on its next startup.
+In memory only, deliberately: a hook is a live object on a running dispatcher, so a
+registration surviving a restart would name a dispatcher that is gone. A channel
+re-registers on its next startup.
 
 ``messaging`` may not import a channel package, so the hook is a plain async
-callable the channel supplies — the same inversion ``session_trust`` uses to let
-a Slack widget write a grant a Telegram turn can read.
+callable the channel supplies.
 """
 
 from __future__ import annotations
@@ -91,15 +83,12 @@ def unregister_channel_delivery(
 
     *hook* is the registration the caller believes it owns, and supplying it makes
     this a COMPARE-AND-DROP. Two dispatcher lifetimes can overlap: a restart
-    registers the replacement hook (``register_channel_delivery`` replaces the
-    slot) before the OLD client's close callback runs, and an unconditional pop
-    there removes the LIVE replacement — leaving the channel with no delivery
-    surface at all, which the gate reads as "fall through to Slack/dashboard" for
-    every later spawn until the next restart. Comparing first makes a stale close
-    a no-op. Equality rather than identity because the registered hook is a bound
-    method: each ``dispatcher.deliver_spawn_approval`` attribute access mints a new
-    object, and two of them compare equal exactly when they name the same method on
-    the same dispatcher, which is the question being asked here.
+    registers the replacement before the OLD client's close callback runs, and an
+    unconditional pop there would remove the LIVE replacement, so every later spawn
+    falls through to Slack/dashboard until the next restart. Comparing first makes a
+    stale close a no-op. Equality, not identity, because the hook is a bound method:
+    each attribute access mints a new object, and two compare equal exactly when
+    they name the same method on the same dispatcher.
 
     Omitted, the drop stays unconditional for a caller holding no handle on its own
     registration.
@@ -143,9 +132,8 @@ async def deliver_spawn_approval(
     exempt on a channel's callback path). A prompt posted under a deny is
     unanswerable, so its deny-by-default wait elapses and the host gate reads the
     elapsed wait as a refusal the operator never made. One check at the routing
-    layer that already resolves the channel gates every present and future hook;
-    a copy inside each dispatcher would be the same authority duplicated per
-    implementation, and the next hook written without it reopens the hole.
+    layer gates every present and future hook; a hook written without its own copy
+    cannot reopen the hole.
 
     It runs AFTER hook resolution, so a key in a non-channel namespace
     (``dashboard:``, ``cron:``) or a ``unified`` DM bucket — neither of which
@@ -175,9 +163,8 @@ async def deliver_spawn_approval(
         return await hook(request_id, description, parent_session_key)
     except Exception:
         # The surface, not the key: the channel is what an operator acts on, and a
-        # raw session key can carry the peer's platform id. The request id is named
-        # too so this seam-level warning matches the granularity of the
-        # dispatcher-level one (which also logs the ``rid``) when both fire.
+        # raw session key can carry the peer's platform id. The request id matches
+        # this warning to the dispatcher-level one when both fire.
         logger.warning(
             "Spawn-approval channel delivery failed on %s for %s; falling through "
             "to the Slack/dashboard path",
@@ -195,28 +182,24 @@ async def unpressed_wait_answer(channel: str, request_id: str) -> "bool | None":
     *channel* is still permitted, and ``None`` (fall through) once the operator's
     ``channels`` ceiling denies it.
 
-    :func:`deliver_spawn_approval` consults the ceiling BEFORE a hook posts, so a
-    channel already denied is never prompted. This is the rest of that window: the
-    gate holds a spawn for as long as its approval takes, so a deny can land while
-    the prompt is pending. From that moment the channel's callback path drops the
-    answering press — every press except an explicit reject — so the prompt is no
-    longer answerable, the wait elapses, and a bare ``False`` would hand the host
-    gate a refusal the operator never made. A deny withholds the channel; it does
-    not vote in the operator's name.
+    :func:`deliver_spawn_approval` checks the ceiling BEFORE a hook posts; this
+    covers a deny that lands while the prompt is pending, since the gate holds a
+    spawn for as long as its approval takes. From then the callback path drops every press
+    except an explicit reject, so the wait elapses, and a bare ``False`` would hand
+    the host gate a refusal the operator never made. A deny withholds the channel;
+    it does not vote in the operator's name.
 
-    The split of duties is why this is a seam function a hook calls rather than
-    something either side does alone. Only the hook can know its wait elapsed with
-    no press: the decision arrives as a bool, and the cause behind it
-    (``last_deny_cause``, see :data:`~kiro_crew.messaging.driver.ApprovalDecider`)
-    is the channel decider's own. Only the seam should decide what that fact MEANS,
-    because that reading is the ceiling's authority and belongs in one place for
-    every channel rather than copied per dispatcher.
+    A seam function a hook calls: only the hook knows its wait elapsed with no press
+    (the cause, ``last_deny_cause``, see
+    :data:`~kiro_crew.messaging.driver.ApprovalDecider`, is the channel decider's
+    own), and only the seam decides what that MEANS, because that reading is the
+    ceiling's authority and belongs in one place for every channel.
 
-    A hook that answers a bare ``False`` without calling this keeps today's
-    behaviour. That is the conservative direction on purpose: the seam cannot tell
-    such a ``False`` apart from a press, and reading a press as unpressed would
-    turn an operator's explicit reject into a fall-through that re-offers the spawn
-    they just refused.
+    A hook that answers a bare ``False`` without calling this keeps a plain deny.
+    That is the conservative direction on purpose: the seam cannot tell such a
+    ``False`` apart from a press, and reading a press as unpressed would turn an
+    operator's explicit reject into a fall-through that re-offers the spawn they
+    just refused.
     """
     if await channel_inbound_permitted(channel):
         return False
