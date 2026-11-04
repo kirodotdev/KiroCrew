@@ -61,6 +61,7 @@ from __future__ import annotations
 
 import json
 import re
+import urllib.parse
 from dataclasses import dataclass
 from typing import Any
 
@@ -326,6 +327,56 @@ def rel_display_path(path: str, cwd: str = "") -> str:
     return "/".join(parts[-2:])
 
 
+_HEX_DIGITS = frozenset("0123456789abcdefABCDEF")
+# Characters a decoded segment must not gain, besides C0 controls and DEL:
+# bidi controls would let an encoded name render as something it is not, and a
+# separator would split one name into two. Mirrors ``UNSAFE_DECODED_RE`` in
+# pathBasename.ts.
+_UNSAFE_DECODED_CHARS = frozenset(
+    "/\\\u200e\u200f\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069"
+)
+
+
+def _scan_escapes(text: str) -> tuple[bool, bool]:
+    """``(has_escape, malformed)`` for ``text``: whether some ``%`` is followed
+    by two hex digits, and whether some ``%`` is not (``decodeURIComponent``
+    rejects that)."""
+    has_escape = malformed = False
+    i = text.find("%")
+    while i != -1:
+        if text[i + 1 : i + 2] in _HEX_DIGITS and text[i + 2 : i + 3] in _HEX_DIGITS:
+            has_escape = True
+        else:
+            malformed = True
+        i = text.find("%", i + 1)
+    return has_escape, malformed
+
+
+def _is_unsafe_decoded(text: str) -> bool:
+    return any(ord(c) < 0x20 or ord(c) == 0x7F or c in _UNSAFE_DECODED_CHARS for c in text)
+
+
+def decode_path_for_display(path: str) -> str:
+    """``path`` with its percent-escapes decoded, for DISPLAY only (``a%20b.md``
+    -> ``a b.md``). Python half of ``decodePathForDisplay`` in pathBasename.ts.
+    Each segment decodes on its own and keeps its encoded form when decoding
+    fails or would yield a separator, a control or a bidi character. Never use
+    the result to open or probe a file: a name can genuinely contain ``%20``."""
+    if not _scan_escapes(path)[0]:
+        return path
+
+    def seg_decoded(seg: str) -> str:
+        if "%" not in seg or _scan_escapes(seg)[1]:
+            return seg
+        try:
+            d = urllib.parse.unquote(seg, errors="strict")
+        except UnicodeDecodeError:
+            return seg
+        return seg if _is_unsafe_decoded(d) else d
+
+    return "/".join(seg_decoded(s) for s in path.split("/"))
+
+
 _DIFF_TARGET_RE = re.compile(r"^\+\+\+ (?:b/)?(.+?)\s*$", re.MULTILINE)
 _DIFF_DEV_NULL_RE = re.compile(r"^--- /dev/null\s*$", re.MULTILINE)
 _FINDING_RE = re.compile(r"^Finding\b", re.ASCII)
@@ -364,7 +415,7 @@ def classify_native(inp: _Input) -> ClassifiedToolCall | None:
     title = inp.title
 
     def rel(p: str) -> str:
-        return rel_display_path(p, inp.cwd)
+        return rel_display_path(decode_path_for_display(p), inp.cwd)
 
     # -- read ---------------------------------------------------------------
     if kind == "read" or tool in ("fs_read", "read", "Read"):
