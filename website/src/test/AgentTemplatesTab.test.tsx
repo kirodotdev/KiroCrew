@@ -76,6 +76,7 @@ vi.mock('../components/AgentSkillsEditor', () => ({
 import AgentTemplatesTab from '../pages/overview/AgentTemplatesTab'
 import { defaultAgentQuery, type DefaultAgentReadout } from '../api/defaultAgentQuery'
 import type { TemplateRow } from '../pages/overview/AgentTemplatesTab'
+import { MORE_BELOW_MASK } from '../components/ModelEffortDropdown'
 
 const row = (over: Partial<TemplateRow>): TemplateRow => ({
   name: 'x', filename: 'x.json', description: '', model: '', skills: [], mcp_servers: [],
@@ -1136,5 +1137,73 @@ describe('AgentTemplatesTab — the default custom agent bar (#18411)', () => {
     await waitFor(() => expect(trigger()).toHaveTextContent('kirocrew'))
     // The fixture roster carries a private copy, so the note shows.
     expect(screen.getByText('Not offered here: mates’ own copies, scheduled-job-only agents, agents an app installed. Agents under “From packages” can be picked.')).toBeInTheDocument()
+  })
+})
+
+/**
+ * The roster is capped at the pane's height, and the scrollbar hides until
+ * scroll, so a long list looked complete. The roster carries the
+ * MORE_BELOW_MASK fade while `useScrollEdgesY` reports rows below the fold, and
+ * drops it when the list fits or a filter shortens it. The fade sits on the
+ * inner scroller (the listbox), never on the bordered pane, whose border a mask
+ * would erase. jsdom does no layout, so the listbox's geometry is stubbed.
+ */
+describe('AgentTemplatesTab roster scroll cue', () => {
+  const MASK_CLASS = MORE_BELOW_MASK.split(' ')[0]
+  class InertObserver { observe() {} unobserve() {} disconnect() {} }
+  const proto = HTMLElement.prototype
+  const saved = {
+    scrollHeight: Object.getOwnPropertyDescriptor(proto, 'scrollHeight'),
+    clientHeight: Object.getOwnPropertyDescriptor(proto, 'clientHeight'),
+  }
+  /** Pixels of the roster hidden below the fold, per visible option row. */
+  let hiddenPerRow = 0
+
+  beforeEach(() => {
+    hiddenPerRow = 0
+    vi.stubGlobal('ResizeObserver', InertObserver)
+    Object.defineProperty(proto, 'clientHeight', { configurable: true, get() { return 200 } })
+    Object.defineProperty(proto, 'scrollHeight', {
+      configurable: true,
+      get(this: HTMLElement) {
+        if (this.getAttribute('role') !== 'listbox') return 200
+        return 200 + hiddenPerRow * this.querySelectorAll('[role="option"]').length
+      },
+    })
+  })
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    for (const [k, d] of Object.entries(saved)) {
+      if (d) Object.defineProperty(proto, k, d)
+      else delete (proto as unknown as Record<string, unknown>)[k]
+    }
+  })
+
+  const roster = () => screen.findByRole('listbox', { name: 'Custom agents' })
+
+  it('fades the bottom while rows sit below the fold, never the bordered pane', async () => {
+    hiddenPerRow = 40
+    renderTab()
+    const box = await roster()
+    await waitFor(() => expect(box.className).toContain(MASK_CLASS))
+    const pane = box.parentElement as HTMLElement
+    expect(pane.className).toContain('border')
+    expect(pane.className).not.toContain(MASK_CLASS)
+  })
+
+  it('shows no fade when the list fits', async () => {
+    renderTab()
+    const box = await roster()
+    await waitFor(() => expect(within(box).getAllByRole('option').length).toBeGreaterThan(0))
+    expect(box.className).not.toContain(MASK_CLASS)
+  })
+
+  it('drops the fade when a filter leaves no rows below', async () => {
+    hiddenPerRow = 40
+    renderTab()
+    const box = await roster()
+    await waitFor(() => expect(box.className).toContain(MASK_CLASS))
+    fireEvent.change(screen.getByPlaceholderText(/filter/i), { target: { value: 'no-such-template' } })
+    await waitFor(() => expect(box.className).not.toContain(MASK_CLASS))
   })
 })
