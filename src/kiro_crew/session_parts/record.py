@@ -23,22 +23,17 @@ class FirstTurnState(Enum):
 
     Records what the session's creator observed at provider start, for the
     first REAL claimant to consume atomically under the per-session semaphore
-    (a speculative claimant reads without consuming). A single three-member
-    field — not a pair of booleans — so the illegal fourth combination the
-    old ``is_new``/``resumed_armed`` pair could represent by accident (a
-    resume marker armed on an already-claimed session, which would silently
-    skip history injection) has no spelling.
+    (a speculative claimant reads without consuming). One three-member field
+    rather than two booleans, so a resume marker armed on an already-claimed
+    session (which would silently skip history injection) cannot be spelled.
 
-    Internal representation only: public return shapes stay
-    ``(provider, is_new, resumed)``, derived via :attr:`is_new` /
-    :attr:`resumed` at the return boundary.
+    Internal only: public returns stay ``(provider, is_new, resumed)``,
+    derived via :attr:`is_new` / :attr:`resumed`.
     """
 
-    # Session already claimed — no first-turn observation armed. The state
-    # every session reaches once a real turn has consumed the observation
-    # (and the state ``get_or_create``'s real creator registers, having
-    # consumed its own; ``open_task_session``'s cold path instead registers
-    # FRESH unconsumed, exactly as it left ``is_new`` armed before).
+    # Session already claimed: no observation armed. Every session reaches it once a
+    # real turn consumed the observation; ``get_or_create``'s real creator registers it
+    # directly, while ``open_task_session``'s cold path registers FRESH unconsumed.
     NOTHING_ARMED = auto()
     # Fresh session: the first real turn injects Kiro Crew history.
     FRESH = auto()
@@ -66,17 +61,11 @@ class _Session:
     # ``last_used`` is monotonic (correct for idle math, but it has no epoch), so
     # it cannot answer "how long has this session been alive".
     created_at: float = field(default_factory=time.time)
-    # One-shot first-turn observation, consumed by the first REAL claimant
-    # under the per-session semaphore (a speculative claimant reads without
-    # consuming). A single ``FirstTurnState`` field replacing the old
-    # ``is_new``/``resumed_armed`` boolean pair, so arming a resume marker on
-    # an already-claimed session is unrepresentable rather than forbidden by
-    # convention. ``RESUMED`` is selected only by a SPECULATIVE creator whose
-    # provider start restored the persisted transcript via ACP session/load —
-    # the existing-session fast path and the won-race path otherwise report
-    # ``resumed=False``, which would make the real first turn inject Kiro
-    # Crew history on top of the natively-replayed transcript. Selected
-    # atomically at registration; read and cleared in one consume.
+    # One-shot first-turn observation (see ``FirstTurnState``), selected at
+    # registration and read and cleared in one consume. ``RESUMED`` is selected only by
+    # a SPECULATIVE creator whose start restored the transcript via ACP session/load:
+    # the fast path and won-race path report ``resumed=False``, so without it the first
+    # real turn would inject Kiro Crew history on top of the replayed transcript.
     first_turn: FirstTurnState = FirstTurnState.FRESH
     # Set when an identity sweep found this session BUSY and therefore left its
     # in-flight turn alone. The child is authenticated as an account that is no
@@ -140,31 +129,17 @@ class _Session:
     approval_policy: str = ""  # "" (interactive) | "auto" (auto-approve all tools)
     agent: str = ""  # kiro agent name used for this session
     capability_member: str = ""
-    # The model this session's allocation SELECTED, as handed to the provider.
-    # Stamped at registration from the same local the factory receives, so the id
-    # sent and the id readable here are one value and cannot diverge.
-    #
-    # It exists because a caller that pins nothing at any of its own tiers passes
-    # ``model=None`` and the allocation resolves one itself, inside a call whose
-    # return says only which provider, whether it is new, and whether it resumed.
-    # A caller recording what it asked for therefore has nothing to record for that
-    # allocation, while the session runs on a concrete id. Read through
-    # ``SessionManager.allocation_requested_model``.
-    #
-    # ``""`` means this allocation resolved nothing, or a registration site that
-    # does not resolve models made the session. Both are "no selection to report",
-    # which is what a consumer of the empty value states.
+    # The model this session's allocation SELECTED, stamped at registration from the
+    # same local the factory receives, so it cannot diverge from the id sent. A caller
+    # passing ``model=None`` gets no model back from ``get_or_create``; it reads this
+    # through ``SessionManager.allocation_requested_model``. ``""``: no selection.
     requested_model: str = ""
-    # The crew log this session SUPERSEDED: what the slot-to-session mapping named
-    # -- its live id, or the stash a recycle left -- at the instant the allocation
-    # registered this session, read inside that registration's critical section
-    # and before this session's own id was mapped. Stamped there because no read a
-    # caller takes around ``get_or_create`` can be right: waiting inside the
-    # allocation for the turn permit, it can be overtaken by a concurrent turn's
-    # allocate-and-recycle on the same key. Kept on the session rather than in a
-    # per-key table so ordinary teardown releases it: every ``/new`` or generation
-    # rotation mints a fresh key, and a table keyed by them would grow for the
-    # life of the gateway. Read through ``SessionManager.allocation_predecessor``.
+    # The crew log this session SUPERSEDED (the mapping's live id or a recycle's
+    # stash), read inside the registration's critical section before this session's
+    # id was mapped: a caller's read around ``get_or_create`` can be overtaken by a
+    # concurrent allocate-and-recycle on the same key. Kept on the session, not in a
+    # per-key table, because every ``/new`` mints a fresh key and the table would grow
+    # forever. Read through ``SessionManager.allocation_predecessor``.
     predecessor_sid: str = ""
     loaded_capabilities: LoadedCapabilities | None = None
     # Slack message queue: FIFO of (msg_ts, text, kwargs) waiting for the semaphore
@@ -229,23 +204,16 @@ class _Session:
     def adopt_provider(self, provider: LLMProvider) -> None:
         """Swap in a freshly-spawned *provider*, resetting conversation state.
 
-        Recycling in place — rather than registering a new ``_Session`` — is what
-        lets a caller already holding this session (or blocked on its semaphore)
-        pick up the replacement instead of a torn-down provider: both the
-        semaphore and the object identity the registry is keyed on survive.
-        Everything reset below describes the OLD transcript, so carrying it onto
-        a fresh provider would misreport its size or replay a preamble the new
-        conversation never lost. ``agent`` and ``approval_policy`` describe the
-        session's role, not its transcript, so they are kept.
+        Recycling in place keeps the semaphore and the object identity, so a caller
+        holding this session (or blocked on its semaphore) picks up the replacement
+        instead of a torn-down provider. The fields reset below describe the OLD
+        transcript; ``agent`` and ``approval_policy`` describe the role and are kept.
         """
         self.provider = provider
         self.loaded_capabilities = None
         self.provider_switch_replay = False
-        # The replacement provider is a fresh native session, not a resumed
-        # one — a stale armed observation would make the next first turn skip
-        # history injection it actually needs. Only the resume half of the
-        # observation is stale: an armed fresh observation, or nothing armed,
-        # describes the replacement just as well and carries over unchanged.
+        # The replacement is a fresh native session, so an armed RESUMED would make
+        # its first turn skip history it needs. FRESH or nothing armed carries over.
         if self.first_turn is FirstTurnState.RESUMED:
             self.first_turn = FirstTurnState.FRESH
         self.prompt_count = 0
@@ -263,13 +231,10 @@ class _Session:
 def unlink_queued_temp_paths(kwargs: dict) -> None:
     """Unlink the temp files a queue entry tracks in ``image_temp_paths``.
 
-    Queued Slack messages defer temp-image cleanup to whichever code path
-    consumes the entry, so the queued turn's text can still resolve its image
-    paths at dispatch time. Every path that consumes an entry — dispatch, or
-    any discard (cancel, queue clear, cancelled-skip on dequeue) — must unlink
-    here, or the files sit on disk until external cleanup. Already-missing
-    files are ignored: a discard can benignly follow a dispatch that already
-    cleaned up.
+    Queued messages keep their images until dispatch so the text can resolve
+    them, so every consumer (dispatch, cancel, queue clear, cancelled-skip on
+    dequeue) must unlink here. Missing files are ignored: a discard can follow
+    a dispatch that already cleaned up.
     """
     for p in kwargs.get("image_temp_paths") or []:
         try:
@@ -281,16 +246,10 @@ def unlink_queued_temp_paths(kwargs: dict) -> None:
 def _unlink_session_queue(session: "_Session") -> None:
     """Unlink temp files for every entry still queued on a popped session.
 
-    Every teardown path that pops a whole ``_Session`` out of ``_sessions``
-    (stale-provider eviction, ``reset``, RSS recycle, ``remove``,
-    ``remove_if_unclaimed``, ``destroy``, ``discard_conversation``,
-    ``drain_all_providers``) discards ``session.queue`` along with it.
-    Anything still sitting there never reaches ``_dispatch_queued``'s own
-    cleanup — that only runs for an entry that actually gets dispatched —
-    so this is the one place responsible for unlinking the images behind a
-    whole-session teardown, the same way ``cancel_queued``/``clear_queue``/
-    ``dequeue``'s cancelled-skip already do for a live session's own
-    piecemeal discards.
+    Every teardown that pops a whole ``_Session`` (stale-provider eviction,
+    ``reset``, RSS recycle, ``remove``, ``remove_if_unclaimed``, ``destroy``,
+    ``discard_conversation``, ``drain_all_providers``) discards its queue, whose
+    entries never reach ``_dispatch_queued``'s cleanup, so they are unlinked here.
     """
     for _, _, kwargs in session.queue:
         unlink_queued_temp_paths(kwargs)
