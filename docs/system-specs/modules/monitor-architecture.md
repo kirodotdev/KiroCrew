@@ -1114,9 +1114,15 @@ The limits a registrant must design for:
 - Owner credentials follow the built-in rule: never from a channel-created
   monitor, and from a dashboard one only through the recorded grant. The shadow
   path, which has no such gate, is refused to a contributed kind.
-- The dashboard's kind vocabulary is the checked-in contract snapshot, so a
-  contributed-kind monitor is shown as blocked even while it probes, with save
-  and restart disabled; stop works.
+- The dashboard prefers the gateway's runtime kind vocabulary over the
+  checked-in contract snapshot. `monitor_frontend_contract()` lists the live
+  kinds -- built-ins plus every contributed one -- and the gateway serves it at
+  the cookie-authed read `GET /api/monitor-contract`; the dashboard fetches it
+  once and installs its kind list, falling back to the bundled snapshot on a 404
+  (an older gateway) or any fetch error. So a contributed-kind monitor shows its
+  real state with save and restart enabled under the built-in rules. Before this,
+  the dashboard read only the snapshot, which lists the built-ins alone, and a
+  contributed-kind monitor was shown as blocked even while it probed.
 - A provider factory that raises is logged and fails only its own kind, whose
   monitors then stop as blocked on their first tick.
 
