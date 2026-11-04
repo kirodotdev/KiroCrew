@@ -159,15 +159,12 @@ logger = logging.getLogger(__name__)
 DEFAULT_MIN_AGE_SECS = 300.0
 
 #: Kills one pass may perform when nothing configures a budget. A reconciler that
-#: has misjudged an entire population reaches this ceiling and stops, leaving the
-#: rest counted and the operator a reading to act on.
+#: misjudged a whole population stops here, leaving the rest counted for the operator.
 #:
-#: ``session.reconcile_max_kills`` can only lower it: that field's ceiling equals
-#: this value, so every configured budget is at or below the shipped one and the
-#: knob withholds signals rather than authorizing new ones. Its default is spelled
-#: in ``config.sections`` and pinned equal to this one by
-#: ``test_the_config_default_matches_the_module_default``, because config is a leaf
-#: package and importing this module into it would be a cycle.
+#: ``session.reconcile_max_kills`` can only lower it (its ceiling is this value), so
+#: the knob withholds signals and never authorizes new ones. Its default lives in
+#: ``config.sections`` (a leaf package; importing this module would be a cycle) and
+#: is pinned equal by ``test_the_config_default_matches_the_module_default``.
 DEFAULT_MAX_KILLS = 5
 
 #: Entries the "already announced this death" memory may hold. The per-pass prune
@@ -188,15 +185,11 @@ class ReconcileReading:
     #: Pids a record claims that are gone, or that now name a stranger.
     owned_dead: int = 0
     #: Live pids inside our own agent slice that no record claims, EXCEPT those
-    #: :meth:`RuntimeReconciler._unowned` excludes: a pid marked as sandboxed tool
-    #: work whose command line does not name a managed harness -- which, for Crew's own
-    #: Linux namespace launcher, is decided by the argv it WRAPS, so a leaked launcher
-    #: around a harness is counted here and one around an MCP probe is not. So this is
-    #: the unclaimed population
-    #: this arm can act on, which is what makes it the number to read beside
-    #: ``would_kill``. ``resource_status.slice_ownership`` publishes a field of the
-    #: same name computed as every unclaimed slice pid, so on a host doing long-lived
-    #: tool work the two disagree BY DESIGN and the larger one is not a fault.
+    #: :meth:`RuntimeReconciler._unowned` excludes: sandboxed tool work whose command
+    #: line names no managed harness (for Crew's Linux namespace launcher, judged by
+    #: the argv it WRAPS). This is the population this arm can act on, to read beside
+    #: ``would_kill``. ``resource_status.slice_ownership``'s same-named field counts
+    #: every unclaimed slice pid, so with long-lived tool work the two differ BY DESIGN.
     unowned_alive: int = 0
     #: Unowned pids that met every condition and whose tree was signalled.
     killed: int = 0
@@ -325,32 +318,23 @@ def _sel_reconcile_kill(pid: int, outcome: str, reason: str) -> None:
 def _session_pid_entry_owners() -> dict[int, tuple[int, str | None, str]]:
     """``{child_pid: (owning gateway pid, recorded start token, VERBATIM row)}`` for EVERY row.
 
-    The whole session-tracking file, not one gateway's slice of it. A reconciler
-    that compares records against the kernel sees pids this gateway never filed --
-    a concurrent ``kirocrew chat`` on the same data home, a predecessor gateway
-    whose rows outlived it -- and needs two things about each: its recorded
-    identity, so a recycled pid is detectable, and its OWNER, because
-    ``session_pid._untrack_session_pid`` matches on the CALLING process's own
-    prefix and cannot remove anybody else's row. Without the owner this module
-    would call the untracker for a foreign row, get ``True`` back from a rewrite
-    that changed nothing, and report a retraction that never happened.
+    The whole file, not one gateway's slice: a reconciler sees pids this gateway
+    never filed (a concurrent ``kirocrew chat``, a predecessor's leftover rows). For
+    each it needs the recorded identity, so a recycled pid is detectable, and the
+    OWNER, because ``session_pid._untrack_session_pid`` matches only the CALLING
+    process's prefix: called on a foreign row it returns ``True`` from a rewrite
+    that changed nothing.
 
-    The row is kept VERBATIM for the third thing: what a retraction is allowed to
-    remove. ``session_pid._untrack_session_pid`` drops every line whose
-    ``<gw_pid>:<pid>`` prefix matches, at ANY start token, so it cannot tell the row
-    a pass inspected from a replacement's row under the same reused number -- and a
-    pass decides to retract from a snapshot taken before its own awaits. Removing by
-    number would take the replacement's row out with the dead one and leave a LIVE
-    runtime tracked nowhere, which is the leak this module exists to prevent.
-    :func:`_retract_session_rows` removes the text captured here instead, the same
-    invariant the descendant half already holds: a line is removed because it was
-    named, never because it shares a field.
+    The row is kept VERBATIM because that untracker drops every ``<gw_pid>:<pid>``
+    line at ANY start token, so it cannot tell the inspected row from a
+    replacement's row under a reused number, and a pass decides from a snapshot
+    taken before its awaits. Removing by number would leave a LIVE runtime tracked
+    nowhere. :func:`_retract_session_rows` removes the captured text instead: a
+    line is removed because it was named, never because it shares a field.
 
-    Read under the file's own lock, through that module's path and lock helpers, so
-    it observes the same exclusion every other reader does. A later row for the same
-    child pid wins, which is the precedence a line-ordered rewrite gives. Tolerant
-    of malformed lines for the reason every reader of this file is: a live gateway
-    appends to it concurrently.
+    Read under the file's own lock through that module's helpers. A later row for
+    the same child pid wins (line-ordered rewrite precedence). Malformed lines are
+    skipped: a live gateway appends concurrently.
     """
     owners: dict[int, tuple[int, str | None, str]] = {}
     path = session_pid._session_pid_file_path()
@@ -384,15 +368,10 @@ def _session_pid_entry_owners() -> dict[int, tuple[int, str | None, str]]:
 def _retract_session_rows(rows: Iterable[str]) -> None:
     """Remove exactly *rows* from the session tracking file.
 
-    Whole-line equality against the text a pass captured, under that file's own
-    lock -- the twin of :func:`_retract_descendant_rows`, and for the same reason.
-    Both row grammars this file holds (``<gw_pid>:<pid>`` and
-    ``<gw_pid>:<pid>:<token>``) are covered by one rule, because a verbatim line
-    needs no grammar.
-
-    Anything appended since the capture stays, including a replacement row under a
-    reused pid. That is the whole point: the record removed is the one confirmed
-    dead, not every record sharing its number.
+    Whole-line equality against the captured text, under the file's own lock, like
+    :func:`_retract_descendant_rows`; this covers both row grammars
+    (``<gw_pid>:<pid>`` and ``<gw_pid>:<pid>:<token>``). Anything appended since the
+    capture stays, including a replacement row under a reused pid.
     """
     doomed = {row.strip() for row in rows if row.strip()}
     if not doomed:
@@ -412,28 +391,21 @@ def _retract_session_rows(rows: Iterable[str]) -> None:
 def _descendant_pid_rows() -> dict[int, tuple[str, ...]]:
     """``{descendant pid: its VERBATIM rows}`` from the other tracking file.
 
-    The rows are kept whole, not reduced to the pid that keys them, because the
-    pid alone is not what identifies a record here. A ``child:parent[:token]`` row
-    names which runtime the descendant belongs to and which process start that
-    descendant was, and a pid legitimately carries one row per parent -- the file's
-    own append dedupes on the ``child:parent`` prefix, not on the child.
+    Rows are kept whole because the pid alone does not identify a record: a
+    ``child:parent[:token]`` row names the runtime and the process start, and a pid
+    carries one row per parent (the append dedupes on ``child:parent``).
 
-    Retracting by pid would therefore remove records this pass never inspected. The
-    number is reused; a replacement registered after this snapshot appends its own
-    row under the same pid, and a pid-keyed removal takes that row out with the dead
-    one. The live descendant would then be tracked nowhere, which is both a leak
-    past every reaper that keys off this file and a candidate the next pass reads as
-    unowned. :func:`_retract_descendant_rows` removes exactly the text captured
-    here, which is the same invariant ``session_pid._replace_child_pids`` states for
-    itself: a line is removed because it was named, never because it shares a field.
+    Retracting by pid would also remove a replacement's row appended under the
+    reused number after this snapshot, leaving a live descendant tracked nowhere: a
+    leak past every reaper keyed off this file, and an "unowned" candidate next
+    pass. :func:`_retract_descendant_rows` removes exactly the captured text, the
+    invariant ``session_pid._replace_child_pids`` also holds.
 
-    A pid appearing only as the PARENT field of somebody else's row is NOT a record
-    of itself and is absent from this result, matching the field the reapers read
-    (:data:`session_pid._REAPABLE_PID_FIELD`).
+    A pid seen only in the PARENT field of another row is not a record of itself and
+    is absent here, matching :data:`session_pid._REAPABLE_PID_FIELD`.
 
-    Read under that file's own lock, through that module's path and lock helpers.
-    Tolerant of malformed lines for the reason every reader of these files is: a
-    live gateway appends to them concurrently.
+    Read under the file's own lock through that module's helpers. Malformed lines
+    are skipped: a live gateway appends concurrently.
     """
     rows: dict[int, tuple[str, ...]] = {}
     path = session_pid._pid_file_path()
@@ -463,22 +435,15 @@ def _descendant_pid_rows() -> dict[int, tuple[str, ...]]:
 def _retract_descendant_rows(rows: Iterable[str]) -> None:
     """Remove exactly *rows* from the descendant tracking file.
 
-    Whole-line equality against the text a pass captured, under that file's own
-    lock. Both row grammars the file holds are covered by one rule, because a
-    verbatim line needs no grammar: a ``child:parent[:token]`` row and a legacy
-    bare pid line are each removed when they are the line that was read.
-
-    Anything appended since the capture stays, including a replacement row under a
-    reused pid. That is the point -- the record removed is the one confirmed dead,
-    not every record sharing its number.
+    Whole-line equality against the captured text, under the file's own lock; this
+    covers a ``child:parent[:token]`` row and a legacy bare pid line alike. Anything
+    appended since the capture stays, including a replacement row under a reused pid.
     """
     doomed = {row.strip() for row in rows if row.strip()}
     if not doomed:
         return
-    # Resolved BEFORE the try: the lock's own ``__enter__`` does a mkdir and opens
-    # the lock file, so an OSError from it would reach a handler whose message reads
-    # ``path`` -- raising UnboundLocalError out of the handler and losing both this
-    # warning and the caller's. The readers above already resolve it first.
+    # Resolved BEFORE the try: the lock's ``__enter__`` can raise OSError, and the
+    # handler reads ``path``, which would otherwise raise UnboundLocalError.
     path = session_pid._pid_file_path()
     try:
         with session_pid._pid_file_lock():
@@ -504,17 +469,12 @@ def _pid_identity(pid: int) -> str | None:
 def _leases_on_pid(pid: int) -> int:
     """Leases live runtimes on *pid* hold, asked through the lease table itself.
 
-    A pid is all this reconciler has: it starts from the kernel's list of process
-    ids, not from runtime objects, so the identity-first accessor has nothing
-    stronger to prefer here. Asked through ``RUNTIME_OWNERSHIP`` because that is
-    the table's own published surface, and a reconciler that reaches for a
-    module-level convenience instead would break on a rename of a name it does
-    not own.
+    The reconciler starts from the kernel's pid list, not runtime objects, so a pid
+    is all it has. Asked through ``RUNTIME_OWNERSHIP``, the table's published surface.
 
-    A dead runtime's leases do not count, which is what makes this a gate and not
-    a lock: a process that has already exited cannot be harmed by a signal, while
-    refusing to signal it would suppress the reap of its zombie and the sweep of
-    the descendants that escaped its group.
+    A dead runtime's leases do not count, so this is a gate and not a lock: an
+    exited process cannot be harmed by a signal, while refusing one would suppress
+    the reap of its zombie and the sweep of descendants that escaped its group.
     """
     return RUNTIME_OWNERSHIP.leases_on_pid(pid)
 
@@ -522,20 +482,16 @@ def _leases_on_pid(pid: int) -> int:
 def _claims_on_pid(pid: int) -> int:
     """Tenancy claims live on *pid*, asked through the tenancy table itself.
 
-    The gate asks TWO questions, and a shield that asks only the first is not the
-    gate's shield. A lease says a session may end this runtime; a tenancy says a
-    party that does not own the process is mid-flight on it -- a session-sharing
-    sub-agent's turn, a Connect OAuth mint child -- and at ``cap=1`` such a party
-    holds no lease at all, because an acquisition cannot join an occupied runtime.
+    The gate asks TWO questions. A lease says a session may end this runtime; a
+    tenancy says a non-owner is mid-flight on it (a session-sharing sub-agent's
+    turn, a Connect OAuth mint child), and at ``cap=1`` such a party holds no lease,
+    because an acquisition cannot join an occupied runtime.
 
-    So a pid carrying only a tenancy is CLAIMED, and counting it unowned publishes
-    every in-flight shared turn as a leak in the reading an operator and the SLI
-    both read. The gate refuses its kill either way; what this fixes is the number,
-    and the per-pass gate refusal and audit row that number dragged behind it.
+    So a tenancy-only pid is CLAIMED. The gate refuses its kill either way; counting
+    it unowned would report every in-flight shared turn as a leak to the operator
+    and the SLI, with a gate refusal and audit row each pass.
 
-    Asked through ``RUNTIME_TENANCY`` for the same reason the lease count is asked
-    through ``RUNTIME_OWNERSHIP``: a pid is all this reconciler has, and that is the
-    table's own published surface.
+    Asked through ``RUNTIME_TENANCY``, the table's published surface.
     """
     return RUNTIME_TENANCY.claims_on_pid(pid)
 
@@ -543,28 +499,22 @@ def _claims_on_pid(pid: int) -> int:
 def process_is_a_managed_agent(pid: int) -> bool:
     """Whether *pid*'s argv names a harness this gateway manages.
 
-    The kill seam's own recycle guard, asked at the DECISION point. It is the same
-    predicate :func:`session_pid._is_managed_agent_process` applies immediately
-    before it signals, and asking it twice is deliberate: the seam must keep asking,
-    because a pid can change hands between this answer and that signal.
+    The kill seam's recycle guard, asked at the DECISION point. The seam applies the
+    same predicate (:func:`session_pid._is_managed_agent_process`) again right before
+    it signals, because a pid can change hands in between.
 
-    What asking it HERE changes is who gets recorded. The unowned population is
-    dominated by processes that carry our inherited spawn marker and are not
-    harnesses at all -- a Playwright chromium tree, an ``mcp start-server`` broker, a
-    sandbox shim around something that is not a runtime, another install's python
-    interpreter. (A shim around ``kiro-cli`` IS one: the gate steps over Crew's own
-    namespace launcher and asks the wrapped argv, because on Linux that launcher is the
-    pid an agent runtime is tracked under.) Every one of them satisfies
-    the other four local conditions, so without this one each would collect an
-    ownership-gate allow and have the gate write a kill attribution naming a process
-    the seam declines to touch.
-    The gate's allow log is the record a maintainer reads to answer "did we signal
-    somebody else's process", and at that volume it cannot answer.
+    Asking it HERE keeps the gate's allow log readable. Most unowned pids carry our
+    spawn marker but are not harnesses (a Playwright chromium tree, an
+    ``mcp start-server`` broker, a sandbox shim around a non-runtime, another
+    install's python). A shim around ``kiro-cli`` IS one: the gate asks the argv
+    Crew's Linux namespace launcher wraps, since that launcher is the tracked pid.
+    Each non-harness meets the other four conditions, so without this check each
+    would get a gate allow and a kill attribution the seam then declines, drowning
+    the log a maintainer reads to answer "did we signal somebody else's process".
 
-    Answers from argv, so it says a pid is the KIND of process we manage and never
-    that it is a particular one. That is why it is a condition and not an
-    authorization: identity is re-read after it, the gate is asked after that, and
-    the seam re-applies this same test last.
+    It answers from argv: the KIND of process, never a particular one. So it is a
+    condition, not an authorization; identity is re-read after it, then the gate is
+    asked, and the seam re-applies this test last.
     """
     return session_pid._is_managed_agent_process(pid)
 
@@ -591,34 +541,25 @@ def process_is_ours(pid: int, *, proc_root: Path | None = None) -> bool:
 def process_is_sandbox_tool(pid: int, *, proc_root: Path | None = None) -> bool:
     """Whether *pid* is a sandboxed tool subprocess this install spawned.
 
-    A tree spawned through :func:`sandbox.sandboxed_spawn_argv` -- a build, an ``npx``
-    install, a ``git``/``gh`` read, a provisioning run -- runs inside the slice this
-    module reads, carries the inherited spawn marker, and is recorded nowhere, so the
-    argv0 basename test is all that holds it back from a signal once it is older than
-    the age floor. The chokepoint stamps ``KIROCREW_SANDBOX_TOOL`` on the whole tree,
-    so this answers for a descendant no spawn recorded, and it answers out of the
-    kernel's exec-time copy: a same-uid process can set its own argv or write any
-    file, and cannot alter a running process's environment. That is the difference
-    between a name and evidence.
+    A tree spawned through :func:`sandbox.sandboxed_spawn_argv` (a build, an ``npx``
+    install, a ``git``/``gh`` read, a provisioning run) runs in this slice, carries
+    the spawn marker and is recorded nowhere, so past the age floor only the argv0
+    test spares it. The chokepoint stamps ``KIROCREW_SANDBOX_TOOL`` on the whole
+    tree, read from the kernel's exec-time environment: a same-uid process can fake
+    its argv or any file, but not a running process's environment.
 
-    The marker means TOOL, not OWNERSHIP, which is why it is a separate variable from
-    the one :func:`process_is_ours` reads. That one enables a kill and this one
-    withholds it, so the two must be able to disagree.
+    The marker means TOOL, not OWNERSHIP, so it is a separate variable from the one
+    :func:`process_is_ours` reads: that one enables a kill, this one withholds it.
 
-    FAILS OPEN, the opposite of every other test here, because its answer is an extra
-    sparing rather than a permission: only a positive read excludes. An unreadable
-    environment and a platform with no environ oracle both leave *pid* in the
-    candidate population, where the ownership, argv, two-pass and age conditions
-    still govern it. Failing closed would widen what escapes those conditions on
-    doubt, which is the one thing this module must never do.
+    FAILS OPEN, unlike every other test here, because its answer only spares: an
+    unreadable environment or no environ oracle leaves *pid* a candidate, still
+    governed by the ownership, argv, two-pass and age conditions. Failing closed
+    would let more escape those conditions on doubt.
 
-    This answer alone NEVER excludes a pid, because the marker describes a TREE. The
-    chokepoint accepts harness argv by design -- its ``is_kiro_cli`` parameter exists
-    so a delegating spawn can route through it, and a pod child probe and an
-    unattended fix-authoring agent both do -- and the marker is inherited, so a
-    harness can carry it without being tool work.
-    :meth:`RuntimeReconciler._unowned` therefore requires this answer AND a
-    non-harness argv0 before it drops a pid.
+    This answer alone NEVER excludes a pid: the marker is inherited by a TREE, and
+    the chokepoint accepts harness argv by design (``is_kiro_cli``, used by a pod
+    child probe and an unattended fix-authoring agent). So
+    :meth:`RuntimeReconciler._unowned` requires this AND a non-harness argv0.
     """
     return session_pid._env_is_sandbox_tool(pid, proc_root) is True
 
