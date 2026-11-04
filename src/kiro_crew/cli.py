@@ -440,6 +440,7 @@ def main() -> None:
     cli_parser_agent.register_chat_parser(sub, _jail_opts)
     cli_parser_gateway.register_doctor_parser(sub)
     cli_parser_gateway.register_ledger_sweep_parser(sub)
+    cli_parser_gateway.register_tmp_parser(sub)
 
     # gateway
     gw_parser = cli_help.add_command(sub, "gateway")
@@ -946,6 +947,10 @@ def main() -> None:
             purge=args.purge,
             older_than_days=args.older_than_days,
             purge_unreadable=args.purge_unreadable,
+        )
+    elif args.command == "tmp":
+        importlib.import_module("kiro_crew.temp_reclaim").run_command(
+            args.paths, dry_run=args.dry_run
         )
     elif args.command == "manifest":
         _manifest(
