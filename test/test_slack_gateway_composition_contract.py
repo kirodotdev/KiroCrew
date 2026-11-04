@@ -269,6 +269,11 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         ),
         ("_refresh_mcp_resolutions", "async method", "(self) -> 'dict'"),
         ("_stop_mcp_broker", "async method", "(self) -> 'None'"),
+        (
+            "_refresh_mcp_overlays",
+            "async method",
+            "(self, register: 'Callable[[], Awaitable[bool]] | None' = None) -> 'dict'",
+        ),
         ("_apply_mcp_gateway_enabled", "async method", "(self, enabled: 'bool') -> 'dict'"),
         ("_apply_mcp_stub", "async method", "(self) -> 'dict'"),
         ("_wire_mcp_gateway_dashboard", "method", "(self) -> 'None'"),

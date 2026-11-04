@@ -765,6 +765,9 @@ class GatewayOrchestrator:
     _mcp_gateway_manager: GatewayManager | None
     _mcp_resolve_prefetch: asyncio.Task[None] | None
     _mcp_target_env: dict[str, str]
+    _mcp_overlay_refresh_lock: asyncio.Lock | None = None
+    _mcp_rewrite_inputs: dict[str, Any] | None = None
+    _mcp_rewrite_policy: dict[str, Any] | None = None
     _mcp_resolve_home: str
     # The channel hoists' fields (gateway_runtime/channel_boot.py):
     _wecom_bot_id: str
@@ -1030,6 +1033,7 @@ class GatewayOrchestrator:
     _stop_mcp_broker = _mcp_broker._stop_mcp_broker
     _apply_mcp_gateway_enabled = _mcp_broker._apply_mcp_gateway_enabled
     _apply_mcp_stub = _mcp_broker._apply_mcp_stub
+    _refresh_mcp_overlays = _mcp_broker._refresh_mcp_overlays
     _wire_mcp_gateway_dashboard = _mcp_broker._wire_mcp_gateway_dashboard
 
     # ------------------------------------------------------------------
