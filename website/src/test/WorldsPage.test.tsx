@@ -37,6 +37,9 @@ vi.mock('../pages/scenes/WizardTowerScene', () => ({
 vi.mock('../pages/scenes/UnderwaterLabScene', () => ({
   default: ({ agents }: { agents: AgentSource[] }) => <div data-testid="scene-underwater">UnderwaterScene ({agents.length})</div>,
 }))
+vi.mock('../pages/scenes/HanoiScene', () => ({
+  default: ({ agents }: { agents: AgentSource[] }) => <div data-testid="scene-hanoi">HanoiScene ({agents.length})</div>,
+}))
 vi.mock('../pages/scenes/mission-control/MissionControlScene', () => ({
   default: ({ agents }: { agents: AgentSource[] }) => <div data-testid="scene-mission">MissionScene ({agents.length})</div>,
 }))
@@ -68,6 +71,7 @@ describe('WorldsPage', () => {
       expect(screen.getByText('Wizard Tower')).toBeInTheDocument()
       expect(screen.getByText('Deep Lab')).toBeInTheDocument()
       expect(screen.getByText('Mission Control')).toBeInTheDocument()
+      expect(screen.getByText('Hà Nội')).toBeInTheDocument()
     })
   })
 
@@ -99,6 +103,14 @@ describe('WorldsPage', () => {
       fireEvent.click(screen.getByText('Deep Lab'))
       const underwaterWrapper = screen.getByTestId('scene-underwater').parentElement!
       expect(underwaterWrapper.style.display).not.toBe('none')
+    })
+
+    it('switches to hanoi scene on click', () => {
+      renderWithProviders(<WorldsPage />)
+      fireEvent.click(screen.getByText('Hà Nội'))
+      const hanoiWrapper = screen.getByTestId('scene-hanoi').parentElement!
+      expect(hanoiWrapper.style.display).not.toBe('none')
+      expect(localStorage.getItem('mc-agent-scene')).toBe('hanoi')
     })
 
     it('keeps all scenes mounted (hidden, not removed)', () => {
@@ -168,6 +180,11 @@ describe('WorldsPage', () => {
     it('passes agents array to wizard scene', () => {
       renderWithProviders(<WorldsPage />)
       expect(screen.getByTestId('scene-wizard')).toHaveTextContent('WizardScene (2)')
+    })
+
+    it('passes agents array to hanoi scene', () => {
+      renderWithProviders(<WorldsPage />)
+      expect(screen.getByTestId('scene-hanoi')).toHaveTextContent('HanoiScene (2)')
     })
 
     it('passes agents array to underwater scene', () => {
