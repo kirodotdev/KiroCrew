@@ -140,3 +140,106 @@ describe('MarkdownRenderer relative path chips', () => {
     expect(probedPaths(fetchMock)).toEqual(['run/checkin.sh'])
   })
 })
+
+describe('MarkdownRenderer relative diff headers', () => {
+  const FENCE = '```diff\n--- a/run/checkin.sh\n+++ b/run/checkin.sh\n@@ -1 +1 @@\n-a\n+b\n```'
+
+  it('probes and opens a relative diff header inside the chat project', async () => {
+    const fetchMock = stubPathKinds(p => (p === ABS ? 'file' : null))
+    const onFileOpen = vi.fn()
+    const { getByRole } = render(
+      <ChatProjectDirCtx.Provider value={PROJECT}>
+        <MarkdownRenderer content={FENCE} onFileOpen={onFileOpen} />
+      </ChatProjectDirCtx.Provider>,
+    )
+    const open = await waitFor(() => getByRole('button', { name: `Open ${ABS} in side panel` }))
+    expect(probedPaths(fetchMock)).toEqual([ABS])
+    fireEvent.click(open)
+    expect(onFileOpen).toHaveBeenCalledWith(ABS)
+  })
+
+  it('offers no Open for a header that climbs out of the project', async () => {
+    const fetchMock = stubPathKinds(() => 'file')
+    const { container } = render(
+      <ChatProjectDirCtx.Provider value={PROJECT}>
+        <MarkdownRenderer content={'```diff\n--- a/../x.sh\n+++ b/../x.sh\n@@ -1 +1 @@\n-a\n+b\n```\n\nSee `run/checkin.sh`.'} onFileOpen={vi.fn()} />
+      </ChatProjectDirCtx.Provider>,
+    )
+    await waitFor(() => {
+      expect(container.querySelectorAll('code[data-path-kind="file"]')).toHaveLength(1)
+    })
+    expect(probedPaths(fetchMock)).toEqual([ABS])
+  })
+})
+
+describe('MarkdownRenderer relative and home path links', () => {
+  it('opens a relative link target inside the chat project', async () => {
+    const fetchMock = stubPathKinds(p => (p === ABS ? 'file' : null))
+    const onFileOpen = vi.fn()
+    const { getByRole } = render(
+      <ChatProjectDirCtx.Provider value={PROJECT}>
+        <MarkdownRenderer content={'See [the script](run/checkin.sh).'} onFileOpen={onFileOpen} />
+      </ChatProjectDirCtx.Provider>,
+    )
+    const link = getByRole('link', { name: 'the script' })
+    await waitFor(() => expect(probedPaths(fetchMock)).toEqual([ABS]))
+    // Wait for the probe's answer to land before the click is judged.
+    await waitFor(() => {
+      const ev = new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 })
+      link.dispatchEvent(ev)
+      expect(onFileOpen).toHaveBeenCalledWith(ABS)
+    })
+  })
+
+  it('opens a home-relative link target', async () => {
+    stubPathKinds(p => (p === '~/notes.md' ? 'file' : null))
+    const onFileOpen = vi.fn()
+    const { getByRole } = render(
+      <ChatProjectDirCtx.Provider value={PROJECT}>
+        <MarkdownRenderer content={'See [notes](~/notes.md).'} onFileOpen={onFileOpen} />
+      </ChatProjectDirCtx.Provider>,
+    )
+    const link = getByRole('link', { name: 'notes' })
+    await waitFor(() => {
+      link.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 }))
+      expect(onFileOpen).toHaveBeenCalledWith('~/notes.md')
+    })
+  })
+
+  it('does not probe a relative link outside a chat transcript', async () => {
+    // A previewed document's relative link is relative to that document, which
+    // nothing here joins to, so it must not be probed against the gateway's
+    // directory. A `~/` link names the home on any host and still resolves.
+    const fetchMock = stubPathKinds(() => 'file')
+    const onFileOpen = vi.fn()
+    const { getByRole } = render(
+      <MarkdownRenderer content={'See [log](./CHANGELOG.md) and [notes](~/notes.md).'} onFileOpen={onFileOpen} />,
+    )
+    const notes = getByRole('link', { name: 'notes' })
+    await waitFor(() => {
+      notes.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 }))
+      expect(onFileOpen).toHaveBeenCalledWith('~/notes.md')
+    })
+    expect(probedPaths(fetchMock)).toEqual(['~/notes.md'])
+    const log = getByRole('link', { name: 'log' })
+    const ev = new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 })
+    log.dispatchEvent(ev)
+    expect(onFileOpen).toHaveBeenCalledTimes(1)
+  })
+
+  it('leaves an unconfirmed relative link an ordinary link', async () => {
+    stubPathKinds(() => null)
+    const onFileOpen = vi.fn()
+    const { getByRole } = render(
+      <ChatProjectDirCtx.Provider value={PROJECT}>
+        <MarkdownRenderer content={'See [docs](notes/guide.md) and [route](settings).'} onFileOpen={onFileOpen} />
+      </ChatProjectDirCtx.Provider>,
+    )
+    const link = getByRole('link', { name: 'docs' })
+    await waitFor(() => expect(link.getAttribute('href')).toBe('notes/guide.md'))
+    const ev = new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 })
+    link.dispatchEvent(ev)
+    expect(onFileOpen).not.toHaveBeenCalled()
+    expect(getByRole('link', { name: 'route' }).getAttribute('href')).toBe('settings')
+  })
+})

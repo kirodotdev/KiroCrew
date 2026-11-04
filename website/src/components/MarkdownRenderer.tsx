@@ -76,6 +76,7 @@ import {
   MdSourceCtx,
   MdBlockStartCtx,
   ParagraphNoticeSlotCtx,
+  ChatProjectDirCtx,
   PathActionCtx,
   PathProbeCtx,
   ReadOnlyCodeCtx,
@@ -88,7 +89,7 @@ import {
 import { artifactSlugFromHref, classifySessionLink, soleLinkInParagraph, useSessionChip, useUnfurlHref } from './markdown/linkTargets'
 import { dashboardPreviewRef, dashboardPreviewTargetFromHref } from '../utils/dashboardPreview'
 import { ClosedSessionNotice } from './markdown/ClosedSessionNotice'
-import { activatePath, usePathResolution } from './markdown/pathReferences'
+import { activatePath, isPathCandidate, splitLineRef, usePathResolution } from './markdown/pathReferences'
 import { ELEMENT_OVERRIDES, sp, textOf } from './markdown/elements'
 import { MD_FLOW_ROOT_CLS, MD_PARAGRAPH_CLS } from './markdown/typography'
 import { InlineCode } from './markdown/InlineCode'
@@ -132,6 +133,7 @@ function MdAnchor({ node, href, children, [SESSION_REF_TRAILING]: trailing }: Md
   const override = useContext(LinkOverrideCtx)
   const probeEnabled = useContext(PathProbeCtx)
   const actions = useContext(PathActionCtx)
+  const chatProjectDir = useContext(ChatProjectDirCtx)
   // The override is resolved FIRST and wins outright — Issue Radar's in-app
   // issue/PR affordance must keep beating a link preview. Feeding `null` into
   // the unfurl gate for a claimed href also means a claimed link is never
@@ -169,6 +171,25 @@ function MdAnchor({ node, href, children, [SESSION_REF_TRAILING]: trailing }: Md
     try {
       const decodedHref = decodeURIComponent(href)
       if (!decodedHref.startsWith('//')) localHref = decodedHref
+    } catch { /* keep it a normal link */ }
+  } else if (href && !URL_SCHEME_RE.test(href) && !href.startsWith('#') && !href.startsWith('?')) {
+    // A scheme-less, unrooted destination shaped like a path (`src/a.ts`,
+    // `~/notes.md`) is the same file reference the inline chip resolves: the
+    // chip joins it to the chat's project and opens it, while as a link it
+    // used to open a new tab at a dashboard URL that names nothing. Only the
+    // probe's confirmation changes the click (see `onPathClick`), so a
+    // relative link to something that is not a file stays an ordinary link.
+    //
+    // A RELATIVE destination is taken only inside a chat transcript, the one
+    // host that says which folder it is relative to (`ChatProjectDirCtx`).
+    // A previewed document's `[x](./CHANGELOG.md)` is relative to that
+    // document, which nothing here joins to, so it keeps its plain link rather
+    // than opening a same-named file from the gateway's directory. `~/` names
+    // the gateway user's home on every host, so it needs no project.
+    try {
+      const decodedHref = decodeURIComponent(href)
+      const relativeOk = decodedHref.startsWith('~/') || chatProjectDir != null
+      if (relativeOk && isPathCandidate(splitLineRef(decodedHref).path)) localHref = decodedHref
     } catch { /* keep it a normal link */ }
   }
   // Where the link goes, for the code spans in its label (`InsideLinkCtx`): a
