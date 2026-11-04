@@ -19,6 +19,7 @@ const {
   EMPTY_XATTR_DIGEST,
   fakeWorkerFactory,
   WORKER_DEPS,
+  writeLeaseUnavailable,
 } = require("./linux-desktop-integration-test-helpers");
 
 test("real filesystem keeps managed metadata stable and detects chmod", LINUX_FILESYSTEM_ONLY, (t) => {
@@ -155,12 +156,17 @@ test("real helper treats a filesystem without xattr support as an empty selected
 
   // A later managed update runs the lease-held publish path, whose fd-based
   // xattr comparison must also read the unsupported filesystem as empty.
+  const noLease = writeLeaseUnavailable(root);
+  if (noLease) {
+    t.skip(noLease);
+    return;
+  }
   const moved = integrateLinuxDesktop({
     ...deps,
     env: { ...deps.env, APPIMAGE: realPath.join(root, "Moved.AppImage") },
     version: "0.6.0",
   });
-  assert.equal(moved.installed, true);
+  assert.equal(moved.installed, true, JSON.stringify(moved));
   assert.match(realFs.readFileSync(launcher, "utf8"), /Moved\.AppImage/);
   const publishes = helperRuns.filter((r) => r.mode === "publish");
   assert.ok(publishes.length > 0);
@@ -192,6 +198,11 @@ test("real helper reports an unexpected xattr failure as a structured error and 
 test("real publication and cleanup defer while their inode has an open descriptor", LINUX_FILESYSTEM_ONLY, (t) => {
   const root = realFs.mkdtempSync(realPath.join(realOs.tmpdir(), "kirocrew-ldi-lease-"));
   t.after(() => realFs.rmSync(root, { recursive: true, force: true }));
+  const noLease = writeLeaseUnavailable(root);
+  if (noLease) {
+    t.skip(noLease);
+    return;
+  }
   const home = realPath.join(root, "home");
   const appDir = realPath.join(root, "appdir");
   const dataDir = realPath.join(root, "data");
@@ -232,11 +243,12 @@ test("real publication and cleanup defer while their inode has an open descripto
   } finally {
     realFs.closeSync(currentFd);
   }
-  assert.equal(integrateLinuxDesktop({
+  const published = integrateLinuxDesktop({
     ...deps,
     env: { ...deps.env, APPIMAGE: realPath.join(root, "Moved.AppImage") },
     version: "0.6.0",
-  }).installed, true);
+  });
+  assert.equal(published.installed, true, JSON.stringify(published));
   assert.match(realFs.readFileSync(launcher, "utf8"), /Moved\.AppImage/);
   const statePath = realPath.join(stateDir, "linux-desktop-integration", "state.json");
   const recovery = JSON.parse(realFs.readFileSync(statePath, "utf8")).artifacts[launcher].recovery;

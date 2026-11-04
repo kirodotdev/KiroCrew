@@ -13,6 +13,58 @@ const LINUX_FILESYSTEM_ONLY = {
   skip: process.platform !== "linux" ? "requires Linux filesystem APIs" : false,
 };
 
+// The packaged helper publishes a managed update, and deletes a recovery
+// path, only while it holds a kernel write lease (F_SETLEASE, F_WRLCK) on the
+// inode. A managed launcher's inode always has two names: the module writes
+// the anchor temp file, then hard-links it to the public path. Some hosts
+// refuse the lease on such an inode with EAGAIN even when no process has it
+// open; the CodeBuild Linux runner (kernel 4.14, overlayfs root) does, for
+// every reopen of a managed launcher. The helper then reports "busy" and the
+// module keeps the old file, which is its designed answer to a refused lease,
+// so a test of the publish path has nothing to observe there.
+//
+// This probe repeats the module's own sequence on a scratch file in `dir`:
+// Node writes and closes the file, hard-links it to a second name, and a
+// separate interpreter reopens each name O_RDWR and asks for the lease. It
+// returns a skip reason naming the errno, or null when both names are granted.
+// A probe that cannot run returns null, so the test still runs and fails
+// loudly instead of skipping.
+const WRITE_LEASE_PROBE = [
+  "import errno, fcntl, os, sys",
+  "for path in sys.argv[1:]:",
+  "    fd = os.open(path, os.O_RDWR | os.O_CLOEXEC | os.O_NOFOLLOW)",
+  "    try:",
+  "        fcntl.fcntl(fd, fcntl.F_SETLEASE, fcntl.F_WRLCK)",
+  "    except OSError as exc:",
+  "        print(errno.errorcode.get(exc.errno, str(exc.errno)))",
+  "        raise SystemExit(0)",
+  "    else:",
+  "        fcntl.fcntl(fd, fcntl.F_SETLEASE, fcntl.F_UNLCK)",
+  "    finally:",
+  "        os.close(fd)",
+  "print('granted')",
+].join("\n");
+
+function writeLeaseUnavailable(dir) {
+  const probeDir = realFs.mkdtempSync(realPath.join(dir, "lease-probe-"));
+  try {
+    const anchor = realPath.join(probeDir, "launcher.desktop.tmp");
+    const published = realPath.join(probeDir, "launcher.desktop");
+    realFs.writeFileSync(anchor, "probe", { flag: "wx", mode: 0o644 });
+    realFs.linkSync(anchor, published);
+    const result = realChildProcess.spawnSync(
+      "/usr/bin/python3", ["-I", "-c", WRITE_LEASE_PROBE, published, anchor],
+      { encoding: "utf8", timeout: 5000 }
+    );
+    const answer = result.status === 0 ? String(result.stdout || "").trim() : "";
+    return /^E[A-Z0-9]+$/.test(answer)
+      ? `this host refuses a write lease on a hard-linked file with no other open descriptor (${answer})`
+      : null;
+  } finally {
+    realFs.rmSync(probeDir, { recursive: true, force: true });
+  }
+}
+
 const BUNDLED_DESKTOP = [
   "[Desktop Entry]",
   "Name=Kiro Crew",
@@ -424,4 +476,5 @@ module.exports = {
   EMPTY_XATTR_DIGEST,
   fakeWorkerFactory,
   WORKER_DEPS,
+  writeLeaseUnavailable,
 };
