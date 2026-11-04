@@ -711,6 +711,18 @@ def test_clean_stale_malformed_json_untouched(tmp_path, monkeypatch):
     assert p.read_text(encoding="utf-8") == "{ not valid json "  # left untouched
 
 
+def test_clean_stale_non_utf8_json_untouched(tmp_path, monkeypatch):
+    # The global mcp.json is shared with other tools; bytes that are not UTF-8
+    # read like bad JSON: nothing is removed and the file is left as it was.
+    p = tmp_path / "mcp.json"
+    raw = b'{"mcpServers": {"kirocrew-core": {"command": "caf\xe9"}}}'
+    p.write_bytes(raw)
+    monkeypatch.setattr(mcp_cleanup, "_KIRO_MCP_JSON", p)
+
+    assert mcp_cleanup.clean_stale_managed_mcp() == []
+    assert p.read_bytes() == raw
+
+
 def test_clean_stale_non_object_json_untouched(tmp_path, monkeypatch):
     p = tmp_path / "mcp.json"
     p.write_text("[]", encoding="utf-8")
