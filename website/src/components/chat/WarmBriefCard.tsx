@@ -26,7 +26,7 @@
 import type { ReactNode } from 'react'
 import { i18nT } from '../../i18n/t'
 import type { ChatMessage } from '../../types'
-import MarkdownRenderer, { LinkOverrideCtx, type LinkOverride } from '../MarkdownRenderer'
+import MarkdownRenderer, { LinkOverrideCtx, LinkUnfurlCtx, type LinkOverride, type LinkUnfurl } from '../MarkdownRenderer'
 import WidgetFrame from '../WidgetFrame'
 import { WidgetFrameProfileContext } from '../widgetFrameProfile'
 import WarmBriefWaiting, { SHOWN, type WarmBriefCardItem } from './WarmBriefWaiting'
@@ -205,6 +205,9 @@ export function warmBriefBodyOf(m: ChatMessage, slotKey?: string): ReactNode | u
   return brief ? <WarmBriefCard brief={brief} messageTs={m.ts} slotKey={slotKey} /> : undefined
 }
 
+/** The link row never fetches a preview: its pills are built from the URL alone. */
+const NO_UNFURL: LinkUnfurl = { enabled: false, live: false }
+
 /** Every link in the body draws as its text: no anchor, no chip, no unfurl. */
 const inertLink: LinkOverride = ({ children }) => <span data-testid="warm-brief-inert-link">{children}</span>
 
@@ -278,19 +281,13 @@ export default function WarmBriefCard({ brief, messageTs, slotKey }: { brief: Wa
         </div>
       )}
       {brief.links.length > 0 && (
-        <div className="flex flex-wrap gap-x-3 gap-y-1 text-[12px] leading-4" data-testid="warm-brief-links">
-          {/* The gateway's own row: PRs it read live, the URL from each read's repo. */}
-          {brief.links.map(link => (
-            <a
-              key={link.url}
-              href={link.url}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-accent underline underline-offset-2 decoration-accent/40 hover:decoration-accent break-all"
-            >
-              {link.label}
-            </a>
-          ))}
+        <div className="min-w-0" data-testid="warm-brief-links">
+          {/* The gateway's own row: PRs it read live, the URL from each read's
+              repo. Bare URLs through the chat's renderer draw as its PR pills
+              (provider mark + `owner/repo#N`); no preview is fetched. */}
+          <LinkUnfurlCtx.Provider value={NO_UNFURL}>
+            <MarkdownRenderer content={brief.links.map(link => link.url).join(' ')} messageTs={messageTs} slotKey={slotKey} />
+          </LinkUnfurlCtx.Provider>
         </div>
       )}
       {brief.asked && (
