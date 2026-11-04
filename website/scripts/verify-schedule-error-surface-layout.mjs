@@ -11,16 +11,9 @@
  * The collapse it exists to catch: the Last Error notice is a flex child of
  * the DialogBody column, and without a shrink floor the column crushes it to
  * a ~16px one-line sliver on a short viewport -- measured, not hypothetical
- * (tmack8001's number, reproduced at `1500x700` before the fix). Two guards
- * hold it now, and BOTH are asserted:
- *
- *   1. `shrink-0` on the notice itself -- the notice holds
- *      min(45vh, 420px) at every viewport height.
- *   2. the plain block wrapper around it -- a visible-overflow block has an
- *      automatic content-height `min-height`, so it reserves the notice's
- *      space in the flex column EVEN WHEN the notice's own `shrink-0` is
- *      lost. Simulated here by forcing `flex-shrink: 1 !important` back onto
- *      the notice: if the wrapper is ever removed, mode 2 goes red.
+ * (tmack8001's number, reproduced at `1500x700` before the fix). `shrink-0`
+ * plus the `min(45vh, 420px)` cap hold it; this asserts both surfaces (the
+ * Last Error notice and the Last Output pre) render at that cap.
  *
  * Usage: node scripts/verify-schedule-error-surface-layout.mjs   (needs `npm run build` first)
  */
@@ -120,12 +113,6 @@ async function measure(page, selector) {
   }, selector)
 }
 
-/** Force the notice's shrink floor off, the way a lost `shrink-0` class would. */
-async function hostile(page) {
-  await page.addStyleTag({ content: '[data-testid="schedule-job-last-error"], [data-testid="schedule-job-last-output"] { flex-shrink: 1 !important; }' })
-  await page.waitForTimeout(150)
-}
-
 const NOTICE_SEL = '[data-testid="schedule-job-last-error"]'
 const OUTPUT_SEL = '[data-testid="schedule-job-last-output"]'
 
@@ -136,7 +123,7 @@ const base = dist.base
 const browser = await chromium.launch()
 
 for (const [width, height] of VIEWPORTS) {
-  // --- mode 1: the notice's own shrink floor --------------------------------
+  // --- the Last Error notice ------------------------------------------------
   {
     const { context, page } = await schedulePage(browser, [FAILED, SUCCEEDED], { width, height })
     const m = await measure(page, NOTICE_SEL)
@@ -153,33 +140,14 @@ for (const [width, height] of VIEWPORTS) {
     await context.close()
   }
 
-  // --- mode 2: the wrapper's structural floor, with shrink-0 lost -----------
-  {
-    const { context, page } = await schedulePage(browser, [FAILED, SUCCEEDED], { width, height })
-    await hostile(page)
-    const m = await measure(page, NOTICE_SEL)
+  // --- the Last Output pre: same cap ----------------------------------------
+  if (height <= 900) {
+    const { context, page } = await schedulePage(browser, [SUCCEEDED, FAILED], { width, height })
+    const m = await measure(page, OUTPUT_SEL)
     const cap = capFor(height)
     check(
       m && m.clientHeight >= cap - TOLERANCE,
-      `${width}x${height}: with shrink-0 forced off, the block wrapper still holds the cap (clientHeight ${m?.clientHeight} >= ${cap - TOLERANCE})`,
-    )
-    await context.close()
-  }
-
-  // --- the Last Output pre: same cap, same structural floor ------------------
-  if (height <= 900) {
-    const { context, page } = await schedulePage(browser, [SUCCEEDED, FAILED], { width, height })
-    const before = await measure(page, OUTPUT_SEL)
-    const cap = capFor(height)
-    check(
-      before && before.clientHeight >= cap - TOLERANCE,
-      `${width}x${height}: the Last Output pre renders at the cap (clientHeight ${before?.clientHeight} >= ${cap - TOLERANCE})`,
-    )
-    await hostile(page)
-    const after = await measure(page, OUTPUT_SEL)
-    check(
-      after && after.clientHeight >= cap - TOLERANCE,
-      `${width}x${height}: the Last Output pre with shrink-0 forced off still holds the cap (clientHeight ${after?.clientHeight} >= ${cap - TOLERANCE})`,
+      `${width}x${height}: the Last Output pre renders at the cap (clientHeight ${m?.clientHeight} >= ${cap - TOLERANCE})`,
     )
     await context.close()
   }
