@@ -957,7 +957,7 @@ function ChatInput({
   // placeholder here is a sentence the user needs whole, so it still wraps —
   // including a caller's own `placeholder`, which `resolvedPlaceholder` carries.
   const placeholderIsHint = !placeholder && activePlaceholder === resolvedPlaceholder
-  const { handleInput } = useTextareaAutosize({ inputRef, mirrorRef, value, prefillHint, manualHeight, dragging, textareaParked, activePlaceholder })
+  const { handleInput } = useTextareaAutosize({ inputRef, mirrorRef, value, prefillHint, manualHeight, dragging, textareaParked, activePlaceholder, boxMounted: !showGhost && !composerCollapsed })
   // The send slot's busy branch: a turn runs (or a stop is under way) and there
   // is a stop or steer path. Read by the cluster below and by the "+" menu row.
   const compactingSlot = busyMode !== 'responsive' && compacting && !isRunning && !composerHasDraft && (!stopState || stopState === 'idle')

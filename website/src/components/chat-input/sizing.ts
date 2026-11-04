@@ -390,7 +390,7 @@ export function useStripHeights({ pendingFilesCount, pendingDirsCount, hasSessio
 /** Content-driven height for the textarea: every re-measure, and the paste
  *  mirror's scroll sync that follows one. Takes `textareaParked` from the voice
  *  hooks, which is why the composer calls this after them. */
-export function useTextareaAutosize({ inputRef, mirrorRef, value, prefillHint, manualHeight, dragging, textareaParked, activePlaceholder }: {
+export function useTextareaAutosize({ inputRef, mirrorRef, value, prefillHint, manualHeight, dragging, textareaParked, activePlaceholder, boxMounted = true }: {
   inputRef: React.RefObject<HTMLTextAreaElement>
   mirrorRef: React.RefObject<HTMLDivElement>
   value: string
@@ -399,6 +399,12 @@ export function useTextareaAutosize({ inputRef, mirrorRef, value, prefillHint, m
   dragging: React.MutableRefObject<boolean>
   textareaParked: boolean
   activePlaceholder: string
+  /** Whether the box that holds the textarea is mounted. The composer unmounts
+   *  the box for the approval ghost and for a collapse, and the box mounts a new
+   *  textarea when it returns. The effects below read `inputRef` only when a dep
+   *  changes, so this dep makes them measure the new textarea and move the width
+   *  observer onto it from the detached one. */
+  boxMounted?: boolean
 }) {
   /** Mirrors `textareaParked` for the handlers that read it at event time (the
    *  input handler, the width observer). Assigned during render, so it is
@@ -421,7 +427,7 @@ export function useTextareaAutosize({ inputRef, mirrorRef, value, prefillHint, m
     const valueChanged = lastMeasuredValueRef.current !== value
     lastMeasuredValueRef.current = value
     if (inputRef.current && !dragging.current) applyHeight(inputRef.current, manualHeight, prefillHint, textareaParked, !valueChanged)
-  }, [value, prefillHint, manualHeight, textareaParked, inputRef, dragging])
+  }, [value, prefillHint, manualHeight, textareaParked, boxMounted, inputRef, dragging])
 
   // A pre-filled prompt is read from its first line. When the seed REPLACES what
   // the box held, a box that was scrolled for the previous text keeps that
@@ -480,7 +486,8 @@ export function useTextareaAutosize({ inputRef, mirrorRef, value, prefillHint, m
     return () => { ro.disconnect(); cancelAnimationFrame(frame); forgetAfterSlide(remeasure) }
     // `textareaParked` re-arms the observer on the way back from the sr-only box,
     // where the 1px width must not be the baseline the next change is judged from.
-  }, [manualHeight, prefillHint, textareaParked, inputRef, dragging])
+    // `boxMounted` re-arms it on the textarea a remounted box brings.
+  }, [manualHeight, prefillHint, textareaParked, boxMounted, inputRef, dragging])
 
   // Keep the paste-highlight mirror's scroll aligned with the textarea after
   // value/height changes (applyHeight mutates scrollTop programmatically, which
