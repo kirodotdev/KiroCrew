@@ -1433,7 +1433,10 @@ class MemoryStore:
 
     @named_store_operation
     def rebuild_index(self) -> int:
-        """Rebuild the full FTS index from all memory files. Returns file count."""
+        """Rebuild the full FTS index from all memory files.
+
+        Returns the number of files indexed, or 0 when the rebuild failed.
+        """
         require_memory_ready(self._memory_store_name)
         if self._memory_version == 2:
             return self._member_store().rebuild_memory_index()
@@ -1499,11 +1502,14 @@ class MemoryStore:
                 indexed += 1
             conn.commit()
         except Exception:
+            # Nothing was committed, so report no files indexed rather than
+            # every source file: callers log this count as the rebuild result.
+            indexed = 0
             logger.warning("FTS rebuild failed", exc_info=True)
         finally:
             if conn is not None:
                 conn.close()
-        return len(files)
+        return indexed
 
     @named_store_operation
     def index_row_count(self) -> int | None:

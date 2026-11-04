@@ -264,6 +264,17 @@ class TestRecentHistoryCache:
         # preferences + projects + at least 1 history file
         assert count >= 3
 
+    def test_rebuild_index_reports_zero_when_the_index_cannot_open(self, tmp_path):
+        """A failed rebuild must not report every source file as indexed."""
+        unopenable = tmp_path / "index-is-a-directory"
+        unopenable.mkdir()
+        store = MemoryStore(workspace=tmp_path, index_db=unopenable)
+        store.init()
+        store.append_history("entry one")
+        count = store.rebuild_index()
+        assert store.index_row_count() is None
+        assert count == 0, f"rebuild_index reported {count} files indexed, none were"
+
     def test_write_projects_no_double_header(self, tmp_path):
         """write_projects does not double-wrap the header."""
         store = MemoryStore(workspace=tmp_path)
