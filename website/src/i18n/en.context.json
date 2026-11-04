@@ -345,6 +345,7 @@
     "pages.artifactDetailPage.updated_at_value": "Footer of an artifact's page: when the artifact was last changed. {{date}} is a formatted date and time; place it where your language puts a date in this phrase.",
     "pages.artifactDetailPage.action_by_actor": "One row of the artifact activity timeline: the action and who did it. {{action}} is the action already translated, such as Created or Edited, and is shown in bold through the <0> tag; keep the tag around it. {{name}} is the actor, such as user or agent.",
     "pages.artifactsPage.all": "Filter option meaning no filter — show every item. A quantifier over the list beside it, not the adjective \"whole\".",
+    "pages.artifactsPage.on_provider": "Heading over the artifacts stored on a remote provider; {{provider}} is that provider's name, such as Quip. \"On\" means located on, not the on/off switch.",
     "pages.artifactsPage.v": "The \"v\" that prefixes a version number, rendered immediately before the digits with no space (`v1.2.3`). Most languages leave this untranslated.",
     "pages.artifactsPage.ver": "Column header abbreviating \"version\" in the artifacts table. Abbreviated for column width, not for style.",
     "pages.channelPage.add": "Verb on a button: add an entry to the list beside it. If the target language needs an object, name the thing being added.",

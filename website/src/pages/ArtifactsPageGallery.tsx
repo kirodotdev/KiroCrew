@@ -106,7 +106,7 @@ function LocalCardBody({ a, context }: { a: Artifact; context: LibCtx }) {
               )}
             </div>
             <code className="text-[11px] text-muted">{a.slug}</code>
-            {author && <span className="block text-[11px] text-muted mt-0.5">{i18nT('pages.artifactsPage.by')} {author}</span>}
+            {author && <span className="block text-[11px] text-muted mt-0.5">{i18nT('pages.artifactsPage.by_author', { author })}</span>}
           </div>
           <Badge variant={KIND_BADGE[a.kind]}>{a.kind}</Badge>
         </div>

@@ -488,7 +488,7 @@ function SkillDetailPanel({
       </div>
 
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted mb-3">
-        {(preview?.author || skill.author) && <span>{i18nT('components.skillBrowserModal.by')} {preview?.author || skill.author}</span>}
+        {(preview?.author || skill.author) && <span>{i18nT('components.skillBrowserModal.by_author', { author: preview?.author || skill.author })}</span>}
         {(skill.installs ?? 0) > 0 && (
           <span className="flex items-center gap-1">
             <Download size={11} aria-hidden="true" /> {formatInstalls(skill.installs!)} {i18nT('components.skillBrowserModal.installs')}

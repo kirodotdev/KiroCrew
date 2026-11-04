@@ -449,7 +449,7 @@ function RelatedLinks({ items }: { items: RelatedRef[] }) {
                     {r.is_pr ? terms.changeRequestShort : i18nT('apps.issueRadar.components.issueDetail.issue')}{sigil}{r.number}
                   </span>
                   {r.state && <span>· {r.state}</span>}
-                  {r.actor && <span>{i18nT('apps.issueRadar.components.issueDetail.by')} {r.actor}</span>}
+                  {r.actor && <span>{i18nT('apps.issueRadar.components.issueDetail.by_actor', { actor: r.actor })}</span>}
                   {r.created_at && (
                     <span title={fmtDateTimeNumeric(r.created_at)}>· {relativeTimeOrDate(r.created_at)}</span>
                   )}
