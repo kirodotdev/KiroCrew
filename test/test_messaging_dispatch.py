@@ -158,11 +158,8 @@ def _patch_pipeline(monkeypatch, *, permitted: bool = True):
 
 
 def test_a_driver_without_a_stop_reason_still_finishes_the_turn(monkeypatch) -> None:
-    """The stop-reason read is defensive, like every other attribute read on
-    this seam. ``TurnDriver`` is resolved through the module attribute, so a
-    stand-in that predates the field must mean "no synthetic completion" — not
-    an AttributeError raised at a real inbound message AFTER the turn already
-    ran and the user already got the answer."""
+    """A driver without ``last_stop_reason`` means "no synthetic completion", not an
+    AttributeError raised after the user already got the answer."""
 
     class _FieldlessDriver:
         def __init__(self, *a, **kw) -> None:
@@ -185,19 +182,10 @@ def test_a_driver_without_a_stop_reason_still_finishes_the_turn(monkeypatch) -> 
 def test_every_turn_open_site_is_gated_on_the_shutdown_state() -> None:
     """Ratchet: the shutdown gate is wired at every site AND placed atomically.
 
-    Two halves, because either alone is satisfiable while the race stays open.
-
-    A gate at the CALL SITE is not enough, which is what the first version of
-    this change got wrong: ``TurnDriver.run`` awaits ``renderer.on_turn_start()``
-    -- a platform round-trip -- before opening the provider stream, so a restart
-    landing there still let the prompt register behind ``close_all``'s drain
-    snapshot. The only atomic placement is inside ``run()``, immediately before
-    the stream, so the gate lives there and each dispatcher passes it in.
-
-    So: every ``TurnDriver(...)`` construction must pass ``closing_gate``, and in
-    the driver no await may occur between the gate and provider stream. A
-    structured monitor may synchronously mark its claim accepted in that span;
-    because it cannot yield, shutdown still cannot take a drain snapshot there.
+    A call-site gate is not enough: ``TurnDriver.run`` awaits
+    ``renderer.on_turn_start()`` before the provider stream, so a restart there
+    slips past ``close_all``'s drain snapshot. So every ``TurnDriver(...)`` passes
+    ``closing_gate``, and no await may sit between the gate and the stream.
     """
     src = Path(D.__file__).resolve().parent.parent
 
@@ -324,8 +312,8 @@ class TestPureCancelPredicate:
     """PURE is what makes the governance exemption safe to grant."""
 
     def test_every_channel_spelling_is_recognised(self) -> None:
-        # 停止 is WeCom's, and it is the one that was missing: the ASCII spellings
-        # are not reachable for a user whose whole surface is Chinese.
+        # 停止 is WeCom's: the ASCII spellings are not reachable for a user whose
+        # whole surface is Chinese.
         for text in ("/stop", "/cancel", "!stop", "!cancel", "停止"):
             assert D.is_pure_cancel(text), text
             assert D.is_pure_cancel(f"  {text.upper()}  "), text
@@ -349,18 +337,9 @@ class TestPureCancelPredicate:
     def test_the_shared_set_covers_the_channel_command_tables(self) -> None:
         """Drift tripwire: a channel alias the shared gate does not know is a hole.
 
-        DISCOVERED rather than listed. The first version of this test imported
-        Discord's and Telegram's tables by name, which made it blind in exactly
-        the way the mirror it guards is blind: WeCom, Teams and WhatsApp each
-        declare their own stop spellings, and WeCom's ``停止`` reached its
-        ``/help`` card while the shared exemption did not know the word. A test
-        that hand-lists the channels is the same mirror one level up, so this
-        walks the packages instead and a new channel is covered by existing.
-
-        The three shapes below are the ones in the tree. An unrecognised shape
-        FAILS rather than being skipped: a channel whose table this cannot read
-        is a channel whose drift it cannot see, and silence there is the whole
-        defect being re-created.
+        The channel packages are walked rather than listed, so a new channel is
+        covered on arrival. A table in an unrecognised shape FAILS rather than
+        being skipped, since its drift would be invisible.
         """
         import importlib
         import pkgutil
