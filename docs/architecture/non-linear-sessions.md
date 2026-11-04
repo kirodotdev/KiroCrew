@@ -37,6 +37,30 @@ Both are non-linear surfaces on a session. Below, they are called docs and canva
 for short, and **page** means either one. The code calls a canvas a **board** (its
 kind, its pane and its reply blocks), so those names appear where code is quoted.
 
+## What the work targets
+
+The question that separates the two uses of a page is where the work lands.
+
+- **The target is the page itself.** "Help me write a doc", "help me lay this out on a
+  canvas." The agent helps you as you create it, and the document or canvas is the
+  work. This is the obvious use, and people get it at once: an editor with an agent in
+  it.
+- **The target is somewhere else, and the page directs it.** "Help me organize a plan
+  of work and execute on it." The page holds the plan, the items and how they relate,
+  and the agent uses it as the direction for orchestrating work that lands elsewhere:
+  branches, pull requests, tickets. This is what a chat thread does today. Nobody
+  takes a session's message array to be the point of the session; it is how work
+  somewhere else gets asked for and followed. A page does the same job, as a surface
+  you can see whole instead of a line you see the tail of. This is the less obvious
+  use, and the more interesting one.
+
+The two modes below follow the two targets: Plain is one agent, and fits the page as
+the target; Crew is a conductor with workers, and fits work that lands elsewhere. The
+line is not strict. A Plain agent can still do a single piece of work elsewhere (a fix
+in a worktree, written up on its page), and a Crew page's plan is itself edited as the
+work moves. But the question a mode answers is the same: is the page the work, or the
+way work elsewhere is run?
+
 ## What a page is
 
 A page is a normal sidebar session with one extra fact: it is bound to a **doc id**.
@@ -48,8 +72,6 @@ session has it, the chat page draws a pane instead of the transcript and compose
 |---|---|---|---|
 | super doc (`doc`) | `DocPane` | none | markdown, optional front matter (`icon`, `cover`, `goal-every`) |
 | super canvas (`board`) | `BoardPane` | `b0a4d` | JSON: `shapes`, `connectors`, `asks`, `goalEvery`, `conductorDefault` |
-| codebase (`codebase`) | `CodebasePane` | `c0deb` | JSON: root, lens, asks |
-| dashboard (`dashboard`) | `DashboardPane` | `da5b0` | a page the conductor writes, plus asks |
 
 The id is 32 hex characters minted by `dashboard/doc_files.py`; the prefix is how the
 kind is told apart (`doc_kind`). The text lives in one file per page,
@@ -58,9 +80,6 @@ text and a **version**, the SHA-256 of the file's bytes. A save (`PUT /api/docs/
 names the version it read; if the file has moved on, the save is refused with
 `409 doc_conflict` and the current text, so a person's edit and a conductor's edit
 never silently overwrite each other.
-
-This document covers docs and canvases in depth. The codebase and dashboard pages use the
-same session, ask and file mechanics with their own panes.
 
 ## Reusing the session mechanism
 
@@ -82,20 +101,20 @@ standing brief. The rest of this document is those four things.
 
 ## Plain and Crew
 
-Every page has the same two modes as an ordinary session.
+Every page has the same two modes as an ordinary session, and they follow
+[what the work targets](#what-the-work-targets).
 
-- **Plain.** The page's agent is `kirocrew-worker`. It does the work itself, in its own
-  session: reads, edits files, runs commands, works in a git worktree on its own
-  branch. The page is where its work shows: tasks ticked, worktree, branch, test
+- **Plain (the target is the page).** The page's agent is `kirocrew-worker`. It does
+  the work itself, in its own session: reads, edits files, runs commands, works in a
+  git worktree on its own branch. The page is where its work shows: tasks ticked, worktree, branch, test
   results, pull request. It opens no further sessions.
-- **Crew.** The page's agent is the conductor (`kirocrew-conductor`, Crew Mode). It
-  breaks work up and starts workers, tracks them on its ledger, and is woken when they
+- **Crew (the target is elsewhere).** The page's agent is the conductor
+  (`kirocrew-conductor`, Crew Mode). It breaks work up and starts workers, tracks them on its ledger, and is woken when they
   report. The page is where you steer the crew and see its state.
 
 A new doc or canvas is Plain. Plain or Crew is chosen on the page before it has been
-asked anything, and is fixed after that, in either direction: a worker's history and a
-conductor's history are not interchangeable. Codebase and dashboard pages stay on the
-conductor.
+asked anything, and is fixed after that, either way: a worker's history and a
+conductor's history are not interchangeable.
 
 The mode decides the brief the session gets (below), and, for a page opened by another
 page's conductor, the default is Plain.
@@ -420,8 +439,8 @@ Next, as design:
 - **The gateway applies a reply's file changes.** Writes are applied once per reply by
   the gateway, with the version check, so a conductor can change a page whose pane is
   closed. Today the open page applies them.
-- **The brief moves into the canvas, codebase and dashboard sessions' system prompts,**
-  as it has for docs, so their turns also carry only what changed.
+- **The brief moves into the canvas session's system prompt,** as it has for docs, so
+  its turns also carry only what changed.
 - **The mode is enforced on the server,** so a page cannot move between Plain and Crew
   after its first ask by any route.
 - **The thread ledger and the filtered array** (Option B), starting with the long
