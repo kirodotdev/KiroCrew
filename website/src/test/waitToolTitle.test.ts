@@ -22,6 +22,16 @@ describe('isWaitToolTitle', () => {
     expect(isWaitToolTitle('wait')).toBe(true) // direct MCP
     expect(isWaitToolTitle('kirocrew-core___wait')).toBe(true) // pooled gateway
     expect(isWaitToolTitle('wait (mcp)')).toBe(true) // suffixed
+    expect(isWaitToolTitle('@kirocrew-core/wait')).toBe(true) // default (kas) harness
+    expect(isWaitToolTitle(' @KIROCREW-CORE/WAIT ')).toBe(true)
+  })
+
+  it('accepts the kas shape only for the kirocrew-core server', () => {
+    // Another server's `wait` must not adopt kirocrew-core's deadline.
+    expect(isWaitToolTitle('@other/wait')).toBe(false)
+    expect(isWaitToolTitle('@kirocrew-core/wait_for_ci')).toBe(false)
+    expect(isWaitToolTitle('@kirocrew-core/wait (mcp)')).toBe(false)
+    expect(isWaitToolTitle('x@kirocrew-core/wait')).toBe(false)
   })
 
   it('is case-insensitive and ignores surrounding whitespace', () => {
