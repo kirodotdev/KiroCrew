@@ -193,7 +193,7 @@ def test_by_name_readers_find_the_crewmate_service_specs(mates, tmp_path, monkey
     assert path == folder / f"{mate_worker.MATE_CONDUCTOR_AGENT}.json"
 
 
-# ── #29821: the worker's record is filed under its dashboard: session key ──
+# ── the worker's record is filed under its dashboard: session key ──
 
 
 def _bound_worker_with_mate_skill(mates, monkeypatch):

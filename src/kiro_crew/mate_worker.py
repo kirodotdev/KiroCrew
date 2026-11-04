@@ -728,7 +728,7 @@ def _worker_scope_key(session_key: str) -> str:
 
     A worker's record is bound under its ``dashboard:<slot>`` session key
     (``session_create``), so a bare slot name finds no record and the worker's
-    skill scope is refused (#29821). Only the exact bare-slot shape is mapped, and
+    skill scope is refused. Only the exact bare-slot shape is mapped, and
     only when it names no record of its own; every other key is returned
     unchanged and still has to name a record. Blocking.
     """
@@ -743,9 +743,11 @@ def _worker_scope_key(session_key: str) -> str:
             return session_key
     except Exception:  # noqa: BLE001 - the seam below refuses an unreadable record itself
         return session_key
-    # Which caller sends the bare name is not known (#29821); name it when it does.
+    # The caller that sends a bare slot name is unknown; the stack names it.
     logger.warning(
-        "worker session %s: bare slot name, read as dashboard:%s", session_key, session_key,
+        "worker session %s: bare slot name, read as dashboard:%s",
+        session_key,
+        session_key,
         stack_info=True,
     )
     return f"dashboard:{session_key}"
