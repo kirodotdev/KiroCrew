@@ -1038,7 +1038,7 @@ def _preview_body(plan: ExportPlan) -> dict[str, Any]:
 
 
 def bundle_filename(name: str) -> str:
-    """An ASCII-safe ``<name>.crewjam`` for the download's plain ``filename``."""
+    """An ASCII-safe ``<name>.kirobot`` for the download's plain ``filename``."""
     stem = re.sub(r"[^A-Za-z0-9._-]+", "-", name).strip("-.") or "crewmate"
     return f"{stem[:64]}{FILE_SUFFIX}"
 
