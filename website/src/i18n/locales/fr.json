@@ -18106,6 +18106,18 @@
       "confirm_delete_job": "Supprimer ?",
       "go_to_chat": "Aller à la conversation",
       "create_your_first_job": "Créer votre première tâche",
+      "batchActions": {
+        "actions_for_selected": "Actions pour les tâches cochées",
+        "batch_failed_many": "{{failed}} sur {{count}} tâches n'ont pas pu être mises à jour",
+        "batch_failed_one": "{{failed}} tâche sur {{count}} n'a pas pu être mise à jour",
+        "batch_failed_other": "{{failed}} sur {{count}} tâches n'ont pas pu être mises à jour",
+        "run_confirm_body": "Chaque tâche démarre une nouvelle exécution maintenant. Les tâches en pause ou déjà en cours sont ignorées.",
+        "run_confirm_title_many": "Exécuter {{count}} tâches maintenant ?",
+        "run_confirm_title_one": "Exécuter {{count}} tâche maintenant ?",
+        "run_confirm_title_other": "Exécuter {{count}} tâches maintenant ?",
+        "strict_off": "Planification stricte désactivée",
+        "strict_on": "Planification stricte activée"
+      },
       "cronFolders": {
         "batch_move_failed_many": "{{count}} tâches sur {{total}} n'ont pas pu être déplacées",
         "batch_move_failed_one": "{{count}} tâche sur {{total}} n'a pas pu être déplacée",
