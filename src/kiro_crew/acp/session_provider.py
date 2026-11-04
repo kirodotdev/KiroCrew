@@ -941,12 +941,15 @@ class AcpSessionProvider(LLMProvider):
         stalled = isinstance(exc, AcpRuntimeStdinStalled) or (
             getattr(self._runtime, "stdin_stall_death", False) is True
         )
+        translated = AcpProcessDied(str(exc), ambiguous_delivery=ambiguous)
         if not stalled and not getattr(handle, "prompt_or_tool_seen", True):
             tail = getattr(self._runtime, "redacted_stderr_tail", lambda: "")()
             cause = registration_throttle_line(tail) if tail else None
             if cause is not None:
-                return registration_rate_limited_error(str(exc), cause)
-        return AcpProcessDied(str(exc), ambiguous_delivery=ambiguous)
+                translated = registration_rate_limited_error(str(exc), cause)
+        if getattr(exc, "session_start_failed", False) is True:
+            translated.session_start_failed = True
+        return translated
 
     async def _guarded(self, awaitable: Any, *, own_write_only: bool = False) -> Any:
         """Await a runtime-touching handle coroutine, translating AcpRuntimeDead

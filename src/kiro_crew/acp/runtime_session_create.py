@@ -27,6 +27,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from copy import copy
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
@@ -47,6 +48,7 @@ from kiro_crew.acp.runtime_start import _START_COLLECT_TIMEOUT_DEFAULT, StartCol
 from kiro_crew.acp.session_handle import (
     AcpFrameTooLarge,
     AcpRequestTimeout,
+    AcpRuntimeDead,
     AcpRuntimeError,
     AcpSessionHandle,
     _load_watchdog_settings,
@@ -443,6 +445,14 @@ async def create_session(
             # One failed start, one sample: the ``except`` below records it.
             raise AcpRuntimeError(f"session/new did not return sessionId: {resp}")
         runtime_start._record_session_start(start_t0, ok=True)
+    except AcpRuntimeDead as exc:
+        permit.release()
+        runtime_start._record_session_start(start_t0, ok=False)
+        # Runtime death wakes every pending request with the same exception, so
+        # only the failed session start may carry attribution.
+        start_exc = copy(exc)
+        setattr(start_exc, "session_start_failed", True)
+        raise start_exc from exc
     except AcpFrameTooLarge as exc:
         # The reply was dropped as oversize: a start that failed, never one
         # a retry fixes. Tagged like a stalled start so a self-driving caller
