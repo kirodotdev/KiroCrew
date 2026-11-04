@@ -63,8 +63,9 @@ export function createCrewWindowRenderers(o: {
     {
       id: 'user',
       roles: ['user'],
-      // The local chat's bubble and hover row (Quote, Copy, More). No copy
-      // link or pin: each names a session or record on THIS machine.
+      // The local chat's bubble and hover row (Quote, Copy, and Edit & Resend
+      // while it can rewind; More only for app actions). No copy link or pin:
+      // each names a session or record on THIS machine.
       render: (m, ctx) => ctx.wrapper(
         <UserMessage
           content={m.content}

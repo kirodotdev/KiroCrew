@@ -29,7 +29,7 @@ const openMore = () => fireEvent.pointerDown(screen.getByTestId('assistant-more-
 describe('AssistantMessage row with Quote offered', () => {
   const rowLabels = () => Array.from(screen.getByTestId('assistant-more-actions').parentElement!.querySelectorAll(':scope > button')).map(b => b.getAttribute('aria-label'))
 
-  it('seats Quote, keeps Copy right after it, and folds Link, Pin and Raw into More', () => {
+  it('seats Quote, keeps Copy right after it, and folds Link, Pin and Raw into More without a second Quote', () => {
     const onQuote = vi.fn()
     const { rerender } = render(<AssistantMessage content={LONG} isStreaming={false} slotRunning={false} messageTs="t1" slotKey="chat-1" onTogglePin={() => {}} />)
     const before = screen.getAllByRole('button').length
@@ -38,10 +38,10 @@ describe('AssistantMessage row with Quote offered', () => {
     // The everyday row is exactly Quote + Copy + More.
     expect(rowLabels()).toEqual(['Quote message', 'Copy', 'More actions'])
     expect(screen.queryByTestId('toggle-raw-view')).not.toBeInTheDocument()
-    openMore()
-    expect(screen.getAllByRole('menuitem').map(i => i.textContent)).toEqual(['Quote message', 'Copy as rich textKeeps formatting in email and documents', 'Copy link to message', 'Pin message', 'Show raw markdown'])
-    fireEvent.click(screen.getByTestId('quote-message-menu-item'))
+    fireEvent.click(screen.getByTestId('quote-message'))
     expect(onQuote).toHaveBeenCalledTimes(1)
+    openMore()
+    expect(screen.getAllByRole('menuitem').map(i => i.textContent)).toEqual(['Copy as rich textKeeps formatting in email and documents', 'Copy link to message', 'Pin message', 'Show raw markdown'])
   })
 
   it('on the main chat with Fork wired (the old menu context) Copy stays in the row after the Quote seat', () => {
@@ -116,8 +116,7 @@ describe('AssistantMessage quotes what the reader sees', () => {
     render(<AssistantMessage content="second answer, also long enough" isStreaming={false} slotRunning={false} variants={variants} variantIdx={1} onQuoteMessage={onQuote} />)
     // Browse locally (no onSwitchVariant) back to the first variant.
     fireEvent.click(screen.getByLabelText('Previous version'))
-    openMore()
-    fireEvent.click(screen.getByTestId('quote-message-menu-item'))
+    fireEvent.click(screen.getByTestId('quote-message'))
     expect(onQuote).toHaveBeenCalledWith('first answer, long enough to keep')
   })
 
@@ -132,16 +131,14 @@ describe('AssistantMessage quotes what the reader sees', () => {
   it('strips the keep-visible marker from the quoted text, as Copy does', () => {
     const onQuote = vi.fn()
     render(<AssistantMessage content={'Shown reply.\n\n<!-- keep-visible -->'} isStreaming={false} onQuoteMessage={onQuote} />)
-    openMore()
-    fireEvent.click(screen.getByTestId('quote-message-menu-item'))
+    fireEvent.click(screen.getByTestId('quote-message'))
     expect(onQuote).toHaveBeenCalledWith('Shown reply.')
   })
 
   it('strips the steer ack marker from the quoted text', () => {
     const onQuote = vi.fn()
     render(<AssistantMessage content={'[STEERING steer-1: noted]\nThe real answer that is long enough.'} isStreaming={false} slotRunning={false} onQuoteMessage={onQuote} />)
-    openMore()
-    fireEvent.click(screen.getByTestId('quote-message-menu-item'))
+    fireEvent.click(screen.getByTestId('quote-message'))
     expect(onQuote.mock.calls[0][0]).not.toContain('STEERING')
     expect(onQuote.mock.calls[0][0]).toContain('The real answer')
   })
