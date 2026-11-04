@@ -24,7 +24,9 @@ SRC = Path(kiro_crew.__file__).parent
 #: well-formed demand. ``chunk_text`` takes no such parameter: it is the blind
 #: fixed-width last resort, and its safety comes from the subject it is handed --
 #: a chunk already cut and graded -- rather than from a scan it could run itself.
-SPLITTERS = frozenset({"split_markdown_safe", "chunk_utf8_bytes"})
+#: ``chunk_for_transport`` is here because a channel can deliver through it alone,
+#: and it falls back to a default redactor where a composed host needs its own.
+SPLITTERS = frozenset({"split_markdown_safe", "chunk_utf8_bytes", "chunk_for_transport"})
 
 
 def _rejoins(chunks: list[str]) -> bool:
