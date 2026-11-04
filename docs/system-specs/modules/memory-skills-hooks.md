@@ -2066,7 +2066,13 @@ exist is skipped, as kiro-cli skips it: the snapshot carries one core
 projection skips it without a note. "Does not exist" means a root-first lstat
 walk meets a missing component and no link; a declared link (dangling or not),
 an unreadable or non-regular file, a managed-state path and an out-of-root path
-still refuse. Missing optional root guides change the snapshot instead. The
+still refuse. One exception: a resource the template declares by ABSOLUTE path
+whose real path leaves its admitted root (a cloud desktop's `~/workplace` linked
+to `/workplace/<user>`) is left out unread; the snapshot names it in one core
+`essential-context#outside-skipped:<template>` note and the KAS projection skips
+it with a warning, because kiro-cli follows the link and loads it natively. A
+project-relative declaration through a link still refuses. Missing optional root
+guides change the snapshot instead. The
 project root's implicit `AGENTS.md` and
 `SOUL.md` go through the same reader, but a refusal there -- a link to a file
 outside the project, a dangling link, a managed memory file, a hard link -- does

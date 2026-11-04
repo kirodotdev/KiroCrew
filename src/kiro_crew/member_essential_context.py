@@ -138,6 +138,17 @@ class _OversizedEssentialSourceError(_UnreadableEssentialSourceError):
         self.size = size
 
 
+class _OutsideRootEssentialSourceError(MemberEssentialContextError):
+    """A source whose real path is not inside its admitted root; nothing was read.
+
+    Raised by :func:`_read` only for the containment failure, after the path
+    screen admitted both the source and the root. A resource the template
+    declares by absolute path and that fails this way is left out unread and
+    named (see :func:`_outside_declared_note`); every other source keeps
+    failing closed.
+    """
+
+
 #: Top-level workspace names the product itself writes as managed state. An entry
 #: the prefix prune catches under one of these names is the store working as
 #: intended; any other name is a prefix collision with ordinary project content.
@@ -325,13 +336,15 @@ def _read(path: Path, root: Path) -> str:
         _refuse_managed_source(path)
         admitted = validate_file_path(str(path))
         admitted_root = _admitted_root(root)
-        if (
-            admitted is None
-            or admitted_root is None
-            or not Path(admitted).is_relative_to(admitted_root)
-        ):
+        if admitted is None or admitted_root is None:
             raise ValueError("outside the admitted document root")
+        # Before the containment check: an outside source is skippable, managed
+        # state reached through a link is not.
         _refuse_managed_source(Path(admitted))
+        if not Path(admitted).is_relative_to(admitted_root):
+            raise _OutsideRootEssentialSourceError(
+                f"Essential source {path}: outside the admitted document root"
+            )
         # Pin this admitted parent, not the whole home. A racing ancestor
         # redirect cannot reach managed data allowed by the generic V1 gate.
         try:
@@ -361,7 +374,7 @@ def _read(path: Path, root: Path) -> str:
         # grammar finds no block, and a manual or fileMatch file reads as always.
         # A file without the mark decodes exactly as with plain utf-8.
         return data.decode("utf-8-sig").replace("\r\n", "\n").replace("\r", "\n")
-    except _UnreadableEssentialSourceError:
+    except (_UnreadableEssentialSourceError, _OutsideRootEssentialSourceError):
         raise
     except (OSError, ValueError) as exc:
         raise MemberEssentialContextError(f"Essential source {path}: {exc}") from exc
@@ -1050,12 +1063,27 @@ def documents_for_member(
                 _mark_core(note[0])
         return documents
 
-    def add(path: Path, root: Path, *, steering: bool = False, body: str | None = None) -> None:
+    def add(
+        path: Path,
+        root: Path,
+        *,
+        steering: bool = False,
+        body: str | None = None,
+        outside_ok: bool = False,
+    ) -> None:
         if Path(os.path.abspath(path)) in seen:
             return
         if body is None:
             try:
                 body = _read(path, root)
+            except _OutsideRootEssentialSourceError as exc:
+                if not outside_ok:
+                    raise
+                # Declared by absolute path, but its real path leaves home (a
+                # linked ~/workplace on a cloud desktop). Left out unread and named.
+                logger.warning("Declared resource %s not loaded: %s", path, exc)
+                outside.append(path)
+                return
             except _UnreadableEssentialSourceError as exc:
                 if not steering:
                     raise
@@ -1244,10 +1272,23 @@ def documents_for_member(
     if include_project and isinstance(resources, list):
         if _declared_document_count(resources) > _MAX_DOCUMENTS:
             raise MemberEssentialContextError(f"Essential template {spec_path}: too many resources")
+        absolute: set[Path] = set()
         for match, root in _resource_paths(
-            resources, source_root, absolute_root, skipped, missing, linked=linked, outside=outside
+            resources,
+            source_root,
+            absolute_root,
+            skipped,
+            missing,
+            linked=linked,
+            outside=outside,
+            absolute_out=absolute,
         ):
-            add(match, root, steering="steering" in match.parts)
+            add(
+                match,
+                root,
+                steering="steering" in match.parts,
+                outside_ok=match in absolute,
+            )
     return _finish()
 
 
@@ -1307,8 +1348,12 @@ def _resource_paths(
     linked: list[Path] | None = None,
     markdown_only: bool = True,
     outside: list[Path] | None = None,
+    absolute_out: set[Path] | None = None,
 ) -> list[tuple[Path, Path]]:
     """Declared ``file://`` matches; an absent literal one goes to *missing* instead.
+
+    When *absolute_out* is given, every match of an ABSOLUTE declaration is also
+    added to it, so a reader can tell those apart from project-relative ones.
 
     A caller that passes *linked* has a steering glob (a ``steering`` component in
     its pattern, the test :func:`documents_for_member` applies to a match) leave a
@@ -1343,6 +1388,8 @@ def _resource_paths(
             wanted = not markdown_only or match.suffix.lower() == ".md"
             if wanted and (match, root) not in paths:
                 paths.append((match, root))
+                if absolute_out is not None and path.is_absolute():
+                    absolute_out.add(match)
                 if markdown_only and len(paths) > _MAX_DOCUMENTS:
                     raise MemberEssentialContextError(
                         "Essential resources exceed the document limit"
@@ -1368,6 +1415,7 @@ def _projected_resource_paths(
     markdown_only: bool = True,
     linked: list[Path] | None = None,
     outside: list[Path] | None = None,
+    absolute_out: set[Path] | None = None,
 ) -> list[tuple[Path, Path]]:
     resources = definition.get("resources", [])
     if not isinstance(resources, list) or any(not isinstance(r, (str, dict)) for r in resources):
@@ -1379,6 +1427,7 @@ def _projected_resource_paths(
         linked=linked,
         markdown_only=markdown_only,
         outside=outside,
+        absolute_out=absolute_out,
     )
 
 
@@ -1442,11 +1491,19 @@ def projected_resource_documents(definition: dict, cwd: str) -> dict[str, str]:
     non-link reparse point).
     """
     documents: dict[str, str] = {}
-    for path, root in _projected_resource_paths(definition, cwd, linked=[], outside=[]):
+    absolute: set[Path] = set()
+    for path, root in _projected_resource_paths(
+        definition, cwd, linked=[], outside=[], absolute_out=absolute
+    ):
         if str(path) in documents:
             continue
         try:
             body = _read(path, root)
+        except _OutsideRootEssentialSourceError as exc:
+            if path not in absolute:
+                raise
+            logger.warning("Declared resource %s not loaded: %s", path, exc)
+            continue
         except _UnreadableEssentialSourceError as exc:
             if "steering" not in path.parts:
                 raise
