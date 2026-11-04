@@ -23,6 +23,7 @@ const launchLog = createLaunchLog({
 });
 
 const { findConfiguredDashboardPort } = require("./data-home");
+const { onQuitForUpdate } = require("./close-action");
 const { defaultedPort } = require("./gateway-auth-hint");
 const {
   classifyBundleLocation,
@@ -367,6 +368,14 @@ const requestQuit = () => {
   isQuitting = true;
   app.quit();
 };
+
+// An update install closes every window BEFORE it emits before-quit, so the
+// flag has to be set here as well or the main window hides to tray instead of
+// closing and the install never reaches ShipIt (#29449, see close-action.js).
+onQuitForUpdate(electron.autoUpdater, () => {
+  if (!isQuitting) glog("update: installer is quitting the app; window closes no longer hide to tray");
+  isQuitting = true;
+});
 
 // Only the lock winner may arm native logging. A rejected second instance must
 // not rotate chromium.log out from under the primary process.

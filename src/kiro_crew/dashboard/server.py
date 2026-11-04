@@ -598,7 +598,10 @@ _BASE_CSP = (
     # (isolatePreviewHost) so host-scoped dashboard cookies are never sent to
     # the framed server. The *.localhost tunnel wildcard stays instances-gated.
     "frame-src 'self' blob: https://*.cloudfront.net{frame_src_extra}; "
-    "object-src 'none'; base-uri 'self'; frame-ancestors {frame_ancestors}"
+    # form-action does not fall back to default-src, so without it an injected
+    # <form> could post to any host. Every dashboard form posts to its own origin.
+    "object-src 'none'; base-uri 'self'; form-action 'self'; "
+    "frame-ancestors {frame_ancestors}"
 )
 
 # Loopback preview origins — always framable AND connectable (see the

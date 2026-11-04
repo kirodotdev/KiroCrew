@@ -41,7 +41,7 @@ from typing import TYPE_CHECKING, Any, Collection
 
 from kiro_crew import __version__, _facade_mirror, platform_compat
 from kiro_crew.agent_spec_format import iter_agent_spec_files
-from kiro_crew.atomic_write import atomic_write
+from kiro_crew.atomic_write import atomic_write, replace_with_retry
 from kiro_crew.env import mcp_search_path, resolved_command_casing
 from kiro_crew.mcp_gateway.launch_approval import LaunchApprovals, filter_target_env
 from kiro_crew.mcp_gateway.mate_overlays import (
@@ -506,7 +506,7 @@ def _store_fingerprint(
             with os.fdopen(fd, "w") as fh:
                 fd_owned = False  # fdopen owns the descriptor now
                 fh.write(json.dumps(payload, sort_keys=True))
-            os.replace(tmp, path)
+            replace_with_retry(tmp, path)
             wrote = True
         finally:
             if fd_owned:

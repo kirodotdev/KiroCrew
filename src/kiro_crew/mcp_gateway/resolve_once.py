@@ -77,6 +77,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Mapping, Optional
 
+from kiro_crew.atomic_write import replace_with_retry
 from kiro_crew.platform_compat import kill_and_reap
 from kiro_crew.sandbox import (
     create_subprocess_limited,
@@ -309,7 +310,7 @@ def write_record(directory: str, record: ResolvedRecord) -> None:
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             json.dump(record.to_json(), fh)
-        os.replace(tmp, target)
+        replace_with_retry(tmp, target)
     except BaseException:
         with contextlib.suppress(OSError):
             os.unlink(tmp)

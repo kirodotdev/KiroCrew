@@ -749,6 +749,24 @@ class TestPutRecipeObject:
         api.put_recipe_object("b", "k", "/tmp/body", region="us-east-1")
         assert _value_after(calls[0], "--server-side-encryption") == "AES256"
 
+    def test_an_owner_pin_reaches_the_put(self, monkeypatch):
+        calls: list[list[str]] = []
+        monkeypatch.setattr(
+            api, "checked_json", lambda args, *a, **k: calls.append(list(args)) or {}
+        )
+        api.put_recipe_object(
+            "b", "k", "/tmp/body", expected_bucket_owner="123456789012", region="us-east-1"
+        )
+        assert _value_after(calls[0], "--expected-bucket-owner") == "123456789012"
+
+    def test_no_owner_sends_no_pin(self, monkeypatch):
+        calls: list[list[str]] = []
+        monkeypatch.setattr(
+            api, "checked_json", lambda args, *a, **k: calls.append(list(args)) or {}
+        )
+        api.put_recipe_object("b", "k", "/tmp/body", region="us-east-1")
+        assert "--expected-bucket-owner" not in calls[0]
+
 
 class TestPutSecret:
     """The value never reaches argv; it rides a 0600 file that is removed at once."""

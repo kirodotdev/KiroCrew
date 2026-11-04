@@ -177,6 +177,32 @@ class TestExtractToolEvent:
         assert event.kind == EVENT_TOOL_CALL
         assert event.title == "Read"
 
+    def test_the_debug_frame_line_is_redacted(self, caplog):
+        """The raw frame is logged at DEBUG; a credential in the tool's arguments
+        must not reach the log in the clear."""
+        import logging
+
+        from kiro_crew.acp.types import JsonRpcMessage
+
+        token = "ghp_" + "a1B2" * 9
+        msg = JsonRpcMessage(
+            method="session/update",
+            params={
+                "update": {
+                    "sessionUpdate": "tool_call",
+                    "title": "Shell",
+                    "kind": "execute",
+                    "toolCallId": "tc-9",
+                    "rawInput": {"command": f"git push https://x:{token}@github.com/o/r"},
+                }
+            },
+        )
+        with caplog.at_level(logging.DEBUG, logger="kiro_crew.acp"):
+            AcpClient()._extract_tool_event(msg)
+        lines = [r.getMessage() for r in caplog.records if "ACP tool_call raw" in r.getMessage()]
+        assert lines, "the debug frame line was not logged"
+        assert all(token not in line for line in lines)
+
     def test_tool_call_with_diff_content(self):
         client = AcpClient()
         from kiro_crew.acp.types import JsonRpcMessage

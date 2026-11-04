@@ -3610,9 +3610,11 @@ It differs in serving the wider `_ALLOWED_EXTENSIONS` set (`.js`/`.json`/`.mjs`/
 and in being UNAUTHENTICATED, which is why it streams in `_UI_STREAM_CHUNK` pieces
 instead of buffering.
 
-`/api/apps/blob` (`handle_blob_proxy`) is the one route that still serves `.svg` from
-this origin through `web.FileResponse` with no per-response policy; it reads a cache
-the gateway itself wrote, not an app-owned install tree.
+`/api/apps/blob` (`handle_blob_proxy`) serves registry art, `.svg` included, through
+`web.FileResponse` from a cache the gateway itself wrote, not an app-owned install
+tree. It answers with the same `default-src 'none'; sandbox` policy, because those
+bytes come from a registry author's repo and a top-level open would otherwise run
+them as a document on this origin.
 
 **`O_NONBLOCK` is in the open flags because it is what makes those checks
 reachable.** Opening a FIFO blocks until a writer appears, and the handler runs inside

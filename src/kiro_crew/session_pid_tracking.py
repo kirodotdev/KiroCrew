@@ -371,11 +371,29 @@ def _collect_active_pids(sessions: "dict") -> tuple[set[int], bool]:
 
     If any session's PID is not an int or extraction fails,
     returns ``(partial_set, False)`` — caller should skip the sweep.
+
+    A provider is one of three known shapes: an ACP ``client`` whose ``_pid``
+    is read here; a lease on a shared runtime (``_runtime``: the
+    ``AcpSessionProvider`` a task-runner step session holds directly), whose
+    process the caller shields from the runtime's own owner, the pool and
+    companion sources, so nothing is read from the session; or the ``_proc`` /
+    ``_active_proc`` subprocess attributes. A provider of none of these shapes (a
+    proxy, or a type added later) hides its live process, which would then look
+    like an orphan, so that also returns ``ok=False``: the sweep runs only when
+    every session's process is accounted for.
     """
     pids: set[int] = _protected_pids()  # shared _bg / subagent runtimes shielded from the sweep
     for sess in sessions.values():
         # ACP provider: long-lived process PID via client._pid
         client = getattr(sess.provider, "client", None)
+        if client is None and not any(
+            hasattr(sess.provider, attr) for attr in ("_runtime", "_proc", "_active_proc")
+        ):
+            logger.warning(
+                "Session provider %s exposes no process PID — skipping orphan sweep this cycle",
+                type(sess.provider).__name__,
+            )
+            return pids, False
         if client is not None:
             try:
                 pid = client._pid  # type: ignore[attr-defined]

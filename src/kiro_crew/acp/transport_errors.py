@@ -32,6 +32,10 @@ from kiro_crew.acp.image_dimension_wedge import (
     format_many_image_dimension_message,
     is_many_image_dimension,
 )
+from kiro_crew.acp.model_registry_errors import (
+    MODEL_REGISTRY_UNAVAILABLE_TEXT,
+    is_model_registry_unavailable,
+)
 from kiro_crew.acp.oversized_request_errors import (
     _RE_ADAPTER_INPUT_TOO_LONG,
     _RE_OVERSIZED_REQUEST,
@@ -1638,6 +1642,8 @@ def _format_acp_error_worded(
                 "sign-in issue, not a backend error."
                 f"{req_id_suffix}"
             )
+        elif is_model_registry_unavailable(data):
+            formatted = MODEL_REGISTRY_UNAVAILABLE_TEXT + req_id_suffix
         elif _RE_CONNECTION.search(haystack):
             formatted = (
                 "Could not reach the model backend (connection refused, reset, "

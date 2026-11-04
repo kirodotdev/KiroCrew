@@ -20,6 +20,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from kiro_crew.atomic_write import replace_with_retry
 from kiro_crew.platform_compat import strip_extended_length_prefix
 
 JsonObject = dict[str, Any]
@@ -468,7 +469,7 @@ def atomic_write_json(
             runtime.os.fsync(descriptor)
         finally:
             runtime.os.close(descriptor)
-        runtime.os.replace(temporary, path)
+        replace_with_retry(temporary, path)
     finally:
         if runtime.os.path.exists(temporary):
             runtime.os.unlink(temporary)

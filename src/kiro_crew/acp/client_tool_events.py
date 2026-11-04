@@ -441,10 +441,20 @@ def _extract_tool_event(self: AcpClient, msg: JsonRpcMessage) -> AcpEvent | None
             None,
         )
         purpose = extract_tool_purpose(raw_input)
-        logger.debug(
-            "ACP tool_call raw: %s",
-            {k: v for k, v in update.items() if k != "sessionUpdate"},
-        )
+        if logger.isEnabledFor(logging.DEBUG):
+            # The frame carries the tool's raw arguments, which can hold a password
+            # or a signed URL the log filter's narrow patterns do not know, so the
+            # line goes through the same redactor as the displayed input.
+            logger.debug(
+                "ACP tool_call raw: %s",
+                redact_text(
+                    json.dumps(
+                        {k: v for k, v in update.items() if k != "sessionUpdate"},
+                        default=str,
+                        ensure_ascii=False,
+                    )
+                ),
+            )
         # Build initial tool input string from raw params
         tool_call_id = update.get("toolCallId", "")
         # Start the round-trip clock here rather than at the yield: this is

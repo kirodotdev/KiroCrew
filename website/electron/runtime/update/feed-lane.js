@@ -15,6 +15,10 @@ const {
 } = require("./freshness-gate");
 
 const FORCE_EXIT_AFTER_MS = 5 * 1000; // failsafe: guarantee exit after quitAndInstall
+// darwin: how long after `before-quit-for-update` Squirrel's own quit may take
+// before the app exits anyway. Squirrel has already staged the update by then,
+// so its handoff to ShipIt takes well under a second; this only bounds a stall.
+const DARWIN_HANDOFF_DEADLINE_MS = 60 * 1000;
 // The longest a quit is held while Squirrel.Mac stages the update. A healthy
 // ~900MB stage takes about 40s; this bound only keeps a wedged installer from
 // leaving an app the user can never quit.
@@ -60,6 +64,7 @@ function createFeedLane({
   linux,
   macDistArch,
   nativeAutoUpdater,
+  getAllWindows = () => [],
   // On Windows, session-end fires on BaseWindow (not App). When provided, the
   // lane registers sessionEndPendingNotice there instead of on app. Optional so
   // tests can stub it and so non-Windows paths are unaffected.
@@ -526,6 +531,18 @@ function createFeedLane({
   // renderer beforeunload or lingering child blocking the quit, letting ShipIt
   // abort with "App Still Running Error" Code=-9) is handled by exiting only
   // AFTER that event.
+  //
+  // On darwin `before-quit-for-update` is still not the handoff itself (#29449).
+  // Electron's native quitAndInstall emits it FIRST, then closes every window,
+  // and only once the window list is empty asks Squirrel to relaunch into
+  // ShipIt; Squirrel then terminates the app, which reaches us as `before-quit`.
+  // A window that swallows its close (hide-to-tray did, before main.js began
+  // treating this event as a quit) stops that sequence before ShipIt gets the
+  // request, and a 5s app.exit then kills the app mid-handoff: ShipIt is
+  // SIGTERMed with the bundle half-swapped and the user relaunches into the old
+  // version. So on darwin the exit failsafe arms on the `before-quit` that
+  // follows the handoff, and the 5s timer that used to exit instead destroys any
+  // window still open, which lets Electron finish the handoff the normal way.
   function forceExitFailsafe(reason) {
     const arm = () => {
       const t = setTimeout(() => {
@@ -544,6 +561,10 @@ function createFeedLane({
         // Release first: the installer's own quit follows this event and must
         // not be held.
         releaseStagingHold();
+        if (osPlatform === "darwin") {
+          awaitDarwinHandoff(reason, arm);
+          return;
+        }
         log.info(`[update] installer took over (${reason}) — arming the exit failsafe`);
         arm();
       });
@@ -552,6 +573,47 @@ function createFeedLane({
     // No native updater surface to listen on (tests, unexpected platform):
     // fall back to the timer rather than losing the guarantee entirely.
     arm();
+  }
+
+  /**
+   * Darwin half of the failsafe: wait for Squirrel's own quit, which proves
+   * ShipIt has the install request, before arming the exit timer. If a window
+   * is still open after FORCE_EXIT_AFTER_MS, destroy it: `destroy()` skips the
+   * `close` event a window can veto, and the empty window list is what lets
+   * Electron call Squirrel.
+   */
+  function awaitDarwinHandoff(reason, arm) {
+    let handedOff = false;
+    const onHandoffQuit = () => {
+      handedOff = true;
+      clearTimeout(windowBackstop);
+      clearTimeout(handoffDeadline);
+      log.info(`[update] Squirrel handed the swap to ShipIt (${reason}) — arming the exit failsafe`);
+      arm();
+    };
+    // Last resort when Squirrel's quit never comes. Without it a handoff that
+    // stalls leaves a running app with no windows. An install failure reported
+    // in the meantime clears `installing` and owns the recovery, so it is left
+    // alone.
+    const handoffDeadline = setTimeout(() => {
+      if (handedOff || !installing) return;
+      log.error(`[update] Squirrel did not quit the app within ${DARWIN_HANDOFF_DEADLINE_MS}ms of the installer taking over (${reason}) — exiting`);
+      try { app.exit(0); } catch { process.exit(0); }
+    }, DARWIN_HANDOFF_DEADLINE_MS);
+    if (typeof handoffDeadline.unref === "function") handoffDeadline.unref();
+    const windowBackstop = setTimeout(() => {
+      if (handedOff) return;
+      let open = [];
+      try { open = (getAllWindows() || []).filter((w) => w && !w.isDestroyed()); } catch { open = []; }
+      if (open.length === 0) return;
+      log.error(`[update] ${open.length} window(s) still open ${FORCE_EXIT_AFTER_MS}ms after the installer took over (${reason}) — closing them so Squirrel can hand off to ShipIt`);
+      for (const w of open) {
+        try { w.destroy(); } catch { /* already gone */ }
+      }
+    }, FORCE_EXIT_AFTER_MS);
+    if (typeof windowBackstop.unref === "function") windowBackstop.unref();
+    log.info(`[update] installer took over (${reason}) — waiting for the windows to close and Squirrel to hand off`);
+    app.once("before-quit", onHandoffQuit);
   }
 
   /**

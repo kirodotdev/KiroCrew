@@ -121,6 +121,12 @@ SPEC_PERMISSIONS_MIN_VERSION: tuple[int, int, int] = (2, 23, 0)
 #: on both engines at the lower release.
 MANDATORY_MCPS_DROP_MIN_VERSION: tuple[int, int, int] = (2, 27, 0)
 
+#: First kiro-cli release with no launcher. From 3.0.0 the POSIX install is the
+#: standalone archive: ``bin/kiro-cli`` IS the chat binary, with no
+#: ``kiro-cli-chat`` beside it, and no newer launcher bundle ships (kiro-cli
+#: ``scripts/build.py`` ``build_user_archives``; ``cutover.rs`` ``release_answer``).
+STANDALONE_KIRO_CLI_MIN_VERSION: tuple[int, int, int] = (3, 0, 0)
+
 #: ``--version`` is a local read of an already-resolved binary, so it gets the
 #: same short leash the readiness probe puts on its own first execution.
 _VERSION_PROBE_TIMEOUT_SECS = 5
@@ -134,6 +140,11 @@ _version_cache: dict[tuple[str, int], tuple[int, int, int] | None] = {}
 def mandatory_mcps_drop_supported(version: tuple[int, int, int] | None) -> bool:
     """Whether *version* meets the verified floor for deferring Crew's MCP servers."""
     return version is not None and version >= MANDATORY_MCPS_DROP_MIN_VERSION
+
+
+def standalone_kiro_cli(version: tuple[int, int, int] | None) -> bool:
+    """Whether a ``kiro-cli`` at *version* is the standalone chat binary, not a launcher."""
+    return version is not None and version >= STANDALONE_KIRO_CLI_MIN_VERSION
 
 
 def mandatory_mcps_drop_allowed(spawned_binary: str | None) -> bool:
@@ -168,14 +179,6 @@ def mandatory_mcps_drop_allowed(spawned_binary: str | None) -> bool:
         if not pinned or not spawned_binary:
             return False
         sibling = chat_sibling(pinned)
-        # A POSIX launcher with no sibling in its own directory execs whatever
-        # kiro-cli-chat it finds on PATH, whose version is unknown.
-        if (
-            sibling is None
-            and sys.platform != "win32"
-            and os.path.basename(pinned) == KIRO_CLI_NAME
-        ):
-            return False
         candidates = [pinned, sibling]
         if os.path.normcase(os.path.realpath(spawned_binary)) not in {
             os.path.normcase(os.path.realpath(binary))
@@ -185,6 +188,16 @@ def mandatory_mcps_drop_allowed(spawned_binary: str | None) -> bool:
             os.path.realpath(os.path.dirname(spawned_binary))
         ) != os.path.normcase(
             os.path.realpath(os.path.dirname(pinned))
+        ):
+            return False
+        # A POSIX launcher with no sibling in its own directory execs whatever
+        # kiro-cli-chat it finds on PATH, whose version is unknown. From 3.0.0
+        # no launcher ships: kiro-cli is the chat binary itself, alone.
+        if (
+            sibling is None
+            and sys.platform != "win32"
+            and os.path.basename(pinned) == KIRO_CLI_NAME
+            and not standalone_kiro_cli(kiro_cli_version_at(pinned))
         ):
             return False
         return all(

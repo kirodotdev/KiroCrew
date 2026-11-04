@@ -28,6 +28,7 @@ from pathlib import Path, PurePosixPath
 from typing import Callable, cast
 
 from kiro_crew import pinned_fs, platform_compat
+from kiro_crew.atomic_write import replace_with_retry
 from kiro_crew.member_memory_backup import StoresInUse
 from kiro_crew.memory_stores import (
     MEMBER_BACKUPS_DIR_NAME,
@@ -85,7 +86,7 @@ def _save_locked_document_to(backup: Path, rel: str) -> Callable[[Path], None]:
                 str(partial),
                 on_skip=pinned_fs.fatal_skip_reporter(f"backup of {rel!r}"),
             )
-            os.replace(partial, final)
+            replace_with_retry(partial, final)
         finally:
             try:
                 partial.unlink()

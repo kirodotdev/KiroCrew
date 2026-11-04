@@ -432,9 +432,48 @@ def replace_with_retry(src: Path | str, dst: Path | str) -> None:
     nothing, which every caller reads as success: a silently lost write. Out
     here, any budget of 1 or less simply degrades to a plain ``os.replace``.
     """
+    _retry_sharing_window(os.replace, src, dst)
+
+
+def replace_with_retry_checked(
+    src: Path | str, dst: Path | str, before_each: Callable[[], None]
+) -> None:
+    """:func:`replace_with_retry`'s count arm, running *before_each* before EVERY attempt.
+
+    For a writer that checks the destination is still the file it read (a
+    compare-and-swap, a transcript repair) right before it renames. A check made
+    once, before the retry, goes stale during the backoff: a scanner holding the
+    temp fails the rename while the destination stays writable, so a save can
+    land in between and the next attempt would overwrite it. Anything
+    *before_each* raises ends the call with no rename; a ``PermissionError`` from
+    it is retried like the rename's own.
+    """
+
+    def _checked_replace(source: str, target: str) -> None:
+        before_each()
+        os.replace(source, target)
+
+    _retry_sharing_window(_checked_replace, src, dst)
+
+
+def rename_with_retry(src: Path | str, dst: Path | str) -> None:
+    """``os.rename(src, dst)``, retrying the same window as :func:`replace_with_retry`.
+
+    For a move that must never overwrite: on Windows ``os.rename`` refuses an
+    existing *dst* with ``FileExistsError``, which is not retried. The retry
+    budget, the Windows-only gate, the no-sleep-on-the-event-loop rule and the
+    final attempt outside the loop are the count arm's, shared through one loop.
+    """
+    _retry_sharing_window(os.rename, src, dst)
+
+
+def _retry_sharing_window(
+    rename: Callable[[str, str], None], src: Path | str, dst: Path | str
+) -> None:
+    """The count arm of :func:`replace_with_retry`, for any by-name rename."""
     for attempt in range(_REPLACE_MAX_ATTEMPTS - 1):
         try:
-            os.replace(str(src), str(dst))
+            rename(str(src), str(dst))
             return
         except PermissionError:
             if not platform_compat.IS_WINDOWS:
@@ -453,7 +492,7 @@ def replace_with_retry(src: Path | str, dst: Path | str) -> None:
                 _REPLACE_MAX_ATTEMPTS,
             )
             time.sleep(_REPLACE_BACKOFF_SECONDS)
-    os.replace(str(src), str(dst))
+    rename(str(src), str(dst))
 
 
 #: ``fsync`` on a directory that the platform or filesystem simply cannot express.

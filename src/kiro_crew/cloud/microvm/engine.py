@@ -1302,6 +1302,7 @@ class ApiVmLauncher(VmLauncher):
                         bucket,
                         key,
                         str(path),
+                        expected_bucket_owner=account_id,
                         profile=profile,
                         region=region,
                         endpoint_url=spec.endpoint_url,
