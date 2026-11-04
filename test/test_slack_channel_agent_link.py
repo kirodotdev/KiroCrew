@@ -1377,7 +1377,8 @@ class TestQueuedReplySurvivesARestartAsARestriction:
         self, tmp_path, monkeypatch
     ):
         """Queued while linked, then unlinked, restarted and switched: the
-        restored reply drains into a turn that admission refuses."""
+        restored reply, once the user sends its card, drains into a turn that
+        admission refuses. A restored entry never drains on its own."""
         from kiro_crew.dashboard import chat_runner as cr
         from kiro_crew.dashboard.chat_turn.turn_admission import _turn_admit
         from kiro_crew.dashboard.chat_turn.turn_locals import _Flow
@@ -1412,7 +1413,8 @@ class TestQueuedReplySurvivesARestartAsARestriction:
 
         monkeypatch.setattr(cr, "_run_chat", _stub_run_chat)
         monkeypatch.setattr(cr, "spawn_guarded_turn", _fake_spawn)
-        assert await cr._start_next_queued_turn(state, slot) is True
+        assert await cr._start_next_queued_turn(state, slot) is False
+        assert await cr._start_next_queued_turn(state, slot, required_queue_id=qid) is True
         assert captured.get("_directive_channel_origin") is False
         assert captured["_directive_source_channels"] == (PINNED,)
 
