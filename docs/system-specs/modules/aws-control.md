@@ -1397,7 +1397,9 @@ holds the only surviving copy. Each of these file listings follows `nextToken`
 oldest first, so a prefix read one page deep loses exactly its newest archives. A
 kind whose walk stops at the cap with keys left is named in the answer's
 `archives_truncated` list, beside `truncated` and `max` for the install roster,
-so a capped listing never reads as complete.
+so a capped listing never reads as complete. The Backup pane says so: each named
+kind it knows gets a line above the archive rows saying its newest archives may be
+missing, and an answer without the field (an older backend) reads as complete.
 
 An install also publishes a human-readable label beside its own archives at
 `<kind>/<install>/_label.json`, written from the upload path and under BOTH kind

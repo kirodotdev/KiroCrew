@@ -5703,6 +5703,7 @@
         "backup_others_on_drive": "Otras instalaciones que respaldan en esta unidad: {{count}}",
         "backup_show_others": "Incluir archivos de otras instalaciones",
         "backup_others_truncated": "Solo se muestran las primeras {{max}} instalaciones.",
+"backup_archives_truncated": "No se pudieron listar algunos archivos de {{kind}}. Puede que falten los más recientes.",
         "backup_shared_note": "Una unidad compartida por dos instalaciones no es memoria compartida ni sesiones compartidas. Cada copia es un archivo separado de un momento, y una restauración solo descarga ese archivo a una carpeta de preparación: los archivos los reemplazas tú, con el gateway detenido.",
         "backup_restore_foreign_confirm": "Este archivo lo subió otra instalación ({{install}}). Restaurarlo descarga los datos de esa instalación, no los de esta instalación. ¿Descargarlo de todos modos?",
         "backup_restore_unverified_confirm": "Este archivo está guardado en la carpeta propia de esta instalación, pero esta instalación no tiene registro de haberlo subido. Cualquiera que pueda escribir en la unidad puede crear esa carpeta, así que puede que no sea de esta instalación. ¿Descargarlo de todos modos?",

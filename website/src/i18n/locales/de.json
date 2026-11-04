@@ -5557,6 +5557,7 @@
         "backup_others_on_drive": "Andere Installationen, die auf dieses Laufwerk sichern: {{count}}",
         "backup_show_others": "Archive von anderen Installationen einschließen",
         "backup_others_truncated": "Es werden nur die ersten {{max}} anderen Installationen angezeigt.",
+"backup_archives_truncated": "Einige Archive vom Typ {{kind}} konnten nicht aufgelistet werden. Die neuesten fehlen hier möglicherweise.",
         "backup_shared_note": "Ein Laufwerk, das sich zwei Installationen teilen, bedeutet kein gemeinsames Gedächtnis und keine gemeinsamen Sitzungen. Jede Sicherung ist ein separates Archiv eines Zeitpunkts, und eine Wiederherstellung lädt diese Datei nur in einen Zwischenordner herunter — die Dateien ersetzt du selbst, bei gestopptem Gateway.",
         "backup_restore_foreign_confirm": "Dieses Archiv wurde von einer anderen Installation ({{install}}) hochgeladen. Es wiederherzustellen lädt die Daten jener Installation herunter, nicht die dieser Installation. Trotzdem herunterladen?",
         "backup_restore_unverified_confirm": "Dieses Archiv liegt im eigenen Ordner dieser Installation, aber diese Installation hat keinen Nachweis, es hochgeladen zu haben. Alles, was auf das Laufwerk schreiben kann, kann diesen Ordner anlegen, daher stammt es womöglich nicht von dieser Installation. Trotzdem herunterladen?",
