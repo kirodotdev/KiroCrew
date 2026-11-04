@@ -2083,7 +2083,15 @@ agent definition) does the same for a link whose target the path screen resolves
 inside the glob's root: the snapshot and the KAS document reader
 (`projected_resource_documents`) leave it out unread, and the snapshot names it in
 that note. A link that resolves outside the root, or that the screen refuses, still
-refuses, and so does a link under any other declared glob. The launch-record size
+refuses, and so does a link under any other declared glob, with one exception for an
+ABSOLUTE declaration: a link its walk meets whose target the path screen resolves
+outside the root (a cloud desktop's `~/workplace` linked to another volume) is left out,
+unread and not descended into, and named in one core
+`essential-context#outside-skipped:<template>` note; the KAS document reader skips it
+the same way. Nothing outside the root is opened or listed. A target that is managed
+memory or member state still refuses (`_refuse_managed_source` runs on the screened
+target), and so do a link the screen refuses, a link that stays inside the root, and
+any link a relative declaration meets. The launch-record size
 check (`_declared_files_fit`, `projected_launch_paths`) does not opt in: it measures
 what kiro-cli loads and cannot measure a link it does not follow, so a link still
 withholds that record (the size check reports unfit, the path read refuses) and the
