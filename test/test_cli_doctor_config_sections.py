@@ -19,19 +19,12 @@ from kiro_crew import cli_doctor
 class TestEffectiveModelSection:
     """`kirocrew doctor`'s Model section.
 
-    The four-tier model precedence is not visible from any single file, so a
-    stale spec pin that outlived the setting which created it is otherwise only
-    diagnosable by hand-reading config.json, two agent-spec directories and the
-    sidecar. This section names the winning tier and, when a pin is deciding,
-    the exact command that clears it.
+    The section names the winning tier of the four-tier model precedence and, when a
+    stale spec pin decides, the command that clears it.
 
-    ISOLATION: the section reads the directory the RESOLVER reads, and that
-    resolver is ``kiro_home()``, which the suite's autouse fixtures deliberately
-    do NOT pin (see the note in the rootdir conftest) -- it resolves the real
-    machine-wide ``~/.kiro``. So every test here sets ``KIRO_HOME`` itself, and
-    ``_agents_dir`` asserts the resolved path really is under tmp before writing
-    a byte. Without that guard these tests overwrite the operator's live agent
-    spec.
+    ISOLATION: ``kiro_home()`` is NOT pinned by the autouse fixtures, so every test sets
+    ``KIRO_HOME`` and ``_agents_dir`` asserts the path is under tmp before writing;
+    without that these tests overwrite the operator's live agent spec.
     """
 
     @pytest.fixture(autouse=True)
@@ -436,13 +429,9 @@ class TestEffectiveModelSection:
         assert "not a valid agent name" in out
 
     def test_a_control_bearing_project_filename_is_escaped(self, monkeypatch, capsys) -> None:
-        """A cloned repository can TRACK a filename containing control bytes, so
-        the path itself is untrusted input on this line.
+        """A cloned repository can track a filename with control bytes, so it is untrusted.
 
-        The hostile path is INJECTED rather than created: control bytes are
-        illegal in a Windows filename, so building it on disk would make this
-        assertion Windows-only-skipped, and what is under test is that the
-        printer escapes what it is handed.
+        The path is injected, not created: control bytes are illegal in Windows filenames.
         """
         hostile = Path("/tmp/proj/.kiro/agents/kirocrew\x1b[2J.json")
         self._install_spec(None)
@@ -530,11 +519,8 @@ class TestEffectiveModelSection:
 class TestWhatsAppSection:
     """`kirocrew doctor`'s WhatsApp Integration section.
 
-    WhatsApp is the only channel whose whole runtime hangs off an OPTIONAL wheel
-    plus a locally stored credential, and neither absence produces an error the
-    operator sees: a message simply never arrives. So the section has to answer
-    both, and it has to answer them WITHOUT loading the Go core: a preflight that
-    initializes the subsystem it is inspecting is both slow and a side effect.
+    A missing optional wheel or stored credential fails silently (messages never
+    arrive), so the section reports both WITHOUT loading the Go core.
     """
 
     def _cfg(self, *, enabled: bool = True, groups: list | None = None):
@@ -710,12 +696,9 @@ class TestWhatsAppSection:
 class TestProjectSectionAndAuthRow:
     """`kirocrew doctor` Project labels + the local-bind auth row.
 
-    The Project row resolves the Kiro Crew SOURCE CHECKOUT (``cli.py``
-    ``_PROJECT_MARKERS``), never the user's own workspace, so its labels must
-    say so. The Configuration auth row must not advertise a loopback
-    exemption: the dashboard middleware requires a valid token on every
-    request (``token_auth.py``), and local CLI/MCP callers authenticate with
-    the local secret instead.
+    The Project row resolves the Kiro Crew SOURCE CHECKOUT, not the user's workspace.
+    The auth row must not claim a loopback exemption: every dashboard request needs a
+    token (``token_auth.py``).
     """
 
     def _run_doctor(self, tmp_path: Path, monkeypatch, capsys, *, project_dir: str) -> str:

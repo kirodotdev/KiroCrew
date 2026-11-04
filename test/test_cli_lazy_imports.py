@@ -1,33 +1,13 @@
 """Regression guards for cli.py's module-scope import weight.
 
-``cli.py`` imports ``cli_commands`` (~556 ms), ``cli_server`` (~549 ms,
-pulling ``slack.gateway``) and ``dashboard.state`` (pulling ``vector_memory``
-→ ``numpy``, ~56 MB) inside the one ``main()`` dispatch branch that uses each
-name, not at module scope. At module scope every CLI invocation and — worse —
-every long-lived MCP stdio server (``kirocrew mcp-core`` / ``mcp-cron`` /
-``mcp-computer``) would pay ~1.3 s and ~112 MB for subcommands that never run;
-a fresh ``import kiro_crew.cli`` instead costs ~0.5 s / ~54 MB.
+``cli_commands``, ``cli_server`` and ``dashboard.state`` (numpy) are imported inside the
+``main()`` branch that uses each; at module scope every CLI call and MCP stdio server
+would pay ~1.3 s and ~112 MB. Pinned: a fresh import loads none of them, every local
+import in ``main()`` and the ``cli_parser_*`` registrars resolves, the stdio servers
+still answer, and ``boot_platform`` runs before mcp-core dispatch.
 
-The tests here keep it that way:
-
-1. **Ratchet** — a fresh interpreter that imports ``kiro_crew.cli`` must not
-   end up with any of the heavy modules in ``sys.modules``.  Without this, the
-   next module-scope import silently undoes the win (the two historical
-   ``# noqa: E402`` blocks show that already happened once).
-2. **Dispatch integrity** — every function-local ``from kiro_crew.* import``
-   inside ``main()`` and the ``cli_parser_*`` registrars it calls must resolve.
-   A typo in a moved import is otherwise only discovered at runtime by the user
-   who runs that one subcommand.
-3. **Stdio servers still serve** — ``mcp-core`` / ``mcp-cron`` answer
-   ``initialize`` + ``tools/list`` over stdio end-to-end through the real CLI
-   entry point.
-4. **Security prelude ordering** — ``boot_platform`` still runs before the
-   mcp-core dispatch branch, and a ``PlatformCompositionError`` still aborts
-   rather than downgrading.
-
-Fresh-interpreter checks run in subprocesses: the warm test process has long
-since imported the heavy modules, so an in-process ``sys.modules`` assertion
-would be vacuous.
+Fresh-interpreter checks run in subprocesses: the warm test process has the heavy
+modules already, so an in-process ``sys.modules`` assertion would be vacuous.
 """
 
 from __future__ import annotations
@@ -170,16 +150,10 @@ def _read_line(
 ) -> str:
     """One handshake line within ``budget``, or a named failure — never a blocked worker.
 
-    A bare ``proc.stdout.readline()`` on a server that boots but neither answers
-    nor closes stdout blocks until the suite's ``--timeout=120`` fires, which
-    reports as an un-attributed pytest timeout instead of the "no <what>
-    response" assertion this helper's caller is written to make — and on Windows
-    pytest-timeout has no SIGALRM, so it kills the xdist worker outright, the
-    caller's ``finally`` never runs, and the ``python -m kiro_crew`` child is
-    left alive holding the worker's pipes. Reading on a daemon thread with a
-    join deadline converts that lost RUN into a failed TEST that names itself.
-    30s is generous for a cold interpreter plus server boot and stays well
-    under the suite timeout, so the failure lands here and not on the worker.
+    A bare ``readline()`` on a silent server blocks until the suite timeout, and on
+    Windows (no SIGALRM) that kills the xdist worker and leaks the child. A daemon
+    thread with a join deadline turns it into a named failure; 30s stays under the
+    suite timeout.
     """
     stream = proc.stdout
     assert stream is not None

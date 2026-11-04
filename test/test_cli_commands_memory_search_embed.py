@@ -1,17 +1,10 @@
 """`kirocrew memory search` must embed the query, not keyword-match it.
 
-``VectorMemoryStore.search_episodic`` falls back to FTS5 whenever
-``query_embedding`` is None and does not auto-embed (only ``get_episodic_context``
-does), and nothing repairs an un-embedded QUERY the way the gateway's boot sweep
-repairs an un-embedded row. The CLI therefore has to produce its own query
-vector, or ``--layer all`` prints two labelled sections that are both keyword
-hits over different corpora — while the two are documented as answering
-different questions ("where did I write this word" versus "what does this mean
-like").
+``VectorMemoryStore.search_episodic`` falls back to FTS5 when ``query_embedding`` is
+None and does not auto-embed, so without its own query vector ``--layer all`` prints
+two keyword sections.
 
-Every test here drives ``_memory_cmd`` directly with an ``argparse.Namespace``,
-the style of ``test_cli_commands_coverage.py``, and stands in for the embedding
-backend rather than loading the 610MB GGUF.
+Tests drive ``_memory_cmd`` directly and fake the embedding backend (no 610MB GGUF).
 """
 
 from __future__ import annotations
@@ -195,12 +188,9 @@ class TestMemorySearchQueryEmbedding:
 class TestUnembeddedCorpusStillReachable:
     """A NULL-embedding episodic row must stay reachable from the CLI.
 
-    ``write_episodic(defer_embedding=True)`` bulk writers, `memory import` and
-    `memory migrate` (this store binds no ``embed_fn`` on those paths), and rows
-    cleared by ``reconcile_embedding_space`` all leave rows that neither vector
-    leg can see — both filter on ``embedding IS NOT NULL`` — until the gateway's
-    boot-only, paced backfill sweep reaches them. An empty semantic result over
-    such a corpus is not "no such memory", so the keyword leg is retried once.
+    Deferred writes, `memory import`/`migrate` and ``reconcile_embedding_space`` leave
+    rows no vector leg sees until the boot backfill, so an empty semantic result
+    retries the keyword leg once.
     """
 
     def test_empty_vector_pass_retries_the_keyword_leg(
