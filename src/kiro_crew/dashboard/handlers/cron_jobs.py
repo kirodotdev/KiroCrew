@@ -567,6 +567,22 @@ async def api_crons_create(request: web.Request) -> web.Response:
     timeout_secs, timeout_err = timeout_secs_from_body(body)
     if timeout_err is not None:
         return timeout_err
+    # The two failure limits take the PATCH contract: checked before anything is
+    # written, so a bad value is a 400 the form can name, and ``null`` is refused
+    # rather than read as "use the default". An absent key keeps the default.
+    failure_limits: dict[str, int] = {}
+    for limit_field, validate_limit in (
+        ("auto_pause_after_failures", validate_auto_pause_after_failures),
+        ("alert_after_failures", validate_alert_after_failures),
+    ):
+        if limit_field not in body:
+            continue
+        try:
+            failure_limits[limit_field] = validate_limit(body[limit_field])
+        except ValueError as exc:
+            return web.json_response(
+                {"error": str(exc), "code": f"invalid_{limit_field}"}, status=400
+            )
     # Same folder_id contract as PATCH /api/crons/{id}: string or null → "",
     # anything else is a 400 so the two entry points cannot diverge.
     folder_id = body.get("folder_id", "")
@@ -659,6 +675,7 @@ async def api_crons_create(request: web.Request) -> web.Response:
         add_kwargs["enabled"] = False
     if timeout_secs is not None:
         add_kwargs["timeout_secs"] = timeout_secs
+    add_kwargs.update(failure_limits)
     # An app token's job is stamped as that app's, exactly as ``CronSDK`` stamps
     # it: without the stamp every later reader (the app's own PATCH/DELETE, the
     # cron session's scope, the disabled-app fire gate, uninstall cleanup) takes
