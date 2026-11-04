@@ -658,7 +658,18 @@ def _url_payload_command(n: int) -> str:
 #: Raised by 8 more, to 33,967, for the ``kirocrew-bin`` entry in
 #: ``paths_lists._WRITE_PROTECTED_HOME_PATHS``: the file-edit tool may not write the
 #: link that decides which ``kirocrew`` an agent shell runs. Deny-only.
-_PACKAGE_LINE_BUDGET = 33_967
+#: Raised by 345 more, from 33,967, for Outlook on the web and Slack links, matched by
+#: structure in ``redaction_entropy._chat_mail_link_spans`` with no pattern: a mail or
+#: calendar item id is base64 with its ``+``, ``/`` and ``=`` percent-escaped, and a
+#: Slack ``client`` link joins its ids and message timestamp into one 40+ char run, so
+#: pass 3 masked both. The link is split by ``urllib.parse.urlsplit``, its host compared
+#: exactly against the four Outlook hosts or a ``slack.com`` host, its path segments
+#: compared as exact tokens, and its ids checked character by character; an Outlook id
+#: must also decode to one whole Exchange id (a folder or message entry id with its
+#: fixed bytes in place), and no piece of the link, cut also at each ``%XX`` escape and
+#: decoded per escaped segment, may be a whole key. No pass widened and no threshold
+#: moved.
+_PACKAGE_LINE_BUDGET = 34_312
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
