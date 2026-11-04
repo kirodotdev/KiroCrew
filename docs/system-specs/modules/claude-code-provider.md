@@ -57,6 +57,22 @@ plain public build:
   `pathToClaudeCodeExecutable`; without it the SDK fails `session/new` with
   "Claude native binary not found", because it does not search `PATH` for
   `claude` on its own.
+- `apply_spawn_env` also defaults `CLAUDE_CODE_THINKING_DISPLAY` to `summarized`
+  when the caller has not set it (an inherited or `agent.env` value wins).
+  Recent models default `thinking.display` to `omitted`, so their thinking blocks
+  carry a signature and no text, the adapter sends no `agent_thought_chunk`, and
+  the chat shows no thinking. The adapter reads the variable from 0.99.0
+  (agentclientprotocol/claude-agent-acp#1081), the installers' pin; an older
+  adapter ignores it. The installers leave an adapter already on `PATH` alone, so
+  a new chat whose adapter reports a release below that floor
+  (`CLAUDE_ACP_THINKING_DISPLAY_MIN_VERSION`) gets one notice row naming the
+  installed version, the minimum and the upgrade command
+  (`thinking_display_version_issue`, read through
+  `AcpProvider.thinking_upgrade_notice`), the way the steer floor does. An adapter
+  that reports no readable version gets none. The user setting
+  `showThinkingSummaries` does not reach this path: it is read by the interactive
+  `claude` UI, not by the SDK session the adapter starts. Covered by
+  `test_acp_claude_thinking_display.py`.
 - The adapter is a **public** npm package, `CLAUDE_ACP_NPM_PKG =
   "@agentclientprotocol/claude-agent-acp"`. Nothing on this path is
   edition-private.

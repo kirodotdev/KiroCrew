@@ -33,6 +33,7 @@ from kiro_crew import sel as sel_module
 from kiro_crew.acp import launch_tuning, pi_steer_turn, transport_framing
 from kiro_crew.acp.client_claude_session import (
     CLAUDE_ACP_STEERING_MIN_VERSION,
+    CLAUDE_ACP_THINKING_DISPLAY_MIN_VERSION,
     _adapter_version_at_least,
 )
 from kiro_crew.acp.client_timeouts import (
@@ -192,6 +193,27 @@ def _tested_range_label(low: tuple[int, int, int], high: tuple[int, int, int]) -
     if low[1:] == (0, 0) and high == (low[0] + 1, 0, 0):
         return f"{low[0]}.x"
     return f"{low[0]}.{low[1]}.x"
+
+
+def thinking_display_version_issue(backend: str, agent_version: str) -> str:
+    """The upgrade notice for a claude *agent_version* too old to show thinking, else ``""``.
+
+    Below :data:`CLAUDE_ACP_THINKING_DISPLAY_MIN_VERSION` the adapter ignores
+    ``CLAUDE_CODE_THINKING_DISPLAY``, so the chat shows no thinking. The session
+    still runs. Another backend, and an absent or unreadable version, gets none;
+    parsed by :func:`_adapter_version_at_least`, as the steer floor is.
+    """
+    if backend != ACP_BACKEND_CLAUDE or not _adapter_version_at_least(agent_version, (0, 0, 0)):
+        return ""
+    floor = CLAUDE_ACP_THINKING_DISPLAY_MIN_VERSION
+    if _adapter_version_at_least(agent_version, floor):
+        return ""
+    minimum = ".".join(str(part) for part in floor)
+    fix = f"npm i -g {ACP_BACKEND_NODE_ADAPTER_PACKAGES[ACP_BACKEND_CLAUDE]}"
+    return (
+        f"{backend} {agent_version} is older than {minimum}, so this chat does not "
+        f"show the agent's thinking. Update it: run '{fix}', then start a new chat."
+    )
 
 
 def untested_version_issue(backend: str, agent_version: str) -> str:

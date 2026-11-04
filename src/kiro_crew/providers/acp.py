@@ -499,6 +499,16 @@ class AcpProvider(LLMProvider):
         )
 
     @property
+    def thinking_upgrade_notice(self) -> str:
+        """The notice when this session's claude adapter is too old to show thinking,
+        else ``""``. ``""`` before the handshake, on another backend, and for an
+        adapter that reported no readable version."""
+        from kiro_crew.acp.client_turn_control import thinking_display_version_issue
+
+        backend = str(getattr(self._client, "backend", "") or "")
+        return thinking_display_version_issue(backend, self.agent_version)
+
+    @property
     def tested_version_notice(self) -> str:
         """The notice when this session's harness reports a release outside the one
         Crew tested it on (goose and codex today), else ``""``. A warning, never a refusal."""

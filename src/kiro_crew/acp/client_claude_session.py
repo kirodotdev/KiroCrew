@@ -158,6 +158,13 @@ CLAUDE_ACP_STEERING_MIN_VERSION = (0, 65, 0)
 #: when the adapter reports no version, a rewind does not fork.
 CLAUDE_ACP_FORK_POINT_MIN_VERSION = (0, 71, 0)
 
+#: The oldest claude-agent-acp that reads ``CLAUDE_CODE_THINKING_DISPLAY``, the
+#: variable ``ClaudeLaunch.apply_spawn_env`` defaults to ``summarized``
+#: (agentclientprotocol/claude-agent-acp#1081). Below it, on a model whose API
+#: default is ``omitted``, every thinking block arrives without text and the chat
+#: shows no thinking.
+CLAUDE_ACP_THINKING_DISPLAY_MIN_VERSION = (0, 99, 0)
+
 
 def _adapter_version_at_least(agent_version: str, floor: tuple[int, int, int]) -> bool:
     """Whether the adapter-reported *agent_version* is at or above *floor*."""

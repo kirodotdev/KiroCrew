@@ -62,6 +62,12 @@ CLAUDE_ACP_BIN = ACP_BACKEND_PROCESS_NAMES[ACP_BACKEND_CLAUDE]
 # action when the binary is on PATH; otherwise the adapter surfaces its own
 # native-binary error.
 CLAUDE_CODE_BIN = "claude"
+# The adapter's own switch for the thinking text (claude-agent-acp 0.99.0+,
+# agentclientprotocol/claude-agent-acp#1081): ``summarized`` or ``omitted``. Crew
+# defaults it to ``summarized`` so the chat shows thinking on models whose API
+# default is ``omitted``; ``apply_spawn_env`` keeps a value already set.
+CLAUDE_THINKING_DISPLAY_ENV = "CLAUDE_CODE_THINKING_DISPLAY"
+CLAUDE_THINKING_DISPLAY_DEFAULT = "summarized"
 # npm package that provides the claude-agent-acp binary.  Install it publicly
 # with ``npm i -g @agentclientprotocol/claude-agent-acp`` (or add it as a
 # project dependency); resolution also accepts a copy under a project-local
@@ -308,12 +314,21 @@ class ClaudeLaunch(ProcessAdapter):
         )
 
     def apply_spawn_env(self, env: dict[str, str], *, spawned_binary: str | None = None) -> None:
-        """Point the adapter's SDK at a native ``claude`` binary, unless one is named.
+        """Ask for summarized thinking, and point the SDK at a native ``claude`` binary.
+
+        Both are only set when unset, so an inherited or ``agent.env`` value (merged
+        before this hook runs) always wins.
+
+        Recent models default ``thinking.display`` to ``omitted``: their thinking
+        blocks carry a signature and no text, so the adapter sends no
+        ``agent_thought_chunk`` and the chat shows no thinking at all.
+        ``CLAUDE_CODE_THINKING_DISPLAY`` asks for the text (claude-agent-acp
+        0.99.0+); an older adapter does not read it, so it changes nothing there.
 
         The SDK needs a native Claude binary Crew does not vendor and does NOT search
-        PATH for ``claude`` itself, so it is named explicitly. Only set when unset, so
-        an operator override always wins.
+        PATH for ``claude`` itself, so it is named explicitly.
         """
+        env.setdefault(CLAUDE_THINKING_DISPLAY_ENV, CLAUDE_THINKING_DISPLAY_DEFAULT)
         if env.get("CLAUDE_CODE_EXECUTABLE"):
             return
         claude_exe = _resolve_claude_code_executable()
