@@ -225,7 +225,13 @@ _MOVED: dict[str, tuple[str, ...]] = {
         _ACL_WRITE _NO_ACL_ERRNOS _acl_admits_another_account group_write_admits_another_account
         _is_root_owned_path _local_aws_bin_candidate _is_native_program
         _local_aws_bin_is_trusted trusted_aws_bin aws_bin_declined_on_ownership
-        trusted_system_path desktop_launcher_available reveal_in_file_manager
+        trusted_system_path desktop_launcher_available _ASCII_ALNUM _WAYLAND_NAME_CHARS
+        _XAUTHORITY_CHARS _DESKTOP_NAME_CHARS _ascii_digits _x11_display_number
+        _is_local_x11_display _is_wayland_socket_name _is_xauthority_path _is_desktop_names
+        _is_kde_session_version _DESKTOP_SESSION_CHECKS _X11_SOCKET_DIR _DESKTOP_SESSION_TTL_SECS
+        _DESKTOP_SESSION_TIMEOUT_SECS _desktop_session_lock _desktop_session_cache
+        _user_manager_desktop_session _user_manager_environment _desktop_session_from
+        _live_desktop_session _x11_display_is_live _wayland_display_is_live reveal_in_file_manager
         open_with_default_app _reveal_env tool_outside_trusted_dirs short_path_name
         """.split()),
     "kiro_crew.platform_compat_liveness": tuple("""
