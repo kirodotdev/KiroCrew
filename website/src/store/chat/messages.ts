@@ -10,7 +10,7 @@ import type { ChatState } from './state'
 import { isUnsafeKey, normalizeQueueEntries, safeKey } from './wire'
 import { hydrateQueuedBubbles } from './queue'
 import { RECONCILE_WINDOW, ensureMsgId, finalizeTrailingStreaming, mintMsgId, tailNotInPage } from './transcript'
-import { isOutOfBandRow, isTurnBoundaryUser, mergePreservedThinking } from './thinking'
+import { isOutOfBandRow, isTurnBoundaryUser, mergePreservedThinking, reinsertThinkingOrphans } from './thinking'
 import { retainServerTotal, setPagingCursor, writeSlotPage } from './slotCache'
 import { evictMcpApps } from './mcpApps'
 
@@ -432,7 +432,10 @@ export const messageReducers = {
    *  refetches unbounded, and a flat one-shot would discard the wider result and
    *  strand the pane on 50 rows. So a bounded page may be superseded once by an
    *  unbounded one. The reverse is refused, and a superseded slot cannot upgrade
-   *  again, so this cannot loop.
+   *  again, so this cannot loop. A held window that says older rows exist but
+   *  records no bounded page (a trim, park or warm wrote it) is superseded by an
+   *  unbounded page the same way: the whole history replaces it, so the
+   *  crewmate pane that refetches unbounded is not left on the trimmed window.
    *  No-op for the active slot (its mirror is already live). */
   hydrateSlotMessages(state: ChatState, action: PayloadAction<{ slot: string; messages: ChatMessage[]; queue?: unknown; hasMore?: boolean; bounded?: boolean; total?: number; running?: boolean; nextBefore?: number }>) {
     const { slot, messages, queue, hasMore, bounded, total, running, nextBefore } = action.payload
@@ -445,8 +448,26 @@ export const messageReducers = {
       // Keep the rows the bounded page never fetched: it was written as
       // [page, ...priorRows], so everything past its length is a live tail.
       const boundedLen = state.slotPaneBounded?.[k]
-      if (bounded || boundedLen === undefined) return
+      if (bounded) return
       const prior = state.slotMessages[k] ?? []
+      if (boundedLen === undefined) {
+        // A held window with older rows behind it and no bounded page to
+        // supersede: `boundSlotWindow` cut its head, or a park or warm wrote it.
+        // A whole-history page covers every durable row the window holds, so it
+        // takes the window's place. The rows it cannot carry (an unacked send, a
+        // queued bubble) stay as the live tail, the window's reasoning is placed
+        // by anchor, and a block the trim parked is seated once the page loads
+        // its anchor again.
+        if (state.slotPaneHasMore?.[k] !== true) return
+        const tail = tailNotInPage(prior.filter(m => m.role !== 'thinking'), messages)
+        const placed = mergePreservedThinking(prior, [...messages, ...tail], messages)
+        const parked = (state.thinkingOrphans ??= {})
+        const seated = reinsertThinkingOrphans(placed, parked[k] ?? [], !hasMore)
+        parked[k] = seated.remaining
+        writeSlotPage(state, slot, seated.list, hasMore, undefined, nextBefore)
+        retainServerTotal(state, slot, total, running)
+        return
+      }
       // The wider page is a fresh server snapshot, so it can already carry rows
       // that tail holds -- a just-sent row persists before its send is acked.
       const tail = tailNotInPage(prior.slice(boundedLen), messages)
@@ -470,6 +491,34 @@ export const messageReducers = {
     const hydrated = hydrateQueuedBubbles([...messages, ...tailNotInPage(cur, messages)], queued, true)
     writeSlotPage(state, slot, hydrated, hasMore, bounded ? messages.length : undefined, nextBefore)
     retainServerTotal(state, slot, total, running)
+  },
+  /** The last pane showing `slot` has unmounted, so `slotHydrated` no longer
+   *  names a transcript a reader is looking at. Clearing it re-opens
+   *  `boundSlotWindow` for the slot: a monitor pane opened once and then left
+   *  in the background is bounded like any other background slot.
+   *
+   *  The page markers stay. They still describe the array (a trim moves them
+   *  with the head it drops), and a remount's hydrate returns early on a
+   *  defined marker, so the pane resumes from the held window and its cursor
+   *  instead of stacking a newest-N page above older retained rows. */
+  clearSlotHydrated(state: ChatState, action: PayloadAction<string>) {
+    const slot = action.payload
+    if (isUnsafeKey(slot)) return
+    delete state.slotHydrated?.[safeKey(slot)]
+  },
+  /** A pane mounted `slot` again. When a page marker already describes the held
+   *  array, the pane's hydrate would only record the flag and return, so it is
+   *  recorded now, at mount. Waiting for the hydrate fetch would leave a window
+   *  in which the slot is on screen yet unflagged, and a background `_done` in
+   *  that window would trim the transcript the reader is looking at. An
+   *  undescribed slot is left to the hydrate, which still has a page to place. */
+  holdHydratedSlotPane(state: ChatState, action: PayloadAction<string>) {
+    const slot = action.payload
+    if (isUnsafeKey(slot) || slot === state.activeSlot) return
+    const k = safeKey(slot)
+    if (state.slotPaneHasMore?.[k] === undefined) return
+    ;(state.slotHydrated ??= {})[k] = true
+    delete state.slotPaneRemovedQueueIds?.[k]
   },
   sseChatMessageUpdate(state: ChatState, action: PayloadAction<{ slot: string; tool_call_id?: string; ts?: string; content?: string; meta?: Record<string, unknown> }>) {
     const { slot, tool_call_id: tcid, ts, content, meta } = action.payload
