@@ -619,6 +619,11 @@ class DashboardState:
         self._context_snapshots_flush_lock = threading.Lock()
         self._folders: list[dict[str, Any]] = []  # project folder definitions
         self._cron_folders: list[dict[str, Any]] = []  # cron job folder groupings
+        # False while a present folders.json / cron_folders.json failed to load:
+        # the folder set is unknown, not empty, so the next write re-reads the
+        # file first and refuses when it still cannot be read.
+        self._folders_authoritative: bool = True
+        self._cron_folders_authoritative: bool = True
         # Malformed cron_folders.json entries dropped at load time, kept verbatim
         # so save_cron_folders round-trips them back instead of erasing bytes it
         # could not parse (mirrors the hooks store's unparsed-entry preservation).
@@ -629,6 +634,9 @@ class DashboardState:
         # hand-edit left in a shape the loader could not validate (mirrors the
         # cron-folder unparsed-entry preservation).
         self._unparsed_chat_pin_entries: list[Any] = []
+        # True while a present chat_pins.json failed to parse at load: the
+        # in-memory list is empty but the file is not, so save_chat_pins refuses.
+        self._chat_pins_load_failed: bool = False
         # Serializes pin mutation + persistence so concurrent requests cannot
         # interleave snapshots and replace chat_pins.json out of order.
         # LoopBoundLock, not asyncio.Lock: DashboardState outlives any
@@ -662,6 +670,10 @@ class DashboardState:
         # a legitimately-empty vocabulary (user deleted every tag) must still
         # prune dangling ids while an unreadable one must not wipe anything.
         self._tags_authoritative: bool = False
+        # True while a present tags.json / tag_boards.json failed to load: the
+        # file holds rows this process never saw, so that store's writers refuse.
+        self._tags_load_failed: bool = False
+        self._tag_boards_load_failed: bool = False
         # Sidebar columns — flat list of {id, name, tag_ids, mode, order, include_untagged}
         self._tag_boards: list[dict[str, Any]] = []
         # Malformed tag-board (sidebar column) entries dropped at load time,
@@ -1141,7 +1153,9 @@ class DashboardState:
     # state_parts/sidebar_stores.py
     load_folders = _sidebar_stores.load_folders
     save_folders = _sidebar_stores.save_folders
+    _reload_folders_if_unknown = _sidebar_stores._reload_folders_if_unknown
     load_cron_folders = _sidebar_stores.load_cron_folders
+    _reload_cron_folders_if_unknown = _sidebar_stores._reload_cron_folders_if_unknown
     _persist_cron_folders = _sidebar_stores._persist_cron_folders
     save_cron_folders = _sidebar_stores.save_cron_folders
     create_cron_folder = _sidebar_stores.create_cron_folder

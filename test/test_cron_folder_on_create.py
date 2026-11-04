@@ -391,6 +391,9 @@ class _FakeDashboardState:
         self.refreshes: list[str] = []
         self.crons = None
 
+    def _reload_cron_folders_if_unknown(self):
+        """The fake's folder list always mirrors disk, so there is nothing to re-read."""
+
     def create_cron_folder(self, name, folder_id):
         if self.fail:
             raise OSError("disk full")
