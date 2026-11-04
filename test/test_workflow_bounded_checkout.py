@@ -135,3 +135,27 @@ def test_a_tight_leg_inside_a_matrix_expression_is_still_flagged(tmp_path: Path)
         encoding="utf-8",
     )
     assert _violations(tmp_path) == [("x.yml", "j")]
+
+
+def test_full_history_jobs_moved_off_a_tight_budget_stay_blobless() -> None:
+    """Jobs that keep fetch-depth: 0 on the runner fleet clone blobless.
+
+    Each one needs full commit history (a tag lookup, a base..head diff), so
+    a bounded fetch is not an option; the blobless filter is what lets the
+    clone finish inside the job budget, and the budget leaves headroom.
+    """
+    for workflow, job_id in (
+        ("fork-internal-content-scan.yml", "fork-internal-content-scan"),
+        ("security-scope-review.yml", "generate"),
+        ("security-scope-review.yml", "validate"),
+        ("security-scope-review.yml", "adjudicate"),
+        ("security-scope-review.yml", "publish"),
+        ("fork-security-scope-review.yml", "generate"),
+        ("fork-security-scope-review.yml", "validate"),
+        ("fork-security-scope-review.yml", "adjudicate"),
+    ):
+        job = yaml.safe_load((WORKFLOWS / workflow).read_text(encoding="utf-8"))["jobs"][job_id]
+        checkout = next(s for s in job["steps"] if "actions/checkout" in str(s.get("uses") or ""))
+        assert checkout["with"]["fetch-depth"] == 0, (workflow, job_id)
+        assert checkout["with"]["filter"] == "blob:none", (workflow, job_id)
+        assert _tightest(job["timeout-minutes"]) >= 20, (workflow, job_id)

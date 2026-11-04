@@ -120,6 +120,10 @@ jobs:
           # scope resolver diffs base...head, and the prefetch below needs both
           # objects -- a shallow base clone has neither.
           fetch-depth: 0
+          # Blobless: every commit still arrives and the checked-out tree is
+          # complete; git fetches older blobs on demand instead of downloading
+          # every historical blob up front.
+          filter: blob:none
           persist-credentials: false
 
       # The surface list, and the maintainer escape from it. A tightening that
@@ -678,7 +682,9 @@ jobs:
     # lane's verdict.
     permissions:
       contents: read
-    timeout-minutes: 15
+    # A full-history checkout on the runner fleet can take most of fifteen
+    # minutes even with the blobless filter below; 20 leaves headroom.
+    timeout-minutes: 20
     outputs:
       adjudicate: ${{ steps.validate.outputs.adjudicate }}
       # Carried to `publish` so its own uploads can read the scrub's answer. An
@@ -699,6 +705,10 @@ jobs:
           # of the BASE commit with `git show`, and a shallow clone of the merge ref
           # has neither parent's tree.
           fetch-depth: 0
+          # Blobless: every commit still arrives and the checked-out tree is
+          # complete; git fetches older blobs on demand instead of downloading
+          # every historical blob up front.
+          filter: blob:none
           persist-credentials: false
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -1148,7 +1158,9 @@ jobs:
     # id-token, no write scope. Nothing here is worth stealing.
     permissions:
       contents: read
-    timeout-minutes: 15
+    # A full-history checkout on the runner fleet can take most of fifteen
+    # minutes even with the blobless filter below; 20 leaves headroom.
+    timeout-minutes: 20
     strategy:
       max-parallel: 4
       # Every leg reports. One platform's regression is not evidence about
@@ -1178,6 +1190,10 @@ jobs:
           # Full history: BOTH commits must be archivable locally, and a shallow
           # clone has neither tree.
           fetch-depth: 0
+          # Blobless: every commit still arrives and the checked-out tree is
+          # complete; git fetches older blobs on demand instead of downloading
+          # every historical blob up front.
+          filter: blob:none
           persist-credentials: false
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -1381,7 +1397,9 @@ jobs:
       checks: read
       contents: read
       pull-requests: write
-    timeout-minutes: 15
+    # A full-history checkout on the runner fleet can take most of fifteen
+    # minutes even with the blobless filter below; 20 leaves headroom.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: github.event.pull_request.head.repo.full_name == github.repository
@@ -1390,6 +1408,10 @@ jobs:
           # with `git show`, and a shallow clone of the merge ref has neither
           # parent's tree.
           fetch-depth: 0
+          # Blobless: every commit still arrives and the checked-out tree is
+          # complete; git fetches older blobs on demand instead of downloading
+          # every historical blob up front.
+          filter: blob:none
           persist-credentials: false
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
