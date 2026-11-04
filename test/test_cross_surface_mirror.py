@@ -317,9 +317,7 @@ class TestDeliverCrossSurfaceReply:
         raw = "see https://evil.example/exfil?q=1 and AKIAIOSFODNN7EXAMPLE"
         expected = redact_credentials(redact_exfiltration_urls(raw)[0])[0]
         async with telegram_wire(monkeypatch) as wire:
-            state.register_channel_transport(
-                TelegramTransport(wire.client, allowed_user_ids=[123])
-            )
+            state.register_channel_transport(TelegramTransport(wire.client, allowed_user_ids=[123]))
             await _deliver_cross_surface_reply(state, "k", raw)
         assert [(call.get("chat_id"), call.get("text")) for call in wire.messages()] == [
             (123, expected)
