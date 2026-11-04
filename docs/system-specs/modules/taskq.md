@@ -366,7 +366,8 @@ run -- write-before-ack, with the write off-loop. The same shape serves every
 other accept path: `continue_conversation_async` (the follow-up watcher
 and `POST /api/spawn/{id}/continue`; the sync `continue_conversation` shares its
 prelude, `_continue_prelude`), the app `SpawnSDK` (`apps/spawn_sdk.py`,
-which awaits `spawn_async` when the manager has it), and the CHANNEL keyword
+which awaits `spawn_async` when the manager has it, and
+`continue_conversation_async` for `ctx.spawn.continue_`), and the CHANNEL keyword
 spawn door -- `spawn <task>` / `bg <task>` from Slack and `/spawn <task>` from
 Telegram, which reach `messaging.commands.spawn_task_reply`. That helper and
 `spawn_command_reply` are `async` for exactly this reason, and

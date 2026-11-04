@@ -418,10 +418,17 @@ class ContinuationCoordinator(ManagerComponent):
         _preassigned_id: str = "",
         _memory_mode: str | None = None,
         _crew_log_asked: "tuple[str, int, int] | None" = None,
+        *,
+        approval_mode: str | None = None,
+        silent: bool = False,
     ) -> SubagentInfo | None:
         """:meth:`continue_conversation_impl` for event-loop callers: the same
         prelude, then ``spawn_async`` (write-before-ack with the store write on
-        its writer thread)."""
+        its writer thread).
+
+        ``approval_mode`` and ``silent`` are the follow-up run's own, as on
+        ``spawn``: an app continuing its unattended run has no user to approve a
+        tool call, so it passes ``"auto"`` the way its first spawn did."""
         # Keep map/busy/promotion mutations on-loop. Only the missing owner's
         # immutable record is read by the worker, then the prelude rechecks busy.
         from kiro_crew.execution_context import stricter_memory_mode
@@ -494,6 +501,10 @@ class ContinuationCoordinator(ManagerComponent):
         )
         if not isinstance(prelude, dict):
             return prelude
+        if approval_mode is not None:
+            prelude["approval_mode"] = approval_mode
+        if silent:
+            prelude["silent"] = True
         return await self._manager.spawn_async(**prelude)
 
     def _continue_prelude_impl(
