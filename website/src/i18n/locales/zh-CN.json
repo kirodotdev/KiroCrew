@@ -7225,6 +7225,7 @@
       "pane_failed_to_load": "窗格加载失败",
       "pane_needs_loopback_origin": "此窗格需要本地仪表板地址",
       "pane_needs_loopback_origin_how": "远程 crew 窗格仅在仪表板于 localhost 打开时才能嵌入。请在该地址打开仪表板以使用此窗格。",
+      "pane_port_unreachable": "此浏览器无法访问端口 {{port}}。最可能的原因是浏览器和网关在不同的机器上：请同时转发该端口（ssh -L {{port}}:127.0.0.1:{{port}} <gateway-host>），或在网关主机上打开仪表板。如果是同一台机器，可能是 crew 的仪表板正在重启，请重试。",
       "retry": "重试",
       "the_tunnel_looks_connected_but_the_remote_dashbo": "隧道看起来已连接，但该 Crew 的仪表板始终未加载。它可能正在重启 — 请重试，或切换上方的标签页。",
       "this_tab_stays_until_you_disconnect_the_instance": "此标签页会一直保留，直到你在“<0>设置 → 远程 Crew</0>”中断开此 Crew。"

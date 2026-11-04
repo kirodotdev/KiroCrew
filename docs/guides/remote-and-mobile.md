@@ -299,6 +299,16 @@ with `KIROCREW_ALLOWED_LOOPBACK_PORTS` on the gateway host; the CSRF check
 deliberately does not blanket-trust every loopback port, because a malicious
 local page on an arbitrary port would otherwise pass it.
 
+**Remote Crew panes through a forwarded dashboard.** The gateway reaches each
+Remote Crew over its own forward on a local port of the *gateway* host, and the
+pane loads `http://localhost:<that port>/` in your browser. When the browser is
+on another machine and you forwarded only the dashboard port, nothing answers on
+that port on your machine: the crew reads `connected`, but its pane times out.
+The pane's error then says it cannot reach the port and names it. Forward that
+port too, with the same number on both sides
+(`ssh -L <port>:127.0.0.1:<port> user@your-host.example.com`), or open the
+dashboard on the gateway host itself.
+
 ### Named HTTPS tunnel (phone)
 
 A phone cannot open an SSH port-forward, so put a tunnel provider in front of
