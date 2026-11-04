@@ -242,7 +242,6 @@ test/test_api_shutdown.py
 test/test_app_backend.py
 test/test_app_backend_stale_reap.py
 test/test_app_bridges.py
-test/test_app_cli.py
 test/test_app_config_self_heal.py
 test/test_app_context.py
 test/test_app_dev_mode.py
