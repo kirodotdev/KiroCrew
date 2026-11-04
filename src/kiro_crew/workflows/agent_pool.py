@@ -1,19 +1,16 @@
-"""Warm session pool for workflow ``ctx.agent()`` calls — kills per-call cold-start.
+"""Warm session pool for workflow ``ctx.agent()`` calls.
 
-Background: the default ``agent_fn`` (``agent_exec.build_agent_fn``) gives every
-``ctx.agent()`` call its own fresh ``SessionManager`` session keyed
-``wf:{run_id}:{i}`` and tears it down (``release(cleanup=True)``) afterwards. Each
-call therefore pays a FULL cold start — subprocess spawn + ACP ``initialize`` +
-``session/new`` (the MCP-toolset + system-prompt load, the dominant cost per
-cold-start profiling). An 8-agent run = 8 cold starts.
+The cold path (``agent_exec.build_agent_fn``) gives every call a fresh session
+keyed ``wf:{run_id}:{i}``, so each pays a full cold start: subprocess spawn, ACP
+``initialize`` and ``session/new`` (the MCP-toolset + system-prompt load, the
+dominant cost).
 
-This module reuses the generic, already-tested :class:`kiro_crew.acp.worker_pool.WorkerPool`
-engine to keep a small set of WARM workflow sessions alive and reuse them across
-calls. Semantics that make this correct:
+This module uses :class:`kiro_crew.acp.worker_pool.WorkerPool` to keep a small set
+of WARM workflow sessions alive and reuse them across calls:
 
   * **Isolation preserved** — the engine hands each *concurrent* task a DISTINCT
     worker (its own live session), so parallel ``ctx.agent()`` calls never share
-    conversational state, exactly like the per-call-session model they replace.
+    conversational state.
   * **Warm reuse** — a *sequential* task reuses an idle worker after a cheap
     clean-slate reset (``provider.new_conversation()`` — fresh ``session/new`` on
     the same live process, skipping spawn + ``initialize``). No cold start on a
@@ -54,9 +51,8 @@ from kiro_crew.taskq.dependency import DEFAULT_MAX_ATTEMPTS as DEPENDENCY_MAX_AT
 from kiro_crew.taskq.dependency import classify_exception
 from kiro_crew.taskq.model import KIND_WORKFLOW_AGENT, SIDE_EFFECT_UNKNOWN
 
-# Per-step tool-call ceiling — shared with the per-call path (agent_exec) so a
-# single edit retunes both; a hand-duplicated copy here would silently diverge the
-# pooled vs fallback ceilings. ``test_workflows_agent_pool.py`` pins them equal.
+# Per-step tool-call ceiling is imported from agent_exec so the pooled and cold
+# paths cannot diverge; ``test_workflows_agent_pool.py`` pins them equal.
 from kiro_crew.workflows.agent_exec import (
     _MAX_TURNS_PER_STEP,
     StepStopWatch,
@@ -275,21 +271,12 @@ class _WorkflowSessionWorker:
             prov.set_delete_delay(delete_delay)
         new_conv = getattr(prov, "new_conversation", None) if prov is not None else None
         if new_conv is not None and not self._sessions.is_retiring(self._key):
-            # BEFORE ``new_conv()``, not after. The cheap path replaces the CONVERSATION and
-            # keeps the process, so the previous conversation's sub-agent runs still have to
-            # end -- the process surviving does not give them anywhere to report, and
-            # without this they inject into whatever this warm worker is handed next.
-            #
-            # The ordering is the whole point. ``new_conv()`` swaps the provider's
-            # conversation handle, and a child that finishes during that await lands in the
-            # handle that exists when it reports. Arming the suppression afterwards leaves a
-            # window in which the previous task's result is delivered into the NEXT task's
-            # conversation -- the exact confusion this verb exists to prevent, and worse
-            # than no teardown because it is silent.
-            #
-            # Outside the try below, so a failure here is not read as ``new_conversation``
-            # having failed: that would send a healthy warm worker down a hard reset it does
-            # not need.
+            # End the previous conversation's sub-agent runs BEFORE ``new_conv()``: the
+            # cheap path keeps the process, and a child that finishes during the swap
+            # lands in whichever conversation handle exists when it reports, so ending
+            # them afterwards would silently deliver the old task's result into the
+            # next one. Outside the try below, so a failure here does not send a
+            # healthy warm worker down a hard reset.
             try:
                 await self._sessions.end_children_for(self._key)
             except Exception:
@@ -460,14 +447,10 @@ def build_pooled_agent_fn(
         sp = subpools.get(key)
         if sp is not None:
             return sp
-        # Aggregate bound: each identity sub-pool holds up to ``max_workers``
-        # live kiro-cli processes, so an unbounded number of distinct identities
-        # (a run can make up to 1000 calls, each with a unique model string)
-        # would blow past the run-wide worker cap and exhaust memory / fds.
-        # Once ``max_identities`` distinct sub-pools exist, a new identity gets
-        # NO pool (returns None) and the caller runs it on the unpooled
-        # create-run-destroy path — so total live workers stay bounded at
-        # ``(max_identities + 1) * max_workers``.
+        # Aggregate bound: each sub-pool holds up to ``max_workers`` live kiro-cli
+        # processes and a run can make up to 1000 calls with distinct identities.
+        # Past ``max_identities`` sub-pools a new identity gets NO pool and runs
+        # unpooled, so live workers stay at most ``(max_identities + 1) * max_workers``.
         if len(subpools) >= max(1, max_identities):
             return None
         sp = _make_pool(*key)
@@ -511,9 +494,7 @@ def build_pooled_agent_fn(
                     agent=opts.get("agent") or default_agent,
                     cwd=opts.get("cwd") or cwd,
                 )
-            # Wall clock for THIS turn only (acp leaves TurnUsage.duration_ms
-            # at 0), started right before the turn so session setup is not
-            # charged to it.
+            # Wall clock for this turn only (acp leaves TurnUsage.duration_ms at 0).
             _turn_t0 = time.monotonic()
             stop = StepStopWatch()
             result = await _run_step(provider, prompt, stop=stop)
