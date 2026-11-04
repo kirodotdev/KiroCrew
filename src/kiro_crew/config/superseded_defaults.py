@@ -23,7 +23,7 @@ them apart -- correcting one necessarily overrides the other.
 So the default stayed REPORT-ONLY, and it still is: an entry rewrites nothing
 unless it says ``auto_adopt``.
 
-Why FOUR entries adopt themselves anyway
+Why FIVE entries adopt themselves anyway
 ----------------------------------------
 Reporting is the right answer only while the two readings of the stored value are
 genuinely indistinguishable AND holding the old value is survivable. On the two
@@ -35,7 +35,9 @@ spawn memory floor is the third: a materialized ``agent.spawn_min_memory_gb: 4.0
 holds every subagent in the queue on a 16 GB laptop, where 4 GB plus a start
 rarely stays free. The KAS MCP sign-in vault is the fourth: a materialized
 ``agent.kas_persist_mcp_sign_in: false`` asks for every remote MCP sign-in again
-in every new session, and false was the default its owner never chose.
+in every new session, and false was the default its owner never chose. The fifth
+is Windows only: a materialized ``agent.sandbox_allow_unsandboxed_exec: false``
+refuses every KAS spawn there, where an undeclared key resolves to true.
 
 The set is deliberately SMALL, and what keeps it small is not a judgment about how
 wide the value's range is. That test was tried and is wrong: ``instances.warm_set_cap``
@@ -228,6 +230,22 @@ def _stt_resolves_auto_locally(base_data: dict) -> bool:
         stt = base_data.get("stt")
         provider = stt.get("provider") if isinstance(stt, dict) else None
     return stt_provider_resolution(provider) == STT_PROVIDER_LOCAL
+
+
+def _stale_unsandboxed_exec_false_applies(_base_data: dict) -> bool:
+    """Whether a stored ``agent.sandbox_allow_unsandboxed_exec: false`` may be stale here.
+
+    True only on Windows, read through the loader's own resolver so tests that pin
+    the platform verdict pin this row too. Never inside a pod: every pod home is
+    fresh, and its seed floor (``pod.runtime._force_seed_agent_security``) writes
+    that false on purpose.
+    """
+    if os.environ.get("KIROCREW_POD") == "1":
+        return False
+    # Imported at call time: the loader imports this module.
+    from kiro_crew.config.loader_document import unsandboxed_exec_platform_default
+
+    return unsandboxed_exec_platform_default()
 
 
 # The session handle waits min(suspect, hard cap) before acting on a tool stall, so
@@ -570,6 +588,32 @@ SUPERSEDED_DEFAULTS: tuple[SupersededDefault, ...] = (
         new_default=True,
         changed_in="#28630",
         auto_adopt=True,
+    ),
+    # A stored false refuses every KAS agent spawn on Windows. Old full saves
+    # (``asdict(agent)``) wrote it on every host without asking, and a stored key
+    # outranks the Windows platform default of true. Kiro CLI sessions delegate to
+    # kiro-cli's own sandbox and never read the value; KAS sessions do.
+    #
+    # auto_adopt, on Windows only, by owner decision: with KAS the default, a
+    # stored false leaves Crew unable to start any session, whether it was written
+    # unasked or on purpose, and kiro-cli confines no KAS process on Windows, so the
+    # false bought no isolation there. Adopting gives the posture a new Windows
+    # install already has. The one-shot ledger keeps a false set after the
+    # adoption, and setup, ``config set`` and Settings saves ack the false they
+    # write. Pods and non-Windows hosts are excluded by ``applies``.
+    SupersededDefault(
+        dotted_key="agent.sandbox_allow_unsandboxed_exec",
+        old_default=False,
+        new_default=True,
+        changed_in="#9758",
+        new_default_display="true on Windows",
+        auto_adopt=True,
+        note=(
+            "without this false, agent subprocesses on this Windows host run without "
+            "OS isolation, the same as on new installs; old versions saved the false "
+            "on every save, and on Windows it blocks every agent session"
+        ),
+        applies=_stale_unsandboxed_exec_false_applies,
     ),
 )
 
@@ -1368,10 +1412,11 @@ def adoption_summary(dotted_key: str, removed: object) -> str:
     # A bool is spelled as JSON, the way config.json and every doc spell it.
     old = vouched.old_default
     typed = json.dumps(old) if isinstance(old, bool) else old
+    note = f" Note: {vouched.note}." if vouched.note else ""
     return (
         f"{key}: stored value {shown} was removed from config.json on upgrade (if that "
-        f"write failed the value is still stored and still listed as drift). Restore it "
-        f"with: kirocrew config set {vouched.dotted_key} {typed}"
+        f"write failed the value is still stored and still listed as drift).{note} "
+        f"Restore it with: kirocrew config set {vouched.dotted_key} {typed}"
     )
 
 

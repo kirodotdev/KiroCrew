@@ -38,6 +38,8 @@ from kiro_crew.config.superseded_defaults import (
     drop_acks,
     drop_drifted_keys,
     record_acks,
+    record_adoptions,
+    stored_value_or_none,
     superseded_default_drift,
 )
 from kiro_crew.config.write_provenance import record_path
@@ -609,11 +611,21 @@ def _defaults_cmd(args: argparse.Namespace) -> None:
         def _mutate(existing: dict) -> dict:
             # Re-detect inside the lock: the document read above is a snapshot, and
             # removing a key whose value changed since would discard a live choice.
-            fresh = [
-                e.dotted_key
-                for e in superseded_default_drift(existing, acked={})
-                if e.dotted_key in keys
+            fresh_entries = [
+                e for e in superseded_default_drift(existing, acked={}) if e.dotted_key in keys
             ]
+            fresh = [e.dotted_key for e in fresh_entries]
+            # An auto-adopt row is one-shot: record it as adopted BEFORE the removal,
+            # the same marker-first order the load path uses. Without the record, a
+            # value the operator writes back later would be auto-removed on the next
+            # load. A failed record raises and aborts this write.
+            auto = {
+                e.dotted_key: stored_value_or_none(existing, e.dotted_key)
+                for e in fresh_entries
+                if e.auto_adopt
+            }
+            if auto:
+                record_adoptions(auto)
             removed.extend(drop_drifted_keys(existing, fresh))
             # A coerced key is not dropped but REWRITTEN as what the loader resolves
             # it to (or dropped only when that is the default), so adopting never

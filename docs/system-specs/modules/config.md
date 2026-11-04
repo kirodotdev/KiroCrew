@@ -725,6 +725,7 @@ names that test; every other report-only row gives its plain reason:
 | `agent.chat_turn_timeout_secs` | 7200 -> 14400, #8949 | adopts | -- |
 | `agent.spawn_min_memory_gb` | 4.0 -> 2.0, #15890 | adopts | -- (the 4.0 inputs in the admission tests set a floor, they do not pin a stored 4.0 as supported; the opt-out is `0`, not the old default) |
 | `agent.kas_persist_mcp_sign_in` | false -> true, #28630 | adopts | -- (false was the default until this change, so the only value an owner had reason to write was true; a false set back after the one-shot adoption is kept as the opt-out) |
+| `agent.sandbox_allow_unsandboxed_exec` | false -> true on Windows, #9758 | adopts | -- (Windows outside pods only, owner decision 2026-11-03: with KAS the default a stored false leaves no agent session able to start, whether written unasked by a pre-0.6.0 save or on purpose, and kiro-cli confines no KAS process on Windows (#25154); elsewhere false is still the default and the row does not apply. `kirocrew setup`, `config set` and Settings saves ack a false they write, and a false set after the one-shot is kept. A Windows load (outside pods) that finds the key absent or `true` has nothing stale to drop, so `windows_exec_adoption.close_when_nothing_stale` acks `false` once; a false written after that, a hand edit included, is never adopted. The drop first writes the setup grant's critical SEL event (`config/windows_exec_adoption.py`) and keeps the false when that write fails; the row's `note` is appended to the adoption log line and doctor's adopted line) |
 | `session.autocompact_pct` | 90.0 -> 70.0, #4388 | reports | `test_a_persisted_ceiling_value_is_left_alone` |
 | `dashboard.loop_stall_exit_after_secs` | 25 -> unset, #6651 | reports | `test_explicit_desktop_default_is_preserved_for_managed_service` |
 | `stt.streaming` | false -> true, 0.5.0 | reports | `test_put_persists_streaming` |
@@ -1045,7 +1046,9 @@ load and is left untouched.
 
 `--adopt` also drops the ack for a key it removed, since the acked value is no
 longer stored and keeping it would silence a genuinely deliberate choice made
-later. When `config.local.json` also carries an adopted key the report says the
+later. On an `auto_adopt` row, `--adopt` also records the key in the adoption
+record before removing it, so a value written back by hand later is kept. When
+`config.local.json` also carries an adopted key the report says the
 overlay still overrides it, because the EFFECTIVE value did not change. Every
 filesystem refusal on these paths surfaces as a controlled non-zero CLI error,
 never a traceback.
