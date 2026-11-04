@@ -320,27 +320,15 @@ def ending_key(self: SessionManager, key: str) -> Iterator[None]:
 def allocation_requested_model(self: SessionManager, key: str) -> str:
     """Return the model *key*'s live allocation selected, or ``""``.
 
-    The selection a caller makes is the caller's to record. This answers the
-    tier BELOW every caller: an allocation handed ``model=None`` resolves an
-    id from config itself, hands it to the provider, and reports only the
-    provider, ``is_new`` and ``resumed`` — so the caller's own record of what
-    was asked for is blank while the session runs on a concrete model. Reading
-    the stamp the allocation left is what closes that, and it is the SAME
-    value the provider received, not a second resolution.
+    An allocation handed ``model=None`` resolves an id from config and reports
+    only ``(provider, is_new, resumed)``; this returns the SAME id the provider
+    received, not a second resolution.
 
-    A caller composes this OVER its own selection (``this or own``) rather
-    than under it. ``is_new`` with ``resumed`` false says the caller consumed a
-    fresh first-turn observation, NOT that the caller allocated the session: a
-    prewarmed session that started fresh arms exactly that observation, so a
-    claim of one is indistinguishable from a cold start in the return value.
-    This stamp is the allocation's own selection by construction and is right
-    for both cases; the caller's own resolution is right only for the cold
-    start, since on a prewarmed claim it re-resolves a config that may have
-    moved since the session was allocated.
+    Compose it OVER the caller's own selection (``this or own``): ``is_new``
+    cannot tell a fresh prewarmed claim from a cold start, and on a prewarmed
+    claim the caller's own resolution reads a config that may have moved since.
 
-    ``""`` for an unknown key, a session with no selection, and a session made
-    by a registration site that resolves no models. All three are "nothing to
-    report", which is what an empty value says.
+    ``""`` for an unknown key or a session with no selection.
     """
     session = self._sessions.get(self._fold_key(key))
     return session.requested_model if session is not None else ""
@@ -442,7 +430,7 @@ async def resume_turn_admission_after_update(self: SessionManager) -> bool:
         return True
 
 
-# ── Per-session semaphore ──
+# ── Continuable and resumable conversations ──
 
 
 def mark_continuable(self: SessionManager, key: str) -> None:
@@ -493,12 +481,11 @@ def mapped_sid(self: SessionManager, key: str) -> str:
 def allocation_predecessor(self: SessionManager, key: str) -> str:
     """The store *key*'s current cold-started session superseded, or ``""``.
 
-    Captured by the allocation boundary inside the registration's own critical
-    section (see :meth:`SessionAllocationService.allocation_predecessor`), so a
-    caller consumes it AFTER ``get_or_create`` returns instead of reading the
-    mapping around its own call -- the read that a concurrent turn's
-    allocate-and-recycle can stale while the caller waits inside the allocation.
-    The ``previous_sid`` source for ``crew_log_emit.on_session_opened``.
+    Captured inside the registration's critical section (see
+    :meth:`SessionAllocationService.allocation_predecessor`); read it AFTER
+    ``get_or_create`` returns, because a read around the call can be staled by a
+    concurrent allocate-and-recycle. The ``previous_sid`` source for
+    ``crew_log_emit.on_session_opened``.
     """
     return self._allocation_boundary().allocation_predecessor(key)
 
@@ -506,12 +493,9 @@ def allocation_predecessor(self: SessionManager, key: str) -> str:
 def mapped_session_keys(self: SessionManager) -> frozenset[str]:
     """Every folded key this gateway holds a session ID for, in memory.
 
-    The in-memory answer, which is the only correct one for a caller that
-    goes on to WRITE through this manager: a detached ``SessionMap`` reads
-    the file, and the file lags this map by whatever it has not flushed, so
-    an enumeration taken there can omit a key whose pointer already exists.
-    Pair it with :meth:`session_keys` to cover a key whose allocation is
-    still in flight and has not reached the map yet.
+    A caller that then WRITES through this manager needs this, not a detached
+    ``SessionMap``: the file lags the map by whatever is unflushed. Pair it with
+    :meth:`session_keys` to cover an allocation still in flight.
     """
     return self._allocation_boundary().mapped_session_keys()
 
@@ -624,13 +608,10 @@ def turn_token(
 def turn_prompt_in_flight(self: SessionManager, key: str) -> bool:
     """True while a turn holds ``key``'s permit AND its prompt is in flight on the provider.
 
-    The window from a claim to the prompt's write (a completion's injection
-    still building its message, a retry before it dispatches) is held but has no
-    prompt in flight, so no tool call can belong to it. Read through the
-    provider's own ``has_active_turn`` (an ACP session's handle: its turn began
-    and has neither ended nor been cancelled). A provider that cannot report it
-    answers False, the base default, so the holder is not named: a completion
-    is then delivered, a duplicate at worst.
+    Between a claim and the prompt's write the permit is held but no tool call can
+    belong to the turn. Read through the provider's ``has_active_turn``; a provider
+    that cannot report it answers False, so a completion is delivered (a duplicate
+    at worst).
     """
     session = self._sessions.get(self._fold_key(key))
     if session is None or not session.semaphore.locked():
