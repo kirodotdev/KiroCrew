@@ -23,6 +23,7 @@ import {
 } from '../api'
 import { approvalRoute } from './approvalActions'
 import { noteStaleOwnerResponse } from '../../../api/staleOwnerSignal'
+import { SilenceWatchdog } from '../../../utils/socketSilenceWatchdog'
 import { purposeFromToolArgs } from '../../../utils/toolPurpose'
 import { readSendReceipt } from '../../../utils/sendDelivery'
 import type { NotificationPayload, PetMood, PetState } from '../src/shared/types'
@@ -544,6 +545,39 @@ let socket: WebSocket | null = null
 let reconnectDelay = 1000
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null
 
+/**
+ * Replace a socket that stays OPEN but has stopped delivering frames (a phone
+ * off-network, an OS-frozen tab): the same silence check the dashboard socket
+ * uses, through the one shared helper so they cannot drift. `isOpen` reads this
+ * module's live socket; `onDead` closes it and reopens at once (bypassing the
+ * backoff, exactly as the onclose path's first retry would), so the fresh
+ * socket's onopen re-seeds every push.
+ */
+const silenceWatchdog = new SilenceWatchdog({
+  isOpen: () => socket?.readyState === WebSocket.OPEN,
+  onDead: () => forceSilentReconnect(),
+})
+let silenceStarted = false
+
+/** Close a silent-but-open socket and reconnect now. */
+function forceSilentReconnect(): void {
+  const dead = socket
+  socket = null
+  if (reconnectTimer !== null) {
+    clearTimeout(reconnectTimer)
+    reconnectTimer = null
+  }
+  reconnectDelay = 1000
+  setOnline(false)
+  // Drop the handler so its onclose cannot schedule a second, backed-off
+  // reconnect that would race the immediate one below.
+  if (dead) {
+    dead.onclose = null
+    try { dead.close() } catch { /* already closing */ }
+  }
+  connect()
+}
+
 /** Fire status subscribers only on an actual transition. */
 function setOnline(next: boolean): void {
   if (wsOnline === next) return
@@ -560,9 +594,16 @@ function connect(): void {
   ws.onopen = () => {
     reconnectDelay = 1000
     setOnline(true)
+    silenceWatchdog.markOpen()
+    // Arm once, on the first connect; it survives every later reconnect.
+    if (!silenceStarted) {
+      silenceStarted = true
+      silenceWatchdog.start()
+    }
   }
 
   ws.onmessage = (ev) => {
+    silenceWatchdog.markFrame()
     let msg: { type?: string; data?: Record<string, unknown> }
     try {
       msg = JSON.parse(ev.data as string)
