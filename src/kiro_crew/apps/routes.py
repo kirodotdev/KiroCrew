@@ -374,10 +374,14 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.apps.routes_static import (  # noqa: F401
         _ALLOWED_EXTENSIONS,
         _CONTENT_TYPES,
+        _GZIP_EXTENSIONS,
+        _GZIP_LEVEL,
+        _GZIP_MIN_BYTES,
         _UI_MAX_BYTES,
         _UI_STREAM_CHUNK,
         _UI_STREAM_SEMAPHORE,
         _UI_STREAM_TIMEOUT_DEFAULT,
+        _accepts_gzip,
         _open_ui_file,
         _ui_stream_timeout_secs,
     )
