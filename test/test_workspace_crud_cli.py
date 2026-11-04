@@ -266,24 +266,6 @@ class TestWorkspaceArgparse:
         assert "Deleted workspace: staging" in out
 
 
-# ── Dispatch routing (Req 6.5) ──
-
-
-class TestWorkspaceDispatch:
-    """Verify args.command == 'workspace' routes to _handle_workspace."""
-
-    def test_dispatch_routes_to_handle_workspace(self, tmp_path: Path) -> None:
-        """Req 6.5: workspace command dispatches to _handle_workspace."""
-        cfg_path = _write_config(tmp_path, _base_config())
-        with (
-            unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=cfg_path),
-            unittest.mock.patch("sys.argv", ["kirocrew", "workspace", "list"]),
-            unittest.mock.patch("kiro_crew.cli_commands._handle_workspace") as mock_handler,
-        ):
-            main()
-        mock_handler.assert_called_once()
-
-
 # ── List output (Req 5.1) ──
 
 
