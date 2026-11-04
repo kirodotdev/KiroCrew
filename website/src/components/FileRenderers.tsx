@@ -1,6 +1,6 @@
 import { memo, useState, useMemo, useCallback, useEffect, useId, useRef, type ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { ChevronLeft, ChevronRight, Download, ExternalLink, FileText, Film, Moon, Music, Sparkles, Sun } from 'lucide-react'
+import { ChevronDown, ChevronLeft, ChevronRight, Download, ExternalLink, FileText, Film, Moon, Music, Sparkles, Sun } from 'lucide-react'
 import DOMPurify from 'dompurify'
 
 import { i18nT } from '../i18n/t'
@@ -308,8 +308,10 @@ function JsonNode({ value, depth }: { value: unknown; depth: number }) {
 
   return (
     <span>
-      <button className="text-muted hover:text-text cursor-pointer bg-transparent border-none font-mono text-sm" onClick={() => setOpen(!open)}>
-        {open ? '▼' : '▶'} {bracket[0]}{!open && <span className="text-muted"> {i18nT('components.fileRenderers.items_count', { count: entries.length })} {bracket[1]}</span>}
+      <button className="text-muted hover:text-text cursor-pointer bg-transparent border-none font-mono text-sm" aria-expanded={open} onClick={() => setOpen(!open)}>
+        {open
+          ? <ChevronDown size={12} className="lucide-inline" aria-hidden="true" />
+          : <ChevronRight size={12} className="lucide-inline" aria-hidden="true" />} {bracket[0]}{!open && <span className="text-muted"> {i18nT('components.fileRenderers.items_count', { count: entries.length })} {bracket[1]}</span>}
       </button>
       {open && (
         <div style={{ paddingLeft: 16 }}>
