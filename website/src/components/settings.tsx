@@ -269,7 +269,7 @@ interface SettingsInputProps {
   onCompositionStart?: React.CompositionEventHandler<HTMLInputElement | HTMLTextAreaElement>
   onCompositionEnd?: React.CompositionEventHandler<HTMLInputElement | HTMLTextAreaElement>
   placeholder?: string
-  type?: 'text' | 'number'
+  type?: 'text' | 'number' | 'time'
   min?: number
   max?: number
   step?: number

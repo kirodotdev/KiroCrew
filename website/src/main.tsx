@@ -23,6 +23,7 @@ import { ProviderProvider } from './providers'
 import { ThemeProvider } from './hooks/useTheme'
 import { UIModeProvider } from './hooks/useUIMode'
 import ThemeExperienceLayer from './components/ThemeExperienceLayer'
+import ThemeScheduleDriver from './components/ThemeScheduleDriver'
 import { NavigationLeaveGuardProvider, NavigationBackGuard } from './components/NavigationLeaveGuard'
 import { RouteHistoryTracker } from './components/NavHistoryArrows'
 import { initRum } from './rum'
@@ -208,6 +209,7 @@ const appTree = (
             <ThemeProvider>
               <UIModeProvider>
                 <ThemeExperienceLayer />
+                <ThemeScheduleDriver />
                 <NavigationLeaveGuardProvider>
                   {/* The build base, plus `/popout/app` when this document is an
                       app pop-out window: the apps inside then see their own

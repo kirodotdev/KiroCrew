@@ -40,6 +40,7 @@ import { i18nT } from '../../i18n/t'
 import { useGatewayPlatform } from '../../hooks/useGatewayPlatform'
 import { ThemeDroppedRulesNotice } from './ThemeDroppedRulesNotice'
 import { ThemeExperienceSettings } from './ThemeExperienceSettings'
+import { ThemeScheduleSettings } from './ThemeScheduleSettings'
 import ErrorNotice from '../../components/ErrorNotice'
 import { useImeGuard } from '../../hooks/useImeGuard'
 import { useBranding } from '../../hooks/useBranding'
@@ -1029,6 +1030,7 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
               { value: 'dark', label: i18nT('pages.settings.displayPanel.theme_mode_dark'), icon: <Moon className="w-3.5 h-3.5" /> },
             ]}
             onChange={v => setTheme(v as 'system' | 'light' | 'dark')} />
+          <ThemeScheduleSettings />
 
           {allThemes.filter(t => t.custom).length > 0 && (
             <div className="flex flex-col gap-1.5 pt-2">

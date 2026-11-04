@@ -364,6 +364,7 @@ dashboard load into header-only round trips.
 | Render cache | `website/src/hooks/themeRenderCache.ts` | Persists the active pack's detail under `localStorage["mc-theme-data"]` and reads it back synchronously at `ThemeProvider` mount so the first paint is themed |
 | Experience layer | `website/src/components/ThemeExperienceLayer.tsx` | Mounts sandboxed overlay/topbar iframes + audio; enforces the postMessage allowlist |
 | Settings UI | `website/src/pages/settings/DisplayPanel.tsx` | Single Theme dropdown + install-from-GitHub/local folder/uploaded `.zip` + remove + "Applying…" status indicator; the Experience section listing the active Level-2 pack's parts (Sounds, Overlays, Persona) as toggles (`ThemeExperienceSettings.tsx`); the catalog-failure and unstyled-theme notices with Retry (see *Catalog failure* below) |
+| Theme schedule | `website/src/utils/themeSchedule.ts`, `website/src/hooks/useThemeSchedule.ts`, `website/src/components/ThemeScheduleDriver.tsx`, `website/src/pages/settings/ThemeScheduleSettings.tsx` | Switches the Mode between light and dark at sunrise/sunset or at fixed times (see *Scheduled light and dark* below) |
 | Utility bridge | `website/src/tailwind-theme.css` | Tailwind v4 `@theme` mapping each utility (`bg-accent`, `text-muted/40`, `rounded-md`, `shadow-sm`, `font-mono`) onto the runtime CSS variable of the same stem, plus the `dark:` variant keyed on `[data-theme="dark"]`. A pack changes what a utility renders by writing the variable; it never touches this file. |
 
 ### Boot sequence: themed first paint
@@ -398,6 +399,30 @@ late. The boot path therefore has two parts.
 The asset routes' validators (above) cover the third leg: once the detail is
 applied, the fonts and `overrides.css` it references revalidate as `304`s
 rather than re-downloading.
+
+### Scheduled light and dark
+
+Settings → Display → Theme carries a *Switch on a schedule* toggle under the Mode
+picker. Its method is either **sunrise and sunset** or **custom times** (a light
+start and a dark start, `HH:MM`). Both are read on the device clock: calendar days
+and clock times are built with the local `Date` constructor, so the schedule
+follows the device time zone, daylight-saving shifts included.
+
+- **Device-local.** The schedule lives in `localStorage["mc-theme-schedule"]`, not
+  in the workspace config, because it is bound to this device's clock, time zone
+  and location. It writes no gateway config path, so its rows carry a `settingId`.
+- **No network, no geolocation.** Sunrise and sunset come from the sunrise
+  equation (`sunTimes`) over a coarse latitude/longitude the user typed. Nothing
+  is fetched and the browser geolocation API is never called. With no location
+  the sun method falls back to the custom times. A day with no sunrise or sunset
+  (polar day or night) keeps one mode from midnight.
+- **The schedule never pins the mode.** `ThemeScheduleDriver` (mounted beside
+  `ThemeExperienceLayer` in `main.tsx`) applies the scheduled mode through the same
+  `setTheme` the Mode picker uses, once per boundary, and records that boundary in
+  `appliedAt` (`dueScheduledMode`). A mode picked by hand therefore holds until the
+  next scheduled switch. Editing when the schedule switches clears `appliedAt`, so
+  the new schedule applies at once. The driver re-checks at the next boundary, at
+  least hourly, and when the tab becomes visible.
 
 ### Catalog failure
 

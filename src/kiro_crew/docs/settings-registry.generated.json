@@ -1340,6 +1340,12 @@
       "hint": "The font the whole dashboard uses, including chat, the composer, and sidebar session and folder names. Pick one installed on the machine you view the dashboard from, or type any font name — a Nerd Font renders its glyphs and a programming font shows its ligatures."
     },
     {
+      "id": "display.dark-from",
+      "label": "Dark from",
+      "tab": "display",
+      "route": "/settings/display/theme?highlight=display.dark-from"
+    },
+    {
       "id": "display.default-for-new-sessions",
       "label": "Default for New Sessions",
       "tab": "display",
@@ -1441,6 +1447,24 @@
       "hint": "Language for the dashboard interface."
     },
     {
+      "id": "display.latitude",
+      "label": "Latitude",
+      "tab": "display",
+      "route": "/settings/display/theme?highlight=display.latitude"
+    },
+    {
+      "id": "display.light-from",
+      "label": "Light from",
+      "tab": "display",
+      "route": "/settings/display/theme?highlight=display.light-from"
+    },
+    {
+      "id": "display.longitude",
+      "label": "Longitude",
+      "tab": "display",
+      "route": "/settings/display/theme?highlight=display.longitude"
+    },
+    {
       "id": "display.mode",
       "label": "Mode",
       "tab": "display",
@@ -1476,6 +1500,12 @@
       "configKey": "dashboard.terminal.reuse_current"
     },
     {
+      "id": "display.schedule",
+      "label": "Schedule",
+      "tab": "display",
+      "route": "/settings/display/theme?highlight=display.schedule"
+    },
+    {
       "id": "display.show-unread-dot-on-session-cards",
       "label": "Show unread dot on session cards",
       "tab": "display",
@@ -1487,6 +1517,13 @@
       "label": "Sounds",
       "tab": "display",
       "route": "/settings/display/theme?highlight=display.sounds"
+    },
+    {
+      "id": "display.switch-on-a-schedule",
+      "label": "Switch on a schedule",
+      "tab": "display",
+      "route": "/settings/display/theme?highlight=display.switch-on-a-schedule",
+      "hint": "Switches between light and dark automatically. A mode you pick by hand stays until the next scheduled switch."
     },
     {
       "id": "display.theme",
