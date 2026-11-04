@@ -312,15 +312,6 @@ async def _spawn(self: AcpClient) -> None:
             await asyncio.to_thread(require_fork_governance, self._agent, self._work_dir)
         except ForkGovernanceUnresolved as exc:
             raise AcpError(str(exc)) from exc
-        # A harness that may read the spec file's own grants is refused on a
-        # crew-bound spec Crew does not own that the ceiling would narrow: Crew never
-        # rewrites such a file.
-        try:
-            await asyncio.to_thread(
-                require_shared_template_within_ceiling, self._agent, self.backend
-            )
-        except SharedTemplateOverCeiling as exc:
-            raise AcpError(str(exc)) from exc
         # The same cwd-first resolution makes a checkout that declares a MANAGED
         # agent name the spec that runs, whatever Kiro Crew installed under it.
         shadowed = await asyncio.to_thread(
@@ -358,16 +349,25 @@ async def _spawn(self: AcpClient) -> None:
             # start must find the launch agent's mode in availableModes even
             # with no prepared view (see NativeSkillProjection.frame).
             self._native_skill_projection.advertised_launch_name = self._agent
-        argv = [
-            kiro_bin,
-            KIRO_CLI_SUBCMD,
-            "--agent",
-            (
-                self._resolve_spawn_agent_argv()
-                if self._native_skill_projection is not None
-                else self._agent
-            ),
-        ]
+        launch_name = (
+            self._resolve_spawn_agent_argv()
+            if self._native_skill_projection is not None
+            else self._agent
+        )
+        # A harness that may read the spec file's own grants is refused on a
+        # crew-bound spec Crew does not own that the ceiling would narrow: Crew never
+        # rewrites such a file. Judged on the name kiro-cli is handed: a skill view is
+        # a Crew-owned copy with the ceiling applied, the authored name is the file.
+        try:
+            await asyncio.to_thread(
+                require_shared_template_within_ceiling,
+                self._agent,
+                self.backend,
+                launch_name=launch_name,
+            )
+        except SharedTemplateOverCeiling as exc:
+            raise AcpError(str(exc)) from exc
+        argv = [kiro_bin, KIRO_CLI_SUBCMD, "--agent", launch_name]
         spawn_label = f"{KIRO_CLI_BIN} {KIRO_CLI_SUBCMD}"
         stderr_label = KIRO_CLI_BIN
         plan = SpawnPlan(argv=argv, spawn_label=spawn_label, stderr_label=stderr_label)

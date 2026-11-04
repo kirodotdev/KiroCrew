@@ -16,7 +16,7 @@ Instance fields read: ``_acp_backend``, ``_agent``, ``_bound_workspace_fd``,
 ``_expect_mcp_reports``, ``_kiro_native_spec_lookup``, ``_launch_agent``,
 ``_launch_copy_spec``, ``_mcp_gateway_overlay``, ``_mcp_gateway_socket``, ``_member_context``,
 ``_native_launch_resources``, ``_native_launch_sources``, ``_native_launch_view_alias``,
-``_native_skill_projection``, ``_session_queues``, ``_tool_search_wire``, ``_wire_mode_id``,
+``_native_skill_projection``, ``_session_queues``, ``_start_launch_name``, ``_tool_search_wire``, ``_wire_mode_id``,
 ``_work_dir``.
 """
 
@@ -321,9 +321,36 @@ async def _refuse_over_ceiling_start(self: AcpRuntime, active_agent: str | None)
             agent_mod.require_shared_template_within_ceiling,
             active_agent,
             getattr(self, "_acp_backend", ""),
+            launch_name=self._start_launch_name(active_agent),
         )
     except agent_mod.SharedTemplateOverCeiling as exc:
         raise AcpRuntimeError(str(exc)) from exc
+
+
+def _start_launch_name(self: AcpRuntime, agent: str | None) -> str | None:
+    """The name kiro-cli runs *agent*'s session under on this runtime, if Crew knows it.
+
+    The spawn agent runs under the name the process was launched with: its launch
+    copy, or the view the spawn's projection gave it. Another agent is activated
+    through the current projection's view. A view is a Crew-owned copy the
+    over-ceiling check reads itself; with no view, or any doubt, this answers the
+    authored *agent*, whose claimants are checked instead (the fail-closed answer).
+    """
+    if not agent:
+        return agent
+    launch_copy = str(getattr(self, "_launch_agent", None) or "")
+    if agent == self._agent and launch_copy:
+        return launch_copy
+    attr = "_spawn_skill_projection" if agent == self._agent else "_native_skill_projection"
+    projection = getattr(self, attr, None)
+    if projection is None:
+        return agent
+    try:
+        return str(
+            projection.spawn_agent(agent) if agent == self._agent else projection.agent(agent)
+        )
+    except Exception:  # noqa: BLE001 -- an unresolved view checks the authored file
+        return agent
 
 
 async def _kas_custom_agents(

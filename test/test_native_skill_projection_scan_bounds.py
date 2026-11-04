@@ -1265,6 +1265,7 @@ async def test_set_mode_sends_the_fresh_alias_never_a_changed_spawn_one(
         _superseding_alias = runtime_module.AcpRuntime._superseding_alias
         _refuse_if_view_superseded = runtime_module.AcpRuntime._refuse_if_view_superseded
         _refuse_if_view_unverified = runtime_module.AcpRuntime._refuse_if_view_unverified
+        _refuse_over_ceiling_mode = runtime_module.AcpRuntime._refuse_over_ceiling_mode
         _note_unadopted_skill_projection = (
             runtime_module.AcpRuntime._note_unadopted_skill_projection
         )

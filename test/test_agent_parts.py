@@ -125,8 +125,8 @@ _BASE_IMPORTS = frozenset("""
     project_agent_name project_agent_names read_json_or redact redact_log replace_with_retry
     REQUIRED_KIRO_AGENT_FILES resolved_command_casing safe_context_call
     safe_read_file_bytes_nolink SecurityEvent sel service_agents shared_kiro_agents_writable
-    shutil skill_resources SKILL_URI_PREFIX spec_path_key stat sys tempfile threading time
-    timezone TYPE_CHECKING uuid worker_agent write_text_owner_only
+    shared_template_view shutil skill_resources SKILL_URI_PREFIX spec_path_key stat sys tempfile
+    threading time timezone TYPE_CHECKING uuid worker_agent write_text_owner_only
     """.split())
 
 #: The names the facade's composition glue imports.
