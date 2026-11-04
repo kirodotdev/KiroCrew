@@ -26,6 +26,7 @@ from kiro_crew.cron_service.model import (
     validate_alert_after_failures,
 )
 from kiro_crew.mcp_cron import _call_tool_inner, _call_tool_locally, _list_tools
+from kiro_crew.sel import SecurityEventLog
 from kiro_crew.slack import gateway as gw
 from kiro_crew.validation import MCP_CRON_SCHEMAS, ValidationError, validate_tool_args
 
@@ -365,19 +366,23 @@ async def test_an_uncounted_script_failure_still_alerts_on_the_default() -> None
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("fail", [_script_failure, _agent_failure])
-async def test_a_held_failure_is_audited(fail) -> None:
+async def test_a_held_failure_is_audited(fail, tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(SecurityEventLog, "_instance", None)
+    monkeypatch.setattr(SecurityEventLog, "_initialized", False)
+    audit = SecurityEventLog(base_dir=tmp_path, sync=True)
     orch = _orchestrator()
     job = _job(alert_after_failures=2)
-    audit = MagicMock()
     with patch.object(gw, "sel", lambda: audit):
         if fail is _script_failure:
             job.record_failure()
             await orch._alert_cron_failure(job, "boom")
         else:
             await orch._cron_single_failure(job, RuntimeError("boom"), "cron:j", False, True, False)
-    audit.log_tool_invocation.assert_called_once_with(
-        session_key=f"cron:{job.id}",
-        tool_name="cron_failure_alert_held",
-        outcome="held",
-        downstream_service="none",
-    )
+    log_path = tmp_path / "security_events.jsonl"
+    rows = [json.loads(line) for line in log_path.read_text().splitlines() if line.strip()]
+    held = [
+        (r["caller_identity"], r["outcome"], r["downstream_service"])
+        for r in rows
+        if r.get("operation") == "cron_failure_alert_held"
+    ]
+    assert held == [(f"cron:{job.id}", "held", "none")]
