@@ -279,17 +279,11 @@ def _model_context_policy(path: Path) -> _ContextPolicy:
         )
         return _DECODER_CONTEXT_POLICY
 
-    # Every file's context and logical batch are clamped to the trained
-    # position count its GGUF declares. A model with learned absolute positions
-    # indexes a position table with n_ctx_train rows -- encoder families, but
-    # causal gpt2 and starcoder as well -- and llama.cpp aborts the process
-    # (`GGML_ASSERT(i01 >= 0 && i01 < ne01)` in ggml's get_rows) when a token
-    # sits past its end, whatever the model's causality. With n_batch equal to
-    # that count, the vendored binding's create_embedding() -> embed(truncate=True)
-    # keeps the first n_batch tokens of a longer input instead (pinned by
-    # test_vendored_embed_truncates_to_the_logical_batch_by_default); _load_model
-    # states that rule once per model. A file trained for _N_CTX positions or
-    # more (the bundled Qwen model declares 32,768) keeps the ceiling.
+    # Clamp context and logical batch to the GGUF's trained position count: with learned
+    # absolute positions (encoders, also gpt2/starcoder) a token past n_ctx_train aborts
+    # llama.cpp (`GGML_ASSERT(i01 >= 0 && i01 < ne01)` in get_rows). With n_batch at that
+    # count, embed(truncate=True) keeps the first n_batch tokens instead (pinned by
+    # test_vendored_embed_truncates_to_the_logical_batch_by_default).
     window = _N_CTX
     if metadata.context_length is not None:
         window = min(_N_CTX, metadata.context_length)

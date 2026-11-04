@@ -32,11 +32,9 @@ from typing import TYPE_CHECKING
 
 from kiro_crew import _facade_mirror
 
-# This module is the facade of the embedding runtime's owners, and every name is reached
-# through it as ``kiro_crew.embeddings.<name>``: a read is served by the owner that binds
-# the name, and a write -- ``monkeypatch.setattr``, ``mock.patch`` -- reaches every module
-# holding it (:mod:`kiro_crew._facade_mirror`). Owners never import this module. New work
-# goes to the owner of its responsibility:
+# Facade over the embedding owners: a read is served by the owner that binds the name, a
+# write (``monkeypatch.setattr``, ``mock.patch``) reaches every module holding it
+# (:mod:`kiro_crew._facade_mirror`). Owners never import this module. New work goes to:
 #
 #   ``embeddings_settings`` -- Constants, scheduling priorities, the ``memory`` config knobs.
 #   ``embeddings_native`` -- Loading the vendored llama.cpp runtime on this platform.
