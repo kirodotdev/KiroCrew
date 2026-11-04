@@ -5672,6 +5672,7 @@
         "backup_others_on_drive": "Outras instalações que fazem backup neste drive: {{count}}",
         "backup_show_others": "Incluir arquivos de outras instalações",
         "backup_others_truncated": "Apenas as primeiras {{max}} outras instalações são mostradas.",
+"backup_archives_truncated": "Não foi possível listar alguns arquivos de {{kind}}. Os mais recentes podem estar faltando.",
         "backup_shared_note": "Um drive compartilhado por duas instalações não é memória compartilhada nem sessões compartilhadas. Cada backup é um arquivo separado de um momento, e uma restauração apenas baixa esse arquivo para uma pasta de preparação — os arquivos você mesmo substitui, com o gateway parado.",
         "backup_restore_foreign_confirm": "Este arquivo foi enviado por outra instalação ({{install}}). Restaurá-lo baixa os dados daquela instalação, não os desta instalação. Baixar mesmo assim?",
         "backup_restore_unverified_confirm": "Este arquivo está guardado na pasta própria desta instalação, mas esta instalação não tem registro de tê-lo enviado. Qualquer um que possa escrever no drive pode criar essa pasta, então talvez ele não seja desta instalação. Baixar mesmo assim?",

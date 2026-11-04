@@ -875,6 +875,21 @@ export function BackupSection({ account }: { account: string }) {
                   {i18nT('apps.awsControl.console.backup_others_truncated', { max: data.remote.max })}
                 </p>
               )}
+              {/* A kind whose listing hit the backend page cap: the keys it could
+                  not read are its NEWEST archives, so the list must not read as
+                  complete. Only kinds this page knows how to name are shown. */}
+              {BACKUP_KINDS.filter((kind) => {
+                const capped = data.remote?.archives_truncated
+                return Array.isArray(capped) && capped.includes(kind)
+              }).map((kind) => (
+                <p
+                  key={kind}
+                  className="border-b border-border px-3 py-2 text-[12px] text-warn"
+                  data-testid="backup-archives-truncated"
+                >
+                  {i18nT('apps.awsControl.console.backup_archives_truncated', { kind: i18nT(BACKUP_KIND_LABEL_KEY[kind]) })}
+                </p>
+              ))}
               <div className="divide-y divide-border">
                 {/* A fresh install is the case this whole feature exists for -- its
                     predecessor's archives are the only copy left -- and it is

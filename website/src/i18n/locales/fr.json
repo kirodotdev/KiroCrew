@@ -5672,6 +5672,7 @@
         "backup_others_on_drive": "Autres installations qui sauvegardent sur ce lecteur : {{count}}",
         "backup_show_others": "Inclure les archives d’autres installations",
         "backup_others_truncated": "Seules les {{max}} premières autres installations sont affichées.",
+"backup_archives_truncated": "Certaines archives de type {{kind}} n’ont pas pu être listées. Les plus récentes peuvent manquer ici.",
         "backup_shared_note": "Un lecteur partagé par deux installations n’est pas une mémoire partagée ni des sessions partagées. Chaque sauvegarde est une archive distincte d'un instant, et une restauration ne fait que télécharger ce fichier dans un dossier de transit — c'est toi qui remplaces les fichiers, le gateway arrêté.",
         "backup_restore_foreign_confirm": "Cette archive a été envoyée par une autre installation ({{install}}). La restaurer télécharge les données de cette autre installation, pas celles de cette installation-ci. La télécharger quand même ?",
         "backup_restore_unverified_confirm": "Cette archive est stockée dans le dossier propre à cette installation, mais cette installation n’a aucune trace de l’avoir envoyée. Tout ce qui peut écrire sur le lecteur peut créer ce dossier, elle ne provient donc peut-être pas de cette installation. La télécharger quand même ?",

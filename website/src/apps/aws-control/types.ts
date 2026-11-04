@@ -463,6 +463,10 @@ export interface RemoteBackup {
   others: number
   truncated: boolean
   max: number
+  /** Kinds whose listing stopped at the backend page cap with keys left unread.
+   *  Archive names sort oldest first, so the unread ones are the newest. Absent
+   *  from a backend older than the cap, which reads as none. */
+  archives_truncated?: string[]
 }
 
 /**
