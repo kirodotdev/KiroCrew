@@ -1,14 +1,8 @@
-"""Auto-pause must survive a daemon restart (round-2 bugfix).
+"""Auto-pause must survive a daemon restart.
 
-A script/command cron auto-pauses after N consecutive failures. Before the fix
-this only set `job.enabled = False` in memory: `_merge_job_result` refused to
-persist `enabled` for recurring jobs (user_paused was the sole authority), and
-`_load()` derived `enabled = not user_paused`. So an auto-paused recurring job
-came back **enabled** on the next reload and kept firing its failing run forever.
-
-The fix adds an execution-owned `auto_paused` flag, persists it for every job,
-and folds it into the effective-enabled derivation on load. These tests pin the
-whole round-trip.
+`_merge_job_result` does not persist `enabled` for recurring jobs, so the
+execution-owned `auto_paused` flag is persisted and folded into the effective
+`enabled` on `_load()`. These tests pin the round-trip.
 """
 
 from __future__ import annotations
@@ -179,11 +173,8 @@ class TestAutoPausePersistence:
     ) -> None:
         """A run cancelled mid-callback owes no retry telemetry.
 
-        ``_execute`` stamps both retry fields only after the callback returns.
-        A cancellation lands inside the callback, so the stamp is never reached
-        and the merge copies the values the last COMPLETED run left -- the only
-        number the Schedule page can honestly show. The spent attempt counter
-        is still cleared, or the next run would start with a smaller budget.
+        ``_execute`` stamps the retry fields after the callback, so the last completed
+        run's values stay. The attempt counter is still cleared for the next run's budget.
         """
         job_id = self._store_a_completed_run_with_three_retries(tmp_path)
         svc = CronService(base_dir=tmp_path)
@@ -227,14 +218,10 @@ class TestAutoPausePersistence:
         assert svc2.get_job(job_id).last_retry_count == 0
 
     def test_a_retried_run_lands_on_disk_bound_to_its_own_last_run_ts(self, tmp_path: Path) -> None:
-        """End to end through ``_run_job_isolated``: the count a retried run took
-        reaches disk stamped with THAT run's ``last_run_ts``.
+        """A retried run's count reaches disk stamped with that run's ``last_run_ts``.
 
-        The Schedule page renders the note only when ``last_retry_run_ts ==
-        last_run_ts``. Stamping the pair from inside the callback bound the count
-        to the PREVIOUS run's ``last_run_ts`` (``_execute`` writes this run's only
-        after the callback returns) so the two never matched and the note never
-        rendered. Pinned here on the reloaded record, not the in-memory job.
+        The Schedule page shows the note only when ``last_retry_run_ts == last_run_ts``,
+        and ``_execute`` writes ``last_run_ts`` after the callback. Read from the reloaded record.
         """
         svc = CronService(base_dir=tmp_path)
         svc._load()
@@ -342,12 +329,8 @@ class TestAutoPausePersistence:
 class TestExecuteSuccessResetsCounter:
     """CronService._execute must reset the auto-pause budget on success.
 
-    Before the fix, record_failure() fired on the error/timeout paths but
-    record_success() was only ever called from the gateway callback's own
-    branches — and callback shapes that return without touching bookkeeping
-    (e.g. a script cron's Skip outcome) left the counter monotonic. A healthy
-    cron accumulating _AUTO_PAUSE_THRESHOLD transient failures over its
-    lifetime, successes in between notwithstanding, silently auto-paused.
+    Callbacks that skip bookkeeping (e.g. a script cron's Skip) would otherwise leave
+    the counter rising, so spaced transient failures would auto-pause a healthy cron.
     """
 
     def _job(self) -> CronJob:

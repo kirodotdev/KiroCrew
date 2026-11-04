@@ -19,20 +19,9 @@ from kiro_crew.cli_commands import _cron_preview
 def _bytecode_stays_in_tmp_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     """Keep the bytecode of the script each test imports inside ``tmp_path``.
 
-    ``_cron_preview`` loads the script with ``spec.loader.exec_module``, and CPython
-    writes its ``.pyc`` under ``sys.pycache_prefix`` -- the suite-wide redirect the
-    rootdir conftest installs, ``<cache root>/kirocrew/pycache`` -- mirrored under the
-    script's ABSOLUTE path. That mirror is keyed on ``tmp_path``, a directory that is
-    new on every run, so each run minted a fresh
-    ``<cache>/<basetemp>/<test>0/s.cpython-312.pyc`` that no later run ever reads and
-    nothing ever reclaims: the host that found this carried 14,800 such files (5.3 GB)
-    under its per-user cache. The prefix is the seam the import system reads, so
-    pointing it at ``tmp_path`` for the test's duration puts the bytecode beside its
-    source, where pytest's own ``tmp_path`` retention removes it.
-
-    The teardown assertion is what turns a regression into a red test rather than a
-    directory on someone's disk: it checks the pyc for the script the test wrote
-    both RESOLVES under ``tmp_path`` and was actually WRITTEN there.
+    The conftest's suite-wide ``sys.pycache_prefix`` mirrors the script's absolute path,
+    which is a new ``tmp_path`` each run, so a ``.pyc`` would pile up per run and never be
+    reclaimed. The teardown checks the pyc was written under ``tmp_path``.
     """
     monkeypatch.setattr(sys, "pycache_prefix", str(tmp_path / "pycache"))
     yield
