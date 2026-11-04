@@ -1,71 +1,44 @@
-"""Shared thread-pool executors for blocking maintenance work.
+"""Shared thread-pool executors for blocking work.
 
-The asyncio event loop's *default* executor is also used by the loop itself
-for ``getaddrinfo`` (DNS) and by every ``run_in_executor(None, ...)`` caller.
-When long-running maintenance work (orphan-PID sweeps, cron subprocesses,
-agent-overlay rewrites) piles onto that default pool it can saturate it and
-starve the loop's own DNS resolution -- which is exactly the failure mode that
-turns a brief network blip into a multi-second event-loop stall.
+The event loop's *default* executor also serves the loop's own ``getaddrinfo``
+(DNS) and every ``run_in_executor(None, ...)`` caller.  Long-running work piled
+onto it starves DNS and turns a brief network blip into a multi-second loop
+stall.  This module gives that work separate, bounded pools, and names the
+default executor's threads ``mc-default`` so profilers like py-spy can
+attribute blocking work to this gateway.
 
-This module provides *separate*, bounded pools for that blocking work and also
-names the loop's default executor's threads ``mc-default`` (Python's default
-names them anonymously), so profilers like py-spy can attribute blocking work
-to this gateway.
-
-Three pools, deliberately split:
+A started ``run_in_executor`` future cannot be cancelled, so each pool's size
+caps how many wedged calls it can hold, and excess work queues among its own
+kind.  The main pools:
 
 * :func:`maintenance_executor` -- the fast periodic sweeps (orphaned MCP/PID
-  cleanup) and agent-overlay rewrites.  These are short and MUST stay
-  responsive, because the orphan sweeps are what reap the leaked kiro-cli/MCP
-  children whose mass death is the documented root cause of the loop wedge.
-* :func:`subprocess_executor` -- per-process teardown work that can block on a
-  *wedged kernel resource*: ``os.close`` on a PTY master fd whose far-end shell
-  is in uninterruptible sleep, and the ``ps``/``pgrep`` spawns + ``os.kill``
-  sweep in :mod:`kiro_crew.acp.client`.  These can hang indefinitely, so they
-  get their OWN pool: a storm of wedged teardowns can occupy every worker here
-  WITHOUT starving the :func:`maintenance_executor` orphan sweep that is the
-  recovery action for the wedge (the bug the wedge fix would otherwise create
-  by coupling the recovery mechanism to the same pool as the work that wedges).
-* :func:`cron_executor` -- user cron command/script execution, which can run
-  for minutes (``job.timeout`` defaults to 300s) and, because the scheduler
-  dispatches every due job concurrently, can have several jobs in flight at
-  once.  Keeping cron on its OWN pool means a burst of long-running cron jobs
-  can never occupy all the maintenance threads and starve the sweeps.
-* :func:`discovery_executor` -- browser-triggerable, read-only filesystem
-  discovery for dashboard list endpoints (``GET /api/skills``,
-  ``/api/agents/installed``, ``/api/prompts``): ``os.walk`` of skill/agent/SOP
-  trees, per-file frontmatter reads, edition skill-root globs.  A large catalog
-  one such scan take seconds, and a ``run_in_executor`` future cannot be
-  cancelled once started, so N concurrent dashboard tabs would each pin a
-  worker for the full scan.  This gets its OWN pool so those user-triggerable
-  scans can never occupy the :func:`maintenance_executor` workers the orphan
-  sweeps need to recover from a wedge.
-* :func:`static_asset_executor` -- the React build's files (open, chunked
-  reads, close).  Its own pool so a default executor that other work has
-  filled cannot stop the dashboard's scripts from loading.
+  cleanup) and agent-overlay rewrites.  These MUST stay responsive: the orphan
+  sweeps reap the leaked kiro-cli/MCP children whose mass death wedges the
+  loop, so they are the recovery action every other pool is kept away from.
+* :func:`subprocess_executor` -- teardown that can block on a wedged kernel
+  resource: ``os.close`` on a PTY controller fd whose shell is in uninterruptible
+  sleep, and the ``ps``/``pgrep`` spawns + ``os.kill`` sweep in
+  :mod:`kiro_crew.acp.client`.  Its own pool so a storm of wedged teardowns
+  cannot starve the orphan sweep that recovers from the wedge.
+* :func:`cron_executor` -- user cron commands and scripts, which run for
+  minutes (``job.timeout`` defaults to 300s) with several in flight at once.
+* :func:`discovery_executor` -- browser-triggerable read-only filesystem scans
+  for dashboard list endpoints (``GET /api/skills``, ``/api/agents/installed``,
+  ``/api/prompts``): seconds each on a large catalog, one per open tab.
+* :func:`static_asset_executor` -- the React build's files, so a full default
+  executor cannot stop the dashboard's scripts from loading.
 * :func:`image_executor` -- Pillow decode/resize/encode for the MCP gateway's
-  tool-result image budget (:mod:`kiro_crew.mcp_gateway.image_budget`).  Paced
-  by whatever a brokered MCP server returns, and a single oversized raster
-  costs a full decode plus up to seven resize+encode passes -- seconds of CPU.
-  Same rationale as :func:`discovery_executor`: externally-paced, seconds-long
-  work gets its OWN small pool so a burst of screenshots queues among ITSELF
-  and can never occupy the :func:`maintenance_executor` workers the orphan
-  sweeps need to recover from a wedge.
-* :func:`stt_executor` -- in-process speech-to-text inference
-  (:mod:`kiro_crew.stt.engine`, which loads the model here and decodes on it).
-  A warm decode is tens of milliseconds, but a model load is seconds and the
-  first ever load also compiles a GPU pipeline.  It cannot share
-  :func:`subprocess_executor`: a ``run_in_executor`` future cannot be
-  cancelled, so a wedged model load would hold one of the eight PTY-teardown
-  workers indefinitely -- and those exist precisely so a teardown storm has
-  somewhere to go.  A caller that gives up on a timeout does NOT free the
-  thread, which is the whole reason this work needs a pool it can only starve
-  for itself.
+  tool-result image budget (:mod:`kiro_crew.mcp_gateway.image_budget`):
+  seconds of CPU per oversized raster, paced by what a brokered server returns.
+* :func:`stt_executor` -- in-process speech-to-text
+  (:mod:`kiro_crew.stt.engine`).  A model load takes seconds (the first also
+  compiles a GPU pipeline) and a caller that times out does not free the
+  thread, so a wedged load may only starve other STT work, never the
+  PTY-teardown workers of :func:`subprocess_executor`.
 
-Long-term direction: this blocking work should move into a dedicated
-supervised process (the VS Code extension-host model), so a wedge there cannot
-touch the dashboard event loop at all.  These bounded pools are the in-process
-containment until that process split lands.
+Long-term, this work should move into a dedicated supervised process (the
+VS Code extension-host model), so a wedge there cannot touch the dashboard
+event loop; these bounded pools are the in-process containment until then.
 """
 
 from __future__ import annotations
@@ -121,65 +94,44 @@ __all__ = [
     "shutdown_maintenance_executor",
 ]
 
-# ── Default executor naming ──
-# asyncio.to_thread and run_in_executor(None, ...) route onto the loop's default
-# executor.  The loop itself uses that same pool for getaddrinfo (DNS).  Python
-# caps it at min(32, cpu_count + 4) and names threads anonymously.  This module
-# keeps that cap but names threads ``mc-default`` so profilers like py-spy can
-# attribute blocking work to this gateway.
-
-# Bounded so a burst of maintenance work cannot spawn unbounded threads.  Four
-# is enough for the periodic sweeps + agent-overlay rewrites while keeping them
-# isolated from the default executor's own bounded pool.
+# Four covers the periodic sweeps + agent-overlay rewrites; bounded so a burst
+# of maintenance work cannot spawn unbounded threads.
 _MAX_MAINT_WORKERS = 4
 
-# Subprocess/PTY teardown can block on a wedged kernel resource and a single
-# mass shutdown (close_all over the warm pool + active sessions) enqueues
-# several tasks per client.  Size this above the maintenance pool so a burst of
-# wedged teardowns queues among ITSELF rather than head-of-line-blocking the
-# orphan sweep on the separate maintenance pool.  Still bounded: a started
-# run_in_executor future cannot be cancelled, so this caps how many wedged
-# closes/spawns we hold threads for; excess work queues here.
+# One mass shutdown (close_all over the warm pool + active sessions) enqueues
+# several teardowns per client, each of which can block on a wedged kernel
+# resource.  Sized above the maintenance pool so wedged teardowns queue among
+# themselves; bounded because each wedged close/spawn pins its thread.
 _MAX_SUBPROCESS_WORKERS = 8
 
 # Windows-only: the thread that owns a ``kiro-cli`` readiness spawn's PRIVATE
-# event loop, so ``CreateProcess`` -- which CPython performs synchronously
-# inside the subprocess transport's constructor, before that transport's first
-# await -- runs there instead of on the gateway loop.  Deliberately NOT
-# :func:`subprocess_executor`: the offloaded loop awaits the Windows descendant
-# scan, which submits back into that pool, so sharing one pool would let
-# concurrent spawns deadlock waiting on workers their own scans need.  Two is
-# enough -- ``_probe_lock`` serializes the readiness probes, leaving the much
-# rarer update spawn as the only concurrent caller -- and a bound matters here
-# because a started run_in_executor future cannot be cancelled: a spawn wedged
-# behind an endpoint-protection filter driver holds its worker for the caller's
-# full timeout (10s for a probe, 120s for an update), so excess work queues
-# here rather than occupying threads the rest of the gateway shares.
+# event loop, so ``CreateProcess`` -- which CPython runs synchronously inside the
+# subprocess transport's constructor -- happens there instead of on the gateway
+# loop.  NOT :func:`subprocess_executor`: the offloaded loop awaits the Windows
+# descendant scan, which submits into that pool, so sharing it would let
+# concurrent spawns deadlock on workers their own scans need.  Two is enough
+# because ``_probe_lock`` serializes the readiness probes, leaving the rarer
+# update spawn as the only concurrent caller.  A spawn wedged behind an
+# endpoint-protection filter driver holds its worker for the caller's full
+# timeout (10s for a probe, 120s for an update).
 _MAX_KIRO_SPAWN_WORKERS = 2
 
-# Cron jobs can be long (default 300s timeout) and several can be due in the
-# same tick (the scheduler fires each as an independent task).  Give them their
-# own bounded pool so they queue among THEMSELVES rather than evicting the fast
-# maintenance sweeps.  A run_in_executor future cannot be cancelled once its
-# thread starts, so this also caps how many concurrent cron subprocesses we hold
-# threads for; excess jobs queue here instead of starving anything else.
+# Cron jobs can run 300s (the default timeout) and several can be due in the
+# same tick, so they queue among themselves here instead of evicting the
+# maintenance sweeps.
 _MAX_CRON_WORKERS = 4
 
-# How long a cron call may sit in the pool's queue before we give up and report
-# it as never-started.  Deliberately much larger than a typical job.timeout:
-# waiting behind a busy worker and then running is CORRECT, so this exists only
-# to bound the pathological case (a wedged job holding a worker indefinitely)
-# so an entry cannot sit un-failed forever.  Reaching it means the pool was
-# starved for a quarter of an hour, which is a fleet problem, not a job defect
-# -- and the distinct CronQueueTimeout text is what makes that legible.
+# How long a cron call may sit in the queue before it is reported as
+# never-started.  Much larger than a typical job.timeout on purpose: waiting
+# behind a busy worker and then running is correct, so this only bounds a
+# wedged job holding a worker indefinitely.  Reaching it means the pool was
+# starved for a quarter of an hour, a fleet problem rather than a job defect,
+# which the distinct CronQueueTimeout text makes legible.
 _CRON_QUEUE_WAIT_SECS = 900
 
-# Dashboard discovery scans (skills/agents/SOP listing) are read-only but can
-# take seconds on a large catalog, and each is browser-triggerable so several
-# can be in flight at once (multiple tabs / pollers).  A started
-# run_in_executor future cannot be cancelled, so bound this at a handful of
-# workers: concurrent scans queue among THEMSELVES here rather than occupying
-# the maintenance pool's orphan-sweep workers.
+# Dashboard discovery scans can take seconds on a large catalog and several run
+# at once (multiple tabs / pollers), so they queue among themselves here rather
+# than occupying the orphan-sweep workers.
 _MAX_DISCOVERY_WORKERS = 4
 
 # The React build's files (``/assets``, ``/fonts``, the service worker, ...):
@@ -195,12 +147,9 @@ _MAX_STATIC_ASSET_WORKERS = 4
 # coroutines instead of growing ThreadPoolExecutor's unbounded work-item queue.
 _MAX_EMBED_WORKERS = 8
 
-# History consolidation and the embedding backfill are background memory work: a
-# consolidation pass can sit minutes on the memory database, and a backfill walks
-# the whole store. On the shared mc-embed pool five consolidations and a backfill
-# filled seven of its eight workers and left turn context (build_message) queued
-# behind them. They get this small pool of their own, so at worst they wait for
-# each other and mc-embed keeps its workers for interactive work.
+# History consolidation (minutes on the memory database) and the embedding
+# backfill (walks the whole store) get their own small pool, so a few of them
+# cannot fill mc-embed and queue turn context (build_message) behind them.
 # Consolidation is admitted at most this many at a time.
 _MAX_MEMORY_BACKGROUND_WORKERS = 2
 # The gateway's embedding backfill (hours, paced) and member repair loop hold a
@@ -218,61 +167,41 @@ _MEMORY_BACKGROUND_LOOP_THREADS = 2
 # queues among ITSELF, never evicting the maintenance sweeps.
 _MAX_GOVERNANCE_WORKERS = 4
 
-# Cron FIRE-TIME governance gates get their OWN pool, deliberately not the
-# governance one above.  The distinction is who paces the queue: that pool is
-# driven by REMOTE senders (one submit per inbound message across five
-# transports, plus the dashboard GETs), so a burst of inbound traffic puts an
-# unbounded FIFO backlog ahead of a cron gate.  A cron gate is awaited INSIDE
-# the job's already-armed wake deadline, so a backlog it did not cause is
-# charged to the job's own execution budget -- and a message job carries no
-# _pool_queue_allowance to cover it, so the wake deadline can expire before the
-# job ever dispatches.  Here the only thing a cron gate queues behind is
-# another cron gate, which is self-paced by the schedule.
+# Cron FIRE-TIME gates get their OWN pool, not the governance one above, because
+# that pool is paced by REMOTE senders (one submit per inbound message, plus the
+# dashboard GETs).  A cron gate is awaited INSIDE the job's armed wake deadline
+# and a message job carries no _pool_queue_allowance, so an inbound backlog
+# ahead of it could expire the deadline before the job dispatches.  Here a cron
+# gate queues only behind other cron gates, which the schedule paces.
 _MAX_CRON_GATE_WORKERS = 4
 
-# Ceiling on how long a fire-time gate may spend QUEUED before we call it
-# starvation.  Unlike _CRON_QUEUE_WAIT_SECS this is small and is additionally
-# capped against the job's own wake budget at the call site: for the EXECUTION
-# pool, waiting past the budget and then running is the correct outcome, but a
-# gate that outlives the wake deadline is never useful -- the deadline kills the
-# run regardless, and the caller then cannot tell starvation from an overrun.
-# So the gate's bound must fire FIRST, which is what makes the run legible as
-# "never started" and keeps a one-shot from being consumed by a run that never
-# dispatched.
+# Ceiling on how long a fire-time gate may spend QUEUED before it counts as
+# starvation; the call site also caps it against the job's wake budget.  Unlike
+# the execution pool, a gate that outlives the wake deadline is never useful:
+# the deadline kills the run anyway and the caller cannot tell starvation from
+# an overrun.  The gate's bound must fire FIRST, so the run reads as "never
+# started" and a one-shot is not consumed by a run that never dispatched.
 _CRON_GATE_WAIT_SECS = 30
 
-# The gate's bound must land STRICTLY below the wake deadline, and a bare floor
-# cannot do that: max(1.0, ...) returns 1.0 for a 1s wake budget, so the two
-# coincide and the OUTER deadline wins the race -- the one state in which
-# starvation is indistinguishable from an overrun, which is how an undispatched
-# one-shot gets consumed.  Removing the floor instead is the opposite error: the
-# gate would get 0.25s at a 2s budget and could time out on a HEALTHY pool,
-# converting a job that would have run into a never-started one.  Both failures
-# are silent and point opposite ways, so keep the floor for budgets that can
-# afford it and clamp it against a fraction of the budget, which is what makes
-# "strictly below" hold for every budget rather than for typical ones.
+# The gate's bound must land STRICTLY below the wake deadline.  A bare
+# max(1.0, ...) floor returns 1.0 for a 1s budget, so the outer deadline wins
+# the tie and an undispatched one-shot is consumed; no floor gives a 2s budget a
+# 0.25s gate that can time out on a healthy pool.  So the floor stays for budgets
+# that can afford it and is clamped to a fraction of the budget.
 _CRON_GATE_MIN_SECS = 1.0
 _CRON_GATE_HEADROOM = 0.75
 
 # How the gate's single budget is DIVIDED between waiting for a worker and
-# running.  It has to be divided rather than handed to both phases, because
-# :func:`run_in_cron_pool` treats its two bounds as independent budgets --
-# *timeout* is charged to EXECUTION alone -- so passing one value to both spends
-# it twice and lets the gate run for 2x it.  The budget is already
-# :func:`cron_gate_budget`, sized to land strictly below the wake deadline, so a
-# gate that outran it put the DEADLINE first and neither phase bound was ever
-# reached: nothing raised, the caller's retention handler never ran, and a
-# one-shot was consumed by a run that never dispatched.  The two shares
-# therefore sum to exactly 1.0 and no more.
+# running.  :func:`run_in_cron_pool` charges *timeout* to EXECUTION alone, so
+# handing one value to both phases spends it twice and lets the gate outrun
+# :func:`cron_gate_budget`: the wake deadline then fires first, nothing raises,
+# and the one-shot is consumed.  The two shares sum to exactly 1.0.
 #
-# Weighted toward EXECUTION deliberately.  Queueing is the cheap phase -- gates
-# queue only behind other gates, which the schedule paces, so a healthy claim
-# costs microseconds and the queue bound binds only under starvation.  Execution
-# is the useful work, and starving it is the OPPOSITE failure with an opposite
-# symptom: a claimed gate cut off near zero raises :class:`CronGateTimeout`, a
-# :class:`CronQueueTimeout` subclass, so the one-shot is RETAINED and never
-# fires.  A fixed share rather than "whatever the queue left over" is what makes
-# execution's slice a floor instead of a race.
+# Weighted toward EXECUTION: gates queue only behind other gates, so a healthy
+# claim costs microseconds and the queue bound binds only under starvation.  A
+# claimed gate cut off near zero raises :class:`CronGateTimeout`, so the
+# one-shot is retained and never fires; a fixed share keeps execution's slice a
+# floor instead of whatever the queue left over.
 _CRON_GATE_QUEUE_SHARE = 0.25
 
 # The tool-call security gate (``HookManager.on_tool_call``) awaited from a
@@ -312,16 +241,11 @@ _TOOL_GATE_QUEUE_WAIT_SECS = 15.0
 # maintenance sweeps or head-of-line blocking any other pool's work.
 _MAX_IMAGE_WORKERS = 2
 
-# In-process STT inference is the longest-running work in this module: minutes of
-# CPU on a meeting-length recording, and the first call for a model size can block
-# on a multi-GB weight download inside the library's constructor.  TWO workers,
-# deliberately small for a reason the other pools do not share -- each in-flight
-# call holds a fully quantised model in RAM (up to ~GBs for large-v3), so the
-# worker count is a MEMORY ceiling, not just a CPU one.  Two lets a queued
-# recording start while one finishes; more would let concurrent dictations OOM a
-# small host.  Sizing it here rather than reusing the 8-worker subprocess pool is
-# the point: a wedged model load cannot be cancelled, so it must only ever be able
-# to starve other STT work.
+# STT inference is the longest work here: minutes of CPU on a meeting-length
+# recording, and the first call for a model size can block on a multi-GB weight
+# download.  Each in-flight call holds a quantised model in RAM (GBs for
+# large-v3), so the worker count is a MEMORY ceiling: two lets a queued recording
+# start while one finishes, and more could OOM a small host.
 _MAX_STT_WORKERS = 2
 
 # Symlink resolution for the sensitive-path gates (``security._candidate_forms``).
@@ -460,9 +384,8 @@ def configure_default_executor() -> None:
     * Names threads ``mc-default`` so they appear labeled in profilers like
       py-spy, instead of the anonymous ``ThreadPoolExecutor-N_M``.
 
-    Does NOT make the documented "default executor free for the loop's own I/O"
-    invariant literally true -- 1700+ call sites still route onto it.  That
-    migration is tracked separately; this function names the pool until then.
+    It does NOT keep the default executor free for the loop's own I/O: most
+    blocking call sites still route onto it.
     """
     loop = asyncio.get_running_loop()
     pool = ThreadPoolExecutor(
@@ -785,16 +708,12 @@ def memory_preparation_executor() -> ThreadPoolExecutor:
     Threads are named ``mc-memprep``. The caller owns the pool and shuts it
     down once its one job has been submitted and awaited.
 
-    Memory preparation is the barrier that keeps chat admission closed after a
-    restart, and its work is short (about 1.5s on a large store). On the loop's
-    default executor that job waits behind every other boot task queued there
-    -- MCP probes, remote reconnects, app loading -- so admission stayed closed
-    for minutes of queueing. Its own thread starts it at once.
+    Memory preparation keeps chat admission closed after a restart and takes
+    about 1.5s on a large store; on the default executor it would queue behind
+    every boot task (MCP probes, remote reconnects, app loading) for minutes.
 
-    A fresh pool per pass rather than a process-wide singleton: a stopped
-    pass's worker cannot be cancelled and may still hold its thread, and a
-    shared single slot would queue the next gateway's pass behind it, which is
-    the same wait in a new place.
+    A fresh pool per pass because a stopped pass's worker cannot be cancelled:
+    a shared single slot would queue the next gateway's pass behind it.
     """
     return ThreadPoolExecutor(max_workers=1, thread_name_prefix="mc-memprep")
 
@@ -979,9 +898,8 @@ class CronQueueTimeout(asyncio.TimeoutError):
     """
 
     def __init__(self, waited: float) -> None:
-        # Sub-second waits get decimals: `:.0f` floored a 0.3s wait to "queued
-        # 0s", which reads as "did not wait at all" and blunts the very
-        # diagnostic this exception exists to carry.
+        # Short waits get decimals: `:.0f` would show a 0.3s wait as "queued 0s",
+        # which reads as "did not wait at all".
         shown = f"{waited:.2f}" if waited < 10 else f"{waited:.0f}"
         super().__init__(f"queued {shown}s, never ran")
         self.waited = waited
@@ -1038,8 +956,8 @@ async def run_in_cron_pool(
     line, reporting them as if the job itself had overrun.
 
     So wait for a worker to actually pick the call up FIRST, untimed by
-    *timeout*, and only then apply *timeout* to the execution.  A job delayed
-    by transient contention now runs instead of dying.
+    *timeout*, and only then apply *timeout* to the execution, so a job delayed
+    by transient contention runs instead of dying.
 
     The two phases fail differently, which is the other half of the point: a
     pool starved for the whole *queue_timeout* raises
@@ -1147,12 +1065,9 @@ def cron_gate_budget(wake_budget: float) -> float:
     A quarter of the budget leaves the remaining three quarters for the dispatch
     the gate is a precondition for.
 
-    The result is STRICTLY below *wake_budget* for every positive budget, which
-    the previous ``max(1.0, ...)`` floor did not achieve: at a 1s budget it
-    returned 1.0, so the gate and the wake deadline expired together and the
-    outer one won.  The floor is kept for budgets that can afford it -- dropping
-    it entirely would hand a 2s job a 0.5s gate and time out on a healthy pool --
-    and is clamped by :data:`_CRON_GATE_HEADROOM` so the ordering holds anyway.
+    The result is STRICTLY below *wake_budget* for every positive budget: the
+    :data:`_CRON_GATE_MIN_SECS` floor is clamped by :data:`_CRON_GATE_HEADROOM`,
+    so a 1s budget cannot get a gate that expires with the wake deadline.
     """
     if wake_budget <= 0:
         return 0.0
@@ -1207,15 +1122,10 @@ async def run_in_cron_gate_pool(func: Callable[..., _T], /, *args: Any, timeout:
             # type-identical to our own bound expiring.
             raise CronGateWorkTimeout(str(exc) or repr(exc)) from exc
         except TimeoutError as exc:
-            # The SAME wrapping, as a second clause, because that 3.11+ identity is
-            # a premise and not a given. Measured: on 3.10 -- which is in this
-            # repo's CI matrix -- asyncio.TimeoutError is a DISTINCT class from
-            # builtins.TimeoutError, so the clause above cannot see the plain
-            # TimeoutError that a store or socket read raises there (socket.timeout
-            # aliases it from 3.10 on), and the raw error escaped the gate
-            # unwrapped: no CronGateWorkTimeout, and the caller could not tell a
-            # failed dispatch DECISION from a bound expiring. On 3.11+ the two
-            # classes are one, so this clause is simply unreachable there.
+            # The SAME wrapping for 3.10 (in the CI matrix), where
+            # asyncio.TimeoutError is a DISTINCT class from builtins.TimeoutError,
+            # so the clause above misses the plain TimeoutError a store or socket
+            # read raises. Unreachable on 3.11+, where the two classes are one.
             #
             # A separate clause rather than `except (asyncio.TimeoutError,
             # TimeoutError)`: under --target-version py314 black rewrites
