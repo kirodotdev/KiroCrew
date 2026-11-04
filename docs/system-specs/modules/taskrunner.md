@@ -398,6 +398,7 @@ class Task:
     result: str = ""  # updated during streaming (partial results visible)
     verification: str = ""  # VerificationStatus value; "" until a verdict exists (see Test verification)
     resume_hint: str = ""  # "resume, do not restart" after a death that may have run the prompt
+    superseded: bool = False  # a revised plan replaced it; execute_plan never resets it
     requires_approval: bool = False
     force_approval: bool = False  # blocks even in YOLO mode
     depends_on: list[int] = field(default_factory=list)
@@ -447,6 +448,7 @@ class Project:
 - `_tasks` cleaned in `finally` block (no leaks)
 - `start_background()` and `execute_plan()` enforce `_MAX_CONCURRENT_TASKS` before changing run state, so rejected admission cannot leave a partially started run. With a task admission attached (below) the guard is skipped: the lane meters the steps, so an over-limit run queues instead of being refused.
 - Replanned steps also reset sessions after execution (no leaks in `_try_replan`)
+- Installing a revised plan marks every failed step (a parallel group can fail more than the one handed to `_try_replan`) and the original plan's steps that never started `superseded` (the latter also `PENDING` → `SKIPPED`); `execute_plan` never resets a superseded step, so a later resume runs only the revised plan. The failed step keeps `FAILED` and its error; `superseded` is persisted in `runs.json`
 
 ## Durable task queue (`taskq.adapters.runner`)
 
@@ -633,6 +635,8 @@ On gateway restart (`_load_runs`), a run left in an active state is settled so n
 | `cancelling` | `cancelled`; open tasks (`IN_PROGRESS`, `PENDING`, `REVIEWING`) become `CANCELLED` |
 
 A run recovered from `running`, `pausing` or `cancelling` also has `auto_approve` cleared and its auto-approve scope deactivated, so the user re-affirms trust on resume.
+
+A graceful gateway stop or restart ends active runs the same way a crash does. `_shutdown` calls `TaskRunner.begin_shutdown()` before it stops memory, the MCP broker or any session, because those stops break the step that is running; a set `shutdown_event` (the stop signal) counts the same from the moment it is set. From then on a run that is still `running` is not re-planned, a replan already under way that the stop cuts short does not fail it, and a failure or an exception the stop causes does not mark it `failed` or `completed`. A cancellation (`CancelledError`) is always a cancel, never read as the stop, because some cancel paths (Workflow Runs) cancel the driver without setting `cancelling` first. Its driver's `finally` saves its progress with the status still `running` and skips `_taskq_end_run` and `git_coord.finalize`, so the run row stays for the adoption sweep and the worktree stays on disk; the restart settles the run by the table above and resumes it from its checkpoint. A run the operator was pausing or cancelling (`pause()` and `cancel()` set the status before they cancel) still ends as before. A run whose driver already exited at the stop is listed in `_stop_frozen`; a later `pause()` or `cancel()` schedules `_settle_stopped_run` (held in `_stop_settles`, apart from `_tasks`, so a repeated cancel cannot cancel it), which writes the `paused` or `cancelled` outcome and ends the queue row as the driver's `finally` would have. A Workflow Runs cancel of a TaskRunner-driven run reaches it too: `WorkflowService.cancel` also calls `TaskRunner.cancel(task_id, exact=True)` when the registry accepts the cancel. `_admission_closed()` refuses new runs once `begin_shutdown()` has run.
 
 - Prevents zombie tasks that appear running but have no backing asyncio task
 - User can resume manually from dashboard
@@ -959,7 +963,7 @@ A task rooted in an existing git repository runs on an isolated branch via
 - **Revert on failure (git runs)**: `git reset --hard HEAD~1` when review fails, before retry.
 - **State summary**: `git log --oneline` + `git diff --stat` is injected when git coordination is active.
 - **Review diff**: the step's diff (`git_coord.get_step_diff`, capped at 8000 characters) feeds the independent review session; only a non-git run or a step whose commit failed uses the generic review prompt.
-- **Finalize**: an owned worktree is cleaned up when the run exits.
+- **Finalize**: an owned worktree is cleaned up when the run exits, except when a gateway stop cut the run short (§ Crash Recovery): that worktree is kept for the resume.
 - **Resume recovery**: a retry — and a restart of a run that already had a
   worktree — validates the saved worktree's path, repository,
   and branch before dispatching more steps. A lost worktree is recreated from

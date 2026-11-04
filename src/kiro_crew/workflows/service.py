@@ -1532,7 +1532,15 @@ class WorkflowService:
         return self.registry.list()
 
     async def cancel(self, run_id: str) -> bool:
-        return await self.registry.cancel(run_id)
+        cancelled = await self.registry.cancel(run_id)
+        handle = self.registry.get(run_id)
+        runner = self._task_runner
+        if cancelled and handle is not None and handle.driver == "taskrunner" and handle.task_id:
+            # The TaskRunner records the operator's cancel and settles a run the
+            # gateway stop froze, whose driver task has already finished.
+            if runner is not None and hasattr(runner, "cancel"):
+                runner.cancel(handle.task_id, exact=True)
+        return cancelled
 
     @admission_errors
     async def rerun_subtree(
