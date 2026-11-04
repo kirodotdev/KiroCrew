@@ -453,7 +453,9 @@ def test_full_cli_keeps_registry_scan_off_the_gateway_readiness_path() -> None:
     guard = cli_src.index('\n    if args.command != "gateway":\n')
     prime = cli_src.index("\n        prime_extension_config_keys()\n")
     first_load = cli_src.index("\n    _setup_cli_logging(args.command, args.verbose)\n")
-    gateway_loop = cli_src.index("\n            asyncio.run(_gateway(**gw_kwargs))\n")
+    gateway_loop = cli_src.index(
+        "\n            asyncio.run(_gateway(**gw_kwargs), loop_factory=gateway_loop_factory())\n"
+    )
     assert guard < prime < first_load < gateway_loop
 
 
