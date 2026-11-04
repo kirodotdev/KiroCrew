@@ -15618,6 +15618,7 @@
         "name": "नाम",
         "new_workflow": "नया वर्कफ़्लो",
         "request_failed": "वर्कफ़्लो अनुरोध विफल रहा",
+        "retry": "फिर से कोशिश करो",
         "revision": "संशोधन {{revision}}",
         "run": "वर्कफ़्लो चलाएँ",
         "run_input": "इनपुट (ctx.args.input के रूप में उपलब्ध)",

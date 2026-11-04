@@ -15976,6 +15976,7 @@
         "name": "Nome",
         "new_workflow": "Nuovo workflow",
         "request_failed": "Richiesta del workflow non riuscita",
+        "retry": "Riprova",
         "revision": "Revisione {{revision}}",
         "run": "Esegui workflow",
         "run_input": "Input (disponibile come ctx.args.input)",

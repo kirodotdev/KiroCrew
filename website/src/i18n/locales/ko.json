@@ -15260,6 +15260,7 @@
         "name": "이름",
         "new_workflow": "새 워크플로",
         "request_failed": "워크플로 요청 실패",
+        "retry": "다시 시도",
         "revision": "리비전 {{revision}}",
         "run": "워크플로 실행",
         "run_input": "입력(ctx.args.input으로 사용 가능)",
