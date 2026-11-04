@@ -89,22 +89,14 @@ class _AlignableStore(_ReconcilableStore, Protocol):
 def build_gated_candidate(path: Path) -> LlamaCppEmbedder:
     """A GATED candidate for ``path`` that adopts the model's own width.
 
-    Two properties make a live model change safe, and both are why this is not
-    just ``LlamaCppEmbedder(path)``:
+    - **Adopt-dim** (``dim=0``) loads the model once; reading ``n_embd`` first would
+      peak at two ~700MB models.
+    - **Gated** (``serving=False``) holds the singleton slot while loading but serves
+      no vectors: an empty slot would let a status poll rebuild the outgoing model,
+      an ungated one would embed queries in a space the store has not reconciled.
 
-    - **Adopt-dim** (``dim=0``) lets the candidate be loaded exactly ONCE. The
-      alternative — load it to read ``n_embd``, free it, let the factory load it
-      again — peaks at two ~700MB models, and :func:`get_shared_embedder` states
-      outright that "loading it twice is never acceptable".
-    - **Gated** (``serving=False``) means it occupies the singleton slot while it
-      loads but hands out no vectors. That closes both halves of the swap window:
-      an empty slot would let a status poll rebuild the OUTGOING model (two
-      models resident), while an ungated one would let a query be embedded in the
-      new space and compared against vectors the store has not reconciled yet.
-
-    ``model_id`` is derived here, not by the caller, so the vector-space
-    signature matches what :func:`resolve_custom_model` would compute for the
-    same file — otherwise a real model change could look like no change.
+    ``model_id`` is derived here so the signature matches :func:`resolve_custom_model`
+    for the same file; otherwise a real model change could look like no change.
     """
     return LlamaCppEmbedder(
         model_path=path, dim=0, model_id=_custom_model_id(path, ""), serving=False
@@ -331,28 +323,18 @@ def reembed_progress() -> ReembedProgress:
 def reconcile_store_embedding_space(store: "_AlignableStore") -> int:
     """Reconcile *store* against the active embedding space. Returns rows invalidated.
 
-    THE single chokepoint for destructive reconciliation. Startup paths that
-    open a vector store either reconcile through this one function (the gateway
-    boot sweep, the onboarding importer) or, where clearing is unsafe, use the
-    non-mutating ``store_embedding_space_is_stale`` probe instead — ``kirocrew
-    run`` (``cli_server``) takes the latter path, disabling embedding for the
-    run and deferring reconciliation to the gateway. Concentrating the
-    destructive path here keeps a future entry point from loading a FAISS index
-    built under the previous model and scoring it against new-model query
-    vectors.
+    The single chokepoint for destructive reconciliation, so no entry point scores a
+    FAISS index built under the previous model against new-model queries. Paths where
+    clearing is unsafe (``kirocrew run``) use the non-mutating
+    :func:`store_embedding_space_is_stale` probe instead.
 
     Refuses to clear when the active backend is not ready and is not the bundled
-    model: clearing is destructive, and a backend that cannot load — a rejected
-    custom path yields exactly that — could never regenerate what was cleared, so
-    a single typo in ``memory.embed_model_path`` would otherwise cost the user
-    every stored vector. Callers that legitimately want the clear (the gateway
-    sweep) wait for readiness first. :func:`store_embedding_space_is_stale` is the
-    non-mutating probe for callers that cannot.
+    model: a backend that cannot load (e.g. a typo in ``memory.embed_model_path``)
+    could never regenerate the cleared vectors. Callers that want the clear (the
+    gateway sweep) wait for readiness first.
 
-    Callers that can also re-embed should follow this with
-    ``backfill_missing_embeddings()``; a one-shot CLI deliberately does not, so
-    the affected rows stay keyword-searchable until the gateway's sweep refills
-    them.
+    Callers that can re-embed follow this with ``backfill_missing_embeddings()``; a
+    one-shot CLI does not, leaving rows keyword-searchable until the gateway sweep.
     """
     backend = get_shared_embedder()
     active = embedding_space_signature(backend.model_id, backend.dim)
