@@ -623,6 +623,9 @@ class PageProbe:
         The snapshot walker keeps its refs in that world (not in the page's own, where
         a page script could rewrite them), and Chrome hands every session the same
         world for the same name, so the refs the helper made are readable here.
+        Checked on Chrome 156 with two separate browser connections attached to one
+        tab: the second ``createIsolatedWorld`` of a name returned the first's context
+        id, and a value set through the first was readable through the second.
         """
         frame_id, _loader, _origin = await self.top_frame()
         made = await self._send(

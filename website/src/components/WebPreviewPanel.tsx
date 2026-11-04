@@ -320,11 +320,32 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
 
   // The list gates what stays up as well as what opens: an origin removed while its
   // page is showing closes the native view, so the refusal below it can be seen
-  // (the view paints over the panel and would hide it).
+  // (the view paints over the panel and would hide it). The page judged is the one
+  // the view is on now. A page the view reached on its own (a link, a redirect)
+  // counts once it has been seen allowed; one that never was is not this list's to
+  // close, as before.
+  const nativeSeen = useRef(new Set<string>())
   useEffect(() => {
-    const shown = nativeTarget || url
-    if (nativeOpen && shown && originsLoaded && !previewAllowsUrl(shown, origins)) native.close()
-  }, [nativeOpen, nativeTarget, url, originsLoaded, origins, native])
+    const seen = nativeSeen.current
+    if (!nativeOpen) { seen.clear(); return }
+    if (!originsLoaded) return
+    const hostPort = (u: string) => {
+      try { return urlHostPort(new URL(u)) } catch { return '' }
+    }
+    const sameOrigin = (a: string, b: string) => {
+      try { return new URL(a).origin === new URL(b).origin } catch { return false }
+    }
+    // What the panel pointed the view at is listed by construction. An origin it
+    // loaded through the cookie-isolation rewrite is judged by that target, not by
+    // the rewritten host the view reports.
+    const base = nativeTarget || url
+    if (base) seen.add(hostPort(base))
+    const live = native.state?.url || ''
+    const shown = live && base && !sameOrigin(live, isolateFrameTarget(base)) ? live : base || live
+    if (!shown) return
+    if (previewAllowsUrl(shown, origins)) seen.add(hostPort(shown))
+    else if (seen.has(hostPort(shown))) native.close()
+  }, [nativeOpen, nativeTarget, url, originsLoaded, origins, native, native.state?.url])
 
   const persist = useCallback((u: string) => {
     if (storageKey && u) safeSetItem(storageKey, u)
@@ -356,6 +377,7 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
       setDraft(saved)
     }
     setNativeTarget('')
+    nativeSeen.current.clear()
     setDeviceId('responsive')
   }, [storageKey, pendingKey])
 

@@ -823,6 +823,27 @@ describe('WebPreviewPanel — native browser transport (desktop app)', () => {
     await waitFor(() => expect(api.close).toHaveBeenCalledWith('sess-1'))
   })
 
+  it('judges the page a link took the view to, not the one it opened on', async () => {
+    setSessionPreviewUrl('sess-1', 'http://localhost:5173/')
+    const api = installNativeBridge(true, 'http://localhost:5173/')
+    const { queryClient } = await renderPanel(<WebPreviewPanel sessionKey="sess-1" />)
+    await waitFor(() => expect(api.getState).toHaveBeenCalled())
+    // An in-page link takes the view to another listed origin.
+    api.getState.mockResolvedValue({ open: true, visible: true, url: 'http://localhost:4000/x', bounds: null })
+    const onNav = api.onDidNavigate.mock.calls.at(-1)?.[0] as (() => void) | undefined
+    await act(async () => { onNav?.() })
+    const without = (...gone: string[]) => ({ dashboard: { browser_local_origins: ORIGINS.filter(o => !gone.includes(o)) } })
+    // Revoking the origin it opened on leaves the page it is on untouched.
+    kirocrewConfig.mockResolvedValue(without('localhost:5173'))
+    await act(async () => { await queryClient.invalidateQueries({ queryKey: ['kirocrewConfig'] }) })
+    await waitFor(() => expect(kirocrewConfig).toHaveBeenCalled())
+    expect(api.close).not.toHaveBeenCalled()
+    // Revoking the origin it is on closes it.
+    kirocrewConfig.mockResolvedValue(without('localhost:5173', 'localhost:4000'))
+    await act(async () => { await queryClient.invalidateQueries({ queryKey: ['kirocrewConfig'] }) })
+    await waitFor(() => expect(api.close).toHaveBeenCalledWith('sess-1'))
+  })
+
   it('keeps the native view while its origin is still listed', async () => {
     setSessionPreviewUrl('sess-1', 'http://localhost:5173/')
     const api = installNativeBridge(true, 'http://localhost:5173/')

@@ -8,10 +8,13 @@ traversal and leak nothing, cleanup on session delete, 0700/0600 on disk.
 
 from __future__ import annotations
 
+import asyncio
 import io
 import os
 import stat
 import sys
+import threading
+from collections.abc import Collection
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -29,6 +32,7 @@ from kiro_crew.browser_harness.takeover import parse_input_event
 from kiro_crew.dashboard.handlers import browser_live as live_mod
 from kiro_crew.dashboard.handlers.sessions_parts import slot_teardown
 from kiro_crew.dashboard.routes import browser_live as route_slice
+from kiro_crew.testing.wait import async_wait_until
 
 pytestmark = pytest.mark.asyncio
 
@@ -1104,37 +1108,52 @@ async def test_a_chat_that_takes_the_key_while_an_earlier_one_is_removed_keeps_i
     assert len(recorded.list_turns(other)) == 1
 
 
-async def test_a_delete_removes_only_the_turns_that_started_by_the_request(
-    tmp_path: Path,
-) -> None:
+async def test_a_delete_keeps_the_turns_it_is_told_to_keep(tmp_path: Path) -> None:
     store = rc.RecordingStore(lambda: tmp_path, rc.RecordingConfig())
     old, new = "a" * 32, "b" * 32
     store.start_turn(KEY, old, 1000)
     store.end_turn(KEY, old, 1100)
-    store.start_turn(KEY, new, 5000)  # a chat that reopened the key afterwards
-    assert store.delete_session(KEY, started_by=2000) is True
+    store.start_turn(KEY, new, 1000)  # a chat that reopened the key in the same millisecond
+    assert store.delete_session(KEY, keep={new}) is True
     assert [t["turn_id"] for t in store.list_turns(KEY)] == [new]
     assert not turn_dir(tmp_path, KEY, old).exists()
     assert turn_dir(tmp_path, KEY, new).is_dir()
-    # With nothing newer, the session goes whole, as before.
-    assert store.delete_session(KEY, started_by=9000) is True
+    # With nothing to keep, the session goes whole, as before.
+    assert store.delete_session(KEY, keep=set()) is True
     assert not (tmp_path / rc.RECORDINGS_DIRNAME / rc.session_dirname(KEY)).exists()
 
 
 async def test_a_successor_that_starts_during_the_delete_keeps_its_turn(tmp_path: Path) -> None:
-    rec, store, clock = make_recorder(tmp_path)
+    rec, store, _clock = make_recorder(tmp_path)
     rec.turn_started(KEY, TURN)
     await rec.flush()
     real = store.delete_session
+    entered, go = threading.Event(), threading.Event()
     successor = "c" * 32
 
-    def delete_after_the_successor_starts(key: str, started_by: int | None = None) -> bool:
-        store.start_turn(key, successor, clock.now + 5000)
-        return real(key, started_by)
+    def hold_the_delete(key: str, keep: Collection[str] | None = None) -> bool:
+        entered.set()
+        assert go.wait(10)
+        return real(key, keep)
 
-    store.delete_session = delete_after_the_successor_starts  # type: ignore[method-assign]
-    await rec.delete_session(KEY)
+    store.delete_session = hold_the_delete  # type: ignore[method-assign]
+    deleting = asyncio.ensure_future(rec.delete_session(KEY))
+    await async_wait_until(entered.is_set, timeout=10)
+    rec.turn_started(KEY, successor)  # the key is reopened while the delete runs
+    await rec.flush(KEY)
+    go.set()
+    await deleting
     assert [t["turn_id"] for t in store.list_turns(KEY)] == [successor]
+
+
+async def test_a_delete_takes_a_turn_whose_start_is_still_queued(tmp_path: Path) -> None:
+    rec, store, _clock = make_recorder(tmp_path)
+    rec.turn_started(KEY, TURN)
+    rec.turn_ended(KEY)  # the turn is closed before its start has reached the store
+    await asyncio.sleep(0)
+    await rec.delete_session(KEY)
+    assert store.list_turns(KEY) == []
+    assert not (tmp_path / rc.RECORDINGS_DIRNAME / rc.session_dirname(KEY)).exists()
 
 
 async def test_a_delete_during_a_running_turn_leaves_nothing_behind(tmp_path: Path) -> None:

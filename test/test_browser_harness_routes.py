@@ -346,11 +346,24 @@ async def test_redownload_installs_only_after_kiros_chromium_has_stopped(
     monkeypatch.setattr(sup, "stop", slow_stop)
     body = {"components": ["chromium"], "refresh": True}
     req = _owner("/api/browser/install", sup, body=body)
-    assert (await routes.api_browser_harness_install(req)).status == 202
-    await async_wait_until(stopping.is_set, timeout=30)
-    assert sup.replacing_chromium is True and order == ["stop begins"]
-    assert (await routes.api_browser_harness_install(req)).status == 409
-    release.set()
-    await req.app["state"]._browser_harness_install_task
-    assert order == ["stop begins", "stop ends", "install"]
+    # The handler runs as a task: a handler that waited for the stop itself would
+    # never return while the stop is held, and that must fail here, not hang.
+    handler = asyncio.ensure_future(routes.api_browser_harness_install(req))
+    try:
+        done, _ = await asyncio.wait({handler}, timeout=30)
+        assert done, "the handler waited for the stop instead of reserving the job"
+        assert handler.result().status == 202
+        await async_wait_until(stopping.is_set, timeout=30)
+        assert sup.replacing_chromium is True and order == ["stop begins"]
+        assert (await routes.api_browser_harness_install(req)).status == 409
+        release.set()
+        await asyncio.wait_for(req.app["state"]._browser_harness_install_task, timeout=30)
+        assert order == ["stop begins", "stop ends", "install"]
+    finally:
+        release.set()
+        if not handler.done():
+            handler.cancel()
+        job = getattr(req.app["state"], "_browser_harness_install_task", None)
+        if job is not None and not job.done():
+            job.cancel()
     assert sup.replacing_chromium is False
