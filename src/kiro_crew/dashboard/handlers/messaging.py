@@ -233,6 +233,7 @@ from kiro_crew.dashboard.messaging_api.spawn import (  # noqa: F401
     _backend_name,
     _chain_note,
     _continue_on_loop,
+    _enterprise_kiro_successor,
     _failover_backend,
     _qualified_model_refusal,
     _requested_backend,

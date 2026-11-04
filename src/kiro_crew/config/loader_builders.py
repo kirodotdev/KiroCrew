@@ -497,9 +497,9 @@ def _read_backend_choice(section: _sections.SectionReader, agent_data: dict, key
     if agent_data.get(key) == MALFORMED_BACKEND_FLOOR:
         # The floor for an unusable value (``validate_config_data``), already
         # warned about there: never a Kiro CLI pick, so never moved onto KAS.
-        from kiro_crew.acp_backends import GOVERNANCE_FLOOR_BACKEND
+        from kiro_crew.acp_backends import governance_floor_backend
 
-        return GOVERNANCE_FLOOR_BACKEND
+        return governance_floor_backend()
     value = backend_from_stored(agent_data.get(key))
     if value is None:
         default = section.default(key)

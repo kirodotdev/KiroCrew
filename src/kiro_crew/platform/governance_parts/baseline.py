@@ -49,8 +49,10 @@ BASELINE_CONTROLS: Dict[str, Mapping[str, object]] = {
     "channels": {"members": _OFF},
     "yolo_duration": _OFF,
     "webhooks": _OFF,
-    # ``acp_backends.POLICY_ID_KIRO``.
-    "agent_backend": {"mode": "allow", "allow": ["kiro"]},
+    # KAS (RFC D6). The Kiro CLI harness (``POLICY_ID_KIRO``) needs a remote rule.
+    # KAS is also the enterprise floor (``acp_backends.governance_floor_backend``),
+    # so it is never submitted to this scope; the row records the minimal set.
+    "agent_backend": {"mode": "allow", "allow": ["kas"]},
     "capabilities.memory_writes": _CAPABILITY_OFF,
     "capabilities.browse": _CAPABILITY_OFF,
     "capabilities.script_hooks": _CAPABILITY_OFF,
