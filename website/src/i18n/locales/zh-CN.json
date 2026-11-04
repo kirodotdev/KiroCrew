@@ -13322,6 +13322,7 @@
       "delete_folder_confirm": "删除“{{name}}”？其中的会话会移出分组。",
       "delete_history_session": "删除历史会话",
       "delete_this_column": "删除此列？",
+      "delete_column_body": "只删除这一列。其中的会话、标签和文件夹都会保留。",
       "double_click_to_rename": "双击可重命名",
       "drag_to_reorder": "拖动可重新排序",
       "drop_here_to_remove_from_folder": "拖到此处可从文件夹中移出",

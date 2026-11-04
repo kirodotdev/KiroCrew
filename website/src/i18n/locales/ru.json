@@ -14234,6 +14234,7 @@
       "delete_folder_confirm": "Удалить «{{name}}»? Сессии останутся без папки.",
       "delete_history_session": "Удалить сессию из истории",
       "delete_this_column": "Удалить этот столбец?",
+      "delete_column_body": "Удаляется только столбец. Его сессии, теги и папки сохраняются.",
       "double_click_to_rename": "Двойной щелчок — переименовать",
       "drag_to_reorder": "Перетащите, чтобы изменить порядок",
       "drop_here_to_remove_from_folder": "Перетащите сюда, чтобы убрать из папки",

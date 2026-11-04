@@ -13626,6 +13626,7 @@
       "delete_folder_confirm": "“{{name}}” মুছে ফেলবে? সেশনগুলো গ্রুপ থেকে বেরিয়ে যাবে।",
       "delete_history_session": "ইতিহাস সেশন মুছুন",
       "delete_this_column": "এই কলামটি মুছে ফেলবেন?",
+      "delete_column_body": "শুধু কলামটি মুছে যাবে। এর সেশন, ট্যাগ আর ফোল্ডার থেকে যাবে।",
       "double_click_to_rename": "নাম বদলাতে ডাবল-ক্লিক করুন",
       "drag_to_reorder": "ক্রম বদলাতে ড্র্যাগ করুন",
       "drop_here_to_remove_from_folder": "ফোল্ডার থেকে সরাতে এখানে ছাড়ুন",

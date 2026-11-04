@@ -13626,6 +13626,7 @@
       "delete_folder_confirm": "“{{name}}” हटाएँ? सत्र किसी समूह में नहीं रहेंगे।",
       "delete_history_session": "इतिहास सत्र हटाएँ",
       "delete_this_column": "यह कॉलम हटाएँ?",
+      "delete_column_body": "सिर्फ़ यह कॉलम हटेगा। इसके सत्र, टैग और फ़ोल्डर बने रहेंगे।",
       "double_click_to_rename": "नाम बदलने के लिए डबल-क्लिक करें",
       "drag_to_reorder": "क्रम बदलने के लिए खींचें",
       "drop_here_to_remove_from_folder": "फ़ोल्डर से निकालने के लिए यहाँ छोड़ें",

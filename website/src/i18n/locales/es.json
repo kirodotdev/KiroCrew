@@ -13930,6 +13930,7 @@
       "delete_folder_confirm": "¿Eliminar “{{name}}”? Las sesiones quedarán sin agrupar.",
       "delete_history_session": "Eliminar la sesión del historial",
       "delete_this_column": "¿Eliminar esta columna?",
+      "delete_column_body": "Solo se elimina la columna. Sus sesiones, etiquetas y carpetas se conservan.",
       "double_click_to_rename": "Doble clic para cambiar el nombre",
       "drag_to_reorder": "Arrastra para reordenar",
       "drop_here_to_remove_from_folder": "Suelta aquí para quitar de la carpeta",

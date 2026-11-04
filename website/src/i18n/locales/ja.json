@@ -13321,6 +13321,7 @@
       "delete_folder_confirm": "「{{name}}」を削除しますか？セッションはグループ解除されます。",
       "delete_history_session": "履歴セッションを削除",
       "delete_this_column": "この列を削除しますか？",
+      "delete_column_body": "削除されるのは列だけです。列内のセッション、タグ、フォルダーは残ります。",
       "double_click_to_rename": "ダブルクリックして名前を変更",
       "drag_to_reorder": "ドラッグして並べ替え",
       "drop_here_to_remove_from_folder": "ここにドロップしてフォルダーから外す",

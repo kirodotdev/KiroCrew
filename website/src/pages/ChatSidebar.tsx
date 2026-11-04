@@ -884,6 +884,7 @@ function ChatSidebar({
   const deleteColumnWithConfirm = (columnId: string) => {
     void askAppConfirm({
       title: i18nT('pages.chatSidebar.delete_this_column'),
+      body: i18nT('pages.chatSidebar.delete_column_body'),
       confirmLabel: i18nT('pages.chatSidebar.delete_column'),
     }).then(ok => { if (ok) deleteColumnMutation.mutate(columnId) })
   }

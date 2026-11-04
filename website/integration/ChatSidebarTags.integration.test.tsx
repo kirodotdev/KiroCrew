@@ -438,6 +438,8 @@ describe('ChatSidebar tag/column UI', () => {
     // The in-app dialog asks, never the browser-native confirm(); the column
     // stays until the dialog is confirmed.
     const dialog = await screen.findByRole('dialog', { name: 'Delete this column?' })
+    // It says what the delete keeps: only the column goes.
+    expect(dialog).toHaveTextContent('Only the column is removed. Its sessions, tags and folders are kept.')
     expect(mockConfirm).not.toHaveBeenCalled()
     expect(backend.state.columns.length).toBe(1)
     await user.click(within(dialog).getByRole('button', { name: 'Delete column' }))

@@ -7561,6 +7561,7 @@
       "delete_folder": "Delete folder",
       "delete_history_session": "Delete history session",
       "delete_this_column": "Delete this column?",
+      "delete_column_body": "Only the column is removed. Its sessions, tags and folders are kept.",
       "double_click_to_rename": "Double-click to rename",
       "drag_to_reorder": "Drag to reorder",
       "drop_here_to_remove_from_folder": "Drop here to remove from folder",

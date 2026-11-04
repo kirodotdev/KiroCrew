@@ -13930,6 +13930,7 @@
       "delete_folder_confirm": "Eliminare «{{name}}»? Le sessioni non saranno più raggruppate.",
       "delete_history_session": "Elimina la sessione dalla cronologia",
       "delete_this_column": "Eliminare questa colonna?",
+      "delete_column_body": "Viene rimossa solo la colonna. Le sue sessioni, i tag e le cartelle restano.",
       "double_click_to_rename": "Doppio clic per rinominare",
       "drag_to_reorder": "Trascina per riordinare",
       "drop_here_to_remove_from_folder": "Rilascia qui per rimuovere dalla cartella",

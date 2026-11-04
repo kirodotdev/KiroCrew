@@ -13322,6 +13322,7 @@
       "delete_folder_confirm": "‘{{name}}’을(를) 삭제하시겠습니까? 세션은 그룹에서 해제됩니다.",
       "delete_history_session": "기록 세션 삭제",
       "delete_this_column": "이 열을 삭제하시겠습니까?",
+      "delete_column_body": "열만 삭제됩니다. 열에 있던 세션, 태그, 폴더는 그대로 남습니다.",
       "double_click_to_rename": "두 번 클릭해서 이름 변경",
       "drag_to_reorder": "드래그해서 순서 변경",
       "drop_here_to_remove_from_folder": "여기에 놓아서 폴더에서 빼기",

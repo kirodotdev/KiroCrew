@@ -13626,6 +13626,7 @@
       "delete_folder_confirm": "„{{name}}“ löschen? Die Sitzungen werden aus der Gruppe entfernt.",
       "delete_history_session": "Verlaufssitzung löschen",
       "delete_this_column": "Diese Spalte löschen?",
+      "delete_column_body": "Nur die Spalte wird entfernt. Ihre Sitzungen, Tags und Ordner bleiben erhalten.",
       "double_click_to_rename": "Doppelklicken zum Umbenennen",
       "drag_to_reorder": "Ziehen zum Umsortieren",
       "drop_here_to_remove_from_folder": "Hier ablegen, um aus dem Ordner zu entfernen",

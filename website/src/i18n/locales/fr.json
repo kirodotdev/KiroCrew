@@ -13930,6 +13930,7 @@
       "delete_folder_confirm": "Supprimer « {{name}} » ? Les sessions seront dégroupées.",
       "delete_history_session": "Supprimer la session de l'historique",
       "delete_this_column": "Supprimer cette colonne ?",
+      "delete_column_body": "Seule la colonne est supprimée. Ses sessions, étiquettes et dossiers sont conservés.",
       "double_click_to_rename": "Double-cliquez pour renommer",
       "drag_to_reorder": "Faites glisser pour réordonner",
       "drop_here_to_remove_from_folder": "Déposez ici pour retirer du dossier",
