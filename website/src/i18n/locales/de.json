@@ -12994,6 +12994,25 @@
         "jump_to_message": "Zur Nachricht springen",
         "copy_failed": "Kopieren fehlgeschlagen"
       },
+      "bookmarks": {
+        "title": "Lesezeichen",
+        "add": "Hinzufügen",
+        "url_label": "Lesezeichen-URL",
+        "title_label": "Lesezeichentitel",
+        "title_placeholder": "Titel (optional)",
+        "save": "Speichern",
+        "cancel": "Abbrechen",
+        "empty": "Noch keine Lesezeichen. Füge einen Link hinzu, um ihn bei dieser Sitzung zu behalten.",
+        "invalid_url": "Gib eine vollständige http- oder https-URL ein.",
+        "url_contains_credential": "Diese URL enthält Zugangsdaten und wurde deshalb nicht gespeichert. Entferne das Token oder Passwort und versuche es erneut.",
+        "limit_reached": "Diese Sitzung hat bereits 100 Lesezeichen. Entferne eines, um ein weiteres hinzuzufügen.",
+        "save_failed": "Das Lesezeichen konnte nicht gespeichert werden. Versuche es erneut.",
+        "load_failed": "Lesezeichen konnten nicht geladen werden.",
+        "remove_failed": "Das Lesezeichen konnte nicht entfernt werden. Versuche es erneut.",
+        "remove": "Lesezeichen entfernen",
+        "remove_named": "Lesezeichen {{name}} entfernen",
+        "added_by_agent": "Vom Agenten hinzugefügt"
+      },
       "earlierMessagesBar": {
         "load_earlier_messages": "Frühere Nachrichten laden",
         "load_failed": "Frühere Nachrichten konnten nicht geladen werden",

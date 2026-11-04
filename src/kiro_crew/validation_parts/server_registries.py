@@ -81,6 +81,7 @@ from kiro_crew.validation_parts.core_agent_schemas import (
     TASK_RUN_SCHEMA,
 )
 from kiro_crew.validation_parts.core_turn_schemas import (
+    CHAT_BOOKMARK_SCHEMA,
     CHAT_TAG_SCHEMA,
     DELETE_MESSAGE_SCHEMA,
     NOTHING_TO_DO_SCHEMA,
@@ -182,6 +183,7 @@ MCP_CORE_SCHEMAS: dict[str, ToolSchema] = {
     "set_project": SET_PROJECT_SCHEMA,
     "reset_conversation": RESET_CONVERSATION_SCHEMA,
     "chat_tag": CHAT_TAG_SCHEMA,
+    "chat_bookmark": CHAT_BOOKMARK_SCHEMA,
     "request_server": REQUEST_SERVER_SCHEMA,
     "suggest_followup": SUGGEST_FOLLOWUP_SCHEMA,
     "artifact_save": ARTIFACT_SAVE_SCHEMA,

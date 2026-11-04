@@ -19,6 +19,7 @@ from aiohttp import web
 from kiro_crew._facade_bindings import own_methods
 from kiro_crew.config.loader import DASHBOARD_PORT, config_dir
 from kiro_crew.dashboard import pinned_session_order
+from kiro_crew.dashboard.chat_bookmarks_store import ChatBookmarkStore
 from kiro_crew.dashboard.folder_repository import FOLDERS_FILE
 from kiro_crew.dashboard.interaction_coordinator import ApprovalCoordinator, QuestionCoordinator
 from kiro_crew.dashboard.slot_registry import SlotRegistry, TakeoverWatch, TruncationClaim
@@ -687,6 +688,7 @@ class DashboardState:
         # LoopBoundLock, not asyncio.Lock: DashboardState outlives any
         # single event loop (in-process gateway restart, test loops).
         self._chat_pins_lock = LoopBoundLock()
+        self.chat_bookmarks = ChatBookmarkStore()
         # Serializes read-modify-write of the folder store; see
         # mutate_folders(). Constructed here rather than lazily so two
         # concurrent first-callers cannot each make their own lock and

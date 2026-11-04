@@ -961,7 +961,8 @@ describe('ActivityViewer — panel section headers', () => {
       />,
       { wrapper: panelWrapper },
     )
-    expect(sectionHeaders()).toEqual([['Resources', '1']])
+    // The session's Bookmarks section heads the tab, above the transcript links.
+    expect(sectionHeaders()).toEqual([['Bookmarks', null], ['Resources', '1']])
   })
 
   it('renders the Artifacts tab groups through the shared header, count outside the label', async () => {

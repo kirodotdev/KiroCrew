@@ -16,6 +16,7 @@ import type { PullRequestLink } from '../../utils/pullRequestLinks'
 import PullRequestPanel from '../../components/PullRequestPanel'
 import IssuePanel from '../../components/IssuePanel'
 import { PinnedMessagesPanel } from './PinnedMessagesPanel'
+import SessionBookmarks from './SessionBookmarks'
 import type { ChatPin } from '../../api/pins'
 import { useAppSelector, useAppDispatch } from '../../store'
 import { useSecondClock } from '../../hooks/useSecondClock'
@@ -592,14 +593,15 @@ function ApprovalEntry({ entry }: { entry: ToolActivity }) {
 }
 
 /* ── Links tab ────────────────────────────────────────────────────────────────
- * One scannable list of the links this session surfaced, with a search box that
- * filters by label and URL. Files are NOT listed here: the pinned Files tab
+ * The session's bookmarks, then one scannable list of the links this session
+ * surfaced, with a search box that filters those by label and URL. Files are NOT listed here: the pinned Files tab
  * browses the project tree and its git working-tree status, which is the
  * general "what changed" view — this tab is only the URLs the conversation
  * referenced. */
 function LinksTab({
-  sources, issues, navLinks, navResolving,
+  slot, sources, issues, navLinks, navResolving,
 }: {
+  slot: string
   sources?: PullRequestLink[]
   issues?: PullRequestLink[]
   navLinks?: ExtractedLink[]
@@ -656,6 +658,7 @@ function LinksTab({
         </div>
       )}
       <div className="flex-1 overflow-y-auto py-1.5">
+        {slot && <SessionBookmarks key={slot} slotKey={slot} />}
         {isEmpty ? (
           <div className="flex-1 flex items-center justify-center text-muted text-[13px] py-8">{i18nT('pages.chat.activityViewer.no_links_yet')}</div>
         ) : noMatches ? (
@@ -1436,6 +1439,7 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
       {/* Links tab */}
       {effectiveTab === 'links' && (
         <LinksTab
+          slot={slot}
           sources={sources}
           issues={issues}
           navLinks={navLinks}

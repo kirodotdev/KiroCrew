@@ -13294,6 +13294,25 @@
         "jump_to_message": "Ir para a mensagem",
         "copy_failed": "Falha ao copiar"
       },
+      "bookmarks": {
+        "title": "Favoritos",
+        "add": "Adicionar",
+        "url_label": "URL do favorito",
+        "title_label": "Título do favorito",
+        "title_placeholder": "Título (opcional)",
+        "save": "Salvar",
+        "cancel": "Cancelar",
+        "empty": "Ainda não há favoritos. Adicione um link para mantê-lo com esta sessão.",
+        "invalid_url": "Insira uma URL http ou https completa.",
+        "url_contains_credential": "Esta URL contém uma credencial, por isso não foi guardada. Remova o token ou a senha e tente novamente.",
+        "limit_reached": "Esta sessão já tem 100 favoritos. Remova um para adicionar outro.",
+        "save_failed": "Não foi possível salvar o favorito. Tente novamente.",
+        "load_failed": "Não foi possível carregar os favoritos.",
+        "remove_failed": "Não foi possível remover o favorito. Tente novamente.",
+        "remove": "Remover favorito",
+        "remove_named": "Remover o favorito {{name}}",
+        "added_by_agent": "Adicionado pelo agente"
+      },
       "earlierMessagesBar": {
         "load_earlier_messages": "Carregar mensagens anteriores",
         "load_failed": "Não foi possível carregar as mensagens anteriores",

@@ -323,6 +323,7 @@ const FRAME_CASES: Array<[string, Frame[], Frame[]]> = [
   ]],
   ['session_summary', [], [{ type: 'session_summary', data: { key: ACTIVE } }, { type: 'session_summary', data: {} }]],
   ['pins_changed', [], [{ type: 'pins_changed', data: { slot_key: ACTIVE } }, { type: 'pins_changed', data: {} }]],
+  ['bookmarks_changed', [], [{ type: 'bookmarks_changed', data: { slot_key: ACTIVE } }, { type: 'bookmarks_changed', data: {} }]],
   ['artifact_update', [], [{ type: 'artifact_update', data: { slug: 'doc' } }]],
   ['artifact_update deleted', [], [{ type: 'artifact_update', data: { slug: 'doc', deleted: true } }, { type: 'artifact_update', data: {} }]],
   ['resume_all_done', [], [{ type: 'resume_all_done', data: { run_id: 'run-1', total: 1, resumed: [ACTIVE], skipped: [], failed: [] } }]],
@@ -1082,6 +1083,9 @@ const EXPECTED_FRAMES: Record<string, string[]> = {
   ],
   "pins_changed": [
     'query invalidateQueries ["chat-pins","slot-a"]',
+  ],
+  "bookmarks_changed": [
+    'query invalidateQueries ["chat-bookmarks","slot-a"]',
   ],
   "artifact_update": [
     'query invalidateQueries ["artifact","doc"]',

@@ -12694,6 +12694,25 @@
         "jump_to_message": "跳转到消息",
         "copy_failed": "复制失败"
       },
+      "bookmarks": {
+        "title": "书签",
+        "add": "添加",
+        "url_label": "书签 URL",
+        "title_label": "书签标题",
+        "title_placeholder": "标题（可选）",
+        "save": "保存",
+        "cancel": "取消",
+        "empty": "还没有书签。添加一个链接，即可将其保存在此会话中。",
+        "invalid_url": "请输入完整的 http 或 https URL。",
+        "url_contains_credential": "此 URL 包含凭据，因此未保存。请删除令牌或密码后重试。",
+        "limit_reached": "此会话已有 100 个书签。请先删除一个再添加。",
+        "save_failed": "无法保存书签。请重试。",
+        "load_failed": "无法加载书签。",
+        "remove_failed": "无法删除书签。请重试。",
+        "remove": "删除书签",
+        "remove_named": "删除书签 {{name}}",
+        "added_by_agent": "由代理添加"
+      },
       "earlierMessagesBar": {
         "load_earlier_messages": "加载更早的消息",
         "load_failed": "无法加载更早的消息",

@@ -382,6 +382,14 @@ export function useWebSocket() {
             }
             break
           }
+          case 'bookmarks_changed': {
+            // Same shape as pins_changed: slot_key only, refetch that session's list.
+            const slotKey = (data as { slot_key?: string }).slot_key
+            if (slotKey) {
+              queryClient.invalidateQueries({ queryKey: ['chat-bookmarks', slotKey] })
+            }
+            break
+          }
           case 'artifact_update':
             handleArtifactUpdate(queryClient, data)
             break

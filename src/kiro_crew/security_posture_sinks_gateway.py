@@ -523,6 +523,15 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "idempotent duplicate-create) via _redacted_pin.",
     ),
     (
+        "Chat session bookmarks",
+        "dashboard/chat_bookmarks_store.py",
+        "Bookmark URLs and titles come from the person or from the agent's "
+        "chat_bookmark tool, are persisted to chat_bookmarks.json and rendered as "
+        "links in the Links tab, so both fields are an output boundary: a URL the "
+        "redactors would rewrite is refused, the title is redacted before storage, "
+        "and both are re-redacted on every response path via public_bookmark.",
+    ),
+    (
         "Skill context budget",
         "dashboard/handlers/skill_budget.py",
         "Skill display names served by `GET /api/skills/-/budget`. An auto-skill's "

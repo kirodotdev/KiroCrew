@@ -13294,6 +13294,25 @@
         "jump_to_message": "Ir al mensaje",
         "copy_failed": "Error al copiar"
       },
+      "bookmarks": {
+        "title": "Marcadores",
+        "add": "Añadir",
+        "url_label": "URL del marcador",
+        "title_label": "Título del marcador",
+        "title_placeholder": "Título (opcional)",
+        "save": "Guardar",
+        "cancel": "Cancelar",
+        "empty": "Aún no hay marcadores. Añade un enlace para guardarlo con esta sesión.",
+        "invalid_url": "Introduce una URL completa http o https.",
+        "url_contains_credential": "Esta URL contiene una credencial, así que no se guardó. Quita el token o la contraseña e inténtalo de nuevo.",
+        "limit_reached": "Esta sesión ya tiene 100 marcadores. Elimina uno para añadir otro.",
+        "save_failed": "No se pudo guardar el marcador. Inténtalo de nuevo.",
+        "load_failed": "No se pudieron cargar los marcadores.",
+        "remove_failed": "No se pudo eliminar el marcador. Inténtalo de nuevo.",
+        "remove": "Eliminar marcador",
+        "remove_named": "Eliminar el marcador {{name}}",
+        "added_by_agent": "Añadido por el agente"
+      },
       "earlierMessagesBar": {
         "load_earlier_messages": "Cargar mensajes anteriores",
         "load_failed": "No se pudieron cargar los mensajes anteriores",
