@@ -30,6 +30,7 @@ from kiro_crew.process_identity import (
 )
 from kiro_crew.runtime_ownership import authorize_runtime_kill
 from kiro_crew.runtime_reconcile import build_reconciler
+from kiro_crew.session_idle_clock import last_activity as _last_activity
 from kiro_crew.watchdog import SessionWatchdog
 
 if TYPE_CHECKING:
@@ -1716,7 +1717,10 @@ class SessionCleanup:
                 total_checked += 1
                 if session.semaphore.locked():
                     continue
-                idle = key not in idle_exempt_keys and now - session.last_used > timeout_secs
+                idle = (
+                    key not in idle_exempt_keys
+                    and now - _last_activity(session, timeout_secs) > timeout_secs
+                )
                 orphaned = self._owner_is_gone(key)
                 if idle or orphaned:
                     expired.append((key, orphaned, session))
@@ -1840,9 +1844,12 @@ class SessionCleanup:
             # finished inside the await released the semaphore again but bumped
             # ``last_used`` on its way in, so the session is not idle now.
             # The orphan axis ignores the clock and re-asks the live set below.
-            if not is_orphan and self._deps.monotonic() - scanned.last_used <= timeout_secs:
+            if (
+                not is_orphan
+                and self._deps.monotonic() - _last_activity(scanned, timeout_secs) <= timeout_secs
+            ):
                 self._deps.logger.info(
-                    "Idle sweep: %s took a turn mid-sweep - left running",
+                    "Idle sweep: %s became active mid-sweep - left running",
                     key,
                 )
                 continue

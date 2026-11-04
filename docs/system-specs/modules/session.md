@@ -401,6 +401,9 @@ state are composed behind that facade:
   `session_lifecycle_parts/` owners below
 - `session_cleanup.py` — cleanup-task state, watchdog hooks, idle/RSS/stuck-turn
   policy, and process/filesystem sweeps
+- `session_idle_clock.py` — `last_activity`, the bounded clock the idle scan
+  and its post-probe recheck read (see *Idle cleanup*); `session_cleanup.py`
+  imports it as `_last_activity`
 
 `SessionLifecycleService` is defined in `session_lifecycle.py`; its behaviour lives in
 the `session_lifecycle_parts/` owner modules, one responsibility each. A member's body is
@@ -1966,9 +1969,23 @@ against sweep completeness, and are torn down at `close_all`.
   whatever the link names. A refused spec is skipped like a malformed one, so
   the resolution falls through to `"auto"` exactly as an absent spec does.
 - **Idle cleanup**: expires sessions after `session.timeout_secs` (default
-  60min) of idleness, measured on `session.last_used`, which is refreshed on
-  every acquire and on a successful `release(key)`. Never expires the persistent
-  keys (`_bg`, `_hb`). Dashboard per-tab sessions
+  60min) since the later of `last_used` and the provider's per-session
+  `session_activity_at` monotonic stamp, with the latter capped at one timeout
+  window after `last_used`. `session.last_used` is refreshed on every acquire
+  and on a successful `release(key)`. Passive traffic can therefore defer idle
+  expiration by at most one additional idle window. Beyond two windows since
+  the last dispatched turn, passive traffic alone no longer prevents expiration
+  on the next sweep. This bounds retention because frames can come from a
+  looping backend and do not establish finite work. The runtime stamps with
+  `time.monotonic()` in `acp/runtime_reader_loop.py`; the sweep reads
+  `SessionCleanupDeps.monotonic`, which `session.py` wires to the same clock.
+  Providers without a numeric
+  stamp use `last_used` alone. Busy-turn, attached-subagent, pending-injection
+  and harness-background launch guards apply independently on both axes; their
+  work evidence is separate from the passive-frame clock. Ordinary session-tagged frames can
+  arrive without an attached child or a tracked harness-background launch;
+  those frames receive only the bounded idle grace. Never expires the
+  persistent keys (`_bg`, `_hb`). Dashboard per-tab sessions
   (`dashboard:{slot_key}`) idle-expire like any other session. A crewmate's worker
   session is one of them: its process is released, its conversation resumes on
   the next send, and `session_status` reports it as `process: released`.
@@ -2090,7 +2107,8 @@ against sweep completeness, and are torn down at `close_all`.
   then the semaphore (a turn that took it during the await is exactly as live
   as one the scan skipped); then, on the idle axis only, the clock (a turn that
   began AND finished inside the await released the semaphore again but bumped
-  `last_used` on its way in, so the session is not idle now -- the orphan axis
+  `last_used` on its way in, or backend activity within the bounded grace
+  window advanced the effective clock, so the session is not idle now -- the orphan axis
   ignores the clock and re-asserts against the live set instead, below).
   Nothing between the probe's return and `reset` suspends. Neither read is the atomic
   one, though: `reset` itself suspends on the registry lock before it validates
