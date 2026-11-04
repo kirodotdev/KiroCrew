@@ -768,6 +768,7 @@ from kiro_crew.mcp_dashboard_session_runs import (  # noqa: E402, F401
     _dispatch_outcome,
     _first_message_line,
     _pending_approval_phrase,
+    _queue_phrase,
     _RefusalCodes,
     _render_session_summary,
     _resolve_folder_for_new_session,
