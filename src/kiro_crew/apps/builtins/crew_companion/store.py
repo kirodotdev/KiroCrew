@@ -392,7 +392,7 @@ class CompanionStore:
             # platform_compat shim, which is a no-op where POSIX modes mean
             # nothing (Windows) instead of raising or silently misleading.
             chmod_safe(tmp, 0o600)
-            os.replace(tmp, self._path)
+            replace_with_retry(tmp, self._path)
         except OSError as exc:
             logger.warning("crew-companion: store write failed: %s", exc)
             try:

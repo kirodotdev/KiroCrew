@@ -56,6 +56,7 @@ from urllib.parse import urlsplit
 from kiro_crew import asset_downloader
 from kiro_crew import env as _env
 from kiro_crew import platform_compat
+from kiro_crew.atomic_write import replace_with_retry
 from kiro_crew.config import live
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.config.paths import data_home
@@ -461,7 +462,7 @@ class LocalModelRuntime:
         tmp = path.with_suffix(".tmp")
         _refuse_links(self.root, tmp)
         tmp.write_text(json.dumps(receipt, indent=1, sort_keys=True), encoding="utf-8")
-        os.replace(tmp, path)
+        replace_with_retry(tmp, path)
 
     def _ensure_weights(self, run: _Run) -> bool:
         m = run.model

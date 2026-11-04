@@ -53,6 +53,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_PROCESS_NAMES,
     NODE_ADAPTER_ENTRY_SEGMENTS,
 )
+from kiro_crew.atomic_write import replace_with_retry
 from kiro_crew.config.paths import config_dir
 from kiro_crew.env import describe_search_path
 from kiro_crew.json_line import parse_json_object_line
@@ -536,7 +537,7 @@ def _publish_gate_artifact(
             fh.write(payload)
         if not platform_compat.IS_WINDOWS:
             os.chmod(tmp, 0o400)
-        os.replace(tmp, target)
+        replace_with_retry(tmp, target)
     except OSError:
         with suppress(OSError):
             os.remove(tmp)
