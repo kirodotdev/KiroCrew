@@ -36,14 +36,30 @@ from kiro_crew.hooks import is_unc_shape, unc_probe_allowed
 # `D:\Users\...`, so backslash and the drive-letter colon MUST be allowed there or
 # EVERY Windows hook path is rejected (autoimport silently loads nothing). `\` and
 # `:` are not shell-injection vectors for an argv path, and the is_sensitive_path
-# + absolute-path + resolve() checks below still apply. POSIX keeps the original,
-# tighter allowlist (no backslash/colon).
+# + absolute-path + resolve() checks below still apply. A Windows profile folder is
+# often named after its owner (`C:\Users\José`), and autoimport scans under it, so
+# the Windows class also admits Unicode letters and digits: `\w` in a str pattern,
+# which still refuses the space, every shell metacharacter and their fullwidth
+# forms. POSIX keeps the original, tighter allowlist (ASCII, no backslash/colon).
 if platform_compat.IS_WINDOWS:
-    _SAFE_PATH_RE = re.compile(r"^[a-zA-Z0-9/_.\-\\:]+$")
+    _SAFE_PATH_RE = re.compile(r"^[\w/.\-\\:]+$")
 else:
     _SAFE_PATH_RE = re.compile(r"^[a-zA-Z0-9/_.\-]+$")
 _SAFE_MATCHER_RE = re.compile(r"^[a-zA-Z0-9_.*\-]+$")
 _MAX_MATCHER_LEN = 200
+
+
+def _first_refused_char(text: str) -> str:
+    """The first character of ``text`` the hook-path class refuses, rendered for a log.
+
+    A refused-path warning names it, so a user whose hook did not load can see which
+    character in the folder name stopped it. ``ascii`` keeps a control character or a
+    look-alike visible; the code point removes any doubt about which one it was.
+    """
+    for char in text:
+        if not _SAFE_PATH_RE.match(char):
+            return f"{char!a} (U+{ord(char):04X})"
+    return "none (empty path)"
 
 
 def _validate_hook_command(command: str, event: str) -> str | None:
@@ -59,8 +75,9 @@ def _validate_hook_command(command: str, event: str) -> str | None:
     # first — the same rule the SEL writer applies on its own side.
     if not _SAFE_PATH_RE.match(command):
         agent_mod.logger.warning(
-            "kiro_hooks[%s]: command contains disallowed characters: %s",
+            "kiro_hooks[%s]: command contains disallowed characters (first refused: %s): %s",
             event,
+            _first_refused_char(command),
             agent_mod._hook_diagnostic(command),
         )
         return None
@@ -88,8 +105,9 @@ def _validate_hook_command(command: str, event: str) -> str | None:
         return None
     if not _SAFE_PATH_RE.match(resolved):
         agent_mod.logger.warning(
-            "kiro_hooks[%s]: resolved path contains disallowed characters: %s",
+            "kiro_hooks[%s]: resolved path contains disallowed characters (first refused: %s): %s",
             event,
+            _first_refused_char(resolved),
             agent_mod._hook_diagnostic(resolved),
         )
         return None
