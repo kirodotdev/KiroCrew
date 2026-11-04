@@ -233,15 +233,12 @@ def main(argv=None, run=_gh):
     unreadable count prints nothing to stdout, so the caller can never mistake a
     failed read for zero.
 
-    ``REVIEW_PUSHES_STOP_AT`` (a positive integer) passes ``stop_at``: the count
-    stops once it reaches that number, so the reads past it are never made. Each
-    replaced head costs one or more check-run reads, so a full count on a long PR
-    is dozens of calls against the repository's shared REST quota, while a caller
-    that only tests a threshold needs no more than the threshold. It is an
-    environment variable, not a flag, because the GPT lane stages this file from
-    the PR's base commit: a base that predates the setting ignores it and counts
-    in full, where an unknown flag would fail the count. Unset, empty or not a
-    positive integer: the full count.
+    ``REVIEW_PUSHES_STOP_AT`` (a positive integer) passes ``stop_at``, so a
+    threshold test skips the check-run reads past it (a full count on a long PR
+    is dozens of calls on the shared REST quota). It is an environment variable,
+    not a flag, because the GPT lane stages this file from the PR's base commit:
+    an older base ignores it, where an unknown flag would fail the count. Unset,
+    empty or not a positive integer: the full count.
     """
     parser = argparse.ArgumentParser(description="Count a PR's pushes past a blocked head.")
     parser.add_argument("--repo", required=True, help="owner/name")

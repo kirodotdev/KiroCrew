@@ -272,20 +272,14 @@ def _item_target(repo: str, item: int) -> str:
     ``#N``, ``owner/repo#N``, and the full issue URL. ``\\b`` after the number
     stops ``#12`` matching ``#123``.
 
-    Shared by :func:`item_reference_re` and :func:`closing_reference_re` rather
-    than written twice, because the difference between them is the KEYWORD and
-    nothing else. Two copies of the target would let the spellings drift while
-    both patterns still looked right.
+    Shared by :func:`item_reference_re` and :func:`closing_reference_re`, which
+    differ only in the keyword, so the spellings cannot drift apart.
 
-    The bare ``#N`` form declines a number carrying a QUALIFIER --
-    ``otherowner/otherrepo#N``, ``v1.2#N`` -- because the only way a subtractive
-    filter can be wrong is a FALSE subtraction, and that is a silent denial of
-    work on an item nobody is fixing. ``owner/repo#N`` for THIS repository is
-    still matched, by its own alternative, and that alternative carries the SAME
-    left boundary: without it a lookalike owner whose name merely ENDS in this
-    one (``fakeowner/repo#N``) would match by substring, which is the same false
-    subtraction arriving through the other door. The lookbehind is one character
-    wide, which is what Python's ``re`` allows.
+    The bare ``#N`` form declines a QUALIFIED number (``other/repo#N``,
+    ``v1.2#N``): a false subtraction silently denies work on an item nobody is
+    fixing. The ``owner/repo#N`` alternative carries the same left boundary, so
+    ``fakeowner/repo#N`` does not match by substring. The lookbehind is one
+    character wide, as Python's ``re`` requires.
     """
     owner_repo = re.escape(repo)
     return (
