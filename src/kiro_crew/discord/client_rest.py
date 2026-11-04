@@ -8,15 +8,10 @@ invalid-request breaker far short of Discord's IP block, and answers a
 the route key a bucket is charged to, the bounded most-recently-used store the maps
 share, the outcome and edit classifications and the shared aiohttp session. Each wait
 the ladder serves is paired with the destination re-check in
-:mod:`kiro_crew.discord.client_recheck`. Each function here whose first parameter is
-``self`` is bound as the ``DiscordClient`` attribute of the same name in
-:mod:`kiro_crew.discord.client`, which keeps the client's state, so ``self.<name>(...)``
-calls and instance and class patches reach it as they reach a method defined in the
-class body. They read ``_breaker_until``, ``_global_ready_at``, ``_proxy``,
-``_session``, ``_session_lock`` and ``_token``, write ``_breaker_until``,
-``_global_ready_at`` and ``_session``, and update ``_holds``, ``_invalid_hits`` and
-``_route_buckets`` in place. New ladder work goes here; the REST verbs, the bodies they
-send and the ``api_json`` / ``api_files`` entry points stay on
+:mod:`kiro_crew.discord.client_recheck`. Each function whose first parameter is ``self``
+is bound as the ``DiscordClient`` attribute of the same name, so ``self.<name>(...)``
+calls and patches reach it like a method; the state stays on the client. New ladder
+work goes here; the REST verbs, their bodies and ``api_json`` / ``api_files`` stay on
 :class:`~kiro_crew.discord.client.DiscordClient`.
 """
 
