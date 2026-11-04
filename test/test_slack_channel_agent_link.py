@@ -1796,6 +1796,7 @@ class TestLinkWritersJudgeTheRecordedAgent:
         o.slack.post_message.assert_not_awaited()
         o.dashboard_state.link_slack.assert_not_called()
         o.slack.post_ephemeral.assert_awaited_once()
+        assert o.sessions.get_slack_link("dashboard:s1") == (None, None)
 
     @pytest.mark.asyncio
     async def test_an_unreadable_record_fails_closed(self, monkeypatch):
