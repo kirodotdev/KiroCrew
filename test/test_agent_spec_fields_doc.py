@@ -201,12 +201,8 @@ def test_app_skill_mapping_names_the_namespaced_path(
 ) -> None:
     """The page's app-skill rule: one namespaced entry per skill, never the flat link.
 
-    Driven through ``_register_skills`` for every case the page lists: a plain skill
-    gets both links, while a skill named after its app, the reserved ``auto`` and a
-    name a real directory already holds get the namespaced link only. The ``~/`` half
-    is driven through ``expand_skill_uri``, which must expand against the home and
-    ignore ``KIROCREW_HOME``. The mapping half is driven through the loader's
-    ``_scoped_entries``, the selection a session's skill block is built from.
+    A plain skill gets both links; one named after its app, ``auto``, or an existing
+    directory gets only the namespaced one. ``expand_skill_uri`` ignores ``KIROCREW_HOME``.
     """
     import json
 

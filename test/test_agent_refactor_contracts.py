@@ -1,19 +1,10 @@
 """Contracts the agent-materialization split must carry across unchanged.
 
-``kiro_crew.agent`` is the import path every caller, test and document uses, and its
-implementation now lives in owners under ``kiro_crew.agent_materialization``. These
-tests freeze what the pre-split module offered and what it wrote, independently of
-where the code lives:
-
-* the SURFACE: every name the module bound, with its kind, signature and value;
-* ``toolsSettings.subagent.availableAgents``: a kiro-cli-owned allowlist Crew reads at
-  its own spawn gate (``subagent_parts/agent_policy.py``), carried byte-for-byte through every read,
-  normalize, rebuild, derived-agent and atomic-write path;
-* the tool-less guest spec, including its model fallback and install order;
-* the conductor prompts and grant tuples, which are spec bytes too.
-
-``test_agent_refactor_spec_bytes.py`` freezes the whole rebuild's output; this module
-pins the individual contracts a reviewer would otherwise have to find in that output.
+``kiro_crew.agent`` is the import path everyone uses; the code lives under
+``kiro_crew.agent_materialization``. Pinned: the module surface, the
+``toolsSettings.subagent.availableAgents`` allowlist (read by
+``subagent_parts/agent_policy.py``) byte-for-byte on every path, the guest spec, and the
+conductor prompts and grants. ``test_agent_refactor_spec_bytes.py`` freezes whole output.
 """
 
 from __future__ import annotations
@@ -757,11 +748,8 @@ def test_derived_specs_inherit_the_shape_from_the_template(
 ) -> None:
     """``agent.json`` overrides reach every spec derived from ``build_agent_config``.
 
-    The conductors and the research agent start from ``build_agent_config``, so an
-    operator's ``subagent`` settings land on them as written. The worker starts from
-    the same template and mirrors only ``_WORKER_MIRRORED_SHAPES`` from the default
-    spec on disk, which does not include ``toolsSettings`` -- so its settings are the
-    template's, whatever the default spec on disk carries.
+    The worker mirrors only ``_WORKER_MIRRORED_SHAPES`` from the default spec on disk,
+    which excludes ``toolsSettings``, so its settings are the template's.
     """
     rig = _Rig(tmp_path, monkeypatch)
     override = {"toolsSettings": {"subagent": SUBAGENT_SHAPES[shape] or {}}}

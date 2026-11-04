@@ -41,15 +41,9 @@ def _reject_json_constant(name: str):  # pragma: no cover - raises by design
 def _sidecar_unreadable_once(monkeypatch, attr: str = "get_model_managed") -> list[bool]:
     """Make the FIRST call of ``agent_state.<attr>`` see an unreadable sidecar.
 
-    Returns the list the call records its ``strict`` flag into (``True`` for a
-    reader that is strict by construction), so a test can assert the read it
-    hit was the strict one. The lenient answer to an I/O error is ``None`` --
-    indistinguishable from "nothing recorded" -- and the strict answer is the
-    error itself; later calls reach the real sidecar.
-
-    One-shot by design: the mutators around both call sites already read
-    strict, so a sidecar that STAYS unreadable is caught by one of them and a
-    test against it would pass for the wrong reason.
+    Returns the recorded ``strict`` flags, so a test can assert the strict read was
+    hit (a lenient read answers ``None``, same as "nothing recorded"). One-shot because
+    the surrounding mutators read strict and would catch a sidecar that stays broken.
     """
     real = getattr(agent_state, attr)
     seen: list[bool] = []
@@ -125,12 +119,8 @@ class TestInstallAgent:
     def test_fresh_install_drops_unsupported_entry_keys(self, tmp_path: Path):
         """A managed entry carries only our fields plus the user's own.
 
-        kiro-cli rejects a spec with a field it does not know, and it rejects the
-        WHOLE agent when it does -- so one stray ``cwd`` on a managed server would
-        take every Kiro Crew tool down with it. Preserving the user's
-        timeout/env/disabled is what put unknown keys in reach on this path (the
-        build would otherwise rebuild the entry from scratch), so the allow-list ships
-        with the preservation rather than after it.
+        kiro-cli rejects the WHOLE agent for an unknown field, so one stray ``cwd`` on a
+        managed server would take every Kiro Crew tool down.
         """
         cfg_dir = _bundled_defaults(tmp_path)
         user_home = tmp_path / "kirocrew_home"
@@ -210,12 +200,8 @@ class TestInstallAgent:
     def test_fresh_install_strips_launcher_exec_env_from_a_managed_entry(self, tmp_path: Path):
         """A managed shim's env cannot choose what the shim executes.
 
-        Some managed commands are scripts whose shebang resolves the interpreter by
-        NAME at exec time, so a declared ``PATH`` picks the binary and ``BASH_ENV``
-        names a file a non-interactive shell sources first. Neither configures our
-        process; both replace the program. Case variants are asserted because
-        ``sanitize_spec_env`` keeps each key's original spelling while Windows env
-        names are case-insensitive.
+        A shebang resolves the interpreter by name, so ``PATH`` or ``BASH_ENV`` replaces
+        the program. Case variants matter: Windows env names are case-insensitive.
         """
         cfg_dir = _bundled_defaults(tmp_path)
         user_home = tmp_path / "kirocrew_home"
@@ -249,18 +235,15 @@ class TestInstallAgent:
             path = _run_install(tmp_path, cfg_dir)
         entry = json.loads(path.read_text(encoding="utf-8"))["mcpServers"]["kirocrew-core"]
 
-        # The user's own variable is still preserved -- that is the fix this PR is.
+        # The user's own variable is still preserved.
         assert entry["env"] == {"MINE": "keep"}
 
     @pytest.mark.parametrize("literal", ["NaN", "Infinity", "-Infinity"])
     def test_fresh_install_drops_a_non_finite_timeout(self, tmp_path: Path, literal: str):
         """A float can be the right type and still not be representable in JSON.
 
-        Python's ``json`` accepts these three literals on the way in and writes them
-        back verbatim, so a type check alone ships a spec no strict parser will
-        read -- and kiro-cli rejects the whole agent with it. All three are
-        parametrized because ``isfinite`` is one test for one class, and a fix that
-        only named ``NaN`` would leave the infinities.
+        Python's ``json`` round-trips these literals, which strict parsers and kiro-cli
+        reject. All three are listed so a check naming only ``NaN`` fails.
         """
         cfg_dir = _bundled_defaults(tmp_path)
         user_home = tmp_path / "kirocrew_home"
@@ -282,15 +265,9 @@ class TestInstallAgent:
     def test_refresh_drops_non_string_tool_list_items(self, tmp_path: Path, monkeypatch):
         """A list of the right type can still hold the wrong items.
 
-        Both list-valued keys carry tool NAMES, so ``disabledTools: [1]`` passes a
-        container-only check and still emits a spec kiro-cli refuses. Filtered per
-        ITEM, not dropped whole -- the same rule this fix applies to env entries --
-        because discarding the list would re-expose every tool the user did name
-        correctly, which is the opposite of what a guard is for.
-
-        ``mcp.honour_auto_approve`` is pinned on so the subject here stays the
-        per-item filter: with it off the whole key is dropped by the ungoverned
-        floor and the filter would have nothing to act on.
+        ``disabledTools: [1]`` passes a container check. Filtered per item, since
+        dropping the list would re-expose every tool the user named correctly.
+        ``mcp.honour_auto_approve`` is on, or the floor drops the key and nothing is filtered.
         """
         from kiro_crew.config import live
         from kiro_crew.config.loader import KiroCrewConfig
@@ -382,32 +359,13 @@ class TestInstallAgent:
     def test_fresh_install_strips_reserved_control_env_keys(self, tmp_path: Path):
         """agent.json cannot smuggle control-plane env vars into a managed server.
 
-        ``KIROCREW_APPROVAL_MODE`` is read straight out of os.environ by
-        mcp_tools/spawn.py and forwarded as ``approval_mode`` on every
-        ``spawn_run`` subagent launch. If an agent-writable agent.json could
-        seed it onto kirocrew-core's env, a clean rebuild would hand every
-        subagent auto-approval — a full PreToolUse-gate bypass. The other
-        session-identity/secret keys are stripped for the same reason: none
-        of them is something agent.json should ever be able to set.
+        ``KIROCREW_APPROVAL_MODE`` on kirocrew-core would give every ``spawn_run``
+        subagent auto-approval, and ``PYTHONPATH`` would run a ``sitecustomize`` inside
+        the process holding the API secret.
 
-        The interpreter/loader names are asserted alongside them because they
-        reach the same outcome one layer earlier: a managed server is a Python
-        entry point, so a ``PYTHONPATH`` here lets a ``sitecustomize`` module run
-        during interpreter startup -- inside the process holding the internal API
-        secret, with no tool call for the gate to intercept.
-
-        The strip is ``env.sanitize_spec_env``, so the property under test is
-        the one a name list cannot state: two whole NAMESPACES, ``KIROCREW_``
-        and ``PYTHON``, are refused by PREFIX and case-INSENSITIVELY.
-        ``KIROCREW_CLI`` is asserted because ``mcp_cron._caller_is_cli()`` reads
-        it as "skip per-session ownership entirely";
-        ``PYTHONBREAKPOINT`` because it takes a dotted callable and imports it;
-        ``KIROCREW_NOT_YET_INVENTED`` and ``PYTHONNOTYETINVENTED`` stand for the
-        next variable in each namespace that nobody has added yet, which is the
-        case an enumeration structurally cannot cover. The odd-cased spellings
-        matter on Windows, where environment names are case-insensitive so
-        ``Kirocrew_Approval_Mode`` reaches the consumer exactly like the
-        upper-cased name.
+        ``env.sanitize_spec_env`` refuses the ``KIROCREW_`` and ``PYTHON`` namespaces by
+        prefix, case-insensitively (Windows env names are). The ``*NOT_YET_INVENTED``
+        names stand for variables nobody has added yet.
         """
         cfg_dir = _bundled_defaults(tmp_path)
         user_home = tmp_path / "kirocrew_home"
@@ -546,13 +504,8 @@ class TestInstallAgent:
     def test_fresh_install_drops_non_string_env_values(self, tmp_path: Path):
         """An ill-typed ``env`` value never reaches the emitted spec.
 
-        The container check above guards ``env`` itself; this guards its
-        ENTRIES. JSON permits any type as a value, and the emitted
-        ``mcpServers`` env is a string map, so copying ``{"PORT": 3000}``
-        through would ship a spec kiro-cli rejects -- costing the user every
-        Crew MCP tool because of one mistyped config value. The bad entries are
-        dropped rather than coerced, and a well-typed sibling still survives,
-        so one bad value does not discard the whole block.
+        The emitted env is a string map, and kiro-cli rejects the whole spec for
+        ``{"PORT": 3000}``. Bad entries are dropped, not coerced; good siblings survive.
         """
         cfg_dir = _bundled_defaults(tmp_path)
         user_home = tmp_path / "kirocrew_home"
@@ -587,25 +540,10 @@ class TestInstallAgent:
     def test_fresh_install_pins_our_data_home_against_a_declared_home(self, tmp_path: Path):
         """A declared ``HOME`` cannot relocate a managed shim's data home.
 
-        ``HOME`` is deliberately NOT in ``env.py``'s deny set -- a user's own MCP
-        server legitimately needs it -- so preserving a user's ``env`` means a
-        managed entry can now carry one. That reaches ``Path.home()``, which is
-        how a managed shim resolves OUR data home when no pin is present, so a
-        declared ``HOME`` would relocate the whole store: ``cron_add`` would
-        report success where the gateway never reads and the job would never run.
-
-        Stripped for this population rather than pinned unconditionally. On a
-        default install the child DERIVES the right home by inheriting the
-        gateway's own ``HOME``, and ``TestDataHomePin`` in
-        ``test_computer_use_registration.py`` pins that a default install emits
-        no ``env`` at all, so that an existing user's ``kirocrew.json`` is not
-        churned. Removing the hijack keeps both properties; adding a pin would
-        have broken the second one.
-
-        The case variants are asserted because ``sanitize_spec_env`` preserves
-        each key's ORIGINAL case, so a spec declaring ``userprofile`` arrives
-        with that spelling -- and Windows env names are case-insensitive, so an
-        exact-case strip would miss it while the OS still honoured it.
+        A managed shim resolves our data home via ``Path.home()``, so a declared ``HOME``
+        would move the store (``cron_add`` would write where the gateway never reads).
+        Stripped, not pinned: ``TestDataHomePin`` requires a default install to emit no
+        ``env``. Case variants matter because Windows env names are case-insensitive.
         """
         cfg_dir = _bundled_defaults(tmp_path)
         user_home = tmp_path / "kirocrew_home"
@@ -743,11 +681,8 @@ class TestInstallAgent:
     ):
         """A fresh install whose sidecar read fails once writes nothing and tries again.
 
-        The seed is one strict, locked claim. When it cannot read the sidecar it
-        raises BEFORE the spec is written, so nothing is decided on a ``None``
-        that may hide a recorded pick, and the next rebuild is still a fresh
-        install. That pass seeds exactly what a readable sidecar warrants: an
-        owner's ``False`` stays ``False``; nothing recorded becomes ``True``.
+        The strict claim raises before the spec is written, so a ``None`` hiding a
+        recorded pick decides nothing. Next pass: ``False`` stays, unset becomes ``True``.
         """
         cfg_dir = _bundled_defaults(tmp_path)
         if recorded is not None:
@@ -770,10 +705,8 @@ class TestInstallAgent:
     ):
         """A managed spec keeps its model for the pass whose sidecar read fails.
 
-        Same one-shot error at the re-sync read. The model is left as the spec
-        has it -- by decision, with a warning, not because a lenient ``None``
-        happened to be falsy -- and the refresh neither raises nor rebuilds the
-        spec from defaults. The next readable pass applies the shipped model.
+        The model is held by decision, with a warning, and the spec is not rebuilt from
+        defaults. The next readable pass applies the shipped model.
         """
         cfg_dir = _bundled_defaults(tmp_path)
         kiro_dir = tmp_path / "kiro_agents"
@@ -807,12 +740,8 @@ class TestInstallAgent:
     def test_existing_config_refreshes_security_fields(self, tmp_path: Path):
         """hooks are always overwritten from bundled.
 
-        ``deniedCommands`` are NOT injected into the agent spec (command
-        denial lives in Kiro Crew's own hooks.py PreToolUse gate). A stale
-        ``deniedCommands`` left by an older build is STRIPPED on refresh so
-        kiro-cli stops enforcing it ahead of the hook gate — otherwise an
-        upgraded install's Settings > Security opt-out would silently stay
-        blocked. Here the whole (now-empty) ``toolsSettings`` is removed.
+        Command denial lives in the hooks.py PreToolUse gate, so a stale
+        ``deniedCommands`` is stripped, or kiro-cli would block a Settings opt-out.
         """
         cfg_dir = _bundled_defaults(tmp_path)
         kiro_dir = tmp_path / "kiro_agents"
@@ -829,7 +758,7 @@ class TestInstallAgent:
 
         path = _run_install(tmp_path, cfg_dir)
         config = json.loads(path.read_text(encoding="utf-8"))
-        # Legacy deniedCommands injection is retired AND stripped on upgrade.
+        # A stale deniedCommands is stripped, with its now-empty toolsSettings.
         assert "toolsSettings" not in config
         assert config["hooks"] == {"preToolUse": "audit"}
 
@@ -856,13 +785,9 @@ class TestInstallAgent:
     def test_existing_config_keeps_a_hand_added_mcp_auto_approve(self, tmp_path: Path):
         """A hand-added ``autoApprove`` survives a restart.
 
-        Nothing DECLARES these verbs -- the managed registry seeds none -- so they
-        are the owner-authored kind, and the owner's own statement about their own
-        tools is respected by default. They carry a real cost, which is why the
-        setting exists: kiro-cli approves an autoApproved MCP tool locally and emits
-        no permission request, so no card is shown and ``hooks.on_tool_call`` never
-        runs for it. ``mcp.honour_auto_approve: false`` drops them (the test below);
-        the command refresh is unaffected either way.
+        The managed registry seeds none, so these are the owner's own. kiro-cli approves
+        them locally and ``hooks.on_tool_call`` never runs, which is why
+        ``mcp.honour_auto_approve: false`` exists to drop them (the test below).
         """
         cfg_dir = _bundled_defaults(tmp_path)
         kiro_dir = tmp_path / "kiro_agents"

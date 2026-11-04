@@ -33,14 +33,9 @@ ROLLBACK_PATH = "/api/agent-panel/dashboard/rollback"
 def _page_store(monkeypatch, **over: Any) -> SimpleNamespace:
     """A store standing in for the instance module, through this file's own seam.
 
-    The same `sys.modules` + package-attribute pair `_adopt_dashboard` uses, and for
-    the same reason: these four handlers are being tested, not the store underneath
-    them, and driving the real store would bind every case here to the shipped
-    catalogue's twelve directories and their sizes.
-
-    ``InstanceRefused`` is a REAL exception class rather than a sentinel, because
-    ``_instance_refusal`` separates a refusal from an unexpected failure with
-    ``isinstance`` -- a stub that got that wrong would make a 400 case pass as a 503.
+    Patched like `_adopt_dashboard` so the handlers are tested without the shipped
+    catalogue. ``InstanceRefused`` is a real exception class because
+    ``_instance_refusal`` uses ``isinstance`` to tell a 400 from a 503.
     """
 
     class InstanceRefused(Exception):

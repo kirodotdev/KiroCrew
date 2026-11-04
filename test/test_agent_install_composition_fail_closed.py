@@ -1,19 +1,8 @@
 """``rebuild_agent_config`` must not swallow ``PlatformCompositionError``.
 
-Every builtin installer reachable from ``rebuild_agent_config`` derives its spec
-from ``build_agent_config()``, which reads the platform context through
-``safe_context_call``. That helper re-raises :class:`PlatformCompositionError` as
-a fail-closed signal (a non-standalone host that cannot compose its companion must
-abort rather than silently keep a stale, wrongly-ceilinged agent config). The
-``safe_context_call`` contract exists so a call site "cannot accidentally swallow"
-that signal. Each installer wrapper in ``rebuild_agent_config`` therefore guards
-its blanket ``except Exception`` with an ``except PlatformCompositionError`` arm
-ahead of it, so the fail-closed signal is never caught there.
-
-These tests pin the seam: a ``PlatformCompositionError`` raised by any one
-installer propagates out of ``rebuild_agent_config``, while any other exception
-from the same installer is still logged and swallowed so one agent's install
-problem never aborts the whole rebuild.
+``safe_context_call`` re-raises :class:`PlatformCompositionError` so a host that cannot
+compose its companion aborts instead of keeping a wrongly-ceilinged config. It must
+propagate out of every installer; any other installer exception is logged and swallowed.
 """
 
 from __future__ import annotations
@@ -167,11 +156,8 @@ def test_the_independent_repairs_run_before_the_composition_error_raises(
 ) -> None:
     """A deferred composition error does not skip the companion-agnostic repairs.
 
-    The signal is captured and re-raised at the end of the rebuild so the
-    independent repairs -- the ``repair_agent_configs`` hook-key sanitization and
-    the fork refresh -- still run on the way out, the same contract the
-    dashboard-author installer's capture-then-raise already honours. An early
-    installer raising must not rob a later security repair of its run.
+    The signal is re-raised at the end so ``repair_agent_configs`` hook-key sanitization
+    and the fork refresh still run.
     """
     _Rig(tmp_path, monkeypatch)
 

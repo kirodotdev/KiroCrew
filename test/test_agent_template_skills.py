@@ -1,6 +1,6 @@
 """Tests for mapping skills to agent templates via ``skill://`` resources.
 
-Three layers, matching the three holes this feature closes:
+Three layers:
 
 * READ — ``agent_discovery`` derives an agent's skills from its ``skill://``
   resources.
@@ -429,12 +429,8 @@ class TestSkillCatalogWalkBench:
     ):
         """A home the pins did not move is refused, not built into.
 
-        The Windows shape: ``Path.home()`` reads ``USERPROFILE`` there and never
-        ``HOME``, so a script that pinned HOME alone resolved ``kiro-user/`` to the
-        runner's real profile, wrote its skills into it, and then found the tree
-        "not at rest" because nothing backdated them. Simulated on every platform
-        by a ``Path.home()`` the environment does not move: the run must stop with
-        the escaping root named and the profile untouched.
+        On Windows ``Path.home()`` reads ``USERPROFILE``, not ``HOME``. Simulated with a
+        ``Path.home()`` the env does not move: the run names the root and writes nothing.
         """
         import skill_catalog_walk_bench as bench
 
@@ -630,12 +626,9 @@ class _RefreshingState(_State):
 class TestPatchReordersManagedSkills:
     """A ``skills`` PATCH that permutes the mapped skills must persist that order.
 
-    ``apply_skill_mapping`` rebuilds ``resources`` as every non-managed entry first,
-    then the managed ``skill://`` URIs in request order. So the list it hands the
-    locked merge differs from the persisted one both when the caller reordered the
-    skills AND when the author merely interleaved a ``file://`` glob (or a
-    hand-written wildcard) between two skills. The merge has to tell those apart:
-    honour the first, leave the second byte-for-byte alone.
+    ``apply_skill_mapping`` puts non-managed entries first, so its list also differs
+    when a ``file://`` glob merely sits between two skills. The merge honours a real
+    reorder and leaves an interleaved layout byte-for-byte alone.
     """
 
     ONE = "skill://~/.kiro/skills/one/SKILL.md"
@@ -727,14 +720,9 @@ class TestPatchReordersManagedSkills:
     ):
         """The requested order applies to the URIs the fresh read still carries, only.
 
-        The order was computed against a snapshot taken before the spec lock. A URI a
-        co-owner unmapped in between is gone from the locked read and must stay gone;
-        the reply then reports what was persisted, so the caller can see the difference.
-
-        The removed skill is named FIRST in a three-skill reorder on purpose: a merge
-        that paired the requested order with the merged list's slots without dropping
-        the absent URI would write it back into slot 0 and push the last carried URI
-        off the end -- named last, the absent URI would fall off the pairing unseen.
+        A URI a co-owner unmapped after the pre-lock snapshot must stay gone. It is named
+        FIRST: a slot-pairing merge would write it back into slot 0, while named last it
+        would fall off the pairing unseen.
         """
         from kiro_crew.dashboard.handlers import agents as agents_handlers
 
@@ -766,10 +754,8 @@ class TestPatchReordersManagedSkills:
     def test_a_skill_a_concurrent_writer_added_is_kept_and_reported(self, fake_home, monkeypatch):
         """The reply lists every skill the WRITTEN spec maps, not only the ones requested.
 
-        A co-owner maps a third skill between this writer's snapshot and the locked
-        read. The merge keeps it -- it is not a URI this request removed -- so the reply
-        has to carry it as well: the skills editor takes the reply as its next state,
-        and a reply missing the addition would have the editor's next toggle unmap it.
+        The editor takes the reply as its next state, so a skill a co-owner mapped
+        meanwhile must be in it, or the next toggle unmaps it.
         """
         from kiro_crew.dashboard.handlers import agents as agents_handlers
 
@@ -803,14 +789,9 @@ class TestPatchReordersManagedSkills:
     def test_a_skills_patch_walks_the_skill_roots_once(self, fake_home, monkeypatch):
         """One PATCH, one catalog walk: the reply reuses the walk that validated the keys.
 
-        ``enumerate_skill_catalog`` caches nothing and walks every skill root. The
-        mapping walks them to validate the keys; a reply resolved by a second walk over
-        the written spec doubles the filesystem cost of every interactive chip toggle,
-        and that walk is hundreds of milliseconds on a 200-skill tree against about one
-        for the re-check (``test/skill_catalog_walk_bench.py``). With the roots at rest
-        (see ``_settle``) the re-check after the write is a stat per directory and no
-        walk. The reply is still the persisted order, so the single walk cannot be
-        bought by echoing the request.
+        A walk costs hundreds of ms on a 200-skill tree (``test/skill_catalog_walk_bench.py``);
+        with the roots at rest (``_settle``) the re-check is a stat per directory. The
+        reply is still the persisted order, not an echo of the request.
         """
         cfg = self._agent(fake_home, monkeypatch, [self.ONE, self.TWO])
         _settle(fake_home / ".kiro" / "skills")
@@ -828,11 +809,8 @@ class TestPatchReordersManagedSkills:
     ):
         """A skill that did not exist when the mapping walked must still reach the receipt.
 
-        A co-owner installs ``three`` on disk AND maps it after the mapping validated the
-        keys but before the locked read. The merge keeps the URI, and the mapping's
-        catalog cannot name it -- so the reply must notice the roots moved and walk them
-        again, or the skills editor's next toggle unmaps a skill the written spec carries.
-        Two walks here, and only here.
+        The mapping's catalog cannot name a skill installed after it walked, so the reply
+        must notice the roots moved and walk again. Two walks here, and only here.
         """
         from kiro_crew.dashboard.handlers import agents as agents_handlers
 

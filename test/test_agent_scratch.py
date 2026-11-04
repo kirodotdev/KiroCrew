@@ -970,15 +970,9 @@ def _git(
 ) -> str:
     """Run git for a fixture, with no host config and a fixed identity.
 
-    Auto-maintenance and auto-gc are off: either can start a background git that
-    creates and removes ``.git/objects/maintenance.lock`` while a test walks the
-    tree, so a snapshot could list the file and then fail to read it. ``-c`` is
-    carried to every git the command starts, the detached one included.
-
-    *trace_to* names a file that receives git's trace2 event stream, so a test
-    can see which child processes a fixture command started. *auto_maintenance*
-    turns git's auto maintenance back on; only the regression test's control
-    command sets it.
+    Auto-maintenance and auto-gc are off: a background git can create and remove
+    ``.git/objects/maintenance.lock`` mid-walk. *trace_to* receives git's trace2
+    events; *auto_maintenance* turns maintenance back on for one control command.
     """
     assert _GIT is not None
     env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
