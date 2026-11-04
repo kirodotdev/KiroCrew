@@ -984,7 +984,22 @@
         "step_n": "Step {{n}}",
         "try_again": "Try again",
         "unrecognised": "Unrecognised",
-        "use_a_local_folder_instead": "Use a local folder instead"
+        "use_a_local_folder_instead": "Use a local folder instead",
+        "start_kind_figma": "Critique Figma file",
+        "start_kind_repo": "Critique repo",
+        "start_kind_local": "Critique local code",
+        "start_kind_url": "Critique running app",
+        "start_this": "Critique this",
+        "start_plain": "Critique",
+        "staged_one_hint": "1 screen · add another to critique it as a flow.",
+        "staged_flow_hint_one": "{{n}} screen · this order is the flow order — reorder or remove before you start.",
+        "staged_flow_hint_other": "{{n}} screens · this order is the flow order — reorder or remove before you start.",
+        "title_blocked": "I couldn’t get in",
+        "title_ask": "What should I critique?",
+        "link_placeholder_staged": "Using your screenshots — clear them to critique a link instead",
+        "link_placeholder": "Figma link · git repo · a folder on this machine · a running URL (localhost or a deployed preview)",
+        "link_label": "Link to critique",
+        "render_before_judging": "I render everything before judging it — never from code alone. If your app is already running, paste its URL and I can measure real colours and sizes instead of estimating them."
       },
       "designCritiquePage": {
         "a_critique_is_still_running_click_to_watch_it": "A critique is still running — click to watch it",
@@ -1031,7 +1046,18 @@
         "what_s_working": "What’s working",
         "what_you_ll_get": "What you’ll get",
         "your_critiques": "Your critiques",
-        "your_question_click_to_see_the_answer": "Your question — click to see the answer"
+        "your_question_click_to_see_the_answer": "Your question — click to see the answer",
+        "rail_uploading": "Uploading…",
+        "rail_reading": "Reading your design…",
+        "rail_flow_one": "A flow of {{n}} screen — I’ll also check the jumps between them.",
+        "rail_flow_other": "A flow of {{n}} screens — I’ll also check the jumps between them.",
+        "rail_one_screen": "One screen.",
+        "rail_pending_figma": "A Figma file — rendering it before judging it.",
+        "rail_pending_repo": "A repo — rendering it before judging it.",
+        "rail_pending_local": "Local code — rendering it before judging it.",
+        "rail_pending_url": "A running app — rendering it before judging it.",
+        "rail_pending_design": "A design — rendering it before judging it.",
+        "rail_getting_ready": "Getting the screens ready."
       },
       "findingRow": {
         "based_on": "Based on",
