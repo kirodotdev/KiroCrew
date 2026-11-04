@@ -18,6 +18,7 @@ import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from fake_child_helpers import read_child_records, reap_recorded_children, write_recording_child
 from mcp_discovery_helpers import (  # noqa: F401 -- the autouse fixture registers by import
     _clear_cache,
     _passthrough_sandbox,
@@ -29,7 +30,6 @@ from conftest import host_abs
 from kiro_crew import platform_compat
 from kiro_crew.mcp_discovery import McpServerInfo, _read_stdio_jsonrpc_response, probe_server
 from kiro_crew.testing.wait import async_wait_until
-from fake_child_helpers import read_child_records, reap_recorded_children, write_recording_child
 
 
 class TestProbeServerProcessCleanup:

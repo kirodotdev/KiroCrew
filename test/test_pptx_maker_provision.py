@@ -998,9 +998,7 @@ class TestProvision:
             reap_recorded_children(child)
         assert fetch.call_args.args[2] == str(uv)
         records = read_child_records(child)
-        assert [record["argv"][1:] for record in records] == [
-            ["sync", "--project", str(mcp_dir)]
-        ]
+        assert [record["argv"][1:] for record in records] == [["sync", "--project", str(mcp_dir)]]
         assert outcome.ok is False
         assert "dependency resolve failed: resolve refused" in outcome.log
 
