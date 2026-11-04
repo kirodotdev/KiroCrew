@@ -151,6 +151,32 @@ describe('ChatEmbed pickers with the grants', () => {
     expect(folders.every(f => f.getAttribute('dir') === 'rtl')).toBe(true)
   })
 
+  it('keeps the previous @ rows on screen while the next scoped read is in flight', async () => {
+    mount(GRANTED)
+    await act(async () => { type('see @ap') })
+    await waitFor(() => expect(within(screen.getByRole('listbox')).getByText('app.ts')).toBeInTheDocument())
+
+    // Hold every later scoped answer behind a deferred, so the in-flight
+    // window is exact rather than a guess at how long the read needs.
+    let releaseAnswer: (() => void) | undefined
+    const base = mockGet.getMockImplementation()!
+    mockGet.mockImplementation(async (path: string) => {
+      if (path.startsWith(EMBED_FILE_SEARCH_PATH)) await new Promise<void>(r => { releaseAnswer = r })
+      return base(path)
+    })
+
+    // A longer token is a new query key under the same scoped source and the
+    // same project slot: the previous rows stay bridged on screen while its
+    // answer is held, instead of dropping to the searching state. The scope
+    // prefix in the key (`app:host`) shifts the project slot, so the bridge
+    // must read the project through that offset, not at a fixed index.
+    await act(async () => { type('see @app') })
+    await waitFor(() => expect(releaseAnswer).toBeDefined(), { timeout: 3000 })
+    expect(within(screen.getByRole('listbox')).getByText('app.ts')).toBeInTheDocument()
+    await act(async () => { releaseAnswer!() })
+    await waitFor(() => expect(within(screen.getByRole('listbox')).getByText('app.ts')).toBeInTheDocument())
+  })
+
   it('removing a picked file chip also takes its @token out of the text', async () => {
     mount(GRANTED)
     await act(async () => { type('see @app') })
