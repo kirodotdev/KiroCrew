@@ -111,11 +111,17 @@ function identityFamily(version) {
  *        evict-on-payload-alone behavior.
  * @param {boolean} [opts.bundledGateway=false] the listener's executable was
  *        positively identified beneath this desktop install's backend-dist.
+ * @param {string} [opts.bundleVersion=""] the version this install's own
+ *        folder is named for, when a packager names folders by a build number
+ *        that differs from ownVersion. The stale check compares the gateway
+ *        against it; the release family still comes from ownVersion.
  * @returns {{action:"reuse", reason:string} |
  *           {action:"warn-stale", oldVersion:string, reason:string} |
  *           {action:"takeover-prompt", otherFamily:"prod"|"nightly", otherVersion:string}}
  */
-function decideGatewayAction(ownVersion, remoteHealth, { localOwner = "unknown", bundledGateway = false } = {}) {
+function decideGatewayAction(ownVersion, remoteHealth, {
+  localOwner = "unknown", bundledGateway = false, bundleVersion = "",
+} = {}) {
   const own = identityFamily(ownVersion);
   // A shell we can't classify never evicts anyone.
   if (own === null) return { action: "reuse", reason: "unclassified-shell" };
@@ -131,7 +137,7 @@ function decideGatewayAction(ownVersion, remoteHealth, { localOwner = "unknown",
     // Warn only for that exact local bundled gateway; never warn for a tunnel,
     // a separate CLI/service install, or a newer gateway on downgrade.
     if (bundledGateway && (localOwner === "kirocrew" || localOwner === "service")
-        && isNewerVersion(ownVersion, remoteHealth.version) === true) {
+        && isNewerVersion(bundleVersion || ownVersion, remoteHealth.version) === true) {
       return { action: "warn-stale", oldVersion: remoteHealth.version, reason: "same-family" };
     }
     return { action: "reuse", reason: "same-family" };

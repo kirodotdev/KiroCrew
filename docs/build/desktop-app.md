@@ -706,8 +706,16 @@ reusing a same-family local gateway on a fixed-path POSIX install, the shell
 checks whether its sole listener is running from this app's current bundled
 backend path. If that bundled gateway reports an older version than the app,
 the shell warns that updated features may be unavailable and offers Continue or
-Quit. The warning explains how to stop the old gateway before reopening the
-app; it adds service guidance only when the listener is service-classified.
+Quit. On an install that keeps each version in its own folder, the same warning
+covers the previous version's gateway: its path is this app's path with one
+version-named folder swapped for the version the gateway reports. That folder
+is found by the swap, not by the app's own version, because a packager may
+name folders by a build number (`0.12.0.4`) while the app reports its release
+version (`0.12.0-rc.5`); the warning then compares and names the folder's
+version. A fourth build-number part decides when the first three tie
+(`0.12.0.4` is newer than `0.12.0.3`). The warning explains how to stop the old
+gateway before reopening the app; it adds service guidance only when the
+listener is service-classified and, on macOS, launchd runs it as a job.
 Unknown owners, remote tunnels, separate CLI installs, same or newer versions,
 Windows, and moved AppImages keep the existing reuse behavior. The shell does
 not restart or force-stop a stale gateway automatically.
