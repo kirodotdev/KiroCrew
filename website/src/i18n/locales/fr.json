@@ -11192,7 +11192,8 @@
         "reason_monitor": "Un moniteur y surveille les changements. La fermer arrête le moniteur.",
         "reason_work": "Du travail y est encore en cours. La fermer arrête ce travail.",
         "reason_setting": "Rien n’y est en cours. Cette question s’affiche parce que « {{setting}} » est activé dans les Paramètres.",
-        "actions": "La conversation et le brouillon de ta zone de message sont conservés, et tu peux rouvrir la session plus tard."
+        "actions": "La conversation et le brouillon de ta zone de message sont conservés, et tu peux rouvrir la session plus tard.",
+        "confirm": "Fermer la session"
       },
       "reload_failed": "Échec du rechargement de la session. L'agent est peut-être en train de répondre ou la passerelle est injoignable ; réessayez quand la session est inactive.",
       "duplicate_unreachable": "Impossible de dupliquer cette session. {{productName}} est injoignable. Vérifie ta connexion et réessaie.",
@@ -13940,6 +13941,7 @@
       "delete_folder_confirm": "Supprimer « {{name}} » ? Les sessions seront dégroupées.",
       "delete_history_session": "Supprimer la session de l'historique",
       "delete_this_column": "Supprimer cette colonne ?",
+      "delete_column_body": "Seule la colonne est supprimée. Ses sessions, étiquettes et dossiers sont conservés.",
       "double_click_to_rename": "Double-cliquez pour renommer",
       "drag_to_reorder": "Faites glisser pour réordonner",
       "drop_here_to_remove_from_folder": "Déposez ici pour retirer du dossier",

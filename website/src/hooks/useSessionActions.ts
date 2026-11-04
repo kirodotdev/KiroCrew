@@ -12,6 +12,7 @@ import { copySessionLink } from '../utils/shareUrl'
 import { useMoveSlotToFolder } from './useMoveSlotToFolder'
 import { loadChatConfig } from '../pages/chat/ChatSettings'
 import { closeConfirmPrompt } from '../lib/closeConfirmPrompt'
+import { askAppConfirm } from '../lib/appConfirm'
 import { i18nT } from '../i18n/t'
 import { forkFailureNoticeOffsite } from '../utils/forkFailure'
 import type { ForkFailureNotice } from '../utils/forkFailure'
@@ -496,10 +497,13 @@ export function useSessionActions(mode?: string, opts?: {
   // The sidebar row ✕ and every session menu close land here. A busy session
   // always asks, on the same rule as Cmd+W (`closeBusyReasons`); an idle one
   // keeps the user's `confirmCloseSession` setting. The prompt names which of
-  // the two made it ask (`closeConfirmPrompt`).
+  // the two made it ask (`closeConfirmPrompt`). The question is the in-app
+  // dialog, never the browser's native confirm(): in the desktop app that one
+  // can leave the window unable to take input once it closes.
   const close = useCallback((slotKey: string) => {
-    const prompt = closeConfirmPrompt(store.getState(), slotKey, { settingOn: loadChatConfig().confirmCloseSession })
-    if (prompt === null || confirm(prompt)) dispatch(deleteSlot(slotKey))
+    const ask = closeConfirmPrompt(store.getState(), slotKey, { settingOn: loadChatConfig().confirmCloseSession })
+    if (ask === null) { dispatch(deleteSlot(slotKey)); return }
+    void askAppConfirm(ask).then(ok => { if (ok) dispatch(deleteSlot(slotKey)) })
   }, [dispatch])
 
   return { duplicate, forkError, clearForkError, toggleRead, togglePin, toggleMutesOpened, toggleMuted, copyLink, move, reload, close }

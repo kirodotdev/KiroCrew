@@ -11192,7 +11192,8 @@
         "reason_monitor": "Ela tem um monitor acompanhando mudanças. Fechar interrompe o monitor.",
         "reason_work": "Ela ainda tem trabalho em andamento. Fechar interrompe esse trabalho.",
         "reason_setting": "Nada está em execução nela. Você está vendo esta pergunta porque “{{setting}}” está ativado nas Configurações.",
-        "actions": "A conversa e o rascunho na caixa de mensagem são mantidos, e você pode reabrir a sessão depois."
+        "actions": "A conversa e o rascunho na caixa de mensagem são mantidos, e você pode reabrir a sessão depois.",
+        "confirm": "Fechar sessão"
       },
       "reload_failed": "Falha ao recarregar a sessão. O agente pode estar no meio de um turno ou o gateway inacessível; tente novamente quando a sessão estiver ociosa.",
       "duplicate_unreachable": "Não foi possível duplicar esta sessão. Não foi possível acessar o {{productName}}. Verifique sua conexão e tente novamente.",
@@ -13940,6 +13941,7 @@
       "delete_folder_confirm": "Excluir “{{name}}”? As sessões serão desagrupadas.",
       "delete_history_session": "Excluir sessão do histórico",
       "delete_this_column": "Excluir esta coluna?",
+      "delete_column_body": "Só a coluna é removida. As sessões, etiquetas e pastas dela são mantidas.",
       "double_click_to_rename": "Clique duas vezes para renomear",
       "drag_to_reorder": "Arraste para reordenar",
       "drop_here_to_remove_from_folder": "Solte aqui para remover da pasta",

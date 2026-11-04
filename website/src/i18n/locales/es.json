@@ -11192,7 +11192,8 @@
         "reason_monitor": "Tiene un monitor pendiente de cambios. Cerrar detiene el monitor.",
         "reason_work": "Todavía tiene trabajo en curso. Cerrar detiene ese trabajo.",
         "reason_setting": "No hay nada en ejecución. Se te pregunta porque “{{setting}}” está activado en Ajustes.",
-        "actions": "La conversación y el borrador de tu cuadro de mensaje se conservan, y puedes reabrir la sesión más tarde."
+        "actions": "La conversación y el borrador de tu cuadro de mensaje se conservan, y puedes reabrir la sesión más tarde.",
+        "confirm": "Cerrar la sesión"
       },
       "reload_failed": "No se pudo recargar la sesión. Puede que el agente esté respondiendo o que el gateway no esté accesible; inténtalo de nuevo cuando la sesión esté inactiva.",
       "duplicate_unreachable": "No se pudo duplicar esta sesión. No se pudo contactar con {{productName}}. Comprueba tu conexión e inténtalo de nuevo.",
@@ -13940,6 +13941,7 @@
       "delete_folder_confirm": "¿Eliminar “{{name}}”? Las sesiones quedarán sin agrupar.",
       "delete_history_session": "Eliminar la sesión del historial",
       "delete_this_column": "¿Eliminar esta columna?",
+      "delete_column_body": "Solo se elimina la columna. Sus sesiones, etiquetas y carpetas se conservan.",
       "double_click_to_rename": "Doble clic para cambiar el nombre",
       "drag_to_reorder": "Arrastra para reordenar",
       "drop_here_to_remove_from_folder": "Suelta aquí para quitar de la carpeta",

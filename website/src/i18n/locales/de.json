@@ -10962,7 +10962,8 @@
         "reason_monitor": "In ihr achtet ein Monitor auf Änderungen. Schließen stoppt den Monitor.",
         "reason_work": "In ihr läuft noch Arbeit. Schließen stoppt diese Arbeit.",
         "reason_setting": "In ihr läuft nichts. Du wirst gefragt, weil „{{setting}}“ in den Einstellungen aktiviert ist.",
-        "actions": "Die Unterhaltung und der Entwurf in deinem Eingabefeld bleiben erhalten, und du kannst die Sitzung später wieder öffnen."
+        "actions": "Die Unterhaltung und der Entwurf in deinem Eingabefeld bleiben erhalten, und du kannst die Sitzung später wieder öffnen.",
+        "confirm": "Sitzung schließen"
       },
       "reload_failed": "Sitzung konnte nicht neu geladen werden. Der Agent ist möglicherweise mitten in einem Zug oder das Gateway ist nicht erreichbar; versuchen Sie es erneut, wenn die Sitzung inaktiv ist.",
       "duplicate_unreachable": "Diese Sitzung konnte nicht dupliziert werden. {{productName}} ist nicht erreichbar. Prüfe deine Verbindung und versuche es erneut.",
@@ -13634,6 +13635,7 @@
       "delete_folder_confirm": "„{{name}}“ löschen? Die Sitzungen werden aus der Gruppe entfernt.",
       "delete_history_session": "Verlaufssitzung löschen",
       "delete_this_column": "Diese Spalte löschen?",
+      "delete_column_body": "Nur die Spalte wird entfernt. Ihre Sitzungen, Tags und Ordner bleiben erhalten.",
       "double_click_to_rename": "Doppelklicken zum Umbenennen",
       "drag_to_reorder": "Ziehen zum Umsortieren",
       "drop_here_to_remove_from_folder": "Hier ablegen, um aus dem Ordner zu entfernen",

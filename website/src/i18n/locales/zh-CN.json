@@ -10732,7 +10732,8 @@
         "reason_monitor": "它有一个正在监视变更的监视器。关闭会停止该监视器。",
         "reason_work": "它仍有工作在运行。关闭会停止这些工作。",
         "reason_setting": "它没有正在运行的内容。之所以询问，是因为设置中开启了“{{setting}}”。",
-        "actions": "对话和消息框中的草稿都会保留，之后可以重新打开会话。"
+        "actions": "对话和消息框中的草稿都会保留，之后可以重新打开会话。",
+        "confirm": "关闭会话"
       },
       "reload_failed": "会话重新加载失败。代理可能正在处理消息或网关不可达；请等会话空闲后重试。",
       "duplicate_unreachable": "无法复制此会话。无法连接到 {{productName}}。请检查网络连接后重试。",
@@ -13328,6 +13329,7 @@
       "delete_folder_confirm": "删除“{{name}}”？其中的会话会移出分组。",
       "delete_history_session": "删除历史会话",
       "delete_this_column": "删除此列？",
+      "delete_column_body": "只删除这一列。其中的会话、标签和文件夹都会保留。",
       "double_click_to_rename": "双击可重命名",
       "drag_to_reorder": "拖动可重新排序",
       "drop_here_to_remove_from_folder": "拖到此处可从文件夹中移出",
