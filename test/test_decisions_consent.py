@@ -35,6 +35,7 @@ from kiro_crew.config.sections import DECISION_PROVIDER_ENDPOINT_DEFAULT as DEFA
 from kiro_crew.decisions import consent
 
 CUSTOM = "https://proxy.example/v1/systemone"
+SAGEMAKER = "sagemaker://argus-9b?region=us-west-2"
 
 
 @pytest.fixture(autouse=True)
@@ -231,6 +232,42 @@ class TestRead:
             json.dumps({"enabled": False, "endpoint": DEFAULT_ENDPOINT}), encoding="utf-8"
         )
         assert consent.permits(DEFAULT_ENDPOINT) is False
+
+    @pytest.mark.parametrize(
+        ("endpoint", "recorded", "expected"),
+        [
+            (SAGEMAKER, None, False),
+            (SAGEMAKER, True, True),
+            (SAGEMAKER, False, False),
+            (DEFAULT_ENDPOINT, None, True),
+            (DEFAULT_ENDPOINT, True, True),
+            (DEFAULT_ENDPOINT, False, False),
+        ],
+        ids=[
+            "sagemaker-unrecorded-off",
+            "sagemaker-yes",
+            "sagemaker-no",
+            "hosted-unrecorded-on",
+            "hosted-yes",
+            "hosted-no",
+        ],
+    )
+    def test_sagemaker_screenshots_need_a_recorded_yes(
+        self, keystone, endpoint, recorded, expected
+    ):
+        """A sagemaker:// consent with no screenshot choice reads as NO.
+
+        That provider was text-only when its owners consented, so an upgrade must not
+        start sending screenshots. A recorded choice is read as written everywhere,
+        and the hosted endpoint keeps its default-on reading.
+        """
+        state = {"enabled": True, "endpoint": endpoint}
+        if recorded is not None:
+            state["browser_images"] = recorded
+        keystone.write_text(json.dumps(state), encoding="utf-8")
+        assert consent.consented_browser_images() is expected
+        # The outline scope is untouched by this exception.
+        assert consent.consented_browser() is True
 
     def test_an_unreadable_file_is_not_consented(self, keystone):
         keystone.write_text('{"enabled": true}', encoding="utf-8")

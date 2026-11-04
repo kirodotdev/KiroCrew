@@ -220,8 +220,9 @@ _REGISTRY: dict[str, ProviderSpec] = {
             egress=EGRESS_THIRD_PARTY,
             authority=AUTHORITY_KEYSTONE,
             governance_row=ROW_DECISIONS,
-            # The SageMaker transport sends the text request only: no images, no Box.
-            supports=QUESTION_KINDS,
+            # The same /v1/systemone body as the hosted service: images travel as
+            # inline ``assets`` and Box is answered, behind the images custom attribute.
+            supports=QUESTION_KINDS | {KIND_BOX, CAPABILITY_IMAGE},
             timeout_window=None,
             factory=_build_sagemaker,
             max_in_flight=8,

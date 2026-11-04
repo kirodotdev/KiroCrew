@@ -32,7 +32,9 @@ fingerprint of its comment bodies, never their text). A ceiling sits beside them
 case, so a record written before a scope existed authorizes exactly the text its
 owner reviewed and never a category added later. The two browser scopes
 (``browser``, ``browser_images``) are the owner's deliberate exception: on by default
-under a standing consent, off only on a recorded no.
+under a standing consent, off only on a recorded no. ``browser_images`` has one
+exception of its own: under a consent bound to a ``sagemaker://`` endpoint it is
+off until the owner records a yes.
 
 The ``decisions`` section of ``config.json`` keeps the knobs that grant nothing on
 their own -- the sampling share and the provider -- so there is exactly one place
@@ -121,7 +123,9 @@ STATE_KEY_BROWSER = "browser"
 #: revoke screenshots alone. On by default once consent stands, on exactly the
 #: terms of :data:`STATE_KEY_BROWSER` (the owner allowed images to the decision
 #: model): only a literal ``False`` refuses, and an explicit ``False`` survives a
-#: consent cycle.
+#: consent cycle. One exception: while the recorded endpoint is a ``sagemaker://``
+#: one, absent reads as NO. That endpoint was text-only when its owners consented,
+#: so screenshots to it need a yes the owner gives on the switch.
 STATE_KEY_BROWSER_IMAGES = "browser_images"
 
 #: "Keep whatever ceiling is recorded" for :func:`save_enabled`. A distinct object,
@@ -347,13 +351,26 @@ def consented_browser(state: "dict | None" = None) -> bool:
 
 
 def consented_browser_images(state: "dict | None" = None) -> bool:
-    """Whether screenshots of the agent's tab may be sent. Absent reads TRUE.
+    """Whether screenshots of the agent's tab may be sent. Absent reads TRUE, but FALSE for SageMaker.
 
     On the terms of :func:`consented_browser`: whether anything is sent at all is
     still ``permits``, and a provider that declares no image support is sent none.
+
+    A recorded choice always wins. With none recorded, a consent bound to a
+    ``sagemaker://`` endpoint reads as no: that provider took text only when its
+    owners consented, and the switch then said screenshots went to the hosted
+    model alone, so upgrading must not start sending them. The endpoint is the
+    RECORDED one, the same one ``permits`` holds the configured endpoint to.
     """
     data = load_state() if state is None else state
-    return data.get(STATE_KEY_BROWSER_IMAGES) is not False
+    value = data.get(STATE_KEY_BROWSER_IMAGES)
+    if isinstance(value, bool):
+        return value
+    # Imported here: the SageMaker module is lazily loaded by the provider
+    # registry too, and its import pulls nothing beyond the standard library.
+    from kiro_crew.decisions.impl_sagemaker import is_sagemaker_endpoint
+
+    return not is_sagemaker_endpoint(consented_endpoint(data))
 
 
 def permits(endpoint: object, state: "dict | None" = None) -> bool:
