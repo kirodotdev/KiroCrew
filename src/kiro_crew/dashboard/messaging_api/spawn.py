@@ -104,6 +104,8 @@ def _backend_name(backend: str) -> str:
     """*backend*'s id in the spelling a request uses (``"kiro"`` for Kiro's ``""``)."""
     from kiro_crew.acp_backends import POLICY_ID_BY_BACKEND
 
+    return POLICY_ID_BY_BACKEND.get(backend, backend)
+
 
 def backend_id_for_policy_id(name: str) -> str | None:
     """The backend id a governance policy id names (Kiro's is ``""``), or None."""
@@ -113,11 +115,6 @@ def backend_id_for_policy_id(name: str) -> str | None:
         if policy_id == name:
             return backend
     return None
-
-
-async def _requested_backend(raw: object) -> tuple[str | None, str | None, web.Response | None]:
-
-    return POLICY_ID_BY_BACKEND.get(backend, backend)
 
 
 async def _failover_backend(

@@ -514,6 +514,7 @@ async def _run_inner_impl(
     # EVENT_PERMISSION_REQUEST branch) but must not be unbounded.
     child_escalations = 0
     child_escalation_limit = max(turn_limit * 3, 60)
+    _inherit.record_served_backend(info, client)
     await _session.persist_spawn_records(self, info, session_key, agent, client)
 
     _rp = agent_dir_for_display(info.id) / "result.txt"
