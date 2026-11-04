@@ -74,6 +74,7 @@ _SOURCES = (
     _CORE,
     *sorted((_SRC / "mcp_core_parts").glob("*.py")),
     _SRC / "mcp_secrets.py",
+    _SRC / "kas_connection_bridge.py",
     _SRC / "mcp_dashboard.py",
     _SRC / "mcp_shared.py",
     _SRC / "mcp_shared_policy.py",

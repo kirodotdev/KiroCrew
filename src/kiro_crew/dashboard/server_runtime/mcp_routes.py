@@ -196,6 +196,11 @@ def _register_mcp_routes(app: web.Application) -> None:
         "/api/mediated-secret-request",
         _deferred("mediated_secrets", "api_mediated_secret_request"),
     )
+    # Crew-owned Connection proxy (``connections.crew_oauth``): the in-session
+    # stdio bridge's only peer. Strict internal, Unix-socket only, off by default.
+    _connection_proxy = _deferred("connection_proxy", "api_connection_proxy")
+    app.router.add_post("/api/connection-proxy", _connection_proxy)
+    app.router.add_delete("/api/connection-proxy", _connection_proxy)
     # The Crew page's masked read of a conductor's work ledger (RFC Phase 4).
     # Deliberately NOT in ``_STRICT_INTERNAL_API_PATHS``: a browser is its only
     # caller, so it stays on cookie auth — the same split the agent-panel surface

@@ -164,6 +164,13 @@ class Bridge:
                 {"jsonrpc": "2.0", "id": rid, "error": {"code": _BRIDGE_ERROR, "message": message}}
             )
 
+    def _http_error_reason(self, exc: urllib.error.HTTPError) -> str:
+        """The reason an HTTP error answer is reported with; never a header value."""
+        hint = " (check its headers)" if exc.code in (401, 403) else ""
+        if exc.code in (301, 302, 303, 307, 308):
+            hint = " (a redirect, which the bridge does not follow)"
+        return f"answered HTTP {exc.code}{hint}"
+
     def _relay_body(self, body: bytes) -> list[Any]:
         try:
             msg = json.loads(body)
@@ -193,11 +200,9 @@ class Bridge:
         try:
             resp = self._opener.open(request, timeout=_READ_TIMEOUT_SECS)
         except urllib.error.HTTPError as exc:
+            reason = self._http_error_reason(exc)
             exc.close()
-            hint = " (check its headers)" if exc.code in (401, 403) else ""
-            if exc.code in (301, 302, 303, 307, 308):
-                hint = " (a redirect, which the bridge does not follow)"
-            self._fail(ids, f"answered HTTP {exc.code}{hint}")
+            self._fail(ids, reason)
             return
         except http.client.HTTPException as exc:
             # A malformed answer (a status line that is not HTTP): the class name
