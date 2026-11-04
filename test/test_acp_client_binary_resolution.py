@@ -249,6 +249,33 @@ class TestResolveClaudeAcpBin:
         assert argv is None
         assert search_path == client_mod.augmented_path(os.environ.get("PATH", ""))
 
+    def test_shim_next_to_another_package_is_left_alone(self, tmp_path, monkeypatch):
+        """Only the shim npm wrote for the named bin is mapped to its target."""
+        from kiro_crew.acp import launch as launch_mod
+
+        shim = tmp_path / "claude-agent-acp.cmd"
+        shim.write_text("@echo off\n", encoding="utf-8")
+        assert (
+            launch_mod._npm_windows_shim_target(
+                str(shim), "claude-agent-acp", _CLAUDE_ACP_PKG_ENTRY
+            )
+            is None
+        )
+        other = tmp_path / "codex-acp.cmd"
+        other.write_text("@echo off\n", encoding="utf-8")
+        entry = tmp_path / "node_modules" / _CLAUDE_ACP_PKG_ENTRY
+        entry.parent.mkdir(parents=True)
+        entry.write_text("// adapter\n", encoding="utf-8")
+        assert (
+            launch_mod._npm_windows_shim_target(
+                str(other), "claude-agent-acp", _CLAUDE_ACP_PKG_ENTRY
+            )
+            is None
+        )
+        assert launch_mod._npm_windows_shim_target(
+            str(shim), "claude-agent-acp", _CLAUDE_ACP_PKG_ENTRY
+        ) == str(entry)
+
 
 class TestResolveClaudeCodeExecutable:
     def test_env_override_wins(self, tmp_path, monkeypatch):
@@ -326,6 +353,63 @@ class TestResolveClaudeCodeExecutable:
         monkeypatch.setattr(client_mod, "_mise_which", lambda tool: None)
         monkeypatch.setattr(client_mod.shutil, "which", lambda name, path=None: None)
         assert client_mod._resolve_claude_code_executable() is None
+
+    @staticmethod
+    def _npm_windows_claude(bin_dir: Path, *, with_exe: bool) -> tuple[Path, Path]:
+        """The layout ``npm i -g @anthropic-ai/claude-code`` leaves on Windows."""
+        bin_dir.mkdir(parents=True)
+        shim = bin_dir / "claude.cmd"
+        shim.write_text("@echo off\n", encoding="utf-8")
+        exe = bin_dir / "node_modules" / "@anthropic-ai" / "claude-code" / "bin" / "claude.exe"
+        if with_exe:
+            exe.parent.mkdir(parents=True)
+            exe.write_bytes(b"MZ")
+        return shim, exe
+
+    @pytest.mark.parametrize("via", ["path", "mise"])
+    def test_windows_npm_cmd_shim_is_replaced_by_its_exe(self, tmp_path, monkeypatch, via):
+        """The adapter execFile()s CLAUDE_CODE_EXECUTABLE with no shell.
+
+        Node refuses a ``.cmd`` there with ``spawn EINVAL`` (CVE-2024-27980), so the
+        npm shim must never be the value: the ``claude.exe`` it runs is.
+        """
+        from kiro_crew.acp import client as client_mod
+
+        shim, exe = self._npm_windows_claude(tmp_path / "npm", with_exe=True)
+        monkeypatch.delenv("CLAUDE_CODE_EXECUTABLE", raising=False)
+        monkeypatch.setattr(client_mod.platform_compat, "IS_WINDOWS", True)
+        monkeypatch.setattr(
+            client_mod, "_mise_which", lambda tool: str(shim) if via == "mise" else None
+        )
+        monkeypatch.setattr(
+            client_mod.shutil,
+            "which",
+            lambda name, path=None: str(shim) if via == "path" and name == "claude" else None,
+        )
+        assert client_mod._resolve_claude_code_executable() == str(exe)
+
+    def test_windows_cmd_shim_without_an_exe_is_not_passed(self, tmp_path, monkeypatch, caplog):
+        """A batch shim Node cannot spawn is withheld, with a warning naming it."""
+        from kiro_crew.acp import client as client_mod
+
+        shim, _exe = self._npm_windows_claude(tmp_path / "npm", with_exe=False)
+        monkeypatch.delenv("CLAUDE_CODE_EXECUTABLE", raising=False)
+        monkeypatch.setattr(client_mod.platform_compat, "IS_WINDOWS", True)
+        monkeypatch.setattr(client_mod, "_mise_which", lambda tool: None)
+        monkeypatch.setattr(client_mod.shutil, "which", lambda name, path=None: str(shim))
+        with caplog.at_level("WARNING", logger="kiro_crew.acp.client"):
+            assert client_mod._resolve_claude_code_executable() is None
+        assert str(shim) in caplog.text
+
+    def test_cmd_shim_is_kept_off_windows(self, tmp_path, monkeypatch):
+        """The swap is a Windows rule: POSIX Node spawns any executable file."""
+        from kiro_crew.acp import client as client_mod
+
+        shim, _exe = self._npm_windows_claude(tmp_path / "npm", with_exe=True)
+        monkeypatch.delenv("CLAUDE_CODE_EXECUTABLE", raising=False)
+        monkeypatch.setattr(client_mod.platform_compat, "IS_WINDOWS", False)
+        monkeypatch.setattr(client_mod, "_mise_which", lambda tool: str(shim))
+        assert client_mod._resolve_claude_code_executable() == str(shim)
 
 
 class TestMiseWhich:
