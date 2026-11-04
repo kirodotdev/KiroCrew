@@ -1,12 +1,7 @@
 """Persistent retry accounting for history consolidation.
 
-A consolidation pass spends a billed LLM turn before it can write the durable
-``last_consolidated`` marker, so a failure in between leaves the span
-unconsolidated. Without durable accounting every entry point then re-spends that
-turn indefinitely — the 60s idle sweep on every tick, session-expiry sweeps on
-every expiry, and every gateway restart (the in-memory throttle is memory-only).
-These tests pin the attempt counter, the exponential backoff, the abandon cap,
-and that no entry point bypasses them.
+A failure between the billed LLM turn and the ``last_consolidated`` write would be
+re-spent by every sweep and restart, so no entry point may bypass the accounting.
 
 The failure accounting (attempts, backoff, the cap, restarts, hostile metadata) is in
 ``test_history_consolidation_retry_accounting.py``, and the cases tying the cap to its span
@@ -68,11 +63,8 @@ async def test_consolidation_captures_execution_off_loop(tmp_path, monkeypatch, 
 class TestTheLineIsValidatedWithTheRows:
     """The consolidator's privacy check reads the line, then snapshots rows.
 
-    A writer can tighten the line in between -- a same-key hand-over landing a
-    restricted tab's rows under a line that was persistent a moment ago. The
-    snapshot therefore re-reads the line under the SAME lock as the rows and
-    refuses them together, at both the pre-turn snapshot and the write-boundary
-    one, so no rows a restricted line governs reach the model or memory.
+    A same-key hand-over can tighten the line in between, so both snapshots re-read it
+    under the SAME lock as the rows and refuse them together.
     """
 
     @staticmethod
@@ -669,12 +661,9 @@ async def test_consolidate_refuses_a_channel_thread_whose_map_entry_was_pruned(
 ):
     """The transcript header is the record a memory reader consults.
 
-    ``privacy_mode.apply_mode`` stamps ``memory_mode`` into the header, the record
-    ``_consolidate`` refuses on, so a channel thread's mode survives the pruning
-    of its session-map entry. Driven the way production runs it: the real
-    modifier path over a real ``SessionMap``, then a consolidator that holds NO
-    session map at all (a header-only reader), with the process-local trackers
-    emptied (the restart), through the session-end hook's entry point.
+    ``privacy_mode.apply_mode`` stamps ``memory_mode`` into the header, so the mode
+    survives pruning of the session-map entry. The consolidator holds NO session map
+    and its trackers are emptied, as after a restart.
     """
     from types import SimpleNamespace
 
@@ -732,14 +721,10 @@ async def test_a_legacy_privacy_flag_is_kept_by_prune_and_stamped_by_the_startup
 ):
     """A thread flagged before the header carried the mode: the map entry is all it has.
 
-    Pre-upgrade installs hold private threads whose flag was written straight to
-    the session map, with no header stamp, and ``apply_mode`` returns early for a
-    mode already marked, so nothing re-stamps them. Two facts pinned in one
-    lifecycle: the startup ``prune()`` keeps such an entry (clearing only its
-    dead ``sid``) and never reads a transcript for it; and the startup path's
-    off-loop step then copies the mode into the existing transcript's header
-    while the row STAYS (it is what the channel gate hydrates from), after which
-    the consolidator -- a header reader, holding no map -- refuses the thread.
+    ``apply_mode`` returns early for a mode already marked, so nothing re-stamps such a
+    thread. Startup ``prune()`` keeps the entry (clearing its dead ``sid``), the off-loop
+    step copies the mode into the header while the row stays for the channel gate, and
+    the header-only consolidator then refuses the thread.
     """
     import threading
 
