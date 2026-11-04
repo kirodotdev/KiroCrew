@@ -335,7 +335,8 @@ async def _monitor_start(
         f"(user messages defer a due fire "
         f"to their turn's end without restarting the countdown){cap}"
         + (f"; {first_wake}" if first_wake else "")
-        + ". End your turn now — the loop wakes you. Call autonudge_stop when the "
+        + ". Reply with one line saying the watch is armed, then end your turn — the "
+        "loop wakes you. Call autonudge_stop when the "
         "exit condition is met."
     )
 
