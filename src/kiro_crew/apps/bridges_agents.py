@@ -68,7 +68,7 @@ def _agent_mcp_policy(app_name: str) -> dict[str, Any]:
     path = app_dir(app_name) / "data" / AGENT_MCP_POLICY_FILE
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except (FileNotFoundError, json.JSONDecodeError, OSError):
+    except (FileNotFoundError, json.JSONDecodeError, UnicodeDecodeError, OSError):
         return {}
     return data if isinstance(data, dict) else {}
 
@@ -805,7 +805,8 @@ def _render_shipped_agent(
     """
     try:
         template = agent_path.read_text(encoding="utf-8")
-    except OSError:
+    except (OSError, UnicodeDecodeError):
+        # Unrendered: the caller's own read of this path reports the failure.
         return agent_path
     if not _TEMPLATE_PLACEHOLDER_RE.search(template):
         return agent_path
@@ -922,7 +923,7 @@ def _register_agents(
             # Read agent JSON to get the agent name
             try:
                 agent_data = json.loads(agent_path.read_text(encoding="utf-8"))
-            except (json.JSONDecodeError, OSError) as exc:
+            except (json.JSONDecodeError, UnicodeDecodeError, OSError) as exc:
                 logger.warning("App %s: unreadable agent %s: %s", app_name, agent_path, exc)
                 if isinstance(exc, OSError) and io_failures is not None:
                     io_failures.append(str(agent_path))  # transient; a malformed spec is not
