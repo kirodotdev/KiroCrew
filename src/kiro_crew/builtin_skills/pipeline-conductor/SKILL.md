@@ -1090,8 +1090,13 @@ carry **metadata only** — the probe never emits transcript text:
 ```
 🔔 <key>  <age>s <TAG> i=<index> d=<digest12>
 BANNED pid=<pid> rule=<regex|argv:<shape>> cwd=fleet|unknown age=<secs|?>s scope=suite|paths|unknown cmd=<program,flags,+withheld>
-OK <n> watched, <m> fired | load/cpu <x> (ok|hot) | mem <n>G | banned <n> | foreign <n> | deliver init-timeout <a>, watchdog <b>
+OK <n> watched, <m> fired | load/cpu <x> (ok|hot)|n/a | mem <n>G|n/a | banned <n>|n/a | foreign <n>|n/a | deliver init-timeout <a>, watchdog <b>
 ```
+
+`n/a` in place of a value means the host could not measure that field.
+`banned n/a | foreign n/a` means there is no `/proc` to scan (for example on
+Windows), so the banned-ops response cannot fire there; it is never a clean
+reading.
 
 A tail with no protocol tag reads as `-` and never fires on its own, and a
 protocol word inside a tool card is quoted text rather than a report — so a worker
@@ -1461,7 +1466,8 @@ no file argument.
 A zero banned count is not proof that no such run exists. Known misses: an
 unquoted separator (`|`, `&`) inside an option value ahead of `-n N`, a pytest
 console script installed with `pip install --user`, and a count carried in the
-`addopts` of a file named by `-c other.ini`.
+`addopts` of a file named by `-c other.ini`. On a host with no `/proc` the scan
+does not run at all, and the count prints `n/a` rather than `0`.
 
 Standing constants: `session_ceiling` machine-wide, `-n0` on every worker test
 run, targeted tests only, ≤2 subagents per worker. `-n0` rather than a small

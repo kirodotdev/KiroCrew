@@ -960,6 +960,21 @@ def test_host_lines_without_a_proc_filesystem(mod, tmp_path, monkeypatch):
     lines, host = mod._host_lines({})
     assert lines == []
     assert "mem n/a" in host
+    # The scan never ran, so its counts are unknown: a 0 would read as a scan
+    # that ran and found nothing.
+    assert host.endswith("| banned n/a | foreign n/a"), host
+    assert "banned 0" not in host and "foreign 0" not in host
+
+
+def test_host_lines_counts_zero_when_an_empty_proc_was_scanned(mod, tmp_path, monkeypatch):
+    """The other side of the unknown: a proc root that exists and holds no
+    process is a real measurement, and prints 0."""
+    root = tmp_path / "empty-proc"
+    root.mkdir()
+    monkeypatch.setenv("KIROCREW_PROBE_PROC_ROOT", str(root))
+    lines, host = mod._host_lines({})
+    assert lines == []
+    assert host.endswith("| banned 0 | foreign 0"), host
 
 
 def test_host_lines_reports_a_hot_host(mod, tmp_path, monkeypatch):
