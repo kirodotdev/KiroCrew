@@ -264,7 +264,8 @@ _OWNER_CONSTANTS = {"git_panel": ("_GIT_PANEL_STDOUT_CAP",)}
 #: ``editor`` owners, from the base file, where each of their names had the same shape.
 #: Recaptured when ``_run_path_probe`` gained its keyword-only ``stall_path``.
 #: Recaptured when ``api_file_download`` began answering a ``web.StreamResponse``.
-_BASE_SHAPE_DIGEST = "f06c3e2cab71d8046ed25b390faed476ba113185bd7ce36a466f67f60da2fc6c"
+#: Recaptured when ``_browse_files_sync`` gained its ``show_hidden`` flag.
+_BASE_SHAPE_DIGEST = "2b4cc46ac8b95071222148ebc8330e87b9e6187f569c438a4c4bafe085e24feb"
 #: Definitions that stay in the facade file: the seams the owners share -- the SEL
 #: accessor, the file-send audit, the sub-agent session mapping and the request-body
 #: error code -- the search walk's clock, the file viewer's owner-view verdict, whose
@@ -1412,7 +1413,7 @@ def test_the_resolved_gate_dicts_name_the_owners() -> None:
     gate = guard._call_sites("is_sensitive_resolved_path")
     assert {k: v for k, v in gate.items() if "dashboard/file_api/" in k} == {
         "kiro_crew/dashboard/file_api/path_complete.py": 3,
-        "kiro_crew/dashboard/file_api/project_tree.py": 2,
+        "kiro_crew/dashboard/file_api/project_tree.py": 3,
     }
     assert "kiro_crew/dashboard/handlers/files.py" not in gate
     containment = guard._containment_claim_sites()
