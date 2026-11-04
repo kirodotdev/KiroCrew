@@ -650,6 +650,12 @@ async def _on_permission_prompt(
             from kiro_crew.autonudge import release_approval_hold_for
 
             release_approval_hold_for(slot.key, why="an approval was answered")
+            # The same person answer is what a worker's "waits on an approval"
+            # report asked for: record it on the worker's item, so its "needs
+            # you" clears without waiting for the worker's next report.
+            from kiro_crew.dashboard.handlers import work_ledger
+
+            work_ledger.note_approval_answered(state, slot.key)
         # Backstop: the future is now gone, so the permission
         # message MUST NOT be left reading pending — the UI would
         # keep rendering an approval bar whose every button answers
