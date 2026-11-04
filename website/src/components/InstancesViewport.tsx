@@ -78,7 +78,7 @@ import { connectInstanceInto, type ConnectVia } from '../lib/connectInstance'
 import { paneCredentialFor } from '../lib/paneCredential'
 import { useDeliverPendingPaneSlot } from '../lib/crewDeepLink'
 import { recallActivePane, rememberActivePane } from '../lib/activePaneMemory'
-import { LINUX_CAPTION_CONTROLS_WIDTH, TRAFFIC_LIGHT_INSET_PX, WIN_CAPTION_OVERLAY_WIDTH } from '../lib/electron'
+import { LINUX_CAPTION_CONTROLS_WIDTH, LINUX_CAPTION_RESERVE_PX, TRAFFIC_LIGHT_INSET_PX, WIN_CAPTION_OVERLAY_WIDTH } from '../lib/electron'
 import { isEmbeddedPane } from '../lib/embedded'
 import { PANE_ACTIVE_SLOT_TYPE, PANE_SLOT_HINT_PARAM, readPaneSlot, rememberPaneSlot } from '../lib/paneLastSlot'
 import ErrorNotice from './ErrorNotice'
@@ -173,12 +173,16 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
   // not a window state, so it derives straight from the platform flag rather
   // than arriving as a prop.
   const winInset = isWinElectron
+  // Frameless Linux counterpart: the shell injects its own caption buttons at
+  // the top-right, which the cross-origin pane cannot see either.
+  const linuxInset = isLinuxFramelessElectron
   // Inset for the HOST-rendered InstanceTabBar strips atop the loading/error
   // overlays: clear of the macOS traffic lights on the left, and of the
-  // Windows titleBarOverlay caption buttons on the right — those strips are
+  // Windows or Linux caption buttons on the right — those strips are
   // the topmost header while an overlay is up, exactly like the pane header.
-  const stripInsetStyle = macInset || winInset
+  const stripInsetStyle = macInset || winInset || linuxInset
     ? {
+        ...(linuxInset ? { paddingRight: LINUX_CAPTION_RESERVE_PX } : null),
         ...(macInset ? { paddingLeft: TRAFFIC_LIGHT_INSET_PX } : null),
         // Read the live, zoom-aware reserve the main process sets on <html>
         // (--mc-win-caption-reserve). :root defaults that property to the
@@ -1384,7 +1388,7 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
           }
         : null
       return {
-        type: 'mc-host-model', v: 1, tabs, activeId, self, macInset, winInset, focusMode,
+        type: 'mc-host-model', v: 1, tabs, activeId, self, macInset, winInset, linuxInset, focusMode,
         ...(winCaptionReserve ? { winCaptionReserve } : null),
         electron: isElectron,
         // Array, not the Set itself: structured clone rejects a Set across this
@@ -1397,7 +1401,7 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
         clipboardRelay: PANE_CLIPBOARD_VERSION,
       }
     },
-    [instancesQuery.data, warm, unread, activeId, macInset, winInset, winCaptionReserve, focusMode, pinnedCrews, stableOrder, chatCompleteNotify],
+    [instancesQuery.data, warm, unread, activeId, macInset, winInset, linuxInset, winCaptionReserve, focusMode, pinnedCrews, stableOrder, chatCompleteNotify],
   )
 
   // Post the model into one embedded pane, addressed to its exact loopback
@@ -1454,7 +1458,7 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
   // to a loopback frame.
   useEffect(() => {
     for (const id of Object.keys(warm)) postModelTo(id)
-  }, [warm, activeId, unread, macInset, winInset, winCaptionReserve, instancesQuery.data, postModelTo, pinnedCrews, stableOrder, chatCompleteNotify])
+  }, [warm, activeId, unread, macInset, winInset, linuxInset, winCaptionReserve, instancesQuery.data, postModelTo, pinnedCrews, stableOrder, chatCompleteNotify])
 
   // Keep warm iframes mounted across Local<->remote switches (hide-not-unmount).
   // Also render when the active tab is a remote instance with no warm iframe
