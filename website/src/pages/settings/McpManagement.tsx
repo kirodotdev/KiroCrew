@@ -131,7 +131,11 @@ export function McpManagement({
   const willShare = useMemo(
     () =>
       servers.filter(
-        s => s.stub && !status?.launch_refused?.[s.name] && s.pooling_blocked_by_env !== true,
+        s =>
+          s.stub &&
+          !status?.launch_refused?.[s.name] &&
+          s.pooling_blocked_by_env !== true &&
+          s.pooling_blocked_by_env_when_shared !== true,
       ),
     [servers, status?.launch_refused],
   )
@@ -320,7 +324,12 @@ export function McpManagement({
       // A read that failed is an error, not "cannot be approved": kept apart
       // so the confirm shows it through the error notice.
       const failed: string[] = []
-      const names = autoShareCandidates(fresh?.servers ?? [], freshStatus?.launch_refused).map(s => s.name)
+      const candidates = autoShareCandidates(fresh?.servers ?? [], freshStatus?.launch_refused)
+      // A candidate its env keeps unshared once sharing is on is named as
+      // skipped: the write after the switch would skip it anyway.
+      const envBlocked = candidates.filter(s => s.pooling_blocked_by_env_when_shared === true)
+      skipped.push(...envBlocked.map(s => s.name))
+      const names = candidates.filter(s => s.pooling_blocked_by_env_when_shared !== true).map(s => s.name)
       for (const { name, preview } of await readLaunchPreviews(names)) {
         if (!preview) failed.push(name)
         else if (launchIsApprovable(preview)) auto.push({ name, expected: preview.expected_launch as string })
