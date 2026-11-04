@@ -131,6 +131,14 @@ export default function LinkPreviewLayer() {
     const doc = document
     let current: { a: HTMLElement; key: string } | null = null
     let timer: number | undefined
+    // The link the latest card belongs to and where it was when the hover began.
+    // Kept after the pointer moves on into the card: a scroll only dismisses the
+    // card when it moved this link.
+    let watched: { el: HTMLElement; left: number; top: number } | null = null
+    const watch = (el: HTMLElement) => {
+      const r = el.getBoundingClientRect()
+      watched = { el, left: r.left, top: r.top }
+    }
 
     const linkOf = (e: Event) => {
       const path = e.composedPath()
@@ -161,6 +169,7 @@ export default function LinkPreviewLayer() {
       const lastFailed = failedAt.current.get(key)
       current = { a: hit.a, key }
       anchorRef.current = { el: hit.a, key }
+      watch(hit.a)
       window.clearTimeout(timer)
       if (lastFailed !== undefined && Date.now() - lastFailed < RETRY_AFTER_MS) {
         // A failed frame is not final, but it is not retried on every hover either.
@@ -203,6 +212,7 @@ export default function LinkPreviewLayer() {
       window.clearTimeout(timer)
       current = null
       anchorRef.current = null
+      watched = null
       host.hideUnpinned(reason)
     }
     hideAllRef.current = hideAll
@@ -217,8 +227,18 @@ export default function LinkPreviewLayer() {
       host.forwardKey(e)
     }
     // Scrolling the chat moves the link away from its card. Scrolling inside a
-    // card happens in its frame and never reaches this window.
-    const onScroll = () => hideAll('scroll')
+    // card happens in its frame and never reaches this window. Any other scroll
+    // (the sidebar, a transcript settling after load, a scroll that ends where it
+    // began) leaves the link where it was, and so leaves its card. Only the
+    // latest hover's link is known, so a card from an earlier hover (pinned,
+    // then unpinned) still goes on any scroll.
+    const onScroll = () => {
+      if (watched && watched.el.isConnected && !host.hasUnpinnedDetached()) {
+        const r = watched.el.getBoundingClientRect()
+        if (Math.abs(r.left - watched.left) < 1 && Math.abs(r.top - watched.top) < 1) return
+      }
+      hideAll('scroll')
+    }
     // Focus moving into a card's frame blurs this window too; that is the user
     // using the card, not leaving the page.
     const onBlur = () => {

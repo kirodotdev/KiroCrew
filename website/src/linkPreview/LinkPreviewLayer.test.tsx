@@ -51,6 +51,13 @@ function link(href = 'https://tickets.example.com/t/TK-1', scoped = true) {
   document.body.append(holder)
   return a
 }
+/** The chat scrolls: `a` moves by `dy`, then the scroll event fires. */
+function scrollChat(a: HTMLElement, dy = -120) {
+  const r = a.getBoundingClientRect()
+  const top = r.top + dy
+  a.getBoundingClientRect = () => ({ ...r, top, y: top, bottom: top + r.height, toJSON() {} })
+  fireEvent.scroll(window)
+}
 /** Hover `a`, let the frame load and answer `ready`, and return what it was sent. */
 async function hoverReady(a: HTMLElement) {
   fireEvent.pointerOver(a)
@@ -112,7 +119,7 @@ describe('LinkPreviewLayer: the card runs in a sandboxed frame', () => {
 
   for (const [how, dismiss] of [
     ['leaves', (a: HTMLElement, other: HTMLElement) => fireEvent.pointerOut(a, { relatedTarget: other })],
-    ['scrolls', () => fireEvent.scroll(window)],
+    ['scrolls', (a: HTMLElement) => scrollChat(a)],
     ['presses Escape', () => fireEvent.keyDown(document, { key: 'Escape' })],
   ] as const) {
     it(`a show still waiting for a loading frame is dropped when the user ${how}`, async () => {
@@ -131,6 +138,54 @@ describe('LinkPreviewLayer: the card runs in a sandboxed frame', () => {
       expect(types(sent)).not.toContain('show')
     })
   }
+
+  it('a scroll that does not move the link keeps a show waiting for a loading frame', async () => {
+    await mount()
+    const a = link()
+    fireEvent.pointerOver(a)
+    await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+    const el = theFrame()
+    const sent = watch(el)
+    // Something else scrolls (the transcript settling after a reload): the link stays put.
+    fireEvent.scroll(window)
+    await act(async () => { await vi.advanceTimersByTimeAsync(400) })
+    fromFrame(el, 'ready')
+    await waitFor(() => expect(types(sent)).toContain('show'))
+    expect(types(sent)).not.toContain('hide')
+  })
+
+  it('a scroll that does not move the link keeps the card the pointer is in', async () => {
+    await mount()
+    const a = link()
+    const { el, sent } = await hoverReady(a)
+    fromFrame(el, 'open')
+    fireEvent.pointerOut(a, { relatedTarget: el }) // into the card
+    fireEvent.scroll(window)
+    expect(el.style.visibility).toBe('visible')
+    expect(types(sent)).not.toContain('hide')
+    // The chat itself scrolling does take it away.
+    scrollChat(a)
+    expect(el.style.visibility).toBe('hidden')
+    expect(sent.at(-1)).toMatchObject({ type: 'hide', reason: 'scroll' })
+  })
+
+  it('a card unpinned after a later hover still goes on a scroll that leaves the later link in place', async () => {
+    await mount()
+    const a = link()
+    const { el: first } = await hoverReady(a)
+    fromFrame(first, 'open')
+    fromFrame(first, 'pin', { pinned: true })
+    const b = link('https://tickets.example.com/t/TK-2')
+    fireEvent.pointerOver(b)
+    await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+    const second = [...document.querySelectorAll<HTMLIFrameElement>('iframe[data-link-preview-frame]')].find((f) => f !== first)
+    if (!second) throw new Error('no second frame')
+    fromFrame(second, 'ready')
+    await act(async () => { await vi.advanceTimersByTimeAsync(400) })
+    fromFrame(first, 'pin', { pinned: false })
+    fireEvent.scroll(window) // b stays put; the unpinned card from a's hover still goes
+    expect(first.isConnected).toBe(false)
+  })
 
   it('a frame removed while loading does not report a load failure later', async () => {
     const errors = vi.spyOn(console, 'error').mockImplementation(() => {})
@@ -167,13 +222,13 @@ describe('LinkPreviewLayer: the card runs in a sandboxed frame', () => {
     expect(el.style.left).toBe(`${window.innerWidth - 300 - 8}px`)
     // Pinned: the chat scrolling does not take it away.
     fromFrame(el, 'pin', { pinned: true })
-    fireEvent.scroll(window)
+    scrollChat(a)
     expect(el.isConnected).toBe(true)
     expect(el.style.visibility).toBe('visible')
     expect(types(sent)).not.toContain('hide')
     // Unpinned again: the next scroll does.
     fromFrame(el, 'pin', { pinned: false })
-    fireEvent.scroll(window)
+    scrollChat(a)
     expect(sent.at(-1)).toMatchObject({ type: 'hide', reason: 'scroll' })
   })
 
@@ -186,7 +241,7 @@ describe('LinkPreviewLayer: the card runs in a sandboxed frame', () => {
     fromFrame(el, 'open')
     fireEvent.pointerOut(a, { relatedTarget: other })
     expect(types(sent)).toContain('leave')
-    fireEvent.scroll(window)
+    scrollChat(a)
     expect(el.style.visibility).toBe('hidden')
     expect(sent.at(-1)).toMatchObject({ type: 'hide', reason: 'scroll' })
     fromFrame(el, 'open')
@@ -461,7 +516,8 @@ describe('LinkPreviewLayer: the protocol is bounded', () => {
 describe('LinkPreviewLayer: overlay mode (a provider with windows of its own)', () => {
   it('covers the viewport, is clipped to the reported regions, and ignores card messages', async () => {
     await mount()
-    const { el, sent } = await hoverReady(link())
+    const a = link()
+    const { el, sent } = await hoverReady(a)
     fromFrame(el, 'regions', { rects: [{ left: 10, top: 20, width: 300, height: 100 }, { left: -50, top: 5, width: 100, height: 10 }] })
     expect([el.style.left, el.style.top, el.style.width, el.style.height]).toEqual(['0px', '0px', `${window.innerWidth}px`, `${window.innerHeight}px`])
     // Off-screen parts are cut to the viewport.
@@ -471,7 +527,7 @@ describe('LinkPreviewLayer: overlay mode (a provider with windows of its own)', 
     fromFrame(el, 'resize', { width: 10, height: 10 })
     expect(el.style.width).toBe(`${window.innerWidth}px`)
     // The chat scrolling tells the provider, which decides what goes; the frame stays.
-    fireEvent.scroll(window)
+    scrollChat(a)
     expect(sent.at(-1)).toMatchObject({ type: 'hide', reason: 'scroll' })
     expect(el.isConnected).toBe(true)
     fromFrame(el, 'regions', { rects: [] })
