@@ -24,9 +24,11 @@ import importlib
 import inspect
 import logging
 import os
+import pkgutil
 import re
 import subprocess
 import sys
+import types
 from collections.abc import Callable
 from pathlib import Path
 from types import ModuleType
@@ -40,7 +42,7 @@ from kiro_crew.subprocess_utf8 import UTF8_TEXT
 TEST_DIR = Path(__file__).resolve().parent
 _THIS_STEM = Path(__file__).stem
 #: The test files discovery reads for an opt-in.
-_PATTERNS = ("test_*facade*.py", "test_*composition*.py")
+_PATTERNS = ("test_*facade*.py", "test_*composition*.py", "test_*_parts*.py")
 
 #: Every check a module can opt into. A name outside this set is a typo that would
 #: otherwise opt the module out silently.
@@ -88,6 +90,15 @@ KNOWN_CHECKS = frozenset(
         "the_owner_list_is_the_layer_order_and_names_every_owner_on_disk",
         "no_owner_takes_a_sync_io_module_through_a_from_import",
         "no_owner_holds_what_the_facade_guards_read_by_path",
+        # The parts packages (a module split into a package of parts).
+        "an_owner_imports_the_facade_only_for_type_checking_and_no_project_module",
+        "no_name_of_the_family_is_excluded_from_the_mirror",
+        "owners_import_only_owners_listed_before_them",
+        "the_globstar_matcher_reads_patterns_as_the_reviewers_do",
+        "the_owner_set_is_the_package",
+        "the_package_init_defines_nothing",
+        "the_sweep_reports_a_global_the_namespace_does_not_bind",
+        "the_value_check_can_fail",
     }
 )
 
@@ -695,3 +706,83 @@ def test_no_owner_holds_what_the_facade_guards_read_by_path(contract: str) -> No
     assert not {stem: labels for stem, labels in held.items() if labels}
     in_facade = set(subject._facade_pinned_shapes(subject.FACADE_PATH.read_text(encoding="utf-8")))
     assert in_facade == subject._FACADE_PINNED.keys() - subject._FORBIDDEN_IN_THE_FACADE_TOO
+
+
+@_each_contract("the_sweep_reports_a_global_the_namespace_does_not_bind")
+def test_the_sweep_reports_a_global_the_namespace_does_not_bind(contract: str) -> None:
+    subject = _load(contract)
+    module_code = compile(
+        "def f():\n    def g():\n        return absent\n    return present, g\n", "probe", "exec"
+    )
+    code = next(c for c in module_code.co_consts if isinstance(c, types.CodeType))
+    probe = types.FunctionType(code, {"__name__": "probe", "present": 1})
+    assert subject._unbound_globals(probe) == ["absent"]
+
+
+@_each_contract("no_name_of_the_family_is_excluded_from_the_mirror")
+def test_no_name_of_the_family_is_excluded_from_the_mirror(contract: str) -> None:
+    """The family came from one namespace, so no name can mean two things in it."""
+    subject = _load(contract)
+    assert subject._MIRROR.excluded == ()
+    assert subject._MIRROR.divergent() == ()
+
+
+@_each_contract("owners_import_only_owners_listed_before_them")
+def test_owners_import_only_owners_listed_before_them(contract: str) -> None:
+    """Lowest layer first: an owner reads a sibling only when the sibling comes earlier."""
+    subject = _load(contract)
+    order = {name: position for position, name in enumerate(subject._MIRROR.owners)}
+    edges = 0
+    for owner_name in subject._MIRROR.owners:
+        for node in ast.walk(subject._tree(importlib.import_module(owner_name))):
+            if isinstance(node, ast.ImportFrom) and node.module in order:
+                edges += 1
+                assert order[node.module] < order[owner_name], (owner_name, node.module)
+    assert edges > 0, "no owner imports a sibling, so this case measures nothing"
+
+
+@_each_contract("the_globstar_matcher_reads_patterns_as_the_reviewers_do")
+def test_the_globstar_matcher_reads_patterns_as_the_reviewers_do(contract: str) -> None:
+    subject = _load(contract)
+    assert subject._globstar("src/a/**/*.py").match("src/a/b.py")
+    assert subject._globstar("src/a/**/*.py").match("src/a/x/y/b.py")
+    assert not subject._globstar("src/a/*.py").match("src/a/x/b.py")
+    assert subject._globstar("src/a/**").match("src/a/x/b.py")
+
+
+@_each_contract("the_package_init_defines_nothing")
+def test_the_package_init_defines_nothing(contract: str) -> None:
+    subject = _load(contract)
+    init = subject._PARTS_DIR / "__init__.py"
+    assert _facade_mirror._defined_names(subject._tree(init)) == set()
+    assert [n for n in subject._tree(init).body if not isinstance(n, ast.Expr)] == []
+
+
+@_each_contract("an_owner_imports_the_facade_only_for_type_checking_and_no_project_module")
+def test_an_owner_imports_the_facade_only_for_type_checking_and_no_project_module(
+    contract: str,
+) -> None:
+    subject = _load(contract)
+    bad = {
+        stem: found
+        for stem, path in subject._owner_paths().items()
+        if (found := subject._bad_owner_imports(subject._tree(path)))
+    }
+    assert bad == {}
+
+
+@_each_contract("the_value_check_can_fail")
+def test_the_value_check_can_fail(contract: str) -> None:
+    subject = _load(contract)
+    assert subject._module_values(ast.parse('"""doc"""\nimport os\nLIMIT = 3\nclass K: ...\n')) == [
+        "3: Assign",
+        "4: ClassDef",
+    ]
+
+
+@_each_contract("the_owner_set_is_the_package")
+def test_the_owner_set_is_the_package(contract: str) -> None:
+    subject = _load(contract)
+    assert {info.name for info in pkgutil.iter_modules([str(subject._OWNER_DIR)])} == set(
+        subject._BASE_OWNERS
+    )

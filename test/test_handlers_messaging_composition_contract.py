@@ -51,6 +51,11 @@ from kiro_crew.dashboard import messaging_api
 from kiro_crew.secrets import SecretVault
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
+# One worker per file, so the shared checks run beside the tests that load this module.
+pytestmark = pytest.mark.xdist_group(name="handlers_messaging_composition_contract")
+
+SHARED_FACADE_CHECKS = ("the_globstar_matcher_reads_patterns_as_the_reviewers_do",)
+
 _FACADE = msg.__name__
 _FACADE_PATH = Path(msg.__file__).resolve()
 _OWNER_PACKAGE = messaging_api.__name__
@@ -1846,13 +1851,6 @@ def _autosde_rules() -> list[dict]:
         for name in ("AUTOSDE.yaml", "website/AUTOSDE.yaml")
         for rule in yaml.safe_load((root / name).read_text(encoding="utf-8"))["custom-rules"]
     ]
-
-
-def test_the_globstar_matcher_reads_patterns_as_the_reviewers_do() -> None:
-    assert _globstar("src/a/**/*.py").match("src/a/b.py")
-    assert _globstar("src/a/**/*.py").match("src/a/x/y/b.py")
-    assert not _globstar("src/a/*.py").match("src/a/x/b.py")
-    assert _globstar("src/a/**").match("src/a/x/b.py")
 
 
 def test_every_review_rule_on_a_facade_also_covers_its_owners() -> None:

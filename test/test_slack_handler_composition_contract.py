@@ -39,6 +39,11 @@ from kiro_crew._facade_compose import compose as facade_compose
 from kiro_crew.slack import handler, handler_runtime
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
+# One worker per file, so the shared checks run beside the tests that load this module.
+pytestmark = pytest.mark.xdist_group(name="slack_handler_composition_contract")
+
+SHARED_FACADE_CHECKS = ("the_owner_set_is_the_package",)
+
 # ── the surface ───────────────────────────────────────────────────────────────
 
 #: Every module-level name ``handler.py`` bound at the base this split was cut from:
@@ -437,10 +442,6 @@ def test_every_name_a_production_module_imports_from_the_facade_resolves() -> No
 
 
 # ── the composition ───────────────────────────────────────────────────────────
-
-
-def test_the_owner_set_is_the_package() -> None:
-    assert {info.name for info in pkgutil.iter_modules([str(_OWNER_DIR)])} == set(_BASE_OWNERS)
 
 
 def _shape(obj: object) -> str:

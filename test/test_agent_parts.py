@@ -50,6 +50,13 @@ from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
 pytestmark = pytest.mark.xdist_group(name="tree_scan_agent_parts")
 
+SHARED_FACADE_CHECKS = (
+    "the_sweep_reports_a_global_the_namespace_does_not_bind",
+    "the_package_init_defines_nothing",
+    "an_owner_imports_the_facade_only_for_type_checking_and_no_project_module",
+)
+
+
 FACADE = agent.__name__
 PACKAGE = agent_parts.__name__
 _PARTS_DIR = Path(agent_parts.__file__).resolve().parent
@@ -234,15 +241,6 @@ def test_the_managed_server_table_holds_the_composed_spec_gate() -> None:
     gate = agent._MANAGED_MCP_SERVERS["kirocrew-computer"]["spec_gate"]
     assert gate is agent._computer_use_spec_gate
     assert gate.__globals__ is vars(agent)
-
-
-def test_the_sweep_reports_a_global_the_namespace_does_not_bind() -> None:
-    module_code = compile(
-        "def f():\n    def g():\n        return absent\n    return present, g\n", "probe", "exec"
-    )
-    code = next(c for c in module_code.co_consts if isinstance(c, types.CodeType))
-    probe = types.FunctionType(code, {"__name__": "probe", "present": 1})
-    assert _unbound_globals(probe) == ["absent"]
 
 
 def test_every_global_an_owner_function_reads_is_bound_on_the_facade() -> None:
@@ -523,15 +521,6 @@ def test_the_owner_import_check_sees_every_spelling(source: str, flagged: bool) 
     assert bool(_bad_owner_imports(ast.parse(source))) is flagged
 
 
-def test_an_owner_imports_the_facade_only_for_type_checking_and_no_project_module() -> None:
-    bad = {
-        stem: found
-        for stem, path in _owner_paths().items()
-        if (found := _bad_owner_imports(_tree(path)))
-    }
-    assert bad == {}
-
-
 def _module_values(tree: ast.Module) -> list[str]:
     """Names a module binds at its top level other than by an import or a ``def``."""
     found = []
@@ -580,12 +569,6 @@ def test_every_module_level_value_an_owner_defines_is_the_object_the_facade_bind
     assert done.returncode == 0, done.stderr
     assert done.stdout.strip().splitlines()[-1] == "[]"
     assert sum(len(names) for names in values.values()) >= 40
-
-
-def test_the_package_init_defines_nothing() -> None:
-    init = _PARTS_DIR / "__init__.py"
-    assert _facade_mirror._defined_names(_tree(init)) == set()
-    assert [n for n in _tree(init).body if not isinstance(n, ast.Expr)] == []
 
 
 def _imports_an_owner(source: str) -> bool:

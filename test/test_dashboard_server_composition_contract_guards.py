@@ -23,6 +23,11 @@ from dashboard_server_composition_contract_helpers import (
 )
 from source_corpus import repo_root
 
+# One worker per file, so the shared checks run beside the tests that load this module.
+pytestmark = pytest.mark.xdist_group(name="dashboard_server_composition_contract_guards")
+
+SHARED_FACADE_CHECKS = ("the_globstar_matcher_reads_patterns_as_the_reviewers_do",)
+
 # ── the guards keep their reach ───────────────────────────────────────────────
 
 #: Constructs repository guards read by path, with the count each guard asserts and
@@ -137,13 +142,6 @@ def _autosde_rules() -> list[dict]:
         for name in ("AUTOSDE.yaml", "website/AUTOSDE.yaml")
         for rule in yaml.safe_load((root / name).read_text(encoding="utf-8"))["custom-rules"]
     ]
-
-
-def test_the_globstar_matcher_reads_patterns_as_the_reviewers_do() -> None:
-    assert _globstar("src/a/**/*.py").match("src/a/b.py")
-    assert _globstar("src/a/**/*.py").match("src/a/x/y/b.py")
-    assert not _globstar("src/a/*.py").match("src/a/x/b.py")
-    assert _globstar("src/a/**").match("src/a/x/b.py")
 
 
 def test_every_review_rule_on_the_facade_also_covers_its_owners() -> None:
