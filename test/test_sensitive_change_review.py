@@ -540,6 +540,21 @@ def test_emphasized_empty_value_still_fails(mod):
     assert any("How to undo" in p for p in mod.template_problems(body))
 
 
+COUNTER_STEPS = ("Count GitHub API calls (measurement only)", "Report GitHub API call counts")
+
+
+def _checker_steps(wf):
+    """The job's steps without the measurement-only gh call counter around them.
+
+    The counter (pinned in test_gh_call_counter.py) is the first and last step;
+    nothing else is dropped, so the checks below see every real step.
+    """
+    (job,) = wf["jobs"].values()
+    steps = job["steps"]
+    assert (steps[0].get("name"), steps[-1].get("name")) == COUNTER_STEPS
+    return steps[1:-1]
+
+
 class TestWorkflow:
     @pytest.fixture(scope="class")
     def wf(self):
@@ -555,18 +570,18 @@ class TestWorkflow:
         assert wf["permissions"] == {"contents": "read", "pull-requests": "write"}
 
     def test_runs_the_default_branch_checker_first(self, wf):
-        (job,) = wf["jobs"].values()
-        base = job["steps"][0]["with"]
+        steps = _checker_steps(wf)
+        base = steps[0]["with"]
         assert base["ref"] == "${{ github.event.repository.default_branch }}"
-        run = job["steps"][-1]["run"]
+        run = steps[-1]["run"]
         assert 'script="base/.github/scripts/sensitive_change_review.py"' in run
         # The PR's own copy is never checked out or run.
         assert "head/" not in run
+        (job,) = wf["jobs"].values()
         assert all("head" not in str(step.get("with", {}).get("ref", "")) for step in job["steps"])
 
     def test_passes_the_event_head_sha(self, wf):
-        (job,) = wf["jobs"].values()
-        env = job["steps"][-1]["env"]
+        env = _checker_steps(wf)[-1]["env"]
         assert env["EVENT_HEAD_SHA"] == "${{ github.event.pull_request.head.sha }}"
 
     def test_no_waiver_label(self, wf):

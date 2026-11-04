@@ -123,6 +123,54 @@ jobs:
     # Two depth-2 checkouts, one `GET pulls/<n>` and a few seconds of grep each.
     timeout-minutes: 5
     steps:
+      # Measurement only: counts this job's GitHub API calls by kind so the
+      # shared GITHUB_TOKEN quota can be attributed per workflow. Every later
+      # `gh` resolves to a shim that appends one line to a counter file and
+      # then `exec`s the real gh with the same arguments, so arguments,
+      # stdin, stdout, stderr and exit code are the real gh's own. A counter
+      # that cannot be installed or written is skipped; it never fails the job.
+      # Pinned identical in every job by test_gh_call_counter.py.
+      - name: Count GitHub API calls (measurement only)
+        continue-on-error: true
+        run: |
+          real="$(command -v gh || true)"
+          dir="$RUNNER_TEMP/gh-call-count"
+          if [ -z "$real" ] || [ "$real" = "$dir/gh" ]; then exit 0; fi
+          mkdir -p "$dir" && : > "$dir/calls" || exit 0
+          {
+            echo '#!/usr/bin/env bash'
+            printf 'REAL_GH=%q\n' "$real"
+            printf 'COUNT_FILE=%q\n' "$dir/calls"
+            cat <<'SHIM'
+          # Kinds follow gh 2.103 at github.com/cli/cli: `api` is one REST
+          # request (`--paginate` one per page, so it is also tallied apart),
+          # `api graphql` one GraphQL request, `pr comment` a GraphQL lookup
+          # plus a GraphQL addComment, `pr view` and `label list` GraphQL,
+          # `label create` REST. `api rate_limit` costs no quota. Anything
+          # else is `other`, counted but unclassified.
+          {
+            kind=other n=1
+            case "${1-} ${2-}" in
+              "api rate_limit" | "api /rate_limit") kind=free ;;
+              api\ *)
+                kind=rest
+                for arg in "${@:2}"; do
+                  case "$arg" in
+                    graphql) kind=graphql ;;
+                    --paginate) printf 'paginate 1\n' >> "$COUNT_FILE" ;;
+                  esac
+                done
+                ;;
+              "pr comment") kind=graphql n=2 ;;
+              "pr view" | "label list") kind=graphql ;;
+              "label create") kind=rest ;;
+            esac
+            printf '%s %s\n' "$kind" "$n" >> "$COUNT_FILE"
+          } 2> /dev/null
+          exec "$REAL_GH" "$@"
+          SHIM
+          } > "$dir/gh" && chmod 755 "$dir/gh" && echo "$dir" >> "$GITHUB_PATH" || true
+
       # The pull request's merge commit, for the three diff-reading policies.
       # depth-2: the merge commit (HEAD) and its first parent (the base tip,
       # HEAD^1). `git diff HEAD^1 HEAD` is then the exact set of changes this PR
@@ -554,6 +602,24 @@ jobs:
             echo "\`**Why no screenshot:** <reason>\` -- the check re-runs on the edit."
           } >> "$GITHUB_STEP_SUMMARY"
           exit 1
+
+      # Counts only, never arguments or responses. `basis=gh-invocations`:
+      # a `--paginate` call is one `rest` however many pages it read, and
+      # calls made by actions (claude-code-action's octokit) are not seen.
+      - name: Report GitHub API call counts
+        if: always()
+        continue-on-error: true
+        run: |
+          f="$RUNNER_TEMP/gh-call-count/calls"
+          wf="${GITHUB_WORKFLOW_REF%@*}"
+          wf="${wf##*/}"
+          if [ ! -f "$f" ]; then
+            echo "rest-calls: workflow=$wf job=$GITHUB_JOB counter=absent"
+            exit 0
+          fi
+          awk -v wf="$wf" -v job="$GITHUB_JOB" '{ c[$1] += $2 } END {
+            printf "rest-calls: workflow=%s job=%s rest=%d graphql=%d paginated=%d other=%d basis=gh-invocations\n",
+              wf, job, c["rest"], c["graphql"], c["paginate"], c["other"] }' "$f" || true
 
       # The verdict. Every policy above ran with `continue-on-error: true`, so
       # the job is still green here whatever they found; this step is the one

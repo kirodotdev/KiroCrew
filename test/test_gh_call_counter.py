@@ -1,7 +1,8 @@
 """Behavioural tests for the measurement-only ``gh`` call counter.
 
-pr-readiness and the same-repo AI review lanes install a shim as their first
-step: every later ``gh`` resolves to it, it appends one ``<kind> <n>`` line to a
+pr-readiness, the same-repo AI review lanes, two PR gates and the fork lanes
+that run no model before a ``gh`` call install a shim as their first step (right
+after harden-runner where a job has one): every later ``gh`` resolves to it, it appends one ``<kind> <n>`` line to a
 counter file, then ``exec``s the real gh. Their last step folds that file into
 one ``rest-calls:`` log line. These tests run both steps for real against a
 stub ``gh`` and pin that the shim is invisible to the caller: same stdout,
@@ -27,8 +28,8 @@ INSTALL = "Count GitHub API calls (measurement only)"
 REPORT = "Report GitHub API call counts"
 BASH = shutil.which("bash") or "bash"
 
-# Every job in these files that runs `gh`. security-scope-review's validate and
-# adjudicate jobs make no gh call and are deliberately not instrumented.
+# Every job in these files that runs `gh`. The validate and adjudicate jobs of
+# both security-scope-review workflows make no gh call and are not instrumented.
 INSTRUMENTED = {
     "pr-readiness.yml": ["readiness"],
     "design-review.yml": ["design-review"],
@@ -37,7 +38,35 @@ INSTRUMENTED = {
     "codex-review.yml": ["codex-review"],
     "claude-review.yml": ["claude-review"],
     "security-scope-review.yml": ["generate", "publish"],
+    "sensitive-change-review.yml": ["sensitive-change-review"],
+    "pr-policy.yml": ["pr-policy"],
+    "fork-pr-description.yml": ["describe"],
+    "fork-internal-content-scan.yml": ["fork-internal-content-scan"],
+    "fork-security-scope-review.yml": ["generate", "publish"],
 }
+
+# Jobs with no step-level fork guard: the gates run for every PR, and the fork
+# lanes carry their guard on the job. Fork lanes whose credentialed `gh` calls
+# run after the model step (gpt, opus, design, ux, first-principles) are not
+# instrumented: the shim is a runner-writable executable those calls would run.
+UNGUARDED = {
+    "sensitive-change-review.yml",
+    "pr-policy.yml",
+    "fork-pr-description.yml",
+    "fork-internal-content-scan.yml",
+    "fork-security-scope-review.yml",
+}
+HARDEN = "step-security/harden-runner"
+# Today their post-model `gh` resolves to the root-owned system binary; a shim
+# would move that call's integrity onto the model's tool allowlist alone.
+# fork-gpt-review.yml also records a standing no-$GITHUB_PATH-write decision.
+NOT_INSTRUMENTED = (
+    "fork-gpt-review.yml",
+    "fork-opus-review.yml",
+    "fork-design-review.yml",
+    "fork-ux-review.yml",
+    "fork-first-principles-review.yml",
+)
 
 pytestmark = pytest.mark.skipif(
     os.name == "nt" or shutil.which("bash") is None or shutil.which("awk") is None,
@@ -130,10 +159,22 @@ def test_every_job_that_calls_gh_carries_identical_steps_first_and_last() -> Non
                 assert INSTALL not in names and REPORT not in names, (workflow, job_name)
                 continue
             assert names.count(INSTALL) == 1 and names.count(REPORT) == 1
-            first = job["steps"][0]
+            hardened = [i for i, s in enumerate(job["steps"]) if HARDEN in str(s.get("uses") or "")]
+            # harden-runner, where a job has it, stays first; the install follows it.
+            assert hardened in ([], [0]), (workflow, job_name)
+            first = job["steps"][len(hardened)]
             report = job["steps"][names.index(REPORT)]
             assert first["name"] == INSTALL, (workflow, job_name)
-            if workflow == "pr-readiness.yml":
+            if workflow in UNGUARDED:
+                if workflow == "pr-policy.yml":
+                    # The verdict keeps the last slot (test_pr_quality_gates pins
+                    # it); it makes no gh call, so the count sits just ahead.
+                    assert names[-2:] == [REPORT, "Fail the job for every red policy"]
+                else:
+                    assert names[-1] == REPORT, (workflow, job_name)
+                assert "if" not in first
+                assert report["if"] == "always()"
+            elif workflow == "pr-readiness.yml":
                 # The budget log keeps the last slot; the count sits just ahead.
                 assert names[-2:] == [REPORT, "Log the remaining REST budget"]
                 assert "if" not in first
@@ -150,6 +191,12 @@ def test_every_job_that_calls_gh_carries_identical_steps_first_and_last() -> Non
             report_run = report_run or report["run"]
             assert first["run"] == install_run, f"{workflow}/{job_name}: install step drifted"
             assert report["run"] == report_run, f"{workflow}/{job_name}: report step drifted"
+
+
+@pytest.mark.parametrize("workflow", NOT_INSTRUMENTED)
+def test_fork_lanes_that_run_gh_after_the_model_carry_no_shim(workflow: str) -> None:
+    text = (WORKFLOWS / workflow).read_text(encoding="utf-8")
+    assert INSTALL not in text and REPORT not in text and "gh-call-count" not in text
 
 
 def test_the_shim_preserves_stdout_stderr_and_exit_code(runner: Runner) -> None:
