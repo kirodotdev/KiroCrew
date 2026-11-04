@@ -1500,21 +1500,22 @@ async def test_the_provider_confirms_from_its_client_arm_only(
     never reaches the call at all."""
     from kiro_crew.providers.acp import AcpProvider
 
-    provider = AcpProvider(work_dir=tmp_path, agent="saved-member", acp_backend=backend)
+    provider = AcpProvider(
+        work_dir=tmp_path, agent="saved-member", acp_backend=backend, member_context=True
+    )
     provider.memory_mode = "persistent"
     monkeypatch.setattr(provider, "_apply_effort_overlay", lambda: None)
     monkeypatch.setattr(provider, "_apply_tool_search_overlay", lambda: None)
     monkeypatch.setattr(provider, "_start_kiro_runtime", AsyncMock())
     monkeypatch.setattr(provider, "_apply_initial_effort", AsyncMock())
     provider._client.ensure_ready = AsyncMock()
-    provider._client.confirm_member_projection = AsyncMock()
+    provider._client._session_id = "live-session"
+    provider._client._confirm_member_projection = lambda _spec: None
 
     await provider.start()
 
-    if client_arm:
-        provider._client.confirm_member_projection.assert_awaited_once_with()
-    else:
-        provider._client.confirm_member_projection.assert_not_awaited()
+    # The real confirmation stamps the session it judged; the runtime arm never stamps.
+    assert provider._client._confirmed_capability_session == ("live-session" if client_arm else "")
 
 
 @pytest.mark.asyncio
@@ -1548,25 +1549,24 @@ async def test_a_confirmed_session_is_not_judged_again(tmp_path):
 async def test_member_confirmation_uses_adapter_routing_seam(
     monkeypatch, backend, mirror_used, member_context
 ):
-    from kiro_crew import acp_tool_gate
+    from kiro_crew import acp_tool_gate, agent_capabilities_consumed
     from kiro_crew.acp.session_handle import AcpSessionHandle
 
     runtime = _codex_runtime()
     runtime._acp_backend = backend
     runtime._member_context = member_context
-    runtime._confirm_member_projection = AsyncMock()
     handle = _codex_handle(None)
     handle._runtime = runtime
     handle.mirror_used = mirror_used
     handle.set_config_option = AsyncMock()
     monkeypatch.setattr(acp_tool_gate, "session_config_issue", lambda *_: None)
+    monkeypatch.setattr(agent_capabilities_consumed, "confirm_consumed_projection", lambda *_: ())
 
     await AcpSessionHandle.apply_session_permission_routing(handle)
 
-    if backend == ACP_BACKEND_CODEX and mirror_used and member_context:
-        runtime._confirm_member_projection.assert_awaited_once_with(handle)
-    else:
-        runtime._confirm_member_projection.assert_not_awaited()
+    # The real runtime confirmation records the saved template on the handle.
+    confirmed = backend == ACP_BACKEND_CODEX and mirror_used and member_context
+    assert handle.confirmed_projection_template == ("saved-member" if confirmed else "")
 
 
 def test_member_confirmation_gate_follows_the_mirrored_array():

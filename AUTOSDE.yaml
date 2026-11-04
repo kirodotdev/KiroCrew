@@ -579,11 +579,16 @@ custom-rules:
       - H1/H3 — Kiro is the floor. FLAG a change that makes the kiro harness
         conditional on an edition, a feature flag, an env var, or a registry
         lookup, or that makes an unusable persisted acp_backend raise instead of
-        degrading to kiro with a logged reason. The one exception is H17 (see
-        Allowed); still FLAG the selection gate itself raising, or a refusal
-        that reaches agent.acp_backend, agent.member_acp_backend, an explicit
-        spawn_run(backend=) override, or any session that is not the pinned
-        crewmate's own DM or worker.
+        degrading to kiro with a logged reason. The exceptions are H17 and the
+        enterprise floor (D6), both under Allowed. In the gateway, D6 may refuse
+        a session whose RESOLVED backend is KAS when the gateway's boot proved KAS
+        cannot start on the route it would take (kiro-cli unable to run KAS, or
+        no runnable engine bundle), wherever that backend came from
+        (agent.acp_backend, agent.member_acp_backend, a crewmate pin or a
+        spawn_run(backend=) override). Still FLAG the
+        selection gate itself raising, anything that refuses or alters a Kiro
+        CLI pick (a session whose resolved backend is kiro), and any other
+        refusal that is not the pinned crewmate's own DM or worker under H17.
       - H6/H7 — capability grants. A new capability predicate must be membership
         in a named ACP_BACKENDS_* set (defined in agent_sdk/backends.py or a backends_* owner,
         re-exported by agent_sdk/backends.py and acp/types.py), and every existing
@@ -613,6 +618,26 @@ custom-rules:
         argument of select_provider_backend before the gate runs; for any other
         session it returns None and changes nothing, so it is not an H13 change
         to the kiro construction path.
+      - D6 (rfc-crew-enterprise-edition.md): in an ENTERPRISE build the floor
+        is KAS, not kiro. The owner chose KAS as the one harness an enterprise
+        build keeps, so there the kiro harness is selectable only when the
+        remote policy allows it, and an unusable persisted acp_backend degrades
+        to KAS with a logged reason. The edition is read ONLY from the
+        build-time constant (kiro_crew.edition.is_enterprise()), never from
+        config, an env var or the platform context, so the selection gate stays
+        free of a context read (H3). A KAS that is proven unable to start on
+        the route it would take refuses the gateway start when the main backend
+        runs KAS (enterprise boot, naming the fix) instead of falling back to
+        kiro. When the main backend does not run KAS, the start goes on and the
+        boot-recorded verdict refuses each later gateway session whose resolved
+        backend is KAS, after the selection gate and before any process exists,
+        with
+        the H17 refusal code and the fix named; the check runs only when the
+        resolved backend is KAS, so the kiro construction path gains nothing
+        (H13). Still FLAG any of this reaching an oss build, the edition read
+        from anything but that constant, the selection gate raising, a refusal
+        or change that reaches a session whose resolved backend is kiro, or a
+        silent fall back to kiro in an enterprise build.
 
   - id: memory-store-seam
     blocking: true

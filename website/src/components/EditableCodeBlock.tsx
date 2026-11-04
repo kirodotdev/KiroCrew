@@ -103,6 +103,7 @@ const EditableCodeBlock = memo(function EditableCodeBlock(
   }
 
   return (
+    // 'code-block' is a stable theming hook — see website/docs/theming-contract.md
     <div ref={wrapperRef} className="code-block rounded-xl border border-border bg-bg-elevated overflow-hidden">
       {/* The header closes off the scroll box below it: once the editor scrolls,
           a partly visible first line meets the header edge, and without a rule

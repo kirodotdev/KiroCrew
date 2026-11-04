@@ -168,7 +168,7 @@ class TestSessionKeyPersistence:
                 }
             ],
         }
-        (tmp_path / "crons.json").write_text(json.dumps(data))
+        (tmp_path / "crons.json").write_text(json.dumps(data), encoding="utf-8")
         svc = CronService(base_dir=tmp_path)
         svc._load()
         assert svc.list_jobs()[0].session_key == ""

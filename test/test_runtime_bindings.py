@@ -81,7 +81,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_audit_denied_off_loop": ("function", False, "bc403500636d", "runtime_host_requests"),
     # Both take ``request_identity``: the vault identity the ``session/new`` went out
     # under, for the KAS catalog recorder (``kas_model_catalog``).
-    "_collect_late_start": ("function", False, "c3cf91b8dc4b", "runtime_session_create"),
+    "_collect_late_start": ("function", False, "1c91d322411d", "runtime_session_create"),
     "_compose_death_summary": ("function", False, "d296f1f5d821", "runtime_liveness"),
     "_confirm_member_projection": ("function", True, "c694d7c95d1b", "runtime_session_setup"),
     "_copy_native_launch_sources": ("function", False, "b4bc0bbb71ed", "runtime_session_setup"),
@@ -92,7 +92,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_exit_reason": ("function", False, "5ea8f751c789", "runtime_liveness"),
     "_exit_watch_loop": ("function", True, "b60c5fea256e", "runtime_liveness"),
     "_failed_start_cleanup": ("function", True, "b60c5fea256e", "runtime_spawn_launch"),
-    "_finish_create_session": ("function", True, "3080888edcbd", "runtime_session_create"),
+    "_finish_create_session": ("function", True, "417fe88faef2", "runtime_session_create"),
     "_finish_session_init": ("function", False, "eb69f6ac3aa6", "runtime_session_registry"),
     "_flush_dropped_frames": ("function", False, "bc10f150ea47", "runtime_frame_accounting"),
     "_flush_roster_overflow": ("function", False, "bc10f150ea47", "runtime_frame_accounting"),
@@ -107,7 +107,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
         "fa6cfecd5574",
         "runtime_mode_activation",
     ),
-    "_kas_custom_agents": ("function", True, "997f5903aa65", "runtime_session_setup"),
+    "_kas_custom_agents": ("function", True, "1cacd0d91137", "runtime_session_setup"),
     "_kill_failed_start_escapees": ("function", True, "ccaec8d76f05", "runtime_spawn_launch"),
     "_kill_inner": ("function", True, "4f9ced5c4b86", "runtime_tree_kill"),
     "_mark_dead": ("function", False, "e8c36427bffd", "runtime_liveness"),
@@ -315,7 +315,7 @@ _BASE_IMPORTS = frozenset("""
     apply_pod_bundle_spawn assert_voice_runtime_outside_agent_workspace asyncio
     attach_kas_custom_agents attach_stub_session_token augmented_path authorize_runtime_kill
     backends_retired_by_host_logout bind_voice_safe_agent_workspace_async
-    browser_session_env browser_socket_env build_session_new_params cgroup_scope_argv
+    build_session_new_params cgroup_scope_argv
     create_subprocess_limited data_home deque emit_counter encode_frame
     ensure_agent_materialized ensure_directory finish_suspended_spawn functools
     group_vouching_available harness_for has_mirror hoist_servers_for_session importlib

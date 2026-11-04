@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 from pathlib import Path
 from typing import Any
@@ -1798,7 +1799,7 @@ class TestRegisterRoutes:
 
     @pytest.mark.asyncio
     async def test_a_failing_startup_hook_is_swallowed(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
     ) -> None:
         app = web.Application()
         routes.register_routes(app)
@@ -1808,7 +1809,11 @@ class TestRegisterRoutes:
 
         monkeypatch.setattr(pr_watchers, "attach_loop", _boom)
         hook = next(h for h in app.on_startup if getattr(h, "__name__", "") == "_bind_watcher_loop")
-        await hook(app)
+        with caplog.at_level(logging.WARNING, logger=routes.logger.name):
+            await hook(app)
+        assert [r.getMessage() for r in caplog.records if r.name == routes.logger.name] == [
+            f"{store.APP_NAME}: could not bind the watcher loop"
+        ]
 
     @pytest.mark.asyncio
     async def test_the_cleanup_hook_stops_every_watcher(
@@ -1824,7 +1829,7 @@ class TestRegisterRoutes:
 
     @pytest.mark.asyncio
     async def test_a_failing_cleanup_hook_never_blocks_shutdown(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
     ) -> None:
         app = web.Application()
         routes.register_routes(app)
@@ -1834,4 +1839,8 @@ class TestRegisterRoutes:
 
         monkeypatch.setattr(pr_watchers, "get_registry", _boom)
         hook = next(h for h in app.on_cleanup if getattr(h, "__name__", "") == "_stop_watchers")
-        await hook(app)
+        with caplog.at_level(logging.WARNING, logger=routes.logger.name):
+            await hook(app)
+        assert [r.getMessage() for r in caplog.records if r.name == routes.logger.name] == [
+            f"{store.APP_NAME}: watcher shutdown failed"
+        ]

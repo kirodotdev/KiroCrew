@@ -1034,15 +1034,28 @@ class TestSendAbortForSession:
         assert abort.call_args.kwargs["reason"] == "hard-stop session=d1"
 
     @pytest.mark.asyncio
-    async def test_the_audit_record_names_the_runtime_the_target_names(self, mgr) -> None:
+    async def test_the_audit_record_names_the_runtime_the_target_names(
+        self, mgr, tmp_path, monkeypatch
+    ) -> None:
         """The record says which runtime was asked; the target renders that itself."""
+        from kiro_crew import sel as sel_mod
+
+        monkeypatch.setattr(sel_mod.SecurityEventLog, "_instance", None)
+        monkeypatch.setattr(sel_mod.SecurityEventLog, "_initialized", False)
+        (tmp_path / "sel").mkdir()
+        audit = sel_mod.SecurityEventLog(base_dir=tmp_path / "sel", sync=True)
+        # Leave the process singleton unset so no other caller is handed this log.
+        monkeypatch.setattr(sel_mod.SecurityEventLog, "_instance", None)
+        monkeypatch.setattr(sel_mod.SecurityEventLog, "_initialized", False)
         target = RuntimeAbortTarget.build(4242, "/tmp/gw.sock")
         sess = _Session(provider=_stub_provider(runtime_abort_target=lambda: target))
-        audit = MagicMock()
         with patch("kiro_crew.session.sel", return_value=audit):
             with patch("kiro_crew.session.schedule_abort_for"):
                 await mgr._send_abort_for_session("d1", sess)
-        assert audit.log_api_access.call_args.kwargs["resources"] == "pid=4242 session=d1"
+        rows = [e for e in audit.recent() if e["operation"] == "mcp-gateway.abort-initiated"]
+        assert [(r["resources"], r["outcome"]) for r in rows] == [
+            ("pid=4242 session=d1", "initiated")
+        ]
 
 
 # ── Orphan-MCP hook ─────────────────────────────────────────────────────────

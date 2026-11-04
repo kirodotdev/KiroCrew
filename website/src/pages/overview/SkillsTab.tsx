@@ -15,6 +15,8 @@ import DiffBlock from '../../components/DiffBlock'
 import ErrorNotice from '../../components/ErrorNotice'
 import ListDetailBack from '../../components/ListDetailBack'
 import { useListDetailView } from '../../hooks/useListDetailView'
+import { useScrollEdgesY } from '../../hooks/useScrollEdges'
+import { MORE_BELOW_MASK } from '../../components/ModelEffortDropdown'
 import { useProvider } from '../../providers'
 import type { Skill } from '../../types'
 import SkillContextBudget from './SkillContextBudget'
@@ -29,6 +31,7 @@ import { i18nT } from '../../i18n/t'
 import { uiLocation } from '../../uiLocations/uiLocation'
 import { parseErrorCode, findReport, type ErrorReport } from '../../utils/errorReport'
 import { SettingRef } from '../../components/settingRef/SettingRef'
+import { putRowBack, takeRow } from '../../lib/optimisticRemoval'
 const EMPTY_FORM: SkillFormData = { name: '', category: '', description: '', triggers: '', tags: '', always: false, body: '' }
 
 /**
@@ -166,6 +169,16 @@ export default function SkillsTab() {
   // runs must not open an editor on the skill the user just left.
   const selectedKeyRef = useRef(selectedKey)
   useEffect(() => { selectedKeyRef.current = selectedKey }, [selectedKey])
+  // Gives mutation callbacks a fresh view of detailEditing without capturing
+  // a stale closure value: the deleteSkill onSuccess fires after an await,
+  // by which point the user may have entered edit mode since the mutation
+  // started, so reading detailEditing directly from the closure yields the
+  // value at call time, not the current value. Written during render (not in
+  // an effect) so the ref is current before any passive effects flush — a
+  // useEffect sync would share the same post-commit batch as useMutation's
+  // observer.setOptions and lose the same race this ref is meant to close.
+  const detailEditingRef = useRef(detailEditing)
+  detailEditingRef.current = detailEditing
 
   const createSkill = useMutation({
     mutationFn: ({ name, content }: { name: string; content: string }) => api.createSkill(name, content),
@@ -284,20 +297,23 @@ export default function SkillsTab() {
       // report a stale outcome as current. A fresh failure re-sets it.
       setDeleteError(null)
       await queryClient.cancelQueries({ queryKey: ['skills'] })
-      const prev = queryClient.getQueryData<Skill[]>(['skills'])
+      const removed = takeRow(queryClient.getQueryData<Skill[]>(['skills']), s => s.key === key)
       queryClient.setQueryData<Skill[]>(['skills'], old => old?.filter(s => s.key !== key) ?? [])
-      return { prev }
+      return { removed }
     },
     onSuccess: () => {
       // An OPEN editor must survive this teardown, whatever its save state:
       // dropping the selection or the editing flag unmounts it (a null
       // selection alone does, via the placeholder branch), which discards a
       // typed-but-unsaved draft outright and leaves an in-flight PUT's later
-      // rejection with nothing to render it. `!detailEditing` covers both — a
-      // pending save can only exist while the editor is open, since every
-      // path that leaves it is disabled or no-ops during the save window.
-      // Outside the editor, the original teardown applies.
-      if (!detailEditing) {
+      // rejection with nothing to render it. `!detailEditingRef.current` covers
+      // both — a pending save can only exist while the editor is open, since
+      // every path that leaves it is disabled or no-ops during the save window.
+      // Outside the editor, the original teardown applies. The ref is used
+      // rather than the state variable to avoid a stale closure: onSuccess
+      // executes after an async await, and the user may have entered edit mode
+      // after the mutation was called but before it resolved.
+      if (!detailEditingRef.current) {
         setSelectedKey(null)
         setDetailEditing(false)
       }
@@ -307,15 +323,17 @@ export default function SkillsTab() {
       queryClient.invalidateQueries({ queryKey: ['discover-skills'] })
     },
     onError: (err: Error, key, context) => {
-      if (context?.prev) queryClient.setQueryData(['skills'], context.prev)
-      // Rollback first (above, unchanged), then say why the row came back:
+      // Only this skill's row comes back: a whole-list snapshot would also
+      // revive a skill another delete removed while this one was in flight.
+      queryClient.setQueryData<Skill[]>(['skills'], old => putRowBack(old, context?.removed, s => s.key === key))
+      // Rollback first (above), then say why the row came back:
       // reversing the optimistic write alone re-renders the deleted row with
       // no explanation, which reads as the delete silently not working.
       // The report is looked up by the ORIGINAL message before it is framed.
       // The banner names the skill the way the ROW does (its display name,
-      // from the rollback snapshot — guaranteed to hold the deleted skill),
-      // so the reader matches banner to row without decoding the raw key.
-      const target = context?.prev?.find(s => s.key === key)
+      // from the row this delete removed), so the reader matches banner to
+      // row without decoding the raw key.
+      const target = context?.removed?.row
       const code = err instanceof ApiError ? parseErrorCode(err.body) : undefined
       // The frame ALWAYS carries the skill name and the word "delete" — a bare
       // hint next to several rows would name neither what failed nor on which
@@ -351,6 +369,13 @@ export default function SkillsTab() {
 
   // Narrow viewport shows one pane at a time; a desktop shows both.
   const { isMobile, showList, showDetail, openDetail, closeDetail } = useListDetailView()
+
+  // A long list is cut at the pane's height, and with the scrollbar hidden
+  // until scroll a mouse user saw a list that just ended. The bottom fade says
+  // more rows sit below (see MORE_BELOW_MASK). A filter or sort changes the
+  // rows, not the scroller's own box, so no observer on the scroller sees it.
+  const [attachList, listEdges, remeasureList] = useScrollEdgesY<HTMLDivElement>()
+  useEffect(() => { remeasureList() }, [allFiltered, remeasureList])
 
   // Keep a valid selection: default to the first skill, and recover if the
   // current selection is filtered out or deleted.  Suspended while editing:
@@ -533,7 +558,9 @@ export default function SkillsTab() {
             value={skillSort}
             onChange={v => setSkillSort(v as SkillSort)}
           />
-          <Btn onClick={() => refetch()} disabled={isFetching} aria-label={i18nT('pages.overview.skillsTab.refresh_skills')} {...uiLocation('skills.refresh')}><RefreshCw size={14} className={isFetching ? 'animate-spin' : ''} /></Btn>
+          {/* Disabled while a refresh runs, so the name carries the reason: a
+              disabled "Refresh skills" reads as unavailable, not busy. */}
+          <Btn onClick={() => refetch()} disabled={isFetching} aria-label={isFetching ? i18nT('pages.overview.skillsTab.refreshing_skills') : i18nT('pages.overview.skillsTab.refresh_skills')} {...uiLocation('skills.refresh')}><RefreshCw size={14} className={isFetching ? 'animate-spin' : ''} /></Btn>
         </div>
       </div>
 
@@ -579,17 +606,21 @@ export default function SkillsTab() {
          *  browser (panes 2+3: file tree + file content) on the right. */
         <div className={PANE_SHELL_CLASS}>
           {/* Pane 1 — skill list. */}
-          {showList && <div className={`${isMobile ? 'w-full' : 'w-[240px]'} shrink-0 overflow-y-auto border border-border rounded-md p-2`} role="listbox" aria-label={i18nT('pages.overview.skillsTab.skills')}>
-            {localSkills.map(renderRow)}
-            {packageSkills.length > 0 && (
-              <div className="mt-2">
-                <div className="text-[11px] text-aim font-semibold tracking-wider px-2 py-1.5 mb-1" title={i18nT('pages.overview.skillsTab.skills_from_read_only', { name: provider.labels.pluginRegistryName })}>
-                  {provider.labels.pluginRegistryName.toUpperCase()}
+          {/* The rows scroll in an inner box: a mask clips everything outside
+              the masked element, so on the pane it would also fade the border. */}
+          {showList && <div className={`${isMobile ? 'w-full' : 'w-[240px]'} shrink-0 flex flex-col border border-border rounded-md`}>
+            <div ref={attachList} className={`flex-1 min-h-0 overflow-y-auto p-2 ${listEdges.bottom ? MORE_BELOW_MASK : ''}`} role="listbox" aria-label={i18nT('pages.overview.skillsTab.skills')}>
+              {localSkills.map(renderRow)}
+              {packageSkills.length > 0 && (
+                <div className="mt-2">
+                  <div className="text-[11px] text-aim font-semibold tracking-wider px-2 py-1.5 mb-1" title={i18nT('pages.overview.skillsTab.skills_from_read_only', { name: provider.labels.pluginRegistryName })}>
+                    {provider.labels.pluginRegistryName.toUpperCase()}
+                  </div>
+                  {packageSkills.map(renderRow)}
                 </div>
-                {packageSkills.map(renderRow)}
-              </div>
-            )}
-            {allFiltered.length === 0 && <div className="text-muted/70 text-[12px] italic px-2 py-2">{i18nT('pages.overview.skillsTab.no_skills_match_query', { query: skillFilter })}</div>}
+              )}
+              {allFiltered.length === 0 && <div className="text-muted/70 text-[12px] italic px-2 py-2">{i18nT('pages.overview.skillsTab.no_skills_match_query', { query: skillFilter })}</div>}
+            </div>
           </div>}
 
           {/* Panes 2+3 — directory browser, or the edit form */}

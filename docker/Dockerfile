@@ -79,9 +79,14 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 # kiro-cli — the agent runtime KiroCrew drives over ACP; chat sessions
-# require it. Global install (Q_INSTALL_GLOBAL) places kiro-cli,
-# kiro-cli-chat, kiro-cli-term into /usr/local/bin; Q_SKIP_SETUP skips
-# dotfile/shell integrations that are meaningless in a container.
+# require it. Every kiro-cli* binary the release ships (kiro-cli, and
+# kiro-cli-chat / kiro-cli-term where present) ends up in /usr/local/bin.
+# Older installers honour Q_INSTALL_GLOBAL; newer ones read
+# KIRO_CLI_INSTALL_GLOBAL and otherwise install into $HOME/.local/bin, so
+# both are set and anything that still lands in $HOME/.local/bin is MOVED
+# (never linked: the home is the volume) into /usr/local/bin. Q_SKIP_SETUP
+# and KIRO_CLI_NO_MODIFY_PATH skip dotfile/shell edits that are meaningless
+# in a container.
 #
 # Supply-chain discipline (image inputs must be verifiable):
 #   1. Read the version from packaging/kiro-cli-version and the per-arch
@@ -118,10 +123,16 @@ RUN --mount=type=bind,source=packaging,target=/tmp/kiro-cli-pin \
         -o /tmp/kirocli.zip; \
     echo "${SHA256}  /tmp/kirocli.zip" | sha256sum -c -; \
     unzip -q /tmp/kirocli.zip -d /tmp; \
-    Q_INSTALL_GLOBAL=1 Q_SKIP_SETUP=1 /tmp/kirocli/install.sh; \
+    Q_INSTALL_GLOBAL=1 Q_SKIP_SETUP=1 KIRO_CLI_INSTALL_GLOBAL=1 KIRO_CLI_NO_MODIFY_PATH=1 \
+        /tmp/kirocli/install.sh; \
+    for bin in "${HOME}"/.local/bin/kiro-cli*; do \
+        [ -e "${bin}" ] || continue; \
+        mv -f "${bin}" /usr/local/bin/; \
+    done; \
     rm -rf /tmp/kirocli /tmp/kirocli.zip; \
     mkdir -p /usr/local/share/kirocrew; \
     printf '%s\n' "${RESOLVED}" > /usr/local/share/kirocrew/kiro-cli-version; \
+    test -x /usr/local/bin/kiro-cli; \
     kiro-cli --version
 
 # The CI-built wheel (build-wheel.yml artifact). The glob keeps the Dockerfile

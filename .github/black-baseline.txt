@@ -92,7 +92,6 @@ src/kiro_crew/apps/builtins/meetings/backend/domain/dictionary.py
 src/kiro_crew/apps/builtins/meetings/backend/providers/calendar.py
 src/kiro_crew/apps/builtins/meetings/backend/providers/tasks.py
 src/kiro_crew/apps/builtins/meetings/backend/routes/calendar.py
-src/kiro_crew/apps/builtins/meetings/backend/routes/tasks.py
 src/kiro_crew/apps/builtins/mochi/backend/routes.py
 src/kiro_crew/apps/builtins/ops_mission_control/backend/ledger_sync.py
 src/kiro_crew/apps/builtins/ops_mission_control/backend/notify_out.py
@@ -202,7 +201,6 @@ src/kiro_crew/mcp_gateway/transport.py
 src/kiro_crew/mcp_tools/artifacts.py
 src/kiro_crew/metrics/http_metrics.py
 src/kiro_crew/metrics/recorder.py
-src/kiro_crew/notifications/resource_pressure.py
 src/kiro_crew/perf_sampler.py
 src/kiro_crew/pod/launchd.py
 src/kiro_crew/publish_sync.py
@@ -299,7 +297,6 @@ test/test_bench_scorers.py
 test/test_bench_windows_symlink.py
 test/test_bootstrap.py
 test/test_brand_name_gate.py
-test/test_browser_cli_snapshots.py
 test/test_browser_recording_skill.py
 test/test_bug_proposal_skip_status_default.py
 test/test_bug_validation_send_message_schema.py
@@ -375,7 +372,6 @@ test/test_dashboard_ws_offloop_fanout.py
 test/test_dashboard_yolo_startup.py
 test/test_delete_message.py
 test/test_denied_commands_api.py
-test/test_denied_commands_authority.py
 test/test_denied_commands_hooks.py
 test/test_dependencies.py
 test/test_dependency_ledger.py
@@ -657,7 +653,6 @@ test/test_skill_script_validator.py
 test/test_skill_update_flow.py
 test/test_skill_versioning.py
 test/test_slack_dashboard_live_sync.py
-test/test_slack_home_tab.py
 test/test_slack_linked_approval.py
 test/test_slack_mirror_unlink.py
 test/test_slack_pins_reactions.py
@@ -714,7 +709,6 @@ test/test_turn_duration_slack.py
 test/test_turn_duration_task_runner.py
 test/test_turn_duration_workflow.py
 test/test_update_venv_detection.py
-test/test_use_builtin_browser_config.py
 test/test_user_resolution_fallback.py
 test/test_validation.py
 test/test_validation_user_actions.py
@@ -734,7 +728,6 @@ test/test_website_build_heap.py
 test/test_wecom_config_handlers.py
 test/test_wecom_wire.py
 test/test_weixin_media.py
-test/test_weixin_wire.py
 test/test_windows_sim.py
 test/test_worker_pool.py
 test/test_workflow_permissions.py

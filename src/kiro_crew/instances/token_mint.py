@@ -26,7 +26,7 @@ import re
 import shutil
 
 from kiro_crew.config.paths import CONFIG_DIR_NAME, LEGACY_CONFIG_DIR_NAME
-from kiro_crew.deploy.engine import tool_spawn_env
+from kiro_crew.deploy.engine import _refresh_aws_bin_dir_trust, tool_spawn_env
 from kiro_crew.instances.constants import (
     DEFAULT_MINT_TIMEOUT_SECS,
     DEFAULT_SSM_MINT_TIMEOUT_SECS,
@@ -438,12 +438,17 @@ def _build_ssh_argv(
     device: every caller here runs a remote command and none of them writes the
     child's stdin, and an inherited console-less stdin keeps the channel open
     after the remote command exits (notably through a ``ProxyCommand``), so ssh
-    waits for an EOF that never arrives. ``ssh_host`` is validated by the caller
-    (registry / tunnel manager) before reaching here.
+    waits for an EOF that never arrives. ``-T`` never asks for a terminal: no
+    caller here is interactive, and a user's ``RequestTTY yes`` otherwise
+    prints "Pseudo-terminal will not be allocated" first on stderr, which then
+    reads as the failure reason.
+    ``ssh_host`` is validated by the caller (registry / tunnel manager) before
+    reaching here.
     """
     return [
         "ssh",
         "-n",
+        "-T",
         "-o",
         "BatchMode=yes",
         "-o",
@@ -490,6 +495,7 @@ def ssh_spawn_argv_env(argv: list[str]) -> tuple[list[str], dict[str, str]]:
     PATH scan; call it via ``asyncio.to_thread`` from async code.
     """
     head = resolve_ssh_bin() if argv[0] == "ssh" else argv[0]
+    _refresh_aws_bin_dir_trust()
     return [head, *argv[1:]], tool_spawn_env(head)
 
 

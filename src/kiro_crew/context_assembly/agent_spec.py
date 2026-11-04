@@ -397,18 +397,19 @@ def _session_computer_use_gate(self, session_key: str, *, refresh: bool) -> bool
 def _live_browser_gate() -> bool:
     """Whether browsing is set up on this host now, as the ``browser`` tool reads it.
 
-    ``browser_cli.install.available`` is the predicate the tool's own call-time
-    check wraps: while it is False the tool refuses every op. Unlike that check
-    this fails OPEN. An unreadable state keeps the whole section, because a
-    section kept by mistake costs tokens while one dropped by mistake leaves a
-    working browser without its approval and loopback rules.
+    ``browser_harness.ops.browsing_available`` is the predicate the gateway's op
+    route answers ``not_installed`` by: while it is False the tool refuses every
+    op. Unlike that check this fails OPEN. An unreadable state keeps the whole
+    section, because a section kept by mistake costs tokens while one dropped by
+    mistake leaves a working browser without its loopback and takeover rules.
     """
     try:
         # Function-local: an owner takes no Kiro Crew import at module scope, so
-        # loading the context does not load the browser install plane.
-        from kiro_crew.browser_cli import install
+        # loading the context does not load the browser plane.
+        from kiro_crew.browser_harness import ops as browser_ops
+        from kiro_crew.config.paths import config_dir
 
-        return bool(install.available())
+        return bool(browser_ops.browsing_available(config_dir()))
     except Exception:
         logger.debug("browse gate unreadable; prompt keeps the Browser section", exc_info=True)
         return True
@@ -490,15 +491,23 @@ def _load_agent_prompt(
     from kiro_crew import context as ctx  # circular import: the facade imports this owner
     from kiro_crew.agent_discovery import _read_agent_spec
     from kiro_crew.member_essential_context import (
+        read_template_spec,
         resolve_relative_prompt_path,
-        resolve_template_path,
     )
 
     try:
-        path = spec_path or resolve_template_path(agent, project)
-        if path is None:
+        if spec_path is not None:
+            resolved: tuple[Path, dict | None] | None = (
+                spec_path,
+                _read_agent_spec(spec_path, operation="agent_prompt", source="context"),
+            )
+        else:
+            resolved = read_template_spec(
+                agent, project, operation="agent_prompt", source="context"
+            )
+        if resolved is None:
             return ""
-        data = _read_agent_spec(path, operation="agent_prompt", source="context")
+        path, data = resolved
         if data is None:
             return ""
         prompt = data.get("prompt") or ""

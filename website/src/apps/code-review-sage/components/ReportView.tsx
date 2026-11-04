@@ -247,12 +247,12 @@ function ReportRowCard({
                 { scope: row.blast })}</Pill>
               {live.red > 0 && (
                 <span className="inline-flex items-center rounded-full bg-danger-subtle text-danger-text px-2 py-0.5 text-[11px] font-medium whitespace-nowrap">
-                  {live.red} {i18nT('apps.codeReviewSage.components.reportView.blocking')}
+                  {i18nT('apps.codeReviewSage.components.reportView.blocking_count', { count: live.red })}
                 </span>
               )}
               {live.yellow > 0 && (
                 <span className="inline-flex items-center rounded-full bg-warn-subtle text-warn-text px-2 py-0.5 text-[11px] font-medium whitespace-nowrap">
-                  {live.yellow} {i18nT('apps.codeReviewSage.components.reportView.should_fix')}
+                  {i18nT('apps.codeReviewSage.components.reportView.should_fix_count', { count: live.yellow })}
                 </span>
               )}
               {moved && (

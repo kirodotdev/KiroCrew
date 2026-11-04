@@ -58,12 +58,15 @@ def rewrite_kwargs(cfg: KiroCrewConfig, stub_servers: frozenset[str]) -> dict[st
     """
     # Deferred: ``config.loader`` imports the rewriter's path helpers.
     from kiro_crew.config.loader import _session_work_dir
-    from kiro_crew.config.paths import kiro_agents_dir
+    from kiro_crew.config.paths import kiro_agents_dir, mate_agents_dir
     from kiro_crew.mcp_gateway.rewriter import default_socket_path, resolve_overlay_dir
 
     cfg_gw = cfg.mcp_gateway
     return {
         "source_dir": kiro_agents_dir(),
+        # The crewmate files, so a crewmate's worker gets its broker stubs too
+        # (``mcp_gateway.mate_overlays``).
+        "mate_source_dir": mate_agents_dir(),
         "overlay_dir": resolve_overlay_dir(cfg_gw.overlay_dir),
         "socket_path": Path(cfg_gw.socket_path) if cfg_gw.socket_path else default_socket_path(),
         "work_dir": _session_work_dir(None),
@@ -86,6 +89,7 @@ def _refresh_agent_specs() -> None:
     try:
         rebuild_agent_config()
     except Exception:
+        # PlatformCompositionError too: boot enforces composition; the previous specs stay.
         logger.warning(
             "mcp launch resolution: agent config rebuild failed; resolving from "
             "the current specs",

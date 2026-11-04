@@ -667,7 +667,7 @@ function createIpcRegistrar({
       windows.chrome.stepZoom(event.sender, direction));
 
     // The window façade resolves every request from event.sender and keeps the
-    // native panel/control-plane internals private to that owning window.
+    // native panel internals private to that owning window.
     ipcMain.handle("browser:open", (event, panelId, url) =>
       windows.browser.open(event.sender, panelId, url));
     ipcMain.handle("browser:navigate", (event, panelId, url) =>
@@ -682,20 +682,7 @@ function createIpcRegistrar({
       windows.browser.close(event.sender, panelId));
     ipcMain.handle("browser:get-state", (event, panelId) =>
       windows.browser.getState(event.sender, panelId));
-    ipcMain.handle("browser:track-session", (event, panelId, tracked) =>
-      windows.browser.trackSession(event.sender, panelId, tracked));
-    ipcMain.handle("browser:set-agent-act", (event, panelId, enabled) =>
-      windows.browser.setAgentAct(event.sender, panelId, enabled));
-    ipcMain.handle("browser:set-control-owner", (event, panelId, requested) =>
-      windows.browser.setControlOwner(event.sender, panelId, requested));
-    ipcMain.handle("browser:get-control", (event, panelId) =>
-      windows.browser.getControl(event.sender, panelId));
-    // Deliberately remains a closed verb dispatcher inside window-lifecycle;
-    // this bridge never exposes a raw CDP method to the renderer.
-    ipcMain.handle("browser:control", (event, panelId, op, args) =>
-      windows.browser.control(event.sender, panelId, op, args));
-    // Element annotation on the native page (human-initiated; closed op set,
-    // not a control op -- it takes no agent ownership of the view).
+    // Element annotation on the native page (human-initiated; closed op set).
     ipcMain.handle("browser:annotate", (event, panelId, op, args) =>
       windows.browser.annotate(event.sender, panelId, op, args));
 

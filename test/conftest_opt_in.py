@@ -354,6 +354,20 @@ def named_cron_caller(monkeypatch):
     return key
 
 
+@pytest.fixture
+def command_crons_run_here(monkeypatch):
+    """Let a test create a ``command`` cron on every host, native Windows included.
+
+    Native Windows refuses a new command cron at each create door
+    (``mcp_cron._command_cron_platform_refusal``). A test that creates one to check
+    something else -- field forwarding, store errors, a later mutation -- states
+    here that it is not about that refusal, so it runs the same on every shard.
+    """
+    import kiro_crew.mcp_cron as mcp_cron
+
+    monkeypatch.setattr(mcp_cron, "_command_cron_platform_refusal", lambda: None)
+
+
 #: Comfortably clear of the memory floor ``SubagentManager.spawn`` admits on at
 #: defaults (``agent.spawn_min_memory_gb``, 2 GB after a start of up to 1 GB,
 #: plus the starts still warming). A HEALTHY host, not an infinite one: the

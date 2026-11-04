@@ -1,6 +1,7 @@
 """What this install follows and what it shows about releases.
 
-``POST /api/update/auto`` (the auto-update policy), ``POST /api/update/channel``
+``POST /api/update/auto`` (the auto-update policy) and its ``GET`` (the
+config.local.json pin on it), ``POST /api/update/channel``
 (the release lane), ``POST /api/update/revalidate`` (a terminal update's request to
 re-check), and the bundled changelog and release list.
 
@@ -143,6 +144,20 @@ async def api_update_auto(request: web.Request) -> web.Response:
             "requested": enabled,
             "overlay_override": overlay_override,
         }
+    )
+
+
+async def api_update_auto_pin(request: web.Request) -> web.Response:
+    """GET /api/update/auto — whether config.local.json pins ``auto_update``.
+
+    The switch reads this when it loads, so a pinned install shows the switch
+    held with its note instead of an editable one whose first click is refused
+    (``auto_update_overlay_owned`` above). Read-only and a single file read:
+    the full check (``GET /api/update/check``) carries the same field, but it
+    runs the update check, which a page load must not.
+    """
+    return web.json_response(
+        {"overlay_override": await asyncio.to_thread(overlay_pins, "auto_update")}
     )
 
 

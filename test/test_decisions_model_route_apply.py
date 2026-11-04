@@ -81,7 +81,7 @@ def consented(tmp_path, monkeypatch):
 @pytest.fixture
 def answers(monkeypatch):
     """Install an oracle answering a fixed tier; returns a setter."""
-    import kiro_crew.decisions.impl_jev as impl_mod
+    import kiro_crew.decisions.impl_systemone as impl_mod
 
     state = {"tier": "complex"}
 
@@ -89,7 +89,7 @@ def answers(monkeypatch):
         async def ask(self, _state, questions):
             return {q.id: Answer(id=q.id, value=state["tier"], p=0.91) for q in questions}
 
-    monkeypatch.setattr(impl_mod, "JevOracle", lambda provider: _Oracle())
+    monkeypatch.setattr(impl_mod, "SystemOneProvider", lambda provider: _Oracle())
 
     def _set(tier: str) -> None:
         state["tier"] = tier
@@ -724,7 +724,7 @@ class TestAManualPickDuringTheAwaitWins:
         mid-await clears the flag and means "let Jev pick", so applying the answer is
         the instruction rather than an overwrite of it. Only a NAMED MODEL is a
         different instruction, which is what the `pin` case moves."""
-        import kiro_crew.decisions.impl_jev as impl_mod
+        import kiro_crew.decisions.impl_systemone as impl_mod
 
         for moved in ("served_model", "pin"):
             state, client = _runner_state(tmp_path)
@@ -741,7 +741,7 @@ class TestAManualPickDuringTheAwaitWins:
                         slot.jev_route = False
                     return {q.id: Answer(id=q.id, value="complex", p=0.93) for q in questions}
 
-            monkeypatch.setattr(impl_mod, "JevOracle", lambda provider: _PickingOracle())
+            monkeypatch.setattr(impl_mod, "SystemOneProvider", lambda provider: _PickingOracle())
 
             with _quiet_sel():
                 await chat_runner._run_chat(state, slot, "please redesign the scheduler")
@@ -867,7 +867,7 @@ def windows(monkeypatch):
 @pytest.fixture
 def answered(monkeypatch):
     """An oracle answering a chosen tier at a chosen probability."""
-    import kiro_crew.decisions.impl_jev as impl_mod
+    import kiro_crew.decisions.impl_systemone as impl_mod
 
     held = {"tier": "simple", "p": 0.41}
 
@@ -875,7 +875,7 @@ def answered(monkeypatch):
         async def ask(self, _state, questions):
             return {q.id: Answer(id=q.id, value=held["tier"], p=held["p"]) for q in questions}
 
-    monkeypatch.setattr(impl_mod, "JevOracle", lambda provider: _Oracle())
+    monkeypatch.setattr(impl_mod, "SystemOneProvider", lambda provider: _Oracle())
 
     def _set(tier: str, p: float) -> None:
         held.update(tier=tier, p=p)
@@ -1500,7 +1500,7 @@ class TestARefusalNothingActedOn:
         and never rewritten -- so a refusal recorded before that guard describes a
         decision nothing acted on and nobody can clear. Driven through the oracle,
         which is the only place inside the await window."""
-        import kiro_crew.decisions.impl_jev as impl_mod
+        import kiro_crew.decisions.impl_systemone as impl_mod
 
         slot = _routed_slot("chat-repick-refused")
         state, client = _wired(tmp_path, serves="model-c")
@@ -1510,7 +1510,7 @@ class TestARefusalNothingActedOn:
                 slot.served_model = "model-a"
                 return {q.id: Answer(id=q.id, value="simple", p=0.41) for q in questions}
 
-        monkeypatch.setattr(impl_mod, "JevOracle", lambda provider: _PickingOracle())
+        monkeypatch.setattr(impl_mod, "SystemOneProvider", lambda provider: _PickingOracle())
         await _turn(state, slot)
 
         assert _switched_to(client) == []
@@ -1532,7 +1532,7 @@ class TestARefusalNothingActedOn:
                 )
             ),
         )
-        import kiro_crew.decisions.impl_jev as impl_mod
+        import kiro_crew.decisions.impl_systemone as impl_mod
 
         slot = _routed_slot("chat-empty-landing-repick")
         state, client = _wired(tmp_path, serves="model-c")
@@ -1542,7 +1542,7 @@ class TestARefusalNothingActedOn:
                 slot.served_model = "model-b"
                 return {q.id: Answer(id=q.id, value="simple", p=0.41) for q in questions}
 
-        monkeypatch.setattr(impl_mod, "JevOracle", lambda provider: _PickingOracle())
+        monkeypatch.setattr(impl_mod, "SystemOneProvider", lambda provider: _PickingOracle())
         await _turn(state, slot)
 
         assert _switched_to(client) == []

@@ -57,6 +57,7 @@ def _render(
     try:
         from kiro_crew import dashboard_frame
         from kiro_crew.dashboard.handlers.member_dashboard import (
+            _dashboard_slot,
             _page_safe,
             _template_text_safe,
             _trusted_page,
@@ -84,12 +85,15 @@ def _render(
         if page is None:
             return None
         read = read_fields(slug, member, manifest, slot=slot)
+        # The slot the folds were read from, so each work item can say whether its
+        # main chat is still open; ``read_fields`` resolves a crewmate's the same way.
+        safe = page_safe_for(state, slot if slot is not None else _dashboard_slot(member, slug))
         payload = dashboard_frame.read_payload(
             # MASKED AND REDACTED on the way out, at the one step that hands fold
             # values to a page's own script. A snapshot is taken from what the page
             # holds, so it inherits this rather than needing its own pass.
             # *state* stamps each work item's worker facts before the key is masked.
-            {name: page_safe_for(state)(value) for name, value in read.fields.items()},
+            {name: safe(value) for name, value in read.fields.items()},
             agentic=[name for name, spec in manifest.fields.items() if spec.agentic],
             seq=read.seq,
             missing=read.missing,

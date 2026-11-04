@@ -323,7 +323,7 @@ strip.
    hard to tell apart from a dropped connection — which is why the default
    tracks the registry rather than a fixed number.
 3. **Health probe.** While CONNECTED, a per-tunnel loop probes the forward
-   **end-to-end** every `DEFAULT_PROBE_INTERVAL_SECS` (30s, not user-configurable;
+   **end-to-end** every `DEFAULT_PROBE_INTERVAL_SECS` (10s, not user-configurable;
    `<= 0` disables the probe): a `GET` at the transport's own unauthenticated
    liveness path through the local forward that must return a completed HTTP
    response within `DEFAULT_PROBE_HEALTH_TIMEOUT_SECS` (4s). Any status line
@@ -352,8 +352,8 @@ strip.
    only that backoff — roughly a two-minute window, long enough to outlast a
    transient drop (screen lock, proxy warmup). A dead-far-end forward that
    re-binds but never answers additionally spends one probe window per attempt
-   (`probe_failure_threshold` x `probe_interval`, 3 x 30s = 90s), so its handoff
-   to diagnosis takes `attempts x (90s + backoff)` ~= 16 minutes at the
+   (`probe_failure_threshold` x `probe_interval`, 3 x 10s = 30s), so its handoff
+   to diagnosis takes `attempts x (30s + backoff)` ~= 6 minutes at the
    defaults.
    The counter resets when the steady-state probe answers end-to-end (proving
    the forward reaches its far end), or on a successful `connect()` — a rebuild
@@ -447,7 +447,7 @@ kirocrew config set instances.connect_timeout_secs 45
 kirocrew config set instances.mint_timeout_secs 60
 ```
 
-Constants that are **not** user-configurable: the probe interval (30s), the
+Constants that are **not** user-configurable: the probe interval (10s), the
 end-to-end health-probe timeout (`DEFAULT_PROBE_HEALTH_TIMEOUT_SECS`, 4s), the
 token refresh fraction (0.8), and the stored-token probe timeout (2s).
 
@@ -1284,7 +1284,7 @@ whose current variable parts are all charset-bound literals.
 | Connect fails with an SSH auth error | Refresh your SSH credentials (re-add the key to `ssh-agent`); `BatchMode` never prompts, so a missing credential is an immediate failure. Tunnels self-heal once auth is restored. |
 | Connect fails for another reason | Use **Diagnose**. The ladder reports the first broken link: `ssh_unreachable` (check SSH access or the host alias), `remote_down` (remote gateway not listening), `not_connected` (SSH and remote are fine, this instance has no tunnel yet: click Connect), or `tunnel_down` (reconnect). |
 | "local port N was taken while connecting" | The allocator picked a port that something grabbed in the moment before `ssh` bound it. Retry. If it persists, stop whatever keeps taking ports in that range or move `instances.tunnel_base_port` to a quieter one. |
-| Instance keeps dropping | The health probe plus 2-tier self-heal retry: a rebuild that fails outright spans roughly a two-minute window (8 attempts, capped-exponential backoff), while a forward that re-binds but whose far end stays dead additionally spends one probe window per attempt (`probe_failure_threshold` x `probe_interval`, 3 x 30s), so handoff to diagnosis takes `attempts x (90s + backoff)` ~= 16 minutes at the defaults. Tune `instances.max_recovery_attempts` / `recover_backoff_max_secs` / `probe_failure_threshold`; both recovery values are clamped so they cannot loop indefinitely. If self-heal gives up, diagnosis runs automatically. Check the remote gateway and SSH stability. |
+| Instance keeps dropping | The health probe plus 2-tier self-heal retry: a rebuild that fails outright spans roughly a two-minute window (8 attempts, capped-exponential backoff), while a forward that re-binds but whose far end stays dead additionally spends one probe window per attempt (`probe_failure_threshold` x `probe_interval`, 3 x 10s), so handoff to diagnosis takes `attempts x (30s + backoff)` ~= 6 minutes at the defaults. Tune `instances.max_recovery_attempts` / `recover_backoff_max_secs` / `probe_failure_threshold`; both recovery values are clamped so they cannot loop indefinitely. If self-heal gives up, diagnosis runs automatically. Check the remote gateway and SSH stability. |
 | A pane vanished from the warm set but its switcher entry is still there | It was LRU-evicted (warm set full). The tunnel is untouched: selecting the crew re-warms it, though the re-mint plus SPA cold boot makes that look like a reconnect. Only an explicit `instances.warm_set_cap`, or a fleet past the automatic ceiling (`WARM_SET_CAP_AUTO_CEILING`), can now be below the number of registered crews — set it to `0` to let the cap track the registry. |
 | Every token mint fails on one remote, though its gateway is healthy | The remote's `~/.local/bin/kirocrew` probably points at an uninstalled checkout. See §12: the run-marker is what makes mint follow the *running* gateway's install. |
 
@@ -1549,8 +1549,12 @@ The server's host-canonical 302 (`should_canonicalize_host`) converges the
 loopback names AND literals for the SPA's per-origin settings, since every
 spelling in that set reaches this same gateway. What it never does is move a
 CREDENTIAL: a navigation carrying `?token=` is served where it was addressed
-rather than redirected, because a 302 preserves the query. That gate does not
-depend on which families are bound. The redirect itself does: when the canonical
+rather than redirected, because a 302 preserves the query. A navigation that
+already bears this gateway's session cookie (`mc_token_<port>` or
+`mc_refresh_<port>` for the port in its Host, `refresh_tokens.bears_session_cookie_for_host`)
+is served in place too: the cookie is host-only, so a browser signed in on
+`127.0.0.1` would arrive at `localhost` with no session and read "Session
+expired". That gate does not depend on which families are bound. The redirect itself does: when the canonical
 host is an ambiguous loopback name, the 302 is withheld while this gateway does not
 hold every loopback family that name resolves to
 (`build_host_canonical_redirect(holds_every_family=...)`), because the browser

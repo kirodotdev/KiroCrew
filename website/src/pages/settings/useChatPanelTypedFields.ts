@@ -24,9 +24,12 @@ import {
 } from './chatPanelOptions'
 
 const AUTOCOMPACT_PATH = 'session.autocompact_pct'
+const KEEP_CHARS_PATH = 'agent.completion_keep_chars'
+const TURN_LIMIT_PATH = 'agent.chat_turn_timeout_secs'
+const WAIT_SECS_PATH = 'session.compact_wait_secs'
 
 export function useChatPanelTypedFields({
-  qc, setSaveError, setPathSaveError, clearOwnPathError, dashQ, mcQ, mcCfg,
+  qc, setSaveError, setPathSaveError, clearOwnPathError, dashQ, mcQ,
 }: {
   qc: QueryClient
   setSaveError: (msg: string) => void
@@ -35,7 +38,6 @@ export function useChatPanelTypedFields({
   clearOwnPathError: (path: string) => void
   dashQ: UseQueryResult<DashboardConfig>
   mcQ: UseQueryResult<KirocrewConfigShape>
-  mcCfg: KirocrewConfigShape | undefined
 }) {
   const [localKeepChars, setLocalKeepChars] = useState('')
   // Seeded ONCE, in the render that first has the served config: setting state
@@ -51,13 +53,14 @@ export function useChatPanelTypedFields({
   }
 
   const keepCharsMut = useMutation({
-    mutationFn: (n: number) => api.patchConfig('agent.completion_keep_chars', n),
+    mutationFn: (n: number) => api.patchConfig(KEEP_CHARS_PATH, n),
+    // The failure banner is scoped to this row's path, so a retry clears it.
+    onMutate: () => clearOwnPathError(KEEP_CHARS_PATH),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['kirocrewConfig'] }),
+    // A failed save keeps the typed number on screen beside the failure, so it
+    // can be retried rather than retyped, as the folder field below does.
     onError: () => {
-      setSaveError(i18nT('pages.settings.chatPanel.failed_to_save_completion_keep_characters'))
-      setLocalKeepChars(
-        String(mcCfg?.agent?.completion_keep_chars ?? COMPLETION_KEEP_CHARS_DEFAULT)
-      )
+      setPathSaveError(KEEP_CHARS_PATH, i18nT('pages.settings.chatPanel.failed_to_save_completion_keep_characters'))
     },
   })
 
@@ -74,11 +77,15 @@ export function useChatPanelTypedFields({
   }, [mcQ.isSuccess, serverTurnLimit])
 
   const turnLimitMut = useMutation({
-    mutationFn: (n: number) => api.patchConfig('agent.chat_turn_timeout_secs', n),
+    mutationFn: (n: number) => api.patchConfig(TURN_LIMIT_PATH, n),
+    onMutate: () => clearOwnPathError(TURN_LIMIT_PATH),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['kirocrewConfig'] }),
-    onError: () => {
-      setSaveError(i18nT('pages.settings.chatPanel.failed_to_save_turn_time_limit'))
-      setLocalTurnLimit(String(mcCfg?.agent?.chat_turn_timeout_secs ?? TURN_LIMIT_DEFAULT))
+    // Put back on screen (a refetch while the save was pending may have
+    // replaced it) and still marked edited, so the next blur retries it.
+    onError: (_err, n) => {
+      setPathSaveError(TURN_LIMIT_PATH, i18nT('pages.settings.chatPanel.failed_to_save_turn_time_limit'))
+      turnLimitEditedRef.current = true
+      setLocalTurnLimit(String(n))
     },
   })
 
@@ -145,7 +152,8 @@ export function useChatPanelTypedFields({
   }, [mcQ.isSuccess, serverWaitSecs])
 
   const waitSecsMut = useMutation({
-    mutationFn: (n: number) => api.patchConfig('session.compact_wait_secs', n),
+    mutationFn: (n: number) => api.patchConfig(WAIT_SECS_PATH, n),
+    onMutate: () => clearOwnPathError(WAIT_SECS_PATH),
     onSuccess: (data: { clamp_notice?: ClampNotice } | undefined) => {
       const notice = data?.clamp_notice
       if (notice) {
@@ -163,9 +171,11 @@ export function useChatPanelTypedFields({
       }
       return qc.invalidateQueries({ queryKey: ['kirocrewConfig'] })
     },
-    onError: () => {
-      setSaveError(i18nT('pages.settings.chatPanel.failed_to_save_compaction_wait_budget'))
-      setLocalWaitSecs(String(mcCfg?.session?.compact_wait_secs ?? 0))
+    // Kept on screen and still marked edited, as the turn time limit above.
+    onError: (_err, n) => {
+      setPathSaveError(WAIT_SECS_PATH, i18nT('pages.settings.chatPanel.failed_to_save_compaction_wait_budget'))
+      waitSecsEditedRef.current = true
+      setLocalWaitSecs(String(n))
     },
   })
 
@@ -179,6 +189,10 @@ export function useChatPanelTypedFields({
   const [localCompactPct, setLocalCompactPct] = useState('')
   const [compactClampNotice, setCompactClampNotice] = useState('')
   const compactPctEditedRef = useRef(false)
+  // Bumped by every preset pick. A typed save carries the count it was sent
+  // under, so its failure re-arms the field only when no pick came after it:
+  // otherwise a later blur would write the stale typed value over the preset.
+  const compactPickGenRef = useRef(0)
   useEffect(() => {
     if (mcQ.isSuccess && !compactPctEditedRef.current) setLocalCompactPct(String(serverCompactPct))
   }, [mcQ.isSuccess, serverCompactPct])
@@ -203,7 +217,7 @@ export function useChatPanelTypedFields({
     // One scope for preset picks and typed saves: they run in order, so a
     // pending typed save can never land after a later preset pick.
     scope: { id: AUTOCOMPACT_PATH },
-    mutationFn: ({ n }: { n: number; typed: number }) => api.patchConfig(AUTOCOMPACT_PATH, n),
+    mutationFn: ({ n }: { n: number; typed: number; fromField?: boolean; pickGen?: number }) => api.patchConfig(AUTOCOMPACT_PATH, n),
     onMutate: () => {
       setCompactClampNotice('')
       clearOwnPathError(AUTOCOMPACT_PATH)
@@ -213,9 +227,14 @@ export function useChatPanelTypedFields({
       setCompactClampNotice(clampNoticeFor(typed, n))
       return qc.invalidateQueries({ queryKey: ['kirocrewConfig'] })
     },
-    onError: () => {
+    // A failed typed save keeps its value on screen and marked edited, as the
+    // fields above; a failed preset pick has no typed value to keep.
+    onError: (_err, { n, fromField, pickGen }) => {
       setPathSaveError(AUTOCOMPACT_PATH, i18nT('pages.settings.chatPanel.failed_to_save_auto_compact_threshold'))
-      setLocalCompactPct(String(serverCompactPct))
+      if (fromField && pickGen === compactPickGenRef.current) {
+        compactPctEditedRef.current = true
+        setLocalCompactPct(String(n))
+      } else setLocalCompactPct(String(serverCompactPct))
     },
   })
   const pickCompact = (v: string) => {
@@ -226,6 +245,7 @@ export function useChatPanelTypedFields({
     setCompactCustomOpen(false)
     setCompactClampNotice('')
     compactPctEditedRef.current = false
+    compactPickGenRef.current += 1
     compactPctMut.mutate({ n: Number(v), typed: Number(v) })
   }
   const editCompactPct = (v: string) => {
@@ -248,7 +268,7 @@ export function useChatPanelTypedFields({
     setLocalCompactPct(String(n))
     // Already stored: nothing to send, and the stored value is what "Saved" names.
     if (n === serverCompactPct) setCompactClampNotice(clampNoticeFor(typed, n))
-    else compactPctMut.mutate({ n, typed })
+    else compactPctMut.mutate({ n, typed, fromField: true, pickGen: compactPickGenRef.current })
   }
 
   const keepModeMut = useMutation({

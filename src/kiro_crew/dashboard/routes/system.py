@@ -15,6 +15,7 @@ import os
 
 from aiohttp import web
 
+from kiro_crew.apps.builtin_unavailable import record_unavailable_builtin
 from kiro_crew.apps.builtins import BUILTIN_NAMES
 from kiro_crew.apps.routes import register_app_routes
 from kiro_crew.constants import env_flag_enabled
@@ -60,6 +61,7 @@ def register(app: web.Application) -> None:
     app.router.add_get("/api/changelog", handlers.api_changelog)
     app.router.add_get("/api/releases", handlers.api_releases)
     app.router.add_post("/api/update", handlers.api_update_apply)
+    app.router.add_get("/api/update/auto", handlers.api_update_auto_pin)
     app.router.add_post("/api/update/auto", handlers.api_update_auto)
     app.router.add_post("/api/update/channel", handlers.api_update_channel)
     # A terminal `kirocrew update` on a git checkout pokes this so the running
@@ -276,6 +278,8 @@ def register(app: web.Application) -> None:
                 type(exc).__name__,
                 exc,
             )
+            # The App Store reads this to show the app as unavailable, with why.
+            record_unavailable_builtin(app, _builtin_name, exc)
             continue
         if _register is not None:
             _register(app)

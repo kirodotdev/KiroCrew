@@ -672,20 +672,20 @@ class TestSelFaultTolerance:
         SecurityEventLog._instance = None
         SecurityEventLog._initialized = False
         real_sel = SecurityEventLog(base_dir=tmp_path)
-        monkeypatch.setattr("kiro_crew.safety_override.sel", lambda: real_sel)
-
-        real_os_open = os.open
-
-        def _boom(path, *a, **k):
-            if str(path).endswith("security_events.jsonl"):
-                raise PermissionError("SEL file unwritable (chmod 000)")
-            return real_os_open(path, *a, **k)
-
-        monkeypatch.setattr(os, "open", _boom)
         try:
-            result = override.activate("dashboard")
+            with monkeypatch.context() as mp:
+                mp.setattr("kiro_crew.safety_override.sel", lambda: real_sel)
+
+                real_os_open = os.open
+
+                def _boom(path, *a, **k):
+                    if str(path).endswith("security_events.jsonl"):
+                        raise PermissionError("SEL file unwritable (chmod 000)")
+                    return real_os_open(path, *a, **k)
+
+                mp.setattr(os, "open", _boom)
+                result = override.activate("dashboard")
         finally:
-            monkeypatch.undo()
             SecurityEventLog._instance = None
             SecurityEventLog._initialized = False
 
@@ -1513,9 +1513,7 @@ class TestBreadcrumbPathResolvedAtEnqueueTime:
         """
         import kiro_crew.safety_override as so_mod
 
-        monkeypatch.setattr(so_mod, "flush_breadcrumb_writes", lambda timeout=5.0: False)
-        try:
+        with monkeypatch.context() as mp:
+            mp.setattr(so_mod, "flush_breadcrumb_writes", lambda timeout=5.0: False)
             with pytest.raises(TimeoutError):
                 drain_breadcrumb_writes(timeout=0.01)
-        finally:
-            monkeypatch.undo()

@@ -1,12 +1,12 @@
 """Tests for kirocrew_client — mirrors TS @kirocrew/client test coverage."""
+
 from __future__ import annotations
 
 from pathlib import Path
 
 import pytest
-
 from kirocrew_client import KiroCrewClient, KiroCrewError
-from kirocrew_client.errors import ErrorCode, http_status_to_code, http_error
+from kirocrew_client.errors import ErrorCode, http_error, http_status_to_code
 
 
 class TestErrors:
@@ -121,7 +121,7 @@ class TestContextBuffer:
         await mc.inject_context(None, "a")
         await mc.inject_context(None, "b")
         assert mc.pending_context_count == 2
-        with pytest.raises(Exception):
+        with pytest.raises(KiroCrewError):
             await mc.flush_pending_context("slot-1")
         # Failed entries preserved for retry
         assert mc.pending_context_count == 2

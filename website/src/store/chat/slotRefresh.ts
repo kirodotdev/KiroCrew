@@ -19,6 +19,7 @@ import {
 import { retainServerTotal, seedContextUsage, setPagingCursor, writeSlotPage } from './slotCache'
 import { hydrateQueuedBubbles } from './queue'
 import { keepPendingCoordinatorApprovals } from './coordinatorApprovals'
+import { persistedSendIds, pruneDeliveredAttempts } from './sendAttempts'
 import { walkWindowBackTo } from './windowWalk'
 
 /** The two row kinds a person decides on and the client stamps locally: a tool
@@ -453,6 +454,8 @@ export function addSlotRefreshCases(builder: ActionReducerMapBuilder<ChatState>)
       // The rows on screen before this refresh, as plain store objects, so the
       // rebuilt transcript can hand back the ones the page repeats unchanged.
       const rowsBeforeRefresh = plainRows(state.messages)
+      // A persisted row carrying a send's id proves that send was delivered.
+      pruneDeliveredAttempts(state, key, persistedSendIds(messages))
       retainServerTotal(state, key, action.payload.total, running, undefined, action.payload.boundedRead)
       // Merge permission messages: prefer state perms (have frontend resolved flags)
       // but include API perms for any we don't have locally (e.g. arrived while disconnected)
@@ -659,6 +662,8 @@ export function addSlotRefreshCases(builder: ActionReducerMapBuilder<ChatState>)
       // Slot became active between dispatch and fulfilment — switchSlot now
       // owns its messages, so leave the cache for it to manage.
       if (state.activeSlot === key) return
+      // A persisted row carrying a send's id proves that send was delivered.
+      pruneDeliveredAttempts(state, key, persistedSendIds(fetchedMessages))
       const reportedRunning = action.payload.running
       const running = historyReportsRunning(state, key, reportedRunning, action.payload)
       const endedTurnHistory = reportedRunning && !running

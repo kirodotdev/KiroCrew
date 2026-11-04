@@ -49,6 +49,7 @@ vi.mock('../apps/mochi/api', async (importOriginal) => {
 
 import * as api from '../apps/mochi/api'
 import MochiPage from '../apps/mochi/MochiPage'
+import { formatDate } from '../apps/mochi/src/shared/statsFormatters'
 
 /** A watch item with every optional field the expanded row can show. */
 function watchItem(over: Partial<WatchItem>): WatchItem {
@@ -241,7 +242,7 @@ describe('MochiPage memories card', () => {
     expect(screen.getByText(/Thought for/)).toBeTruthy()
     expect(screen.getByText(/stayed up till 02:10/)).toBeTruthy()
     expect(screen.getByText(/up at 06:30/)).toBeTruthy()
-    expect(screen.getByText(/Chattiest day: 2026-07-28/)).toBeTruthy()
+    expect(screen.getByText(`Chattiest day: ${formatDate('2026-07-28')} (`, { exact: false })).toBeTruthy()
     expect(screen.getByText(/Longest chat: 40 messages/)).toBeTruthy()
     expect(screen.getByText('Top moods:')).toBeTruthy()
     expect(screen.getByText('Curious 75%')).toBeTruthy()

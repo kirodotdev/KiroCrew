@@ -14,8 +14,11 @@
  *   writes the value the response accepted, then the config is re-read either
  *   way, since a write can persist even when its response is lost.
  * - `overlayPinned`: config.local.json sets the key, as the latest answer that
- *   reports it said (a save, a refusal, a check). The switch stays usable, so
- *   a click after the overlay is removed is what clears the note.
+ *   reports it said: the pin's own read (`GET /api/update/auto`, made on every
+ *   mount and window focus), a save, a refusal or a check. A pinned switch is
+ *   held, so it cannot offer a click the gateway will refuse; the next read
+ *   after the overlay is removed is what clears it. A read that fails leaves
+ *   the last known answer, and with none the switch stays usable.
  * - `readFailed` / `refreshFailed` / `saveError`: what the row reports, each
  *   describing the position `checked` shows (no read notice while a click is
  *   in flight, since the switch shows the click). A save
@@ -34,7 +37,7 @@ import { parseErrorCode } from '../utils/errorReport'
 
 const AUTO_UPDATE_PATH = 'auto_update'
 const CONFIG_KEY = ['kirocrewConfig'] as const
-/** Whether config.local.json sets `auto_update`: client-held, never fetched. */
+/** Whether config.local.json sets `auto_update`: read, and also set by every answer that reports it. */
 const AUTO_UPDATE_OVERLAY_KEY = ['update.auto_update.overlay'] as const
 /**
  * The value the latest successful save reported the gateway holds:
@@ -107,7 +110,16 @@ export function useGatewayAutoUpdate(
     select: c => (c?.auto_update === undefined ? true : c.auto_update === true),
     ...(readOnMount ? { refetchOnMount: 'always' as const } : { staleTime: 30_000, refetchOnWindowFocus: false }),
   })
-  const pin = useQuery<boolean>({ queryKey: AUTO_UPDATE_OVERLAY_KEY, queryFn: skipToken, staleTime: Infinity, gcTime: Infinity })
+  // Read on every mount and focus: the overlay is edited by hand outside the
+  // dashboard, and no frame says when, so a stale "pinned" would hold the
+  // switch after the entry is gone. 'always' for both, because the dashboard
+  // client never marks a query stale on its own (staleTime: Infinity).
+  const pin = useQuery<boolean>({
+    queryKey: AUTO_UPDATE_OVERLAY_KEY,
+    queryFn: async () => (await api.autoUpdatePin())?.overlay_override === true,
+    refetchOnMount: 'always',
+    refetchOnWindowFocus: 'always',
+  })
   const answer = useQuery<boolean>({ queryKey: AUTO_UPDATE_ANSWER_KEY, queryFn: skipToken, staleTime: Infinity, gcTime: Infinity })
 
   const { shown, mutationOpts } = useOptimisticConfigPaths(qc)

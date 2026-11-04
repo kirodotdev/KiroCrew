@@ -26,7 +26,7 @@ from oauth_url_corpus import LEGIT_OAUTH_URLS
 
 from kiro_crew import mcp_discovery
 from kiro_crew.connections import get_all_registry_providers, get_visible_providers
-from kiro_crew.dashboard import chat_runner
+from kiro_crew.dashboard import chat_runner, mcp_oauth_provenance
 from kiro_crew.dashboard.chat_runner import (
     _connections_managed_mcp_names,
     _drain_session_init_oauth_requests,
@@ -72,16 +72,30 @@ class TestIsSafeOAuthUrl:
 
 
 class TestRedactMetaForRole:
+    """The shape gates, on rows whose URL the child did send.
+
+    A URL no child sent is withheld before these gates run
+    (``test_mcp_oauth_provenance.py``); each row here is recorded first so the
+    scheme and credential gates are what is measured.
+    """
+
+    @staticmethod
+    def _emitted(meta: dict) -> dict:
+        mcp_oauth_provenance.record_emitted("live-child", meta["oauth_url"])
+        return {**meta, "child": "live-child"}
+
     def test_mcp_oauth_preserves_https_url(self):
         url = "https://mcp.linear.app/authorize?client_id=abc"
-        out = _redact_meta_for_role("mcp_oauth", {"server_name": "linear", "oauth_url": url})
+        out = _redact_meta_for_role(
+            "mcp_oauth", self._emitted({"server_name": "linear", "oauth_url": url})
+        )
         assert out["oauth_url"] == url
         assert out["server_name"] == "linear"
 
     def test_mcp_oauth_drops_unsafe_url(self):
         out = _redact_meta_for_role(
             "mcp_oauth",
-            {"server_name": "evil", "oauth_url": "javascript:alert(1)"},
+            self._emitted({"server_name": "evil", "oauth_url": "javascript:alert(1)"}),
         )
         # Unsafe scheme is replaced with empty string, not preserved as-is.
         assert out["oauth_url"] == ""
@@ -92,10 +106,12 @@ class TestRedactMetaForRole:
         Mirrors the live-emission gate in _emit_mcp_oauth_request."""
         out = _redact_meta_for_role(
             "mcp_oauth",
-            {
-                "server_name": "linear",
-                "oauth_url": "https://evil.com/auth?key=AKIAIOSFODNN7EXAMPLE",
-            },
+            self._emitted(
+                {
+                    "server_name": "linear",
+                    "oauth_url": "https://evil.com/auth?key=AKIAIOSFODNN7EXAMPLE",
+                }
+            ),
         )
         assert out["oauth_url"] == ""
 
@@ -104,11 +120,13 @@ class TestRedactMetaForRole:
         url = "https://mcp.example.com/authorize"
         out = _redact_meta_for_role(
             "mcp_oauth",
-            {
-                "server_name": "ex",
-                "oauth_url": url,
-                "error": "AKIAIOSFODNN7EXAMPLE leaked",
-            },
+            self._emitted(
+                {
+                    "server_name": "ex",
+                    "oauth_url": url,
+                    "error": "AKIAIOSFODNN7EXAMPLE leaked",
+                }
+            ),
         )
         assert out["oauth_url"] == url
         # _redact_value is invoked for non-preserved fields, so AKIA pattern is scrubbed.
@@ -126,11 +144,14 @@ class TestRedactMetaForRole:
         # a special-case preserved field.
         assert "oauth_url" in out  # key still present, value may differ
 
-    def test_non_string_oauth_url_redacted_as_value(self):
-        # If a tampered history line stored a non-string for oauth_url, fall
-        # through to _redact_value so the carve-out can't be exploited.
-        out = _redact_meta_for_role("mcp_oauth", {"oauth_url": 123})
-        assert out["oauth_url"] == 123  # _redact_value passes through non-str/non-container
+    @pytest.mark.parametrize("value", [123, ["https://mcp.linear.app/authorize"]])
+    def test_non_string_oauth_url_is_withheld(self, value):
+        # A tampered history line that stored a non-string for oauth_url is no
+        # URL any child sent, so it never reaches a client (a list would be
+        # stringified into a link by some renderers).
+        out = _redact_meta_for_role("mcp_oauth", {"oauth_url": value, "child": "live-child"})
+        assert "oauth_url" not in out
+        assert out["expired"] is True
 
 
 # ── _emit_mcp_oauth_request ──

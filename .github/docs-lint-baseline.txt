@@ -52,7 +52,6 @@ dead-identifier	docs/app-kit/api-reference.md	setAppConfig
 dead-identifier	docs/app-kit/api-reference.md	setDefaultSlot
 dead-identifier	docs/app-kit/api-reference.md	setGatewayConfig
 dead-identifier	docs/app-kit/api-reference.md	setSlotModel
-dead-identifier	docs/app-kit/manifest-reference.md	FeatureCard
 dead-identifier	docs/architecture/design-notes/mcp-gateway-oversize-response.md	unix_timestamp
 dead-identifier	docs/architecture/mcp.md	computer_call
 dead-identifier	docs/build/release.md	DebUpdater
@@ -62,7 +61,6 @@ dead-identifier	docs/build/signing-runbook.md	KiroCrewNotary
 dead-identifier	docs/ci/e2e-gate.md	webServer
 dead-identifier	docs/guides/docker-troubleshooting.md	initialDelaySeconds
 dead-identifier	docs/guides/docker-troubleshooting.md	livenessProbe
-dead-identifier	docs/reference/kiro-cli/chat/voice.md	SynthesizeSpeech
 dead-identifier	docs/reference/kiro-cli/hooks.md	cache_ttl_seconds
 dead-identifier	docs/reference/kiro-cli/mcp/examples.md	read_documentation
 dead-identifier	docs/reference/kiro-cli/mcp/examples.md	search_documentation
@@ -82,7 +80,6 @@ dead-identifier	docs/system-specs/modules/computer-use.md	AddImage
 dead-identifier	docs/system-specs/modules/computer-use.md	AppRepository
 dead-identifier	docs/system-specs/modules/computer-use.md	AppsFolder
 dead-identifier	docs/system-specs/modules/computer-use.md	ignoreDefaultValue
-dead-identifier	docs/system-specs/modules/dev-fleet.md	refused_containment
 dead-identifier	docs/system-specs/modules/governance.md	cu_action
 dead-identifier	docs/system-specs/modules/instances.md	instances_send_session
 dead-identifier	docs/system-specs/modules/kas-auth.md	client_type
@@ -116,7 +113,6 @@ dead-identifier	docs/system-specs/modules/metrics.md	AppInstallations
 dead-identifier	docs/system-specs/modules/metrics.md	BeaconPings
 dead-identifier	docs/system-specs/modules/metrics.md	DailyActiveInstances
 dead-identifier	docs/system-specs/modules/metrics.md	NewInstallations
-dead-identifier	docs/system-specs/modules/metrics.md	PutMetricData
 dead-identifier	docs/system-specs/modules/metrics.md	beacon_daily
 dead-identifier	docs/system-specs/modules/metrics.md	kirocrew_analytics
 dead-identifier	docs/system-specs/modules/metrics.md	recordFields

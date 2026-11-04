@@ -752,7 +752,7 @@ def _run_package_page(
                     else member_dashboard._newest_unit(slot)
                 ),
                 redact=(
-                    member_dashboard.page_safe_for(state)
+                    member_dashboard.page_safe_for(state, slot)
                     if real is not None
                     else member_dashboard._page_safe
                 ),

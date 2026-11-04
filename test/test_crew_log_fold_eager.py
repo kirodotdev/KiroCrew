@@ -1407,7 +1407,7 @@ def test_an_advanced_fold_is_pushed_with_its_value_and_revision(pushed):
     ], f"the pushed value is not this board's record: {value}"
 
 
-def test_a_burst_pushes_once_per_board_rather_than_once_per_entry(pushed):
+def test_a_burst_pushes_once_per_board_rather_than_once_per_entry(pushed, monkeypatch):
     """MUTATION-SENSITIVE: the worker's coalesce is what bounds the frames, not a timer.
 
     A turn writes several entries. The worker drains its whole queue per batch and folds
@@ -1416,8 +1416,11 @@ def test_a_burst_pushes_once_per_board_rather_than_once_per_entry(pushed):
     """
     slot = WORK_SLOT
     handle = _slot_log("s-push-2", slot)
-    # Queued while the worker is stopped, so all three are in ONE batch.
+    # Queued while the worker consumes nothing, so all three are in ONE batch. Stopping
+    # is not enough on its own: ``note_commit`` restarts a stopped worker, and a live one
+    # that takes the first wake before this test drains the rest splits the burst.
     eager.stop_for_tests()
+    monkeypatch.setattr(eager, "_run", lambda: None)
     bus.reset_for_tests()
     seen: list[tuple[str, str, int, dict]] = []
     _subscribe_slot_events(seen)

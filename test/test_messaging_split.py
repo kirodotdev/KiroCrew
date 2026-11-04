@@ -20,6 +20,7 @@ from kiro_crew.messaging.split import (
     _Fence,
     _safe_cut,
     chunk_utf8_bytes,
+    close_open_fence,
     iter_fence_lines,
     iter_fence_spans,
     split_markdown_bytes,
@@ -1403,6 +1404,36 @@ class TestIterFenceLines:
             pos = start + len(line)
             expected_inside = role != FENCE_OUTSIDE
             assert (start in inside) is expected_inside, (line, role)
+
+
+class TestCloseOpenFence:
+    """A caller appending its own lines ends the user's open fence first."""
+
+    @pytest.mark.parametrize(
+        ("text", "closed"),
+        [
+            ("see:\n```python\nprint(1)", "see:\n```python\nprint(1)\n```"),
+            ("see:\n```python\nprint(1)\n", "see:\n```python\nprint(1)\n```"),
+            ("````md\n```\ninner", "````md\n```\ninner\n````"),
+            ("~~~\nx", "~~~\nx\n~~~"),
+        ],
+        ids=["no-trailing-newline", "trailing-newline", "longer-run", "tilde"],
+    )
+    def test_an_open_fence_gets_its_closer(self, text: str, closed: str) -> None:
+        out = close_open_fence(text)
+
+        assert out == closed
+        # A line appended after it is outside the fence: the span ends at the
+        # closer's own newline.
+        assert list(iter_fence_spans(out + "\nafter"))[-1][1] == len(out) + 1
+
+    @pytest.mark.parametrize(
+        "text",
+        ["", "plain text", "```\nx\n```", "```\nx\n```\nafter", "a `b` c"],
+        ids=["empty", "prose", "closed", "closed-then-prose", "inline-code"],
+    )
+    def test_text_outside_every_fence_is_unchanged(self, text: str) -> None:
+        assert close_open_fence(text) == text
 
 
 class TestSplitMarkdownBytes:

@@ -43,6 +43,9 @@ from kiro_crew.apps.bridges import (
 from kiro_crew.apps.manifest import AppManifest
 from kiro_crew.cron import CronService
 
+pytestmark = pytest.mark.usefixtures("command_crons_run_here")
+
+
 APP = "resync-app"
 SHORT = "digest"
 NAME = f"{APP}/{SHORT}"

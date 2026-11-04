@@ -22,3 +22,29 @@ export function emitThemeSound(trigger: string): void {
     /* no window (SSR) — non-fatal */
   }
 }
+
+/** The audio triggers the active theme can play right now: published by the
+ *  theme layer only while its sounds are on and audible (consented, not muted,
+ *  no reduced motion), and withdrawn when that stops or the layer unmounts.
+ *  Read at event time by both notification listeners, so whichever runs first
+ *  they agree on who plays a notification. */
+let activeThemeTriggers: ReadonlySet<string> | null = null
+let activeThemeOwner: symbol | null = null
+
+/** Publish the playable trigger names; returns a release that withdraws them
+ *  only while this publication is still the current one. */
+export function publishThemeSoundTriggers(triggers: Iterable<string>): () => void {
+  const owner = Symbol('theme-sound-triggers')
+  activeThemeTriggers = new Set(triggers)
+  activeThemeOwner = owner
+  return () => {
+    if (activeThemeOwner !== owner) return
+    activeThemeTriggers = null
+    activeThemeOwner = null
+  }
+}
+
+/** The trigger names published right now; empty when no theme sound can play. */
+export function activeThemeSoundTriggers(): ReadonlySet<string> {
+  return activeThemeTriggers ?? new Set()
+}

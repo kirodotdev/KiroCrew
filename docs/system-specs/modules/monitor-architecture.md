@@ -794,7 +794,7 @@ committed store with the new one, logs each loop that stopped at WARNING with it
 `stopped_reason`, and appends the same record as one JSON line to
 `<data home>/logs/autonudge_stops.jsonl`. The log line is for reading live; grep
 `gateway.log` for `AutoNudge:`. Each gateway boot moves `gateway.log` to
-`gateway.log.prev`, keeping one copy, so the line is gone after two restarts. The JSONL file is the record that stays: it holds
+`gateway.log.prev` and keeps three older boots in `logs/gateway-boots/`, so the line is gone after five restarts. The JSONL file is the record that stays: it holds
 the same scrubbed fields, is size-rotated to one `.1` generation (about 2 MiB in
 total), and a failure to append costs that one record, never the store write.
 To see the last stops, newest last:
@@ -1313,8 +1313,7 @@ It is read in `mcp_tools/control_parts/schemas.py::schemas()`, which is the only
 read, and read afresh on every build: `mcp_tools.build_tool_list` rebuilds
 descriptors per call rather than caching them, so a Settings write needs no
 gateway restart. It does not reach a session already open, because kiro-cli
-caches a session's tool list for that session's life -- the same limitation
-`mcp_tools/browser.py` records for `dashboard.use_builtin_browser`. A config read
+caches a session's tool list for that session's life. A config read
 that raises resolves to the off position, since off is what ships.
 
 The key deliberately does not make `monitor_start` REFUSE a target the structured

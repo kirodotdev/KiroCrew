@@ -379,9 +379,9 @@ choice blob makes the usage line unreadable.
 | `kirocrew security verify` | Verify SEL HMAC chain integrity |
 | `kirocrew security deny-list` | Show active deny patterns. The deny planes those patterns feed: [security.md](security.md) |
 | `kirocrew snapshot [output_dir]` | Create a .tar.gz snapshot of all Kiro Crew state, into `output_dir` or the data home's snapshots dir. A bare `list` or `ls` as `output_dir` is refused (exit 1, nothing written, a hint naming `--list`) unless a directory of that name already exists; a path spelling such as `./list` is taken as written |
-| `kirocrew snapshot --keep N` | Auto-prune to N most recent snapshots (default 7) |
+| `kirocrew snapshot --keep N` | Auto-prune to N most recent snapshots (default 7). Recency is the UTC stamp in the bundle name (`snapshot_order.newest_first`), not the file mtime, so an older bundle copied back in does not outrank the one just written; a name without a stamp falls back to its mtime. The bundle the run just wrote always holds the first kept slot, so a clock set back after a future-stamped run cannot prune it |
 | `kirocrew snapshot --strict` | Exit 3 (not 0) when the written bundle omits entries it was asked to carry; see the retention note below |
-| `kirocrew snapshot --list` | List existing snapshots |
+| `kirocrew snapshot --list` | List existing snapshots, newest first by the same order as `--keep` |
 | `kirocrew restore <file>` | Restore from a snapshot (auto-detects replace vs merge) |
 | `kirocrew restore <file> --mode replace\|merge` | Force restore mode; merge skips malformed incoming or local cron JSON with a file-specific warning, and never overwrites a `config` file the destination already has -- it names each settings file it kept (`↩️ <file>: kept the existing file ...`, pointing at `--mode replace --components config`) instead of printing `✅ config`, while host state (`session_map.json`, `project_dir`, `workspace_dir`) keeps this machine's copy silently; a bundle `ui-prefs.json` / `notification_settings.json` its own reader would refuse stops a replace before anything is installed, and stops a merge only where the destination has no such file (otherwise the destination's file is kept); a bundle's `config.local.json` is never installed even where the destination has none (`↩️ config.local.json: not applied ...`), since that overlay outranks `config.json` |
 | `kirocrew restore <file> --components X,Y` | Selective component restore |
@@ -397,7 +397,7 @@ choice blob makes the usage line unreadable.
 | `kirocrew eval [scenarios…] [--all] [--judge]` | Run multi-session evaluation scenarios; a bare invocation is the ~30s smoke test — see [knowledge.md](knowledge.md). An unknown scenario name runs nothing: it prints the error and the available names to stderr and exits 1. Any failed scenario also exits 1, after the report and JSON summary are written; exit 0 means every scenario passed. |
 | `kirocrew perf sample [--seconds N] [--interval S] [--pid PID] [--call MODULE:CALLABLE] [--output PATH]` | Sample stacks into a folded-stack profile. Debug-only: requires `KIROCREW_DEBUG=1`. With no `--call` it attaches to the running gateway (or `--pid`) using py-spy; with `--call` it profiles that callable in this process. Writes `./kirocrew-profile.folded` by default |
 | `kirocrew sandbox install-profile/status/remove-profile` | Manage the AppArmor profile the agent sandbox needs (Linux) — see [security.md](security.md). |
-| `kirocrew kas install/status/remove` | Install, inspect or delete Kiro Crew's own KAS engine bundle (`<data home>/engines/kas/<version>/`: a sha256-pinned `@kiro/agent` build plus its Node runtime). `install` installs this release's pinned version (`acp/kas_pin.py`) and refuses a manifest that does not hash to the pin; it takes `--version` and `--unpinned` (another version, for testing), `--url` (an https base; default `agent.kas_bundle_url`), `--from DIR` (a local manifest and its artifacts, for offline installs) and `--force`. A version the data home already holds is a success with no fetch, so re-running an installer passes (`cli.sh` and `install.sh` run `kirocrew kas install` by default once Kiro Crew is installed, warn and print this command when it fails, and skip it with `--no-kas`; neither turns `agent.kas_bundle` on); `--force` replaces it. That check is by version name only: a copy an earlier `--unpinned` install laid down under the pin's name also counts, and `--force` is how to swap it for the pinned manifest's engine. `status` shows the pin, the version that runs and every version on disk; `remove --version V` deletes one. Operator-facing like `doctor`: it runs outside the sandbox, which is the only place the `engines` leaf is writable. The route itself is `agent.kas_bundle` — see [acp-client.md](acp-client.md) § KAS bundle route. |
+| `kirocrew kas install/status/remove` | Install, inspect or delete Kiro Crew's own KAS engine bundle (`<data home>/engines/kas/<version>/`: a sha256-pinned `@kiro/agent` build plus its Node runtime). `install` installs this release's pinned version (`acp/kas_pin.py`) and refuses a manifest that does not hash to the pin; it takes `--version` and `--unpinned` (another version, for testing), `--url` (an https base; default `agent.kas_bundle_url`), `--from DIR` (a local manifest and its artifacts, for offline installs) and `--force`. A version the data home already holds is a success with no fetch, so re-running an installer passes (`cli.sh` and `install.sh` run `kirocrew kas install` by default once Kiro Crew is installed, warn and print this command when it fails, and skip it with `--no-kas`; neither turns `agent.kas_bundle` on); `--force` replaces it. That check is by version name only: a copy an earlier `--unpinned` install laid down under the pin's name also counts, and `--force` is how to swap it for the pinned manifest's engine. `--if-in-use` installs when `agent.kas_bundle` is on, or an engine is on disk and KAS takes the bundle route on its own (a failure exits 1), or refreshes an engine version already on disk (a failure, or a refresh still running after 600 s, prints the retry and exits 4, which an update does not fail on), and is otherwise a success that fetches nothing; every update runs it from the new release (see [The release is the unit of install](#the-release-is-the-unit-of-install)). `status` shows the pin, the version that runs and every version on disk; `remove --version V` deletes one. Operator-facing like `doctor`: it runs outside the sandbox, which is the only place the `engines` leaf is writable. The route itself is `agent.kas_bundle` — see [acp-client.md](acp-client.md) § KAS bundle route. |
 | `kirocrew kas login/whoami/logout/route` | Crew's own Kiro sign-in from a shell (`cli_kas_login.py`), for a host with no browser and no dashboard session -- the remote crew signed in over SSM by `kirocrew cloud login`, a headless host reached by ssh. `login [--provider builder_id\|idc\|google\|github] [--start-url U] [--region R]` runs the device-code flow and prints `Open <URL>` + `code: XXXX-XXXX`, polling until approved (exit 0 once the vault holds the credential; `already signed in`, exit 0, over a usable stored identity). `whoami [--format json]` exits 0 with the identity (the `kiro-cli whoami --format json` document, never a token) or 1 when signed out. `logout` removes every stored identity; a gateway on the host retires its agent processes on its next turn. `route` prints `kas-bundle` when `agent.acp_backend` is `kas` AND `agent.kas_bundle` is on, `kiro-cli` otherwise -- the remote sign-in scripts read it on the box. Not an MCP tool: a sign-in moves a credential and the agent must never choose whose. [kas-auth.md](kas-auth.md) § Sign-in from a shell. |
 | `kirocrew tailnet status/up/down` | Publish the dashboard on your tailnet (Tailscale) and trust its origin, or stop publishing — see [remote-and-mobile](../../guides/remote-and-mobile.md). |
 | `kirocrew telemetry status/disable/enable` | Inspect exactly what the anonymous beacon sends, or turn it off permanently — see [metrics.md](metrics.md) and [governance.md](governance.md). |
@@ -1597,13 +1597,16 @@ One flag is a MODE rather than a check and short-circuits before the list above 
    KAS bundle route (`agent_sdk.kas_bundle.kas_bundle_route()`: KAS selected
    AND `agent.kas_bundle` on), where kiro-cli is not part of what runs, so the
    step is skipped and the printed line says so. The engine is Kiro Crew's own
-   install, laid down by `kirocrew kas install` and not by this update, so the
-   line also names `kirocrew kas install` for a release that changes the pin;
-   the unattended auto-apply logs the same reason and command, and the
+   install, which step 3 lays down for the new release's pin; the unattended
+   auto-apply logs the same reason, and the
    gateway's boot-time "kiro-cli is outdated" warning (`_warn_if_kiro_cli_outdated`) is skipped on
    that route for the same reason. The relay route and every other harness
    keep the step as it was.
-3. Reinstalls backend via `pip install -e .`
+3. Installs the release through `platform/release_apply.apply_release`: the
+   backend via `pip install -e .` (`dep_sync.sync_or_reinstall`), then the KAS
+   engine the new revision pins (see [The release is the unit of
+   install](#the-release-is-the-unit-of-install)). Either failing exits 1
+   without the restart hint.
 4. Refreshes the agent config, then, best-effort, asks a running gateway to
    re-check for updates (`POST /api/update/revalidate`) so its update badge
    reconciles at once. The local secret rides `_owner_verified_secret_urlopen`
@@ -1622,6 +1625,78 @@ in-place upgrade command plus a gateway-restart command to run instead, or a not
 when no signed upgrade command can be named
 (`platform/update_layout.non_managed_pip_update_hint`), because re-running the
 installer would add a second copy.
+
+### The release is the unit of install
+
+Each release pins exactly one KAS engine version (`acp/kas_pin.py`), and
+`installed_bundle()` finds that version only, so a release whose pin moved
+starts with no engine. An update therefore installs the RELEASE (its code and
+the engine it pins), and `platform/release_apply.apply_release` is the one
+function every update path goes through: `kirocrew update` on a git checkout
+(`GitRelease`) and on the managed venv (`WheelRelease`), the dashboard's `POST
+/api/update` (git) and `POST /api/update/approve` (wheel, through
+`wheel_apply.run_wheel_apply`), and the gateway's unattended auto-apply (git
+through `apply_release_supervised`, wheel through `run_wheel_apply`). Nothing
+else in an update route calls `dep_sync.sync_or_reinstall` or
+`wheel_engine.apply_wheel_update` (`test_release_apply` pins it).
+
+1. The code goes in: `dep_sync.sync_or_reinstall` into the checkout's venv, or
+   the shadow tree the wheel engine builds and verifies beside the running one.
+2. The NEW release's `kirocrew kas install --if-in-use` runs on the new code's
+   interpreter (`<python> -I -P -m kiro_crew kas install --if-in-use`), so the pin
+   it installs is the new release's, never the one the updating process
+   imported. The child decides how much the install needs the engine.
+   `agent.kas_bundle` on makes it required: a failure fails the update. That is
+   the switch alone, not `kas_bundle_route()`, because with it on a member route
+   (`agent.member_acp_backend`), a mate's harness pin or a spawn asking for KAS
+   runs the engine while the default backend is something else. An engine
+   version on disk while a KAS spawn here takes the bundle route on its own
+   (`acp.kas_route.resolve_kas_route`: no kiro-cli, or one that cannot run a
+   session) is required too, because KAS already runs on that engine; with
+   nothing on disk that route needs nothing from the update, since the gateway
+   installs the engine at the first spawn. An engine
+   version only on disk under `<data home>/engines/kas` while the spawn runs
+   kiro-cli's relay (the installers lay one
+   down on every default install) makes it optional: the child still tries, and
+   on any failure (a refused fetch, a full or unwritable disk) prints the retry
+   (`kirocrew kas install`) and exits
+   `release_apply.ENGINE_OPTIONAL_FAILED_EXIT` (4), which the update reports and
+   switches past. The optional child also bounds itself below the update's kill
+   of it, since that kill reads as a failed install: a download still running at
+   `ENGINE_OPTIONAL_DEADLINE_SECS` (600 s) stops at its next chunk, and a stall
+   that never reaches one is ended by the child's own timer at
+   `ENGINE_OPTIONAL_HARD_STOP_SECS` (660 s), both exiting 4. It prints
+   `ENGINE_OPTIONAL_MARKER` as a stdout line before it starts, so an optional
+   child that ends any other nonzero way (a signal) is reported the same way.
+   Neither: it exits 0 having done nothing. So a relay-route host
+   that cannot fetch the engine (an old glibc, no network, a slow link) keeps updating. A
+   target release that predates the step (a channel move or rollback to an older
+   build: argparse's usage exit for no `kas` command or no `--if-in-use`) counts
+   as nothing to install. An unreadable config reads as the relay route, as it does for every
+   `kas_bundle_route()` reader. It runs through the update's one child spawn
+   (`wheel_engine_build_child._spawn_build_child`: own process group, the
+   gateway's trusted `PATH` inside the gateway, the full shell environment for
+   `kirocrew update`, killed on cancel or after `ENGINE_INSTALL_TIMEOUT_SECS`,
+   900 s, which only a required install reaches).
+   The child runs in `/`, so a `KIROCREW_HOME` override reaches it as the
+   absolute data home this process resolved, never as a relative spelling.
+3. Only then is the release switched to. On the wheel route the engine step runs
+   inside the update lock after `verify_shadow_venv` and before the memory
+   snapshot and `promote`; a failure is an `EngineInstallError` (a
+   `WheelUpdateError`, classified `failed`) and the stable link never flips. On
+   the git route the checkout has already moved, so the switch is the restart:
+   a failed engine install returns `ENGINE_FAILED` (3, distinct from pip's 1 and
+   `dep_sync.REFUSED`), the caller refuses the restart and skips the core-dep
+   repair, and the message names `kirocrew kas install` as the step to run
+   before restarting. A restart that happens anyway (a reboot, a manual
+   restart) runs the new pin with its engine missing; the gateway's install on
+   first need (`acp/kas_engine_install.py`) then downloads it at the first KAS
+   spawn, and an offline host's spawn is refused naming the same command.
+
+The engine install never deletes another version, so the previous release's
+engine stays on disk and a rollback to that release needs no download. The
+pipx and externally managed layouts do not go through this step; their
+installers own the update.
 
 ## Client Port Resolution
 
@@ -2571,7 +2646,27 @@ source is most appropriate:
 4. `~/.kiro/crew/gateway.log` for foreground gateways
 
 `gateway.log` itself is opened by `cli_logging._setup_cli_logging`. Only the `gateway`
-command rotates it (2 MiB, three backups). Every other process that logs there —
+command rotates it (2 MiB, three backups). At boot it also moves a non-empty
+`gateway.log` to `gateway.log.prev` (`_rotate_boot_logs`) in two renames, each into a
+name nothing else holds: first the old `.prev` to `logs/gateway-boots/gateway.log.<n>`
+(*n* one more than the largest kept, so order never depends on the clock;
+`cli_log_files.older_boot_logs`), then `gateway.log` to the freed `.prev`. Boot lists
+only that directory, never the data home, so its cost stays fixed. Rotation runs
+only once the start holds the gateway lock (`_start_gateway_log_after_lock`, called
+right after `GatewayLock.acquire`): logging is set up long before the lock, and a
+start the lock refuses must never move, size-roll or prune a running gateway's log.
+Until then the start appends to `gateway.log` with the size rollover off, so its own
+lines, a refusal's included, land in the running log and the lines a winning start
+wrote before the lock stay at the end of the new `.prev`, where the restart relay
+reads them. The handler's stream is closed for the rename, since Windows cannot
+rename a file this process holds open. Nothing is ever moved back: if either rename fails (a file held open on Windows), boot stops,
+leaves every file where it is and appends to `gateway.log`, so a failed boot loses no
+kept log and never writes over a `gateway.log` another process recreated. Only after
+both succeed are older boots past three, or past 16 MiB in total newest first
+(`BOOT_LOG_GENERATIONS_MAX_BYTES`), deleted; `gateway.log.prev` never is. A run's log
+therefore survives four restarts, and after a successful rotation `gateway.log.prev`
+is the boot just before this one, which the restart relay reads. `kirocrew doctor --bundle` includes every
+kept boot. Every other process that logs there —
 the `mcp-*` stdio servers, `kirocrew chat`, short CLI verbs — writes through
 `_AppendOnlyLogFileHandler`, which opens the file for one record, closes it again
 and never rotates. Windows refuses to rename a file while another process holds
@@ -2726,8 +2821,10 @@ EFFECTIVE value read back after the merge, the `requested` one beside it, and
 `overlay_override`, the flag (and the best-effort read,
 `config.loader.overlay_pins`) the telemetry switches share. `GET /api/update/check` and the
 channel switch carry `overlay_override` too, since those are where the UI reads
-`auto_update`, and the POST sends a `refresh` frame so a second open tab stops
-showing the old position. A check that fails unexpectedly carries `can_arm`
+`auto_update`, and `GET /api/update/auto` returns it alone (one overlay read, no
+check), which the switch reads on every mount and window focus so a pinned
+install shows it held with its note before any click. The POST sends a
+`refresh` frame so a second open tab stops showing the old position. A check that fails unexpectedly carries `can_arm`
 the way the feed-failure paths do, so one transient raise cannot make a managed
 venv look notify-only. `test_every_unattended_apply_consults_the_effect_first`
 pins that every apply branch reads it before pausing admission.

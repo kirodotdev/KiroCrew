@@ -1160,6 +1160,12 @@ class TestShutdown:
         orch, service, add_task, release, finished = await self._cut_drain_over_a_slow_write(
             tmp_path, monkeypatch, graceful_secs=0.3
         )
+        # Replace teardown with a no-op so ``settle_admitted_writes`` is always
+        # reached before the graceful deadline, regardless of shard load.  Once
+        # reached, the warning fires unconditionally (via deadline or via the
+        # CancelledError path in settle_admitted_writes), making the assertion
+        # deterministic.  The real teardown is not under test here.
+        orch._stop_services_and_sessions = AsyncMock(return_value=None)
         caplog.set_level("WARNING", logger="kiro_crew.autonudge")
         try:
             shutdown = orch._shutdown()

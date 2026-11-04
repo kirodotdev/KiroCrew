@@ -202,6 +202,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.config.loader import data_home  # noqa: F401
     from kiro_crew.config.loader import read_config_text  # noqa: F401
     from kiro_crew.dashboard import part_stream  # noqa: F401
+    from kiro_crew.dashboard.body_numbers import body_int  # noqa: F401
     from kiro_crew.dashboard.chat_utils import drained_to_thread  # noqa: F401
     from kiro_crew.dashboard.handlers._shared import read_bounded_json  # noqa: F401
     from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request  # noqa: F401
@@ -215,6 +216,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.dashboard.handlers.files import _probe_busy_response  # noqa: F401
     from kiro_crew.dashboard.handlers.files import _run_path_probe  # noqa: F401
     from kiro_crew.dashboard.origin import is_direct_local_request  # noqa: F401
+    from kiro_crew.dashboard.session_export import content_disposition  # noqa: F401
     from kiro_crew.dashboard.upload_limits import bytes_to_mb_figure  # noqa: F401
     from kiro_crew.dashboard.upload_limits import knowledge_upload_max_bytes  # noqa: F401
     from kiro_crew.executors import run_in_embed_pool  # noqa: F401

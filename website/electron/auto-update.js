@@ -969,6 +969,9 @@ function classifyError(err) {
  *   the "writable external disk still updates" case is unassertable.
  * @param {object} [deps.nativeAutoUpdater]     - Electron's native autoUpdater, observed
  *   for `before-quit-for-update` to know the installer took over (tests inject a stub)
+ * @param {() => Array<{isDestroyed:Function, destroy:Function}>} [deps.getAllWindows]
+ *   - every open window, so a darwin install can close one that refuses to
+ *   (defaults to Electron's BrowserWindow.getAllWindows)
  * @param {string} [deps.feedBase]             - override feed host
  * @param {(state:object) => void} [deps.onUpdateState] - if provided, the
  *   in-app UI drives the install prompt: state transitions are pushed here
@@ -1038,6 +1041,18 @@ function initAutoUpdate(deps) {
     nativeAutoUpdater = (() => {
       try { return require("electron").autoUpdater || null; } catch { return null; }
     })(),
+    // Every open BrowserWindow. On darwin Squirrel hands the swap to ShipIt only
+    // once ALL windows have closed (see forceExitFailsafe), so the lane needs to
+    // reach a window that refuses to close. Resolved lazily for the same reason
+    // as nativeAutoUpdater; outside Electron there are no windows.
+    getAllWindows = () => {
+      try {
+        const { BrowserWindow } = require("electron");
+        return BrowserWindow && typeof BrowserWindow.getAllWindows === "function"
+          ? BrowserWindow.getAllWindows()
+          : [];
+      } catch { return []; }
+    },
     feedBase = process.env.KIROCREW_UPDATE_FEED || DEFAULT_FEED_BASE,
     onUpdateState = null,
     log = console,
@@ -1235,6 +1250,7 @@ function initAutoUpdate(deps) {
     linux,
     macDistArch,
     nativeAutoUpdater,
+    getAllWindows,
     getMainWindow,
     feedBase,
     uiDriven,

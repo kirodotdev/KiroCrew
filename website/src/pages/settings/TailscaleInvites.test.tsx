@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { i18nT } from '../../i18n/t'
 import userEvent from '@testing-library/user-event'
 import { api } from '../../api/client'
 import { ApiError } from '../../api/apiError'
@@ -121,7 +122,10 @@ describe('TailscaleInvites', () => {
     mount()
     const file = new File(['x'], 'a.txt', { type: 'text/plain' })
     fireEvent.change(await screen.findByTestId('invite-avatar-input'), { target: { files: [file] } })
-    expect(screen.getByTestId('invite-avatar-hint')).toHaveTextContent(inviteErrorText('avatar_type'))
+    const hint = screen.getByTestId('invite-avatar-hint')
+    expect(hint).toHaveTextContent(inviteErrorText('avatar_type'))
+    expect(hint).toHaveAttribute('role', 'status')
+    expect(screen.getByRole('button', { name: i18nT('sharedCrew.invite_avatar') })).toHaveAttribute('aria-describedby', 'invite-avatar-hint')
     expect(screen.queryByTestId('invite-avatar-error')).toBeNull()
     expect(screen.queryByRole('alert')).toBeNull()
   })

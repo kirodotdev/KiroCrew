@@ -5,7 +5,6 @@ import { useAppSelector } from '../store'
 import SidePanelLayout from '../components/SidePanelLayout'
 import { SUBNAV_PARAM, SUBNAV_LEGACY_PARAMS, deleteSubSelection, toPathSegment, parsePathSegments } from '../components/subNavParams'
 import { useSettingHighlight } from '../hooks/useSettingHighlight'
-import { BrowserPanel } from './settings/BrowserPanel'
 import { RemoteCrewPanel } from './settings/RemoteCrewPanel'
 import { PeoplePanel } from './settings/PeoplePanel'
 import { useSharedCrewCapabilities } from '../hooks/sharedCrew/useSharedCrew'
@@ -44,6 +43,10 @@ const AgentBackendTab = lazy(() =>
 /** Subagent Settings + Warm Pool, beside the backend picker: both govern how agents run. */
 const AgentRunSettings = lazy(() =>
   import('./overview/KiroCrewCfgTab').then(m => ({ default: m.AgentRunSettings })),
+)
+/** Lazy: the Browser tab's status card and live-view settings are only needed when that tab opens. */
+const BrowserPanel = lazy(() =>
+  import('./settings/BrowserPanel').then(m => ({ default: m.BrowserPanel })),
 )
 import { SessionEnvironmentsCard } from './settings/SessionEnvironmentsCard'
 import { SettingsCard } from '../components/settings'
@@ -300,7 +303,11 @@ export default function SettingsPage() {
         {tab === 'shortcuts' && <ShortcutsPanel />}
         {tab === 'skills' && <SkillsPanel />}
         {tab === 'channels' && <ChannelsPanel basePath={SETTINGS_BASE_PATH} />}
-        {tab === 'browser' && <BrowserPanel />}
+        {tab === 'browser' && (
+          <Suspense fallback={<ContentSkeleton rows={6} />}>
+            <BrowserPanel />
+          </Suspense>
+        )}
         {tab === 'computer-use' && <GuideTrustRootRegion><ComputerUsePanel /></GuideTrustRootRegion>}
         {tab === 'webhooks' && <WebhooksPanel />}
         {tab === 'instances' && <RemoteCrewPanel />}

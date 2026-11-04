@@ -444,6 +444,13 @@ Two separate consolidation paths with independent triggers:
 | Preferences/projects | 30 messages (per session, `_CONSOLIDATION_THRESHOLD`) | Semantic entries; V1 legacy mode also updates `preferences.md` and `projects.md` | In-memory `_prefs_offset` dict |
 | Daily history + lessons | 3h idle (per session, `history_idle_hours` = 3.0) | V1: daily Markdown and vector/JSONL lessons. V2: history, episodes and lessons in one SQLite transaction | Transcript `last_consolidated`; V2 also retains an atomic source-span receipt |
 
+The history prompt lets the model answer `"history_entry": ""` when a span holds no
+decision, outcome or fact, and tells it never to write a "No substantive
+conversation" placeholder; a scheduled or automated run that did real work still
+gets an entry. Both writers append only a non-blank string entry (V1 in
+`_consolidate`, V2 in `apply_consolidation`), so an empty answer writes no dated
+line while the marker still advances.
+
 Per-consolidation extraction caps (`vector_memory_constants.py`, also
 interpolated into the LLM prompt so the model is told the same numbers):
 `_MAX_SEMANTIC_PER_CONSOLIDATION = 20`, `_MAX_EPISODIC_PER_CONSOLIDATION = 10`,
@@ -1683,7 +1690,9 @@ skips it without guessing:
   member's `member_id` is empty;
 - the record's `owner_member`, when set, equals that member's alias, and
   `member-memory.json` is absent or its `owner_member` equals that alias; a
-  malformed manifest refuses. Both labels are writer-populated and a rebinding
+  malformed manifest (unreadable, not UTF-8, not JSON, nested past the
+  recursion limit, or naming no `owner_member`) refuses that store alone, and
+  the scan goes on to the next store. Both labels are writer-populated and a rebinding
   can leave them naming another member, so two labels that agree with each
   other but not with the bound member are refused rather than adopted;
 - `memory.db` exists, is a regular file with exactly one name (`st_nlink == 1`:
@@ -1851,6 +1860,19 @@ Auto relevance and file paths first discovered through tools remain agent-driven
 the pointer tells the agent to read the complete file when its condition holds,
 not to apply every conditional body unconditionally.
 A project override of a template takes precedence over its global copy. A
+global template that no regular spec claims is looked up by declared name in the
+global agents directory, following links the way kiro-cli does
+(`member_essential_context.linked_global_template_spec`). Each entry is read once
+through `agent_discovery._read_agent_spec`, and a target outside the agents
+directory that sits inside managed memory or member private state is refused, as
+is every such target when a managed root cannot be resolved. Entries with
+differing content that declare the same name are ambiguous. The member persona,
+the execution prompt, the session MCP spec and the side-turn read-only spec read
+templates this way, and the read-only spec reaper counts such a base as present;
+spec writers refuse links. On Windows `_read_agent_spec` screens every link on
+the spec's path through `hooks._screen_windows_links` before it resolves
+anything, so a link whose target names an untrusted UNC share is refused and
+audited as `untrusted link target rejected` without the SMB probe. A
 relative `file://` prompt uses the project root when its template comes from the
 project's agents directory, and the user home when it comes from the global
 agents directory, even with a project bound. Both readers share the same path
@@ -2046,7 +2068,13 @@ exist is skipped, as kiro-cli skips it: the snapshot carries one core
 projection skips it without a note. "Does not exist" means a root-first lstat
 walk meets a missing component and no link; a declared link (dangling or not),
 an unreadable or non-regular file, a managed-state path and an out-of-root path
-still refuse. Missing optional root guides change the snapshot instead. The
+still refuse. One exception: a resource the template declares by ABSOLUTE path
+whose real path leaves its admitted root (a cloud desktop's `~/workplace` linked
+to `/workplace/<user>`) is left out unread; the snapshot names it in one core
+`essential-context#outside-skipped:<template>` note and the KAS projection skips
+it with a warning, because kiro-cli follows the link and loads it natively. A
+project-relative declaration through a link still refuses. Missing optional root
+guides change the snapshot instead. The
 project root's implicit `AGENTS.md` and
 `SOUL.md` go through the same reader, but a refusal there -- a link to a file
 outside the project, a dangling link, a managed memory file, a hard link -- does
@@ -2063,7 +2091,15 @@ agent definition) does the same for a link whose target the path screen resolves
 inside the glob's root: the snapshot and the KAS document reader
 (`projected_resource_documents`) leave it out unread, and the snapshot names it in
 that note. A link that resolves outside the root, or that the screen refuses, still
-refuses, and so does a link under any other declared glob. The launch-record size
+refuses, and so does a link under any other declared glob, with one exception for an
+ABSOLUTE declaration: a link its walk meets whose target the path screen resolves
+outside the root (a cloud desktop's `~/workplace` linked to another volume) is left out,
+unread and not descended into, and named in one core
+`essential-context#outside-skipped:<template>` note; the KAS document reader skips it
+the same way. Nothing outside the root is opened or listed. A target that is managed
+memory or member state still refuses (`_refuse_managed_source` runs on the screened
+target), and so do a link the screen refuses, a link that stays inside the root, and
+any link a relative declaration meets. The launch-record size
 check (`_declared_files_fit`, `projected_launch_paths`) does not opt in: it measures
 what kiro-cli loads and cannot measure a link it does not follow, so a link still
 withholds that record (the size check reports unfit, the path read refuses) and the
@@ -2641,6 +2677,11 @@ staged; only an explicitly missing original permits activation without a
 preserved prior tree. An existing directory with a missing or mismatched database identity is refused. This recovery exception never relaxes ordinary memory reads.
 Restore refusal responses retain the concrete reason (`restore_refused`), including
 an already-pending restore, rather than labeling every refusal as corruption.
+A damaged backup is a refusal too, not a failed restore: a V1 file SQLite cannot
+read as a database and a member zip whose compressed entry fails to decompress
+both raise `ValueError` before anything is displaced, so the dashboard answers 409
+`restore_refused`. An I/O or locking error (`sqlite3.OperationalError`) is not
+about the backup and still answers 500 `restore_failed`.
 
 **Global V1 keeps its single-DB backup format. Restore activation is staged for
 both versions so a live writer never loses its database or WAL.**
@@ -2681,7 +2722,13 @@ self-contained file with no WAL to pair.
   operator's `memory.pre-upgrade.db`, is not a backup to retention: `prune_backups`,
   the interval guard and `newest_backup` (restore's default choice) read
   `list_backups(..., stamped_only=True)`, so it is never deleted, never counted
-  toward `keep` and never restored without `--from`.
+  toward `keep` and never restored without `--from`. The interval guard measures
+  from the newest backup stamped at or before the current time and logs a warning
+  for any stamped after it (taken under a wrong clock): a future stamp neither keeps
+  every pass skipping until the clock catches up, nor turns the guard off so that
+  each restart copies and prunes the real history away. `prune_backups` reads the
+  same view: a future-stamped copy is kept and takes no `keep` slot, so it can never
+  evict the copy the pass just took.
 - **Atomicity**: each call writes its own hidden UUID `.partial` and renames it, so an
   interrupted or concurrent run cannot delete another call's stage or leave a
   truncated file that looks like a backup. The stage is switched to
@@ -2856,6 +2903,7 @@ responsibility:
 Embeddings run in-process via the vendored llama-cpp-python 0.3.34 runtime (`kiro_crew/_vendor/llama_cpp`) — no external server, no HTTP hop, no runtime pip install. There is no remote embedding URL, so no URL validation or SSRF hardening is needed on this path; see `../post-launch-removals.md` for why a network embedding client must not come back.
 
 - `LlamaCppEmbedder.embed(text)` / `embed_batch(texts)` → returns 1024-dim vectors or `None` on any failure (graceful degradation)
+- **The raw `memory` knobs follow the overlay**: the embedder reads its `memory.*` settings raw (`embeddings_settings._read_memory_config`), off the config dataclass graph, and reads `config.local.json` over `config.json` with the loader's nested merge, so a knob set only in the overlay is the one the embedder runs with, as Settings reports it. An absent or unreadable file contributes nothing.
 - **Background model load, bounded cold-load wait**: the GGUF load runs on a background daemon thread (`_kick_background_load()`, thread name `kc-embed-load`). On an event-loop thread, and for `PRIORITY_BULK` work anywhere, `embed()`/`embed_batch()` NEVER block on the load: when the model isn't in memory the call kicks the load and returns `None` immediately, and the caller degrades to keyword search. A normal or interactive embed off the event loop (`_caller_may_wait_for_load()`) waits for the load it kicked (`_wait_for_cold_load()`), bounded by `_COLD_LOAD_WAIT_SECS` (30 s) and by the caller's own `embedding_work` deadline, then returns `None` if the model is still not there; nothing waits when no load is running (missing file, failed load in cooldown). This covers every default-priority caller off the loop, including sync memory writes through `make_sync_embed_fn()`: such a caller already blocks for the inference itself, and waiting once for the load is what keeps an idle unload from silently storing a row without a vector. The gateway/dashboard event loop is never stalled by embedding work. `wait_ready(timeout)` exists for sync contexts (tests, one-shot CLI flows) that legitimately want to block — never call it from an event-loop thread
 - **Weight repacking is an opt-out (`memory.embedding_weight_repack`, default `true`)**: llama.cpp's CPU backend keeps a repacked, anonymous copy of the weights beside the mmap'd file (`CPU_REPACK model buffer size = 446.25 MiB` for the shipped model, against `CPU_Mapped 600.68 MiB`, which is clean and file-backed). `embedding_weight_repack()` reads the raw `memory` section once per load and only an explicit `false` passes `use_extra_bufts=False` to the vendored `Llama` (a `kiro_crew DIVERGENCE FROM UPSTREAM` listed in `_vendor/README.md`, inert at its `None` default), so the default constructor call is unchanged and stored vectors stay byte-identical. Measured on macos_arm64 with the shipped model and four threads, repack on against off: footprint after a long input 1.6 GB against 1.2 GB, a 534-token embed 0.89 s against 1.09 s, a 9-token query 21 ms against 28 ms; cosine against repacked vectors 0.999559 to 0.999853 over inputs of 9 to 561 tokens, on every platform because Linux's `libggml-cpu` repacks too. That vector movement and the slower bulk embed are why turning it off is the operator's choice, never the default. `test/test_embeddings_weight_repack.py` pins the reader, the call site and the vendored parameter.
 - **Idle unload**: once loaded, a daemon evictor (`kc-embed-evict`) unloads the model after `memory.embedding_idle_evict_secs` (default 3600; `0` never unloads) with no embed and nothing queued or running (`evict_if_idle()`), freeing ~1 GB (GGUF mapping ~600 MB plus context ~400 MB) and trimming the native heap; the next embed reloads it. A reload must map the same file the backend first published (`_published_stamp`: device, inode, size, mtime, ctime); a file changed in place is refused with one ERROR and the load is marked failed, because `model_id` was fixed when the backend was built. `can_load_on_demand()` reports a not-in-memory model as loadable (file present, not protected, no failed load since the last `close()`), which is what lets the knowledge availability check answer yes without starting a load. `InProcessEmbedder.model_resident_async()` is a pure `is_ready()` check: the knowledge watcher's bulk self-heal asks it every pass and must never bring an unloaded model back. Memory preparation calls `prefetch()` at startup so the first recall does not pay the load on its own path
@@ -4469,6 +4517,38 @@ help a user enable and interpret it. It does not enable the feature or trigger
 generation, and holds no runtime-written frontmatter, since a builtin skill is
 re-synced by `rmtree` + `copytree` on upgrade.
 
+The bundled `feature-request` skill is the in-session answer when a user asks to
+report a problem or send feedback; both phrases are among its triggers, and its
+description names them for the skill index. Before it gathers anything it routes
+the report, first match wins: a security vulnerability goes to `SECURITY.md`'s
+private email and is never drafted or filed in public; something broken on this
+install goes to the Report a Problem dialog, or `kirocrew doctor --bundle` without
+the dashboard, both of which build the redacted diagnostics bundle and link to
+the tracker the edition's `FeedbackTrackerProvider` names; a question or early
+idea goes to Discussions; anything else continues to the skill's GitHub filing
+workflow. The "Request a Feature" button does not load the skill but seeds
+`FEATURE_REQUEST_PROMPT_FALLBACK`, which carries the same three routes ahead of
+its own filing workflow. `website/src/test/featureRequestRouting.test.ts` holds
+both copies to these checks: each `issues/new?template=` form they name exists
+in `.github/ISSUE_TEMPLATE/`; the security and Discussions links are the ones
+its `config.yml` lists, cited whole rather than inside a longer link, and
+`SECURITY.md` says not to open a public issue and gives a `mailto:` address; the
+security route equals the text the test pins for that copy, ignoring only paired
+`**` bold outside code and the amount of whitespace; the security route comes
+first, which in the skill means that "Route it first", parsed as CommonMark up
+to the next heading of the same or a higher level, is the intro paragraph and
+then one list whose first item cites the security policy, so nothing but the
+intro comes before that item, and in the fallback means that the security route
+is the first line after the greeting and the greeting the first after the
+opening line; the other routes follow it in the order above; the
+Report a Problem labels and the Settings › About › Support › Report a Problem
+path are the strings in `en.manual.json`; and the fallback cites the same
+`kirocrew` commands as the skill. `test/test_feature_request_skill_routing.py`
+checks the description length and the triggers, and parses each `kirocrew`
+command the skill cites with the `doctor` registrar in `cli_parser_gateway.py`,
+abbreviations off. Wording outside the security route, the other routes' prose,
+the repository link and the plain and prefilled new-issue links are not checked.
+
 **`GET /api/skills` coalesces concurrent readers onto one scan, and stores nothing.**
 The catalog assembly is filesystem-heavy (`os.walk` plus per-file frontmatter reads, package
 path globs, per-skill resolve/read, agent annotation), and the defect this addresses is that
@@ -5732,6 +5812,13 @@ alias was deleted or a symlink retargeted. Repeat calls avoid a re-walk only thr
     to `atomic_write`, so it must land for all three surfaces at once rather than
     by reverting one of them to an in-place write that a mid-write failure or a full
     disk would turn into data loss.
+    Directory upload (`/api/directory-upload`) is not one of these surfaces: it is
+    create-only, so it never replaces a file. It creates the file through
+    `pinned_fs.write_new_file_pinned` (an `O_EXCL` create under the pinned
+    directory, with an identity-checked rollback), and an existing name answers
+    409 `name_collision`. The bytes are written under the final name, so a reader
+    can see a partially written file while the upload runs, and a failed write
+    removes it (see [learn-cron-dashboard.md](learn-cron-dashboard.md)).
 - `delete_skill(name)` — removes entire skill directory
 - All three address the leaf relative to a descriptor pinning the parent chain
   (`pinned_fs`) where the platform has the descriptor-relative syscalls, so an
@@ -6213,7 +6300,7 @@ What stays in `hooks.py`, and why, because a guard or a contract reads it there:
   types live in `hook_types`, and a class keeps its owner's `__module__`: `compose`
   selects the classes whose methods it rebinds by it, and nothing else reads it. Their
   shapes are unchanged;
-- `uncounted_gate` and its ContextVar: a `contextmanager`'s generator is not a function
+- `uncounted_gate`, `unattended_turn` and their ContextVars: a `contextmanager`'s generator is not a function
   `compose` rebinds, so in an owner it would read the owner's globals (the one owner
   `contextmanager`, `ScriptHookStore._atomic_mutation`, is rebound onto this module's
   globals right after `compose`);

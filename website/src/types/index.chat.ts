@@ -22,6 +22,9 @@ export interface CrewWorkFacts {
   open: number
   /** Open items waiting on a person (`reason` approval / needs_human). */
   person: number
+  /** The worker each of those items belongs to ("" for a remote or unbound one);
+   *  absent from a gateway that predates it. */
+  person_workers?: string[]
   items: CrewWorkItemFacts[]
 }
 
@@ -269,6 +272,10 @@ export interface ChatSlot extends TurnIdentityFields {
    *  worker): that root's key. The person's session list leaves such a row out;
    *  the side panel lists it under its root. Absent on every other row. */
   crew_root?: string
+  /** On a session a crewmate thread dispatched (directly or through another
+   *  session): that mate thread's key (`crew_mode.MATE_ROOT_FIELD`). The mate
+   *  chat shows its pending approvals and question cards. Absent elsewhere. */
+  mate_root?: string
   /** The conductor the chat runs in Crew Mode (`crew_mode_agent` on the slot), "" when
    *  it never turned on: it marks the chat as Crew Mode until the gateway moves it onto
    *  the configured `agent.crew_mode_agent`. */

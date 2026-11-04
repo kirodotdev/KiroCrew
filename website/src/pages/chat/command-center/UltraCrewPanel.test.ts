@@ -108,17 +108,25 @@ describe('milestoneState', () => {
 
   it('waiting: an idle session after progress or an answered report', () => {
     expect(milestoneState(item({ status: 'progress', ...R }), false)).toBe('waiting')
+  })
+
+  it('quiet: the board stale flag on a chat that is still there, not stuck', () => {
+    expect(milestoneState(item({ status: 'progress', stale: true, ...R }), false)).toBe('quiet')
+    expect(milestoneState(item({ status: 'progress', stale: true, alive: 'closed' }), false)).toBe('stuck')
+    // No report yet, even past the window and with no worker bound (the board
+    // reads that as closed): Not started, never stuck.
+    expect(milestoneState(item({ status: null, stale: true }), false)).toBe('next')
+    expect(milestoneState(item({ status: null, stale: true, alive: 'closed' }), false)).toBe('next')
     expect(milestoneState(item({ status: 'blocked', ...ANSWERED }), false)).toBe('waiting')
     expect(milestoneState(item({ status: 'question', outstanding: false, ...ANSWERED }), false)).toBe('waiting')
   })
 
-  it('stalled: a closed session on an open report, or the board stale / orphaned flag', () => {
-    expect(milestoneState(item({ status: 'progress', alive: 'closed' }), false)).toBe('stalled')
-    expect(milestoneState(item({ status: 'blocked', alive: 'closed', ...R }), false)).toBe('stalled')
-    expect(milestoneState(item({ status: 'progress', stale: true, ...R }), false)).toBe('stalled')
-    expect(milestoneState(item({ status: 'progress', orphaned: true, ...R }), false)).toBe('stalled')
+  it('stuck: a closed session on an open report, or an orphaned board', () => {
+    expect(milestoneState(item({ status: 'progress', alive: 'closed' }), false)).toBe('stuck')
+    expect(milestoneState(item({ status: 'blocked', alive: 'closed', ...R }), false)).toBe('stuck')
+    expect(milestoneState(item({ status: 'progress', orphaned: true, ...R }), false)).toBe('stuck')
     // An orphaned board (conductor tab closed) flags every open item: a done
-    // report or an unstarted item is not stalled.
+    // report or an unstarted item is not stuck.
     expect(milestoneState(item({ status: 'done', orphaned: true, ...R }), false)).toBe('done')
     expect(milestoneState(item({ status: null, orphaned: true }), false)).toBe('next')
     expect(milestoneState(item({ status: 'done', stale: true, ...R }), false)).toBe('done')
@@ -156,7 +164,8 @@ describe('Recap', () => {
 
   it('builds the milestone sentence', () => {
     expect(milestoneSentence(4, 8, ['Disk check', 'Decor team'], ['Launch-day checklist'])).toBe('4 of 8 done; Disk check and Decor team wait on you; Launch-day checklist is running.')
-    expect(milestoneSentence(5, 6, [], [], ['Supplies list'])).toBe('5 of 6 done; Supplies list has stalled.')
+    expect(milestoneSentence(5, 6, [], [], ['Supplies list'])).toBe('5 of 6 done; Supplies list is stuck.')
+    expect(milestoneSentence(4, 6, [], ['Poem'], ['Supplies list'], ['Drinks menu'])).toBe('4 of 6 done; Supplies list is stuck; Drinks menu has gone quiet; Poem is running.')
   })
 })
 

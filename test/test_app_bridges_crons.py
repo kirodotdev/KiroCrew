@@ -24,6 +24,8 @@ from kiro_crew.apps.bridges import (
 from kiro_crew.apps.manager import APP_MANIFEST_FILENAME, install_app
 from kiro_crew.apps.manifest import AppManifest
 
+pytestmark = pytest.mark.usefixtures("command_crons_run_here")
+
 
 def _run(coro):
     """Drive an async bridge helper from a synchronous test.

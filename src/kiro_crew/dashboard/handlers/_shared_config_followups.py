@@ -22,6 +22,21 @@ AGENT_SPEC_NOT_REWRITTEN = (
     "the previous servers; see the gateway log"
 )
 
+# The response text for a saved change whose rebuild stopped on a
+# ``PlatformCompositionError``: the host's enterprise setup could not be built, so no
+# spec was composed from the open-source defaults and the cause is governance, not a
+# transient write failure.
+AGENT_SPEC_COMPOSITION_REFUSED = (
+    "saved, but the agent spec was not rewritten: this host's enterprise setup could "
+    "not be built (governance); see the gateway log"
+)
+
+# The gateway-log line for that same stop, shared by every save path that reports it.
+COMPOSITION_REFUSED_LOG = (
+    "agent spec was not rewritten after %s: this host's enterprise setup could not be "
+    "built (governance)"
+)
+
 
 def rebuild_agent_spec(context: str) -> bool:
     """Rebuild the agent spec after a dashboard config write; True only on a confirmed rewrite.
@@ -32,16 +47,24 @@ def rebuild_agent_spec(context: str) -> bool:
     unconfirmed outcomes: the rebuild declined to write (this instance may not own
     the shared agent home), or it raised, possibly after part of the spec set was
     already written. The config write itself already landed, so neither is an
-    error response.
+    error response. A ``PlatformCompositionError`` is logged at ERROR under its own
+    governance line: the rebuild already stopped before composing a spec from the
+    open-source defaults, so the fail-closed outcome holds and what remains is
+    telling the operator the cause.
 
     The import stays function-local: ``kiro_crew.agent`` imports the dashboard
     handlers, and resolving the name at call time is what lets a test that
     substitutes ``kiro_crew.agent.rebuild_agent_config`` reach this call.
     """
+    from kiro_crew.platform import PlatformCompositionError
+
     try:
         from kiro_crew.agent import rebuild_agent_config_reporting
 
         _spec_path, wrote = rebuild_agent_config_reporting()
+    except PlatformCompositionError:
+        logger.error(COMPOSITION_REFUSED_LOG, context, exc_info=True)
+        return False
     except Exception:
         logger.warning("agent spec rebuild failed after %s", context, exc_info=True)
         return False

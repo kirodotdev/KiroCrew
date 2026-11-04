@@ -102,6 +102,16 @@ def test_reap_empty_pidfile_returns_zero(pidfile):
     assert backend_mod._reap_stale_app_backends() == 0
 
 
+@pytest.mark.parametrize("row", [4242, None, "4242", ["pid", 4242]])
+def test_reap_drops_a_row_that_is_not_an_object(pidfile, row):
+    """A hand-edited row must not crash the reap: it runs on every gateway start."""
+    backend_mod._write_pidfile({"broken": row})
+
+    assert backend_mod._reap_stale_app_backends() == 0
+
+    assert backend_mod._read_pidfile() == {}
+
+
 def test_reap_kills_matched_alive_orphan(pidfile):
     backend_mod._write_pidfile({"code_reviewer": {"pid": 4321, "start_time": "ST-1", "port": 9100}})
     alive = {"v": True}

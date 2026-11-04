@@ -316,6 +316,17 @@ class TestOutboxDownloadRange:
             assert resp.headers["Content-Range"] == f"bytes */{len(_MP4)}"
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("header", ["bytes=200-100", "bytes=0-1,5-9", "bytes=+5-20"])
+    async def test_malformed_range_serves_whole_file_200(self, outbox, mock_sel, header):
+        """RFC 9110 14.2: a malformed Range is ignored, never answered 416."""
+        (outbox / "clip.mp4").write_bytes(_MP4)
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.get("/api/outbox/clip.mp4", headers={"Range": header})
+            assert resp.status == 200
+            assert "Content-Range" not in resp.headers
+            assert await resp.read() == _MP4
+
+    @pytest.mark.asyncio
     async def test_range_does_not_bypass_the_content_scan(self, outbox, mock_sel):
         """The scan reads the whole file even when the range names a clean slice."""
         (outbox / "leak.png").write_bytes(_synth_flagged_png())

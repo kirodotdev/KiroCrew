@@ -1110,8 +1110,8 @@ def published_autocompact_pct() -> float:
 #
 # Defaults to "" -- the dataclass default for :attr:`KiroCrewConfig.timezone` --
 # so a read taken BEFORE the first load resolves exactly as a defaults-only load
-# would (empty falls through to UTC in both consumers) rather than inventing a
-# zone during the boot window.
+# would (empty falls through to the host's zone, as an unset config does) rather
+# than inventing a configured zone during the boot window.
 _CONFIG_TIMEZONE: str = ""
 
 _CONFIG_TIMEZONE_TICKET: int = 0
@@ -1164,9 +1164,10 @@ def published_config_timezone() -> str:
     """The published default timezone name, or ``""`` if none is configured.
 
     ``""`` is not an error and not a "cold snapshot" signal -- it is what an
-    unset :attr:`KiroCrewConfig.timezone` says, and both consumers already
-    resolve it to UTC. Callers must NOT treat it as a reason to reach for
-    ``config.json`` themselves; that is the I/O this snapshot exists to remove.
+    unset :attr:`KiroCrewConfig.timezone` says, and every consumer resolves it
+    to the host's zone (``cron_service.schedule.resolve_timezone_name``).
+    Callers must NOT treat it as a reason to reach for ``config.json``
+    themselves; that is the I/O this snapshot exists to remove.
     """
     return _CONFIG_TIMEZONE
 

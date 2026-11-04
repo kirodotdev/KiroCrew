@@ -111,7 +111,7 @@ _BASE_MODULE_NAMES = frozenset("""
     platform_compat popen_limited prevalidated_gh_env re read_local_secret redact
     refuse_unaudited_on_dead_fs replace_with_retry resolve_script_path resolve_serving_port
     run_command_sandboxed run_limited run_script_sandboxed safe_read_file_bytes_nolink
-    sanitize_spec_env sel sensitive_path_refusal shutil signal subprocess sys tempfile
+    sanitize_spec_env sel shutil signal subprocess sys tempfile
     threading time tmp_env urllib validate_secret_env_grant wrap_argv
     """.split())
 

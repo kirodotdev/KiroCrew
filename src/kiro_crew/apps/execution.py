@@ -732,7 +732,11 @@ def _execution_admission(
         return None, provenance
 
     reason = repository_denied or (
-        "third-party app execution is disabled; trust this app alone in Settings "
+        # Settings -> Security -> Third-party apps only lists and revokes per-app
+        # grants; the grant itself is made by the App Store's install, update or
+        # enable prompt.
+        "third-party app execution is disabled; trust this app alone from the "
+        "dashboard's App Store, whose install, update and enable prompts ask for it "
         f"({_TRUST_SETTING_PATH}), or set {_ALLOW_ALL_SETTING_PATH}=true to allow "
         "every third-party app's Python, backend, and manifest shell code"
     )

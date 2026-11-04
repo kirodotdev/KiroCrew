@@ -101,12 +101,12 @@ export default function RunProgress({
       {/* Header: completion tally on the left, the elapsed clock on the right. */}
       <div className="flex items-center justify-between gap-2 text-[12px] text-muted">
         <span className="tabular-nums">
-          {tally.done} / {total} {i18nT('apps.codeReviewSage.components.runProgress.reviewed')}
+          {i18nT('apps.codeReviewSage.components.runProgress.reviewed_of', { done: tally.done, count: total })}
           {tally.failed > 0 && (
-            <span className="text-danger"> · {tally.failed} {i18nT('apps.codeReviewSage.components.runProgress.failed')}</span>
+            <span className="text-danger"> · {i18nT('apps.codeReviewSage.components.runProgress.failed_count', { count: tally.failed })}</span>
           )}
           {tally.cancelled > 0 && (
-            <span> · {tally.cancelled} {i18nT('apps.codeReviewSage.components.runProgress.cancelled')}</span>
+            <span> · {i18nT('apps.codeReviewSage.components.runProgress.cancelled_count', { count: tally.cancelled })}</span>
           )}
         </span>
         <span className="inline-flex items-center gap-1.5 tabular-nums" title={i18nT('apps.codeReviewSage.components.runProgress.elapsed_time')}>

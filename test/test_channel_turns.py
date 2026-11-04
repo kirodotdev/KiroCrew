@@ -1478,6 +1478,23 @@ class TestAMonitorWake:
     def _wake(self, hook: _Hook, *, current: bool = True) -> MonitorWake:
         return MonitorWake(hook, lambda: current)  # type: ignore[arg-type]
 
+    def test_only_a_wake_builds_an_unattended_tool_gate(self, monkeypatch) -> None:
+        from kiro_crew.messaging import dispatch
+
+        built: list[bool] = []
+        real = dispatch.build_tool_gate
+
+        def _recording(*args: Any, unattended: bool = False, **kwargs: Any) -> Any:
+            built.append(unattended)
+            return real(*args, unattended=unattended, **kwargs)
+
+        monkeypatch.setattr(dispatch, "build_tool_gate", _recording)
+        sessions = FakeSessions(ScriptedProvider(answer(), answer()))
+        turns = _turns(sessions, drift=DISCORD_DRIFT)
+        _answer(turns, asker=_asker(route=None), monitor=self._wake(_Hook()))
+        _answer(turns, asker=_asker(route=None))
+        assert built == [True, False]
+
     def test_a_wake_claims_without_waiting_and_composes_no_ceiling(self, one_turn_ceiling):
         sessions = FakeSessions(ScriptedProvider(answer(), answer()))
         turns = _turns(sessions, drift=DISCORD_DRIFT)

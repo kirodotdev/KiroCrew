@@ -122,10 +122,14 @@ export const PANEL_TAB_MAP: Record<string, PanelTarget> = {
   // The Theme page's per-part Experience toggles, mounted by DisplayPanel.
   'ThemeExperienceSettings.tsx': { tab: 'display', params: { sub: 'theme' } },
   'BrowserPanel.tsx': 'browser',
+  // The Browser tab's sections (RFC browser-live-harness section 8), each mounted
+  // by BrowserPanel: the live-view and Advanced controls, and the Preview tab's
+  // origin list. Mapped with it so a control any of them gains stays indexed.
+  'BrowserCredentialDomains.tsx': 'browser',
+  'BrowserLiveSection.tsx': 'browser',
+  'BrowserLocalOrigins.tsx': 'browser',
   // The Browser tab's managed-browser and existing-browser sections, mounted by
   // BrowserPanel. Mapped with it so a control either one gains stays indexed.
-  'ManagedBrowsersSection.tsx': 'browser',
-  'ConnectBrowserSection.tsx': 'browser',
   'ComputerUsePanel.tsx': 'computer-use',
   'InstancesPanel.tsx': 'instances',
   'SecurityPanel.tsx': 'security',
@@ -230,6 +234,9 @@ export const PANEL_TAB_MAP: Record<string, PanelTarget> = {
   // It has no extractable primitive; mapped so its hand-written search entry
   // (`agent.kiro-sign-in` in settingsManual.ts) stays anchored to its source.
   'KiroSignInCard.tsx': 'agent',
+  // The conductor remote-dispatch card FeaturePreviewsSection mounts: its
+  // `work_ledger.remote_dispatch` switch is a Developer-tab row.
+  'RemoteDispatchCard.tsx': DEVELOPER_PREVIEWS,
   // The per-app model rows ChatPanel's Model page mounts. Each row is labelled
   // with the app's own name, a dynamic label the extractor skips, so the file
   // yields no entry today; mapped so a static control added to it lands on the

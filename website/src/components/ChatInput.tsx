@@ -9,6 +9,7 @@ import CopyBranchButton from './CopyBranchButton'
 import ProjectAwsProfileStatus from './ProjectAwsProfile'
 import { useSlotRemoteEnvironment } from './sessionEnvironmentHooks'
 import RejectDropdown from './RejectDropdown'
+import DenyOverrideDropdown, { DenyOverrideWarning } from './DenyOverrideDropdown'
 import { OverlayPortal } from './overlayRoot'
 import { useQueryClient } from '@tanstack/react-query'
 import { useBranding } from '../hooks/useBranding'
@@ -70,6 +71,7 @@ import { HoldToTalkBar, MicButton, VoiceCaptureStatus } from './chat-input/Voice
 import { AgentChip, ContextUsageControl, ModelChip, SessionControlChips, useContextPopover, useShelfMeasure } from './chat-input/ContextShelf'
 import { useAutoCompactThreshold } from './chat-input/autoCompact'
 import { AttachMenu, usePlusMenu } from './chat-input/attach'
+import { ComposerActionMenuItems, useComposerActionMenu } from './chat-input/composerActions'
 import { BusySendControls, CompactingIndicator, useComposerSend } from './chat-input/busySend'
 import { CollapsedComposerBar, collapseMenuRowElement, useComposerCollapse } from './chat-input/collapse'
 import { useGuideRevealScope } from '../guide/GuideRevealScope'
@@ -251,6 +253,7 @@ function ChatInput({
   onProjectClick,
   environmentSlot,
   sessionControls,
+  composerActions,
   onSessionControlClick,
   contextPct,
   contextUsedTokens,
@@ -271,6 +274,7 @@ function ChatInput({
   stopState,
   approvalMode,
   approvalModeRemote,
+  afterApprovalMode,
   reasoningEffort,
   effortIsDefault = false,
   hasEffort,
@@ -408,6 +412,7 @@ function ChatInput({
     approvalNotice, setApprovalNotice, approvalNoticeKind, showApprovalError,
     approvalToolInput, approvalIsReadOnly, approvalFullCommand, approvalBaseCommand, approvalIsShell,
     approvalTrustCommandGrantable, approvalTrustBaseGrantable, approvalTrustAllGrantable, approvalIsUnattended, approvalTrustGrantable,
+    approvalDenyRule, approvalDenyDetail, approvalDenyFamily, approvalDenyCommand,
     approvalLabelRaw, approvalToolCallId, approvalPurpose, approvalTs, approvalLabel, showGhost, showInChat, handleApprovalAction,
   } = useToolApproval({ slotId, slotApprovalChrome, approvalMode, dispatch })
   const activeSlot = slotId
@@ -549,6 +554,7 @@ function ChatInput({
   const bindProjectPress = usePressActivation()
   const plus = usePlusMenu({ pickers, value, onChange, composerControl, fileInputRef, isTouchInput: () => touchInput })
   const { setPlusOpen, sketchOpen, setSketchOpen } = plus
+  const appActions = useComposerActionMenu({ items: terminal.active ? undefined : composerActions, value, onChange, pasteBlocks, composerControl, scopeKey: slotId, locked: typingLocked, plusBtnRef: plus.plusBtnRef, composerBoxRef: composerAnchorRef, closeMenu: () => setPlusOpen(false) })
   // The More menu's Sketch item opens a dialog. The dialog hands focus to the
   // composer itself on close (`returnFocusRef`), so only the menu half of the
   // hand-off is used here: defer the open, and skip the trigger restore.
@@ -951,7 +957,7 @@ function ChatInput({
   // placeholder here is a sentence the user needs whole, so it still wraps —
   // including a caller's own `placeholder`, which `resolvedPlaceholder` carries.
   const placeholderIsHint = !placeholder && activePlaceholder === resolvedPlaceholder
-  const { handleInput } = useTextareaAutosize({ inputRef, mirrorRef, value, prefillHint, manualHeight, dragging, textareaParked, activePlaceholder })
+  const { handleInput } = useTextareaAutosize({ inputRef, mirrorRef, value, prefillHint, manualHeight, dragging, textareaParked, activePlaceholder, boxMounted: !showGhost && !composerCollapsed })
   // The send slot's busy branch: a turn runs (or a stop is under way) and there
   // is a stop or steer path. Read by the cluster below and by the "+" menu row.
   const compactingSlot = busyMode !== 'responsive' && compacting && !isRunning && !composerHasDraft && (!stopState || stopState === 'idle')
@@ -1197,14 +1203,10 @@ function ChatInput({
                       control. A `data-` hook rather than button text because every
                       catalog translates the labels. */}
                   <div data-approval-actions className="flex gap-1.5 flex-wrap items-center">
+                      {approvalDenyRule ? <DenyOverrideDropdown disabled={approvalSubmitting} className={approvalBtnClass} family={approvalDenyFamily} onAction={(action) => { handleApprovalAction(action) }} /> : <>
                       <button disabled={approvalSubmitting} className={approvalBtnClass} onClick={() => handleApprovalAction('approved')}><CheckCircle size={12} className="shrink-0" />{i18nT('components.chatInput.allow_once')}</button>
-                      {/* One dropdown carries every standing grant this card can
-                          record. Trust-reads is a tier inside it, not a sibling
-                          button: the row is capped at three controls
-                          (`max-two-buttons-per-row` grandfathers Allow once +
-                          Trust + Reject and forbids a fourth), and a read-only
-                          scopeless card can offer reads and session trust at
-                          once. */}
+                      {/* One dropdown carries every standing grant (trust-reads is a tier in it):
+                          `max-two-buttons-per-row` grandfathers Allow once + Trust + Reject; no fourth. */}
                       {approvalTrustGrantable && (approvalTrustCommandGrantable || approvalTrustAllGrantable || approvalIsReadOnly) && (
                         <TrustDropdown
                             fullCommand={approvalFullCommand}
@@ -1219,6 +1221,7 @@ function ChatInput({
                             onAction={(action, pattern, ttlSeconds) => { handleApprovalAction(action, pattern, ttlSeconds) }}
                         />
                       )}
+                      </>}
                       <RejectDropdown
                           disabled={approvalSubmitting}
                           className={`${approvalBtnClass} hover:!text-danger hover:!bg-[color-mix(in_srgb,var(--danger)_10%,transparent)]`}
@@ -1226,15 +1229,12 @@ function ChatInput({
                       />
                   </div>
               </div>
-              {/* A1 discoverability hint: points at the footer mode picker so a
-                  new user learns approval prompting is adjustable. Withheld for
-                  unattended sources (the mode picker governs THIS slot, not the
-                  job that raised the card), in the ghost state (the collapsed
-                  composer unmounts the picker, so the link would have nothing
-                  to open), while the B2 nudge is up (two pointers at one
-                  control), and retired forever once the user has found the
-                  picker — via this link or by adjusting the mode. */}
-              {!showGhost && !approvalIsUnattended && !approvalModeAdjusted && !approvalNudgeActive && approvalMode && (
+              {approvalDenyRule && <DenyOverrideWarning rule={approvalDenyRule} family={approvalDenyFamily} detail={approvalDenyDetail} command={approvalDenyCommand} />}
+              {/* A1 hint: points at the footer mode picker. Withheld for unattended
+                  sources (the picker governs THIS slot), the ghost state (picker
+                  unmounted), an override card, the B2 nudge, and once the user has
+                  found the picker (this link or a mode change). */}
+              {!showGhost && !approvalIsUnattended && !approvalDenyRule && !approvalModeAdjusted && !approvalNudgeActive && approvalMode && (
                 <div className="flex items-center gap-1.5 flex-wrap px-3.5 pb-2 -mt-1 text-[12px] text-muted select-none">
                   <span>{i18nT('components.chatInput.approval_hint_question')}</span>
                   <button
@@ -1317,6 +1317,7 @@ function ChatInput({
       {onUploadFiles && (
         <SketchDialog open={sketchOpen} onOpenChange={setSketchOpen} onInsert={onUploadFiles} returnFocusRef={composerAnchorRef} />
       )}
+      {appActions.popover}
 
       {!terminal.active && <ComposerPickerMenus pickers={pickers} value={value} onChange={onChange} composerAnchorRef={composerAnchorRef} sendOnEnter={sendOnEnter} hiddenCommands={hiddenCommands} project={project} agentName={agentName} onFileSelect={onFileSelect} onFileOpen={onFileOpen} />}
 
@@ -1657,7 +1658,7 @@ function ChatInput({
         <div data-testid="composer-bottom-row" className={inlineToolbar ? 'contents' : `flex items-center justify-between px-2.5 pb-2 pt-0.5${terminal.active ? ' flex-wrap gap-y-1' : ''}`}>
           {typingLock && <TypingLockBanner lock={typingLock} />}
           <div ref={leftClusterRef} className={`flex items-center gap-0.5 min-w-0${inlineToolbar ? ' order-first pl-1.5 shrink-0 relative z-[1]' : ''}${typingLocked ? ' hidden' : ''}`}>
-            <AttachMenu plus={plus} onUploadFiles={onUploadFiles} uploading={uploading} onCancelUpload={onCancelUpload} uploadCount={uploadCount} directFilePicker={directFilePicker} fileInputId={fileInputId} openPicker={openPicker} isMac={isMac} touchInput={touchInput} onScreenshot={onScreenshot} collapseMenuRow={collapseMenuRow} typedCommandMenus={typedCommandMenus && !terminal.active} onFileSelect={terminal.active ? undefined : onFileSelect} optimizeRow={busyOptimizeRow} />
+            <AttachMenu plus={plus} onUploadFiles={onUploadFiles} uploading={uploading} onCancelUpload={onCancelUpload} uploadCount={uploadCount} directFilePicker={directFilePicker} fileInputId={fileInputId} openPicker={openPicker} isMac={isMac} touchInput={touchInput} onScreenshot={onScreenshot} collapseMenuRow={collapseMenuRow} typedCommandMenus={typedCommandMenus && !terminal.active} onFileSelect={terminal.active ? undefined : onFileSelect} optimizeRow={busyOptimizeRow} appActionRows={appActions.rows} />
             {directFilePicker && collapsible && (
               /* The repo's own overflow mechanism, not a second spelling of it.
                  `max-two-buttons-per-row` names the two files to copy for exactly
@@ -1712,6 +1713,7 @@ function ChatInput({
                       {collapseMenuRow}
                     </DropdownMenuItem>
                   )}
+                  <ComposerActionMenuItems items={appActions.items} onPick={(item) => moreMenuLayer.openLayer(() => appActions.start(item))} />
                   {/* Mid-turn Optimize, as in the "+" menu (`busyOptimizeRow`). */}
                   {busyOptimizeOffered && (
                     <DropdownMenuItem asChild disabled={optimizeBlocked} onSelect={() => optimizeUnlessLocked()}>
@@ -1753,6 +1755,7 @@ function ChatInput({
               {!isMobile && approvalMode && (
                 <ApprovalModePicker mode={approvalMode} slotKey={activeSlot || ''} remote={approvalModeRemote} onPicked={focusComposerAfterPick} openSignal={approvalPickerSignal} nudge={approvalNudgeActive} onNudgeDismiss={dismissApprovalNudge} onNudgeHide={hideApprovalNudge} />
               )}
+              {!isMobile && afterApprovalMode}
               </div>
               {/* Edge cues: the row itself fades out at a clipped edge (`edge-fade-x`,
                   driven by data-fade-left/right). A mask fades the buttons on any
@@ -1762,6 +1765,7 @@ function ChatInput({
             {isMobile && approvalMode && (
               <ApprovalModePicker mode={approvalMode} slotKey={activeSlot || ''} remote={approvalModeRemote} compact onPicked={focusComposerAfterPick} openSignal={approvalPickerSignal} nudge={approvalNudgeActive} onNudgeDismiss={dismissApprovalNudge} onNudgeHide={hideApprovalNudge} />
             )}
+            {isMobile && afterApprovalMode}
           </div>
           <div ref={rightClusterRef} className={`flex items-center gap-1 shrink-0${terminal.active ? ' ml-auto max-w-full justify-end [&>button]:shrink-0' : ''}${inlineToolbar ? ' order-last pr-1.5' : ''}`}>
             {onVoiceToggle && !typingLocked && (

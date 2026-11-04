@@ -123,14 +123,49 @@ def _report_kas_bundle(issues: list[str], *, automatic: bool = False) -> None:
     if installed is None:
         # Not a failure on its own: the gateway installs the pinned engine at the
         # first chat. Still a ⚠ with an issue, because an offline host fails then.
-        print(f"  bundle:      ⚠  not installed yet under {kas_bundle.kas_engines_root()}")  # type: ignore[misc]
-        print("               The gateway downloads it at the first chat. To do it now:")
-        print("               kirocrew kas install")
-        issues.append(
-            "Kiro Crew's KAS engine is not installed yet (the first chat downloads it)"
-            if automatic
-            else "agent.kas_bundle is on but no KAS engine bundle is installed"
-        )
+        # Another version on disk is not "nothing installed": name what is there
+        # and what this release needs, which is what a release whose pin moved
+        # leaves behind when its engine refresh did not finish.
+        needed = kas_bundle.pinned_version()  # type: ignore[misc]
+        try:
+            on_disk = kas_bundle.installed_versions()  # type: ignore[misc]
+        except OSError as exc:
+            # An engines directory the doctor cannot list is its own finding: the
+            # first chat's install cannot write there either. The rest of the
+            # report still runs.
+            print(f"  bundle:      ❌ cannot read {kas_bundle.kas_engines_root()}: {exc}")  # type: ignore[misc]
+            print("               Fix: restore read access to it, then: kirocrew kas install")
+            issues.append(f"the KAS engine directory cannot be read: {exc}")
+            _report_kas_bundle_spec_permissions(None, issues)
+            return
+        if needed in on_disk:
+            # A directory at the pin's name that does not read back as an engine:
+            # an install refuses to overwrite it, so only --force replaces it.
+            print(f"  bundle:      ❌ KAS {needed} is on disk but incomplete")
+            print("               Fix: kirocrew kas install --force")
+            issues.append(f"the KAS engine directory for {needed} is incomplete")
+        elif on_disk:
+            print(
+                f"  bundle:      ⚠  KAS {', '.join(on_disk)} installed, but this release "
+                f"needs KAS {needed}"
+            )
+            issues.append(
+                f"Kiro Crew's KAS engine {needed} is not installed yet (the first chat "
+                f"downloads it); on disk: {', '.join(on_disk)}"
+                if automatic
+                else f"agent.kas_bundle is on but the KAS engine this release needs ({needed}) "
+                f"is not installed; on disk: {', '.join(on_disk)}"
+            )
+        else:
+            print(f"  bundle:      ⚠  not installed yet under {kas_bundle.kas_engines_root()}")  # type: ignore[misc]
+            issues.append(
+                "Kiro Crew's KAS engine is not installed yet (the first chat downloads it)"
+                if automatic
+                else "agent.kas_bundle is on but no KAS engine bundle is installed"
+            )
+        if needed not in on_disk:
+            print("               The gateway downloads it at the first chat. To do it now:")
+            print("               kirocrew kas install")
         _report_kas_bundle_spec_permissions(None, issues)
         return
     where = " (built into the app)" if installed.bundled else ""

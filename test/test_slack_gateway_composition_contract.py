@@ -197,7 +197,11 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
             "function",
             "(handoff: '_ClaimHandoff', job: 'CronJob', fn: 'Callable[..., Any]', *args: 'Any') -> 'Any'",
         ),
-        ("_annotate_model_fallback", "function", "(text: 'str', provider: 'Any') -> 'str'"),
+        (
+            "_annotate_model_fallback",
+            "function",
+            "(text: 'str', provider: 'Any', *, stop_reason: 'str | None' = None) -> 'str'",
+        ),
         (
             "_cron_stream_with_posttoken_resume",
             "async function",
@@ -529,7 +533,9 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
             "async method",
             "(self, watchdog: 'asyncio.Future | None' = None) -> 'None'",
         ),
+        ("_park_if_force_exit_claimed", "async method", "(self) -> 'None'"),
         ("_MARKER_WRITE_WAIT_SECS", "value", "'float'"),
+        ("_FORCE_EXIT_DEADLINE_SECS", "value", "'float'"),
     ),
     "process_entry": (
         ("_live_session_work_dirs", "function", "(sessions: 'Any') -> 'list[str]'"),

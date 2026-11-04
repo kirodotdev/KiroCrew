@@ -272,15 +272,17 @@ def window_for_provider_client(client: object) -> int | None:
 
     Prefers a real usage-reported window via the provider's public
     :meth:`LLMProvider.context_window_tokens` accessor (0 until the backend has
-    run a turn); otherwise derives it from the resolved model id on the inner
-    ACP client (``client.client._model``) via :func:`resolve_model_window`.
-    Returns ``None`` (⇒ 1M reference) for a client that exposes neither — a
-    fail-safe that never shrinks the budget on missing data. Never raises: a
-    mis-shaped/None client yields ``None``.
+    run a turn). Otherwise it derives the window from the resolved model id on
+    the inner ACP client (``client.client._model``), or from the provider's
+    public :attr:`LLMProvider.served_model` property when there is no inner
+    client. Returns ``None`` (⇒ 1M reference) when none of those sources has a
+    usable model or window. Never raises: a mis-shaped/None client yields
+    ``None``.
 
-    Note: at a fresh (``is_new``) session — the only path that reads the budget —
-    no turn has completed, so the live window is 0 and the model-id path is what
-    actually resolves the window. The live-window branch covers later rebuilds.
+    At a fresh (``is_new``) session — the only path that reads the budget — no
+    turn has completed, so the live window is 0 and a model-id fallback resolves
+    the window. Providers with an inner ACP client use its configured model;
+    session providers expose the backend-resolved id through ``served_model``.
     """
     # Prefer the provider ABC's public accessor (per-backend dispatch, safe 0
     # default) over reaching into private attrs — a new backend that reports its
@@ -296,7 +298,13 @@ def window_for_provider_client(client: object) -> int | None:
             return live
     inner = getattr(client, "client", None)
     if inner is None:
-        return None
+        try:
+            model = getattr(client, "served_model", "")
+        except Exception:
+            return None
+        if not isinstance(model, str) or not model:
+            return None
+        return resolve_model_window(model)
     model = getattr(inner, "_model", "") or ""
     return resolve_model_window(model)
 

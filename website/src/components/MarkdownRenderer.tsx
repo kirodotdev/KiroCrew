@@ -29,6 +29,7 @@ import '../utils/hljs'
 import { useBlockAssembler, maskInlineCode } from '../hooks/useBlockAssembler'
 import SegmentedControl from './SegmentedControl'
 import { urlTransform, ALLOWED_PROTOCOLS } from '../utils/urlTransform'
+import { isDesktopAppPane } from '../lib/hostRelay'
 import { safeHttpUrl } from '../lib/safeUrl'
 import { useLinkMeta, type LinkMeta } from '../lib/linkMeta'
 import { LinkChip, LinkCard } from './LinkPreview'
@@ -287,6 +288,14 @@ function MdAnchor({ node, href, children, [SESSION_REF_TRAILING]: trailing }: Md
       pathResolution.endLine,
     )
   }
+  // In a desktop-app pane, CSP `frame-src` refuses an in-place navigation to an
+  // editor scheme and blanks the frame, so ask the app to open it instead.
+  const onEditorLinkClick = (e: React.MouseEvent<HTMLAnchorElement>) => {
+    const plainPrimaryClick = e.button === 0 && !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey
+    if (!plainPrimaryClick || !href || !isDesktopAppPane()) return
+    e.preventDefault()
+    window.open(href, '_blank', 'noopener,noreferrer')
+  }
   // A destination `urlTransform` REJECTED arrives here as '' — react-markdown's
   // defaultUrlTransform sentinel for a scheme outside its allowlist (a custom
   // scheme like `obsidian:`, a `javascript:`/`data:` payload the gate refuses
@@ -355,6 +364,7 @@ function MdAnchor({ node, href, children, [SESSION_REF_TRAILING]: trailing }: Md
   }
   let ext = false
   try { ext = !!href && ALLOWED_PROTOCOLS.has(new URL(href, 'http://x').protocol) } catch { /* not a URL */ }
+  const editorLink = ext && !sessionLink && !href?.startsWith('#')
   // A confirmed session link is in-app navigation, so it keeps in-place semantics.
   // So does a `#heading` link: the renderer scrolls to it (see handleClick).
   if (sessionLink || href?.startsWith('#')) ext = true
@@ -371,7 +381,9 @@ function MdAnchor({ node, href, children, [SESSION_REF_TRAILING]: trailing }: Md
       // closed or unknown key, a short name no open session answers to, or the
       // active session's own key) is intercepted and declined rather than left to
       // navigate the browser to a dead `?sid=` view (#9914) or a duplicate tab.
-      onClick={sessionHrefNamesSession ? onSessionClick : (pathResolution.candidate ? onPathClick : undefined)}
+      onClick={sessionHrefNamesSession
+        ? onSessionClick
+        : (pathResolution.candidate ? onPathClick : (editorLink ? onEditorLinkClick : undefined))}
       title={sessionLink && !sessionLink.failure
         ? `${sessionLink.title}\n${i18nT('components.markdownRenderer.click_to_switch_to_this_session')}`
         : sessionHrefNotOpen

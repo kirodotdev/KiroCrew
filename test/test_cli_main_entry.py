@@ -22,6 +22,7 @@ from cli_helpers import (  # noqa: F401 -- the autouse fixture registers by impo
 )
 
 from kiro_crew import platform_compat
+from kiro_crew.platform_compat_offloop_spawn import gateway_loop_factory
 
 
 class TestPortEnvValidatedAtEntry:
@@ -278,7 +279,7 @@ class TestSeedDispatch:
         seed_args = mock_seed.call_args.args[0]
         assert (seed_args.seed, seed_args.seed_replace) == ("demo", expect_replace)
         mock_gateway.assert_called_once()
-        mock_run.assert_called_once_with(gateway_call)
+        mock_run.assert_called_once_with(gateway_call, loop_factory=gateway_loop_factory())
 
     def test_seed_nonzero_exits(self, monkeypatch):
         """When seed_cmd returns non-zero, CLI should sys.exit with that code."""
@@ -307,7 +308,7 @@ class TestSeedDispatch:
             main()
         mock_seed.assert_not_called()
         mock_gateway.assert_called_once()
-        mock_run.assert_called_once_with(gateway_call)
+        mock_run.assert_called_once_with(gateway_call, loop_factory=gateway_loop_factory())
 
 
 class TestGatewayLockRefusalExit:
@@ -684,6 +685,63 @@ class TestGatewayLockRefusalExit:
         assert probe_host_for_bind(bind_address_for(local_only=False)) == probe_host_for_bind(
             bind_address_for(local_only=True)
         )
+
+
+class TestGatewayLogRotatesOnlyUnderTheLock:
+    """``kirocrew gateway`` moves gateway.log aside only once it holds the gateway lock.
+
+    A start the lock refuses runs the whole logging setup first, so before the
+    rotation waited for the lock every stray start renamed the running gateway's
+    log, and a fifth one pruned it.
+    """
+
+    @staticmethod
+    def _start(monkeypatch, lock_cls):
+        from kiro_crew.cli_logging import _stop_log_queue_listener
+
+        monkeypatch.setattr(sys, "argv", ["kirocrew", "gateway"])
+        with (
+            patch("kiro_crew.cli.GatewayLock", lock_cls),
+            patch("kiro_crew.cli_server._gateway"),
+            patch("kiro_crew.cli.asyncio.run"),
+            patch("kiro_crew.cli.faulthandler.enable"),
+        ):
+            from kiro_crew.cli import main
+
+            try:
+                main()
+            except SystemExit:
+                pass
+            finally:
+                _stop_log_queue_listener()
+
+    def test_five_refused_starts_leave_the_running_log_in_place(self, monkeypatch, tmp_path):
+        from kiro_crew.config import config_dir
+        from kiro_crew.gateway_lock import GatewayLockError
+
+        log_file = config_dir() / "gateway.log"
+        log_file.write_text("running gateway\n", encoding="utf-8")
+        before = log_file.stat()
+        lock_cls = MagicMock()
+        lock_cls.return_value.acquire.side_effect = GatewayLockError(
+            tmp_path, 4242, "another gateway already owns this home", live_holder=True
+        )
+        for _ in range(5):
+            self._start(monkeypatch, lock_cls)
+        after = log_file.stat()
+        assert (after.st_dev, after.st_ino) == (before.st_dev, before.st_ino)
+        assert log_file.read_text(encoding="utf-8").startswith("running gateway\n")
+        assert not log_file.with_name("gateway.log.prev").exists()
+        assert not (config_dir() / "logs" / "gateway-boots").exists()
+
+    def test_the_start_that_holds_the_lock_rotates(self, monkeypatch):
+        from kiro_crew.config import config_dir
+
+        log_file = config_dir() / "gateway.log"
+        log_file.write_text("last run\n", encoding="utf-8")
+        self._start(monkeypatch, MagicMock())
+        prev = log_file.with_name("gateway.log.prev")
+        assert prev.read_text(encoding="utf-8").startswith("last run\n")
 
 
 @pytest.mark.skipif(

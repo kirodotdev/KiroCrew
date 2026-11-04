@@ -1375,7 +1375,7 @@ class SessionCatalogProjection:
                     continue
                 try:
                     data = json.loads(line)
-                except ValueError:
+                except (ValueError, RecursionError):  # past the nesting limit
                     continue
                 if not isinstance(data, dict) or data.get("_type") == "metadata":
                     continue

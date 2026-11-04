@@ -261,7 +261,7 @@ _OWNER_CONSTANTS = {"git_panel": ("_GIT_PANEL_STDOUT_CAP",)}
 #: ``editor`` owners, from the base file, where each of their names had the same shape.
 #: Recaptured when ``_run_path_probe`` gained its keyword-only ``stall_path``.
 #: Recaptured when ``api_file_download`` began answering a ``web.StreamResponse``.
-_BASE_SHAPE_DIGEST = "3563ee4c4afdebcea85f7b59035a08807a91fafcc5c76832084a182db7e1b205"
+_BASE_SHAPE_DIGEST = "f06c3e2cab71d8046ed25b390faed476ba113185bd7ce36a466f67f60da2fc6c"
 #: Definitions that stay in the facade file: the seams the owners share -- the SEL
 #: accessor, the file-send audit, the sub-agent session mapping and the request-body
 #: error code -- the search walk's clock, the file viewer's owner-view verdict, whose
@@ -389,7 +389,7 @@ def test_the_routes_and_the_package_reach_the_facade_objects() -> None:
         if getattr(files, getattr(route.handler, "__name__", ""), None) is not None
         and route.handler.__module__ == _FACADE
     ]
-    assert len({id(h) for h in served}) == 34
+    assert len({id(h) for h in served}) == 35
     inner = [getattr(h, "__wrapped__", h) for h in served]
     assert [h.__name__ for h in inner if getattr(files, h.__name__) is not h] == []
     assert sorted({h.__name__ for h in served if hasattr(h, "__wrapped__")}) == [
@@ -404,7 +404,7 @@ def test_the_routes_and_the_package_reach_the_facade_objects() -> None:
         "api_project_git_status",
     ]
     reexports = _package_reexports()
-    assert len(reexports) == 36
+    assert len(reexports) == 37
     assert [n for n in reexports if getattr(handlers_pkg, n) is not getattr(files, n)] == []
 
 
@@ -434,6 +434,7 @@ def test_the_seams_other_modules_import_keep_their_identity() -> None:
 #: path (or close an import cycle), so each stays function-local.
 _IMPORTED_BY_NAME = {
     "_get_config_lock": "kiro_crew.dashboard.handlers.agents",
+    "browse_denied_async": "kiro_crew.browser_harness.governance",
     "denied_sides": "kiro_crew.decisions.capability",
     "is_owner_dashboard_request": "kiro_crew.dashboard.handlers.source_providers",
     "owner_view_for_request": "kiro_crew.dashboard.handlers.source_providers",

@@ -641,8 +641,9 @@ copy of the core file-read endpoint's binary-extension set in its own `tests/`.
 Every backend app gate runs the same scanner, `test/core_app_independence.py`:
 `core_app_imports` finds a core import of the app's package in any spelling, and
 `core_name_strings` finds a core string naming it, minus the reasoned rows the gate
-allows. The aws-control and Files gates call it with their own package and names,
-and the next app to leave adds a gate that does the same, never another scanner.
+allows. The aws-control, Files and Design Critique gates call it with their own
+package and names, and the next app to leave adds a gate that does the same, never
+another scanner.
 
 ## 0. Three-axis classification: origin, resources, lifecycle
 
@@ -2738,6 +2739,15 @@ seed row with no cached manifest as its minimal entry instead of cloning its
 repository. Installs still use the network. The E2E harness gateway always sets it
 (`testing/harness.py`, `harness_environment`).
 
+Each of the three published documents' cache readers (`_read_cache`, and the
+catalog's `cached_entries`) reads its file through `read_bytes_with_retry`. The
+writer replaces the file with `atomic_write` and no lock, so two store requests
+refreshing at once race every reader, and on Windows a read that overlaps the
+replace raises a sharing violation. Folding that into "no cache" would send
+`load_official_catalog` to fetch again, and an offline fetch would then overwrite a
+good cache with the failure sentinel. An absent or damaged file still reads as no
+cache.
+
 That degradation is silent -- a failed fetch overwrites the on-disk cache with a
 failure sentinel and the seed listing renders with no error -- so the store
 header carries a manual refresh. `POST /api/app-store/refresh`
@@ -4072,6 +4082,18 @@ order it this way, and
 For an adopted backend, where we hold no handle to poll, "we still track it"
 is the only honest answer and `healthy` is the load-bearing signal.
 
+**A built-in app skipped at boot is reported as unavailable.** When
+`dashboard.routes.system.register` cannot import a built-in app because reading
+its files raises `OSError`, it logs the warning, skips the app's routes and
+records the skip with `apps.builtin_unavailable.record_unavailable_builtin`, on
+the aiohttp application, keyed by the installed-app name (`builtin_app_name`: the
+package name with `_` spelled `-`, pinned for every shipped built-in). `GET /api/apps` and `GET /api/apps/{name}` then carry
+`unavailable: {"reason": "<ExceptionType>: <message>"}` (redacted) on that app's
+built-in record, and the Library tile and the app detail page show it as
+unavailable with the reason (an `ErrorNotice` with the agent hand-off) instead of
+as a working app. A record that loaded
+carries no `unavailable` key. Only `origin == "builtin"` records are stamped.
+
 Writers: `apps/backend_runtime/supervision.py` (`_health_check_loop`,
 `_watch_backend_health`, `_supervise_backend_health`, `_start_health_supervisor`,
 `_start_adopted_health_watch`), `apps/backend_runtime/registration.py` (`_demote`,
@@ -4101,6 +4123,13 @@ second React. Apps receive host events as `CustomEvent`s on `window`
 rail listens for two window events: `mc:app:badge` sets an app row's badge
 (`website/src/shell/nav/railBadges.ts`), and `mc:apps-changed` re-reads the
 installed apps (`refreshAppNav` in `website/src/shell/appShell.tsx`).
+`mc:apps-changed` only fires for a change made in the same tab. A change made
+elsewhere (`kirocrew app install` or `uninstall`, another tab) sends no event to
+the tab, and CLI uninstall never reaches the gateway at all, so the shell also
+re-reads the list when the tab regains focus or becomes visible. Focus that
+returns from one of the page's own app iframes is skipped, and one return reads
+once. The shared `['apps']` query keeps `staleTime: Infinity`; this re-read is
+what keeps the rail and the link-preview layer current without a reload.
 
 This is a different mechanism from the MCP App (SEP-1865) `srcdoc` iframes, which
 load their own ESM runtime from a CDN through an import map and are confined by
@@ -4467,6 +4496,168 @@ the frame, the capability, the fetch or the invocation contract is its own. The 
 Writers: `apps/manifest_contributes.py` (`LinkOpenConfig`), `apps/link_open_grants.py`,
 `apps/link_open_frame.py`, `website/src/linkOpen/*`, `website/src/pages/AppDetailPage.tsx`.
 
+## 18e. A composer action inserts only into an empty composer, only text with nothing to resolve; the app sees nothing and sends nothing
+
+`contributes.composerActions[]` (at most 2 per app: `id`, `title` of at most 40
+UTF-16 units, optional glyph `icon`, `entry`, optional
+`popover.width` 200 to 480 and `popover.maxHeight` 120 to 600; a field with the wrong
+type or an unknown field is refused, never coerced) puts one row per action in the
+composer's "+" menu, after the host's own shortcuts and naming its app. It is a
+click-driven point on the shared frame contract (§18b); the RFC is
+`docs/request-for-change/rfc-app-contribution-points.md` §6.
+
+- **Point.** `composerActions`, registered at the bottom of `apps/app_frame.py`
+  with `composer_action_frame.resolve_composer_action` and
+  `COMPOSER_ACTION_SCRIPT`. The resolver answers only for an enabled app's declared
+  action whose grant the owner approved, so a revoked action or a disabled app
+  stops its frame, its renewal and its next fetch.
+- **What the frame gets.** `init` and one `composer.invoke { invocationId,
+  deadlineMs }`. Nothing from the composer: not the draft, the selection, the
+  session or the agent. The script hands the module a frozen `call`
+  (`invocationId`, `deadlineMs`, `signal`, `insert`, `resize`, `close`, `error`),
+  runs one invocation at a time, and turns a returned string into `insert`.
+- **Host** (`website/src/composerActions/composerActionHost.ts`, on `HostInvocation`
+  with `allowedKinds` `insert` only). The frame must say `ready` within 5 s; the
+  invocation has a 2-minute deadline. An offer over 32,000 characters is
+  answered `too_large` (`frameProtocol.offerRefusal`), one that is empty after `displaySafe` `not_allowed`; an
+  accepted one is acked and `settle()`d, so no `invoke.cancel` follows. A message
+  over `MAX_HOST_MESSAGE_BYTES`, past the burst allowance, or a second `load` tears
+  the frame down.
+- **Insert.** Stateless: an app's text goes only into an EMPTY composer (no text,
+  no collapsed paste, `literalInsert.draftIsEmpty`), so the text is the whole draft.
+  A click on a non-empty composer opens the popover with a notice and makes no
+  frame. The draft is checked again when the offer arrives: if the person typed
+  meanwhile the offer is refused `not_empty`, so a draft is never mixed. An offer
+  whose text alone would resolve anything is refused `not_literal`
+  (`literalInsert.composerWouldResolve`). Each refusal is answered to the app as
+  `result.error` and shown in the popover (`composer_action_needs_empty`,
+  `composer_action_would_resolve`); the frame stays, so the app can offer other
+  text. Accepted text is ordinary draft text with no mark: nothing in it resolves,
+  and what the person types after it is their own and resolves normally. A session
+  switch, a revoked action, or a typing lock (another tab holds the draft) cancels
+  the invocation, and a locked composer opens no action; an offer that lands while
+  locked settles `stale` and touches nothing. Before any check the host drops every
+  `\p{Default_Ignorable_Code_Point}` (zero-width characters, tag characters,
+  variation selectors, fillers; `literalInsert.visibleOnly`), so the draft holds
+  only what the person can read before sending. The check's rules are each a
+  superset of one reader, because the gateway's readers are Python:
+  - a line whose first character other than JS `\s` or U+0085 is `/`: the gateway's
+    `message.split()[0]` and the client's `raw.trim()` slash readers;
+  - a line whose first such character is `!`: the composer's terminal-command
+    reader (`useTerminalCommand.terminalCommand`, a separated leading bang), whose
+    command reaches the person's shell;
+  - `@` not straight after a letter or digit: mentions, `@prompt`, `@knowledge`;
+  - `$` before a letter or digit, after anything: the gateway's `$skill` reader;
+  - the paste token and the attachment and folder markers (`PASTE_TOKEN_REGEX`,
+    `fileTokens.parseFiles`, `parseDirs`);
+  - a path separator followed on the same line by an `IMG_EXT` suffix: every match
+    of `kiro_crew.image_refs._PATH_RE` has that shape;
+  - markdown image syntax `![`, any raw HTML tag (`<` then a letter, `!`, `/` or
+    `?`, since `rehypeRaw` passes HTML through), and any `[attached_file` /
+    `[attached_dir` marker, however spaced or encoded: the transcript renderer decodes and fetches a local media
+    destination (`ImgWithFallback`), and `resolveFileSegment` / `resolveDirSegment`
+    read markers with any blank after them.
+- **Grant.** One staged family, `composerActions`, entry `<id>:insert`
+  (`apps/composer_action_grants.py`), registered in `apps/point_grants.py`. A new id
+  on update is held back until the owner approves it on the App Detail page; a
+  title or icon change keeps the approval. The app row carries
+  `composerActionGrant { actions, staged }`, and the dashboard renders only
+  `actions`.
+- **Hosts.** Only the main chat composer passes `composerActions`
+  (`ComposerDockView`). On a touch host whose "+" is a bare file picker (`directFilePicker`)
+  the rows are items of the touch overflow menu instead (`composer-more-trigger`,
+  `ComposerActionMenuItems`). A failed or stopped action is shown through
+  `ErrorNotice` with no agent hand-off, because the draft below it is unsaved; the
+  popover's window Escape listener closes it when the local Crew is hidden.
+
+Writers: `apps/composer_action_frame.py`, `apps/composer_action_grants.py`,
+`apps/manifest_contributes.py`, `website/src/composerActions/*`,
+`website/src/components/chat-input/composerActions.tsx`.
+
+## 18f. `contributes.selectionActions`: app items on selected chat text
+
+A point on §18b's contract, beside message actions (§18c), link opening (§18d)
+and composer actions (§18e). The user selects text in one chat reply and picks an app's item; the app
+is handed that text and nothing else.
+
+- **Manifest** (`SelectionActionConfig` in `manifest_contributes.py`): at most 2
+  per app; `id`, `title` (1-40 UTF-16 units), optional `icon` (a host glyph-set name, `AppIcon`),
+  `entry`, `sources` (subset of `chat`, default `["chat"]`), `minLength` /
+  `maxLength` (1-8,000), `effects` (subset of `copy`, `open`), `popover.width`
+  (200-480) and `popover.maxHeight` (120-600). A wrong JSON type is refused, never
+  coerced; the block serializes resolved defaults and is in the signing payload;
+  `entry` gets the same path containment as a panel tab.
+- **Grant** (`apps/selection_action_grants.py`, registered in `point_grants.py`):
+  family `selectionActions`, one entry per item,
+  `<id>:<sources>:<min>-<max>:<effects>` (sorted). Any change is a new entry, so an
+  update that adds a source, raises a length or adds an effect is held back and the
+  item is not offered until approved; the App Detail page lists the held entries
+  and approves them with the other families. The app row carries
+  `selectionActionGrant: { approved: [ids], staged: [entries] }`.
+- **Frame point** (`apps/selection_action_frame.py`, registered in `app_frame.py`):
+  `resolve_selection_action` serves an item only for an enabled app whose current
+  entry is approved (`approved_selection_action`), so a revoked or changed item
+  stops its mint, frame and fetch. Every mint and renewal names the grant entry the
+  dashboard resolved the item at (`?grant=`), and `admit_selection_action` refuses
+  it (`403 not_granted`) unless it is the item's current approved entry, so a pick
+  made from a menu read before the owner changed the item sends no text, and a
+  live frame's next renewal is refused. Its script answers `selection.invoke` by calling
+  the handler's `invoke(selection, invocationControls(invocationId))`, where
+  `selection` is `{ text, truncated, source }`; `ctx` is `{ appName, theme, fetch }`.
+- **Source.** The app never reads the document selection. A host surface offers
+  items only through a typed source adapter (`selectionActions/selectionSources.ts`);
+  the one source is `chat`, the text `SelectionToolbar` snapshotted inside one
+  `AssistantMessage`, trimmed and cut to `maxLength` without splitting a surrogate
+  pair. App items get only the selection's one range inside that reply
+  (`appTextRef`), never the other ranges of a multi-range selection, which host
+  Copy keeps. That text is the selected characters as shown: a link card's hidden
+  address is never substituted for selected words of its title. The layer is mounted in the dashboard, popped-out and embedded chat
+  shells. A new source is a new `sources` value, which widens every item's grant.
+- **Trigger and touch.** One **Apps** button sits in its own row under the host's
+  (`SelectionToolbar`'s `appActions`), so the host row never grows. It shows only
+  while the dashboard's shared `['apps']` list holds an enabled app with an approved
+  item; that list decides the button's presence and nothing else. The button
+  hides only while a read of that list is in flight or after a successful read
+  with no approved item, and no failure since. If the shared read failed (even
+  with an earlier list still cached), the list was invalidated and no read has
+  landed since, or the dashboard shell's own
+  nav read (`shell/appShell.tsx`, which owns the list there, so the layer does
+  not fetch it a second time) has not landed, the button shows (fail open on
+  visibility only), so a failure is never silent: opening the menu runs its own
+  read, which shows the error row with **Retry**. Grants are unchanged: items
+  come only from a successful fresh read. The popped-out and embedded chats have
+  no shell read, so their layer fetches the list itself.
+- **The menu reads fresh (rule).** The Apps menu reads the app list itself every
+  time it opens and lists items only from that read. It never lists cached or stale
+  items, and no state carries over between opens. If the read fails, it shows the
+  "couldn't load apps" error row with **Retry**, and Retry runs a new read. There is
+  no retry state machine and no fallback list. The menu scrolls past the screen
+  height. On
+  touch the toolbar is the existing dock above the composer and the popover is a
+  bottom sheet; nothing intercepts a long-press, and the native selection, handles
+  and callout are untouched.
+- **Invocation** (`selectionActions/selectionInvocation.ts` on `HostInvocation`):
+  sent on `ready`, deadline 2 minutes. The item's `effects` are the invocation's
+  `allowedKinds` (`copy`, `open`; never `insert`), so any other kind is answered
+  `result.error { code: not_allowed }`; a frame `invocation.close` settles the
+  invocation (`settle()`, no cancel); a resize is clamped to 48 and `popover.maxHeight`, and the
+  host cancels with `closed` when the popover closes (Escape, Close, a click
+  outside, another pick). A capability renewal the gateway refuses with `403` or
+  `404` (the app disabled or removed, or the item's grant taken back) cancels the
+  live invocation with `revoked`, removes the frame and says the app can no longer
+  use the item; a network error or a 5xx leaves it for the frame's next retry.
+  Accepted offers fill the
+  host's **Copy** and **Open \<host\>** buttons only. Selection frames are not
+  registered with the link bridge, so a link clicked in one goes nowhere.
+- **Bounds.** No `ready` within 10 seconds, a message over `MAX_HOST_MESSAGE_BYTES`
+  or past the token bucket, or a second `load`: the frame is removed and the
+  popover says the app did not respond. An app error is shown through
+  `displaySafe`.
+
+Writers: `apps/selection_action_frame.py`, `apps/selection_action_grants.py`,
+`apps/manifest_contributes.py`, `website/src/selectionActions/*`,
+`pages/chat/AssistantMessage.tsx`, `pages/AppDetailPage.tsx`.
+
 ## 19. Spec Builder's backend is composed by lifecycle owner
 
 Spec Builder's backend carries more orchestration than a typical app: agent turns
@@ -4613,7 +4804,7 @@ change lands in its owner.
 | `backend_runtime/registration.py` | Health-gated MCP registration: `_set_backend_health`, `_gate_mcp_registration`, promote, demote and retry, tri-state enablement, and the disabled-app undo |
 | `backend_runtime/restart.py` | Restarting an exited backend: the activation re-vet, the backoff, the lifecycle-generation handoff (`_settle_superseding_start`), and the thread-waitable shutdown signal |
 | `backend_runtime/supervision.py` | The per-record supervisor thread: the startup poll, the standing watch, the ceiling revocation, and the adopted-owner rebind |
-| `backend_runtime/startup.py` | Boot: the reap, the resource reconcile, the vetting, the concurrent spawn wave with its fixed-port preclaim, and the deferred Dev Fleet spawn |
+| `backend_runtime/startup.py` | Boot: the reap, the resource reconcile, the vetting, the concurrent spawn wave with its fixed-port preclaim, and the deferred spawn of every backend whose host grants ask for the bound port |
 
 Imports only point down this order: `tracking`, `probe`, `pidfile`, `ports`,
 `provisioning`, `termination`, `stale_reap`, `registration`, `restart`, `supervision`,
@@ -4633,7 +4824,7 @@ reaches the call site in whichever owner makes the call. The mutable state is on
 object per name, defined once in its owner and imported by the owners that act on it,
 so `bmod._processes.clear()` empties the table every owner reads and replacing it
 through the facade reaches every holder. The two flags rebound with `global` each have
-one holder: `_warned_unconfined_cache` in `backend.py` and `_DEV_FLEET_DEFERRED` in
+one holder: `_warned_unconfined_cache` in `backend.py` and `_DEFERRED_BOUND_PORT_APPS` in
 `startup.py`. Every owner logs through the `kiro_crew.apps.backend` logger, and
 `importlib.reload(backend)` reloads each owner in layer order.
 `mock.patch(..., create=True)` on a forwarded name is the one spelling the facade
@@ -4792,6 +4983,40 @@ slot another create path made first (ChatEmbed's own POST) carries neither.
   outcome `revoked`).
 
 Writers: `apps/worker_slots.py`. Tests: `test/test_apps_worker_slots.py`.
+
+## 23a. A built-in's worker slot mode is a seam the built-in fills
+
+A slot's `mode` is fixed at creation, and the chat sidebar lists only `""` slots, so an
+app whose throwaway worker slots must stay off the sidebar creates them under a mode of
+its own. `POST /api/chat/slots` and the auto-create on `POST /api/chat` accept only
+`chat_handlers._CREATABLE_MODES`, which is `""` followed by `seams.worker_slot_modes()`
+(section 30); the core spells no app's mode.
+
+- **Registration.** A builtin's `seams.py` calls `seams.register_worker_slot_mode(app_id)`
+  with its own id when it is imported. A non-`str` id is refused with `ValueError`; the
+  loader logs that module and skips it, like any broken provider.
+- **Built-ins only, in practice.** `chat_handlers` reads the seam once, at import, and
+  that first lookup is what loads the builtin seams modules. An installed app's
+  `on_startup` runs later, so it reaches no create path, and no manifest field is read.
+  With no builtin registering one, the create paths accept `""` alone. The mode-switch
+  (`chat_folders._VALID_MODES`) and fork-override allowlists stay narrower on purpose.
+- **Light package.** The lookup imports the app's package `__init__`, so Design
+  Critique serves `register_routes` from a module `__getattr__` that imports its route
+  module on first access. That access is the boot route loop's guarded lookup, so an
+  unreadable route file is skipped like any unreadable app, not fatal.
+
+Design Critique is held to it by `test/test_core_design_critique_decoupling.py`, which
+runs the shared `test/core_app_independence.py` scans: no module under `src/kiro_crew`
+outside `apps/builtins/`, and no `scripts/` file, imports the app's package or names
+`design_critique` / `design-critique` in a non-docstring string. Its UI is held the
+same way by `website/src/apps/design-critique/designCritiqueBoundary.test.ts`: outside that
+directory only the `/design-critique` row of `apps/builtinRegistry.ts` imports from it,
+and the app's backend and frontend tests live in its own directories.
+
+Writers: `apps/seams.py`, `apps/builtins/design_critique/seams.py`.
+Tests: `test/test_app_seams.py`,
+`apps/builtins/design_critique/tests/test_worker_slot_mode.py`,
+`apps/builtins/design_critique/tests/test_unreadable_routes_skipped.py`.
 
 ## 24. A backend's principal claim is opt-in and bound to one request
 
@@ -5156,6 +5381,7 @@ this repository without core changing.
 | `aws_account_policy` | `AwsAccountPolicy`: `resolve_consent_target()`, `configured_region(p)`, `is_sso_profile(p)` | `dashboard/handlers/aws_consent.py` (`s3` / `ce` cards), `dashboard/handlers/aws_project_profile.py` (the project pill) | the consent card names the CLI default chain; the pill probes in the default region and reports a failed probe as `unavailable` |
 | `transfer_staging` | `TransferStaging`: `pinned_staging(prefix)` | `cloud/microvm/api.py` `staging_dir` | `RuntimeError`, never the shared temp directory |
 | `stopped_loop_tombstone` | `StoppedLoopTombstone`: `keeps_stopped_loop(slot_key, app_id)` | `dashboard/session_directive_apply_monitor.py` `_keeps_stopped_loop` (the stop of a legacy autonudge loop) | the loop row is removed, as for every other legacy loop (see `knowledge.md`, "Repository boundary") |
+| worker slot modes | `register_worker_slot_mode(app_id)`, one per app | `dashboard/chat_handlers.py` `_CREATABLE_MODES` (section 23a) | the chat create paths accept `""` alone |
 
 A builtin app registers from a `seams.py` at its package root. The first lookup of any
 seam imports every such module once, for each name in `BUILTIN_NAMES`, found by file so
@@ -5169,6 +5395,7 @@ an installed app's `on_startup` hook, calls `seams.register` itself.
 A provider answers whether or not its app is enabled, because the core features above
 worked with aws-control switched off (its default). One app holds a seam: a second app
 registering it is refused with `ValueError`, so the answer cannot depend on import order.
+Worker slot modes are the exception: each app registers its own id.
 A broken provider module is logged and skipped. The one-time load holds its own lock,
 never the registry's, so a provider module registering from another thread cannot
 deadlock it; a seams module therefore only registers while it is imported, and never
@@ -5613,6 +5840,46 @@ Writers (dashboard side): `website/src/appNav.ts`, `website/src/apps/builtinIcon
 `website/src/apps/BuiltinAppRoute.tsx`, `website/src/hooks/panelTabRegistry.ts`,
 `website/src/components/InstalledAppSurface.tsx`, `website/src/components/appstore/types.ts`,
 `website/src/pages/AppDetailAdoptionNotice.tsx`, `website/src/pages/AppDetailPage.tsx`.
+
+## 34. What a built-in asks of the host is the built-in's own data
+
+The core names no built-in app. Where a shipped built-in needs something from the host
+that no manifest field may ask for, the built-in declares it and the core reads it
+through one seam that is empty by default:
+
+- **Host grants** (`apps/builtin_host_grants.py`). A package in `BUILTIN_NAMES` may ship
+  a `host_grants.py` data module holding one `HOST_GRANTS` mapping: `build_rlimit` (the
+  backend spawns with `RLIMIT_PROFILE_BUILD`), `bound_port` (the backend receives
+  `KIROCREW_BOUND_PORT` and `backend_runtime/startup.py` defers its spawn to
+  `start_deferred_app_backends`), `backend_env_names` / `backend_env_prefixes`
+  (operator-set `KIROCREW_*` variables `apps/backend.py` forwards to every backend),
+  `config_top_keys` (`config/validation._APP_OWNED_TOP_KEYS`), `strict_internal_paths`
+  (folded into `server._STRICT_INTERNAL_API_PATHS`) and `relay_credential_paths`
+  (`kiro_relay/limits._LOCAL_CREDENTIAL_EXACT`). The loader looks for the file on disk
+  before importing, so a built-in that grants nothing is never imported, and it reads
+  the rows once per process. A row may grant only its own app (`app` must be the
+  package's installed name), every path must sit under that app's own
+  `/api/apps/<app>/` or `/apps/<app>/` namespace and not end in `/` (the strict tier
+  also admits an entry's children, so a row names leaf verbs), and a forwarded variable must be a
+  `KIROCREW_*` name; a malformed row raises at load, so a grant cannot silently stop
+  applying. Only `BUILTIN_NAMES` is read: an installed or registry app can claim none
+  of this, whatever its manifest says.
+- **Agent-template placeholders** (`bridges_agents._placeholder_values`). A built-in
+  whose shipped agent config names a runtime path ships `agent_placeholders.py` with a
+  `placeholder_values()` the gateway calls to compute them; a result that is not a
+  `{"{NAME}": str}` mapping is refused whole, and an app with no such module gets `{}`
+  (its template stays unrendered and unregistered).
+
+A capability the core itself offers lives in the core, and an app that needs it too
+imports it there rather than the other way round: the file panel's slide previews and
+PPTX Maker both find `soffice` (and its install hint) through
+`kiro_crew.soffice_discovery`, the only copy in the repository.
+`test/test_core_dev_fleet_pptx_maker_decoupling.py` fails, through the shared scan in
+`test/core_app_independence.py`, on any core module or script that imports Dev Fleet
+or PPTX Maker.
+
+Writers: `apps/builtin_host_grants.py`, `apps/bridges_agents.py`,
+`apps/builtins/dev_fleet/host_grants.py`, `apps/builtins/pptx_maker/agent_placeholders.py`.
 
 ## Windows stale-backend cleanup capacity
 

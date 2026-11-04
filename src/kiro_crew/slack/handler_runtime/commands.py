@@ -625,8 +625,25 @@ async def _bang_link_to_dashboard(
         )
         return ""
     from kiro_crew.slack.interactions import _import_thread_to_slot
+    from kiro_crew.slack.interactions_options import (
+        IMPORT_AGENT_MISMATCH_NOTICE,
+        ChannelAgentMismatchError,
+    )
 
-    slot = await _import_thread_to_slot(slack, _dashboard_state, channel, reply_ts)
+    try:
+        slot = await _import_thread_to_slot(slack, _dashboard_state, channel, reply_ts)
+    except ChannelAgentMismatchError:
+        sel().log_tool_invocation(
+            session_key="",
+            agent="kirocrew",
+            source="slack",
+            tool_name="link_to_dashboard",
+            tool_kind="command",
+            outcome="denied",
+            metadata={"user_id": user_id, "channel": channel, "reason": "channel_agent_mismatch"},
+        )
+        await slack.post_message(channel, IMPORT_AGENT_MISMATCH_NOTICE, reply_ts)
+        return ""
     if not slot:
         sel().log_tool_invocation(
             session_key="",

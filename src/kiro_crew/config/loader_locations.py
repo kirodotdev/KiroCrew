@@ -126,15 +126,39 @@ def workspace_root(*, create: bool = True) -> Path:
     override = os.environ.get("KIROCREW_WORKSPACE")
     if override:
         return _resolve_workspace_root(normalize_workspace_path(override), create=create)
-    if _workspace_dir_file().is_file():
+    saved = _read_saved_workspace_dir(_workspace_dir_file())
+    if saved:
         try:
-            saved = _workspace_dir_file().read_text(encoding="utf-8").strip()
-            if saved:
-                return _resolve_workspace_root(normalize_workspace_path(saved), create=create)
+            return _resolve_workspace_root(normalize_workspace_path(saved), create=create)
         except OSError:
+            # A saved root that cannot be resolved or created (a component is a
+            # file, a permission refusal) falls back to the default, so a bad
+            # saved path never stops the gateway from starting.
             pass
     base = _default_workspace_base()
     return _resolve_workspace_root(base / _WORKSPACE_DIR_NAME, create=create)
+
+
+def _read_saved_workspace_dir(path: Path) -> str:
+    """The path saved in *path* (``config_dir()/workspace_dir``), or ``""`` when there is none.
+
+    The file is one hand-editable line, so a leading UTF-8 BOM (an editor's "UTF-8
+    with BOM") is dropped: left in, ``str.strip`` keeps it and the path reads as
+    relative, which moves the workspace. A file that is not UTF-8 reads as no saved
+    path, with a warning, as an unreadable one does, rather than raising out of
+    every caller of :func:`workspace_root`. Each caller passes its own
+    ``_workspace_dir_file()``, so a test patching that name where it is used still
+    reaches the read.
+    """
+    if not path.is_file():
+        return ""
+    try:
+        return strip_utf8_bom(path.read_text(encoding="utf-8")).strip()
+    except UnicodeDecodeError:
+        logger.warning("%s is not UTF-8; using the default workspace", path)
+    except OSError:
+        pass
+    return ""
 
 
 def _session_work_dir(session_key: str | None) -> Path:
@@ -170,6 +194,30 @@ def read_config_text(path: Path) -> str:
     :func:`~kiro_crew.user_json.strip_utf8_bom` directly.
     """
     return strip_utf8_bom(path.read_text(encoding="utf-8"))
+
+
+def read_merged_config_files(*paths: Path) -> dict:
+    """The config documents at *paths*, each merged over the one before. Never raises.
+
+    The raw counterpart of the loader's overlay for a reader that must stay off the
+    config dataclass graph: callers pass ``config.json`` then ``config.local.json``
+    (from their own path helpers, so a test patching those still reaches the read),
+    and the whole documents merge with :func:`~kiro_crew.config.resolution._deep_merge`
+    BEFORE any section is read, as the loader does, so an overlay ``"x": null``
+    replaces the base section. A file that is absent, unreadable or not an object
+    contributes nothing.
+    """
+    from kiro_crew.config.resolution import _deep_merge
+
+    merged: dict = {}
+    for path in paths:
+        try:
+            document = json.loads(read_config_text(path))
+        except (OSError, ValueError):
+            continue
+        if isinstance(document, dict):
+            merged = _deep_merge(merged, document)
+    return merged
 
 
 def overlay_pins(*key_path: str) -> bool:

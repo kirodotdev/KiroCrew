@@ -105,7 +105,7 @@ def _patch_config(monkeypatch, *, acp_backend: str, provider: str = "acp", **tel
 def _last_resource(metrics_dir) -> dict:
     shards = sorted(metrics_dir.glob("metrics-*.jsonl"))
     assert shards, "no shard written by the final flush"
-    last = json.loads(shards[-1].read_text().splitlines()[-1])
+    last = json.loads(shards[-1].read_text(encoding="utf-8").splitlines()[-1])
     return last["resource_metrics"][0]["resource"]["attributes"]
 
 

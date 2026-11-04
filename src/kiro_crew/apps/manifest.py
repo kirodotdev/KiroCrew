@@ -40,6 +40,9 @@ from kiro_crew.apps.manifest_containment import (  # noqa: F401
 from kiro_crew.apps.manifest_contributes import (  # noqa: F401
     _COMMAND_AGENT_RE,
     _COMMAND_SLUG_RE,
+    _COMPOSER_ACTION_ICON_RE,
+    _COMPOSER_ACTION_KEYS,
+    _COMPOSER_ACTION_POPOVER,
     _FILE_MENU_KINDS,
     _HOST_RE,
     _MAX_ARGUMENT_HOSTS,
@@ -52,29 +55,41 @@ from kiro_crew.apps.manifest_contributes import (  # noqa: F401
     _MAX_MESSAGE_ACTION_TITLE,
     _MAX_PANEL_TABS_PER_APP,
     _MAX_PROMPT_TEMPLATE,
+    _MAX_SELECTION_TITLE,
     _MAX_TITLE,
     _MESSAGE_ACTION_KEYS,
     _MESSAGE_ACTION_POPOVER_HEIGHT,
     _MESSAGE_ACTION_POPOVER_WIDTH,
     _PANEL_TAB_ID_RE,
     _POPOVER_KEYS,
+    _SELECTION_ICON_RE,
+    _SELECTION_POPOVER_HEIGHT,
+    _SELECTION_POPOVER_WIDTH,
     _SESSION_CONTROL_ID_RE,
     _SESSION_CONTROL_STATUS_PATH_RE,
     _TEXT_PATTERN_FLAGS_RE,
     _TEXT_PATTERN_KEYS,
     ARGUMENT_TOKEN,
     FILE_MENU_SURFACES,
+    MAX_COMPOSER_ACTION_STRING,
+    MAX_COMPOSER_ACTION_TITLE,
+    MAX_COMPOSER_ACTIONS_PER_APP,
     MAX_LINK_OPEN_PER_APP,
     MAX_LINK_PREVIEW_TEXT_PATTERN_LEN,
     MAX_LINK_PREVIEW_TEXT_PATTERNS,
     MAX_LINK_PREVIEWS_PER_APP,
     MAX_MESSAGE_ACTION_CHARS,
     MAX_MESSAGE_ACTIONS_PER_APP,
+    MAX_SELECTION_ACTIONS_PER_APP,
+    MAX_SELECTION_TEXT,
     MAX_SESSION_CONTROLS_PER_APP,
     MESSAGE_ACTION_FORMATS,
     MESSAGE_ACTION_ROLES,
+    SELECTION_EFFECTS,
+    SELECTION_SOURCES,
     CommandArgument,
     CommandContribution,
+    ComposerActionConfig,
     Contributes,
     FileMenuItemConfig,
     FileMenuWhen,
@@ -82,12 +97,16 @@ from kiro_crew.apps.manifest_contributes import (  # noqa: F401
     LinkPreviewConfig,
     MessageActionConfig,
     PanelTabConfig,
+    SelectionActionConfig,
     SessionControlContribution,
+    _int_field,
     _mirrored_len,
+    _name_list,
     _normalize_status_path,
     _strict_int,
 )
 from kiro_crew.apps.manifest_names import (  # noqa: F401
+    APP_NAME_MAX_LENGTH,
     KEBAB_RE,
     RESERVED_APP_NAME_CODE,
     RESERVED_APP_NAMES,
@@ -132,6 +151,7 @@ from kiro_crew.apps.manifest_sections import (  # noqa: F401
     UISidebar,
     _granted_list,
     _l10n_quoted,
+    _sidebar_order,
     clamp_lifecycle_timeout,
     lifecycle_timeout_error,
     lifecycle_timeout_seconds,
@@ -560,6 +580,19 @@ class AppManifest:
             refusal = path_refusal(link_open.entry)
             if refusal:
                 report_path(refusal, f"contributes.linkOpen entry {refusal}: {link_open.entry!r}")
+        # A composer-action entry is imported by the same frame bootstrap.
+        for composer in self.contributes.composerActions:
+            refusal = path_refusal(composer.entry)
+            if refusal:
+                report_path(
+                    refusal, f"contributes.composerActions entry {refusal}: {composer.entry!r}"
+                )
+        for selection in self.contributes.selectionActions:
+            refusal = path_refusal(selection.entry)
+            if refusal:
+                report_path(
+                    refusal, f"contributes.selectionActions entry {refusal}: {selection.entry!r}"
+                )
 
         # UI page validation
         for page in self.ui.pages:
@@ -802,6 +835,8 @@ class AppManifest:
             # A link-open `entry` is the same kind of module, and `hosts` decides which
             # clicked links the app is handed.
             or self.contributes.linkOpen
+            or self.contributes.composerActions
+            or self.contributes.selectionActions
         ):
             # A contributed command's `prompt` is sent to an agent with tools as if
             # the reader typed it, and `autoSend` fires it without a further

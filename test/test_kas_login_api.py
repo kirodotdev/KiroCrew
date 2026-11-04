@@ -16,8 +16,10 @@ import socket
 import aiohttp
 import pytest
 
+from kiro_crew.auth.login.builder_id import StartUrlRejectedError
 from kiro_crew.auth.login.portal import PortalAuthError, wait_for_callback
 from kiro_crew.auth.service import (
+    InvalidStartUrlError,
     KasLoginService,
     LoopbackUnavailableError,
     UnknownIdentityError,
@@ -92,6 +94,10 @@ class _StubService(KasLoginService):
             raise UnknownIdentityError(replaces)
         if provider_str == "facebook":
             raise ValueError(provider_str)
+        if start_url == "malformed":
+            raise InvalidStartUrlError("Start URL must use https.")
+        if start_url == "refused-by-aws":
+            raise StartUrlRejectedError("AWS did not accept the start URL.")
         return {
             "login_id": "lid-1",
             "user_code": "ABCD",
@@ -213,6 +219,20 @@ async def test_begin_device_missing_and_unknown_provider():
     resp = await api_kas_login_begin_device(_FakeRequest(_StubService(), {"provider": "facebook"}))
     assert resp.status == 400
     assert _body(resp)["code"] == "invalid_provider"
+
+
+@pytest.mark.parametrize("start_url", ["malformed", "refused-by-aws"])
+@pytest.mark.asyncio
+async def test_begin_device_bad_start_url_is_a_coded_400_with_the_reason(start_url):
+    """Whether Crew or AWS refuses the start URL, the form gets a 400 it can fix
+    with the reason as the message, not a 502 that reads as an outage."""
+    resp = await api_kas_login_begin_device(
+        _FakeRequest(_StubService(), {"provider": "idc", "start_url": start_url})
+    )
+    assert resp.status == 400
+    body = _body(resp)
+    assert body["code"] == "invalid_start_url"
+    assert "start url" in body["error"].lower()
 
 
 @pytest.mark.asyncio

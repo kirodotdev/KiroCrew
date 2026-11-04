@@ -1606,6 +1606,7 @@ class TestReviewDriverDoesNotGuessASiblingPort:
         monkeypatch.setattr(review_driver, "_RESOLVED_BASE", "", raising=False)
         monkeypatch.setattr(review_driver, "_candidate_ports", lambda: [7811])
         monkeypatch.setattr(review_driver, "_probe", lambda base, secret: False)
+        # The unreachable fallback base must be the v4 literal, not localhost.
         assert review_driver._gateway_base() == "http://127.0.0.1:7811"
 
     def test_local_secret_honours_the_helper_refusal_and_does_not_read_crew_home(
@@ -1876,12 +1877,3 @@ class TestSingleFamilyGatewayAuthenticatesTheV4LiteralDial:
         dashboard_server._write_secret_file(run_marker.secret_path(5476), "port-keyed")
         _publish_listener(home, 5476, "::1", "v6")
         assert read_local_secret(5476, dial_host="127.0.0.1") == ""
-
-    def test_review_driver_base_dials_the_v4_literal(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from kiro_crew.apps.builtins.code_review_sage.sage_lib import review_driver
-
-        monkeypatch.setattr(review_driver, "_RESOLVED_BASE", "", raising=False)
-        monkeypatch.setattr(review_driver, "_candidate_ports", lambda: [7811])
-        monkeypatch.setattr(review_driver, "_probe", lambda base, secret: False)
-        # The unreachable fallback base must be the v4 literal, not localhost.
-        assert review_driver._gateway_base() == "http://127.0.0.1:7811"

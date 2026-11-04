@@ -169,7 +169,21 @@ async def _polling_loop(self: TelegramClient) -> None:
             self._notify_status(True, "")
             attempt = 0  # reset on success
             for update in updates:
-                self._dispatch(update)
+                # Guard EACH update on its own. A malformed envelope that makes
+                # ``_dispatch`` raise (``_build_inbound`` reads ``message.from``
+                # / ``message.chat`` as dicts, and a null or odd-typed field
+                # raises) would otherwise abort this ``for`` under the loop's
+                # own ``except Exception`` -- so every LATER update in the same
+                # getUpdates batch goes undispatched, and because ``_offset``
+                # already advanced on observation in ``_get_updates`` Telegram
+                # never redelivers them. One bad update must cost only itself.
+                try:
+                    self._dispatch(update)
+                except Exception:
+                    logger.exception(
+                        "Telegram: dropping one malformed update (update_id=%s)",
+                        update.get("update_id") if isinstance(update, dict) else "?",
+                    )
             # AFTER the whole batch is dispatched, so every update that became
             # a live handler is already registered in flight and the low-water
             # mark holds behind the oldest of them. An empty batch, or one whose

@@ -274,6 +274,7 @@ Base metadata always carries `format`, `title` (file stem), `file_size`, `extens
 - **`.kiroignore` (`kiroignore.py`)**: when the SOURCE ROOT holds a `.kiroignore`, its rules are compiled once per sweep and applied on top of everything above. Matching **directories are pruned in place** during `os.walk`, so a generated tree (`cdk.out`, coverage output) is never descended rather than filtered file by file. The rule file itself is never indexed — its extensionless name is in `FileReader.SUPPORTED`, so it would otherwise be ingested as a document.
   - Syntax is a documented SUBSET of gitignore: `#` comments, blank lines, trailing `/` (directories only), leading `/` (root-anchored), any other embedded `/` (also anchored; a separator-free pattern matches that basename at any depth), `*` / `?` / `**`, and `!` negation where the last matching rule wins. NOT supported: `[a-z]` character classes (brackets match literally), backslash escapes other than a leading `\#` / `\!`, nested `.kiroignore` files in subdirectories, and re-including a path underneath an excluded directory (as in git).
   - **Defensive by contract**: the file is user-authored and re-read every sweep, so an unreadable, oversized (> `MAX_FILE_BYTES` = 64 KiB) or undecodable one degrades to "no extra exclusions" and never raises mid-scan; a single unusable pattern is dropped and the rest of the file still applies. Rules are capped at `MAX_RULES` = 1000.
+  - **Encoding**: a file starting with a UTF-16 LE/BE BOM (Windows PowerShell 5.1's `Out-File` and `>` default) is decoded as UTF-16; anything else as UTF-8 with an optional BOM stripped, `errors="replace"` in both cases. Decoded text containing NUL (BOM-less UTF-16, binary) logs one WARNING per sweep naming the file and asking for UTF-8, since no rule can contain NUL and its rules match nothing.
   - **`.gitignore` is deliberately NOT read as a fallback.** A scan treats a file that stops being discovered as DELETED and archives its items (`_handle_deleted`), so honouring `.gitignore` implicitly would, on the next sweep, drop already-indexed documents out of every existing folder source whose root happens to be a repository. Creating a `.kiroignore` is an explicit act, so the same removal is the user's intent.
 - **Extension filter**: keeps a file only if its lower-cased suffix is in `FileReader.SUPPORTED` **or** equals `.canvas` (Obsidian canvas files).
 - **Sensitive-path guard**: resolves each candidate (`Path.resolve()`) and skips it if `is_sensitive_path()` matches.
@@ -1196,7 +1197,9 @@ Two properties make the numbers auditable:
   bucket is never one of them.
 
 `kirocrew knowledge stats` prints the totals line plus a `SOURCE / DOCS / ITEMS`
-table; `--json` emits `{sources, documents, items, per_source:[{id, name,
+table, its name column padded by `messaging.tables.display_width` so a CJK or
+accented source name keeps the count columns aligned; `--json` emits
+`{sources, documents, items, per_source:[{id, name,
 documents, items}]}` with `id: null` for the bucket. A missing DB is reported
 (SEL `not_configured`), as JSON under `--json` so a script parses one shape
 either way; every call emits an SEL event under tool name `knowledge_stats`.

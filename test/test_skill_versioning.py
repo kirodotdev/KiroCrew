@@ -856,3 +856,67 @@ def test_a_refused_live_read_refuses_the_approval_with_the_candidate_unredacted(
     assert refused.value.reason == "promotion_failed"
     assert candidate.read_bytes() == before
     assert live_skill.read_bytes() == live_before
+
+
+# ── frontmatter rebuild keeps block-scalar values ──
+
+
+def _rebuild(candidate: str) -> str:
+    return SkillsLoader._rewrite_update_frontmatter(
+        candidate, target_name="auto/t", created_at="2020-01-01T00:00:00+00:00", version=3
+    )
+
+
+def test_rebuild_keeps_indented_key_like_lines_inside_a_block_scalar():
+    candidate = (
+        "---\nname: auto/cand\ndescription: |\n  First paragraph.\n"
+        "  version: 2 of the steps lives here.\n  pinned: by the operator.\n---\n\nbody\n"
+    )
+
+    out = _rebuild(candidate)
+
+    assert "  version: 2 of the steps lives here.\n" in out
+    assert "  pinned: by the operator.\n" in out
+    assert out.count("\nversion: 3\n") == 1
+    assert "name: auto/cand" not in out
+
+
+def test_rebuild_keeps_a_blank_line_between_block_scalar_paragraphs():
+    candidate = "---\nname: auto/cand\ndescription: |\n  One.\n\n  Two.\ntriggers: t\n---\n\nbody\n"
+
+    out = _rebuild(candidate)
+
+    assert "description: |\n  One.\n\n  Two.\ntriggers: t\n" in out
+
+
+@pytest.mark.parametrize("prefix,nl", [("\ufeff", "\n"), ("", "\r\n")])
+def test_rebuild_treats_a_bom_or_crlf_fence_as_frontmatter(prefix, nl):
+    lines = ["---", "name: auto/cand", "description: d", "---", "", "body", ""]
+    candidate = prefix + nl.join(lines)
+
+    out = _rebuild(candidate)
+
+    assert out.startswith("---\nname: auto/t\ndescription: d\n")
+    assert "auto/cand" not in out
+    assert out.count("---") == 2
+
+
+@pytest.mark.parametrize("closer", ["--- ", "----"])
+def test_rebuild_reads_a_closer_with_trailing_text_like_the_loader(closer):
+    candidate = f"---\nname: auto/cand\ndescription: routes x\n{closer}\n\nintro\n\n---\n\nmore\n"
+
+    out = _rebuild(candidate)
+
+    fm, _, body = out[len("---\n") :].partition("\n---\n")
+    assert "description: routes x" in fm
+    assert "version: 3" in fm
+    assert "intro" in body and "more" in body
+    assert "auto/cand" not in out
+
+
+def test_rebuild_keeps_trailing_blank_lines_of_a_keep_block_scalar():
+    candidate = "---\nname: auto/cand\ndescription: |+\n  Kept.\n\n---\n\nbody\n"
+
+    out = _rebuild(candidate)
+
+    assert "description: |+\n  Kept.\n\ncreated_at:" in out

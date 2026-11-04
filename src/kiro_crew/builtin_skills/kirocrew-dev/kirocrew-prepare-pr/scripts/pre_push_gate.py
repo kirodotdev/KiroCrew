@@ -122,8 +122,10 @@ _GIT_NEUTRAL = [
     "core.untrackedCache=false",
     "-c",
     "core.ignoreStat=false",
+    # Empty, not ``os.devnull``: git skips an excludes path it cannot open, on every OS, but
+    # refuses a device file, and on Windows ``os.devnull`` is the ``nul`` device.
     "-c",
-    "core.excludesFile=" + os.devnull,
+    "core.excludesFile=",
 ]
 # Variables that point git at a different repository, index or object store. A pre-push hook
 # sets some of them; a proof about the repository in the current directory must not use them.

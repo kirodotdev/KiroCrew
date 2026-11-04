@@ -72,6 +72,11 @@ workspace-authorized session tools.
     OK <n> watched, <m> fired | load/cpu <x> (<posture>) | mem <G>G
        | banned <k> | foreign <k> | deliver init-timeout <a>, watchdog <b>
 
+A field the host cannot measure prints ``n/a`` after its label instead of a
+value: ``load/cpu n/a``, ``mem n/a``, and ``banned n/a | foreign n/a`` when there
+is no ``/proc`` to scan. An unmeasured count is never printed as ``0``, which
+would read as a scan that ran and found nothing.
+
 ``banned`` counts fleet-owned matches only -- a banned command shape running in
 an unrelated checkout on the same host is somebody else's business, and counting
 it made the conductor stop a worker that was not the offender. Those are
@@ -665,7 +670,11 @@ def _host_lines(cfg: dict[str, Any]) -> tuple[list[str], str]:
     proc_root = Path(os.environ.get("KIROCREW_PROBE_PROC_ROOT") or "/proc")
     banned = 0
     foreign = 0
-    if proc_root.is_dir():
+    # Without a proc root the scan never runs, so its counts are unknown, not
+    # zero. ``banned 0`` would be byte-identical to a scan that ran and found
+    # nothing, so the summary prints ``n/a`` like the load and mem fields do.
+    scanned = proc_root.is_dir()
+    if scanned:
         for entry in proc_root.iterdir():
             if not entry.name.isdigit():
                 continue
@@ -872,7 +881,8 @@ def _host_lines(cfg: dict[str, Any]) -> tuple[list[str], str]:
         else "load/cpu n/a"
     )
     mem_part = f"mem {mem_gb:.0f}G" if mem_gb is not None else "mem n/a"
-    return lines, f"{load_part} | {mem_part} | banned {banned} | foreign {foreign}"
+    scan_part = f"banned {banned} | foreign {foreign}" if scanned else "banned n/a | foreign n/a"
+    return lines, f"{load_part} | {mem_part} | {scan_part}"
 
 
 def _sessions_dir() -> Path:

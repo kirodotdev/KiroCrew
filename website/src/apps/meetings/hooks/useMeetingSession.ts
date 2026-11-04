@@ -7,7 +7,7 @@
 // stays in useState.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useMutationState, useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { i18nT } from '../../../i18n/t'
 import {
@@ -737,7 +737,9 @@ export function useMeetingSession({ eventId, fallbackTitle, config, notify }: Op
   // Also guarded on `connecting`: pausing the meeting between the worklet loading
   // and the server's 'ready' frame leaves `active` false, so without the `connecting`
   // check the stop() branch never fires and buffered PCM is flushed after 'ready',
-  // persisting pause-window speech into the notes and tasks.
+  // persisting pause-window speech into the notes and tasks. `isStarting()` covers
+  // the step before that: a pause while the permission prompt is open publishes
+  // neither flag, and stopping there is what releases the stream granted later.
   //
   // A TERMINAL server error frame (streaming off, no consent, ...) `halts` the
   // hook: its own `start()` refuses until `stop()` runs, whatever order the
@@ -756,7 +758,7 @@ export function useMeetingSession({ eventId, fallbackTitle, config, notify }: Op
     if (mayOpen && !t.active && !t.connecting && !t.halted) {
       void t.start()
     }
-    if (!mayOpen && (t.active || t.connecting || t.halted)) {
+    if (!mayOpen && (t.active || t.connecting || t.halted || t.isStarting())) {
       t.stop()
     }
   }, [status, ingressReady, transcriptFull, transcriptionActive, transcriptionConnecting, transcriptionHalted])
@@ -972,13 +974,23 @@ export function useMeetingSession({ eventId, fallbackTitle, config, notify }: Op
     onSuccess: () => invalidate(),
   })
 
+  const fileTaskKey = [...scope, 'fileTask'] as const
   const fileTaskMutation = useMutation({
+    mutationKey: fileTaskKey,
     mutationFn: (taskId: string) => meetingsApi.fileTask(meetingId, taskId),
     onSuccess: () => {
       notify(i18nT('apps.meetings.session.taskFiled'), { type: 'success' })
       invalidate()
     },
     onError: error => failureNotice(error, i18nT('apps.meetings.session.taskFileFailed')),
+  })
+
+  // Every filing still in flight, not only the latest: `fileTaskMutation.variables`
+  // names only the last call, so a second File would make the first look settled
+  // and its row archivable while its provider call is still running.
+  const filingIds = useMutationState({
+    filters: { mutationKey: fileTaskKey, status: 'pending' },
+    select: mutation => mutation.state.variables as string,
   })
 
   const reviewTaskMutation = useMutation({
@@ -1145,6 +1157,8 @@ export function useMeetingSession({ eventId, fallbackTitle, config, notify }: Op
       /** The target status of an in-flight pause/resume/review change, or null. */
       settingStatus: statusMutation.isPending ? statusMutation.variables ?? null : null,
       filing: fileTaskMutation.isPending ? fileTaskMutation.variables : null,
+      /** Every action item with a filing in flight, oldest first. */
+      filingIds,
     },
   }
 }

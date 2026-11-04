@@ -602,7 +602,11 @@ async def _consolidate(
             keys.append(
                 '"history_entry": A concise paragraph (2-5 sentences) summarizing '
                 "what happened. Use local time [YYYY-MM-DD HH:MM]. Focus on "
-                "decisions, outcomes, facts. Use user's real name if known."
+                "decisions, outcomes, facts. Use user's real name if known. "
+                "If nothing worth remembering happened (no decision, outcome or "
+                'fact), return an empty string "" and never a placeholder such as '
+                '"No substantive conversation occurred". A scheduled or automated '
+                "run that did real work still gets an entry."
             )
 
         # Structured memory extraction (when vector store is available).
@@ -1001,7 +1005,11 @@ async def _consolidate(
 
             await _run_in_memory_background_pool(_apply_member_consolidation)
 
-        if not member_memory and (entry := result.get("history_entry")):
+        # An empty or blank entry is the model's answer that nothing in the span
+        # is worth a dated history line: write nothing, as the member store's
+        # ``apply_consolidation`` does. The marker still advances.
+        entry = result.get("history_entry")
+        if not member_memory and isinstance(entry, str) and entry.strip():
             stage = "history entry"
 
             # Offloaded to a worker thread: append_history takes a blocking

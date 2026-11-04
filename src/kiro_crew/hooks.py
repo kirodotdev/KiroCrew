@@ -105,6 +105,7 @@ from kiro_crew.hook_runtime.gate_tiers import (  # noqa: F401
     _rule_sensitive_bash,
     _rule_sensitive_path,
     _spec_builtin_names,
+    _spec_command_composed,
     _spec_command_granted,
     _tier_app_own_server,
     _tier_deny_rules,
@@ -419,6 +420,37 @@ def uncounted_gate():
         _GATE_UNCOUNTED.reset(token)
 
 
+#: Set by :func:`unattended_turn`; read by ``_governance_denial``.
+_UNATTENDED_TURN: ContextVar[bool] = ContextVar("kirocrew_unattended_turn", default=False)
+
+
+@contextmanager
+def unattended_turn(active: bool = True):
+    """Judge the gate calls made inside this block as an UNATTENDED turn's.
+
+    For a turn no person is watching: a cron job, a heartbeat task, a monitor
+    wake. The one thing it changes is what the governance tier does when its own
+    evaluation raises: an unattended call is refused, because nobody is there to
+    notice that policy went unchecked, while an attended call keeps "no
+    governance opinion" so a transient fault never refuses an ordinary user
+    action. Every other tier judges the call exactly as before.
+
+    The marker is a ContextVar, so it reaches the tool-gate pool thread (which
+    runs the call in a copy of the caller's context) and nothing outside this
+    block. Wrap the single gate consultation, not a whole turn, so a task the
+    turn spawns does not inherit it. ``active=False`` is a no-op, for a call site
+    that only sometimes runs unattended.
+    """
+    if not active:
+        yield
+        return
+    token = _UNATTENDED_TURN.set(True)
+    try:
+        yield
+    finally:
+        _UNATTENDED_TURN.reset(token)
+
+
 #: The reason a call is refused when the gate itself raised while judging it.
 #: Says plainly that the refusal is a gate defect, not a rule the call broke and
 #: not a user action -- without it the host surfaces kiro-cli's generic
@@ -675,6 +707,7 @@ class HookManager:
         app: str = "",
         classifier_only: bool = False,
         trust_reads: bool = False,
+        deny_waivers: frozenset[str] = frozenset(),
     ) -> ToolHookResult:
         """Whether *call* is auto-approved, denied, or handled normally.
 
@@ -727,6 +760,14 @@ class HookManager:
         ``read_only`` auto-approve for one of those tools, never the reverse, and
         an operator ``confirm_tools`` match still asks first. Default ``False``:
         every other mode and surface judges an MCP call as before.
+
+        ``deny_waivers`` are the refusal keys a person overrode on the dashboard
+        approval card (``docs/request-for-change/rfc-deny-session-override.md``).
+        Only the ``deny-rules`` tier reads them, after dropping every
+        governance-pinned key, and each one it uses is audited or refuses; every
+        other tier judges the call exactly as without them. Default empty: only
+        the dashboard's override path and the transport floor it approves through
+        pass any.
         """
         if _GATE_TABLE_PROBLEMS:
             return ToolHookResult.deny(GATE_TABLE_UNSOUND_REASON)
@@ -738,6 +779,7 @@ class HookManager:
             app=app,
             classifier_only=classifier_only,
             trust_reads=trust_reads,
+            deny_waivers=frozenset(deny_waivers),
         )
         for tier in GATE_TIERS:
             verdict = tier.judge(facts, tier)
@@ -745,7 +787,7 @@ class HookManager:
                 if not verdict.tier:
                     verdict.tier = tier.name
                 return verdict
-        return ToolHookResult.allow()
+        return ToolHookResult.allow(facts.ask_note)
 
     @_fail_closed_on_gate_crash
     def on_tool_call(
@@ -776,6 +818,7 @@ class HookManager:
         resolved_agent: str = "",
         classifier_only: bool = False,
         trust_reads: bool = False,
+        deny_waivers: frozenset[str] = frozenset(),
     ) -> ToolHookResult:
         """:meth:`judge`, for a caller that holds the call as keywords.
 
@@ -824,6 +867,7 @@ class HookManager:
             app=app,
             classifier_only=classifier_only,
             trust_reads=trust_reads,
+            deny_waivers=deny_waivers,
         )
 
     def _effective_denied(self, ctx: object) -> list[str]:

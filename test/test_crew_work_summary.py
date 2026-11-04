@@ -72,11 +72,19 @@ def test_summary_counts_open_items_and_splits_out_the_person():
     )
     assert summary["open"] == 4
     assert summary["person"] == 2
+    # Each person-waiting item names its worker, so the row can count it once.
+    assert summary["person_workers"] == ["chat-w", "chat-w"]
     a, e = summary["items"]
     assert a == {"worker": "chat-w", "stale_at_ms": NOW_MS - 5 * 60_000 + WINDOW_MS}
     # A question for the conductor: the ledger never flags it while the move is not
     # the worker's.
     assert e["stale_at_ms"] == 0
+
+
+def test_a_person_wait_with_no_local_worker_names_none():
+    remote = _item("r", status="blocked", reason="approval", worker_instance_id="peer-1")
+    unbound = _item("u", status="question", reason="needs_human", worker_session_key="")
+    assert _summary([remote, unbound])["person_workers"] == ["", ""]
 
 
 def test_an_answered_person_wait_is_the_worker_s_again():

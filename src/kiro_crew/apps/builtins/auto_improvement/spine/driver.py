@@ -1454,8 +1454,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument(
         "--data-dir",
         type=Path,
-        default=Path("/tmp/auto_improvement_run"),
-        help="where the archive/ledger/pr_queue live",
+        default=None,
+        help=(
+            "where the archive/ledger/pr_queue live; a --dry-run without it uses a"
+            " throwaway directory inside its own temporary run root"
+        ),
     )
     args = ap.parse_args(argv if argv is not None else sys.argv[1:])
 

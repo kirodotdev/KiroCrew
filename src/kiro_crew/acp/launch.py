@@ -50,7 +50,7 @@ from kiro_crew.acp.transport_errors import AcpError, AcpToolGateUnroutable
 from kiro_crew.acp.transport_framing import _STDOUT_BUFFER_LIMIT
 from kiro_crew.agent_sdk.backends import launch_for
 from kiro_crew.constants import KIROCREW_SPAWNED_ENV, KIROCREW_SPAWNED_VALUE
-from kiro_crew.env import describe_search_path, mise_data_dir
+from kiro_crew.env import append_mcp_path_dirs, describe_search_path, mise_data_dir
 from kiro_crew.sandbox import RLIMIT_PROFILE_SESSION_HOST, ssh_auth_sock_consent_notice
 
 # The client's logger name, because the helpers below were the client's and every
@@ -820,8 +820,6 @@ class LaunchTools:
     augmented_path: Callable[[str], str]
     scrub_agent_subprocess_env: Callable[..., dict[str, str]]
     apply_pod_home_remap: Callable[..., dict[str, str]]
-    browser_session_env: Callable[[Mapping[str, str]], dict[str, str]]
-    browser_socket_env: Callable[[Mapping[str, str]], dict[str, str]]
     inject_xdist_auto_cap: Callable[[dict[str, str]], Any]
     bind_voice_safe_agent_workspace_async: Callable[[Any], Awaitable[tuple[str, int | None]]]
     create_subprocess_limited: Callable[..., Awaitable[asyncio.subprocess.Process]]
@@ -1168,7 +1166,15 @@ async def launch(host: LaunchHost, request: LaunchRequest, tools: LaunchTools) -
         env.update(await host._to_thread_guarding_sandbox(tools.agent_env_overlay))
     if request.extra_env:
         env.update(request.extra_env)
-    env["PATH"] = tools.augmented_path(env.get("PATH", ""))
+    # The contributed MCP launcher dirs go LAST, after everything the gateway's
+    # PATH already resolves, so a bare-name MCP server kiro-cli starts is found
+    # even when the gateway itself was started without them (a service installed
+    # from a non-login shell). Read from the snapshot the config load above just
+    # refreshed, and never persisted: see ``env.append_mcp_path_dirs``. Off-loop:
+    # validating a ``~user`` entry expands it through a directory-service lookup.
+    env["PATH"] = await host._to_thread_guarding_sandbox(
+        append_mcp_path_dirs, tools.augmented_path(env.get("PATH", ""))
+    )
     env = await request.env_before_scrub(env, spawned_binary)
     # Whether the child would have had an agent socket before the scrub, read
     # here because the driver's credential repair above may have just found one.
@@ -1199,15 +1205,6 @@ async def launch(host: LaunchHost, request: LaunchRequest, tools: LaunchTools) -
     # node) are identifiable as ours.
     env[KIROCREW_SPAWNED_ENV] = KIROCREW_SPAWNED_VALUE
     request.env_after_marker(env)
-    # Own browser session per agent process: the CLI resolves a nameless command to
-    # one shared ``default`` browser, so without this two agents navigate and close
-    # each other's pages (see browser_session_env). Per PROCESS, not per agent: a
-    # shared runtime's sessions share this one.
-    browser_env = tools.browser_session_env(env)
-    env.update(browser_env)
-    if browser_env:
-        lifecycle_env = {**os.environ, **browser_env}
-        env.update(await host._to_thread_guarding_sandbox(tools.browser_socket_env, lifecycle_env))
     # The scratch dir was allocated before the sandbox wrap (carved out of the
     # masked root there); hand it to the child as its temp.
     if host._scratch_dir is not None:

@@ -19,6 +19,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
+from kiro_crew.apps.composer_action_grants import composer_action_grant_row
 from kiro_crew.apps.execution import shipped_builtin_app_root
 from kiro_crew.apps.link_open_grants import link_open_grant_row
 from kiro_crew.apps.link_preview_grants import link_preview_grant_row
@@ -37,6 +38,7 @@ from kiro_crew.apps.manager_records import (
 )
 from kiro_crew.apps.manifest import AppManifest, contain_command_agents
 from kiro_crew.apps.message_action_grants import message_action_grant_row
+from kiro_crew.apps.selection_action_grants import selection_action_grant_row
 from kiro_crew.platform_compat import is_link_or_junction
 
 logger = logging.getLogger("kiro_crew.apps.manager")
@@ -401,6 +403,8 @@ def list_apps() -> list[dict[str, Any]]:
             **link_preview_grant_row(entry.name, manifest_data),
             **message_action_grant_row(entry.name, manifest_data),
             **link_open_grant_row(entry.name, manifest_data),
+            **composer_action_grant_row(entry.name, manifest_data),
+            **selection_action_grant_row(entry.name, manifest_data),
             "manifest": manifest_data,
         }
         # Include migratedTo if non-empty
@@ -441,6 +445,8 @@ def get_app(name: str) -> dict[str, Any] | None:
         **link_preview_grant_row(name, manifest_data),
         **message_action_grant_row(name, manifest_data),
         **link_open_grant_row(name, manifest_data),
+        **composer_action_grant_row(name, manifest_data),
+        **selection_action_grant_row(name, manifest_data),
         "manifest": manifest_data,
     }
     adoption_markers = _adoption_rows_context()

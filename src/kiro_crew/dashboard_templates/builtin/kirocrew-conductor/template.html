@@ -111,7 +111,7 @@
           done_of: '{d} of {n} accepted by the conductor', running: '{n} working', next: 'Next', note: 'Last note',
           note_at: 'sent {t}', empty: 'No tasks on this board yet.', untitled: 'Untitled task',
           t_done: 'accepted', t_working: 'working', t_reported: 'conductor checking', t_you: 'needs you',
-          t_waiting: 'not started', t_rejected: 'rejected', t_abandoned: 'abandoned',
+          t_waiting: 'not started', t_paused: 'waiting', t_rejected: 'rejected', t_abandoned: 'abandoned',
           status_question: 'has a question', status_blocked: 'is stuck',
           reason_approval: 'approval', reason_needs_human: 'needs a person', pr: 'PR #{n}',
           how: 'The button fills your chat box. Nothing sends until you press send.', reply: '\u270e Reply in chat',
@@ -127,7 +127,7 @@
           note: '\u6700\u65b0\u7559\u8a00', note_at: '\u53d1\u9001\u4e8e {t}',
           empty: '\u770b\u677f\u4e0a\u8fd8\u6ca1\u6709\u4efb\u52a1\u3002', untitled: '\u672a\u547d\u540d\u4efb\u52a1',
           t_done: '\u5df2\u63a5\u53d7', t_working: '\u5de5\u4f5c\u4e2d', t_reported: '\u6307\u6325\u6b63\u5728\u68c0\u67e5',
-          t_you: '\u9700\u8981\u4f60', t_waiting: '\u5c1a\u672a\u5f00\u59cb', t_rejected: '\u5df2\u62d2\u7edd',
+          t_you: '\u9700\u8981\u4f60', t_waiting: '\u5c1a\u672a\u5f00\u59cb', t_paused: '\u7b49\u5f85\u4e2d', t_rejected: '\u5df2\u62d2\u7edd',
           t_abandoned: '\u5df2\u653e\u5f03', status_question: '\u6709\u95ee\u9898', status_blocked: '\u88ab\u5361\u4f4f',
           reason_approval: '\u7b49\u5f85\u6279\u51c6', reason_needs_human: '\u9700\u8981\u4eba\u5de5',
           how: '\u6309\u94ae\u53ea\u4f1a\u586b\u5165\u4f60\u7684\u804a\u5929\u6846\u3002\u4f60\u6309\u53d1\u9001\u524d\u4e0d\u4f1a\u53d1\u51fa\u3002', reply: '\u270e \u5728\u804a\u5929\u91cc\u56de\u590d',
@@ -203,7 +203,12 @@
         if (state === 'abandoned') return ['other', 't_abandoned'];
         if (state !== 'open') return ['other', state || 'unknown'];
         if (it.status === 'question' || it.status === 'blocked') return ['you', 't_you'];
-        if (it.status === 'progress') return ['run', 't_working'];
+        // A `progress` report is the worker's last word, not proof it is mid-turn. The
+        // host stamps `worker` (running / idle / closed) on each item, so only a running
+        // worker reads as working. A value without `worker` keeps the old rule.
+        if (it.status === 'progress') {
+          return it.worker === undefined || it.worker === 'running' ? ['run', 't_working'] : ['wait', 't_paused'];
+        }
         if (it.status === 'done') return ['test', 't_reported'];
         return ['wait', 't_waiting'];
       }
@@ -381,7 +386,7 @@
           var id = text(it.item_id) || String(i);
           var reading = tone(it);
           var signature = JSON.stringify([
-            locale(), it.title, it.state, it.status, it.reason, it.pr, it.summary
+            locale(), it.title, it.state, it.status, it.reason, it.pr, it.summary, it.worker
           ]);
           var card = taskNodes[id];
           if (!card) {

@@ -17,7 +17,7 @@ to the model as text.
 from __future__ import annotations
 
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 from chat_test_helpers import _make_state
@@ -106,7 +106,7 @@ class TestKasClear:
         dispatched.assert_not_called()
         state.sessions.get_or_create.assert_not_called()
         state.sessions.discard_conversation.assert_awaited_once_with(
-            effective_session_key(slot), replay=False, skip_if_busy=True
+            effective_session_key(slot), replay=False, skip_if_busy=True, refuse_if=ANY
         )
         assert any("Conversation cleared" in t for t in _texts(slot)), _texts(slot)
         # The plan goes with the conversation, or the fresh one rebuilds it.
@@ -215,7 +215,7 @@ class TestOtherHarnessesClear:
         dispatched.assert_not_called()
         state.sessions.get_or_create.assert_not_called()
         state.sessions.discard_conversation.assert_awaited_once_with(
-            effective_session_key(slot), replay=False, skip_if_busy=True
+            effective_session_key(slot), replay=False, skip_if_busy=True, refuse_if=ANY
         )
         assert any("Conversation cleared" in t for t in _texts(slot)), _texts(slot)
         assert slot.todo_payload() is None

@@ -686,13 +686,37 @@ class TestTheDrainCarriesOrigin:
         # mixed batch is not quoted back (it would quote the Slack words too).
         from kiro_crew.dashboard import chat_delivery as cd
 
+        # A channel entry with no stamped source channel (another channel's
+        # hand-off) still merges with the dashboard's words.
         state, busy, run = self._drain(tmp_path, monkeypatch, merge=True)
         slot = busy("chat-1")
-        await self._route_busy(state, slot, monkeypatch)
+        cd.queue_for_next_turn(
+            state, slot, "from a channel", directive_user_origin=True, directive_channel_origin=True
+        )
         cd.queue_for_next_turn(state, slot, "typed in the dashboard", directive_user_origin=True)
         kwargs = await run(slot)
         assert slot._queue == []
         assert kwargs["_directive_channel_origin"] is True
+
+    @pytest.mark.asyncio
+    async def test_a_routed_slack_reply_runs_apart_from_a_dashboard_message(
+        self, tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The router stamps its reply's source channel, and a merge run stops
+        # where those change: the reply runs channel-origin on its own, and the
+        # dashboard message after it still runs as the person.
+        from kiro_crew.dashboard import chat_delivery as cd
+
+        state, busy, run = self._drain(tmp_path, monkeypatch, merge=True)
+        slot = busy("chat-1")
+        await self._route_busy(state, slot, monkeypatch)
+        cd.queue_for_next_turn(state, slot, "typed in the dashboard", directive_user_origin=True)
+        first = await run(slot)
+        assert first["_directive_channel_origin"] is True
+        assert [item["content"] for item in slot._queue] == ["typed in the dashboard"]
+        second = await run(slot)
+        assert slot._queue == []
+        assert second["_directive_channel_origin"] is False
 
 
 # ── Tool steps read like the dashboard's rows, never as a raw tool id ────────

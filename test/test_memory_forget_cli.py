@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import io
 import json
+import socket
 import urllib.error
 from typing import Any
 from unittest.mock import MagicMock
@@ -112,6 +113,16 @@ def _forget(key: str = _KEY, *, superseded_by: str | None = None) -> None:
     cc._memory_cmd(argparse.Namespace(mem_action="forget", key=key, superseded_by=superseded_by))
 
 
+@pytest.fixture
+def unix_socket_platform(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Give a runner with no ``socket.AF_UNIX`` (native Windows) one, so a test can
+    drive the verb past its platform refusal. The gateway call is faked or refused
+    in every test that uses this, so no Unix socket is ever opened."""
+    if not hasattr(socket, "AF_UNIX"):
+        monkeypatch.setattr(socket, "AF_UNIX", 1, raising=False)
+
+
+@pytest.mark.usefixtures("unix_socket_platform")
 class TestOwnerTerminal:
     def test_confirmed_forget_deletes_and_passes_the_shown_value(
         self, store_path, gateway, monkeypatch, capsys
@@ -204,6 +215,7 @@ def test_the_parser_routes_forget_with_its_flag(monkeypatch, tmp_path):
     assert [(a.mem_action, a.key, a.superseded_by) for a in seen] == [("forget", _KEY, _WINNER)]
 
 
+@pytest.mark.usefixtures("unix_socket_platform")
 class TestRefusedBeforeAnyStoreOpens:
     """Every refusal here must leave the store unopened and the gateway uncalled."""
 
@@ -252,6 +264,32 @@ class TestRefusedBeforeAnyStoreOpens:
         )
         monkeypatch.setattr(cc.sys, "stdin", io.StringIO(_KEY + "\n"))
         self._assert_refused(capsys, "interactive terminal")
+
+    def test_native_windows_is_refused_before_the_value_is_shown(self, monkeypatch, capsys):
+        # A Python with no socket.AF_UNIX is what native Windows looks like to the
+        # transport; the owner terminal is otherwise valid, so only the platform refuses.
+        _owner_terminal(monkeypatch)
+        monkeypatch.setattr("builtins.input", MagicMock(side_effect=AssertionError("asked")))
+        monkeypatch.delattr(socket, "AF_UNIX", raising=False)
+        with pytest.raises(SystemExit) as exc:
+            _forget()
+        assert exc.value.code == 1
+        out = capsys.readouterr()
+        assert "not available on native Windows" in out.err
+        assert "dashboard Memory page" in out.err
+        assert "Nothing was forgotten" not in out.err
+        assert _KEY not in out.out
+
+
+def test_forget_help_names_native_windows(monkeypatch, capsys):
+    """``kirocrew memory forget --help`` states the platform limit."""
+    monkeypatch.setattr("sys.argv", ["kirocrew", "memory", "forget", "--help"])
+    from kiro_crew.cli import main
+
+    with pytest.raises(SystemExit) as exc:
+        main()
+    assert exc.value.code == 0
+    assert "native Windows" in " ".join(capsys.readouterr().out.split())
 
 
 # ── client ────────────────────────────────────────────────────────────────

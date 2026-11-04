@@ -974,12 +974,30 @@ class TestMatchPathOnWindows:
     @pytest.mark.parametrize(
         "item, pattern",
         [
-            (r"C:\work\private\doc.txt", r"C:\work\private\**"),
-            ("C:/work/private/doc.txt", r"C:\work\private\**"),
-            (r"C:\work\private\doc.txt", "C:/work/private/**"),
+            pytest.param(item, pattern, id=f"{name}-{item}-{pattern}")
+            for name, cases in {
+                "an_allow_meets_either_separator": [
+                    (r"C:\work\private\doc.txt", r"C:\work\private\**"),
+                    ("C:/work/private/doc.txt", r"C:\work\private\**"),
+                    (r"C:\work\private\doc.txt", "C:/work/private/**"),
+                ],
+                "a_bracket_range_keeps_every_path_it_covers": [
+                    # ``[A-z]`` spans ``[ \ ] ^ _ `` between ``Z`` and ``a``: lower-casing
+                    # it to ``[a-z]`` would drop them, and the deny with them.
+                    (r"C:\data\_secret.txt", r"C:\data\[A-z]*"),
+                    (r"C:\data\^key", r"C:\data\[A-z]*"),
+                    (r"C:\data\_secret.txt", "C:/data/[A-z]*"),
+                    # A negated class keeps every path its as-written comparison denies.
+                    (r"C:\data\abc", r"C:\data\[!A-Z]*"),
+                    (r"C:\data\1", r"C:\data\[!A-Z]*"),
+                    # A range covering ``\`` still meets the ``\`` the item is written with.
+                    (r"C:\data\x", r"C:\data[A-z]x"),
+                ],
+            }.items()
+            for item, pattern in cases
         ],
     )
-    def test_an_allow_meets_either_separator(self, item, pattern):
+    def test_an_allow_meets_the_path_it_covers(self, item, pattern):
         from kiro_crew.platform.governance import _match_path
 
         assert _match_path(item, pattern)
@@ -1054,26 +1072,6 @@ class TestMatchPathOnWindows:
         )
         assert not resolve(ceiling, None, "filesystem.read", r"C:\Users\u\.ssh\id_rsa").permitted
         assert resolve(ceiling, None, "filesystem.read", r"C:\Users\u\notes.txt").permitted
-
-    @pytest.mark.parametrize(
-        "item, pattern",
-        [
-            # ``[A-z]`` spans ``[ \ ] ^ _ `` between ``Z`` and ``a``: lower-casing it
-            # to ``[a-z]`` would drop them, and the deny with them.
-            (r"C:\data\_secret.txt", r"C:\data\[A-z]*"),
-            (r"C:\data\^key", r"C:\data\[A-z]*"),
-            (r"C:\data\_secret.txt", "C:/data/[A-z]*"),
-            # A negated class keeps every path its as-written comparison denies.
-            (r"C:\data\abc", r"C:\data\[!A-Z]*"),
-            (r"C:\data\1", r"C:\data\[!A-Z]*"),
-            # A range covering ``\`` still meets the ``\`` the item is written with.
-            (r"C:\data\x", r"C:\data[A-z]x"),
-        ],
-    )
-    def test_a_bracket_range_keeps_every_path_it_covers(self, item, pattern):
-        from kiro_crew.platform.governance import _match_path
-
-        assert _match_path(item, pattern)
 
     @pytest.mark.parametrize(
         "item, pattern",

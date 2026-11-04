@@ -5,7 +5,7 @@ import json
 import pytest
 
 from kiro_crew.dashboard import chat_utils as cu
-from kiro_crew.dashboard import wire_render
+from kiro_crew.dashboard import mcp_oauth_provenance, wire_render
 from kiro_crew.security import exfil
 
 
@@ -73,6 +73,8 @@ def test_oauth_endpoint_revocation_is_checked_on_every_read(monkeypatch):
     approved = {"value": True}
     monkeypatch.setattr(cu, "oauth_url_contains_credential", lambda _: not approved["value"])
     url = "https://auth.example.com/authorize?state=opaque"
+    # A banner child "c" sent, so the endpoint approval is what decides the link.
+    mcp_oauth_provenance.record_emitted("c", url)
     rows = [{"role": "mcp_oauth", "content": "", "meta": {"oauth_url": url, "child": "c"}}]
     first = wire_render.prepare_messages_json(rows, False, live_child="c")
     assert url in first

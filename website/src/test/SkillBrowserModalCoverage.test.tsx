@@ -369,7 +369,7 @@ describe('SkillBrowserModal', () => {
     expect(body).toHaveTextContent('# Wrangling widgets')
     expect(body).not.toHaveTextContent('Frontmatter description wins')
 
-    expect(screen.getByText('by preview-author')).toBeInTheDocument()
+    expect(screen.getByText('By preview-author')).toBeInTheDocument()
     expect(screen.getByText('License: MIT')).toBeInTheDocument()
     expect(screen.getByText('3 files')).toBeInTheDocument()
     expect(screen.getByRole('link', { name: /Source/ }))
@@ -391,7 +391,7 @@ describe('SkillBrowserModal', () => {
     expect(strip).toHaveAttribute('data-description', 'Wrangles widgets from end to end')
     expect(strip).toHaveAttribute('data-tags', 'widgets, ops')
     expect(strip).toHaveAttribute('data-triggers', '')
-    expect(screen.getByText('by acme')).toBeInTheDocument()
+    expect(screen.getByText('By acme')).toBeInTheDocument()
   })
 
   it('refuses a non-http(s) repo_url as a Source link', async () => {

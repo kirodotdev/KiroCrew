@@ -530,8 +530,12 @@ def test_every_binder_declares_whether_it_vouches():
             actual[(path.relative_to(root).as_posix(), enclosing)] = keywords.get("vouch", "ABSENT")
 
     # ABSENT means the default: publish the record, claim NO own-store authority.
-    # The fork carries its store from the SOURCE session's record, and the subagent
-    # binder runs on keys that never reach the vouch, so neither may vouch.
+    # The subagent binders run on keys that never reach the vouch, so they may not.
+    #
+    # The fork carries its store from the SOURCE session's record, so it never
+    # vouches on that record's word: `source_vouch_agrees` answers True only when
+    # this gateway already vouches the source for the same member and store, and a
+    # source that rewrote its record to a peer's store carries nothing.
     #
     # The vouched population is CALLERS whose session key can reach `create_session`
     # -- a real dashboard slot key that `caller_slot_key` can resolve -- because a
@@ -561,7 +565,9 @@ def test_every_binder_declares_whether_it_vouches():
     expected = {
         ("cron_service/identity.py", "rebind_cron_session_template"): "False",
         ("mate_config_migration.py", "_repoint_member_threads"): "False",
-        ("dashboard/chat_fork.py", "_bind_fork_execution"): "ABSENT",
+        ("dashboard/chat_fork.py", "_bind_fork_execution"): (
+            "source_vouch_agrees(source[0], execution)"
+        ),
         (
             "dashboard/chat_persistence_parts/member_store.py",
             "_pin_private_agent_assignment",

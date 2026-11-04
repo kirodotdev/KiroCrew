@@ -1537,3 +1537,13 @@ class TestSignedPrincipalManifest:
         )
         assert b"signedPrincipal" not in ordinary.signing_payload()
         assert b'"signedPrincipal":true' in opted_in.signing_payload()
+
+
+@pytest.mark.parametrize(
+    ("order", "expected"),
+    [(None, 10), ("top", 10), (float("nan"), 10), ({}, 10), (5, 5), ("7", 7), (True, 1)],
+)
+def test_sidebar_order_that_int_cannot_take_keeps_the_default(order, expected):
+    from kiro_crew.apps.manifest_sections import UISidebar
+
+    assert UISidebar.from_dict({"order": order}).order == expected

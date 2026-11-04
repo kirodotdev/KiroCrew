@@ -339,9 +339,9 @@ rule aimed at anything else never reaches the document.
 | `topbar` | the header shell (`shell/topbar/shellHeader.tsx`) |
 | `sidebar` | the conversation-list cards: the chat session list (`ChatSidebar.tsx`) and the Crew Members roster (`members/MembersPageRoster.tsx`), both via `LIST_SHELL_CLS` in `components/listShell.ts` |
 | `chat-container` | the chat scroll region (`pages/chat/TranscriptScrollShell.tsx`) |
-| `message-bubble` | a user or assistant turn (`chat/UserMessage.tsx`, `chat/AssistantMessage.tsx`), and the pinned card that stands in for a user turn (`chat/PinnedPrompt.tsx`) |
+| `message-bubble` | a user or assistant turn (`pages/chat/UserMessage.tsx`, `pages/chat/AssistantMessage.tsx`), the pinned card that stands in for a user turn (`pages/chat/PinnedPrompt.tsx`), and a crewmate's live typing bubble (`components/chat/CrewmateLiveActivity.tsx`) |
 | `input-area` | the composer (`ChatInput.tsx`) |
-| `code-block` | a rendered fenced block (`CodeBlock.tsx`) |
+| `code-block` | a rendered fenced block (`components/CodeBlock.tsx`), the same block while it is edited (`components/EditableCodeBlock.tsx`), and a fenced block shown with a credential masked (`RedactedCodeBlock` in `components/RedactionCards.tsx`) |
 
 Do not rename or drop one of these classes when refactoring the component that
 carries it. There is no compiler reference to break, so the only signal is a

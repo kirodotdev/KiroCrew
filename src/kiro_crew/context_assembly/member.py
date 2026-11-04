@@ -867,8 +867,25 @@ def operating_mode_block(agent_label: str, *, ledger: bool = False) -> str:
     """
     block = _fill("conductor.operating_mode", agent_label=agent_label)
     if ledger:
-        block += _prompt("conductor.patrol")
+        block += ledger_rules_block("conductor.patrol")
     return block
+
+
+def ledger_rules_block(key: str) -> str:
+    """Crewmate piece *key* with each placeholder filled by the ledger-conductor rule
+    of that name (``agent_parts/spec_prompts.py`` ``_LEDGER_CONDUCTOR_RULES``).
+
+    Those rules are the one copy the root conductor's charter is assembled from as
+    well, so a rule both conductors carry cannot drift between them. A placeholder
+    that names no rule raises ``KeyError``, so a renamed rule fails at the first
+    render rather than reaching a crewmate as a hole. The charter's own outer
+    spacing is stripped; the piece lays its rules out itself.
+    """
+    from kiro_crew import agent as agent_mod
+    from kiro_crew import crewmate_prompts
+
+    rules = agent_mod._LEDGER_CONDUCTOR_RULES
+    return _fill(key, **{name: rules[name].strip() for name in crewmate_prompts.placeholders(key)})
 
 
 def resolve_turn_owner(

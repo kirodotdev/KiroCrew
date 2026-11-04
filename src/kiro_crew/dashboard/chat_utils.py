@@ -745,6 +745,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         is_system_injection_item,
         payload_for_replay,
         releases_past_subagent_hold,
+        teardown_hold_active,
     )
     from kiro_crew.dashboard.chat_utils_slack_options import (  # noqa: F401
         _forget_slack_options_message,
@@ -861,6 +862,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     )
     from kiro_crew.dashboard.slot_queue_repository import (  # noqa: F401
         ATTACHMENT_META_KEYS,
+        source_channels_of,
     )
     from kiro_crew.dashboard.state import (  # noqa: F401
         BUSY_RECOVERY_PREFIX,

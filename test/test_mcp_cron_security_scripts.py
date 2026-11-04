@@ -381,7 +381,7 @@ def test_script_parent_swap_before_metadata_never_reads_the_target(monkeypatch, 
     target = root / "private-target"
     target.mkdir()
     (target / script.name).write_text("private content must not reach the reader", encoding="utf-8")
-    original_sensitive = mcp_cron.sensitive_path_refusal
+    original_sensitive = mcp_cron.canonical_path_refusal
     original_fd_path = mcp_cron.fd_real_path
     swapped = []
     descriptors = []
@@ -401,7 +401,7 @@ def test_script_parent_swap_before_metadata_never_reads_the_target(monkeypatch, 
         assert actual is not None and Path(actual) == target / script.name
         return actual
 
-    monkeypatch.setattr(mcp_cron, "sensitive_path_refusal", swap_after_path_check)
+    monkeypatch.setattr(mcp_cron, "canonical_path_refusal", swap_after_path_check)
     monkeypatch.setattr(mcp_cron, "fd_real_path", observed_fd_path)
     monkeypatch.setattr(os, "fdopen", _refuse_content_read)
     with _recording_closes(monkeypatch) as closed:
@@ -535,10 +535,10 @@ def test_vet_script_file_blocks_sensitive_symlink(monkeypatch, tmp_path):
     link = tmp_path / "evil.py"
     link.symlink_to(target)
 
-    # Force sensitive_path_refusal to flag the resolved target, simulating ~/.aws.
+    # Force canonical_path_refusal to flag the resolved target, simulating ~/.aws.
     monkeypatch.setattr(
         mcp_cron_mod,
-        "sensitive_path_refusal",
+        "canonical_path_refusal",
         lambda p: "Blocked: x" if str(target) in p else None,
     )
     err = _vet_script_file(str(link))

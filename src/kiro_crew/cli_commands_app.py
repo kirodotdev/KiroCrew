@@ -1,9 +1,10 @@
-"""``kirocrew app``: install, import, list, enable, disable, uninstall and inspect apps.
+"""``kirocrew app``: install, import, list, enable, update, disable, uninstall and inspect apps.
 
 ``_handle_app`` dispatches every verb, ``dev``, ``info``, ``init`` and ``mcp`` (serve an
 app's MCP server, ``_run_app_mcp_server``) included. A lifecycle change goes through a
 running gateway when one answers (``_apply_through_gateway``); otherwise it is applied
-to the files alone, ``enable`` and ``disable`` say so (``_print_file_only_app_result``),
+to the files alone (``update`` has no file-only form and refuses), ``enable`` and
+``disable`` say so (``_print_file_only_app_result``),
 and the backend, cron and hook follow-ups are applied or warned about here.
 
 An owner of the mirror facade ``kiro_crew.cli_commands``: callers and tests reach every
@@ -517,16 +518,28 @@ def _handle_app(args: argparse.Namespace) -> None:
         result = install_app(args.source)
         if result.ok:
             print(f"✅ {result.message}")
-            reg = register_app(result.name)
-            if reg.agents:
-                print(f"   Agents: {', '.join(reg.agents)}")
-            if reg.skills:
-                print(f"   Skills: {', '.join(reg.skills)}")
-            if reg.crons:
-                print(f"   Crons:  {', '.join(reg.crons)}")
-            if reg.errors:
-                for e in reg.errors:
-                    print(f"   ⚠️  {e}")
+            # The gateway's install route uses the same rule
+            # (``apps.routes_lifecycle._app_may_run_after_install`` with
+            # ``fresh_install``): a fresh install registers its agents, skills and
+            # MCP servers unless the app waits for session-approval consent, which
+            # only the dashboard gives.
+            info = get_app(result.name)
+            if info and not info.get("sessionApprovalConsentPending"):
+                reg = register_app(result.name)
+                if reg.agents:
+                    print(f"   Agents: {', '.join(reg.agents)}")
+                if reg.skills:
+                    print(f"   Skills: {', '.join(reg.skills)}")
+                if reg.crons:
+                    print(f"   Crons:  {', '.join(reg.crons)}")
+                if reg.errors:
+                    for e in reg.errors:
+                        print(f"   ⚠️  {e}")
+            elif info:
+                print(
+                    "   This app asks for session approval, so it stays off until "
+                    "enabled from the dashboard."
+                )
             print(f"\n   Run: kirocrew app enable {result.name}")
         else:
             print(f"❌ {result.error}", file=sys.stderr)
@@ -566,6 +579,20 @@ def _handle_app(args: argparse.Namespace) -> None:
         else:
             print(f"❌ {result.error}", file=sys.stderr)
             sys.exit(1)
+
+    elif action == "update":
+        # Gateway only, with no file-only fallback. An update stops the app's
+        # backend, swaps its tree and restarts it, and re-registers its crons
+        # with the running scheduler; from a separate process the backend
+        # would keep running the old tree and the scheduler the old jobs.
+        if _run_app_action_through_gateway("update", args.name):
+            return
+        print(
+            "❌ No running gateway answered, so nothing was updated. Start it "
+            "(kirocrew gateway) and run this again, or press Update on the app's page.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
     elif action == "disable":
         _refuse_unsafe_app_name(args.name)
@@ -751,4 +778,4 @@ def _handle_app(args: argparse.Namespace) -> None:
         print(f"   kirocrew app install {app_dir}")
 
     else:
-        print("Usage: kirocrew app {install|list|enable|disable|uninstall|info|init}")
+        print("Usage: kirocrew app {install|list|enable|update|disable|uninstall|info|init}")

@@ -7,8 +7,9 @@ import MarkdownRenderer from '../../components/MarkdownRenderer'
 import ErrorNotice from '../../components/ErrorNotice'
 import { errMessage } from '../../utils/thunkError'
 import { knowledgeApi } from './api'
-import { typeBadgeVariant, formatDate, useCopy } from './helpers'
+import { typeBadgeVariant, formatDate, useCopy, itemTypeLabel, itemStatusLabel } from './helpers'
 import type { KnowledgeItem, Entity } from './types'
+import { fmtNumber } from '../../i18n/format'
 
 import { i18nT } from '../../i18n/t'
 import { useImeGuard } from '../../hooks/useImeGuard'
@@ -59,8 +60,8 @@ function RelatedItems({ itemId, entities }: { itemId: string; entities: Entity[]
           <div key={r.id} className="text-[12px] text-text flex items-center gap-2">
             <Link2 size={10} className="text-accent shrink-0" />
             <span className="truncate flex-1">{r.title}</span>
-            {r.shared_entities && <span className="text-[10px] text-muted">{r.shared_entities} {i18nT('pages.knowledge.detailView.shared')}</span>}
-            <Badge variant={typeBadgeVariant(r.item_type)}>{r.item_type.replace(/_/g, ' ')}</Badge>
+            {r.shared_entities && <span className="text-[10px] text-muted">{i18nT('pages.knowledge.detailView.shared_count', { count: r.shared_entities, n: fmtNumber(r.shared_entities) })}</span>}
+            <Badge variant={typeBadgeVariant(r.item_type)}>{itemTypeLabel(r.item_type)}</Badge>
           </div>
         ))}
       </div>
@@ -244,9 +245,9 @@ export default function DetailView({ itemId, onBack, onEntityClick }: { itemId: 
       />
       <h2 className="text-lg font-bold text-text-strong mb-1">{item.title}</h2>
       <div className="flex items-center gap-2 mb-2">
-        <Badge variant={typeBadgeVariant(item.item_type)}>{item.item_type.replace(/_/g, ' ')}</Badge>
+        <Badge variant={typeBadgeVariant(item.item_type)}>{itemTypeLabel(item.item_type)}</Badge>
         <span className="text-[11px] text-muted">{formatDate(item.updated_at)}</span>
-        <span className={`text-[11px] ${item.status === 'active' ? 'text-ok' : 'text-muted'}`}>{item.status}</span>
+        <span className={`text-[11px] ${item.status === 'active' ? 'text-ok' : 'text-muted'}`}>{itemStatusLabel(item.status)}</span>
         {item.namespace && item.namespace !== 'default' && <span className="bg-accent/10 text-accent px-1.5 py-0.5 rounded text-[10px]">{item.namespace}</span>}
       </div>
 

@@ -1340,6 +1340,25 @@ _DECLARED_IDENTITY_TESTS: dict[tuple[str, str], str] = {
     "Its unpooled managed stdio declarations need a per-session token override; "
     "other harnesses already carry identity through their own projections.",
     (
+        "src/kiro_crew/acp/runtime_session_setup.py",
+        "_session_label_elements",
+    ): "The session label rides a per-session element for the same reason the token "
+    "does in ``_unpooled_control_planes``: only native Kiro launches spec servers from "
+    "a shared process with no session-valued environment. KAS carries the label on its "
+    "per-session wire agent, and mirrored hosts project their own arrays.",
+    (
+        "src/kiro_crew/acp/runtime_session_setup.py",
+        "_pooled_session_servers_and_ref_spec",
+    ): "Only KAS subtracts a crewmate worker's stubbed servers from its own custom-agent "
+    "projection, so only there must the pooled lookup be keyed by the worker session "
+    "(mcp_gateway.mate_overlays). Every other host keeps the by-name lookup it had.",
+    (
+        "src/kiro_crew/acp/runtime_session_setup.py",
+        "_kas_worker_stub_names",
+    ): "The subtraction set is consumed only by the KAS harness's projection "
+    "(kas_custom_agents worker_stub_names); no harness property means 'this host "
+    "projects the worker's servers itself and must withhold the stubbed ones'.",
+    (
         "src/kiro_crew/acp/runtime_session_load.py",
         "load_session",
     ): "KAS alone must have its custom agents re-attached on resume, and no harness "

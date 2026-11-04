@@ -12,8 +12,10 @@ Kiro Crew is an open-source personal AI agent: chat from the web dashboard, the
 CLI, or a messaging channel like Slack and Discord; run multi-step tasks
 unattended; schedule cron jobs; keep memory across sessions.
 
-Kiro Crew's sole LLM provider speaks ACP. Its default backend runs `kiro-cli`
-over ACP JSON-RPC; other verified ACP harnesses are selected with
+Kiro Crew's sole LLM provider speaks ACP. With no `agent.acp_backend` choice it
+runs KAS, Kiro's agent engine, through `kiro-cli acp --agent-engine v3` or Kiro
+Crew's own bundled copy of that engine (`acp/kas_route.py`), over ACP JSON-RPC;
+Kiro CLI and the other verified ACP harnesses are selected with
 `agent.acp_backend`. MCP tools supply the agent's host capabilities.
 
 - **Backend:** Python package `kiro_crew` in `src/kiro_crew/`. **Frontend:** React
@@ -37,7 +39,7 @@ in the **same commit** when you change what it documents.
 | If you are touching… | Read first |
 |---|---|
 | `platform/`, editions, CPP seam, governance | [platform-context](docs/system-specs/modules/platform-context.md) + [governance](docs/system-specs/modules/governance.md) |
-| `security.py`, `hooks.py`, `hook_runtime/`, denied commands, sensitive paths | [security](docs/system-specs/modules/security.md) + [sel](docs/system-specs/modules/sel.md) |
+| `security/`, `hooks.py`, `hook_runtime/`, denied commands, sensitive paths | [security](docs/system-specs/modules/security.md) + [sel](docs/system-specs/modules/sel.md) |
 | `config/` — the live watcher, `restart=True` marks, appliers, `config.json` writes | [config](docs/system-specs/modules/config.md) |
 | the security model as a whole, threat boundaries | [security-deep-dive](docs/architecture/security-deep-dive.md) |
 | `computer_use/` | [computer-use](docs/system-specs/modules/computer-use.md) |

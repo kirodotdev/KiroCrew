@@ -26,7 +26,7 @@ const { createNavigationGuard, createRedirectGuard, createWindowOpenHandler } = 
 const { sanitizeWindowState, captureWindowState } = require("./window-state");
 const { stepZoomFactor } = require("./zoom");
 const { registerCaptureSurface } = require("./capture-trust");
-const { isLoopbackUrl } = require("./browser-control");
+const { isLoopbackUrl } = require("./browser-view");
 const { runAnnotateOp } = require("./browser-annotate");
 const { attachContextMenu } = require("./context-menu");
 const {
@@ -69,7 +69,7 @@ const { createWindowPrompts } = require("./runtime/window/prompts");
 const { createSessionSecurity } = require("./runtime/window/session-security");
 const { injectLinuxCaptionControls } = require("./runtime/window/linux-captions");
 const { wireWillDownloadOnce } = require("./download-handler");
-const { attachBrowserPanels, dispatchBrowserOp } = require("./runtime/window/browser-panels");
+const { attachBrowserPanels } = require("./runtime/window/browser-panels");
 
 const BROWSER_PARTITION = "persist:kirocrew-browser";
 const FULLSCREEN_SETTLE_MS = [250, 1500];
@@ -138,6 +138,9 @@ function createWindowLifecycle(options) {
   if (typeof mintLocalToken !== "function") {
     throw new Error("createWindowLifecycle: mintLocalToken is required");
   }
+  // Shared by every window, and kept in memory only, so a "Don't ask again"
+  // ends when the app quits.
+  const rememberedEditorTargets = new Set();
   if (typeof fetchRemoteToken !== "function") {
     throw new Error("createWindowLifecycle: fetchRemoteToken is required");
   }
@@ -332,11 +335,10 @@ function createWindowLifecycle(options) {
       isAlive: () => !win.isDestroyed() && !view.webContents.isDestroyed(),
     });
 
-    // Teardown order is load-bearing: no command poller or CDP owner may outlive
-    // the page it targets. Close the dashboard WebContents only after releasing
+    // Teardown order is load-bearing: no embedded view may outlive the page it
+    // is composited over. Close the dashboard WebContents only after releasing
     // every embedded panel.
     win.on("closed", () => {
-      if (win._mcAgentChannel) void win._mcAgentChannel.stop();
       if (win._mcBrowserPanels) {
         for (const id of [...win._mcBrowserPanels.keys()]) win._mcDestroyBrowserPanel(id);
       }
@@ -477,14 +479,11 @@ function createWindowLifecycle(options) {
     registerCaptureSurface(view.webContents, windowBackendUrl);
     win._mcView = view;
 
-    // One native browser view/control plane per dashboard panel, plus the agent
-    // command channel that drives them (runtime/window/browser-panels.js).
+    // One native Preview view per dashboard panel (runtime/window/browser-panels.js).
     const browserPanels = attachBrowserPanels(win, view, {
       WebContentsView,
       shell,
       partition: BROWSER_PARTITION,
-      readInternalSecret,
-      isGatewayLocalForWindow,
     });
 
     // The dashboard's own webContents, so the link block also gets the origin --
@@ -575,6 +574,19 @@ function createWindowLifecycle(options) {
     const windowOpenHandler = createWindowOpenHandler({
       openExternal: (url) => shell.openExternal(url),
       getAppOrigin: () => windowBackendUrl,
+      confirmOpen: async (url) => {
+        const { response, checkboxChecked } = await dialog.showMessageBox(win, {
+          type: "question",
+          buttons: ["Open", "Cancel"],
+          defaultId: 0,
+          cancelId: 1,
+          message: "Open this link in your editor?",
+          detail: url,
+          checkboxLabel: "Don't ask again for this machine until Kiro Crew quits",
+        });
+        return { open: response === 0, remember: checkboxChecked === true };
+      },
+      rememberedEditorTargets,
       log: glog,
     });
     // An allowed same-origin window.open (the session pop-out) is a child window
@@ -1571,7 +1583,6 @@ function createWindowLifecycle(options) {
     const panel = panelForSender(sender, panelId, { create: false });
     if (!panel) return null;
     const state = panel.manager.getState();
-    // Release CDP ownership before the view disappears.
     if (owner && owner._mcDestroyBrowserPanel) {
       owner._mcDestroyBrowserPanel(panel.id);
     }
@@ -1583,54 +1594,9 @@ function createWindowLifecycle(options) {
     return panel ? panel.manager.getState() : null;
   }
 
-  function browserTrackSession(sender, panelId, tracked) {
-    const owner = windowForWebContents(sender);
-    const sessions = owner && owner._mcReachableSessions;
-    const id = typeof panelId === "string" ? panelId.trim() : "";
-    if (!sessions || !id) return { ok: false };
-    if (tracked) sessions.add(id);
-    else sessions.delete(id);
-    // Interrupt idle/backoff so a newly declared session is registered inside
-    // submit's short native-panel wait instead of after a 25s long poll.
-    if (owner._mcAgentChannel) owner._mcAgentChannel.poke();
-    return { ok: true };
-  }
-
-  async function browserSetAgentAct(sender, panelId, enabled) {
-    const panel = panelForSender(sender, panelId);
-    if (!panel) return { ok: false };
-    panel.agentAct = !!enabled;
-    // Revocation must detach an already-held debugger immediately.
-    if (!panel.agentAct) await panel.control.release();
-    return { ok: true };
-  }
-
-  async function browserSetControlOwner(sender, panelId, requested) {
-    const panel = panelForSender(sender, panelId, { create: false });
-    if (!panel) return null;
-    return panel.control.setOwner(requested, panel.gate());
-  }
-
-  function browserGetControl(sender, panelId) {
-    const panel = panelForSender(sender, panelId, { create: false });
-    if (!panel) return null;
-    return {
-      owner: panel.control.getOwner(),
-      attached: panel.control.isAttached(),
-      gate: panel.gate(),
-    };
-  }
-
-  async function browserControl(sender, panelId, op, args) {
-    const panel = panelForSender(sender, panelId, { create: false });
-    if (!panel) return null;
-    // dispatchBrowserOp owns the closed wire vocabulary; never accept raw CDP.
-    return dispatchBrowserOp(panel, op, args);
-  }
-
   // Human-initiated element annotation on the page the user is looking at.
-  // Served through executeJavaScript/capturePage, never the agent control
-  // plane: it needs no CDP owner and Browser Mode may be off. Closed op set.
+  // Served through executeJavaScript/capturePage; no debugger attachment.
+  // Closed op set.
   // Native pointer input seen by the browser view, per WebContents. The
   // annotate focus hand-back keys off THIS (a signal the page cannot forge),
   // never off the page-controlled poll reply alone. WebContents 'input-event'
@@ -1786,11 +1752,6 @@ function createWindowLifecycle(options) {
       setInactive: browserSetInactive,
       close: browserClose,
       getState: browserGetState,
-      trackSession: browserTrackSession,
-      setAgentAct: browserSetAgentAct,
-      setControlOwner: browserSetControlOwner,
-      getControl: browserGetControl,
-      control: browserControl,
       annotate: browserAnnotate,
     },
     security: {

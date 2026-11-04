@@ -1,27 +1,23 @@
 """Pins the credential dot-dir denylist to ONE shared owner.
 
-`design_critique` (local render target) and `design_tweak` (previewed project
-folder) each screen operator-picked paths against a set of credential dot-dirs
-that the `is_sensitive_path()` floor does not enumerate. That set is owned by
-:data:`kiro_crew.security.DENIED_ROOT_PARTS`; both apps must consume the SAME
-object — identity, not equality — so a credential directory added for one app
-can never silently miss the other.
+Apps that screen operator-picked paths against a set of credential dot-dirs that
+the `is_sensitive_path()` floor does not enumerate consume
+:data:`kiro_crew.security.DENIED_ROOT_PARTS`, the SAME object — identity, not
+equality — so a credential directory added for one app can never silently miss
+another. Each consumer pins its own identity, in its own tests where it has them;
+`design_tweak` (previewed project folder) does it here.
 """
 
 from __future__ import annotations
 
-from kiro_crew.apps.builtins.design_critique.backend import routes
 from kiro_crew.apps.builtins.design_tweak.backend import server
 from kiro_crew.security import DENIED_ROOT_PARTS
 
 
 class TestDeniedRootPartsSharedOwner:
-    def test_design_critique_consumes_the_shared_object(self):
+    def test_design_tweak_consumes_the_shared_object(self):
         # `is`, not `==`: a byte-identical local copy would pass equality while
         # re-creating exactly the drift this refactor removes.
-        assert routes._DENIED_ROOT_PARTS is DENIED_ROOT_PARTS
-
-    def test_design_tweak_consumes_the_shared_object(self):
         assert server._DENIED_ROOT_PARTS is DENIED_ROOT_PARTS
 
     def test_project_secret_dirs_derives_from_the_shared_set(self):

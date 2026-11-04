@@ -44,6 +44,7 @@ import sys  # noqa: F401
 import tempfile  # noqa: F401
 import threading  # noqa: F401
 import time
+import unicodedata  # noqa: F401 - owner: uploads
 import urllib.parse  # noqa: F401
 import uuid  # noqa: F401
 import zipfile  # noqa: F401
@@ -80,6 +81,7 @@ from kiro_crew.config.sections import (  # noqa: F401
     LINK_PATTERNS_MAX,
     link_pattern_url_ok,
 )
+from kiro_crew.constants import WINDOWS_DEVICE_STEMS  # noqa: F401
 from kiro_crew.dashboard import git_repo_touches as _git_repo_touches  # noqa: F401
 from kiro_crew.dashboard import part_stream, upload_destination  # noqa: F401
 from kiro_crew.dashboard.body_numbers import body_int  # noqa: F401
@@ -291,11 +293,14 @@ from kiro_crew.dashboard.file_api.uploads import (  # noqa: F401
     _content_mismatch_message,
     _fit_stored_name,
     _log_upload_diagnostic,
+    _name_max,
     _resolve_raster_ext,
+    _safe_upload_name,
     _sniff_media_type,
     _stream_media_part,
     _upload_dir,
     _write_file_restricted,
+    api_directory_upload,
     api_upload_file,
 )
 from kiro_crew.dashboard.file_api.workspaces import (  # noqa: F401
@@ -357,7 +362,11 @@ from kiro_crew.hooks import (  # noqa: F401
 from kiro_crew.messaging.display_safety import redact_for_display  # noqa: F401
 from kiro_crew.messaging.outbound_files import OutboundFile  # noqa: F401
 from kiro_crew.messaging.raster import SNIFF_BYTES, sniff_raster_mime  # noqa: F401
-from kiro_crew.owner_only_files import ensure_directory  # noqa: F401 - owner: uploads
+from kiro_crew.owner_only_files import (  # noqa: F401 - owner: uploads
+    OWNER_ONLY_FILE_MODE,
+    ensure_directory,
+    is_owner_only_target,
+)
 from kiro_crew.pdf_extract import PdfExtraction, extract_pdf_segments  # noqa: F401
 from kiro_crew.platform import binary_content_is_flagged  # noqa: F401
 from kiro_crew.platform import wide_content_is_flagged  # noqa: F401
@@ -581,6 +590,13 @@ _MAX_UPLOAD_FILES = 20  # max files per request
 #: at 255 bytes on ext4, APFS and NTFS, and the stored name adds a 32-hex UUID
 #: and ``_`` (``_fit_stored_name``).
 _MAX_STORED_NAME_BYTES = 200
+#: Bytes the stored name spends before the tail: 32 hex digits and ``_``.
+_STORED_NAME_PREFIX_BYTES = 33
+#: Bytes the cap also leaves free: a streamed part is written under the stored
+#: name plus this temp suffix before it is committed.
+_STORED_NAME_TEMP_BYTES = len(part_stream.TEMP_SUFFIX)
+#: File-name byte limit assumed where the file system cannot report its own.
+_DEFAULT_NAME_MAX = 255
 
 # Fallback-walk budgets. ``_WALK_MAX_SCAN_*`` bounds entries scored PER KIND
 # (anti-starvation); ``_WALK_MAX_DIRS_VISITED`` bounds directories entered and is

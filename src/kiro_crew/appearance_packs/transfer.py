@@ -588,7 +588,11 @@ def save_sprite_pack(
         return {"ok": False, "error": "That sprite art could not be decoded"}
     if not raw:
         return {"ok": False, "error": "That sprite art is empty"}
-    if len(raw) > MAX_FILE_BYTES:
+    # Measured as stored: the store keeps the base64 text and caps THAT at
+    # ``MAX_FILE_BYTES`` (as the bundle import does), so a decoded size under the
+    # cap whose base64 is over it would pass here and fail the save with a
+    # message that hides the reason.
+    if len(sprite_base64.encode("utf-8")) > MAX_FILE_BYTES:
         return {"ok": False, "error": "That sprite art is too large"}
 
     if not appearances.save_pack(ident, manifest, {safe_name: sprite_base64}):

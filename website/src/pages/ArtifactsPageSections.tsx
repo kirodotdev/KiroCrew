@@ -249,7 +249,7 @@ export function RemoteBrowseSection({ provider, onForked, onCloned }: {
   const actionsStale = useSearch && isPlaceholderData
   return (
     <Card className="mt-4">
-      <CardTitle>{i18nT('pages.artifactsPage.on')} {provider.display_name}</CardTitle>
+      <CardTitle>{i18nT('pages.artifactsPage.on_provider', { provider: provider.display_name })}</CardTitle>
       <div className="mb-2">
         <SearchInput placeholder={i18nT('pages.artifactsPage.filter_artifacts', { provider: provider.display_name })} value={search} onChange={e => setSearch((e.target as HTMLInputElement).value)} />
       </div>

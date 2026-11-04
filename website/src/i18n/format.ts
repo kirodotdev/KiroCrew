@@ -345,6 +345,32 @@ export function fmtCompact(value: number, options?: NumberOptions): string {
 }
 
 /**
+ * The quantity `fmtCompact(value)` SHOWS, for choosing a plural form.
+ *
+ * A plural form has to agree with the number on screen, not the exact one:
+ * 1001 shown as `1 тыс.` takes Russian's `many` form (`1 тыс. токенов`), while
+ * 1001 itself selects `one`. The shown mantissa is read back from the formatted
+ * parts and scaled by the power of ten it abbreviates, so `1.2K` is 1200 and
+ * zh's `1.5万` is 15000. A value that does not abbreviate is returned as is.
+ */
+export function compactPluralCount(value: number, options?: NumberOptions): number {
+  if (!Number.isFinite(value) || value === 0) return value
+  const locale = activeLocale()
+  // Latin digits so the mantissa parses in every language (bn writes ১২).
+  const read = { notation: 'compact', maximumFractionDigits: 1, ...options, numberingSystem: 'latn' } as const
+  const parts = memo('compactPlural', locale, read, () =>
+    new Intl.NumberFormat(locale, { localeMatcher: 'lookup', ...read }),
+  ).formatToParts(value)
+  if (!parts.some(p => p.type === 'compact')) return value
+  const integer = parts.filter(p => p.type === 'integer').map(p => p.value).join('')
+  const fraction = parts.find(p => p.type === 'fraction')?.value ?? ''
+  const mantissa = Number(fraction ? `${integer}.${fraction}` : integer)
+  if (!Number.isFinite(mantissa) || mantissa === 0) return value
+  const exponent = Math.round(Math.log10(Math.abs(value) / mantissa))
+  return Math.sign(value) * Number((mantissa * 10 ** exponent).toPrecision(15))
+}
+
+/**
  * A byte size — `512kB`, `1.5MB`, `2.3GB`.
  *
  * One implementation replacing four that disagreed with each other: the same
@@ -537,6 +563,10 @@ const RELATIVE_THRESHOLDS: Array<{ unit: Intl.RelativeTimeFormatUnit; seconds: n
  * Future timestamps format forwards (`in 5m`) rather than being clamped, so
  * clock skew is visible instead of silently reading as "now".
  *
+ * `numeric: 'always'` keeps the number for a countdown: with `'auto'`, a run
+ * 24-48 hours away truncates to one day and reads `tomorrow`, which can be two
+ * calendar days off.
+ *
  * `unit` pins the unit instead of picking the largest that fits. A caller that
  * has already reduced its input to whole CALENDAR days needs this: with an
  * auto-picked unit a zero delta means "under one second" and renders "now",
@@ -545,18 +575,24 @@ const RELATIVE_THRESHOLDS: Array<{ unit: Intl.RelativeTimeFormatUnit; seconds: n
  */
 export function fmtRelative(
   value: Date | string | number | null | undefined,
-  options?: { style?: RelativeStyle; now?: Date | number; unit?: Intl.RelativeTimeFormatUnit },
+  options?: {
+    style?: RelativeStyle
+    now?: Date | number
+    unit?: Intl.RelativeTimeFormatUnit
+    numeric?: Intl.RelativeTimeFormatNumeric
+  },
 ): string {
   const d = toDate(value)
   if (!d) return '—'
   const style = options?.style ?? 'narrow'
+  const numeric = options?.numeric ?? 'auto'
   const nowMs = options?.now instanceof Date ? options.now.getTime() : (options?.now ?? Date.now())
   const deltaSeconds = (d.getTime() - nowMs) / 1000
   const magnitude = Math.abs(deltaSeconds)
 
   const locale = activeLocale()
-  const rtf = memo('relative', locale, style, () =>
-    new Intl.RelativeTimeFormat(locale, { localeMatcher: 'lookup', numeric: 'auto', style }),
+  const rtf = memo(numeric === 'auto' ? 'relative' : 'relativeAlways', locale, style, () =>
+    new Intl.RelativeTimeFormat(locale, { localeMatcher: 'lookup', numeric, style }),
   )
 
   if (options?.unit) {

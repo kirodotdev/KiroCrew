@@ -26,6 +26,8 @@ import type { DiscoveredMcpServer, McpDiscoverDetail, McpInstallPlan } from '../
 import { i18nT } from '../i18n/t'
 import { fmtNumber } from '../i18n/format'
 import { useImeGuard } from '../hooks/useImeGuard'
+import { useScrollEdgesY } from '../hooks/useScrollEdges'
+import { MORE_BELOW_MASK } from './ModelEffortDropdown'
 interface Props {
   open: boolean
   onClose: () => void
@@ -105,7 +107,15 @@ export default function McpBrowserModal({ open, onClose, askAgent = true }: Prop
   // yank the list away on small screens.
   const [mobileDetail, setMobileDetail] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
-  const listRef = useRef<HTMLDivElement>(null)
+  const listRef = useRef<HTMLDivElement | null>(null)
+  // The results column is capped by the modal, and with the scrollbar hidden
+  // until scroll a mouse user saw a list that just ended. The bottom fade says
+  // more servers sit below (see MORE_BELOW_MASK).
+  const [attachList, listEdges, remeasureList] = useScrollEdgesY<HTMLDivElement>()
+  const setListNode = useCallback((node: HTMLDivElement | null) => {
+    listRef.current = node
+    attachList(node)
+  }, [attachList])
 
   const handleQueryChange = useCallback((value: string) => {
     setQuery(value)
@@ -157,6 +167,10 @@ export default function McpBrowserModal({ open, onClose, askAgent = true }: Prop
   const failedProviderCount = providerOutcomes.filter(outcome => outcome.status !== 'ok').length
   const allProvidersFailed = providerOutcomes.length > 0 && failedProviderCount === providerOutcomes.length
 
+  // New results or an install note change the rows, not the column's own box,
+  // so no observer on the column sees it.
+  useEffect(() => { remeasureList() }, [results, installPhases, remeasureList])
+
   const serverKey = (s: DiscoveredMcpServer) => `${s.provider}:${s.id}`
   const selectedServer = results.find(s => serverKey(s) === selectedKey) ?? null
   const isInstalled = (s: DiscoveredMcpServer) => s.installed || installedOverride.has(serverKey(s))
@@ -196,6 +210,11 @@ export default function McpBrowserModal({ open, onClose, askAgent = true }: Prop
       setInstalledOverride(prev => new Set(prev).add(key))
       queryClient.invalidateQueries({ queryKey: ['mcp-servers'] })
       queryClient.invalidateQueries({ queryKey: ['mcp-discover'] })
+      // MCP Management (#24920) shares the MCP Servers panel and reads
+      // ['mcpGatewayServers'] under staleTime: Infinity, so a registry install
+      // otherwise leaves the new server without a Management row / stub control
+      // until a reload. Same refresh the custom-add, edit and apply paths do.
+      queryClient.invalidateQueries({ queryKey: ['mcpGatewayServers'] })
     },
     onError: (err, server) => {
       const key = serverKey(server)
@@ -313,11 +332,11 @@ export default function McpBrowserModal({ open, onClose, askAgent = true }: Prop
         {results.length > 0 && (
           <div className="flex gap-3 flex-1 min-h-0">
             <div
-              ref={listRef}
+              ref={setListNode}
               id="mcp-results-list"
               role="listbox"
               aria-label={i18nT('components.mcpBrowserModal.mcp_server_search_results')}
-              className={`${selectedServer && mobileDetail ? 'hidden md:block' : 'block'} w-full md:w-[40%] md:shrink-0 overflow-y-auto space-y-1.5 pr-1`}
+              className={`${selectedServer && mobileDetail ? 'hidden md:block' : 'block'} w-full md:w-[40%] md:shrink-0 overflow-y-auto space-y-1.5 pr-1 ${listEdges.bottom ? MORE_BELOW_MASK : ''}`}
             >
               {results.map(server => {
                 const key = serverKey(server)

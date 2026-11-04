@@ -84,7 +84,8 @@ def _create_stacked_dump(dumps_dir: Path, *, age_secs: float = 0.0) -> Path:
         "# If thread stacks appear below, the event loop wedged and faulthandler fired.\n"
         "\n"
         "Thread 0x00007f0000000000 (most recent call first):\n"
-        '  File "example.py", line 1 in main\n'
+        '  File "example.py", line 1 in main\n',
+        encoding="utf-8",
     )
     if age_secs:
         old = time.time() - age_secs
@@ -99,7 +100,8 @@ def _create_header_only_dump(dumps_dir: Path) -> Path:
         "# Kiro Crew loop-stall crash dump — opened 20260810T020000Z\n"
         "# PID: 12345\n"
         "# If thread stacks appear below, the event loop wedged and faulthandler fired.\n"
-        "\n"
+        "\n",
+        encoding="utf-8",
     )
     return p
 
@@ -307,7 +309,8 @@ def _create_owned_dump(
         "# If thread stacks appear below, the event loop wedged and faulthandler fired.\n"
         "\n"
         "Thread 0x00007f0000000000 (most recent call first):\n"
-        '  File "example.py", line 1 in main\n'
+        '  File "example.py", line 1 in main\n',
+        encoding="utf-8",
     )
     return p
 

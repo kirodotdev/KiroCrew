@@ -167,6 +167,14 @@ export function pendingImageBoxStyle(compact: boolean): React.CSSProperties {
  *  the 404s a genuinely missing image costs. */
 const MAX_SITE_ROOT_ANCESTORS = 8
 
+/** `path` with its last component cut off, or `path` unchanged when it has no
+ *  separator. `\` counts as a separator only on a drive-rooted Windows path
+ *  (`windows`, read from the path itself unless the caller pins it for a walk
+ *  up from one file); on POSIX a backslash is a legal file-name character. */
+function parentDirOf(path: string, windows = WINDOWS_ABS_PATH_RE.test(path)): string {
+  return windows ? path.replace(/[\\/][^\\/]*$/, '') : path.replace(/\/[^/]*$/, '')
+}
+
 /** Fallback on-disk paths for a root-relative image (`/images/a.png`) in a
  *  previewed file, nearest directory first.
  *
@@ -181,14 +189,12 @@ const MAX_SITE_ROOT_ANCESTORS = 8
  *  reading resolves against the gateway's own drive, which need not be the
  *  previewed file's.
  *
- *  `\` counts as a separator only when the file itself sits on a drive-rooted
- *  Windows path; on POSIX a backslash is a legal file-name character. */
+ *  Separators follow `parentDirOf`. */
 export function siteRootImageCandidates(filePath: string, rootRelative: string): string[] {
   const rel = rootRelative.replace(/^\/+/, '')
   if (!rel) return []
-  const parentOf = WINDOWS_ABS_PATH_RE.test(filePath)
-    ? (p: string) => p.replace(/[\\/][^\\/]*$/, '')
-    : (p: string) => p.replace(/\/[^/]*$/, '')
+  const windows = WINDOWS_ABS_PATH_RE.test(filePath)
+  const parentOf = (p: string) => parentDirOf(p, windows)
   let dir = parentOf(filePath)
   // No separator at all: there is no directory to walk from.
   if (dir === filePath) return []
@@ -379,7 +385,7 @@ export function ImgWithFallback({
     const rawUrl = (p: string) => `/api/file-raw?path=${encodeURIComponent(p)}${version ? `&v=${encodeURIComponent(version)}` : ''}`
     let candidatePaths: string[]
     if (basePath && !src.startsWith('/') && !src.startsWith('~') && !isWinAbs) {
-      const resolved = basePath.replace(/\/[^/]*$/, '') + '/' + localPath
+      const resolved = parentDirOf(basePath) + '/' + localPath
       diskPath = resolved
       candidatePaths = [resolved]
     } else {

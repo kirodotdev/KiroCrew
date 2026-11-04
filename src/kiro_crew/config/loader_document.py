@@ -214,7 +214,7 @@ def _raw_config() -> dict:
         return {}
     try:
         raw = json.loads(read_config_text(p))
-    except (json.JSONDecodeError, OSError):
+    except (json.JSONDecodeError, UnicodeDecodeError, OSError):
         return {}
     return raw if isinstance(raw, dict) else {}
 

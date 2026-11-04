@@ -196,6 +196,7 @@ async def _init_services(self: GatewayOrchestrator) -> None:
             log_message="agent_runtime.run_first_run_setup failed",
         )
     except Exception:
+        # A rebuild PlatformCompositionError lands here too: platform boot enforces composition.
         # Boot deliberately continues: a gateway with no agent spec still
         # serves the dashboard, and one command repairs it. But this is NOT a
         # warning-level event — without a spec on disk kiro-cli answers every
@@ -892,6 +893,18 @@ async def run(self: GatewayOrchestrator) -> None:
     from kiro_crew.enterprise_boot import require_kiro_login
 
     self._boot_kiro_service = await require_kiro_login(assume_ready=self._test_mode)
+
+    # Enterprise build only (RFC D6): KAS is the harness, and a KAS that cannot start
+    # refuses the start instead of falling back to the Kiro CLI harness. Before any
+    # service starts, like the sign-in check above. Only the gateway records the
+    # verdict that refuses later KAS sessions; another process that spawns KAS gets
+    # that spawn's own error. An oss build skips this block entirely.
+    from kiro_crew import edition
+
+    if edition.is_enterprise():
+        from kiro_crew.enterprise_boot import require_kas_harness
+
+        await asyncio.to_thread(require_kas_harness, self._cfg, test_mode=self._test_mode)
 
     # ── Initialise all services ──
     from kiro_crew.slack.events import SeenCache, init_socket_mode

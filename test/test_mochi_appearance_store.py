@@ -189,10 +189,10 @@ class TestOverwrite:
                 raise OSError("No space left on device")
             return real_write_bytes(self, data)
 
-        monkeypatch.setattr(Path, "write_bytes", _explode)
-        with pytest.raises(OSError):
-            save_sprite_pack(tmp_path, _payload(overwriteId=pack_id, name="Replacement"))
-        monkeypatch.undo()
+        with monkeypatch.context() as mp:
+            mp.setattr(Path, "write_bytes", _explode)
+            with pytest.raises(OSError):
+                save_sprite_pack(tmp_path, _payload(overwriteId=pack_id, name="Replacement"))
 
         # Old pack still there, unchanged, and no staging debris left behind.
         assert sorted(p.name for p in pack.iterdir()) == before
@@ -226,10 +226,10 @@ class TestStagedOverwriteAcrossEveryWriter:
                 raise zipfile.BadZipFile("CRC failed")
             return real_read(self, name)
 
-        monkeypatch.setattr(zipfile.ZipFile, "read", _boom)
-        with pytest.raises(Exception):
-            import_bundle(tmp_path, blob)
-        monkeypatch.undo()
+        with monkeypatch.context() as mp:
+            mp.setattr(zipfile.ZipFile, "read", _boom)
+            with pytest.raises(Exception):
+                import_bundle(tmp_path, blob)
 
         assert sorted(p.name for p in pack.iterdir()) == before
         detail = get_pack_detail(tmp_path, pack_id)
@@ -255,10 +255,10 @@ class TestStagedOverwriteAcrossEveryWriter:
                 raise OSError("No space left on device")
             return real(path, content, **kw)
 
-        monkeypatch.setattr(store, "atomic_write", _explode)
-        with pytest.raises(OSError):
-            save_pack(tmp_path, {**meta, "name": "Replacement"}, {"idle": "<svg>b</svg>"})
-        monkeypatch.undo()
+        with monkeypatch.context() as mp:
+            mp.setattr(store, "atomic_write", _explode)
+            with pytest.raises(OSError):
+                save_pack(tmp_path, {**meta, "name": "Replacement"}, {"idle": "<svg>b</svg>"})
 
         assert sorted(p.name for p in pack.iterdir()) == before
         detail = get_pack_detail(tmp_path, "edit-me")

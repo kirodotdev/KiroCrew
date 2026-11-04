@@ -412,6 +412,50 @@ class TestTheUpgradeRefusesWhatItCannotAttribute:
         )
 
     @pytest.mark.parametrize(
+        ("content", "reason"),
+        [
+            (b'{"owner_member": "r\xe9viewer"}', f"{LEGACY_MEMBER_MANIFEST} is not UTF-8"),
+            (b"[" * 100_000 + b"]" * 100_000, f"{LEGACY_MEMBER_MANIFEST} is not valid JSON"),
+        ],
+        ids=["not-utf8", "nested-past-the-recursion-limit"],
+    )
+    def test_an_unparseable_manifest_refuses_its_store_and_the_scan_goes_on(
+        self, content: bytes, reason: str
+    ) -> None:
+        """One store's manifest refuses that store alone; the next store still upgrades."""
+        from kiro_crew.config import loader
+
+        directory = _write_legacy_home("reviewer")
+        (directory / LEGACY_MEMBER_MANIFEST).write_bytes(content)
+        other = "member-writer-fedcba9876543210fedcba9876543210"
+        document = json.loads(_config_bytes())
+        document["agents"]["writer"] = {"kiro_agent": "kirocrew", "memory_store": other}
+        document["memory_stores"][other] = {"owner_member": "writer", "memory_version": 2}
+        (config_dir() / "config.json").write_text(json.dumps(document), encoding="utf-8")
+        other_dir = memory_stores.memory_stores_root() / other
+        other_dir.mkdir(parents=True)
+        (other_dir / LEGACY_MEMBER_MANIFEST).write_text(
+            json.dumps({"owner_member": "writer", "memory_version": 2}), encoding="utf-8"
+        )
+        _write_legacy_database(
+            other_dir / memory_stores.MEMORY_DB_FILE, store=other, owner="writer"
+        )
+        loader._invalidate_config_cache()
+        cfg = KiroCrewConfig.load()
+
+        try:
+            states = legacy_member_store_states(cfg)
+            upgraded = migrate_legacy_member_stores(cfg)
+        except Exception as exc:  # the property under test: one manifest never ends the scan
+            pytest.fail(f"the upgrade scan raised: {exc!r}")
+        assert reason in states[STORE]
+        assert upgraded == [other]
+
+        assert cfg.agents["reviewer"].member_id == ""
+        assert cfg.agents["writer"].member_id == "writer"
+        assert (directory / LEGACY_MEMBER_MANIFEST).read_bytes() == content
+
+    @pytest.mark.parametrize(
         ("stamp", "reason"),
         [
             (

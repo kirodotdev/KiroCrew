@@ -72,7 +72,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "agent_version": ("property", False, "bb418bb7ece8", "acp"),
     "answer_elicitation": ("function", True, "2fcb1ac189fa", "acp"),
     "approval_withdrawable": ("data", False, "", ""),
-    "approve_tool": ("function", True, "d240c0f882a7", "acp"),
+    "approve_tool": ("function", True, "86811c6ce780", "acp"),
     "available_models": ("function", False, "92d6193dbe19", "acp"),
     "background_launch": ("function", False, "d85112f1c4e4", "acp"),
     "billing_stats": ("function", False, "8a5937500587", "acp"),
@@ -99,6 +99,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "disown_work_dir": ("function", False, "b60c5fea256e", "acp_lifecycle"),
     "exit_code": ("property", False, "8dc15be1dfda", "acp"),
     "get_valid_effort_levels": ("function", False, "6806e867af4e", "acp"),
+    "harness_compact_verb_advertised": ("property", False, "a6632a57e602", "acp"),
     "harness_managed_compaction_backend": ("property", False, "f21e39ec5ffb", "acp"),
     "has_active_turn": ("function", False, "a6632a57e602", "acp"),
     "has_unfinished_turn": ("function", False, "a6632a57e602", "acp"),
@@ -173,6 +174,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "wait_for_compaction": ("function", True, "1d8ef804d52e", "acp_turns"),
     "wait_for_declared_mcp": ("function", True, "921c3727b83c", "acp"),
     "wait_turn_done": ("function", True, "48da118c69ff", "acp"),
+    "withheld_credentials_notice": ("property", False, "bb418bb7ece8", "acp"),
     "work_scratch_dir": ("property", False, "d921fd8d443d", "acp"),
 }
 

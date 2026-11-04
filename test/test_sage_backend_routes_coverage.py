@@ -1359,10 +1359,14 @@ class TestRegisterRoutes(_SageRoutesBase):
     async def test_startup_hook_reaps_orphan_run_dirs_off_the_loop(self):
         app = web.Application()
         self.mod.register_routes(app)
+        store.ensure_run_layout("orphan-run")
+        self.assertEqual(store.list_run_ids(), ["orphan-run"])
         with unittest.mock.patch.object(
-                self.mod, "_reap_orphan_run_dirs", return_value=2) as reap:
+                self.mod, "_reap_orphan_run_dirs",
+                wraps=self.mod._reap_orphan_run_dirs) as reap:
             await self._startup_hook(app, "_reap_on_startup")(app)
         reap.assert_called_once_with()
+        self.assertEqual(store.list_run_ids(), [], "the orphan run dir is reaped")
 
     async def test_startup_hook_swallows_a_reap_failure(self):
         app = web.Application()
@@ -1374,11 +1378,11 @@ class TestRegisterRoutes(_SageRoutesBase):
     async def test_cleanup_hook_retires_the_review_pool(self):
         app = web.Application()
         self.mod.register_routes(app)
-        shutdown = unittest.mock.AsyncMock()
-        with unittest.mock.patch.object(
-                self.mod.review_pool, "shutdown_pool", shutdown):
+        live_pool = unittest.mock.AsyncMock()
+        with unittest.mock.patch.object(self.mod.review_pool, "_POOL", live_pool):
             await app.on_cleanup[-1](app)
-        shutdown.assert_awaited_once()
+            self.assertIsNone(self.mod.review_pool._POOL, "the singleton pool is retired")
+        live_pool.shutdown.assert_awaited_once()
 
     async def test_cleanup_hook_swallows_a_shutdown_failure(self):
         app = web.Application()

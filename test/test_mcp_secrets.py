@@ -19,6 +19,7 @@ import pytest
 
 from kiro_crew import mcp_secrets
 from kiro_crew.mcp_caller import SOURCE_ENV, SOURCE_PROTECTED, SOURCE_TOKEN, OwnIdentity
+from kiro_crew.validation import ValidationError
 
 
 @pytest.fixture(autouse=True)
@@ -107,7 +108,7 @@ def test_validate_args_accepts_a_well_formed_call() -> None:
 
 
 def test_validate_args_rejects_a_bad_method() -> None:
-    with pytest.raises(Exception):
+    with pytest.raises(ValidationError):
         mcp_secrets._validate_args(
             "call_api_with_secret",
             {"secret_name": "K", "method": "TRACE", "url": "https://api.example.com"},

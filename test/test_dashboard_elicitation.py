@@ -242,6 +242,19 @@ async def test_bad_bodies_are_400(state):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("action", [[], ["accept"], {}, {"a": 1}])
+async def test_an_unhashable_action_is_a_400_not_a_500(state, action):
+    _slot, fut, row = _slot_with_pending(state, "rid-9")
+    async with TestClient(TestServer(_app(state, _dashboard_user))) as client:
+        resp = await client.post(
+            "/api/chat/slots/selected/elicitation", json={**_target(row), "action": action}
+        )
+        assert resp.status == 400
+        assert (await resp.json())["code"] == "invalid_action"
+    assert not fut.done()
+
+
+@pytest.mark.asyncio
 async def test_a_stale_card_cannot_answer_a_later_ask_that_reused_its_id(state):
     """ACP request ids are connection-scoped and a backend may reuse one once the
     earlier ask expired. A delayed POST from the OLD card names the old row, so

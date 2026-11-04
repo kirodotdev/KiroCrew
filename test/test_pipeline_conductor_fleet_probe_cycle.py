@@ -11,7 +11,6 @@ Shared fixtures and helpers are in ``pipeline_conductor_fleet_probe_helpers.py``
 from __future__ import annotations
 
 import json
-import time
 from pathlib import Path
 
 import pytest
@@ -28,6 +27,7 @@ from pipeline_conductor_fleet_probe_helpers import (
 )
 
 from conftest import make_dir_link
+from kiro_crew.testing.clock import ManualClock
 
 
 @pytest.fixture
@@ -91,6 +91,19 @@ def write_state(tmp_path, handled, name="probe-config.json") -> Path:
     return path
 
 
+def probe_clock(mod, monkeypatch, written: Path) -> ManualClock:
+    """Freeze the wall clock the probe reads at the instant ``written`` was last modified.
+
+    The script and its sessions owner both measure a transcript's age and a recorded
+    mark's age against ``time.time()``. On one frozen clock the transcript is 0 s old and
+    a mark is exactly as old as the test stamps it.
+    """
+    clock = ManualClock(start=written.stat().st_mtime)
+    clock.install(monkeypatch, mod)
+    clock.install(monkeypatch, mod._sessions)
+    return clock
+
+
 def test_probe_fires_gone_for_a_missing_transcript(mod, sessions, empty_proc, tmp_path, capsys):
     assert probe(mod, {"sessions": [KEY]}, tmp_path) == 0
     out = capsys.readouterr().out
@@ -110,12 +123,12 @@ def test_probe_fires_a_payload_report_with_its_digest(mod, sessions, empty_proc,
 
 
 def test_probe_suppresses_a_payload_the_conductor_already_acted_on(
-    mod, sessions, empty_proc, tmp_path, capsys
+    mod, sessions, empty_proc, tmp_path, monkeypatch, capsys
 ):
-    transcript(sessions, KEY, row("assistant", "GREEN: PR 42 is green"))
+    path = transcript(sessions, KEY, row("assistant", "GREEN: PR 42 is green"))
+    clock = probe_clock(mod, monkeypatch, path)
     digest = mod._digest("GREEN:GREEN: PR 42 is green")
-    # flake-ok: wall-clock mark far inside the idle window, pre-existing shape, moved verbatim; tracked for a de-flake pass
-    write_state(tmp_path, {KEY: {"tag": "GREEN", "digest": digest, "ts": int(time.time())}})
+    write_state(tmp_path, {KEY: {"tag": "GREEN", "digest": digest, "ts": int(clock.time())}})
     assert probe(mod, {"sessions": [KEY]}, tmp_path) == 0
     out = capsys.readouterr().out
     assert fired_lines(out) == []
@@ -148,27 +161,27 @@ def test_probe_fires_terminal_when_a_finished_worker_keeps_talking(
 
 
 def test_probe_fires_noprogress_when_nothing_was_produced_since_the_mark(
-    mod, sessions, empty_proc, tmp_path, capsys
+    mod, sessions, empty_proc, tmp_path, monkeypatch, capsys
 ):
-    transcript(sessions, KEY, row("assistant", "prose, no report"))
-    # flake-ok: wall-clock mark an hour old, well past the 900 s idle window, pre-existing shape, moved verbatim; tracked for a de-flake pass
-    write_state(tmp_path, {KEY: {"tag": "WORKING", "index": 0, "ts": time.time() - 3600}})
+    path = transcript(sessions, KEY, row("assistant", "prose, no report"))
+    clock = probe_clock(mod, monkeypatch, path)
+    write_state(tmp_path, {KEY: {"tag": "WORKING", "index": 0, "ts": clock.time() - 3600}})
     assert probe(mod, {"sessions": [KEY], "idle_alert_secs": 900}, tmp_path) == 0
     assert "NOPROGRESS" in fired_lines(capsys.readouterr().out)[0]
 
 
 def test_probe_surfaces_a_sticky_report_behind_a_handled_error(
-    mod, sessions, empty_proc, tmp_path, capsys
+    mod, sessions, empty_proc, tmp_path, monkeypatch, capsys
 ):
-    transcript(
+    path = transcript(
         sessions,
         KEY,
         row("assistant", "BLOCKED: a ruling is owed"),
         row("error", "dispatch failure"),
     )
+    clock = probe_clock(mod, monkeypatch, path)
     err_digest = mod._digest("ERR:dispatch failure")
-    # flake-ok: wall-clock mark far inside the idle window, pre-existing shape, moved verbatim; tracked for a de-flake pass
-    write_state(tmp_path, {KEY: {"tag": "ERR", "digest": err_digest, "ts": int(time.time())}})
+    write_state(tmp_path, {KEY: {"tag": "ERR", "digest": err_digest, "ts": int(clock.time())}})
     assert probe(mod, {"sessions": [KEY]}, tmp_path) == 0
     line = fired_lines(capsys.readouterr().out)[0]
     assert "BLOCKED" in line
@@ -176,14 +189,14 @@ def test_probe_surfaces_a_sticky_report_behind_a_handled_error(
 
 
 def test_probe_converts_a_suppressed_payload_into_noprogress(
-    mod, sessions, empty_proc, tmp_path, capsys
+    mod, sessions, empty_proc, tmp_path, monkeypatch, capsys
 ):
-    transcript(sessions, KEY, row("assistant", "PR: opened 42"))
+    path = transcript(sessions, KEY, row("assistant", "PR: opened 42"))
+    clock = probe_clock(mod, monkeypatch, path)
     digest = mod._digest("PR:PR: opened 42")
     write_state(
         tmp_path,
-        # flake-ok: wall-clock mark an hour old, well past the 900 s idle window, pre-existing shape, moved verbatim; tracked for a de-flake pass
-        {KEY: {"tag": "PR", "digest": digest, "index": 0, "ts": time.time() - 3600}},
+        {KEY: {"tag": "PR", "digest": digest, "index": 0, "ts": clock.time() - 3600}},
     )
     assert probe(mod, {"sessions": [KEY], "idle_alert_secs": 900}, tmp_path) == 0
     assert "NOPROGRESS" in fired_lines(capsys.readouterr().out)[0]

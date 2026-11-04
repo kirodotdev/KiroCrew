@@ -118,6 +118,8 @@ interface AppListEntry {
 // staying empty until a manual reload or an app enable/disable.
 const APP_NAV_MAX_RETRIES = 4
 const APP_NAV_RETRY_BASE_MS = 500
+/** One return to the tab fires focus and visibilitychange; read the app list once. */
+const APP_LIST_RETURN_FLOOR_MS = 2000
 
 /**
  * The dashboard shell's state and effects: the routing context, the boot reads,
@@ -648,12 +650,12 @@ export function useAppShell() {
             const customIconUrl = target.iconUrl
             const builtinIcon = target.glyphAllowed ? getBuiltinIcon(iconName) : undefined
             const baseIcon = customIconUrl || target.iconUrlDark
-              ? <AppIcon iconUrl={customIconUrl} iconUrlDark={target.iconUrlDark} icon={iconName} size={16} />
+              ? <AppIcon iconUrl={customIconUrl} iconUrlDark={target.iconUrlDark} icon={iconName} size={20} />
               : target.pageIconUrl
-                ? <img src={'/apps/' + a.name + '/ui/' + target.pageIconUrl} alt="" className="w-4 h-4 rounded-sm object-contain" />
+                ? <img src={'/apps/' + a.name + '/ui/' + target.pageIconUrl} alt="" className="w-5 h-5 rounded-sm object-contain" />
                 : builtinIcon
                   ? builtinIcon
-                  : <Package size={16} />
+                  : <Package size={20} />
             // An app that declares `ui.pages[].iconInactiveUrl` gets that file on
             // its row while the row is not selected, the way built-in icons go
             // grey (see AppNavStateIcon).
@@ -729,6 +731,41 @@ export function useAppShell() {
     }
     window.addEventListener('mc:apps-changed', handler)
     return () => window.removeEventListener('mc:apps-changed', handler)
+  }, [refreshAppNav, queryClient])
+  // An app installed, updated or removed OUTSIDE this tab (`kirocrew app
+  // install` in a terminal, another tab's App Store) fires no mc:apps-changed
+  // here, and the gateway sends no event for it: CLI uninstall does not even go
+  // through the gateway. With ['apps'] at staleTime Infinity the nav rail and
+  // the link-preview layer would keep the old list until a reload, so re-read
+  // it when the user comes back to the tab (#28740). Focus that returns from
+  // one of this document's own app iframes is not a return to the tab and is
+  // skipped, and a short floor folds the focus + visibilitychange pair one
+  // return fires into a single read.
+  useEffect(() => {
+    let lastRead = 0
+    let blurredIntoFrame = false
+    const reread = () => {
+      const now = Date.now()
+      if (now - lastRead < APP_LIST_RETURN_FLOOR_MS) return
+      lastRead = now
+      queryClient.invalidateQueries({ queryKey: ['apps'], exact: true, refetchType: 'none' })
+      refreshAppNav()
+    }
+    const onBlur = () => { blurredIntoFrame = document.activeElement instanceof HTMLIFrameElement }
+    const onFocus = () => {
+      const fromFrame = blurredIntoFrame
+      blurredIntoFrame = false
+      if (!fromFrame) reread()
+    }
+    const onVisibility = () => { if (document.visibilityState === 'visible') reread() }
+    window.addEventListener('blur', onBlur)
+    window.addEventListener('focus', onFocus)
+    document.addEventListener('visibilitychange', onVisibility)
+    return () => {
+      window.removeEventListener('blur', onBlur)
+      window.removeEventListener('focus', onFocus)
+      document.removeEventListener('visibilitychange', onVisibility)
+    }
   }, [refreshAppNav, queryClient])
   // Refetch the Apps nav when the gateway connection is *re*-established after a
   // drop — e.g. a `kirocrew update` restart disconnects then reconnects the

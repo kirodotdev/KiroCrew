@@ -208,11 +208,14 @@ def test_an_edit_during_the_read_is_not_memoized(
         return policy
 
     monkeypatch.setattr(sessions_mod, "_read_managed_tool_policy_uncached", read_while_editing)
+    # The one-name read is what this pins; the every-name walk has its own test.
+    monkeypatch.setattr(sessions_mod, "_prefill_managed_tool_policies", lambda agents_dir, **_: {})
 
     assert sessions_mod._read_managed_tool_policy_sync(tmp_path, AGENT) == old_policy
     # The read count alone cannot distinguish "not stored" from "stored but
     # missed": the bumped mtime makes the second call miss either way.
-    assert str(tmp_path) not in sessions_mod._TOOL_POLICY_MEMO._answers
+    stored = sessions_mod._TOOL_POLICY_MEMO._answers.get(str(tmp_path), (b"", {}, False))[1]
+    assert AGENT not in stored
     assert sessions_mod._read_managed_tool_policy_sync(tmp_path, AGENT) == new_policy
     assert uncached_calls == 2, "the answer read across the edit must not be served again"
 
@@ -295,3 +298,132 @@ async def test_the_route_serves_a_repeat_request_without_spec_reads(
     second = await sessions_mod.api_session_tool_policy(request)
     assert json.loads(second.body.decode("utf-8")) == {"exclude": ["shell"]}
     assert reads == []
+
+
+def test_one_walk_serves_the_first_read_of_every_other_agent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Each managed server asks for its own agent's policy. The first read under
+    a revision answers every name exactly one spec declares, so the next
+    agent's first read opens no spec file, and its answer is the one the
+    one-name read gives."""
+    _populate(tmp_path)
+    _write_spec(
+        tmp_path / "Pkg-writer.json",
+        {"name": "writer", "managedToolPolicy": {"exclude": ["cron"]}},
+    )
+    expected = sessions_mod._read_managed_tool_policy_uncached(tmp_path, "writer")
+    reads = _count_reads(monkeypatch)
+
+    assert sessions_mod._read_managed_tool_policy_sync(tmp_path, AGENT) == {"exclude": ["shell"]}
+    assert reads, "the first read must walk the directory"
+    reads.clear()
+
+    assert sessions_mod._read_managed_tool_policy_sync(tmp_path, "writer") == expected
+    assert sessions_mod._read_managed_tool_policy_sync(tmp_path, "other-0") == {}
+    assert reads == [], "another agent's first read walked the directory again"
+
+
+def test_the_walk_leaves_twins_refusals_and_undeclared_names_to_the_one_name_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only a name exactly one spec declares, with a policy that reads, is
+    answered by the walk; every other name is read on its own each time it
+    misses, so a refusal is still re-derived and a twin is still compared."""
+    twin = {"name": "twin", "managedToolPolicy": {"exclude": ["shell"]}}
+    _write_spec(tmp_path / "Alpha-twin.json", twin)
+    _write_spec(tmp_path / "Beta-twin.json", twin)
+    _write_spec(tmp_path / "bad.json", {"name": "bad", "managedToolPolicy": ["shell"]})
+    _write_spec(tmp_path / "plain.json", {"name": "plain"})
+
+    assert sessions_mod._read_managed_tool_policy_sync(tmp_path, "plain") == {}
+    stored = sessions_mod._TOOL_POLICY_MEMO._answers[str(tmp_path)][1]
+    assert set(stored) == {"plain"}
+
+    reads = _count_reads(monkeypatch)
+    assert sessions_mod._read_managed_tool_policy_sync(tmp_path, "twin") == {"exclude": ["shell"]}
+    assert reads, "a twin is resolved by the one-name read"
+    for _ in range(2):
+        reads.clear()
+        with pytest.raises(sessions_mod.ManagedToolPolicyUnreadable):
+            sessions_mod._read_managed_tool_policy_sync(tmp_path, "bad")
+        assert reads, "a refusal must not be served from the walk"
+
+
+def test_a_walk_read_across_an_edit_is_not_stored(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The every-name walk follows the store rule of every answer: a write that
+    lands during it leaves nothing from it in the memo."""
+    _populate(tmp_path)
+    writer = tmp_path / "Pkg-writer.json"
+    _write_spec(writer, {"name": "writer", "managedToolPolicy": {"exclude": ["cron"]}})
+    real_walk = sessions_mod._prefill_managed_tool_policies
+    walks = 0
+
+    def walk_while_editing(agents_dir: Path, **kwargs: Any) -> dict[str, Any]:
+        nonlocal walks
+        walks += 1
+        answers = real_walk(agents_dir, **kwargs)
+        if walks == 1:
+            _write_spec(writer, {"name": "writer", "managedToolPolicy": {"exclude": ["browser"]}})
+            _bump_mtime(writer, 5)
+        return answers
+
+    monkeypatch.setattr(sessions_mod, "_prefill_managed_tool_policies", walk_while_editing)
+
+    assert sessions_mod._read_managed_tool_policy_sync(tmp_path, AGENT) == {"exclude": ["shell"]}
+    assert sessions_mod._read_managed_tool_policy_sync(tmp_path, "writer") == {
+        "exclude": ["browser"]
+    }
+    assert walks == 2, "the walk read across the edit was served"
+
+
+def test_the_walk_keeps_no_more_policies_than_the_memo_can_store(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The every-name walk is bounded while it collects, not after: past the
+    memo's key bound a name's policy is never read by the walk, the requested
+    name always keeps its place wherever the walk meets it, and a name the
+    bound left out is answered by the one-name read."""
+    from kiro_crew.dashboard.handlers.sessions_parts import tool_policy
+
+    monkeypatch.setattr(tool_policy, "_AGENTS_DIR_MEMO_MAX_KEYS", 4)
+    _populate(tmp_path, others=10)
+    real_policy_of_spec = tool_policy._policy_of_spec
+    policy_reads: list[str] = []
+
+    def counting_policy_of_spec(spec: Any, name: str, *args: Any) -> Any:
+        policy_reads.append(name)
+        return real_policy_of_spec(spec, name, *args)
+
+    monkeypatch.setattr(tool_policy, "_policy_of_spec", counting_policy_of_spec)
+    for requested in (AGENT, "other-0", "other-9"):
+        policy_reads.clear()
+        answers = tool_policy._prefill_managed_tool_policies(tmp_path, requested=requested)
+        # Bounded while collecting: no policy past the bound was even read.
+        assert len(policy_reads) <= 3, policy_reads
+        assert len(answers) <= 3
+        assert requested in answers
+    policy_reads.clear()
+    assert len(tool_policy._prefill_managed_tool_policies(tmp_path)) <= 3
+    assert len(policy_reads) <= 3, policy_reads
+    kept = tool_policy._prefill_managed_tool_policies(tmp_path, requested=AGENT)
+    assert kept[AGENT] == {"exclude": ["shell"]}
+    monkeypatch.setattr(tool_policy, "_policy_of_spec", real_policy_of_spec)
+
+    # The first read prefills the memo; a name the bound left out then misses
+    # it, and the one-name read answers it.
+    assert sessions_mod._read_managed_tool_policy_sync(tmp_path, AGENT) == {"exclude": ["shell"]}
+    left_out = sorted({f"other-{i}" for i in range(10)} - set(kept))
+    assert left_out
+    real_uncached = sessions_mod._read_managed_tool_policy_uncached
+    uncached_names: list[str] = []
+
+    def recording_uncached(agents_dir: Path, agent_name: str) -> Any:
+        uncached_names.append(agent_name)
+        return real_uncached(agents_dir, agent_name)
+
+    monkeypatch.setattr(sessions_mod, "_read_managed_tool_policy_uncached", recording_uncached)
+    assert sessions_mod._read_managed_tool_policy_sync(tmp_path, left_out[0]) == {}
+    assert uncached_names == [left_out[0]]

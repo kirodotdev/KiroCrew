@@ -163,9 +163,9 @@ In an `oss` build a scope the policy does not name is ungoverned and permitted (
 
 - **Where it applies.** `evaluator._policy_level` fills the POLICY level only, in `resolve`. `_query_level` still permits a `None` control, because it also answers the profile level: a profile that does not name a scope must not impose the baseline again beneath a remote widening. For the same reason no baseline is added when a `Profile` sits in the ceiling slot (`governance_profiles` asks `may_skip_gate` about one profile alone) or when `gate_decision`'s alias-group pass asks the profile layer alone (`resolve(..., baseline=False)`). `policy_level_control` exposes the same lookup to readers that inspect a ceiling directly: `may_skip_gate` and `_ceiling_mentions_mcp_server` use it, so an auto-approve grant cannot skip the gate for an unnamed scope, the policy viewer (`GET /api/governance/policy`) reports the baseline instead of "ungoverned", and the member-dashboard script grant (`member_dashboard._egress_decision`) reads an unnamed `network.egress` as the baseline's off. A `folders.*` query finds the policy's `filesystem.*` rule before the baseline answers, because the parser stores it under the canonical scope.
 - **Who may widen.** The remote policy, by naming the scope. A profile only narrows.
-- **Not gated.** `BASELINE_UNGATED` lists the two ordinals (`approval_mode`, `sandbox.min_level`), which keep Crew's own default. A scope in neither table (one registered at run time) is denied. RFC D3 as amended on 2026-11-02 moves eight more scopes here (`mcp`, `filesystem.read`, `filesystem.write`, `commands`, `tools`, `capabilities.spawn`, `capabilities.cron`, `apps`); that code change is pending in #28751.
-- **Minimal sets that differ from the appendix wording.** `approval_modes` is `normal`, `trust`, `trust_reads` (the catalog floor; only `yolo` is off). `filesystem.read` is Crew's fixed default workspace root (`config.paths._default_workspace_base()` + `_WORKSPACE_DIR_NAME`), never the configured one, because the configured root is a local source. `tools` is the local read-only built-ins `fs_read`, `glob`, `grep` (each one's `BUILTIN_TOOL_SCOPES` row is `filesystem.read` alone); `web_fetch` and `web_search` are read-only but reach the network, and `network.egress` is off. `updates.source` is not a catalog scope and has no baseline.
-- **A proven non-shell call is judged in its own scopes.** `classify_tool_title` reads an unprefixed name as a command body and a tool name both, and kiro-cli titles an MCP call `Running: @server/tool`, so with `commands` off every built-in and every MCP call was refused. In an enterprise build `GateFacts.governance_own_scopes` proves, from the trusted identity of a call the client did not classify as shell, that the call is MCP-served (`("mcp",)`) or a host built-in whose `BUILTIN_TOOL_SCOPES` row has no `commands` (`("tools", *row)`; a KAS id through its admitting kiro-cli alias only, so `delete_file`, `run_command` and `code` stay unproven). `gate_decision(own_scopes=...)` then keeps every `commands` pair, the title's `tools` pair, an MCP identity's `tools` pair, and a built-in's argument pair outside its row as deny-only: an explicit deny there (a local `curl *` deny) still refuses, an allow-mode miss does not. Each scope in a built-in's row that its arguments name no target in is asked about `_NO_TARGET_ITEM`, so the baseline's `filesystem.read` refuses a pathless `grep` or `glob` (it searches a directory the gate cannot see) and `filesystem.write` refuses a write that does not arrive as an edit. A relative path is anchored at the gateway's working directory, as for every `filesystem.*` rule. `oss` never sets `own_scopes`.
+- **Not gated.** `BASELINE_UNGATED` lists, each with its reason, the scopes that keep Crew's own default: the two ordinals (`approval_mode`, `sandbox.min_level`) and the open controls of RFC D3 as amended on 2026-11-02 (`mcp`, `filesystem.read`, `filesystem.write`, `commands`, `tools`, `capabilities.spawn`, `capabilities.cron`, `apps`; appendix "Crew default"). With the policy silent, an open control answers as in `oss`, ungoverned; a remote policy that names one still decides, and a local tier composed under a silent central policy still narrows it. A scope in neither table (one registered at run time) is denied.
+- **Minimal sets that differ from the appendix wording.** `approval_modes` is `normal`, `trust`, `trust_reads` (the catalog floor; only `yolo` is off). `updates.source` is not a catalog scope and has no baseline.
+- **A proven non-shell call is judged in its own scopes.** `classify_tool_title` reads an unprefixed name as a command body and a tool name both, and kiro-cli titles an MCP call `Running: @server/tool`, so with `commands` off (a remote policy that turns it off) every built-in and every MCP call was refused. In an enterprise build `GateFacts.governance_own_scopes` proves, from the trusted identity of a call the client did not classify as shell, that the call is MCP-served (`("mcp",)`) or a host built-in whose `BUILTIN_TOOL_SCOPES` row has no `commands` (`("tools", *row)`; a KAS id through its admitting kiro-cli alias only, so `delete_file`, `run_command` and `code` stay unproven). `gate_decision(own_scopes=...)` then keeps every `commands` pair, the title's `tools` pair, an MCP identity's `tools` pair, and a built-in's argument pair outside its row as deny-only: an explicit deny there (a local `curl *` deny) still refuses, an allow-mode miss does not. Each scope in a built-in's row that its arguments name no target in is asked about `_NO_TARGET_ITEM`, so an allow-mode `filesystem.read` the remote policy names refuses a pathless `grep` or `glob` (it searches a directory the gate cannot see), and an allow-mode `filesystem.write` refuses a write that does not arrive as an edit. A relative path is anchored at the gateway's working directory, as for every `filesystem.*` rule. `oss` never sets `own_scopes`.
 - **Inner lists the remote leaves out.** `BASELINE_INNER_LISTS` names inner lists that keep their baseline even when the remote policy names their capability: today `capabilities.publish` `regions`, `audience` and `accounts`, all off. `parsing.with_inner_baseline` fills them into a remote-named gate, in `evaluator._policy_level` and in `tiers._with_enterprise_baseline` for a central authority, so a local tier cannot supply a list the remote left out.
 - **Local policy tiers.** `compose_tier_ladder` first fills the authority tier's unnamed scopes from the baseline (`tiers._with_enterprise_baseline`), so the tighten-only `_intersect_ceilings` composes a local tier (`env`, `home`, `bundled`) WITH the baseline: a local tier can narrow it and never supply a scope's whole answer. With no central document the authority is itself local, so it is intersected with the baseline scope by scope rather than filled; only a central authority's named scopes replace the baseline. The installed ceiling therefore names every gated scope in an enterprise build, and `kirocrew policy show` lists the baseline rows beside the document's own.
 - **Not covered here.** The `ceiling is None and profile is None` early returns in `hook_runtime/governance_gate.py`, `mcp_gateway/app_call.py` and `governance_profiles.governance_permits` still permit before `resolve` runs; an enterprise host with no policy at all is the enterprise gate's to refuse (RFC Migration plan phase 2).
@@ -551,8 +551,10 @@ in an oss build). One fetch is the Kiro control plane's
   `messaging_channel` to `channels.members`, `permission_mode` to `approval_modes`
   with its floor kept, and the on/off `messaging` and `cron` to
   `capabilities.messaging` and `capabilities.cron`), re-read every 300 s. An on/off
-  capability is off on any deny, on on an allow with no deny, and unnamed (baseline)
-  with no rule or with a rule shape it does not know. For a capability with a
+  capability is off on any deny or on a rule shape it does not know (`match`,
+  `exclude` or `when`), on on an allow with no deny, and unnamed (baseline) with no
+  rule. A shape it does not know is off, not unnamed, because `capabilities.cron`
+  is an open control: unnamed, it keeps Crew's default. For a capability with a
   resource, only a deny `exclude` grants anything; a lone deny `match` leaves the capability unnamed, so the
   baseline keeps it off. `DISABLED` answers
   a document that names no scope, so the baseline holds every control. `UNCHANGED`
@@ -1860,10 +1862,40 @@ canonical taxonomy parser — never re-implemented). Resolution is:
   (fail-closed, never a permissive fall-through), mirroring the dashboard
   `api_session_tool_policy` precedent.
 
+`resolve_task_bound_profile(agent)` reads only the `task` bind for one agent,
+with no app or surface fallback (an unloaded store denies). A caller that already
+resolved the active profile uses it to narrow that by a second agent's own
+profile without re-applying the surface default; the one caller is a crewmate
+stub's app callback (`mcp_gateway/app_call.py`).
+
 **`identity_proven` is true for ANY non-empty session key**, so an unattended
 surface that *does* carry a key — `cron:<job>`, `subagent:<id>`, `taskrunner` —
 resolves to `None` (policy-ceiling-only), **not** `deny_all_profile`; only `_bg`
 and `_hb` fall to deny-all. That is correct for every scope that remains.
+
+**Unattended turns at the PreToolUse gate.** A cron turn hands
+`stream_and_collect` its own `cron:<job>` session key and the agent's alias or
+crew record name (each step's alias on an `agent_sequence`), the name a chat turn
+on that agent hands the gate, so the gate resolves that session's profile the
+same way it does for a chat turn, including a `task` bind on that name. A
+schedule whose capture selected a member runs as that member, so its gate name
+is the member's own live alias (the record `member_config_for_id` finds for the
+captured `member_id`, the one dispatch resolves through, else the captured
+`selection_name`), even when the job's `agent` names a template or another
+member; the job's `agent` is the gate name only for a capture that selected no
+member. The template the alias collapses to is used only to acquire the session
+and build the message. Cron, heartbeat and
+Slack-thread nudge turns pass `stream_and_collect(unattended=True)`. A
+structured monitor wake runs its gate call under the same marker on every
+surface: `build_tool_gate(unattended=True)` for a Slack thread and for a
+messaging channel's `drive_turn` with a `MonitorWake`, and the wrapped gate call
+in the dashboard's `_run_chat(_directive_self_wake=True)`. The marker is
+`hooks.unattended_turn`, a ContextVar scoped to the one gate consultation. When the governance tier's own evaluation raises,
+`_governance_denial` records it through `audit_governance_degraded` (failed
+closed on an unattended turn, failed open otherwise, with the traceback logged)
+and then refuses the call on an unattended turn; on an attended turn it keeps
+"no governance opinion", so a transient fault never refuses an ordinary user
+action.
 
 There is no feature-local unattended refusal in `computer_use.gate` and no shipped
 `cu-off` profile bound to the unattended surfaces. Computer use has
@@ -2727,8 +2759,8 @@ switched off. Two fields keep that honest:
 only POSTURE — set `mode`, entry COUNTS (`allow_count`/`deny_count`),
 capability `enabled` + inner scope names, ordinal `floor` — and NEVER the rule
 CONTENTS (the allow/deny globs, command patterns). This is deliberate: the
-dashboard is reachable by the agent's own browser tooling (`playwright-cli attach
---extension` drives the user's authenticated Chrome), and `security_policy.json` /
+dashboard is reachable by the agent's own browser tooling (the `browser` tool
+drives the user's own Chrome through the gateway relay), and `security_policy.json` /
 `profiles` are on the `is_sensitive_path` keystone, so the agent's file tools refuse
 to read them and no sandbox mode lets the agent write them (they are OS read-only).
 They are still OS-readable by design, so posture-only serialization is
@@ -2808,8 +2840,8 @@ denials leave the same forensic trail.
   through the same effective-deny floor as `on_tool_call` is tracked as its own
   follow-up; do not describe computer-use governance as covering it.
 - **Raster capture has two channels and neither is governed.** Computer use has no
-  `observations` scope any more, and `playwright-cli screenshot` is a shell command
-  rather than a tool call, so an `mcp` deny cannot reach it at all. A fleet that
+  `observations` scope any more, and the `browser` tool's `screenshot` op sits
+  behind `capabilities.browse`, not behind computer-use governance. A fleet that
   means "no raster capture" must deny `@kirocrew-computer` via the `mcp` scope
   **and** the browser CLI via the `commands` scope.
 - **The `mcp`-scope deny is the only per-tool governance lever over computer use, and
@@ -2897,11 +2929,19 @@ materialised by narrowing the `acp_backends` registry at gateway start),
 (ordinal floor at `wrap_argv`), `approval_mode` (boot floor only), and every capability
 gate — `capabilities.spawn`, `capabilities.messaging`, `capabilities.cron`,
 `capabilities.memory_writes`, `capabilities.script_hooks`,
-`capabilities.browse` (the native `browser` MCP tool's dispatch chokepoint —
-default on; a deny makes the tool refuse outright, and it does NOT fall back to
-`playwright-cli`. The `playwright-cli` fallback path itself remains governed by
-the `commands` scope, so denying browsing wholesale means denying both this
-capability AND the `playwright-cli` command),
+`capabilities.browse` (default on; one deny turns the whole browser off. It is
+asked at the `browser` MCP tool's dispatch chokepoint in the shim, which never
+falls back to another driver, and again, fail-closed, in the gateway
+(`browser_harness/governance.py`): at every `/api/browser/*` route that drives,
+shows or installs the browser (the op route, takeover claim and input, "Open
+live", the replay, a quick ask's answer and poll, the hand-back poll, Settings'
+status, install and connect, and the startup auto-install), at the engine's own
+start and at every helper it runs, so a deny that lands mid-op ends it and stops
+the running browser. Only the routes that end something stay open under a deny
+(`input/release`, `live/close`, `browser/disconnect`). Every refusal is 403
+`policy_denied`; `GET /api/dashboard/config` reports the answer as
+`browse_enabled`, and Settings → Browser and the live card then show one policy
+line with no install or takeover control),
 `capabilities.publish` (artifact publish chokepoint — see below),
 `capabilities.agentcore` (opt-in agent workload identity + Gateway MCP —
 see below),
@@ -3674,6 +3714,29 @@ harness — it is served by kiro-cli's own ACP relay
 binary while adding a second thing that can be absent. The floor has to be the
 member with the fewest preconditions of its own; revisit if KAS ever ships a
 binary of its own.
+
+That reasoning holds in an `oss` build. In an enterprise build the floor is KAS
+(`acp_backends.governance_floor_backend()`, the enterprise edition RFC
+[rfc-crew-enterprise-edition](../../request-for-change/rfc-crew-enterprise-edition.md)
+D6), and the baseline minimal set is `kas`, so the Kiro CLI harness needs a
+remote rule there. KAS now has a route of its own, Crew's engine bundle
+(`acp/kas_bundle.py`), which is the "binary of its own" the paragraph above
+waits for. A KAS proven unable to start on the route it would take refuses the
+gateway start when the main backend runs KAS, and otherwise refuses each
+gateway session whose resolved backend is KAS (`enterprise_boot.require_kas_harness`,
+`enterprise_boot.refuse_unstartable_kas`); no session the provider factory builds
+falls back to the Kiro CLI harness. An enterprise build has no automatic
+fallback to the Kiro CLI harness anywhere: the Kiro CLI harness runs only as an
+explicit pick (`agent.acp_backend` `"kiro"`) that the remote policy allows. Two
+runtimes outside the provider factory fall back to it in `oss` when their backend
+cannot serve them: the knowledge model pool, which never spawns KAS
+(`knowledge/llm_pool.py`), and Code Review Sage's shared review runtime for a
+backend it does not serve (`code_review_sage/sage_lib/review_pool.py`). In an
+enterprise build both refuse instead, before any process exists
+(`KnowledgeHarnessUnavailable`, `ReviewHarnessDenied`); Sage with no backend
+configured runs on the governed default, KAS, and refuses a KAS that boot proved
+cannot start. A background runtime whose `agent.acp_backend` cannot be read takes
+the build's floor, and refuses that KAS the same way.
 
 **Enforced by RECOMPUTING the registry, not by a per-decision read.** This is the
 one scope here whose answer is materialised instead of resolved at each decision.

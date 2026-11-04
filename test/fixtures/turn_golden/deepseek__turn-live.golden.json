@@ -1,0 +1,375 @@
+{
+  "scenario": "deepseek/turn-live.jsonl",
+  "sockets": {
+    "viewer": [
+      {
+        "type": "slots",
+        "data": [
+          {
+            "key": "chat-golden-1",
+            "title": "New Session…",
+            "agent": "",
+            "agent_kind": "",
+            "crew_mode_agent": "",
+            "effective_agent": "",
+            "model": "",
+            "jev_route": false,
+            "model_withheld": null,
+            "served_model": "",
+            "reasoning_effort": "",
+            "mode": "",
+            "surface": "",
+            "workspace": "default",
+            "project": "",
+            "executor": "local",
+            "instance_id": "",
+            "row_identity": "chat-golden-1",
+            "artifact": "",
+            "messages": 0,
+            "running": false,
+            "admission_queued": false,
+            "wake_starting": false,
+            "turn": 0,
+            "turn_gen": "<turn_gen:1>",
+            "compacting": false,
+            "preparing": false,
+            "stop_declined": false,
+            "queue_depth": 0,
+            "stopping": false,
+            "pending_approval": false,
+            "pending_approval_info": null,
+            "last_activity_ts": "",
+            "last_agent_ts": "",
+            "waiting_for_input": false,
+            "needs_input": false,
+            "interrupted": false,
+            "stop_state": "idle",
+            "wait_state": null,
+            "created": "<stamp>",
+            "last_ts": "",
+            "last_turn_ts": "",
+            "last_message": "",
+            "source_links": [],
+            "source_links_total": 0,
+            "todo": null,
+            "mcp_report": null,
+            "has_options": false,
+            "options_ts": "",
+            "options": [],
+            "prompt_preview": "",
+            "trust": false,
+            "trust_scope": "",
+            "trust_reads": false,
+            "trusted_patterns_count": 0,
+            "slack_linked": false,
+            "slack_channel": "",
+            "slack_thread_ts": "",
+            "folder_id": "",
+            "pinned": false,
+            "mutes_opened": false,
+            "muted": false,
+            "tags": [],
+            "tags_revision": "<tags_revision>",
+            "color_index": null,
+            "color_hex": null,
+            "color_theme": "",
+            "theme_consent": false,
+            "theme_consent_sha": null,
+            "memory_mode": "persistent",
+            "forked_from": null,
+            "linked_session_key": "",
+            "app": "",
+            "origin": "",
+            "created_by": "",
+            "lineage_minted": false,
+            "attribution": {
+              "schema_version": 1,
+              "availability": "legacy_missing",
+              "creator": {
+                "id": "p_unknown",
+                "kind": "unknown",
+                "display": {
+                  "name": "",
+                  "login": "",
+                  "captured_at": null
+                }
+              },
+              "created_at": null
+            },
+            "pin_rank": null,
+            "pin_rev": 0,
+            "manual_rank": null,
+            "manual_rev": 0,
+            "links": [],
+            "subagents_running": false,
+            "subagents_queued": 0,
+            "parent": null,
+            "crew_mode_root": false
+          }
+        ],
+        "yolo": false,
+        "channelTrusted": false,
+        "gitlabHostsGeneration": "<gitlabHostsGeneration>",
+        "folders": [],
+        "foldersGeneration": 0,
+        "governanceGeneration": "<governanceGeneration>",
+        "tagsGeneration": 0
+      },
+      {
+        "type": "activity_event",
+        "data": {
+          "slot": "chat-golden-1",
+          "kind": "status",
+          "text": "Creating session…"
+        }
+      },
+      {
+        "type": "activity_event",
+        "data": {
+          "slot": "chat-golden-1",
+          "kind": "session",
+          "spawned": true,
+          "text": "Session created · kirocrew · auto"
+        }
+      },
+      {
+        "type": "chat_status",
+        "data": {
+          "slot": "chat-golden-1",
+          "status": "Thinking…"
+        }
+      },
+      {
+        "type": "activity_event",
+        "data": {
+          "slot": "chat-golden-1",
+          "kind": "status",
+          "text": "Thinking…"
+        }
+      },
+      {
+        "type": "tool_call",
+        "data": {
+          "slot": "chat-golden-1",
+          "tool": "bash",
+          "kind": "other",
+          "is_shell": false,
+          "tool_call_id": "call_hez03eul",
+          "purpose": "",
+          "input_preview": "{\n  \"command\": \"touch ../outside-probe.txt \",\n  \"description\": \"create a file outside the workspace.\"\n}"
+        }
+      },
+      {
+        "type": "chat_message",
+        "data": {
+          "slot": "chat-golden-1",
+          "role": "tool",
+          "content": "🔧 bash",
+          "ts": "<ts>",
+          "cls": "msg msg-tool",
+          "meta": {
+            "tool_call_id": "call_hez03eul",
+            "purpose": "",
+            "input": "{\n  \"command\": \"touch ../outside-probe.txt \",\n  \"description\": \"create a file outside the workspace.\"\n}",
+            "kind": "other",
+            "mid": "<mid:1>"
+          }
+        }
+      },
+      {
+        "type": "tool_result",
+        "data": {
+          "slot": "chat-golden-1",
+          "tool_call_id": "call_hez03eul",
+          "output": "(no output)",
+          "final": true
+        }
+      },
+      {
+        "type": "chat_segment",
+        "data": {
+          "slot": "chat-golden-1"
+        }
+      },
+      {
+        "type": "chat_chunk",
+        "data": {
+          "slot": "chat-golden-1",
+          "content": "I called the bash tool, but it did not produce any output. The `exit code: N` marker is available; investigating the failure will continue.\n\nChecking exit code 0 for the bash command; no output indicates an expected error or successful termination with no output, according to DSH. No result means success; see `work dir`. File contents will be read next.\n\n\nUsing `read` on file `../outside-probe.txt` as it exists now:\n\n\nFile has 0 lines and is empty. Next ",
+          "seq": 1,
+          "gen": "<gen:1>"
+        }
+      },
+      {
+        "type": "chat_chunk",
+        "data": {
+          "slot": "chat-golden-1",
+          "content": "step?",
+          "seq": 2,
+          "gen": "<gen:1>"
+        }
+      },
+      {
+        "type": "chat_message",
+        "data": {
+          "slot": "chat-golden-1",
+          "role": "assistant",
+          "content": "I called the bash tool, but it did not produce any output. The `exit code: N` marker is available; investigating the failure will continue.\n\nChecking exit code 0 for the bash command; no output indicates an expected error or successful termination with no output, according to DSH. No result means success; see `work dir`. File contents will be read next.\n\n\nUsing `read` on file `../outside-probe.txt` as it exists now:\n\n\nFile has 0 lines and is empty. Next step?",
+          "ts": "<ts>",
+          "cls": "msg msg-a",
+          "meta": {
+            "native_message_id": "msg-synthetic-a",
+            "mid": "<mid:2>"
+          }
+        }
+      },
+      {
+        "type": "context_usage",
+        "data": {
+          "slot": "chat-golden-1",
+          "pct": 0.0,
+          "reset": true
+        }
+      },
+      {
+        "type": "slots",
+        "data": [
+          {
+            "key": "chat-golden-1",
+            "title": "chat-golden-1",
+            "agent": "",
+            "agent_kind": "",
+            "crew_mode_agent": "",
+            "effective_agent": "",
+            "model": "",
+            "jev_route": false,
+            "model_withheld": null,
+            "served_model": "",
+            "reasoning_effort": "",
+            "mode": "",
+            "surface": "",
+            "workspace": "default",
+            "project": "",
+            "executor": "local",
+            "instance_id": "",
+            "row_identity": "chat-golden-1",
+            "artifact": "",
+            "messages": 3,
+            "running": false,
+            "admission_queued": false,
+            "wake_starting": false,
+            "turn": 0,
+            "turn_gen": "<turn_gen:1>",
+            "compacting": false,
+            "preparing": false,
+            "stop_declined": false,
+            "queue_depth": 0,
+            "stopping": false,
+            "pending_approval": false,
+            "pending_approval_info": null,
+            "last_activity_ts": "<stamp>",
+            "last_agent_ts": "<stamp>",
+            "waiting_for_input": true,
+            "needs_input": false,
+            "interrupted": false,
+            "stop_state": "idle",
+            "wait_state": null,
+            "created": "<stamp>",
+            "last_ts": "<stamp>",
+            "last_turn_ts": "<stamp>",
+            "last_message": "I called the bash tool, but it did not produce any output. The exit code: N mark…",
+            "source_links": [],
+            "source_links_total": 0,
+            "todo": null,
+            "mcp_report": null,
+            "has_options": false,
+            "options_ts": "",
+            "options": [],
+            "prompt_preview": "",
+            "trust": false,
+            "trust_scope": "",
+            "trust_reads": false,
+            "trusted_patterns_count": 0,
+            "slack_linked": false,
+            "slack_channel": "",
+            "slack_thread_ts": "",
+            "folder_id": "",
+            "pinned": false,
+            "mutes_opened": false,
+            "muted": false,
+            "tags": [],
+            "tags_revision": "<tags_revision>",
+            "color_index": null,
+            "color_hex": null,
+            "color_theme": "",
+            "theme_consent": false,
+            "theme_consent_sha": null,
+            "memory_mode": "persistent",
+            "forked_from": null,
+            "linked_session_key": "",
+            "app": "",
+            "origin": "",
+            "created_by": "",
+            "lineage_minted": false,
+            "attribution": {
+              "schema_version": 1,
+              "availability": "legacy_missing",
+              "creator": {
+                "id": "p_unknown",
+                "kind": "unknown",
+                "display": {
+                  "name": "",
+                  "login": "",
+                  "captured_at": null
+                }
+              },
+              "created_at": null
+            },
+            "pin_rank": null,
+            "pin_rev": 0,
+            "manual_rank": null,
+            "manual_rev": 0,
+            "links": [],
+            "subagents_running": false,
+            "subagents_queued": 0,
+            "parent": null,
+            "crew_mode_root": false
+          }
+        ],
+        "yolo": false,
+        "channelTrusted": false,
+        "gitlabHostsGeneration": "<gitlabHostsGeneration>",
+        "folders": [],
+        "foldersGeneration": 0,
+        "governanceGeneration": "<governanceGeneration>",
+        "tagsGeneration": 0
+      },
+      {
+        "type": "chat_done",
+        "data": {
+          "slot": "chat-golden-1",
+          "turn": 0,
+          "turn_gen": "<turn_gen:1>",
+          "continuing": false,
+          "needs_input": false
+        }
+      },
+      {
+        "type": "refresh",
+        "data": {
+          "kinds": [
+            "history"
+          ]
+        }
+      }
+    ],
+    "bystander": "<same frames as viewer>"
+  },
+  "transcript": {
+    "dashboard_chat-golden-1.jsonl": [
+      "{\"_type\": \"metadata\", \"created_at\": \"<created_at>\", \"last_consolidated\": 0, \"memory_mode\": \"persistent\", \"model\": \"\", \"autocompact_pct\": null, \"tab_id\": \"<tab_id:1>\"}",
+      "{\"role\": \"tool\", \"content\": \"\\ud83d\\udd27 bash\", \"ts\": \"<ts>\", \"source_thread\": \"dashboard\", \"source_user\": \"dashboard\", \"meta\": {\"tool_call_id\": \"call_hez03eul\", \"purpose\": \"\", \"input\": \"{\\n  \\\"command\\\": \\\"touch ../outside-probe.txt \\\",\\n  \\\"description\\\": \\\"create a file outside the workspace.\\\"\\n}\", \"kind\": \"other\", \"mid\": \"<mid:1>\", \"done\": true, \"output\": \"(no output)\"}}",
+      "{\"role\": \"assistant\", \"content\": \"I called the bash tool, but it did not produce any output. The `exit code: N` marker is available; investigating the failure will continue.\\n\\nChecking exit code 0 for the bash command; no output indicates an expected error or successful termination with no output, according to DSH. No result means success; see `work dir`. File contents will be read next.\\n\\n\\nUsing `read` on file `../outside-probe.txt` as it exists now:\\n\\n\\nFile has 0 lines and is empty. Next step?\", \"ts\": \"<ts>\", \"source_thread\": \"dashboard\", \"source_user\": \"dashboard\", \"meta\": {\"native_message_id\": \"msg-synthetic-a\", \"mid\": \"<mid:2>\"}}"
+    ]
+  }
+}

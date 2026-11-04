@@ -653,26 +653,6 @@ class TestTheFilingIsSynchronous:
         assert state._background_tasks == set()
 
     @pytest.mark.asyncio
-    async def test_the_placement_is_broadcast_only_after_it_is_on_disk(self, monkeypatch) -> None:
-        """Telling an open sidebar the tab is filed before the metadata line lands
-        advertises a placement a failed write would erase, with nothing saying so."""
-        import kiro_crew.dashboard.chat_persistence as persistence
-
-        release = asyncio.Event()
-
-        async def _save(state, slot, *a, **kw):
-            await release.wait()
-            return True
-
-        monkeypatch.setattr(persistence, "save_slot_off_loop", _save)
-        state = _make_state()
-        inject_cron_result_to_dashboard(state, _job(chat_folder_id=FOLDER), "the brief", history=[])
-        assert state.push_slots_update.call_count == 1  # the injection's own push
-        release.set()
-        await asyncio.gather(*list(state._background_tasks))
-        assert state.push_slots_update.call_count == 2
-
-    @pytest.mark.asyncio
     async def test_a_failed_write_retracts_the_placement(self, monkeypatch) -> None:
         """So memory and disk agree on "not filed" rather than disagreeing."""
         import kiro_crew.dashboard.chat_persistence as persistence

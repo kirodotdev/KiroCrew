@@ -4773,7 +4773,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Initialize Timeout",
-      "help": "Seconds a freshly spawned backend has to answer its first MCP initialize once the session sends it. A backend that stays silent is failed and reaped so its slot frees; the broker holds the spawn permit for this same window. Raise it for servers whose startup is legitimately slow (large runtimes, remote resolution). On Windows the effective deadline is floored at 30 seconds (a cold-start floor): a configured value below it is lifted, a value above it is used as is.",
+      "help": "Seconds a freshly spawned backend has to answer its first MCP initialize once the session sends it. A backend that stays silent is failed and reaped so its slot frees; the broker holds the spawn permit for this same window. Raise it for servers whose startup is legitimately slow (large runtimes, remote resolution). The effective deadline is floored at 30 seconds (a cold-start floor): a configured value below it is lifted, a value above it is used as is.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 10,
@@ -5197,7 +5197,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Max Recovery Attempts",
-      "help": "Consecutive self-heal attempts before a dropped tunnel is left disconnected. A rebuild that fails outright spans a ~2 min window under the capped-exponential backoff (enough to outlast a transient drop such as a screen lock or proxy warmup); a forward that re-binds but whose far end stays dead additionally spends one probe window per attempt (probe_failure_threshold x probe_interval), so handoff to diagnosis takes roughly attempts x (90s + backoff) ~= 16 min at the default 8. Size this against the longer window.",
+      "help": "Consecutive self-heal attempts before a dropped tunnel is left disconnected. A rebuild that fails outright spans a ~2 min window under the capped-exponential backoff (enough to outlast a transient drop such as a screen lock or proxy warmup); a forward that re-binds but whose far end stays dead additionally spends one probe window per attempt (probe_failure_threshold x probe_interval), so handoff to diagnosis takes roughly attempts x (30s + backoff) ~= 6 min at the default 8. Size this against the longer window.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 8
@@ -5307,6 +5307,260 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false
+    },
+    {
+      "path": "browser",
+      "kind": "core",
+      "type": "object",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Browser",
+      "help": "Which browser the agent drives and how its live view streams into the chat. Settings -> Browser edits every key; nothing here is gated by it.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": {
+        "choice": "auto",
+        "live": {
+          "enabled": true,
+          "quality": "auto",
+          "max_fps": 60,
+          "mask_passwords": true
+        },
+        "credentials": {
+          "enabled": null,
+          "domains": []
+        },
+        "recording": {
+          "enabled": true,
+          "max_session_mb": 200,
+          "max_total_mb": 1024
+        }
+      }
+    },
+    {
+      "path": "browser.choice",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Browser",
+      "help": "Which browser the agent drives. `auto` picks your Chrome (with your logins, once you allow remote debugging in it), then Edge on Windows, then Kiro's own Chromium without a window on a machine with no display. `user_chrome` and `kiro_chromium` pin one of those; `headless` runs Kiro's Chromium without a window even on a desktop.",
+      "hasChildren": false,
+      "enumValues": [
+        "auto",
+        "user_chrome",
+        "kiro_chromium",
+        "headless"
+      ],
+      "defaultValue": "auto"
+    },
+    {
+      "path": "browser.live",
+      "kind": "core",
+      "type": "object",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Live view",
+      "help": "The live view of the agent's browser in chat.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": {
+        "enabled": true,
+        "quality": "auto",
+        "max_fps": 60,
+        "mask_passwords": true
+      }
+    },
+    {
+      "path": "browser.live.enabled",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Show live view in chat",
+      "help": "When the agent uses the browser, the turn shows a live card of the page in the chat. Click the picture to take over. Off hides the card; the agent still browses.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": true
+    },
+    {
+      "path": "browser.live.quality",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Quality",
+      "help": "`auto` adapts frame rate and picture quality to your link, lowering the frame rate first and the picture only when even the lowest frame rate does not fit; a still page gets one sharp frame. A fixed value pins the picture quality and leaves only the frame rate adaptive.",
+      "hasChildren": false,
+      "enumValues": [
+        "auto",
+        "high",
+        "medium",
+        "low"
+      ],
+      "defaultValue": "auto"
+    },
+    {
+      "path": "browser.live.max_fps",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Max frame rate",
+      "help": "Frames per second the live view never exceeds: 15, 30 or 60. 60 is the most this machine streams. No frames are sent while the card is off screen.",
+      "hasChildren": false,
+      "enumValues": [
+        15,
+        30,
+        60
+      ],
+      "defaultValue": 60
+    },
+    {
+      "path": "browser.live.mask_passwords",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Mask password fields",
+      "help": "Cover password boxes in the live picture. Passwords are only ever typed by you, during a takeover; they never pass through the agent and, with this on, never appear in a frame.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": true
+    },
+    {
+      "path": "browser.credentials",
+      "kind": "core",
+      "type": "object",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Sign-in for Kiro's Chromium",
+      "help": "Whether the edition's sign-in is put into Kiro's own Chromium, and for which domains.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": {
+        "enabled": null,
+        "domains": []
+      }
+    },
+    {
+      "path": "browser.credentials.enabled",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Use your organisation's sign-in",
+      "help": "Let Kiro's own Chromium start signed in to the sites below, using the sign-in your edition of Kiro Crew provides. Unset follows the edition's default; with no edition provider it does nothing. Your own Chrome is never changed.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": null,
+      "nullable": true
+    },
+    {
+      "path": "browser.credentials.domains",
+      "kind": "core",
+      "type": "array",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Sign-in domains",
+      "help": "The sites that sign-in may be used for, such as `example.com` (which covers its subdomains). Only a domain both listed here and served by the edition is used. Empty follows the edition's default.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": []
+    },
+    {
+      "path": "browser.credentials.domains.*",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "*",
+      "help": "",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": null
+    },
+    {
+      "path": "browser.recording",
+      "kind": "core",
+      "type": "object",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Turn replay",
+      "help": "The per-turn replay of the agent's browsing, and how much of it is kept.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": {
+        "enabled": true,
+        "max_session_mb": 200,
+        "max_total_mb": 1024
+      }
+    },
+    {
+      "path": "browser.recording.enabled",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Record browser turns for replay",
+      "help": "Keep a replay of each turn the agent browses: masked pictures of the page and the clicks, typing and scrolls, so you can play the turn back later. Password fields are covered before a picture is kept, and typed secrets are kept as a length only. Kept only on this machine, and removed with the chat.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": true
+    },
+    {
+      "path": "browser.recording.max_session_mb",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Replay space per chat (MB)",
+      "help": "The most replay one chat keeps. Past it the chat's oldest turns are removed first.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 200
+    },
+    {
+      "path": "browser.recording.max_total_mb",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Replay space in total (MB)",
+      "help": "The most replay all chats keep together. Past it the oldest turns are removed first, whichever chat they belong to.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 1024
     },
     {
       "path": "decisions",
@@ -5687,7 +5941,8 @@
         "max_depth": 2,
         "remote_dispatch": false,
         "remote_dispatch_memory_gb": 5.0,
-        "remote_dispatch_disk_gb": 5.0
+        "remote_dispatch_disk_gb": 5.0,
+        "remote_dispatch_retire_minutes": 30.0
       }
     },
     {
@@ -5745,6 +6000,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 5.0
+    },
+    {
+      "path": "work_ledger.remote_dispatch_retire_minutes",
+      "kind": "core",
+      "type": "number",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Remote dispatch retire timeout (minutes)",
+      "help": "How long a crew a work item is bound to may stay unreachable before the conductor's next ledger read retires that binding and leaves the item unbound for redispatch on another crew. Used only with remote_dispatch on; a value that is not a positive number uses the default.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 30.0
     },
     {
       "path": "power",
@@ -8371,9 +8640,7 @@
         "cautious_boot": true,
         "default_memory_mode": "persistent",
         "widget_density": "more",
-        "use_builtin_browser": true,
         "browser_local_origins": [],
-        "browser_view_port": 0,
         "verbosity": "answer_only",
         "link_previews": false,
         "tail_fork_enabled": false,
@@ -9156,20 +9423,6 @@
       "defaultValue": "more"
     },
     {
-      "path": "dashboard.use_builtin_browser",
-      "kind": "core",
-      "type": "boolean",
-      "required": false,
-      "deprecated": false,
-      "sensitive": false,
-      "tags": [],
-      "label": "Use Built-in Browser",
-      "help": "When on, the browser tool opens pages in Kiro Crew's built-in panel (desktop app only). When off, the agent browses via playwright-cli.",
-      "hasChildren": false,
-      "enumValues": null,
-      "defaultValue": true
-    },
-    {
       "path": "dashboard.browser_local_origins",
       "kind": "core",
       "type": "array",
@@ -9177,8 +9430,8 @@
       "deprecated": false,
       "sensitive": false,
       "tags": [],
-      "label": "Built-in Browser Local Origins",
-      "help": "Loopback origins the browser tool may open in the built-in panel, each written host:port with host localhost, 127.0.0.1 or [::1] (e.g. localhost:5173 for a Vite dev server). Empty (the default) keeps every loopback, private and link-local address refused. The port is required and matched exactly, so one entry opens one dev server and never the rest of the machine; the gateway's own port is refused even when listed. Entries in any other shape are dropped. The agent cannot set this while its sandbox is on: config.json is read-only inside the sandbox.",
+      "label": "Local Preview Origins",
+      "help": "Loopback origins the browser tool and the side panel's Preview tab may open, each written host:port with host localhost, 127.0.0.1 or [::1] (e.g. localhost:5173 for a Vite dev server). The tab is for previewing your own dev server; the agent never drives it, and an outside address is answered with 'Open this in your Chrome, or ask Kiro'. Empty (the default) keeps every loopback, private and link-local address refused. The port is required and matched exactly, so one entry opens one dev server and never the rest of the machine; the gateway's own port is refused even when listed. Entries in any other shape are dropped; at most 32 are kept. Edited on Settings -> Browser -> Local preview, or by the Preview tab's own Allow button. The agent cannot set this while its sandbox is on: config.json is read-only inside the sandbox.",
       "hasChildren": true,
       "enumValues": null,
       "defaultValue": []
@@ -9196,20 +9449,6 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": null
-    },
-    {
-      "path": "dashboard.browser_view_port",
-      "kind": "core",
-      "type": "integer",
-      "required": false,
-      "deprecated": false,
-      "sensitive": false,
-      "tags": [],
-      "label": "Browser Live-View Port",
-      "help": "Pin the browser live-view server (playwright-cli show) to this loopback port. 0 (the default) picks a fresh OS-assigned ephemeral port on every start. Set a fixed port when the dashboard is viewed remotely through an SSH tunnel that forwards a fixed set of ports, so the Browser panel can always reach the view. The server binds loopback-only either way. A value outside 1-65535 is treated as unset. A changed pin applies the next time the view server (re)starts; an already-running server keeps its current port.",
-      "hasChildren": false,
-      "enumValues": null,
-      "defaultValue": 0
     },
     {
       "path": "dashboard.verbosity",
@@ -10750,6 +10989,20 @@
       "defaultValue": false
     },
     {
+      "path": "agents.*.star_order",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Star order",
+      "help": "Position of this starred crew in the dashboard's left dock, set by dragging its row there. 1 is the top; 0 means not placed yet, which sorts after every placed crew. Cleared when the crew is unstarred. Purely a display preference, like starred.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 0
+    },
+    {
       "path": "agents.*.watchdog_tool_stall_suspect_secs",
       "kind": "core",
       "type": "number",
@@ -11111,7 +11364,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Timezone",
-      "help": "IANA timezone name (e.g. 'America/Los_Angeles'). Used to display cron schedules in local time.",
+      "help": "IANA timezone name (e.g. 'America/Los_Angeles'), or 'local' to follow this computer's time zone wherever it travels. The default zone for cron jobs that name none and for the agent's sense of 'now'. Empty means 'local'.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": ""

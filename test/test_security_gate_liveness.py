@@ -334,7 +334,7 @@ def _url_payload_command(n: int) -> str:
 #:
 #: Raised again, from 29,293, for the ``engines`` leaf in ``paths.py``: the KAS
 #: engine bundle the gateway installs and later executes joins the file-tool floor
-#: beside ``playwright-cli`` -- one entry and its reason. No matcher moved.
+#: beside ``browser-harness`` -- one entry and its reason. No matcher moved.
 #:
 #: Raised again, from 29,296, for the hosts-file parse in ``argv_floor.py``
 #: telling apart the two halves of its cache key: a file that moves mid-parse is
@@ -635,7 +635,30 @@ def _url_payload_command(n: int) -> str:
 #: was relaxed.
 #: Raised by 3, from 33,720, for the ``kas-mcp-launch`` leaf on the read+write floor
 #: (``paths_lists``): one entry and its two-line note; the floor only grows.
-_PACKAGE_LINE_BUDGET = 33_723
+#: Raised by 12, from 33,723, for the Salesforce consumer-key shape that an
+#: ``oauth_endpoints.json`` endpoint accepts in ``client_id`` (``exfil_oauth``): the
+#: shape regex, the operator-listed lookup that reads the file only for that shape,
+#: its once-per-endpoint audit, and the second counterfactual keyword that keeps
+#: MCP discovery from assuming an operator entry. No check was relaxed elsewhere.
+#: Raised by 217 more, from 33,735, for a person's in-session override of one deny rule
+#: (``docs/request-for-change/rfc-deny-session-override.md``): 137 are
+#: ``deny_waiver`` (reading a refusal's key, the governance-pin and overlay checks
+#: that keep a key unwaivable, and the check against the per-transport backend
+#: sets that ``agent_sdk`` owns), and the other 80 are ``deny_gate``'s new lines
+#: (``_DenyWaiver`` plus one skip at each return site, which has to sit in
+#: ``is_denied`` beside the refusal it steps aside, and keeping a waived push out
+#: of ``push_allowed``); main left no headroom. ``deny_waiver``
+#: stays in this package, not beside its dashboard reader, so the sensitive-change,
+#: security-scope and denial-differential lanes keep reviewing it. No rule was
+#: dropped and no check relaxed: an empty ``waived`` judges every call as before.
+#: Raised by 7 more, to 33,959, for ``deny_waiver.deny_key_is_self_guard`` and its
+#: use in ``_DenyWaiver``: it keeps every self-protection floor, the unverifiable
+#: push key and every self-protection or credential-exfil rule out of the override
+#: entirely, so the change only narrows what can be waived.
+#: Raised by 8 more, to 33,967, for the ``kirocrew-bin`` entry in
+#: ``paths_lists._WRITE_PROTECTED_HOME_PATHS``: the file-edit tool may not write the
+#: link that decides which ``kirocrew`` an agent shell runs. Deny-only.
+_PACKAGE_LINE_BUDGET = 33_967
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

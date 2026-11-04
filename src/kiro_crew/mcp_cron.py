@@ -41,8 +41,10 @@ from kiro_crew.cron import (
     get_local_tz,
     is_valid_skip_date,
     is_valid_timezone,
+    job_zone_name,
     never_fires_warning,
     parse_time_string,
+    resolve_timezone_name,
 )
 from kiro_crew.cron_script import (
     compute_secret_env_pin,
@@ -64,6 +66,7 @@ from kiro_crew.mcp_cron_list_render import (
 )
 from kiro_crew.mcp_cron_tool_list import _list_tools
 from kiro_crew.mcp_cron_vet import (
+    _command_cron_platform_refusal,
     _log_cron_denial,
     _resolve_cron_folder,
     _vet_cron_capability_governance,
@@ -841,7 +844,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         script = args.get("script", "")
         command = args.get("command", "")
         if command:
-            err = _vet_shell_command(command)
+            err = _vet_shell_command(command) or _command_cron_platform_refusal()
             if err:
                 _log_cron_denial("cron_add", err)
                 return err
@@ -889,7 +892,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         if at_ts is not None and at_ts < time.time():
             # Rendered in the zone the job keeps its wall clocks in, so a refused
             # at_time echoes the clock the caller typed rather than the process's.
-            shown_tz = ZoneInfo(tz) if tz else get_local_tz()[1]
+            shown_tz = ZoneInfo(resolve_timezone_name(tz) or "UTC") if tz else get_local_tz()[1]
             local = datetime.fromtimestamp(at_ts, shown_tz)
             return f"Error: resolved time {local.strftime('%I:%M %p %Z')} is in the past"
         channel = (args.get("channel") or "").strip() or None
@@ -1034,7 +1037,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             return f"Error: {exc}"
         except ValueError as e:
             return f"Error: {e}"
-        sched_str = format_schedule(job.schedule, tz_name=job.timezone or "")
+        sched_str = format_schedule(job.schedule, tz_name=job_zone_name(job))
         sel().log_api_access(
             caller="mcp",
             operation="cron.create",
@@ -1190,7 +1193,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             source="mcp",
             resources=f"job_id={jid}",
         )
-        sched_str = format_schedule(updated.schedule, tz_name=updated.timezone or "")
+        sched_str = format_schedule(updated.schedule, tz_name=job_zone_name(updated))
         # Read from the SAVED row, not from ``args``: an update that leaves
         # persistent_session alone must still warn if the job is already in that
         # state and this call turned it into an agent job, and the flag is writable
@@ -1591,12 +1594,12 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         _fold_line_continuations,
         _iter_shell_chars,
         audit_bash_exfiltration,
+        canonical_path_refusal,
         enabled_rule_ids,
         is_sensitive_bash_command,
-        is_sensitive_path,
+        is_sensitive_canonical_path,
         is_unverifiable_path_refusal,
         scan_exfiltration_urls,
-        sensitive_path_refusal,
     )
     from kiro_crew.security.readonly_bash import (  # noqa: F401
         _EXTGLOB_RE,

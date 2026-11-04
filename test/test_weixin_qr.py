@@ -312,7 +312,7 @@ def test_stage_config_raises_on_a_corrupt_file(tmp_path, monkeypatch):
     cfg = tmp_path / "config.json"
     cfg.write_text("{not valid json")
     monkeypatch.setattr(qr, "config_path", lambda: cfg)
-    with pytest.raises(Exception):
+    with pytest.raises(json.JSONDecodeError):
         qr._stage_weixin_config(account_id="acct1", base_url="https://x")
     assert cfg.read_text() == "{not valid json"  # original preserved for repair
 
@@ -335,7 +335,7 @@ def test_corrupt_config_does_not_clobber_an_existing_credential(tmp_path, monkey
     monkeypatch.setattr(qr, "config_path", lambda: cfg)
 
     # The handler stages first, so this raises before _write_env_secret runs.
-    with pytest.raises(Exception):
+    with pytest.raises(json.JSONDecodeError):
         _path, _serialized = qr._stage_weixin_config(account_id="new", base_url="https://x")
         qr._write_env_secret("WEIXIN_TOKEN", "replacement")
 

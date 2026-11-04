@@ -106,21 +106,21 @@ def test_a_create_that_loses_the_race_refuses_instead_of_overwriting(loader, mon
     """
     import kiro_crew.skills as skills_mod
 
-    monkeypatch.setattr(skills_mod, "_DIR_FD_SUPPORTED", pinned)
-    real_exists = Path.exists
-    rival_ran = {"done": False}
+    with monkeypatch.context() as mp:
+        mp.setattr(skills_mod, "_DIR_FD_SUPPORTED", pinned)
+        real_exists = Path.exists
+        rival_ran = {"done": False}
 
-    def exists_then_lose_the_race(self, *args, **kwargs):
-        answer = real_exists(self, *args, **kwargs)
-        if not rival_ran["done"] and self.name == "racer":
-            self.mkdir(parents=True, exist_ok=True)
-            (self / "SKILL.md").write_text("RIVAL", encoding="utf-8")
-            rival_ran["done"] = True
-        return answer
+        def exists_then_lose_the_race(self, *args, **kwargs):
+            answer = real_exists(self, *args, **kwargs)
+            if not rival_ran["done"] and self.name == "racer":
+                self.mkdir(parents=True, exist_ok=True)
+                (self / "SKILL.md").write_text("RIVAL", encoding="utf-8")
+                rival_ran["done"] = True
+            return answer
 
-    monkeypatch.setattr(Path, "exists", exists_then_lose_the_race)
-    assert loader.create_skill("racer", "MINE") is False
-    monkeypatch.undo()
+        mp.setattr(Path, "exists", exists_then_lose_the_race)
+        assert loader.create_skill("racer", "MINE") is False
 
     assert rival_ran["done"], "the rival never ran, so nothing was raced"
     # The rival's body is intact: the loser refused rather than overwriting.
@@ -160,9 +160,9 @@ def test_create_addresses_the_leaf_through_the_parent_it_already_pinned(loader, 
         decoy.rename(group)
         return fd
 
-    monkeypatch.setattr(skills_mod.pinned_fs, "open_dir_pinned", pin_then_swap)
-    assert loader.create_skill("group/nested", "MINE") is True
-    monkeypatch.undo()
+    with monkeypatch.context() as mp:
+        mp.setattr(skills_mod.pinned_fs, "open_dir_pinned", pin_then_swap)
+        assert loader.create_skill("group/nested", "MINE") is True
 
     # The skill landed in the directory that was PINNED, now reachable at its new
     # name -- never in the directory swapped onto the name afterwards.
@@ -315,10 +315,10 @@ def test_the_rollback_does_not_delete_a_rivals_replacement_leaf(loader, monkeypa
             raise OSError(errno.ENOSPC, "no space left on device")
         return real_write(fd, data)
 
-    monkeypatch.setattr(os, "write", swap_the_leaf_then_fail)
-    with pytest.raises(OSError):
-        loader.create_skill("rivalled", "MINE")
-    monkeypatch.undo()
+    with monkeypatch.context() as mp:
+        mp.setattr(os, "write", swap_the_leaf_then_fail)
+        with pytest.raises(OSError):
+            loader.create_skill("rivalled", "MINE")
 
     # The rival's file survived the rollback. The directory removal is refused for
     # the same reason -- it is not empty -- so the skill is left for a human
@@ -345,10 +345,10 @@ def test_a_failed_create_leaves_nothing_behind_so_a_retry_can_succeed(loader, mo
             raise OSError(errno.ENOSPC, "no space left on device")
         return real_write(fd, data)
 
-    monkeypatch.setattr(os, "write", die_after_the_first_chunk)
-    with pytest.raises(OSError):
-        loader.create_skill("halfmade", "BODY")
-    monkeypatch.undo()
+    with monkeypatch.context() as mp:
+        mp.setattr(os, "write", die_after_the_first_chunk)
+        with pytest.raises(OSError):
+            loader.create_skill("halfmade", "BODY")
 
     assert not (loader._dir / "halfmade").exists(), "the directory the create made survived"
     # No staging residue from remove_dir_verified either, so nothing is left for a
@@ -379,18 +379,18 @@ def test_update_carries_the_acl(loader, monkeypatch):
         pytest.skip("platform without xattr syscalls")
     assert loader.create_skill("acl", "before") is True
 
-    monkeypatch.setattr(os, "listxattr", lambda *a, **k: ["system.posix_acl_access"], raising=False)
-    monkeypatch.setattr(os, "getxattr", lambda *a, **k: b"acl-bytes", raising=False)
-    recorded: list[tuple[str, bytes]] = []
-    monkeypatch.setattr(
-        os,
-        "setxattr",
-        lambda fd, attr, value, *a, **k: recorded.append((attr, value)),
-        raising=False,
-    )
+    with monkeypatch.context() as mp:
+        mp.setattr(os, "listxattr", lambda *a, **k: ["system.posix_acl_access"], raising=False)
+        mp.setattr(os, "getxattr", lambda *a, **k: b"acl-bytes", raising=False)
+        recorded: list[tuple[str, bytes]] = []
+        mp.setattr(
+            os,
+            "setxattr",
+            lambda fd, attr, value, *a, **k: recorded.append((attr, value)),
+            raising=False,
+        )
 
-    assert loader.update_skill("acl", "after") is True
-    monkeypatch.undo()
+        assert loader.update_skill("acl", "after") is True
     assert ("system.posix_acl_access", b"acl-bytes") in recorded
 
 

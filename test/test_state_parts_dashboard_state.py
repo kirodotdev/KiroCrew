@@ -265,12 +265,6 @@ _BASE_STATE_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
         False,
         "(self, loop: 'asyncio.AbstractEventLoop') -> 'None'",
     ),
-    "broadcast_browser_event": (
-        "function",
-        False,
-        False,
-        "(self, event_type: 'str', data: 'dict') -> 'None'",
-    ),
     "broadcast_context_usage": (
         "function",
         False,
@@ -333,6 +327,12 @@ _BASE_STATE_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
         False,
         "(self, msg_type: 'str', data: 'WsPayload') -> 'int'",
     ),
+    "deliver_ws_owners_bytes": (
+        "function",
+        True,
+        False,
+        "(self, payload: 'bytes') -> 'int'",
+    ),
     "disable_yolo": ("function", False, False, "(self) -> 'None'"),
     "effective_max_background_turns": ("function", False, False, "(self) -> 'int'"),
     "enable_yolo": ("function", False, False, "(self, *, from_config: 'bool' = False) -> 'None'"),
@@ -340,7 +340,12 @@ _BASE_STATE_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
     "ensure_context_snapshots_loaded": ("function", False, False, "(self) -> 'bool'"),
     "ensure_dynamic_card_store": ("function", False, False, "(self) -> 'Any'"),
     "finish_slot_list_rebuild": ("function", False, False, "(self) -> 'None'"),
-    "flush_slot_now": ("function", False, False, "(self, slot: '_ChatSlot') -> 'None'"),
+    "flush_slot_now": (
+        "function",
+        False,
+        False,
+        "(self, slot: '_ChatSlot', takeover_basis: 'TakeoverBasis | None' = None) -> 'None'",
+    ),
     "fold_apply_watch": ("function", False, False, "(self) -> 'frozenset[str]'"),
     "fold_watch_routing": (
         "function",
@@ -380,6 +385,12 @@ _BASE_STATE_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
     ),
     "get_slot": ("function", False, False, "(self, name: 'str') -> '_ChatSlot | None'"),
     "has_slot": ("function", False, False, "(self, name: 'str') -> 'bool'"),
+    "hold_turn_heartbeat": (
+        "function",
+        False,
+        False,
+        "(self, holder: 'object', slot_key: 'str') -> 'None'",
+    ),
     "hold_folders": (
         "function",
         True,
@@ -537,6 +548,7 @@ _BASE_STATE_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
         False,
         "(self, ws: 'web.WebSocketResponse', *, owner: 'bool' = False) -> 'None'",
     ),
+    "release_turn_heartbeat": ("function", False, False, "(self, holder: 'object') -> 'None'"),
     "release_deleted_slot_keys": (
         "function",
         False,

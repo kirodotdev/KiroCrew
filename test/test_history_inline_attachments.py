@@ -182,16 +182,13 @@ def test_delete_is_refused_when_attachments_cannot_be_moved_aside(tmp_path, png)
 
     log = ConversationLog(base_dir=tmp_path)
     log.append("thread1", "assistant", f"![shot]({png})")
-    monkeypatch = pytest.MonkeyPatch()
 
     def refuse(*_a, **_k):
         raise PermissionError("busy")
 
-    monkeypatch.setattr(projection, "stage_attachments_removal", refuse)
-    try:
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(projection, "stage_attachments_removal", refuse)
         assert log.delete_session("thread1") is False
-    finally:
-        monkeypatch.undo()
 
     assert (tmp_path / "thread1.jsonl").exists()
     assert attachments_dir(tmp_path, "thread1").is_dir()
@@ -215,9 +212,9 @@ def test_a_failed_transcript_unlink_puts_the_attachments_back(tmp_path, png, mon
             raise PermissionError("busy")
         return real_unlink(self, *a, **k)
 
-    monkeypatch.setattr(Path, "unlink", refuse)
-    assert log.delete_session("thread1") is False
-    monkeypatch.undo()
+    with monkeypatch.context() as mp:
+        mp.setattr(Path, "unlink", refuse)
+        assert log.delete_session("thread1") is False
 
     assert (tmp_path / "thread1.jsonl").exists()
     assert sorted(p.name for p in attachments_dir(tmp_path, "thread1").iterdir()) == before

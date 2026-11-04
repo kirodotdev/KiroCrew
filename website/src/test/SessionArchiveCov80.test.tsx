@@ -61,8 +61,8 @@ describe('SessionArchive list', () => {
     await waitFor(() => expect(screen.getByText('slot-alpha')).toBeInTheDocument())
     expect(screen.getByText('2026-01-01 09:15:30')).toBeInTheDocument()
     expect(screen.getByText('512B')).toBeInTheDocument()
-    expect(screen.getByText('4.0KB')).toBeInTheDocument()
-    expect(screen.getByText('3.00MB')).toBeInTheDocument()
+    expect(screen.getByText('4.1kB')).toBeInTheDocument()
+    expect(screen.getByText('3.1MB')).toBeInTheDocument()
     // A stamp that isn't the fixed 15-char form is shown verbatim.
     expect(screen.getByText('raw-stamp')).toBeInTheDocument()
   })

@@ -12,7 +12,7 @@ from kiro_crew.apps.manager import APP_MANIFEST_FILENAME, install_app
 # ---------------------------------------------------------------------------
 
 
-def _make_app_source(tmp_path, name="cli-test-app", crons=None, hooks=None):
+def _make_app_source(tmp_path, name="cli-test-app", crons=None, hooks=None, permissions=None):
     src = tmp_path / "source" / name
     src.mkdir(parents=True)
     manifest = {
@@ -30,6 +30,8 @@ def _make_app_source(tmp_path, name="cli-test-app", crons=None, hooks=None):
             manifest["permissions"] = {"cron": True}
     if hooks is not None:
         manifest["backend"] = {"hooks": hooks}
+    if permissions is not None:
+        manifest.setdefault("permissions", {}).update(permissions)
     (src / APP_MANIFEST_FILENAME).write_text(json.dumps(manifest, indent=2))
     (src / "agents").mkdir()
     (src / "agents" / "test-agent.json").write_text('{"name": "test-agent"}')
@@ -166,6 +168,60 @@ class TestHandleApp:
         _handle_app(ns)
         captured = capsys.readouterr()
         assert "Usage" in captured.out
+
+
+class TestFileOnlyInstallRegistration:
+    """A file-only `app install` registers under the gateway's install rule.
+
+    The gateway's install route registers a fresh install's resources unless the
+    app waits for session-approval consent (``_app_may_run_after_install``). The
+    CLI path, taken when no gateway answers, follows the same rule.
+    """
+
+    def _install(self, monkeypatch, src):
+        import argparse
+
+        from kiro_crew.apps.bridges import RegistrationResult
+        from kiro_crew.cli_commands import _handle_app
+
+        registered: list[str] = []
+
+        def _record(name):
+            registered.append(name)
+            return RegistrationResult()
+
+        monkeypatch.setattr(
+            "kiro_crew.cli_commands._install_app_through_gateway", lambda _source: False
+        )
+        monkeypatch.setattr("kiro_crew.cli_commands.register_app", _record)
+        _handle_app(argparse.Namespace(app_action="install", source=str(src)))
+        return registered
+
+    def test_a_session_approval_app_registers_nothing_and_stays_pending(
+        self, tmp_path, app_env, monkeypatch, capsys
+    ):
+        from kiro_crew.apps.manager import _read_installed
+
+        src = _make_app_source(tmp_path, permissions={"sessionApproval": True})
+
+        registered = self._install(monkeypatch, src)
+
+        assert registered == []
+        meta = _read_installed("cli-test-app")
+        assert meta is not None
+        assert meta.sessionApprovalConsentPending is True
+        assert meta.enabled is False
+        out = capsys.readouterr().out
+        assert "stays off until enabled from the dashboard" in out
+        assert "Run: kirocrew app enable cli-test-app" in out
+
+    def test_a_plain_app_still_registers(self, tmp_path, app_env, monkeypatch, capsys):
+        src = _make_app_source(tmp_path)
+
+        registered = self._install(monkeypatch, src)
+
+        assert registered == ["cli-test-app"]
+        assert "session approval" not in capsys.readouterr().out
 
 
 class TestEnableWarnsHooksNeedRestart:

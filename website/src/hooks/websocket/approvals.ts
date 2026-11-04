@@ -68,6 +68,7 @@ export function useApprovalRegistry(dispatch: AppDispatch, queryClient: QueryCli
       approved: boolean,
       decision?: string,
       slotlessResolution = false,
+      mid?: string,
     ) => {
       if (!id) return
       const coordinatorSlot = coordinatorApprovalsRef.current.get(id)
@@ -101,6 +102,8 @@ export function useApprovalRegistry(dispatch: AppDispatch, queryClient: QueryCli
         slot: targetSlot,
         decision: displayDecision ?? (approved ? 'approved' : 'rejected'),
         ...(ownsCoordinatorEntry ? { registry: 'coordinator' } : {}),
+        // An instance-bound answer names the row it settled; ids recur.
+        ...(mid ? { mid } : {}),
       }))
       // A stale retirement carries no outcome: the approval may have been
       // answered either way where this client could not see it (another window,
@@ -263,7 +266,8 @@ export function useApprovalRegistry(dispatch: AppDispatch, queryClient: QueryCli
         // from `approved`. An explicit expiry is a known auto-denial, but
         // retireApproval keeps its chat-row display token as `stale`.
         const decision = data.decision === 'expired' ? 'expired' : undefined
-        retireApproval(id, targetSlot, !!data.approved, decision, frameSlot === undefined)
+        const mid = typeof data.mid === 'string' && data.mid ? data.mid : undefined
+        retireApproval(id, targetSlot, !!data.approved, decision, frameSlot === undefined, mid)
       },
     }
   }, [dispatch, queryClient])

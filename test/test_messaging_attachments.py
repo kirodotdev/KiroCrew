@@ -59,21 +59,39 @@ async def _boom(url: str, dest: str) -> None:
     raise RuntimeError("network error")
 
 
+def _named(prefix, rows):
+    return [pytest.param(mime, kind, id=f"{prefix}-{mime}") for mime, kind in rows]
+
+
 class TestClassify:
     @pytest.mark.parametrize(
         "mime,expected",
-        [
-            ("image/png", IMAGE),
-            ("image/jpeg", IMAGE),
-            ("text/plain", TEXT),
-            ("application/json", TEXT),
-            ("audio/webm", AUDIO),
-            ("video/mp4", VIDEO),
-            ("application/octet-stream", OTHER),
-            ("", OTHER),
-        ],
+        _named(
+            "mimetype_mapping",
+            [
+                ("image/png", IMAGE),
+                ("image/jpeg", IMAGE),
+                ("text/plain", TEXT),
+                ("application/json", TEXT),
+                ("audio/webm", AUDIO),
+                ("video/mp4", VIDEO),
+                ("application/octet-stream", OTHER),
+                ("", OTHER),
+            ],
+        )
+        + _named(
+            "parameters_after_the_type_are_ignored",
+            [
+                # Discord's content_type for a JSON or XML file carries a charset.
+                ("application/json; charset=utf-8", TEXT),
+                ("application/xml; charset=utf-8", TEXT),
+                ("text/plain;charset=UTF-8", TEXT),
+                ("IMAGE/PNG ; foo=bar", IMAGE),
+                ("application/octet-stream; charset=utf-8", OTHER),
+            ],
+        ),
     )
-    def test_mimetype_mapping(self, mime, expected):
+    def test_mimetype_maps_to_its_kind(self, mime, expected):
         assert classify(mime) == expected
 
     def test_documents_detected_by_filename(self):
@@ -82,6 +100,33 @@ class TestClassify:
     def test_svg_is_not_an_image(self):
         """SVG is scriptable XML; the ACP encoder cannot inline it."""
         assert classify("image/svg+xml") == OTHER
+
+    def test_a_parameter_cannot_make_svg_an_image(self):
+        assert classify("image/svg+xml; charset=utf-8") == OTHER
+
+
+class TestParameterizedDocumentReachesTheParser:
+    @pytest.mark.asyncio
+    async def test_the_parser_gets_the_same_base_type_the_classifier_read(self, monkeypatch):
+        """``application/pdf; charset=binary`` on a name with no extension is parsed as a PDF."""
+        import kiro_crew.messaging.attachments as mod
+
+        seen: list[str] = []
+
+        def _extract(path: str, *, mimetype: str = "", filename: str = "") -> str:
+            seen.append(mimetype)
+            return "page one"
+
+        monkeypatch.setattr(mod, "extract_text", _extract)
+        att = Attachment(
+            name="report", mimetype="application/pdf; charset=binary", url="https://x/1"
+        )
+        result = await ingest_attachments([att], download=_writer(b"%PDF-1.4\n"), source="test")
+        try:
+            assert seen == ["application/pdf"]
+            assert result.rejections == []
+        finally:
+            cleanup(result.temp_paths)
 
 
 class TestSafeSuffix:
@@ -100,6 +145,28 @@ class TestSafeSuffix:
         out = safe_suffix(hint)
         assert out == expected
         assert "/" not in out and ".." not in out.strip(".")
+
+    def test_a_long_hint_is_bounded(self):
+        assert safe_suffix("x" * 300) == "." + "x" * 16
+
+
+class TestAttachmentSuffix:
+    @pytest.mark.parametrize(
+        ("name", "mimetype", "expected"),
+        [
+            ("report.pdf", "", ".pdf"),
+            ("report.pdf", "image/png", ".pdf"),
+            ("README", "text/plain", ".txt"),
+            ("README", "", ".bin"),
+            (".env", "", ".bin"),
+            ("clip", "video/mp4; codecs=avc1", ".mp4"),
+            ("voice", "audio/ogg; codecs=opus", ".ogg"),
+            ("x" * 300, "text/plain", ".txt"),
+            ("a." + "y" * 40, "", ".bin"),
+        ],
+    )
+    def test_name_extension_then_mimetype_then_bin(self, name, mimetype, expected):
+        assert attachments.attachment_suffix(name, mimetype) == expected
 
 
 class TestSniffImageMime:
@@ -142,6 +209,28 @@ class TestIngestAttachments:
         assert result.rejections == []
         assert os.path.exists(result.image_paths[0])
         cleanup(result.temp_paths)
+
+    async def test_a_dotless_name_downloads_under_its_mimetype_extension(self):
+        """A channel that sends no hint (Discord, Telegram) for a dotless name left
+        the whole name as the temp suffix; a long one made the temp path too long
+        to create, so the file was refused as "download failed"."""
+        dests: list[str] = []
+
+        async def _download(url: str, dest: str) -> None:
+            dests.append(dest)
+            with open(dest, "wb") as fh:
+                fh.write(b"hello")
+
+        for name in ("README", "n" * 300):
+            result = await ingest_attachments(
+                [Attachment(name=name, mimetype="text/plain", size=5, url="u")],
+                download=_download,
+                source="test",
+            )
+            assert result.rejections == []
+            assert len(result.text_blocks) == 1
+            cleanup(result.temp_paths)
+        assert [os.path.splitext(d)[1] for d in dests] == [".txt", ".txt"]
 
     async def test_size_enforced_on_downloaded_bytes_not_metadata(self):
         """The hole this closes: Slack trusted the channel's `size`, which

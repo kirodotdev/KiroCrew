@@ -244,7 +244,7 @@ BASE_SURFACE: dict[str, str] = {
     "_project_shadow_of": "callable _project_shadow_of(agent: 'str', work_dir: 'str | Path | None', *, markdown_specs: 'bool' = True, dispatchable_only: 'bool' = False) -> 'Path | None'",
     "_projected_ceiling_generation": "value state",
     "_prompt_path": "callable _prompt_path() -> 'Path'",
-    "_read_agent_spec": "callable _read_agent_spec(path: 'Path', *, operation: 'str' = 'list_agents', source: 'str' = 'list_agents') -> 'dict[str, Any] | None'",
+    "_read_agent_spec": "callable _read_agent_spec(path: 'Path', *, operation: 'str' = 'list_agents', source: 'str' = 'list_agents', fence: 'Callable[[Path], bool] | None' = None) -> 'dict[str, Any] | None'",
     "_read_spec_capped": "callable _read_spec_capped(path: 'Path') -> 'dict | None'",
     "_reconcile_tool_aliases_from_disk": "callable _reconcile_tool_aliases_from_disk(path: 'Path', config: 'dict') -> 'bool'",
     "_refresh_dynamic_fields": "callable _refresh_dynamic_fields(config: 'dict', *, gated_off: \"'frozenset[str] | None'\" = None, fork: 'bool' = False) -> 'None'",
@@ -513,11 +513,12 @@ _RUNTIME_STATE = frozenset(
 )
 
 #: Values compiled per platform at import, pinned for each platform they are built on:
-#: the hook path allowlist admits ``\`` and ``:`` on Windows only.
+#: the hook path allowlist admits ``\``, ``:`` and Unicode letters and digits on
+#: Windows only.
 _PER_PLATFORM: dict[str, dict[str, str]] = {
     "_SAFE_PATH_RE": {
         "posix": "value Pattern 0d1f4584e517d253",
-        "windows": "value Pattern 92e93b93e927a8a7",
+        "windows": "value Pattern 87efde2f8558ca88",
     },
 }
 

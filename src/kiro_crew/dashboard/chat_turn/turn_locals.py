@@ -21,12 +21,16 @@ from __future__ import annotations
 import enum
 from typing import TYPE_CHECKING
 
+# The one join of a reply segment's chunks; a module name so a test can count its input.
+_join_segments = "".join
+
 if TYPE_CHECKING:
     from asyncio import Task
     from asyncio.locks import Lock
     from collections.abc import Awaitable, Callable
     from typing import Any
 
+    from kiro_crew.agent_sdk.drivers.acp_vocab import EngineFallbackWalk
     from kiro_crew.agent_sdk.spec_hooks import PostToolIdentity
     from kiro_crew.dashboard.chat_runner import (
         DashboardState,
@@ -39,6 +43,7 @@ if TYPE_CHECKING:
         _TurnExit,
     )
     from kiro_crew.dashboard.chat_turn.turn_stats import _FirstVisibleClock
+    from kiro_crew.dashboard.deny_override import DenyOverrideOffer
     from kiro_crew.dashboard.poisoned_escalation import PoisonedConversationEscalation
     from kiro_crew.dashboard.responsive_chat import ResponsiveTurn
     from kiro_crew.execution_context import ExecutionContext
@@ -83,6 +88,7 @@ class _ChatTurn:
     _directive_loop_gen: "int"
     _skill_trigger_text: "str | None"
     _directive_channel_origin: "bool"
+    _directive_source_channels: "tuple[str, ...]"
     _directive_owner_origin: "bool"
     _commands_off: "bool"
     _recovery_echo_owed: "bool"
@@ -127,9 +133,11 @@ class _ChatTurn:
     _deferred_cut_text: "str"
     died_notice: "str | None"
     _deferred_options_expiry: "bool"
+    _deny_override: "DenyOverrideOffer | None"
     _dir_consumed_out: "dict[str, str]"
     _dispatch_lock: "Lock"
     _dispatch_lock_held: "bool"
+    _engine_fallback_walk: "EngineFallbackWalk"
     _escalation: "PoisonedConversationEscalation"
     _failed_write_calls: "set[str]"
     _first_turn_history_assembled: "bool"
@@ -198,6 +206,7 @@ class _ChatTurn:
     _saw_terminal_event: "bool"
     _saw_text_chunk: "bool"
     _seen_tool_identity: "dict[str, tuple[str, str]]"
+    _session_deny_waivers: "frozenset[str]"
     #: Built on the turn's first tool call (the provider is known by then).
     _undelivered_watch: "Any"
     _session_stop_gen_at_entry: "int"
@@ -267,7 +276,10 @@ class _ChatTurn:
     _wt_pending_coding: "set[str]"
     _wt_pending_dropped: "int"
     agent_model: "str"
-    assistant_text: "str"
+    # The open reply segment as the chunks that built it; read and written as
+    # ``assistant_text`` (the property below), extended by ``append_assistant_text``.
+    # Never holds an empty string, so an empty list is the empty segment.
+    _assistant_parts: "list[str]"
     chunk_seq: "int"
     client: "Any"
     execution_context: "ExecutionContext | None"
@@ -278,7 +290,6 @@ class _ChatTurn:
     is_slash: "bool"
     kiro_agent: "str | None"
     label: "str"
-    last_heartbeat: "float"
     memory_store: "str | None"
     needs_conversation_discard: "bool"
     needs_session_reset: "bool"
@@ -325,6 +336,7 @@ class _ChatTurn:
         _skill_trigger_text: "str | None",
         _directive_channel_origin: "bool",
         _directive_owner_origin: "bool",
+        _directive_source_channels: "tuple[str, ...]" = (),
         _commands_off: "bool",
         _recovery_echo_owed: "bool",
         _turn_actor: "str",
@@ -355,6 +367,7 @@ class _ChatTurn:
         self._directive_loop_gen = _directive_loop_gen
         self._skill_trigger_text = _skill_trigger_text
         self._directive_channel_origin = _directive_channel_origin
+        self._directive_source_channels = tuple(_directive_source_channels)
         self._directive_owner_origin = _directive_owner_origin
         self._commands_off = _commands_off
         self._recovery_echo_owed = _recovery_echo_owed
@@ -366,6 +379,39 @@ class _ChatTurn:
         self._current_message = _current_message
         # No admission reservation until the context-builder branch opens one.
         self._admission_slot = None
+
+    @property
+    def assistant_text(self) -> str:
+        """The open reply segment's text.
+
+        A long reply arrives as tens of thousands of chunks, and ``str +=`` on an
+        attribute copies the whole prefix on every chunk (CPython's in-place append
+        applies only to a local). The chunks are kept as a list instead and joined
+        on the first read after an append, which replaces the list with the joined
+        text, so each byte is copied once per read rather than once per chunk.
+        """
+        parts = self.__dict__.get("_assistant_parts")
+        if parts is None:
+            raise UnboundLocalError(
+                "cannot access local variable 'assistant_text' where it is not associated with a value"
+            )
+        if len(parts) > 1:
+            parts[:] = [_join_segments(parts)]
+        return parts[0] if parts else ""
+
+    @assistant_text.setter
+    def assistant_text(self, value: str) -> None:
+        self._assistant_parts = [value] if value else []
+
+    def append_assistant_text(self, chunk: str) -> None:
+        """Extend the open segment by *chunk* without copying what it already holds."""
+        if chunk:
+            self._assistant_parts.append(chunk)
+
+    @property
+    def has_assistant_text(self) -> bool:
+        """Whether the open segment holds any text, without joining its chunks."""
+        return bool(self._assistant_parts)
 
     if not TYPE_CHECKING:
 

@@ -310,6 +310,10 @@ the patch applied to the live `_vc`, so a failed write never leaves the gateway
 running a value the file does not hold. A failed write answers non-2xx with a
 `code`: 500 `config_corrupt` (config.json unreadable), 400
 `config_write_refused`, or 500 `config_write_failed`; success is `{"ok": true}`.
+A `provider` or `engine` the server does not know (or a non-string one) is left
+unsaved while the rest of the patch applies, and the 200 then also carries
+`warnings`: one `{field, code, message}` per such field, with code
+`voice_provider_unknown` or `voice_engine_unknown`.
 
 | Setting | Meaning |
 |---|---|
@@ -343,7 +347,12 @@ AWS CLI is unavailable. It checks that Polly is the active provider and that
 `aws_consent.refuse_and_log()` grants consent before it invokes
 `aws polly describe-voices`. Those gates keep a direct API request from
 silently using ambient AWS credentials for a provider the operator did not
-select or authorize.
+select or authorize. Both gates run before the cache too, so a cached catalogue
+is served only while Polly is the confirmed provider, and the cache is keyed by
+the `(aws_profile, region)` it was read with: after either changes, the next
+request reads the catalogue again. The handler reads that pair once, so the
+consent check, the cache key and the `describe-voices` command always name the
+same account and region even when a config PUT lands mid-request.
 
 ## Provider safety
 

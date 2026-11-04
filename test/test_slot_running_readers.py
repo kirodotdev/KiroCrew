@@ -25,6 +25,10 @@ _BUSY_HELPERS: dict[str, frozenset[str]] = {
     "_turn_busy": frozenset({"running"}),
     # A failed create's newborn retraction: keeps a slot a turn has reserved.
     "_retract_failed_newborn": frozenset({"running"}),
+    # The deferred discard's foreign-owner check: the reservation plus the
+    # slot's task, minus the caller's own turn, since the turn-path consume runs
+    # inside that task.
+    "_a_foreign_turn_owns_the_slot": frozenset({"running"}),
 }
 
 
@@ -139,6 +143,12 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
                 ("mate_thread_wakes.py", "_idle"),
                 ("chat_folders.py", "api_chat_slot_mode"),
                 ("chat_api/slot_guards.py", "_switch_target_busy"),
+                ("chat_turn/session_reset.py", "_arm_pending_reset_retry"),
+                # The deferred discard's own consume: it re-reads the
+                # RESERVATION after its awaited probes, because a turn that
+                # reserved during one of them has not acquired the session yet,
+                # so `skip_if_busy` cannot see it.
+                ("chat_turn/session_reset.py", "_consume_pending_reset"),
                 # The create's retraction of a newborn it answers with a
                 # failure, through _retract_failed_newborn: it reads the
                 # RESERVATION, because a turn that started on the slot during
@@ -168,12 +178,12 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
                 # A crewmate's harness change reloads its DM chat the same way,
                 # refusing the save while that slot is reserved.
                 ("agent_admin/crew_update.py", "api_kirocrew_agent_update"),
-                ("chat_api/slot_lifecycle.py", "api_chat_slot_reset_conversation"),
+                ("chat_api/slot_repair.py", "api_chat_slot_reset_conversation"),
                 # Image repair rebuilds the session through the shared
                 # reload_slot_session path, so it refuses a reserved slot via
                 # _slot_replaced_while_queued before re-issuing the turn, the
                 # same reservation read reset_conversation and reload make.
-                ("chat_api/slot_lifecycle.py", "api_chat_slot_repair_images"),
+                ("chat_api/slot_repair.py", "api_chat_slot_repair_images"),
                 ("chat_api/resume.py", "api_chat_slot_resume"),
                 ("chat_api/session_relaunch.py", "api_chat_slot_workspace"),
                 ("chat_api/slot_lifecycle.py", "api_chat_slots_cleanup"),

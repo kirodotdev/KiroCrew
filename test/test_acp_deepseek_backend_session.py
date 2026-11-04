@@ -222,7 +222,7 @@ def test_the_resolution_ladder_prefers_the_explicit_override(monkeypatch, tmp_pa
     from kiro_crew.acp import client as client_module
 
     binary = tmp_path / "dsh"
-    binary.write_text("#!/bin/sh\n")
+    binary.write_text("#!/bin/sh\n", encoding="utf-8")
     monkeypatch.setenv("DSH_BIN", str(binary))
     monkeypatch.setattr(
         client_module.platform_compat,

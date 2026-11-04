@@ -34,13 +34,19 @@ from kiro_crew.cron_service.model import (
     CronJob,
     CronSchedule,
 )
+from kiro_crew.cron_service.zone_default_migration import (
+    LOCAL_DEFAULT_STORE_VERSION,
+    predates_local_default,
+)
 
 logger = logging.getLogger("kiro_crew.cron")
 
 _CRONS_FILE = "crons.json"
 
 
-_STORE_VERSION = 2
+#: 3: an empty job zone under an empty config zone is the host's zone, not UTC
+#: (``zone_default_migration`` keeps an older store's jobs on UTC).
+_STORE_VERSION = LOCAL_DEFAULT_STORE_VERSION
 
 #: The top-level keys of the store document this build writes itself. Any other
 #: top-level key came from a newer build and is written back unchanged.
@@ -194,6 +200,13 @@ def _record_is_enabled(j: dict[str, Any]) -> bool:
     drift when a future pause-state change lands in only one reader.
     """
     return not _record_user_paused(j) and not j.get("auto_paused", False)
+
+
+def _ack_ids_field(value: Any) -> list[str]:
+    """``acked_item_ids`` as stored: a list of strings, else no ids at all."""
+    if isinstance(value, list) and all(isinstance(i, str) for i in value):
+        return value
+    return []
 
 
 def _job_from_record(j: dict[str, Any], *, warn_on_coercion: bool = True) -> CronJob:
@@ -390,6 +403,10 @@ def _job_from_record(j: dict[str, Any], *, warn_on_coercion: bool = True) -> Cro
         execution_context=j.get("execution_context"),
         approval_mode=_guard_str("approval_mode"),
         acked_items=j.get("acked_items", []),
+        # Anything but a list of strings (null from an imported archive, a hand
+        # edit) loads as no ids, so the job still saves and no id names an entry.
+        acked_item_ids=_ack_ids_field(j.get("acked_item_ids")),
+        acked_item_ids_digest=_guard_str("acked_item_ids_digest"),
         created_by=_guard_str("created_by"),
         source_preset=_guard_str("source_preset"),
         source_template_prompt=_guard_str("source_template_prompt"),
@@ -646,12 +663,18 @@ def job_record(j: CronJob) -> dict[str, Any]:
         record["managed_by"] = j.managed_by
     if j.app_manifest_digest:
         record["app_manifest_digest"] = j.app_manifest_digest
+    # The per-entry ack ids follow the same rule: a job whose acks carry no id
+    # (every ack before this key, and every Slack ack) writes nothing new.
+    if any(j.acked_item_ids):
+        record["acked_item_ids"] = j.acked_item_ids
+        record["acked_item_ids_digest"] = j.acked_item_ids_digest
     return record
 
 
 #: Every key :func:`job_record` can write, read off the encoder itself so the two
 #: cannot drift: a job that sets each conditionally written key
-#: (``user_pause_generation``, ``managed_by``, ``app_manifest_digest``, and a
+#: (``user_pause_generation``, ``managed_by``, ``app_manifest_digest``,
+#: ``acked_item_ids`` with ``acked_item_ids_digest``, and a
 #: non-default ``auto_pause_after_failures`` and ``alert_after_failures``, which
 #: are omitted at the default). A record key outside this set came from a newer
 #: build. A key inside it is this build's to write or to omit, so a value this
@@ -668,6 +691,8 @@ _KNOWN_JOB_KEYS = frozenset(
             app_manifest_digest="-",
             auto_pause_after_failures=0,
             alert_after_failures=2,
+            acked_item_ids=["-"],
+            acked_item_ids_digest="-",
         )
     )
 )
@@ -723,7 +748,8 @@ def encode_store(
     written back fill-only, the rule ``KiroCrewConfig.to_dict`` applies to unknown
     config keys: a key this build writes itself is never overwritten, and only a job
     still in ``jobs`` gets its unknown keys back, so a job this build deleted is gone
-    with them. The version is never written lower than the one read. A store with no
+    with them. ``version`` is written as given: the decoder's, never lower than the
+    one read, or the older version a store whose upgrade had to wait keeps. A store with no
     unknown keys encodes exactly as it did before.
     """
     fields_by_job = unknown_fields or {}
@@ -738,7 +764,7 @@ def encode_store(
                 record.setdefault(key, value)
         records.append(record)
     data: dict[str, Any] = {
-        "version": max(_STORE_VERSION, version),
+        "version": version,
         "jobs": records,
     }
     for key, value in (extra or {}).items():
@@ -767,6 +793,8 @@ class StoreDocument:
     version: int
     extra: Mapping[str, Any]
     unknown_fields: Mapping[str, UnknownFields]
+    #: Written before an unset zone followed the host; see ``zone_default_migration``.
+    predates_local_default: bool = False
 
 
 def _unknown_fields_of(record: dict[str, Any]) -> tuple[UnknownFields, int] | None:
@@ -867,7 +895,13 @@ def decode_store(raw: bytes) -> StoreDocument | None:
             past_total,
             MAX_UNKNOWN_FIELDS_STORE_BYTES,
         )
-    return StoreDocument(jobs=jobs, version=version, extra=extra, unknown_fields=unknown_fields)
+    return StoreDocument(
+        jobs=jobs,
+        version=version,
+        extra=extra,
+        unknown_fields=unknown_fields,
+        predates_local_default=predates_local_default(read_version),
+    )
 
 
 #: Infix between the store's file name and the UTC stamp of a quarantine copy:

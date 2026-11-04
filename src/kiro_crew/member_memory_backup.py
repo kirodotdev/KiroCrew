@@ -15,6 +15,7 @@ import shutil
 import stat
 import tempfile
 import zipfile
+import zlib
 from contextlib import ExitStack, closing, contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -640,7 +641,15 @@ def stage_restore(backup: Path, db_path: Path) -> Path:
                                     dest.write(chunk)
                             if digest.hexdigest() != checksum:
                                 raise ValueError("Snapshot file checksum does not match")
-                except (zipfile.BadZipFile, KeyError, json.JSONDecodeError) as exc:
+                except (
+                    zipfile.BadZipFile,
+                    KeyError,
+                    json.JSONDecodeError,
+                    # A damaged compressed entry fails while it is read, not opened.
+                    zlib.error,
+                    EOFError,
+                    NotImplementedError,
+                ) as exc:
                     raise ValueError("Member snapshot is invalid") from exc
                 _check_snapshot_database(stage / "memory.db", manifest, name, owner)
                 if _is_legacy(manifest):

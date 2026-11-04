@@ -1199,7 +1199,7 @@ class TestThePreSpawnGate:
         from kiro_crew.apps.builtins.dev_fleet import runtime
 
         launcher = tmp_path / "launcher.sh"
-        launcher.write_text("#!/bin/sh\n")
+        launcher.write_text("#!/bin/sh\n", encoding="utf-8")
         order: list[str] = []
 
         async def _prep(prepare, *, executor=None):

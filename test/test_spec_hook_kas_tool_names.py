@@ -8,6 +8,7 @@ id KAS states for the call (``_meta.kiro.toolId``), translated through one table
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -553,15 +554,46 @@ async def test_kas_a_gated_chat_call_runs_its_hook_once_on_the_permission_reques
 async def test_kiro_cli_a_chat_tool_call_still_fires_its_informational_hook(
     tmp_path, agents_dir, monkeypatch
 ):
+    # A real Hooks-page PreToolUse hook that writes the event it was sent to a file.
+    monkeypatch.setattr("kiro_crew.sandbox.wrap_argv", lambda argv, **k: (list(argv), None))
+    monkeypatch.setattr("kiro_crew.sandbox.cgroup_scope_argv", lambda argv: list(argv))
+    monkeypatch.setattr(hooks_mod, "_script_hooks_capability_denied", lambda sk="": None)
+    # The real spawner's default cwd is the test runner's (the checkout), so the
+    # child runs in tmp_path instead.
+    real_run = hooks_mod.run_script_hook
+
+    async def run_in_tmp(*args, **kwargs):
+        kwargs["cwd"] = str(tmp_path)
+        return await real_run(*args, **kwargs)
+
+    monkeypatch.setattr(hooks_mod, "run_script_hook", run_in_tmp)
+    script = tmp_path / "probe.py"
+    script.write_text(
+        "import os, sys\n"
+        "with open(sys.argv[1], 'w', encoding='utf-8') as f:\n"
+        "    f.write(sys.stdin.read())\n"
+        "with open(sys.argv[1] + '.cwd', 'w', encoding='utf-8') as f:\n"
+        "    f.write(os.getcwd())\n",
+        encoding="utf-8",
+    )
+    out = tmp_path / "event.json"
     _write_spec(agents_dir, "fs_write")
     state, client = _turn_state(tmp_path, ACP_BACKEND_KIRO)
-    informational = AsyncMock()
-    monkeypatch.setattr("kiro_crew.dashboard.chat_runner.fire_tool_hooks", informational)
+    state._hook_store._hooks = {
+        "page": ScriptHook(
+            id="page",
+            event=HOOK_EVENT_PRE_TOOL_USE,
+            command=f'"{sys.executable}" "{script}" "{out}"',
+        )
+    }
     await _one_turn(
         state, client, [LLMEvent(kind=EVENT_TOOL_CALL, title="Fetch URL", tool_call_id="t-1")]
     )
-    informational.assert_awaited_once()
-    assert informational.await_args.args[1] == "Fetch URL"
+    child_cwd = Path(f"{out}.cwd").read_text(encoding="utf-8")
+    assert Path(child_cwd).resolve() == tmp_path.resolve()
+    event = json.loads(out.read_text(encoding="utf-8"))
+    assert event["hook_event_name"] == HOOK_EVENT_PRE_TOOL_USE
+    assert event["tool_name"] == "Fetch URL"
 
 
 @pytest.mark.asyncio

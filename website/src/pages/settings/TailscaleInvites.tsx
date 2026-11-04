@@ -220,7 +220,7 @@ function ErrorLine({ code, testId }: { code: string; testId: string }) {
 /** A client-side check on a field, not a failure: plain text, not an `ErrorNotice`. */
 function FieldHint({ code, id }: { code: string; id: string }) {
   if (!code) return null
-  return <span id={id} className="text-[12px] text-text" data-testid={id}>{inviteErrorText(code)}</span>
+  return <span id={id} role="status" className="text-[12px] text-text" data-testid={id}>{inviteErrorText(code)}</span>
 }
 
 /** No key yet: the manual share path, and the one-time key form. */
@@ -363,7 +363,7 @@ function InviteForm({ disabled }: { disabled: boolean }) {
         <div className="flex items-center gap-2">
           {avatarId && <img src={avatarUrl(avatarId)} alt="" className="w-8 h-8 rounded-full object-cover" data-testid="invite-avatar-preview" />}
           <input ref={fileRef} type="file" disabled={draftLocked || upload.isPending} accept={AVATAR_TYPES.join(',')} className="sr-only" aria-label={i18nT('sharedCrew.invite_avatar')} onChange={e => { onPick(e.target.files?.[0]); e.target.value = '' }} data-testid="invite-avatar-input" />
-          <Btn type="button" onClick={() => fileRef.current?.click()} disabled={draftLocked || upload.isPending}>{i18nT('sharedCrew.invite_avatar')}</Btn>
+          <Btn type="button" onClick={() => fileRef.current?.click()} disabled={draftLocked || upload.isPending} aria-describedby={avatarHint ? 'invite-avatar-hint' : undefined}>{i18nT('sharedCrew.invite_avatar')}</Btn>
         </div>
       </div>
       <FieldHint code={avatarHint} id="invite-avatar-hint" />

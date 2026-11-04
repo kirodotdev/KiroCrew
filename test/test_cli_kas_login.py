@@ -193,9 +193,16 @@ class _FakeService:
         self.store = store
 
     async def begin_device(self, provider, *, start_url="", region="", replaces=""):
+        from kiro_crew.auth.login.builder_id import StartUrlRejectedError
+        from kiro_crew.auth.service import InvalidStartUrlError
+
         _FakeService.begun.append(
             {"provider": provider, "start_url": start_url, "region": region, "replaces": replaces}
         )
+        if start_url.startswith("http://"):
+            raise InvalidStartUrlError("Start URL must use https.")
+        if "wrong-region" in start_url:
+            raise StartUrlRejectedError("This usually means the region is wrong.")
         return {
             "login_id": "lid-1",
             "user_code": "WXYZ-1234",
@@ -256,6 +263,24 @@ class TestLogin:
         assert cli_kas.kas_cmd(args) == 0
         assert fake_service.begun[0]["start_url"] == "https://acme.awsapps.com/start"
         assert fake_service.begun[0]["region"] == "eu-west-1"
+
+    @pytest.mark.parametrize(
+        "start_url, reason",
+        [
+            # Refused by Crew before AWS is called.
+            ("http://acme.awsapps.com/start", "Start URL must use https."),
+            # Refused by AWS: still the user's input to fix, not a service failure.
+            ("https://wrong-region.awsapps.com/start", "the region is wrong"),
+        ],
+    )
+    def test_an_unusable_start_url_is_a_usage_error_naming_why(
+        self, home_store, fake_service, capsys, start_url, reason
+    ):
+        args = _parse("login", "--provider", "idc", "--start-url", start_url)
+        assert cli_kas.kas_cmd(args) == 2
+        err = capsys.readouterr().err
+        assert reason in err
+        assert "service refused" not in err
 
     def test_an_idc_login_without_a_start_url_is_a_usage_error(self, home_store, fake_service):
         assert cli_kas.kas_cmd(_parse("login", "--provider", "idc")) == 2

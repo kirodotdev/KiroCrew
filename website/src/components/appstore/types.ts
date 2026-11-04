@@ -1,6 +1,13 @@
 import { i18nT } from '../../i18n/t'
 import type { BackendStatus } from '../../utils/backendStatus'
 
+/** An app row's `composerActionGrant`: the approved composer buttons, and the ids
+ *  of the ones an update added that wait (`apps/composer_action_grants.py`). */
+export interface ComposerActionGrantRow {
+  actions?: Array<{ id?: string; title?: string; icon?: string }>
+  staged?: string[]
+}
+
 /** An app row's `linkPreviewGrant`: approved hosts and text patterns, and the ones held back. */
 export interface LinkPreviewGrantRow {
   hosts?: string[]
@@ -27,6 +34,13 @@ export interface LinkOpenGrantRow {
   /** Whole URLs (query and fragment) approved, and asked for but waiting. */
   fullUrl?: boolean
   stagedFullUrl?: boolean
+}
+
+/** An app row's `selectionActionGrant`: item ids the owner approved, and changed entries that wait. */
+export interface SelectionActionGrantRow {
+  approved?: string[]
+  /** Grant entries (`<id>:<sources>:<min>-<max>:<effects>`) an update added or changed. */
+  staged?: string[]
 }
 
 /**
@@ -146,6 +160,9 @@ export type InstalledApp = {
   messageActionGrant?: MessageActionGrantRow
   /** Approved link-open hosts, and the ones an update holds back. */
   linkOpenGrant?: LinkOpenGrantRow
+  composerActionGrant?: ComposerActionGrantRow
+  /** Approved selection-action items, and the changed ones an update holds back. */
+  selectionActionGrant?: SelectionActionGrantRow
   installedAt: string
   source?: string
   origin?: string     // "builtin" | "registry" | "local" | "external"
@@ -163,6 +180,12 @@ export type InstalledApp = {
   lifecycle?: string  // "gateway" | "app" | "locked"
   migratedTo?: string
   orphaned?: boolean
+  /**
+   * Set on a built-in app the gateway skipped at boot because its files could not
+   * be read; `reason` is the redacted `"<ExceptionType>: <message>"`. Absent on an
+   * app that loaded.
+   */
+  unavailable?: { reason: string }
   updateAvailable?: boolean
   /**
    * Live backend process status, present on a `GET /api/apps` row when the app
@@ -412,11 +435,20 @@ export function normalizeInstalledApp<T extends InstalledApp>(raw: T): T {
   const name = str(raw?.name)
   const version = str(raw?.version, '0.0.0')
   const displayName = str(raw?.displayName, name)
+  // Kept only in the one shape the server sends, so a reader can trust `reason`.
+  const unavailableRaw = (raw as { unavailable?: unknown }).unavailable
+  const unavailableReason =
+    unavailableRaw && typeof unavailableRaw === 'object'
+      ? (unavailableRaw as { reason?: unknown }).reason
+      : undefined
   return {
     ...raw,
     name,
     version,
     displayName,
+    ...('unavailable' in raw
+      ? { unavailable: typeof unavailableReason === 'string' ? { reason: unavailableReason } : undefined }
+      : {}),
     manifest: {
       ...manifest,
       name: str(manifest.name, name),

@@ -36,7 +36,7 @@ from kiro_crew.dashboard.session_directive_apply import (
     REFUSAL_SELF_WAKE_META_KEY,
     REFUSAL_WAKE_LOOP_ID_META_KEY,
 )
-from kiro_crew.dashboard.slot_queue_repository import RESTORED_QUEUE_KEY
+from kiro_crew.dashboard.slot_queue_repository import RESTORED_QUEUE_KEY, source_channels_of
 from kiro_crew.dashboard.state import CRON_NOTIFY_RE, SUBAGENT_COMPLETION_PREFIXES
 from kiro_crew.history import HUMAN_TURN_META_KEY
 
@@ -60,6 +60,7 @@ if TYPE_CHECKING:
         redact_exfiltration_urls,
         shutdown_event,
         spawn_guarded_turn,
+        teardown_hold_active,
     )
     from kiro_crew.dashboard.chat_turn.recipient import (
         MIRROR_ECHO_OWED_META_KEY,
@@ -666,8 +667,15 @@ async def _start_next_queued_turn(
         return False
     # Picked here rather than asked for by a card: the person's waiting sends
     # are one conversation, so a leading run of them drains as one turn.
-    auto_priority = bool(priority_id and not required_queue_id)
-    if priority_id and not required_queue_id:
+    explicit_request = bool(required_queue_id)
+    teardown_held = teardown_hold_active(state, slot)
+    # Automatic promotion is skipped while a teardown holds the user entries:
+    # promoting one would set ``required_queue_id``, and that plus the hold
+    # returns below before the system-only dequeue, parking a cron or sub-agent
+    # injection that is allowed to pass a held queue. A card's explicit Run now
+    # still selects its entry.
+    auto_priority = bool(priority_id and not required_queue_id and not teardown_held)
+    if auto_priority:
         required_queue_id = priority_id
         allow_user_during_subagents = True
 
@@ -676,11 +684,14 @@ async def _start_next_queued_turn(
     # user message held for the children must not run ahead of it. The hold still
     # drains system entries, so that completion is what runs next.
     hold_users = bool(
-        not allow_user_during_subagents
-        and (
-            slot._subagent_deliveries_inflight > 0
-            or any(item.get("kind") == SUBAGENT_COMPLETION_KIND for item in slot._queue)
-            or subagents_hold_user_messages(state, effective_session_key(slot))
+        (teardown_held and not explicit_request)
+        or (
+            not allow_user_during_subagents
+            and (
+                slot._subagent_deliveries_inflight > 0
+                or any(item.get("kind") == SUBAGENT_COMPLETION_KIND for item in slot._queue)
+                or subagents_hold_user_messages(state, effective_session_key(slot))
+            )
         )
     )
     restored_ids = _RESTORED_DRAIN_IDS.get().get(slot.key)
@@ -704,7 +715,11 @@ async def _start_next_queued_turn(
         return False
     if hold_users:
         # Sub-agent completions / recovery still flow while user messages wait.
-        next_msg, consumed = _dequeue_next_system_message(slot)
+        # Under the teardown hold the selection narrows to structurally tagged
+        # injections: the sub-agent hold also releases a queued steer, which is
+        # a person's words and would be answered by the conversation they asked
+        # to drop.
+        next_msg, consumed = _dequeue_next_system_message(slot, system_only=teardown_held)
     elif auto_priority and (run := responsive_chat.dequeue_waiting_run(slot)) is not None:
         next_msg, consumed = run
     else:
@@ -1182,6 +1197,11 @@ async def _start_next_queued_turn(
         "_directive_user_origin": directive_user_origin,
         "_directive_channel_origin": directive_channel_origin,
     }
+    # Every channel a consumed entry was typed in, so admission checks the batch
+    # against each one's configured agent. Set only when an entry carries one.
+    _source_channels = tuple(sorted({ch for item in consumed for ch in source_channels_of(item)}))
+    if _source_channels:
+        _run_kwargs["_directive_source_channels"] = _source_channels
     if any(responsive_chat.priority_entry(item) for item in consumed):
         _run_kwargs["_responsive_human"] = True
         _run_kwargs["_responsive_protected"] = any(

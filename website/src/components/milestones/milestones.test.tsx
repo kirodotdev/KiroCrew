@@ -714,6 +714,24 @@ describe('Explore panel', () => {
     expect(screen.getByTestId('milestone-next-chats-opened').textContent).toBe('1,200 / 1,000')
   })
 
+  it('heads the panel with the same tried count the top-bar ring shows, and keeps its close there', async () => {
+    vi.spyOn(api, 'milestones').mockResolvedValue(payload())
+    renderWith(<MilestonesSheet />)
+    act(() => openMilestonesPanel())
+    const header = await screen.findByTestId('milestones-header')
+    expect(within(header).getByTestId('milestones-header-progress').textContent).toBe('1 of 7 features tried')
+    expect(within(header).getByTestId('milestones-ring').getAttribute('data-ratio')).toBe((1 / 7).toFixed(3))
+    expect(within(header).getByRole('button', { name: 'Close Explore' })).toBeTruthy()
+  })
+
+  it('strikes through a finished Getting started row', async () => {
+    vi.spyOn(api, 'milestones').mockResolvedValue(payload({}, [feature('widgets', 'done', 'send'), feature('scheduled-task', 'open')]))
+    renderWith(<MilestonesSheet />)
+    act(() => openMilestonesPanel())
+    const row = await screen.findByTestId('milestone-row-widgets')
+    expect(within(row).getByTestId('milestone-row-text').firstElementChild?.className).toContain('line-through')
+  })
+
   it('has no badge wall before the first tier', async () => {
     vi.spyOn(api, 'milestones').mockResolvedValue(payload({
       groups: [{ id: 'features', items: [feature('slack', 'open')] }, { id: 'sessions', items: [{ id: 'chats-opened', value: 2, tiers: [10, 100, 1000], tiers_reached_at: {} }] }],
@@ -777,7 +795,7 @@ describe('Explore panel', () => {
 })
 
 describe('starter tasks (Try it)', () => {
-  const tryIt = (row: HTMLElement) => fireEvent.click(row.querySelector('button:last-of-type') as HTMLElement)
+  const tryIt = (row: HTMLElement) => fireEvent.click(within(row).getByText('Try it'))
 
   it('sends directly for widgets', async () => {
     vi.spyOn(api, 'milestones').mockResolvedValue(payload())

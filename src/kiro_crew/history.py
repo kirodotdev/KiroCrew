@@ -476,7 +476,13 @@ class ConversationLog:
         #: every session, so routing it through ``_msg_cache`` retains the full
         #: parsed transcript corpus. The file stamp includes inode and size in
         #: addition to nanosecond mtime so rotations and atomic rewrites miss.
-        self._file_change_cache: _LRUCache[_FileChangeCacheEntry] = _LRUCache(cache_max)
+        #:
+        #: Sized by ``_METADATA_CACHE_MAX``, NOT ``cache_max``: the scan walks
+        #: every session in one order, so an LRU smaller than the store evicts
+        #: each entry before it is read again and every call re-reads every
+        #: file. Entries hold changed paths only (a few hundred bytes for a
+        #: session with documents), so covering the whole store is cheap.
+        self._file_change_cache: _LRUCache[_FileChangeCacheEntry] = _LRUCache(_METADATA_CACHE_MAX)
         #: Sparse row-to-byte indexes for paginated transcript reads. Entries
         #: contain offsets and counts only, never message content, so a bounded
         #: page does not retain the complete parsed transcript in memory.
@@ -706,8 +712,7 @@ class ConversationLog:
     def get_unconsolidated(self, key: str) -> tuple[list[dict], int]:
         """Return (messages_after_last_consolidated, total_message_count)."""
         messages = self._read_messages(key)
-        offset = self._read_metadata(key).get("last_consolidated", 0)
-        return messages[offset:], len(messages)
+        return messages[self.consolidated_offset(key) :], len(messages)
 
     def chained_keys(self, key: str) -> list[str]:
         """Every transcript key :meth:`read_messages_chained` concatenates for *key*."""
@@ -913,8 +918,16 @@ class ConversationLog:
     def mtime_of(self, key: str) -> float | None:
         return self._metadata_projection.mtime_of(key)
 
-    def clear_closed(self, key: str, *, only_if_closed_before: float | None = None) -> None:
-        self._metadata_projection.clear_closed(key, only_if_closed_before=only_if_closed_before)
+    def clear_closed(
+        self,
+        key: str,
+        *,
+        only_if_closed_before: float | None = None,
+        only_if_closed_id: str | None = None,
+    ) -> None:
+        self._metadata_projection.clear_closed(
+            key, only_if_closed_before=only_if_closed_before, only_if_closed_id=only_if_closed_id
+        )
 
     def _read_messages(self, key: str) -> list[dict]:
         return self._read_projection._read_messages(key)
@@ -1104,6 +1117,7 @@ class ConversationLog:
     _persist_inline_attachments = _history_append._persist_inline_attachments
     append = _history_append.append
     append_if_absent = _history_append.append_if_absent
+    _holds_identical_row = _history_append._holds_identical_row
 
     # -- Consolidation marker and retry ledger (``history_marker``).
     rotation_generation = _history_marker.rotation_generation

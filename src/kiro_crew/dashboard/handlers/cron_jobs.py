@@ -531,6 +531,11 @@ async def api_crons_create(request: web.Request) -> web.Response:
     if timezone_val and not is_valid_timezone(timezone_val):
         safe_tz, _ = redact_credentials(redact_exfiltration_urls(timezone_val)[0])
         return web.json_response({"error": f"invalid timezone: {safe_tz!r}"}, status=400)
+    # A "local" (or default) clock time is read in the host's zone: have it read
+    # before the clock becomes a stored instant, which nothing corrects later.
+    from kiro_crew.host_timezone import ensure_host_timezone
+
+    await ensure_host_timezone()
     at_ts, at_err = _resolve_one_shot_at(body, timezone_val)
     if at_err is not None:
         return at_err

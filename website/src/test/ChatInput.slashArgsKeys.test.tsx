@@ -50,6 +50,14 @@ describe('ChatInput: slash text with arguments does not hold the picker gate', (
     expect(onStop).not.toHaveBeenCalled()
   })
 
+  it('NEGATIVE CONTROL: a hyphenated command name still owns Escape', () => {
+    const onStop = vi.fn()
+    renderWithProviders(<Host isRunning onStop={onStop} />)
+    typeInto('/security-')
+    fireEvent.keyDown(textarea(), { key: 'Escape', code: 'Escape' })
+    expect(onStop).not.toHaveBeenCalled()
+  })
+
   it('NEGATIVE CONTROL: a lone slash still owns Escape', () => {
     const onStop = vi.fn()
     renderWithProviders(<Host isRunning onStop={onStop} />)

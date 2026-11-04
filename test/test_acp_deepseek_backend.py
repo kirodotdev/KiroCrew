@@ -37,6 +37,7 @@ from kiro_crew.acp import launch as launch_mod
 from kiro_crew.acp.client import AcpClient
 from kiro_crew.acp.harness import deepseek as deepseek_mod
 from kiro_crew.acp.harness import pi as pi_mod
+from kiro_crew.acp.transport_errors import AcpError
 from kiro_crew.acp_backends import (
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_DEEPSEEK,
@@ -950,13 +951,16 @@ def test_a_spawn_that_cannot_resolve_its_binary_leaves_no_scratch_behind(
     root.mkdir(mode=0o700, parents=True, exist_ok=True)
     before = {p.name for p in root.iterdir()}
 
-    client = AcpClient(work_dir=tmp_path)
+    # The workspace sits beside the data home, not around it: on macOS the kiro arm
+    # first refuses a workspace that contains the voice runtime under KIROCREW_HOME,
+    # and that refusal is a RuntimeError, raised before the binary is resolved.
+    client = AcpClient(work_dir=tmp_path / "work")
     # The resolution the kiro arm performs, made to fail the way a host without
     # kiro-cli fails: resolved to nothing rather than raised, so the arm takes its
     # own not-found path instead of an exception from the resolver.
     monkeypatch.setattr(client_module, "_resolve_kiro_bin_for_spawn", AsyncMock(return_value=None))
 
-    with pytest.raises(Exception):
+    with pytest.raises(AcpError):
         asyncio.run(client._spawn())
 
     after = {p.name for p in root.iterdir()}

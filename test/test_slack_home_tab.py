@@ -424,9 +424,7 @@ class TestPublishHomeTabSessions:
         within a ``with patch(...)`` block.
         """
         monkeypatch.setattr("kiro_crew.slack.events.is_owner", lambda _: True)
-        monkeypatch.setattr(
-            "kiro_crew.slack.events.is_allowed_user", lambda _: True
-        )
+        monkeypatch.setattr("kiro_crew.slack.events.is_allowed_user", lambda _: True)
 
     @pytest.mark.asyncio
     @patch("kiro_crew.slack.events.is_yolo_mode", return_value=False)
@@ -555,9 +553,7 @@ class TestPublishHomeTabSessions:
         new_callable=AsyncMock,
         return_value="*SSO:* ✅",
     )
-    async def test_uses_section_blocks_not_task_card(
-        self, _mw, _fmt, _yolo, tmp_path, monkeypatch
-    ):
+    async def test_uses_section_blocks_not_task_card(self, _mw, _fmt, _yolo, tmp_path, monkeypatch):
         """Slack ``views.publish`` rejects ``task_card`` blocks with
         ``unsupported type: task_card``. The Home Tab MUST render sessions
         as plain ``section`` blocks. Regression test for the rendering
@@ -621,9 +617,7 @@ class TestPublishHomeTabSessions:
         new_callable=AsyncMock,
         return_value="*SSO:* ✅",
     )
-    async def test_collector_failure_emits_error_sel_audit(
-        self, _mw, _fmt, _yolo, monkeypatch
-    ):
+    async def test_collector_failure_emits_error_sel_audit(self, _mw, _fmt, _yolo, monkeypatch):
         """SEL audit records the data-access attempt on the Home Tab path.
 
         SEL audit must record the data-access attempt even when the collector
@@ -803,9 +797,7 @@ class TestHomeTabCollectorConcurrency:
             self._tracking_collector(observed),
         )
 
-        await asyncio.gather(*(
-            _publish_home_tab(_make_orch(), f"U{i}") for i in range(6)
-        ))
+        await asyncio.gather(*(_publish_home_tab(_make_orch(), f"U{i}") for i in range(6)))
 
         assert observed, "the collector never ran"
         assert max(observed) == 1, f"collectors overlapped: {observed}"
@@ -831,9 +823,7 @@ class TestHomeTabCollectorConcurrency:
         )
         orchs = [_make_orch() for _ in range(4)]
 
-        await asyncio.gather(*(
-            _publish_home_tab(o, f"U{i}") for i, o in enumerate(orchs)
-        ))
+        await asyncio.gather(*(_publish_home_tab(o, f"U{i}") for i, o in enumerate(orchs)))
 
         assert len(observed) == 4
         for o in orchs:
@@ -869,7 +859,9 @@ class TestHomeTabCollectorConcurrency:
             "_collect_recent_sessions_off_loop",
             self._tracking_collector(observed),
         )
-        await finished(_publish_home_tab(_make_orch(), "U2"), "the second home-tab publish", timeout=5)
+        await finished(
+            _publish_home_tab(_make_orch(), "U2"), "the second home-tab publish", timeout=5
+        )
 
         assert observed == [1]
 
@@ -982,11 +974,7 @@ class TestPublishHomeTabCronTimezone:
             captured["tz_name"] = tz_name
             return "0 9 * * *"
 
-        cfg = SimpleNamespace(timezone="America/New_York")
-        with (
-            patch("kiro_crew.slack.events.format_schedule", side_effect=_capture),
-            patch("kiro_crew.slack.events.KiroCrewConfig.load", return_value=cfg),
-        ):
+        with patch("kiro_crew.slack.events.format_schedule", side_effect=_capture):
             await _publish_home_tab(orch, "U123")
 
         assert captured.get("tz_name") == "Asia/Seoul"
@@ -998,22 +986,24 @@ class TestPublishHomeTabCronTimezone:
         new_callable=AsyncMock,
         return_value="*SSO:* ✅",
     )
-    async def test_falls_back_to_configured_zone_when_job_has_none(self, _mw, _yolo):
-        """A job with no timezone falls back to the existing App Home zone."""
+    async def test_a_job_with_no_zone_renders_in_the_zone_the_scheduler_fires_it_in(
+        self, _mw, _yolo
+    ):
+        """A job with no timezone reaches format_schedule with no zone, so it is
+        resolved the scheduler's way (configured zone, else the host's), never as
+        the viewer's Slack zone, which would show a different instant."""
         orch = _make_orch(
             cron_svc=FakeCronService([FakeCronJobTZ(timezone="")]),
         )
+        orch.slack.get_user_profile = AsyncMock(return_value={"timezone": "Asia/Seoul"})
         captured: dict = {}
 
         def _capture(_schedule, tz_name=""):
             captured["tz_name"] = tz_name
             return "0 9 * * *"
 
-        cfg = SimpleNamespace(timezone="America/New_York")
-        with (
-            patch("kiro_crew.slack.events.format_schedule", side_effect=_capture),
-            patch("kiro_crew.slack.events.KiroCrewConfig.load", return_value=cfg),
-        ):
+        with patch("kiro_crew.slack.events.format_schedule", side_effect=_capture):
             await _publish_home_tab(orch, "U123")
 
-        assert captured.get("tz_name") == "America/New_York"
+        assert captured.get("tz_name") == ""
+        orch.slack.get_user_profile.assert_not_called()

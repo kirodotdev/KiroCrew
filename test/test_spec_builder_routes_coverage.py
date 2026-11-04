@@ -868,15 +868,31 @@ class TestDiscardQueuedWork:
         assert slot._pending_steers == []
 
 
-class TestAudit:
-    def test_an_api_audit_reaches_sel(self, _quiet_sel):
-        r._audit("spec_create", "demo")
-        assert _quiet_sel.log_api_access.call_args.kwargs["caller"] == r.APP_NAME
-        assert _quiet_sel.log_api_access.call_args.kwargs["operation"] == "spec_create"
+def _sel_rows(root: Path) -> list[dict]:
+    """The events a real SEL bound to *root* wrote, oldest first."""
+    raw = (root / "security_events.jsonl").read_text(encoding="utf-8")
+    return [json.loads(line) for line in raw.splitlines() if line.strip()]
 
-    def test_a_raising_sel_never_breaks_the_request(self, _quiet_sel):
+
+class TestAudit:
+    def test_an_api_audit_reaches_sel(self, sel_private_root):
+        from kiro_crew.sel import sel as real_sel
+
+        with mock.patch.object(r, "sel", real_sel):
+            r._audit("spec_create", "demo")
+        row = _sel_rows(sel_private_root)[-1]
+        assert row["event_type"] == "api_access"
+        assert (row["caller_identity"], row["operation"]) == (r.APP_NAME, "spec_create")
+        assert (row["outcome"], row["resources"]) == ("success", "demo")
+
+    def test_a_raising_sel_never_breaks_the_request(self, _quiet_sel, caplog):
+        import logging
+
         _quiet_sel.log_api_access.side_effect = RuntimeError("log down")
-        r._audit("spec_create", "demo")  # must not raise
+        with caplog.at_level(logging.DEBUG, logger=r.logger.name):
+            r._audit("spec_create", "demo")  # must not raise
+        logged = [x.getMessage() for x in caplog.records if x.name == r.logger.name]
+        assert logged == ["SEL audit failed for spec_create"]
 
     def test_no_sel_means_no_audit_and_no_error(self):
         with mock.patch.object(r, "sel", None):
@@ -890,9 +906,14 @@ class TestAudit:
         assert kwargs["critical"] is True
         assert CRED_NAME not in kwargs["resources"]
 
-    def test_a_tool_audit_carries_the_return_code_when_there_is_one(self, _quiet_sel):
-        r._audit_tool("failure", "rev-parse", "/repo", rc=128)
-        assert _quiet_sel.log_tool_invocation.call_args.kwargs["metadata"]["rc"] == 128
+    def test_a_tool_audit_carries_the_return_code_when_there_is_one(self, sel_private_root):
+        from kiro_crew.sel import sel as real_sel
+
+        with mock.patch.object(r, "sel", real_sel):
+            assert r._audit_tool("failure", "rev-parse", "/repo", rc=128) is True
+        row = _sel_rows(sel_private_root)[-1]
+        assert (row["operation"], row["outcome"]) == ("git", "failure")
+        assert row["metadata"] == {"subcommand": "rev-parse", "rc": 128}
 
     def test_a_tool_audit_that_could_not_be_recorded_reports_false(self, _quiet_sel):
         # The "invoked" event is a PRECONDITION for spawning git, not a

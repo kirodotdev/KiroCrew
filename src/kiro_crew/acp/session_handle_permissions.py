@@ -48,7 +48,9 @@ from kiro_crew.acp.types import (
     AcpEvent,
     JsonRpcMessage,
 )
+from kiro_crew.agent_sdk.backends import ACP_BACKENDS_SHARED_RUNTIME_CHILD_CALLS_MARKED
 from kiro_crew.metrics.events import CHILD_PERMISSION_DENIED, emit_counter
+from kiro_crew.security.deny_waiver import child_calls_marked
 from kiro_crew.session_environment import WORKSPACE_SERVER_NAME
 from kiro_crew.trust_patterns import GrantDeadline, GrantEnded, grant_deadline_guard
 
@@ -69,6 +71,7 @@ async def approve_tool(
     *,
     deadline: GrantDeadline | None = None,
     withdraw_if: Callable[[], bool] | None = None,
+    deny_waivers: frozenset[str] = frozenset(),
 ) -> bool:
     """Approve a pending permission request.
 
@@ -97,6 +100,9 @@ async def approve_tool(
     :class:`~kiro_crew.permission_floor.ApprovalWithdrawn` is raised. Under
     the lock it is read ahead of the runtime's liveness check, which
     ``deadline`` follows.
+
+    ``deny_waivers`` reach the floor's gate unchanged, as on
+    ``AcpClient.approve_tool``.
     """
     gate_event = self._permission_gate_events.pop(request_id, None)
     # Taken first, before any await: it records the session's cancellation
@@ -107,7 +113,12 @@ async def approve_tool(
     if gate_event is None:
         reason: str | None = permission_floor.REASON_NO_EVENT
     else:
-        reason = await asyncio.to_thread(permission_floor.refusal_for, gate_event)
+        if deny_waivers:
+            reason = await asyncio.to_thread(
+                permission_floor.refusal_for, gate_event, deny_waivers=deny_waivers
+            )
+        else:
+            reason = await asyncio.to_thread(permission_floor.refusal_for, gate_event)
     if reason is not None:
         # Same as ``AcpClient.approve_tool``: drop any earlier grant for this call
         # id now, since ``reject_tool`` below finds the gate event already popped.
@@ -671,9 +682,19 @@ def _build_permission_event(self: AcpSessionHandle, msg: JsonRpcMessage) -> AcpE
     # structured context; the low-fidelity downgrade applies only when the
     # provenance flags say the context never arrived (frame race, drop).
     frame_sid = str((msg.params or {}).get("sessionId") or "")
+    # Whether the child marks below can be trusted for this backend: only a
+    # backend this transport is proven to tell sub-agent calls apart for
+    # (``security.deny_waiver``) is offered a deny override at all.
+    event.child_calls_marked = child_calls_marked(
+        getattr(self._runtime, "acp_backend", None), ACP_BACKENDS_SHARED_RUNTIME_CHILD_CALLS_MARKED
+    )
     if frame_sid and frame_sid != self._session_id:
         event.sub_session_id = frame_sid
-    elif self._runtime.acp_backend == ACP_BACKEND_KAS and not _is_native_child_call(self, event):
+    elif self._runtime.acp_backend == ACP_BACKEND_KAS and _is_native_child_call(self, event):
+        # A native KAS sub-agent's call carries this session's id, so mark it:
+        # the dashboard keeps the parent's deny overrides away from it.
+        event.native_child_call = True
+    elif self._runtime.acp_backend == ACP_BACKEND_KAS:
         # What this session's own agent granted and the KAS policy kept at ask,
         # so the gate can answer the request itself after its checks. A child's
         # request runs another agent's spec, so it never carries this: neither

@@ -79,7 +79,9 @@ export const LOCATIONS = {
   },
   'skills.refresh': {
     kind: 'button',
-    label: { from: 'attr', attr: 'aria-label' },
+    // Icon-only: the name is the aria-label, which reads "Refreshing skills…"
+    // while a refresh runs; the idle name is the one people look for.
+    label: { from: 'attr', attr: 'aria-label', key: 'pages.overview.skillsTab.refresh_skills' },
     terms: {
       en: ['reload skills', 'refresh the skill list', 'rescan skills'],
       'zh-CN': ['重新加载技能', '刷新技能列表'],

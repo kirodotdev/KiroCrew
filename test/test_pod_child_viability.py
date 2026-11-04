@@ -116,9 +116,14 @@ def test_a_child_still_serving_when_the_bound_expires_is_viable(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, resolved
 ) -> None:
     """Waiting on stdin is what a healthy ACP child does -- accept, do not refuse."""
+    from kiro_crew.agent_sdk import pod_child_probe as probe_mod
+
     monkeypatch.setattr(rt, "_CHILD_VIABILITY_TIMEOUT_SECS", 1.0)
     resolved(_fake_cli(tmp_path, "import time\ntime.sleep(30)\n"))
 
+    # Graded viable, not merely "did not refuse": a signed-out verdict also boots.
+    verdict = probe_mod.probe_pod_child_bootstrap(_pod_env(tmp_path), timeout_secs=1.0).verdict
+    assert verdict == probe_mod.PROBE_VIABLE
     rt._probe_pod_child_bootstrap(_pod_env(tmp_path))  # no raise
 
 
@@ -129,8 +134,12 @@ def test_a_clean_zero_exit_is_viable_not_a_failure(tmp_path: Path, resolved) -> 
     auth store was staged: every healthy child then exited 0 with empty stderr, and
     the probe read that as "could not bootstrap" and refused with exit 78.
     """
+    from kiro_crew.agent_sdk import pod_child_probe as probe_mod
+
     resolved(_fake_cli(tmp_path, "raise SystemExit(0)\n"))
 
+    result = probe_mod.probe_pod_child_bootstrap(_pod_env(tmp_path), timeout_secs=10.0)
+    assert result.verdict == probe_mod.PROBE_VIABLE
     rt._probe_pod_child_bootstrap(_pod_env(tmp_path))  # no raise
 
 

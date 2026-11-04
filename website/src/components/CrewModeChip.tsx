@@ -19,12 +19,15 @@ interface CrewModeChipProps {
   busy?: boolean
   /** Id of a visible line that says more about the chip. */
   describedBy?: string
+  /** The mid-chat switch (right of the permission button) has its own id. */
+  testId?: string
 }
 
-/** The composer's Ultra Mode switch on a NEW chat only (before its first
- *  message). one chip that toggles in place -- pressed is on. The first
- *  message locks it; a chat with messages never offers it. */
-export function CrewModeChip({ onTurnOn, pressed = false, onTurnOff, disabled = false, busy = false, describedBy }: CrewModeChipProps) {
+/** The composer's Ultra Mode switch. On a NEW chat (before its first message)
+ *  it toggles in place -- pressed is on -- and the first message locks it. In a
+ *  plain chat that already has messages the same chip, unpressed, sits right of
+ *  the permission button and turns the chat on one way. */
+export function CrewModeChip({ onTurnOn, pressed = false, onTurnOff, disabled = false, busy = false, describedBy, testId = 'crew-mode-chip' }: CrewModeChipProps) {
   const ref = useRef<HTMLElement | null>(null)
   const hint = busy
     ? i18nT('components.crewMode.chip_hint_busy')
@@ -45,7 +48,7 @@ export function CrewModeChip({ onTurnOn, pressed = false, onTurnOff, disabled = 
       radius={8}
       type="button"
       ref={ref as never}
-      data-testid="crew-mode-chip"
+      data-testid={testId}
       aria-label={i18nT('components.crewMode.chip_off')}
       aria-pressed={pressed}
       aria-describedby={describedBy}

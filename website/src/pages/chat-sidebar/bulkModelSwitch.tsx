@@ -12,6 +12,7 @@ import { useAvailableModelsQuery } from '../../hooks/useAvailableModels'
 import { useListboxKeyboard } from '../../hooks/useListboxKeyboard'
 import { partitionBulkSwitch } from '../../lib/bulkModelSwitch'
 import { i18nT } from '../../i18n/t'
+import { fmtNumber } from '../../i18n/format'
 import type { Slot } from './types'
 import type { SidebarScope } from './scope'
 
@@ -144,11 +145,11 @@ export function renderBulkModelPanel(shell: SidebarScope): React.ReactNode {
           {bulkRunningCount > 0 && (
             <label className="flex items-center gap-2 text-[12px] text-muted mb-2 cursor-pointer">
               {/* aria-labelledby, not aria-label: the name is the visible
-                  "Skip N running sessions" text, which is two catalog keys plus a
-                  live count. Binding it by reference keeps the announced name and
+                  "Skip N running sessions" text, one catalog key with a live
+                  count. Binding it by reference keeps the announced name and
                   the rendered name the same string, so the count cannot drift. */}
               <input type="checkbox" aria-labelledby={bulkSkipRunningLabelId} checked={bulkSkipRunning} onChange={e => setBulkSkipRunning(e.target.checked)} />
-              <span id={bulkSkipRunningLabelId}>{i18nT('pages.chatSidebar.skip')} {i18nT('pages.chatSidebar.running_session', { count: bulkRunningCount })}</span>
+              <span id={bulkSkipRunningLabelId}>{i18nT('pages.chatSidebar.skip_running_sessions', { count: bulkRunningCount, n: fmtNumber(bulkRunningCount) })}</span>
             </label>
           )}
           {/* The bucket the Switch count leaves out with no other surface:

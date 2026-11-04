@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from kiro_crew.hooks import (
         _GATE_UNCOUNTED,
+        _UNATTENDED_TURN,
         logger,
         sel,
     )
@@ -63,10 +64,17 @@ def _governance_denial(
     pays only an attribute read.  Emits a governance audit record on a deny.
 
     Fail-closed discipline mirrors the CPP shims: a ``PlatformCompositionError``
-    (a non-standalone host that could not compose) is re-raised, never swallowed;
-    any other unexpected error degrades to "no governance opinion" (None) so a
-    transient profile-load glitch cannot wedge every tool call — the always-on
-    deny floor in ``HookManager.on_tool_call`` already ran.
+    (a non-standalone host that could not compose) is re-raised, never swallowed.
+    Any other unexpected error is recorded through ``audit_governance_degraded``
+    (which logs it with its traceback), then:
+
+    * on an UNATTENDED turn (``unattended_turn``: cron, heartbeat, monitor wake)
+      the call is refused, since nobody is there to see that policy went
+      unchecked and the turn runs on;
+    * on an attended turn it degrades to "no governance opinion" (None) so a
+      transient profile-load glitch cannot wedge every interactive tool call --
+      the always-on deny floor in ``HookManager.on_tool_call`` already ran, and
+      the surface's own approval path still decides.
     """
     from kiro_crew.platform.context import PlatformCompositionError
 
@@ -105,16 +113,25 @@ def _governance_denial(
     except PlatformCompositionError:
         raise
     except Exception:
-        # Wrap the late import + audit so a broken/renamed/partially-installed
-        # governance_profiles cannot raise ImportError out of this except-branch
-        # and convert the intended soft fail-open into a hard fail-closed that
-        # wedges every tool call.
+        unattended = _UNATTENDED_TURN.get()
+        # The degrade audit logs the fault with its traceback, at ERROR when the
+        # call is refused. Wrap the late import + audit so a broken/renamed/
+        # partially-installed governance_profiles cannot raise ImportError out of
+        # this except-branch and turn an attended call's soft fail-open into a
+        # hard fail-closed that wedges every interactive tool call.
         try:
             from kiro_crew.platform.governance_profiles import audit_governance_degraded
 
-            audit_governance_degraded("hooks.on_tool_call", session_key=session_key, app=app)
+            audit_governance_degraded(
+                "hooks.on_tool_call",
+                session_key=session_key,
+                app=app,
+                failed_closed=unattended,
+            )
         except Exception:
             logger.debug("governance degrade audit unavailable", exc_info=True)
+        if unattended:
+            return "Blocked by governance policy: it could not be evaluated for an unattended turn"
         return None
 
 

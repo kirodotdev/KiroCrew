@@ -27,6 +27,7 @@ share the harness in ``acp_runtime_helpers.py``.
 """
 
 import asyncio
+import dataclasses
 import json
 import time
 from unittest.mock import AsyncMock, patch
@@ -281,6 +282,48 @@ def kas_readiness_wire(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("resume", [False, True], ids=["new", "load"])
+async def test_a_withdrawn_worker_stub_never_reaches_the_wire(
+    kas_readiness_wire, monkeypatch, tmp_path, resume
+):
+    """A stub the payload withdrew (its server muted between the two reads of the
+    worker spec) is not in the ``session/new`` or ``session/load`` array."""
+    import kiro_crew.acp.runtime as runtime_mod
+
+    wire = kas_readiness_wire
+    rt = wire.runtime
+    monkeypatch.setattr(
+        rt,
+        "_kas_custom_agents",
+        AsyncMock(
+            return_value=SessionExtras(
+                custom_agents=[{"id": "worker", "tools": []}],
+                withdrawn_stub_names=frozenset({"jira"}),
+            )
+        ),
+    )
+    servers = [{"name": "kirocrew-dashboard"}, {"name": "jira"}]
+    kwargs = {"cwd": tmp_path, "agent": "worker", "session_key": ""}
+    if resume:
+        monkeypatch.setattr(runtime_mod, "pooled_session_servers", lambda *_, **_kw: servers)
+        start = rt.load_session("", "ready-session", **kwargs)
+    else:
+        start = rt.create_session(mcp_servers=servers, **kwargs)
+    reader_task = await _start_reader(rt)
+    task = asyncio.create_task(start)
+    try:
+        request = await wire.take(wire.sent)
+        assert request["method"] == (METHOD_SESSION_LOAD if resume else METHOD_SESSION_NEW)
+        names = {entry["name"] for entry in request["params"]["mcpServers"]}
+        assert "jira" not in names
+        assert "kirocrew-dashboard" in names
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        await _stop_reader(reader_task)
+
+
+@pytest.mark.asyncio
 async def test_kas_readiness_wire_stdout_reads_on_the_running_loop(kas_readiness_wire):
     """A consumer that reads ``rt._process.stdout`` directly must not hit the
     cross-loop error the fixture once needed ``_start_reader`` to paper over.
@@ -478,6 +521,45 @@ async def test_session_cwd_is_bound_through_real_create_and_load(
         wrapper = AcpProvider.__new__(AcpProvider)
         wrapper._client = inner
         assert wrapper.cwd == str(tmp_path)
+    finally:
+        if start is not None:
+            if not start.done():
+                start.cancel()
+            await asyncio.gather(start, return_exceptions=True)
+        reader_task.cancel()
+        await asyncio.gather(reader_task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_create_session_records_the_withheld_credentials_notice(
+    kas_readiness_wire, monkeypatch
+):
+    """The real ``create_session`` copies the payload's withheld-credentials notice
+    onto the handle the provider reads for the new chat's notice row."""
+    wire = kas_readiness_wire
+    extras = wire.runtime._kas_custom_agents.return_value
+    notice = "notice naming gitlab-mcp"
+    wire.runtime._kas_custom_agents.return_value = dataclasses.replace(
+        extras, withheld_credentials_notice=notice
+    )
+    captured: list[AcpSessionHandle] = []
+    constructed = AcpSessionHandle.__init__
+
+    def capture_init(self, *args, **kwargs):
+        constructed(self, *args, **kwargs)
+        captured.append(self)
+
+    monkeypatch.setattr(AcpSessionHandle, "__init__", capture_init)
+    reader_task = await _start_reader(wire.runtime)
+    start = None
+    try:
+        start = await wire.handshake(False, pre_ready=True)
+        for _ in range(200):
+            if captured and captured[-1].kas_withheld_credentials_notice:
+                break
+            await asyncio.sleep(0)
+        assert captured, "the real create path never constructed a handle"
+        assert captured[-1].kas_withheld_credentials_notice == notice
     finally:
         if start is not None:
             if not start.done():

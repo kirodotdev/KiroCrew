@@ -130,6 +130,38 @@ class TestTheReplayParameter:
         )
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("sent", "read"),
+        [
+            ("false", False),
+            ("0", False),
+            ("OFF", False),
+            ("no", False),
+            ("true", True),
+            (1, True),
+            (0, False),
+            (None, False),
+            ("yes please", True),
+        ],
+    )
+    async def test_a_spelled_replay_reads_as_it_spells(self, sent, read):
+        """``bool("false")`` is True; a spelled false must not replay."""
+        state = _state(_slot("chat-1-foo"))
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post(
+                "/api/chat/slots/chat-1-foo/reset-conversation",
+                json={"replay": sent},
+            )
+            body = await resp.json()
+
+        assert resp.status == 200
+        assert body["replay"] is read
+        state.sessions.discard_conversation.assert_awaited_once_with(
+            "dashboard:chat-1-foo", replay=read, skip_if_busy=True
+        )
+
+    @pytest.mark.asyncio
     async def test_a_body_less_post_still_works(self):
         """The route took no body before this parameter existed."""
         state = _state(_slot("chat-1-foo"))

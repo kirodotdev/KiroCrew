@@ -1174,9 +1174,14 @@ def test_lock_closes_fd_when_acquire_raises(store: CronHistoryStore) -> None:
 
 def test_lock_returns_open_fd_on_success(store: CronHistoryStore) -> None:
     """The normal acquire path still hands back a usable, open fd."""
+    from kiro_crew import platform_compat
+
     store._dir.mkdir(parents=True, exist_ok=True)
     fd = store._lock()
     try:
         os.fstat(fd)  # open fd: no raise
+        # The fd really holds the lock: a second opener cannot take it.
+        with platform_compat.open_lock_file(store._lock_path()) as other:
+            assert platform_compat.try_acquire_lock(other, exclusive=True) is False
     finally:
         store._unlock(fd)

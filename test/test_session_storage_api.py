@@ -157,6 +157,47 @@ class TestCleanup:
         assert (kiro_home / "sessions" / "cli" / "aaaa1111.jsonl").is_file()
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("sent", ["false", "0", "Off", "no"])
+    async def test_a_spelled_false_dry_run_is_a_real_cleanup(
+        self, stores: tuple[Path, Path], sent: str
+    ) -> None:
+        """``bool("false")`` is True; a spelled false must not be a dry run."""
+        _, kiro_home = stores
+        _retired(kiro_home, "aaaa1111")
+        req = _request(
+            "POST",
+            "/api/system/session-storage/cleanup",
+            {"older_than_days": 30, "dry_run": sent},
+        )
+
+        with patch.object(handler, "_sel", return_value=_sel_stub()):
+            resp = await handler.api_session_storage_cleanup(req)
+        body = json.loads(resp.body)
+
+        assert resp.status == 200
+        assert body.get("dry_run") is not True
+        assert not (kiro_home / "sessions" / "cli" / "aaaa1111.jsonl").is_file()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("sent", ["true", "yes please", 1])
+    async def test_a_truthy_dry_run_still_moves_nothing(
+        self, stores: tuple[Path, Path], sent: object
+    ) -> None:
+        _, kiro_home = stores
+        _retired(kiro_home, "aaaa1111")
+        req = _request(
+            "POST",
+            "/api/system/session-storage/cleanup",
+            {"older_than_days": 30, "dry_run": sent},
+        )
+
+        with patch.object(handler, "_sel", return_value=_sel_stub()):
+            resp = await handler.api_session_storage_cleanup(req)
+
+        assert json.loads(resp.body)["dry_run"] is True
+        assert (kiro_home / "sessions" / "cli" / "aaaa1111.jsonl").is_file()
+
+    @pytest.mark.asyncio
     async def test_stages_and_audits(self, stores: tuple[Path, Path]) -> None:
         _, kiro_home = stores
         _retired(kiro_home, "aaaa1111")

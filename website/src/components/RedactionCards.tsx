@@ -1950,6 +1950,7 @@ export function RedactedCodeBlock({ code, lang, base }: { code: string; lang?: s
   for (let o = base; o < base + n; o++) if (credentials.has(o)) ids.push(`rx-cred-${o}`)
   return (
     <>
+      {/* 'code-block' is a stable theming hook — see website/docs/theming-contract.md */}
       <div className="code-block group/code my-2 overflow-hidden rounded-xl border border-border bg-bg-elevated" data-testid="redacted-code-block">
         <div className="flex min-h-7 items-center justify-between py-1 pl-3 pr-1 text-[13px] text-muted">
           <span className="font-mono">{lang || 'code'}</span>

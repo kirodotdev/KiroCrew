@@ -10,10 +10,12 @@
  */
 import type {
   AppAdoptionRow,
+  ComposerActionGrantRow,
   LinkOpenGrantRow,
   LinkPreviewGrantRow,
   MessageActionGrantRow,
   RegistryApp,
+  SelectionActionGrantRow,
 } from '../components/appstore/types'
 
 type AppInfo = Pick<RegistryApp, '_registry' | 'provenance'> & {
@@ -69,6 +71,8 @@ type AppInfo = Pick<RegistryApp, '_registry' | 'provenance'> & {
   linkPreviewGrant?: LinkPreviewGrantRow
   messageActionGrant?: MessageActionGrantRow
   linkOpenGrant?: LinkOpenGrantRow
+  composerActionGrant?: ComposerActionGrantRow
+  selectionActionGrant?: SelectionActionGrantRow
   managed?: string
   source?: string
   installedAt?: string
@@ -79,6 +83,8 @@ type AppInfo = Pick<RegistryApp, '_registry' | 'provenance'> & {
   origin?: string     // "builtin" | "registry" | "local" | "external"
   resources?: string  // "gateway" | "app"
   lifecycle?: string  // "gateway" | "app" | "locked"
+  /** Set when the gateway skipped this built-in app at boot; see `InstalledApp.unavailable`. */
+  unavailable?: { reason: string }
   // Platform
   platform?: { os?: string[]; installMode?: string; clientInstall?: { shell?: string; postInstall?: string }
     // Set when the app's UI needs the Electron shell (native windows,

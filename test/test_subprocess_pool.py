@@ -854,10 +854,10 @@ class TestShutdownRefillWindow:
         try:
             self._wait_spawned(executor, 2)
             executor._reaper.join = join  # a Thread instance takes the attribute
-            monkeypatch.setattr(executor_mod._Child, "kill", kill)
-            executor.shutdown(wait=False)
+            with monkeypatch.context() as mp:
+                mp.setattr(executor_mod._Child, "kill", kill)
+                executor.shutdown(wait=False)
         finally:
-            monkeypatch.undo()
             executor.shutdown(wait=False)
         assert order[0] == "join", order
         assert order.count("kill") >= 2, order
@@ -899,15 +899,15 @@ class TestShutdownRefillWindow:
                 # so only the tick's own refusal keeps the killed child off the queue.
                 executor._lease(time.monotonic() + 10.0)
             leased_before = executor._free.qsize()
-            monkeypatch.setattr(executor_mod._Child, "kill", kill)
-            monkeypatch.setattr(executor_mod._Child, "ensure_spawned", ensure_spawned)
-            executor._wake.set()
-            executor._reaper.join(timeout=30.0)
-            assert not executor._reaper.is_alive(), "reaper did not stop on the flag"
-            assert killed == executor._children, "the spawned child was not reaped by its tick"
-            assert executor._free.qsize() == leased_before, "a post-shutdown child was leased"
+            with monkeypatch.context() as mp:
+                mp.setattr(executor_mod._Child, "kill", kill)
+                mp.setattr(executor_mod._Child, "ensure_spawned", ensure_spawned)
+                executor._wake.set()
+                executor._reaper.join(timeout=30.0)
+                assert not executor._reaper.is_alive(), "reaper did not stop on the flag"
+                assert killed == executor._children, "the spawned child was not reaped by its tick"
+                assert executor._free.qsize() == leased_before, "a post-shutdown child was leased"
         finally:
-            monkeypatch.undo()
             executor.shutdown(wait=False)
 
 

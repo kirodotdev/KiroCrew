@@ -1512,7 +1512,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
             {richDiffChip}
           </div>
           <div className="flex items-center gap-1.5">
-            <button className="p-1.5 rounded-md border border-border text-muted hover:text-text hover:border-border-strong cursor-pointer transition-all disabled:opacity-40" onClick={handleRefresh} disabled={refreshing || dirty} title={dirty ? i18nT('components.markdownPanel.save_or_discard_changes_first') : i18nT('components.markdownPanel.refresh_file')} aria-label={i18nT('components.markdownPanel.refresh_file')}><RefreshCw size={14} className={refreshing ? 'animate-spin' : ''} /></button>
+            <button className="p-1.5 rounded-md border border-border text-muted hover:text-text hover:border-border-strong cursor-pointer transition-all disabled:opacity-40" onClick={handleRefresh} disabled={refreshing || dirty} title={dirty ? i18nT('components.markdownPanel.save_or_discard_changes_first') : refreshing ? i18nT('components.markdownPanel.refreshing_file') : i18nT('components.markdownPanel.refresh_file')} aria-label={refreshing ? i18nT('components.markdownPanel.refreshing_file') : i18nT('components.markdownPanel.refresh_file')}><RefreshCw size={14} className={refreshing ? 'animate-spin' : ''} /></button>
             {!showBinaryCard && <FileArtifactActionButton state={artifactState} />}
             {(() => {
               const ext = '.' + (filePath.split('.').pop() || '').toLowerCase()

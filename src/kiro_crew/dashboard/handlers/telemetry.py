@@ -727,7 +727,7 @@ def _iter_export_cycles(
                 for line in bounded_records(fh, p, label="telemetry"):
                     try:
                         obj = json.loads(line)
-                    except ValueError:
+                    except (ValueError, RecursionError):  # past the nesting limit
                         continue
                     yield obj, shard_day, shard_pid
         except (OSError, UnicodeDecodeError):

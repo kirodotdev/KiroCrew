@@ -33,6 +33,7 @@ from kiro_crew.dashboard.chat import _run_chat
 from kiro_crew.dashboard.state import _ChatSlot, parse_cls_meta, row_mid
 from kiro_crew.hooks import (
     HOOK_EVENT_PRE_TOOL_USE,
+    TOOL_ALLOW,
     TOOL_AUTO_APPROVE,
     ScriptHookResult,
     ToolHookResult,
@@ -659,6 +660,35 @@ class TestApprovalModes:
             if m.get("role") == "permission" or "Auto-approve not applied" in m.get("content", "")
         ]
         assert shown == (["system", "permission"] if expect_note else []), slot.messages
+        client.approve_tool.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_gate_ask_note_is_shown_ahead_of_the_card(self, tmp_path):
+        """The gate's reason for asking (an allowedCommands entry kept off by shell
+        composition) reaches the person as a note right before the card."""
+        note = "This command matches allowedCommands, but commands with | always ask."
+        cb = _context_builder(ToolHookResult(action=TOOL_ALLOW, reason=note))
+        state, client = _make_state(tmp_path, context_builder=cb)
+        slot = _make_slot()
+        _set_stream(client, [_permission_event(), _complete_event()])
+
+        async def _approve() -> None:
+            await _answer_approval(slot, "req-1", "approved")
+
+        approver = asyncio.get_running_loop().create_task(_approve())
+        try:
+            with _patch_stats():
+                await finished(_run_chat(state, slot, "hello"), "the chat turn completing")
+        finally:
+            await _drain(approver)
+
+        shown = [
+            (m.get("role"), m.get("content", ""))
+            for m in slot.messages
+            if m.get("role") in ("system", "permission")
+        ]
+        assert [role for role, _ in shown] == ["system", "permission"], slot.messages
+        assert note in shown[0][1]
         client.approve_tool.assert_called_once()
 
 

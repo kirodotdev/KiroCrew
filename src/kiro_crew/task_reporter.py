@@ -137,6 +137,7 @@ def save_progress(run: Project) -> None:
                 TaskStatus.REVIEWING: "🔍",
                 TaskStatus.PENDING: "⬜",
                 TaskStatus.SKIPPED: "⏭️",
+                TaskStatus.CANCELLED: "🚫",
             }[task.status]
             line = f"- {icon} **Task {task.index}:** {task.title}"
             if task.attempts > 1:

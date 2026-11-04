@@ -759,7 +759,7 @@ async def test_an_unaddressable_abandoned_session_quarantines_its_generation(
     monkeypatch.setattr(warm._warm_mint, "_sessions", {})
     monkeypatch.setattr(warm._warm_mint, "_retiring", [])
 
-    with pytest.raises(BaseException):
+    with pytest.raises(asyncio.TimeoutError):
         await warm._warm_mint._activate_locked("agent", frozenset())
 
     assert warm._warm_mint._plan is None, "the generation must be quarantined"
@@ -818,7 +818,7 @@ async def test_a_recovered_handle_does_not_quarantine_the_generation(
     monkeypatch.setattr(warm._warm_mint, "_digest", resident.digest)
     monkeypatch.setattr(warm._warm_mint, "_sessions", {})
 
-    with pytest.raises(BaseException):
+    with pytest.raises(asyncio.TimeoutError):
         await warm._warm_mint._activate_locked("agent", frozenset())
 
     assert created and created[0].destroyed is True, "the reap must still have worked"

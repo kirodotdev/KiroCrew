@@ -140,6 +140,7 @@ export default function AgentPillBar({
             key={agent.id}
             primary={enabled}
             onClick={() => onToggleAgent(agent.id, !enabled)}
+            aria-pressed={enabled}
             title={title}
             className={`rounded-full ${enabled ? '' : 'opacity-60 hover:opacity-100'}`}
           >
@@ -147,6 +148,7 @@ export default function AgentPillBar({
             {agent.name}
             {enabled && !muted && status === 'active' && (
               <span
+                role="img"
                 className="w-1.5 h-1.5 rounded-full bg-ok animate-pulse"
                 aria-label={i18nT('apps.meetings.pillBar.listening')}
               />

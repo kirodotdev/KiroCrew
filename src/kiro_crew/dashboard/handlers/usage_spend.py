@@ -102,7 +102,7 @@ def slot_spend(days: int = SPEND_WINDOW_DAYS) -> dict[str, dict[str, float]]:
                 for line in bounded_records(fh, path, label="usage"):
                     try:
                         obj = json.loads(line)
-                    except ValueError:
+                    except (ValueError, RecursionError):  # past the nesting limit
                         continue
                     if not isinstance(obj, dict) or obj.get("_type") != "tokens":
                         continue
@@ -155,7 +155,7 @@ def daily_credits(days: int = _SESSIONS_HISTORY_DAYS) -> dict[str, float]:
                 for line in bounded_records(fh, path, label="usage"):
                     try:
                         obj = json.loads(line)
-                    except ValueError:
+                    except (ValueError, RecursionError):  # past the nesting limit
                         continue
                     if not isinstance(obj, dict) or obj.get("_type") != "tokens":
                         continue
@@ -248,7 +248,7 @@ def slot_turn_usage(
                 for line in bounded_records(fh, shard_path, label="usage"):
                     try:
                         obj = json.loads(line)
-                    except ValueError:
+                    except (ValueError, RecursionError):  # past the nesting limit
                         continue
                     if not isinstance(obj, dict) or obj.get("_type") != "tokens":
                         continue

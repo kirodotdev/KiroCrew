@@ -62,7 +62,9 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         require_owner_for_dashboard_caller,
     )
     from kiro_crew.dashboard.handlers._shared_config_followups import (  # noqa: F401
+        AGENT_SPEC_COMPOSITION_REFUSED,
         AGENT_SPEC_NOT_REWRITTEN,
+        COMPOSITION_REFUSED_LOG,
         _pip_install_channel_available,
         logger,
         pip_extra_install_command,

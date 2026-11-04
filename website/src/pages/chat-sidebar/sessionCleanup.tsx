@@ -9,6 +9,7 @@ import { api } from '../../api/client'
 import { Btn } from '../../components/ui'
 import { fmtRelativeTime, slotActivityTs } from '../chat/sessionOrder'
 import { i18nT } from '../../i18n/t'
+import { fmtNumber } from '../../i18n/format'
 import type { Slot } from './types'
 import type { QueryClient } from '@tanstack/react-query'
 import type { AppDispatch } from '../../store'
@@ -95,10 +96,12 @@ export function renderSessionCleanupPanel(shell: SidebarScope): React.ReactNode 
                   : noStale
                     ? i18nT('pages.chatSidebar.no_inactive_sessions_to_archive')
                     : cleanupPreview != null && <>
-                      {i18nT('pages.chatSidebar.session', { count: archivable.length })} {i18nT('pages.chatSidebar.will_be_moved_to_older_sessions')}{activeIsStale ? ` ${i18nT('pages.chatSidebar.1_skipped_currently_selected')}` : ''} {i18nT('pages.chatSidebar.pinned_sessions_are_kept')}
+                      {i18nT('pages.chatSidebar.cleanup_move_count', { count: archivable.length, n: fmtNumber(archivable.length) })}{activeIsStale ? ` ${i18nT('pages.chatSidebar.1_skipped_currently_selected')}` : ''} {i18nT('pages.chatSidebar.pinned_sessions_are_kept')}
                       {archivable.length > 0 && (
                         <button type="button" aria-expanded={cleanupExpanded} aria-controls={CLEANUP_LIST_ID} className="ml-1 text-accent hover:underline cursor-pointer bg-transparent border-none p-0 text-[12px]" onClick={() => setCleanupExpanded(!cleanupExpanded)}>
-                          {cleanupExpanded ? i18nT('pages.chatSidebar.hide') : i18nT('pages.chatSidebar.show')} {i18nT('pages.chatSidebar.session', { count: archivable.length })} ▸
+                          {cleanupExpanded
+                            ? i18nT('pages.chatSidebar.hide_sessions_count', { count: archivable.length, n: fmtNumber(archivable.length) })
+                            : i18nT('pages.chatSidebar.show_sessions_count', { count: archivable.length, n: fmtNumber(archivable.length) })} ▸
                         </button>
                       )}
                       {cleanupExpanded && archivable.length > 0 && (

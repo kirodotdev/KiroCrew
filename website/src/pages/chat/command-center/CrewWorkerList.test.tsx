@@ -14,6 +14,7 @@ import { ApiError } from '../../../api/apiError'
 import { CrewWorkersTab, reopenCrewSession } from './CrewWorkerList'
 import UltraCrewPanel from './UltraCrewPanel'
 import { crewModePreviewOn } from '../../../test/crewModePreview'
+import { setCrewModeCatalog } from '../../../lib/crewMode'
 
 const W = (key: string, title: string, status: string, group: string) =>
   ({ key, title, agent: 'kirocrew-worker', status, group, last_activity: '', ledger_item: '', created_by: 'root-1' })
@@ -146,6 +147,25 @@ describe('Ultra Mode Crew tab', () => {
     await expect(reopenCrewSession(store.dispatch, store.getState, 'w-three', 'Worker G')).resolves.toEqual({ ok: false, activated: false, key: 'w-three' })
   })
 
+  it('shows the Ultra panel for a chat with messages that was just switched on, before its root stamp lands', async () => {
+    setCrewModeCatalog('kirocrew-conductor', ['kirocrew-conductor'])
+    try {
+      api.crewWorkers.mockResolvedValue({ root: 'mid', workers: [] })
+      renderWith(<CrewWorkersTab slot="mid" active />, [{ key: 'mid', messages: 3, agent: 'kirocrew-conductor', agent_kind: 'template' }])
+      expect(await screen.findByTestId('ultra-crew-panel')).toBeInTheDocument()
+      expect(screen.queryByTestId('crew-workers-none')).toBeNull()
+    } finally {
+      setCrewModeCatalog(undefined, undefined)
+    }
+  })
+
+  it('names the two views Status and Workers', async () => {
+    api.crewWorkers.mockResolvedValue(WORKERS)
+    renderWith(<UltraCrewPanel root="root-1" viewing="root-1" active />, [{ key: 'root-1', title: 'Sample goal', crew_mode_root: true }])
+    expect(await screen.findByTestId('ultra-view-status')).toHaveTextContent(/^Status$/)
+    expect(screen.getByTestId('ultra-view-list')).toHaveTextContent(/^Workers$/)
+  })
+
   it('the Workers tab on a plain chat lists nothing', () => {
     // A plain chat with messages: a brand-new one shows its (empty) panel while
     // its Ultra Mode switch lands.
@@ -162,10 +182,13 @@ describe('Ultra Mode Crew tab', () => {
     ])
     await screen.findByTestId('ultra-crew-panel')
     const back = screen.getByTestId('crew-panel-back')
-    expect(back).toHaveTextContent('Back to main chat')
+    // The visible word is short; its accessible name still says where it goes.
+    expect(back).toHaveTextContent(/^Back$/)
     // One label, no title chip beside it.
     expect(back).not.toHaveTextContent('Sample goal')
-    expect(back).toHaveAccessibleName('Back to main chat')
+    // Label in name: the visible word is the accessible name; the long form is the tooltip.
+    expect(back).toHaveAccessibleName('Back')
+    expect(back).toHaveAttribute('title', 'Back to main chat')
     // A real button, so Tab and Enter reach it.
     expect(back.tagName).toBe('BUTTON')
     fireEvent.click(back)
@@ -229,11 +252,42 @@ describe('Ultra Mode Crew tab', () => {
     expect(await screen.findByText('Could not load the crew.')).toBeInTheDocument()
   })
 
-  it('Status: the pulse reads the board stale flag on open work', async () => {
+  it('Status: the pulse says stuck only when a milestone has no chat left', async () => {
     api.crewWorkers.mockResolvedValue(WORKERS)
-    api.crewBoard.mockResolvedValue({ ...BOARD, items: [ITEM({ item_id: 'a', stale: true })] })
+    api.crewBoard.mockResolvedValue({ ...BOARD, items: [ITEM({ item_id: 'a', alive: 'closed' })] })
     renderWith(<UltraCrewPanel root="root-1" viewing="root-1" active />)
-    expect(await screen.findByTestId('ultra-pulse')).toHaveTextContent(/stalled/i)
+    expect(await screen.findByTestId('ultra-pulse')).toHaveTextContent(/stuck/i)
+  })
+
+  it('Status: the quiet pulse shows even when nobody has reported yet', async () => {
+    api.crewWorkers.mockResolvedValue(WORKERS)
+    api.crewBoard.mockResolvedValue({ ...BOARD, items: [ITEM({ item_id: 'n1', status: null, last_report_at: null, stale: true })] })
+    renderWith(<UltraCrewPanel root="root-1" viewing="root-1" active />)
+    expect(await screen.findByTestId('ultra-pulse')).toHaveTextContent(/quiet/i)
+  })
+
+  it('Status: a stale milestone whose chat is open reads Quiet with its PR, an idle one names its PR or says no reason', async () => {
+    api.crewWorkers.mockResolvedValue(WORKERS)
+    api.crewBoard.mockResolvedValue({ ...BOARD, items: [
+      ITEM({ item_id: 'q1', title: 'Supplies list', stale: true, pr: 42, summary: 'Holding for CI.' }),
+      ITEM({ item_id: 'w1', title: 'Drinks menu', pr: 7, summary: '' }),
+      ITEM({ item_id: 'w2', title: 'Guest list', summary: '' }),
+    ] })
+    renderWith(<UltraCrewPanel root="root-1" viewing="root-1" active />)
+    const rows = await screen.findAllByTestId('ultra-milestone')
+    expect(rows.map(r => r.getAttribute('data-state'))).toEqual(['quiet', 'waiting', 'waiting'])
+    expect(rows[0]).toHaveTextContent('Quiet · nothing is scheduled to wake it· PR #42Holding for CI.')
+    // The worker's words get a line of their own, so a narrow panel never hides them.
+    expect(screen.getByTestId('ultra-quiet-said')).toHaveTextContent('Holding for CI.')
+    expect(screen.getByTestId('ultra-quiet-said').parentElement?.className).toContain('flex-col')
+    // On a narrow panel the reason truncates and the PR number keeps its width.
+    expect(screen.getByTestId('ultra-quiet-reason').className).toMatch(/\bmin-w-0\b.*\btruncate\b/)
+    expect(screen.getByText('· PR #42').className).toContain('shrink-0')
+    expect(rows[1]).toHaveTextContent('Waiting on PR #7')
+    expect(rows[2]).toHaveTextContent('Paused, no reason given')
+    expect(screen.getByTestId('ultra-pulse')).toHaveTextContent(/quiet/i)
+    expect(screen.getByTestId('ultra-recap')).toHaveTextContent('Supplies list has gone quiet')
+    expect(screen.getByTestId('ultra-needs-you-none')).toHaveTextContent('Quiet or stuck work is under Milestones.')
   })
 
   it('Status: a blocked milestone opens its crew member, and shows no "moving" pulse', async () => {
@@ -272,15 +326,15 @@ describe('Ultra Mode Crew tab', () => {
     expect(screen.getByTestId('ultra-recap')).toHaveTextContent('Supplies list waits on you')
   })
 
-  it('Status: a worker whose session closed on an open report reads Stalled, not needs you', async () => {
+  it('Status: a worker whose session closed on an open report reads Stuck, not needs you', async () => {
     api.crewWorkers.mockResolvedValue(WORKERS)
     api.crewBoard.mockResolvedValue({ ...BOARD, items: [ITEM({ item_id: 's1', title: 'Supplies list', status: 'progress', alive: 'closed', summary: 'Half the list. More soon.' })] })
     renderWith(<UltraCrewPanel root="root-1" viewing="root-1" active />)
     const row = await screen.findByTestId('ultra-milestone')
-    expect(row.getAttribute('data-state')).toBe('stalled')
-    expect(row).toHaveTextContent('Stalled · worker stopped, open its chat to restart')
-    expect(screen.getByTestId('ultra-needs-you-none')).toHaveTextContent('Stalled work is under Milestones.')
-    expect(screen.getByTestId('ultra-recap')).toHaveTextContent('Supplies list has stalled')
+    expect(row.getAttribute('data-state')).toBe('stuck')
+    expect(row).toHaveTextContent('Stuck · its chat closed, ask the main chat to restart it')
+    expect(screen.getByTestId('ultra-needs-you-none')).toHaveTextContent('Quiet or stuck work is under Milestones.')
+    expect(screen.getByTestId('ultra-recap')).toHaveTextContent('Supplies list is stuck')
   })
 
   it('Status: an unstarted milestone says Not started, never a made-up order', async () => {

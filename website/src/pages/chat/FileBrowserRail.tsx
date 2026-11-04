@@ -5,7 +5,9 @@ import { useTranslation } from 'react-i18next'
 import { Files, Diff, Search, X, RefreshCw, FileText, Folder } from 'lucide-react'
 import { api } from '../../api/client'
 import { fileGrep, type FileGrepHit } from '../../api/fileGrep'
+import ChatDropOverlay, { useChatFileDrop } from '../../components/ChatDropOverlay'
 import ErrorNotice from '../../components/ErrorNotice'
+import StatusNotice from '../../components/StatusNotice'
 import {
   gitFilterRefusalCause,
   gitFilterRefusalCopyKey,
@@ -26,6 +28,8 @@ import { PierreWorkspaceTree, type TreeReveal } from '../../pierre/tree'
 import { mergeTreeMatches } from '../../lib/treeSearchMatches'
 import { findReport, reportForError } from '../../utils/errorReport'
 import { errMessage } from '../../utils/thunkError'
+import { pathBasename, relativeToRoot, stripTrailingSeparators } from '../../utils/pathBasename'
+import { useDirectoryUpload } from './useDirectoryUpload'
 
 /** Rail width bounds; the grip clamps between them. */
 const RAIL_MIN_W = 300
@@ -127,14 +131,6 @@ export function useTreeState(projectDir: string | null | undefined, active = tru
   // root cannot, which is why FolderPanel names and re-reads the tree only in the first case.
   const cause = searchErrorCause(q.error)
   return cause === 'timed_out' || cause === 'failed' ? 'recoverable' : 'error'
-}
-
-/** A hit's path as the rail shows it: relative to the searched root, because the
- *  absolute prefix is the same on every row and is what pushes the informative
- *  tail out of a 300px rail. */
-function shortenPath(path: string, root: string): string {
-  if (root && path.startsWith(root)) return path.slice(root.length).replace(/^\//, '')
-  return path
 }
 
 /**
@@ -302,7 +298,9 @@ function ContentResults({ query, projectDir, active, onOpen }: {
             >
               <div className="flex items-center gap-1 text-[11.5px] text-text truncate">
                 <FileText size={11} className="shrink-0 opacity-60" />
-                <span className="truncate">{shortenPath(hit.file, data?.root ?? projectDir)}</span>
+                {/* Relative to the searched root: the absolute prefix is the same on every
+                    row and pushes the informative tail out of a 300px rail. */}
+                <span className="truncate">{relativeToRoot(hit.file, data?.root ?? projectDir)}</span>
                 {/* A document has no line to jump to, so the row names the place
                     inside itself instead — "p 3", "slide 7", "Sheet1 row 12".
                     The note above the list says the click opens the document at
@@ -541,6 +539,26 @@ export default function FileBrowserRail({ projectDir, onFileOpen, onAddToContext
       )}`
     : t('pages.chat.fileBrowserRail.changed')
 
+  // A drop anywhere on the rail uploads into the project root: the overlay
+  // covers the tree, so no row under the pointer is visible to choose. A
+  // specific folder is reached through its row menu's "Upload files…". The
+  // tree computes the same fallback (`tree?.root ?? projectDir`) because the
+  // backend answers with the realpath, which can differ from a symlinked
+  // projectDir.
+  const root = treeData?.root ?? projectDir
+  // The name the Files tab header shows for the project (FilesHomePanel).
+  const rootName = pathBasename(stripTrailingSeparators(projectDir)) || projectDir
+
+  const {
+    uploadFiles, pickAndUpload, progress: uploadProgress, error: uploadError, dismissError,
+    success: uploadSuccess, dismissSuccess, fileInput,
+  } = useDirectoryUpload(projectDir, root)
+  const { active: dragOver, dropTargetProps } = useChatFileDrop((dataTransfer) => {
+    const files = Array.from(dataTransfer.files)
+    if (!files.length) return
+    void uploadFiles(root, files)
+  })
+
   // Both queries poll (10s tree / 5s status); this is the "I changed something
   // outside the app, show me now" escape hatch. `refetchQueries` (not
   // `invalidateQueries`) so `refreshing` tracks the actual network round trip
@@ -618,9 +636,11 @@ export default function FileBrowserRail({ projectDir, onFileOpen, onAddToContext
         />
       )}
       <div
+        {...dropTargetProps}
         style={fill ? undefined : { width: rail.width }}
-        className={cn('min-h-0 flex flex-col', fill ? 'flex-1 min-w-0' : 'shrink-0 border-l border-border')}
+        className={cn('relative min-h-0 flex flex-col', fill ? 'flex-1 min-w-0' : 'shrink-0 border-l border-border')}
       >
+        <ChatDropOverlay active={dragOver} label={t('pages.chat.fileBrowserRail.drop_to_upload', { folder: rootName })} />
         <div className="flex items-center gap-1.5 px-2 h-[40px] shrink-0 border-b border-border">
           {/* All/Changed scopes the TREE, and Content mode has no tree. Left
               rendered it kept its "Changed" highlight while the content results
@@ -700,8 +720,10 @@ export default function FileBrowserRail({ projectDir, onFileOpen, onAddToContext
               'flex flex-none items-center justify-center h-[26px] rounded-[7px] bg-bg-elevated border border-border text-muted hover:text-text hover:border-border-strong cursor-pointer transition-colors aria-disabled:opacity-40 aria-disabled:cursor-default',
               treeNoticeNamesRefresh ? 'gap-1 px-1.5' : 'w-[26px]',
             )}
-            title={t('pages.chat.fileBrowserRail.refresh')}
-            aria-label={t('pages.chat.fileBrowserRail.refresh')}
+            // While inert the name says why, keyed on the same flag as `aria-disabled`: a
+            // disabled "Refresh" reads as unavailable, not busy.
+            title={refreshing ? t('pages.chat.fileBrowserRail.refreshing') : t('pages.chat.fileBrowserRail.refresh')}
+            aria-label={refreshing ? t('pages.chat.fileBrowserRail.refreshing') : t('pages.chat.fileBrowserRail.refresh')}
           >
             <RefreshCw size={12} className={refreshing ? 'animate-spin' : ''} />
             {/* When the notice names "Refresh" as the remedy, the control it names has to
@@ -799,6 +821,30 @@ export default function FileBrowserRail({ projectDir, onFileOpen, onAddToContext
             />
           </div>
         )}
+        {(uploadProgress || uploadSuccess) && (
+          <div className="px-2 pt-1.5 shrink-0 flex flex-col gap-1.5">
+            <StatusNotice tone="info" message={uploadProgress} testId="file-browser-rail-upload-progress" />
+            <StatusNotice
+              tone="info"
+              message={uploadSuccess}
+              onDismiss={dismissSuccess}
+              testId="file-browser-rail-upload-success"
+            />
+          </div>
+        )}
+        {/* Files rail, no draft to lose on hand-off: the tree itself holds no
+            unsaved input, so askAgent is safe to leave on. */}
+        {uploadError && (
+          <div className="px-2 pt-1.5 shrink-0">
+            <ErrorNotice
+              variant="inline"
+              message={uploadError}
+              askAgent
+              onDismiss={dismissError}
+              testId="file-browser-rail-upload-error"
+            />
+          </div>
+        )}
         <div className="flex-1 min-h-0 flex flex-col py-1.5 pl-1">
           {contentMode ? (
             <ContentResults
@@ -846,6 +892,7 @@ export default function FileBrowserRail({ projectDir, onFileOpen, onAddToContext
                   persistExpansion
                   onFileOpen={(abs) => onFileOpen(abs, changedMode)}
                   onAddToContext={onAddToContext}
+                  onUploadRequest={pickAndUpload}
                   searchQuery={nameSearch ? null : query || null}
                   selectedPath={selectedPath ?? null}
                   onOpenFolder={onOpenFolder ? folder => onOpenFolder(`${projectRoot}/${folder}`) : undefined}
@@ -858,6 +905,7 @@ export default function FileBrowserRail({ projectDir, onFileOpen, onAddToContext
           )}
         </div>
       </div>
+      {fileInput}
     </>
   )
 }

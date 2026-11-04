@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useLocation } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import { motion, useReducedMotion } from 'framer-motion'
-import { CalendarCheck, Check, Circle, MessageSquare, X, type LucideIcon } from 'lucide-react'
+import { CalendarCheck, Check, Circle, MessageSquare, Sparkles, TrendingUp, X, type LucideIcon } from 'lucide-react'
 import { OverlayPortal, useCloseWhenCrewHidden } from '../overlayRoot'
 import Glass from '../Glass'
 import { Btn, IconButton } from '../ui'
@@ -15,12 +15,18 @@ import { errMessage } from '../../utils/thunkError'
 import type { MilestoneFeatureItem, MilestoneUsageItem } from '../../api/client/featureDiscovery'
 import { FEATURE_COPY, GETTING_STARTED_TITLE, QUICK_ROWS, USAGE_COPY } from './copy'
 import ExploreIntroVideo from './ExploreIntroVideo'
+import { MilestoneRing } from './MilestonesIndicator'
 import {
-  closeMilestonesPanel, earnedBadges, featureItems, gettingStarted, milestonesLoadFailed, refreshMilestones, tryToday, useMilestoneActions,
+  closeMilestonesPanel, earnedBadges, featureItems, featureProgress, gettingStarted, milestonesLoadFailed, refreshMilestones, tryToday, useMilestoneActions,
   useFailedArrival, useMilestones, useMilestonesPanel, useRunStarter, useTryTodayArrival, usageItem, type EarnedBadge,
 } from './useMilestones'
 
-const CARD = 'notif-material glass-shadow block rounded-2xl px-3 py-2.5'
+/** One section of the panel body. Sections are divided by a rule, not drawn as
+ *  separate panes, so everything reads as inside the one Explore panel. */
+const SECTION = 'px-4 py-3'
+const SECTION_TITLE = 'flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted'
+/** The intro clip's inset: a nested card, so its own close reads as closing only the clip. */
+const INSET = 'block rounded-xl border border-border bg-bg-hover/40 px-3 py-2'
 
 /** Line icons per badge row. No trophies, no medals. */
 const BADGE_ICON: Readonly<Record<string, LucideIcon>> = {
@@ -46,7 +52,7 @@ function BadgeWall({ badges }: { badges: EarnedBadge[] }) {
               title={fmtDate(b.at * 1000)}
               // Every badge here is earned, so none may look locked: all share the
               // earned border and text. An advanced one adds the colored fill.
-              className={`inline-flex items-center gap-1.5 px-2 py-1 rounded-lg border border-accent/40 text-[12px] tabular-nums ${b.kind === 'advanced' ? 'bg-accent-subtle text-accent' : 'text-text'}`}
+              className={`inline-flex items-center gap-1.5 px-2 py-1 rounded-full border border-accent/40 text-[12px] tabular-nums ${b.kind === 'advanced' ? 'bg-accent-subtle text-accent' : 'text-text'}`}
             >
               <Icon size={13} strokeWidth={1.75} className={b.kind === 'advanced' ? 'text-accent' : 'text-text'} aria-hidden="true" />
               <span>{label}</span>
@@ -109,19 +115,23 @@ function FeatureRow({ item, focused, onError, title, completesOnArrival = false 
       <div className="flex-1 min-w-0 flex flex-wrap items-start gap-x-2 gap-y-1.5">
       <div className="flex-1 min-w-[10rem]" data-testid="milestone-row-text">
         {/* A row still to try is named by what to do; the past-tense title is for notices. */}
-        <div className="text-[13px] text-text">{title ?? i18nT(copy.action)}</div>
+        {/* A finished row is struck through, except the one a notice opened
+            Explore at: that row is being celebrated, not crossed off. */}
+        <div className={`text-[13px] ${done && !focused ? 'text-muted line-through decoration-muted/50' : 'text-text'}`}>{title ?? i18nT(copy.action)}</div>
         <div className="text-[12px] text-muted">{i18nT(copy.blurb)}</div>
       </div>
-      {!done && <div className="shrink-0 flex items-center gap-2" data-testid="milestone-row-actions">
-        {!(completesOnArrival && item.starter) && (
-          <button type="button" className="text-[12px] text-muted hover:text-text bg-transparent border-none cursor-pointer" onClick={() => { markDone(item.id).catch(e => onError(errMessage(e))) }}>
-            {i18nT('milestones.mark_as_done')}
-          </button>
-        )}
+      {/* "Try it" leads and "Mark as done" sits under it as the quieter
+          choice. Try today's pick is the panel's main action, so it is filled. */}
+      {!done && <div className="shrink-0 flex flex-col items-end gap-1" data-testid="milestone-row-actions">
         {item.starter && (
-          <Btn className="text-[12px] px-2 py-0.5" onClick={() => { onError(''); runStarter(item, { completeOnArrival: completesOnArrival }).then(closeMilestonesPanel, e => onError(errMessage(e) || i18nT('pages.chatPage.unknown_error'))) }}>
+          <Btn primary={completesOnArrival} className="text-[12px] px-2.5 py-0.5" onClick={() => { onError(''); runStarter(item, { completeOnArrival: completesOnArrival }).then(closeMilestonesPanel, e => onError(errMessage(e) || i18nT('pages.chatPage.unknown_error'))) }}>
             {i18nT('milestones.try_it')}
           </Btn>
+        )}
+        {!(completesOnArrival && item.starter) && (
+          <button type="button" className="text-[11px] text-muted hover:text-text bg-transparent border-none cursor-pointer p-0" onClick={() => { markDone(item.id).catch(e => onError(errMessage(e))) }}>
+            {i18nT('milestones.mark_as_done')}
+          </button>
         )}
       </div>}
       </div>
@@ -130,10 +140,12 @@ function FeatureRow({ item, focused, onError, title, completesOnArrival = false 
 }
 
 /**
- * Explore. Shaped like the notification sheet: a column of floating cards that
- * slides in from the right edge under the top bar, full width on a phone.
- * Top to bottom: the "Kiro Crew in 15 seconds" card, "Try today" (up to three
- * untried features, `tryToday`), and "Your progress": the Getting started pair
+ * Explore. One glass panel that slides in from the right edge under the top
+ * bar, full screen on a phone. Its header bar holds the title and the close for
+ * the whole panel and stays put while the body scrolls. The body's sections
+ * are divided by rules inside that panel, so no close in the body can be read
+ * as closing Explore. Top to bottom: the "Kiro Crew in 15 seconds" inset,
+ * "Try today" (up to three untried features, `tryToday`), and "Your progress": the Getting started pair
  * in the first days, the streak, a bar per achievement toward its next tier,
  * and the badge wall. Fixed layout and i18n text only.
  */
@@ -192,6 +204,8 @@ export default function MilestonesSheet() {
   const streakItem = usageItem(data, 'streak')
   const sessions = usageItem(data, 'sessions')
   const streak = data?.streak ?? { current: 0, best: 0 }
+  // The same count the top-bar ring shows, repeated so the panel says where it stands.
+  const progress = featureProgress(data)
 
   return (
     <OverlayPortal>
@@ -204,15 +218,29 @@ export default function MilestonesSheet() {
           initial={reduceMotion ? false : { x: 24, opacity: 0 }}
           animate={{ x: 0, opacity: 1 }}
           transition={{ duration: reduceMotion ? 0 : 0.2, ease: 'easeOut' }}
-          className={`absolute top-0 bottom-0 right-0 pointer-events-auto ${isMobile ? 'w-full bg-bg' : 'w-[400px]'} overflow-y-auto px-3 py-2 flex flex-col gap-2`}
+          className={`absolute pointer-events-auto flex flex-col ${isMobile ? 'inset-0' : 'top-2 right-3 w-[400px] max-h-[calc(100%-16px)]'}`}
         >
-          <Glass variant="panel" radius={16} className={CARD}>
-            <div className="flex items-center gap-2">
-              <span className="flex-1 text-[14px] font-bold text-text-strong">{i18nT('milestones.title')}</span>
-              <IconButton aria-label={i18nT('milestones.close')} onClick={closeMilestonesPanel}><X size={14} /></IconButton>
+          <Glass
+            variant="panel"
+            radius={isMobile ? 0 : 16}
+            className={`notif-material glass-shadow flex flex-col min-h-0 overflow-hidden ${isMobile ? 'h-full bg-bg' : 'rounded-2xl'}`}
+          >
+          <div className="flex items-center gap-2.5 px-4 py-3 border-b border-border shrink-0" data-testid="milestones-header">
+            {data?.enabled && <MilestoneRing done={progress.done} total={progress.total} size={18} />}
+            <div className="flex-1 min-w-0">
+              <h2 className="m-0 text-[15px] leading-tight font-bold text-text-strong">{i18nT('milestones.title')}</h2>
+              {data?.enabled && progress.total > 0 && (
+                <div className="text-[12px] text-muted tabular-nums" data-testid="milestones-header-progress">
+                  {i18nT('milestones.header_progress', { done: progress.done, total: progress.total })}
+                </div>
+              )}
             </div>
-          </Glass>
-          {/* The panel holds no draft, so handing the error to the agent loses nothing. */}
+            <IconButton aria-label={i18nT('milestones.close')} onClick={closeMilestonesPanel}><X size={16} /></IconButton>
+          </div>
+          <div className="flex-1 min-h-0 overflow-y-auto pb-1 [&>section+section]:border-t [&>section+section]:border-border" data-testid="milestones-body">
+          {/* Wrappers that render nothing collapse, so no empty gap tops the body.
+              The panel holds no draft, so handing the error to the agent loses nothing. */}
+          <div className="px-4 pt-3 flex flex-col gap-2 empty:hidden">
           <ErrorNotice
             message={error || (loadFailed && !loadDismissed ? i18nT('milestones.load_failed') : null)}
             variant="inline"
@@ -228,20 +256,22 @@ export default function MilestonesSheet() {
               footer={<Btn className="text-[12px] px-2 py-0.5" data-testid="milestones-arrival-retry" onClick={() => { void retryArrival() }}>{i18nT('milestones.retry')}</Btn>}
             />
           )}
+          </div>
           {data?.enabled && (<>
-          <ExploreIntroVideo className={CARD} />
+          {/* The intro's wrapper collapses when the clip has retired. */}
+          <div className="px-4 pt-3 empty:hidden"><ExploreIntroVideo className={INSET} /></div>
           {/* A notice for a finished feature opens here at that row: read-only,
               with its check, and only while it is the row asked for, so Try
               today never takes a finished feature back. */}
           {reached && (
-            <Glass variant="panel" radius={16} className={CARD}>
+            <section className={SECTION}>
               <ul className="list-none m-0 p-0" data-testid="milestones-reached">
                 <FeatureRow item={reached} title={i18nT(FEATURE_COPY[reached.id].title)} focused onError={setError} />
               </ul>
-            </Glass>
+            </section>
           )}
-          <Glass variant="panel" radius={16} className={CARD}>
-            <div className="text-[12px] font-semibold text-muted">{i18nT('milestones.try_today')}</div>
+          <section className={SECTION}>
+            <h3 className={`m-0 ${SECTION_TITLE}`}><Sparkles size={12} aria-hidden="true" />{i18nT('milestones.try_today')}</h3>
             {today.length > 0 ? (<>
               <div className="text-[12px] text-muted" data-testid="milestones-try-today-hint">{i18nT('milestones.try_today_hint')}</div>
               <ul className="list-none m-0 p-0" data-testid="milestones-try-today">
@@ -262,10 +292,10 @@ export default function MilestonesSheet() {
             ) : (
               <div className="text-[13px] text-muted mt-1" data-testid="milestones-all-tried">{i18nT('milestones.all_tried')}</div>
             )}
-          </Glass>
+          </section>
 
-          <Glass variant="panel" radius={16} className={`${CARD} flex flex-col gap-3`}>
-            <div className="text-[12px] font-semibold text-muted">{i18nT('milestones.your_progress')}</div>
+          <section className={`${SECTION} flex flex-col gap-3`}>
+            <h3 className={`m-0 ${SECTION_TITLE}`}><TrendingUp size={12} aria-hidden="true" />{i18nT('milestones.your_progress')}</h3>
             {starting.length > 0 && (
               <div data-testid="milestones-getting-started">
                 <div className="text-[12px] text-muted">{i18nT('milestones.getting_started')}</div>
@@ -285,8 +315,10 @@ export default function MilestonesSheet() {
             {sessions && <AchievementRow item={sessions} focused={focusId === sessions.id} />}
             {streakItem && <AchievementRow item={streakItem} focused={focusId === streakItem.id} />}
             <BadgeWall badges={earnedBadges(data)} />
-          </Glass>
+          </section>
           </>)}
+          </div>
+          </Glass>
         </motion.div>
       </div>
     </OverlayPortal>

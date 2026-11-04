@@ -540,6 +540,7 @@ def test_run_chat_keeps_its_entry_signature() -> None:
         "_directive_loop_gen",
         "_skill_trigger_text",
         "_directive_channel_origin",
+        "_directive_source_channels",
         "_directive_owner_origin",
         "_commands_off",
         "_recovery_echo_owed",
@@ -1360,7 +1361,6 @@ _GUARDED_CONSTRUCT_HOMES: dict[str, tuple[str, ...]] = {
     # _turn_admit; each lives only in its homes, so the turn's own copy stays there.
     r"await _consume_pending_reset\(state, slot\)": (
         "dashboard/chat_turn/eager_spawn.py",
-        "dashboard/chat_turn/session_reset.py",
         "dashboard/chat_turn/turn_admission.py",
     ),
     r"_requested_model = slot\.model": (

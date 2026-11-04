@@ -33,7 +33,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from datetime import datetime
 from typing import Any
 
@@ -255,13 +255,30 @@ def _redact_deep(value: Any) -> Any:
     patterns. It is deliberately fail-closed on a composition error, which surfaces
     as a 500 here -- a host that cannot compose its redaction must not answer with
     un-redacted content instead.
+
+    Each DISTINCT string is redacted once per call: a board repeats the same keys,
+    states and words thousands of times, and the redactor is a wide regex sweep.
+    The memo is local to this one call, so nothing is kept across replies or users.
     """
+    memo: dict[str, str] = {}
+
+    def redact(text: str) -> str:
+        hit = memo.get(text)
+        if hit is None:
+            hit = memo[text] = redact_via_context(text)
+        return hit
+
+    return _redact_walk(value, redact)
+
+
+def _redact_walk(value: Any, redact: Callable[[str], str]) -> Any:
+    """The recursive half of :func:`_redact_deep`, with its per-call *redact*."""
     if isinstance(value, str):
-        return redact_via_context(value)
+        return redact(value)
     if isinstance(value, dict):
         redacted: dict[Any, Any] = {}
         for key, item in value.items():
-            safe_key = redact_via_context(key) if isinstance(key, str) else key
+            safe_key = redact(key) if isinstance(key, str) else key
             if safe_key in redacted:
                 # Two distinct keys can redact to the same placeholder. Keep both
                 # rows rather than let the later one overwrite the earlier.
@@ -269,10 +286,10 @@ def _redact_deep(value: Any) -> Any:
                 while f"{safe_key} ({suffix})" in redacted:
                     suffix += 1
                 safe_key = f"{safe_key} ({suffix})"
-            redacted[safe_key] = _redact_deep(item)
+            redacted[safe_key] = _redact_walk(item, redact)
         return redacted
     if isinstance(value, list):
-        return [_redact_deep(item) for item in value]
+        return [_redact_walk(item, redact) for item in value]
     return value
 
 
@@ -389,8 +406,9 @@ def _alive_of(state: DashboardState, worker_key: str) -> str:
     return "closed"
 
 
-def with_worker_facts(value: Any, state: Any) -> Any:
-    """*value* with each LOCAL work item stamped ``worker`` and ``stale``.
+def with_worker_facts(value: Any, state: Any, conductor: str = "") -> Any:
+    """*value* with each LOCAL work item stamped ``worker``, ``stale`` and, when
+    *conductor* names the board's slot, ``orphaned``.
 
     The page may not see ``worker_session_key`` (``member_dashboard._page_safe`` drops
     it), yet whether that worker is mid-turn is what tells "working" from "waiting".
@@ -400,12 +418,20 @@ def with_worker_facts(value: Any, state: Any) -> Any:
     behind ``stale`` is :func:`work_ledger.item_liveness`, both as the Crew page reads
     them, so the two pages cannot disagree.
 
+    ``orphaned`` is :func:`work_ledger.is_orphaned` over whether *conductor*'s slot is
+    still open, the Crew page's own read: no main chat is left to read the item's
+    reports. With no *conductor* it is not stamped and the page draws the item as it
+    did before.
+
     Only a list whose entries are work items (``item_id`` beside
     ``worker_session_key``) is touched. A remote item has no slot here, so it is left
-    as it is and the page draws it as it always did. Memory reads only.
+    as it is and the page draws it as it always did. It gets no ``orphaned`` either:
+    without its ``worker`` the page could not tell a running remote worker from a
+    stuck one, and stuck would win. Memory reads only.
     """
     if state is None or not isinstance(value, list):
         return value
+    conductor_alive = _slot_open(state, conductor) if conductor else None
     out: list[Any] = []
     for raw in value:
         if not (isinstance(raw, Mapping) and "item_id" in raw and "worker_session_key" in raw):
@@ -415,6 +441,9 @@ def with_worker_facts(value: Any, state: Any) -> Any:
         if item.worker_instance_id:
             out.append(raw)
             continue
+        facts: dict[str, Any] = {}
+        if conductor_alive is not None:
+            facts["orphaned"] = work_ledger.is_orphaned(item, conductor_slot_exists=conductor_alive)
         running, closed, looping = work_ledger.item_liveness(
             "",
             item,
@@ -422,11 +451,11 @@ def with_worker_facts(value: Any, state: Any) -> Any:
             closed=lambda k: _slot_closed(state, k),
             looping=_slot_looping,
         )
-        stale = work_ledger.is_stale(
+        facts["stale"] = work_ledger.is_stale(
             item, worker_running=running, worker_closed=closed, worker_looping=looping
         )
-        worker = _alive_of(state, item.worker_session_key or "")
-        out.append({**raw, "worker": worker, "stale": stale})
+        facts["worker"] = _alive_of(state, item.worker_session_key or "")
+        out.append({**raw, **facts})
     return out
 
 

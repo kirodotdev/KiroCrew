@@ -70,6 +70,12 @@ The electron-builder configuration lives in
   `rpm.depends` needs no such thing but uses entirely different names
   (`gtk3`, `nss`, `alsa-lib`). Both lists are verified against a real
   `apt-get install` / `dnf` resolution by `scripts/smoke-linux-packages.sh`.
+  Both lists name libgbm (`libgbm1` / `mesa-libgbm`) because the desktop
+  binary links `libgbm.so.1` and no other entry requires it: Ubuntu 24.04,
+  Debian 12 and Amazon Linux 2023 bring it in only as a recommendation or weak
+  dependency, which a minimal install skips, and on Ubuntu 22.04 nothing brings
+  it in. Without it the app installs but cannot start.
+  `website/electron/test/packaging.test.js` pins both entries.
 - `build.files` is an explicit per-file allowlist, not a glob: electron-builder
   packs exactly those paths into `app.asar` at the same relative location, plus
   `package.json` and the production `node_modules`. The four lifecycle facades

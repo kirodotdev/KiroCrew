@@ -802,54 +802,24 @@ class TestFindListeningPids:
         finally:
             s.close()
 
-    def test_windows_listener_probe_marks_browser_capable(self, monkeypatch):
-        """Use real Windows/Darwin attribution there; both synthetic shapes elsewhere."""
-        from kiro_crew.browser_cli import view as browser_view
-
-        def _assert_capable(port: int) -> None:
-            assert pc.process_owns_loopback_listener(os.getpid(), port) is True
-            browser_view._invalidate_listener_lookup_self_test_cache()
-            try:
-                assert browser_view._listener_lookup_functional() is True
-                assert browser_view._structurally_blind_listener_attribution() is False
-            finally:
-                browser_view._invalidate_listener_lookup_self_test_cache()
-
-        if sys.platform in {"win32", "darwin"}:
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
-                listener.bind(("127.0.0.1", 0))
-                listener.listen(1)
-                _assert_capable(int(listener.getsockname()[1]))
-            return
-
-        monkeypatch.setattr(pc, "IS_WINDOWS", True)
-        monkeypatch.setattr(pc, "IS_LINUX", False)
-        monkeypatch.setattr(pc, "IS_POSIX", False)
-        monkeypatch.setattr(
-            pc,
-            "_windows_loopback_listener_owner_pids",
-            lambda port: {os.getpid()},
+    def test_linux_per_process_probe_runs_on_every_runner(self, tmp_path, monkeypatch):
+        proc_root = tmp_path / "proc"
+        (proc_root / "net").mkdir(parents=True)
+        (proc_root / "4242" / "fd").mkdir(parents=True)
+        (proc_root / "4242" / "fd" / "7").touch()
+        (proc_root / "net" / "tcp").write_text(
+            "header\n"
+            "0: 0100007F:1E61 00000000:0000 0A 00000000:00000000 "
+            "00:00000000 00000000 1000 0 12345\n",
+            encoding="ascii",
         )
-        _assert_capable(45613)
-
+        (proc_root / "net" / "tcp6").write_text("header\n", encoding="ascii")
         monkeypatch.setattr(pc, "IS_WINDOWS", False)
-        monkeypatch.setattr(pc, "IS_LINUX", False)
+        monkeypatch.setattr(pc, "IS_LINUX", True)
         monkeypatch.setattr(pc, "IS_POSIX", True)
-        monkeypatch.setattr(pc, "listening_pid_tool", lambda: "lsof")
-        monkeypatch.setattr(
-            pc,
-            "trusted_system_bin",
-            lambda name: "/usr/bin/lsof" if name == "lsof" else None,
-        )
-        monkeypatch.setattr(
-            pc,
-            "probe_port_listeners",
-            lambda port, process_pid=None: (
-                [pc.PortListener(os.getpid(), "127.0.0.1", "4")],
-                True,
-            ),
-        )
-        _assert_capable(45613)
+        monkeypatch.setattr(pc.os, "readlink", lambda path: "socket:[12345]")
+
+        assert pc.process_owns_loopback_listener(4242, 7777, proc_root=proc_root) is True
 
 
 class TestProcessCommandLine:

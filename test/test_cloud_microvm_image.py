@@ -804,7 +804,7 @@ class TestTheDigestCoversTheBuildSettings:
         bundle = tmp_path / "bundle"
         (bundle / "skills").mkdir(parents=True)
         for name in ("manifest.json", "agent.json", "mcp.json"):
-            (bundle / name).write_text("{}\n")
+            (bundle / name).write_text("{}\n", encoding="utf-8")
         wheel = tmp_path / "kiro_crew-0.0.0-py3-none-any.whl"
         import zipfile
 

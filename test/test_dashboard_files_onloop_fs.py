@@ -274,8 +274,15 @@ class TestStaticRatchet:
 # --- behavioural proof -------------------------------------------------------
 
 
+class _NoIndexRegistry:
+    """Stand-in for FileIndexRegistry whose ensure() always falls back to walk."""
+
+    async def ensure(self, root):
+        return None
+
+
 class _State:
-    file_indexes: dict = {}
+    file_indexes = _NoIndexRegistry()
 
 
 def _app() -> web.Application:

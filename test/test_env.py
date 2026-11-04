@@ -542,7 +542,8 @@ class TestAugmentedPath:
         """A service-installed gateway resolves exactly as it did before.
 
         ``service_path()`` writes ``~/.local/bin:/usr/local/bin:/usr/bin:/bin``
-        ahead of the installer's PATH. Its inherited ``~/.local/bin`` must not
+        (with mise's shims after ``~/.local/bin`` on Linux) ahead of the
+        installer's PATH. Its inherited ``~/.local/bin`` must not
         push the node-manager bins behind ``/usr/bin``, and an nvm-style bin the
         installer's PATH carried behind ``/usr/bin`` must still be prepended.
         The first-occurrence order must equal the old ``extra + [base_path]``.

@@ -211,8 +211,9 @@ class TestApplyChannelPin:
         [
             ("dashboard approve", "dashboard/handlers/updates_step_up.py", "run_wheel_apply("),
             ("scheduled auto-apply", "slack/gateway_runtime/update_apply.py", "run_wheel_apply("),
-            ("server update CLI", "cli_server_update.py", "apply_wheel_update("),
-            ("run_wheel_apply", "platform/wheel_apply.py", "wheel_engine.apply_wheel_update,"),
+            ("server update CLI", "cli_server_update.py", "release_apply.apply_release("),
+            ("run_wheel_apply", "platform/wheel_apply.py", "release_apply.apply_release("),
+            ("release apply", "platform/release_apply.py", "wheel_engine.apply_wheel_update("),
         ],
     )
     def test_each_install_route_goes_through_the_engine(self, route, module, call) -> None:

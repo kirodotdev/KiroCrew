@@ -23,6 +23,7 @@ const launchLog = createLaunchLog({
 });
 
 const { findConfiguredDashboardPort } = require("./data-home");
+const { onQuitForUpdate } = require("./close-action");
 const { defaultedPort } = require("./gateway-auth-hint");
 const {
   classifyBundleLocation,
@@ -44,6 +45,8 @@ const { resolveHome } = require("./home-dir");
 const { internalSecretFor } = require("./local-token");
 const { identityFamily } = require("./instance-guard");
 const { describeSingletonLock } = require("./singleton-lock");
+const { startLinuxDesktopIntegration } = require("./linux-desktop-integration");
+const { resolveLinuxInstall } = require("./auto-update");
 const { initNativeLogging } = require("./native-logging");
 const { armCrashCollector, collectCrashReports } = require("./crash-collector");
 const { initGpuPolicy } = require("./disable-gpu");
@@ -367,6 +370,14 @@ const requestQuit = () => {
   isQuitting = true;
   app.quit();
 };
+
+// An update install closes every window BEFORE it emits before-quit, so the
+// flag has to be set here as well or the main window hides to tray instead of
+// closing and the install never reaches ShipIt (#29449, see close-action.js).
+onQuitForUpdate(electron.autoUpdater, () => {
+  if (!isQuitting) glog("update: installer is quitting the app; window closes no longer hide to tray");
+  isQuitting = true;
+});
 
 // Only the lock winner may arm native logging. A rejected second instance must
 // not rotate chromium.log out from under the primary process.
@@ -739,6 +750,32 @@ app.whenReady().then(async () => {
   ipcRegistrar.registerShell();
   windows.createTray();
   const mainWindow = windows.createMainWindow();
+
+  // Linux AppImage desktop integration. It creates the first launcher and then
+  // reconciles only files whose hashes still match bytes Kiro Crew wrote. The
+  // reconciliation itself (synchronous filesystem work plus one packaged
+  // helper process per fingerprint, publish, and cleanup step) runs on a worker
+  // thread; the main thread only evaluates the plan and receives the result,
+  // and no thread is started on a non-AppImage install. The promise never
+  // rejects by contract; the catch below is the last fence for a defect in it.
+  try {
+    startLinuxDesktopIntegration({
+      env: process.env,
+      installKind: resolveLinuxInstall({
+        env: process.env,
+        resourcesPath: process.resourcesPath,
+      }).kind,
+      version: app.getVersion(),
+      stateDir: app.getPath("userData"),
+      uid: typeof process.geteuid === "function" ? process.geteuid() : null,
+      resourcesPath: process.resourcesPath,
+      log: (m) => { try { glog(`desktop-integration: ${m}`); } catch { /* ignore */ } },
+    }).catch((e) => {
+      try { glog(`desktop-integration: failed: ${e && e.message}`); } catch { /* ignore */ }
+    });
+  } catch (e) {
+    try { glog(`desktop-integration: skipped: ${e && e.message}`); } catch { /* ignore */ }
+  }
 
   // The global accelerator needs an existing main window. The updater needs
   // that same window for notifications, but MUST be fully registered before

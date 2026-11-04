@@ -197,12 +197,23 @@ class TestAcpSessionProviderLifecycle:
     async def test_shutdown_owns_runtime_kills_runtime(self):
         # Parent session owns the runtime → kill the whole process, no per-session
         # cancel/destroy dance.
+        from kiro_crew import runtime_ownership as ro
+
+        ro._reset_for_tests()
         handle = _make_handle(is_turn_active=True)
         runtime = _make_runtime()
         runtime.kill = AsyncMock()
         provider = AcpSessionProvider(handle, runtime, owns_runtime=True)
+        try:
+            await provider.acquire_runtime_lease()
+            assert ro.RUNTIME_OWNERSHIP.leases_on_runtime(runtime) == 1
 
-        await provider.shutdown()
+            await provider.shutdown()
+            # The owner gives up its lease before it kills, so the kill gate lets it through.
+            assert provider._runtime_lease is None
+            assert ro.RUNTIME_OWNERSHIP.leases_on_runtime(runtime) == 0
+        finally:
+            ro._reset_for_tests()
         assert runtime.kill.await_args_list == [call(expected=True, reason="provider shutdown")]
         assert handle.destroy.await_count == 0
         assert handle.cancel.await_count == 0
@@ -884,12 +895,19 @@ class TestAcpSessionProviderRound4Parity:
     async def test_cancel_session_accepts_grace_secs(self):
         """Round-3 -- cancel_session must accept grace_secs (AcpProvider.cancel
         calls it with grace_secs=...) and forward to handle.cancel."""
-        handle = _make_handle()
-        handle.cancel = AsyncMock()
+        import asyncio
+
+        from kiro_crew.acp.session_handle import AcpSessionHandle
+
         runtime = _make_runtime()
+        runtime.send_notification = AsyncMock()
+        # A real handle, so the cancel it records is read back, not the call.
+        handle = AcpSessionHandle("sA", asyncio.Queue(), runtime)
         provider = AcpSessionProvider(handle, runtime)
-        await provider.cancel_session(grace_secs=3.0)
-        assert handle.cancel.await_args_list == [call(grace_secs=3.0)]
+        # Above the handle's own 10s floor, so a dropped grace_secs reads as 10.0.
+        await provider.cancel_session(grace_secs=30.0)
+        assert handle._cancelled is True
+        assert handle._cancel_grace_secs == 30.0
 
     @pytest.mark.asyncio
     async def test_cancel_session_swallows_runtime_dead(self):
@@ -1380,29 +1398,28 @@ class TestLivePathModelEntitlement:
         assert excinfo.value.transient is False
 
     @pytest.mark.asyncio
-    async def test_advertised_switch_still_applied_on_live_path(self):
-        provider, handle = self._provider(["claude-sonnet-4.6", "claude-opus-4.8"])
-
-        await provider.set_model("claude-opus-4.8")
-
-        assert handle.set_model.await_args_list == [call("claude-opus-4.8")]
-        assert handle.refresh_available_models.await_count == 0
-
-    @pytest.mark.asyncio
-    async def test_unknown_advertised_set_still_applied(self):
-        """A backend that advertises nothing must not have every switch refused."""
+    @pytest.mark.parametrize(
+        "advertised",
+        [
+            pytest.param(
+                ["claude-sonnet-4.6", "claude-opus-4.8"],
+                id="advertised_switch_still_applied_on_live_path",
+            ),
+            # A backend that advertises nothing must not have every switch refused.
+            pytest.param([], id="unknown_advertised_set_still_applied"),
+            # Remote-shaped input degrades to "unknown", never an exception.
+            pytest.param("not-a-list", id="malformed_advertised_payload_does_not_raise"),
+            # The probe runs only on a would-be refusal: an allowed switch costs
+            # no extra round-trip.
+            pytest.param(["claude-opus-4.8"], id="advertised_pick_never_probes"),
+        ],
+    )
+    async def test_an_allowed_switch_is_applied_without_a_probe(self, advertised):
         provider, handle = self._provider([])
-
-        await provider.set_model("claude-opus-4.8")
-
-        assert handle.set_model.await_args_list == [call("claude-opus-4.8")]
-        assert handle.refresh_available_models.await_count == 0
-
-    @pytest.mark.asyncio
-    async def test_malformed_advertised_payload_does_not_raise(self):
-        """Remote-shaped input degrades to "unknown", never an exception."""
-        provider, handle = self._provider([])
-        handle.available_models = "not-a-list"
+        if isinstance(advertised, list):
+            handle.available_models = [{"modelId": m, "name": m} for m in advertised]
+        else:
+            handle.available_models = advertised
 
         await provider.set_model("claude-opus-4.8")
 
@@ -1464,17 +1481,6 @@ class TestLivePathModelEntitlement:
 
         handle.refresh_available_models.assert_awaited_once()
         assert "claude-sonnet-4.6" in str(excinfo.value)
-
-    @pytest.mark.asyncio
-    async def test_advertised_pick_never_probes(self):
-        """The probe runs only on a would-be refusal — an allowed switch costs
-        no extra round-trip."""
-        provider, handle = self._provider(["claude-opus-4.8"])
-
-        await provider.set_model("claude-opus-4.8")
-
-        assert handle.refresh_available_models.await_count == 0
-        assert handle.set_model.await_args_list == [call("claude-opus-4.8")]
 
     @pytest.mark.asyncio
     async def test_refusal_heal_forces_a_fresh_probe(self):

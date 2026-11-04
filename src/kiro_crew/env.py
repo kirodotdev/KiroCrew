@@ -18,8 +18,8 @@ from collections.abc import Iterable, Mapping, MutableMapping
 from pathlib import Path
 from typing import Any
 
-from kiro_crew import env_node_windows, platform_compat
-from kiro_crew.config.paths import data_home, peek_data_home
+from kiro_crew import env_node_windows, env_own_kirocrew, platform_compat
+from kiro_crew.config.paths import data_home
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
 # ``uv`` is a declared dependency shipped as a wheel (``setup.cfg``), so this
@@ -97,7 +97,10 @@ _EXTRA_PATH_DIRS = (
 # contribution out, :func:`mcp_runtime_path` wraps the former rather than
 # altering it, and nothing is persisted.
 #
-# That exception is also where the setting stops being live. A resolution caller
+# A second exception, the agent child (kiro-cli), which starts an unwrapped
+# bare-name server itself: see :func:`append_mcp_path_dirs`.
+#
+# The gatewayd exception is also where the setting stops being live. A resolution caller
 # reads the current snapshot on every call, so an edit reaches it immediately;
 # the daemon's PATH is a process environment fixed when ``manager._spawn_once``
 # spawns it, and an ADOPTED survivor never has a new one applied (``manager``'s
@@ -910,25 +913,9 @@ def git_build_info() -> tuple[str, str]:
     )
 
 
-def _managed_browser_cli_dirs() -> list[str]:
-    """Managed browser CLI directories exposed to agent shell commands.
-
-    The resolver in ``browser_cli.install`` never consumes this search path. It
-    resolves the same crew-home leaf by absolute path. These entries exist only
-    so an approved agent shell command can spell ``playwright-cli`` normally;
-    the OS sandbox seals the whole prefix read-only before that shell starts.
-    """
-    try:
-        root = peek_data_home() / "playwright-cli"
-    except Exception:
-        logger.debug("could not resolve managed browser CLI path", exc_info=True)
-        return []
-    entries: tuple[Path, ...]
-    if platform_compat.IS_WINDOWS:
-        entries = (root / "managed-bin", root / "bin", root)
-    else:
-        entries = (root / "managed-bin", root / "bin")
-    return [value for entry in entries if (value := _validated_bin_dir(str(entry)))]
+def _own_kirocrew_dirs() -> list[str]:
+    """This install's ``kirocrew`` directory (:func:`env_own_kirocrew.own_kirocrew_dirs`)."""
+    return env_own_kirocrew.own_kirocrew_dirs(_validated_bin_dir)
 
 
 def _windows_toolbox_bin_dir(resolved_home: str, pinned_home: str | None) -> str | None:
@@ -1005,7 +992,9 @@ def augmented_path(base_path: str = "", *, home: str | None = None) -> str:
     rebind a user MCP spec's bare ``"command": "python"`` (and the spawned
     agent's own ``python``/``pip`` shell calls) to the gateway's venv
     interpreter. As a pure fallback it resolves only names found nowhere
-    else — exactly the console-script-wrapper case.
+    else — exactly the console-script-wrapper case. The one name that must
+    NOT fall through to an earlier directory is ``kirocrew`` itself, so a
+    directory holding only that link (:func:`_own_kirocrew_dirs`) goes ahead of ``~/.local/bin``.
 
     Deliberately NOT extended by ``mcp.extra_path_dirs`` /
     :func:`register_mcp_path_dirs`: callers here include the resolvers for the
@@ -1030,8 +1019,9 @@ def augmented_path(base_path: str = "", *, home: str | None = None) -> str:
     ``/opt/homebrew/bin``, and still precede ``/usr/bin``. An inherited dir
     that sits behind a system dir is not an anchor and is prepended as on
     main, so a :func:`~kiro_crew.service.common.service_path` ``PATH``
-    (``~/.local/bin:/usr/local/bin:/usr/bin:/bin:<installer PATH>``) resolves
-    in the same order as before. With no anchor at all the output equals main.
+    (``~/.local/bin:/usr/local/bin:/usr/bin:/bin:<installer PATH>``, with
+    mise's shims after ``~/.local/bin`` on Linux) resolves in the same order
+    as before. With no anchor at all the output equals main.
     Anchoring is POSIX-only: on Windows the system section (``System32``) comes
     FIRST and user dirs such as ``~/.local/bin`` come last, so there is no
     "ahead of the system dirs" to anchor in, and every extra is prepended
@@ -1045,7 +1035,7 @@ def augmented_path(base_path: str = "", *, home: str | None = None) -> str:
     # would otherwise put a relative "{mise_data}/shims" entry on every spawned
     # subprocess's PATH, re-resolved against the CHILD's cwd — letting a
     # work-dir-relative executable shadow the configured command.
-    extra = _managed_browser_cli_dirs() if home is None else []
+    extra = _own_kirocrew_dirs() if home is None else []
     extra += [
         e
         for d in _EXTRA_PATH_DIRS
@@ -1419,6 +1409,25 @@ def mcp_runtime_path(base_path: str = "") -> str:
     if not extra:
         return path
     return os.pathsep.join(_dedup_dirs([*extra, *path.split(os.pathsep)]))
+
+
+def append_mcp_path_dirs(path: str) -> str:
+    """*path* with the contributed MCP dirs appended AFTER every entry, for an agent child.
+
+    kiro-cli resolves a bare-name server command against the PATH it inherits, and
+    its spec carries no contributed dir (:func:`spec_env_path`), so a gateway whose
+    PATH lacks one (a service installed from a non-login shell) starts no such
+    server. The dirs TRAIL, unlike :func:`mcp_runtime_path`, because the agent's
+    shell resolves against this PATH too: they only supply names found nowhere
+    else. Every existing entry, an empty (cwd) one too, is kept verbatim. Computed
+    per spawn, stored nowhere. A ``~user`` entry may block on lookup: run off-loop.
+    """
+    present = {os.path.normcase(os.path.normpath(p)) for p in path.split(os.pathsep) if p}
+    norm = os.path.normcase
+    added = [
+        d for d in _dedup_dirs(_extra_mcp_path_dirs()) if norm(os.path.normpath(d)) not in present
+    ]
+    return os.pathsep.join([p for p in (path, *added) if p]) if added else path
 
 
 # Env keys a spec's declared ``env`` must never set on a process WE spawn.

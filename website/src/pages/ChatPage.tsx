@@ -699,7 +699,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // offer to turn Crew Mode off, since the server refuses that once a message was
   // sent (`crew_mode_locked`) and the loaded rows are the only way to know.
   const hasUserMessage = slotLoading || messages.some(m => m.role === 'user')
-  const { crewModeEligible, crewModeOn, crewModeChosen, crewModeLeaving, crewModeSwitching, turnOnCrewMode, turnOffCrewMode, openTaskBoard } = useCrewModeSwitch({ currentSlot, defaultAgent, hasUserMessage, switchAgent, openView: tabsCtl.openView })
+  const { crewModeEligible, crewModeOn, crewModeChosen, crewModeLeaving, crewModeSwitching, turnOnCrewMode, crewModeMidChat, turnOffCrewMode, openTaskBoard } = useCrewModeSwitch({ currentSlot, defaultAgent, hasUserMessage, switchAgent, openView: tabsCtl.openView })
   // A crew member's message box sends nothing while its conductor is closed
   // (ComposerDockView's gate); the voice auto-submit below honours it too.
   const currentCrewRoot = crewRootOf(currentSlot)
@@ -774,9 +774,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // then the cold file tabs' reads.
   const { runInTerminalScope } = useChatEventBridges({
     activeSlot,
-    activeSlotRef,
     messages,
-    slots,
     dispatch,
     queryClient,
     showActionError,
@@ -977,7 +975,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   })
   const {
     mobileSessions, drawerMounted, drawerX, drawerPanelRef, drawerScrimRef, sideOverlayX, sideOverlayPanelRef, sideOverlayPhase, drawerScrim, openSidebar, closedSessionActions, sidebarFolderActions,
-    closeSidebar, chatContainerRef, containerH, activitySlot, hasTaskDashboard, sidePanelWantsMount, inlineSidePanelShowing, drawerDragging, revealSourceLink, previewExpanded, sidebarOpen,
+    closeSidebar, chatContainerRef, containerH, activitySlot, refreshActivitySlot, hasTaskDashboard, sidePanelWantsMount, inlineSidePanelShowing, drawerDragging, revealSourceLink, previewExpanded, sidebarOpen,
     sidebarOnScreen, flyoutTriggerRef, flyoutSurfaceRef, flyoutEligible, flyout, expandFrom, expandSidebar,
   } = useSessionsDrawer({
     embedded, embedMode, dispatch, navigate, navigationType, location, isMobile, filteredSlots, slotsLoaded, activeSlot, splitMode, crewWindow, activityOpen, showActionError, githubSourceHostsRef, hasBrowserTab,
@@ -1198,6 +1196,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               // is still loading: drawn alone first, the Crew Mode chip would slide
               // across the memory chip arriving beside it.
               crewModeOffered={crewModeEligible && !crewModeChosen && !slotLoading && showComposerMemoryChip} turnOnCrewMode={turnOnCrewMode}
+              crewModeMidChatOffered={crewModeMidChat && !slotLoading && !showComposerMemoryChip}
               crewChipPressed={crewChipPressed}
               agentPickerHidden={crewModeChosen || (!crewModeLeaving && runsCrewMode(currentSlot?.agent, currentSlot?.agent_kind, currentSlot?.crew_mode_agent))}
               // With the preview off too: the raw `crew_mode_root` stamp is the gateway's
@@ -1220,7 +1219,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
         selectedSourceUrl={selectedSourceUrl} selectIssueUrl={selectIssueUrl} selectSourceUrl={selectSourceUrl} tabsCtl={tabsCtl} submitComments={submitComments} currentSlot={currentSlot}
         handleAddToContext={handleAddToContext} sidePanelDock={sidePanelDock} sidePanelDockAnim={sidePanelDockAnim} effectiveSidebarWidth={effectiveSidebarWidth} toggleAct={toggleAct}
         chatNav={chatNav} chatPins={chatPins} chatPinsLoading={chatPinsLoading} handleJumpToPin={handleJumpToPin} handleUnpinById={handleUnpinById} jumpToSearchResult={jumpToSearchResult}
-        activeSlotTitle={activeSlotTitle} activitySlot={activitySlot} hasTaskDashboard={hasTaskDashboard} sidebarOpen={sidebarOpen} sideOverlayPanelRef={sideOverlayPanelRef}
+        activeSlotTitle={activeSlotTitle} activitySlot={activitySlot} refreshActivitySlot={refreshActivitySlot} embedded={!!embedded || !!popout} chatPaneEl={chatPaneEl} hasTaskDashboard={hasTaskDashboard} sidebarOpen={sidebarOpen} sideOverlayPanelRef={sideOverlayPanelRef}
         sideOverlayPhase={sideOverlayPhase} sideOverlayX={sideOverlayX} panelFillWidth={panelFillWidth} panelMaximized={panelMaximized} panelReserve={panelReserve}
         pinSummary={sidePanelPinSummary} trackpad={panelTrackpad}
       />

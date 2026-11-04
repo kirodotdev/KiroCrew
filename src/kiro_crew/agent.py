@@ -89,6 +89,7 @@ from kiro_crew.agent_parts.kirocrew_launcher import (
     _stale_mcp_purge_marker,
     _through_stable_link,
     ensure_kirocrew_on_path,
+    refresh_own_kirocrew_link,
     run_first_run_setup,
 )
 from kiro_crew.agent_parts.shared_home import (
@@ -169,9 +170,11 @@ from kiro_crew.agent_parts.spec_lookup import (
     markdown_spec_for_agent,
 )
 from kiro_crew.agent_parts.spec_prompts import (
+    _CONDUCTOR_PROMPT_SECTIONS,
     _CONDUCTOR_SYSTEM_PROMPT,
     _CONDUCTOR_WORK_LEDGER_PROTOCOL,
     _DASHBOARD_MANAGER_SYSTEM_PROMPT,
+    _LEDGER_CONDUCTOR_RULES,
     _PIPELINE_CONDUCTOR_SYSTEM_PROMPT,
     _SECURITY_CONDUCTOR_SYSTEM_PROMPT,
     _TEAM_LEAD_SYSTEM_PROMPT,
@@ -252,6 +255,7 @@ from kiro_crew.env import (
 from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes_nolink
 from kiro_crew.owner_only_files import mkdirs_owner_only, write_text_owner_only
 from kiro_crew.platform import (
+    PlatformCompositionError,
     current_context,
 )
 from kiro_crew.platform import redact_log_via_context as redact_log
@@ -390,6 +394,7 @@ if TYPE_CHECKING:  # served by ``__getattr__`` at runtime; named here for mypy
         _mcp_registry_mode,
         _mcp_server_emission_eligible,
         _mcp_spec_gate_open,
+        _registry_marker_for,
         _spec_gate_answers_closed,
         crew_owned_mcp_servers,
         emission_eligible_mcp_servers,
@@ -953,6 +958,7 @@ _EXPORTS_BY_OWNER: dict[str, tuple[str, ...]] = {
         "_HOME_DERIVING_ENV_KEYS",
         "_LAUNCHER_EXEC_ENV_KEYS",
         "_mcp_registry_mode",
+        "_registry_marker_for",
         "_managed_mcp_env",
         "_mcp_spec_gate_open",
         "_spec_gate_answers_closed",

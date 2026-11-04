@@ -24,6 +24,8 @@ import type { DiscoveredSkill, SkillProviderOutcome } from '../types'
 import { i18nT } from '../i18n/t'
 import { fmtCompact } from '../i18n/format'
 import { useImeGuard } from '../hooks/useImeGuard'
+import { useScrollEdgesY } from '../hooks/useScrollEdges'
+import { MORE_BELOW_MASK } from './ModelEffortDropdown'
 interface Props {
   open: boolean
   onClose: () => void
@@ -71,7 +73,15 @@ export default function SkillBrowserModal({ open, onClose }: Props) {
   // yank the list away on small screens.
   const [mobileDetail, setMobileDetail] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
-  const listRef = useRef<HTMLDivElement>(null)
+  const listRef = useRef<HTMLDivElement | null>(null)
+  // The results column is capped by the modal, and with the scrollbar hidden
+  // until scroll a mouse user saw a list that just ended. The bottom fade says
+  // more skills sit below (see MORE_BELOW_MASK).
+  const [attachList, listEdges, remeasureList] = useScrollEdgesY<HTMLDivElement>()
+  const setListNode = useCallback((node: HTMLDivElement | null) => {
+    listRef.current = node
+    attachList(node)
+  }, [attachList])
 
   const handleQueryChange = useCallback((value: string) => {
     setQuery(value)
@@ -117,6 +127,9 @@ export default function SkillBrowserModal({ open, onClose }: Props) {
   })
 
   const results = useMemo(() => data?.results ?? [], [data])
+  // New results or an install note change the rows, not the column's own box,
+  // so no observer on the column sees it.
+  useEffect(() => { remeasureList() }, [results, installPhases, remeasureList])
   const providers = data?.providers ?? []
   const failureLines = providerFailureLines(data?.provider_outcomes ?? [])
   // Every provider failed and nothing came back: "no skills found" would claim we
@@ -259,11 +272,11 @@ export default function SkillBrowserModal({ open, onClose }: Props) {
         {results.length > 0 && (
           <div className="flex gap-3 flex-1 min-h-0">
             <div
-              ref={listRef}
+              ref={setListNode}
               id="skill-results-list"
               role="listbox"
               aria-label={i18nT('components.skillBrowserModal.skill_search_results')}
-              className={`${selectedSkill && mobileDetail ? 'hidden md:block' : 'block'} w-full md:w-[40%] md:shrink-0 overflow-y-auto space-y-1.5 pr-1`}
+              className={`${selectedSkill && mobileDetail ? 'hidden md:block' : 'block'} w-full md:w-[40%] md:shrink-0 overflow-y-auto space-y-1.5 pr-1 ${listEdges.bottom ? MORE_BELOW_MASK : ''}`}
             >
               {results.map(skill => {
                 const key = skillKey(skill)
@@ -443,6 +456,11 @@ function SkillDetailPanel({
     queryFn: () => api.previewDiscoveredSkill(skill.provider, skill.id),
     staleTime: 60_000,
   })
+  // The bundle file list is capped at max-h-40; the bottom fade says more
+  // files sit below. Opening the <details> resizes the list, which the
+  // observer sees; a new preview swaps the rows, which it does not.
+  const [attachFileList, fileListEdges, remeasureFileList] = useScrollEdgesY<HTMLUListElement>()
+  useEffect(() => { remeasureFileList() }, [preview, remeasureFileList])
 
   // Same presentation as the installed-skill viewer (SkillDirectoryBrowser):
   // frontmatter parsed into the labeled meta strip, body rendered without
@@ -470,7 +488,7 @@ function SkillDetailPanel({
       </div>
 
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted mb-3">
-        {(preview?.author || skill.author) && <span>{i18nT('components.skillBrowserModal.by')} {preview?.author || skill.author}</span>}
+        {(preview?.author || skill.author) && <span>{i18nT('components.skillBrowserModal.by_author', { author: preview?.author || skill.author })}</span>}
         {(skill.installs ?? 0) > 0 && (
           <span className="flex items-center gap-1">
             <Download size={11} aria-hidden="true" /> {formatInstalls(skill.installs!)} {i18nT('components.skillBrowserModal.installs')}
@@ -531,7 +549,7 @@ function SkillDetailPanel({
           <summary className="text-xs text-muted cursor-pointer hover:text-text">
             {i18nT('components.skillBrowserModal.bundle_contents_count', { count: preview!.file_count })}
           </summary>
-          <ul className="mt-1.5 text-xs text-muted font-mono space-y-0.5 max-h-40 overflow-y-auto">
+          <ul ref={attachFileList} data-testid="skill-bundle-file-list" className={`mt-1.5 text-xs text-muted font-mono space-y-0.5 max-h-40 overflow-y-auto ${fileListEdges.bottom ? MORE_BELOW_MASK : ''}`}>
             {preview!.files!.map(f => <li key={f}>{f}</li>)}
           </ul>
         </details>

@@ -20,7 +20,7 @@ Instance fields written: ``_active_run_id``, ``_active_tool_calls``, ``_between_
 ``_tool_call_params``, ``_tool_call_tool_name``, ``_tool_call_unclassified``,
 ``_tool_dispatched``, ``_turn_done``, ``last_prompt_stats``.
 
-Instance fields read: ``_agent_accepts_image``, ``_buffer``, ``_copilot_ambiguous_mcp_calls``, ``_copilot_unmatched_titles``, ``_last_activity``, ``_liveness_oracle``,
+Instance fields read: ``_agent_accepts_image``, ``_buffer``, ``_copilot_ambiguous_mcp_calls``, ``_copilot_unmatched_titles``, ``_engine_fallback``, ``_last_activity``, ``_liveness_oracle``,
 ``_permission_gate_events``, ``_pid``, ``_process``, ``_sel_settled_tool_calls``,
 ``_session_id``, ``_steer_turn``, ``_turn_lock``.
 """
@@ -53,6 +53,7 @@ from kiro_crew.acp.client_timeouts import (
 from kiro_crew.acp.client_transport import _AGENT_STARTED_REQUEST_ID, _is_safe_oauth_url
 from kiro_crew.acp.client_turn_control import format_command_result
 from kiro_crew.acp.elicitation import is_elicitation_request
+from kiro_crew.acp.engine_fallback import is_v2_model_fallback, normalize_kiro_v2
 from kiro_crew.acp.liveness import EVIDENCE_SAMPLING, VERDICT_WORKING, consult_offloaded
 from kiro_crew.acp.oauth_offline import with_google_offline_access
 from kiro_crew.acp.prompt_blocks import build_prompt_blocks
@@ -239,6 +240,10 @@ def _process_message(self: AcpClient, msg: JsonRpcMessage, req_id: int) -> str:
         return "subagent_list"
 
     if msg.is_method(METHOD_KIRO_SESSION_UPDATE):
+        # The V2 engine's fallback notice for this session rides the same
+        # extension method (acp/engine_fallback.py).
+        if is_v2_model_fallback(msg.params):
+            return "model_fallback"
         return "subagent_activity"
 
     # An MCP server's elicitation on either wire; a request only, so the
@@ -724,6 +729,7 @@ async def send_message_stream(
     req_id = await self._send_prompt(message)
     self.last_prompt_stats = self.last_prompt_stats.carry_over()
     self._reset_native_child_turn()
+    self._engine_fallback.begin_prompt(self)
     # Credits held between turns (see ``_track_metadata``): billed here, once.
     self.last_prompt_stats.credits += getattr(self, "_between_turn_credits", 0.0)
     self._between_turn_credits = 0.0
@@ -907,6 +913,7 @@ async def _dispatch_events(
     """Shared event dispatch loop for prompts and commands."""
     self.last_prompt_stats = self.last_prompt_stats.carry_over()
     self._reset_native_child_turn()
+    self._engine_fallback.begin_prompt(self)
     # Credits held between turns (see ``_track_metadata``): billed here, once.
     self.last_prompt_stats.credits += getattr(self, "_between_turn_credits", 0.0)
     self._between_turn_credits = 0.0
@@ -1268,6 +1275,13 @@ async def _dispatch_events(
                 # process with a single session, so an ownerless frame from
                 # it is this session's own roster, never a co-tenant's.
                 yield AcpEvent(kind=EVENT_SUBAGENT_LIST, subagents=_subs)
+        elif action == "model_fallback":
+            # The engine moved this turn onto another model, or could not.
+            # AcpClient owns one session, so the notice is this session's.
+            _fb_upd = (msg.params or {}).get("update")
+            if isinstance(_fb_upd, dict):
+                for _fb_event in self._engine_fallback.events(self, normalize_kiro_v2(_fb_upd)):
+                    yield _fb_event
         elif action == "subagent_activity":
             # _kiro.dev/session/update: a sub-agent session's own update,
             # tagged with its sessionId. Carries either:
@@ -1490,6 +1504,7 @@ async def _read_prompt_response(self: AcpClient, req_id: int, timeout: float) ->
     getattr(self, "_sel_settled_tool_calls", set()).clear()
     self.last_prompt_stats = self.last_prompt_stats.carry_over()
     self._reset_native_child_turn()
+    self._engine_fallback.begin_prompt(self)
     # Credits held between turns (see ``_track_metadata``): billed here, once.
     self.last_prompt_stats.credits += getattr(self, "_between_turn_credits", 0.0)
     self._between_turn_credits = 0.0
@@ -1532,6 +1547,12 @@ async def _read_prompt_response(self: AcpClient, req_id: int, timeout: float) ->
             await self._decline_elicitation(msg)
         elif action == "server_request_unknown":
             await self._reject_unknown_server_request(msg)
+        elif action == "model_fallback":
+            # As the streaming path does, minus the event this API cannot return:
+            # a V2 refusal hop must unfold its refusal before the terminal folds.
+            _fb_upd = (msg.params or {}).get("update")
+            if isinstance(_fb_upd, dict):
+                self._engine_fallback.apply(self, normalize_kiro_v2(_fb_upd))
         elif action == "update":
             # See send_message_stream: a native child's own frames are not the answer.
             if self._native_child_events(msg)[1]:

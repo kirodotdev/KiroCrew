@@ -9,6 +9,7 @@ every sweep and leak until reboot.
 from __future__ import annotations
 
 import asyncio
+import threading
 from collections import deque
 from unittest.mock import MagicMock
 
@@ -649,3 +650,41 @@ async def test_kill_untracks_pid_when_process_died(monkeypatch):
 
     assert untracked_pids == [54321, 54321]
     assert r._process is None
+
+
+@pytest.mark.asyncio
+async def test_kill_untracks_root_off_the_event_loop(monkeypatch):
+    """The root's PID-registry untrack runs off the event loop.
+
+    ``_untrack_root_by_identity`` takes the PID file's exclusive lock and
+    rewrites the file through ``atomic_write`` (mkstemp + fsync). On the loop
+    thread a slow disk would stall the gateway and the ``wait_for`` timeout
+    bounding the warm-pool discard could not fire, so the call is handed to a
+    worker thread the way ``_prune_dead_descendants`` is.
+
+    The assertion is on the recorded thread, not a call count: the point is
+    WHERE it ran, and ``kill()`` awaits the offload so the field is populated
+    by return.
+    """
+    r = _bare_runtime()
+    # A recorded identity so the retire goes through _untrack_root_by_identity,
+    # the call that holds the pid-file lock.
+    r._spawn_start_token = "root-start"
+    monkeypatch.setattr(rt.platform_compat, "kill_process_tree", lambda *a, **k: None)
+    monkeypatch.setattr(rt.platform_compat, "pid_exists", lambda pid: False)
+
+    loop_thread_id = threading.get_ident()
+    ran_on: list[int] = []
+
+    def _record_thread(pid, token):
+        ran_on.append(threading.get_ident())
+        return True  # a line of ours was retired; no bare fallback needed
+
+    monkeypatch.setattr(rt, "_untrack_root_by_identity", _record_thread)
+
+    await r.kill()
+
+    assert ran_on, "the root untrack never ran"
+    assert (
+        ran_on[0] != loop_thread_id
+    ), "the root PID untrack ran on the event-loop thread; it must be offloaded"

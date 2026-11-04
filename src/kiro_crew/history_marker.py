@@ -114,10 +114,23 @@ def snapshot_for_consolidation(
             self._withhold_if_restricted(key)
         messages = self._read_messages(key)
         meta = self._read_metadata(key)
-        offset = meta.get("last_consolidated", 0)
         generation = int(meta.get("rotation_generation", 0) or 0)
-        sub_offset = self._sub_offset_for_generation(meta, generation)
+        offset, sub_offset = _live_position(meta, generation)
         return list(messages[offset:]), len(messages), generation, sub_offset
+
+
+def _live_position(meta: dict, generation: int) -> tuple[int, int]:
+    """``(row marker, sub-offset)`` as the consolidator reads them, for *generation*.
+
+    The one reading of the pair: the snapshot slices by it, and the retry-span
+    check compares a charged attempt against it, so the two cannot disagree. A
+    sub-offset is a character position in the row at the stored marker, so a
+    marker that had to be repaired (unreadable or negative) pairs with 0.
+    """
+    offset, repaired = _read_consolidated_offset(meta)
+    if repaired:
+        return 0, 0
+    return offset, _sub_offset_for_generation(meta, generation)
 
 
 def _sub_offset_for_generation(meta: dict, generation: int) -> int:
@@ -347,10 +360,7 @@ def advance_consolidation_sub_offset(
                 key,
             )
             return None
-        try:
-            current_offset = int(meta.get("last_consolidated", 0) or 0)
-        except (TypeError, ValueError, OverflowError):
-            current_offset = 0
+        current_offset, repaired = _read_consolidated_offset(meta)
         if current_offset != offset:
             logger.info(
                 "advance_consolidation_sub_offset: marker moved %d->%d for "
@@ -361,6 +371,11 @@ def advance_consolidation_sub_offset(
                 key,
             )
             return None
+        if repaired:
+            # Saved with the sub-offset it pairs with: a snapshot reads a marker
+            # it had to repair as 0 with no sub-offset, so leaving the stored
+            # value in place would restart this head's first slice every pass.
+            meta["last_consolidated"] = 0
         meta["consolidation_sub_offset"] = max(0, int(sub_offset))
         meta["consolidation_sub_offset_generation"] = generation
         # A slice that reached its durable sub-offset is a span that ended —
@@ -392,8 +407,7 @@ def unconsolidated_count(self: ConversationLog, key: str) -> int:
     the startup idle-seed scan calls this for every recent transcript.
     """
     total = self._count_messages(key)
-    offset = self._read_metadata(key).get("last_consolidated", 0)
-    return max(0, total - offset)
+    return max(0, total - self.consolidated_offset(key))
 
 
 def consolidation_counts(self: ConversationLog, key: str) -> tuple[int, int]:
@@ -416,11 +430,29 @@ def consolidation_counts(self: ConversationLog, key: str) -> tuple[int, int]:
 
 def consolidated_offset(self: ConversationLog, key: str) -> int:
     """Rows already consolidated, from the metadata line; 0 when unreadable."""
-    offset = self._read_metadata(key).get("last_consolidated", 0)
+    return _consolidated_offset_of(self._read_metadata(key))
+
+
+def _consolidated_offset_of(meta: dict) -> int:
+    """``last_consolidated`` as a row count: 0 when unreadable or negative."""
+    return _read_consolidated_offset(meta)[0]
+
+
+def _read_consolidated_offset(meta: dict) -> tuple[int, bool]:
+    """``(row count, repaired)`` for ``last_consolidated``.
+
+    The value is caller-supplied JSON. A negative one used as a slice start would
+    count from the END of the transcript and skip the rows before it, and a
+    non-integer one would raise in the slice or the subtraction, so both read as
+    0 with ``repaired`` true.
+    """
     try:
-        return int(offset or 0)
+        value = int(meta.get("last_consolidated", 0) or 0)
     except (TypeError, ValueError, OverflowError):
-        return 0
+        return 0, True
+    if value < 0:
+        return 0, True
+    return value, False
 
 
 def consolidation_retry_state(
@@ -555,14 +587,23 @@ def _attempts_describe_current_span(
     transcript in front of us by construction, and every test here would
     trivially match.
     """
-    for meta_key, span_key in (
-        ("rotation_generation", "consolidation_attempts_generation"),
-        ("last_consolidated", "consolidation_attempts_offset"),
+    # The live marker is read as the snapshot reads it (``_live_position``), so an
+    # attempt charged against a repaired marker matches the 0 it was sliced from.
+    try:
+        live_generation = int(meta.get("rotation_generation", 0) or 0)
+    except (TypeError, ValueError, OverflowError):
+        live_generation = None
+    live_offset, live_sub_offset = (
+        _live_position(meta, live_generation) if live_generation is not None else (None, None)
+    )
+    for span_key, live in (
+        ("consolidation_attempts_generation", live_generation),
+        ("consolidation_attempts_offset", live_offset),
     ):
-        if span_key not in meta:
+        if span_key not in meta or live is None:
             continue
         try:
-            if int(meta.get(span_key, 0) or 0) != int(meta.get(meta_key, 0) or 0):
+            if int(meta.get(span_key, 0) or 0) != live:
                 return False
         except (TypeError, ValueError, OverflowError):
             # Unreadable stamp — fall back to keeping the cap.
@@ -585,10 +626,8 @@ def _attempts_describe_current_span(
     # the generation-honoured value makes the comparison see the same 0 the
     # slicer used, so a genuinely-advanced earlier slice still resets the cap
     # while a bare rotation does not.
-    if "consolidation_attempts_sub_offset" in meta:
+    if "consolidation_attempts_sub_offset" in meta and live_sub_offset is not None:
         try:
-            current_generation = int(meta.get("rotation_generation", 0) or 0)
-            live_sub_offset = self._sub_offset_for_generation(meta, current_generation)
             if int(meta.get("consolidation_attempts_sub_offset", 0) or 0) != live_sub_offset:
                 return False
         except (TypeError, ValueError, OverflowError):
