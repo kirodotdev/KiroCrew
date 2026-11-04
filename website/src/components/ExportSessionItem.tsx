@@ -2,6 +2,8 @@ import { useId, useState } from 'react'
 import { useMutation } from '@tanstack/react-query'
 import { Check, Download, Loader2 } from 'lucide-react'
 import { api } from '../api/client'
+import { useConnected } from '../hooks/useConnected'
+import { offlineProps } from '../utils/offline'
 import ErrorNotice, {
   ErrorNoticeMenuItem,
   type ErrorNoticeMenuItemComponent,
@@ -81,6 +83,8 @@ export default function ExportSessionItem(
   const errorId = useId()
   const [state, setState] = useState<ExportState>({ kind: 'idle' })
   const notPersistent = memoryMode !== undefined && memoryMode !== 'persistent'
+  // The gateway reads the transcript, so an offline click cannot produce a file.
+  const connected = useConnected()
 
   const exportMutation = useMutation({
     mutationFn: () => api.exportSession(slotKey, format),
@@ -102,14 +106,18 @@ export default function ExportSessionItem(
   return (
     <>
       <Item
+        offline={!connected}
+        {...(connected ? {} : offlineProps(false, i18nT('utils.offline.export_sessions'), format === 'md' ? i18nT('components.exportSessionItem.export_markdown') : i18nT('components.exportSessionItem.export_json')))}
         disabled={notPersistent || state.kind === 'exporting'}
-        onSelect={notPersistent
-          ? undefined
-          : (event: Event) => {
+        onSelect={connected && !notPersistent
+          ? (event: Event) => {
             // Keep the menu open so the row can report the outcome.
             event.preventDefault()
             exportMutation.mutate()
-          }}
+          }
+          // Offline stays aria-disabled rather than natively disabled, so the
+          // reason tooltip and roving focus still reach it like its siblings.
+          : (event: Event) => { event.preventDefault() }}
       >
         <Download size={13} className="shrink-0 text-muted" />
         <span className="flex-1">
