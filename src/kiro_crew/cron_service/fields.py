@@ -302,12 +302,9 @@ def build_job(
     failed runs it takes before the failure message is delivered; ``None`` means
     the ``_ALERT_AFTER_DEFAULT`` of 1.
 
-    The optional presentation/routing fields (``agent_id``, ``model``,
-    ``silent``, ``timezone``, ``strict_schedule``, ``hide_in_chat``) are set
-    here so the job is persisted **fully-formed** in the single locked
-    transaction. This closes a create-then-mutate-then-unlocked-``_save``
-    window (two concurrent creates could otherwise interleave at the
-    ``await`` and the unlocked save could clobber the other request's job).
+    Every optional field is set here so the job is persisted fully-formed
+    in one locked transaction; a later unlocked ``_save`` could clobber a
+    concurrent create's job.
     """
     from kiro_crew import cron as seams  # the facade holds the patched names; it imports us
 
@@ -619,18 +616,11 @@ def apply_job_update(
     if "channel" in kwargs:
         job.channel = kwargs["channel"] or None
     if "thread_ts" in kwargs:
-        # Paired with ``channel``: together they decide WHERE a run's
-        # output lands, and ``add_job`` has always accepted both. With
-        # no branch here the field was validated (see the caps table)
-        # and then dropped, so the caller was told "Updated" while the
-        # cron kept replying in the old thread. Falsy clears, mirroring
-        # ``channel`` and how mcp_cron normalizes blank to None.
-        #
-        # A granted script job re-threaded this way fails its NEXT run
-        # closed: thread_ts is bound into the grant's delivery
-        # fingerprint (cron_script.delivery_fingerprint), so the pin
-        # stops verifying until the operator re-approves. That is the
-        # intended fail-closed path, not a regression.
+        # With ``channel``, decides where a run's output lands. Falsy clears,
+        # as for ``channel`` and mcp_cron's blank-to-None. A granted script
+        # job re-threaded here fails its next run closed on purpose:
+        # thread_ts is in the grant's delivery fingerprint
+        # (cron_script.delivery_fingerprint) until the operator re-approves.
         job.thread_ts = kwargs["thread_ts"] or None
     if "approval_mode" in kwargs:
         job.approval_mode = kwargs["approval_mode"] or ""
