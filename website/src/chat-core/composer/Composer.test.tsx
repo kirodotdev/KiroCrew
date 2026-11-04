@@ -1,8 +1,8 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { useEffect, useState, type ReactNode } from 'react'
 import { act, fireEvent, render, screen } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { defaultScheduler, notifyManager, QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { configureStore } from '@reduxjs/toolkit'
 import chatReducer from '../../store/chatSlice'
@@ -39,7 +39,10 @@ vi.mock('./Composer', async importOriginal => {
     useComposerVoiceSlice: () => { bodyCount.chatInput++; return actual.useComposerVoiceSlice() },
   }
 })
-vi.mock('../../hooks/usePushToTalk', () => ({ usePushToTalk: () => ({ config: { enabled: false, mode: 'hybrid', binding: { code: 'AltRight' }, holdMs: 500 }, phase: 'idle', holding: false }) }))
+// One stable object, as the real hook's state is between renders: a fresh literal per call would
+// itself wake ChatInput and hide what the render-stability tests below measure.
+const ptt = vi.hoisted(() => ({ config: { enabled: false, mode: 'hybrid', binding: { code: 'AltRight' }, holdMs: 500 }, phase: 'idle', holding: false }))
+vi.mock('../../hooks/usePushToTalk', () => ({ usePushToTalk: () => ptt }))
 vi.mock('../../api/client', () => ({
   api: {
     sttConfig: vi.fn().mockResolvedValue({ enabled: true, available: true, streaming: false, dictation_panel: true, provider: 'local' }),
@@ -80,6 +83,9 @@ function makeStore() {
 
 function Providers({ children }: { children: ReactNode }) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  // Fresh forever, so the seed is not refetched on mount: a refetch resolving after mount renders
+  // ChatInput once more, and the render-stability tests below would count it as per-chunk churn.
+  qc.setQueryDefaults(['sttConfig'], { staleTime: Infinity })
   qc.setQueryData(['sttConfig'], { enabled: true, available: true, streaming: false, dictation_panel: true, provider: 'local' })
   return (
     <Provider store={makeStore()}>
@@ -273,6 +279,11 @@ describe('composerSendState', () => {
 })
 
 describe('ChatInput render stability under a host render that changes nothing', () => {
+  // React Query hands results to React on a setTimeout(0), so its mount-time notification would land
+  // after the baseline and count as churn. As microtasks, the act() flush below settles them first.
+  beforeEach(() => { notifyManager.setScheduler(queueMicrotask) })
+  afterEach(() => { notifyManager.setScheduler(defaultScheduler) })
+
   // Module-level so every Host render hands ChatInput IDENTICAL props except `followUpOptions`.
   const NOOP = () => {}
   const STREAMING: ChatMessage[] = [

@@ -25,7 +25,10 @@ vi.mock('../../hooks/useVoiceInput', () => ({
   }),
   voiceInputSupported: true,
 }))
-vi.mock('../../hooks/usePushToTalk', () => ({ usePushToTalk: () => undefined }))
+// One stable object, as the real hook's state is between renders: a fresh literal per call would
+// itself wake ChatInput and hide what the render-stability tests below measure.
+const ptt = vi.hoisted(() => ({ config: { enabled: false, mode: 'hybrid', binding: { code: 'AltRight' }, holdMs: 500 }, phase: 'idle', holding: false }))
+vi.mock('../../hooks/usePushToTalk', () => ({ usePushToTalk: () => ptt }))
 vi.mock('../../api/client', () => ({
   api: { sttConfig: vi.fn().mockResolvedValue({ enabled: true, available: true, provider: 'local' }) },
 }))
