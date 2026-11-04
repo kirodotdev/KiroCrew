@@ -49,6 +49,11 @@ from kiro_crew import subagent_parts
 from kiro_crew._facade_compose import compose as facade_compose
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
+# One worker per file, so the shared checks run beside the tests that load this module.
+pytestmark = pytest.mark.xdist_group(name="subagent_parts_composition_contract")
+
+SHARED_FACADE_CHECKS = ("the_sweep_reports_a_global_the_namespace_does_not_bind",)
+
 _FACADE = subagent.__name__
 _SRC = Path(subagent.__file__).resolve().parents[1]
 _PARTS_DIR = Path(subagent_parts.__file__).resolve().parent
@@ -990,15 +995,6 @@ def test_the_owners_define_functions_for_the_sweeps_to_check() -> None:
 def test_every_owner_function_runs_on_the_facade_globals() -> None:
     elsewhere = [label for label, fn in _owner_functions() if fn.__globals__ is not vars(subagent)]
     assert elsewhere == []
-
-
-def test_the_sweep_reports_a_global_the_namespace_does_not_bind() -> None:
-    module_code = compile(
-        "def f():\n    def g():\n        return absent\n    return present, g\n", "probe", "exec"
-    )
-    code = next(c for c in module_code.co_consts if isinstance(c, types.CodeType))
-    probe = types.FunctionType(code, {"__name__": "probe", "present": 1})
-    assert _unbound_globals(probe) == ["absent"]
 
 
 def test_every_global_an_owner_function_reads_is_bound_on_the_facade() -> None:
