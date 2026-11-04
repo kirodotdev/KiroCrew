@@ -46,6 +46,17 @@ def _wire_trace(wire: SlackWire) -> list[tuple[str, str, str]]:
     return [(c.method, c.get("channel"), c.get("text") or c.get("name")) for c in wire.calls]
 
 
+def _remove_reaction_raises(monkeypatch: pytest.MonkeyPatch, wire: SlackWire) -> None:
+    """The real remove reaches the wire, then raises as a client that does not swallow would."""
+    real_remove = wire.client.remove_reaction
+
+    async def _remove_then_raise(*args, **kwargs):
+        await real_remove(*args, **kwargs)
+        raise RuntimeError("slack remove_reaction unavailable")
+
+    monkeypatch.setattr(wire.client, "remove_reaction", _remove_then_raise)
+
+
 class FlakySlack(MockSlackClient):
     """MockSlackClient whose named methods raise instead of recording.
 
@@ -358,7 +369,7 @@ class TestCompactCommandFailureArms:
         sessions.discard_conversation = AsyncMock(side_effect=RuntimeError("registry locked"))
         async with slack_wire(monkeypatch) as wire:
             wire.fail("chat.postMessage", "channel_not_found")
-            wire.fail("reactions.remove", "no_reaction")
+            _remove_reaction_raises(monkeypatch, wire)
             await h._handle_compact_command(wire.client, sessions, "C1", "t1", "m1", "slack:t1")
         sessions.discard_conversation.assert_awaited_once_with("slack:t1")
         sessions.release.assert_called_once_with("slack:t1")
@@ -376,7 +387,7 @@ class TestCompactCommandFailureArms:
         monkeypatch.setattr(h, "sel", _raising_sel(method="log_tool_invocation"))
         async with slack_wire(monkeypatch) as wire:
             wire.fail("chat.postMessage", "channel_not_found")
-            wire.fail("reactions.remove", "no_reaction")
+            _remove_reaction_raises(monkeypatch, wire)
             await h._handle_compact_command(wire.client, sessions, "C1", "t1", "m1", "slack:t1")
         sessions.release.assert_called_once_with("slack:t1")
         assert _wire_trace(wire) == [

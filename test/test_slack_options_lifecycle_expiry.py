@@ -108,10 +108,15 @@ class TestExpireOptions:
         posted = PostedOptions(
             channel="C1", ts="opt_ts", choices=("A",), blocks=({"type": "actions"},)
         )
+        # A failure outside every Slack/transport class is final: the record is settled.
+        slack = _slack()
+        slack.update_message = AsyncMock(side_effect=Exception("channel_not_found"))
+        assert await expire_options(slack, posted) is True
 
         async with slack_wire(monkeypatch) as wire:
             wire.fail("chat.update", "channel_not_found")
-            await expire_options(wire.client, posted)  # must not raise
+            # Slack's own 200 refusal is final too; neither raises.
+            assert await expire_options(wire.client, posted) is True
 
         [update] = wire.sent("chat.update")
         assert (update.get("channel"), update.get("ts")) == ("C1", "opt_ts")
