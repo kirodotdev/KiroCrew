@@ -33,6 +33,7 @@ from slack_interactions_coverage_helpers import (
     _sel_ops,
     _set_owner,
 )
+from slack_wire_helpers import SlackWire, slack_wire
 
 from kiro_crew import sel as sel_mod
 from kiro_crew.config.loader import ConfigReadError, config_path
@@ -64,6 +65,11 @@ def _audit_ops(audit: sel_mod.SecurityEventLog, operation: str) -> list[tuple[st
     """``(outcome, resources)`` of each stored row for *operation*, oldest first."""
     rows = [e for e in audit.recent() if e["operation"] == operation]
     return [(e["outcome"], e.get("resources", "")) for e in reversed(rows)]
+
+
+def _updates(wire: SlackWire) -> list[tuple[Any, Any, Any]]:
+    """``(channel, ts, text)`` of each ``chat.update`` the real client sent."""
+    return [(u.get("channel"), u.get("ts"), u.get("text")) for u in wire.sent("chat.update")]
 
 
 def _stops(audit: sel_mod.SecurityEventLog) -> list[tuple[str, str]]:
@@ -219,25 +225,26 @@ class TestAckButton:
 
     @pytest.mark.asyncio
     async def test_falls_back_to_chat_update_on_non_200(
-        self, orch: MagicMock, _mock_aiohttp: AsyncMock
+        self, orch: MagicMock, _mock_aiohttp: AsyncMock, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         bad = MagicMock()
         bad.status = 500
         _mock_aiohttp.post = AsyncMock(return_value=bad)
-        await ix.ack_button(_payload(response_url="https://hooks.slack.com/x"), "C1", "m1")
-        orch.slack.update_message.assert_awaited_once()
-        assert orch.slack.update_message.await_args.args == ("C1", "m1")
-        assert orch.slack.update_message.await_args.kwargs["text"] == "✅ Acknowledged"
+        async with slack_wire(monkeypatch) as wire:
+            orch.slack = wire.client
+            await ix.ack_button(_payload(response_url="https://hooks.slack.com/x"), "C1", "m1")
+        assert _updates(wire) == [("C1", "m1", "✅ Acknowledged")]
 
     @pytest.mark.asyncio
     async def test_falls_back_when_response_url_raises(
-        self, orch: MagicMock, _mock_aiohttp: AsyncMock
+        self, orch: MagicMock, _mock_aiohttp: AsyncMock, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         _mock_aiohttp.post = AsyncMock(side_effect=RuntimeError("boom"))
-        await ix.ack_button(_payload(response_url="https://hooks.slack.com/x"), "C1", "m1")
+        async with slack_wire(monkeypatch) as wire:
+            orch.slack = wire.client
+            await ix.ack_button(_payload(response_url="https://hooks.slack.com/x"), "C1", "m1")
         _mock_aiohttp.post.assert_awaited_once()
-        orch.slack.update_message.assert_awaited_once()
-        assert orch.slack.update_message.await_args.kwargs["text"] == "✅ Acknowledged"
+        assert _updates(wire) == [("C1", "m1", "✅ Acknowledged")]
 
     @pytest.mark.asyncio
     async def test_strips_action_blocks_and_appends_ack_context(self, orch: MagicMock) -> None:
@@ -1087,11 +1094,11 @@ class TestAgentSelect:
         _mock_aiohttp.post = AsyncMock(side_effect=RuntimeError("boom"))
         action = {"action_id": "mc_agent_select", "selected_option": {"value": "off"}}
         payload = _payload(response_url="https://hooks.slack.com/z")
-        await ix._handle_agent_select(payload, action, "C1", "m1", "U1")
+        async with slack_wire(monkeypatch) as wire:
+            orch.slack = wire.client
+            await ix._handle_agent_select(payload, action, "C1", "m1", "U1")
         _mock_aiohttp.post.assert_awaited_once()
-        orch.slack.update_message.assert_awaited_once()
-        assert orch.slack.update_message.await_args.args == ("C1", "m1")
-        assert orch.slack.update_message.await_args.kwargs["text"] == "🔄 Reset to default agent."
+        assert _updates(wire) == [("C1", "m1", "🔄 Reset to default agent.")]
 
 
 class TestUsersSelect:
@@ -1773,10 +1780,11 @@ class TestStopConfirm:
         o.sessions = None
         monkeypatch.setattr(ix, "_orch", o)
         monkeypatch.setattr(ix, "is_allowed_user", lambda uid: True)
-        await ix._handle_stop_confirm(_payload(), "C1", "m1", "U1")
-        o.slack.update_message.assert_awaited_once()
-        assert o.slack.update_message.await_args.kwargs["text"] == "✅ Acknowledged"
-        o.slack.post_message.assert_not_awaited()
+        async with slack_wire(monkeypatch) as wire:
+            o.slack = wire.client
+            await ix._handle_stop_confirm(_payload(), "C1", "m1", "U1")
+        assert _updates(wire) == [("C1", "m1", "✅ Acknowledged")]
+        assert wire.posts() == []
 
 
 # ---------------------------------------------------------------------------
@@ -1824,12 +1832,17 @@ class TestSessionResume:
 
     @pytest.mark.asyncio
     async def test_already_linked_reports_existing_conversation(
-        self, resume_orch: MagicMock
+        self, resume_orch: MagicMock, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        resume_orch.sessions.get_slack_link = MagicMock(return_value=("111.222", "C4"))
-        await ix._handle_session_resume(_payload(), {"value": "s1"}, "C1", "m1", "U1")
-        assert "archives/C4/p111222" in resume_orch.slack.post_message.await_args.args[1]
-        resume_orch.slack.post_blocks.assert_not_awaited()
+        ts, channel = "111.222", "C4"
+        resume_orch.sessions.get_slack_link = MagicMock(return_value=(ts, channel))
+        async with slack_wire(monkeypatch) as wire:
+            resume_orch.slack = wire.client
+            await ix._handle_session_resume(_payload(), {"value": "s1"}, "C1", "m1", "U1")
+        [post] = wire.posts()
+        assert post.get("channel") == "C1"
+        assert f"archives/{channel}/p{ts.replace('.', '')}" in post.get("text")
+        assert "blocks" not in post.args
 
     @pytest.mark.asyncio
     async def test_already_linked_prefers_response_url(
@@ -1846,11 +1859,19 @@ class TestSessionResume:
         resume_orch.slack.post_blocks.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_home_tab_click_falls_back_to_dm(self, resume_orch: MagicMock) -> None:
+    async def test_home_tab_click_falls_back_to_dm(
+        self, resume_orch: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """A Home Tab payload has no channel — the offer must land in the user's DM."""
-        await ix._handle_session_resume(_payload(channel={}), {"value": "s1"}, "", "", "U1")
-        resume_orch.slack.open_dm.assert_awaited_once_with("U1")
-        assert resume_orch.slack.post_blocks.await_args.args[0] == "D1"
+        async with slack_wire(monkeypatch) as wire:
+            wire.respond("conversations.open", {"channel": {"id": "D1"}})
+            resume_orch.slack = wire.client
+            await ix._handle_session_resume(_payload(channel={}), {"value": "s1"}, "", "", "U1")
+        assert [c.get("users") for c in wire.sent("conversations.open")] == ["U1"]
+        [post] = wire.posts()
+        assert post.get("channel") == "D1"
+        ids = [e["action_id"] for e in post.get("blocks")[1]["elements"]]
+        assert ids[0].startswith("mc_resume_thread_") and ids[1].startswith("mc_resume_dm_")
 
     @pytest.mark.asyncio
     async def test_open_dm_failure_leaves_nowhere_to_post(
