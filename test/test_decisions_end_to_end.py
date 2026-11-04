@@ -43,6 +43,14 @@ def _generous_append_deadline(_floor_monkeypatch):
     _floor_monkeypatch.setattr(gate, "_LOG_BUDGET_SECS", 20.0)
 
 
+@pytest.fixture(autouse=True)
+def _provider_http_stack_imported():
+    """Import the provider's HTTP stack before the timed ask, not inside its 2 s budget."""
+    import h2  # noqa: F401
+    import httpcore  # noqa: F401
+    import httpx  # noqa: F401
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "enabled,bucket,choice,expected,requests",
