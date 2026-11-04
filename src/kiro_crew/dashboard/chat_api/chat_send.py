@@ -1614,6 +1614,16 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
             _actor,
             prior_user_turns=sum(1 for m in slot.messages if m.get("role") == "user"),
         )
+        from kiro_crew.dashboard.slot_buffers import flush_restored_hold
+
+        # A hold a restart restored into this idle slot is owed to this turn.
+        # Its rows reach an SSE reader through `_pending`, which the stale-frame
+        # drain below empties, so drain first and keep the flush's own frames.
+        _restored_frames: list[dict[str, Any]] = []
+        if slot._deferred_notes:
+            slot.drain()
+            flush_restored_hold(slot, logger=logger)
+            _restored_frames = slot.drain()
         _user_row = slot.append("user", message, "msg msg-u", meta=_user_row_meta)
         _send_race.commit_request(
             request, message_id=str(_user_row.get("meta", {}).get("mid") or _send_id_of(user_meta))
@@ -1651,6 +1661,12 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
         # after their SSE reader disconnected. Must happen BEFORE _run_chat
         # so we don't discard the new turn's output.
         slot.drain()
+        # Only the slot's own reader gets them back: an app's turn-scoped stream
+        # may send on this session but not read the note, which reached the
+        # user's tabs through the flush's own broadcast.
+        if _restored_frames and not turn_scoped_stream:
+            slot._pending[:0] = _restored_frames
+            slot.event.set()
 
         # Kick off LLM titling now, from the first user message, so the title lands
         # *during* the first turn instead of waiting for the whole response to

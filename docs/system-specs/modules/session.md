@@ -3221,7 +3221,11 @@ state a close compensates is not all scoped the same way.
   metadata, its flush stamps no id and its save retires nothing, so a
   downgrade-deliver-reupgrade cycle replays already-delivered notes as
   duplicates — bounded harm, and the chosen at-least-once direction, but the
-  invariant silently does not hold across versions.) A close flushes the hold before
+  invariant silently does not hold across versions. A hold restored into an idle
+  slot, because a restart cut the turn that held it, is flushed by the next
+  directly started turn (`_api_chat_send` and the OpenAI-compatible route call
+  `slot_buffers.flush_restored_hold`) above that turn's user row: neither the
+  queue drain nor the cycle end runs before such a turn.) A close flushes the hold before
   its archive save, so each held note's visible row reaches the transcript a History
   resume reads; that path does not read `deferred_notes`, so before the flush a note
   the DELETE had answered 200 for left no row there. A note with no context half is

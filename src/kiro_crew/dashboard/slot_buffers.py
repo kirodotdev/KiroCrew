@@ -999,3 +999,26 @@ class SlotBufferCoordinator:
                 continue
             return _apply_message_patch(slot, message, content, meta)
         return None
+
+
+def flush_restored_hold(slot: Any, *, logger: logging.Logger) -> None:
+    """Deliver a hold an idle slot still carries, before a turn writes its row.
+
+    A note is held only while a turn runs, and the queue drain or the cycle end
+    delivers it. A restart that cut that turn restores the hold into an idle
+    slot, where neither seam runs before the next directly started turn. The
+    paths that start one call this above their user row, so the note's line
+    lands first and its context half is pending when the prompt is built.
+    """
+    if not slot._deferred_notes or slot.turn_running:
+        return
+    try:
+        slot.flush_deferred_notes()
+    except Exception:
+        # The flush puts the unwritten suffix back before raising, so the next
+        # seam still delivers it; the turn itself goes on.
+        logger.warning(
+            "flush_deferred_notes failed before a direct turn for slot %s",
+            slot.key,
+            exc_info=True,
+        )
