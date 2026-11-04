@@ -1,6 +1,7 @@
-# Exact pins resolved and served on CPU against the pinned weights. torch's
-# CPU build is taken from the PyTorch CPU index on Linux; elsewhere PyPI's
-# torch is already the CPU build.
+# Exact pins. torch's public version is shared by the CPU wheel and the CUDA
+# wheels. On Linux the runtime picks the index: the CPU index unless the owner
+# turned Plumb's GPU switch on and the NVIDIA driver can run one of this pin's
+# published CUDA builds. Elsewhere PyPI's torch is already the CPU build.
 accelerate==1.15.0
 annotated-doc==0.0.5
 anyio==4.15.1

@@ -1,8 +1,12 @@
-"""Serve Plumb-4B on this machine's CPU for Kiro Crew's decision seam.
+"""Serve Plumb-4B for Kiro Crew's decision seam.
 
 Runs inside the model's own environment, never the gateway's: it imports torch
 and jevk5, which Kiro Crew does not depend on. The weights are a directory the
 gateway already downloaded and verified, so nothing here reaches the network.
+
+``--device cuda`` is how the gateway asks for the GPU. It is honored only when
+this environment's torch can see a CUDA device; a CPU wheel, or a CUDA wheel
+whose driver is not usable, still loads on CPU.
 """
 
 import argparse
@@ -56,12 +60,28 @@ import torch  # noqa: E402
 from jevk5.runtime import JevK5  # noqa: E402
 from jevk5.server import make_handler  # noqa: E402
 
+
+def _resolve_device(requested: str) -> str:
+    """``cuda`` only when the gateway asked for it and this torch can use it."""
+    if requested != "cuda":
+        return "cpu"
+    try:
+        if torch.cuda.is_available():
+            return "cuda"
+    except Exception:
+        return "cpu"
+    return "cpu"
+
+
 parser = argparse.ArgumentParser()
 parser.add_argument("--weights", required=True)
 parser.add_argument("--port", type=int, required=True)
+parser.add_argument("--device", choices=("cpu", "cuda"), default="cpu")
 args = parser.parse_args()
 
-model = JevK5(args.weights, device="cpu", dtype=torch.bfloat16, graphs=False)
+device = _resolve_device(args.device)
+print(f"plumb-4b device={device}", file=sys.stderr, flush=True)
+model = JevK5(args.weights, device=device, dtype=torch.bfloat16, graphs=False)
 Handler = make_handler(model, "plumb-4b")
 
 

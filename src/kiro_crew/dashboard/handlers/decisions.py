@@ -1066,6 +1066,7 @@ async def api_decisions_feedback(request: web.Request) -> web.Response:
 
 _CODE_PROVIDER_INVALID_BODY = "decisions_provider_invalid_body"
 _CODE_PROVIDER_WRITE_FAILED = "decisions_provider_write_failed"
+_CODE_GPU_UNAVAILABLE = "decisions_gpu_unavailable"
 
 OP_PROVIDER_GET = "decisions_provider_get"
 OP_PROVIDER_PUT = "decisions_provider_put"
@@ -1079,6 +1080,7 @@ def _provider_payload() -> dict:
     from kiro_crew.decisions import local_models
     from kiro_crew.decisions.capability import denied_sides
     from kiro_crew.decisions.local_runtime import get_runtime
+    from kiro_crew.decisions.local_torch import plumb_gpu_view
 
     cfg = live.snapshot() or KiroCrewConfig.load()
     provider = getattr(getattr(cfg, "decisions", None), "provider", None)
@@ -1106,6 +1108,10 @@ def _provider_payload() -> dict:
         # ``capabilities.decisions``, a local preset by both rows, each audited once.
         "hosted_permitted": not hosted_denied,
         "local_permitted": not local_denied,
+        # Plumb's GPU switch: whether this host can install a CUDA torch, and
+        # whether the owner has asked for it. The card disables the control
+        # when ``available`` is false and shows ``reason``.
+        "plumb_gpu": plumb_gpu_view(),
     }
 
 
@@ -1204,10 +1210,121 @@ def _carry_consent(endpoint: str) -> bool:
     return consent.rebind_if_enabled(endpoint)
 
 
-async def api_decisions_provider_put(request: web.Request) -> web.Response:
-    """PUT /api/decisions/provider -- ``{"preset": id}`` switches the provider.
+def _write_plumb_gpu(enabled: bool) -> None:
+    """Record Plumb's GPU switch. Every other provider key stays as it is."""
+    from kiro_crew.config.loader import config_path, update_config_locked
 
-    ``preset`` is ``"jev"``, ``"none"`` or a local preset id. Anything else is a 400: no field
+    def _mutate(data: dict) -> dict:
+        section = data.setdefault("decisions", {})
+        if not isinstance(section, dict):
+            raise ValueError("config section 'decisions' is not an object")
+        provider = section.setdefault("provider", {})
+        if not isinstance(provider, dict):
+            raise ValueError("config section 'decisions.provider' is not an object")
+        provider["gpu"] = enabled
+        return data
+
+    update_config_locked(config_path(), mutate=_mutate)
+
+
+def _reapply_plumb_if_configured() -> None:
+    """Start Plumb again so its environment matches the GPU switch, if it is the preset."""
+    from urllib.parse import urlsplit
+
+    from kiro_crew.config import live
+    from kiro_crew.config.loader import KiroCrewConfig
+    from kiro_crew.decisions import gate as _gate
+    from kiro_crew.decisions import local_models
+    from kiro_crew.decisions.local_runtime import get_runtime
+    from kiro_crew.decisions.local_torch import PLUMB_MODEL_ID
+
+    cfg = live.snapshot() or KiroCrewConfig.load()
+    endpoint = _gate.configured_endpoint(cfg)
+    provider = getattr(getattr(cfg, "decisions", None), "provider", None)
+    preset = local_models.get(local_models.active_id(endpoint, getattr(provider, "model", "")))
+    port = urlsplit(endpoint).port
+    if preset is None or preset.id != PLUMB_MODEL_ID or port is None:
+        return
+    get_runtime().activate(preset, port)
+
+
+async def _put_plumb_gpu(request: web.Request, body: dict) -> web.Response:
+    """``{"gpu": bool}`` records the switch and restarts Plumb when it is in use.
+
+    A body that carries anything else is a 400, the same refusal as a preset body
+    with an extra field: no value from the body is written except that one bool.
+    Turning the switch on is refused when this host cannot install a CUDA torch,
+    so the card cannot show a GPU that the runtime will not use.
+    """
+    if set(body) != {"gpu"} or not isinstance(body.get("gpu"), bool):
+        await _audit(
+            request,
+            operation=OP_PROVIDER_PUT,
+            outcome="denied",
+            error="invalid_body",
+            resources="decisions.provider",
+        )
+        return web.json_response(
+            {
+                "error": 'body must be {"gpu": true} or {"gpu": false}',
+                "code": _CODE_PROVIDER_INVALID_BODY,
+            },
+            status=400,
+        )
+    enabled = body["gpu"]
+    from kiro_crew.decisions.local_torch import cuda_unavailable_reason
+
+    if enabled and cuda_unavailable_reason() is not None:
+        await _audit(
+            request,
+            operation=OP_PROVIDER_PUT,
+            outcome="denied",
+            error=_CODE_GPU_UNAVAILABLE,
+            resources="decisions.provider gpu=true",
+        )
+        return web.json_response(
+            {
+                "error": "this machine cannot run Plumb on a GPU",
+                "code": _CODE_GPU_UNAVAILABLE,
+            },
+            status=409,
+        )
+    from kiro_crew.dashboard.handlers.agents import _get_config_lock
+    from kiro_crew.dashboard.handlers.core import _hot_apply_after_write
+
+    async with _PROVIDER_SWITCH_LOCK:
+        try:
+            async with _get_config_lock():
+                await asyncio.to_thread(_write_plumb_gpu, enabled)
+            await _hot_apply_after_write()
+            await asyncio.to_thread(_reapply_plumb_if_configured)
+        except Exception as exc:
+            await _audit(
+                request,
+                operation=OP_PROVIDER_PUT,
+                outcome="error",
+                error=type(exc).__name__,
+                resources=f"decisions.provider gpu={enabled}",
+            )
+            return web.json_response(
+                {"error": "the provider could not be saved", "code": _CODE_PROVIDER_WRITE_FAILED},
+                status=500,
+            )
+    await _audit(
+        request,
+        operation=OP_PROVIDER_PUT,
+        outcome="allowed",
+        resources=f"decisions.provider gpu={enabled}",
+    )
+    return web.json_response(await asyncio.to_thread(_provider_payload))
+
+
+async def api_decisions_provider_put(request: web.Request) -> web.Response:
+    """PUT /api/decisions/provider -- switch the preset, or Plumb's GPU switch.
+
+    ``{"preset": id}`` with ``preset`` of ``"jev"``, ``"none"`` or a local preset
+    id changes which server answers. ``{"gpu": true}`` or ``{"gpu": false}``
+    records whether Plumb may use a CUDA torch. Anything else is a 400: no field
     of the body is written verbatim, which is what keeps a URL out of this route.
     Choosing a local preset also starts it -- download, install and serve, in the
     background -- and choosing hosted Jev or ``"none"`` stops it; the GET reports progress.
@@ -1226,6 +1343,8 @@ async def api_decisions_provider_put(request: web.Request) -> web.Response:
             resources="decisions.provider",
         )
         return web.json_response({"error": "invalid JSON", "code": _CODE_INVALID_JSON}, status=400)
+    if isinstance(body, dict) and "gpu" in body:
+        return await _put_plumb_gpu(request, body)
     target = await asyncio.to_thread(_provider_target, body)
     if target is None:
         await _audit(
