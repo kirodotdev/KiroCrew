@@ -38,6 +38,16 @@ describe('workerKitErrorText', () => {
     expect(text).toContain(detail)
   })
 
+  it('calls a mate a mate, never a crewmate', () => {
+    const uncarried = workerKitErrorText(named('template_restrictions_uncarried', 'toolsSettings.execute_bash'))
+    const backend = workerKitErrorText(named('template_policy_backend_unsupported', 'hooks, permissions'))
+    expect(uncarried).toContain('this mate')
+    expect(uncarried).not.toContain('crewmate')
+    expect(backend).toContain("this mate's backend")
+    expect(backend).toContain('Run the mate')
+    expect(backend).not.toContain('crewmate')
+  })
+
   it('points at the preview on screen, not at a button', () => {
     expect(workerKitErrorText(refusal('stale_revision'))).toContain('The changes below are up to date')
     expect(workerKitErrorText(refusal('revision_required'))).toBe('Check the changes below first, then add them.')
