@@ -191,6 +191,27 @@ def _vet_command_governance(command: str) -> str | None:
     return None
 
 
+def _command_cron_platform_refusal() -> str | None:
+    """Refuse a NEW command cron on a platform that can never run one.
+
+    ``cron_script._resolve_command_shell`` returns ``None`` on native Windows by
+    design, so every command cron there fails at each wake. The create doors call
+    this after ``_vet_shell_command`` and return the fire step's own text, so the
+    job is refused before it is stored. It stays out of ``_vet_shell_command``
+    because import and the fire-time re-vet call that too, and an imported job is
+    kept and refused at fire as before.
+    """
+
+    # Imported here: a module-scope import would surface both names on the
+    # mcp_cron facade, whose served-name inventory is pinned.
+    from kiro_crew import platform_compat
+    from kiro_crew.cron_script import _no_command_shell_message
+
+    if not platform_compat.IS_WINDOWS:
+        return None
+    return "Error: " + _no_command_shell_message().removeprefix("❌ ")
+
+
 def _vet_shell_command(command: str, *, governance_checked: bool = False) -> str | None:
     """Apply the bash-tool security guards to a model-supplied cron shell command.
 

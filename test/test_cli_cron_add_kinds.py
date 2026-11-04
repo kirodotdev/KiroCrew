@@ -27,6 +27,8 @@ from kiro_crew.config.loader import config_dir
 from kiro_crew.cron import CronSchedule, CronService
 from kiro_crew.validation import MODEL_NAME_HINT
 
+pytestmark = pytest.mark.usefixtures("command_crons_run_here")
+
 
 def test_at_schedule_uses_configured_timezone_when_job_timezone_is_unset(monkeypatch):
     schedule = CronSchedule(kind="at", at_ts=1767225600)

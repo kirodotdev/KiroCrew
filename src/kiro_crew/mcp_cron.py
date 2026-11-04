@@ -66,6 +66,7 @@ from kiro_crew.mcp_cron_list_render import (
 )
 from kiro_crew.mcp_cron_tool_list import _list_tools
 from kiro_crew.mcp_cron_vet import (
+    _command_cron_platform_refusal,
     _log_cron_denial,
     _resolve_cron_folder,
     _vet_cron_capability_governance,
@@ -843,7 +844,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         script = args.get("script", "")
         command = args.get("command", "")
         if command:
-            err = _vet_shell_command(command)
+            err = _vet_shell_command(command) or _command_cron_platform_refusal()
             if err:
                 _log_cron_denial("cron_add", err)
                 return err

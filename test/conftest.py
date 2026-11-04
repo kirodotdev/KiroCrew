@@ -255,6 +255,7 @@ from conftest_opt_in import (  # noqa: E402,F401 -- bound for pytest and importe
     cap_project_root_walk,
     close_skills_loaders,
     close_subagent_managers,
+    command_crons_run_here,
     drain_breadcrumb_writes,
     forget_env_at_teardown,
     healthy_host_memory,

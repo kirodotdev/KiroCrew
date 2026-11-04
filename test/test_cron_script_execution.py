@@ -27,6 +27,8 @@ from kiro_crew.cron_script import (
     run_script_sandboxed,
 )
 
+pytestmark = pytest.mark.usefixtures("command_crons_run_here")
+
 
 class TestResolveScriptPath:
     """Tests for resolve_script_path validation."""
