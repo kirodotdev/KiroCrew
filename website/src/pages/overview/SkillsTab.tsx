@@ -302,7 +302,9 @@ export default function SkillsTab() {
       queryClient.setQueryData<Skill[]>(['skills'], old => old?.filter(s => s.key !== key) ?? [])
       return { removed }
     },
-    onSuccess: () => {
+    onSuccess: (_data, key) => {
+      // A row picked while the delete was in flight is the user's choice now,
+      // so only the deleted skill's own selection is torn down.
       // An OPEN editor must survive this teardown, whatever its save state:
       // dropping the selection or the editing flag unmounts it (a null
       // selection alone does, via the placeholder branch), which discards a
@@ -314,7 +316,7 @@ export default function SkillsTab() {
       // rather than the state variable to avoid a stale closure: onSuccess
       // executes after an async await, and the user may have entered edit mode
       // after the mutation was called but before it resolved.
-      if (!detailEditingRef.current) {
+      if (!detailEditingRef.current && selectedKeyRef.current === key) {
         setSelectedKey(null)
         setDetailEditing(false)
       }
