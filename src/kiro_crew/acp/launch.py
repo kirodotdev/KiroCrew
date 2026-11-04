@@ -211,6 +211,29 @@ def _resolve_node_for_script(script_path: str) -> str | None:
     return None
 
 
+def _npm_windows_shim_target(shim: str, bin_name: str, package_target: Path) -> str | None:
+    """The file an npm Windows bin shim launches, or ``None`` when *shim* is not one.
+
+    On Windows, ``npm i -g`` cannot symlink a package's ``bin``, so it writes text
+    shims into the global bin directory -- ``<bin_name>.cmd`` among them -- each
+    running ``<that dir>/node_modules/<package_target>``. Python's ``CreateProcess``
+    runs such a ``.cmd``, but a Node child does not: since the CVE-2024-27980 fix
+    ``child_process.spawn``/``execFile`` refuse a ``.cmd`` or ``.bat`` without a shell
+    (``spawn EINVAL``). A path Crew hands to a Node child to run is therefore the
+    target the shim names, never the shim, with no shell in between.
+
+    Matched by layout, not by reading the shim: a shim whose name is *bin_name* (any
+    extension) sitting next to ``node_modules/<package_target>``. Reading the shim's
+    text would trust a script anything on PATH can write; the layout check accepts
+    only the file npm itself would have put there.
+    """
+    path = Path(shim)
+    if path.stem.casefold() != bin_name.casefold():
+        return None
+    target = path.parent / "node_modules" / package_target
+    return str(target) if target.is_file() else None
+
+
 #: Sentinel for "not yet resolved": every host's cached resolution starts here, and the
 #: install probe compares a cache against this one object by identity.
 _UNRESOLVED: object = object()
