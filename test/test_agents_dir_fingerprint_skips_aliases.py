@@ -87,9 +87,15 @@ class _SpyingScandir:
 
 
 def _spy_entry_stats(monkeypatch: pytest.MonkeyPatch, directory: Path) -> list[str]:
-    """Record the name of every entry of *directory* that a ``scandir`` walk stats."""
+    """Record the name of every entry of *directory* that a walk stats.
+
+    Both spellings count: ``DirEntry.stat`` from the ``scandir`` walk, and
+    ``os.stat`` on a path directly inside *directory*, which the revision uses
+    where it pins every entry on its bytes (Windows) because ``DirEntry.stat``
+    carries no inode, device or link count there."""
     seen: list[str] = []
     real_scandir = os.scandir
+    real_stat = os.stat
 
     def spying_scandir(path: Any = ".", *args: Any, **kwargs: Any) -> Any:
         inner = real_scandir(path, *args, **kwargs)
@@ -97,7 +103,13 @@ def _spy_entry_stats(monkeypatch: pytest.MonkeyPatch, directory: Path) -> list[s
             return inner
         return _SpyingScandir(inner, seen)
 
+    def spying_stat(path: Any, *args: Any, **kwargs: Any) -> os.stat_result:
+        if not isinstance(path, int) and Path(os.fspath(path)).parent == directory:
+            seen.append(Path(os.fspath(path)).name)
+        return real_stat(path, *args, **kwargs)
+
     monkeypatch.setattr(agent_discovery.os, "scandir", spying_scandir)
+    monkeypatch.setattr(agent_discovery.os, "stat", spying_stat)
     return seen
 
 

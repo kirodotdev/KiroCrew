@@ -26,9 +26,15 @@ from kiro_crew.pinned_fs import open_fenced_for_read
 # name, mtime, ctime, size, inode, device, mode, link count, content digest.
 _SpecStatRevision = tuple[str, int, int, int, int, int, int, int, bytes]
 AgentsDirRevision = tuple[tuple[_SpecStatRevision, ...], int]
+# The switch the revision answers ``None`` under, for every caller at once.
+AGENTS_DIR_MEMO_ENABLED = True
 # ``st_ctime_ns`` is creation time on Windows, so entry metadata cannot prove
-# that an in-place rewrite did not happen; the revision is unavailable there.
-AGENTS_DIR_MEMO_ENABLED = not _WINDOWS
+# that an in-place rewrite did not happen: there every entry is pinned on a
+# digest of its bytes, the rule a young entry follows elsewhere.
+_PIN_EVERY_ENTRY_ON_BYTES = _WINDOWS
+# How many bytes one revision may digest when every entry is pinned on them.
+# A directory past it reads uncached.
+_AGENTS_DIR_ALL_ENTRIES_MAX_DIGEST_BYTES = 256 * 1024 * 1024
 # Follow the racy-git precedent: metadata younger than this window is untrusted,
 # so an entry that young is pinned on a digest of its bytes as well.
 _AGENTS_DIR_RACY_WINDOW_NS = 2_000_000_000
@@ -115,10 +121,20 @@ def agents_dir_revision(agents_dir: Path) -> AgentsDirRevision | None:
     unreadable, or replaced while it was read).
 
     A symlinked spec gives ``None``: its entry metadata cannot see edits to its
-    target. On Windows the answer is always ``None``: ``st_ctime_ns`` is
-    creation time there, so entry metadata cannot prove an in-place rewrite did
-    not happen. There is no cap on the number of entries: the walk is one
-    ``stat`` per spec where the reads it saves are one parse per spec, and
+    target. On Windows (:data:`_PIN_EVERY_ENTRY_ON_BYTES`) ``st_ctime_ns`` is
+    creation time, so entry metadata cannot prove an in-place rewrite did not
+    happen; there EVERY entry is pinned on a digest of its bytes, whatever its
+    age, with no cap on how many and a total of
+    :data:`_AGENTS_DIR_ALL_ENTRIES_MAX_DIGEST_BYTES`, past which the answer is
+    ``None``. Its metadata comes from ``os.stat(path, follow_symlinks=False)``,
+    because ``DirEntry.stat`` leaves the inode, device and link count at zero
+    there. One residual is accepted: a rewrite DURING one read that is undone
+    before the read ends, with its mtime set back by hand, leaves the bytes and
+    the metadata as they were, so the answer read across it can be stored; it
+    takes a deliberate ``utime`` inside the read, which an ordinary edit,
+    restore or sync never does. There is no cap on the number of entries: the
+    walk is one ``stat`` per spec where the reads it saves are one parse per
+    spec, and
     :class:`AgentsDirMemo` retains a fixed-size digest of the revision, never
     the tuple.
 
@@ -139,6 +155,11 @@ def agents_dir_revision(agents_dir: Path) -> AgentsDirRevision | None:
     """
     if not AGENTS_DIR_MEMO_ENABLED:
         return None
+    pin_all = _PIN_EVERY_ENTRY_ON_BYTES
+    max_digests = None if pin_all else _AGENTS_DIR_RACY_MAX_DIGESTS
+    max_digest_bytes = (
+        _AGENTS_DIR_ALL_ENTRIES_MAX_DIGEST_BYTES if pin_all else _AGENTS_DIR_RACY_MAX_DIGEST_BYTES
+    )
     # Taken before the walk, so an entry written while it runs is young.
     cutoff = time.time_ns() - _AGENTS_DIR_RACY_WINDOW_NS
     digests = 0
@@ -151,21 +172,24 @@ def agents_dir_revision(agents_dir: Path) -> AgentsDirRevision | None:
                     return None
             except OSError:
                 return None
+            path = os.path.join(agents_dir, entry.name)
             try:
-                st = entry.stat(follow_symlinks=False)
+                # ``DirEntry.stat`` carries no inode, device or link count on
+                # Windows; the digest's identity check needs them.
+                st = (
+                    os.stat(path, follow_symlinks=False)
+                    if pin_all
+                    else entry.stat(follow_symlinks=False)
+                )
             except OSError:
                 entries.append((entry.name, 0, 0, 0, 0, 0, 0, 0, _NO_DIGEST))
                 continue
             digest = _NO_DIGEST
-            if st.st_mtime_ns > cutoff or st.st_ctime_ns > cutoff:
+            if pin_all or st.st_mtime_ns > cutoff or st.st_ctime_ns > cutoff:
                 digests += 1
-                if digests > _AGENTS_DIR_RACY_MAX_DIGESTS:
+                if max_digests is not None and digests > max_digests:
                     return None
-                hashed = _young_entry_digest(
-                    os.path.join(agents_dir, entry.name),
-                    st,
-                    _AGENTS_DIR_RACY_MAX_DIGEST_BYTES - digest_bytes,
-                )
+                hashed = _young_entry_digest(path, st, max_digest_bytes - digest_bytes)
                 if hashed is None:
                     return None
                 digest, read = hashed
@@ -221,7 +245,10 @@ class AgentsDirMemo(Generic[T]):
       not grow with the number of specs in it;
     - a key that is a skill-view alias name is computed on every call and never
       stored, because the revision leaves aliases out and a caller's
-      direct-filename fallback would read ``<alias>.json``.
+      direct-filename fallback would read ``<alias>.json``;
+    - a caller that can answer every name from one walk passes ``prefill``, so
+      the first read of each other name under a revision is a hit (see
+      :meth:`get`).
 
     An in-process spec write that calls :func:`clear_list_agents_cache` moves
     the spec generation, which is part of every revision, so the stored answers
@@ -237,15 +264,34 @@ class AgentsDirMemo(Generic[T]):
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._answers: dict[str, tuple[bytes, dict[str, T]]] = {}
+        # dir -> (revision pin, answers, whether a prefill already ran under the pin).
+        self._answers: dict[str, tuple[bytes, dict[str, T], bool]] = {}
 
-    def get(self, agents_dir: Path, key: str, compute: Callable[[], T]) -> T:
+    def get(
+        self,
+        agents_dir: Path,
+        key: str,
+        compute: Callable[[], T],
+        prefill: Callable[[], dict[str, T]] | None = None,
+    ) -> T:
         """Return the memoized answer for *key* under *agents_dir*, or ``compute()``.
 
         A *key* that is a skill-view alias name is always computed: every reader
         keyed here is keyed by agent name and may read ``<key>.json`` by
         filename, and the revision does not fingerprint aliases, so an answer
         read from one could outlive the alias it was read from.
+
+        *prefill*, when given, answers many keys from ONE walk of the directory:
+        it runs on the first miss under a revision, and the answers it returns
+        are stored under the same rules as ``compute``'s (revision equal before
+        and after, alias names left out), so each other key's first read is a
+        hit instead of another walk. A key it does not answer is computed as
+        before. It runs once per revision (two threads missing at once may
+        both run it, as they may both compute); an ``OSError`` from it stores
+        nothing, and past :data:`_AGENTS_DIR_MEMO_MAX_KEYS` only part of its
+        answers is kept (see :meth:`_prefill`). A prefill must answer a key
+        exactly as ``compute`` would, and leave out every key it cannot answer
+        that way.
         """
         if is_native_skill_alias_name(key):
             return compute()
@@ -254,20 +300,67 @@ class AgentsDirMemo(Generic[T]):
         if revision is None:
             return compute()
         pin = _revision_pin(revision)
+        prefilled = False
         with self._lock:
             cached = self._answers.get(dir_key)
-            if cached is not None and cached[0] == pin and key in cached[1]:
-                return cached[1][key]
+            if cached is not None and cached[0] == pin:
+                if key in cached[1]:
+                    return cached[1][key]
+                prefilled = cached[2]
+        if prefill is not None and not prefilled:
+            found = self._prefill(agents_dir, dir_key, key, revision, pin, prefill)
+            if found is not None and key in found:
+                return found[key]
         answer = compute()
         if agents_dir_revision(agents_dir) != revision:
             return answer
         with self._lock:
             cached = self._answers.get(dir_key)
             if cached is None or cached[0] != pin:
-                cached = (pin, {})
+                cached = (pin, {}, False)
                 self._answers[dir_key] = cached
             answers = cached[1]
             if len(answers) >= _AGENTS_DIR_MEMO_MAX_KEYS:
                 answers.clear()
             answers[key] = answer
         return answer
+
+    def _prefill(
+        self,
+        agents_dir: Path,
+        dir_key: str,
+        key: str,
+        revision: AgentsDirRevision,
+        pin: bytes,
+        prefill: Callable[[], dict[str, T]],
+    ) -> dict[str, T] | None:
+        """Run *prefill* once under *pin*; its answers, or ``None`` when they are unusable.
+
+        The answers are usable only when the revision is the same after the walk
+        as before it, the rule every stored answer follows. They are stored up
+        to one below :data:`_AGENTS_DIR_MEMO_MAX_KEYS`: the asked-for *key*
+        first, then answers already stored under *pin*, then the rest in walk
+        order. On a directory declaring more names than that, the caller's own
+        answer is still kept and the names past the cap are read one by one as
+        before.
+        """
+        try:
+            answers = prefill()
+        except OSError:
+            return None
+        if agents_dir_revision(agents_dir) != revision:
+            return None
+        found = {name: a for name, a in answers.items() if not is_native_skill_alias_name(name)}
+        with self._lock:
+            cached = self._answers.get(dir_key)
+            prior = cached[1] if cached is not None and cached[0] == pin else {}
+            # One below the cap, so the next one-name store does not clear it.
+            room = _AGENTS_DIR_MEMO_MAX_KEYS - 1
+            kept: dict[str, T] = {}
+            for name in [*([key] if key in found else []), *prior, *found]:
+                if len(kept) >= room:
+                    break
+                if name not in kept:
+                    kept[name] = prior[name] if name in prior else found[name]
+            self._answers[dir_key] = (pin, kept, True)
+        return found

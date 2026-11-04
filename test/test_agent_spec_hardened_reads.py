@@ -1107,6 +1107,9 @@ _EXPECTED_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
         # surface resolves an agent id and finds no ``<agent_id>.json``; it
         # forwards so each such surface attributes its own denials.
         ("forward:operation", "forward:source"),
+        # ``iter_declared_specs`` is the same walk without a chosen name, for
+        # a surface that answers every declared name at once; it forwards too.
+        ("forward:operation", "forward:source"),
         # ``agent_spec_stems`` reads each ``*.md`` to decide whether it is a
         # spec at all, for the Slack listings; it forwards for the same reason.
         ("forward:operation", "forward:source"),
@@ -1419,6 +1422,15 @@ _EXPECTED_DECLARED_NAME_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
 }
 
 
+# The every-name walk: the tool-policy read's memo prefill, under the same label
+# as the one-name scan it stands in for.
+_EXPECTED_DECLARED_SPECS_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
+    "kiro_crew/dashboard/handlers/sessions_parts/tool_policy.py": [
+        ("session_tool_policy", "dashboard")
+    ],
+}
+
+
 # The strict reader is the direct-filename read for the three surfaces that
 # need the failure CLASS (transient vs deterministic) rather than ``None``: the
 # KAS projection, the overlay rewriter and the tool-policy read. Each names
@@ -1495,6 +1507,7 @@ _RATCHET_INVENTORY: dict[str, dict[str, list[tuple[str, str]]]] = {
     "read_template_spec": _EXPECTED_TEMPLATE_SPEC_CALL_SITE_LABELS,
     "_project_scope_denied": _EXPECTED_SCOPE_GUARD_CALL_SITE_LABELS,
     "_read_agent_spec": _EXPECTED_CALL_SITE_LABELS,
+    "iter_declared_specs": _EXPECTED_DECLARED_SPECS_CALL_SITE_LABELS,
     "parsed_agent_specs": _EXPECTED_PARSED_SPECS_CALL_SITE_LABELS,
     "project_agent_files": _EXPECTED_PROJECT_FILES_CALL_SITE_LABELS,
     "project_agent_names": _EXPECTED_PROJECT_NAMES_CALL_SITE_LABELS,

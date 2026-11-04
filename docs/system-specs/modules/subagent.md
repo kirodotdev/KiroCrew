@@ -1568,7 +1568,8 @@ declaration itself (`subagent._vet_parent_available_agents`, called from
   memoized per directory in an `AgentsDirMemo` pinned to
   `agents_dir_revision` (names, mtime AND ctime, size, inode, mode, link
   count, the in-process spec generation, and a SHA-256 of the bytes of any
-  entry younger than the racy window) — a
+  entry younger than the racy window, or of every entry on Windows, where
+  `st_ctime_ns` is creation time) — a
   blocking read, so it never runs on the gateway loop: the
   event-loop entry points resolve `subagent.parent_spawn_policy` (parent
   template + declaration) through `asyncio.to_thread` and hand it to
@@ -1589,8 +1590,9 @@ declaration itself (`subagent._vet_parent_available_agents`, called from
   spec (`cp -p`, `rsync -t`, a restore) would serve its previous, permissive
   allowlist for ever; the non-blocking `cached_agent_specs` serves empty rows
   on a cold cache, and an empty read would admit a spawn the declaration
-  forbids. When the revision cannot prove freshness (Windows, a symlinked
-  spec, an entry younger than two seconds) the walk simply runs uncached.
+  forbids. When the revision cannot prove freshness (a symlinked spec, a
+  young entry it cannot hash, more bytes than its digest budget) the walk
+  simply runs uncached.
 - **Target** = the EFFECTIVE child template (`execution.template_id`: explicit
   `agent`, the inherited parent template, or a `crew=`/`target_member` member's
   `kiro_agent`), matched with `fnmatch.fnmatchcase` against each glob. Only
