@@ -1545,6 +1545,12 @@ losing a pathological key beats leaking the secret.
 malformed value becomes `None` ("no override") and can never widen or remove a
 run's ceiling.
 
+The other loosely typed launch fields are read the same lenient way, never
+refused: `_opt_str` reads a `name` on `/run` and `/run_intent` as absent unless
+it is a string, so an object or list never becomes a run's name, and
+`_rerun_from_index` reads a rerun's `from_index` as 0 unless it is a whole
+number, clamping a negative one to 0 (a `bool` would otherwise replay call 0).
+
 When the originating chat slot is gone at delivery (the common case for a
 webhook-driven run, whose ephemeral session is destroyed when its turn ends),
 `inject_workflow_result` falls back to a dedicated `workflow-<run_id>` slot

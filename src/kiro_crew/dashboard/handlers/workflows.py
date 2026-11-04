@@ -605,6 +605,27 @@ def _opt_int(value: Any) -> Optional[int]:
     return value
 
 
+def _opt_str(value: Any) -> str:
+    """An optional text body field; anything but a string reads as absent ("").
+
+    ``name`` and ``title`` label a run in the run list and its fallback chat, so
+    an object, list or number must not reach the service as the run's name.
+    """
+    return value if isinstance(value, str) else ""
+
+
+def _rerun_from_index(value: Any) -> int:
+    """The agent call a rerun restarts at; anything but a whole number reads as 0.
+
+    A JSON ``true`` is a Python ``bool`` (an ``int`` subclass) and would replay
+    call 0; a negative index already replays nothing, so it is clamped to 0 here
+    and the rerun is labelled for the index it really ran from.
+    """
+    if isinstance(value, bool) or not isinstance(value, int):
+        return 0
+    return max(0, value)
+
+
 async def _admit_workflow_run(request: web.Request, svc: Any, body: object) -> Any:
     """Fair admission (Shared Crew) for a workflow run: it starts now or is refused."""
     from kiro_crew.shared_crew.admission import OperationKind
@@ -712,7 +733,7 @@ async def api_workflow_run(request: web.Request) -> web.Response:
         with principal_scope(None if run_admission.work is None else run_admission.work.budget_key):
             out = await svc.start(
                 source,
-                name=body.get("name", "") or "",
+                name=_opt_str(body.get("name")),
                 args=body.get("args") if isinstance(body.get("args"), dict) else {},
                 author=request.headers.get("X-Session-Key", ""),
                 session_key=request.headers.get("X-Session-Key", ""),
@@ -791,7 +812,7 @@ async def api_workflow_run_intent(request: web.Request) -> web.Response:
             body,
             lambda: svc.start_from_intent(
                 intent,
-                name=body.get("name", "") or "",
+                name=_opt_str(body.get("name")),
                 args=body.get("args") if isinstance(body.get("args"), dict) else {},
                 author=request.headers.get("X-Session-Key", ""),
                 session_key=request.headers.get("X-Session-Key", ""),
@@ -969,9 +990,7 @@ async def api_workflow_run_rerun(request: web.Request) -> web.Response:
     if body_err is not None:
         return body_err
     assert body is not None  # read_bounded_json returns (dict, None) on success
-    from_index = body.get("from_index", 0)
-    if not isinstance(from_index, int):
-        from_index = 0
+    from_index = _rerun_from_index(body.get("from_index", 0))
     # Optional edited script: review → tweak → rerun with the edited source.
     edited_source = body.get("source")
     if not isinstance(edited_source, str):
