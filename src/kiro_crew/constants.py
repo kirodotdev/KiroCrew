@@ -292,15 +292,13 @@ def crew_log_enabled() -> bool:
 
 # Outer wall-clock cap on a single ``_run_chat`` invocation (any dispatch site:
 # primary user turn, queue-drain, cron injection, subagent injection, Slack first
-# turn). Sized to match the inner ACP ``_DEFAULT_PROMPT_TIMEOUT`` (14400s) in
+# turn). Matches the inner ACP ``_DEFAULT_PROMPT_TIMEOUT`` (14400s) in
 # ``acp/client_timeouts.py`` so the dashboard layer doesn't bound below the transport.
-# Four hours is the longest single turn the shipped budgets can legitimately
-# produce (the task runner's 90-minute test command plus a fix and a re-run, or a
-# blocking subagent wave at its 2h wait cap plus synthesis); work that outlives
-# it belongs to the loop mechanisms, which end the turn between cycles.
-# Wedged-session detection is handled by ``_STALE_TURN_TIMEOUT`` (90s, also in
-# ``acp/client_timeouts.py``); this cap is the upper safety ceiling for genuinely runaway
-# work, not a "this turn took too long" guard.
+# Four hours is the longest turn the shipped budgets can produce (the task runner's
+# 90-minute test command plus a fix and a re-run, or a blocking subagent wave at its
+# 2h wait cap plus synthesis); longer work belongs to the loop mechanisms. Wedged
+# sessions are caught by ``_STALE_TURN_TIMEOUT`` (90s); this is only the ceiling
+# for runaway work.
 CHAT_TURN_TIMEOUT = 14400.0
 
 # How long the dashboard chat path parks a turn waiting for a human to answer a
@@ -316,11 +314,9 @@ TOOL_APPROVAL_TIMEOUT = 600.0
 # How long any caller waits for a compaction to report completed/failed when
 # ``session.compact_wait_secs`` is unset (0) -- the default of
 # ``LLMProvider.wait_for_compaction``. Manual (/compact, !compact, channel
-# commands) and automatic compaction deliberately share one budget: the
-# operation is identical, so a shorter manual budget only reports "timed out"
-# on work that is still running and subsequently succeeds. A configured key
-# raises both: every caller -- the automatic coordinator, the task runner,
-# the dashboard and each chat channel -- resolves it through the one
+# commands) and automatic compaction share one budget: the operation is
+# identical, so a shorter manual budget would report "timed out" on work that
+# later succeeds. Every caller resolves it through
 # ``SessionManager.compact_wait_budget_secs()``.
 COMPACT_WAIT_TIMEOUT_SECS = 300.0
 
@@ -331,9 +327,8 @@ COMPACT_WAIT_TIMEOUT_SECS = 300.0
 # without importing the config tree: the manager's ``asyncio.wait_for``, the
 # reaper's force-kill deadline, and the MCP gateway's hard-wedge ceiling, which
 # has to sit ABOVE it or a blocking ``spawn_sub_agents`` awaiting a legitimately
-# long subagent is recycled out from under its caller. Sized for work a
-# subagent is actually given (a full test suite, a large refactor, a wide
-# investigation); the reaper still force-kills at the deadline.
+# long subagent is recycled out from under its caller. Sized for a full test
+# suite, a large refactor or a wide investigation.
 SUBAGENT_TIMEOUT_SECS = 10800
 
 # Budget for an agent backend's ``initialize`` handshake, in seconds. Spent by
@@ -379,7 +374,7 @@ SUBAGENT_TIMEOUT_MIN = 60
 SUBAGENT_TIMEOUT_MAX = 86400
 
 
-# ── Canonical "[OPTIONS: a | b | c]" trailer parsers ────────────────────────
+# Canonical "[OPTIONS: a | b | c]" trailer parsers.
 # The agent emits a trailing ``[OPTIONS: choice1 | choice2 | ...]`` marker that
 # every surface renders as tappable choices. Two variants exist because the
 # surfaces scan differently, but their GRAMMAR must stay identical — so both are
@@ -405,25 +400,18 @@ SUBAGENT_TIMEOUT_MAX = 86400
 # ends a LINE (not necessarily the whole message). The negated class EXCLUDES
 # ``\n`` (``[^[\n]``): in Python ``re`` a negated class matches ``\n`` regardless
 # of DOTALL, so ``[^[]`` here would silently widen the single-line body to span
-# lines (deleting/splitting a multi-line span the old single-line ``.*`` never
-# matched). Trailing class is ``[ \t]`` (NOT ``\s``, which under MULTILINE would
-# also match ``\n``).
+# lines and delete or split a multi-line span. Trailing class is ``[ \t]`` (NOT
+# ``\s``, which under MULTILINE would also match ``\n``).
 #
 # OPTIONAL MARKDOWN-LINK CLOSE ``(?:\(...\))?`` after the ``]``: models sometimes
-# append a stray ``(OPTIONS)`` (or any ``(...)``) right after the marker, e.g.
-# ``[OPTIONS: A | B | C](OPTIONS)``. That does TWO bad things at once: the extra
-# text after ``]`` breaks the end anchor so the marker leaks unparsed, AND
-# ``[label](url)`` is valid Markdown so the dashboard renders the whole thing as a
-# clickable link instead of buttons. Absorbing a single tightly-attached ``(...)``
-# here (it stays OUTSIDE the captured label group, so choices are unaffected)
-# makes the parser resilient to that tic. The ``(`` must follow the ``]`` with no
-# gap, so genuine trailing prose (``] and then...``) or a spaced note (``] (note)``)
-# still fails the anchor and is left intact — the deliberate "trailing note on the
-# same line" behaviour is preserved. The inner class is ``[^\s()]`` (NOT ``[^)\n]``)
-# so it shares NO character with the trailing ``[ \t]*`` — that keeps the added group
-# unambiguous and avoids a polynomial-ReDoS (``py/polynomial-redos``) backtracking
-# path over ``[OPTIONS:`` + a long whitespace run. The real tic (``(OPTIONS)``, a
-# bare ``(url)``) contains no whitespace or nested parens, so nothing is lost.
+# append a stray ``(OPTIONS)`` (or any ``(...)``), e.g. ``[OPTIONS: A | B](OPTIONS)``,
+# which breaks the end anchor AND renders as a Markdown link instead of buttons.
+# One tightly-attached ``(...)`` is absorbed outside the label group. The ``(`` must
+# abut the ``]``, so trailing prose (``] and then...``) or a spaced note
+# (``] (note)``) still fails the anchor and stays intact. The inner class is
+# ``[^\s()]`` (NOT ``[^)\n]``) so it shares NO character with the trailing
+# ``[ \t]*``, which avoids a ``py/polynomial-redos`` path over ``[OPTIONS:`` plus a
+# long whitespace run; the real tic carries no whitespace or nested parens.
 #: Closing brackets accepted on a protocol marker. ASCII ``]`` is the only form
 #: the prompt ever specifies, but a model intermittently substitutes a fullwidth
 #: or CJK lookalike — U+3011 ``】`` is the observed one; U+FF3D ``］`` and U+3015
@@ -495,27 +483,21 @@ _MARKER_BRACKETS = re.escape(MARKER_OPENERS + MARKER_CLOSERS)
 
 #: Markdown WRAPPER characters tolerated around a complete marker line.
 #: A model sometimes wraps the whole marker in inline code or emphasis --
-#: ``\`[OPTIONS: A | B]\``` or ``**[OPTIONS: A | B]**``. The wrapper character
-#: lands AFTER the closer, breaks the end anchor, and the marker leaks into the
-#: visible message as literal text while the turn silently loses its pills --
-#: the same class of model tic as the stray ``](OPTIONS)`` suffix the grammar
-#: already absorbs. Scope is deliberately tight so real prose never matches:
-#: a LEADING wrapper is accepted only at line start (after optional indent), so
-#: emphasis belonging to preceding prose (``**Choose:** [OPTIONS: ...]``) is
-#: never eaten, and a TRAILING wrapper only when the marker itself OPENED one:
-#: the ``(?(lwrap)...)`` conditional arms only when the ``lwrap`` group
-#: captured a nonempty line-leading run. This is the invariant that makes every
-#: reviewed corruption shape unreachable at once (mid-line code span
-#: ``\`Use [OPTIONS: A | B]\```, a streaming frame's stray run, a MULTILINE
-#: emphasis closer ``**Choose one\n[OPTIONS: A | B]**``): a run at line start
-#: can only OPEN emphasis under CommonMark flanking rules (preceded by a
-#: newline, it is not right-flanking), while a run after the closer can only
-#: CLOSE something -- and if the marker did not open it, it belongs to the
-#: enclosing prose and must survive the strip. A bare or mid-line marker keeps
-#: the pre-widening grammar exactly. Leading-only stays absorbed (nothing
-#: follows the closer, so nothing can be stolen); trailing-only does not
-#: match and renders literally, as it did before the widening. Runs are capped
-#: at 3 (``***`` is the longest CommonMark emphasis run; 4+ is not a wrapper).
+#: ``\`[OPTIONS: A | B]\``` or ``**[OPTIONS: A | B]**`` -- and the wrapper after
+#: the closer breaks the end anchor, so the marker leaks as text and loses its
+#: pills. Scope is tight so real prose never matches: a LEADING wrapper is
+#: accepted only at line start (after optional indent), so emphasis of preceding
+#: prose (``**Choose:** [OPTIONS: ...]``) is never eaten, and a TRAILING wrapper
+#: only when the marker itself OPENED one (the ``(?(lwrap)...)`` conditional).
+#: That keeps a mid-line code span ``\`Use [OPTIONS: A | B]\```, a streaming
+#: frame's stray run and a MULTILINE emphasis closer
+#: ``**Choose one\n[OPTIONS: A | B]**`` out: under CommonMark flanking rules a run
+#: at line start can only OPEN emphasis, while a run after the closer can only
+#: CLOSE something, and one the marker did not open belongs to the enclosing
+#: prose. A bare or mid-line marker is unaffected. Leading-only stays absorbed
+#: (nothing follows the closer to steal); trailing-only does not match and
+#: renders literally. Runs are capped at 3 (``***`` is the longest CommonMark
+#: emphasis run; 4+ is not a wrapper).
 #:
 #: ReDoS profile unchanged: the class shares no character with the trailing
 #: ``[ \t]*`` / ``\s*`` or the indent class, and both wrapper positions are
@@ -528,34 +510,25 @@ MARKER_STRUCTURE_CHARS: frozenset[str] = frozenset(
     MARKER_OPENERS + MARKER_CLOSERS + MARKER_WRAPPERS + "|"
 )
 
-#: A closer may stay INSIDE a label only where it CONTINUES the label list
-#: A label may legitimately carry a closer -- ``[OPTIONS: Alpha ] |
-#: Bravo ]]`` is a supported shape -- so the body has to admit one. Admitting it
-#: UNCONDITIONALLY (the old ``[^[\n]``, which includes ``]``) made the body run to
-#: the LAST closer in range instead of the first plausible one, so an ordinary
-#: final line that mentions a bracket after the marker matched across BOTH:
+#: A closer may stay INSIDE a label only where it CONTINUES the label list.
+#: A label may legitimately carry a closer -- ``[OPTIONS: Alpha ] | Bravo ]]``
+#: is a supported shape -- but admitting one UNCONDITIONALLY makes the body run
+#: to the LAST closer in range, so ``Use [OPTIONS: A | B] then check arr[0]``
+#: matches whole. Every consumer removes the whole match (``slack.format`` and
+#: ``messaging.renderer`` cut at ``match.start()``, ``whatsapp.turn_renderer``
+#: PERSISTS the cut turn), so the sentence would vanish and return as a pill
+#: label; under TRAILER (``DOTALL``) the whole final paragraph would go with it.
 #:
-#:     Use [OPTIONS: A | B] then check arr[0]
+#: It is the SAME discriminator the streaming probe applies (``CONTINUES_LABELS_RE``
+#: in ``website/src/app-sdk/protocol/optionMarker.ts``) to decide whether an
+#: arriving closer ended the marker, so the regex and the probe agree.
 #:
-#: matched whole, and since every consumer removes the whole match -- ``slack.
-#: format`` and ``messaging.renderer`` cut the visible text at ``match.start()``,
-#: and ``whatsapp.turn_renderer`` PERSISTS the cut turn -- the sentence vanished
-#: from the message and came back as a pill label. Under TRAILER (``DOTALL``) the
-#: body crossed blank lines too, so the whole final paragraph went with it.
-#:
-#: This is the SAME discriminator the streaming probe already applies
-#: (``CONTINUES_LABELS_RE`` in ``website/src/app-sdk/protocol/optionMarker.ts``)
-#: to decide whether an arriving closer ended the marker, so the regex and the
-#: probe now answer that question the same way instead of two different ways.
-#:
-#: Continuation ALONE is too strict, though: ``[OPTIONS: Fix [x] logging |
-#: Skip]`` is a first-class supported shape (pinned by
-#: ``test_options_buttons.py`` and ``test_parse_options.py``, whose comments say
-#: so outright), and there the closer is followed by an ordinary word. So the
-#: body admits a closer under EITHER of two conditions -- it is MATCHED by a
-#: ``[`` earlier in the same label (:data:`_MARKER_LABEL_PAIR`), or the list
-#: CONTINUES after it (:data:`_MARKER_LABEL_CONTINUES`). Neither test alone
-#: separates the three shapes; the union does:
+#: Continuation ALONE is too strict: ``[OPTIONS: Fix [x] logging | Skip]`` is a
+#: supported shape (pinned by ``test_options_buttons.py`` and
+#: ``test_parse_options.py``) whose closer is followed by an ordinary word. So the
+#: body admits a closer under EITHER condition -- MATCHED by a ``[`` earlier in
+#: the same label (:data:`_MARKER_LABEL_PAIR`), or the list CONTINUES after it
+#: (:data:`_MARKER_LABEL_CONTINUES`). Only the union separates the three shapes:
 #:
 #:     [OPTIONS: Fix [x] logging | Skip]   matched pair      -> parses
 #:     [OPTIONS: Alpha ] | Bravo ]]        list continues    -> parses
@@ -569,9 +542,7 @@ MARKER_STRUCTURE_CHARS: frozenset[str] = frozenset(
 #:
 #: RESIDUAL COST. Every shape the union gives up is a closer that satisfies
 #: NEITHER half and has ordinary words after it, so at that closer the input is
-#: genuinely indistinguishable from "marker ended, prose followed on the same
-#: line". There is more than one way to be that closer, and all of them parsed
-#: on the old body:
+#: indistinguishable from "marker ended, prose followed on the same line":
 #:
 #:     [OPTIONS: Fix ]x logging | Skip]            unmatched -- no opener at all
 #:     [OPTIONS: Fix list[dict[str, Any]] now | S] nesting deeper than one level
@@ -581,20 +552,15 @@ MARKER_STRUCTURE_CHARS: frozenset[str] = frozenset(
 #:                                                 interior excludes ``\n`` even
 #:                                                 under DOTALL
 #:
-#: All four fail toward a VISIBLE marker, not toward deleted prose, and that
-#: asymmetry is what makes them affordable: the user sees the marker they were
-#: already seeing for the broken shapes, and nothing is removed from the
-#: message. A MATCHED lookalike pair (``[OPTIONS: 【x】 | Skip]``) is NOT in this
-#: list -- it parses, because :data:`MARKER_OPENERS` pairs ``【`` with ``】``.
-#: Making the remaining shapes parse means matching brackets to arbitrary depth,
-#: or pairing openers with closers this grammar deliberately keeps unpaired,
-#: which a regex is the wrong tool for; the cost is bounded instead by the
-#: direction it fails in.
+#: All four fail toward a VISIBLE marker, never toward deleted prose, which is
+#: what makes them affordable. A MATCHED lookalike pair (``[OPTIONS: 【x】 | Skip]``)
+#: parses, because :data:`MARKER_OPENERS` pairs ``【`` with ``】``. Parsing the
+#: rest needs arbitrary-depth bracket matching or pairs this grammar keeps
+#: unpaired, which a regex is the wrong tool for.
 #:
 #: A declined marker leaves the text intact only because every partial-cut gate
 #: downstream tests for a closer over :data:`MARKER_CLOSERS` rather than ASCII
-#: ``]`` -- see the gate in ``messaging.renderer.split_options_trailer``, which
-#: this rule is what made load-bearing.
+#: ``]`` -- see the gate in ``messaging.renderer.split_options_trailer``.
 #:
 #: NOT reachable by this rule: the separator-tail form (``Done. [OPTIONS: Merge |
 #: Wait], details in CHANGELOG[1]``). ``], `` DOES continue the list, by the very
@@ -620,16 +586,13 @@ _MARKER_LABEL_CONTINUES = rf"(?=[ \t]*[|,]|{_MARKER_CLOSE_CLASS})"
 #: spelling of it.
 #:
 #: Every opener carries the SAME ``(?!OPTIONS:)`` guard as the bare-opener
-#: alternative. It is load-bearing on the ``[`` alternative -- without it that
-#: form is the one place the union rule is LOOSER than the body it replaced,
-#: because it can open on a nested head and pair it with that head's own closer.
-#: ``Note [OPTIONS: see [OPTIONS: x] below | Skip]`` then matches from the OUTER
-#: head and renders a pill whose label is a raw protocol marker, echoed back as
-#: the user's reply when tapped. The guard makes "no bracket form may consume a
-#: ``[`` that begins a fresh ``[OPTIONS:``" an absolute property of the body. The
-#: lookalike openers cannot spell the head, so the guard is a no-op on them; it
-#: rides them anyway so the alternatives are one shape and the property does not
-#: depend on which opener carries it.
+#: alternative. On the ``[`` alternative it is load-bearing: without it the pair
+#: form could open on a nested head and pair it with that head's own closer, so
+#: ``Note [OPTIONS: see [OPTIONS: x] below | Skip]`` would match from the OUTER
+#: head and render a pill whose label is a raw protocol marker, echoed back as
+#: the user's reply when tapped. The lookalike openers cannot spell the head, so
+#: the guard is a no-op on them; it rides them anyway so the alternatives are one
+#: shape.
 _MARKER_LABEL_PAIR = "|".join(
     rf"{re.escape(_open)}(?!OPTIONS:)[^{_MARKER_BRACKETS}\n]*"
     rf"{re.escape(_close)}(?![ \t]*[|,]|{_MARKER_CLOSE_CLASS})"
@@ -648,7 +611,7 @@ _STRAY_TIC_HEAD_RE = re.compile(r"\([^\s()]*\)")
 _MARKER_WRAP_RUN = rf"{_MARKER_WRAP_CLASS}{{0,3}}"
 
 #: Label body, spelled once per regex so LINE and TRAILER cannot drift. LINE
-#: stops at a newline; TRAILER spans them (``DOTALL``, as the old ``.*`` did).
+#: stops at a newline; TRAILER spans them (``DOTALL``).
 #: No part of the LINE pattern may match ``\n``: :func:`_line_marker_candidates`
 #: scans only the lines holding the head, which is equivalent only while that holds.
 #: The one body-shaped pattern NOT derived from these is
@@ -692,14 +655,12 @@ _RAW_OPTIONS_RE_LINE = re.compile(
 
 # TRAILER (``re.DOTALL``, ``\Z`` anchor) — for the Discord/Telegram/WeCom
 # renderers, which match the marker only at the very END of the message and
-# allow it to span newlines (the body omits ``\n`` from its negated class, as the
-# old ``.*`` spanned newlines under DOTALL). Trailing ``\s*`` before ``\Z``. Carries
-# the same optional markdown-link close as LINE (same ``[^\s()]`` inner class, so it
-# shares no character with the trailing ``\s*`` — ReDoS-safe) so the grammar stays
-# identical.
-# ``re.MULTILINE`` is added ONLY so the optional leading-wrapper group can
-# anchor ``^`` at the marker's own line start; the pattern has no ``$`` and
-# ``\Z`` is unaffected by the flag, so nothing else changes.
+# allow it to span newlines (the body's negated class admits ``\n``). Trailing
+# ``\s*`` before ``\Z``. Same optional markdown-link close as LINE (same
+# ``[^\s()]`` inner class, disjoint from the trailing ``\s*``, so ReDoS-safe).
+# ``re.MULTILINE`` is there ONLY so the optional leading-wrapper group can anchor
+# ``^`` at the marker's own line start; the pattern has no ``$`` and ``\Z`` is
+# unaffected by the flag.
 _RAW_OPTIONS_RE_TRAILER = re.compile(
     rf"(?:^[ \t]*(?P<lwrap>{_MARKER_WRAP_CLASS}{{1,3}}))?"
     rf"\[OPTIONS:(?P<labels>{_MARKER_BODY_TRAILER}){_MARKER_CLOSE_CLASS}"
@@ -723,16 +684,13 @@ _RAW_OPTIONS_RE_TRAILER = re.compile(
 #:
 #: WHY THE PATTERN CANNOT DO IT. Balance is not a regular language at unbounded
 #: depth: a lookahead sees one nesting level, so ``list[dict[str, int]]`` defeats a
-#: one-level rule and ``a[b[c[d]]]`` a two-level one. Encoding depths is a
-#: treadmill, so the decision lives here and the patterns stay candidates.
+#: one-level rule and ``a[b[c[d]]]`` a two-level one. So the decision lives here
+#: and the patterns stay candidates.
 #:
-#: WHY THE RULE IS TOTAL -- no separator escape hatch. An earlier form accepted an
-#: unmatched opener when a ``|`` followed it, on the theory that the opener was then
-#: inside a label with the list continuing past it. That hatch was defeated three
-#: times, most recently by a ``|`` INSIDE the unmatched bracket
-#: (``[OPTIONS: A | B then inspect dict[str | int]``), and each time the shape it
-#: readmitted was structurally identical to the shape it was meant to protect. The
-#: hatch was the defect, not its spelling.
+#: WHY THE RULE IS TOTAL -- no separator escape hatch. Accepting an unmatched
+#: opener when a ``|`` follows it readmits shapes structurally identical to the
+#: one this rule refuses, e.g. a ``|`` INSIDE the unmatched bracket:
+#: ``[OPTIONS: A | B then inspect dict[str | int]``.
 #:
 #: THE COST, which is exactly one shape: ``[OPTIONS: Fix [x logging | Skip]`` -- a
 #: label carrying an unclosed ``[`` -- is refused. Admitting it means admitting
@@ -748,10 +706,9 @@ _RAW_OPTIONS_RE_TRAILER = re.compile(
 #: Openers are TYPED, not fungible. ``【`` pairs with ``】`` and nothing else, so a
 #: closer pops only the opener it partners; a closer of another kind is treated
 #: exactly like an unmatched closer -- ignored. Counting every closer against every
-#: opener admitted ``[OPTIONS: A 【x] | B]``: the ``]`` after ``x`` closed the ``【``
-#: on the count, the candidate parsed, and a label with a half-open lookalike pair
-#: rendered as options. Under typed pairing that ``【`` is still open at the
-#: terminator, which is the bare-opener shape, and the candidate declines.
+#: opener would admit ``[OPTIONS: A 【x] | B]`` (the ``]`` closing the ``【``), so a
+#: half-open lookalike pair would render as options. Under typed pairing that
+#: ``【`` is still open at the terminator, the bare-opener shape, and it declines.
 def _marker_labels_have_unmatched_opener(labels: str) -> bool:
     """Whether *labels* leave an opener unclosed, so the terminator is not theirs.
 
@@ -801,8 +758,8 @@ def _line_marker_candidates(pattern: re.Pattern[str], text: str) -> Iterator[re.
 class _MarkerMatcher:
     """A candidate pattern plus the balance decision the pattern cannot make.
 
-    Deliberately shaped like the compiled pattern it replaced -- ``search``,
-    ``finditer``, ``sub`` and ``pattern`` are the only members anything used -- so
+    Deliberately shaped like a compiled pattern -- ``search``, ``finditer``,
+    ``sub`` and ``pattern`` are the only members callers use -- so
     every call site reads the same and none of them can opt out of the check by
     forgetting to call it. That is the point of the indirection: the raw patterns
     are private, so there is no supported way to get an unchecked match.
@@ -874,13 +831,11 @@ OPTIONS_RE_TRAILER = _MarkerMatcher(_RAW_OPTIONS_RE_TRAILER)
 #: wrapper means the marker sits inside a span such as inline code, so the line
 #: is a sample and not a candidate.
 #:
-#: The abut is DIRECT (no ``[ \t]*`` before the lookahead) on purpose: the bug this
-#: feeds is a concatenation seam that joins two spans with NO separator
-#: (``...]Anytime.``). A closer followed by a SPACE then prose (``[OPTIONS: A | B]
-#: documents the syntax``) is a human/model authoring a sentence ABOUT the marker,
-#: not a glued reply, and reflowing it would turn a documentation example into live
-#: pills; requiring direct abut leaves that -- and an indented code remainder
-#: (``[OPTIONS: A | B]    code``) -- untouched.
+#: The abut is DIRECT (no ``[ \t]*`` before the lookahead): a concatenation seam
+#: joins two spans with NO separator (``...]Anytime.``). A closer followed by a
+#: SPACE then prose (``[OPTIONS: A | B] documents the syntax``) is a sentence ABOUT
+#: the marker, and reflowing it would turn a documentation example into live
+#: pills; direct abut leaves that, and ``[OPTIONS: A | B]    code``, untouched.
 #:
 #: The tail (stray tic + closing wrapper run) is an ATOMIC group ``(?>...)``.
 #: Both fragments are optional, so without atomicity the engine backtracks INTO
@@ -978,7 +933,7 @@ def reflow_and_label_glued_option_marker(text: str) -> tuple[str, list[str]]:
     persists a turn's accumulated model text: ``_flush_segment`` for a finished
     segment and ``_persist_partial_reply`` for a turn that ends abnormally. It heals
     text at the moment it is persisted; it does not re-pass already-persisted
-    history, and it touches neither the parse grammar nor any of its pinned tests.
+    history, and it leaves the parse grammar unchanged.
 
     Scope, deliberately narrow:
 
@@ -1072,9 +1027,8 @@ def relocate_glued_tail_marker(text: str) -> str:
 # heartbeat's ``deliver:`` tags are HEARTBEAT.md FILE-format suffixes on
 # checklist lines, not message-tail emissions — echoed into a message body
 # they are mid-body content, which the dashboard renders as nothing and this
-# strip deliberately leaves alone. Position-independent stripping was tried
-# and retired: rounds 5–8 each surfaced another quoted-code dialect it
-# corrupted.
+# strip deliberately leaves alone. Stripping is never position-independent:
+# every quoted-code dialect in the body would be another way to corrupt it.
 #
 # Tag-line leading indent is ≤3 (CommonMark: 4+ spaces renders as an
 # indented code block — visible content, never a control tag).
@@ -1152,8 +1106,7 @@ _FENCE_DELIM_LINE_RE = re.compile(r"^[ \t]{0,3}(`{3,}|~{3,})")
 # indented code block at top level, but a REAL fence inside a list
 # continuation). Classifying these correctly needs full CommonMark
 # container tracking (nesting, lazy continuation, per-container indent
-# budgets); each conformance round surfaced another sibling. Instead of
-# deciding, the walker VETOES: a candidate seen while outside any tracked
+# budgets). Instead of deciding, the walker VETOES: a candidate seen while outside any tracked
 # fence makes the message's fence structure ambiguous and the strip does
 # nothing. Over-matching is safe by construction — the failure modes are
 # asymmetric: wrongly stripping deletes visible fence-interior content,
@@ -1278,9 +1231,8 @@ def strip_control_comments(text: str, *, hide_partial: bool = False) -> str:
     task-planner appends a newline-prefixed tag — so nothing real is
     missed, and a tag quoted anywhere in the body (prose, inline code, any
     fence dialect) is structurally untouchable rather than guarded by a
-    code-span grammar this module would have to keep re-deriving (rounds
-    5–8 each found another dialect). Stacked trailing tags are all
-    removed. This is the ONE backend strip implementation.
+    code-span grammar. Stacked trailing tags are all removed. This is the ONE
+    backend strip implementation.
 
     *hide_partial* is the STREAMING question, and it is a parameter for the
     same reason ``split_options_trailer`` makes it one: a tail that is a
@@ -1418,11 +1370,9 @@ def split_trailing_protocol_suffix(text: str) -> tuple[str, str]:
     # a still-streaming label (``[OPTIONS: Use 】 the bracket``) would read as
     # finished, the fragment would not be detached, and a length rotation
     # could split the marker so raw fragments render and the pills are lost.
-    # Completeness is decided by ``OPTIONS_RE_TRAILER`` on the next line,
-    # which DOES accept the lookalikes -- so a complete lookalike-closed block
-    # is still pulled into the suffix. Widening there buys nothing (both paths
-    # already yield the same split for a complete tail) and reintroduces that
-    # bug.
+    # Completeness is decided by ``OPTIONS_RE_TRAILER`` below, which DOES
+    # accept the lookalikes, so a complete lookalike-closed block is still
+    # pulled into the suffix.
     if idx != -1:
         suffix_start = _leading_wrapper_start(text, idx)
 
@@ -1449,7 +1399,7 @@ def split_trailing_protocol_suffix(text: str) -> tuple[str, str]:
     return text[:suffix_start], text[suffix_start:]
 
 
-# ── Markdown link destinations ─────────────────────────────────────────────
+# Markdown link destinations.
 
 #: A nested Markdown link opener. Backslash escapes are one token, and bare
 #: brackets and newlines end the label, so an escaped ``]`` cannot close the
@@ -1559,9 +1509,8 @@ LEAKED_TOOL_CALL_NOTE = (
 # structured header facts (outcome, tallies, chunk index, agent id) the
 # dashboard card reads. Mirrors ``META_KEY`` in
 # website/src/pages/chat/subagentCompletion.ts — the two are one wire contract.
-# Stamping the facts here means a reword of the header PROSE below cannot
-# silently break card rendering: the card reads this meta and the prose regexes
-# demote to a legacy-scrollback fallback.
+# The card reads this meta, so rewording the header PROSE cannot break it; the
+# prose regexes serve only old scrollback.
 SUBAGENT_COMPLETION_META_KEY = "subagentCompletion"
 
 
@@ -1626,13 +1575,10 @@ SLACK_NAMESPACE = "slack"
 #: (``dashboard:``, ``cron:``, ``hook:``, ``subagent:``, ``channel:``) — those
 #: are surfaced by their own owners, not by the channel-session reconciler.
 #:
-#: NOTE: ``autonudge._CHANNEL_KEY_PREFIXES`` is a SEPARATE hand-kept copy. It is
-#: often described as narrower; as of this writing it is not -- both hold the same
-#: 11 namespaces. It answers a different question (does this key SHAPE belong to a
-#: channel rather than a dashboard slot), which is why it lists namespaces nothing
-#: can currently be delivered to. Deriving it from here would be sound and is
-#: deliberately left out of the change that homed this roster; until then, do not
-#: assume the two have diverged, and do not assume they are kept in step either.
+#: NOTE: ``autonudge._CHANNEL_KEY_PREFIXES`` is a SEPARATE hand-kept copy holding
+#: the same 11 namespaces. It answers a different question (does this key SHAPE
+#: belong to a channel rather than a dashboard slot), which is why it lists
+#: namespaces nothing can be delivered to. Nothing keeps the two in step.
 #:
 #: HOMED HERE, not in ``messaging.link``, because the roster has readers on both
 #: sides of an import cycle. ``messaging.link`` is itself stdlib-only, but
@@ -1640,8 +1586,7 @@ SLACK_NAMESPACE = "slack"
 #: pulls in ``driver`` -> ``acp`` -> ``hooks``; a reader that ``hooks`` is already
 #: mid-import for (``hooks`` -> ``webhooks`` -> ``validation``) then fails with a
 #: partially-initialized ``hooks``. This module imports only ``os`` and ``re``, so
-#: it can be read from anywhere. ``messaging.link`` re-exports both names, which
-#: is where the rest of the codebase still reads them from.
+#: it can be read from anywhere. ``messaging.link`` re-exports both names.
 CHANNEL_SESSION_NAMESPACES: tuple[str, ...] = (
     SLACK_NAMESPACE,
     "discord",
@@ -1702,9 +1647,8 @@ def is_owner_minted_session_key(key: str) -> bool:
 
 #: The channels a PROACTIVE send may name -- ``send_message``'s ``channel_type``
 #: and its channel ``session`` values. Derived ONCE here rather than subtracted at
-#: each reader: the same subtraction was spelled in three places, which is the
-#: drift shape that made a Webex owner DM unreachable while the gateway leg behind
-#: it already worked, one level up.
+#: each reader, so a reader's copy cannot drift and leave a channel unreachable
+#: while the gateway leg behind it works.
 #:
 #: Two members of the roster cannot be a send target:
 #:
@@ -1772,12 +1716,10 @@ BANNER = r"""
 # in place of a long recurring instruction. Unrelated to ``BANNER`` above, which
 # is the product wordmark; this is a per-loop user string.
 #
-# It lives here, in a leaf that imports only ``os`` and ``re``, because three
-# modules need the same bound and one of them is ``validation.py``: importing it
-# from ``autonudge`` pulled a service module into a validation leaf and made the
-# bound's home depend on import order. Every enforcement site -- the two REST
-# authorizers, the MCP tool schemas, and the store loader -- reads THIS name, so
-# there is one definition and no path can drift to a different cap.
+# It lives in this leaf because one of its readers is ``validation.py``, which
+# must not import the ``autonudge`` service module. Every enforcement site -- the
+# two REST authorizers, the MCP tool schemas, and the store loader -- reads THIS
+# name, so no path can drift to a different cap.
 MAX_BANNER_CHARS = 500
 
 # Byte cap on one artifact's content: the store's own limit AND the MCP save /
@@ -1786,11 +1728,10 @@ MAX_BANNER_CHARS = 500
 # HTML reports, CSVs) routinely exceed 1 MiB, so 25 MiB brings those down while
 # still refusing unbounded content.
 #
-# Same reason as ``MAX_BANNER_CHARS``: ``validation.py`` is a leaf, and reading
-# this bound from ``artifacts`` was the closing edge of the import cycle
-# ``artifacts -> hooks -> webhooks -> validation -> artifacts``, which broke any
-# process whose first ``kiro_crew`` import reached ``artifacts`` before
-# ``validation``. ``artifacts.MAX_CONTENT_BYTES`` is this name, re-exported.
+# Same reason as ``MAX_BANNER_CHARS``: reading this bound from ``artifacts`` would
+# close the import cycle ``artifacts -> hooks -> webhooks -> validation ->
+# artifacts``, breaking any process whose first ``kiro_crew`` import reaches
+# ``artifacts`` before ``validation``. ``artifacts.MAX_CONTENT_BYTES`` re-exports it.
 ARTIFACT_MAX_CONTENT_BYTES = 26_214_400  # 25 MiB
 
 #: Why a tool call was denied, for the in-band notice's cause-specific wording
