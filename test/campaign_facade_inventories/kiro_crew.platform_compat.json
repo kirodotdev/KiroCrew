@@ -176,6 +176,7 @@
   "process_namespaces_match",
   "process_owner_uid",
   "process_owns_loopback_listener",
+  "process_owns_port_listener",
   "process_start_boot_secs",
   "process_start_id_for_source",
   "process_start_time",

@@ -1545,8 +1545,10 @@ graceful shutdown, so a crash or SIGKILL leaves the file behind and an unrelated
 process may since have bound that port. Because client commands send the local
 secret (`X-Local-Secret`) to whatever answers, the consumer must verify the
 listener before trusting a discovered port. `port_resolution._gateway_owns_port()`
-does that in four fail-closed steps: the recorded pid must exist, must be among
-`platform_compat.find_listening_pids(port)`, must be owned by the caller's uid
+does that in four fail-closed steps: the recorded pid must exist, must itself
+hold a listener on the port, on any address
+(`platform_compat.process_owns_port_listener(pid, port)` is `True`), must be
+owned by the caller's uid
 (which closes pid recycling into another user's process), and must look like a
 gateway by argv (defense in depth only, never the sole proof). Discovery is
 skipped outright on non-POSIX hosts, where no owner can be reported and the

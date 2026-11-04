@@ -559,6 +559,7 @@ if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
         loopback_owner_pids,
         probe_port_listeners,
         process_owns_loopback_listener,
+        process_owns_port_listener,
     )
     from kiro_crew.platform_compat_proctable import (  # noqa: F401
         _DARWIN_BSDINFO_SIZE,

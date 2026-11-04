@@ -264,7 +264,8 @@ _MOVED: dict[str, tuple[str, ...]] = {
         _LOOPBACK_COVERING_ADDRESSES _LSOF_TIMEOUT_SECS _normalize_local_address
         address_covers_loopback loopback_owner_pids probe_port_listeners
         _linux_loopback_listener_inodes _windows_loopback_listener_owner_pids
-        process_owns_loopback_listener find_port_listeners find_listening_pids
+        process_owns_loopback_listener process_owns_port_listener find_port_listeners
+        find_listening_pids
         """.split()),
     "kiro_crew.platform_compat_descendants": tuple("""
         _descendants_from_parent_map _posix_process_parent_map ProcessDescendantIdentity
