@@ -109,7 +109,11 @@ When the recorded directory resolves to the current pool default, continuation
 omits the redundant override. Disabled overrides therefore do not reject a turn
 that stays in the default directory. A different recorded directory remains an
 explicit override and must pass current directory policy, including after the
-pool default changes.
+pool default changes. A recorded directory that no longer exists is forwarded
+anyway, so `spawn` refuses it, with one exception: the run's own per-run scratch
+directory (`workspace_root()/<its session key>`, recorded only by a run spawned
+without a cwd and reclaimed when that run ends) is omitted, so the follow-up
+goes where a spawn without a cwd goes (`recorded_cwd_impl`).
 
 A run whose parent session is bound to a remote session environment inherits it
 before its session starts (`coder.session_launch.inherit_environment_for_subagent`):

@@ -800,10 +800,26 @@ class ContinuationCoordinator(ManagerComponent):
         returns "" too: omitting the override selects that exact directory without
         requesting an override-policy exception. A changed pool keeps the recorded
         path explicit, so current directory policy still applies.
+
+        The one missing path that returns "" is the run's OWN per-run scratch
+        directory (``workspace_root()/<its session key>``), which only a run
+        spawned without a cwd records and which is reclaimed when the run ends. It
+        was never a project, so omitting it puts the follow-up exactly where a
+        spawn without a cwd goes, which is where the run itself went.
         """
         import os
 
-        recorded = str((read_state(conv_id) or {}).get("cwd") or "")
+        state = read_state(conv_id) or {}
+        recorded = str(state.get("cwd") or "")
+        if recorded and not os.path.isdir(recorded):
+            from kiro_crew.config.loader_locations import workspace_root
+            from kiro_crew.config.paths import _safe_dir_name
+
+            keys = {f"subagent:{conv_id}", str(state.get("conversation_key") or "")}
+            root = workspace_root(create=False)
+            own = {os.path.realpath(root / _safe_dir_name(k)) for k in keys if k}
+            if os.path.realpath(recorded) in own:
+                return ""
         pool_cwd = getattr(self._manager._sessions, "_pool_cwd", "")
         if recorded and isinstance(pool_cwd, str) and pool_cwd:
             if os.path.realpath(recorded) == os.path.realpath(pool_cwd):
