@@ -19,6 +19,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from real_dashboard_state import drain, notes, open_feed, real_dashboard_state
 from slack_gateway_helpers import _mock_context_builder  # noqa: F401
 from slack_gateway_helpers import _restore_update_check_cache  # noqa: F401
 from slack_gateway_helpers import (
@@ -646,15 +647,14 @@ class TestDeliverResult:
             ),
         ],
     )
-    async def test_dashboard_target_slot_not_found(self, deliver, operation):
+    async def test_dashboard_target_slot_not_found(self, deliver, operation, tmp_path):
         orch = _make_orchestrator()
-        ds = _mock_dashboard_state()
-        ds.resolve_slot = MagicMock(return_value=None)
+        ds = real_dashboard_state(tmp_path)
+        feed = open_feed(ds)
         orch.dashboard_state = ds
         with patch("kiro_crew.slack.gateway.sel") as mock_sel:
             mock_sel.return_value.log_api_access = MagicMock()
             await orch._deliver_result("Title", "task", "result", deliver)
-        ds.resolve_slot.assert_called_once_with("gone")
         mock_sel.return_value.log_api_access.assert_called_once_with(
             caller="heartbeat",
             operation=operation,
@@ -662,8 +662,9 @@ class TestDeliverResult:
             source="gateway",
             resources="requested=gone",
         )
-        ds.notify.assert_not_called()
-        ds.push_slots_update.assert_not_called()
+        assert notes(ds) == []
+        assert drain(feed) == []
+        assert list(ds._slots) == []
 
     @pytest.mark.asyncio
     async def test_slack_dm_delivery(self):
@@ -729,9 +730,10 @@ class TestDeliverResult:
         )
 
     @pytest.mark.asyncio
-    async def test_prompt_dashboard_queued(self):
+    async def test_prompt_dashboard_queued(self, tmp_path):
         orch = _make_orchestrator()
-        ds = _mock_dashboard_state()
+        ds = real_dashboard_state(tmp_path)
+        feed = open_feed(ds)
         slot = MagicMock()
         slot.key = "s1"
         slot.enqueue_or_run_prompt = MagicMock(return_value=False)
@@ -742,8 +744,8 @@ class TestDeliverResult:
             mock_sel.return_value.log_api_access = MagicMock()
             await orch._deliver_result("Title", "task", "result", "prompt:dashboard:s1")
         assert slot.enqueue_or_run_prompt.call_args.args[0] == "Title\n\nresult"
-        ds.notify.assert_not_called()
-        ds.push_slots_update.assert_not_called()
+        assert notes(ds) == []
+        assert drain(feed) == []
 
 
 # ═══════════════════════════════════════════════════════════════════════════
