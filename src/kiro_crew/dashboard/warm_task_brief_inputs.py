@@ -562,3 +562,27 @@ def public_live(entries: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     return fit(
         ({k: v for k, v in e.items() if not k.startswith("_")} for e in entries), LIVE_PRS_CHARS
     )
+
+
+def language_of(text: str) -> str:
+    """The fixed-line language for *text*, judged only by its script."""
+    counts = {"zh": 0, "ja": 0, "ko": 0, "ru": 0, "hi": 0, "bn": 0}
+    for char in text:
+        point = ord(char)
+        if 0x3040 <= point <= 0x30FF:
+            counts["ja"] += 1
+        elif 0x4E00 <= point <= 0x9FFF or 0x3400 <= point <= 0x4DBF:
+            counts["zh"] += 1
+        elif 0xAC00 <= point <= 0xD7AF or 0x1100 <= point <= 0x11FF:
+            counts["ko"] += 1
+        elif 0x0400 <= point <= 0x04FF:
+            counts["ru"] += 1
+        elif 0x0900 <= point <= 0x097F:
+            counts["hi"] += 1
+        elif 0x0980 <= point <= 0x09FF:
+            counts["bn"] += 1
+    # Kana marks Japanese even beside more Han characters.
+    if counts["ja"]:
+        return "ja"
+    best = max(counts, key=lambda lang: counts[lang])
+    return best if counts[best] else "en"
