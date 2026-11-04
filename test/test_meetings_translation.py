@@ -55,9 +55,7 @@ def _queue(root: Path, *, language: str = "ja", runner=None) -> translate.Transl
     )
 
 
-# ---------------------------------------------------------------------------
 # Prompt
-# ---------------------------------------------------------------------------
 
 
 class TestPrompt:
@@ -118,9 +116,7 @@ class TestCleanTranslation:
         assert translate.clean_translation(raw) == expected
 
 
-# ---------------------------------------------------------------------------
 # Queue
-# ---------------------------------------------------------------------------
 
 
 class TestEnabled:
@@ -282,9 +278,7 @@ class TestDrain:
         await asyncio.sleep(0)
 
 
-# ---------------------------------------------------------------------------
 # Store
-# ---------------------------------------------------------------------------
 
 
 class TestStore:
@@ -344,9 +338,7 @@ class TestStore:
             store.translations_path("../escape", root)
 
 
-# ---------------------------------------------------------------------------
 # Config + route
-# ---------------------------------------------------------------------------
 
 
 class TestConfig:
@@ -393,7 +385,7 @@ class TestConfig:
     @pytest.mark.asyncio
     async def test_put_preserves_the_language_it_was_not_asked_to_change(self, app, root: Path):
         # `handle_put_config` is a narrow allow-list REBUILD, so a field the frontend
-        # forgets to resend is silently reset. This is the regression guard for that.
+        # forgets to resend is silently reset.
         async with client_for(app) as client:
             await client.put(
                 f"{k.API_BASE}/config", json={"config": {"translation_language": "de"}}
