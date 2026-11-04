@@ -141,6 +141,11 @@ async def _build_off_loop(
     if ok:
         return value, cancelled
     try:
+        if cancelled:
+            # The task was cancelled while the build ran: the cancellation is what
+            # it must see, as at the stock await. The build error rides along as
+            # the cause.
+            raise asyncio.CancelledError() from value
         raise value
     finally:
         del value

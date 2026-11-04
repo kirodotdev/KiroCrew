@@ -536,7 +536,10 @@ returns, so stdin/stdout/`wait()`, terminate paths and the cleanup reservation's
 exact-handle capture (which still happens at `CreateProcess` return, now on the
 worker) are untouched. A cancellation during step 1 cannot stop the worker: the
 spawn waits for it, adopts any child it built and tears it down with `close()` then
-`_wait()`, exactly as a cancellation at the stock `await waiter` does.
+`_wait()`, exactly as a cancellation at the stock `await waiter` does. When the
+worker's build fails after such a cancellation, the spawn still raises
+`CancelledError` (chained from the build error) so the caller's cancel is not
+turned into an ordinary spawn failure.
 
 Both gateway entry points (`cli.main`'s gateway command and `gatewayd.main`) pass
 `gateway_loop_factory()` to `asyncio.run`. On Windows it returns
