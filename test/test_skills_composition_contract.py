@@ -255,7 +255,7 @@ _LOADER_SIGNATURES = {
     "credit_skill_reads": "(self, keys: 'list[str]') -> 'None'",
     "delete_skill": "(self, name: 'str') -> 'bool'",
     "dismiss_all_pending": "(self) -> 'int'",
-    "dismiss_pending_skill": "(self, slug: 'str') -> 'bool'",
+    "dismiss_pending_skill": "(self, slug: 'str', content_sha256: 'str | None' = None) -> 'bool'",
     "dismiss_pending_slugs": "(self, slugs: 'list[str]') -> 'int'",
     "find_similar": "(self, description: 'str', threshold: 'float' = 0.85, *, exclude: 'str' = '') -> 'str | None'",
     "get_always_skills": "(self, project_dir: 'str | Path | None' = None) -> 'list[str]'",
@@ -304,7 +304,7 @@ AUTO_SKILL_NAMESPACE AUTO_SKILL_SOURCE_VALUE AUTO_SLUG_CLAIM_LOCK_NAME
 AUTO_SLUG_CLAIM_LOCK_TIMEOUT_SECS AutoSkillProvenance CRON_SOURCE_DIVERGED
 CRON_SOURCE_IN_SYNC CRON_SOURCE_UNVERIFIABLE ClaimRefusal CronScriptSource
 InstalledSkillCurrency MAX_SKILL_VERSIONS PINNED_SKILL_BODIES_CAP PROJECT_SKILL_BODY_CAP
-PendingApprovalRefused RETIRED_CONDUCTOR_SKILL_SHA256 SKILLS_DIR_NAME
+PendingApprovalRefused PendingDismissRefused RETIRED_CONDUCTOR_SKILL_SHA256 SKILLS_DIR_NAME
 SKILL_INSTALL_BEHIND SKILL_INSTALL_EDITED SKILL_INSTALL_IN_SYNC
 SKILL_INSTALL_UNVERIFIABLE SkillContextCapacityError SkillsLoader VERSIONS_DIRNAME
 _AUTO_NAME_PATTERN _BUILTIN_SKILLS_DIR _CATALOG_READ_BATCH _CATALOG_READ_WORKERS

@@ -313,7 +313,10 @@ describe('pending-card script-validation verdict (issue #10861)', () => {
       // Dismiss the candidate; the row (still rendered from the stale list
       // mock) must no longer carry the previous candidate's refusal notice.
       fireEvent.click(screen.getByText('Dismiss'))
-      await waitFor(() => expect(mockApi.dismissPendingSkill).toHaveBeenCalledWith('evil-helper'))
+      // The card has read the candidate, so the dismiss names those bytes.
+      await waitFor(() =>
+        expect(mockApi.dismissPendingSkill).toHaveBeenCalledWith('evil-helper', 'c'.repeat(64)),
+      )
       await waitFor(() =>
         expect(
           screen.queryByText('Approval refused: the bundled scripts failed validation — approving again without changes returns this same refusal. Fix the scripts, then approve.'),
@@ -337,7 +340,10 @@ describe('pending-card script-validation verdict (issue #10861)', () => {
       renderWithQuery()
       await waitFor(() => expect(screen.getByText('auto/evil-helper')).toBeInTheDocument())
       fireEvent.click(screen.getByText('Dismiss'))
-      await waitFor(() => expect(mockApi.dismissPendingSkill).toHaveBeenCalledWith('evil-helper'))
+      // Never opened, so there is no read to name: the dismiss sends no digest.
+      await waitFor(() =>
+        expect(mockApi.dismissPendingSkill).toHaveBeenCalledWith('evil-helper', undefined),
+      )
       // The mutation's rejection must not vanish: the panel renders the
       // localized failure through ErrorNotice (errors-use-error-notice —
       // the value originates in a rejected mutation, so the shared error
@@ -367,6 +373,58 @@ describe('pending-card script-validation verdict (issue #10861)', () => {
         expect(
           screen.queryByText('Dismiss of “auto/evil-helper” failed (this candidate is no longer pending — it was already dismissed in another window or by your Kiro Crew agent and does not appear in the Skills list below; a replacement candidate can be proposed again later).'),
         ).not.toBeInTheDocument(),
+      )
+    } finally {
+      confirmSpy.mockRestore()
+    }
+  })
+
+  it('a dismiss refused because the candidate changed says so and reads it again', async () => {
+    mockApi.skillsPending.mockResolvedValue({ pending: [FLAGGED_ROW] })
+    mockApi.dismissPendingSkill.mockRejectedValue(
+      Object.assign(new Error('the candidate changed after it was read; read it again'), {
+        status: 409,
+        body: JSON.stringify({
+          error: 'the candidate changed after it was read; read it again',
+          code: 'pending_skill_changed',
+        }),
+      }),
+    )
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    try {
+      renderWithQuery()
+      // Skills must settle before the pending-list query renders this row.
+      await waitFor(() => expect(screen.getByText('auto/evil-helper')).toBeInTheDocument(), {
+        timeout: CHAINED_QUERY_TIMEOUT_MS,
+      })
+      fireEvent.click(screen.getByText('Review'))
+      // Review opens the row and starts the detail query.
+      await waitFor(() => expect(mockApi.skillPendingDetail).toHaveBeenCalled(), {
+        timeout: CHAINED_QUERY_TIMEOUT_MS,
+      })
+      // The detail response enables Approve once the candidate has been read.
+      await waitFor(() =>
+        expect(screen.getByText('Approve').closest('button') as HTMLButtonElement).not.toBeDisabled(),
+        { timeout: CHAINED_QUERY_TIMEOUT_MS },
+      )
+      const readsBefore = mockApi.skillPendingDetail.mock.calls.length
+      fireEvent.click(screen.getByText('Dismiss'))
+      // Dismiss submits the digest from the settled detail query.
+      await waitFor(() =>
+        expect(mockApi.dismissPendingSkill).toHaveBeenCalledWith('evil-helper', 'c'.repeat(64)),
+        { timeout: CHAINED_QUERY_TIMEOUT_MS },
+      )
+      // The dismiss mutation's refusal renders the changed-candidate notice.
+      await waitFor(() =>
+        expect(
+          screen.getByText('Dismiss of “auto/evil-helper” failed (it changed after you read it; it has been read again, so review it, then dismiss).'),
+        ).toBeInTheDocument(),
+        { timeout: CHAINED_QUERY_TIMEOUT_MS },
+      )
+      // The dismiss refusal invalidates the detail query, which then reads again.
+      await waitFor(() =>
+        expect(mockApi.skillPendingDetail.mock.calls.length).toBeGreaterThan(readsBefore),
+        { timeout: CHAINED_QUERY_TIMEOUT_MS },
       )
     } finally {
       confirmSpy.mockRestore()
