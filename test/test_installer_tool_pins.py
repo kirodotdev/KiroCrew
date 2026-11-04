@@ -65,7 +65,7 @@ def _env_pins(path: Path) -> dict[str, str]:
     return pins
 
 
-# ---------------------------------------------------------------- static ---
+# Static checks
 
 
 @pytest.mark.parametrize("name", SHELL_INSTALLERS)
@@ -140,7 +140,7 @@ def test_aws_pins_are_complete_and_match_the_runtime_image() -> None:
     assert used and used <= set(pins), f"read but not pinned: {sorted(used - set(pins))}"
 
 
-# ------------------------------------------------------------ behavioural ---
+# Behavioural checks
 
 
 def _stub_curl(bin_dir: Path, payload: Path) -> None:

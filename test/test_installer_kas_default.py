@@ -160,10 +160,7 @@ def test_cli_sh_help_names_the_opt_out() -> None:
     assert "--no-kas" in result.stdout
 
 
-# ---------------------------------------------------------------------------
-# install.sh: a full run builds the clone (npm, vite, pip), so these pin the
-# script's own text instead.
-# ---------------------------------------------------------------------------
+# install.sh: a full run builds the clone (npm, vite, pip), so these pin its text.
 
 
 def _install_sh() -> str:
