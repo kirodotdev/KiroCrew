@@ -628,21 +628,26 @@ def resolve_main_file(project: Path) -> str | None:
     main_file = get_main_file(project)
     if _contained_file(project, main_file):
         return main_file
+    discovered = _discover_main_file(project)
+    if discovered is not None and discovered != DEFAULT_MAIN_FILE:
+        set_main_file(project, discovered)
+    return discovered
+
+
+def _discover_main_file(project: Path) -> str | None:
+    """Return the fallback main document, without writing the config.
+
+    The candidates of :func:`resolve_main_file` after the configured value:
+    :data:`MAIN_FILE_CANDIDATES`, then the first ``*.tex`` in sorted order.
+    """
     for candidate in MAIN_FILE_CANDIDATES:
         if _contained_file(project, candidate):
-            if candidate != DEFAULT_MAIN_FILE:
-                set_main_file(project, candidate)
             return candidate
     # The glob branch too: `p.is_file()` follows a link exactly as the probes above do.
     tex_files = sorted(
         p.name for p in project.glob("*.tex") if _contained_file(project, p.name)
     )
-    if not tex_files:
-        return None
-    discovered = tex_files[0]
-    if discovered != DEFAULT_MAIN_FILE:
-        set_main_file(project, discovered)
-    return discovered
+    return tex_files[0] if tex_files else None
 
 
 def _contained_file(project: Path, relative: str) -> bool:
@@ -1030,9 +1035,18 @@ def delete_file(project: Path, relative: str) -> None:
     ``safe_child`` already refuses the string-level dodges (``./main.tex``,
     ``sections/../main.tex``, a trailing slash), so a symlink is the case it cannot
     see — and it is the one a hostile or merely careless repository actually brings.
+
+    When the configured main is absent, the document :func:`resolve_main_file` falls
+    back to is refused as well: the project view reports it and compile builds it, so
+    it is the main document the user sees. It is found without writing the config.
     """
     target = safe_child(project, relative)
-    main = safe_child(project, get_main_file(project))
+    configured = get_main_file(project)
+    mains = [safe_child(project, configured)]
+    if not _contained_file(project, configured):
+        fallback = _discover_main_file(project)
+        if fallback is not None:
+            mains.append(safe_child(project, fallback))
     # `os.path.realpath`, not `Path.resolve(strict=True)`: the main document may not
     # exist yet (a fresh project, or a config naming a file the clone omitted), and a
     # missing main must not make deletion of everything else raise.
@@ -1041,8 +1055,10 @@ def delete_file(project: Path, relative: str) -> None:
     # main document would then read as a different file. The unlink below still
     # acts on ``target`` as resolved.
     fold = platform_compat.strip_extended_length_prefix
-    if fold(os.path.realpath(target)) == fold(os.path.realpath(main)):
-        raise ValueError("cannot delete the main document")
+    target_real = fold(os.path.realpath(target))
+    for main in mains:
+        if target_real == fold(os.path.realpath(main)):
+            raise ValueError("cannot delete the main document")
     if not target.is_file():
         raise FileNotFoundError(relative)
     target.unlink()
