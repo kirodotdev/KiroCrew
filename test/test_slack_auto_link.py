@@ -840,6 +840,55 @@ class TestSendHandlerHook:
         assert slot.task is None
         assert slot._turn_admission_reserved is False
 
+    @pytest.mark.parametrize("mode", ["owed", "lifted", "write_failed"])
+    @pytest.mark.asyncio
+    async def test_a_pause_during_link_hold_owes_the_turn_or_lets_it_run(
+        self, tmp_path, monkeypatch, mode
+    ):
+        """Pause all lands while the first send waits for the link: the prompt is
+        owed to Resume all; a pause lifted before that is recorded lets it run."""
+        from aiohttp.test_utils import TestClient, TestServer
+        from chat_test_helpers import _make_app
+
+        from kiro_crew import crew_pause
+
+        state = _slack_state(tmp_path, monkeypatch)
+        state.get_or_create_slot("s1", origin=SlotOrigin.USER)
+        monkeypatch.setattr("kiro_crew.dashboard.chat_handlers._maybe_auto_title", AsyncMock())
+        run_chat = AsyncMock()
+        monkeypatch.setattr("kiro_crew.dashboard.chat_handlers._run_chat", run_chat)
+        paused = {"on": False}
+        owed: list[str] = []
+        monkeypatch.setattr(crew_pause, "holds_slot", lambda sl: paused["on"])
+
+        def _owe(key: str) -> bool:
+            owed.append(key)
+            if mode == "write_failed":
+                raise OSError("disk full")
+            if mode == "lifted":
+                paused["on"] = False  # Resume all dropped the record first
+            return mode == "owed"
+
+        monkeypatch.setattr(crew_pause, "owe_turn", _owe)
+
+        async def _hold(_st, _sl):
+            paused["on"] = True  # Pause all publishes its hold during the link
+            return False
+
+        monkeypatch.setattr("kiro_crew.dashboard.chat_handlers.maybe_auto_link_slack", _hold)
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post("/api/chat?ws=1", json={"message": "hello", "slot": "s1"})
+            body = await resp.json()
+
+        assert resp.status == 200
+        assert owed == ["s1"]
+        if mode == "lifted":
+            assert body.get("stopped") is not True
+            run_chat.assert_awaited()
+        else:
+            assert body["stopped"] is True
+            run_chat.assert_not_awaited()
+
     @pytest.mark.asyncio
     async def test_stop_during_link_hold_still_starts_a_send_queued_behind_it(
         self, tmp_path, monkeypatch

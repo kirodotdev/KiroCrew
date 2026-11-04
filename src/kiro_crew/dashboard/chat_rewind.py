@@ -171,6 +171,12 @@ async def api_chat_slot_rewind(request: web.Request) -> web.Response:
     if len(content) > 32_768:
         return web.json_response({"error": "content too long (max 32768 chars)"}, status=400)
 
+    # The stored Ultra Mode pause is read (off the loop) before the pause
+    # check under the lock, so a paused crew's history is not rewritten
+    # right after a restart.
+    from kiro_crew import crew_pause as _crew_pause
+
+    await _crew_pause.ensure_loaded()
     async with slot._lock:
         if request_app and state._slots.get(name) is not slot:
             return slot_not_found()
@@ -184,6 +190,15 @@ async def api_chat_slot_rewind(request: web.Request) -> web.Response:
             # the slot live, so an aborted close re-admits the edit.
             return web.json_response(
                 {"error": "slot is closing", "code": "slot_closing"}, status=409
+            )
+        from kiro_crew import crew_pause
+
+        if crew_pause.holds_slot(slot):
+            # Nothing is truncated: a rewind whose replacement turn cannot run
+            # while the crew is paused would leave a rewritten chat unanswered.
+            return web.json_response(
+                {"error": "this crew is paused; resume it from the Board", "code": "crew_paused"},
+                status=409,
             )
 
         msgs = slot.messages

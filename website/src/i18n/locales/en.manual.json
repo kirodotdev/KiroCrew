@@ -4305,7 +4305,22 @@
       "ultra_done_line_files_rest_one": "Done when {{count}} file check passes and you approve the rest.",
       "ultra_done_line_files_rest_other": "Done when all {{count}} file checks pass and you approve the rest.",
       "breadcrumb_nav_label": "Breadcrumb",
-      "breadcrumb_back_to": "Back to {{t}}"
+      "breadcrumb_back_to": "Back to {{t}}",
+      "ultra_pause_all": "Pause all",
+      "ultra_resume_all": "Resume all",
+      "ultra_paused_continue": "Continue",
+      "ultra_pause_confirm_title": "Pause all workers?",
+      "ultra_pause_failed": "Could not pause the crew.",
+      "ultra_resume_failed": "Could not resume the crew.",
+      "ultra_continue_failed": "Could not continue this worker.",
+      "ultra_paused_detail_one": "{{count}} worker stopped · queued messages kept",
+      "ultra_paused_detail_other": "{{count}} workers stopped · queued messages kept",
+      "ultra_pause_confirm_body_one": "Stops {{count}} running worker, sub-teams included. Steps in progress stop now and run again on resume. No new workers start while paused.",
+      "ultra_pause_confirm_body_other": "Stops {{count}} running workers, sub-teams included. Steps in progress stop now and run again on resume. No new workers start while paused.",
+      "ultra_paused_notice_one": "You paused the crew. {{count}} worker stopped. Resume from the Board.",
+      "ultra_paused_notice_other": "You paused the crew. {{count}} workers stopped. Resume from the Board.",
+      "ultra_row_lead_working": "Lead working",
+      "ultra_pause_confirm_lead": "Stops the lead's current step. No new workers start while paused."
     },
     "guideLayer": {
       "region_label": "Guide",

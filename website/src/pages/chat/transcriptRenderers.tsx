@@ -46,6 +46,7 @@ import { feedbackTracker } from '../../feedbackTracker'
 import NoticeCard from './NoticeCard'
 import { resolveGatewayNotice } from './gatewayNotice'
 import CrewDispatchNoticeCard from './CrewDispatchNoticeCard'
+import CrewPausedNoticeCard from './CrewPausedNoticeCard'
 import WorkflowRunCard, { extractWorkflowRunId, isWorkflowRunTool } from './WorkflowRunCard'
 import SubagentRunCard, { extractSpawnRunLaunch, isSpawnRunTool } from './SubagentRunCard'
 import WorkflowCompletionCard, { isWorkflowCompletionMessage } from './WorkflowCompletionCard'
@@ -417,6 +418,15 @@ export function createTranscriptRenderers(
           slot={o.slot}
           onOpenCrewTab={o.onOpenCrewTab}
         />,
+      ),
+    },
+    {
+      // The main chat's one "You paused the crew" row (Ultra Mode Pause all).
+      id: 'crew_paused_notice',
+      roles: ['notice'],
+      match: m => m.meta?.kind === 'crew_paused_notice',
+      render: (m, ctx) => ctx.row(
+        <CrewPausedNoticeCard key={ctx.key} stopped={Number(m.meta?.stopped) || 0} />,
       ),
     },
     // ── Shape-matched rows, ahead of anything keyed only by role ──

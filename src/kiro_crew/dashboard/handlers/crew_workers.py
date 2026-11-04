@@ -499,6 +499,11 @@ async def api_crew_workers(request: web.Request) -> web.Response:
             }
         )
     out: dict[str, Any] = {"root": root, "workers": workers}
+    from kiro_crew.dashboard.handlers.crew_pause import pause_view
+
+    paused = await asyncio.to_thread(pause_view, root)
+    if paused is not None:
+        out["paused"] = paused
     if kind == ROOT_KIND_MATE:
         # Only a mate's answer names its kind, so a Crew Mode root's stays as it was.
         out["root_kind"] = ROOT_KIND_MATE

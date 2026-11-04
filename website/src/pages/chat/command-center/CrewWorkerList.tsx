@@ -74,6 +74,8 @@ export function useLiveCrewWorkers(root: string): CrewWorker[] {
  *  showing counts from an older read, or nothing at all. */
 export function useCrewWorkerSummary(root: string): {
   workers: CrewWorker[] | undefined; failed: boolean; savedTitle: string
+  /** Pause all stands on this crew (the latest read said so). */
+  paused: boolean
   /** The last list a read gave, kept through a failed poll (the cache's data),
    *  with the open live rows the store carries on its own. */
   lastWorkers: CrewWorker[] | undefined
@@ -92,7 +94,7 @@ export function useCrewWorkerSummary(root: string): {
   // A route the gateway does not serve is no data, not a failed read: the row
   // shows what the live rows say and raises no notice.
   const failed = query.isError && !routeNotServed(query.error)
-  return { workers: failed ? (live.length ? live : undefined) : lastWorkers, failed, savedTitle, lastWorkers }
+  return { workers: failed ? (live.length ? live : undefined) : lastWorkers, failed, savedTitle, lastWorkers, paused: !!query.data?.paused }
 }
 
 /** Open one of a root's sessions -- a worker, or the root itself -- in the main

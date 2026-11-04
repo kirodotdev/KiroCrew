@@ -540,6 +540,14 @@ async def _start_next_queued_turn(
     if _gateway_shutdown_requested(state):
         return False
 
+    # An Ultra Mode "Pause all" holds the root and every member it stopped: the
+    # queue stays as it is until Resume all (or the member's own Continue) lets it go.
+    # Imported here: this module's functions run on the composing module's globals.
+    from kiro_crew import crew_pause
+
+    if slot._queue and crew_pause.holds_slot(slot):
+        return False
+
     # A drain that follows a turn's end marks that end before it writes anything:
     # the drop notices, the held-note flush and the cancellation notices below
     # belong to what comes next, not to the turn that ended. Held back only while
@@ -659,6 +667,11 @@ async def _start_next_queued_turn(
             if work_ids and await service._cancelled_parked(work_ids) is not None:
                 slot.queue_remove_by_id(item["id"])
                 state.broadcast_ws("queue_pop", {"slot": slot.key, "queue_id": item["id"]})
+
+    # Asked again after the last await above: a Pause all published during those
+    # probes holds this drain too, with the queue left as it is.
+    if slot._queue and crew_pause.holds_slot(slot):
+        return False
 
     try:
         merge = KiroCrewConfig.load().dashboard.merge_queued_messages

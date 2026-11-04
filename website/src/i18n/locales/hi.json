@@ -10411,7 +10411,22 @@
       "ultra_done_line_files_other": "सभी {{count}} फ़ाइल जाँचें पास होने पर पूरा होगा।",
       "ultra_done_line_files_rest_other": "सभी {{count}} फ़ाइल जाँचें पास होने और बाकी को तुम्हारी मंज़ूरी मिलने पर पूरा होगा।",
       "breadcrumb_nav_label": "ब्रेडक्रम्ब",
-      "breadcrumb_back_to": "{{t}} पर वापस जाओ"
+      "breadcrumb_back_to": "{{t}} पर वापस जाओ",
+      "ultra_pause_all": "सब रोको",
+      "ultra_resume_all": "सब फिर शुरू करो",
+      "ultra_paused_continue": "जारी रखो",
+      "ultra_pause_confirm_title": "सभी वर्कर रोकें?",
+      "ultra_pause_failed": "टीम को रोका नहीं जा सका।",
+      "ultra_resume_failed": "टीम को फिर शुरू नहीं किया जा सका।",
+      "ultra_continue_failed": "इस वर्कर को जारी नहीं रखा जा सका।",
+      "ultra_paused_detail_one": "{{count}} वर्कर रुका · कतार के संदेश रखे गए",
+      "ultra_paused_detail_other": "{{count}} वर्कर रुके · कतार के संदेश रखे गए",
+      "ultra_pause_confirm_body_one": "{{count}} चल रहा वर्कर रुकेगा, सब-टीम समेत। चल रहे कदम अभी रुकेंगे और फिर शुरू करने पर दोबारा चलेंगे। रुके रहने तक कोई नया वर्कर शुरू नहीं होगा।",
+      "ultra_pause_confirm_body_other": "{{count}} चल रहे वर्कर रुकेंगे, सब-टीम समेत। चल रहे कदम अभी रुकेंगे और फिर शुरू करने पर दोबारा चलेंगे। रुके रहने तक कोई नया वर्कर शुरू नहीं होगा।",
+      "ultra_paused_notice_one": "तुमने टीम रोक दी। {{count}} वर्कर रुका। Board से फिर शुरू करो।",
+      "ultra_paused_notice_other": "तुमने टीम रोक दी। {{count}} वर्कर रुके। Board से फिर शुरू करो।",
+      "ultra_row_lead_working": "लीड काम कर रहा है",
+      "ultra_pause_confirm_lead": "लीड का मौजूदा चरण रुक जाएगा। रुके रहने तक कोई नया वर्कर शुरू नहीं होगा।"
     },
     "guideLayer": {
       "region_label": "गाइड",

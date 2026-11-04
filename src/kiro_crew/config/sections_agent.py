@@ -74,7 +74,7 @@ def coerce_fallback_model(raw: object) -> str:
 #: The Crew Mode conductor template's name. Equal to
 #: ``crew_mode.DEFAULT_CREW_MODE_AGENT`` (a test pins it); defined here so this owner
 #: binds no name the sections facade does not.
-_CREW_MODE_AGENT_DEFAULT = "kirocrew-conductor"
+_CREW_MODE_AGENT_DEFAULT = "kirocrew-team-lead"
 
 
 @dataclass

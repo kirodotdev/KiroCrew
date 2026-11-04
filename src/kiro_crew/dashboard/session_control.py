@@ -218,6 +218,7 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         _inherited_project_dir,
         _model_pin_refusal,
         _record_spawn,
+        _refuse_if_crew_paused,
         _register_spawn_pending_edge,
         _store_s_crewmate,
         create_session,

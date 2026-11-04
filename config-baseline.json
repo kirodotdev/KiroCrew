@@ -35,7 +35,7 @@
         "kas_bundle_url": "https://kas.crew.kiro.dev",
         "native_skill_projection": true,
         "default_agent": "",
-        "crew_mode_agent": "kirocrew-conductor",
+        "crew_mode_agent": "kirocrew-team-lead",
         "deepseek_env": {},
         "strands_env": {},
         "strands_project": "",
@@ -505,7 +505,7 @@
       "help": "The agent template a chat runs when Ultra Mode is turned on. Empty falls back to the default. Takes effect live for new chats; no gateway restart.",
       "hasChildren": false,
       "enumValues": null,
-      "defaultValue": "kirocrew-conductor"
+      "defaultValue": "kirocrew-team-lead"
     },
     {
       "path": "agent.deepseek_env",

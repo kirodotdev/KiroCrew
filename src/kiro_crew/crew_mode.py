@@ -52,8 +52,9 @@ from kiro_crew.agent_files import (
     TEAM_LEAD_AGENT_FILENAME,
 )
 
-#: The agent Crew Mode runs while ``agent.crew_mode_agent`` is unset.
-DEFAULT_CREW_MODE_AGENT: Final[str] = CONDUCTOR_AGENT_FILENAME.removesuffix(".json")
+#: The agent Crew Mode (Ultra Mode) runs while ``agent.crew_mode_agent`` is unset:
+#: the team lead. A person who set the key keeps their value.
+DEFAULT_CREW_MODE_AGENT: Final[str] = TEAM_LEAD_AGENT_FILENAME.removesuffix(".json")
 
 #: The shipped conductors: every agent whose job is dispatching work to other
 #: sessions, all kept out of a normal chat's agent picker. Derived from the
@@ -72,12 +73,14 @@ CONDUCTOR_TEMPLATES: Final[frozenset[str]] = frozenset(
 #: The slot field (and metadata key) that stamps the agent Crew Mode turned on with.
 STAMP_FIELD: Final[str] = "crew_mode_agent"
 
-#: Deprecated names that resolve to the shipped Crew Mode conductor
+#: Deprecated names that resolve to the shipped conductor
 #: (``conductor_agents.DEPRECATED_AGENT_SPECS``): a chat on one is on that conductor.
 #: Derived from the filenames the runtime installs, so a renamed spec cannot leave a
 #: stale literal here.
 CONDUCTOR_ALIASES: Final[dict[str, str]] = {
-    LEDGER_CONDUCTOR_AGENT_FILENAME.removesuffix(".json"): DEFAULT_CREW_MODE_AGENT,
+    LEDGER_CONDUCTOR_AGENT_FILENAME.removesuffix(".json"): CONDUCTOR_AGENT_FILENAME.removesuffix(
+        ".json"
+    ),
 }
 
 #: The row fields the slot list stamps. ``crew_mode_root`` is True on a Crew Mode

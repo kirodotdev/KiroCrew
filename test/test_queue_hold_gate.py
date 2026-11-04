@@ -244,6 +244,60 @@ class TestSynthesisConsultsTheHold:
         assert started and started[0] is not None, "the arrival never got the floor"
         _cancel_turn(slot)
 
+    async def test_an_ultra_mode_pause_withholds_the_synthesis_dispatch(
+        self, tmp_path, monkeypatch
+    ):
+        """Pause all holds the session: its armed synthesis waits for Resume all."""
+        from kiro_crew import crew_pause
+
+        monkeypatch.setattr(crew_pause, "holds_slot", lambda sl: True)
+        state, slot = self._setup(tmp_path)
+        slot._pending_synthesis = True
+        with patch.object(chat_runner, "_run_pending_synthesis", new=AsyncMock()):
+            await chat_runner._finish_queue_cycle(state, slot)
+            await asyncio.sleep(0)
+        assert slot._synthesis_inflight is False
+        assert slot._pending_synthesis is True
+        _cancel_turn(slot)
+
+    async def test_a_pause_after_the_verdict_still_holds_the_synthesis_turn(
+        self, tmp_path, monkeypatch
+    ):
+        """The recheck timer reaches `_run_pending_synthesis` directly: it holds there too."""
+        from kiro_crew import crew_pause
+
+        monkeypatch.setattr(crew_pause, "holds_slot", lambda sl: True)
+        state, slot = self._setup(tmp_path)
+        slot._pending_synthesis = True
+        runs = _record_runs(monkeypatch)
+        await chat_runner._run_pending_synthesis(state, slot)
+        assert runs == []
+        assert slot._pending_synthesis is True
+        _cancel_turn(slot)
+
+    async def test_a_pause_during_the_synthesis_queue_drain_holds_the_synthesis(
+        self, tmp_path, monkeypatch
+    ):
+        """The drain awaits before it refuses: a pause published then holds synthesis too."""
+        from kiro_crew import crew_pause
+
+        paused = {"on": False}
+        monkeypatch.setattr(crew_pause, "holds_slot", lambda sl: paused["on"])
+
+        async def drain_then_paused(_st, _sl, **_kwargs):
+            paused["on"] = True
+            return False
+
+        state, slot = self._setup(tmp_path)
+        slot._pending_synthesis = True
+        slot.queue_append("waiting behind the pause")
+        runs = _record_runs(monkeypatch)
+        monkeypatch.setattr(chat_runner, "_start_next_queued_turn", drain_then_paused)
+        await chat_runner._run_pending_synthesis(state, slot)
+        assert runs == []
+        assert slot._pending_synthesis is True
+        _cancel_turn(slot)
+
     async def test_synthesis_still_dispatches_when_nothing_is_held(self, tmp_path):
         """Positive control for the gate above."""
         state, slot = self._setup(tmp_path)

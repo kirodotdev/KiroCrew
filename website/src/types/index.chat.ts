@@ -769,6 +769,13 @@ export interface SessionInfo {
   key: string; title?: string; messages: number; created?: string; modified?: number; agent?: string; memory_mode?: 'persistent' | 'incognito' | 'temporary'
 }
 
+/** A paused crew, on the worker list while Pause all stands: the members the
+ *  pause stopped (and has not handed back) and when it was pressed. */
+export interface CrewPause {
+  stopped: string[]
+  paused_at: string
+}
+
 /** One row of a Crew Mode root's worker list (`GET /api/chat/slots/{root}/crew-workers`). */
 export interface CrewWorker {
   key: string

@@ -515,7 +515,17 @@ async def _await_restore(state: Any, *, limit: float = RESTORE_WAIT_SECS) -> Non
 
 async def run(state: Any, *, start_delay: float = 2.0) -> None:
     """The dashboard's background task, started once its restore has rebuilt the slot
-    set: the start pass, then retry busy roots. A headless gateway never starts it."""
+    set: the start pass, then retry busy roots. A headless gateway never starts it.
+
+    It first reads the Ultra Mode pause file off-loop, so the sidebar and the sends
+    that consult it find it in memory.
+    """
+    from kiro_crew import crew_pause
+
+    try:
+        await asyncio.to_thread(crew_pause.load)
+    except Exception:
+        logger.warning("crew pause preload failed", exc_info=True)
     await asyncio.sleep(start_delay)
     await _await_restore(state)
     try:

@@ -1339,3 +1339,78 @@ async def test_no_variants_refusal_carries_its_own_code(state) -> None:
         payload = await resp.json()
         assert payload["code"] == "no_variants"
         assert payload["error"] == "no variants"
+
+
+@pytest.mark.parametrize(
+    ("path", "body"),
+    [
+        ("regenerate", None),
+        ("edit-resend", {"index": 0, "content": "edited"}),
+    ],
+)
+@pytest.mark.asyncio
+async def test_a_paused_crew_session_keeps_its_history_when_asked_to_redo_it(
+    state, monkeypatch, path, body
+) -> None:
+    """Ultra Mode "Pause all" holds the session: its replacement turn could not
+    run, so the history is left as it is and the refusal says why."""
+    from kiro_crew import crew_pause
+
+    stored = {"read": False}
+    monkeypatch.setattr(crew_pause, "holds_slot", lambda sl: stored["read"] and sl.key == "s1")
+
+    async def _ensure_loaded() -> None:
+        stored["read"] = True  # right after a restart: the stored pause is read first
+
+    monkeypatch.setattr(crew_pause, "ensure_loaded", _ensure_loaded)
+    slot = state.get_or_create_slot("s1")
+    slot.append("user", "hi")
+    slot.append("assistant", "hello v1")
+    before = [m.get("content") for m in slot.messages]
+    async with _client(state) as client:
+        resp = await client.post(f"/api/chat/slots/s1/{path}", json=body)
+        assert resp.status == 409
+        assert (await resp.json())["code"] == "crew_paused"
+    assert [m.get("content") for m in slot.messages] == before
+
+
+@pytest.mark.asyncio
+async def test_a_pause_landing_during_the_edit_probe_keeps_the_history(state, monkeypatch) -> None:
+    """Pause all lands while Edit & Resend awaits its sub-agent probe: the edit is
+    refused before the history is cut, so the edited prompt is not silently lost."""
+    from kiro_crew import crew_pause
+    from kiro_crew.dashboard import chat_handlers
+
+    paused = {"now": False}
+    monkeypatch.setattr(crew_pause, "holds_slot", lambda sl: paused["now"])
+
+    async def _probe(*_a: object, **_k: object) -> None:
+        paused["now"] = True  # the pause publishes its hold during the read
+        return None
+
+    monkeypatch.setattr(chat_handlers, "_subagents_attached_response", _probe)
+    slot = state.get_or_create_slot("s1")
+    slot.append("user", "hi")
+    slot.append("assistant", "hello v1")
+    before = [m.get("content") for m in slot.messages]
+    async with _client(state) as client:
+        resp = await client.post(
+            "/api/chat/slots/s1/edit-resend", json={"index": 0, "content": "edited"}
+        )
+        assert resp.status == 409
+        assert (await resp.json())["code"] == "crew_paused"
+    assert [m.get("content") for m in slot.messages] == before
+
+
+@pytest.mark.asyncio
+async def test_switching_a_variant_is_not_held_by_a_crew_pause(state, monkeypatch) -> None:
+    """A variant switch starts no turn, so a paused crew may still read its replies."""
+    from kiro_crew import crew_pause
+
+    monkeypatch.setattr(crew_pause, "holds_slot", lambda sl: True)
+    slot = state.get_or_create_slot("s1")
+    slot.append("user", "hi")
+    slot.append("assistant", "hello v1")
+    async with _client(state) as client:
+        resp = await client.post("/api/chat/slots/s1/switch-variant", json={"index": 0})
+        assert (await resp.json()).get("code") != "crew_paused"

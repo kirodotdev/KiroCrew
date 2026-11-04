@@ -104,6 +104,38 @@ async def api_chat_slot_continue(request: web.Request) -> web.Response:
     if refusal is not None:
         return refusal
 
+    # Ultra Mode "Pause all": the person's own Continue on a member the pause
+    # stopped hands that one member back. A paused root resumes from the Board.
+    # Imported here: this module's functions run on chat_handlers' globals.
+    import asyncio
+
+    from kiro_crew import crew_mode, crew_pause
+
+    if crew_pause.root_paused(slot.key) and crew_mode.slot_is_crew_mode_root(slot):
+        return web.json_response(
+            {"error": "this crew is paused; resume it from the Board", "code": "crew_paused"},
+            status=409,
+        )
+    released: dict[str, dict[str, Any]] = {}
+    if not request.get("app", "") and crew_pause.holds_turn(slot.key):
+        released = await asyncio.to_thread(crew_pause.release, slot.key)
+        queue = list(slot._queue or [])
+        owed = any("stopped" in taken.get("fields", []) for taken in released.values())
+        restored = bool(queue) and all(e.get(RESTORED_QUEUE_KEY) for e in queue)
+        if queue and not slot.running and (owed or not restored):
+            # What queued while it was paused carries the thread on, as on resume.
+            # A member the pause stopped sends its first restored card too (a
+            # restart during the pause); otherwise Continue below runs over a
+            # restored queue, as it does on any interrupted chat.
+            from kiro_crew.dashboard.handlers.crew_pause import drain_held_queue
+
+            drained = await drain_held_queue(state, slot, send_restored=owed)
+            # A chosen restored card that waits (memory still preparing) is sent
+            # by the drain that follows: holding the member again would stop it.
+            if drained == "drained" or (drained == "held" and owed and restored):
+                state.push_slots_update()
+                return web.json_response({"ok": True, "slot": slot.key})
+
     try:
         await continue_slot_turn(
             state,
@@ -120,6 +152,10 @@ async def api_chat_slot_continue(request: web.Request) -> web.Response:
             ),
         )
     except SlotContinueRefusal as exc:
+        if released:
+            # Refused (still tearing down, sub-agents attached): the pause still
+            # owes this member its hand-back, so Resume all continues it later.
+            await asyncio.to_thread(crew_pause.rehold, slot.key, released)
         if exc.code == "slot_not_found":
             return _slot_not_found()
         if exc.response is not None:

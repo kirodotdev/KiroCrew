@@ -10411,7 +10411,22 @@
       "ultra_done_line_files_other": "সব {{count}}টি ফাইল চেক পাস করলে শেষ হবে।",
       "ultra_done_line_files_rest_other": "সব {{count}}টি ফাইল চেক পাস করলে এবং তুমি বাকিগুলো অনুমোদন করলে শেষ হবে।",
       "breadcrumb_nav_label": "ব্রেডক্রাম্ব",
-      "breadcrumb_back_to": "{{t}}-এ ফিরে যাও"
+      "breadcrumb_back_to": "{{t}}-এ ফিরে যাও",
+      "ultra_pause_all": "সব থামাও",
+      "ultra_resume_all": "সব আবার চালু করো",
+      "ultra_paused_continue": "চালিয়ে যাও",
+      "ultra_pause_confirm_title": "সব ওয়ার্কার থামাবে?",
+      "ultra_pause_failed": "টিম থামানো গেল না।",
+      "ultra_resume_failed": "টিম আবার চালু করা গেল না।",
+      "ultra_continue_failed": "এই ওয়ার্কার চালিয়ে যাওয়া গেল না।",
+      "ultra_paused_detail_one": "{{count}}টি ওয়ার্কার থেমেছে · সারির বার্তা রাখা আছে",
+      "ultra_paused_detail_other": "{{count}}টি ওয়ার্কার থেমেছে · সারির বার্তা রাখা আছে",
+      "ultra_pause_confirm_body_one": "চলমান {{count}}টি ওয়ার্কার থামায়, সাব-টিমসহ। চলমান ধাপগুলো এখন থামবে এবং আবার চালু করলে আবার চলবে। থামানো থাকা অবস্থায় কোনো নতুন ওয়ার্কার শুরু হয় না।",
+      "ultra_pause_confirm_body_other": "চলমান {{count}}টি ওয়ার্কার থামায়, সাব-টিমসহ। চলমান ধাপগুলো এখন থামবে এবং আবার চালু করলে আবার চলবে। থামানো থাকা অবস্থায় কোনো নতুন ওয়ার্কার শুরু হয় না।",
+      "ultra_paused_notice_one": "তুমি টিম থামিয়েছ। {{count}}টি ওয়ার্কার থেমেছে। Board থেকে আবার চালু করো।",
+      "ultra_paused_notice_other": "তুমি টিম থামিয়েছ। {{count}}টি ওয়ার্কার থেমেছে। Board থেকে আবার চালু করো।",
+      "ultra_row_lead_working": "লিড কাজ করছে",
+      "ultra_pause_confirm_lead": "লিডের চলতি ধাপ থামবে। থামানো অবস্থায় কোনো নতুন ওয়ার্কার শুরু হবে না।"
     },
     "guideLayer": {
       "region_label": "গাইড",

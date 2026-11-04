@@ -10411,7 +10411,22 @@
       "ultra_done_line_files_rest_one": "Erledigt, wenn {{count}} Dateiprüfung bestanden ist und du den Rest freigibst.",
       "ultra_done_line_files_rest_other": "Erledigt, wenn alle {{count}} Dateiprüfungen bestanden sind und du den Rest freigibst.",
       "breadcrumb_nav_label": "Brotkrümelnavigation",
-      "breadcrumb_back_to": "Zurück zu {{t}}"
+      "breadcrumb_back_to": "Zurück zu {{t}}",
+      "ultra_pause_all": "Alle pausieren",
+      "ultra_resume_all": "Alle fortsetzen",
+      "ultra_paused_continue": "Fortsetzen",
+      "ultra_pause_confirm_title": "Alle Worker pausieren?",
+      "ultra_pause_failed": "Die Crew konnte nicht pausiert werden.",
+      "ultra_resume_failed": "Die Crew konnte nicht fortgesetzt werden.",
+      "ultra_continue_failed": "Dieser Worker konnte nicht fortgesetzt werden.",
+      "ultra_paused_detail_one": "{{count}} Worker gestoppt · Nachrichten in der Warteschlange bleiben erhalten",
+      "ultra_paused_detail_other": "{{count}} Worker gestoppt · Nachrichten in der Warteschlange bleiben erhalten",
+      "ultra_pause_confirm_body_one": "Stoppt {{count}} laufenden Worker, Sub-Teams eingeschlossen. Laufende Schritte stoppen jetzt und laufen beim Fortsetzen erneut. Solange pausiert ist, starten keine neuen Worker.",
+      "ultra_pause_confirm_body_other": "Stoppt {{count}} laufende Worker, Sub-Teams eingeschlossen. Laufende Schritte stoppen jetzt und laufen beim Fortsetzen erneut. Solange pausiert ist, starten keine neuen Worker.",
+      "ultra_paused_notice_one": "Du hast die Crew pausiert. {{count}} Worker gestoppt. Fortsetzen über das Board.",
+      "ultra_paused_notice_other": "Du hast die Crew pausiert. {{count}} Worker gestoppt. Fortsetzen über das Board.",
+      "ultra_row_lead_working": "Lead arbeitet",
+      "ultra_pause_confirm_lead": "Stoppt den aktuellen Schritt des Leads. Solange pausiert ist, starten keine neuen Worker."
     },
     "guideLayer": {
       "region_label": "Anleitung",

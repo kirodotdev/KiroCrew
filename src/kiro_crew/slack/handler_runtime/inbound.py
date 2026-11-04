@@ -827,12 +827,17 @@ async def route_linked_thread(
         **({"meta": dict(user_meta)} if user_meta else {}),
     )
     _queued_text = text
+    # Ultra Mode "Pause all" holds this session: the message queues as it does
+    # behind a running turn, and Resume all (or its own Continue) runs it.
+    from kiro_crew import crew_pause
+
+    _starts = not _linked_slot.running and not crew_pause.holds_slot(_linked_slot)
     if turn_context:
         from kiro_crew.context import _neutralize_structural_markers
 
         _safe_context = _neutralize_structural_markers(turn_context)
         _seated: dict[str, Any] | None = None
-        if not _linked_slot.running and hasattr(_linked_slot, "append_pending_context"):
+        if _starts and hasattr(_linked_slot, "append_pending_context"):
             try:
                 from kiro_crew.dashboard.chat_handlers import _build_pending_context_entry
 
@@ -854,7 +859,7 @@ async def route_linked_thread(
                 logger.debug("action context not queued as pending context", exc_info=True)
         if _seated is None:
             _queued_text = f"{text}\n\n{_safe_context}"
-    if not _linked_slot.running:
+    if _starts:
         from kiro_crew.dashboard.chat import _run_chat
 
         _chat_task = asyncio.create_task(

@@ -116,7 +116,7 @@ const API_KEY_ORDER = [
   'pullRequestChecks', 'pullRequestStatuses', 'resolvePullRequestThread', 'unresolvePullRequestThread',
   'replyToPullRequestThread', 'commentOnPullRequest', 'enablePullRequestAutoMerge', 'markPullRequestReady',
   'pullRequestPendingReview', 'submitPullRequestReview', 'fetchIssueSource', 'appContributors',
-  'chatSlots', 'crewWorkers', 'crewWorkerRecap', 'crewTimeline', 'crewWorkerSteer', 'crewWorkerApprove', 'chatSlotsUnrestored', 'autonudgeList', 'autonudgeForSlot', 'autonudgeSetActive', 'monitorsList',
+  'chatSlots', 'crewWorkers', 'crewWorkerRecap', 'crewPause', 'crewResume', 'crewTimeline', 'crewWorkerSteer', 'crewWorkerApprove', 'chatSlotsUnrestored', 'autonudgeList', 'autonudgeForSlot', 'autonudgeSetActive', 'monitorsList',
   'monitorForSlot', 'monitorCreate', 'monitorUpdate', 'monitorStop',
   'monitorClear', 'monitorRestart', 'monitorContract', 'chatSlotSourceLinks', 'unlinkSourceLink', 'chatSlotDetail',
   'createChatSlot', 'chatSlotContext', 'deleteChatSlot', 'cleanupSessions',

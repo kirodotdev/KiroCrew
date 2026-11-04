@@ -10176,7 +10176,19 @@
       "ultra_done_line_files_other": "当全部 {{count}} 项文件检查通过后完成。",
       "ultra_done_line_files_rest_other": "当全部 {{count}} 项文件检查通过且你批准其余部分后完成。",
       "breadcrumb_nav_label": "面包屑导航",
-      "breadcrumb_back_to": "返回 {{t}}"
+      "breadcrumb_back_to": "返回 {{t}}",
+      "ultra_pause_all": "全部暂停",
+      "ultra_resume_all": "全部继续",
+      "ultra_paused_continue": "继续",
+      "ultra_pause_confirm_title": "暂停所有成员？",
+      "ultra_pause_failed": "无法暂停团队。",
+      "ultra_resume_failed": "无法继续团队。",
+      "ultra_continue_failed": "无法让这个成员继续。",
+      "ultra_paused_detail_other": "已停止 {{count}} 个成员 · 排队的消息会保留",
+      "ultra_pause_confirm_body_other": "停止 {{count}} 个正在运行的成员，包括子团队。进行中的步骤现在停止，继续时会重新运行。暂停期间不会启动新成员。",
+      "ultra_paused_notice_other": "你暂停了团队。已停止 {{count}} 个成员。可在 Board 上继续。",
+      "ultra_row_lead_working": "负责人工作中",
+      "ultra_pause_confirm_lead": "停止负责人当前的步骤。暂停期间不会启动新成员。"
     },
     "guideLayer": {
       "region_label": "引导",
