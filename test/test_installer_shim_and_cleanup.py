@@ -1,31 +1,15 @@
-"""Regression gates for the packaged-install path of the Kiro Crew installer.
+"""Packaged-install path of the Kiro Crew installer: launcher shim and MCP cleanup.
 
-Two properties only a *packaged* install can violate — a dev or source tree
-satisfies both by accident, which is why these gates exist:
+A dev or source tree satisfies these properties by accident, so they are tested
+against a fake packaged layout:
 
-Property A — the packaged launcher must resolve
-    ``_resolve_kirocrew_bin()`` reaches the desktop bundle's launcher by walking
-    up from ``kiro_crew.__file__``: the bundle is a python-build-standalone
-    interpreter tree carrying the package under ``lib/*/site-packages`` and
-    exposing a launcher at its root. When that walk misses, the resolver falls
-    back to the bare string ``"kirocrew"`` — which is not on ``PATH`` inside a
-    bundle — and ``build_agent_config`` / ``rebuild_agent_config`` then DROP
-    ``kirocrew-core`` and ``kirocrew-cron``, taking ``spawn_run``, ``cron_add``,
-    ``learn_add`` … offline.
-
-    NOTE: a live ``kirocrew mcp-core`` stdio handshake PASSES even when this is
-    broken — the server code is healthy, it just never gets launched. The gate
-    is at the *resolution / wiring* level, which is what these tests assert: the
-    managed-server command must be an absolute, existing, executable path so the
-    validation loop keeps it.
-
-Defect B — stale predecessor MCP entries
-    ``clean_stale_managed_mcp()`` only removes ``kirocrew-*`` entries unless an
-    edition registers a superseded agent through the import-source seam — those
-    entries point at a runtime that does not exist and are purgeable by the
-    edition that replaced them.
-
-Both tests FAIL against the pre-fix code, proving they catch the real bug.
+- The desktop bundle's launcher must resolve by walking up from
+  ``kiro_crew.__file__``. A miss falls back to the bare ``"kirocrew"``, which is
+  not on ``PATH`` in a bundle, and the config build then DROPS ``kirocrew-core``
+  and ``kirocrew-cron``. A live ``mcp-core`` handshake still passes in that case,
+  so the tests check the wiring: the command must be an absolute executable path.
+- ``clean_stale_managed_mcp()`` purges a superseded predecessor's entries only
+  when an edition registers it through the import-source seam.
 """
 
 from __future__ import annotations
@@ -48,20 +32,14 @@ from kiro_crew.platform.bootstrap import build_default_context
 from kiro_crew.platform.context import reset_context, set_context
 from kiro_crew.platform.interfaces import ImportSource
 
-# The ~/.local/bin symlink shim is POSIX-only: ensure_kirocrew_on_path returns
-# early on Windows (pip's Scripts\kirocrew.exe is the launcher there, and a
-# symlink needs Developer Mode / elevation). These exercise the symlink
-# behavior itself, so they are POSIX-only; a dedicated Windows no-op test
-# covers the other branch.
+# The ~/.local/bin symlink shim is POSIX-only: on Windows pip's Scripts\kirocrew.exe
+# is the launcher and a symlink needs Developer Mode. A Windows no-op test covers that.
 _posix_shim_only = pytest.mark.skipif(
     sys.platform == "win32",
     reason="POSIX ~/.local/bin symlink shim; Windows uses pip's Scripts\\kirocrew.exe",
 )
 
 
-# --------------------------------------------------------------------------
-# import-source seam — register a superseded predecessor in tests
-# --------------------------------------------------------------------------
 def _install_superseded(
     managed_mcp_names: tuple[str, ...] = (),
     stale_mcp_binaries: tuple[str, ...] = (),
@@ -97,22 +75,13 @@ def _clean_context():
 def _repository_boundary_at_tmp_path(tmp_path: Path) -> None:
     """Pin the nearest repository marker for everything built under ``tmp_path``.
 
-    ``_in_linked_git_worktree`` walks up from its target to the NEAREST ``.git``
-    and answers on that marker alone, so a fixture's verdict depends on what sits
-    above ``tmp_path`` unless the fixture carries a marker of its own. pytest's
-    temp root is not guaranteed to be outside a repository: a developer's
-    ``TMPDIR=./tmp`` or the hygiene sweep's pinned scratch puts it INSIDE a
-    linked worktree, where every "no repository here" target read as a worktree
-    and every shim was declined. An ordinary-clone marker (a ``.git`` DIRECTORY)
-    at ``tmp_path`` makes the walk stop at the fixture: targets below it answer on
-    the markers the test wrote, or on this one when it wrote none.
+    ``_in_linked_git_worktree`` answers on the NEAREST ``.git`` above its target,
+    and pytest's temp root may sit inside a linked worktree (``TMPDIR=./tmp``).
+    An ordinary-clone ``.git`` directory here stops the walk at the fixture.
     """
     (tmp_path / ".git").mkdir(exist_ok=True)
 
 
-# --------------------------------------------------------------------------
-# helpers
-# --------------------------------------------------------------------------
 def _fake_bundle_launcher(tmp_path: Path) -> Path:
     """The desktop bundle's launcher, at the root of a python-build-standalone tree.
 
@@ -169,9 +138,7 @@ def _simulate_bundled_app(monkeypatch, launcher: Path) -> None:
     )
 
 
-# --------------------------------------------------------------------------
-# Defect A — resolver
-# --------------------------------------------------------------------------
+# Bundled launcher resolution
 def test_resolver_finds_the_bundled_launcher(tmp_path, monkeypatch):
     """In the desktop bundle, the walk-up from the package must reach the
     bundle's own launcher instead of the bare ``"kirocrew"`` sentinel."""
@@ -185,9 +152,7 @@ def test_resolver_finds_the_bundled_launcher(tmp_path, monkeypatch):
     )
 
 
-# --------------------------------------------------------------------------
-# Defect A — managed servers survive (not dropped)
-# --------------------------------------------------------------------------
+# Managed MCP servers kept in the desktop bundle
 def test_managed_servers_survive_in_the_desktop_bundle(tmp_path, monkeypatch):
     """build_agent_config() must give kirocrew-core/kirocrew-cron an absolute,
     existing, executable command — the exact predicate the rebuild validation
@@ -225,9 +190,7 @@ def test_managed_servers_survive_in_the_desktop_bundle(tmp_path, monkeypatch):
         ), f"{name} command {cmd!r} would be DROPPED by validation in the bundle"
 
 
-# --------------------------------------------------------------------------
-# Shim install — mirrors install.sh for install paths that skip it (the app)
-# --------------------------------------------------------------------------
+# Shim install: mirrors install.sh for install paths that skip it (the app)
 @_posix_shim_only
 def test_ensure_kirocrew_on_path_creates_shim(tmp_path, monkeypatch):
     """A bundled app with no `kirocrew` on PATH must get a shim pointing at the
@@ -258,24 +221,19 @@ def test_ensure_kirocrew_on_path_idempotent(tmp_path, monkeypatch):
 
 
 def test_ensure_kirocrew_on_path_is_noop_on_windows(tmp_path, monkeypatch):
-    """On Windows the POSIX symlink shim must be skipped entirely — pip's
-    Scripts\\kirocrew.exe is the launcher, and attempting the symlink raises
-    WinError 1314 without Developer Mode, printing a traceback into the setup
-    wizard. It must return None WITHOUT touching the filesystem."""
+    """On Windows the symlink shim is skipped without touching the filesystem:
+    pip's Scripts\\kirocrew.exe is the launcher, and the symlink raises WinError
+    1314 without Developer Mode."""
     monkeypatch.setattr(agent.platform_compat, "IS_WINDOWS", True)
     bin_dir = tmp_path / "localbin"
 
-    # Even with a resolvable target, Windows returns None and creates nothing.
     with patch.object(agent, "_resolve_kirocrew_bin", return_value=str(tmp_path / "kc")):
         assert agent.ensure_kirocrew_on_path(bin_dir=bin_dir) is None
     assert not bin_dir.exists()
 
 
-# --------------------------------------------------------------------------
-# First-run auto-delivery (gateway path) — shim every start, purge once.
-# The desktop app launches `kirocrew gateway` (never `kirocrew setup`), so
-# run_first_run_setup() delivers both automatically.
-# --------------------------------------------------------------------------
+# First-run setup on the gateway path: shim every start, purge once.
+# The desktop app launches `kirocrew gateway`, never `kirocrew setup`.
 def _seed_global_mcp(path: Path) -> None:
     """Write a global mcp.json with stale predecessor entries for first-run tests."""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -326,16 +284,13 @@ def test_first_run_delivers_shim_and_purge(tmp_path, monkeypatch):
 
     agent.run_first_run_setup()
 
-    # shim created under sandbox ~/.local/bin
     link = tmp_path / ".local" / "bin" / "kirocrew"
     assert link.is_symlink() and os.path.realpath(link) == os.path.realpath(exe)
-    # stale managed entries purged, genuine user server preserved
     remaining = set(json.loads(mcp.read_text(encoding="utf-8"))["mcpServers"])
     assert {"predecessor-core", "predecessor-cron", "kirocrew-core", "kirocrew-cron"}.isdisjoint(
         remaining
     )
     assert "ai-community-slack-mcp" in remaining
-    # one-time marker written
     assert marker.exists()
 
 
@@ -400,9 +355,7 @@ def test_first_run_is_best_effort(tmp_path, monkeypatch):
     assert not marker.exists()
 
 
-# --------------------------------------------------------------------------
-# Default-on builtin backfill — runs ONCE, and must reach EXISTING installs
-# --------------------------------------------------------------------------
+# Default-on builtin backfill: runs once, and must reach existing installs
 def _spy_backfill(monkeypatch, calls, *, raises=None):
     """Replace the backfill with a spy recording each invocation."""
 
@@ -418,11 +371,8 @@ def _spy_backfill(monkeypatch, calls, *, raises=None):
 def test_first_run_runs_the_default_on_backfill(tmp_path, monkeypatch):
     """First-run invokes the backfill on every start.
 
-    The one-shot guarantee is NOT first-run's job: it lives on the app record
-    itself (``InstalledApp.defaultOnBackfilled``, written in the same atomic write
-    that flips ``enabled``), so calling unconditionally is correct and there is no
-    marker file for this layer to own. See test_builtin_app_optional_enable.py for
-    the once-only property.
+    The once-only guarantee lives on ``InstalledApp.defaultOnBackfilled``
+    (tested in test_builtin_app_optional_enable.py), not on a first-run marker.
     """
     exe = _fake_bundle_launcher(tmp_path)
     _sandbox_first_run(tmp_path, monkeypatch, exe)
@@ -435,11 +385,8 @@ def test_first_run_runs_the_default_on_backfill(tmp_path, monkeypatch):
 
 
 def test_first_run_backfills_on_an_install_that_already_purged_mcp(tmp_path, monkeypatch):
-    """An install holding the stale-MCP marker still gets the backfill.
-
-    Existing installs are the ONLY ones this step has anything to do, and every
-    one of them already holds that marker. A backfill placed after the
-    stale-MCP early return would therefore run for nobody.
+    """An install holding the stale-MCP marker still gets the backfill: every
+    existing install holds it, so a backfill after that early return runs for nobody.
     """
     exe = _fake_bundle_launcher(tmp_path)
     marker, mcp = _sandbox_first_run(tmp_path, monkeypatch, exe)
@@ -457,10 +404,8 @@ def test_first_run_backfills_on_an_install_that_already_purged_mcp(tmp_path, mon
 def test_first_run_survives_a_failing_backfill(tmp_path, monkeypatch):
     """A raising backfill must not break gateway startup.
 
-    Continuation is asserted through the stale-MCP purge, a LATER step, rather
-    than through the `~/.local/bin` shim: that shim is POSIX-only (Windows uses
-    pip's `Scripts\\kirocrew.exe`), and skipping the whole case on Windows would
-    drop coverage of the one property here that is not platform-specific.
+    Continuation is checked through the later stale-MCP purge, not the POSIX-only
+    `~/.local/bin` shim, so the case also runs on Windows.
     """
     exe = _fake_bundle_launcher(tmp_path)
     _, mcp = _sandbox_first_run(tmp_path, monkeypatch, exe)
@@ -475,14 +420,11 @@ def test_first_run_survives_a_failing_backfill(tmp_path, monkeypatch):
     agent.run_first_run_setup()
 
     assert calls == [True]
-    # A step AFTER the failing one still ran, so the failure did not abort setup.
     remaining = set(json.loads(mcp.read_text(encoding="utf-8"))["mcpServers"])
     assert "predecessor-core" not in remaining
 
 
-# --------------------------------------------------------------------------
 # Resolver: the running interpreter is never the answer
-# --------------------------------------------------------------------------
 def test_resolver_never_returns_the_interpreter(tmp_path, monkeypatch):
     """The resolver must return a ``kirocrew`` launcher, never whatever
     interpreter happens to be running — a source install with the launcher only
@@ -506,9 +448,7 @@ def test_resolver_never_returns_the_interpreter(tmp_path, monkeypatch):
     assert resolved != str(interp), "the resolver must not return sys.executable"
 
 
-# --------------------------------------------------------------------------
-# ensure_kirocrew_on_path — edge cases
-# --------------------------------------------------------------------------
+# ensure_kirocrew_on_path edge cases
 def test_ensure_shim_noop_when_no_binary(tmp_path, monkeypatch):
     monkeypatch.setattr(agent, "_KIROCREW_BIN", "", raising=False)
     monkeypatch.setattr(agent, "_bin_is_usable", lambda p: False)
@@ -547,12 +487,8 @@ def test_ensure_shim_noop_when_already_on_path(tmp_path, monkeypatch):
     assert not (bin_dir / "kirocrew").exists()
 
 
-# --------------------------------------------------------------------------
-# ensure_kirocrew_on_path — never follow an ephemeral git worktree
-#
-# `git worktree remove` deletes the tree's .venv with it, so a shim pointing
-# there dangles and `kirocrew` breaks machine-wide, not just in that tree.
-# --------------------------------------------------------------------------
+# ensure_kirocrew_on_path never links into a linked git worktree:
+# `git worktree remove` deletes its .venv, and a dangling shim breaks `kirocrew` machine-wide.
 def _checkout_with_kirocrew(
     root: Path, *, linked_worktree: bool, bare_parent: bool = False
 ) -> Path:
@@ -652,8 +588,7 @@ def test_ensure_shim_declines_a_symlink_pointing_into_a_worktree(tmp_path, monke
 
 @_posix_shim_only
 def test_ensure_shim_declines_a_bare_repo_worktree_target(tmp_path, monkeypatch):
-    """Same refusal for a worktree of a bare repo — the shape that bypassed the
-    first version of this guard."""
+    """Same refusal for a worktree of a bare repo, whose pointer has no `.git`."""
     binary = _checkout_with_kirocrew(
         tmp_path / "wt-from-bare", linked_worktree=True, bare_parent=True
     )
@@ -680,8 +615,7 @@ def test_ensure_shim_links_an_ordinary_clone_target(tmp_path, monkeypatch):
 
 @_posix_shim_only
 def test_ensure_shim_keeps_a_working_shim_when_target_is_a_worktree(tmp_path, monkeypatch):
-    """The regression that broke the machine: an existing, working shim must
-    survive a resolution that lands in a worktree — not be replaced by it."""
+    """An existing, working shim survives a resolution that lands in a worktree."""
     good = _checkout_with_kirocrew(tmp_path / "clone", linked_worktree=False)
     bin_dir = tmp_path / "localbin"
     bin_dir.mkdir()
@@ -695,9 +629,7 @@ def test_ensure_shim_keeps_a_working_shim_when_target_is_a_worktree(tmp_path, mo
     assert os.path.exists(bin_dir / "kirocrew"), "shim must not be left dangling"
 
 
-# --------------------------------------------------------------------------
-# clean_stale_managed_mcp — edge cases + command-based (playwright) purge
-# --------------------------------------------------------------------------
+# clean_stale_managed_mcp: edge cases and the argv-based playwright purge
 def test_clean_stale_missing_file_returns_empty(tmp_path, monkeypatch):
     monkeypatch.setattr(mcp_cleanup, "_KIRO_MCP_JSON", tmp_path / "nope.json")
     assert mcp_cleanup.clean_stale_managed_mcp() == []
@@ -752,11 +684,8 @@ def test_clean_stale_purges_deleted_playwright_proxy(tmp_path, monkeypatch):
             {
                 "mcpServers": {
                     "@playwright/mcp": {"command": "kirocrew", "args": ["mcp-playwright-proxy"]},
-                    # Launched by kirocrew but with a verb that still EXISTS,
-                    # and deliberately NOT one of KIROCREW_BIN_MCP_SERVERS (those
-                    # are purged by the separate install-path rule). Proves the
-                    # new purge matches the deleted VERB, not "anything kirocrew
-                    # launches".
+                    # A live kirocrew verb, NOT in KIROCREW_BIN_MCP_SERVERS: the
+                    # purge matches the deleted VERB, not anything kirocrew launches.
                     "operator-own-server": {"command": "kirocrew", "args": ["mcp-core"]},
                     "ai-community-slack-mcp": {"command": "ai-community-slack-mcp", "args": []},
                 }
@@ -769,7 +698,6 @@ def test_clean_stale_purges_deleted_playwright_proxy(tmp_path, monkeypatch):
     removed = mcp_cleanup.clean_stale_managed_mcp()
     remaining = set(json.loads(p.read_text(encoding="utf-8"))["mcpServers"])
 
-    # The deleted playwright proxy entry is purged by argv token.
     assert "@playwright/mcp" not in remaining
     assert "@playwright/mcp" in removed
     assert "operator-own-server" in remaining  # other kirocrew-launched verb kept
@@ -798,11 +726,8 @@ def _stale_mcp_doc() -> str:
 def test_clean_stale_never_rewrites_the_file_in_place(tmp_path, monkeypatch):
     """The cleanup must REPLACE mcp.json, never truncate-and-rewrite the open inode.
 
-    A reader caught inside an in-place rewrite sees 0 bytes, and the session-start
-    reader treats an empty mcp.json as "no servers". The observable for "never in
-    place" is the ORIGINAL inode: a handle opened before the cleanup must still read
-    every original byte afterwards. An in-place write truncates and refills exactly
-    that inode, so the handle would read the new (or a torn) document instead.
+    A reader mid-rewrite sees 0 bytes, read as "no servers". A handle opened before
+    the cleanup must still read every original byte afterwards.
     """
     p = tmp_path / "mcp.json"
     original = _stale_mcp_doc()
@@ -869,14 +794,8 @@ def test_first_run_no_global_mcp(tmp_path, monkeypatch):
     assert not mcp.exists()  # purge must not create a global mcp.json
 
 
-# --------------------------------------------------------------------------
-# purge_deleted_proxy_from_config — every-rebuild agent-config purge
-#
-# The first-run marker-guarded purge (clean_stale_managed_mcp) covers the
-# GLOBAL ~/.kiro/settings/mcp.json.  purge_deleted_proxy_from_config covers
-# the assembled agent config on EVERY rebuild, because an entry can be
-# re-injected from ~/.kiro/crew/mcp.json by the merge passes.
-# --------------------------------------------------------------------------
+# purge_deleted_proxy_from_config runs on EVERY rebuild of the agent config, because
+# the merge passes can re-inject an entry from ~/.kiro/crew/mcp.json.
 
 
 def test_rebuild_purge_drops_proxy_entry_even_when_marker_exists(tmp_path):
@@ -961,8 +880,7 @@ def test_rebuild_purge_leaves_operator_playwright_server_untouched():
 
 
 def test_rebuild_purge_drops_reinjected_entry_on_second_rebuild():
-    """A re-injected entry is dropped again on a SECOND rebuild — this is
-    the property the deleted converge_playwright_servers existed for."""
+    """A re-injected entry is dropped again on a SECOND rebuild."""
     base_config: dict = {
         "mcpServers": {
             "playwright-mcp": {
@@ -972,7 +890,6 @@ def test_rebuild_purge_drops_reinjected_entry_on_second_rebuild():
         },
         "tools": ["@playwright-mcp"],
     }
-    # First rebuild purge.
     removed_1 = mcp_cleanup.purge_deleted_proxy_from_config(base_config)
     assert "playwright-mcp" in removed_1
     assert "playwright-mcp" not in base_config["mcpServers"]
@@ -984,7 +901,6 @@ def test_rebuild_purge_drops_reinjected_entry_on_second_rebuild():
     }
     base_config["tools"].append("@playwright-mcp")
 
-    # Second rebuild purge drops it again.
     removed_2 = mcp_cleanup.purge_deleted_proxy_from_config(base_config)
     assert "playwright-mcp" in removed_2
     assert "playwright-mcp" not in base_config["mcpServers"]
@@ -1031,10 +947,8 @@ def test_shim_declines_an_appimage_mount_target(tmp_path, monkeypatch):
 
 
 def test_launcher_whose_venv_is_gone_is_not_usable(tmp_path):
-    """The reaped-work-directory case, observed live: a clone's `bin/kirocrew`
-    survives while its `.venv` is deleted, so the file is readable and executable
-    but fails at run time. Publishing it as the machine-wide `kirocrew` writes a
-    command that is broken the moment it is written."""
+    """A clone's `bin/kirocrew` can survive its deleted `.venv`: readable and
+    executable, but it fails at run time, so it must not be published."""
     root = tmp_path / "kc-work-dir"
     launcher = root / "bin" / "kirocrew"
     launcher.parent.mkdir(parents=True)
@@ -1116,22 +1030,13 @@ def test_launcher_naming_no_interpreter_stays_usable(tmp_path):
     assert agent._bin_is_usable(compiled) is True
 
 
-# --------------------------------------------------------------------------
-# Shim ownership — a background start must not take the name from another
-# install. The documented Linux pairing (cli.sh for the CLI, deb/rpm for the
-# desktop shell) puts a wheel launcher and a package launcher on ONE machine,
-# and `ensure_kirocrew_on_path` runs on every gateway start.
-# --------------------------------------------------------------------------
+# Shim ownership: a gateway start must not take the name from another install.
+# On Linux cli.sh (wheel) and deb/rpm (desktop shell) can share one machine.
 def _simulate_bundled_app_honest(monkeypatch, tmp_path, exe):
     """``_simulate_bundled_app``, but launchers under *tmp_path* are judged for real.
 
-    The shared helper stubs ``_bin_is_usable`` to accept ONLY the bundle launcher.
-    That is right for the resolver tests -- it makes them independent of whatever dev
-    tree they run in -- but wrong for these, which turn entirely on whether
-    ANOTHER install's launcher is judged alive or dead. A stub that calls every
-    foreign launcher dead would report ownership working while the product still
-    hijacked a live one, so the verdict for the paths built by this test comes
-    from the real predicate.
+    These tests turn on whether ANOTHER install's launcher is alive; a stub calling
+    every foreign launcher dead would hide a hijack of a live one.
     """
     real_usable = agent._bin_is_usable
     _simulate_bundled_app(monkeypatch, exe)
@@ -1210,11 +1115,7 @@ def test_gateway_start_repairs_a_dangling_launcher(tmp_path, monkeypatch):
 
 @_posix_shim_only
 def test_gateway_start_replaces_launcher_whose_interpreter_vanished(tmp_path, monkeypatch):
-    """The launcher file exists but its venv was reaped: dead, so replaceable.
-
-    This is the shape that made the live host's `kirocrew` fail -- a readable,
-    executable console script whose interpreter does not exist.
-    """
+    """The launcher file exists but its venv was reaped: dead, so replaceable."""
     exe = _fake_bundle_launcher(tmp_path)
     _simulate_bundled_app_honest(monkeypatch, tmp_path, exe)
     stale_bin = tmp_path / "reaped-venv" / "bin"

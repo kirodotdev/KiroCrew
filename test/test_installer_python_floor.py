@@ -5,9 +5,8 @@ carries its OWN copy of two decisions -- "is this interpreter good enough" and "
 this venv still reusable" -- and each one fails differently when it is missed:
 
 * A probe that ends in ``die``/``exit`` turns a host that would install into one
-  that aborts. Under the old >= 3.10 floor the distro's own ``python3`` satisfied
-  every probe on Ubuntu 22.04, so the package-manager branch was always sufficient;
-  under >= 3.12 it is not.
+  that aborts. The distro ``python3`` does not clear the floor everywhere (Ubuntu
+  22.04 ships 3.10), so the package-manager branch alone is not sufficient.
 * A venv reused on its executability alone makes ``pip install -e .`` refuse the
   package ("Requires-Python >=3.12"), so a documented ``git pull && bash install.sh``
   upgrade dead-ends with no way forward.
@@ -62,12 +61,8 @@ _VENV_FLOOR_PROBE = "import sys; sys.exit(0 if sys.version_info >= (3, 12) else 
 def _discover_venv_owners() -> list[Path]:
     """Every shell entry point that assigns `_venv=`, found rather than listed.
 
-    The round-4 revision of this file hand-maintained this list and got it wrong:
-    `minimal_install.sh` owns `$REPO_DIR/.venv` and was recorded as owning none, so
-    the reuse rule was never enforced there and the review found the gap instead.
-    Discovering the owners means a new installer -- or one that grows a venv later --
-    is covered the moment it lands, and the list cannot silently disagree with the
-    tree again.
+    A hand-kept list can miss an owner (`minimal_install.sh` owns `$REPO_DIR/.venv`);
+    discovery covers a new installer, or one that grows a venv, the moment it lands.
     """
     owners = []
     for script in sorted(REPO.glob("*.sh")):
@@ -106,9 +101,7 @@ def _lines(path: Path) -> list[str]:
     return path.read_text(encoding="utf-8").splitlines()
 
 
-# ---------------------------------------------------------------------------
 # install.sh: no probe may end in `die` without trying the bootstrap first
-# ---------------------------------------------------------------------------
 
 
 def test_install_sh_defines_a_python_bootstrap():
@@ -123,11 +116,9 @@ def test_install_sh_defines_a_python_bootstrap():
 
 
 def test_every_install_sh_python_probe_tries_the_bootstrap_before_dying():
-    """A `_find_python || die` with no bootstrap is the abort regression itself.
+    """A `_find_python || die` with no bootstrap aborts a supported host.
 
-    Ubuntu 22.04 is the case that made this a regression rather than a
-    pre-existing limitation: `apt install python3` gives 3.10, which passed the
-    old floor and fails the new one.
+    On Ubuntu 22.04 `apt install python3` gives 3.10, below the floor.
     """
     offenders = []
     for number, line in enumerate(_lines(INSTALL_SH), start=1):
@@ -148,19 +139,15 @@ def test_install_sh_has_no_bare_die_for_a_missing_interpreter():
     assert "_bootstrap_python" in no_pkg_mgr
 
 
-# ---------------------------------------------------------------------------
 # setup.sh / cloud-install.sh: delegate to the repo's own bootstrap
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(("script", "var"), _CLONE_LOCAL, ids=_CLONE_LOCAL_IDS)
 def test_clone_local_installers_provision_before_giving_up(script, var):
     """Both run from a clone, so `ensure-python.sh` is right there to be used.
 
-    The guard is asserted, not just the call: a bootstrap block that is present but
-    reachable only when the probe SUCCEEDED (or never, behind a constant) is dead
-    code that reads like a fallback. So the condition has to name the same variable
-    the probe assigns and require it to be empty.
+    The guard is asserted, not just the call: it must require the probe's own
+    variable to be empty, or the fallback is dead code.
     """
     body = script.read_text(encoding="utf-8")
     guard = re.compile(
@@ -182,8 +169,7 @@ def test_the_bootstrap_attempt_precedes_the_give_up_branch(script, var):
     """A bootstrap after the exit is unreachable code, not a fallback."""
     body = script.read_text(encoding="utf-8")
     bootstrap_at = body.index("ensure-python.sh")
-    # Keyed on the guidance the give-up branch prints rather than on one wording of
-    # the failure line, which has been rewritten twice as the remedy changed.
+    # Keyed on the guidance URL, which is steadier than the failure line's wording.
     give_up = body.index("mise.jdx.dev/installing-mise.html")
     assert bootstrap_at < give_up
 
@@ -198,9 +184,7 @@ def test_the_provisioned_interpreter_is_revalidated_before_use(script, var):
     ), f"{script.name} adopts the recorded interpreter without re-checking the floor"
 
 
-# ---------------------------------------------------------------------------
-# every venv owner: an existing venv is reusable only at >= 3.12
-# ---------------------------------------------------------------------------
+# Every venv owner: an existing venv is reusable only at >= 3.12
 
 
 @pytest.mark.parametrize("script", _VENV_OWNERS, ids=_VENV_OWNER_IDS)
@@ -210,7 +194,6 @@ def test_venv_reuse_is_gated_on_the_interpreter_version(script):
     assert (
         _VENV_FLOOR_PROBE in body
     ), f"{script.name} decides venv reuse without checking the interpreter version"
-    # And the too-old venv must be removed, not installed into.
     assert 'rm -rf "$_venv"' in body
 
 
@@ -251,13 +234,11 @@ def test_the_reuse_probe_accepts_exactly_the_supported_interpreters(tmp_path, re
     assert (proc.returncode == 0) is reusable
 
 
-# ---------------------------------------------------------------------------
-# install.ps1: the Windows cloud client had no version gate at all
-# ---------------------------------------------------------------------------
+# install.ps1: the Windows cloud client gates Python on the floor
 
 
 def test_install_ps1_gates_python_on_the_floor_not_on_existence():
-    """`Have "python"` accepted a 3.10 and let pip refuse it four steps later."""
+    """A bare `Have "python"` gate accepts a 3.10 that pip refuses later."""
     body = INSTALL_PS1.read_text(encoding="utf-8")
     assert "function Resolve-Python312" in body
     assert "sys.version_info >= (3, 12)" in body
@@ -284,17 +265,12 @@ def test_install_ps1_runs_pip_through_the_resolved_interpreter():
     assert not offenders, "these calls bypass the resolved interpreter:\n" + "\n".join(offenders)
 
 
-# ---------------------------------------------------------------------------
-# dep_sync: the in-process editable reinstall is the third reuser
-# ---------------------------------------------------------------------------
+# dep_sync: the in-process editable reinstall also reuses the venv
 
 
 def test_editable_reinstall_refuses_a_venv_below_the_declared_floor(tmp_path, capsys):
-    """pip would refuse this anyway -- refusing first names the reason.
-
-    Without the gate the failure is a raw pip "Requires-Python" error on a
-    revision whose git merge has already landed, with no recovery hint.
-    """
+    """pip would refuse this anyway; refusing first names the reason instead of
+    a raw "Requires-Python" error after the git merge has landed."""
     repo = tmp_path
     (repo / "setup.cfg").write_text("[options]\npython_requires = >=3.12\n", encoding="utf-8")
 
@@ -391,9 +367,7 @@ def test_no_floor_declared_does_not_block_the_reinstall(tmp_path):
     assert sp.run.called
 
 
-# ---------------------------------------------------------------------------
 # The floor is declared in more than one place; they must not drift apart
-# ---------------------------------------------------------------------------
 
 
 def test_the_declared_floor_agrees_across_the_shell_entry_points():
@@ -410,18 +384,14 @@ def test_the_declared_floor_agrees_across_the_shell_entry_points():
     assert floors == {("3", "12")}, f"probes disagree on the floor: {sorted(floors)}"
 
 
-# ---------------------------------------------------------------------------
 # The automatic bootstrap must not execute unverified network content
-# ---------------------------------------------------------------------------
 
 
 def test_the_automatic_bootstrap_does_not_pipe_a_remote_script_to_a_shell():
     """`--mise` is an opt-in; the automatic fallback is not, so it must not fetch-and-run.
 
-    The distinction is consent, not mechanism: a user who passes `--mise` has asked
-    for the version manager, while `_bootstrap_python` runs on its own when a probe
-    comes up empty. Executing a downloaded installer there would run unverified
-    remote content as the user on a path nobody opted into.
+    `_bootstrap_python` runs on its own when a probe comes up empty, so a downloaded
+    installer there would run unverified remote code nobody opted into.
     """
     body = INSTALL_SH.read_text(encoding="utf-8")
     bootstrap = body.split("_bootstrap_python() {", 1)[1].split("\n}", 1)[0]
@@ -456,10 +426,8 @@ def test_the_give_up_messages_name_a_way_forward():
 def test_the_fallback_cannot_install_its_own_provisioner(script, var):
     """`ensure-python.sh` installs mise by piping a remote script into sh.
 
-    That is acceptable where the user asked for it and unacceptable on a fallback
-    that fires by itself, so the automatic path may only USE a version manager the
-    host already has. The predicate is spelled identically in both scripts so the
-    posture is one decision rather than two that can drift.
+    A fallback that fires by itself may only USE a version manager the host already
+    has. The predicate is spelled identically in both scripts so it cannot drift.
     """
     body = script.read_text(encoding="utf-8")
     assert "_has_provisioner() {" in body
@@ -475,20 +443,15 @@ def test_the_give_up_branch_names_the_provisioner_route(script, var):
     assert "mise.jdx.dev/installing-mise.html" in body
 
 
-# ---------------------------------------------------------------------------
 # install.sh: the .install-method=pip record is gated on a verified entry point
-# ---------------------------------------------------------------------------
 
 
 def test_install_sh_verifies_the_console_script_before_recording_pip():
     """A pip install that leaves no `kirocrew` entry point must not be recorded.
 
-    The interrupted-venv-rebuild incident: a killed `pip install -e` can leave a
-    venv with a working interpreter but no console script, yet the old install.sh
-    still wrote `.install-method=pip` and symlinked a dangling `kirocrew`. The
-    gateway then dies later with exit 127. install.sh must die before recording
-    the method unless BOTH the executable entry point and the `import kiro_crew`
-    check pass.
+    An interrupted `pip install -e` can leave an interpreter but no console script;
+    recording `.install-method=pip` then makes the gateway die with exit 127. Both
+    the entry-point and the `import kiro_crew` checks must pass first.
     """
     body = INSTALL_SH.read_text(encoding="utf-8")
 
@@ -502,13 +465,9 @@ def test_install_sh_verifies_the_console_script_before_recording_pip():
     assert unsafe_import_guard not in body, "PYTHONPATH can spoof the venv postcondition"
     assert record in body, "the .install-method=pip record moved or was renamed"
 
-    # Both guards must run BEFORE the method is recorded, or the record is not
-    # actually gated. This is the property that breaks if either guard is
-    # reverted (mutation check).
     assert body.index(entry_guard) < body.index(record)
     assert body.index(import_guard) < body.index(record)
 
-    # And each guard must abort (die) rather than merely warn.
     entry_stmt = body.split(entry_guard, 1)[1].split("fi", 1)[0]
     assert "die " in entry_stmt, "the entry-point guard must die, not warn"
     import_stmt = body.split(import_guard, 1)[1].split("fi", 1)[0]
