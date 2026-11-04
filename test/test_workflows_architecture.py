@@ -45,11 +45,14 @@ ALLOWED_SIBLING_IMPORTS: dict[str, set[str]] = {
     "store": set(),  # durable JSON-per-run persistence; imports config.paths + security
     #                  (external), no intra-pkg siblings — an OPTIONAL persistence adapter
     "library": {"store"},  # reusable-definition persistence; shares store path resolution
+    "nesting": set(),  # leaf: depth and fan-out caps on nested runs; imports config only
     "context": {"validate"},
     "budget_watch": set(),  # leaf: warn-only estimate of a run's token use, stdlib only
     "runner": {"validate", "dsl", "events", "context", "schema", "registry", "budget_watch"},
     # run-to-revision update below service: handed the service, never imports it
     "update_from_run": {"library", "validate", "registry"},
+    # nesting reservation steps below service: handed the service, never imports it
+    "service_nesting": {"registry"},
     # service is the gateway-side façade ABOVE runner — composes the engine for the
     # live process (chat tools / app / injection). Top of the stack.
     "service": {
@@ -62,6 +65,8 @@ ALLOWED_SIBLING_IMPORTS: dict[str, set[str]] = {
         "library",
         "events",
         "update_from_run",
+        "nesting",
+        "service_nesting",
     },
 }
 
