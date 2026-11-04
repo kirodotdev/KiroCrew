@@ -17259,6 +17259,14 @@
       "confirm_delete_job": "削除？",
       "go_to_chat": "チャットに移動",
       "create_your_first_job": "最初のジョブを作成",
+      "batchActions": {
+        "actions_for_selected": "チェックしたジョブの操作",
+        "batch_failed_other": "{{count}} 件中 {{failed}} 件のジョブを更新できませんでした",
+        "run_confirm_body": "各ジョブが今すぐ新しい実行を開始します。一時停止中と実行中のジョブはスキップされます。",
+        "run_confirm_title_other": "{{count}}件のジョブを今すぐ実行しますか？",
+        "strict_off": "厳密なスケジュールをオフ",
+        "strict_on": "厳密なスケジュールをオン"
+      },
       "cronFolders": {
         "batch_move_failed_other": "{{total}}件中{{count}}件のジョブを移動できませんでした",
         "collapse_folder": "フォルダー「{{name}}」を折りたたむ",

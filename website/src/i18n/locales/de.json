@@ -17715,6 +17715,16 @@
       "confirm_delete_job": "Löschen?",
       "go_to_chat": "Zum Chat",
       "create_your_first_job": "Erstellen Sie Ihren ersten Job",
+      "batchActions": {
+        "actions_for_selected": "Aktionen für die markierten Jobs",
+        "batch_failed_one": "{{failed}} von {{count}} Job konnte nicht aktualisiert werden",
+        "batch_failed_other": "{{failed}} von {{count}} Jobs konnten nicht aktualisiert werden",
+        "run_confirm_body": "Jeder Job startet jetzt einen neuen Lauf. Pausierte und laufende Jobs werden übersprungen.",
+        "run_confirm_title_one": "{{count}} Job jetzt ausführen?",
+        "run_confirm_title_other": "{{count}} Jobs jetzt ausführen?",
+        "strict_off": "Strikter Zeitplan aus",
+        "strict_on": "Strikter Zeitplan an"
+      },
       "cronFolders": {
         "batch_move_failed_one": "{{count}} von {{total}} Job konnte nicht verschoben werden",
         "batch_move_failed_other": "{{count}} von {{total}} Jobs konnten nicht verschoben werden",

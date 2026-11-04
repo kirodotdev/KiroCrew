@@ -17715,6 +17715,16 @@
       "confirm_delete_job": "हटाएँ?",
       "go_to_chat": "चैट पर जाएँ",
       "create_your_first_job": "अपना पहला जॉब बनाएँ",
+      "batchActions": {
+        "actions_for_selected": "चुने गए कार्यों के लिए क्रियाएँ",
+        "batch_failed_one": "{{count}} में से {{failed}} कार्य अपडेट नहीं हो सका",
+        "batch_failed_other": "{{count}} में से {{failed}} कार्य अपडेट नहीं हो सके",
+        "run_confirm_body": "हर कार्य अभी एक नया रन शुरू करता है। रोके गए और चल रहे कार्य छोड़ दिए जाते हैं।",
+        "run_confirm_title_one": "{{count}} कार्य अभी चलाएँ?",
+        "run_confirm_title_other": "{{count}} कार्य अभी चलाएँ?",
+        "strict_off": "सख्त शेड्यूल बंद",
+        "strict_on": "सख्त शेड्यूल चालू"
+      },
       "cronFolders": {
         "batch_move_failed_one": "{{total}} में से {{count}} कार्य स्थानांतरित नहीं किया जा सका",
         "batch_move_failed_other": "{{total}} में से {{count}} कार्य स्थानांतरित नहीं किए जा सके",
