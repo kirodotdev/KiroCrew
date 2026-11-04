@@ -766,6 +766,28 @@ class TestInstallValidation:
         assert not (home / "apps").exists() or not any((home / "apps").iterdir())
 
     @pytest.mark.asyncio
+    async def test_a_manifest_that_is_not_utf8_refuses_like_an_unreadable_one(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Bytes that do not decode read like a manifest that does not parse:
+        # the same retryable refusal, not a 500.
+        _setup_env(tmp_path, monkeypatch)
+        src = tmp_path / "source" / APP
+        src.mkdir(parents=True)
+        (src / APP_MANIFEST_FILENAME).write_bytes(b'\xff\xfe{"name": "x"}')
+
+        def _must_not_install(*args: Any, **kwargs: Any) -> AppResult:
+            raise AssertionError("install must not proceed without a stable app identity")
+
+        monkeypatch.setattr(routes_mod, "install_app", _must_not_install)
+        async with TestClient(TestServer(_make_app(dashboard_user="owner"))) as client:
+            resp = await client.post("/api/apps/install", json={"source": str(src)})
+            assert resp.status == 409
+            body = await resp.json()
+        assert body["code"] == "app_identity_unavailable"
+        assert body["retryable"] is True
+
+    @pytest.mark.asyncio
     async def test_a_non_object_manifest_gets_the_answer_install_app_gives_it(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

@@ -10,7 +10,11 @@ registration, app MCP policy, or the App Store listing:
 * agent registration skips the agent;
 * an app's MCP policy reads as none;
 * the manifest cache, the external registry cache and the bundled registry
-  read as absent.
+  read as absent;
+* an app agent config on disk reads as absent, and Kiro Crew's own agent
+  config (``kirocrew.json``) reads as empty for a read-only caller while a
+  read-modify-write caller still refuses it;
+* the dev-mode sentinel and grant record read as empty (no grants).
 """
 
 from __future__ import annotations
@@ -138,3 +142,46 @@ def test_a_bundled_registry_that_is_not_utf8_reads_as_empty(tmp_path, monkeypatc
     rows = _call(sources._load_registry_file)
 
     assert isinstance(rows, list)
+
+
+def test_an_agent_config_that_is_not_utf8_reads_as_absent(tmp_path):
+    config = tmp_path / "test-app--my-agent.json"
+    config.write_bytes(_UNDECODABLE)
+
+    assert _call(lambda: bridges_agents._read_agent_config(config)) is None
+
+
+def test_kirocrew_agent_config_that_is_not_utf8_reads_as_empty(tmp_path, monkeypatch):
+    from kiro_crew.apps import bridges_mcp_config
+
+    config = tmp_path / "kirocrew.json"
+    config.write_bytes(_UNDECODABLE)
+    monkeypatch.setattr(bridges_mcp_config, "_mcp_json_path", lambda: config)
+
+    assert _call(bridges_mcp_config._read_mcp_json_unlocked) == {}
+
+
+def test_a_strict_read_of_kirocrew_agent_config_still_refuses_to_guess(tmp_path, monkeypatch):
+    # A read-modify-write caller must not take the file for empty and write
+    # over the whole agent config, so the strict read raises as for bad JSON.
+    from kiro_crew.apps import bridges_mcp_config
+
+    config = tmp_path / "kirocrew.json"
+    config.write_bytes(_UNDECODABLE)
+    monkeypatch.setattr(bridges_mcp_config, "_mcp_json_path", lambda: config)
+
+    with pytest.raises(ValueError):
+        bridges_mcp_config._read_mcp_json_unlocked(strict=True)
+    assert config.read_bytes() == _UNDECODABLE
+
+
+def test_dev_mode_files_that_are_not_utf8_read_as_empty(app_env):
+    from kiro_crew.apps import dev_mode
+
+    dev_mode._sentinel_path().parent.mkdir(parents=True, exist_ok=True)
+    dev_mode._sentinel_path().write_bytes(_UNDECODABLE)
+    dev_mode._grants_path().write_bytes(_UNDECODABLE)
+
+    assert _call(dev_mode._read_dev_sentinel) == set()
+    # Fails closed: an unreadable grant record grants nothing.
+    assert _call(dev_mode._read_dev_grants) == {}
