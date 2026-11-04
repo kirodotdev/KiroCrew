@@ -229,14 +229,25 @@ def test_real_collected_nodes_are_the_disjoint_fleet_and_hosted_union(tmp_path):
 def test_workflow_routes_every_scope_without_changing_local_defaults(jobs):
     config = configparser.ConfigParser()
     config.read(ROOT / "setup.cfg", encoding="utf-8")
-    assert "ipv6_required:" in config["tool:pytest"]["markers"]
+    markers = config["tool:pytest"]["markers"]
+    assert "ipv6_required:" in markers
+    assert "real_venv:" in markers
     assert "ipv6_required" not in config["tool:pytest"]["addopts"]
+    assert "real_venv" not in config["tool:pytest"]["addopts"]
     assert config["tool:pytest"]["testpaths"] == "test src/kiro_crew/apps/builtins"
     for name, expected_count in (("backend-test", 4), ("backend-test-windows", 1)):
         body = _step(jobs, name, "Run tests")["run"].replace("\\\n", " ")
         commands = re.findall(r"^\s*(?:python -m )?pytest .+$", body, re.MULTILINE)
         assert len(commands) == expected_count
-        assert all('-m "not ipv6_required"' in command for command in commands)
+        # Every backend shard must deselect both ipv6_required and real_venv
+        # tests; real_venv tests run only in the dedicated wheel-engine-real-venv
+        # CI job.
+        for command in commands:
+            m = re.search(r'-m\s+"([^"]+)"', command)
+            assert m is not None, f"no -m expression found in: {command}"
+            expr = m.group(1)
+            assert "not ipv6_required" in expr, f"ipv6_required not excluded in: {command}"
+            assert "not real_venv" in expr, f"real_venv not excluded in: {command}"
         assert jobs[name]["strategy"]["matrix"]["group"] == list(range(1, 9))
     hosted = jobs["backend-test-ipv6"]
     assert hosted["needs"] == ["changes", "await-fast-gate", "lint-gate"]
