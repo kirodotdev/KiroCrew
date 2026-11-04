@@ -555,7 +555,7 @@ def _crewmate_worker_prompt(agent: str, base_prompt: str, session_key: str) -> s
     out against the on-disk worker base, the literal base KAS hands the seam, so a
     crewmate file whose prompt repeats that base adds nothing here either. Only a worker whose
     backend gets its prompt from this block alone
-    (``ACP_BACKENDS_MATE_WORKER_PROMPT_IN_CONTEXT``: claude)
+    (``ACP_BACKENDS_MATE_WORKER_PROMPT_IN_CONTEXT``: claude, codex)
     carries both here; KAS's wire spec already does, so its block keeps the base.
     Any other agent, or no session, keeps the base too.
     """
