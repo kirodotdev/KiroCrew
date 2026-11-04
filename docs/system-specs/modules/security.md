@@ -2405,7 +2405,12 @@ complete, and the keystone floor closes the whole class).
   `_reload_live_hooks` splices the new opt-out fields onto the live
   `HookManager` (preserving its flat hook keys) so the change enforces without
   a restart. These operator endpoints open the file directly and do NOT route
-  through the agent tool gate.
+  through the agent tool gate. Their readers (`_read_denied_data` for the
+  snapshot and the user-rule existence pre-checks, `_read_denied_strict` for
+  the mutation) go through `atomic_write.read_bytes_with_retry`, so a read that
+  lands in a concurrent writer's replace on Windows (`PermissionError`,
+  WinError 32) retries for one bounded window instead of reading the file as empty — which would show
+  no rules and answer 404 "unknown user rule" for a rule that exists.
 
 `HooksConfig.from_dict` remains **fully defensive** against malformed values
 (type-checks every field; booleans — `disable_all`, the auto-approve flags, a
