@@ -892,17 +892,10 @@ class TestStopReasonCancelled:
 
 
 class TestLiveTurnPresentationFailure:
-    """A presentation-side Slack call that raises mid-run must not flip the
-    placeholder to the terminal "🔧 Something went wrong" message nor record a
-    session failure while the ACP turn is still live and will finish with the
-    correct, complete reply.
+    """A raising presentation-side Slack call mid-run must not fail a live turn.
 
-    The exposed calls run on the first ``tool_call`` event, before any text has
-    streamed, so ``accumulated`` is empty. A non-ACP raise there is not caught by
-    the typed ``except`` arms (all ``kiro_crew.acp.client`` errors) and would
-    reach the generic ``except Exception`` catch-all, which renders the terminal
-    error and records a failure. These tests assert the raise is swallowed and
-    the turn still delivers.
+    These calls run on the first ``tool_call`` event, where a non-ACP raise would
+    reach the generic ``except Exception`` and render "🔧 Something went wrong".
     """
 
     @pytest.fixture(autouse=True)
@@ -1069,14 +1062,10 @@ class TestLiveTurnPresentationFailure:
 
 
 class TestStreamingLoopPresentationGuards:
-    """Presentation-guard sweep: every remaining presentation-side Slack
-    call inside the streaming loop must be best-effort. The real ``SlackClient``
-    swallows its own API errors, but a client or transport that raises instead
-    would escape into the generic ``except Exception`` catch-all (the typed arms
-    are all ``kiro_crew.acp.client`` errors), rendering the terminal
-    "🔧 Something went wrong" message and recording a session failure on a turn
-    that is still live. Each test drives one guarded site with a raising client
-    and asserts: no failure recorded, no terminal placeholder, reply delivered.
+    """Every presentation-side Slack call in the streaming loop is best-effort.
+
+    Each test drives one site with a raising client and asserts no failure recorded,
+    no terminal placeholder, and the reply delivered.
     """
 
     class _TrackingSessions(FakeSessionManager):

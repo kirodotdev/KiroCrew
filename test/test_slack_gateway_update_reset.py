@@ -47,31 +47,12 @@ class TestAutoApplyUpdateResetPath:
 
     @pytest.fixture(autouse=True)
     def _permit_update_preconditions(self):
-        """Neutralize the two seam preconditions so these tests keep their subject.
+        """Neutralize the seam preconditions so these tests reach the reset sequence.
 
-        `_auto_apply_update` refuses outright when the checkout declares a
-        repo-named git driver, when the branch does not track the remote it resets
-        to, or when a tracked edit is hidden by assume-unchanged. All read the REAL
-        git metadata of ``KIROCREW_PROJECT_DIR``, which these tests point at a path
-        that is not a repo — so without this they would all pass vacuously by
-        refusing before reaching the fetch/reset sequence they exist to cover. The
-        refusals have their own tests in ``TestAutoApplyUpdatePreconditions`` and
-        ``TestAutoApplyUpdateResetPath``.
-
-        The git binary is pinned too: ``_auto_apply_update`` resolves it through
-        ``platform_compat.trusted_git_bin`` (fixed trusted directories, never
-        PATH) and skips the whole update when that answers ``None``. Every spawn
-        below is faked, so the value only has to be an argv[0]; without the pin,
-        a host whose git lives outside those directories (a per-user Git for
-        Windows install) made every test here pass or fail on the refusal branch
-        instead of the sequence it covers. A test about the resolver itself
-        patches it again explicitly, and that inner patch wins.
-
-        The network fetch now goes through the shared isolated helper
-        ``fetch_and_pin_upstream`` (its isolation is covered against real git in
-        ``test_update_check_git_exec_neutralized``). Here it is stubbed to a
-        fixed fetched OID so these tests keep their subject -- the reset flow
-        after the fetch. ``self._fetch_and_pin`` exposes the stub.
+        The preconditions read real git metadata of ``KIROCREW_PROJECT_DIR``, a non-repo
+        here, so without these patches every test would refuse before the fetch. The git
+        binary is pinned because a host git outside the trusted directories skips the
+        update. ``self._fetch_and_pin`` exposes the stubbed fetch.
         """
         self._fetch_and_pin = AsyncMock(return_value="0" * 40)
         with (
@@ -97,16 +78,9 @@ class TestAutoApplyUpdateResetPath:
                 "kiro_crew.slack.gateway.dep_sync.incoming_python_floor_breach",
                 return_value=None,
             ),
-            # The pre-restart drain, shortened to nothing. Nothing in these tests
-            # makes its condition true, so it polled at 10ms all the way to its
-            # 30s deadline and then deferred the restart -- the same verdict these
-            # tests already assert, reached thirty seconds later. Eleven tests
-            # across the three TestAutoApplyUpdate* classes paid it in full:
-            # ~330s of pure sleeping per full suite run, measured identically in
-            # five runs. The branch still executes and the deferral still happens;
-            # only the waiting goes. The 30.0 itself stays pinned by
-            # test_restart_fences_then_closes_and_final_drains, which is the test
-            # that is ABOUT it.
+            # The pre-restart drain never finishes here, so its 30s deadline would only
+            # add sleep before the same deferral. The 30.0 is pinned by
+            # test_restart_fences_then_closes_and_final_drains.
             patch.object(gw.GatewayOrchestrator, "_UPDATE_DRAIN_TIMEOUT_SECS", 0.0),
         ):
             yield
@@ -193,14 +167,9 @@ class TestAutoApplyUpdateResetPath:
     async def test_reset_then_frontend_then_pip(self, tmp_path):
         """A CLEAN checkout resets, then frontend build + pip install run.
 
-        Public OSS flow (no internal workspace sync or toolbox step): branch → fetch →
-        diff → status → reset → [kiro-cli optional] → build frontend → pip.
-
-        A dirty tree is not exercised here: passing ` M file.py` and expecting
-        the reset to run would encode a warn-and-destroy behaviour that
-        `test_uncommitted_tracked_changes_refuse_the_reset` forbids. The
-        happy path is a clean tree; the dirty tree is a refusal, not a variant
-        of this flow.
+        Order: branch → fetch → diff → status → reset → [kiro-cli optional] → build
+        frontend → pip. A dirty tree is a refusal, pinned by
+        `test_uncommitted_tracked_changes_refuse_the_reset`.
         """
         orch = _make_orchestrator()
         ds = real_dashboard_state(tmp_path)
@@ -765,11 +734,8 @@ class TestAutoApplyUpdateResetPath:
     async def test_uncommitted_tracked_changes_refuse_the_reset(self):
         """An unattended update must not delete a developer's uncommitted work.
 
-        This check refuses rather than logging a warning and resetting anyway:
-        a warn-and-reset would make the boot-time path the one place that could
-        silently destroy uncommitted edits. It refuses like the committed-work
-        and exec-config checks immediately above it, and defers to `kirocrew
-        update` -- where a human chose the destructive semantics.
+        It refuses rather than warning and resetting, and defers to `kirocrew update`,
+        where a human chose the destructive semantics.
         """
         orch = _make_orchestrator()
         ds = _mock_dashboard_state()
@@ -951,11 +917,8 @@ class TestAutoApplyUpdateResetPath:
     async def test_an_untracked_collision_refuses(self, tmp_path):
         """`reset --hard` OVERWRITES an untracked file the target adds.
 
-        This is the data-loss case that survives a clean tracked tree:
-        `git status --porcelain` reports the local file as `??`, and the
-        tracked-change refusal deliberately skips those -- so without this check
-        the reset silently replaces it. Verified against real git while
-        developing the fix.
+        `git status --porcelain` reports the local file as `??`, which the tracked-change
+        refusal skips, so without this check the reset silently replaces it.
         """
         orch = _make_orchestrator()
         ds = _mock_dashboard_state()
@@ -1052,15 +1015,9 @@ class TestAutoApplyUpdateResetPath:
     async def test_the_collision_scan_does_not_run_on_the_event_loop(self, tmp_path):
         """`no-blocking-call-on-event-loop`: the ancestor walk is offloaded.
 
-        `_obstructions` stats every added path AND each of its ancestors, so a
-        large update would run an unbounded stat walk on the loop thread and stall
-        every chat and the heartbeat.
-
-        Asserts the THREAD the scan's own probes run on, not which executor object
-        some offload was handed: the first version of this test asserted the
-        latter and passed even with the scan inline, because another offload in
-        the same function already used that executor. Thread identity is the
-        property the rule is actually about.
+        `_obstructions` stats every added path and its ancestors, which would stall the
+        loop. Asserts the thread the probes run on, not the executor: another offload in
+        the same function uses that executor, so an executor check passes with the scan inline.
         """
         orch = _make_orchestrator()
         ds = _mock_dashboard_state()
@@ -1099,11 +1056,9 @@ class TestAutoApplyUpdateResetPath:
     async def test_a_junction_ancestor_refuses(self, tmp_path):
         """A Windows junction must be treated as a link, not a directory.
 
-        `os.path.islink` returns False for a junction, so the round-20 check would
-        read one as a plain directory and let the reset write THROUGH it, outside
-        the checkout. `AGENTS.md` names `is_link_or_junction` as the required form
-        for exactly this. Asserted by faking the junction verdict, since a real
-        junction cannot be created on POSIX.
+        `os.path.islink` returns False for a junction, so an `islink` check would let the
+        reset write through it, outside the checkout. The junction verdict is faked, since
+        POSIX cannot create one.
         """
         orch = _make_orchestrator()
         ds = _mock_dashboard_state()
@@ -1195,16 +1150,9 @@ class TestAutoApplyUpdateResetPath:
     async def test_the_collision_refusal_logs_an_encodable_record(self, tmp_path, caplog):
         """Reproduces the CI shard crash without needing xdist.
 
-        The collision refusal is the one log line carrying a filename straight
-        from git output. When that name is not valid UTF-8, an unsanitized record
-        raises inside the handler -- `logging` drops it, and `pytest-xdist`, which
-        serializes reports as UTF-8, dies with `DumpError` and takes the WHOLE
-        shard with it. That is what happened: one test killed shard 4 on both
-        Python versions while passing locally, because the local run disabled
-        `-n auto`.
-
-        Asserting encodability here is what makes the guard durable -- reverting
-        the sanitizer fails this test in a plain single-process run.
+        The collision refusal logs a filename straight from git output. A non-UTF-8 name
+        in an unsanitized record makes `pytest-xdist` die with `DumpError` and take the
+        whole shard, so encodability is asserted in a plain single-process run.
         """
         orch = _make_orchestrator()
         ds = _mock_dashboard_state()
@@ -1250,12 +1198,9 @@ class TestAutoApplyUpdateResetPath:
     async def test_the_added_paths_query_disables_rename_detection(self, tmp_path):
         """Without `--no-renames` the collision guard is silently bypassable.
 
-        Rename detection is on by default for porcelain diffs, so a pure `git mv`
-        upstream is ONE `R` entry -- and `--diff-filter=A` excludes it, leaving the
-        destination path absent from the added list while the reset still
-        overwrites an untracked local file there.
-        `test_governance_updates` proves that against real git; this pins the flag
-        so the argv cannot regress.
+        With rename detection a pure `git mv` upstream is one `R` entry that
+        `--diff-filter=A` excludes, so the reset overwrites an untracked file at the
+        destination. `test_governance_updates` proves it against real git.
         """
         orch = _make_orchestrator()
         ds = _mock_dashboard_state()
@@ -1367,11 +1312,8 @@ class TestAutoApplyUpdateResetPath:
     async def test_a_refusal_skips_the_core_dep_repair_entirely(self):
         """A REFUSED sync must not be followed by a repair into the same venv.
 
-        REFUSED means the sync stopped before touching anything — most
-        importantly when the venv serves a DIFFERENT checkout. The core-dep
-        repair writes into exactly that venv, so running it after a refusal
-        would perform the mutation the guard exists to prevent, and the restart
-        would then bring up the wrong checkout with changed dependencies.
+        REFUSED covers a venv that serves a different checkout; the core-dep repair would
+        write into exactly that venv.
         """
         orch = _make_orchestrator()
         ds = _mock_dashboard_state()
@@ -1402,16 +1344,10 @@ class TestAutoApplyUpdateResetPath:
 
     @pytest.mark.asyncio
     async def test_reset_target_is_the_isolated_fetch_oid_not_a_resolved_ref(self):
-        """The reset target is the OID the isolated fetch returned, resolved from
-        no ref name at all.
+        """The reset target is the OID the isolated fetch returned, not a resolved ref.
 
-        The old flow resolved ``refs/remotes/origin/<branch>`` with ``rev-parse
-        --verify`` after an inline fetch, which carried a tag-ambiguity hazard (a
-        tag literally named ``origin/main`` could win). The shared isolated
-        helper (``fetch_and_pin_upstream``, stubbed by the autouse fixture)
-        returns the fetched commit id directly, so the reset targets that OID and
-        no ``origin/<branch>`` ref is resolved to get it -- the ambiguity cannot
-        arise. The helper is asked for ``origin`` and the current branch.
+        Resolving ``origin/<branch>`` by name lets a tag literally named ``origin/main``
+        win. The helper is asked for ``origin`` and the current branch.
         """
         orch = _make_orchestrator()
         ds = _mock_dashboard_state()
@@ -1449,13 +1385,9 @@ class TestAutoApplyUpdateResetPath:
     async def test_no_restart_after_any_unclean_sync_even_when_the_repair_works(self):
         """A nonzero sync never restarts, even when the core-dep repair succeeds.
 
-        Every nonzero result names something the restart cannot fix on its own.
-        Dependencies may still be unsatisfied — the repair covers only the CORE
-        deps, not whatever the revision actually added. Or the revision repointed
-        the console script, which no dependency install rewrites: this restart uses
-        `-m kiro_crew` and would survive it, but the next restart through the
-        service manager runs `kirocrew` and would not. Staying up on
-        already-imported modules tells the operator now instead of then.
+        The repair covers only the core deps, not what the revision added, and a
+        repointed console script would break the next service-manager restart even
+        though this `-m kiro_crew` restart survives it.
         """
         orch = _make_orchestrator()
         ds = _mock_dashboard_state()
@@ -1488,11 +1420,8 @@ class TestAutoApplyUpdateResetPath:
     async def test_a_failed_install_with_a_failed_repair_does_not_restart(self):
         """Restarting into unsatisfied dependencies would kill the gateway.
 
-        The reset already moved the tree to the new revision. If neither the
-        dependency install nor the core-dep repair succeeded, the process this
-        restart brings up is a revision whose dependencies are known to be
-        missing — it dies at import. Staying up on already-imported modules
-        leaves the operator a working gateway to finish the install from.
+        With both the install and the core-dep repair failed, the new process dies at
+        import; staying up leaves a working gateway to finish the install from.
         """
         orch = _make_orchestrator()
         ds = _mock_dashboard_state()
@@ -1533,11 +1462,8 @@ class TestAutoApplyUpdatePreconditions:
     async def test_repo_declared_driver_refuses_before_running_a_driver(self):
         """A repo-named filter/textconv driver would be run BY these git commands.
 
-        `-c` cannot pin an arbitrary driver name, so the run is refused. What must
-        be proven is that the refusal lands before the commands that would EXECUTE
-        such a driver — `status`, `diff` and `reset`. The branch probe ahead of it
-        is a pure ref read that runs no driver, and it carries the neutralizer env
-        regardless.
+        `-c` cannot pin an arbitrary driver name, so the refusal must land before
+        `status`, `diff` and `reset`. The earlier branch probe is a pure ref read.
         """
         orch = _make_orchestrator()
         orch.dashboard_state = _mock_dashboard_state()
