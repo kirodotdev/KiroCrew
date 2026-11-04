@@ -635,7 +635,12 @@ def _url_payload_command(n: int) -> str:
 #: was relaxed.
 #: Raised by 3, from 33,720, for the ``kas-mcp-launch`` leaf on the read+write floor
 #: (``paths_lists``): one entry and its two-line note; the floor only grows.
-_PACKAGE_LINE_BUDGET = 33_723
+#: Raised by 12, from 33,723, for the Salesforce consumer-key shape that an
+#: ``oauth_endpoints.json`` endpoint accepts in ``client_id`` (``exfil_oauth``): the
+#: shape regex, the operator-listed lookup that reads the file only for that shape,
+#: its once-per-endpoint audit, and the second counterfactual keyword that keeps
+#: MCP discovery from assuming an operator entry. No check was relaxed elsewhere.
+_PACKAGE_LINE_BUDGET = 33_735
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

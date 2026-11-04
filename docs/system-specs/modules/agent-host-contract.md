@@ -117,7 +117,10 @@ the one harness-neutral seam; crew-mode.md, "The worker runs on its crewmate's
 backend"). It is carried the way a member chat's saved spec is, so it runs on the
 hosts in `ACP_BACKENDS_MATE_WORKER_KIT` and is refused with the member chat's
 codes elsewhere (harness-parity.md). KAS takes every agent over the wire per
-session, so its projection reads the seam. claude, the one mirrored host in the
+session, so its projection reads the seam. Its gateway-routed servers come from
+the crewmate's own broker overlay, found by the session's key, and KAS subtracts
+and injects that one set (architecture/mcp.md, "Crewmate overlays"); a server the
+gateway does not route is declared on the wire as before. claude, the one mirrored host in the
 set, builds its `session/new` `mcpServers` array from `session_mcp_projection`,
 which reads the seam for a worker session by its key, so the worker's own servers
 reach it; a

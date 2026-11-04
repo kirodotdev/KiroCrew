@@ -140,6 +140,7 @@ DECLARED_SITES = frozenset(
         ("mcp_gateway/backend_tmp.py", "_discard_owner_marker"),
         ("mcp_gateway/backend_tmp.py", "record_owner"),
         ("mcp_gateway/backend_tmp.py", "sweep_all_backend_tmp"),
+        ("mcp_gateway/mate_overlays.py", "mate_dir_refused"),
         ("mcp_gateway/spill.py", "cleanup_old_spill_files"),
         ("mcp_gateway/spill.py", "maybe_spill_response"),
         ("member_essential_context.py", "_is_absent"),

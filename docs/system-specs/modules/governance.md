@@ -1853,6 +1853,12 @@ canonical taxonomy parser — never re-implemented). Resolution is:
   (fail-closed, never a permissive fall-through), mirroring the dashboard
   `api_session_tool_policy` precedent.
 
+`resolve_task_bound_profile(agent)` reads only the `task` bind for one agent,
+with no app or surface fallback (an unloaded store denies). A caller that already
+resolved the active profile uses it to narrow that by a second agent's own
+profile without re-applying the surface default; the one caller is a crewmate
+stub's app callback (`mcp_gateway/app_call.py`).
+
 **`identity_proven` is true for ANY non-empty session key**, so an unattended
 surface that *does* carry a key — `cron:<job>`, `subagent:<id>`, `taskrunner` —
 resolves to `None` (policy-ceiling-only), **not** `deny_all_profile`; only `_bg`
