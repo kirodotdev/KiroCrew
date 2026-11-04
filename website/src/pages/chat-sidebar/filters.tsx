@@ -517,6 +517,8 @@ export function useSessionStatusFilters({ unreadSlots, activeFilters, filtersPau
   // tick. See the helper's docstring for the known accepted batched-update
   // edge case.
   const prevUnreadCount = useRef<number | null>(null)
+  const otherFiltersOn = useMemo(() => [...activeFilters].some(key => key !== 'unread'), [activeFilters])
+  const prevOtherFiltersOn = useRef<boolean | null>(null)
   useEffect(() => {
     // Guard the ENTIRE body on slotsLoaded: without this, the unconditional
     // `prevUnreadCount.current = unreadSlots.length` assignment below would
@@ -538,10 +540,13 @@ export function useSessionStatusFilters({ unreadSlots, activeFilters, filtersPau
       current: unreadSlots.length,
       slotsLoaded,
       showUnreadOnly: activeFiltersRef.current.has('unread'),
+      otherFiltersOn,
+      prevOtherFiltersOn: prevOtherFiltersOn.current,
     })
     if (action === 'disable') disableFilter('unread')
     prevUnreadCount.current = unreadSlots.length
-  }, [unreadSlots.length, slotsLoaded, disableFilter, filtersPaused])
+    prevOtherFiltersOn.current = otherFiltersOn
+  }, [unreadSlots.length, slotsLoaded, disableFilter, filtersPaused, otherFiltersOn])
   return {
     slotsLoaded, workflowActiveSet, automationRunningSet, subagentCounts, subagentStartedCounts, subagentApprovalCounts, unreadSet,
     recentWindowMs, recentAmountDraft, setRecentAmountDraft, recentUnitDraft, selectRecentPreset,
