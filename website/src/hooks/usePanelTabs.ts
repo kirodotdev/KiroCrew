@@ -68,7 +68,7 @@ export type TabKind = ViewKind | 'file' | 'diff' | 'wtdiff' | 'artifact' | 'term
  *  ChatPage on a session's FIRST pin. A session pinned before the tab existed
  *  reaches it through the + menu, the same zero option Issues gives pre-existing
  *  issue links; that is what keeps this free of any reveal-claim mechanism. */
-export const PINNED_VIEWS: ViewKind[] = ['changes', 'artifacts', 'files']
+export const PINNED_VIEWS: ViewKind[] = ['files', 'changes', 'artifacts']
 
 /** Where each singleton view gets its data — the fact a NON-chat host needs to
  *  decide whether it can offer the view at all.
