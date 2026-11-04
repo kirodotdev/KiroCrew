@@ -15,7 +15,7 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { screen, waitFor, within } from '@testing-library/react'
+import { fireEvent, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { renderWithProviders } from './helpers'
 import { RemoteCrewPanel } from '../pages/settings/RemoteCrewPanel'
@@ -922,6 +922,51 @@ describe('the cancel that removes an instance asks first', () => {
     await u.click(await screen.findByRole('button', { name: /Keep setting up/i }))
     expect(screen.queryByTestId('cancel-remove-warning')).not.toBeInTheDocument()
     expect(api.cloudLaunchCancel).not.toHaveBeenCalled()
+  })
+
+  it('keeps keyboard focus on the swapped-in buttons when arming and backing out', async () => {
+    // Arming replaces the pressed button with Confirm + Keep setting up, and
+    // backing out swaps it back. Without moving focus, each swap drops it to
+    // the page, so a keyboard user loses their place on a billed launch.
+    useJob(LAUNCHING)
+    const u = userEvent.setup()
+    renderWithProviders(<RemoteCrewPanel />)
+    await openSetup(u)
+
+    const first = (await screen.findAllByRole('button', { name: /remove the crew/i }))[0]
+    first.focus()
+    await u.keyboard('{Enter}')
+    expect(document.activeElement).toHaveTextContent(/Yes, remove/i)
+
+    await u.tab()
+    expect(document.activeElement).toHaveTextContent(/Keep setting up/i)
+    await u.keyboard('{Enter}')
+    expect(screen.queryByTestId('cancel-remove-warning')).not.toBeInTheDocument()
+    expect(document.activeElement).toHaveTextContent(/Cancel and remove the crew…$/)
+  })
+
+  it('does not let the held Enter that armed it also confirm the removal', async () => {
+    // Focus moves to Confirm while the arming Enter can still be down, and its
+    // auto-repeat would click the newly focused button.
+    useJob(LAUNCHING)
+    const u = userEvent.setup()
+    renderWithProviders(<RemoteCrewPanel />)
+    await openSetup(u)
+
+    const first = (await screen.findAllByRole('button', { name: /remove the crew/i }))[0]
+    first.focus()
+    await u.keyboard('{Enter}')
+    const confirm = document.activeElement as HTMLElement
+    expect(confirm).toHaveTextContent(/Yes, remove/i)
+
+    // A repeat keydown is the held key, not a new press.
+    const repeat = fireEvent.keyDown(confirm, { key: 'Enter', repeat: true })
+    expect(repeat).toBe(false)
+    expect(api.cloudLaunchCancel).not.toHaveBeenCalled()
+
+    // A fresh press still confirms.
+    await u.keyboard('{Enter}')
+    await waitFor(() => expect(api.cloudLaunchCancel).toHaveBeenCalled())
   })
 
   it('does not make stopping a sign-in ask twice', async () => {
