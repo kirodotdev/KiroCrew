@@ -143,6 +143,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
         "session_handle_model_selection",
     ),
     "_match_mcp_sign_in_ask": ("function", False, "b60c5fea256e", "session_handle_mcp"),
+    "_mcp_attribution_launches": ("function", False, "146e34524e76", "session_handle_mcp"),
     "_no_tool_in_flight": ("function", False, "a6632a57e602", "session_handle_updates"),
     "_normalize_models": ("staticmethod", False, "0587318c8e24", "session_handle_model_selection"),
     "_note_mcp_sign_in_status": ("function", False, "d0d2b0689553", "session_handle_mcp"),
