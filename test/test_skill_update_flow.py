@@ -67,6 +67,8 @@ class FakeLoader:
         refusal=None,
         missing_scripts=None,
         rejected_scripts=None,
+        supersede_slug=None,
+        supersede_created_at=None,
     ):
         self.staged.append(
             {
@@ -80,6 +82,8 @@ class FakeLoader:
                 "scripts": scripts,
                 "missing_scripts": missing_scripts,
                 "rejected_scripts": rejected_scripts,
+                "supersede_slug": supersede_slug,
+                "supersede_created_at": supersede_created_at,
             }
         )
         return f"auto/{slug}"
@@ -119,11 +123,13 @@ async def test_dedupe_maps_update_verdict(monkeypatch):
     c = _mk(loader, judge_model="claude-haiku-4.5")
     c._event_loop = asyncio.get_running_loop()
     monkeypatch.setattr(
-        H, "metadata_dedupe_verdict",
+        H,
+        "metadata_dedupe_verdict",
         lambda cand, existing, judge: (H.VERDICT_UPDATE, "auto/deploy-helper"),
     )
     assert c._dedupe_candidate("deploy-helper-2", "d", "t") == (
-        H.VERDICT_UPDATE, "auto/deploy-helper"
+        H.VERDICT_UPDATE,
+        "auto/deploy-helper",
     )
 
 
@@ -133,7 +139,8 @@ async def test_dedupe_maps_dup_verdict(monkeypatch):
     c = _mk(loader, judge_model="claude-haiku-4.5")
     c._event_loop = asyncio.get_running_loop()
     monkeypatch.setattr(
-        H, "metadata_dedupe_verdict",
+        H,
+        "metadata_dedupe_verdict",
         lambda *a: (H.VERDICT_DUP, "auto/deploy-helper"),
     )
     assert c._dedupe_candidate("x", "d", "t") == (H.VERDICT_DUP, "auto/deploy-helper")
@@ -362,7 +369,8 @@ def test_process_dup_still_rejects(monkeypatch):
     assert staged_update == []
     assert loader.staged == []
     rej = [
-        r for r in recorded
+        r
+        for r in recorded
         if r.get("outcome") == "rejected"
         and r.get("metadata", {}).get("reason") == "similar_exists"
     ]
@@ -381,7 +389,8 @@ def test_process_no_candidate_emits_skipped_audit(monkeypatch):
     c = _mk(loader)
     # _dedupe_candidate must never be consulted — there is no candidate.
     monkeypatch.setattr(
-        c, "_dedupe_candidate",
+        c,
+        "_dedupe_candidate",
         lambda *a, **k: pytest.fail("dedupe called for a null candidate"),
     )
     recorded: list[dict] = []
@@ -393,7 +402,8 @@ def test_process_no_candidate_emits_skipped_audit(monkeypatch):
         ctx.stop()
     assert loader.staged == []
     skipped = [
-        r for r in recorded
+        r
+        for r in recorded
         if r.get("tool_name") == "auto_skill_create"
         and r.get("outcome") == "skipped"
         and r.get("metadata", {}).get("reason") == "no_candidate_proposed"
@@ -465,9 +475,7 @@ def test_strip_skill_frontmatter_and_fence_helpers():
 async def test_merge_receives_prose_only_not_frontmatter():
     """The live SKILL.md header must be stripped before the merge turn, else the
     model echoes it back and a second ``---`` block nests in the procedure."""
-    loader = FakeLoader(
-        live_body="---\nname: auto/deploy-helper\nversion: 4\n---\n\n" + _LIVE_BODY
-    )
+    loader = FakeLoader(live_body="---\nname: auto/deploy-helper\nversion: 4\n---\n\n" + _LIVE_BODY)
     c = _mk(loader)
     c._event_loop = asyncio.get_running_loop()
     seen: dict = {}
@@ -728,7 +736,8 @@ async def test_update_verdict_on_pending_target_stages_a_new_candidate():
     assert st.get("target") is None
     # And it was NOT audited as a dropped/rejected candidate.
     assert not [
-        r for r in recorded
+        r
+        for r in recorded
         if r.get("outcome") == "rejected"
         and r.get("metadata", {}).get("reason") in ("target_not_live", "similar_exists")
     ]
@@ -850,9 +859,7 @@ def test_frontmatter_value_resolves_block_scalars():
         "  a, b\n"
         "---\n\n## Steps\n"
     )
-    assert (
-        H._frontmatter_value(body, "description") == "Retry a deploy after checking the logs.\n"
-    )
+    assert H._frontmatter_value(body, "description") == "Retry a deploy after checking the logs.\n"
     # `triggers` uses `|-`, whose strip chomping drops the trailing break, so it is
     # unaffected by the strip chomping -- the pair keeps the two modes visibly distinct here.
     assert H._frontmatter_value(body, "triggers") == "a, b"
@@ -976,3 +983,359 @@ async def test_base_version_is_captured_before_the_body_it_describes():
     # version live drifted to during the merge (2). The staleness guard will then
     # correctly refuse this candidate instead of silently applying it over v2.
     assert loader.staged[0]["base_version"] == 1
+
+
+# ── one pending update per live skill ──
+
+
+def _real_loader_with_live(tmp_path):
+    from kiro_crew.skills import AutoSkillProvenance, SkillsLoader
+
+    loader = SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False)
+    assert (
+        loader.create_auto_skill(
+            "deploy-helper",
+            description="deploy the service",
+            triggers="deploy",
+            procedure_md="## Steps\n1. live step\n",
+            provenance=AutoSkillProvenance(
+                session_key="s0", created_at=AutoSkillProvenance.now_iso()
+            ),
+        )
+        == "auto/deploy-helper"
+    )
+    return loader
+
+
+def _stage_update_from(c, session_key, procedure_md, triggers):
+    ctx = _sel_recorder([])
+    try:
+        c._stage_skill_update(
+            key=session_key,
+            target_key="auto/deploy-helper",
+            description="",
+            triggers=triggers,
+            procedure_md=procedure_md,
+        )
+    finally:
+        ctx.stop()
+
+
+@pytest.mark.asyncio
+async def test_two_sessions_updating_one_skill_leave_one_pending_item(tmp_path):
+    """Two sessions proposing an update to the same live skill must leave ONE
+    pending update, and the second merge must start from the first proposal so
+    neither requirement is lost."""
+    loader = _real_loader_with_live(tmp_path)
+    c = _mk(loader)
+    c._event_loop = asyncio.get_running_loop()
+    merge_bases: list[str] = []
+
+    async def fake_merge(base, d, t, p):
+        merge_bases.append(base)
+        return f"{base}\n{p}"
+
+    c._merge_skill_update = fake_merge  # type: ignore[assignment]
+
+    await asyncio.to_thread(_stage_update_from, c, "sess-a", "2. first requirement", "rollback")
+    await asyncio.to_thread(_stage_update_from, c, "sess-b", "3. second requirement", "canary")
+
+    pending = loader.list_pending_skills()
+    assert len(pending) == 1, [p["slug"] for p in pending]
+    only = pending[0]
+    assert only["kind"] == "update" and only["target"] == "auto/deploy-helper"
+    # The second merge was built on the first proposal, not on the live body.
+    assert "first requirement" in merge_bases[1]
+    body = loader.get_pending_skill(only["slug"])["content"]
+    assert "first requirement" in body and "second requirement" in body
+    for trig in ("deploy", "rollback", "canary"):
+        assert trig in only["triggers"]
+
+
+@pytest.mark.asyncio
+async def test_queued_update_on_an_older_live_version_is_not_the_merge_base(tmp_path):
+    """A queued update built on an older live version is refused as stale at
+    approval, so the next update merges over the live body and replaces it."""
+    loader = _real_loader_with_live(tmp_path)
+    c = _mk(loader)
+    c._event_loop = asyncio.get_running_loop()
+    merge_bases: list[str] = []
+
+    async def fake_merge(base, d, t, p):
+        merge_bases.append(base)
+        return f"{base}\n{p}"
+
+    c._merge_skill_update = fake_merge  # type: ignore[assignment]
+    await asyncio.to_thread(_stage_update_from, c, "sess-a", "2. first requirement", "rollback")
+    real_version = loader.get_auto_skill_version("auto/deploy-helper")
+    loader.get_auto_skill_version = lambda key: real_version + 1  # type: ignore[method-assign]
+    await asyncio.to_thread(_stage_update_from, c, "sess-b", "3. second requirement", "canary")
+
+    assert "first requirement" not in merge_bases[1]
+    # The stale one was not the merge base, so it is not superseded: it stays
+    # beside the new candidate for approval to refuse.
+    pending = loader.list_pending_skills()
+    assert len(pending) == 2, [p["slug"] for p in pending]
+
+
+@pytest.mark.asyncio
+async def test_failed_merge_over_a_queued_update_supersedes_nothing(tmp_path):
+    """When the merge over a queued update fails, the new candidate carries
+    only its own procedure, so the queued requirement must stay queued."""
+    loader = _real_loader_with_live(tmp_path)
+    c = _mk(loader)
+    c._event_loop = asyncio.get_running_loop()
+    calls: list[str] = []
+
+    async def merge_then_fail(base, d, t, p):
+        calls.append(base)
+        if len(calls) == 1:
+            return f"{base}\n{p}"
+        raise RuntimeError("merge unavailable")
+
+    c._merge_skill_update = merge_then_fail  # type: ignore[assignment]
+    await asyncio.to_thread(_stage_update_from, c, "sess-a", "2. first requirement", "rollback")
+    await asyncio.to_thread(_stage_update_from, c, "sess-b", "3. second requirement", "canary")
+
+    pending = loader.list_pending_skills()
+    assert len(pending) == 2, [p["slug"] for p in pending]
+    bodies = [loader.get_pending_skill(p["slug"])["content"] for p in pending]
+    assert any("first requirement" in b for b in bodies)
+    assert any("second requirement" in b for b in bodies)
+
+
+@pytest.mark.asyncio
+async def test_merge_supersedes_only_the_queued_update_it_used(tmp_path):
+    """With two queued updates for one skill, a merge built from one of them
+    removes that one only; the other sibling keeps its requirement queued."""
+    from kiro_crew.skills import AutoSkillProvenance
+
+    loader = _real_loader_with_live(tmp_path)
+    version = loader.get_auto_skill_version("auto/deploy-helper")
+    for step in ("2. first requirement", "2. sibling requirement"):
+        loader.stage_skill_candidate(
+            "deploy-helper-update",
+            description="deploy the service",
+            triggers="deploy",
+            procedure_md=f"## Steps\n1. live step\n{step}\n",
+            provenance=AutoSkillProvenance(
+                session_key="s", created_at=AutoSkillProvenance.now_iso()
+            ),
+            kind="update",
+            target="auto/deploy-helper",
+            base_version=version,
+        )
+    assert sorted(p["slug"] for p in loader.list_pending_skills()) == [
+        "deploy-helper-update",
+        "deploy-helper-update-2",
+    ]
+    c = _mk(loader)
+    c._event_loop = asyncio.get_running_loop()
+    merge_bases: list[str] = []
+
+    async def fake_merge(base, d, t, p):
+        merge_bases.append(base)
+        return f"{base}\n{p}"
+
+    c._merge_skill_update = fake_merge  # type: ignore[assignment]
+    await asyncio.to_thread(_stage_update_from, c, "sess-b", "3. second requirement", "canary")
+
+    slugs = sorted(p["slug"] for p in loader.list_pending_skills())
+    assert "first requirement" in merge_bases[0]
+    assert "deploy-helper-update" not in slugs
+    assert "deploy-helper-update-2" in slugs
+    assert len(slugs) == 2, slugs
+
+
+def test_stage_update_supersedes_only_the_same_target(tmp_path, monkeypatch):
+    """Staging an update replaces the named queued update for the SAME target
+    only; a queued update for another skill and a queued new candidate stay,
+    and a named slug for another target is left alone."""
+    from kiro_crew.skills import AutoSkillProvenance, SkillsLoader
+
+    loader = SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False)
+
+    def stage(slug, **kw):
+        return loader.stage_skill_candidate(
+            slug,
+            description=f"d {slug}",
+            triggers=slug,
+            procedure_md="## Steps\n1. x",
+            provenance=AutoSkillProvenance(
+                session_key="s", created_at=AutoSkillProvenance.now_iso()
+            ),
+            **kw,
+        )
+
+    assert stage("a-update", kind="update", target="auto/a", base_version=1) == "auto/a-update"
+    assert stage("b-update", kind="update", target="auto/b", base_version=1) == "auto/b-update"
+    assert stage("a-new") == "auto/a-new"
+    consumed: list[dict] = []
+    from kiro_crew import skills_auto_model
+
+    monkeypatch.setattr(skills_auto_model, "_PENDING_CONSUMED_HOOK", consumed.append)
+    # Naming a candidate that is not an update for this target removes nothing.
+    stage("a-update", kind="update", target="auto/a", base_version=1, supersede_slug="b-update")
+    stage("a-update", kind="update", target="auto/a", base_version=1, supersede_slug="a-new")
+    assert [e for e in consumed if e["outcome"] == "superseded"] == []
+    for p in loader.list_pending_skills():
+        if p["slug"] not in ("a-update", "a-new", "b-update"):
+            loader.dismiss_pending_skill(p["slug"])
+    a_created = next(
+        p["created_at"] for p in loader.list_pending_skills() if p["slug"] == "a-update"
+    )
+    # A different created_at means a different candidate under the same slug.
+    stray = stage(
+        "a-update",
+        kind="update",
+        target="auto/a",
+        base_version=1,
+        supersede_slug="a-update",
+        supersede_created_at="1999-01-01T00:00:00+00:00",
+    )
+    assert [e for e in consumed if e["outcome"] == "superseded"] == []
+    loader.dismiss_pending_skill(stray.split("/", 1)[1])
+    second = stage(
+        "a-update",
+        kind="update",
+        target="auto/a",
+        base_version=1,
+        supersede_slug="a-update",
+        supersede_created_at=a_created,
+    )
+
+    slugs = sorted(p["slug"] for p in loader.list_pending_skills())
+    assert slugs == sorted(["a-new", "b-update", second.split("/", 1)[1]])
+    assert len([p for p in loader.list_pending_skills() if p.get("target") == "auto/a"]) == 1
+    assert [e["slug"] for e in consumed if e["outcome"] == "superseded"] == ["a-update"]
+
+
+@pytest.mark.asyncio
+async def test_update_verdict_on_a_pending_update_targets_its_live_skill(monkeypatch):
+    """The judge can name the queued UPDATE candidate itself. That is an update
+    to the candidate's live skill, not a new skill to queue beside it."""
+    loader = FakeLoader()
+    loader.list_pending_skills = lambda: [  # type: ignore[method-assign]
+        {"slug": "deploy-helper-update", "kind": "update", "target": "auto/deploy-helper"}
+    ]
+    loader.get_pending_skill = lambda slug: None  # type: ignore[attr-defined]
+    live = {"auto/deploy-helper": _LIVE_BODY}
+    loader.read_auto_skill_body = lambda key: live.get(key)  # type: ignore[method-assign]
+    c = _mk(loader)
+    c._event_loop = asyncio.get_running_loop()
+    c._dedupe_candidate = lambda s, d, t: (H.VERDICT_UPDATE, "auto/deploy-helper-update")  # type: ignore[assignment]
+
+    async def fake_merge(*a):
+        return "## Steps\n1. m\n"
+
+    c._merge_skill_update = fake_merge  # type: ignore[assignment]
+    result = {
+        "new_skill": {
+            "slug": "another-take",
+            "description": "d",
+            "triggers": "t",
+            "procedure_md": "## Steps\n1. x",
+        }
+    }
+    ctx = _sel_recorder([])
+    try:
+        await asyncio.to_thread(c._process_auto_skills, result, "sess")
+    finally:
+        ctx.stop()
+
+    assert len(loader.staged) == 1
+    assert loader.staged[0]["kind"] == "update"
+    assert loader.staged[0]["target"] == "auto/deploy-helper"
+
+
+def _queue_update_with_scripts(loader, scripts):
+    from kiro_crew.skills import AutoSkillProvenance
+
+    name = loader.stage_skill_candidate(
+        "deploy-helper-update",
+        description="deploy the service",
+        triggers="deploy",
+        procedure_md="## Steps\n1. live step\n2. first requirement, run check.sh\n",
+        provenance=AutoSkillProvenance(session_key="s", created_at=AutoSkillProvenance.now_iso()),
+        scripts=scripts,
+        kind="update",
+        target="auto/deploy-helper",
+        base_version=loader.get_auto_skill_version("auto/deploy-helper"),
+    )
+    assert name == "auto/deploy-helper-update"
+
+
+async def _merge_second_update(loader, monkeypatch, scripts):
+    from kiro_crew import skills_auto_model
+
+    consumed: list[dict] = []
+    monkeypatch.setattr(skills_auto_model, "_PENDING_CONSUMED_HOOK", consumed.append)
+    c = _mk(loader)
+    c._event_loop = asyncio.get_running_loop()
+    merge_bases: list[str] = []
+
+    async def fake_merge(base, d, t, p):
+        merge_bases.append(base)
+        return f"{base}\n{p}"
+
+    c._merge_skill_update = fake_merge  # type: ignore[assignment]
+
+    def stage():
+        ctx = _sel_recorder([])
+        try:
+            c._stage_skill_update(
+                key="sess-b",
+                target_key="auto/deploy-helper",
+                description="",
+                triggers="canary",
+                procedure_md="3. second requirement",
+                scripts=scripts,
+            )
+        finally:
+            ctx.stop()
+
+    await asyncio.to_thread(stage)
+    # The merge succeeded from the queued body in every case below.
+    assert "first requirement" in merge_bases[0]
+    return consumed
+
+
+_CHECK_SH = {"filename": "check.sh", "content": "#!/bin/sh\necho ok\n"}
+
+
+@pytest.mark.asyncio
+async def test_queued_update_with_a_script_the_new_one_lacks_is_kept(tmp_path, monkeypatch):
+    """Approval copies only the approved candidate's scripts, so a queued update
+    shipping a script the new candidate does not ship stays queued beside it."""
+    loader = _real_loader_with_live(tmp_path)
+    _queue_update_with_scripts(loader, [_CHECK_SH])
+    consumed = await _merge_second_update(loader, monkeypatch, scripts=None)
+
+    slugs = sorted(p["slug"] for p in loader.list_pending_skills())
+    assert slugs == ["deploy-helper-update", "deploy-helper-update-2"], slugs
+    assert (loader._pending_root() / "deploy-helper-update" / "scripts" / "check.sh").is_file()
+    assert [e for e in consumed if e["outcome"] == "superseded"] == []
+
+
+@pytest.mark.asyncio
+async def test_queued_update_whose_scripts_the_new_one_ships_is_superseded(tmp_path, monkeypatch):
+    loader = _real_loader_with_live(tmp_path)
+    _queue_update_with_scripts(loader, [_CHECK_SH])
+    consumed = await _merge_second_update(
+        loader, monkeypatch, scripts=[{"filename": "check.sh", "content": "#!/bin/sh\necho v2\n"}]
+    )
+
+    slugs = [p["slug"] for p in loader.list_pending_skills()]
+    assert slugs == ["deploy-helper-update-2"], slugs
+    assert [e["slug"] for e in consumed if e["outcome"] == "superseded"] == ["deploy-helper-update"]
+
+
+@pytest.mark.asyncio
+async def test_queued_update_without_scripts_is_superseded(tmp_path, monkeypatch):
+    loader = _real_loader_with_live(tmp_path)
+    _queue_update_with_scripts(loader, None)
+    consumed = await _merge_second_update(loader, monkeypatch, scripts=None)
+
+    slugs = [p["slug"] for p in loader.list_pending_skills()]
+    assert slugs == ["deploy-helper-update-2"], slugs
+    assert [e["slug"] for e in consumed if e["outcome"] == "superseded"] == ["deploy-helper-update"]
