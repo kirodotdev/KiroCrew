@@ -146,22 +146,14 @@ def recall_micro_at_k(ranked: Sequence[str], gold: Sequence[str], k: int) -> flo
 def corpus_has_distractors(corpus: Corpus) -> tuple[bool, str]:
     """Whether queries face a haystack containing sessions that are not their gold.
 
-    A corpus that fails this cannot measure retrieval: if a question's haystack
-    contains nothing but its own evidence, then any ranking whatsoever achieves
-    perfect recall, and the resulting number describes the dataset rather than the
-    system. This is not hypothetical — LongMemEval's ``oracle`` variant satisfies
-    ``set(gold_sessions) == set(all_sessions)`` for 500 of 500 instances, and it is
-    the smallest and therefore most tempting variant to reach for.
+    Without distractors any ranking gets perfect recall, so the number describes
+    the dataset. LongMemEval's ``oracle`` variant has ``set(gold_sessions) ==
+    set(all_sessions)`` for 500 of 500 instances.
 
-    **The test is per QUERY, not per instance.** An earlier version unioned gold
-    across an instance's queries, which is wrong for any multi-query dataset and
-    produced a false refusal on the whole of LoCoMo: each conversation carries ~199
-    questions against 19–32 sessions, so the union of their gold sets covers every
-    session. That means "every session is evidence for *some* question", which says
-    nothing about whether an *individual* question faces distractors — and it does,
-    16–29 of them. The bug also hid itself on small slices, where too few queries
-    were present to cover the haystack, so a subset run passed while the full
-    corpus was refused.
+    **The test is per QUERY, not per instance.** A union of gold across a LoCoMo
+    conversation (~199 questions, 19–32 sessions) covers every session, yet each
+    question still faces 16–29 distractors; a union would refuse all of LoCoMo
+    while passing small slices.
 
     Returns the verdict plus a message suitable for a refusal.
     """
