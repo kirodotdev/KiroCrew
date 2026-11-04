@@ -43,6 +43,9 @@ from kiro_crew.telegram.renderer import TelegramApprovalDecider
 
 pytestmark = pytest.mark.xdist_group(name="tree_scan_telegram_dispatch")
 
+SHARED_FACADE_CHECKS = ("the_class_body_scan_can_fail",)
+
+
 FACADE = "kiro_crew.telegram.transport_dispatch"
 FACADE_PATH = Path(td.__file__).resolve()
 DISPATCH_DIR = FACADE_PATH.with_name("dispatch")
@@ -1188,11 +1191,6 @@ def test_no_owner_needs_the_class_body() -> None:
         if (hits := _class_body_reads(source))
     }
     assert offenders == {}
-
-
-def test_the_class_body_scan_can_fail() -> None:
-    planted = "def f(self):\n    super().g()\n    return __class__, self.__secret, self.__dict__\n"
-    assert _class_body_reads(planted) == ["2: super()", "3: __class__", "3: __secret"]
 
 
 def test_dashboard_imports_stay_call_time() -> None:
