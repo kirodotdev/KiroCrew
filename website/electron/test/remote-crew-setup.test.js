@@ -226,7 +226,12 @@ test("the failure dialog offers the crew form and retries once it is saved", () 
   );
   assert.match(
     source,
-    /action === "enable-retry"\s*\|\|\s*action === "configure-remote"\s*\)/,
+    /const RETRY_ACTIONS = new Set\(\[[^\]]*"configure-remote"[^\]]*\]\);/,
+    "a saved crew is one of the retry actions",
+  );
+  assert.match(
+    source,
+    /if \(RETRY_ACTIONS\.has\(action\)\) \{\s*gatewayStartFailure = null;/,
     "a saved crew falls into the existing retry path",
   );
 });
