@@ -26,10 +26,11 @@ from kiro_crew.platform.governance import strip_ungoverned_auto_approve
 _NON_LITERAL = frozenset("*?[]{}!/")
 
 
-def auto_approve_refs(spec: dict[str, Any]) -> list[str]:
+def auto_approve_refs(spec: dict[str, Any], *, audit: bool = True) -> list[str]:
     """``@<server>/<tool>`` for each governed ``autoApprove`` verb in *spec*.
 
     Order follows the spec. Malformed servers and verbs are skipped, never raised.
+    *audit* False is for a read-only check that projects nothing.
     """
     servers = spec.get("mcpServers")
     if not isinstance(servers, dict):
@@ -43,7 +44,7 @@ def auto_approve_refs(spec: dict[str, Any]) -> list[str]:
         return []
     # Audited here, not only at spec write: a hand-written spec reaches this
     # projection without ever passing a writer, and each kept list is a grant.
-    kept = strip_ungoverned_auto_approve(asking, audit=True)
+    kept = strip_ungoverned_auto_approve(asking, audit=audit)
     refs: list[str] = []
     for name, entry in kept.items():
         verbs = entry.get("autoApprove") if isinstance(entry, dict) else None

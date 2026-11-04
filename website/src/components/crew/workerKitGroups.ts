@@ -8,7 +8,7 @@ import { compareText } from '../../i18n/format'
 import type { WorkerKitChange } from '../../api/crewCapabilities'
 import { changeLabel } from './workerKitLabels'
 
-export type WorkerKitGroupKey = 'directions' | 'connections' | 'tools' | 'skills' | 'approvals' | 'off'
+export type WorkerKitGroupKey = 'directions' | 'connections' | 'tools' | 'skills' | 'approvals' | 'off' | 'policy'
 
 /** The groups in display order, each with the sections it holds. */
 const GROUPS: { key: WorkerKitGroupKey; sections: WorkerKitChange['section'][]; heading: () => string }[] = [
@@ -18,6 +18,8 @@ const GROUPS: { key: WorkerKitGroupKey; sections: WorkerKitChange['section'][]; 
   { key: 'skills', sections: ['resources', 'skills'], heading: () => i18nT('crewWorkerKit.group_skills') },
   { key: 'approvals', sections: ['allowedTools'], heading: () => i18nT('crewWorkerKit.group_approvals') },
   { key: 'off', sections: ['excludedTools', 'disabledTools', 'disabledServers'], heading: () => i18nT('crewWorkerKit.section_excluded') },
+  // Hooks, permission rules and tool settings run on the crewmate's worker.
+  { key: 'policy', sections: ['hooks', 'permissions', 'toolsSettings'], heading: () => i18nT('crewWorkerKit.group_policy') },
 ]
 
 const CHANGE_ORDER: Record<WorkerKitChange['change'], number> = { added: 0, replaced: 0, skipped: 1 }

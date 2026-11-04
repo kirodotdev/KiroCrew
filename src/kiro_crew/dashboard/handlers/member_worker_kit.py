@@ -35,8 +35,20 @@ async def api_member_worker_kit(request: web.Request) -> web.Response:
         from kiro_crew.dashboard.handlers.agents import _get_config_lock
 
         async with _get_config_lock():
-            result = await drained_to_thread(mate_worker_kit.apply, name, body)
+            result, policy_changed = await drained_to_thread(
+                mate_worker_kit.apply_reporting, name, body
+            )
         request.app["state"].push_refresh("agents")
+        if policy_changed:
+            # A live worker keeps the KAS permission batch it registered, so a
+            # new restriction holds only once it is reloaded onto the file
+            # (``crewmate_worker_reload``; a busy one at its turn end).
+            from kiro_crew.dashboard.crewmate_worker_reload import schedule_reload_workers
+
+            schedule_reload_workers(request.app["state"], name)
         return web.json_response(result)
     except WorkerKitError as exc:
-        return web.json_response({"error": exc.code, "code": exc.code}, status=exc.status)
+        # ``detail`` names the field or rule a refusal is about ("" when none).
+        return web.json_response(
+            {"error": exc.code, "code": exc.code, "detail": exc.detail}, status=exc.status
+        )

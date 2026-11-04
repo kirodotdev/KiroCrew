@@ -443,6 +443,7 @@ def _mirrorless_member_mounts(self: AcpClient, stubbed: Collection[str]) -> list
         )
     try:
         from kiro_crew.acp.session_mcp import session_mcp_projection
+        from kiro_crew.mate_spec_policy import applies_spec_policy
 
         projection = session_mcp_projection(
             self._agent,
@@ -450,6 +451,7 @@ def _mirrorless_member_mounts(self: AcpClient, stubbed: Collection[str]) -> list
             work_dir=self._work_dir,
             session_key=self._session_key or "",
             worker_tool_limits_honoured=self.backend in ACP_BACKENDS_MATE_WORKER_TOOL_LIMITS,
+            spec_policy_honoured=applies_spec_policy(self.backend),
         )
     except Exception:
         logger.warning(
