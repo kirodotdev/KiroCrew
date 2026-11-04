@@ -284,13 +284,13 @@ def test_warm_search_reads_the_window_metadata(tmp_path, monkeypatch):
     log = ConversationLog(base_dir=tmp_path)
     log.warm_search()
     heads: list[object] = []
-    real = SessionCatalogProjection._scan_head_title
+    real = SessionCatalogProjection._scan_head_lines
 
-    def counted(path):
-        heads.append(path)
-        return real(path)
+    def counted(f):
+        heads.append(f.name)
+        return real(f)
 
-    monkeypatch.setattr(SessionCatalogProjection, "_scan_head_title", staticmethod(counted))
+    monkeypatch.setattr(SessionCatalogProjection, "_scan_head_lines", staticmethod(counted))
     assert log.search_sessions("deployment", 50)
     assert heads == [], "the first search found every session's metadata cached"
 
