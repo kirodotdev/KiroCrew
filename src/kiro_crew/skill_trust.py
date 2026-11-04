@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import time
 from contextlib import contextmanager
@@ -708,12 +709,12 @@ def _as_epoch(value: Any) -> int:
         return 0
     if isinstance(value, int):
         return value
-    if isinstance(value, float):
-        return int(value)
     try:
-        return int(float(str(value)))
+        number = value if isinstance(value, float) else float(str(value))
     except (TypeError, ValueError):
         return 0
+    # json.load accepts NaN and Infinity, and int() raises on both.
+    return int(number) if math.isfinite(number) else 0
 
 
 def list_trusted_projects() -> list[dict[str, Any]]:
