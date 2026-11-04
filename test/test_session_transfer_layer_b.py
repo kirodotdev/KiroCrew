@@ -1,13 +1,9 @@
 """Layer B, the kiro-cli context window a bundle carries so an imported session resumes.
 
-Pins when the sending side reads it (in full, never while a turn is in flight), the v1 or
-Layer-B-free downgrade for an older peer, validation of its wire shape, and on arrival the
-envelope rewrite, the owner-only write locked down before its content, the join through
-the live session manager and the rollback a refused or cancelled import owes its file
-pair, plus when an imported tab is marked transcript-only. Bundle construction and the
-import endpoint live in ``test_session_transfer.py``, the slot an import lands as in
-``test_session_transfer_landing.py``, and the Layer B snapshot a send streams in
-``test_session_transfer_outbound.py``.
+Covers the send-side read, the downgrade for an older peer, wire-shape validation, and on
+arrival the owner-only write, the join through the live session manager and the rollback
+a refused import owes its file pair. Bundle construction and the import endpoint live in
+``test_session_transfer.py``; the landing slot in ``test_session_transfer_landing.py``.
 """
 
 from __future__ import annotations
@@ -159,12 +155,9 @@ def test_events_jsonl_handles_empty_and_blank():
     assert st._events_jsonl_is_loadable("\n\n") is True
 
 
-# The shape of a REAL kiro-cli thinking block, which earlier revisions of this
-# feature corrupted. ``signature`` is a cryptographic signature over the thinking
-# content; the provider validates it when the conversation is replayed, so any
-# rewrite of a covered byte makes the peer's NEXT turn fail -- long after the
-# import reported success. Every Layer B test below uses this shape rather than an
-# empty ``{}`` envelope, because an empty envelope cannot catch that class of bug.
+# The shape of a real kiro-cli thinking block. The provider validates ``signature``
+# on replay, so rewriting a covered byte fails the peer's next turn after a successful
+# import. Tests use this shape because an empty ``{}`` envelope cannot catch that.
 _THINKING_ENVELOPE = {
     "session_id": "src-sid",
     "cwd": "/Users/someone/work/project",
@@ -471,13 +464,10 @@ def test_write_layer_b_files_returns_none_on_failure(monkeypatch, tmp_path):
 
 
 def test_join_layer_b_goes_through_the_live_manager():
-    """Constructing a fresh ``SessionMap()``
-    writes a correct file that the live map then clobbers, because its ``_data``
-    is a startup snapshot and every ``set`` rewrites the whole file.
+    """The join uses the live map, never a fresh ``SessionMap()``.
 
-    Asserted by absence of the IMPORT — if the name is not bound in the module it
-    cannot be constructed, and the body's own comments legitimately mention the
-    hazard they prevent.
+    A fresh map's write is clobbered by the live map's whole-file rewrite. Asserted by
+    absence of the import, because the body's comments legitimately name the hazard.
     """
     from kiro_crew.dashboard import session_transfer as st
 
@@ -1180,14 +1170,10 @@ def test_mid_turn_bundle_announces_that_it_withheld_context():
 
 @pytest.mark.asyncio
 async def test_imported_tab_is_marked_when_the_sender_withheld_layer_b(monkeypatch):
-    """The gap: a mid-turn source ships NO ``layer_b``, so gating the marker on
-    that key silenced the tab in exactly the case the sender's own row was
-    reporting as transcript-only.
+    """A mid-turn source ships no ``layer_b``, and the tab is still marked.
 
-    The two negatives are covered elsewhere: a v1 bundle by
-    ``test_a_v1_import_is_not_marked_transcript_only``, and a v2 session that
-    never had a context by ``test_import_creates_a_new_slot_with_no_project``
-    (plain ``_valid()``, no flag -> no suffix).
+    The negatives: ``test_a_v1_import_is_not_marked_transcript_only`` and
+    ``test_import_creates_a_new_slot_with_no_project``.
     """
     from kiro_crew.dashboard import session_transfer as st
 
@@ -1226,17 +1212,10 @@ def test_a_mapped_but_unreadable_layer_b_is_reported_as_withheld(monkeypatch):
 def test_layer_b_is_discarded_when_owner_lockdown_fails(monkeypatch, tmp_path):
     """Fail CLOSED, and leave nothing behind.
 
-    On Windows the POSIX mode bits are a no-op, so the owner-only DACL applied by
-    ``atomic_write(restrict_to_owner=True)`` is the only thing making the file
-    owner-only -- if it fails, the context would be readable by other local
-    accounts on a shared machine. Refusing costs only resume fidelity (the import
-    lands transcript-only), so it is the cheaper side of the trade. Both files
-    must go: the pair is useless alone and the ``.json`` carries context too.
-
-    The lockdown seam lives inside ``atomic_write`` now (it locks the temp file
-    down BEFORE any content reaches it), so the failure is injected
-    at ``platform_compat.restrict_to_owner`` -- the module-level function the
-    helper calls -- not at a name in this module.
+    On Windows the owner-only DACL is the only protection, so a failed lockdown refuses
+    the write (the import lands transcript-only). Both files go: the ``.json`` carries
+    context too. The failure is injected at ``platform_compat.restrict_to_owner``,
+    which ``atomic_write`` calls.
     """
     from kiro_crew import platform_compat
     from kiro_crew.dashboard import session_transfer as st
@@ -1258,15 +1237,10 @@ def test_layer_b_is_discarded_when_owner_lockdown_fails(monkeypatch, tmp_path):
 
 
 def test_layer_b_lockdown_precedes_content(monkeypatch, tmp_path):
-    """The context window must never exist in a file that has not been locked
-    down yet.
+    """The context window never exists in a file that is not yet locked down.
 
-    On Windows the POSIX mode bits are a no-op, so the owner-only DACL is the
-    only protection; applying it after the rename left Layer B readable under
-    the inherited ACL for the write window. Asserted by measuring
-    each file's SIZE at the moment its lockdown is applied — zero means no
-    payload byte existed yet. A post-write stat passes on the buggy ordering
-    too, so it would not be a regression test.
+    Each file's size is measured when its lockdown is applied; zero means no payload
+    byte existed yet. A post-write stat would pass on the wrong ordering too.
     """
     from kiro_crew import platform_compat
     from kiro_crew.dashboard import session_transfer as st
@@ -1291,17 +1265,10 @@ def test_layer_b_lockdown_precedes_content(monkeypatch, tmp_path):
 
 
 def test_import_preserves_the_thinking_signature_verbatim(monkeypatch, tmp_path):
-    """THE regression test for this feature's worst failure mode.
+    """Layer B is written unredacted, so a thinking-block ``signature`` survives.
 
-    An earlier revision redacted Layer B on both boundaries. Measured against 704
-    real sessions on a developer machine, that rewrote a thinking-block
-    ``signature`` in 41% of them -- and the provider validates that signature when
-    it replays the conversation, so the peer's ``session/load`` succeeded and its
-    very NEXT turn was rejected. Every test in the suite passed, because they all
-    used ``{"envelope": {}}``.
-
-    Asserts on the byte-level file content, not on the in-memory dict, because the
-    file is what kiro-cli reads.
+    The provider validates that signature on replay: a rewritten one loads fine and
+    then rejects the next turn. Asserts on the file bytes, which kiro-cli reads.
     """
     from kiro_crew.dashboard import session_transfer as st
 
@@ -1398,14 +1365,9 @@ async def test_import_rolls_back_layer_b_on_cancellation(monkeypatch):
 async def test_a_refusal_cleans_layer_b_when_the_delete_left_no_replacement(monkeypatch):
     """ABSENT is not REPLACED, and ``dict.get`` answers ``None`` for both.
 
-    The ordinary permanent delete pops by key and puts nothing back, so this
-    import's own Layer B pair is nobody else's -- and the delete does not unwind
-    these module-local helpers. Folding the absent case into the replaced one
-    orphans a ``.json``, a ``.jsonl`` and a join for a session with no tab, and
-    nothing re-cleans it: this refusal return is terminal and re-arms nothing.
-
-    Mutation-checked: collapsing the two cases back into one ``else`` leaves
-    ``unlinked`` empty here while the replacement test below still passes.
+    A plain delete pops by key and puts nothing back, so the Layer B pair is this
+    import's own. Treating absent as replaced would orphan a ``.json``, a ``.jsonl`` and
+    a join, and this refusal return re-arms nothing to clean them.
     """
     from kiro_crew.dashboard import session_transfer as st
 
@@ -1444,13 +1406,8 @@ async def test_a_refusal_cleans_layer_b_when_the_delete_left_no_replacement(monk
 async def test_a_refusal_leaves_a_replacement_s_layer_b_alone(monkeypatch):
     """The other half, and the reason the guard exists at all.
 
-    A DIFFERENT object holding the key is a session somebody else created. Its
-    slot, its join and its files are its own writer's, so a refusal touches none
-    of them -- the case that makes a bare pop-by-key wrong.
-
-    Mutation-checked: widening the cleanup to fire whenever the key is not this
-    object unlinks the replacement's files here, while the absent test above
-    still passes.
+    A different object holding the key is somebody else's session, so a refusal touches
+    none of its slot, join or files.
     """
     from kiro_crew.dashboard import session_transfer as st
 
@@ -1487,16 +1444,9 @@ async def test_a_refusal_leaves_a_replacement_s_layer_b_alone(monkeypatch):
 async def test_a_refusal_leaves_a_foreign_join_mapping_alone(monkeypatch):
     """An ABSENT key does not make the mapping at that key this import's.
 
-    A replacement can land at the same key, register its OWN join, and be popped
-    again before the object read -- which leaves ``current is None`` while the
-    mapping belongs to that replacement. Forgetting by key alone would drop its
-    mapping and its continuable mark, and nothing re-arms: this refusal return is
-    terminal. The object comparison cannot separate this from a plain delete, so
-    the forget is scoped by equality against this import's own sid instead.
-
-    Mutation-checked: dropping the guard, or weakening it from an equality to a
-    presence test, forgets the foreign mapping here while the own-sid test above
-    still passes.
+    A replacement can register its own join and be popped before the object read,
+    leaving ``current is None``. So the forget is scoped by equality against this
+    import's own sid, not by key or a presence test.
     """
     from kiro_crew.dashboard import session_transfer as st
 
@@ -1537,11 +1487,7 @@ async def test_a_refusal_leaves_a_foreign_join_mapping_alone(monkeypatch):
 async def test_a_refusal_without_layer_b_forgets_no_mapping(monkeypatch):
     """Holding no Layer B of its own, this import has no mapping to drop.
 
-    The bundle carries no Layer B, so there is no join this import wrote. Any
-    mapping sitting at the key is therefore somebody else's by construction, and
-    a forget here could only ever take a foreign one.
-
-    Mutation-checked: dropping the guard forgets the squatting mapping here.
+    The bundle carries no Layer B, so any mapping at the key is somebody else's.
     """
     from kiro_crew.dashboard import session_transfer as st
 

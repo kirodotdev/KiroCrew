@@ -208,15 +208,9 @@ async def test_shared_runtime_is_counted_once_in_the_total(stub_proc: None) -> N
 async def test_co_tenants_split_the_shared_runtime_measurement(stub_proc: None) -> None:
     """A ``shared`` row must show its SPLIT of the runtime, not the whole thing.
 
-    The card's tooltip states a shared row's figure is "that runtime's
-    measurement divided between them, not an exclusive one". Handing every
-    co-tenant the full figure made that copy false and inflated the apparent
-    footprint: N sharers read as N times the memory that exists, and any one of
-    them could outrank a genuinely large exclusive session.
-
-    An even split is an attribution rather than a measurement -- per-session
-    usage inside one interpreter is not observable from /proc -- which is why the
-    row keeps its ``shared`` badge.
+    The full figure on every co-tenant would count N times the memory that exists.
+    An even split is an attribution, not a measurement (/proc cannot see per-session
+    usage in one interpreter), so the row keeps its ``shared`` badge.
     """
     sessions = _FakeSessions(
         [
@@ -239,12 +233,8 @@ async def test_co_tenants_split_the_shared_runtime_measurement(stub_proc: None) 
 async def test_co_tenant_rows_carry_the_sharer_count(stub_proc: None) -> None:
     """Every row on a shared runtime says how many sessions are on it.
 
-    ``owns_runtime`` cannot answer this. It is false only on the JOINERS, so a
-    consumer reading it as "is this runtime shared?" misses the founder, and a
-    consumer aggregating per-runtime figures has no key to de-duplicate on
-    beyond the pid. The count is published because the sampler already computes
-    it to divide rss/cpu -- withholding it made each consumer re-derive it, or
-    guess.
+    ``owns_runtime`` is false only on the joiners, so it cannot tell the founder is
+    shared too.
     """
     sessions = _FakeSessions(
         [
@@ -263,14 +253,10 @@ async def test_co_tenant_rows_carry_the_sharer_count(stub_proc: None) -> None:
 
 @pytest.mark.asyncio
 async def test_procs_and_mcp_stay_the_runtimes_own_totals(stub_proc: None) -> None:
-    """``procs`` and ``mcp`` are counts of real objects on the runtime, so they
-    are reported whole on every co-tenant row -- unlike rss/cpu, which are
-    divided.
+    """``procs`` and ``mcp`` are counts, so they stay whole on co-tenant rows; rss/cpu split.
 
-    Dividing a count of 3 processes between 3 sessions yields 1 each, and
-    between 4 yields 0.75 of a process, which describes nothing. The row states
-    the runtime's true figure and carries ``sharers`` so an aggregate can add it
-    once per runtime instead of once per session.
+    A fraction of a process describes nothing; ``sharers`` lets an aggregate count the
+    runtime once.
     """
     sessions = _FakeSessions(
         [
@@ -383,9 +369,7 @@ def test_runtime_pids_resolves_both_provider_shapes() -> None:
     """A provider that stores ``_runtime`` on ITSELF must still report its pid.
 
     Only AcpProvider nests the runtime under ``_client``; AcpSessionProvider (the
-    unified/task-runner path) holds it directly. Resolving just the nested shape
-    silently reported pid=None for the latter, so those sessions rendered as
-    "unknown memory" forever -- invisible because chat sessions use the other shape.
+    task-runner path) holds it directly.
     """
     from kiro_crew.session import _Session
 
@@ -419,11 +403,8 @@ def test_runtime_pids_reports_unknown_when_there_is_no_runtime() -> None:
 async def test_background_session_records_the_agent_it_runs_as() -> None:
     """``_bg`` must carry its agent, not read as agent-less.
 
-    The background session runs as a real Kiro agent, but the name was passed
-    ONLY to the provider factory -- the ``_Session`` record kept the ``agent=""``
-    default. Every consumer reading ``sess.agent`` therefore saw no agent, which
-    surfaced as an em-dash in the Session & Task Memory card's Agent column even
-    though the agent was perfectly well known one line earlier.
+    The ``_Session`` record, not only the provider factory, gets the agent name, or
+    the memory card's Agent column shows an em-dash.
     """
     from unittest.mock import MagicMock
 
@@ -448,8 +429,6 @@ async def test_background_session_records_the_agent_it_runs_as() -> None:
 
     row = {r["key"]: r for r in mgr.runtime_pids()}[BACKGROUND_KEY]
     assert row["agent"] == BACKGROUND_AGENT, "background session lost its agent"
-    # Both sites must agree: the factory and the record read the same constant,
-    # so they cannot drift back apart.
     assert factory_saw == [BACKGROUND_AGENT]
 
 
@@ -473,12 +452,8 @@ class _FakeRuntime:
 def test_runtime_pids_includes_runtimes_held_only_on_the_manager() -> None:
     """``_bg_runtime`` and companion runtimes are real trees, not rounding error.
 
-    Both live ONLY as SessionManager attributes -- so far outside ``_sessions``
-    that ``_companion_runtime_pids`` has to shield them from the orphan sweep
-    with ``register_protected_pid``. Iterating ``_sessions`` alone omitted a
-    whole runtime each from the host total, understating "Kiro Crew Used" by the
-    200-400 MB a runtime costs and hiding the very process a user chasing memory
-    would want to see.
+    Both live only as SessionManager attributes, outside ``_sessions``; skipping them
+    understates "Kiro Crew Used" by 200-400 MB per runtime.
     """
     import time as _time
 
@@ -1084,11 +1059,8 @@ async def test_a_failing_claim_source_does_not_fail_the_poll(
 def test_the_claim_union_matches_the_sweeps_own_sources() -> None:
     """The SLI and the periodic sweep must draw claims from the SAME sources.
 
-    A source the sweep protects with and this does not read turns a well-owned
-    runtime into a reported leak -- the exact noise mode that makes an alarm
-    whose contract is "non-zero means investigate" unusable. Read out of
-    ``_active_pids``'s source, so adding a fifth source there without adding it
-    to ``_CLAIM_SOURCES`` fails here rather than in production.
+    A source only the sweep reads would report a well-owned runtime as a leak. Read
+    from ``_active_pids``'s source, so a new source must also join ``_CLAIM_SOURCES``.
     """
     import inspect
     import re
@@ -1116,11 +1088,8 @@ async def test_a_single_non_zero_ownership_reading_is_not_yet_an_alarm(
     """The claim set and the slice are read at different instants, so ordinary
     churn produces a one-sample fault.
 
-    A session spawning between the two reads is in the slice and not in the
-    claims (reads as leaked); one exiting between them is claimed and not alive
-    (reads as a stale claim). Neither is a fault. An alarm that fires on those
-    trains an operator to ignore the one signal built to mean "investigate", so a
-    single non-zero reading is reported as suspected, not confirmed.
+    A session spawning or exiting between the two reads looks leaked or stale, so a
+    single non-zero reading is suspected, not confirmed.
     """
     sessions = _FakeSessions([_row("dashboard:a", 7)])
     monkeypatch.setattr(

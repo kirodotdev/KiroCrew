@@ -1,19 +1,8 @@
 """Per-session auto-compact threshold override.
 
-Three layers, each pinned where its defect would live:
-
-- **SessionManager override map** — the override moves the compaction gate for
-  exactly its own session while every other session keeps the global; values
-  clamp into the documented range (an out-of-range override must degrade to the
-  nearest firing value, never silently disable the backstop) and ``None``
-  restores the global.
-- **HTTP endpoint** (``/api/chat/slots/{slot}/autocompact``) — the validation
-  mirrors the global knob's PATCH handler: out-of-range and NaN are rejected,
-  null clears, and a successful set reaches both the slot (persistence) and the
-  SessionManager (live gate).
-- **Persistence validator** — a tampered/corrupted metadata file cannot seed a
-  non-numeric or NaN override, and finite out-of-range values clamp exactly as
-  the facade would clamp them.
+Covers the SessionManager map (an out-of-range value clamps to the nearest firing
+value, never disabling the backstop), the ``/api/chat/slots/{slot}/autocompact``
+endpoint, and the persistence validator for tampered metadata.
 """
 
 from __future__ import annotations
@@ -463,11 +452,8 @@ class TestOverrideLifecycle:
     def test_slot_save_owns_the_key_so_a_clear_erases_it(self) -> None:
         """A cleared override must not resurrect from stale metadata.
 
-        The slot save rebuilds its metadata line and then carries forward every
-        key it does NOT own (``carry_unowned_metadata``). If ``autocompact_pct``
-        is not in ``SLOT_OWNED_META_KEYS``, a clear (slot field None, key
-        omitted from the rebuilt line) is undone by the carry — the old value
-        rides back in and the next restart resurrects the cleared override.
+        ``carry_unowned_metadata`` carries forward keys the slot does not own, so
+        ``autocompact_pct`` must be in ``SLOT_OWNED_META_KEYS`` or a clear is undone.
         """
         from kiro_crew.history import SLOT_OWNED_META_KEYS, carry_unowned_metadata
 
@@ -496,12 +482,8 @@ class TestOverrideLifecycle:
 class TestExpectedHistoryKeyPin:
     """The forced save refuses a write whose routing moved off the pinned key.
 
-    The save worker resolves its target transcript from live routing
-    (``slot.linked_session_key``) at write time, and a rebind on the event
-    loop can land between a caller's authorization and that snapshot. The
-    ``expected_history_key`` pin makes the save return ``False`` with nothing
-    written in that case, so a durable write can never land on a transcript
-    the caller never authorized.
+    The worker reads ``slot.linked_session_key`` at write time, after a possible
+    rebind, so the ``expected_history_key`` pin returns ``False`` and writes nothing.
     """
 
     def test_moved_routing_refuses_the_save(self, tmp_path, monkeypatch):
@@ -624,13 +606,8 @@ class TestHydrationRestoresOverride:
 class TestConcurrentPostSerialization:
     """Concurrent POSTs for one slot must serialize as whole transactions.
 
-    The write span contains awaits, so without per-slot serialization two
-    in-flight requests capture each other's values as rollback snapshots: a
-    request whose save fails after a sibling committed the same value rolls
-    the field back past the sibling's acknowledged write (value equality
-    cannot identify ownership). The forced interleaving below holds the first
-    request's save open until the second request has fully committed, then
-    fails it -- the committed value must survive.
+    The write span awaits, so a failed request could roll back past a sibling's commit.
+    The first save is held open until the second commits, then failed.
     """
 
     @pytest.mark.asyncio
@@ -676,11 +653,8 @@ class TestConcurrentPostSerialization:
 class TestAliasSlotsShareOneTranscript:
     """Slots aliased onto ONE transcript must not undo each other's commit.
 
-    Channel-linked aliases resolve distinct slot names onto one file. The
-    ordinary save writes ``autocompact_pct`` unconditionally from the slot's
-    own field, so a sibling left holding the old value persists it back over
-    an acknowledged commit on its next flush — and a lock keyed by the SLOT
-    would let two alias requests interleave the same transcript's write span.
+    A sibling still holding the old ``autocompact_pct`` would write it back on flush,
+    and a lock keyed by SLOT would let alias requests interleave one transcript.
     """
 
     @pytest.mark.asyncio
@@ -736,12 +710,8 @@ class TestAliasSlotsShareOneTranscript:
 class TestLegacyMetadataDeleteWon:
     """The delete-won guard must cover LEGACY transcripts (no ``created_at``).
 
-    Legacy metadata records no ``created_at``, which leaves the slot's
-    observed identity EMPTY — the guard read that as "fresh slot, no evidence"
-    and a save racing a permanent delete recreated the deleted transcript. The
-    observation is now tracked as its own bit, so the missing-file witness
-    fires for legacy sessions too; the identity comparison still requires a
-    recorded ``created_at`` on both sides.
+    An empty identity must not read as "fresh slot", so observation is its own bit and
+    the missing-file witness fires; identity comparison still needs both ``created_at``.
     """
 
     def _state(self, tmp_path, monkeypatch):
@@ -806,12 +776,8 @@ class TestLegacyMetadataDeleteWon:
 class TestObservedBitRecordedAtEveryHydrationSite:
     """Every ``_disk_meta_created_at`` recording site must set the observed bit.
 
-    The delete-won guard's evidence gate reads ``_disk_meta_observed``; a
-    hydration site that records the identity string without the bit leaves
-    legacy transcripts (no ``created_at``) unprotected at exactly that entry
-    point — the class of miss that recurred at the resume and channel-surface
-    sites after the persistence loaders were fixed. This census pins ALL
-    current and future sites structurally.
+    The delete-won guard reads ``_disk_meta_observed``, so a site that skips the bit
+    leaves legacy transcripts unprotected. This census pins every site structurally.
     """
 
     def test_every_identity_recording_site_sets_the_observed_bit(self) -> None:
@@ -839,13 +805,8 @@ class TestObservedBitRecordedAtEveryHydrationSite:
 class TestMidPersistRebindDoesNotSeedForeignSession:
     """A rebind the pin cannot see must not seed the foreign session's gate.
 
-    The expected_history_key pin refuses a save whose routing moved BEFORE its
-    internal read. A rebind landing AFTER that read leaves the durable write
-    correctly on the authorized transcript while the slot now resolves to a
-    different session — and reauthorization can PASS (the caller may own the
-    new session too). Seeding the live map from effective_session_key(slot)
-    would then apply the threshold to a session whose transcript never
-    received it.
+    A rebind AFTER the save's routing read writes the right transcript, but seeding
+    from effective_session_key(slot) would hit another session; reauth can still pass.
     """
 
     @pytest.mark.asyncio
@@ -880,13 +841,8 @@ class TestMidPersistRebindDoesNotSeedForeignSession:
 class TestSiblingFlushCannotStaleTheCommit:
     """The durable record must be re-confirmed AFTER the alias mirror.
 
-    The mirror runs on the event loop after the commit save returns, but a
-    sibling's already-queued flush can take the transcript's file lock in the
-    executor first and write its then-stale field over the commit. The fix is
-    ordering: mirror every live field, then run a second confirmed save that
-    the file lock serializes behind any such interleaved write. This test
-    pins that ordering — the commit save must observe the sibling still
-    stale, the confirm save must observe it mirrored.
+    A sibling's queued flush can write a stale field over the commit, so a confirm save
+    runs after the mirror. The commit save sees the sibling stale, the confirm mirrored.
     """
 
     @pytest.mark.asyncio
