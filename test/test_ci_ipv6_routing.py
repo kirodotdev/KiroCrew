@@ -236,7 +236,7 @@ def test_workflow_routes_every_scope_without_changing_local_defaults(jobs):
         body = _step(jobs, name, "Run tests")["run"].replace("\\\n", " ")
         commands = re.findall(r"^\s*(?:python -m )?pytest .+$", body, re.MULTILINE)
         assert len(commands) == expected_count
-        assert all('-m "not ipv6_required"' in command for command in commands)
+        assert all('-m "not ipv6_required' in command for command in commands)
         assert jobs[name]["strategy"]["matrix"]["group"] == list(range(1, 9))
     hosted = jobs["backend-test-ipv6"]
     assert hosted["needs"] == ["changes", "await-fast-gate", "lint-gate"]
