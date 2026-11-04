@@ -115,6 +115,7 @@ _DECLARED_FOR_OTHER_OWNERS = frozenset(
         "_member_reconcile_task",
         "_persistence_watchdog_task",
         "_cron_quarantine",
+        "_force_exit_claimed",
     }
 )
 
