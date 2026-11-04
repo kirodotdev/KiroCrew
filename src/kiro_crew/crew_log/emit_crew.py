@@ -17,24 +17,20 @@ if TYPE_CHECKING:  # pragma: no cover -- typing only; the runtime imports stay g
     from kiro_crew.crew_log.store import CrewLog
 
 
-# --------------------------------------------------------------------------- #
 # The crew kind
-# --------------------------------------------------------------------------- #
 #
 # The first writer for ``crew-log/crews/<store>/``. Deliberately NOT routed
-# through the write-behind queue in ``emit_runtime``: every structure that queue owns is keyed
-# by an ACP SESSION id and ``_handle`` opens its unit with ``_KIND``, so handing
-# it a crew's store name would make it look for a SESSION unit under that name
-# and, failing to find one, drop the entry as a policy no-op. Threading a kind
-# through the batch machinery is a change to the session path, which these two
-# entries do not need: a dispatch is written once per work item and a report once
-# per milestone, both already off the event loop in the route's worker thread.
+# through the write-behind queue in ``emit_runtime``: every structure that queue
+# owns is keyed by an ACP SESSION id and ``_handle`` opens its unit with ``_KIND``,
+# so a crew's store name would be looked up as a SESSION unit and, not found, the
+# entry dropped as a policy no-op. These entries need no queue: a dispatch is
+# written once per work item and a report once per milestone, both already off the
+# event loop in the route's worker thread.
 #
 # No handle is cached either. A handle holds the unit's write lease until it is
-# dropped, and a cached crew handle would hold one for the process's life --
-# refusing ``remove_unit`` for a unit nothing is writing. Opening per entry costs
-# a bounded tail read, which is what the lease's own refcount makes safe to
-# repeat.
+# dropped, so a cached crew handle would hold one for the process's life, refusing
+# ``remove_unit`` for a unit nothing is writing. Opening per entry costs a bounded
+# tail read, which the lease's own refcount makes safe to repeat.
 
 _KIND_CREW = "crew"
 
@@ -119,22 +115,17 @@ def _crew_thread(log: CrewLog, item: Any) -> "int | None":
     requests -- often in separate processes -- and an in-memory map would answer
     ``None`` for every report after a restart while the anchor sat on disk.
 
-    ONE pass, from seq 1, because a narrower start would not be a cheaper read:
-    :meth:`~kiro_crew.crew_log.store.CrewLog.iter_from` walks ``_iter_segments``
-    from the first segment and decodes every entry, dropping the ones below its
-    *seq* after parsing them. So a "recent entries" window costs the same full
-    parse as the whole file, and a window MISS -- the ordinary case for an item
-    whose dispatch has aged out -- would pay for that parse twice. A byte-tail
-    reader like :func:`~kiro_crew.crew_log.store._anchor_exists`'s is what an
-    actual bound would take, and it answers a different question (does this seq
-    exist) than this one (which dispatch named this item).
+    ONE pass, from seq 1: :meth:`~kiro_crew.crew_log.store.CrewLog.iter_from`
+    parses every entry from the first segment whatever *seq* it is given, so a
+    "recent entries" window costs the same full parse, and a window MISS (the
+    ordinary case for an item whose dispatch has aged out) would pay it twice. A
+    byte-tail reader like :func:`~kiro_crew.crew_log.store._anchor_exists`'s
+    answers a different question: does this seq exist.
 
-    Reading the whole file is also what correctness wants, though not because a
-    miss refuses the write: :func:`on_crew_report` records an unthreaded report
-    rather than dropping it. What a miss costs is that the entry becomes
-    indistinguishable from one volunteered with no dispatch behind it, which is a
-    claim about where the work came from that nothing later can correct -- so every
-    anchor the file actually holds is worth finding.
+    Correctness wants the whole file too. A miss does not refuse the write
+    (:func:`on_crew_report` records an unthreaded report), but it makes the entry
+    indistinguishable from one volunteered with no dispatch behind it, a claim
+    about where the work came from that nothing later can correct.
 
     An unreadable log answers ``None``, so a report still lands.
     """
@@ -243,12 +234,11 @@ def on_crew_report(store: str, data: dict[str, Any], *, cite_unit: str) -> int:
     record: it is unbounded in time and invisible, while an unthreaded report
     states that the work happened and is merely missing its link.
 
-    What that costs is worth naming, because it is not free. The spec reads a
-    report with no ``thread`` as one volunteered with no dispatch behind it, so an
-    unthreaded report here is indistinguishable from a volunteered one -- one
-    field is ambiguous, rather than one item's whole history being absent. The
-    anomaly is logged when it happens, which is where a reader looks to tell the
-    two apart.
+    The cost: the spec reads a report with no ``thread`` as one volunteered with no
+    dispatch behind it, so an unthreaded report here is indistinguishable from a
+    volunteered one -- one field is ambiguous, rather than one item's whole history
+    being absent. The anomaly is logged when it happens, which is where a reader
+    looks to tell the two apart.
 
     The refusal that remains is the evidence one above: no citable unit means no
     write at all, because a report that cannot be checked is a claim, not a record.

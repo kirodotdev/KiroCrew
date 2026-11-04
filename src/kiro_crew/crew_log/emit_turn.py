@@ -55,13 +55,11 @@ _EST_CHARS_PER_TOKEN = 4.0
 #: specs, injected crew log context -- have none, so their characters land in its
 #: ``unclassified`` bucket.
 #:
-#: That bucket keeps its own name and is NOT renamed here. It is a label the readers
-#: already know: the Context panel carries a translated string for ``unclassified``
-#: and none for ``other``, so folding the two together made a named remainder render
-#: as an untranslated word in every shipped locale -- visible the moment that panel
-#: started reading these sources instead of the token row's own ``split_blocks``
-#: output. Only the empty label lands here, because an empty label names nothing and
-#: a reader cannot be given a translation for it.
+#: That bucket keeps its own name and is NOT renamed here: the Context panel carries
+#: a translated string for ``unclassified`` and none for ``other``, so folding the
+#: two together would render a named remainder as an untranslated word in every
+#: shipped locale. Only the empty label lands here, because an empty label names
+#: nothing and a reader cannot be given a translation for it.
 _OTHER_SOURCE = "other"
 
 _UNCLASSIFIED_LABELS = frozenset({""})

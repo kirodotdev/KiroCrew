@@ -185,16 +185,14 @@ def _candidate_is_same_slot(candidate_sid: str, slot: str) -> bool:
 
     ``unit_header_slot`` is the accessor rather than ``CrewLog.open`` because this
     path must not write, and ``open`` does: its torn-tail truncation is
-    unconditional, deliberately so, since trailing bytes that are not a whole line
-    are not a record. Harmless in itself, and still wrong here -- a verification
-    read would take the crew log's lock and rewrite a candidate's file while asking
-    for nothing but one field. The accessor states the opposite contract, no lease
-    and nothing written, and its ``None`` means "cannot prove" rather than "no such
-    field", which is the refusal this function already wanted. It is also stricter
-    than ``open``: it refuses a linked directory, and a header whose own ``id`` does
-    not fold back to the directory holding it, both of which would let one store
-    answer for another unit. Its own docstring names this caller's position exactly
-    -- a unit id reached through a channel the caller does not fully trust.
+    unconditional, so a verification read would take the crew log's lock and
+    rewrite a candidate's file while asking for one field. The accessor takes no
+    lease and writes nothing, and its ``None`` means "cannot prove" rather than "no
+    such field", the refusal this function wants. It is also stricter than
+    ``open``: it refuses a linked directory, and a header whose own ``id`` does not
+    fold back to the directory holding it, either of which would let one store
+    answer for another unit. Its own docstring names this caller's position: a unit
+    id reached through a channel the caller does not fully trust.
 
     Nothing is caught here because the accessor answers ``None`` for every
     unreadable-crew-log case itself, down to the directory walk and the header

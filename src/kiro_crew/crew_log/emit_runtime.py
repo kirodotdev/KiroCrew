@@ -615,8 +615,7 @@ def _handle(session_id: str) -> Any:
     a queued job, so the exception reaches the writer and the entry is
     retained and retried like any other failed append -- where returning None would
     make the job succeed with nothing written, and the entry would vanish with no
-    retry and no entry in :func:`dropped_writes`. That is the same silent hole the
-    retention exists to close, one layer up. The ``exists`` stat is inside that
+    retry and no entry in :func:`dropped_writes`. The ``exists`` stat is inside that
     rule too: a stat that raises has not answered whether the crew log is there, and
     reading it as absent would discard the entry on a guess.
 
@@ -842,13 +841,12 @@ def _repair_superseded(previous_sid: str, slot: str, *, walked: "tuple[str, ...]
     **The deferral is the queue, not a decision.** This job is submitted into
     ``previous_sid``'s OWN bucket, and the writer runs a session's jobs in
     submission order -- so it cannot run until everything already owed for that
-    crew log has been attempted. That is the whole ordering requirement, and
-    taking it from the buffer rather than from a fresh predicate is what makes it
-    resumable by construction: a real ``turn/completed`` still queued or retrying
-    at supersede time is written BEFORE this runs, and one abandoned after its
-    attempt budget is spent is dropped and admitted in a ``write/dropped`` marker
-    before this runs. Either way the tail is closed exactly once and the file
-    never carries two outcomes for one turn. Asking at create time instead --
+    crew log has been attempted. Taking the ordering from the buffer rather than a
+    fresh predicate makes it resumable by construction: a real ``turn/completed``
+    still queued or retrying at supersede time is written BEFORE this runs, and one
+    abandoned after its attempt budget is spent is dropped and admitted in a
+    ``write/dropped`` marker before this runs. Either way the tail is closed exactly
+    once and the file never carries two outcomes for one turn. Asking at create time instead --
     whether the predecessor still owes anything, standing down while it does --
     leaves nothing that can re-run it: a superseded id is never resumed and
     nothing maps to it once the successor takes over, so precisely the crew log
@@ -900,23 +898,16 @@ def _repair_superseded(previous_sid: str, slot: str, *, walked: "tuple[str, ...]
     rewrites. Leaving the opener unmatched leaves a reader one fact short; closing
     it can leave a reader wrong.
     """
-    # Live records are LEFT ALONE, which is the same rule `on_session_closed`
-    # applies to them and for the same reason: a forced reset tears a session down
-    # MID-TURN, that turn goes on running, and its closer is handed over later by
-    # its own ``finally``. Releasing such a record here would take back the one
-    # signal that says so -- ``closer_owed`` is set at handover, so a turn still
-    # running reads exactly like a leaked record -- and ``live_turn`` would then
-    # report 0 and let this job write ``interrupted`` ahead of a real
-    # ``turn/completed`` that is still coming. That is the two-outcomes-for-one-turn
-    # hazard, in a file nothing rewrites.
+    # Live records are LEFT ALONE, as the docstring says: releasing one would make
+    # ``live_turn`` report 0 and let this job write ``interrupted`` ahead of a real
+    # ``turn/completed`` still coming, two outcomes for one turn in a file nothing
+    # rewrites.
     # Whether a live turn stands the repair down, and the debt recorded when one
     # does, are read and written in ONE critical section of the tracker's
     # (`TurnTracker.stand_down`), for the window its docstring names. Standing down
-    # is right only while that terminal is still COMING, and it may instead spend its
-    # attempt budget and be dropped. The debt is recorded against the predecessor so
-    # the drop can re-queue this job: the terminal's drop hook is the one site that
-    # learns the deferral ended badly, and without the debt it has no way to know a
-    # repair was waiting.
+    # is right only while that terminal is still COMING; it may instead be dropped.
+    # The debt lets the terminal's drop hook, the one site that learns the deferral
+    # ended badly, re-queue this job.
     running = _tracker().stand_down(previous_sid, slot)
     if running:
         logger.warning(
@@ -1130,14 +1121,13 @@ def _child_gone_probe(session_id: str) -> "Callable[[str], bool] | None":
     A child is reported present while this process owes ANY entry for
     *session_id*, on top of what the registry says. A terminal outcome reaches
     the file through the writer and :func:`_submit` returns before it lands, so a
-    child leaves the running set while its own closer is still queued: the file
-    then shows an opener with no match while the registry omits the child. Closing on that reading puts a synthesised ``unknown`` ahead of the
-    real outcome and leaves both standing in a file nothing rewrites. The debt
-    set is the exact record of what is still owed -- queued, claimed by the
-    writer, retained, and owed loss markers alike -- and it is the one source
-    here carrying no bound that
-    could shed a pending child, which the manager's completed-run retention does
-    carry. An entry a hard ceiling refuses is absent from the debt set, which is
+    child leaves the running set while its own closer is still queued, and closing
+    on that reading puts a synthesised ``unknown`` ahead of the real outcome, both
+    standing in a file nothing rewrites. The debt set is the exact record of what
+    is still owed (queued, claimed by the writer, retained, owed loss markers) and
+    the one source here with no bound that could shed a pending child, unlike the
+    manager's completed-run retention. An entry a hard ceiling refuses is absent
+    from the debt set, which is
     the wanted answer: that closer is never coming, so the opener is the
     repair's to close.
 
@@ -1408,13 +1398,13 @@ def on_session_closed(
     one, and a reader treats it as "the gateway stopped serving this session for
     reason R" rather than "nothing further appears".
 
-    Holding the entry until the session went quiet was tried and abandoned: nothing
-    in the gateway defines quiescence. A turn is pinned only once ``turn/started``
-    is written, so an authorization await ahead of it is unpinned; eviction under
-    the tracker's live-turn ceiling strands a held reason; and a resume that re-claims the id
-    would have to decide whether the predecessor's teardown still happened. Each of
-    those is a way to LOSE the terminal, which is worse than a terminal a late entry
-    follows -- an absent one cannot be told apart from a crash.
+    The entry is not held until the session goes quiet, because nothing in the
+    gateway defines quiescence: a turn is pinned only once ``turn/started`` is
+    written, so an authorization await ahead of it is unpinned; eviction under the
+    tracker's live-turn ceiling strands a held reason; and a resume that re-claims
+    the id would have to decide whether the predecessor's teardown still happened.
+    Each is a way to LOSE the terminal, which is worse than a terminal a late entry
+    follows: an absent one cannot be told apart from a crash.
 
     What this must not do is erase state a live turn still needs. The cleanup below
     drops only what a successor must not inherit; the live-turn records and the open

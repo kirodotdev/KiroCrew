@@ -37,13 +37,11 @@ def on_subagent_spawned(
     about this child reuses the captured ordinal instead of asking what turn the
     parent is on now.
 
-    No ``ref`` into the child's log. The schema describes one, and a child that
-    had a crew log would deserve it, but no subagent code path opens one: the only
-    site that creates a session's crew log is the dashboard turn path, and a subagent
-    run does not go through it. A ``ref`` written now would cite a file that does
-    not exist, which a reader cannot distinguish from one that was deleted. It
-    becomes writable, unchanged, the day subagent sessions get crew logs of their
-    own.
+    No ``ref`` into the child's log. The schema describes one, but no subagent code
+    path opens one: the only site that creates a session's crew log is the dashboard
+    turn path, and a subagent run does not go through it. A ``ref`` would cite a
+    file that does not exist, which a reader cannot distinguish from one that was
+    deleted.
 
     ``turn`` is ABSENT when no turn asked, the same way :func:`on_model_selected`
     omits its own. A spawn does not always arrive inside a model turn -- a slash
@@ -123,9 +121,8 @@ def on_subagent_dismissed(
     It lives in the log rather than in a registry beside it because the panel's
     durable half is a FOLD of this log. A dismissal held anywhere else is a second
     record of a fact about this session, and the two are reclaimed on different
-    schedules -- which is not hypothetical: the registry that held it was keyed on
-    the run's folder at both ends, so a dismissed card came back the moment that
-    folder was pruned while the log still carried the child.
+    schedules: a registry keyed on the run's folder brings a dismissed card back
+    the moment that folder is pruned while the log still carries the child.
 
     ``on_settled`` is handed True only once the append has COMMITTED. A caller that
     will tell the user the card is gone needs that, because this is the only record

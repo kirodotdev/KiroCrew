@@ -373,13 +373,9 @@ def on_open_tab_unrestored(
 ) -> None:
     """Record that this session's tab was listed as open but did not come back.
 
-    The durable account of a dashboard startup that could not rebuild a tab. Before
-    this, a tab that vanished left NOTHING anywhere: no ``session/closed``, because
-    the gateway did not stop serving the session; no delete, because nothing was
-    deleted; and the restore's own ``logger.warning`` goes to a rotated gateway log
-    that is gone long before anyone asks what happened. So the only account of a lost
-    working set was the user noticing it, which is how a loss of sixteen tabs went
-    from happening to being understood with nothing in between.
+    The durable account of a dashboard startup that could not rebuild a tab. Such a
+    tab leaves no ``session/closed`` (the gateway did not stop serving the session),
+    no delete, and only a ``logger.warning`` in a rotated gateway log.
 
     It is emitted on the DROPPED session's own log rather than on a gateway-wide one
     because that is where a reader goes: the question is always "what happened to this
@@ -454,12 +450,11 @@ def on_session_opened(
     re-resolving at the first turn would record a model that session never used.
     Selection is not transmission either: the withhold happens inside the
     provider, so this field names the choice rather than a message the backend
-    received. The pair is the record -- ``model`` states what serves the session,
-    ``model_requested`` what was chosen -- and the entry infers nothing from the
-    two. A difference between them is not by itself a refusal, because the backend
-    serves the spelling it resolved; whether a choice was APPLIED is not something
-    this entry knows, and a reader that needs it reads the provider's own outcome
-    rather than comparing these strings. Absent ``model_requested`` means no tier
+    received. The entry infers nothing from the pair. A difference between them is
+    not by itself a refusal, because the backend serves the spelling it resolved;
+    whether a choice was APPLIED is not something this entry knows, and a reader
+    that needs it reads the provider's own outcome rather than comparing these
+    strings. Absent ``model_requested`` means no tier
     resolved one, OR that this process did not observe the allocation (a re-attach
     carries provenance from a process that is gone) -- and on an entry written
     before the field existed it means nothing at all.
@@ -478,24 +473,17 @@ def on_session_opened(
     written at all, so a fold can tell "no creator" from "creator unknown".
 
     ``depth`` is how many creators stand ABOVE this session: ``0`` for a session
-    nobody created, and a child's creator's depth plus one. It is the caller's
-    reading, resolved before the call and passed in rather than derived here,
-    which is the whole point of the field. The creator chain lives across OTHER
-    sessions' logs, so the only two ways to answer are to join those logs or to
-    ask the tree a reader already holds in memory -- and this runs on the writer
-    thread, where neither belongs. The caller is where the no-I/O read already
-    happens (the same fold ``parent_slot`` itself can come from), so the depth
-    arrives as a value and this function only records it.
+    nobody created, and a child's creator's depth plus one. The caller resolves it
+    and passes it in: the creator chain lives across OTHER sessions' logs, and
+    joining them or reading the in-memory tree does not belong on the writer thread.
 
-    ``None`` -- the default -- writes no key, and that is the honest answer for
-    every caller and every state that cannot establish the number: a writer that
-    does not resolve one, and a session whose creator is KNOWN to exist while the
-    tree could not place it. It is deliberately NOT inferred from ``parent_slot``
-    being empty, which would be the obvious shortcut and is wrong: an empty
-    creator covers both a session nobody made and one whose creator this entry
-    may not cite, and writing ``0`` for the second would record a child as the
-    root of its own tree in an entry nothing rewrites. A caller that knows there
-    is no creator says ``0`` and says it on purpose.
+    ``None`` -- the default -- writes no key, the honest answer whenever the number
+    cannot be established, including a session whose creator is KNOWN to exist
+    while the tree could not place it. It is deliberately NOT inferred from an
+    empty ``parent_slot``: an empty creator covers both a session nobody made and
+    one whose creator this entry may not cite, and writing ``0`` for the second
+    would record a child as the root of its own tree in an entry nothing rewrites.
+    A caller that knows there is no creator says ``0`` and says it on purpose.
 
     ``memory``, ``app`` and ``channel`` record WHAT KIND of session this log
     belongs to: the slot's memory mode verbatim, the app that owns it if one does,
@@ -557,28 +545,24 @@ def on_session_opened(
     def _job() -> None:
         created = False
         if _crew_log().CrewLog.exists(_KIND, session_id):
-            # THE resume path, and the only caller that may repair. ``resumed``
-            # means this claim re-attached to a conversation a DIFFERENT gateway
-            # process was writing, so a turn left open in that file belongs to a
-            # writer that is gone and closing it records what happened. A warm
-            # reuse inside this process passes ``resumed=False`` and must not
-            # repair: its turn may still be running. A reconnect after a cache
-            # eviction never reaches here at all -- it goes through ``_handle``,
-            # which opens without repair.
+            # THE resume path, and the only caller that may repair. ``resumed`` means
+            # this claim re-attached to a conversation a DIFFERENT gateway process was
+            # writing, so a turn left open in that file belongs to a writer that is
+            # gone. A warm reuse inside this process passes ``resumed=False`` and must
+            # not repair: its turn may still be running. A reconnect after a cache
+            # eviction never reaches here: it goes through ``_handle``, which opens
+            # without repair.
             #
-            # A live turn of OUR OWN contradicts the claim. ``resumed`` is the
-            # caller's belief that the writer is gone, and this process holding a
-            # running turn for that id is direct evidence that it is not -- it is
-            # us. Repairing then closes a turn that is still producing entries, and
-            # the file ends up saying the turn completed as interrupted and then
-            # completed again for real, with the same tool closed both unknown and
-            # completed: a fold reads two outcomes for one turn and cannot tell
-            # which happened. Local evidence beats the flag, so this degrades to a
-            # reconnect. A writer in ANOTHER process is caught one layer down
-            # instead of here: the repair is an append, so it takes that unit's
-            # write ownership and is refused while another process holds it, and
-            # this check is what covers the same-process race a cache eviction
-            # produces -- which no kernel lock can see, both handles being ours.
+            # A live turn of OUR OWN contradicts the claim: it is direct evidence that
+            # the writer is not gone. Repairing then closes a turn still producing
+            # entries, and the file would say the turn completed as interrupted and
+            # then for real, with one tool closed both unknown and completed, so a fold
+            # cannot tell which happened. Local evidence beats the flag, so this
+            # degrades to a reconnect. A writer in ANOTHER process is caught one layer
+            # down: the repair is an append, so it takes that unit's write ownership
+            # and is refused while another process holds it. This check covers the
+            # same-process race a cache eviction produces, which no kernel lock can
+            # see because both handles are ours.
             may_repair = bool(resumed) and not live_at_claim
             if resumed and live_at_claim:
                 logger.warning(
@@ -599,13 +583,10 @@ def on_session_opened(
             log = _crew_log().CrewLog.open(
                 _KIND, session_id, repair=may_repair, child_gone=_child_gone_probe(session_id)
             )
-            # Rebuild the attempt counts from what is already in the file, for
-            # the two cases where memory cannot answer: a resume, whose counts
-            # belong to a process that is gone, and a session whose map was
-            # evicted by the bound. A warm reuse still HOLDS its counts, and
-            # re-seeding it would rescan the whole file on the one thread that
-            # serializes every session's appends -- once per open, against a file
-            # that only grows.
+            # Rebuild the attempt counts when memory cannot answer: a resume, whose
+            # counts belong to a process that is gone, or a map the bound evicted. A
+            # warm reuse still HOLDS its counts, and re-seeding would rescan the whole
+            # file, once per open, on the one thread serializing every session's appends.
             needs_seed = bool(resumed) or not _tracker().knows_attempts(session_id)
             if needs_seed:
                 _seed_attempts(session_id, log)
@@ -615,24 +596,20 @@ def on_session_opened(
                 # repair rides the in-memory buffer, so a crash between the two loses
                 # the repair and a superseded id is never resumed to re-queue it. A
                 # re-attach is the one moment a later process holds this crew log
-                # again and can read its OWN edge back, so the repair is recovered
-                # from the file rather than from state that did not survive.
+                # again, so the repair is recovered from its OWN edge in the file.
                 #
                 # This log's own entry, never the caller's ``previous_sid``. The latch
-                # below refuses the caller's value on a re-attach for a stated reason
-                # -- the unit it names may be this same one or an unrelated one that
-                # is still LIVE -- and that reason does not apply here: this value was
-                # written by an earlier attempt of THIS session's opening entry, which
-                # verified it against the slot before writing it.
+                # below refuses the caller's value on a re-attach because the unit it
+                # names may be this same one or an unrelated one that is still LIVE.
+                # That does not apply here: an earlier attempt of THIS session's
+                # opening entry verified this value against the slot before writing it.
                 #
                 # Gated on ``slot`` because the repair verifies the candidate against
-                # that slot and refuses without one, and nothing is lost by the gate:
-                # an edge is only ever written for two crew logs KNOWN to be one
-                # slot's, so a session with no slot has no durable edge to recover.
+                # that slot and refuses without one. An edge is only ever written for
+                # two crew logs KNOWN to be one slot's, so a slot-less session has none.
                 #
-                # Latched like every other decision in this job, so a retry acts on
-                # the first attempt's reading rather than re-deriving from a file the
-                # attempt before it may have changed.
+                # Latched like every other decision in this job, so a retry acts on the
+                # first attempt's reading, not on a file an earlier attempt changed.
                 recovered = announce.setdefault(
                     "recovered_previous",
                     _durable_previous(session_id),
@@ -661,19 +638,16 @@ def on_session_opened(
         # on every turn rather than only the first, which is what lets a class the
         # session acquires LATER reach the log at all.
         observed = (memory, app, bool(channel), workspace) if memory else None
-        # Latched on the FIRST attempt and read back on every later one, exactly like
-        # ``owed`` below and for the same reason: the decision is derived from
-        # filesystem state this job itself changes, so a retry after the header
-        # landed reads ``exists`` true and ``created`` false, and an unlatched edge
-        # would be dropped there -- silently, and permanently, while the entry it
-        # belongs to still gets written. The latch holds the ID rather than a flag,
-        # so the retry writes the edge the first attempt decided on, and an empty
-        # string is a latched "no edge" that nothing downstream re-tests.
+        # Latched on the FIRST attempt, like ``owed`` below and for the same reason: a
+        # retry after the header landed reads ``exists`` true and ``created`` false,
+        # and an unlatched edge would be dropped there, silently and permanently,
+        # while its entry still gets written. The latch holds the ID, so the retry
+        # writes the edge the first attempt chose, and an empty string is a latched
+        # "no edge" that nothing downstream re-tests.
         #
-        # ``created`` is part of the condition, not just the ``previous_sid``
-        # comparison. A re-attach has a store already, so the unit the caller names
-        # is either this same one or an unrelated one that may still be LIVE, and
-        # repairing that is how a running turn gets an outcome it never had.
+        # ``created`` is part of the condition: a re-attach already has a store, so
+        # the unit the caller names is this same one or an unrelated one that may
+        # still be LIVE, and repairing that gives a running turn an outcome it never had.
         superseded = announce.setdefault(
             "superseded",
             (
@@ -687,17 +661,14 @@ def on_session_opened(
                 else ""
             ),
         )
-        # Buffered beside the id above and gated the same way, because it answers the
-        # same question: what this entry says about the slot's earlier store. It is
-        # only meaningful when NOTHING was named -- a named edge already says the
-        # predecessor is known -- so a caller passing both leaves the id winning.
+        # Buffered beside the id above and gated the same way: it says what this entry
+        # states about the slot's earlier store. Meaningful only when NOTHING was
+        # named, so a caller passing both leaves the id winning.
         #
-        # THREE values, not two, and the third is the one that keeps this honest. A
-        # caller that looked reports what it found; a caller that never looked passes
-        # nothing, and this entry then says nothing either way. Collapsing the last
-        # two would make the emitter state a conclusion on behalf of a caller that
-        # never reached one, which is the same defect as reading an absent key as a
-        # conclusion, written from the other side.
+        # THREE values, not two. A caller that looked reports what it found; a caller
+        # that never looked passes nothing, and this entry then says nothing either
+        # way. Collapsing the last two would state a conclusion for a caller that
+        # never reached one.
         determined = announce.setdefault(
             "previous_determined", bool(created and previous_undecided is not None)
         )
@@ -723,31 +694,25 @@ def on_session_opened(
             "resumed": bool(resumed),
         }
         if model_requested:
-            # Written whenever the gateway resolved one, and never conditioned on
-            # ``model``. Both guards tried before this inferred the application
-            # outcome from the two ids and both lost the record: suppressing on a
-            # DIFFERENCE reported an honoured request as unconfirmed, because the
-            # backend serves the spelling it resolved; suppressing on a KNOWN
-            # ``model`` dropped the request whenever a refused pin left the session
-            # on a concrete backend default rather than the auto sentinel, which is
-            # ordinary operation. Recording the request outright costs one short
-            # string and cannot lose the requested/served pair. The entry states two
-            # facts and infers nothing: what the gateway asked for, and what serves.
+            # Written whenever the gateway resolved one, never conditioned on ``model``.
+            # Suppressing on a DIFFERENCE would report an honoured request as
+            # unconfirmed, because the backend serves the spelling it resolved;
+            # suppressing on a KNOWN ``model`` would drop the request whenever a
+            # refused pin left the session on a concrete backend default, which is
+            # ordinary operation. The entry states two facts and infers nothing: what
+            # the gateway asked for, and what serves.
             data["model_requested"] = model_requested
         if superseded:
             # No ``slot`` inside: it is the slot in ``data.slot``, and repeating it
             # would invite a reader to trust a second copy of one fact.
             data["previous"] = {"sid": superseded}
         elif unresolved:
-            # A predecessor EXISTS and could not be named. Recorded BESIDE the
-            # citation rather than as an empty one, because ``previous.sid`` is
-            # required and a citation naming nothing would be a weaker promise for
-            # every reader of it. This is a third thing from the two a reader already
-            # tells apart: a named edge, and neither key, which means this log starts
-            # the slot's chain. Without it this log would read as that chain start,
-            # and a fold ranking the slot's logs would pass over it and elect the log
-            # before it -- the citation this read refused to guess, written anyway by
-            # another route and frozen into an append-only entry.
+            # A predecessor EXISTS and could not be named. Recorded BESIDE the citation
+            # rather than as an empty one, because ``previous.sid`` is required and a
+            # citation naming nothing would be a weaker promise for every reader.
+            # Without it this log would read as the slot's chain start, and a fold
+            # ranking the slot's logs would pass over it and elect the log before it:
+            # the citation this read refused to guess, frozen into an append-only entry.
             data["previous_undecided"] = True
         elif created and determined and not previous_sid:
             # The caller LOOKED and there is no predecessor: this is the slot's first
@@ -775,36 +740,26 @@ def on_session_opened(
                 parent["sid"] = parent_sid
             data["parent"] = parent
         if isinstance(depth, int) and not isinstance(depth, bool) and depth >= 0:
-            # Written only for a reading the caller actually made. ``None`` is the
-            # ordinary absence and costs nothing to check; the type and sign checks
-            # cover a caller handing over something that is not a depth at all --
-            # a bool, which is an int in Python and would land as 0 or 1, or a
-            # negative, which no walk of a tree can produce. Each of those would be
-            # a number in an append-only entry that no later read can correct, and
-            # the alternative to refusing them here is a counting reader learning to
-            # distrust the field. A depth that cannot be stated is simply absent,
-            # which every reader of this field already has to handle.
+            # Written only for a reading the caller actually made. The type and sign
+            # checks refuse a bool (an int in Python, landing as 0 or 1) and a
+            # negative (no tree walk produces one): either would be a number in an
+            # append-only entry that no later read can correct. A depth that cannot
+            # be stated is absent, which every reader of this field already handles.
             data["depth"] = depth
         if memory:
-            # The class of session this log belongs to, as facts. Written only when
-            # the caller supplied ``memory``, which every live slot has: that makes
-            # one member the witness that the class was recorded at all, so a reader
-            # can tell "recorded, and nothing applies" from "not recorded", and an
-            # object that is never empty carries that distinction without a flag
-            # saying so. A caller that passes no memory mode -- a test fixture, an
-            # older build's log -- records no class, and a reader that needs one
-            # must refuse rather than read the absence as "nothing applies".
+            # The class of session this log belongs to, as facts. Written only when the
+            # caller supplied ``memory``, which every live slot has, so that member is
+            # the witness that the class was recorded at all: a reader can tell
+            # "recorded, and nothing applies" from "not recorded" without a flag. A
+            # caller that passes no memory mode (a test fixture, an older build's log)
+            # records no class, and a reader that needs one must refuse rather than
+            # read the absence as "nothing applies".
             #
-            # These live HERE, on the opening entry, because the crew log is the
-            # authoritative record of a session and the question they answer is
-            # asked about sessions that have CLOSED. A gate that read them from the
-            # live slot instead can answer only for a session still being served,
-            # which is the one case it does not need.
-            #
-            # Facts, not a verdict: what owns the session, whether it keeps memory,
-            # whether its conversation is published to a channel. A verdict recorded
-            # here would be this build's reading of a rule that may change, and the
-            # entry cannot be rewritten.
+            # On the opening entry because the crew log is the authoritative record of
+            # a session and the question is asked about sessions that have CLOSED; a
+            # gate reading the live slot can answer only for a session still served.
+            # Facts, not a verdict: a verdict would be this build's reading of a rule
+            # that may change, and the entry cannot be rewritten.
             session_class: dict[str, Any] = {"memory": memory}
             if app:
                 session_class["app"] = app
@@ -814,21 +769,18 @@ def on_session_opened(
                 session_class["workspace"] = workspace
             data["class"] = session_class
         log.append("session/opened", data, src=_SRC_GATEWAY)
-        # DURABILITY FIRST, THEN MEMORY. The session tree is a projection folded in
-        # memory and advanced here, at commit, so no reader ever has to re-derive it
-        # from disk; this line is the only thing that keeps it current. It runs AFTER
-        # the append, never before, so the disk can never hold an edge the memory
-        # lacks -- and if it did run first, an append that then failed would leave a
-        # creator edge that no log records.
+        # DURABILITY FIRST, THEN MEMORY. The session tree is an in-memory projection
+        # advanced only here, at commit. It runs AFTER the append, never before, so
+        # the disk can never hold an edge the memory lacks; run first, a failed append
+        # would leave memory with a creator edge that no log records.
         #
         # This gateway is the store's only writer (a pod or the internal gateway has
-        # its own data home), which is what makes an in-process projection complete
-        # rather than a guess about somebody else's writes.
+        # its own data home), which is what makes an in-process projection complete.
         #
         # Never raises: ``record_opened`` swallows its own failures, because an append
-        # that already succeeded must not be reported as failed on account of the
-        # memory image of it, and a projection that missed a record self-heals through
-        # the tail replay on the next cold start.
+        # that already succeeded must not be reported as failed on account of its
+        # memory image, and a projection that missed a record self-heals through the
+        # tail replay on the next cold start.
         _record_session_tree_edge(session_id, slot, log, parent_slot, superseded)
         if observed is not None:
             # This line states the class, so it is also what later turns compare
