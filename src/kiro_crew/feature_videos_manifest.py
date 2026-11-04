@@ -99,17 +99,11 @@ DASHBOARD_SURFACE_KEY = "dashboard:ui"
 
 _UNEVALUABLE_REASON = "governance unavailable (fail-closed)"
 
-#: Last answer :func:`download_denied` produced. Its one reader is
-#: :func:`download_permitted_cached`, which serves it to the polled ``/status``
-#: route for up to :data:`_GOVERNANCE_TTL_SECS` so a progress poll does not write
-#: an audited SEL row per request. Starts denied: a process that has not evaluated
-#: the ceiling yet reports "off" — fail-closed in the direction that costs a
-#: lagging permit rather than a lagging denial (and the cached reader evaluates on
-#: its first call, so the default is never actually served). Refreshed by every
-#: real evaluation — the boot task, each clip request, ``fetch-all`` — so the memo
-#: tracks the ceiling within a request of it changing. Process-wide state about
-#: the MACHINE, not about any caller, which is why a module global is the right
-#: home.
+#: Last answer :func:`download_denied` produced, served by
+#: :func:`download_permitted_cached` to the polled ``/status`` route so a poll does
+#: not write an audited SEL row per request. Starts denied (fail-closed), and every
+#: real evaluation refreshes it. A module global because it describes the machine,
+#: not any caller.
 _last_download_permitted = False
 
 #: How long :func:`download_permitted_cached` may serve the memo before it
@@ -208,19 +202,14 @@ _POSTER_SUFFIXES = (".jpg", ".jpeg", ".png", ".webp")
 def download_denied() -> bool:
     """Whether the ceiling forbids fetching hosted feature videos. Blocking.
 
-    FAIL-CLOSED. The two dispositions are not symmetric: a wrong-DENY withholds
-    an intro clip a user might have enjoyed, while a wrong-PERMIT makes an
-    outbound request to a vendor CDN on a fleet that forbade vendor egress —
-    which puts this row with ``capabilities.telemetry`` / ``capabilities.publish``
-    rather than with the advisory probes. ``fail_closed`` also makes the
-    evaluator audit an unevaluable ceiling as a critical SEL event.
+    FAIL-CLOSED: a wrong deny only withholds a clip, while a wrong permit makes a
+    vendor-CDN request on a fleet that forbade vendor egress. ``fail_closed`` also
+    audits an unevaluable ceiling as a critical SEL event.
 
     Consulted at three chokepoints, because any one alone is a half-control: each
     manifest request (:func:`fetch_manifest` re-asks before every candidate url),
     each clip request in the download pass, and the ``fetch-all`` route. The
-    settings panel reads the same answer as ``download_enabled`` on
-    ``/api/feature-videos/status`` — through :func:`download_permitted_cached`,
-    the memo, not a fresh audited row — so it never guesses.
+    settings panel reads it through :func:`download_permitted_cached`.
     """
     global _last_download_permitted
     try:
@@ -251,20 +240,11 @@ def download_denied() -> bool:
 def download_permitted_cached() -> bool:
     """Permitted?, re-evaluated at most once per :data:`_GOVERNANCE_TTL_SECS`. Blocking.
 
-    For a POLLED route. ``/api/feature-videos/status`` is polled while a download
-    runs, and :func:`download_denied` writes a ``governance_decision`` SEL row on
-    every call — so evaluating per request turns a progress readout into an
-    audit-log flood and a disk write per poll, which also buries the rows that
-    record a real decision.
-
-    The split this creates is the point: an audited evaluation happens where the
-    ACTION is (each clip download, ``fetch-all``), and a polled read gets a bounded
-    stale answer. Worst case a denial is up to a minute old on one offer, while the
-    transfer it would stop is re-checked before every request it makes.
-
-    Fail-closed on the cold path: with nothing evaluated yet the first call
-    evaluates rather than returning the denied default, so a fresh process reports
-    the truth instead of claiming the feature is off.
+    For the polled ``/api/feature-videos/status`` route: :func:`download_denied`
+    writes a SEL row per call, so polling it would flood the audit log. Actions
+    (each clip download, ``fetch-all``) still evaluate fresh; only the polled read
+    may be up to a minute stale. The first call evaluates rather than serving the
+    denied default.
     """
     global _last_download_check_ts
     now = time.monotonic()
