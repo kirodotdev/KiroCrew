@@ -1,22 +1,8 @@
 """What a launch and a teardown keep true beyond the order of their steps.
 
-The control secret is written before the VM runs, its value never reaches argv, its
-reference is recorded, and the payload carries it beside, and distinct from, the
-operator's identity reference, which the spec carries rather than derives. A teardown
-deletes the secret after the VM is gone, with its recovery window kept, and deregisters
-the node itself after the activation. The client token is fixed per launch attempt and
-differs per relaunch. Registration names the guest's run-as user, and a failed
-registration terminates the VM and clears the record. A step that waits rereads the
-record, so a launch does not overwrite a teardown that lands during the wait, and a
-teardown leaves alone the resources of a relaunch that lands during its own. A teardown
-sends every call to the profile and region the record names, falling back to the request
-only for a row that recorded none. A launch records its wall when the VM exists and sweeps
-before it creates anything: rows past their wall and grace are released, live, unwalled,
-terminal and its own rows are left alone, and a release that is refused or raises keeps
-its running row without failing the sweep. The sweep stops once its time budget is spent,
-checking between rows, so a release already begun finishes. The engine's steps and their
-order are pinned in ``test_cloud_microvm_engine.py``, and the image a launch runs in
-``test_cloud_microvm_engine_image.py``.
+Covers the control secret, client tokens, registration, rereads around waits, the
+record's profile and region on teardown, and the expiry sweep. Step order is pinned in
+``test_cloud_microvm_engine.py``, the image in ``test_cloud_microvm_engine_image.py``.
 """
 
 from __future__ import annotations
@@ -35,11 +21,8 @@ from kiro_crew.cloud.microvm.record import CrewRecord
 class TestRegistrationNamesTheGuestsRunAsUser:
     """The registry's default is an EC2 user, and no MicroVM guest has it.
 
-    Asserted against the call rather than the constant, because what breaks a
-    live crew is the VALUE that reaches the registry: every in-guest command goes
-    out as ``sudo -u <run_as> -i``, and the dashboard's token mint is the first
-    one. A failed mint takes the tunnel with it, so the crew is online,
-    registered and unreachable.
+    Asserted on the call: every in-guest command runs as ``sudo -u <run_as> -i``, and
+    a failed token mint leaves the crew online, registered and unreachable.
     """
 
     def test_the_registry_is_given_the_guests_user(self, tmp_path, monkeypatch):
@@ -140,11 +123,8 @@ class TestTheControlSecretExistsBeforeTheVmReadsIt:
     def test_the_identity_reference_is_carried_and_never_derived(self):
         """The launch TAG is not the operator's to choose.
 
-        A dashboard launch builds its job with no tag and ``run_launch`` mints
-        ``kc-<random hex>``, so a secret name built from the tag cannot exist
-        before the launch that invents it. Deriving one sent every launch to its
-        secrets stage while the VM billed to its wall. The operator creates the
-        secret once, at a path they choose, and the spec carries that reference.
+        ``run_launch`` mints ``kc-<random hex>``, so a secret named from the tag cannot
+        exist beforehand. The operator creates it once and the spec carries the reference.
         """
         assert not hasattr(
             SPEC, "identity_secret_name"
@@ -407,11 +387,8 @@ class TestALifecycleStepRechecksTheRecordAfterItWaits:
 class TestTheClientTokenIsDeterministic:
     """``RunMicrovm``'s token is both an idempotency key and a recovery handle.
 
-    As an idempotency key it makes two deliveries of one request one VM. As a
-    recovery handle it is the ONLY way back to a VM whose creating call never
-    answered: the call carries no tags, the list has no attributable field, and
-    the id is precisely what was lost. A random part defeats both at once, because
-    the replay is then a second request and makes a second billing VM.
+    It is the only way back to a VM whose creating call never answered (no tags, no
+    attributable field). A random part would make the replay a second billing VM.
     """
 
     def test_the_same_launch_attempt_gets_the_same_token(self):
@@ -443,10 +420,8 @@ class TestTheClientTokenIsDeterministic:
 class TestAFailedRegistrationIsRolledBack:
     """``register`` runs AFTER the step rollback covers, so it has to undo itself.
 
-    The launch job's rollback is scoped to a failed ``provision``. A raise here
-    with nothing else done leaves a VM running, billing to its wall, and absent
-    from the one registry anything in the dashboard reads -- so neither the owner
-    nor the orphan reaper can see it, and only the record names it.
+    Otherwise a raise leaves a billing VM missing from the registry, so neither the
+    owner nor the orphan reaper can see it.
     """
 
     @pytest.fixture()
@@ -511,11 +486,8 @@ class TestAFailedRegistrationIsRolledBack:
 class TestTeardownUsesTheRecordsOwnCoordinates:
     """A crew lives where it was launched, and nothing moves it.
 
-    ``cloud.json`` can be edited between a launch and a teardown, a dashboard
-    passes whatever the operator is looking at now, and a sweep acts on rows it
-    did not launch. Against the wrong region the terminate fails and every
-    best-effort delete fails quietly -- and the row is marked ``terminated`` all
-    the same, so the VM bills to its wall with a record saying it is gone.
+    Against the wrong region every delete fails quietly while the row is still marked
+    ``terminated``, so the VM bills with a record saying it is gone.
     """
 
     @pytest.fixture()

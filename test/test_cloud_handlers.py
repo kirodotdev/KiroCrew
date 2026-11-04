@@ -24,19 +24,12 @@ from kiro_crew.dashboard import handlers_cloud as hc
 def _posix_host(monkeypatch):
     """Pin a POSIX platform for every test in this module.
 
-    These routes are POSIX-only by design, so on Windows ``_guard()`` answers
-    400 before any handler logic runs and every success-path assertion below
-    would fail for a reason that has nothing to do with the code under test.
-    Pinning the platform keeps the suite host-independent; the rejection itself
-    is asserted by ``test_windows_rejected``, whose own monkeypatch overrides
-    this fixture.
+    On Windows ``_guard()`` answers 400 before any handler runs; ``test_windows_rejected``
+    overrides this fixture to assert that.
 
-    ``hc.sys`` is the process-wide ``sys``, so the pin is seen by every import
-    that runs while it holds. The shared teardown fixture imports the STT
-    engine, and with it numpy, whose import calls ``os.uname()`` when the
-    platform reads ``linux``; on a Windows host that has no ``os.uname`` and
-    errors every teardown when this module runs alone. Import it first, under
-    the real platform, so the pin cannot reach that import.
+    ``hc.sys`` is the process-wide ``sys``. The teardown fixture imports numpy via the STT
+    engine, which calls ``os.uname()`` when the platform reads ``linux``, so it is imported
+    first under the real platform.
     """
     try:
         import kiro_crew.stt.engine  # noqa: F401
@@ -133,11 +126,8 @@ class TestGuards:
     async def test_windows_may_still_read_launch_history(self, tmp_path, monkeypatch):
         """The two read-only launch routes answer on Windows; the writes do not.
 
-        The Remote Crew list waits for BOTH the instances and the launch history
-        before it renders anything, so POSIX-gating this read replaced the whole
-        list — hand-added SSH crews included — with a cloud-provisioning error,
-        leaving no way to connect, edit or remove any of them. The route parses a
-        local job store and shells to nothing, so there is nothing to gate.
+        The Remote Crew list waits for both, so gating this read would hide every crew,
+        hand-added SSH crews included, behind an error. It only parses a local job store.
         """
         state = _state(tmp_path)
         monkeypatch.setattr(hc.sys, "platform", "win32")
@@ -745,11 +735,8 @@ class TestInstanceMutations:
     ):
         """A crew from another lane must not be driven down the EC2 lane's path.
 
-        The built-in path looks for a CloudFormation stack named after the tag, and
-        only that lane creates one. Sent there, a MicroVM crew produced a credentials
-        error about describing a stack that was never meant to exist -- measured on a
-        live crew, and it reads as a broken profile rather than a verb that does not
-        apply here.
+        Only the EC2 lane creates a CloudFormation stack; a MicroVM crew sent there gets a
+        credentials error that reads as a broken profile.
         """
         reached: list[str] = []
         monkeypatch.setattr(hc.ec2, "stop", lambda *a, **k: reached.append("ec2.stop") or {})
@@ -1188,22 +1175,11 @@ def _compose(monkeypatch, provider):
 @pytest.mark.asyncio
 class TestProvisionerSeam:
     def test_the_engine_is_resolved_off_the_event_loop(self):
-        """Resolving an engine now touches the disk, so it must not run on the loop.
+        """Resolving an engine reads ``cloud.json``, so it must not run on the loop.
 
-        The seam reads ``cloud.json`` to decide whether the Fargate lane exists, and
-        this handler's sibling store calls are already wrapped for exactly this
-        reason -- one says so in a comment: a slow disk would stall the gateway's
-        other requests and its heartbeat behind it. An unwrapped resolve beside
-        wrapped calls is also the inconsistency a later reader re-litigates, so the
-        property is pinned rather than left to a comment.
-
-        Asserted on the code because the cost is a blocking syscall inside a
-        coroutine: a behavioural test would have to make the disk slow to see it,
-        and this class is pinned the same way elsewhere in the suite.
-
-        Read as a TREE, not as a substring. A substring pins the call's line breaks as
-        well as its meaning, so adding one argument reformats the line and reddens a test
-        about the event loop -- which says nothing about the event loop.
+        A slow disk would stall the gateway's other requests and heartbeat. Asserted on the
+        code, as a TREE: a behavioural test would need a slow disk, and a substring would
+        pin line breaks.
         """
         import ast
         import inspect

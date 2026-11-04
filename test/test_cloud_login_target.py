@@ -1,13 +1,8 @@
 """The Kiro login target survives every managed launch path.
 
-Every managed launch (setup cloud step, ``cloud launch``, dashboard Remote
-Crew) signs the crew in as a NAMED identity: an IAM Identity Center user gets
-their own organization's portal, never the Builder ID one, and a valid session
-for the wrong identity reads as a mismatch, not as "signed in". These tests pin
-the target at each boundary it crosses: the shared model, the login module's
-identity-aware probe and pinned no-fallback, the durable launch job, the
-engine's start AND resume, the owner-only HTTP boundary, and the CLI's
-inherit/override resolution.
+Every managed launch signs the crew in as a NAMED identity: an IAM Identity Center user
+gets their own portal, never Builder ID, and a session for the wrong identity is a
+mismatch. Pinned at each boundary the target crosses, from the shared model to the CLI.
 
 Placeholders only — no real start URL, account or device code appears here.
 """
@@ -604,13 +599,9 @@ class TestEngineForwarding:
     def test_preflight_refuses_a_target_the_engine_declares_it_cannot_honour(self):
         """An engine that receives ``login_target`` may still refuse one, at preflight.
 
-        Accepting the keyword only says the engine can be handed a target.
-        An engine whose instances never sign in (the Fargate engine) declares
-        the targets it cannot honour through ``login_target_refusal``, and
-        ``_check_signin_target_supported`` turns that reason into the same
-        preflight failure a legacy engine gets, so ``provision`` never runs and
-        nothing is billed. An engine without the hook, and one whose hook
-        returns ``""``, are unaffected.
+        The Fargate engine declares targets it cannot honour via ``login_target_refusal``;
+        ``_check_signin_target_supported`` fails preflight so nothing is billed. No hook, or
+        a hook returning ``""``, is unaffected.
         """
 
         class DeclaringEngine:

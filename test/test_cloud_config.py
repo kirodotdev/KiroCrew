@@ -52,10 +52,8 @@ class TestFargateConfig:
         """What the operator confirms at launch: the container that receives the model
         credential, and the ARN of the secret that delivers it there.
 
-        Both, because both decide who receives it. The image reference is digest-pinned, so
-        it names the registry, the repository and the content -- but the digest rule
-        constrains the FORM of the reference and never who owns the registry, which is why a
-        person has to read it rather than a checker merely validate it.
+        The digest rule constrains the reference's FORM, not who owns the registry, so a
+        person has to read it.
         """
         config = FargateConfig.from_mapping(COMPLETE_FARGATE)
 
@@ -192,13 +190,8 @@ class TestFargateConfig:
     def test_a_reference_the_engine_would_refuse_does_not_register(self):
         """The gate asks the ENGINE, so its answer and the engine's cannot differ.
 
-        This replaces an earlier assertion that a conforming NAME registered whatever
-        its ARN said. That was deliberate at the time -- the ARN pairing was left to the
-        engine to avoid a second copy of its rule -- but it meant a mismatched pair
-        registered the lane and was then refused at launch, which is the state this
-        module exists to prevent. Delegating to ``identity.secret_env_name`` moved the
-        boundary rather than duplicating it: there is still exactly one copy of the
-        rule, and it now runs here too.
+        A mismatched name/ARN pair must not register a lane the launch then refuses. The
+        rule has one copy, ``identity.secret_env_name``, and it runs here too.
         """
         block = {**COMPLETE_FARGATE, "secrets": [[CREDENTIAL_SECRET[0], "arn:not-a-real-arn"]]}
         assert FargateConfig.from_mapping(block) is None
@@ -236,14 +229,9 @@ class TestFargateConfig:
     def test_no_boolean_field_coerces_a_non_boolean(self, bad: object):
         """Every boolean field, derived from the dataclass, not a branch someone maintains.
 
-        Coercion would read the string ``"false"`` as true, and these fields decide
-        network exposure and the trust boundary -- the two directions a value must never
-        be guessed in. Parametrized over the FIELDS for the reason the string version is:
-        ``assign_public_ip`` had a hand-written branch of its own, and ``internal_only``
-        would have arrived beside it as a second one free to disagree.
-
-        ``None`` is in the values because an explicit JSON ``null`` is a PRESENT value
-        and must drop the block rather than fall through to the default.
+        Coercion would read ``"false"`` as true, and these fields decide network exposure
+        and the trust boundary. An explicit JSON ``null`` is a PRESENT value and must drop
+        the block rather than fall through to the default.
         """
         from kiro_crew.cloud.config import _BOOL_FIELD_DEFAULTS
 
@@ -356,17 +344,9 @@ class TestFargateConfig:
     def test_no_ceiling_is_imposed_on_the_lifetime(self, huge: int):
         """``cloud.md`` states the absence of a TTL ceiling as a DECISION, so pin it.
 
-        The spec says a very large value is an operator asking for effectively no
-        lifetime bound, and that the engine's fixed cap still holds the population. That
-        is prose, and prose cannot fail: someone adding a plausible-looking maximum
-        later -- a day, a week, a year -- would falsify the spec with every test still
-        green. So each of those thresholds is a case here, and the assertion runs
-        through the PRODUCTION path (``from_mapping`` decides the block, then
-        ``task_bounds`` hands the number to the engine's own dataclass) rather than
-        calling a helper directly, because a ceiling could be added at either step.
-
-        ``TaskBounds`` raises ``ValueError`` for a number it rejects, so reaching a
-        bound at all is the engine's acceptance, not merely this module's.
+        Each plausible maximum (a day, a week, a year) is a case, run through
+        ``from_mapping`` and then ``task_bounds``, because a ceiling could be added at either
+        step. ``TaskBounds`` raises ``ValueError`` on a number it rejects.
         """
         config = FargateConfig.from_mapping({**COMPLETE_FARGATE, "task_ttl_seconds": huge})
         assert config is not None, f"a ceiling now drops the block at {huge}"
@@ -375,22 +355,10 @@ class TestFargateConfig:
     def test_the_spec_and_this_module_track_the_engine_numbers(self):
         """The spec's guarantees are pinned to the CODE, not to its own wording.
 
-        Asserting a paragraph's sentences would redden on any rewording while catching
-        no real drift, so this follows the pattern ``test_context_management_doc.py``
-        already uses: every assertion is derived from a constant or a symbol, so the
-        thing that reddens is the code moving out from under the prose.
-
-        Three properties. The spec must NAME both engine constants, so renaming one
-        reddens here instead of leaving the paragraph pointing at a symbol that no
-        longer exists. The spec must NAME the test that pins the no-ceiling decision, so
-        that citation cannot rot into a reference to a deleted test. And neither the spec
-        nor ``cloud/config.py`` may contain the TTL default's VALUE, which is the "single
-        answer" guarantee stated as a check: the number lives in the engine, and a copy
-        anywhere here is the drift the guarantee exists to forbid.
-
-        The cap's value is deliberately NOT asserted absent. It is ``10``, which occurs
-        legitimately in ordinary prose and in unrelated numbers, so an absence assertion
-        on it would pass for reasons unrelated to the property and prove nothing.
+        The spec must name both engine constants and the no-ceiling test, and neither the
+        spec nor ``cloud/config.py`` may contain the TTL default's value: it lives in the
+        engine only. The cap's value (``10``) is not asserted absent, because it occurs in
+        unrelated prose and the check would prove nothing.
         """
         from kiro_crew.cloud.fargate_engine import (
             DEFAULT_MAX_RUNNING_TASKS,
@@ -415,15 +383,9 @@ class TestFargateConfig:
     def test_no_bound_field_accepts_anything_but_a_positive_whole_number(self, bad: object):
         """Every bound field, derived from the dataclass, not a list someone maintains.
 
-        ``True`` and ``False`` are in the set because ``bool`` is a subclass of ``int``:
-        with no explicit refusal, ``true`` reads as a lifetime of one second, which is a
-        task stopped the moment it starts. ``None`` is here because an explicit JSON
-        ``null`` is a PRESENT value of the wrong type, which this module drops a block
-        for wherever it appears -- ``assign_public_ip: null`` already does.
-
-        ``0`` and ``-1`` are the range half, and they must drop the block rather than
-        raise: a lane carrying a bound the engine refuses has to read as no lane, not as
-        a lane that raises out of ``TaskBounds`` on its first launch.
+        ``bool`` is a subclass of ``int``, so ``true`` would read as a one-second lifetime.
+        An explicit JSON ``null`` is a present value of the wrong type. ``0`` and ``-1`` must
+        drop the block rather than raise out of ``TaskBounds`` on the first launch.
         """
         from kiro_crew.cloud.config import _INT_FIELD_NAMES
 
@@ -453,11 +415,8 @@ class TestFargateConfig:
     def test_the_range_refusal_comes_from_the_engine(self):
         """The range rule has ONE home, and this reads the engine's own words.
 
-        Constructed directly rather than through ``from_mapping``, which answers ``None``
-        for such a block and so cannot show whose refusal fired. If this module grew its
-        own copy of "a lifetime of zero or less is not a lifetime", the message would
-        stop being the engine's and this would fail -- which is the drift the delegation
-        exists to make impossible.
+        Constructed directly: ``from_mapping`` answers ``None`` for such a block and cannot
+        show whose refusal fired.
         """
         with pytest.raises(ValueError, match="is not a lifetime"):
             FargateConfig(task_ttl_seconds=0).task_bounds()
@@ -466,16 +425,10 @@ class TestFargateConfig:
 class TestAConcurrentEditIsNeverLost:
     """The property, stated so a narrower race cannot pass it.
 
-    A caller reads the config, works, and writes the whole record back. Anything that
-    landed in between is in the file but not in the snapshot, so writing the snapshot
-    erases it with nothing said. The property is not "the window is small": it is that
-    the write either INCLUDES the other edit or REFUSES. Both outcomes keep the edit;
-    only a silent overwrite loses it.
+    A caller that writes back a whole snapshot erases any edit that landed meanwhile. The
+    write must either INCLUDE the other edit or REFUSE.
 
-    Note on scope: the read-only seal on `cloud.json` does NOT cover this. The seal stops
-    a sandboxed agent from writing the file at all, and the writers racing here are both
-    trusted paths. Claiming the seal answers this would be the same mistake as the macOS
-    branch -- naming a protection that is not doing the work.
+    The read-only seal on `cloud.json` does not cover this: both racing writers are trusted.
     """
 
     FARGATE = dict(COMPLETE_FARGATE)
@@ -582,11 +535,9 @@ class TestAConcurrentEditIsNeverLost:
     def test_the_precondition_caller_cannot_resolve_an_empty_tag(self, monkeypatch):
         """Merging from displaced bytes stays out of reach of a caller with a precondition.
 
-        The on-disk tag read answers the default for a file that cannot be parsed, so a caller
-        naming the default tag would be the one way a precondition could be satisfied by a
-        tag nobody read. The only production caller of `expect_last_tag` resolves its tag
-        through a path that exits rather than yielding an empty one, which is what closes
-        that case, so it is pinned here rather than left to reading.
+        An unparseable file reads as the default tag, so a caller naming the default could
+        satisfy a precondition with a tag nobody read. The only caller of `expect_last_tag`
+        exits rather than yielding an empty tag.
         """
         import argparse as _argparse
 
@@ -612,15 +563,11 @@ class TestAConcurrentEditIsNeverLost:
     def test_a_file_that_cannot_become_a_document_reads_as_defaults(self, tmp_path, kind):
         """One answer for every way a hand-edited file fails to parse.
 
-        These reach `json.loads` through different failure types: a decode error, a
-        `JSONDecodeError`, the interpreter's integer-string limit (a plain `ValueError` on
-        syntax that is perfectly valid JSON), and a `RecursionError` on depth the parser
-        accepts less of than it can build. No caller can act differently on any of them, so
-        naming them one at a time is what lets one be missed; this list is the answer.
+        Covers a decode error, `JSONDecodeError`, the integer-string limit (a plain
+        `ValueError` on valid JSON) and `RecursionError` on deep nesting.
 
-        Parametrized on a short KEY, not on the payload: pytest exports the node id as an
-        environment variable, and a 60,000-bracket document in the id blows past the Windows
-        32767-character cap, which the repo has a gate for.
+        Parametrized on a short KEY: pytest exports the node id as an environment variable,
+        and a 60,000-bracket id exceeds the Windows 32767-character cap.
         """
         from kiro_crew.cloud.config import CloudConfig
 
@@ -770,19 +717,10 @@ class TestAConcurrentEditIsNeverLost:
     def test_no_cloud_caller_reads_mutates_and_saves(self):
         """No cloud caller holds a snapshot, mutates it and writes it back.
 
-        A caller that does erases whatever landed meanwhile, and it runs AFTER the remote
-        change -- the resume write and the destroy's tag clear are both past the point of no
-        return -- so a failure there cannot be retried away.
+        Such a write runs after the remote change, so a lost edit cannot be retried away.
+        Callers should use the field-scoped `LaunchState.record(**fields)`.
 
-        `CloudConfig` has no writer at all, so a `cfg.save()` would not even resolve; this is
-        the static ratchet for that, and it also covers the launch record, which is where a
-        whole-record write now legitimately happens. `LaunchState` is frozen, so a mutation on
-        one cannot silently reach disk either -- but a caller could still build a stale record
-        by hand and record it, and the field-scoped `LaunchState.record(**fields)` is what to
-        use instead.
-
-        AST, not a source grep: `wizard.py` carries the words `cfg.save()` inside an
-        explaining comment, and a grep would count that comment as the defect it warns about.
+        AST, not a grep: `wizard.py` has `cfg.save()` inside a comment.
         """
         import ast as _ast
         import pathlib as _pathlib
@@ -950,13 +888,9 @@ class TestCloudConfig:
 class TestCloudConfigIsSealedAgainstAgentWrites:
     """``cloud.json`` must not be writable through an agent's file-edit tool.
 
-    The Fargate block made this file an input to a security decision:
-    ``fargate.image`` chooses the container a launch runs, and the task's execution
-    role delivers the model credential into that container. An agent that could
-    rewrite the field could name a digest-pinned image of its own -- the digest rule
-    constrains the reference's FORM, not who owns the registry -- while leaving the
-    owner's placement and secrets intact, so the owner's next launch would hand the
-    credential to an image they never chose.
+    ``fargate.image`` chooses the container that receives the model credential. An agent
+    that could rewrite it could name its own digest-pinned image, and the owner's next
+    launch would hand the credential to it.
     """
 
     #: Spelled out rather than looped from the production tuple: a test derived from
@@ -1028,11 +962,8 @@ class TestTheSealedCloudConfigNameCannotBeAnAlias:
 def _strict_check(target: str) -> None:
     """The strict refusal with fixed wording, so the tests below measure SHAPE only.
 
-    ``harm`` and ``remedy`` are required of every caller because the two strict leaves are
-    refused for different reasons -- an aliased ``cloud.json`` picks the image a launch runs,
-    an aliased launch record picks the stack a destroy deletes -- and neither may inherit the
-    other's message. Which words those are is not what this class is about, so they are
-    supplied once here rather than repeated in every case.
+    ``harm`` and ``remedy`` are required because the two strict leaves are refused for
+    different reasons; their wording is not what these tests check.
     """
     from kiro_crew import sandbox
 
@@ -1046,12 +977,9 @@ def _strict_check(target: str) -> None:
 class TestTheStrictCloudConfigSealRefusesEveryUncoveredName:
     """A read-only bind seals a MOUNT, not an inode, so two names escape it.
 
-    A symlink leaves the lexical name replaceable; a second hardlink puts an alias
-    outside the mount that reaches the same inode. For an ordinary ceiling the codebase
-    only WARNS about both, because refusing would break a dotfile manager or a snapshot
-    tool. For ``cloud.json`` a write through either name picks the container image a
-    Fargate launch runs, and the execution role delivers the model credential into it,
-    so the strict leaf refuses where the rest warn.
+    A symlink leaves the name replaceable; a second hardlink is an alias outside the mount.
+    Ordinary ceilings only warn, but a write to ``cloud.json`` picks the image that receives
+    the model credential, so the strict leaf refuses.
     """
 
     #: A block present means an alias could choose the image a launch runs, which is
@@ -1119,9 +1047,8 @@ class TestTheStrictCloudConfigSealRefusesEveryUncoveredName:
 
     #: Contents that a content-based rule would have judged differently. The refusal must
     #: not vary across them: the agent supplies the contents, so any rule reading them can
-    #: be satisfied by writing something else. The escaped spellings are the specific
-    #: bypass a byte-level probe had; the no-block and empty rows are the ones an earlier
-    #: exemption let through, which is how an agent could write a whole block via the alias.
+    #: be satisfied by writing something else. The escaped spellings defeat a byte-level
+    #: probe; the no-block and empty rows defeat a content exemption.
     ENCODINGS = [
         ("plain block", '{"fargate": {"cluster": "c"}}'),
         ("escaped key", '{"\\u0066argate": {"cluster": "c"}}'),
@@ -1173,11 +1100,9 @@ class TestTheStrictCloudConfigSealRefusesEveryUncoveredName:
 class TestTheCredentialGateAgreesWithTheEngine:
     """No spelling may pass this gate and then be refused at launch.
 
-    The gate exists so an incomplete block leaves the lane UNREGISTERED instead of
-    registered-and-refusing. A gate that accepts a name the engine rejects recreates
-    that exact state from inside the gate, which is what a tail-only check did: both a
-    bare ``KIRO_IDENTITY`` and a wrong-prefix ``junk/KIRO_IDENTITY`` pass a tail-only
-    check and are refused by ``identity.secret_env_name``.
+    An incomplete block must leave the lane UNREGISTERED, not registered-and-refusing. A
+    bare ``KIRO_IDENTITY`` and ``junk/KIRO_IDENTITY`` pass a tail-only check and are refused
+    by ``identity.secret_env_name``.
     """
 
     @staticmethod
@@ -1211,11 +1136,8 @@ class TestTheCredentialGateAgreesWithTheEngine:
     def test_every_name_this_gate_accepts_the_engine_also_accepts(self):
         """The property itself, over a MATRIX, checked against the engine.
 
-        Written as a product rather than a hand-picked list because a hand-picked list
-        is what let this defect recur three times: each round fixed the spelling that
-        had been reported and left the next one. Any name this module admits must
-        survive ``secret_env_name``, which is what the launch path calls, so the two
-        halves cannot drift apart without a red here.
+        A product, not a hand-picked list, so no spelling is left out. Any name admitted
+        must survive ``secret_env_name``, which the launch path calls.
         """
         import itertools
 
