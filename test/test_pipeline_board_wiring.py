@@ -15,6 +15,7 @@ import json
 from typing import Any
 
 import pytest
+from crew_log_drain import assert_drained
 
 from kiro_crew import agent_panel
 from kiro_crew import crew_log as lg
@@ -188,7 +189,7 @@ def _work(*, action: str, **fields: Any) -> None:
     payload: dict[str, Any] = {"slot": SLOT, "actor": "conductor", "by": SLOT, "action": action}
     payload.update({name: value for name, value in fields.items() if value is not None})
     assert crew_log_emit.on_work_recorded(UNIT, payload, timeout=5.0) is True
-    crew_log_emit.flush(timeout=5.0)
+    assert_drained()
 
 
 def _board(*, items: int = 2, rounds: int = 3) -> list[str]:

@@ -58,7 +58,7 @@ def _open(session_id: str) -> None:
         cwd="/x",
         owner="default",
     )
-    emit.flush(timeout=5.0)
+    assert_drained()
 
 
 # 1. Burst from N sessions: nothing dropped, accounting honest
@@ -112,7 +112,7 @@ class TestBurstFanout:
         _open(sid)
         for turn in range(1, 5):
             emit.on_turn_started(sid, turn)
-        emit.flush(timeout=5.0)
+        assert_drained()
         assert emit.peak_buffered_writes() >= 0
         assert emit.dropped_writes() == 0
 

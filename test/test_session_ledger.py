@@ -21,6 +21,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
+from crew_log_drain import assert_drained
 from off_loop_helpers import off_loop
 
 from kiro_crew import crew_log as lg
@@ -70,7 +71,7 @@ def _record(slot_key: str, *, session_id: str = SESSION, **fields: Any) -> dict[
     running event loop the writer defers instead of appending inline.
     """
     state = sl.record(slot_key, session_id=session_id, **fields)
-    assert crew_log_emit.flush(timeout=5.0), "the crew log writer did not drain"
+    assert_drained()
     return state
 
 
@@ -154,7 +155,7 @@ def test_phase_and_event_ride_on_one_entry():
     key = "chat-3-333"
     _unit(slot=key)
     _record(key, phase="implementing", event="started the fix", event_kind="phase")
-    assert crew_log_emit.flush(timeout=5.0)
+    assert_drained()
     handle = CrewLog.open(lg.KIND_SESSION, SESSION)
     try:
         entries = [e for e in handle.iter_from(1) if e.type == sl.LEDGER_ENTRY_TYPE]
@@ -590,7 +591,7 @@ async def test_route_record_answers_a_typed_refusal_when_the_crew_log_refuses(_o
         _mk_request("POST", "/api/session-ledger/record", body={"goal": "before the damage"})
     )
     assert first.status == 200, "the undamaged write must land, or this pins nothing"
-    assert crew_log_emit.flush(timeout=5.0), "the crew log writer did not drain"
+    assert_drained()
 
     path = lg.crew_log_path(lg.KIND_SESSION, SESSION)
     newest = path.read_bytes().splitlines(keepends=True)[-1]

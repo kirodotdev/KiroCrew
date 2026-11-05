@@ -14,6 +14,7 @@ import threading
 from dataclasses import replace
 
 import pytest
+from crew_log_drain import assert_drained
 from session_ledger_projection_helpers import (  # noqa: F401 -- the autouse fixture registers by import
     LATER_SESSION,
     SESSION,
@@ -341,8 +342,7 @@ def test_an_append_landing_during_a_fold_survives_the_next_read():
     # why they go through the emitter rather than through ``record``.
     for goal in ("fourth", "fifth"):
         crew_log_emit.on_ledger_recorded(SESSION, {"slot": SLOT, "goal": goal})
-    # flake-ok: the 5 s cap only names a stuck writer; flush returns as soon as the queue drains
-    assert crew_log_emit.flush(timeout=5.0)
+    assert_drained()
     # Every committed entry wakes the eager folder, which folds this unit's slot AND
     # session folds on its own thread through the same module attributes the probes
     # below replace. Settled first, and both probes count only THIS thread: otherwise
