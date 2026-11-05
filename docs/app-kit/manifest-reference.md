@@ -910,9 +910,13 @@ no cookie is sent and no other route accepts it. Only `GET`, `POST`, `PUT`,
 
 If the app list cannot be read, a hover on a chat link shows the same notice and
 the list is asked for again. If the frame does not report `ready` within 10 seconds, or the module fails to
-import, or `activate` throws, the host logs the error, shows a short "couldn't
-load this preview" notice under the hovered element, and tries again on a hover
-at least 30 seconds later. When the app is disabled the host sends `hide('disabled')`
+import, or `activate` throws, or no frame can be minted for the app, the host
+logs the error and draws its own card where the app's card would be. The card
+says which of the three happened (it took too long, the app reported an error,
+the app is not available) and has **Retry**, which disposes that provider's
+failed frame and loads a new one for the same link, and a close button; Escape
+closes it too. Without Retry, the next hover at least 30 seconds later tries
+again. When the app is disabled the host sends `hide('disabled')`
 and `dispose`, then removes the frame.
 
 **Plain text (`textPatterns`).** Each entry names text that is not a link but should
