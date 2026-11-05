@@ -31,12 +31,12 @@ import json
 import os
 import pathlib
 import re
-import shutil
 import subprocess
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _pathcheck import open_media_input, read_json_input  # noqa: E402
+from _toolpath import user_bin_dirs, which_any  # noqa: E402
 
 
 def _home() -> pathlib.Path:
@@ -58,8 +58,10 @@ BRIGHT_MIN = 244.0  # above this it is blown out -- a white frame is as dead as 
 
 
 def tool(name: str) -> str:
-    found = shutil.which(name) or str(_home() / ".local/bin" / name)
-    if pathlib.Path(found).exists():
+    # The doctor's own lookup, so a tool deps.py reports green is found here too
+    # (on Windows that includes ffprobe.exe in ~/.local/bin).
+    found = which_any(name, user_bin_dirs(_home()))
+    if found and pathlib.Path(found).exists():
         return found
     # The doctor accepts an imageio-provided ffmpeg, which is not on PATH. This
     # must accept the same one or a green doctor would still fail here.
