@@ -73,7 +73,7 @@ def cli_opt_in(home: Path) -> Path:
     cannot prove it is attended.
     """
     state = home / "computer_use.json"
-    body = json.loads(state.read_text()) if state.exists() else {}
+    body = json.loads(state.read_text(encoding="utf-8")) if state.exists() else {}
     body["allow_cli_diagnostics"] = True
     state.write_text(json.dumps(body), encoding="utf-8")
     return state

@@ -19,7 +19,13 @@ permissions:
 
 concurrency:
   group: pages
-  cancel-in-progress: true
+  # Every run of this workflow is a production deploy: the triggers are a push
+  # to main and workflow_dispatch, and both reach `deploy`. So a newer run
+  # queues behind the one in flight rather than killing it mid-deploy, which is
+  # what `true` did. No condition, unlike ci.yml and build.yml: there is no
+  # pull_request trigger here, so `github.event_name == 'pull_request'` would
+  # be a constant false and read as a live rule to anyone who added one.
+  cancel-in-progress: false
 
 jobs:
   build:

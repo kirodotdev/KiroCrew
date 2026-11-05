@@ -6,7 +6,7 @@ crash interrupted. The ``TASK_PROGRESS.md`` checkpoints and the status view read
 registry. A new persisted run field is written and read back here.
 
 Instance fields written: ``_persist_failed``, ``_persist_seq``, ``_persist_written``,
-``_runs``, ``_snapshot_recovery_incomplete``.
+``_recovery_pending``, ``_runs``, ``_snapshot_recovery_incomplete``.
 
 Instance fields read: ``_agent``, ``_persist_lock``, ``_tasks``, ``_work_dir``.
 """
@@ -147,6 +147,7 @@ def _serialize_runs(self: TaskRunner) -> str:
                             # would restore the task to a verbatim replay of a
                             # possibly-executed step.
                             "resume_hint": t.resume_hint or "",
+                            "superseded": t.superseded,
                             "verification": t.verification,
                         }
                         for t in run.tasks
@@ -334,6 +335,7 @@ def _load_runs(self: TaskRunner) -> None:
                     error=t.get("error", ""),
                     result=t.get("result", ""),
                     resume_hint=t.get("resume_hint", ""),
+                    superseded=t.get("superseded", False) is True,
                     verification=str(t.get("verification", "")),
                     attempts=t.get("attempts", 1),
                     depends_on=t.get("depends_on", []),
@@ -425,6 +427,10 @@ def _load_runs(self: TaskRunner) -> None:
                 logger.info(
                     "Recovered crashed cancelling run %s — marked as cancelled", run.task_id
                 )
+            if run.status in ("paused", "planned"):
+                # The adoption sweep may resume it (``taskq_bridge._resume``):
+                # fair admission holds its record until the sweep decides.
+                self._recovery_pending.add(run.task_id)
             self._runs[run.task_id] = run
         except Exception as exc:
             self._snapshot_recovery_incomplete = True

@@ -11,7 +11,7 @@
  * filter-dimension walk in ChatSidebar.revealFilterDimensions.test.tsx.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { render, waitFor } from '@testing-library/react'
+import { render, waitFor, act } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
@@ -144,7 +144,7 @@ describe('reveal-in-sidebar pre-expands the stale-session section', () => {
       await waitFor(() => expect(utils.getByTestId('stale-expander-root')).toBeInTheDocument())
       expect(utils.queryByText('dormant session')).toBeNull()
 
-      utils.store.dispatch(requestSlotReveal('dormant'))
+      act(() => { utils.store.dispatch(requestSlotReveal('dormant')) })
 
       await waitFor(() => expect(utils.queryByText('dormant session')).not.toBeNull())
     })
@@ -161,7 +161,7 @@ describe('reveal-in-sidebar pre-expands the stale-session section', () => {
       await waitFor(() => expect(utils.getByTestId('stale-expander-f1')).toBeInTheDocument())
       expect(utils.queryByText('foldered dormant')).toBeNull()
 
-      utils.store.dispatch(requestSlotReveal('in-dormant'))
+      act(() => { utils.store.dispatch(requestSlotReveal('in-dormant')) })
 
       await waitFor(() => expect(utils.queryByText('foldered dormant')).not.toBeNull())
       // Per-container scope: the root's dormant section stays collapsed.
@@ -179,7 +179,7 @@ describe('reveal-in-sidebar pre-expands the stale-session section', () => {
 
       // The active session is stale-exempt: it renders outside the dormant
       // section, so revealing it must not pop the section open.
-      utils.store.dispatch(requestSlotReveal('fresh'))
+      act(() => { utils.store.dispatch(requestSlotReveal('fresh')) })
 
       await waitFor(() => expect(Element.prototype.scrollIntoView).toHaveBeenCalled())
       expect(utils.queryByText('dormant session')).toBeNull()

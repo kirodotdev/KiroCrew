@@ -1,10 +1,7 @@
 """Session storage: emptying the trash, its approval and its manifest.
 
-``TestEmptyTrashApproval`` pins what one call may delete and what it reports: the approval
-binds each batch's identity, listing and size, and a batch it cannot verify is refused
-rather than dropped. ``TestEmptyTrashManifest`` pins the manifest's own step: a link at
-its name is refused, not unlinked or followed, a file substituted at its name is not
-destroyed, and putting it back never overwrites a manifest that arrived meanwhile.
+The approval binds each batch's identity, listing and size; the manifest step never follows
+a link, destroys a substitute, or overwrites a manifest that arrived meanwhile.
 """
 
 from __future__ import annotations
@@ -102,11 +99,8 @@ class TestEmptyTrashApproval:
     ) -> None:
         """A swap between the listing and the snapshot must not be approved.
 
-        `list_trash()` reads each manifest by path and takes no lock, so its byte totals
-        describe whatever answered to that name then. Recording the identity separately, by
-        the same name, could straddle a swap -- the approval would carry the REPLACEMENT's
-        identity with the original's numbers, and the delete, which checks the identity it
-        was handed, would then destroy session data the user was never shown.
+        `list_trash()` reads by path with no lock, so a separate identity read could pair the
+        replacement's identity with the original's numbers and delete data never shown.
         """
         if not session_storage._FD_SAFE_DELETE:
             pytest.skip("needs the descriptor-bound delete path")
@@ -153,11 +147,8 @@ class TestEmptyTrashApproval:
     ) -> None:
         """A missing id must not read as "nothing to disagree with".
 
-        `_write_header` always writes `batch_id` beside `schema`, and a summary is only
-        returned when the schema is the current one -- so within what reaches the approval the
-        id is always present, and its absence means the header was tampered with. Tolerating
-        that is the fail-OPEN reading, and it is the one an actor gets to choose: strip the
-        field and a swapped batch walks through the check.
+        `_write_header` always writes `batch_id`, so its absence means tampering; tolerating
+        it would let a swapped batch pass by stripping the field.
         """
         _, kiro_home = stores
         _cli_half(kiro_home, "aaaa1111", log_bytes=16, age_days=40)
@@ -180,11 +171,8 @@ class TestEmptyTrashApproval:
     ) -> None:
         """The scan that PRODUCES the approval has a check-to-use window of its own.
 
-        `scandir` lists a name and the open happens a moment later. A rename in between means
-        the inode recorded for that name belongs to the replacement -- so the approval blesses
-        the impostor, and the delete, validating faithfully against that map, removes it. Every
-        other guard in this module is downstream of this map, which is why it cannot be the one
-        place that trusts a name.
+        A rename between `scandir` and the open would record the replacement's inode, and
+        every later guard trusts this map.
         """
         if not session_storage._FD_SAFE_DELETE:
             pytest.skip("needs the descriptor-bound delete path")
@@ -225,12 +213,8 @@ class TestEmptyTrashApproval:
     ) -> None:
         """The per-file check has to answer to the approval, not to the delete's own scan.
 
-        The delete verifies each staged file's identity, but against a map its own scan
-        built -- which is self-consistent and authorises nothing. A listed file replaced
-        during the handoff had its replacement's inode recorded, matched, and was unlinked:
-        an unapproved file, whose only copy it may be, destroyed on consent given for a
-        different one. The approval now carries the file identities and the whole map is
-        compared, so the batch is refused instead.
+        A map the delete's own scan built authorises nothing, so the approval carries the file
+        identities and a file replaced during the handoff refuses the batch.
         """
         if not session_storage._FD_SAFE_DELETE:
             pytest.skip("needs the descriptor-bound delete path")
@@ -271,11 +255,8 @@ class TestEmptyTrashApproval:
     ) -> None:
         """The listing is what the delete may remove, so it must be the approved listing.
 
-        The manifest's inode is not enough. Rewritten IN PLACE it keeps that inode, and
-        every other identity check still passes because no file changed -- only which files
-        the delete believes it may unlink. A file already sitting in the batch, unlisted, is
-        refused today; adding it to the listing after the approval would have it deleted as
-        if the user had approved it.
+        A manifest rewritten IN PLACE keeps its inode, so adding an unlisted file to it after
+        the approval would pass every identity check.
         """
         if not session_storage._FD_SAFE_DELETE:
             pytest.skip("needs the descriptor-bound delete path")
@@ -319,12 +300,8 @@ class TestEmptyTrashApproval:
     ) -> None:
         """The approval's own two reads must not straddle a rewrite either.
 
-        The digest closes the gap between approval and delete. It only does so if it
-        describes the same manifest the inode maps describe: taken AFTER the interior scan it
-        could be a listing rewritten in between, recorded against the old maps -- which
-        authorises precisely the file it exists to refuse. So it is captured first, through
-        the pinned descriptor, and a rewrite after that leaves it describing the old listing,
-        which the delete then refuses.
+        The digest is captured first, through the pinned descriptor; taken after the interior
+        scan it could bless a listing rewritten in between.
         """
         if not session_storage._FD_SAFE_DELETE:
             pytest.skip("needs the descriptor-bound delete path")
@@ -443,11 +420,8 @@ class TestEmptyTrashApproval:
     ) -> None:
         """Emptying everything must not report success for a batch it could not verify.
 
-        A named selection refuses outright. The unnamed sweep cannot: one batch damaged by a
-        crash mid-append would make the whole trash un-emptyable, and the delete loop skips
-        rather than aborts for that reason. So the batch stays in the id list WITHOUT an
-        approval, and the delete refuses an id its approval map does not name -- which turns
-        a silent omission into a skip the user can read.
+        The unnamed sweep skips rather than aborts (one damaged batch must not block the rest),
+        so the batch stays listed WITHOUT an approval and is reported as skipped.
         """
         _, kiro_home = stores
         _cli_half(kiro_home, "aaaa1111", log_bytes=16, age_days=40)
@@ -549,16 +523,9 @@ class TestEmptyTrashManifest:
     ) -> None:
         """A symlink at the manifest's name must stop the batch before anything is removed.
 
-        The manifest is excluded from the FILE loop so it can go last -- it is the only
-        thing that makes a batch restorable, and `list_trash()` omits a batch without a
-        readable one. A symlink at that name is not a file, so it was recorded as a LINK
-        instead, and the link loop unlinks every link it recorded: the manifest went early,
-        and a batch that then failed to finish (an unwritable directory, a file held open)
-        left the user data on disk they could neither see nor restore.
-
-        Refusing rather than deferring is deliberate. The product writes this file with
-        `atomic_write`, so a symlink here is not ours, and the entries the approval was
-        computed from were read THROUGH it.
+        The manifest must go last (it makes a batch restorable); a symlink there would be
+        unlinked early by the link loop. The product writes it with `atomic_write`, so a
+        symlink is not ours and the approval was read THROUGH it: refuse, do not defer.
         """
         _, kiro_home = stores
         _cli_half(kiro_home, "aaaa1111", log_bytes=8, age_days=40)
@@ -665,15 +632,9 @@ class TestEmptyTrashManifest:
     ) -> None:
         """Putting the manifest back must fail rather than replace.
 
-        The manifest is moved aside so the batch can be removed, and renamed back if that
-        fails. But POSIX rename REPLACES its destination silently -- the same property the
-        debris name is randomised to be safe against -- and this direction needs the
-        opposite guarantee. If anything has written a `manifest.jsonl` into the batch since
-        ours went aside, renaming over it destroys the only copy of a file this code has
-        never read.
-
-        Here the arriving file also makes the batch non-empty, so the removal fails on its
-        own and the recovery runs for real.
+        POSIX rename silently replaces its destination, which would destroy a
+        `manifest.jsonl` written while ours was aside. The arriving file also makes the
+        batch non-empty, so the removal fails and the recovery runs for real.
         """
         if not session_storage._FD_SAFE_DELETE:
             pytest.skip("needs the descriptor-bound delete path")
@@ -715,11 +676,8 @@ class TestEmptyTrashManifest:
     ) -> None:
         """The final scan has to authenticate the survivor, not just count it.
 
-        Everything after the post-condition treats whatever holds the manifest's name as the
-        batch's own manifest: it is renamed aside and, once the batch is gone, the debris is
-        unlinked. So a file substituted at that name after the first scan would be accepted
-        as "nothing left but the manifest" and then destroyed -- an unapproved file, whose
-        only copy it is, deleted for matching a name.
+        Whatever holds the manifest's name is renamed aside and later unlinked, so a file
+        substituted there after the first scan would be destroyed for matching a name.
         """
         if not session_storage._FD_SAFE_DELETE:
             pytest.skip("needs the descriptor-bound delete path")
@@ -766,13 +724,8 @@ class TestEmptyTrashManifest:
     ) -> None:
         """`link` is not universally available, and giving up would strand the batch.
 
-        The recovery uses `os.link` so it cannot overwrite a manifest that arrived while ours
-        was aside. But a filesystem without hard links refuses `link` outright, and the
-        capability probe cannot see that -- it tests whether the OS accepts `dir_fd`, not what
-        the MOUNT supports. Failing there would leave the batch holding data with no manifest,
-        which is the exact loss this recovery exists to prevent. So it falls back to `rename`,
-        and only once the destination is known to be absent, where a rename has nothing to
-        destroy.
+        The capability probe tests `dir_fd`, not what the MOUNT supports, so on a no-hard-link
+        filesystem the recovery falls back to `rename`, only once the destination is absent.
         """
         if not session_storage._FD_SAFE_DELETE:
             pytest.skip("needs the descriptor-bound delete path")
@@ -862,11 +815,8 @@ class TestEmptyTrashManifest:
     ) -> None:
         """A truncated manifest is worse than none at all.
 
-        The hard-link fallback copies rather than links, so a write can fail part way. A
-        manifest holding SOME of its entries lists some sessions and silently drops the rest,
-        which reads as a successful listing of a smaller batch -- the user would never know
-        the difference. So a failed copy removes what it wrote and reports the failure, which
-        at least leaves the debris named in the log.
+        A partial copy would read as a valid listing of a smaller batch, so a failed copy
+        removes what it wrote and logs the debris name.
         """
         if not session_storage._FD_SAFE_DELETE:
             pytest.skip("needs the descriptor-bound delete path")
@@ -911,12 +861,8 @@ class TestEmptyTrashManifest:
     ) -> None:
         """The last name-addressed step checks what LANDED, since it cannot check first.
 
-        The post-condition verifies the manifest's inode and the rename that follows
-        addresses its name -- two syscalls apart, the same interval the leaf unlink has,
-        because POSIX has no rename-by-inode either. What can be checked is the result: if
-        the debris is not the file that was verified, the rename moved something else, and
-        the unlink that ends the successful path would destroy it. It is left as debris
-        instead, with both names logged.
+        POSIX has no rename-by-inode, so if the debris is not the verified file it is left in
+        place with both names logged instead of unlinked.
         """
         if not session_storage._FD_SAFE_DELETE:
             pytest.skip("needs the descriptor-bound delete path")

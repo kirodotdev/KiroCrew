@@ -17,9 +17,11 @@
  * dockClearance geometry stays with the page, which supplies the floating
  * dock's clearance padding via `scrollerStyle`.
  */
-import React, { useCallback, useLayoutEffect, useState } from 'react'
+import React, { useCallback, useEffect, useLayoutEffect, useState } from 'react'
 import { Loader } from 'lucide-react'
 import { i18nT } from '../../i18n/t'
+import { afterSlide, forgetAfterSlide, holdReadingPosition, markSlideSettling, onReleaseReadingPosition, slideHeld, watchPanelSlide } from '../../utils/panelSlide'
+import { attachUserScrollIntent } from '../../utils/searchScroll'
 
 /** Inherited custom property carrying the scroller's usable width in px, so a
  *  descendant that may outgrow the reading column (a top-level assistant table,
@@ -45,9 +47,139 @@ function usePaneWidthProperty(scrollerRef: React.RefObject<HTMLDivElement | null
     const publish = () => { el.style.setProperty(PANE_WIDTH_PROPERTY, `${el.clientWidth}px`) }
     publish()
     if (typeof ResizeObserver === 'undefined') return
-    const observer = new ResizeObserver(publish)
+    // While a side panel slides (panelSlide), only the final width is
+    // published: each change restyles the whole transcript.
+    const observer = new ResizeObserver(() => { if (slideHeld()) afterSlide(publish); else publish() })
     observer.observe(el)
-    return () => observer.disconnect()
+    return () => {
+      observer.disconnect()
+      forgetAfterSlide(publish)
+    }
+  }, [scrollerRef])
+}
+
+/** The blocks a reading position is anchored to: leaves only (a block holding
+ *  another is skipped), so the anchor is the line the reader sees, not the top
+ *  of a long reply that reflows under it. */
+const anchorBlockSelector = ['p', 'li', 'tr', 'pre', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'blockquote', 'img'].join(', ')
+/** Where in the viewport the anchored line is, as a share of its height. */
+const ANCHOR_LINE = 0.3
+/** Within this of the bottom, the transcript follows the bottom instead. */
+const ANCHOR_AT_BOTTOM_PX = 4
+/** How long after a slide ends the anchor still holds: the pane width, the
+ *  tables and the virtualizer's settled heights land in this window. */
+const ANCHOR_AFTER_SLIDE_MS = 600
+
+function pickSlideAnchor(el: HTMLElement): { node: Element; want: number } | null {
+  const top = el.getBoundingClientRect().top
+  const line = top + el.clientHeight * ANCHOR_LINE
+  for (const b of el.querySelectorAll(anchorBlockSelector)) {
+    if (b.querySelector(anchorBlockSelector)) continue
+    const r = b.getBoundingClientRect()
+    if (r.height === 0 || r.bottom <= line) continue
+    return { node: b, want: r.top - top }
+  }
+  return null
+}
+
+/**
+ * Keep the line the reader is looking at in place while a side panel slides
+ * (utils/panelSlide). The column changes width on every frame, so every block
+ * above that line rewraps (tables most of all) and, with the scroll offset
+ * left alone, the text under the reader's eyes moved up and down with the
+ * drag. Not at the bottom only: there the transcript follows the bottom.
+ *
+ * The correction runs in a ResizeObserver on the scroller, after the frame's
+ * layout and before its paint, so the reflowed frame is drawn already
+ * corrected; a scroll offset change needs no new layout. After the slide it
+ * holds a little longer, frame by frame, while the held width work lands. The
+ * reader's own scroll input ends it at once (`attachUserScrollIntent`: a
+ * wheel the page's swipe did not cancel, a scrollbar press, a scrolling key, a
+ * touch).
+ */
+function useSlideAnchor(scrollerRef: React.RefObject<HTMLDivElement | null>): void {
+  useEffect(() => {
+    const el = scrollerRef.current
+    if (!el || typeof ResizeObserver === 'undefined') return
+    let anchor: { node: Element; want: number } | null = null
+    // At the bottom: the transcript stays pinned there. The follow logic pins
+    // too, but on its own schedule; when the slide lands, the held width
+    // rewraps the rows in that same commit, and a pin a frame later let one
+    // frame paint the transcript a message's height off (Ray's 120fps
+    // recording: a single-frame flash at the top, the bottom pinned).
+    let bottom = false
+    let raf = 0
+    let until = 0
+    const correct = () => {
+      if (bottom) {
+        const top = el.scrollHeight - el.clientHeight
+        if (Math.abs(el.scrollTop - top) >= 0.5) el.scrollTop = top
+        return
+      }
+      if (!anchor || !anchor.node.isConnected) return
+      const d = anchor.node.getBoundingClientRect().top - el.getBoundingClientRect().top - anchor.want
+      if (Math.abs(d) >= 0.5) el.scrollTop += d
+    }
+    const ro = new ResizeObserver(correct)
+    // The browser's own scroll anchoring picks its own node and would pull
+    // against this one every frame: off while this anchor holds
+    // (`data-slide-anchor`, chat-transcript.css; the follow logic writes the
+    // inline value, so a stylesheet rule wins over it).
+    const drop = () => {
+      anchor = null
+      bottom = false
+      el.removeAttribute('data-slide-anchor')
+      holdReadingPosition(el, false)
+      onReleaseReadingPosition(el, null)
+      markSlideSettling(el, false)
+      ro.disconnect()
+      if (raf) cancelAnimationFrame(raf)
+      raf = 0
+    }
+    // The reader's own input (a wheel the page's swipe did not claim, a
+    // scrollbar press, a scrolling key, a touch) ends the hold at once: the
+    // next correction would undo their scroll.
+    const detachIntent = attachUserScrollIntent(el, () => { if (anchor || bottom) drop() })
+    const unwatch = watchPanelSlide((sliding, retired) => {
+      if (sliding) {
+        drop()
+        if (el.scrollHeight - el.scrollTop - el.clientHeight <= ANCHOR_AT_BOTTOM_PX) {
+          bottom = true
+          onReleaseReadingPosition(el, drop)
+        } else {
+          anchor = pickSlideAnchor(el)
+          if (!anchor) return
+          el.setAttribute('data-slide-anchor', '')
+          holdReadingPosition(el, true, drop)
+        }
+        markSlideSettling(el, true)
+        // The scroller resizes on every frame of the slide; its children (the
+        // rows, the virtualizer's spacers) also change height when it rests
+        // and the held width lands, with the scroller's own size unchanged.
+        // A ResizeObserver runs after layout and before paint, so the
+        // corrected position is the one painted.
+        ro.observe(el)
+        for (const child of el.children) ro.observe(child)
+        return
+      }
+      // Dropped rather than landed (a session switch): the scroller may show
+      // another session now, whose own restore owns the position.
+      if (retired) { drop(); return }
+      if (!anchor && !bottom) return
+      until = performance.now() + ANCHOR_AFTER_SLIDE_MS
+      const tick = () => {
+        correct()
+        if (performance.now() < until) raf = requestAnimationFrame(tick)
+        else drop()
+      }
+      correct()
+      raf = requestAnimationFrame(tick)
+    })
+    return () => {
+      unwatch()
+      drop()
+      detachIntent()
+    }
   }, [scrollerRef])
 }
 
@@ -145,6 +277,7 @@ export default function TranscriptScrollShell({
   children: React.ReactNode
 }) {
   usePaneWidthProperty(scrollerRef)
+  useSlideAnchor(scrollerRef)
   useLayoutEffect(() => {
     if (!onScrollerElement) return
     onScrollerElement(scrollerRef.current)

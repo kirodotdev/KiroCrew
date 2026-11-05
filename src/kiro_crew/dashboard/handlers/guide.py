@@ -157,6 +157,15 @@ _USER_TURN_OPERATIONS = frozenset(
         "cards.propose",
         "member.update_self",
         "member.propose_self",
+        # ``request_server`` (handlers.template_server_request): a card in front of
+        # the person, so only their own turn raises it -- never a patrol or a wake.
+        "cards.request_server",
+        # The crew-scoped session reads (``handlers_instances_crew_reads``) disclose
+        # another crew's transcripts with the owner's credential, so they take the
+        # user-turn bar here and add their own owner-sent arm on top of it.
+        "instances.crew_search",
+        "instances.crew_list",
+        "instances.crew_read",
     }
 )
 

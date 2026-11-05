@@ -33,8 +33,12 @@ from kiro_crew.apps.proxy_auth import (
     PRINCIPAL_APP_TOKEN,
     PRINCIPAL_NONE,
     PRINCIPAL_OWNER_SESSION,
+    PROXY_NONCE_HEADER,
     PROXY_PRINCIPAL_HEADER,
+    PROXY_V2_HEADER,
+    new_proxy_nonce,
     sign_proxy_principal_claim,
+    sign_proxy_request_v2,
 )
 from kiro_crew.sel import sel
 
@@ -108,19 +112,20 @@ _PROXY_HOP_HEADERS = frozenset(
 # X-KiroCrew-Proxy HMAC (injected below), never via user cookies or the
 # gateway's own internal-auth headers. The internal-auth set (X-Internal-Secret,
 # X-Session-Token, X-Session-Key, X-Internal-Caller) is stripped because a
-# credentialed internal caller — the design_tweak_update_thread MCP tool is the
-# first to reach an app backend through this proxy — would otherwise hand the
-# gateway-wide secret (which opens every strict internal route) to an app
-# subprocess that also serves content from the user's own projects. The HMAC is
+# credentialed internal caller — a tool a built-in app declares for its agent
+# (``apps.builtin_agent_tools``) reaches its backend through this proxy — would
+# otherwise hand the gateway-wide secret (which opens every strict internal route)
+# to an app subprocess that also serves content from the user's own projects. The HMAC is
 # all the backend needs to trust a proxied request, so dropping the rest is a
 # pure hardening with no functional loss.
 #
-# The two gateway-authored proxy headers are stripped too. For an app that has
+# The gateway-authored proxy headers are stripped too. For an app that has
 # not opted in to ``backend.signedPrincipal``, a caller-sent
 # ``x-kirocrew-principal`` would otherwise reach a backend that never asked for
-# one, and could pass for the gateway's. For ``x-kirocrew-proxy``, stripping the
-# caller's copy first keeps the outgoing request from depending on which spelling
-# of a header the HTTP client lets win when the gateway sets its own value below.
+# one, and could pass for the gateway's. For the proxy signature and nonce
+# headers, stripping the caller's copy first keeps the outgoing request from
+# depending on which spelling of a header the HTTP client lets win when the
+# gateway sets its own value below, so a page can never supply its own nonce.
 # Relay identity headers (``x-kiro-relay-*``) are dropped by prefix, ``is_relay_header``.
 _PROXY_STRIP_HEADERS = _PROXY_HOP_HEADERS | frozenset(
     {
@@ -131,7 +136,12 @@ _PROXY_STRIP_HEADERS = _PROXY_HOP_HEADERS | frozenset(
         "x-session-key",
         "x-internal-caller",
         "x-kirocrew-proxy",
+        "x-kirocrew-proxy-v2",
+        "x-kirocrew-proxy-nonce",
         "x-kirocrew-principal",
+        # An app frame's capability (apps/app_frame.py): read by
+        # the gateway, never handed on to the app's backend.
+        "x-kirocrew-capability",
     }
 )
 
@@ -319,6 +329,18 @@ async def handle_app_api_proxy(request: web.Request) -> web.StreamResponse:
         msg = f"{ts}:{request.method}:{wire_target}:{body_hash}"
         sig = _hmac.new(secret.encode(), msg.encode(), hashlib.sha256).hexdigest()
         headers["X-KiroCrew-Proxy"] = f"{ts}:{sig}"
+        # The replay-proof v2 signature rides in separate headers beside the
+        # unchanged v1 value, so a backend that only knows v1 ignores them.
+        nonce = new_proxy_nonce()
+        headers[PROXY_NONCE_HEADER] = nonce
+        headers[PROXY_V2_HEADER] = sign_proxy_request_v2(
+            secret=secret,
+            ts=int(ts),
+            nonce=nonce,
+            method=request.method,
+            target=wire_target,
+            body=body or b"",
+        )
     except OSError as exc:
         # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure -- logs the app name and the OSError only and never the secret value
         logger.warning("Failed to read app secret for %s: %s", name, exc)

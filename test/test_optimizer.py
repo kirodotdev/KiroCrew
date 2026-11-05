@@ -852,6 +852,27 @@ class TestOptimizerDraftUrls:
         assert data == {"optimized": prompt, "changed": False, "reason": "draft_url_redacted"}
 
     @pytest.mark.asyncio
+    async def test_redacted_uppercase_scheme_draft_url_returns_the_draft(self):
+        url = "HTTPS" + _LONG_URL[len("https") :]
+        prompt = f"review {url} and make it better"
+        data = await _optimize_reply(prompt, f"Review the reference at {url} closely")
+        assert data == {"optimized": prompt, "changed": False, "reason": "draft_url_redacted"}
+
+    @pytest.mark.asyncio
+    async def test_draft_url_embedded_in_an_exempt_link_returns_the_draft(self, monkeypatch):
+        """The redactor judges a URL glued inside an exempt host's link on its own,
+        so the draft check reads that embedded span as the user's too."""
+        exempt = "docs.example.com"
+        monkeypatch.setattr(
+            "kiro_crew.security.exfil._exfil_exempt_hosts", lambda: frozenset({exempt})
+        )
+        inner = "https://reviews.example.net/view?state=" + "A" * 232
+        link = f"`https://{exempt}/r?x=1`[reference]({inner})"
+        prompt = f"review {link} and make it better"
+        data = await _optimize_reply(prompt, f"Review the reference at {link} closely")
+        assert data == {"optimized": prompt, "changed": False, "reason": "draft_url_redacted"}
+
+    @pytest.mark.asyncio
     async def test_draft_url_before_a_period_the_model_drops_returns_the_draft(self):
         prompt = f"look at {_LONG_URL}."
         data = await _optimize_reply(prompt, f"Review the reference at {_LONG_URL} closely")

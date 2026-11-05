@@ -1,26 +1,14 @@
 """The headless-crew turn proxy: what it refuses, and what it never discloses.
 
-``POST /api/instances/{id}/crew-turn`` exists because a headless crew has no
-dashboard to embed, so the hub has to be the crew's chat client. That puts a
-credential in the hub's hands, and these tests pin the three properties that
-follow from it rather than the forwarding mechanics:
+``POST /api/instances/{id}/crew-turn`` makes the hub a headless crew's chat client,
+so it holds the crew's control secret. Pinned here:
 
-* the crew's control secret reaches the CREW and nothing else -- not the
-  response, not an error message, not a log line;
-* the route refuses before it reaches for the secret at all when the crew is not
-  a connected headless crew, so a misdirected turn never causes a secret read;
-* "headless" is decided from the provisioner, not from the connection method,
-  because the EC2 lane and the MicroVM lane share ``ssm`` and only one of them is
-  headless.
+* the secret reaches the crew only: not the response, an error or a log line;
+* the route refuses before any secret read unless the crew is connected and headless;
+* "headless" comes from the provisioner, since the EC2 and MicroVM lanes share ``ssm``.
 
-Unit-level on purpose: the live end-to-end path is exercised against a real crew
-in a real MicroVM, and what a test can add is the refusal matrix, which a live
-run gets to see only one row of.
-
-What the hub does with the crew's answer -- redaction, the cap and type gate, the
-shape of a refusal and the audit of every outcome -- is pinned in
-``test_crew_turn_proxy_reply.py``; the fakes both modules drive the handler with
-live in ``crew_turn_proxy_helpers.py``.
+Handling of the crew's answer is in ``test_crew_turn_proxy_reply.py``; shared fakes are
+in ``crew_turn_proxy_helpers.py``.
 """
 
 from __future__ import annotations
@@ -54,11 +42,8 @@ def test_a_disconnected_crew_has_no_turn_target():
 def test_a_connected_gateway_crew_has_no_turn_target():
     """A full-gateway crew is embedded, not chatted with through this route.
 
-    The EC2 lane reaches its crews with ``connection_method="ssm"`` -- the same
-    method the MicroVM lane uses -- and its crews DO serve a dashboard. So a
-    connected instance with a local port and no headless provisioner must not
-    produce a target: posting a crew turn at a gateway's own port is a request
-    that fails in a way nobody can read.
+    The EC2 lane also uses ``ssm`` but serves a dashboard, so without a headless
+    provisioner there is no target.
     """
     status = {"state": "connected", "local_port": 18081}
     assert mod._turn_target(status, "") == ""
@@ -124,7 +109,7 @@ def test_the_control_header_matches_the_containers_own_constant():
     )
     spec = importlib.util.spec_from_file_location("_container_config_probe", config)
     assert spec is not None and spec.loader is not None
-    text = config.read_text()
+    text = config.read_text(encoding="utf-8")
     # Read as source rather than imported: the container package has its own
     # import root and loading it here would pull its dependencies.
     assert f'CONTROL_SECRET_HEADER = "{mod.CONTROL_SECRET_HEADER}"' in text
@@ -146,11 +131,11 @@ def test_the_body_contract_is_refused_by_shape(body, code):
 
     Checked through the module's own validation order rather than a live request:
     what matters is that an unusable body cannot reach the secret read, and the
-    order of the checks in ``api_crew_turn`` is what guarantees it.
+    order of the checks in ``_crew_turn`` is what guarantees it.
     """
     import inspect
 
-    source = inspect.getsource(mod.api_crew_turn)
+    source = inspect.getsource(mod._crew_turn)
     body_checks = source.index("message must be a non-empty string")
     secret_read = source.index("_read_control_secret")
     assert body_checks < secret_read, (
@@ -164,15 +149,8 @@ def test_the_body_contract_is_refused_by_shape(body, code):
 class TestAHeadlessCrewIsNotMintedFor:
     """A crew with no dashboard has no dashboard token.
 
-    Skipping the mint on the `fargate` TRANSPORT is not enough. A MicroVM crew is
-    reached over `ssm`, the same method the EC2 lane uses, so a transport-keyed
-    skip lets it through to the mint -- which fails against a crew serving no
-    dashboard. The connect path then returns an error status and tears down the
-    forward it had already installed, so the pane reports a crew that will not
-    answer about a forward that is fine.
-
-    The decision is a property of the CREW, which is why it keys on the
-    provisioner id.
+    Keyed on the provisioner id, not the transport: a MicroVM crew uses `ssm` like EC2,
+    and a failed mint would tear down a forward that is fine.
     """
 
     def test_the_two_headless_lanes_are_recognised(self):
@@ -237,16 +215,9 @@ class TestAHeadlessCrewIsNotMintedFor:
 def _lane_row(tmp_path, monkeypatch, *, tag, node_id, profile="", region=""):
     """The instance row the LANE really registers, written by the real registry.
 
-    Driven through ``connect.register_instance`` with the launch path's own
-    keyword arguments rather than hand-built, because the gap between the two is
-    exactly where this route's binding broke. ``register_instance`` passes the
-    launch TAG as ``name`` and the ``mi-`` node id as ``ssm_target``, and
-    ``reg.add`` derives the row's ``id`` from the name -- so the id of every row
-    this lane writes is a slug of the tag, which no crew record carries.
-
-    A hand-built ``SimpleNamespace(id="mi-...")`` is a row shape production never
-    writes. Every assertion made against one stays green while the route 503s on
-    every real crew, which is how the binding shipped broken.
+    Not hand-built: ``reg.add`` derives the row's ``id`` from the launch tag and puts
+    the ``mi-`` node id in ``ssm_target``. A hand-built ``id="mi-..."`` row is a shape
+    production never writes, and tests against it pass while real crews get 503.
     """
     from kiro_crew.cloud import connect
     from kiro_crew.cloud.microvm import recipe as recipe_mod
@@ -274,14 +245,8 @@ def _lane_row(tmp_path, monkeypatch, *, tag, node_id, profile="", region=""):
 class TestTheRowTheLaneWritesResolvesItsOwnRecord:
     """The route has to work against the row ``connect.register_instance`` writes.
 
-    ``reg.add(name=tag, ssm_target=<mi-id>)`` derives the row's ``id`` from the
-    NAME, so the id is a slug of the launch tag and the node id lives in
-    ``ssm_target``. A record match on ``inst.id`` therefore misses every record
-    this lane ever wrote, and every turn against a real crew ends in
-    ``503 crew_secret_unavailable``.
-
-    These run against the real registry rather than a stand-in row, because the
-    stand-in is what hid it.
+    The row's ``id`` is a slug of the launch tag and the node id is in ``ssm_target``,
+    so a match on ``inst.id`` would end every real turn in ``503 crew_secret_unavailable``.
     """
 
     @staticmethod
@@ -367,11 +332,8 @@ class TestTheRowTheLaneWritesResolvesItsOwnRecord:
 class TestTheSecretIsNamedByTheLaneNotTheDisplayName:
     """A crew's display name is a label, and labels are not secret names.
 
-    The Fargate lane registers crews as ``Kiro Crew Cloud (<tag>)``, which is not
-    a valid Secrets Manager name at all, so deriving an id from it makes every
-    turn report a secret it never looked for. An operator who moved
-    ``microvm.secret_path_prefix`` is ignored by a hardcoded path for the same
-    reason.
+    ``Kiro Crew Cloud (<tag>)`` is not a valid Secrets Manager name, and a hardcoded
+    path would ignore a moved ``microvm.secret_path_prefix``.
     """
 
     def test_a_recorded_reference_is_preferred(self, tmp_path, monkeypatch):
@@ -443,22 +405,12 @@ class TestTheSecretIsNamedByTheLaneNotTheDisplayName:
 class TestTheCrewIsAddressedByItsOwnNameNotTheLaunchTag:
     """``model`` names the crew, and the launch tag is not that name.
 
-    The guest's front compares ``model`` against its own ``SMC_CREW_NAME`` and
-    answers 404 ``crew_not_served_here`` for anything else. ``SMC_CREW_NAME``
-    comes from the bundle's manifest, while the tag is this launch's id -- so a
-    turn carrying the tag reaches a crew that can be seen, connected and never
-    talked to.
+    The guest answers 404 ``crew_not_served_here`` unless ``model`` equals its
+    ``SMC_CREW_NAME`` (from the bundle manifest), so the launch tag would never be served.
 
-    This half asserts what the HOST resolves. The guest's own matcher is asserted
-    in its own suite -- ``container_tests/test_front_crew_address.py`` -- because
-    that function returns a ``JSONResponse`` and so cannot be imported without the
-    image's web dependencies, which this lane does not install. Two lanes, one
-    invariant, each pinned where it can actually run, exactly as
-    ``test_crew_runtime_payload.py`` splits the two packaging lanes.
-
-    Two functions deciding what counts as addressing a crew is how one of them
-    drifts, and the one that drifts is this side, which has no 404 to show for it.
-    So the container-side test names the tag SHAPE this side can send.
+    This pins the host side; the guest's matcher is pinned in
+    ``container_tests/test_front_crew_address.py``, which also names the tag shape this
+    side can send.
     """
 
     @staticmethod
@@ -525,22 +477,11 @@ class TestTheCrewIsAddressedByItsOwnNameNotTheLaunchTag:
         assert served_crew_name(Inst()) == ""
 
 
-# ======================================================================
 # Driving the turn handler itself.
 #
-# ``api_crew_turn`` is the hub's side of the conversation: it validates the
-# body, refuses before it reads a secret when the crew is not a connected
-# headless crew, reads the control secret, and relays the crew's answer -- as a
-# single JSON response, or as the SSE frames of a streamed turn. The refusals
-# above pin the ORDER of the checks from the source; the tests below drive the
-# handler through each branch with the far end faked, so no turn ever leaves the
-# process.
-#
-# The upstream crew is a fake aiohttp ``ClientSession``: the handler's own
-# forward (the control-secret header, the OpenAI-shaped payload, the SSE relay)
-# is real, only the socket is not. ``web.StreamResponse`` is replaced with a
-# recorder so the streamed path needs no transport.
-# ======================================================================
+# These drive ``api_crew_turn`` through each branch with a fake aiohttp
+# ``ClientSession`` as the crew; the handler's own forward is real, only the socket is
+# not. ``web.StreamResponse`` is a recorder, so the streamed path needs no transport.
 
 
 class TestTheTurnHandlerRefusesBeforeItForwards:
@@ -639,12 +580,9 @@ class TestTheTurnHandlerRefusesBeforeItForwards:
     ):
         """The row was relabelled onto a tunnel that reaches a different node.
 
-        ``_record_for`` matches the (now-rewritten) row to a real crew's record,
-        but the OPEN tunnel was dialled on another node before the edit and does
-        not rebuild on it. Binding the credential to the live tunnel's own dial
-        identity -- not to the row -- is what stops the real crew's control secret
-        from being read and sent down that tunnel. Asserting the secret read was
-        never awaited is the property the module's docstring names.
+        The rewritten row matches a real crew's record, but the open tunnel was dialled
+        to another node and does not rebuild. The credential binds to the tunnel's dial
+        identity, so the secret read is never awaited.
         """
         # The matched record names the REAL crew's node; the live tunnel reaches
         # a DIFFERENT node (an SSH peer, or an SSM peer dialled elsewhere).
@@ -918,16 +856,9 @@ class TestReadingTheControlSecret:
 class TestOnlyTheMicrovmLaneIsServed:
     """This route serves the MicroVM lane, and declines any other.
 
-    A Fargate crew is headless too, but serving it here needs the crew name and
-    the control secret THAT task ran with, and both are resolvable only from the
-    operator's configuration -- a live document naming whichever crew is
-    configured now. With a second crew configured in the same account and region,
-    a turn to the first would present the second one's credential to a task that
-    must not see it. Recording the deployment on the crew's row at launch is the
-    fix, and it belongs to that lane's launch path.
-
-    So the lane is declined instead. Declining is the mechanism: there is no
-    branch to get wrong and nothing on this path reads the configuration.
+    A Fargate crew's name and secret resolve only from the live operator config, which
+    names whichever crew is configured now, so a second crew in the same account could
+    get the first one's credential. Declining leaves no branch to get wrong.
     """
 
     def test_the_served_lanes_are_exactly_the_microvm_lane(self):
@@ -971,16 +902,8 @@ class TestControlSecretIdLanePrecedence:
     """``control_secret_id`` prefers this crew's recorded reference, then a derive
     FROM THAT RECORD'S OWN TAG -- never from a label the row supplied.
 
-    A row that owns no record resolves to nothing. Deriving a secret path from the
-    tag in its display name instead would be the hole rather than a fallback:
-    ``instances.json`` is not write-protected, so the label is agent-supplied, and
-    a relabelled row would name whichever crew's secret its label claims. The
-    derive is available only where the record is already matched by identity, so
-    the tag it uses is the record's own.
-
-    Nothing legitimate needs the wider form. Every record this lane's launch
-    writes carries ``control_secret_ref`` from the start, and this function is
-    called only from the turn route, which serves only this lane.
+    A row with no record resolves to nothing: ``instances.json`` is not write-protected,
+    so deriving from the row's label would let a relabelled row name any crew's secret.
     """
 
     def test_a_record_for_another_instance_is_not_borrowed(self, tmp_path, monkeypatch):
@@ -1115,20 +1038,10 @@ def _wire_resume(monkeypatch, *, state, raises=None, on_resume=None, on_lookup=N
 class TestTheCredentialIsBoundToTheNodeTheTunnelDials:
     """`instances.json` is NOT write-protected, so a row is agent-writable.
 
-    Resolving the crew record by the row's TAG, its display name, or its registry
-    id binds the credential to a label while the tunnel stays bound to a NODE. An
-    agent that controls a connected hostile peer's row can relabel it with a real
-    crew's tag, lane and AWS coordinates, and the owner's next turn then reads the
-    REAL crew's control secret and sends it down the HOSTILE peer's already-open
-    tunnel.
-
-    So the record is found by `ssm_target`, which is the field the tunnel is
-    actually built from -- the forward dials `validate_ssm_target(inst.
-    ssm_target)`. Any other field leaves the same gap one step over: a row whose
-    `ssm_target` names a node of the attacker's choosing passes a check on the id,
-    and the secret goes down the tunnel that `ssm_target` opened. Its account and
-    region have to agree with the record too, because they are what the secret is
-    READ with.
+    Matching on a label (tag, display name, registry id) lets a relabelled hostile row
+    receive a real crew's secret down its own tunnel. So the record is found by
+    `ssm_target`, the field the forward dials, and its account and region must agree
+    because they are what the secret is read with.
     """
 
     REAL_REF = "kirocrew/crew/realcrew/CONTROL_SECRET"
@@ -1219,11 +1132,8 @@ class TestTheCredentialIsBoundToTheNodeTheTunnelDials:
     ):
         """The binding must be on the field the tunnel goes down, not beside it.
 
-        A check on the row's registry `id` is satisfied by a row that keeps the
-        real crew's id -- its label -- and points `ssm_target` at a node of the
-        attacker's choosing. Profile, region and lane all still agree, the record
-        is matched, and the owner's next turn sends the real crew's control secret
-        down the OTHER node's tunnel: the same relabelling attack, one field over.
+        A row keeping the real crew's `id` but pointing `ssm_target` at another node
+        would pass a check on `id` and send the secret down the other node's tunnel.
         """
         from kiro_crew.dashboard.handlers_crew_turn import control_secret_id, served_crew_name
 
@@ -1257,3 +1167,27 @@ class TestTheCredentialIsBoundToTheNodeTheTunnelDials:
         self._store(tmp_path, monkeypatch)
         inst = self._Inst(ssm_target=_REAL_NODE, provisioner_tag="realcrew", **{field: value})
         assert control_secret_id(inst) == ""
+
+
+class TestTheFakeSessionStaysInTheHandler:
+    """``_install_session`` fakes the handler's ``aiohttp.ClientSession`` and nothing else.
+
+    Patching the package attribute leaks: ``aiohttp.test_utils``, first imported while
+    the patch is live, keeps the fake after the undo, and later aiohttp test clients in
+    the same worker cannot close it.
+    """
+
+    def test_the_package_keeps_its_real_client_session(self, monkeypatch):
+        import aiohttp
+
+        real = aiohttp.ClientSession
+        _install_session(monkeypatch, [])
+        assert aiohttp.ClientSession is real, "the fake reached the aiohttp package"
+        assert mod.aiohttp.ClientSession is not real, "the handler does not see the fake"
+        assert mod.aiohttp.ClientTimeout is aiohttp.ClientTimeout
+
+    def test_the_handler_opens_the_fake(self, monkeypatch):
+        calls = []
+        _install_session(monkeypatch, calls)
+        session = mod.aiohttp.ClientSession(timeout=mod.aiohttp.ClientTimeout(total=1))
+        assert type(session).__name__ == "_FakeSession"

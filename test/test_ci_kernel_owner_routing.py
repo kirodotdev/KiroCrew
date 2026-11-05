@@ -46,7 +46,14 @@ def _junit_check(run_body):
 
 def test_the_lane_is_a_hosted_vm_running_exactly_the_two_strict_cases(jobs, run_body):
     job = jobs[JOB]
-    assert job["runs-on"] == "ubuntu-latest"
+    # A hosted VM is the contract; which hosted pool is not. The organization's
+    # larger-runner group is the same uncontainerized image, and a fork, which
+    # cannot reach an organization group, keeps the standard one. Both branches
+    # are pinned: dropping the fork one leaves fork runs queued forever.
+    assert job["runs-on"] == (
+        "${{ github.repository == 'kirodotdev/KiroCrew' "
+        "&& 'kirocrew-linux-4-core' || 'ubuntu-latest' }}"
+    )
     assert job["needs"] == ["changes", "await-fast-gate", "lint-gate"]
     # Skipped on a frontend-only diff: backend flock tests cannot be affected
     # by frontend-only changes.

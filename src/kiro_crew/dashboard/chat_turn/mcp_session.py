@@ -10,6 +10,11 @@ from typing import TYPE_CHECKING, Any
 
 from kiro_crew.config.loader import oauth_endpoints_path
 from kiro_crew.dashboard.chat_utils import _redact_meta_for_role
+from kiro_crew.dashboard.mcp_banner_dedupe import (
+    forget_mcp_banner,
+    rejected_banner_is_repeat,
+)
+from kiro_crew.dashboard.mcp_oauth_provenance import record_emitted
 from kiro_crew.dashboard.urls import is_loopback
 from kiro_crew.security import sanitized_oauth_endpoint, sanitized_oauth_endpoint_display
 
@@ -128,6 +133,7 @@ async def _drain_session_init_oauth_requests(
     # process instance is the identity every one of these banners is stamped
     # with — the flow's loopback listener and verifier live in it.
     minted_by = str(getattr(client, "process_instance", "") or "")
+    session_id = _provider_session_id(client)
     for req in pending:
         if not isinstance(req, dict):
             continue
@@ -144,6 +150,7 @@ async def _drain_session_init_oauth_requests(
             oauth_url,
             card_owned=bool(server_name) and server_name in managed,
             minted_by=minted_by,
+            session_id=session_id,
         )
 
 
@@ -162,12 +169,20 @@ def _publish_session_mcp_report(state: "DashboardState", slot: "_ChatSlot", prov
     report = _session_mcp_report(provider)
     if report is None:
         return
+    payload = report.payload()
+    # A server this session reports as connected has signed in, however that
+    # was learned: a mid-turn event, or a frame the init drain or a session
+    # load consumed without one. Its next rejection is news, so its
+    # rejected-banner record goes, before the unchanged-report early return.
+    for name in (payload or {}).get("ready") or ():
+        if isinstance(name, str) and name:
+            forget_mcp_banner(slot, name)
+            forget_mcp_banner(slot, _redact_acp_string(name))
     # Stamp the payload with the session it describes. This copy outlives its
     # owner — the report itself lives on the transport and is inherently that
     # session's — so without the id a reader cannot tell a current answer from a
     # replaced session's, which is the leak every teardown patch chased.
     session_id = str(getattr(provider, "session_id", "") or "")
-    payload = report.payload()
     if slot.set_mcp_report(payload, session_id):
         state.broadcast_ws(
             "mcp_report_update",
@@ -239,6 +254,36 @@ async def _approve_discovered_mcp_oauth_endpoint(server_name: str, oauth_url: st
     await approve_discovered_oauth_endpoint(server_name, oauth_url)
 
 
+def _provider_session_id(provider: Any) -> str:
+    """The ACP session id *provider* serves, or "" when it has none."""
+    session_id = getattr(provider, "session_id", "")
+    return session_id if isinstance(session_id, str) else ""
+
+
+def _append_rejected_mcp_oauth_banner(
+    slot: "_ChatSlot",
+    server_name: str,
+    safe_name: str,
+    ambiguous: bool,
+    session_id: str,
+    content: str,
+    meta: dict[str, Any],
+) -> None:
+    """Append a rejected-URL banner unless it repeats the last one shown.
+
+    kiro-cli retries a signed-out server's sign-in on every turn, so without
+    this check the same rejection is posted on every user turn and every
+    auto-nudge cycle. See :mod:`kiro_crew.dashboard.mcp_banner_dedupe`
+    for what counts as a change.
+    """
+    if rejected_banner_is_repeat(
+        slot, server_name, safe_name, ambiguous, session_id, content, str(meta.get("error", ""))
+    ):
+        logger.debug("ACP: not repeating an unchanged MCP OAuth rejection banner")
+        return
+    slot.append("mcp_oauth", content, "msg msg-warn", meta=meta)
+
+
 def _emit_mcp_oauth_request(
     state: "DashboardState",
     slot: "_ChatSlot",
@@ -246,6 +291,7 @@ def _emit_mcp_oauth_request(
     oauth_url: str,
     card_owned: bool = False,
     minted_by: str = "",
+    session_id: str = "",
 ) -> None:
     """Append an mcp_oauth banner so the user can authorize an MCP server.
 
@@ -274,6 +320,13 @@ def _emit_mcp_oauth_request(
     Deliberately annotates the authorize banner only. A rejected URL is a
     security notice rather than a consent prompt — no card can act on it — so it
     stays unconditionally visible wherever banners render.
+
+    ``session_id`` is the ACP session the request came from. With it, a
+    rejected banner that repeats the last one shown for the same server in the
+    same session is not posted again (see
+    :mod:`~kiro_crew.dashboard.mcp_banner_dedupe`). Without it every
+    rejection is posted. The authorize banner is always posted: it carries a
+    fresh link.
     """
     safe_name = _redact_acp_string(server_name)
     ambiguous = _mcp_server_name_is_ambiguous(server_name, safe_name)
@@ -281,11 +334,14 @@ def _emit_mcp_oauth_request(
 
     if not _is_safe_oauth_url(oauth_url):
         logger.warning("ACP: refusing unsafe MCP OAuth URL for %s", server_name or "(unknown)")
-        slot.append(
-            "mcp_oauth",
+        _append_rejected_mcp_oauth_banner(
+            slot,
+            server_name,
+            safe_name,
+            ambiguous,
+            session_id,
             f"🚫 {label} sent an unsafe authentication URL (scheme rejected).",
-            "msg msg-warn",
-            meta={
+            {
                 "server_name": safe_name,
                 "failed": True,
                 "rejected_url": True,
@@ -343,11 +399,14 @@ def _emit_mcp_oauth_request(
                 "chat to reconnect."
             )
             rejected_meta["error"] = loopback_advice[0].upper() + loopback_advice[1:]
-            slot.append(
-                "mcp_oauth",
+            _append_rejected_mcp_oauth_banner(
+                slot,
+                server_name,
+                safe_name,
+                ambiguous,
+                session_id,
                 f"🚫 {label}: {loopback_advice}",
-                "msg msg-warn",
-                meta=rejected_meta,
+                rejected_meta,
             )
             return
         endpoint_detail = ""
@@ -384,8 +443,12 @@ def _emit_mcp_oauth_request(
                 f" The rejected authorization endpoint was "
                 f"{rejected_host}{rejected_path} (query values withheld)."
             )
-        slot.append(
-            "mcp_oauth",
+        _append_rejected_mcp_oauth_banner(
+            slot,
+            server_name,
+            safe_name,
+            ambiguous,
+            session_id,
             f"🚫 {label} sent an authentication URL containing a credential "
             f"pattern (rejected).{endpoint_detail} If this is a self-hosted "
             "or otherwise unlisted identity provider, its authorization "
@@ -393,8 +456,7 @@ def _emit_mcp_oauth_request(
             'Crew data home, shaped {"additional_authorization_endpoints": '
             '[{"host": ..., "path": ...}]}; otherwise ask the server owner '
             "to fix the URL.",
-            "msg msg-warn",
-            meta=rejected_meta,
+            rejected_meta,
         )
         return
     # A new authorize request for this server means kiro-cli started a FRESH
@@ -408,6 +470,9 @@ def _emit_mcp_oauth_request(
     # a banner with no `oauth_url`, so superseding an older one there would take
     # away the only authorize affordance the user has and hand back nothing.
     _supersede_open_mcp_oauth_banners(state, slot, safe_name, ambiguous)
+    # A sign-in prompt is a new state for this server: a rejection after it is
+    # news again, so it must not be held back as a repeat of an older one.
+    forget_mcp_banner(slot, safe_name)
     content = f"🔐 {label} requires authentication."
     meta: dict[str, Any] = {
         "server_name": safe_name,
@@ -424,6 +489,11 @@ def _emit_mcp_oauth_request(
     }
     if card_owned:
         meta["card_owned"] = True
+    # Recorded before the append, so the first read of this row (a refetch the
+    # append's broadcast may trigger) already finds it. Every later read of the
+    # banner goes through `_redact_meta_for_role`, which shows the link only for
+    # a (child, URL) pair recorded here; see `mcp_oauth_provenance`.
+    record_emitted(minted_by, oauth_url)
     slot.append(
         "mcp_oauth",
         content,
@@ -556,8 +626,14 @@ def _session_mcp_report(provider: Any) -> "SessionMcpReport | None":
 def _mark_mcp_oauth_completed(
     state: "DashboardState", slot: "_ChatSlot", server_name: str, success: bool, error: str = ""
 ) -> None:
-    """Patch the most recent open mcp_oauth banner for ``server_name`` to a terminal state."""
+    """Patch the most recent open mcp_oauth banner for ``server_name`` to a terminal state.
+
+    A success also clears the server's rejected-banner record, so a later
+    sign-out is announced again even when its rejection reads the same.
+    """
     safe_name = _redact_acp_string(server_name)
+    if success:
+        forget_mcp_banner(slot, safe_name)
     target: dict | None = None
     for m in reversed(slot.messages):
         if m.get("role") != "mcp_oauth":
@@ -672,6 +748,7 @@ async def _on_mcp_oauth_request(turn: _ChatTurn, event) -> None:
         event.oauth_url,
         card_owned=bool(server_name) and server_name in managed,
         minted_by=str(getattr(client, "process_instance", "") or ""),
+        session_id=_provider_session_id(client),
     )
     _record_session_mcp_event(
         state,

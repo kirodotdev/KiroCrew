@@ -71,6 +71,9 @@ from kiro_crew import (  # noqa: F401
 )
 from kiro_crew.atomic_write import fsync_dir, refuse_linked_parent  # noqa: F401
 from kiro_crew.config.paths import config_dir, kiro_agents_dir  # noqa: F401
+from kiro_crew.config.write_provenance import (  # noqa: F401
+    launcher_record as _published_file_record,
+)
 from kiro_crew.constants import (  # noqa: F401
     KIROCREW_SANDBOX_TOOL_ENV,
     KIROCREW_SANDBOX_TOOL_VALUE,
@@ -351,7 +354,9 @@ if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
         SANDBOX_LAYER_HARNESS,
         _command_log_label,
         _delegate_to_kiro_internal_sandbox,
+        _first_json_value,
         _kiro_delegation_warned,
+        _kiro_settings_concat_warned,
         _spawns_kiro_cli,
         delegated_workspace_exposes_sealed_target,
         kiro_internal_sandbox_enabled,
@@ -590,6 +595,7 @@ if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
         _agents_slice_cgroup_dir,
         _check_slice_memory_pressure,
         _default_max_total_memory_mb,
+        _default_max_total_tasks,
         _default_slice_memory_high_mb,
         _disarm_slice_reclaim,
         _ensure_agent_slice_memory_high,
@@ -645,11 +651,13 @@ if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
     from kiro_crew.sandbox_staging import (  # noqa: F401
         _AUTH_STORE_LEGACY_TEMP_PREFIX,
         _AUTH_STORE_PUBLISHED_KEY_LEAF,
+        _LEGACY_AUTH_SWEEP_CLEAN,
         _MD_NOTEBOOK_STATE_COMPONENTS,
         LiveTargetUnfitness,
         _live_target_irregular_detail,
         _live_target_multilink_detail,
         _live_target_symlink_detail,
+        _materialize_env_mask_target,
         _materialize_live_target_mask_target,
         _materialize_maskable_dirs,
         _materialize_md_notebook_mask_targets,
@@ -686,6 +694,8 @@ if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
         _STRICT_DIRS,
         _TIER_ORDINALS,
         _bundled_kas_targets_cached,
+        _bundled_kiro_cli_targets_cached,
+        _bundled_root_spellings,
         _caller_mask_contains,
         _clamp_sandbox_mode,
         _clamp_sandbox_mode_to_floor,
@@ -785,12 +795,17 @@ if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
         voice_runtime_workspace_conflict,
     )
     from kiro_crew.sandbox_wrap import (  # noqa: F401
+        _INHERITED_USERNS_FAILURE_ENV,
         _backend,
         _background_warm,
+        _holds_inherited_unshare_failure,
+        _inherited_unshare_failure,
         _kick_background_warm,
         _last_unshare_failure,
         _probe_unshare,
+        _read_inherited_userns_failure,
         _record_probe_failure,
+        _set_inherited_userns_failure,
         _warm_thread,
         _warn_no_isolation,
         detect_backend,

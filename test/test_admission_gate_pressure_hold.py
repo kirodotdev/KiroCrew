@@ -219,7 +219,7 @@ class TestSpawnAdmissionGatePressureHold(_TestSpawnAdmissionGateHarness):
         monkeypatch.setattr(
             crew_log_emit,
             "remember_child_origin",
-            lambda agent_id, sid, turn: pinned.append((agent_id, sid, turn)),
+            lambda agent_id, sid, turn, attempt=0: pinned.append((agent_id, sid, turn)),
         )
         mgr = self._mgr()
         self._busy(mgr)

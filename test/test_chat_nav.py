@@ -20,6 +20,14 @@ from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK
 from kiro_crew.testing.wait import async_wait_until, await_until
 
 
+@pytest.fixture(autouse=True)
+def _empty_link_label_inflight_map():
+    # The map is module-global and outlives each test's loop.
+    chat_nav._LINK_SUMMARY_INFLIGHT.clear()
+    yield
+    chat_nav._LINK_SUMMARY_INFLIGHT.clear()
+
+
 class TestBuildLinkSummaryPrompt:
     def test_single_link_no_context(self):
         links = [{"url": "https://git.example.com/reviews/CR-123"}]
@@ -690,7 +698,45 @@ def _count_shared_call_entries(monkeypatch) -> list[int]:
     return entered
 
 
+def _future_on_a_closed_loop() -> asyncio.Future:
+    """A pending future whose loop is gone, so its done callbacks can never run."""
+    other = asyncio.new_event_loop()
+    try:
+        return other.create_future()
+    finally:
+        other.close()
+
+
 class TestLinkLabelInFlight:
+    @pytest.mark.asyncio
+    async def test_entries_left_by_a_torn_down_loop_are_neither_reused_nor_counted(
+        self, monkeypatch
+    ):
+        # A task whose loop was torn down never runs its cleanup: the same key must
+        # start a fresh call on this loop, and dead entries must not fill the cap.
+        links = [{"url": "https://example.com/docs", "context": "docs"}]
+        key = tuple((link["url"], link["context"]) for link in map(chat_nav._bounded_link, links))
+        chat_nav._LINK_SUMMARY_INFLIGHT[key] = _future_on_a_closed_loop()
+        for i in range(chat_nav._LINK_SUMMARY_INFLIGHT_MAX - 1):
+            chat_nav._LINK_SUMMARY_INFLIGHT[(("https://example.com/%d" % i, ""),)] = (
+                _future_on_a_closed_loop()
+            )
+        calls: list[list[dict]] = []
+
+        async def _resolve(_state, bounded):
+            calls.append(bounded)
+            return ["Docs page"]
+
+        monkeypatch.setattr(chat_nav, "_resolve_link_summaries", _resolve)
+        # Gathered so a reused dead entry shows up as a wrong answer, not a crash.
+        outcome = await asyncio.gather(
+            chat_nav._shared_link_summaries(SimpleNamespace(), links), return_exceptions=True
+        )
+        assert outcome == [["Docs page"]]
+        assert len(calls) == 1
+        await asyncio.sleep(0)
+        assert chat_nav._LINK_SUMMARY_INFLIGHT == {}
+
     @pytest.mark.asyncio
     async def test_identical_requests_share_one_call(self, monkeypatch):
         entered = _count_shared_call_entries(monkeypatch)

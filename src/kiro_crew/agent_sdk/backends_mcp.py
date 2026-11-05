@@ -27,6 +27,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_KIRO,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
+    ACP_BACKEND_STRANDS,
 )
 
 # ── Capability: where a harness gets its MCP servers ──
@@ -84,7 +85,7 @@ from kiro_crew.agent_sdk.backends import (
 # entry with pi's built-in MCP support (``pi.registerMcpServer``; the release that
 # carries it is ``PI_MIN_VERSION``). The array still travels on the wire because
 # the session report reads its roster from it. Captured as a ROUND TRIP against
-# pi-acp 0.0.34 over pi 1.3.0: ``test/fixtures/acp_frames/pi/mcp-stdio-mount-live.jsonl``
+# pi-acp 0.0.34 over pi 1.4.0: ``test/fixtures/acp_frames/pi/mcp-stdio-mount-live.jsonl``
 # -- the server is asked ``initialize``, ``tools/list`` and ``tools/call``, the call
 # raises ``session/request_permission`` through the gate first, and the tool's own
 # result reaches the turn. A same-named server in pi's own ``mcp.json`` (user-level,
@@ -139,6 +140,14 @@ from kiro_crew.agent_sdk.backends import (
 # The array still carries the stdio elements on the wire because the session report
 # and the mount check read their roster from it, and each transport has exactly one
 # channel that mounts it, so nothing is mounted twice.
+#
+# strands is a member on pi's terms, one step further: the array is composed like
+# every member's, and none of it goes on the wire. The Strands CLI refuses a
+# non-empty ``session/new`` array in its Python-project mode, so the strands launch
+# writes the whole composition to an owner-only ``--mcp-config`` file
+# (``acp.harness.strands``) and the CLI mounts it at start, with its own discovery of
+# other tools' MCP files switched off. Captured as a round trip:
+# ``test/fixtures/acp_frames/strands/mcp-stdio-mount-live.jsonl``.
 ACP_BACKENDS_SESSION_MCP_ARRAY: FrozenSet[str] = frozenset(
     {
         ACP_BACKEND_CLAUDE,
@@ -148,6 +157,7 @@ ACP_BACKENDS_SESSION_MCP_ARRAY: FrozenSet[str] = frozenset(
         ACP_BACKEND_DEEPSEEK,
         ACP_BACKEND_PI,
         ACP_BACKEND_COPILOT,
+        ACP_BACKEND_STRANDS,
     }
 )
 
@@ -199,6 +209,23 @@ ACP_BACKENDS_MARKDOWN_AGENT_SPECS = frozenset({ACP_BACKEND_KAS})
 # governance. Read through the runtime's own scope helper, never as "is KAS": a
 # host added later whose servers come from the user level alone joins here.
 ACP_BACKENDS_USER_LEVEL_AGENT_SPECS_ONLY = frozenset({ACP_BACKEND_KAS})
+
+# Backends that never take an agent's grants (``allowedTools``, a server's
+# ``autoApprove``) from the spec FILE: Crew projects the spec onto the wire at
+# session start and filters both lists against the live governance ceiling there
+# (``acp.kas_agents._ceiling_permitted``, ``kas_permissions.merge_user_permissions``).
+# kiro-cli is the opposite: it reads the file for ``--agent`` and honours both lists
+# before Crew's PreToolUse gate, so the only way Crew can hold the ceiling on it is to
+# rewrite the file.
+#
+# Members are the hosts that take ``allowedTools`` and ``autoApprove`` from the
+# ``~/.kiro/agents`` spec file itself. Crew never rewrites a crew-bound spec it does
+# not own, so a start on a member is refused while that file's grants exceed the
+# ceiling (``fork_refresh.require_shared_template_within_ceiling``). Every other host
+# gets Crew's projection of the spec, which filters both lists (KAS) or forwards
+# neither (the adapted harnesses), so its starts are never refused for them. A
+# harness that reads the file's grants itself must join.
+ACP_BACKENDS_SPEC_FILE_GRANTS = frozenset({ACP_BACKEND_KIRO})
 
 
 def overlay_project_scope(backend: str, work_dir: Any) -> dict[str, Any]:
@@ -333,15 +360,26 @@ ACP_BACKENDS_SPEC_SERVERS_OFF_WIRE = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KA
 # spec's ``tools`` is read beside the member mounts and ``_deny_zero_tools`` answers
 # every request with the reject option. Measured end to end on a zero-tool spec:
 # ``test/fixtures/acp_frames/pi/zero-tools-refused-live.jsonl`` (pi-acp 0.0.34 over
-# pi 1.3.0, driven through ``AcpClient``) holds a ``write``, a ``bash``, an MCP call
+# pi 1.4.0, driven through ``AcpClient``) holds a ``write``, a ``bash``, an MCP call
 # and a tool pi does not have, each ended ``failed`` with nothing on disk, and a
 # session with no gate extension is refused before its first prompt by the routing.
 #
-# claude is NOT a member: its routing, ``Routing.SEEDED_SETTINGS``, is declared but
-# not enforced by this core (see ``Routing``'s docstring and
-# ``tool_gate.ENFORCED_ROUTINGS``) -- an operator's own ``~/.claude`` settings can
-# pre-approve a tool, which skips ``session/request_permission`` entirely, so
-# ``_deny_zero_tools`` never runs to close the mirror's allowlist-only translation.
+# claude is a member on a ground of its own: a zero-tool session MOUNTS NO TOOL, so
+# no call is made for a refusal to judge. Its routing, ``Routing.SEEDED_SETTINGS``,
+# is still not enforced by this core (see ``Routing``'s docstring and
+# ``tool_gate.ENFORCED_ROUTINGS``), and an operator's own ``~/.claude`` settings can
+# pre-approve a tool, skipping ``session/request_permission``. So the ban is not
+# left to ``_deny_zero_tools``: ``AcpClient._claude_session_meta`` sends
+# ``_meta.claudeCode.options.tools`` empty (no built-in exists) with
+# ``strictMcpConfig`` (no user, project or plugin server), the wire array must be
+# empty (``refuse_claude_zero_tool_mounts``), and an adapter below
+# ``CLAUDE_ACP_SETTING_SOURCES_MIN_VERSION`` is stopped before its first prompt.
+# Membership also binds ``_deny_zero_tools``, for any request that still arrives.
+# Measured on claude-agent-acp 0.94.0, and the same on 0.93.0 (the installers' pin):
+# ``test/fixtures/acp_frames/claude/zero-tools-refused-live.jsonl``. With a project
+# allow rule for Bash, Write and WebFetch in force, a prompt asking for all three
+# raised no ``tool_call`` and no permission request and nothing reached the disk;
+# the same session without the options ran all three unasked.
 #
 # codex is NOT a member: its sessions are served by ``AcpRuntime`` /
 # ``AcpSessionHandle`` (``acp/runtime_class.py``, ``acp/session_handle_class.py``), which carry
@@ -354,16 +392,35 @@ ACP_BACKENDS_SPEC_SERVERS_OFF_WIRE = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KA
 # session's own directory WITHOUT a permission request (measured -- its ``view``
 # ran unasked), so ``_deny_zero_tools`` never sees that call and a total ban cannot
 # be honoured.
+#
+# strands is a member on pi's grounds: Crew's gate module raises an interrupt for
+# EVERY tool call of every Strands ``Agent`` in the process -- built-in, the
+# project's own, vended or MCP -- which the CLI forwards as
+# ``session/request_permission``, so ``_deny_zero_tools`` sees each one; it is
+# mirrored, enforced (``Routing.VERIFIED_GATE_EXTENSION``) and ``AcpClient``-served.
 ACP_BACKENDS_HONOR_ZERO_TOOL_BAN = frozenset(
     {
         ACP_BACKEND_KIRO,
         ACP_BACKEND_KAS,
+        ACP_BACKEND_CLAUDE,
         ACP_BACKEND_OPENCODE,
         ACP_BACKEND_GOOSE,
         ACP_BACKEND_DEEPSEEK,
         ACP_BACKEND_PI,
+        ACP_BACKEND_STRANDS,
     }
 )
+
+# Backends that honour a remote MCP entry's ``oauth`` block (the pre-registered
+# client id, redirect URI and scopes a Connections provider writes). Only kiro-cli
+# reads it: it loads the entry from the agent file it was launched with. KAS takes
+# its agents over ``_meta.kiro.customAgents``, whose remote-server schema has no
+# ``oauth`` slot, so the block is dropped and the engine falls back to dynamic
+# client registration, which a pre-registered provider does not offer.
+# The kiro-cli relay route of KAS projects through the same schema, so it is not a
+# member either. A backend joins only once its own path carries the block to the
+# engine; until then the Connections page marks those providers kiro-cli only.
+ACP_BACKENDS_REMOTE_MCP_OAUTH = frozenset({ACP_BACKEND_KIRO})
 
 # Backends whose ``session/new`` array Crew prunes of stdio elements whose command
 # certainly cannot be found (``acp.mcp_startable``), recording each one as a failed
@@ -484,6 +541,35 @@ ACP_BACKENDS_MCP_CONFIG_HOT_RELOAD = frozenset({ACP_BACKEND_KIRO})
 # and load of a resident session with a changed array, so none inherits a skip
 # whose wrong grant leaves a server unmounted with nothing red to say why.
 ACP_BACKENDS_MCP_WIRE_REINJECT = frozenset({ACP_BACKEND_KAS})
+
+# Backends whose RUNNING session takes a changed MCP server set by Crew RELAUNCHING
+# its process with the new launch-time MCP config and ``session/load``-ing the same
+# session id, with the conversation kept. The third way a live session applies a
+# config change without a reset, beside the file watcher
+# (``ACP_BACKENDS_MCP_CONFIG_HOT_RELOAD``) and the re-sent projection
+# (``ACP_BACKENDS_MCP_WIRE_REINJECT``); the dashboard's MCP writers skip their
+# all-sessions reset when every live provider answers one of the three.
+#
+# Membership is a MEASURED relaunch, not a reading of the CLI's flags. The Strands
+# CLI reads its MCP servers once, from ``--mcp-config`` at launch, and refuses a
+# non-empty ``session/new`` array in project mode, so nothing reaches a running
+# process. A SECOND process launched with a changed ``--mcp-config`` and sent
+# ``session/load`` of the same id (empty array) replays the saved conversation,
+# answers ``{}``, and its next turn sees the new set with the earlier turns kept.
+# Captured live on Strands CLI 0.2.3:
+# ``test/fixtures/acp_frames/strands/mcp-relaunch-add-live.jsonl`` (a server
+# added: its tool is offered and completes) and ``mcp-relaunch-remove-live.jsonl``
+# (a server withdrawn: its tool is absent from the offer). Crew performs the relaunch
+# on a client marked by a dashboard MCP write, at that session's next turn
+# boundary and never mid-turn (``acp/relaunch_reload.py``): the stalled-child
+# replacement ``ensure_ready`` already runs for a disposed session
+# (``ACP_BACKENDS_RELOAD_DISPOSED_SESSION``), and the replacement's spawn re-reads
+# the agent spec into a fresh ``--mcp-config`` file.
+#
+# Disjoint from both sets above: the process does not watch a file and takes no
+# projection on a live session; the relaunch is the mechanism, with its own
+# failure mode (a load that falls back to a fresh session).
+ACP_BACKENDS_MCP_RELAUNCH_RELOAD = frozenset({ACP_BACKEND_STRANDS})
 
 # Backends on which a per-template MCP addition reaches a session of a template
 # Crew does NOT own (a third-party or other custom agent) without Crew writing into

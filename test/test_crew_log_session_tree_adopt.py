@@ -1,17 +1,9 @@
 """Adoption and release: the records that MOVE a session in the tree.
 
-The creating edge is stamped once and never rewritten, so every property here is about
-a second kind of statement living beside it. Four things can break independently and
-each gets its own test:
-
-* the FOLD prefers the newest decision over the creating citation, and over an older
-  decision, whatever order the records arrive in;
-* the fold's cycle colouring still runs over the applied decisions, because a takeover
-  can be recorded against a reading of the tree that has since moved;
-* the PROJECTION advances only after the append succeeded, refuses a decision that
-  arrives out of order, and hands out the same object when nothing moved;
-* a COLD scan with no checkpoint reaches the same tree as the fold, which is the whole
-  claim that lets the checkpoint be a shortcut rather than an authority.
+The creating edge is never rewritten; decisions live beside it. The fold prefers the
+newest decision in any arrival order and still colours cycles; the projection advances
+only after the append; a cold scan reaches the same tree, so the checkpoint is only a
+shortcut.
 """
 
 from __future__ import annotations
@@ -19,6 +11,7 @@ from __future__ import annotations
 import json
 
 import pytest
+from crew_log_drain import assert_drained
 
 from kiro_crew import crew_log as lg
 from kiro_crew.crew_log import CrewLog, emit
@@ -48,11 +41,8 @@ GATEWAY = "gateway"
 def _isolated_home(tmp_path, monkeypatch):
     """Every test writes into its own data home, and no write is armed on the real pool.
 
-    Same shape as the projection suite's fixture and for the same two reasons: the
-    process-wide projection is bound to ONE store, so a test inheriting another test's
-    fold would read another store's records; and ``_debounced_write`` saves outside the
-    lock, so a worker that already passed the epoch check could land a file in this
-    test's tmp home after pytest considers it finished.
+    The process-wide projection is bound to one store, and ``_debounced_write`` saves
+    outside the lock, so a live pool could land a file here after the test ends.
     """
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
     monkeypatch.setenv(emit.CREW_LOG_ENV, "1")
@@ -63,10 +53,8 @@ def _isolated_home(tmp_path, monkeypatch):
     stp.reset_for_tests()
     yield
     stp.reset_for_tests()
-    # Units written through ``emit.on_session_opened`` leave the emitter holding their
-    # handles, and a kept handle holds that session's write lease process-wide (see the
-    # projection suite's fixture). Drop them here too, so this file's leases do not
-    # surface as another test's "lease still held" on the same xdist worker.
+    # Kept emitter handles hold their write leases process-wide; drop them so they do not
+    # show up as another test's "lease still held" on the same xdist worker.
     emit.reset_caches()
 
 
@@ -116,9 +104,7 @@ def _checkpoint_path():
 def test_an_adoption_replaces_the_creating_citation_and_carries_the_subtree():
     """The takeover case, which is the whole feature: one record moves a branch.
 
-    D adopts A, and B and C follow with no record of their own -- they cite A's SLOT,
-    so nothing about them has to change for the tree under them to move. A fold that
-    keyed children on a PATH would need an entry per descendant here.
+    B and C follow with no record of their own because they cite A's SLOT.
     """
     records = [
         _rec("s-a", "A", created=1),
@@ -133,9 +119,7 @@ def test_an_adoption_replaces_the_creating_citation_and_carries_the_subtree():
 def test_a_release_clears_the_edge_that_the_opening_entry_recorded():
     """The one record that RETRACTS a parent.
 
-    B was opened by A, and the release says it has none now -- which a
-    ``session/opened`` carrying no parent deliberately cannot say, because that only
-    means the entry did not repeat a creator.
+    A ``session/opened`` with no parent cannot say this: it only did not repeat a creator.
     """
     records = [_rec("s-a", "A", created=1), _rec("s-b", "B", created=2, parent="A")]
     released = fold_tree(records, [EdgeRecord(slot="B", parent_slot=None, at=50, sid="s-b")])
@@ -143,13 +127,9 @@ def test_a_release_clears_the_edge_that_the_opening_entry_recorded():
 
 
 def test_the_newest_decision_wins_whatever_order_the_records_arrive_in():
-    """Order-independence, which is the property a stale checkpoint plus a replayed
-    tail actually needs.
+    """Order-independence, which a stale checkpoint plus a replayed tail needs.
 
-    The release is newer than the adoption, so the answer is "no parent" whether the
-    fold sees it first or second. Taking the LAST arrival instead would put the session
-    back under a parent that already let it go, and it would stay there until the
-    process restarted.
+    Taking the last arrival would put the session back under a parent that released it.
     """
     records = [_rec("s-a", "A", created=1), _rec("s-d", "D", created=2)]
     adopt = EdgeRecord(slot="A", parent_slot="D", at=100, sid="s-a", seq=2)
@@ -180,11 +160,8 @@ def test_two_decisions_in_one_millisecond_are_ordered_by_the_citing_log():
 def test_an_adoption_that_would_close_a_loop_is_coloured_as_a_cycle_by_the_fold():
     """The fold-time guard, which is not the same guard as the tool's.
 
-    The tool refuses a target already above the caller, reading the tree as it stands
-    then. This is the case that reading cannot cover: a decision reaching the fold from
-    a checkpoint and a replayed tail, in an order no writer saw. Every slot on the loop
-    is marked, so a consumer nests none of them rather than rendering a branch that
-    eats itself.
+    A checkpoint plus a replayed tail can apply decisions in an order no writer saw.
+    Every slot on the loop is marked, so a consumer nests none of them.
     """
     records = [
         _rec("s-a", "A", created=1),
@@ -295,16 +272,11 @@ def test_the_projection_refuses_a_decision_that_arrives_out_of_order():
 
 
 def test_a_checkpoint_round_trip_keeps_the_decisions():
-    """The checkpoint is a shortcut, and a shortcut that lost adoptions would be an
-    authority for the wrong answer: it would load as "nothing was ever adopted".
+    """A checkpoint that lost adoptions would load as "nothing was ever adopted".
 
-    Real units on disk, because the replay drops a held record whose unit is gone -- so a
-    checkpoint of hand-built records would be reconciled away before the decision could be
-    asserted, and the test would pass or fail for the wrong reason. The DECISION is on disk
-    for the same reason one step further: the replay also drops a held edge that a complete
-    read of the log contradicts, which is how a decision retention removed stops being the
-    tree's answer. The emitter never folds an edge it has not appended, so a decision only
-    in memory is not a state production reaches.
+    Units and the decision are real on disk: the replay drops a held record whose unit
+    is gone and a held edge the log contradicts, so hand-built state would be reconciled
+    away before the assertion.
     """
     handle_a = _log("s-a", "A")
     _opened(handle_a, "A")
@@ -361,12 +333,8 @@ def test_forgetting_a_unit_drops_the_decisions_it_recorded():
 def test_forgetting_the_winning_log_leaves_the_surviving_logs_decision():
     """Deleting the unit whose decision WON must not take the slot's other decisions.
 
-    A slot outlives its ACP session, so two logs can each hold a decision for it and the
-    newer log's is the one the fold serves. Holding one winner per slot would discard the
-    older log's decision on arrival -- and then deleting the winner leaves the slot with
-    no decision at all, so the fold falls back to the OPENING edge and a session that had
-    been taken over silently moves back to the conductor that opened it. Decisions are
-    held per ``(slot, sid)`` for exactly this, so the survivor is still there to be read.
+    Two logs of one slot can each hold a decision. Decisions are held per ``(slot, sid)``,
+    so after the winner is deleted the fold does not fall back to the opening edge.
     """
     proj = SessionTreeProjection()
     # One slot, two logs: the replacement log is newer by the header's ``created_at``.
@@ -388,11 +356,8 @@ def test_forgetting_the_winning_log_leaves_the_surviving_logs_decision():
 def test_a_backward_clock_step_does_not_let_the_earlier_decision_win():
     """Ordering comes from the STORE's sequence, never from a clock.
 
-    A clock that moves backward between two appends on one log -- an NTP correction, a
-    VM resume -- gives the later entry the smaller timestamp. Comparing timestamps would
-    then keep the superseded edge, silently, until some later decision happened to land
-    past the held time. ``seq`` is assigned by the writer and only increases, so it
-    cannot be inverted this way.
+    A clock step backward (NTP, VM resume) gives the later entry a smaller timestamp;
+    ``seq`` only increases.
     """
     records = [_rec("s-a", "A", created=1), _rec("s-d", "D", created=2)]
     adopt = EdgeRecord(slot="A", parent_slot="D", at=5000, sid="s-a", seq=4)
@@ -549,16 +514,8 @@ def test_a_cold_scan_with_no_checkpoint_reaches_the_same_tree_as_the_fold():
 def test_a_cold_seed_keeps_every_logs_decision_not_one_per_slot():
     """A seed must install each unit's decision, not the winner it computed itself.
 
-    Two things rest on that. Choosing between LOGS needs the record order that ranks
-    them, which the seed does not have when it reduces on its own -- with no ranking the
-    comparison falls back to the timestamp, so a clock that stepped backward between the
-    two logs would seed the OLDER decision and a cold rebuild would restore a lineage
-    that had been superseded. And a decision discarded at seed time is not there later:
-    deleting the winning unit would then leave the slot with no decision rather than with
-    the survivor's.
-
-    Asserted from a real store through the delete, because that is the shape both
-    failures share -- the survivor has to still be in the projection to be read.
+    Reducing alone, the seed lacks the record order that ranks logs and falls back to
+    timestamps. A decision dropped at seed time is also gone after the winner is deleted.
     """
     _unit_with_decision("s-1-old", "A", parent="P", adopt_to="D")
     _unit_with_decision("s-2-new", "A", parent="P", adopt_to="E")
@@ -590,20 +547,16 @@ def test_a_scan_without_edges_reports_where_each_slot_was_opened():
 def test_a_stale_checkpoint_is_corrected_by_the_replay_for_a_unit_it_already_holds():
     """The reason the decision pass covers held names and not only new ones.
 
-    A decision lives at the END of a log, so the unit a checkpoint already holds is
-    exactly where a decision it missed will be. A replay that skipped those names would
-    make the checkpoint authoritative for adoptions, and a stale one would leave a
-    session hanging under a parent that released it.
+    A decision lives at the end of a log, so a missed one is in a unit the checkpoint
+    already holds.
     """
     _unit_with_decision("s-a", "A", parent=None, adopt_to="D")
     handle = _log("s-d", "D")
     _opened(handle, "D")
     del handle
 
-    # A checkpoint that knows both units and NO decisions -- the shape a process that
-    # died between the adopt append and the debounced write leaves behind. Written by
-    # hand, because a projection seeded from THIS disk would have read the decision
-    # already and its checkpoint would not be stale.
+    # Both units and no decisions, as a crash before the debounced write leaves it.
+    # Edited by hand: a seed from this disk would already hold the decision.
     seeded = SessionTreeProjection()
     seeded.ensure_seeded()
     assert seeded.flush_checkpoint() is True
@@ -648,7 +601,7 @@ def test_the_emitter_writes_the_entry_and_advances_the_fold():
         "s-d", agent="kirocrew", slot="D", model="opus", cwd="/w", owner="raymond"
     )
     emit.on_session_adopted("s-a", slot="A", parent_slot="D", parent_sid="s-d")
-    assert emit.flush(timeout=5.0) is True
+    assert_drained()
 
     assert stp.projection().nodes()["A"].parent_slot == "D"
     directory = crew_store.unit_dir_for(lg.KIND_SESSION, "s-a")
@@ -660,9 +613,8 @@ def test_the_emitter_writes_the_entry_and_advances_the_fold():
 def test_the_emitter_reports_the_durable_outcome_to_a_waiting_caller():
     """``on_settled`` is how a verb learns the append actually landed.
 
-    The emitter hands the entry to the writer and returns, so a caller that must not
-    claim a takeover it did not persist has no other way to know. Called once, with
-    ``True`` only after the entry is on disk.
+    The emitter returns before the write, so this is the caller's only signal. It is
+    called once, with ``True`` only after the entry is on disk.
     """
     settled: list[bool] = []
     emit.on_session_opened(
@@ -674,7 +626,7 @@ def test_the_emitter_reports_the_durable_outcome_to_a_waiting_caller():
     emit.on_session_adopted(
         "s-a", slot="A", parent_slot="D", parent_sid="s-d", on_settled=settled.append
     )
-    assert emit.flush(timeout=5.0) is True
+    assert_drained()
     assert settled == [True]
     # And the entry really is there, so ``True`` is not merely "the job ran".
     directory = crew_store.unit_dir_for(lg.KIND_SESSION, "s-a")
@@ -683,13 +635,12 @@ def test_the_emitter_reports_the_durable_outcome_to_a_waiting_caller():
 
 
 def test_the_emitter_reports_failure_when_there_is_no_log_to_write_to():
-    """A job that finds no log appends NOTHING, and that must not reach the caller as a
-    completed write: the terminal cleanup runs either way, so the two would otherwise be
-    indistinguishable and the verb would report a takeover of a session it never
-    touched."""
+    """A job that finds no log appends nothing, and the caller is told False.
+
+    The terminal cleanup runs either way, so it cannot stand in for a write."""
     settled: list[bool] = []
     emit.on_session_adopted("s-missing", slot="A", parent_slot="D", on_settled=settled.append)
-    assert emit.flush(timeout=5.0) is True
+    assert_drained()
     assert settled == [False]
 
 
@@ -707,13 +658,9 @@ def test_the_emitter_reports_failure_for_an_entry_it_refuses_outright():
 def test_the_settle_signal_reports_the_append_not_the_absence_of_a_drop():
     """The arm that must not read as success.
 
-    ``_submit`` runs an entry's terminal cleanup for EVERY outcome, and only some of them
-    run the permanent-drop hook: an entry rejected for crossing the buffer's memory
-    ceiling is finished without it, which is exactly the wedged-writer condition the
-    ceiling exists for. A settle that inferred success from that hook's absence would
-    tell the caller its takeover landed while nothing was appended and the projection
-    never moved. So the signal is what the job DID -- ``wrote`` is set after
-    ``log.append`` returns -- and a terminal cleanup with no append behind it is False.
+    An entry rejected at the buffer's memory ceiling finishes without the permanent-drop
+    hook, so success cannot be inferred from that hook's absence. ``wrote`` is set only
+    after ``log.append`` returns.
     """
     told: list[bool] = []
     settle = emit._tree_settle_hooks(told.append)
@@ -748,7 +695,7 @@ def test_the_emitter_records_the_parent_a_takeover_replaced():
         previous_parent_slot="OLD",
         previous_parent_sid="s-old",
     )
-    assert emit.flush(timeout=5.0) is True
+    assert_drained()
     directory = crew_store.unit_dir_for(lg.KIND_SESSION, "s-a")
     entry = read_last_tree_edge(crew_store.newest_segment(directory))
     assert entry.data["previous_parent"] == {"slot": "OLD", "sid": "s-old"}
@@ -768,11 +715,11 @@ def test_a_release_written_by_the_emitter_returns_the_session_to_a_root():
         owner="raymond",
         parent_slot="D",
     )
-    assert emit.flush(timeout=5.0) is True
+    assert_drained()
     assert stp.projection().nodes()["A"].parent_slot == "D"
 
     emit.on_session_released("s-a", slot="A", previous_parent_slot="D", previous_parent_sid="s-d")
-    assert emit.flush(timeout=5.0) is True
+    assert_drained()
     assert stp.projection().nodes()["A"].parent_slot is None
     directory = crew_store.unit_dir_for(lg.KIND_SESSION, "s-a")
     entry = read_last_tree_edge(crew_store.newest_segment(directory))
@@ -788,21 +735,17 @@ def test_the_emitter_writes_nothing_without_both_sides_of_the_edge():
     emit.on_session_adopted("s-a", slot="", parent_slot="D")
     emit.on_session_adopted("s-a", slot="A", parent_slot="")
     emit.on_session_released("s-a", slot="")
-    assert emit.flush(timeout=5.0) is True
+    assert_drained()
     directory = crew_store.unit_dir_for(lg.KIND_SESSION, "s-a")
     assert read_last_tree_edge(crew_store.newest_segment(directory)) is None
     assert _store_name("s-a") == directory.name
 
 
 def test_a_store_that_cannot_be_listed_is_not_answered_as_no_decision(monkeypatch):
-    """A listing that fails has established NOTHING, so it must raise rather than return
-    ``None``.
+    """A listing that fails must raise rather than return ``None``.
 
-    Both callers cache what this returns. Answered as "no decision", the projection's seed
-    installs the creating edge for a session that was moved, and the scanner stores that as
-    its verdict for the segment's whole stat identity -- so one moment's fault becomes the
-    tree's standing answer. Each caller catches ``OSError`` and marks its scan incomplete
-    instead, which is the honest reading.
+    Both callers cache the answer, so "no decision" would become the tree's standing
+    answer. They catch ``OSError`` and mark the scan incomplete.
     """
     from pathlib import Path
 
@@ -825,13 +768,10 @@ def test_a_store_that_cannot_be_listed_is_not_answered_as_no_decision(monkeypatc
 
 
 def test_an_unlistable_directory_is_reported_incomplete_not_as_no_decision(monkeypatch):
-    """The scanner's second value is what a DECIDING reader consults, so an unreadable
-    directory must set it.
+    """An unreadable directory sets the scanner's incomplete flag.
 
-    ``newest_segment`` collapsed absent, empty and unlistable into one ``None``, and the
-    scanner read all three as a complete "no decision" -- which leaves a stale cached edge
-    standing as the tree's answer, and lets a release authorize the parent that gave the
-    session up. Absent and empty ARE answers; a failed listing is not.
+    Absent and empty are answers; a failed listing is not, or a stale cached edge stands
+    and a release could authorize the parent that gave the session up.
     """
     from pathlib import Path
 
@@ -850,19 +790,17 @@ def test_an_unlistable_directory_is_reported_incomplete_not_as_no_decision(monke
             raise OSError(5, "input/output error")
         return real(self)
 
-    monkeypatch.setattr(Path, "iterdir", _refuse_one)
-    reading = SessionTree().reading(with_edges=True)
-    monkeypatch.undo()
+    with monkeypatch.context() as mp:
+        mp.setattr(Path, "iterdir", _refuse_one)
+        reading = SessionTree().reading(with_edges=True)
     assert reading.incomplete is True
 
 
 def test_a_complete_read_that_finds_no_decision_drops_the_checkpoints_edge():
     """A decision retention removed must stop being the tree's answer.
 
-    The replay skipped a unit whose complete read found no decision, which KEPT whatever
-    the checkpoint loaded -- so an edge whose segment is gone from the log pinned the slot
-    under that parent on every restart, with nothing on disk behind it and no later scan
-    able to contradict it. A complete read finding nothing is the only thing that can.
+    Only a complete read finding nothing can contradict the checkpoint's edge; otherwise
+    it pins the slot under that parent on every restart.
     """
     handle_a = _log("s-a", "A")
     _opened(handle_a, "A")
@@ -897,14 +835,10 @@ def test_a_complete_read_that_finds_no_decision_drops_the_checkpoints_edge():
 
 
 def test_a_failed_stat_in_the_whole_file_scan_is_not_answered_as_no_decision(monkeypatch):
-    """The third site of the same mistake, on the path the bounded window could not answer.
+    """A failed stat in ``_scan_whole_for_types`` raises, like its ``open`` does.
 
-    ``_scan_whole_for_types`` stats the segment to decide whether the window already covered
-    it. A swallowed stat returned ``None``, which ``find_last_tree_edge`` reports as "this
-    unit records no decision" -- and that verdict is CACHED against the segment's unchanged
-    dev/ino/size, so an idle unit never re-reads it and nothing corrects it. The ``open``
-    immediately below already propagates, so the guard made one function answer two
-    different ways about the same file.
+    A ``None`` would be cached as "no decision" against the segment's unchanged
+    dev/ino/size, and an idle unit would never re-read it.
     """
     from pathlib import Path
 
@@ -926,8 +860,7 @@ def test_a_failed_stat_in_the_whole_file_scan_is_not_answered_as_no_decision(mon
 
     directory = crew_store.unit_dir_for(lg.KIND_SESSION, "s-a")
     segment = crew_store.newest_segment(directory)
-    # The window must be outrun, or the whole-file scan is never reached and the test
-    # would pass without exercising the guard at all.
+    # The window must be outrun, or the whole-file scan is never reached.
     assert read_last_tree_edge(segment) is None
     assert find_last_tree_edge(directory) is not None
 
@@ -946,10 +879,10 @@ def test_a_failed_stat_in_the_whole_file_scan_is_not_answered_as_no_decision(mon
         return _stat
 
     # The unit itself: its ONE stat of the segment fails, and it must not answer ``None``.
-    monkeypatch.setattr(Path, "stat", _refuser(1))
-    with pytest.raises(OSError):
-        crew_store._scan_whole_for_types(segment, crew_store._TREE_EDGE_TYPES)
-    monkeypatch.undo()
+    with monkeypatch.context() as mp:
+        mp.setattr(Path, "stat", _refuser(1))
+        with pytest.raises(OSError):
+            crew_store._scan_whole_for_types(segment, crew_store._TREE_EDGE_TYPES)
 
     # And the walk above it does not convert that into "no decision". Its bounded window
     # stats the segment FIRST, so the scan's own stat is the second one.
@@ -961,16 +894,8 @@ def test_a_failed_stat_in_the_whole_file_scan_is_not_answered_as_no_decision(mon
 def test_a_clock_rollback_between_two_sessions_does_not_invert_the_cross_log_order():
     """The log ranking must not be a clock value either.
 
-    ``seq`` already made two decisions in ONE log clock-free. Across two logs of one slot
-    the rank led with the header's ``created_at``, so the rollback the comparison documents
-    as ordinary -- an NTP correction, a VM resume, here landing between the old session
-    closing and its successor opening -- made the SUCCESSOR's log rank BELOW its
-    predecessor's. The release in the newer log then lost to the adoption in the older one,
-    and the sidebar kept a parent that had let the session go, with the loser written into
-    the checkpoint and no path that re-reads it.
-
-    ``previous_sid`` is what the store wrote about which session replaced which, so the
-    chain answers where the clock cannot.
+    A clock rollback between two sessions of one slot gives the successor the earlier
+    ``created_at``. The ``previous_sid`` chain records which replaced which, so it ranks.
     """
     # The successor's header carries the EARLIER stamp: that is the rollback.
     old_log = _rec("s-old", "A", created=5000)
@@ -991,10 +916,8 @@ def test_a_clock_rollback_between_two_sessions_does_not_invert_the_cross_log_ord
 def test_the_record_fold_and_the_decision_ranking_share_one_log_order():
     """Two orderings of one slot's logs would let the tree contradict itself.
 
-    The creating citation comes from a slot's OLDEST record and the decisions are ranked by
-    log; if those two used different keys, a decision could be placed in a log the record
-    fold considers older. Both now read ``log_rank_of``, so the rollback above moves them
-    together.
+    The creating citation (oldest record) and the decision ranking both read
+    ``log_rank_of``.
     """
     old_log = _rec("s-old", "A", created=5000, parent="P")
     new_log = _rec("s-new", "A", created=10, previous="s-old", parent="Q")
@@ -1005,13 +928,10 @@ def test_the_record_fold_and_the_decision_ranking_share_one_log_order():
 
 
 def test_a_previous_sid_cycle_does_not_hang_the_ranking():
-    """Forged or damaged records can point ``previous_sid`` in a loop, and the walk has to
-    end -- and end the SAME way whichever sid it reaches first.
+    """A ``previous_sid`` loop ends the same way whichever sid the walk reaches first.
 
-    Breaking the loop at the first member visited is the trap: it makes that member the
-    chain start, so the rank depends on iteration order and ``fold_tree`` stops answering
-    the same tree for the same input in a different order. Every log on a cycle is given
-    depth 0 instead, which puts them all on the clock tiebreak.
+    Breaking at the first member visited would make rank depend on iteration order; every
+    log on a cycle gets depth 0 and falls to the clock tiebreak.
     """
     a = _rec("s-a", "A", created=10, previous="s-b")
     b = _rec("s-b", "A", created=20, previous="s-a")
@@ -1023,15 +943,10 @@ def test_a_previous_sid_cycle_does_not_hang_the_ranking():
 
 
 def test_a_previous_sid_naming_another_slots_log_does_not_borrow_its_depth():
-    """``previous_sid`` says which session of THIS slot was replaced, so a link naming
-    another slot's log measures nothing about this one and must not be walked.
+    """A ``previous_sid`` naming another slot's log is not walked.
 
-    Following it borrows the foreign chain's length as this log's depth, and depth is the
-    leading term of the ranking -- so a log the chain cannot place at all outranks one that
-    is genuinely newer, and the decision held in the loser is the one the fold applies. Here
-    the borrowed depth makes an older ADOPTION beat a newer RELEASE and the released session
-    keeps a parent it was let go from. The two logs are unrelated once the foreign step is
-    refused, which puts them on the clock tiebreak where they belong.
+    Depth leads the ranking, so a borrowed foreign depth would let an older adoption beat
+    a newer release.
     """
     later = _rec("s-later", "A", created=100)
     borrower = _rec("s-borrower", "A", created=50, previous="s-foreign")
@@ -1049,13 +964,10 @@ def test_a_previous_sid_naming_another_slots_log_does_not_borrow_its_depth():
 
 
 def test_a_partial_removal_re_reads_the_decision_from_the_segments_that_survive():
-    """A decision is appended, so it can be in any segment -- including the ones a partial
-    removal took while leaving the rest.
+    """A partial removal re-reads the decision from the segments that survive.
 
-    Nothing else corrects that. A decision is otherwise only re-derived by a cold rebuild,
-    so between the failed removal and the next restart the tree asserts a takeover with no
-    segment behind it, serves that reading as COMPLETE, and writes it into the checkpoint.
-    The trigger is an ordinary unlink refusal, which the removal path already expects.
+    Otherwise only a cold rebuild re-derives it, and until then the tree serves a takeover
+    with no segment behind it as complete.
     """
     handle_a = _log("s-a", "A")
     _opened(handle_a, "A")
@@ -1069,9 +981,7 @@ def test_a_partial_removal_re_reads_the_decision_from_the_segments_that_survive(
     proj.ensure_seeded()
     assert proj.nodes()["A"].parent_slot == "D", "the adoption must hold before the removal"
 
-    # The removal gets the decision's segment and is then refused the rest, which is the
-    # partial shape: the header still yields a record, and nothing on disk records a
-    # decision.
+    # Partial removal: the header still yields a record, but no decision is on disk.
     directory = crew_store.unit_dir_for(lg.KIND_SESSION, "s-a")
     segment = crew_store.newest_segment(directory)
     kept = [
@@ -1090,13 +1000,7 @@ def test_a_partial_removal_re_reads_the_decision_from_the_segments_that_survive(
 
 
 def test_a_partial_removal_that_cannot_be_read_keeps_the_decision_and_says_so(monkeypatch):
-    """An unreadable directory proves nothing, so the held decision stays and the reading
-    stops claiming to be complete.
-
-    The opposite choice is worse in both directions: dropping on a transient error discards
-    a valid takeover, and keeping it silently serves a possibly-stale tree as authoritative
-    to a caller that decides on it.
-    """
+    """An unreadable directory proves nothing: the decision stays, the reading is partial."""
     handle_a = _log("s-a", "A")
     _opened(handle_a, "A")
     handle_a.append("session/adopted", {"parent": {"slot": "D"}}, src=GATEWAY)
@@ -1120,11 +1024,9 @@ def test_a_partial_removal_that_cannot_be_read_keeps_the_decision_and_says_so(mo
 
 
 def test_a_partial_removal_of_a_unit_holding_no_decision_reads_nothing(monkeypatch):
-    """The common partial removal is of a unit that never recorded a decision, and it must
-    not pay for a file read to learn that.
+    """A partial removal of a unit with no held decision reads no file.
 
-    The held state answers it: no decision for this unit means a removal cannot have
-    stranded one.
+    No held decision means the removal cannot have stranded one.
     """
     handle_a = _log("s-a", "A")
     _opened(handle_a, "A")
@@ -1142,18 +1044,11 @@ def test_a_partial_removal_of_a_unit_holding_no_decision_reads_nothing(monkeypat
 
 
 def test_byte_damage_in_a_segment_reads_as_a_failed_read_not_as_no_decision(monkeypatch):
-    """The framing reader raises its OWN exception class, which is neither ``OSError`` nor
-    ``ValueError`` -- the two every tree-edge caller guards.
+    """The framing reader's own exception is converted to ``ValueError`` at one boundary.
 
-    Left as-is it escaped all of them into the projection's boot guard, which marks the
-    projection seeded with nothing installed and then refuses lineage and both verbs for
-    the rest of the process. Converted at the single boundary the callers guard, rather
-    than by adding a class to three separate tuples that would have to stay in step.
-
-    Not answered with the newest READABLE decision either. The framing reader aborts at
-    the damage, so everything past it in the file is unseen -- and that is exactly where a
-    later decision would be, so a confident answer there is a wrong edge served as
-    complete.
+    Callers guard only ``OSError`` and ``ValueError``; anything else reaches the boot
+    guard, which seeds nothing and refuses lineage for the process. The newest readable
+    decision is no answer either: a later decision may sit past the damage.
     """
     handle_a = _log("s-a", "A")
     _opened(handle_a, "A")
@@ -1173,18 +1068,10 @@ def test_byte_damage_in_a_segment_reads_as_a_failed_read_not_as_no_decision(monk
 
 
 def test_a_steady_state_seed_does_not_re_read_a_unit_whose_log_has_not_changed():
-    """The complete read is proportional to a unit's WHOLE log, and a unit that records no
-    decision is the only case that reads all of it.
+    """A unit with no decision costs a whole-log read, so its verdict is cached by identity.
 
-    Paid per unit on every process start, that is a read of the entire store to re-learn
-    what the last boot already established -- and most sessions are never adopted, so it is
-    the dominant case rather than a corner of it. The verdict is a pure function of the
-    bytes, so a boot that reaches it records the identity it was reached at and later boots
-    skip the read while that identity holds.
-
-    The FIRST boot here is the cold one and it does read: with no checkpoint there is no
-    prior verdict to trust, which is the one boot that genuinely has to look. What this
-    pins is the steady state after it.
+    Most sessions are never adopted. The verdict is a function of the bytes, so later boots
+    skip the read while the file identity holds; the cold first boot still reads.
     """
     handle_a = _log("s-a", "A")
     _opened(handle_a, "A")
@@ -1217,8 +1104,7 @@ def test_a_steady_state_seed_does_not_re_read_a_unit_whose_log_has_not_changed()
     assert reads == [], "an unchanged unit was read again to reach a verdict already held"
     assert third.nodes()["A"].parent_slot is None
 
-    # An APPEND moves the identity, so the next boot reads it rather than trusting the
-    # cache -- which is what keeps the skip from hiding a decision written since.
+    # An append moves the identity, so the skip cannot hide a decision written since.
     handle_a.append("session/adopted", {"parent": {"slot": "D"}}, src=GATEWAY)
     del handle_a
     handle_d = _log("s-d", "D")

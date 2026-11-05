@@ -1,6 +1,10 @@
 #!/bin/sh
-# KiroCrew first-time setup script (public build)
+# Kiro Crew first-time setup script (public build, contributor / from-source layout)
 # Usage: source setup.sh   (bash or zsh), or: bash setup.sh
+#
+# Builds the clone it sits in, so the install follows the clone's branch (`main`
+# is the Nightly lane). For Stable on a laptop or server, use the signed wheel:
+#   curl -fsSL https://download.crew.kiro.dev/cli.sh | sh
 #
 # Sets up KiroCrew using only public tooling:
 #   1. Node.js (via ensure-node.sh)

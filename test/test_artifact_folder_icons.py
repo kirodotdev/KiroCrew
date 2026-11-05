@@ -67,6 +67,27 @@ def patch_restricted(monkeypatch):
     monkeypatch.setattr(art_handlers, "_is_restricted_session", _stub)
 
 
+@pytest.fixture(autouse=True)
+def _fresh_icon_state() -> Any:
+    """Start and end every test with empty icon bookkeeping.
+
+    The three collections are module globals, so a test in another module that
+    created a folder and never drained its icon task leaves an entry bound to a
+    loop that is gone. Those entries never clean themselves up, and the
+    ``_settle`` waits below read the in-flight map whole.
+    """
+    tracked = (
+        art_handlers._ARTIFACT_FOLDER_ICON_TASKS,
+        art_handlers._ARTIFACT_FOLDER_ICON_INFLIGHT,
+        art_handlers._ARTIFACT_FOLDER_ICON_NEXT,
+    )
+    for collection in tracked:
+        collection.clear()
+    yield
+    for collection in tracked:
+        collection.clear()
+
+
 def _request(
     *,
     body: dict | None = None,
@@ -744,3 +765,40 @@ class TestIconGenerationCoalescing:
             assert child not in art_handlers._ARTIFACT_FOLDER_ICON_NEXT
             release.set()
             await self._settle()
+
+    @pytest.mark.asyncio
+    async def test_an_entry_left_by_a_torn_down_loop_never_blocks_a_spawn(
+        self, stores, patch_restricted
+    ) -> None:
+        # A task whose loop was torn down never runs its done callback, so its
+        # in-flight entry would stay forever and every spawn would only queue.
+        _store, folders = stores
+        fid = folders.create("Rocketry")["id"]
+        other = asyncio.new_event_loop()
+        try:
+            orphan = other.create_future()
+        finally:
+            other.close()
+        art_handlers._ARTIFACT_FOLDER_ICON_INFLIGHT[fid] = (orphan, 0)
+        art_handlers._ARTIFACT_FOLDER_ICON_NEXT[fid] = ("Stale", 0)
+        names: list[str] = []
+
+        def _gen(release: asyncio.Event) -> Any:
+            async def _run(_state: Any, name: str) -> str:
+                names.append(name)
+                await asyncio.wait_for(release.wait(), self.WAIT)
+                return "🚀"
+
+            return _run
+
+        async with _held_generation(_gen) as release:
+            art_handlers._spawn_artifact_folder_icon_task(
+                _request(), fid, "Rocketry", expected_epoch=0
+            )
+            assert len(self._live()) == 1, "the spawn starts instead of queueing"
+            assert art_handlers._ARTIFACT_FOLDER_ICON_INFLIGHT[fid][0] is not orphan
+            assert fid not in art_handlers._ARTIFACT_FOLDER_ICON_NEXT
+            release.set()
+            await self._settle()
+        assert names == ["Rocketry"]
+        assert folders.get(fid)["icon"] == "🚀"

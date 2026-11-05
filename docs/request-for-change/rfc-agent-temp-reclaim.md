@@ -145,8 +145,9 @@ there.
    minutes old. This is the same tree walk as
    `agent_scratch._tree_newest_mtime`. For a regular file, the routine reads
    the file's own `mtime` from the `lstat` in step 1, because the tree walk
-   cannot open a file. S1 has no idle check, because the tree belongs to the
-   caller's own session.
+   cannot open a file. A tree written more recently is kept with `recent`.
+   S1 has no idle check, because the tree belongs to the caller's own
+   session.
 5. **Not a repository.** This check applies to directories only. A regular
    file cannot be a repository, so the ancestor check below is all it gets.
    For a directory, `agent_scratch.holds_git_repository(tree)` is false,
@@ -264,9 +265,10 @@ Exit criteria:
 - Unit tests cover every `kept` reason, a dry run, a file target, and a tree
   swapped for a link between the scan and the removal.
 - Run from an unsandboxed terminal on the host above, `--dry-run` over
-  `/tmp/*home*` lists each tree as `would-remove`, `in-use`, `idle` or
-  `holds-repository`. The count of unreadable same-uid processes is recorded
-  in this document (Open question 1).
+  `/tmp/*home*` lists each tree as `would-remove`, `in-use`, `recent` (a
+  write within 30 minutes, step 4) or `holds-repository`. The count of
+  unreadable same-uid processes is recorded in this document (Open
+  question 1).
 
 ### Phase 2: the gateway route and `tmp_reclaim`
 

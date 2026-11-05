@@ -125,6 +125,7 @@ from kiro_crew.cron_service.model import (  # noqa: F401 -- re-exported
 from kiro_crew.cron_service.readers import (  # noqa: F401 -- re-exported
     _SKILL_TOKEN_RE,
     _captured_template_id,
+    bound_script_runs_from_disk,
     dispatched_agents_from_disk,
     enabled_count_from_disk,
     job_agent_names_from_disk,
@@ -139,6 +140,7 @@ from kiro_crew.cron_service.schedule import (  # noqa: F401 -- re-exported
     _RE_IN_DURATION,
     _TIMER_POLL_SECS,
     _UNIT_SECS,
+    LOCAL_TIMEZONE,
     _compute_next_run_ts_raw,
     _humanize_cron,
     _job_tz,
@@ -146,13 +148,19 @@ from kiro_crew.cron_service.schedule import (  # noqa: F401 -- re-exported
     compute_jitter,
     compute_next_run_ts,
     cron_expr_matches,
+    default_timezone_name,
     format_schedule,
     get_local_tz,
     is_due,
+    is_local_timezone,
     is_valid_skip_date,
     is_valid_timezone,
+    job_follows_host,
+    job_zone_name,
+    never_fires_warning,
     next_wake_secs,
     parse_time_string,
+    resolve_timezone_name,
     validate_cron_expr,
 )
 from kiro_crew.cron_service.service import job_ownership as _job_ownership
@@ -492,8 +500,10 @@ class CronPauseNotSaved(RuntimeError):
     """Raised by :meth:`CronService.cancel` when a cancelled one-shot's pause did not reach the store.
 
     The run is cancelled and its history entry written; only the park failed to
-    land, and nothing retries the save later. The message describes the job as the
-    cancel last saw it, after the merge (see :func:`_cancelled_park_report`).
+    land. A scheduled run keeps its terminal record for the next store tick, but
+    this error still reports that no durable write has returned yet. The message
+    describes the job as the cancel last saw it, after the merge (see
+    :func:`_cancelled_park_report`).
     """
 
 
@@ -501,10 +511,15 @@ class CronPauseNotSaved(RuntimeError):
 _PARK_JOB_REMOVED = "the job is no longer in the cron store"
 _PARK_NEWER_RUN = "the cron store already holds a newer run of the job"
 _PARK_NOT_ONE_SHOT = "the job is no longer a one-shot in the cron store"
+_PARK_NEWER_CHOICE = "the job was paused or resumed after the cancel"
 _PARK_NOT_SAVED = "The run was cancelled, but its pause could not be saved"
 _ON_SCHEDULE_MESSAGE = (
     f"{_PARK_NOT_SAVED}: a newer run of the job was recorded meanwhile, so the job is back"
     " on its schedule now. Pause or delete it if it must not run again."
+)
+_RESUMED_MESSAGE = (
+    "The run was cancelled, but the job was resumed meanwhile, so it is back on its"
+    " schedule now. Pause or delete it if it must not run again."
 )
 _RECURRING_MESSAGE = (
     f"{_PARK_NOT_SAVED}: the job was changed to a recurring schedule meanwhile and runs on"
@@ -513,7 +528,11 @@ _RECURRING_MESSAGE = (
 
 
 def _cancelled_park_report(
-    job: CronJob | None, reason: str | None, saved: str | None = None
+    job: CronJob | None,
+    reason: str | None,
+    saved: str | None = None,
+    *,
+    held: bool = False,
 ) -> tuple[str, str | None]:
     """The history note and the message for a cancelled one-shot's park.
 
@@ -523,10 +542,20 @@ def _cancelled_park_report(
     is true whatever wrote the store meanwhile. A message of None means nothing
     is left to pause, and ``cancel`` returns True: a failed park answers that
     only on ``saved``, what the store as saved shows when it shows the job
-    cannot run again (``CronService._saved_job_state``).
+    cannot run again (``CronService._saved_job_state``). ``held`` says this
+    process still holds the cancel's terminal record for a later store write
+    (a scheduled run): a reload re-applies it, so only a restart before that
+    write lands can run the job again.
     """
     if reason is None:
         return "", None
+    if reason == _PARK_NEWER_CHOICE and job is not None:
+        # The store saved the user's later choice, so it is the job's state.
+        if job.enabled:
+            return "; the job was resumed meanwhile, so it is back on its schedule now", (
+                _RESUMED_MESSAGE
+            )
+        return "; the job was paused meanwhile", None
     if saved == "absent":
         return "; the job was removed from the cron store meanwhile", None
     note = f"; the pause could not be saved ({reason})"
@@ -540,6 +569,12 @@ def _cancelled_park_report(
     # shown paused or absent by the saved store: a reload or a restart can bring
     # it back enabled, so it may run again.
     subject = "this one-shot" if job is None or job.schedule.kind == "at" else "the job"
+    if held:
+        return f"{note}, so {subject} may run again after a restart", (
+            f"{_PARK_NOT_SAVED}. It is held off the schedule until a later cron store"
+            f" write saves the pause, so {subject} may run again only if the gateway"
+            " restarts first. Delete it if it must not run again."
+        )
     return f"{note}, so {subject} may run again", (
         f"{_PARK_NOT_SAVED}, so {subject} may run again once the cron store is reloaded or"
         " the gateway restarts. Delete it if it must not run again."
@@ -639,6 +674,11 @@ class CronService:
         # every apply of a held record: the loop holds, worker threads re-apply
         # and release, and a hold and a re-apply never interleave on one job.
         self._held_run_records: dict[str, CronJob] = {}
+        # The held records that are a scheduled cancel or reap's terminal
+        # settlement, by job id (the same object as in _held_run_records). Their
+        # park is not on disk until a save lands it, so they leave the listed
+        # job's ``user_paused`` as persisted (_apply_held_run_record).
+        self._held_settlements: dict[str, CronJob] = {}
         self._held_run_records_guard = threading.Lock()
         # True while a critical-posture episode is deferring scheduled
         # firings (see _on_timer). Log-throttle state only: the INFO line
@@ -663,6 +703,10 @@ class CronService:
         # the entire exact key, not one caller's reference to it.
         self._active_session_lock = threading.Lock()
         self._active_session_keys: dict[str, dict[str, _RunClaim | None]] = {}
+        # (job id, key) pairs whose registering run ended its turn on the key
+        # (``finish_session_key``): retired by the last sub-agent's cleanup even
+        # while that run's claim is live.
+        self._finished_session_keys: set[tuple[str, str]] = set()
         self._sessions: SessionManager | None = None
         self._reaper_task: asyncio.Task[None] | None = None
         self._push_refresh: Callable[[str], None] | None = None  # set externally
@@ -800,6 +844,8 @@ class CronService:
     # The runs in flight: ``kiro_crew.cron_service.service.run_registry``.
     register_active_session_key = _run_registry.register_active_session_key
     clear_active_session_key = _run_registry.clear_active_session_key
+    retire_finished_session_key = _run_registry.retire_finished_session_key
+    finish_session_key = _run_registry.finish_session_key
     _run_session_keys = _run_registry._run_session_keys
     active_session_keys = _run_registry.active_session_keys
     get_history = _run_registry.get_history
@@ -832,6 +878,7 @@ class CronService:
     _save_held_run_records_locked = _run_merge._save_held_run_records_locked
     _flush_held_run_records = _run_merge._flush_held_run_records
     _merge_job_result = _run_merge._merge_job_result
+    _merge_terminal_state_with_retry = _run_merge._merge_terminal_state_with_retry
     _merge_terminal_state_locked = _run_merge._merge_terminal_state_locked
     _saved_job_state = _run_merge._saved_job_state
     # The loop-stall breaker: ``kiro_crew.cron_service.service.stall_breaker``.
@@ -927,13 +974,37 @@ class CronService:
                 # onto the SAME object (identity is what readers hold), and the
                 # reload-on-change in ``_sync_for_write`` cannot do this, since a
                 # failed save changes nothing on disk.
+                #
+                # Only the fields this update changed are put back. A run in
+                # flight writes its own fields on the loop thread, without the
+                # store lock, onto this same object -- the failure count, the
+                # auto-pause, the one-shot park, the last status -- and a
+                # whole-record restore would undo that write. So the update is
+                # applied to a private copy first, the fields it changed are
+                # read off that copy (no other thread can touch it), and only
+                # those are written to the live job; a failed save restores
+                # each of them only while it still holds this update's value.
                 previous_limit = job.auto_pause_after_failures
-                before = copy.copy(job)
-                apply_job_update(job, kwargs, chat_folder_out)
+                staged = copy.copy(job)
+                prior = dict(staged.__dict__)
+                apply_job_update(staged, kwargs, chat_folder_out)
+                edits = {
+                    name: value
+                    for name, value in staged.__dict__.items()
+                    if name not in prior or prior[name] is not value
+                }
+                for name, value in edits.items():
+                    setattr(job, name, value)
                 try:
                     self._save()
                 except BaseException:
-                    job.__dict__.update(before.__dict__)
+                    for name, value in edits.items():
+                        if name not in job.__dict__ or job.__dict__[name] is not value:
+                            continue
+                        if name in prior:
+                            setattr(job, name, prior[name])
+                        else:
+                            delattr(job, name)
                     raise
                 job.audit_auto_pause_limit_change(previous_limit, audit_actor)
                 logger.info("Updated cron job %s", job_id)
@@ -1096,6 +1167,20 @@ class CronService:
                 if job.id == job_id:
                     if expected_owner is not None and job.created_by != expected_owner:
                         raise PermissionError("Cron job ownership violation")
+                    # A request that moves the job's pause state is ordered after
+                    # every terminal record frozen before it, so a pending record
+                    # keeps this choice (``_apply_held_run_record``). So is a
+                    # resume of a one-shot: another process can hold a cancelled
+                    # run's park for it that this store never received, and the
+                    # resume is the user's answer to it. Any other request that
+                    # changes nothing records nothing, and its save leaves the
+                    # store's bytes as they were.
+                    if (
+                        (job.enabled, job.user_paused) != (enabled, not enabled)
+                        or (enabled and job.auto_paused)
+                        or (enabled and job.schedule.kind == "at")
+                    ):
+                        job.user_pause_generation += 1
                     job.user_paused = not enabled
                     job.enabled = enabled
                     # Re-enabling clears an execution auto-pause; without this a
@@ -1112,7 +1197,40 @@ class CronService:
                         # A user resume that lifts an auto-pause restores execute
                         # permission — audit it like the auto-pause transition.
                         job._audit_pause_change("auto_pause_cleared")
-                    self._save()
+                    try:
+                        self._save()
+                    except BaseException:
+                        # These pause fields are also written on the loop thread
+                        # by a run in flight, so restoring the values seen here
+                        # would undo the run's write, and keeping them leaves a
+                        # change the caller is told failed. A reload does
+                        # neither: a run's write that must outlive a reload is
+                        # a held run record or settlement (re-applied by
+                        # ``_load``) or a pending removal (skipped by the due
+                        # scan), the same guarantee a reload after another
+                        # process's write relies on. The list is then the store
+                        # plus those records, as if this request never ran. The
+                        # fingerprint is dropped first, so a reload that cannot
+                        # run here still happens on the next ``_sync``. A store
+                        # that cannot be read latches ``_load_failed``: the list
+                        # is never part-swapped, and every save is refused until
+                        # a load replaces it, so no later write can persist the
+                        # change this caller is told failed.
+                        self._reset_fingerprint()
+                        try:
+                            self._sync()
+                        except Exception:
+                            logger.error(
+                                "Cron: reload after a failed pause/resume save did not run",
+                                exc_info=True,
+                            )
+                        else:
+                            if self._load_failed:
+                                logger.error(
+                                    "Cron: store unreadable after a failed pause/resume save;"
+                                    " writes are refused until it reloads"
+                                )
+                        raise
                     logger.info("%s cron job %s", "Enabled" if enabled else "Disabled", job_id)
                     return True
             if expected_owner is not None:

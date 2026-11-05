@@ -334,6 +334,43 @@ async def test_the_refetch_route_says_so_when_nothing_is_armed(wired: Any) -> No
 
 
 @pytest.mark.asyncio
+async def test_after_a_restart_the_tabs_re_read_is_what_re_arms_the_push(wired: Any) -> None:
+    """THE RESTART GAP, and why the tab's reconnect re-read closes it.
+
+    A restart starts the gateway with no armed pages, so nothing pushes into an open
+    package page and its own refetch is refused ``no_live_page`` -- the page's gap
+    rule never fires because no patch ever arrives. The dashboard tab re-reads on
+    every socket reconnect (``refreshServerStateAfterReconnect``); this pins that the
+    re-read GET alone puts the push back."""
+    await _call(md.api_member_dashboard, _request(wired.app, "GET", PATH))
+    pages = wired.app["member_dashboard_live_pages"]
+    # The restart: every armed page gone, as a fresh process holds none.
+    for page in list(pages.values()):
+        await md._run(page.disarm)
+    pages.clear()
+    wired.frames.clear()
+    _publish("work", {"conductor": {"goal": "moved while down"}}, 1)
+    assert wired.frames == [], "nothing is armed, so nothing can push"
+    status, body = await _call(
+        md.api_member_dashboard_refetch,
+        _request(
+            wired.app,
+            "POST",
+            f"/api/members/{SLUG}/dashboard/refetch?member={CREW}&dashboard={PACKAGE_SLUG}",
+        ),
+    )
+    assert (status, body["code"]) == (409, "no_live_page")
+
+    # The reconnect re-read.
+    await _call(md.api_member_dashboard, _request(wired.app, "GET", PATH))
+    assert (SLUG, PACKAGE_SLUG) in pages
+    wired.frames.clear()
+    _publish("work", {"conductor": {"goal": "moved after the re-read"}}, 2)
+    assert wired.frames, "the re-read armed no page, so the tab is still not pushed"
+    assert wired.frames[-1][1]["read"]["fields"]["goal"] == "moved after the re-read"
+
+
+@pytest.mark.asyncio
 async def test_a_package_bound_elsewhere_is_not_served_here(wired: Any) -> None:
     """A page carries the binding's own fold values, so rendering one bound elsewhere
     would show one crewmate's work under another's name."""

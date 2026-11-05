@@ -300,19 +300,6 @@ describe('TrustDropdown', () => {
     })
   })
 
-  it.skip('closes on outside click — handled by Radix DropdownMenu', () => {
-    render(
-      <div>
-        <div data-testid="outside">outside</div>
-        <TrustDropdown fullCommand="ls /tmp" baseCommand="ls" isShell className={btnClass} onAction={() => {}} />
-      </div>,
-    )
-    fireEvent.click(screen.getByText('Trust'))
-    expect(screen.getByText('Trust all tools for this session')).toBeInTheDocument()
-    fireEvent.mouseDown(screen.getByTestId('outside'))
-    expect(screen.queryByText('Trust all tools for this session')).not.toBeInTheDocument()
-  })
-
   it('closes dropdown after selecting an option', () => {
     render(<TrustDropdown fullCommand="ls /tmp" baseCommand="ls" isShell className={btnClass} onAction={() => {}} />)
     fireEvent.click(screen.getByText('Trust'))
@@ -432,12 +419,14 @@ describe('TrustDropdown accessibility', () => {
 })
 
 describe('TrustDropdown positioning', () => {
-  it.skip('renders menu positioned above — handled by Radix Portal', () => {
+  it('asks Radix to open the menu above the trigger, aligned to its end edge', () => {
+    // Radix places the menu (and flips it when the room runs out); the side
+    // and alignment it starts from are this component's choice.
     render(<TrustDropdown fullCommand="ls /tmp" baseCommand="ls" isShell className={btnClass} onAction={() => {}} />)
     fireEvent.click(screen.getByText('Trust'))
-    const menu = screen.getByText('Trust all tools for this session').closest('div[class*="absolute"]')
-    expect(menu).toBeInTheDocument()
-    expect(menu?.className).toContain('bottom-full')
+    const menu = screen.getByRole('menu')
+    expect(menu).toHaveAttribute('side', 'top')
+    expect(menu).toHaveAttribute('align', 'end')
   })
 })
 

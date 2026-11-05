@@ -56,14 +56,14 @@ def resolve_worker_project(config: Any, name: str, project: str, message: str) -
         try:
             found = cw.ensure(slug, ws_dir, candidate)
         except cw.WorktreeRefused as exc:
-            logger.warning("crewmate %s: no worktree for %s: %s", name, candidate, exc)
+            logger.warning("Bot %s: no worktree for %s: %s", name, candidate, exc)
             continue
         except Exception as exc:  # noqa: BLE001 - this candidate only; try the next
             if type(exc).__name__ == "SandboxUnavailable":
                 # No sandbox for git at all: no candidate can have a worktree.
-                logger.warning("crewmate %s: worktree lookup failed", name, exc_info=True)
+                logger.warning("Bot %s: worktree lookup failed", name, exc_info=True)
                 return None
-            logger.warning("crewmate %s: no worktree for %s", name, candidate, exc_info=True)
+            logger.warning("Bot %s: no worktree for %s", name, candidate, exc_info=True)
             continue
         if found is None:
             continue
@@ -92,7 +92,9 @@ async def scope_worker_turn(
     key = effective_session_key(slot)
     sessions = getattr(state, "sessions", None)
     if sessions is not None and sessions.get_provider(key) is not None:
-        slot._pending_reset_history_key = key
+        from kiro_crew.dashboard.transcript_binding import arm_project_reset
+
+        arm_project_reset(state, slot, key)
     slot._dirty = True
     push = getattr(state, "push_slots_update", None)
     if push is not None:
@@ -100,5 +102,5 @@ async def scope_worker_turn(
             push()
         except Exception:  # noqa: BLE001 - a missed push is repaired by the next one
             logger.debug("push_slots_update failed", exc_info=True)
-    logger.info("crewmate %s worker %s runs in %s (%s)", name, slot.key, found.cwd, found.branch)
+    logger.info("Bot %s worker %s runs in %s (%s)", name, slot.key, found.cwd, found.branch)
     return found.cwd

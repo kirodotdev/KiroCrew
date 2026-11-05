@@ -26,11 +26,7 @@ from kiro_crew.dashboard.origin import (
 class TestBindAddressFor:
     """KIROCREW_BIND overrides ONLY the TCP bind address (container support).
 
-    The override must never touch local_only semantics (URLs, CSRF origin
-    set, canonicalization) — those are covered by the existing suites; here
-    we pin the bind resolution itself plus the fail-narrow validation rule:
-    a malformed value falls back to loopback (can only narrow exposure,
-    never widen it).
+    A malformed value falls back to loopback, so it can only narrow exposure.
     """
 
     @pytest.mark.parametrize(
@@ -266,16 +262,9 @@ class TestFormatDashboardUrls:
     def _not_over_ssh(self, _floor_monkeypatch):
         """Unset the two variables ``format_dashboard_urls`` reads, and nothing else.
 
-        Clearing ``os.environ`` would also drop the floor's ``KIROCREW_HOME`` pin for
-        the test's duration. Nothing here resolves the data home, but a resolver left
-        running by an EARLIER test on the worker (a model's idle evictor, a debounced
-        crew-log write) can tick inside that window, fall through to the operator's real
-        ``~/.kiro/crew``, and the teardown guard then blames whichever test here is
-        running -- the hanging-lookup test has the widest window. Removing only what the
-        function reads keeps the pin, so a stray resolution lands in this test's home.
-        Patched through the floor's own instance, not the shared ``monkeypatch``: an
-        autouse fixture on the shared one is lifted by any ``monkeypatch.undo()`` in a
-        test body.
+        Clearing ``os.environ`` would drop the floor's ``KIROCREW_HOME`` pin, and a
+        resolver left by an earlier test could then reach the real ``~/.kiro/crew``.
+        Uses the floor's own monkeypatch, which a test's ``monkeypatch.undo()`` cannot lift.
         """
         _floor_monkeypatch.delenv("SSH_CONNECTION", raising=False)
         _floor_monkeypatch.delenv("SSH_CLIENT", raising=False)
@@ -320,11 +309,8 @@ class TestFormatDashboardUrls:
     ) -> None:
         """The Remote hint is cosmetic; the event loop it runs on is not.
 
-        A GitHub macOS runner's own hostname does not resolve and the resolver
-        sits in a multi-second mDNS timeout. Unbounded, that blocked the loop
-        past the dashboard watchdog's 15 s threshold and the gateway exited
-        right after READY (first cross-OS boot matrix run). The lookup is
-        bounded and abandoned, so the lines come back without the hint.
+        On a macOS runner the hostname lookup can sit in a multi-second mDNS timeout,
+        past the watchdog's 15 s threshold, so it is bounded and the hint is dropped.
         """
         import threading
 
@@ -890,6 +876,68 @@ class TestBuildHostCanonicalRedirect:
             assert "Location" not in resp.headers
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("cookie_name", ["mc_token_7777", "mc_refresh_7777"])
+    async def test_signed_in_literal_nav_is_served_not_redirected(self, cookie_name: str) -> None:
+        # The session cookie is host-only, so a browser signed in on 127.0.0.1
+        # does not carry it to localhost. Redirecting its document navigation
+        # there lands it on a host where it has no session: every API call 403s
+        # with X-Auth-Required and the page reads "Session expired".
+        # A navigation bearing this gateway's session is served where it was sent.
+        from aiohttp import web
+        from aiohttp.test_utils import TestClient, TestServer
+
+        from kiro_crew.dashboard.server import build_host_canonical_redirect
+
+        async def _ok(_request: web.Request) -> web.Response:
+            return web.Response(text="served here")
+
+        app = web.Application(middlewares=[build_host_canonical_redirect("localhost")])
+        app.router.add_get("/apps/library", _ok)
+
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.get(
+                "/apps/library",
+                headers={
+                    "Host": "127.0.0.1:7777",
+                    "Sec-Fetch-Dest": "document",
+                    "Cookie": f"{cookie_name}=opaque",
+                },
+                allow_redirects=False,
+            )
+            assert resp.status == 200
+            assert await resp.text() == "served here"
+            assert "Location" not in resp.headers
+
+    @pytest.mark.asyncio
+    async def test_other_port_session_cookie_does_not_hold_the_redirect(self) -> None:
+        # Cookies are not port-isolated, so a 127.0.0.1 jar can hold another
+        # gateway's mc_token_<port>. That cookie is no session HERE, so it must
+        # not stop this gateway's spelling convergence.
+        from aiohttp import web
+        from aiohttp.test_utils import TestClient, TestServer
+
+        from kiro_crew.dashboard.server import build_host_canonical_redirect
+
+        async def _ok(_request: web.Request) -> web.Response:
+            return web.Response(text="ok")
+
+        app = web.Application(middlewares=[build_host_canonical_redirect("localhost")])
+        app.router.add_get("/chat", _ok)
+
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.get(
+                "/chat",
+                headers={
+                    "Host": "127.0.0.1:7777",
+                    "Sec-Fetch-Dest": "document",
+                    "Cookie": "mc_token_8888=opaque; mc_refresh_8888=opaque",
+                },
+                allow_redirects=False,
+            )
+            assert resp.status == 302
+            assert resp.headers["Location"].startswith("http://localhost:7777/chat")
+
+    @pytest.mark.asyncio
     async def test_literal_address_nav_is_redirected_when_it_carries_nothing(self) -> None:
         # End to end through the middleware: a credential-free document navigation
         # on a literal converges onto the canonical name, because both families
@@ -1036,11 +1084,8 @@ class TestBuildHostCanonicalRedirect:
 class TestHoldsEveryLoopbackFamily:
     """The server-side counterpart of ``listenerSecretsFor``.
 
-    Coverage is read from the recorded claims plus each guard's live socket, so a
-    family that was never bound and one whose listener has since died answer the
-    same. The pre-publication state answers False: nothing is recorded yet, so the
-    gateway cannot prove coverage, and a suppressed redirect costs one
-    un-canonicalized document.
+    A never-bound family and a dead listener answer the same. Before publication the
+    answer is False: coverage cannot be proven, and that costs one redirect.
     """
 
     @staticmethod
@@ -1339,12 +1384,8 @@ class TestFrameAncestorsValue:
     def test_self_is_always_present(self) -> None:
         """The serving origin must be named by ``'self'``, not derived server-side.
 
-        ``'self'`` is resolved by the BROWSER against the frame's real URL, so it is
-        correct behind a TLS-terminating tunnel that rewrites ``Host`` to the
-        loopback backend and may not forward ``X-Forwarded-Proto``. A header built
-        from ``Host`` instead names ``http://localhost:<port>`` while the browser is
-        on ``https://<tunnel-host>``, matches no ancestor, and refuses the frame —
-        a regression invisible on a direct loopback connection.
+        The browser resolves ``'self'`` against the real URL; behind a TLS tunnel a
+        ``Host``-built value names ``http://localhost:<port>`` and refuses the frame.
         """
         from kiro_crew.dashboard.origin import frame_ancestors_value
 
@@ -1388,11 +1429,8 @@ class TestFrameAncestorsValue:
     def test_an_inexpressible_or_injecting_ancestor_is_dropped(self, bad: str) -> None:
         """The producer is not trusted to have made the value header-safe.
 
-        A bracketed IPv6 literal is not expressible as a CSP host-source (the
-        browser refuses the source expression and drops it), a value carrying a
-        space would smuggle a second source, and one carrying a semicolon would
-        smuggle a whole directive. Each is dropped here rather than at the producer,
-        so no future ancestor source can reintroduce the class.
+        A bracketed IPv6 literal is not a CSP host-source, a space smuggles a second
+        source, and a semicolon a whole directive; each is dropped here.
         """
         from kiro_crew.dashboard.origin import frame_ancestors_value
 
@@ -1406,12 +1444,8 @@ class TestBoundedHostnameResolve:
     def test_thread_exhaustion_reads_as_unresolved_not_as_a_raise(self, monkeypatch):
         """A RuntimeError from ``Thread.start`` must not escape into the banner.
 
-        ``_resolve_hostname_bounded``'s only caller decides whether to print one
-        extra ``ssh -NL`` hint line with it. Under thread exhaustion the naive
-        spelling propagates a RuntimeError out through the code that prints the
-        dashboard's URLs, so the operator loses the whole banner -- including the
-        authenticated URL they actually need -- to gain nothing. Unresolved is the
-        honest answer and it costs a hint line.
+        The result only decides one ``ssh -NL`` hint line; a raise would lose the
+        whole banner, including the authenticated URL.
         """
         from kiro_crew.dashboard import urls as urls_mod
 

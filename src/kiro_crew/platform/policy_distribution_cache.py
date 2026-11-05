@@ -544,7 +544,9 @@ def _cache_write_lock(directory: Path) -> Iterator[None]:
     # onto a file it wants truncated. No O_TRUNC — a lock file carries no content.
     if is_link_or_junction(lock_path):
         raise OSError(f"refusing cache lock file (link or junction): {lock_path}")
-    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    from kiro_crew.platform_compat import open_create_or_existing
+
+    fd = open_create_or_existing(lock_path, os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600)
     try:
         st = os.fstat(fd)
         if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1:

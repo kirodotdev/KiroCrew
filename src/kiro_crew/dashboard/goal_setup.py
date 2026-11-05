@@ -92,7 +92,12 @@ def kickoff_prompt(
         step3 += T("goal_setup.kickoff_has_milestones")
     # The Heartbeat is the switch that makes the mate work on its own, so the
     # moment a goal is saved is when it is offered; once on, nothing is asked.
-    if (rec.get("schedules") or {}).get(member_goals.CADENCE_HEARTBEAT):
+    # A goal card carries that offer itself (its Heartbeat checkbox), and the
+    # answer is stored with the goal, so a goal set on a card, or a Heartbeat
+    # once declined there, is never asked about again in the chat.
+    if (rec.get("schedules") or {}).get(member_goals.CADENCE_HEARTBEAT) or (
+        rec.get("heartbeat_offer") in member_goals.HEARTBEAT_OFFER_ANSWERS
+    ):
         step1_tail = T("goal_setup.kickoff_ask_nothing")
     else:
         step1_tail = T(
@@ -163,7 +168,7 @@ async def _wait_and_send(state: Any, slug: str, member: str, build: Build) -> st
             if again is slot:
                 dispatch_hidden_turn(state, slot, prompt, human_seen=True)
                 return "started"
-        if skip == "skipped: the mate's thread is not open" or loop.time() >= deadline:
+        if skip == "skipped: the Bot's thread is not open" or loop.time() >= deadline:
             return skip or "skipped: timed out"
         await asyncio.sleep(POLL_SECS)
 

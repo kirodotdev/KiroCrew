@@ -10,6 +10,7 @@ from aiohttp import web
 
 from kiro_crew import aws_consent
 from kiro_crew.apps.builtins.aws_control.backend import accounts as accounts_mod
+from kiro_crew.apps.builtins.aws_control.backend import backup as backup_mod
 from kiro_crew.apps.builtins.aws_control.backend import costs as costs_mod
 from kiro_crew.apps.builtins.aws_control.backend.routes_parts.common import (
     _account_target,
@@ -34,7 +35,11 @@ from kiro_crew.deploy.engine import AWSError
 async def _handle_accounts(request: web.Request) -> web.Response:
     refresh = request.rel_url.query.get("refresh") == "1"
     snapshot = await accounts_mod.list_accounts(refresh=refresh)
-    return web.json_response(snapshot)
+    payload = {
+        **snapshot,
+        "nightlyNoKeySkip": await asyncio.to_thread(backup_mod.nightly_no_key_skip),
+    }
+    return web.json_response(payload)
 
 
 async def _handle_reconnect_plan(request: web.Request) -> web.Response:

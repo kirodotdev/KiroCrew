@@ -21,8 +21,10 @@ event must survive, in order:
 5. **authorize**: deny-by-default, with SEL audit on every denial. A DM is
    judged by ``dm_policy`` (``self`` default). A GROUP message is judged by the
    per-sender allowlist, exactly as every other channel judges group traffic:
-   the linked account always passes, any other member must be listed in
-   ``allowed_wa_ids``, and an empty list admits nobody but the operator. The
+   the linked account always passes, any other member must be listed on the
+   group's allowlist (the group entry's own ``allowed_wa_ids`` when it has one,
+   else the global ``allowed_wa_ids``), and an empty list admits nobody but the
+   operator. The
    group gate above decides whether the agent may SPEAK in the group; this step
    decides whether the PERSON may make it speak, and it runs for mention,
    reply and rules-mode unprompted turns alike, so an unlisted member cannot
@@ -96,6 +98,19 @@ logger = logging.getLogger(__name__)
 #: older than ``connected_at - GRACE`` are reconnect replay, not live traffic.
 _REPLAY_GRACE_S = 60.0
 
+#: neonize encodes ``MessageInfo.Timestamp`` with Go's ``UnixMilli``
+#: (goneonize/utils/encoder.go), while ``connected_at`` is ``time.time()``
+#: seconds. A stamp at or past this is milliseconds: as seconds it would be
+#: the year 5138, and as milliseconds anything since early 1973.
+_MS_TIMESTAMP_FLOOR = 1e11
+
+
+def _event_seconds(raw: Any) -> float:
+    """An event ``Timestamp`` in seconds, whichever unit neonize sent it in."""
+    stamp = float(raw or 0)
+    return stamp / 1000.0 if stamp >= _MS_TIMESTAMP_FLOOR else stamp
+
+
 #: Distinct ``@lid`` senders whose phone JID is remembered. An alias is stable
 #: for the life of an account, so this only bounds memory against a group with
 #: churning membership; a miss costs one resolver round-trip, never a denial.
@@ -143,6 +158,60 @@ DM_POLICY_OPEN = "open"
 DM_POLICY_DISABLED = "disabled"
 
 
+def _group_allowlists(groups: list[dict]) -> dict[str, frozenset[str]]:
+    """Each configured group's OWN allowlist, keyed by normalized group JID.
+
+    Only a group whose coerced entry carries ``allowed_wa_ids`` appears here; a
+    group without one is absent, which is what sends its senders to the global
+    list. Keyed exactly as :class:`GroupGate` keys its entries (``normalize_jid``,
+    the later entry winning on a collision), so the entry that decides whether
+    the agent may speak in a group is the same entry that decides who may make
+    it speak there. Frozen and rebuilt wholesale, like the global allowlist, so
+    an in-flight decision never sees a mutation.
+    """
+    per_group: dict[str, frozenset[str] | None] = {}
+    for entry in groups:
+        jid = normalize_jid(str(entry.get("jid", "")))
+        if not jid:
+            continue
+        if "allowed_wa_ids" not in entry:
+            per_group[jid] = None
+        else:
+            # A present value that is not a list admits nobody (fail closed),
+            # never the wider global list.
+            wa_ids = entry["allowed_wa_ids"]
+            per_group[jid] = frozenset(
+                normalize_jid(wa_id_to_user_jid(w))
+                for w in (wa_ids if isinstance(wa_ids, list) else [])
+                if str(w).strip()
+            )
+    return {jid: allowed for jid, allowed in per_group.items() if allowed is not None}
+
+
+#: Submessages whose ``contextInfo`` can carry an @-mention or a quote: typed
+#: text, and the caption a user types on a photo, video or file.
+_CONTEXT_FIELDS = ("extendedTextMessage", "imageMessage", "videoMessage", "documentMessage")
+
+
+def _context_infos(message: Any) -> list[Any]:
+    """Every ``contextInfo`` on *message*'s text or media submessage.
+
+    All are returned rather than the first found: on a real protobuf an absent
+    submessage still reads as a default instance with an empty ``contextInfo``,
+    so stopping at the first would let an empty text context hide a caption's
+    mention.
+    """
+    if not message:
+        return []
+    out = []
+    for name in _CONTEXT_FIELDS:
+        sub = getattr(message, name, None)
+        ctx = getattr(sub, "contextInfo", None) if sub is not None else None
+        if ctx is not None:
+            out.append(ctx)
+    return out
+
+
 class WhatsAppTransport(MessagingTransport):
     """WhatsApp personal-account transport (see module docstring)."""
 
@@ -179,6 +248,7 @@ class WhatsAppTransport(MessagingTransport):
         # cooldown clock) on every unrelated whatsapp write.
         self._group_rules: list[dict] = _coerce_whatsapp_groups(groups)
         self.group_gate = GroupGate(self._group_rules)
+        self._group_allowed = _group_allowlists(self._group_rules)
         self._clock = clock or time.time
         #: ``@lid`` alias -> phone JID, resolved once per sender (see
         #: ``_canonical_sender``). Confined to the gateway event loop like the
@@ -282,6 +352,7 @@ class WhatsAppTransport(MessagingTransport):
         if groups != self._group_rules:
             self._group_rules = groups
             self.group_gate = GroupGate(groups)
+            self._group_allowed = _group_allowlists(groups)
             logger.info("whatsapp: group rules reloaded (%d configured group(s))", len(groups))
             sel().log_api_access(
                 caller="config",
@@ -362,7 +433,8 @@ class WhatsAppTransport(MessagingTransport):
         even if a future caller reaches it without passing step 5.
 
         Group media therefore requires INDIVIDUAL admission: the linked account,
-        or a number the operator listed. It deliberately does NOT consult
+        or a number the operator listed for THIS group (its own allowlist, else
+        the global one, exactly as step 5 reads it). It deliberately does NOT consult
         ``dm_policy``, because ``open`` resolves to "anyone with a user id" and
         would hand the capability straight back. Being admitted to the
         conversation is not being admitted to the machine.
@@ -373,7 +445,13 @@ class WhatsAppTransport(MessagingTransport):
 
     def _group_sender_admitted(self, msg: InboundMessage) -> bool:
         """Per-sender admission for GROUP traffic: the linked account, or a
-        number listed in ``allowed_wa_ids``. Deny by default.
+        number on the group's allowlist. Deny by default.
+
+        The group's allowlist is its own ``groups[].allowed_wa_ids`` when the
+        entry has one, and the global ``allowed_wa_ids`` otherwise, so a number
+        can be admitted to one group without being admitted to every group. A
+        group's own list REPLACES the global one rather than adding to it, which
+        is what lets an operator keep a globally listed number out of a group.
 
         The group gate decides whether the agent may speak in the group; this
         decides whether the sender may make it speak. It is the same allowlist
@@ -385,7 +463,9 @@ class WhatsAppTransport(MessagingTransport):
         sender_jid = wa_id_to_user_jid(msg.user_id)
         if self._client.me.matches(sender_jid):
             return True
-        return normalize_jid(sender_jid) in self._allowed
+        own = self._group_allowed.get(normalize_jid(msg.conversation_id))
+        allowed = self._allowed if own is None else own
+        return normalize_jid(sender_jid) in allowed
 
     def may_send_to(
         self, conversation_id: str, thread_id: str | None = None, *, principal: str = ""
@@ -535,7 +615,7 @@ class WhatsAppTransport(MessagingTransport):
             return
 
         # 2. Reconnect-replay flood gate.
-        stamp = float(getattr(info, "Timestamp", 0) or 0)
+        stamp = _event_seconds(getattr(info, "Timestamp", 0))
         connected_at = self._client.connected_at
         if connected_at is not None and stamp and stamp < connected_at - _REPLAY_GRACE_S:
             logger.debug("whatsapp: dropping replayed history message %s", message_id)
@@ -695,20 +775,17 @@ class WhatsAppTransport(MessagingTransport):
         """
         if sender_is_operator:
             return True
-        extended = getattr(message, "extendedTextMessage", None) if message else None
-        ctx = getattr(extended, "contextInfo", None) if extended is not None else None
-        if ctx is None:
-            return False
         me = self._client.me
-        for mentioned in getattr(ctx, "mentionedJID", []) or []:
-            if me.matches(str(mentioned)):
-                return True
-        participant = str(getattr(ctx, "participant", "") or "")
-        stanza_id = str(getattr(ctx, "stanzaID", "") or "")
-        if participant and me.matches(participant):
-            return True  # replying to one of the agent's/operator's messages
-        if stanza_id and chat and self.echo.is_own_echo(chat, stanza_id):
-            return True  # quoted message ID is one we sent
+        for ctx in _context_infos(message):
+            for mentioned in getattr(ctx, "mentionedJID", []) or []:
+                if me.matches(str(mentioned)):
+                    return True
+            participant = str(getattr(ctx, "participant", "") or "")
+            stanza_id = str(getattr(ctx, "stanzaID", "") or "")
+            if participant and me.matches(participant):
+                return True  # replying to one of the agent's/operator's messages
+            if stanza_id and chat and self.echo.is_own_echo(chat, stanza_id):
+                return True  # quoted message ID is one we sent
         return False
 
     # -- Configured outbound targets ----------------------------------------

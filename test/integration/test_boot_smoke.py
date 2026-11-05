@@ -436,6 +436,9 @@ _KNOWN_SECOND_BOOT_CHANGES: dict[tuple[str, str], str] = {
     ("kiro_crew.config.loader_snapshots", "_MATERIALIZED_REFRESH_ISSUED"): "counter",
     ("kiro_crew.context", "_store_cache_generation"): "counter",
     ("kiro_crew.dashboard.handlers.updates_check", "_last_update_check"): "clock",
+    # When the shared-crew admission service last read its config: a monotonic
+    # stamp the harness zeroes and each boot sets again when it builds its service.
+    ("kiro_crew.shared_crew.admission_gate", "_last_config_at"): "clock",
     # When telemetry consent was last re-read, and whether a re-read is in
     # flight: a boot that outlasts the recheck window starts one. The consent
     # itself (``_built_consent``) does not change here.
@@ -469,6 +472,14 @@ _KNOWN_SECOND_BOOT_CHANGES: dict[tuple[str, str], str] = {
     ("kiro_crew.diag.recorder", "_recorder"): "replaced per boot",
     ("kiro_crew.hooks", "_BUILTIN_APP_AGENTS"): "replaced per boot",
     ("kiro_crew.hooks", "_global_script_hook_store"): "replaced per boot",
+    # Shared crew: the boot's host hooks and what its tailnet setup resolved to.
+    # The harness resets each to a fresh default, a new object every boot.
+    ("kiro_crew.shared_crew.access", "_direct_tailnet"): "replaced per boot",
+    ("kiro_crew.shared_crew.access", "_forwarded_attribution"): "replaced per boot",
+    ("kiro_crew.shared_crew.admission_gate", "_HOOKS"): "replaced per boot",
+    # The lock that serializes building the admission service; the harness drops
+    # the service and gives each boot a fresh lock for the one it builds.
+    ("kiro_crew.shared_crew.admission_gate", "_SERVICE_LOCK"): "replaced per boot",
     ("kiro_crew.skill_usage", "_global_skill_read_observer"): "replaced per boot",
     ("kiro_crew.slack.interactions", "_orch"): "replaced per boot",
     ("kiro_crew.slack.interactions_approvals", "_orch"): "replaced per boot",

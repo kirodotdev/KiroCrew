@@ -28,17 +28,8 @@ from kiro_crew import atomic_write as aw
 def launchers_confined_to_tmp(tmp_path: Path):
     """Let ``_resolve_kirocrew_bin`` accept only launchers the test wrote under ``tmp_path``.
 
-    Steps 1 and 2 of the resolver walk EVERY ancestor of the fake package dir,
-    and that dir sits under ``tmp_path`` -- so whatever the host keeps above the
-    temp root is a candidate too. A developer whose ``TMPDIR`` lives inside a
-    checkout has a real ``<checkout>/.venv/Scripts/kirocrew.exe`` (or
-    ``.venv/bin/kirocrew``) on that walk, and it wins over the launcher the test
-    built because step 1 runs to the filesystem root before step 2 starts.
-    Patching ``os.path.isfile`` does not close that door: the validator asks
-    ``Path.is_file`` and ``os.access``. Confining the validator itself makes the
-    resolver's answer a function of the tree the test built, wherever pytest put
-    it. Real validation still runs inside that tree, so a test that expects a
-    stale or dead launcher to be REJECTED keeps that assertion.
+    The resolver walks every ancestor of ``tmp_path``, so a ``TMPDIR`` inside a checkout
+    would find its real ``.venv`` launcher. Real validation still runs inside the tree.
     """
     import kiro_crew.agent as agent_mod
 
@@ -131,16 +122,8 @@ class TestAtomicJsonWrite:
     def test_a_contended_rename_is_retried_on_windows(self, tmp_path: Path, monkeypatch):
         """The rename this writer ends on is the one Windows can refuse.
 
-        The docstring reasons about Linux, where `rename()` is atomic and a
-        reader holding the destination cannot block it. On Windows `os.replace`
-        raises `PermissionError` (`WinError 32`) while ANY other handle is open
-        on either path, and a freshly written temp file is exactly what an
-        indexer or AV scanner touches. `replace_with_retry` exists for that
-        window and every other tmp-plus-rename writer in the tree goes through
-        it; this one hand-rolled the rename and did not.
-
-        It matters here more than most: these are the agent configs kiro-cli
-        reads at spawn, so a refused rename surfaces as a failed spawn.
+        On Windows `os.replace` raises `PermissionError` (`WinError 32`) while an indexer
+        or AV scanner holds the file; a refused rename here is a failed kiro-cli spawn.
         """
         from kiro_crew import platform_compat
         from kiro_crew.agent import _atomic_json_write
@@ -352,11 +335,8 @@ class TestResolveKirocrewBin:
     def no_interpreter_scripts(self, tmp_path: Path):
         """Neutralise the interpreter's-own-prefix resolution step.
 
-        That step answers from the REAL interpreter running this suite, whose
-        prefix legitimately holds a ``bin/kirocrew`` whenever the suite runs
-        inside an install — so it short-circuits resolution before any LATER
-        step can be observed. Tests asserting a later step must point it at an
-        empty prefix; tests asserting the step itself supply their own.
+        The real interpreter's prefix may hold a ``bin/kirocrew``, which would answer
+        before any later step can be observed.
         """
         empty = tmp_path / "empty-prefix"
         empty.mkdir(exist_ok=True)
@@ -366,16 +346,8 @@ class TestResolveKirocrewBin:
     def test_prefers_interpreter_scripts_dir_over_path(self, tmp_path: Path):
         """A sibling-tree console script beats an unrelated one on PATH.
 
-        A prefix-style runtime can put the package under
-        ``<root>/lib/python3.12/site-packages/`` and the console script under
-        the interpreter prefix ``<root>/python3.12/`` — sibling trees, so the
-        parent walk cannot reach the script. Resolution must not fall through to
-        PATH and pick up whatever ``kirocrew`` an unrelated earlier install has
-        left there, then cache it as the command for the built-in MCP servers.
-
-        The launcher is created through ``_kirocrew_bin_subpath`` rather than at
-        a hardcoded ``bin/kirocrew``, so the layout is the one this OS actually
-        looks for (``Scripts\\kirocrew.exe`` on Windows).
+        A prefix-style runtime puts the script under ``<root>/python3.12/``, a sibling of
+        ``site-packages`` the parent walk cannot reach. Built via ``_kirocrew_bin_subpath``.
         """
         import kiro_crew.agent as agent_mod
         from kiro_crew.agent import _kirocrew_bin_subpath, _resolve_kirocrew_bin
@@ -434,7 +406,7 @@ class TestResolveKirocrewBin:
     def test_finds_bin_in_parent_hierarchy(self, tmp_path: Path):
         """Walks up from package dir to find bin/kirocrew."""
         import kiro_crew.agent as agent_mod
-        from kiro_crew.agent import _resolve_kirocrew_bin
+        from kiro_crew.agent import _kirocrew_bin_subpath, _resolve_kirocrew_bin
 
         # Create structure: venv/lib/python3.x/site-packages/kiro_crew
         #                   venv/bin/kirocrew
@@ -443,9 +415,8 @@ class TestResolveKirocrewBin:
         pkg_dir.mkdir(parents=True)
         (pkg_dir / "__init__.py").write_text("")
 
-        bin_dir = venv / "bin"
-        bin_dir.mkdir()
-        kirocrew_bin = bin_dir / "kirocrew"
+        kirocrew_bin = _kirocrew_bin_subpath(venv)
+        kirocrew_bin.parent.mkdir()
         kirocrew_bin.write_text("#!/bin/bash\necho kirocrew")
         kirocrew_bin.chmod(0o755)
 
@@ -700,16 +671,15 @@ class TestResolveKirocrewBin:
         readable ``bin/kirocrew`` discovered by the walk is used as-is.
         """
         import kiro_crew.agent as agent_mod
-        from kiro_crew.agent import _resolve_kirocrew_bin
+        from kiro_crew.agent import _kirocrew_bin_subpath, _resolve_kirocrew_bin
 
         venv = tmp_path / "venv"
         pkg_dir = venv / "lib" / "python3.10" / "site-packages" / "kiro_crew"
         pkg_dir.mkdir(parents=True)
         (pkg_dir / "__init__.py").write_text("")
 
-        bin_dir = venv / "bin"
-        bin_dir.mkdir()
-        kirocrew_bin = bin_dir / "kirocrew"
+        kirocrew_bin = _kirocrew_bin_subpath(venv)
+        kirocrew_bin.parent.mkdir()
         kirocrew_bin.write_text('#!/bin/sh\nexec kirocrew "$@"\n')
         kirocrew_bin.chmod(0o755)
 
@@ -739,7 +709,7 @@ class TestResolveKirocrewBin:
     def test_accepts_apollo_binary_with_envroot(self, tmp_path: Path):
         """Accepts Apollo binary when .envroot exists in a parent directory."""
         import kiro_crew.agent as agent_mod
-        from kiro_crew.agent import _resolve_kirocrew_bin
+        from kiro_crew.agent import _kirocrew_bin_subpath, _resolve_kirocrew_bin
 
         # Create env/runtime/.envroot + env/runtime/bin/kirocrew (Apollo)
         runtime = tmp_path / "env" / "runtime"
@@ -749,9 +719,8 @@ class TestResolveKirocrewBin:
         )
         (runtime / ".envroot").write_text("")
 
-        bin_dir = runtime / "bin"
-        bin_dir.mkdir()
-        kirocrew_bin = bin_dir / "kirocrew"
+        kirocrew_bin = _kirocrew_bin_subpath(runtime)
+        kirocrew_bin.parent.mkdir()
         kirocrew_bin.write_bytes(
             b"#!/apollo/sbin/envroot $ENVROOT/python3.10/bin/python3.10\nimport sys\n"
         )
@@ -778,16 +747,15 @@ class TestResolveKirocrewBin:
         check is a no-op), so the walk-discovered bin wins over PATH.
         """
         import kiro_crew.agent as agent_mod
-        from kiro_crew.agent import _resolve_kirocrew_bin
+        from kiro_crew.agent import _kirocrew_bin_subpath, _resolve_kirocrew_bin
 
         project = tmp_path / "project"
         pkg_dir = project / "src" / "kiro_crew"
         pkg_dir.mkdir(parents=True)
         (pkg_dir / "__init__.py").write_text("")
 
-        bin_dir = project / "bin"
-        bin_dir.mkdir()
-        wrapper = bin_dir / "kirocrew"
+        wrapper = _kirocrew_bin_subpath(project)
+        wrapper.parent.mkdir()
         wrapper.write_text('#!/bin/sh\nexec kirocrew "$@"\n')
         wrapper.chmod(0o755)
 
@@ -833,7 +801,7 @@ class TestResolveKirocrewBin:
     def test_prefers_venv_bin_over_project_bin(self, tmp_path: Path):
         """Resolves .venv/bin/kirocrew before bin/kirocrew in the same tree."""
         import kiro_crew.agent as agent_mod
-        from kiro_crew.agent import _resolve_kirocrew_bin
+        from kiro_crew.agent import _kirocrew_bin_subpath, _resolve_kirocrew_bin
 
         # Create structure: project/src/kiro_crew + project/.venv/bin/kirocrew
         # + project/bin/kirocrew (Brazil wrapper)
@@ -843,15 +811,14 @@ class TestResolveKirocrewBin:
         (pkg_dir / "__init__.py").write_text("")
 
         # .venv/bin/kirocrew — the preferred candidate
-        venv_bin = project / ".venv" / "bin" / "kirocrew"
+        venv_bin = _kirocrew_bin_subpath(project / ".venv")
         venv_bin.parent.mkdir(parents=True)
         venv_bin.write_text('#!/bin/sh\nexec python -m kiro_crew "$@"\n')
         venv_bin.chmod(0o755)
 
         # bin/kirocrew — Brazil wrapper (should be skipped)
-        bin_dir = project / "bin"
-        bin_dir.mkdir()
-        brazil_wrapper = bin_dir / "kirocrew"
+        brazil_wrapper = _kirocrew_bin_subpath(project)
+        brazil_wrapper.parent.mkdir()
         brazil_wrapper.write_text('#!/bin/sh\nexec brazil-runtime-exec kirocrew "$@"\n')
         brazil_wrapper.chmod(0o755)
 
@@ -870,7 +837,7 @@ class TestResolveKirocrewBin:
     def test_venv_install_falls_through_to_step1(self, tmp_path: Path):
         """When pkg_dir is inside .venv/, pyvenv.cfg breaks step 0."""
         import kiro_crew.agent as agent_mod
-        from kiro_crew.agent import _resolve_kirocrew_bin
+        from kiro_crew.agent import _kirocrew_bin_subpath, _resolve_kirocrew_bin
 
         # Simulate pip-into-venv: .venv/lib/python3.x/site-packages/kiro_crew/
         venv_root = tmp_path / ".venv"
@@ -880,7 +847,7 @@ class TestResolveKirocrewBin:
         (venv_root / "pyvenv.cfg").write_text("home = /usr/bin\n")
 
         # .venv/bin/kirocrew exists (step 1 should find it)
-        venv_bin = venv_root / "bin" / "kirocrew"
+        venv_bin = _kirocrew_bin_subpath(venv_root)
         venv_bin.parent.mkdir(parents=True)
         venv_bin.write_text('#!/bin/sh\nexec python -m kiro_crew "$@"\n')
         venv_bin.chmod(0o755)
@@ -902,12 +869,8 @@ class TestResolveKirocrewBin:
 class TestKirocrewBinSubpath:
     """Tests for the per-OS console-script subpath.
 
-    On Windows the resolver must prefer the relocatable ``bin\\kirocrew.cmd``
-    shim over the pip-generated ``Scripts\\kirocrew.exe``: inside the shipped
-    desktop bundle the ``.exe`` embeds the ABSOLUTE interpreter path of the
-    build agent and can never run on the user's machine, while the ``.cmd``
-    resolves its interpreter via ``%~dp0``. Mirrors the ranking in
-    ``website/electron/find-bin.js``.
+    Windows prefers ``bin\\kirocrew.cmd`` (``%~dp0``) over ``Scripts\\kirocrew.exe``,
+    which embeds the build agent's absolute path. Mirrors ``website/electron/find-bin.js``.
     """
 
     def test_posix_returns_bin_kirocrew(self, tmp_path: Path, monkeypatch):
@@ -1010,12 +973,8 @@ class TestKirocrewBinSubpath:
 class TestKirocrewMcpInvocation:
     """Tests for built-in MCP server invocation resolution.
 
-    Regression: when ``_resolve_kirocrew_bin`` cannot find a usable
-    standalone binary (e.g. the gateway runs as a systemd user service and
-    ``kirocrew`` is not on the service PATH), the built-in cron/core servers
-    must still get a runnable command instead of the bare ``"kirocrew"``
-    sentinel, which fails validation and drops them from ``kirocrew.json`` on
-    every refresh.
+    With no standalone binary (e.g. a systemd service PATH), built-in servers still get a
+    runnable command; the bare ``"kirocrew"`` sentinel fails validation and is dropped.
     """
 
     def test_uses_standalone_binary_when_resolved(self):

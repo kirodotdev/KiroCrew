@@ -484,7 +484,7 @@ search_chat_history select_crew send_message send_notification session_ledger_re
 session_ledger_record skill_discover skill_fetch skill_search spawn_continue spawn_list
 spawn_release spawn_run spawn_status spawn_steer spawn_sub_agents suggest_followup
 update_message wait workflow_author workflow_cancel workflow_library_list workflow_list
-workflow_result workflow_status
+workflow_result workflow_status request_server
 """.split())
 
 

@@ -12,8 +12,10 @@ Kiro Crew is an open-source personal AI agent: chat from the web dashboard, the
 CLI, or a messaging channel like Slack and Discord; run multi-step tasks
 unattended; schedule cron jobs; keep memory across sessions.
 
-Kiro Crew's sole LLM provider speaks ACP. Its default backend runs `kiro-cli`
-over ACP JSON-RPC; other verified ACP harnesses are selected with
+Kiro Crew's sole LLM provider speaks ACP. With no `agent.acp_backend` choice it
+runs KAS, Kiro's agent engine, through `kiro-cli acp --agent-engine v3` or Kiro
+Crew's own bundled copy of that engine (`acp/kas_route.py`), over ACP JSON-RPC;
+Kiro CLI and the other verified ACP harnesses are selected with
 `agent.acp_backend`. MCP tools supply the agent's host capabilities.
 
 - **Backend:** Python package `kiro_crew` in `src/kiro_crew/`. **Frontend:** React
@@ -37,7 +39,7 @@ in the **same commit** when you change what it documents.
 | If you are touching… | Read first |
 |---|---|
 | `platform/`, editions, CPP seam, governance | [platform-context](docs/system-specs/modules/platform-context.md) + [governance](docs/system-specs/modules/governance.md) |
-| `security.py`, `hooks.py`, `hook_runtime/`, denied commands, sensitive paths | [security](docs/system-specs/modules/security.md) + [sel](docs/system-specs/modules/sel.md) |
+| `security/`, `hooks.py`, `hook_runtime/`, denied commands, sensitive paths | [security](docs/system-specs/modules/security.md) + [sel](docs/system-specs/modules/sel.md) |
 | `config/` — the live watcher, `restart=True` marks, appliers, `config.json` writes | [config](docs/system-specs/modules/config.md) |
 | the security model as a whole, threat boundaries | [security-deep-dive](docs/architecture/security-deep-dive.md) |
 | `computer_use/` | [computer-use](docs/system-specs/modules/computer-use.md) |
@@ -55,7 +57,7 @@ in the **same commit** when you change what it documents.
 | `context.py`, `context_blocks.py`, `context_assembly/`, what reaches the model's context | [context-management](docs/architecture/context-management.md) + [memory-skills-hooks: Context Builder](docs/system-specs/modules/memory-skills-hooks.md#context-builder-contextpy) (module ownership) |
 | MCP servers or tools (adding, changing, statelessness) | [mcp](docs/architecture/mcp.md) |
 | `mcp_gateway/` — `gatewayd.py`, `daemon/`, the daemon's lifecycle and facade | [mcp-gateway-daemon-lifecycle](docs/system-specs/modules/mcp-gateway-daemon-lifecycle.md) + [mcp](docs/architecture/mcp.md) |
-| apps, App Kit, manifests, app agents | [app-kit-platform](docs/system-specs/modules/app-kit-platform.md) + [app-kit/](docs/app-kit/README.md) |
+| apps, App Kit, manifests, app agents, where a new app ships | [app-kit-platform](docs/system-specs/modules/app-kit-platform.md) + [app-kit/](docs/app-kit/README.md) + [No built-in apps](#no-built-in-apps) |
 | artifacts, companion chat | [artifacts](docs/system-specs/modules/artifacts.md) |
 | `stt/`, `transcribe.py` and its `transcribe_*.py` owners, `voice_reply.py`, the mic, dictation, TTS | [stt-streaming](docs/system-specs/modules/stt-streaming.md) + [voice-streaming](docs/system-specs/modules/voice-streaming.md) |
 | cron, learn, dashboard handlers | [learn-cron-dashboard](docs/system-specs/modules/learn-cron-dashboard.md) |
@@ -166,6 +168,14 @@ Detail and rationale: [security](docs/system-specs/modules/security.md),
   main and failed every backend test at COLLECTION, including
   `test_every_strict_leaf_of_either_shape_is_covered_by_the_delegated_guard`,
   the test written to catch exactly that gap.
+- **A tightened credential rule sweeps the clients outside this repo.** When a
+  change narrows what a credential accepts and that credential crosses a process
+  boundary (minted by one program through a public endpoint, presented by
+  another), the writer sweep under `## Backwards compatibility` names the clients
+  that are NOT in this repository, or the PR ships a rollback plan that names
+  them. A sweep proving every in-tree mint was updated proves nothing about an
+  installed app minting through the same endpoint. Reviewers hold the PR to this;
+  #14436 had to revert a tightening whose sweep missed such a client.
 - **Computer use is governed by one on/off row only**: the operator opt-in on the
   keystone `computer_use.json`, ANDed with `capabilities.computer_use`
   ([rfc-crew-enterprise-edition](docs/request-for-change/rfc-crew-enterprise-edition.md),
@@ -204,6 +214,26 @@ capability sets and the CI half:
 [harness-parity](docs/system-specs/modules/harness-parity.md). Run the added-line
 gate locally with
 `HARNESS_BASE_REF=origin/main python3 scripts/check_harness_parity.py`.
+
+## No built-in apps
+
+Kiro Crew accepts no new built-in app. Never add an app under
+`src/kiro_crew/apps/builtins/`, an `app.json` outside `docs/app-kit/examples/` and
+test fixtures, a per-app page under `website/src/apps/<app>/`, a per-app row in a
+core built-in table (`BUILTIN_NAMES`, `apps/manager_builtins.py`, the
+`website/src/apps/` registries), or an app-specific MCP tool (`mcp_tools/apps.py`)
+or internal-secret path row (`dashboard/server_internal_paths.py`) in core. A new
+app, first-party included, ships from a dedicated GitHub repository listed in the
+official registry ([kirodotdev/KiroCrewApps](https://github.com/kirodotdev/KiroCrewApps)).
+The built-ins that still ship are being moved out under #26967; fixing one in place
+until it leaves is fine. An app moves out COMPLETELY: no part of it (backend, UI,
+scripts, CI, specs) stays in core, and core never imports or hard-codes a specific
+app (`kiro_crew.apps.builtins.<app>`, an app id) outside the built-in tables being
+emptied. A capability an app cannot get from outside core is an App Kit seam gap:
+fix it with a generic, app-agnostic seam, never put the app in core. Rule:
+`no-new-builtin-apps` in `AUTOSDE.yaml`; decision:
+[2026-11-01](docs/decisions/2026-11-01-kiro-crew-accepts-no-new-built-in-apps.md);
+seams: [app-kit-platform](docs/system-specs/modules/app-kit-platform.md).
 
 ## Specs and docs
 

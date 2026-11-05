@@ -11,11 +11,14 @@ import { fileURLToPath } from 'node:url'
 import {
   createAppSlotPush,
   noteAppSlotFrame,
+  noteAppSlotRows,
   resetAppSlotPushForTests,
   setAppSlotPushConnected,
 } from '../utils/appSlotPush'
+import type { ChatSlot } from '../types'
 
 const owners = new Map<string, string>()
+const listed = new Map<string, Partial<ChatSlot>>()
 
 function watcher() {
   return { onChange: vi.fn(), onConnection: vi.fn() }
@@ -23,7 +26,8 @@ function watcher() {
 
 beforeEach(() => {
   owners.clear()
-  resetAppSlotPushForTests((key) => owners.get(key) ?? null)
+  listed.clear()
+  resetAppSlotPushForTests((key) => owners.get(key) ?? null, (key) => listed.get(key) ?? null)
 })
 
 afterEach(() => {
@@ -152,6 +156,109 @@ describe('appSlotPush', () => {
     // Ownership is read live: the slot arriving in the list makes it live.
     owners.set('unlisted', 'spec-builder')
     expect(push.connected('unlisted')).toBe(true)
+  })
+
+  it('signals a watched slot when its listed row shows a new row or a new turn', () => {
+    owners.set('s1', 'spec-builder')
+    listed.set('s1', { key: 's1', messages: 0, running: false })
+    const w = watcher()
+    createAppSlotPush('spec-builder').watch('s1', w)
+    noteAppSlotRows([{ key: 's1', messages: 0, running: false }])
+    expect(w.onChange).not.toHaveBeenCalled()
+    noteAppSlotRows([{ key: 's1', messages: 1, running: true }])
+    expect(w.onChange).toHaveBeenCalledTimes(1)
+    expect(w.onChange).toHaveBeenCalledWith()
+    noteAppSlotRows([{ key: 's1', messages: 1, running: true }])
+    expect(w.onChange).toHaveBeenCalledTimes(1)
+  })
+
+  it('signals on the first row of a slot that was not listed at watch time', () => {
+    // A page creates a session, mounts the embed and posts at once: the first
+    // list that names the slot can already carry the posted row.
+    owners.set('s1', 'spec-builder')
+    const w = watcher()
+    createAppSlotPush('spec-builder').watch('s1', w)
+    noteAppSlotRows([{ key: 's1', messages: 1, running: true }])
+    expect(w.onChange).toHaveBeenCalledTimes(1)
+    noteAppSlotRows([{ key: 's1', messages: 1, running: true }])
+    expect(w.onChange).toHaveBeenCalledTimes(1)
+  })
+
+  it('takes the row this tab lists at watch time as the baseline', () => {
+    // The embed read the slot at mount, so a list that repeats the listed row
+    // is quiet, and the page's post right after the mount is the change.
+    owners.set('s1', 'spec-builder')
+    listed.set('s1', { key: 's1', messages: 0, running: false, queue_depth: 0 })
+    const w = watcher()
+    createAppSlotPush('spec-builder').watch('s1', w)
+    noteAppSlotRows([{ key: 's1', messages: 0, running: false, queue_depth: 0 }])
+    expect(w.onChange).not.toHaveBeenCalled()
+    noteAppSlotRows([{ key: 's1', messages: 1, running: true, queue_depth: 0 }])
+    expect(w.onChange).toHaveBeenCalledTimes(1)
+  })
+
+  it.each([
+    ['stopping', false, true],
+    ['queue_depth', 0, 1],
+    ['pending_approval', false, true],
+  ] as const)('signals when %s moves', (field, before, after) => {
+    owners.set('s1', 'spec-builder')
+    listed.set('s1', { key: 's1', messages: 2, running: true, [field]: before } as Partial<ChatSlot>)
+    const w = watcher()
+    createAppSlotPush('spec-builder').watch('s1', w)
+    noteAppSlotRows([{ key: 's1', messages: 2, running: true, [field]: after } as Partial<ChatSlot>])
+    expect(w.onChange).toHaveBeenCalledTimes(1)
+  })
+
+  it('reads a slot_patch row as stating only the fields it carries', () => {
+    owners.set('s1', 'spec-builder')
+    listed.set('s1', { key: 's1', messages: 3, running: false })
+    const w = watcher()
+    createAppSlotPush('spec-builder').watch('s1', w)
+    noteAppSlotRows([{ key: 's1', title: 'Renamed', pinned: true }])
+    expect(w.onChange).not.toHaveBeenCalled()
+    noteAppSlotRows([{ key: 's1', running: true }])
+    expect(w.onChange).toHaveBeenCalledTimes(1)
+    // The omitted `messages` kept its value: an unchanged full row is quiet.
+    noteAppSlotRows([{ key: 's1', messages: 3, running: true }])
+    expect(w.onChange).toHaveBeenCalledTimes(1)
+  })
+
+  it('signals only the owning app, and ignores rows of unwatched slots', () => {
+    owners.set('s1', 'other-app')
+    owners.set('s2', 'spec-builder')
+    listed.set('s1', { key: 's1', messages: 0 })
+    listed.set('s2', { key: 's2', messages: 0 })
+    const w1 = watcher()
+    const w2 = watcher()
+    createAppSlotPush('spec-builder').watch('s1', w1)
+    createAppSlotPush('spec-builder').watch('s2', w2)
+    noteAppSlotRows([
+      { key: 's1', messages: 1 },
+      { key: 's2', messages: 0 },
+      { key: 's3', messages: 9 },
+    ])
+    expect(w1.onChange).not.toHaveBeenCalled()
+    expect(w2.onChange).not.toHaveBeenCalled()
+    noteAppSlotRows(undefined)
+    noteAppSlotRows([null as unknown as ChatSlot, { key: 42 } as unknown as ChatSlot])
+    expect(w2.onChange).not.toHaveBeenCalled()
+  })
+
+  it('forgets the baseline once the last watcher of a slot leaves', () => {
+    owners.set('s1', 'spec-builder')
+    const push = createAppSlotPush('spec-builder')
+    const first = watcher()
+    const off = push.watch('s1', first)
+    noteAppSlotRows([{ key: 's1', messages: 0 }])
+    off()
+    // The next watch starts with no baseline, so the same row the old watch saw
+    // is a first sight that signals, not a repeat of the old watch's row.
+    const second = watcher()
+    push.watch('s1', second)
+    noteAppSlotRows([{ key: 's1', messages: 0 }])
+    expect(second.onChange).toHaveBeenCalledTimes(1)
+    expect(first.onChange).toHaveBeenCalledTimes(1)
   })
 
   it('is fed every decoded frame by the socket router', () => {

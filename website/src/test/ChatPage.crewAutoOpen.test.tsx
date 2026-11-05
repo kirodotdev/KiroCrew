@@ -61,6 +61,7 @@ Object.defineProperty(window, 'matchMedia', {
   })),
 })
 import ChatPage from '../pages/ChatPage'
+import { crewModePreviewOn } from './crewModePreview'
 
 const slot = (key: string): ChatSlot => ({ key, title: key, messages: 0, running: false, mode: '', created: '', last_ts: '' })
 
@@ -113,3 +114,6 @@ describe('ChatPage opens no Crew Mode crew member on its own', () => {
     await waitFor(() => expect(store.getState().chat.activeSlot).toBe('chat-8-800'))
   })
 })
+
+// Last, after the file's own hooks that clear localStorage: Crew Mode is a feature preview.
+crewModePreviewOn()

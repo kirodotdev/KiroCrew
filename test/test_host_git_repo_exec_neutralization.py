@@ -1032,6 +1032,10 @@ class TestNestedProbeFailures:
         user.write_text(f'[filter "pwn"]\n\tclean = {prog}\n')
         monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(user))
         (nested / ".git" / "config").unlink()
+        # The index a slow shard writes: no racily clean entry, so only the
+        # stat-dirty x.txt can reach the filter.
+        later = (nested / ".gitattributes").stat().st_mtime + 60
+        os.utime(nested / ".git" / "index", (later, later))
         _prove_planted_vector_fires(repo, marker, "status", "--porcelain")
 
         assert ug.nested_repo_exec_driver_reason(str(repo)) == ug._NESTED_REPO_INCOMPLETE

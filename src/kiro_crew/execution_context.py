@@ -88,8 +88,8 @@ def _vouch(key: tuple[str, str], execution: ExecutionContext) -> None:
     exactly one direction: the entry is absent, `read_vouched_session_execution`
     answers None, and a caller asking whether that session may reach a private
     store must refuse. Nothing is granted by dropping an entry, and the durable
-    record is never touched, so a refused session recovers the moment its owner
-    re-selects its agent -- the same deferral a restart already carries.
+    record is never touched, so a refused session recovers at its next
+    gate-verified admission -- the same deferral a restart already carries.
     """
     oversized = _oversized_retained_field(execution)
     if oversized is not None:
@@ -642,9 +642,9 @@ def revouch_at_verified_admission(
     The recovery this process cannot do from the durable record alone. A restart
     (or a cap eviction) empties `_VOUCHED_EXECUTIONS` while the durable record
     survives, so a rehydrated member session's own-store dispatch is refused --
-    `read_vouched_session_execution` answers None -- until its owner re-selects the
-    agent and re-binds through the durable path. This restores the vouch WITHOUT
-    that owner action, at the session's next gate-verified admission.
+    `read_vouched_session_execution` answers None. Picking the agent again does not
+    vouch a chat that has messages, so nothing else on this chat restores it. This
+    restores the vouch at the session's next gate-verified admission.
 
     The trust source is the VERIFIED session key AND config, never the durable
     record. The caller passes ``verified_session_key`` only after the admission
@@ -674,7 +674,7 @@ def revouch_at_verified_admission(
     Callable only where the key is genuinely gate-verified; every other reader of
     the vouched map stays read-only.
     """
-    from kiro_crew.members import is_member_session_key, slug_from_dm_slot_key
+    from kiro_crew.members import _slot_part, is_member_session_key, slug_from_dm_slot_key
 
     if not verified_session_key:
         return False
@@ -684,15 +684,11 @@ def revouch_at_verified_admission(
         return _revouch_from_durable_record(verified_session_key, execution, config)
     # The member id the VERIFIED key names, taken from the key's own slug rather
     # than from any field the session writes. `is_member_session_key` accepts the
-    # `dashboard_`/`dashboard:` layer prefixes, so strip the same set before the
-    # canonical `slug_from_dm_slot_key`, which drops the `.memory-<store>` slot
-    # suffix so a key that carries it still reads the bare slug.
-    key = verified_session_key
-    for prefix in ("dashboard_", "dashboard:"):
-        if key.startswith(prefix):
-            key = key[len(prefix) :]
-            break
-    verified_member_id = slug_from_dm_slot_key(key)
+    # `dashboard_`/`dashboard:` layer prefixes, so strip them with the same
+    # `_slot_part` it reads before the canonical `slug_from_dm_slot_key`, which
+    # drops the `.memory-<store>` slot suffix so a key that carries it still reads
+    # the bare slug.
+    verified_member_id = slug_from_dm_slot_key(_slot_part(verified_session_key))
     if not verified_member_id or verified_member_id != execution.member_id:
         # The record claims a member the verified key does not name -- the forgery
         # shape. Vouch for nothing.
@@ -767,6 +763,61 @@ def _revouch_from_durable_record(
     with _EXECUTION_LOCK:
         _vouch(_live_key(verified_session_key), durable)
         return _VOUCHED_EXECUTIONS.get(_live_key(verified_session_key)) is not None
+
+
+def source_vouch_agrees(source_key: str, execution: ExecutionContext, config: Any = None) -> bool:
+    """Whether this gateway already vouches *source_key* for *execution*'s member and store.
+
+    Read-only: it vouches for nothing. A fork asks it before binding its child,
+    because the identity a fork copies comes from the source session's own record,
+    which that session writes, so the copy may only carry own-store authority the
+    gateway itself already gave the source. Without it every fork of a member
+    conversation is published unvouched, and its own-store ``session_create`` is
+    refused for the child's whole life: no restart re-vouches it (its ``chat-`` key
+    names no member and it has no durable copy) and no agent re-pick can reach it
+    (a conversation with messages cannot be re-pinned).
+
+    The gateway's word is the in-memory vouch, or after a restart or a cap eviction
+    the durable copy ``bind_session_execution`` wrote when it vouched. A durable copy
+    counts only while config still gives its member that store, the same check the
+    restart self-heal applies, so a member deleted or re-pointed since carries
+    nothing. *config* is loaded only for that fallback when the caller passes none.
+
+    A source whose record was rewritten to name a peer's store copies that peer's
+    store into *execution*, and neither source of the gateway's word names it, so
+    the answer is False and the child is published unvouched, as before.
+    """
+    if execution.member_id is None:
+        return False
+    with _EXECUTION_LOCK:
+        vouched = _VOUCHED_EXECUTIONS.get(_live_key(source_key))
+    if vouched is None:
+        from kiro_crew._durable_vouch import read_durable_vouch
+
+        record = read_durable_vouch(source_key)
+        if record is None:
+            return False
+        try:
+            vouched = execution_from_record({EXECUTION_CONTEXT_KEY: record})
+            if vouched.member_id is None:
+                return False
+            if config is None:
+                from kiro_crew.config.loader import KiroCrewConfig
+
+                config = KiroCrewConfig.load()
+            alias, _ = member_config_for_id(config, vouched.member_id)
+            canonical = resolve_member_execution(config, alias)
+        except Exception:
+            return False
+        if canonical.store.store_id != vouched.store.store_id:
+            return False
+    # The memory mode is compared too, the way `_revouch_from_durable_record` does.
+    # A restricted child never vouches anyway, so this only keeps the two rules alike.
+    return (
+        vouched.member_id == execution.member_id
+        and vouched.store == execution.store
+        and vouched.memory_mode == execution.memory_mode
+    )
 
 
 def read_live_session_execution(session_key: str) -> ExecutionContext | None:
@@ -1107,7 +1158,7 @@ def _backfill_legacy_member_record(
     not `bind_session_execution`, which would re-enter this read. The store came
     from the session's own record, so the result is never vouched: the migrated
     session is on the same footing as a member session after a restart and
-    re-establishes own-store authority the same way, by re-selecting its agent.
+    re-establishes own-store authority the same way, at a gate-verified admission.
     """
     from kiro_crew.config.loader import KiroCrewConfig
     from kiro_crew.history import ConversationLog
@@ -1391,9 +1442,9 @@ def restore_live_session_execution(session_key: str, prior, published) -> bool:
             # the vouched half of the agreement -- the same forgery this map
             # exists to refuse, and the one the paragraph above describes.
             #
-            # Dropping it defers own-store dispatch until the owner re-selects the
-            # agent, which binds afresh through the durable path. That is the
-            # fail-closed direction and the recovery the spec already documents.
+            # Dropping it defers own-store dispatch until a gate-verified admission
+            # re-vouches the session. That is the fail-closed direction and the
+            # recovery the spec already documents.
             _withdraw_vouched(key)
         current = _LIVE_EXECUTIONS.get(key)
         if current is None:

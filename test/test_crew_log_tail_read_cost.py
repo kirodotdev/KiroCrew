@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from crew_log_drain import assert_drained
 
 from kiro_crew import crew_log as lg
 from kiro_crew.crew_log import CrewLog
@@ -75,7 +76,7 @@ def _ledger(unit_id: str, **fields: Any) -> None:
     payload: dict[str, Any] = {"slot": SLOT}
     payload.update(fields)
     crew_log_emit.on_ledger_recorded(unit_id, payload)
-    crew_log_emit.flush(timeout=5.0)
+    assert_drained()
 
 
 def _entries(unit_id: str, count: int) -> None:
@@ -158,7 +159,7 @@ def test_a_warm_read_of_one_new_entry_does_not_decode_the_whole_log():
                 unit_id,
                 {"slot": f"{SLOT}-{unit_id}", "event": f"e{step}", "event_kind": "progress"},
             )
-        crew_log_emit.flush(timeout=20.0)
+        assert_drained()
     # The slope is only a slope if the two logs really differ, so the gap is asserted
     # rather than assumed: an emitter that dropped the thousand would make a flat
     # measurement look like the fix working.
@@ -173,7 +174,7 @@ def test_a_warm_read_of_one_new_entry_does_not_decode_the_whole_log():
         crew_log_emit.on_ledger_recorded(
             unit_id, {"slot": slot, "event": "the one new entry", "event_kind": "progress"}
         )
-        crew_log_emit.flush(timeout=20.0)
+        assert_drained()
         with _Decodes() as seen:
             crew_log.fold_slot_warm("ledger", (unit_id,), slot=slot)
         costs[unit_id] = (seen.parsed, seen.yielded)

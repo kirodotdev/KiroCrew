@@ -7,12 +7,12 @@ bookkeeping, deferred resets, eager spawn and the MCP report.
 
 Instance fields of ``_ChatSlot`` this module reads and writes:
 
-Writes: ``_app``, ``_auto_tagged``, ``_channel_runtime_origin``, ``_created_by``,
+Writes: ``_app``, ``_auto_tagged``, ``_binding``, ``_channel_runtime_origin``, ``_created_by``,
 ``_created_by_sid``, ``_crew_log_opened_sid``, ``_crew_log_pending_channel``,
 ``_crew_log_previous_from_mapping``, ``_crew_log_previous_sid``,
 ``_crew_log_previous_undecided``, ``_detail_render_lock``, ``_eager_spawn_failures``,
 ``_eager_spawn_retry_at``, ``_eager_spawn_task``, ``_effort_pick_gen``, ``_fork_lock``,
-``_human_seen``, ``_last_stop_reason``, ``_lineage_minted``, ``_mcp_report``,
+``_human_seen``, ``_last_stop_reason``, ``_lineage_minted``, ``_mcp_banner_shown``, ``_mcp_report``,
 ``_mcp_report_session_id``, ``_memory_assignment_from_history``, ``_model_pick_gen``,
 ``_model_pick_lock``, ``_model_runtime_pick_gen``, ``_model_withheld``,
 ``_model_withheld_for``, ``_origin``, ``_pending_discard_conversation_key``,
@@ -26,7 +26,7 @@ Writes: ``_app``, ``_auto_tagged``, ``_channel_runtime_origin``, ``_created_by``
 ``_title_retry_pending``, ``_title_task``, ``_titled``, ``_turn_timeout_hydrated``,
 ``_welcomed_agent``, ``agent_kind``, ``app_agent_owner``, ``autocompact_pct``,
 ``channel_origin``, ``created_at``, ``crew_mode_agent``, ``executor``, ``forked_from``, ``instance_id``,
-``jev_route``, ``memory_store``, ``project``,
+``jev_route``, ``memory_store``,
 ``remote_slot``, ``served_model``, ``turn_timeout_secs``.
 Reads only: ``model``.
 
@@ -42,6 +42,7 @@ import re
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, NamedTuple
 
+from kiro_crew.dashboard.transcript_binding import TranscriptBinding
 from kiro_crew.history import MEMORY_MODES
 
 if TYPE_CHECKING:
@@ -219,7 +220,8 @@ def init_session_fields(self: _ChatSlot) -> None:
     # assignment. Only a protected binding or an explicit owner pick clears
     # that admission boundary; this marker is not persisted in the transcript.
     self._memory_assignment_from_history = False
-    self.project = ""
+    # A private binding until ``bind_transcript`` joins it to a live alias group.
+    self._binding = TranscriptBinding()
     # Relay-archive binding, read off disk. ``executor`` is "local" for every
     # ordinary slot; "remote" marks a chat an older build ran on the peer
     # ``instance_id`` (its slot ``remote_slot``). Such a slot is read-only:
@@ -297,6 +299,10 @@ def init_session_fields(self: _ChatSlot) -> None:
     #: person's own tab, a fork, a restore. Read by
     #: ``DashboardState.creator_slot_count`` for ``MAX_SLOTS_PER_CREATOR``.
     self._created_by = ""
+    #: Shared Crew creator attribution (``shared_crew.attribution``): ``None``
+    #: until stamped or read back, then write-once. Persisted by the
+    #: metadata codec's ``attribution`` row.
+    self._attribution = None
     #: The ``created_by`` the session's saved metadata line names, read on every
     #: hydration (restore, recent, resume). DISPLAY ONLY: the Crew Mode stamp reads
     #: it to keep a reopened worker under its root (``crew_mode.stamp_rows``). It
@@ -340,6 +346,10 @@ def init_session_fields(self: _ChatSlot) -> None:
     self._mcp_report = None
     # The session the cached report describes — see set_mcp_report.
     self._mcp_report_session_id = ""
+    # The rejected MCP sign-in banners this slot already showed, per server:
+    # (digest of the ACP session id, sign-in round, digest of the text). In
+    # memory only and bounded; see dashboard.mcp_banner_dedupe.
+    self._mcp_banner_shown = {}
     # Set by api_chat_slot_project; consumed in _run_chat instead of
     # inline because the endpoint can be reached from inside the kiro-cli
     # process group via the set_project MCP tool.

@@ -1,17 +1,8 @@
-"""Tests for the RSS-threshold recycle hook (CR 1, new behaviour).
+"""Tests for the RSS-threshold recycle hook.
 
-Covers:
-  * get_session_rss_mb / _rss_mb_from_tree tree accumulation + subtree barrier
-  * the REAL /proc parsing primitives (_read_rss_pages, _build_child_map),
-    exercised against a fake /proc tree rather than mocked away
-  * per-PID sub-MiB accumulation (pages summed, truncated to MiB once)
-  * _rss_threshold_check: disabled by default, busy-skip, threshold trigger,
-    persistent- and channel-key protection, the attached-sub-agent guard
-    (kept when attached, recycled when not, kept when the probe raises),
-    the collect->reset race guard,
-    gating of the recycle notification on an actual reset, and a single
-    per-tick /proc child-map scan (not one scan per candidate)
-  * reset()'s atomic identity (expect_session) + not-busy (skip_if_busy) guards
+Covers tree accumulation, the real /proc parsing primitives against a fake /proc tree,
+per-PID pages summed then truncated to MiB once, the ``_rss_threshold_check`` sweep and
+its guards, and ``reset()``'s ``expect_session`` and ``skip_if_busy`` guards.
 """
 
 from __future__ import annotations
@@ -58,11 +49,8 @@ class TestGetSessionRssMb:
     def _off_windows_by_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Default this class to the /proc route.
 
-        The tree-accumulation tests below set ``sys.platform`` to "linux" and stub
-        the /proc primitives, but the Windows dispatch is keyed off
-        ``platform_compat.IS_WINDOWS``, which a Windows host reports as True — so
-        without this they would take the Win32 route and never reach the stubs.
-        The Windows tests re-patch it to True explicitly.
+        The Windows dispatch keys off ``platform_compat.IS_WINDOWS``, not
+        ``sys.platform``, so on a Windows host the stubs would never be reached.
         """
         monkeypatch.setattr(session_pid.platform_compat, "IS_WINDOWS", False)
 
@@ -250,22 +238,16 @@ class TestProcParsingPrimitives:
 class TestWindowsRssPrimitives:
     """Why the ``/proc`` primitives stay ``/proc``-only.
 
-    The RSS ceiling was a silent no-op on Windows (every tree measured 0 MiB, so
-    an over-budget tree was never recycled). The fix routes whole-tree
-    measurement through a lineage-validating helper rather than teaching these
-    two primitives a Win32 dialect -- pairing a raw Toolhelp parent map with an
-    aggressively recycled PID would sum an unrelated subtree and recycle a
-    HEALTHY session, which is worse than not recycling at all.
+    Windows measures through a lineage-validating helper instead: a raw Toolhelp
+    parent map with a recycled PID would sum an unrelated subtree and recycle a
+    healthy session.
     """
 
     def test_the_child_map_has_no_windows_branch_by_design(self) -> None:
         """A raw Toolhelp parent map is deliberately NOT used here.
 
-        ``th32ParentProcessID`` is never cleared when a parent exits, so pairing
-        it with an aggressively recycled PID would sum an unrelated subtree and
-        recycle a healthy session. Windows gets its own lineage-validated route
-        in ``get_session_rss_mb`` instead of a shareable snapshot. The map
-        ``_build_child_map`` wraps is where such a branch would land.
+        ``th32ParentProcessID`` is never cleared when a parent exits. Windows uses its
+        own lineage-validated route in ``get_session_rss_mb``.
         """
         import inspect
 
@@ -280,22 +262,18 @@ class TestRssThresholdCheck:
     def _on_the_proc_route(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Pin the hook's /proc branch for the behaviour tests below.
 
-        They assert on the sweep's DECISIONS (which sessions get recycled, and
-        which are protected), so they stub the /proc measurement helpers. That
-        stub only takes effect on the /proc branch, so a Windows host would
-        otherwise measure real trees here and every one of them would read as
-        under-threshold. The Windows dispatch has its own test above.
+        They stub the /proc helpers, which only the /proc branch calls; a Windows host
+        would otherwise measure real trees, all under threshold.
         """
         monkeypatch.setattr(session.platform_compat, "IS_WINDOWS", False)
 
     def test_shipped_default_reaches_the_enforcement_point(self) -> None:
-        """The ceiling is off by default: a manager built from the shipped
-        SessionConfig default holds 0, so ``_rss_threshold_check`` never
-        recycles a session until an operator sets a ceiling."""
+        """A manager built from the shipped SessionConfig default holds the
+        shipped ceiling, so ``_rss_threshold_check`` enforces it out of the box."""
         from kiro_crew.config.sections import DEFAULT_WATCHDOG_RSS_MAX_MB, SessionConfig
 
         manager = _make_manager(rss_max_mb=SessionConfig().watchdog_rss_max_mb)
-        assert manager._rss_max_mb == DEFAULT_WATCHDOG_RSS_MAX_MB == 0
+        assert manager._rss_max_mb == DEFAULT_WATCHDOG_RSS_MAX_MB == 4096
 
     @pytest.mark.asyncio
     async def test_explicit_zero_disables(self) -> None:
@@ -351,6 +329,8 @@ class TestRssThresholdCheck:
             await manager._rss_threshold_check()
         assert bm.call_count == 1  # one /proc scan for the whole tick
         assert rt.call_count == 2  # measured once per candidate
+        recycled = {key: rss for key, (_, rss) in _rss_recycled(manager).items()}
+        assert recycled == {"dashboard:a": 2048, "dashboard:b": 2048}
 
     @pytest.mark.asyncio
     async def test_windows_measures_per_candidate_without_a_shared_map(self) -> None:
@@ -378,6 +358,8 @@ class TestRssThresholdCheck:
             await manager._rss_threshold_check()
         assert gs.call_count == 2
         assert manager.reset.await_count == 2
+        recycled = {key: rss for key, (_, rss) in _rss_recycled(manager).items()}
+        assert recycled == {"dashboard:a": 2048, "dashboard:b": 2048}
 
     @pytest.mark.asyncio
     async def test_one_failed_victim_does_not_skip_the_rest(self) -> None:
@@ -405,14 +387,10 @@ class TestRssThresholdCheck:
 
     @pytest.mark.asyncio
     async def test_co_tenants_are_measured_once_and_recycle_one_session(self) -> None:
-        """Two sessions on ONE runtime: the tree is measured once, and crossing
-        the ceiling recycles ONE of them, not both.
+        """Two sessions on one runtime: the tree is measured once and one is recycled.
 
-        The RSS figure is the shared tree's, so N co-tenants read the SAME
-        number and all N cross together. Resetting all of them in one tick
-        discards N sessions' work to reclaim one process, and the process
-        survives anyway while any tenant remains -- so the sweep repeats. One
-        reset per runtime per tick is the action the measurement supports.
+        Co-tenants share one tree's figure, so all cross together; resetting all of
+        them discards their work while the process survives any remaining tenant.
         """
         manager = _make_manager(rss_max_mb=1000)
         manager._sessions["dashboard:a"] = _session_stub(busy=False)
@@ -426,6 +404,8 @@ class TestRssThresholdCheck:
             await manager._rss_threshold_check()
         assert rt.call_count == 1  # one walk per DISTINCT pid
         assert manager.reset.await_count == 1
+        recycled = {key: rss for key, (_, rss) in _rss_recycled(manager).items()}
+        assert recycled == {"dashboard:a": 2048}
 
     @pytest.mark.asyncio
     async def test_distinct_runtimes_over_threshold_are_each_recycled(self) -> None:
@@ -443,16 +423,15 @@ class TestRssThresholdCheck:
             await manager._rss_threshold_check()
         assert rt.call_count == 2
         assert manager.reset.await_count == 2
+        recycled = {key: rss for key, (_, rss) in _rss_recycled(manager).items()}
+        assert recycled == {"dashboard:a": 2048, "dashboard:b": 2048}
 
     @pytest.mark.asyncio
     async def test_a_skipped_co_tenant_lets_the_next_one_be_recycled(self) -> None:
         """The budget is one SUCCESSFUL reset per runtime, not one attempt.
 
-        A victim the guards decline (attached sub-agents, a mid-flight
-        injection, reset's own atomic re-check) has reclaimed nothing, so the
-        tick must still be able to recycle a co-tenant. Otherwise a single
-        permanently-guarded tenant makes the ceiling unreachable for its whole
-        runtime.
+        A declined victim reclaimed nothing, so the tick may recycle a co-tenant;
+        otherwise one permanently guarded tenant makes the ceiling unreachable.
         """
         manager = _make_manager(rss_max_mb=1000)
         manager._sessions["dashboard:a"] = _session_stub(busy=False)
@@ -609,6 +588,9 @@ class TestRssThresholdCheck:
         probe.assert_called_once_with("dashboard:x")
         manager.reset.assert_awaited_once()
         assert manager.reset.await_args.args[0] == "dashboard:x"
+        assert [(key, rss) for key, (_, rss) in _rss_recycled(manager).items()] == [
+            ("dashboard:x", 2048)
+        ]
 
     @pytest.mark.asyncio
     async def test_raising_subagent_probe_counts_as_attached(self, caplog) -> None:

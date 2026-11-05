@@ -16,7 +16,7 @@ import pytest
 from chat_runner_coverage_helpers import _errors, _slot, _state
 
 from kiro_crew.dashboard import chat_runner
-from kiro_crew.dashboard.chat_utils import chunk_generation
+from kiro_crew.dashboard.chat_utils import SUBAGENT_COMPLETION_KIND, chunk_generation
 from kiro_crew.testing.wait import async_wait_until
 
 # ── queue drain / synthesis ───────────────────────────────────────────────
@@ -180,7 +180,6 @@ class TestStartNextQueuedTurn:
             ({}, True),
             ({"running": [{"id": "b2", "stalled": True}]}, False),
             ({"in_memory": True}, False),
-            ({"delivering": 1}, False),
             ({"unreadable": True}, False),
             ({"probe_raises": True}, False),
             ({"queued_in_store": 1}, False),
@@ -190,7 +189,6 @@ class TestStartNextQueuedTurn:
             "settled",
             "running",
             "pending-in-memory",
-            "delivering",
             "unreadable",
             "probe-raises",
             "queued-in-store",
@@ -200,18 +198,14 @@ class TestStartNextQueuedTurn:
     async def test_a_user_message_ends_the_batch_only_when_nothing_is_out(
         self, tmp_path, children, ends_batch
     ):
-        """A user message drained at a turn's end (`_hand_off_queue`, the
-        ending turn still holding the floor) disarms the synthesis either way.
-        It clears the batch's turn count only when the fire gate answers clear,
-        so no child of the batch is still out: clearing a live batch's count
-        loses its synthesis, while keeping a stale one costs at most one extra
-        synthesis. A store nobody could read keeps it too. The running child is
-        flagged stalled so the drain's own child hold lets the message through;
-        the fire gate still counts it as running."""
+        """A user message at a turn's end disarms the synthesis either way.
+
+        The batch's turn count clears only when no child is still out (an unreadable store
+        keeps it). The running child is flagged stalled so the drain lets the message by.
+        """
         state, slot = _state(tmp_path), _slot()
         slot._pending_synthesis = True
         slot._synthesis_completion_turns = 2
-        slot._subagent_deliveries_inflight = children.get("delivering", 0)
         subs = _children(
             running=children.get("running", ()),
             in_memory=children.get("in_memory", False),
@@ -244,6 +238,66 @@ class TestStartNextQueuedTurn:
         assert spawn.call_count == 1, "the message drained as the next turn"
         assert slot._pending_synthesis is False, "the user takes over, as before"
         assert slot._synthesis_completion_turns == (0 if ends_batch else 2)
+
+    @pytest.mark.asyncio
+    async def test_a_user_message_waits_while_a_completion_is_being_delivered(self, tmp_path):
+        """A completion still on its way to the tab holds user messages as a
+        running child does: the last child is done, but its result is not queued
+        yet, and the message must not be answered without it."""
+        state, slot = _state(tmp_path), _slot()
+        slot._pending_synthesis = True
+        slot._synthesis_completion_turns = 2
+        slot._subagent_deliveries_inflight = 1
+        state.subagents = _children()
+        slot.queue_append("a user message")
+        slot.task = ending = asyncio.get_running_loop().create_future()
+
+        with (
+            patch.object(chat_runner, "spawn_guarded_turn", return_value=MagicMock()) as spawn,
+            patch.object(chat_runner, "_run_chat", new=MagicMock(return_value=MagicMock())),
+        ):
+            try:
+                await chat_runner._hand_off_queue(
+                    state, slot, drain=True, allow_automatic_successor=True
+                )
+            finally:
+                ending.cancel()
+
+        assert spawn.call_count == 0
+        assert [entry["content"] for entry in slot._queue] == ["a user message"]
+        assert slot._pending_synthesis is True
+        assert slot._synthesis_completion_turns == 2
+
+    @pytest.mark.asyncio
+    async def test_a_queued_completion_runs_before_a_user_message_queued_ahead_of_it(
+        self, tmp_path
+    ):
+        """A completion that queued behind another system turn keeps the hold: that
+        turn's end runs the completion, not the user message held for the
+        children, though no child is running and none is being delivered."""
+        state, slot = _state(tmp_path), _slot()
+        slot._pending_synthesis = True
+        state.subagents = _children()
+        slot.queue_append("a user message")
+        slot.queue_append(
+            "[Subagent completion event] the last result", kind=SUBAGENT_COMPLETION_KIND
+        )
+        slot.task = ending = asyncio.get_running_loop().create_future()
+
+        with (
+            patch.object(chat_runner, "spawn_guarded_turn", return_value=MagicMock()) as spawn,
+            patch.object(chat_runner, "_run_chat", new=MagicMock(return_value=MagicMock())),
+        ):
+            try:
+                await chat_runner._hand_off_queue(
+                    state, slot, drain=True, allow_automatic_successor=True
+                )
+            finally:
+                ending.cancel()
+
+        assert spawn.call_count == 1
+        assert [entry["content"] for entry in slot._queue] == ["a user message"]
+        assert slot._pending_synthesis is True
 
     @pytest.mark.asyncio
     async def test_an_armed_drain_reads_no_store_and_keeps_the_count(self, tmp_path):
@@ -494,11 +548,8 @@ class TestRunPendingSynthesis:
     async def test_synthesis_prompt_is_appended_as_an_inject_row(self, tmp_path):
         """The prompt must reach the transcript as `inject`, never as user speech.
 
-        This site bypasses `_start_next_queued_turn` (it runs no queue entry),
-        which is the only other place a turn-dispatching path appends a row.
-        Without a row of its own the prompt reaches the conversation log with
-        nothing on the dashboard, and resurfaces attributed to the USER on
-        replay.
+        This site bypasses `_start_next_queued_turn`; without its own row the prompt
+        replays attributed to the USER.
         """
         state, slot = _state(tmp_path), _slot()
         slot._pending_synthesis = True
@@ -541,12 +592,8 @@ class TestRunPendingSynthesis:
     def test_inject_provenance_survives_the_persistence_boundary(self):
         """`injectKind` must round-trip; the older `cls` channel does not.
 
-        This is the property the whole render decision now rests on. An inject
-        row's ``cls`` is persisted only for ``role == "system"``, so the
-        ``cronLabel`` the frontend reads (synthesized from ``cls`` at emit time)
-        silently disappears on the next rehydrate — which is exactly how a
-        carve-out keyed on it swallowed every restored cron notification. Assert
-        the durable channel directly rather than trusting the live shape.
+        ``cls`` is persisted only for ``role == "system"``, so a ``cronLabel`` built from it
+        vanishes on rehydrate. The render decision rests on the durable channel.
         """
         from kiro_crew.dashboard.chat_persistence import _build_message_entry_uncached
 

@@ -23,6 +23,7 @@ from off_loop_helpers import off_loop
 from kiro_crew.messaging.link import ChannelLink, legacy_dashboard_mirror_key
 from kiro_crew.messaging.transport import InboundMessage
 from kiro_crew.session import _opt_out_key
+from kiro_crew.testing.wait import await_until, until_parked
 
 
 def _read_session_log(unit: str) -> list[Any]:
@@ -456,18 +457,27 @@ class TestDispatcherOriginMirroring:
             # The loser's view when it reaches the allocation: the older store.
             mapping["sid"] = "acp-gen-0"
             real_get_or_create = sess.get_or_create
+            permit = asyncio.Event()
 
             async def _wait_for_the_permit_then_allocate(key: str, **kwargs: Any) -> Any:
-                # Suspended inside the allocation, waiting for the permit. The
-                # winner's intermediate session is allocated and recycled meanwhile.
-                # flake-ok: the stub's zero-delay yield suspends the allocation; moved verbatim
-                await asyncio.sleep(0)
-                mapping["sid"] = "acp-gen-1"
+                # Suspended inside the allocation, parked on the permit until the
+                # winner has recycled its intermediate session and releases it.
+                await await_until(permit, what="the winner releasing the turn permit")
                 return await real_get_or_create(key, **kwargs)
 
             sess.get_or_create = _wait_for_the_permit_then_allocate
             monkeypatch.setattr(FakeProvider, "session_id", "acp-gen-2", raising=False)
-            await d.handle_message(self._msg("and again"))
+            loser = asyncio.ensure_future(d.handle_message(self._msg("and again")))
+            try:
+                # The loser is observed parked inside the allocation; only then does
+                # the winner's intermediate session get allocated and recycled, and
+                # the permit pass to the loser.
+                await until_parked(permit, describe=lambda: repr(loser))
+                mapping["sid"] = "acp-gen-1"
+                permit.set()
+                await await_until(loser, what="the loser's turn after the permit is released")
+            finally:
+                loser.cancel()
             await asyncio.to_thread(assert_drained)
 
             opened = [

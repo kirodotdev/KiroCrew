@@ -52,13 +52,9 @@ _kill_seam = cron_reaper_helpers._kill_seam
 class TestReaperRecordsAFailedSigkill:
     """The audit never says ``reaped`` for a run whose process group was not killed.
 
-    ``_sigkill_session`` raises nothing -- the reap must still finish the claim
-    it took -- but it REPORTS what stopped the kill: the broadcast guard's
-    refusal of the pid, or the error the kill raised. ``_force_reap`` carries
-    that into the run's terminal record (``…; kill failed: <reason>``) and
-    audits ``reaper_force_kill`` as ``failed``, the same outcome a kill await
-    that raised gets. Before this, both were a log line and the audit read
-    ``reaped`` while the process group kept running.
+    ``_sigkill_session`` raises nothing, so the reap still finishes its claim, but it
+    returns what stopped the kill. ``_force_reap`` writes that into the terminal record
+    (``…; kill failed: <reason>``) and audits ``reaper_force_kill`` as ``failed``.
     """
 
     @pytest.mark.asyncio
@@ -106,11 +102,9 @@ class TestReaperRecordsAFailedSigkill:
     async def test_the_kill_failure_suffix_is_bounded_at_retention(self, tmp_path: object) -> None:
         """A kill reason the size of a tree's stderr cannot push ``last_error`` past the record bound.
 
-        A Windows tree drain that fails carries one line per process the run
-        spawned; joined onto the run's own text it is held to
-        ``MAX_ERROR_DETAIL_LEN`` by the shared ``with_kill_failure`` (the same
-        bound the sub-agent record applies), the reason keeping at least
-        ``KILL_FAILURE_RESERVE_LEN`` of it and the run's text trimmed to make room.
+        A failed Windows tree drain carries one line per process. ``with_kill_failure``
+        holds the total to ``MAX_ERROR_DETAIL_LEN``, the reason keeping at least
+        ``KILL_FAILURE_RESERVE_LEN`` and the run's text trimmed to make room.
         """
         from kiro_crew.process_identity import (
             KILL_FAILURE_RESERVE_LEN,
@@ -363,14 +357,9 @@ class TestReaperRecordsAFailedSigkill:
     ) -> None:
         """The Windows rule keeps only real errors: a root the pin cannot find is a gone tree.
 
-        The no-pin variant of the Windows gone-root rule: the object with the
-        recorded creation time cannot be opened at the pin (the root exited
-        between the last identity read and the pin), and with no exact-tree
-        cleanup pending for its identity there is nothing this code can
-        enumerate, verify or signal (the pinned drain walked the tree while it
-        was alive), and Windows has no process groups to probe -- a gone root
-        stays "nothing to kill", the documented platform limitation. A pending
-        pin is the other variant (``TestAGoneWindowsRootDrainsItsPendingTreeCleanup``).
+        The no-pin variant: the root exited before the pin and no tree cleanup is pending,
+        and Windows has no process groups to probe, so there is nothing left to signal.
+        The pending-pin variant is ``TestAGoneWindowsRootDrainsItsPendingTreeCleanup``.
         """
         svc = CronService(base_dir=None, on_job=AsyncMock())
         svc._sessions = _mock_sessions()
@@ -403,11 +392,8 @@ class TestReaperRecordsAFailedSigkill:
     async def test_no_handle_and_no_usable_pid_are_nothing_to_kill(self) -> None:
         """The early returns are not failures: there is no process group to answer for.
 
-        No pre-reset handle (no session was live under the key before the
-        reset), or a handle with no usable pid -- nothing names a process, so
-        nothing is signalled. A live session whose client has no usable pid
-        (never spawned, or already reset) is not even a candidate: the key names
-        no process through it.
+        No pre-reset handle, or a handle with no usable pid: nothing names a process, so
+        nothing is signalled.
         """
         svc = CronService(base_dir=None, on_job=AsyncMock())
         svc._sessions = _mock_sessions()
@@ -594,14 +580,9 @@ class TestReaperRecordsAFailedSigkill:
     ) -> None:
         """The start id is read again right before the signal; a changed one is a gone root, and a child the walk found is named.
 
-        The child walk awaits, and the root can exit -- and its pid be handed to
-        another process -- while it does. A ``killpg`` through the pid then would
-        signal that process's group. A child the walk FOUND (7272, in its own
-        group, so the retained group's probe never sees it) was read through a
-        pid that may already have been recycled when the walk ran, so it is not
-        swept -- and it is not dropped either: the record names it as a kill
-        failure, unattributed and not signalled, never ``reaped`` over it. Only
-        the children recorded before the reset (6262) are swept.
+        The root can exit and its pid be reused during the awaited child walk. A child the
+        walk found (7272) may come from a reused pid, so it is named as a kill failure and
+        not signalled; only children recorded before the reset (6262) are swept.
         """
         svc = CronService(base_dir=None, on_job=AsyncMock())
         svc._sessions = _mock_sessions()
@@ -676,11 +657,8 @@ class TestReaperRecordsAFailedSigkill:
     ) -> None:
         """``reset`` answers False when the key is already gone: it stopped nothing.
 
-        A concurrent reset popped the entry between the reap's snapshot and the
-        reset's lock. Whether that reset's shutdown lands is not this reap's to
-        assume: the handle says the process is standing (its recorded start id
-        reads back), so the kill goes through the handle and the record says
-        reaped only once it has been signalled.
+        A concurrent reset popped the entry, but the handle's start id still reads back,
+        so the kill goes through the handle before the record says reaped.
         """
         svc, job, claim = _overdue_reap_fixture(tmp_path, "unmapped1")
         _session_with_pid(svc, "cron:unmapped1", 5858)
@@ -712,15 +690,8 @@ class TestReaperRecordsAFailedSigkill:
     ) -> None:
         """The run's own finally reset pops the session BEFORE the reap looks; the kill still lands.
 
-        The ordinary shape of a run that hangs in its teardown: the run body's
-        ``finally`` resets its session, the reset pops the map entry under the
-        registry lock and then hangs in the provider shutdown, and only later does
-        the reaper measure the run over its deadline. Its live-map lookup misses,
-        its own reset answers False for the already-popped key, and without the
-        torn-down table there was no handle -- nothing to verify, ``reaped``
-        recorded, while the hung reset (which this reap's cancel of the run task
-        is about to interrupt) still held the process. The handle is read from
-        the session the manager retains for the life of that teardown, and the
+        A run hung in teardown has popped its map entry, so the reap's lookup misses. The
+        handle comes from the session the manager retains during that teardown, and the
         kill goes to the pre-pop pid.
         """
         svc, job, claim = _overdue_reap_fixture(tmp_path, "torn1")
@@ -750,12 +721,8 @@ class TestReaperRecordsAFailedSigkill:
     ) -> None:
         """The retained handle is the one captured at the pop, not a re-read of the session.
 
-        The run's own teardown pops the session, its ACP kill fails, the client's
-        reset clears the recorded pid anyway, and the teardown hangs on the
-        transport -- the process still standing. A reap that re-read the retained
-        session found no pid, dropped the only process under the key as "names
-        nothing", and recorded ``reaped``. The table captures the handle in the
-        pop's own lock hold, and the kill goes to that identity.
+        After a failed ACP kill the client's reset clears the pid while the process stands,
+        so a re-read finds no pid. The table captures the handle under the pop's lock.
         """
         svc, job, claim = _overdue_reap_fixture(tmp_path, "torn3")
         client = _session_with_pid(svc, "cron:torn3", 6565)
@@ -786,12 +753,7 @@ class TestReaperRecordsAFailedSigkill:
     async def test_a_refused_kill_of_a_session_the_run_s_own_teardown_popped_is_a_failed_kill(
         self, tmp_path: object
     ) -> None:
-        """Same pop-before-the-snapshot shape, kill refused: ``failed``, never ``reaped``.
-
-        Before the torn-down table this run was audited ``reaped`` with a clean
-        ``last_error`` and no kill attempted at all -- the audit this PR corrects,
-        on the path a hung teardown takes every time.
-        """
+        """Same pop-before-the-snapshot shape, kill refused: ``failed``, never ``reaped``."""
         svc, job, claim = _overdue_reap_fixture(tmp_path, "torn2")
         _session_with_pid(svc, "cron:torn2", 6464)
         _torn_down_by_the_run(svc, "cron:torn2")
@@ -824,12 +786,8 @@ class TestReaperRecordsAFailedSigkill:
     ) -> None:
         """End to end through ``SessionManager``: the run's reset hangs, the reap kills, the table empties.
 
-        The run task resets its own session and hangs in the provider shutdown;
-        the reaper arrives after that pop. Through the real manager the handle
-        comes from the torn-down table, the kill goes to the pre-pop pid, the
-        audit says ``reaped`` for a delivered kill -- and the reap's cancel of the
-        run task ends the hung teardown, whose scope releases the entry: the
-        table is empty once the teardown is over.
+        The reap's cancel of the run task ends the hung teardown, whose scope releases the
+        torn-down table entry.
         """
         from kiro_crew.config import KiroCrewConfig
         from kiro_crew.session import SessionManager
@@ -950,12 +908,8 @@ class TestReaperRecordsAFailedSigkill:
     ) -> None:
         """Two hung teardowns under one key -- the run's own and a successor's -- and both processes are answered.
 
-        The run's reset pops its session and hangs; a late completion cold-starts
-        a successor under the key; the successor's own reset pops it and hangs as
-        well. A table that retained the first popper alone let the reap kill the
-        run's process, record ``reaped``, and leave the successor's hung process
-        standing with nothing left to find it by. Every teardown in flight is
-        retained, so the reap's snapshot names both handles and kills both.
+        A late completion cold-starts a successor whose reset also hangs. Every teardown in
+        flight is retained, so a table keeping only the first would leave one standing.
         """
         from kiro_crew.config import KiroCrewConfig
         from kiro_crew.session import SessionManager
@@ -1144,12 +1098,8 @@ class TestReaperRecordsAFailedSigkill:
     ) -> None:
         """Control: identity alone is not liveness -- an exited pid the platform confirms is no survivor.
 
-        On Windows the creation time reads back through a query handle for as long
-        as any handle to the exited process object is held (the transport's, until
-        GC), so a just-exited child answers the recorded start id while
-        ``pid_exists`` (which confirms the exit code) says gone. Without the
-        liveness read every completed reset there logged a survivor and spawned
-        two ``taskkill`` runs against a dead pid before recording ``reaped``.
+        On Windows an exited process's creation time reads back while any handle to it is
+        held, so only ``pid_exists`` (which confirms the exit code) says it is gone.
         """
         svc, job, claim = _overdue_reap_fixture(tmp_path, "exited1")
         _session_with_pid(svc, "cron:exited1", 6767)

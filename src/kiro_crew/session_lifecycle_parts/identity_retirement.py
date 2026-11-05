@@ -320,7 +320,8 @@ async def retire_kiro_identity_sessions(
                         self._origin_links.pop(key, None)
                         self.state.stop_requests.pop(key, None)
                         self._discard_replay_gap(key)
-                        self.state.orphaned_holders.pop(key, None)
+                        # ``orphaned_holders`` is kept, as in ``remove``: a holder an
+                        # earlier reset recorded still owes its late release.
                         retired_keys.append(key)
                         invalidated_keys.append(key)
                         teardown_children_by_key[key] = self._snapshot_parent_children(key)
@@ -471,7 +472,7 @@ async def retire_kiro_identity_sessions(
                             self._origin_links.pop(key, None)
                             self.state.stop_requests.pop(key, None)
                             self._discard_replay_gap(key)
-                            self.state.orphaned_holders.pop(key, None)
+                            # ``orphaned_holders`` is kept, as in ``remove``.
                             # Selection only -- the committed fence is already open
                             # (promoted above); re-opening it would discard the
                             # concurrent admissions it carries.

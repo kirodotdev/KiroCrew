@@ -54,6 +54,7 @@ from kiro_crew import asset_downloader, pinned_fs, platform_compat
 from kiro_crew import sel as _sel_mod
 from kiro_crew.apps.version import parse_version
 from kiro_crew.config.paths import config_dir
+from kiro_crew.owner_only_files import mkdirs_owner_only
 from kiro_crew.platform import governance_profiles as _governance_profiles
 from kiro_crew.platform.feed_trust import verify_document_signature
 from kiro_crew.tips_allowlist import TIP_DOC_ALLOWLIST
@@ -513,7 +514,7 @@ def ensure_cache_dir(release: str) -> Path:
     # The root by name: mkdir never writes THROUGH a link (an existing target only
     # makes it a no-op), and a root that became a link is refused by the pinned
     # open and the witness below. The release folder is never created by name.
-    root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    mkdirs_owner_only(root)
     # Early, readable refusal for a link already there (a junction included); the
     # no-follow opens and the descriptor witnesses below are what settle it.
     _refuse_link(path, "feature-video release folder")

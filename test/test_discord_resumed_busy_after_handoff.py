@@ -768,11 +768,12 @@ async def test_a_cancelled_handler_still_reconciles_an_accepted_steer(tmp_path) 
 
     Awaited inline, the handler's cancellation lands inside the steer RPC: the
     client has the text, and everything behind the RPC -- the transcript row, the
-    pop of the per-steer maps -- is skipped, so the text runs with no row while
-    the maps keep its entry for the slot's lifetime (the ``steering_consumed``
-    settle only removes the pending entry and patches an existing row). Shielded
-    and strongly held, the hand-off task completes the reconciliation; the caller
-    unwinds without the outcome, so no confirmation reaches the closing DM.
+    pop of the delivery and send ids -- is skipped, so the text runs with no row
+    while those ids keep its entry for the slot's lifetime (the
+    ``steering_consumed`` settle removes the pending entry, patches an existing row
+    and releases the held provenance, but pops neither id). Shielded and strongly
+    held, the hand-off task completes the reconciliation; the caller unwinds without
+    the outcome, so no confirmation reaches the closing DM.
     """
     client, slot, enqueued = await _handler_cancelled_inside_the_steer_rpc(tmp_path, accepted=True)
 
@@ -780,9 +781,13 @@ async def test_a_cancelled_handler_still_reconciles_an_accepted_steer(tmp_path) 
     assert steer_row is not None, "the accepted steer has its transcript row"
     assert steer_row["content"] == "keep the old name"
     assert steer_row["meta"].get(HUMAN_TURN_META_KEY) is True
-    assert slot._steer_delivery_ids == {} and slot._steer_user_origin == {}
-    assert slot._steer_channel_origin == {} and slot._steer_admissions == {}
+    assert slot._steer_delivery_ids == {}
     assert slot._pending_steers == ["keep the old name"], "delivered and live: the turn consumes it"
+    # Provenance is held with the pending steer for the requeue; the echo's settle
+    # releases it.
+    assert set(slot._steer_admissions) == {"keep the old name"}
+    assert slot._steer_user_origin == {"keep the old name": True}
+    assert slot._steer_channel_origin == {"keep the old name": True}
     assert len(slot._steer_audience_fences) == 1, "the audience's record stays for the turn"
     assert slot._queue == [] and enqueued == []
     assert ch._HANDOFFS_IN_FLIGHT == set(), "the strong reference is released on completion"
@@ -946,6 +951,142 @@ async def test_the_composers_own_steer_does_not_narrow_the_turn(tmp_path, monkey
     spy.assert_called_once()
     assert spy.call_args.kwargs["producer_is_channel"] is False
     assert slot._turn_channel_narrowed is False
+
+
+@pytest.mark.parametrize("origin", ["composer", "channel", "peer"])
+@pytest.mark.asyncio
+async def test_an_accepted_steer_requeued_before_its_echo_keeps_its_producer_marks(
+    tmp_path, monkeypatch, origin
+):
+    """The RPC accepts the steer, the turn ends without ``steering_consumed``, and the
+    requeued text runs as its own turn that emits ``monitor_watch``.
+
+    Accepting the write is not consumption, so the successful tail must leave the
+    steer's provenance for the requeue. Dropped there, the requeued entry carried no
+    origin marks and no containment baseline. The session's own human then lost the
+    positive origin that vouches for a member self-arm (so ``monitor_start``
+    answered "requested" and the arm got the outside-arm 409), and a Discord human
+    lost the channel narrowing. A peer's text carries no positive mark either way.
+
+    Mutation guard: pop ``_steer_user_origin`` / ``_steer_channel_origin`` /
+    ``_steer_admissions`` unconditionally in the steered tail of
+    ``steer_into_running_turn`` and the composer's requeued directive is applied
+    with ``producer_is_user_facing=False``.
+    """
+    from test_acp_tool_identity import _stub_state
+
+    from kiro_crew import session_directive
+    from kiro_crew.acp.types import (
+        EVENT_COMPLETE,
+        EVENT_TEXT_CHUNK,
+        EVENT_TOOL_CALL,
+        EVENT_TOOL_RESULT,
+        AcpEvent,
+    )
+    from kiro_crew.dashboard.chat_delivery import steer_into_running_turn
+
+    state = _stub_state(tmp_path)
+    slot = state.get_or_create_slot("chat-1")
+    slot._titled = True
+    marker = session_directive.encode(
+        "monitor_watch",
+        {
+            "kind": "github_pull_request",
+            "target": "https://github.com/example/repo/pull/1",
+            "objective": "review_ready",
+        },
+        "watching",
+    )
+    outcomes: list = []
+
+    async def _stream(_msg):
+        if outcomes:
+            # The requeued steer's own turn: it emits the directive under test.
+            yield AcpEvent(
+                kind=EVENT_TOOL_CALL,
+                tool_call_id="tc-watch",
+                title="Watching the pull request",
+                tool_name="monitor_watch",
+                mcp_server_name="kirocrew-core",
+            )
+            yield AcpEvent(
+                kind=EVENT_TOOL_RESULT,
+                tool_call_id="tc-watch",
+                tool_output=marker,
+                tool_final=True,
+            )
+            yield AcpEvent(kind=EVENT_COMPLETE)
+            return
+        yield AcpEvent(kind=EVENT_TEXT_CHUNK, text="working")
+        _busy(slot)
+        try:
+            if origin == "composer":
+                # The dashboard composer's steer: its session's own human typed it.
+                outcomes.append(
+                    await steer_into_running_turn(
+                        state, slot, "watch that PR for me", user_origin=True
+                    )
+                )
+            elif origin == "channel":
+                outcomes.append(
+                    await ch.hand_to_resumed_slot(
+                        state,
+                        "dashboard:chat-1",
+                        "watch that PR for me",
+                        mode="steer",
+                        has_attachments=False,
+                        channel_type="discord",
+                        conversation_id="c1",
+                        principal="u1",
+                    )
+                )
+            else:
+                # The containment half of what `send_to_target` hands the steer
+                # for a peer session.
+                outcomes.append(
+                    await steer_into_running_turn(
+                        state,
+                        slot,
+                        "watch that PR for me",
+                        user_origin=False,
+                        admission=sc.containment_meta(state, slot),
+                    )
+                )
+        finally:
+            slot.task = None
+        # The turn ends here and the fake client never echoes the steer as consumed.
+        yield AcpEvent(kind=EVENT_COMPLETE)
+
+    inner = _steerable()
+    client = MagicMock()
+    client.stream = _stream
+    client.stream_command = _stream
+    client.context_usage_pct = MagicMock(return_value=1.0)
+    client.client = inner
+    state.sessions.get_or_create = AsyncMock(return_value=(client, True, False))
+    spy = AsyncMock(return_value=DirectiveOutcome("[applied]"))
+    monkeypatch.setattr(cr, "apply_session_directive_outcome", spy)
+
+    await cr._run_chat(state, slot, "go", _directive_user_origin=True)
+    task = getattr(slot, "task", None)
+    if task is not None:
+        await task
+
+    assert inner.steer.await_count == 1, outcomes
+    spy.assert_called_once()
+    assert spy.call_args.args[3] == "monitor_watch"
+    kwargs = spy.call_args.kwargs
+    assert kwargs["producer_is_self_wake"] is False
+    if origin == "composer":
+        assert kwargs["producer_is_user_facing"] is True
+        assert kwargs["producer_is_channel"] is False
+    elif origin == "channel":
+        assert kwargs["producer_is_channel"] is True
+    else:
+        assert kwargs["producer_is_user_facing"] is False
+        assert kwargs["producer_is_channel"] is False
+    assert slot._steer_admissions == {} and slot._steer_user_origin == {}
+    assert slot._steer_channel_origin == {}, "the requeue releases what it copied"
 
 
 @pytest.mark.asyncio

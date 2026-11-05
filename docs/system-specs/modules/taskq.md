@@ -171,6 +171,15 @@ Pinned by
 and the legacy importer drops a persisted `auto_approve` for the same reason
 (`migrate.import_legacy`).
 
+### Accepted-work rows (Shared Crew)
+
+`taskq.store_work` adds two tables to the same file: `accepted_work` (one admission
+record per accepted unit of work, unique on its idempotency `scope`, written through
+the writer thread with compare-and-set on `revision`) and `principal_storage` (the
+per-principal byte ledger). Both are created by `apply_schema` with `IF NOT EXISTS`;
+the schema version is unchanged because an older build that does not know the tables
+leaves them in place. `shared_crew.work_store` is their only writer.
+
 ## State machine
 
 Fifteen states, one table (`model.TRANSITIONS`), consulted by every write.
@@ -1096,6 +1105,15 @@ data instead: `GET /api/spawn/lanes` (`admission.lane_snapshot_async()`): per-la
 `lane_kind ∈ {system, session}` attribute on `kirocrew.taskq.depth` is left to
 the health sampler.
 
+### Per-person lanes (Shared Crew)
+
+While Shared Crew fair admission is on, the admission gate installs
+`lanes.set_lane_resolver`: a root session whose running work has an initiator maps to
+the lane `principal:<id>`, so the same round-robin is fair across people and one
+person's many sessions share one lane. A key the resolver does not know keeps its
+session lane; children still inherit their root's lane. See
+[shared-crew.md](shared-crew.md) section 4.
+
 ## Deferral (memory pressure)
 
 `defer(task_id, *, wait, reason)` sets `next_run_at` on a claimable row to the
@@ -1228,10 +1246,28 @@ rows this incarnation has since claimed are skipped.
 | class `unknown` | `unknown_side_effect` |
 | class `none` / `idempotent_key` | `recovering`, `next_run_at = now + backoff(attempts)` (`2·2^attempts`, cap 120s); the dispatcher re-claims it. A row this table already sent to `recovering` `model.RECOVERY_MAX_ATTEMPTS` (3) times goes to `failed` instead, with `reconciled: lost_owner_limit`, the count and a readable `error` on its transition event, so a run that takes its gateway down cannot restart it on every boot. The count is `store.lost_owner_recoveries`, read from the row's `reconciled: lost_owner` transitions into `recovering`, never `attempts`, which also counts `retry_wait` re-dispatches |
 
-The reconciler deliberately still examines only `ACTIVE` rows: it is
-kind-agnostic, and a CLAIMABLE row is normally its dispatcher's — a `queued`
-`subagent` row is exactly what the window refill exists to pick up. The
-`queued` rows of a kind with NO dispatcher are therefore the kind-scoped
+The table above is the `ACTIVE` pass. A `queued` row is claimed by nobody and
+is normally its dispatcher's — a `queued` `subagent` row is exactly what the
+window refill exists to pick up — so the reconciler reads the `queued` rows,
+and with them the `retry_wait` rows (a start given back before registration,
+or a parked backoff: claimable by the same refill, so refused the same way)
+(`store.queued_rows()`, snapshotted BEFORE the active pass, so a row that pass
+requeues from `admitted` is not read twice; counted in
+`ReconcileReport.queued_examined`, not `examined`) for one thing only: an
+`artifact_probe` verdict of `REFUSED` (the subagent refusal tombstone,
+`cause="refused"`, [subagent](subagent.md) § Refused-row settle), settled
+`failed`. It never applies a class verdict to a `queued` row, and it does NOT
+settle one on a plain `done` / `failed` / `cancelled`: a row comes back to
+`queued` after an earlier attempt (a dependency wake of a parked `retry_wait`
+row, this table's own lost-owner requeue), and that attempt's ending on disk is
+not this row's; the refusal marker is written only for a spawn refused before
+its row was claimed, so it can only be this row's own. A `queued` row whose
+artifacts say nothing, or record only such an ending, is left as it was. The
+case it closes is a refusal recorded for a row the dispatcher never claimed
+whose own `failed` write was lost before the crash: without the pass the
+pump starts that row under an id whose tombstone already records an ending,
+and the next crash's probe reads the stale ending as that execution's. The
+`queued` rows of a kind with NO dispatcher are otherwise the kind-scoped
 adopter's half of the job (§ Runner adapters, `adopt_orphaned_rows`), and the
 two are complementary rather than overlapping: the adopter also picks up the
 row this table just requeued from `admitted`, which for such a kind would

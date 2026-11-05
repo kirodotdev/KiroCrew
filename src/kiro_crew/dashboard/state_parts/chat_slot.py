@@ -37,6 +37,7 @@ if TYPE_CHECKING:
     from kiro_crew.dashboard.git_repo_touches import TouchCandidates
     from kiro_crew.dashboard.state_parts.dashboard_state import DashboardState
     from kiro_crew.dashboard.steer_retract import SteerClear, SteerRetract
+    from kiro_crew.dashboard.transcript_binding import TranscriptBinding
     from kiro_crew.subagent import SubagentDelivery
     from kiro_crew.trust_patterns import GrantDeadline
 
@@ -86,7 +87,7 @@ class _ChatSlot:
         "workspace",
         "memory_store",
         "_memory_assignment_from_history",
-        "project",
+        "_binding",
         "created_at",
         "_messages",
         "_lazy_window",
@@ -115,9 +116,11 @@ class _ChatSlot:
         "_trust_card_scoped",
         "_trust_scope",
         "_trust_reads",
+        "_posture_inherited",
         "_member_approval_seeded",
         "_trusted_patterns",
         "_trusted_pattern_deadlines",
+        "_deny_waivers",
         "_titled",
         "_title_origin",
         "_title_epoch",
@@ -132,6 +135,7 @@ class _ChatSlot:
         "_detail_render_lock",
         "_last_stop_reason",
         "_created_by",
+        "_attribution",
         "_created_by_sid",
         "_saved_created_by",
         "_lineage_minted",
@@ -139,6 +143,7 @@ class _ChatSlot:
         "_revived_by",
         "_artifact",
         "_doc",
+        "_session_kind",
         "_channel_folder_filed",
         "_resumed_count",
         "_hook_continuation_depth",
@@ -149,6 +154,7 @@ class _ChatSlot:
         "_todo_rebuild_expected",
         "_mcp_report",
         "_mcp_report_session_id",
+        "_mcp_banner_shown",
         "_on_message",
         "_on_row",
         "_on_card_event",
@@ -264,6 +270,10 @@ class _ChatSlot:
         "_human_seen",
         "_origin",
         "_pending_variants",
+        "_regenerate_target",
+        "_swap_in_flight",
+        "_window_swap_epoch",
+        "_window_swap_applying",
         "_lock",
         "forked_from",
         "_fork_lock",
@@ -307,6 +317,7 @@ class _ChatSlot:
         "_acp_client",
         "_last_turn_awaiting_permission",
         "_last_turn_children_announced",
+        "_crew_dispatch_notice_turn_gen",
         "_steer_segment_cut",
         "_owed_segment_cut",
         "_native_subagent_tracker",
@@ -317,13 +328,17 @@ class _ChatSlot:
         "_steer_send_ids",
         "_steer_user_origin",
         "_steer_channel_origin",
+        "_steer_owner_origin",
         "_turn_channel_narrowed",
         "_turn_channel_origin",
         "_turn_user_sent",
+        "_turn_owner_sent",
+        "_turn_agent_started",
         "_steer_admissions",
         "_steer_decision_strips",
         "_steer_possibly_delivered",
         "_steer_rpc_in_flight",
+        "_native_steer_in_flight",
         "_steer_retract",
         "_steer_clear",
         "_steer_audience_fences",
@@ -353,6 +368,7 @@ class _ChatSlot:
     # Initialised by state_parts/slot_sidebar.py.
     _artifact: str
     _doc: str
+    _session_kind: dict[str, str] | None
     _channel_folder_filed: bool
     folder_id: str
     _folder_changed: bool
@@ -397,7 +413,7 @@ class _ChatSlot:
     _turn_timeout_hydrated: bool
     memory_store: str
     _memory_assignment_from_history: bool
-    project: str
+    _binding: TranscriptBinding
     executor: str
     instance_id: str
     remote_slot: str
@@ -416,6 +432,7 @@ class _ChatSlot:
     _summary_turn_mark: int
     _last_stop_reason: str
     _created_by: str
+    _attribution: Any
     _created_by_sid: str
     _saved_created_by: str
     _lineage_minted: bool
@@ -423,6 +440,7 @@ class _ChatSlot:
     _revived_by: str
     _mcp_report: dict[str, Any] | None
     _mcp_report_session_id: str
+    _mcp_banner_shown: dict[str, tuple[str, int, str]]
     _pending_reset_history_key: str | None
     _pending_discard_conversation_key: str | None
     _pending_discard_from_wake: bool
@@ -481,9 +499,11 @@ class _ChatSlot:
     _trust_card_scoped: bool
     _trust_scope: str
     _trust_reads: bool
+    _posture_inherited: bool
     _member_approval_seeded: bool
     _trusted_patterns: set[str]
     _trusted_pattern_deadlines: dict[str, GrantDeadline]
+    _deny_waivers: set[str]
     _hook_continuation_depth: int
     _on_message: object | None
     _on_row: object | None
@@ -508,6 +528,16 @@ class _ChatSlot:
     _deferred_notes: list[dict[str, Any]]
     _dropped_note_ids: set[str]
     _pending_variants: list[dict]
+    # ``chat_turn.regenerate_swap.RegenerateTarget`` while a Regenerate turn runs.
+    _regenerate_target: Any
+    # Bumped under the transcript lock by each committed Regenerate swap, and
+    # the swap memory does not show yet (``slot_persistence.write_guards``):
+    # a save whose window copy predates the swap re-takes it.
+    _window_swap_epoch: int
+    # A Regenerate swap is between its snapshot and its memory update: the
+    # window's front trim waits (``slot_transcript.append``).
+    _swap_in_flight: bool
+    _window_swap_applying: Any
     _lock: asyncio.Lock
     _file_changes: list[dict[str, Any]]
     _git_repos: list[str]
@@ -529,6 +559,12 @@ class _ChatSlot:
     _acp_client: None
     _last_turn_awaiting_permission: bool
     _last_turn_children_announced: bool
+    #: The ``_turn_generation`` a Crew Mode dispatch notice was last written for
+    #: (``crew_dispatch_notice``). One notice per person turn: the first
+    #: successful ``session_create`` of a turn stamps this, and the rest of that
+    #: turn's dispatches see the generation already stamped and write nothing.
+    #: ``-1`` means none written yet; in-memory only, so a restart starts fresh.
+    _crew_dispatch_notice_turn_gen: int
     _question_pending: dict[str, dict]
 
     # Initialised by state_parts/slot_ladder.py.
@@ -595,13 +631,22 @@ class _ChatSlot:
     _steer_send_ids: dict[str, str]
     _steer_user_origin: dict[str, bool]
     _steer_channel_origin: dict[str, bool]
+    _steer_owner_origin: dict[str, bool]
     _turn_channel_narrowed: bool
     _turn_channel_origin: bool
     _turn_user_sent: bool
+    _turn_owner_sent: bool
+    #: The turn running now is one the agent started on its own between prompts
+    #: (``chat_turn.agent_started``); its assistant rows carry ``meta.origin``.
+    _turn_agent_started: bool
     _steer_admissions: dict[str, dict]
     _steer_decision_strips: dict[str, dict]
     _steer_possibly_delivered: set[str]
     _steer_rpc_in_flight: set[str]
+    #: Native-card ids with a /question/steer delivery in flight (handlers/slot_question).
+    #: A SEPARATE set, never on the card's pending record, so a steer claim is never
+    #: serialized out through GET .../question or a question_card broadcast.
+    _native_steer_in_flight: set[str]
     _steer_retract: SteerRetract | None
     _steer_clear: SteerClear | None
     _steer_audience_fences: dict[str, dict]
@@ -653,7 +698,7 @@ class _ChatSlot:
         self.agent = agent
         _slot_session.init_session_fields(self)
         self.model = model
-        # "" = default chat; app workers may carry their own mode (design-critique)
+        # "" = default chat; app workers may carry their own mode (apps/seams.py)
         self.mode = mode
         self.workspace = workspace
         _slot_turns.init_turns_fields(self)
@@ -690,6 +735,22 @@ class _ChatSlot:
         # legacy sessions; the identity COMPARISON still requires a non-empty
         # ``created_at`` on both sides.
         self._disk_meta_observed: bool = False
+
+    @property
+    def project(self) -> str:
+        """The session's project directory, held in the binding aliases share.
+
+        Live slots on one transcript run one session with one working directory, so
+        they hold one value: a write on any of them is the group's write
+        (``dashboard/transcript_binding.py``).
+        """
+        return self._binding.project
+
+    @project.setter
+    def project(self, value: str) -> None:
+        from kiro_crew.dashboard.transcript_binding import write_project
+
+        write_project(self._binding, value)
 
     @property
     def reasoning_effort(self) -> str:
@@ -957,6 +1018,7 @@ class _ChatSlot:
         state: DashboardState,
         *,
         extra_meta: dict[str, Any] | None = None,
+        relay_meta: dict[str, Any] | None = None,
     ) -> bool:
         """Queue *prompt* if busy, otherwise start an agent turn.
 
@@ -996,6 +1058,12 @@ class _ChatSlot:
             # win a collision: a caller's extra fields are descriptive, and the
             # drain's authorization input must not be replaceable from here.
             _meta: dict[str, Any] = dict(extra_meta or {})
+            # The gateway-set cross-session sender (``meta.relay``) rides the queue
+            # entry so the drain unions it onto the row it later appends — the one
+            # path a queued peer send reaches the transcript. Descriptive, applied
+            # before the containment update so an authorization key still wins.
+            if relay_meta:
+                _meta["relay"] = dict(relay_meta)
             _meta.update(containment_meta(state, self))
             self.queue_append(prompt, meta=_meta)
             # Returning False IS the receipt that the prompt was accepted onto the
@@ -1012,7 +1080,11 @@ class _ChatSlot:
             # transcript rewrites.
             start_queue_persist(state, self)
             return False
-        self.append("user", prompt, "msg msg-u")
+        # The run arm has no queue entry, so a cross-session sender stamp is
+        # applied directly to the user row it appends (``extra_meta`` is queue-only).
+        self.append(
+            "user", prompt, "msg msg-u", meta={"relay": dict(relay_meta)} if relay_meta else None
+        )
         task = asyncio.create_task(run_chat_coro(state, self, prompt))
         self.task = task
         state._background_tasks.add(task)

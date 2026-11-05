@@ -23,6 +23,7 @@ const launchLog = createLaunchLog({
 });
 
 const { findConfiguredDashboardPort } = require("./data-home");
+const { onQuitForUpdate } = require("./close-action");
 const { defaultedPort } = require("./gateway-auth-hint");
 const {
   classifyBundleLocation,
@@ -44,6 +45,8 @@ const { resolveHome } = require("./home-dir");
 const { internalSecretFor } = require("./local-token");
 const { identityFamily } = require("./instance-guard");
 const { describeSingletonLock } = require("./singleton-lock");
+const { startLinuxDesktopIntegration } = require("./linux-desktop-integration");
+const { resolveLinuxInstall } = require("./auto-update");
 const { initNativeLogging } = require("./native-logging");
 const { armCrashCollector, collectCrashReports } = require("./crash-collector");
 const { initGpuPolicy } = require("./disable-gpu");
@@ -60,7 +63,9 @@ const {
   shutdownCrewCompanion,
   suspendCrewCompanion,
   resumeCrewCompanion,
+  hostsDashboard,
 } = require("./crew-companion/index");
+const { createDeepLinkHandler, installDeepLinks, installNavigateReady } = require("./deep-link-handler");
 
 // An update install stops the gateway and quits the app. Close the Crew
 // Companion overlay at dispatch so it does not float orphaned over the vanished
@@ -75,6 +80,10 @@ function reopenCrewCompanionAfterUpdate() {
   try { resumeCrewCompanion(); } catch { /* best effort */ }
 }
 const { createGatewaySupervisor } = require("./gateway-supervisor");
+const {
+  createShellBundleWatch,
+  promptRestartForPrunedBundle,
+} = require("./shell-bundle-watch");
 const { createWindowLifecycle } = require("./window-lifecycle");
 const { createIpcRegistrar } = require("./ipc-registrar");
 const { createDownloadExpectations } = require("./download-expectations");
@@ -265,6 +274,35 @@ function readInternalSecret(gatewayUrl) {
 let isQuitting = false;
 let desktopMetricsRecorder = null;
 let windows = null;
+// The kirocrew:// deep-link handler (armed by the single-instance winner below).
+let deepLinks = null;
+
+/** The main window's dashboard view webContents, or null while there is none. */
+function mainDashboardContents() {
+  const win = windows && windows.getMainWindow();
+  if (!win || win.isDestroyed() || !win._mcView) return null;
+  const wc = win._mcView.webContents;
+  return wc && !wc.isDestroyed() ? wc : null;
+}
+
+/**
+ * Deliver a resolved kirocrew:// route to the main window, the one connected
+ * to this machine's gateway, which is where a slot key names a session. An
+ * empty route only raises it. A session route is sent only while the view
+ * serves the gateway's origin -- the Crew Companion's own routing check -- and
+ * the window is raised only then, so an undeliverable link moves nothing and
+ * stays held.
+ */
+function deliverDeepLink(route) {
+  if (!windows) return false;
+  if (!route) return windows.showMainWindow({ focus: true });
+  const wc = mainDashboardContents();
+  if (!wc || !hostsDashboard(wc, BACKEND_URL)) return false;
+  windows.showMainWindow({ focus: true });
+  wc.send("navigate", route);
+  return true;
+}
+
 // Whether a dashboard document has finished loading in this run, owned by the
 // GPU-crash fallback (the single-instance winner arms it below). The dead-
 // renderer dialog reads it to tell a renderer that never started from one
@@ -332,6 +370,14 @@ const requestQuit = () => {
   isQuitting = true;
   app.quit();
 };
+
+// An update install closes every window BEFORE it emits before-quit, so the
+// flag has to be set here as well or the main window hides to tray instead of
+// closing and the install never reaches ShipIt (#29449, see close-action.js).
+onQuitForUpdate(electron.autoUpdater, () => {
+  if (!isQuitting) glog("update: installer is quitting the app; window closes no longer hide to tray");
+  isQuitting = true;
+});
 
 // Only the lock winner may arm native logging. A rejected second instance must
 // not rotate chromium.log out from under the primary process.
@@ -415,15 +461,52 @@ if (!app.requestSingleInstanceLock()) {
   });
   dashboardLoaded = gpuFallback.dashboardLoaded;
 
-  app.on("second-instance", () => {
-    // Relaunch is explicit intent to see the existing window. The window owner
-    // cancels a pending fullscreen/tray hide before restore/show/focus.
+  // kirocrew:// deep links: bare `kirocrew://` raises the window and
+  // `kirocrew://chat?sid=<slot>` opens that session. A session link is held
+  // until the dashboard document reports `navigate-ready` (its `navigate`
+  // listener is mounted), so a link that LAUNCHED the app is applied once the
+  // SPA can take it. Registered here, before `whenReady`, because macOS
+  // delivers a launching URL through `open-url` during startup and drops it
+  // when no listener is attached.
+  deepLinks = createDeepLinkHandler({ deliver: deliverDeepLink, log: glog });
+  installDeepLinks({ app, handler: deepLinks, log: glog });
+  installNavigateReady({
+    app,
+    ipcMain,
+    handler: deepLinks,
+    isDashboardContents: (contents) => Boolean(contents) && contents === mainDashboardContents(),
+  });
+  // On Windows and Linux the URL that launched THIS instance is in its own
+  // argv; `second-instance` fires only for later launches. macOS argv carries
+  // no URL, so this finds nothing there.
+  deepLinks.handleArgv(process.argv);
+
+  app.on("second-instance", (_event, argv) => {
+    // On Windows and Linux a kirocrew:// link launches a second copy with the
+    // URL in argv; route to it. Otherwise a relaunch is explicit intent to see
+    // the existing window. The window owner cancels a pending fullscreen/tray
+    // hide before restore/show/focus.
+    if (deepLinks && deepLinks.handleArgv(argv)) return;
     windows?.showMainWindow({ focus: true });
   });
 }
 
 // Factories are created at module load, before any renderer can change settings.
 // In particular, the supervisor snapshots runLocalGateway once for this launch.
+// The shell-bundle watch is declared first because the supervisor reports
+// stale-bundle respawns to it, and it reads the supervisor's update handoff.
+const shellBundleWatch = createShellBundleWatch({
+  // Electron's unpatched fs: the patched one can answer for a deleted app.asar
+  // from its archive cache.
+  fs: require("original-fs"),
+  path,
+  processObj: process,
+  isPackaged: app.isPackaged,
+  isQuitting: () => isQuitting,
+  isUpdating: () => gateway.isInstallingUpdate(),
+  log: glog,
+  onPruned: () => promptRestartForPrunedBundle({ dialog, requestQuit, log: glog }),
+});
 const gateway = createGatewaySupervisor({
   app,
   store,
@@ -455,6 +538,8 @@ const gateway = createGatewaySupervisor({
   // process pins the answer into the successor's environment, so the port it
   // watches is the port the successor takes.
   predictLocalPort: () => fallbackLocalPort(store, glog),
+  // The respawned backend can be healthy while this app's own bundle is gone.
+  onStaleBundleRespawn: () => shellBundleWatch.checkNow(),
 });
 
 // Shared single-use registry of downloads the renderer explicitly asked for.
@@ -666,6 +751,32 @@ app.whenReady().then(async () => {
   windows.createTray();
   const mainWindow = windows.createMainWindow();
 
+  // Linux AppImage desktop integration. It creates the first launcher and then
+  // reconciles only files whose hashes still match bytes Kiro Crew wrote. The
+  // reconciliation itself (synchronous filesystem work plus one packaged
+  // helper process per fingerprint, publish, and cleanup step) runs on a worker
+  // thread; the main thread only evaluates the plan and receives the result,
+  // and no thread is started on a non-AppImage install. The promise never
+  // rejects by contract; the catch below is the last fence for a defect in it.
+  try {
+    startLinuxDesktopIntegration({
+      env: process.env,
+      installKind: resolveLinuxInstall({
+        env: process.env,
+        resourcesPath: process.resourcesPath,
+      }).kind,
+      version: app.getVersion(),
+      stateDir: app.getPath("userData"),
+      uid: typeof process.geteuid === "function" ? process.geteuid() : null,
+      resourcesPath: process.resourcesPath,
+      log: (m) => { try { glog(`desktop-integration: ${m}`); } catch { /* ignore */ } },
+    }).catch((e) => {
+      try { glog(`desktop-integration: failed: ${e && e.message}`); } catch { /* ignore */ }
+    });
+  } catch (e) {
+    try { glog(`desktop-integration: skipped: ${e && e.message}`); } catch { /* ignore */ }
+  }
+
   // The global accelerator needs an existing main window. The updater needs
   // that same window for notifications, but MUST be fully registered before
   // either awaited gateway boot step: preload exposes updateAPI immediately.
@@ -674,6 +785,9 @@ app.whenReady().then(async () => {
 
   await gateway.start();
   await gateway.connect(mainWindow);
+  // Armed for every launch mode, including a service-managed or adopted
+  // gateway, whose backend never reports a stale bundle to this process.
+  shellBundleWatch.start();
   // The gateway now answers and the dashboard is loading. After an upgrade, drop
   // the old build's cached copies and connect again: a fresh navigation replaces
   // the pending one, where a reload would replay the uncommitted splash.
@@ -719,6 +833,7 @@ app.whenReady().then(async () => {
 
 app.on("before-quit", () => {
   isQuitting = true;
+  shellBundleWatch.stop();
   // Flush the final metrics window before gateway teardown begins.
   try {
     desktopMetricsRecorder?.stop();

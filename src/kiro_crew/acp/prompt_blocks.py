@@ -49,10 +49,13 @@ from kiro_crew.hooks import (
 # kiro_crew.acp. The pattern names are re-exported because this module and
 # its tests are where they have always been read from.
 from kiro_crew.image_refs import (  # noqa: F401 -- re-exported, see comment
+    _MASKED,
     _PATH_RE,
     _POSIX_PATH_RE,
     _WINDOWS_PATH_RE,
     STRIPPED_IMAGE_MARKER,
+    mask_literal_spans,
+    mask_user_literal_text,
     strip_image_refs,
 )
 
@@ -67,6 +70,7 @@ from kiro_crew.imaging import (  # noqa: F401 -- constants re-exported, see comm
 )
 from kiro_crew.messaging.raster import SNIFF_BYTES, sniff_raster_mime
 from kiro_crew.platform_compat import is_link_or_junction
+from kiro_crew.prompt_segments import SOURCE_USER, segments_of
 
 logger = logging.getLogger(__name__)
 
@@ -140,7 +144,20 @@ def build_prompt_blocks(
     ``[image: <name> (2)]``, and so on; the same bytes under two names are one
     block, marked both places with the first name. Past ``max_prompt_image_blocks``
     blocks or ``max_prompt_image_b64_bytes`` of base64 in one prompt, a further
-    picture stays a path in the text.
+    picture stays a path in the text. A path written as literal text -- in
+    fenced or inline code, on a 4-space-indented line, or inside escaped
+    ``\\![x](...)`` markup -- is not a reference: it stays as written and attaches
+    nothing (:func:`~kiro_crew.image_refs.mask_literal_spans`). Each user segment
+    is judged on its own, so a fence that injected text in front of it leaves
+    open cannot pair with the user's next fence line.
+
+    Only the user's own segments are read (:mod:`kiro_crew.prompt_segments`).
+    A :class:`~kiro_crew.prompt_segments.SegmentedPrompt` from ``build_message``
+    marks memory, lessons, rules and the other injected context as
+    ``SOURCE_INJECTED``, and that text is sent as written: no block is built from
+    it and no path or rule in it is rewritten. A typed ``[image`` marker is
+    escaped in every segment, since unescaped it claims an attachment. A plain
+    string is one user segment.
 
     ``allow_image=False`` (the caller's text is ABOUT a session, not an
     attachment) leaves the path in the text untouched. ``agent_accepts_image=False``
@@ -160,6 +177,15 @@ def build_prompt_blocks(
     """
     text = message
     images: list[dict] = []
+    # INVARIANT: only the user's own segments are upgraded. Every extra block
+    # (an image today; a file, PDF or resource_link later) is built from text in
+    # a SOURCE_USER segment, and every SOURCE_INJECTED segment -- memory,
+    # lessons, rules, steering, replay, ledger, notes -- goes out as written: no
+    # path or rule is rewritten. The single exception is the backslash before a
+    # typed ``[image`` marker, escaped in every segment because the model reads
+    # an unescaped one as "a picture is attached to this request". A plain string
+    # is one user segment. Pinned by test_injected_context_image_refs.TestTheInvariant.
+    user_spans = _user_spans(message)
 
     if allow_image:
         seen: set[str] = set()
@@ -181,11 +207,32 @@ def build_prompt_blocks(
         marker_count: dict[str, int] = {}
         prompt_b64_bytes = 0
         past_block_cap = 0
-        for match in _PATH_RE.finditer(message):
+        # Literal text (code, indented code, escaped ``\![x](...)``) is ABOUT a
+        # path, not an attachment: scan the view with it masked, the same view
+        # strip_image_refs reads, so the text stays as written and no block is
+        # attached. Offsets index straight into *message*. A fence the user
+        # left open stays unmasked: a channel's own attachment lines follow
+        # the user's text, and a dangling opener must not swallow them. Each
+        # user segment is judged on its own (mask_user_literal_text), so injected
+        # text ending inside an open fence cannot pair with the user's next
+        # fence line.
+        try:
+            scan = mask_user_literal_text(message)
+        except Exception:  # pragma: no cover - defensive: a scan must never break a turn
+            logger.debug("acp prompt: literal-span mask failed", exc_info=True)
+            scan = message
+        for match in _PATH_RE.finditer(scan):
+            if _MASKED in match.group(1):
+                # Only reachable through a Windows UNC host segment, whose
+                # negated class admits the sentinel: a span touching literal
+                # text is not a reference.
+                continue
             group = match.group(1)
             raw = group.strip()
             start = match.start(1) + (len(group) - len(group.lstrip()))
             end = start + len(raw)
+            if not _inside(user_spans, start, end):
+                continue
             candidates.append((start, end, raw))
             if raw in seen:
                 continue
@@ -355,7 +402,22 @@ def build_prompt_blocks(
         # attachment on a backend that takes none either.
         text = _rewrite_text(message, [], {}, {})
 
-    return [{"type": "text", "text": text}, *images]
+    return [{"type": "text", "text": str(text)}, *images]
+
+
+def _user_spans(message: str) -> list[tuple[int, int]]:
+    """``(start, end)`` of every user segment of *message*, in order."""
+    spans: list[tuple[int, int]] = []
+    pos = 0
+    for source, segment in segments_of(message):
+        if source == SOURCE_USER:
+            spans.append((pos, pos + len(segment)))
+        pos += len(segment)
+    return spans
+
+
+def _inside(spans: list[tuple[int, int]], start: int, end: int) -> bool:
+    return any(s <= start and end <= e for s, e in spans)
 
 
 def _sniffs_as_raster(path: Path) -> bool:
@@ -399,6 +461,10 @@ def _rewrite_text(
 ) -> str:
     """*message* with inlined candidates replaced by their marker, kept-out
     pictures followed by their note, and typed marker-shaped tokens escaped.
+
+    Inlining and notes land only inside a user span. The one edit made in every
+    segment is the backslash before a typed ``[image`` token: wherever it sits, an
+    unescaped one reads to the model as a picture attached to this request.
 
     One pass over the grammar's own match spans plus the typed-marker spans, in
     text order, so a marker lands exactly where a candidate the grammar

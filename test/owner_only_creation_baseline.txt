@@ -1,0 +1,18 @@
+# Umask-mode creation sites per file under src/kiro_crew when the owner-only
+# creation ratchet landed. Read by test/test_owner_only_creation_ratchet.py;
+# one "<count> <path under src/kiro_crew/>" per line.
+# RATCHET: a count may only go down (delete the line at zero); never raise or add one.
+# `python test/test_owner_only_creation_ratchet.py --write-baseline` lowers every
+# line to its real count and drops files that are gone; it never raises or adds.
+1 acp/harness/goose.py
+1 apps/builtins/dev_fleet/npm_preflight.py
+2 apps/marketplace_install.py
+2 config/paths.py
+1 dashboard/handlers/mcp.py
+1 dashboard/handlers/mcp_config_files.py
+1 dashboard/session_transfer_layers.py
+1 frontend.py
+1 platform/wheel_engine.py
+1 platform_owner_compat.py
+1 pod/runtime_boot.py
+1 secrets/migrate.py

@@ -97,10 +97,12 @@ __all__ = sorted(name for name in set(globals()) | set(_EXPORTS) if not name.sta
 if TYPE_CHECKING:  # every owner-defined name this module forwards, for type checkers
     from kiro_crew.dashboard.session_control_parts.caller_access import (  # noqa: F401
         APP_CRON_OWNER_PREFIX,
+        CONDUCTOR_AGENTS,
         CRON_LINK_PREFIX,
         CRON_SLOT_PREFIX,
         HANDOFF_WIDENED_OPERATIONS,
         MAX_MANAGER_CHAIN,
+        OWNER_CHAT_SLOT_PREFIX,
         UNATTENDED_SLOT_PREFIXES,
         WORKFLOW_SLOT_PREFIX,
         SessionControlError,
@@ -109,13 +111,17 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         _audit_denials,
         _caller_is_ownership_fenced,
         _channel_link_of,
+        _conductor_bypass,
+        _conductor_fenced,
         _created_by_other,
         _cron_caller,
         _delegation_lineage_fenced,
+        _dispatch_bypass,
         _manager_chain_on,
         _member_bypass,
         _member_caller,
         _outside_reach,
+        _owner_tab_conductor,
         _sel_off_loop,
         _store_is_member_owned,
         caller_slot_key,
@@ -209,6 +215,7 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         _dispatching_crewmate,
         _hands_off_to_own_worker,
         _inherited_pin_foreign_to_child,
+        _inherited_project_dir,
         _model_pin_refusal,
         _record_spawn,
         _register_spawn_pending_edge,
@@ -398,12 +405,13 @@ if TYPE_CHECKING:  # names this module re-exported from other modules
     from kiro_crew.crew_log import emit as crew_log_emit  # noqa: F401
     from kiro_crew.crew_log.session_tree_projection import projection  # noqa: F401
     from kiro_crew.dashboard import session_managers  # noqa: F401
-    from kiro_crew.dashboard.approval_posture import trust_carries  # noqa: F401
+    from kiro_crew.dashboard.approval_inheritance import inherit_posture  # noqa: F401
     from kiro_crew.dashboard.chat_delivery import sanitize_outbound  # noqa: F401
     from kiro_crew.dashboard.chat_folders import _folder_declared_project  # noqa: F401
     from kiro_crew.dashboard.chat_folders import _resolve_folder_project_dir  # noqa: F401
     from kiro_crew.dashboard.chat_folders import _slot_meta_txn_lock  # noqa: F401
     from kiro_crew.dashboard.chat_folders import _unhide_folder  # noqa: F401
+    from kiro_crew.dashboard.chat_folders import _validate_project_dir  # noqa: F401
     from kiro_crew.dashboard.chat_folders import note_folder_filed  # noqa: F401
     from kiro_crew.dashboard.chat_fork import _FORK_DIRECTION_HEAD  # noqa: F401
     from kiro_crew.dashboard.chat_fork import ForkResult  # noqa: F401

@@ -52,11 +52,17 @@ def _browse_dirs_sync(base: str, skip: set[str]) -> list[dict]:
     return dirs
 
 
-def _browse_files_sync(base: str, skip: set[str]) -> tuple[list[dict], list[dict]]:
+def _browse_files_sync(
+    base: str, skip: set[str], show_hidden: bool = False
+) -> tuple[list[dict], list[dict]]:
     """Walk *base* one level deep and return its ``(dirs, files)`` entries.
 
     The sibling of :func:`_browse_dirs_sync` and blocking for the same reasons, plus a
     ``stat`` per entry for the mtime the browser sorts on. Offloaded the same way.
+
+    *show_hidden* (the Files panel's "Show hidden files" toggle) lists dot-files too.
+    It changes nothing else: the skip set and the sensitive-path check still apply to
+    every entry, so a credential file stays out of the listing either way.
     """
     dirs: list[dict] = []
     files: list[dict] = []
@@ -75,8 +81,9 @@ def _browse_files_sync(base: str, skip: set[str]) -> tuple[list[dict], list[dict
                 is_file = False if is_dir else entry.is_file(follow_symlinks=True)
             except OSError:
                 continue
-            # Dot-directories are listed (e.g. ``.worktrees``); dot-files stay hidden.
-            if entry.name.startswith(".") and not is_dir:
+            # Dot-directories are listed (e.g. ``.worktrees``); dot-files stay hidden
+            # unless the caller asked for hidden files.
+            if entry.name.startswith(".") and not is_dir and not show_hidden:
                 continue
             # Resolve symlinks before the sensitivity check — a symlink in a
             # benign dir pointing at ~/.aws would otherwise pass through. Same

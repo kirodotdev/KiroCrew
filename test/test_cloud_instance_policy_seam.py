@@ -401,14 +401,71 @@ def account(monkeypatch):
     monkeypatch.delenv("KIROCREW_SESSION_KEY", raising=False)
 
 
+_DENIED_VERSION = (
+    "An error occurred (AccessDenied) when calling the CreatePolicyVersion operation: "
+    "User is not authorized to perform: iam:CreatePolicyVersion"
+)
+
+
 class TestMigration:
-    def test_a_launch_on_the_earlier_boundary_names_the_upgrade(
+    def test_a_launch_on_the_earlier_boundary_upgrades_it_when_allowed(
+        self, host_agent, account, monkeypatch, capsys
+    ):
+        fake = _FakeIam(iam.base_boundary_policy_document(_ACCT))
+        monkeypatch.setattr(aws, "run_aws", fake)
+        assert source.ensure_instance_boundary() == _BOUNDARY
+        assert len(fake.writes()) == 1
+        assert fake.document == iam.boundary_policy_document(_ACCT)
+        assert f"Upgraded the permissions boundary '{iam.BOUNDARY_NAME}'" in capsys.readouterr().err
+
+    def test_a_launch_denied_the_re_version_names_the_upgrade(
+        self, host_agent, account, monkeypatch
+    ):
+        earlier = iam.base_boundary_policy_document(_ACCT)
+        fake = _FakeIam(earlier, create_err=_DENIED_VERSION)
+        monkeypatch.setattr(aws, "run_aws", fake)
+        with pytest.raises(aws.AWSError, match="iam-boundary --upgrade"):
+            source.ensure_instance_boundary()
+        assert fake.document == earlier
+
+    def test_a_launch_at_the_version_limit_names_the_upgrade(
+        self, host_agent, account, monkeypatch
+    ):
+        earlier = iam.base_boundary_policy_document(_ACCT)
+        fake = _FakeIam(
+            earlier,
+            create_err="An error occurred (LimitExceeded) when calling CreatePolicyVersion",
+        )
+        monkeypatch.setattr(aws, "run_aws", fake)
+        with pytest.raises(aws.AWSError, match="iam-boundary --upgrade"):
+            source.ensure_instance_boundary()
+        assert fake.document == earlier
+
+    def test_a_launch_from_an_agent_session_does_not_upgrade(
         self, host_agent, account, monkeypatch
     ):
         fake = _FakeIam(iam.base_boundary_policy_document(_ACCT))
         monkeypatch.setattr(aws, "run_aws", fake)
+        monkeypatch.setenv("KIROCREW_SESSION_KEY", "chat-1")
         with pytest.raises(aws.AWSError, match="iam-boundary --upgrade"):
             source.ensure_instance_boundary()
+        assert fake.writes() == []
+
+    def test_a_launch_on_a_hand_edited_boundary_writes_nothing(
+        self, host_agent, account, monkeypatch
+    ):
+        edited = iam.base_boundary_policy_document(_ACCT)
+        edited["Statement"][0]["Action"] = "*"
+        fake = _FakeIam(edited)
+        monkeypatch.setattr(aws, "run_aws", fake)
+        with pytest.raises(aws.AWSError, match="does NOT match"):
+            source.ensure_instance_boundary()
+        assert fake.writes() == []
+
+    def test_a_launch_on_a_current_boundary_writes_nothing(self, host_agent, account, monkeypatch):
+        fake = _FakeIam(iam.boundary_policy_document(_ACCT))
+        monkeypatch.setattr(aws, "run_aws", fake)
+        assert source.ensure_instance_boundary() == _BOUNDARY
         assert fake.writes() == []
 
     def test_upgrade_re_versions_the_earlier_document_and_a_launch_then_accepts_it(
@@ -488,10 +545,23 @@ class TestMigration:
     def test_a_kms_launch_on_the_earlier_kms_boundary_names_the_kms_upgrade(
         self, host_agent, account, monkeypatch
     ):
-        fake = _FakeIam(iam._with_session_kms(iam.base_boundary_policy_document(_ACCT)))
+        fake = _FakeIam(
+            iam._with_session_kms(iam.base_boundary_policy_document(_ACCT)),
+            create_err=_DENIED_VERSION,
+        )
         monkeypatch.setattr(aws, "run_aws", fake)
         with pytest.raises(aws.AWSError, match="iam-boundary --upgrade --ssm-kms"):
             source.ensure_instance_kms_boundary()
+
+    def test_a_kms_launch_on_the_earlier_kms_boundary_upgrades_it_when_allowed(
+        self, host_agent, account, monkeypatch
+    ):
+        fake = _FakeIam(iam._with_session_kms(iam.base_boundary_policy_document(_ACCT)))
+        monkeypatch.setattr(aws, "run_aws", fake)
+        assert source.ensure_instance_kms_boundary() == iam.kms_boundary_arn(_ACCT)
+        (write,) = fake.writes()
+        assert write[write.index("--policy-arn") + 1] == iam.kms_boundary_arn(_ACCT)
+        assert fake.document == iam.kms_boundary_policy_document(_ACCT)
 
     def test_a_missing_kms_boundary_points_at_its_own_create_step(
         self, host_agent, account, monkeypatch

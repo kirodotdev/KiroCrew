@@ -107,7 +107,7 @@ def _prune_stale_app_resources(app_name: str, manifest: AppManifest, app_root: P
                 # never links it, so it carries no current name either.
                 continue
             data = json.loads(agent_path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError) as exc:
+        except (json.JSONDecodeError, UnicodeDecodeError, OSError) as exc:
             # A declared agent we CANNOT read is not the same as a removed one. If
             # we skipped it, its name would be absent from `current_links` and the
             # prune below would delete its last-good materialized config — over a
@@ -388,41 +388,23 @@ def reconcile_enabled_app_resources() -> dict[str, int]:
 def app_conversation_keys(app_name: str, *, mapped_keys: Iterable[str] | None = None) -> list[str]:
     """Session keys that still hold a resume pointer and belong to *app_name*.
 
-    A slot key an app chooses is often DETERMINISTIC — one slot per object it tracks,
-    named after that object — so the next slot created under that name is the same
-    key, and ``session.py``'s ``resume_sid = self._session_map.get(key)`` hands it the
-    previous conversation. That is correct while the app is installed: it is how a
-    long-lived per-object conversation keeps what it has learned about that object.
-    It stops being correct once the app is gone: reinstall it, open the same object,
-    and the first turn resumes a conversation from the previous installation — a
-    transcript from code that is gone.
+    App slot keys are often deterministic (one per tracked object), so after a
+    reinstall ``session.py``'s ``resume_sid = self._session_map.get(key)`` would resume
+    a conversation from the previous installation.
 
-    Ownership is read from the record that already outlives the tab: every save
-    writes ``app`` into the conversation's metadata line, and closing a tab is a
-    save. Live ``_ChatSlot._app`` cannot answer here (the CLI path has no gateway,
-    and a closed slot is gone from a running one), and ``open_slots.json`` cannot
-    either — it tracks tabs to REOPEN, so a closed slot leaves it while the resume
-    pointer deliberately stays. A closed app slot is the mainline state before an
-    uninstall, so sourcing ownership from open tabs would miss the common case.
+    Ownership comes from the ``app`` field every save writes into the conversation's
+    metadata line. Live ``_ChatSlot._app`` (absent on the CLI path, gone for a closed
+    slot) and ``open_slots.json`` (drops closed tabs while the pointer stays) both miss
+    the common case of a closed slot before uninstall.
 
-    Scoped to keys that still have a sid, which makes this index exactly as wide as
-    the problem: a pointer exists only if a conversation was started, and starting
-    one writes the metadata line this reads.
+    A caller that owns a live map must pass *mapped_keys*
+    (``mapped_session_keys() | session_keys()``, the second covering an allocation in
+    flight): a detached ``SessionMap`` reads a file that lags the live map and can omit
+    a key. The detached read is for the CLI path, which holds the gateway lock; it is
+    sound only because nothing here writes (rule 3 forbids a detached WRITE).
 
-    **Which keys to look at is the caller's answer, not this function's, whenever
-    the caller owns a live map.** A detached ``SessionMap`` reads the file, and the
-    file lags a running gateway's map by whatever that map has not flushed, so a
-    detached enumeration can omit a key whose pointer already exists — and the
-    in-gateway caller then clears through the live map, leaving the pointer it
-    could not see behind for a reinstall to resume. So that caller passes
-    *mapped_keys* from its own manager (``mapped_session_keys() | session_keys()``,
-    the second covering an allocation still in flight), and the detached read is
-    reserved for the CLI path, which holds the gateway lock and therefore knows no
-    live map exists. Reading detached is sound only because nothing here writes —
-    the class's rule 3 forbids a detached WRITE.
-
-    Returns keys sorted for stable logs. Never raises: an uninstall the user asked
-    for does not fail over bookkeeping.
+    Returns keys sorted for stable logs. Never raises: bookkeeping must not fail an
+    uninstall.
     """
     if not app_name:
         return []
@@ -462,21 +444,13 @@ def app_conversation_keys(app_name: str, *, mapped_keys: Iterable[str] | None = 
 class SessionPointerCleanup:
     """What a CLI-path pointer clear actually did.
 
-    ``dropped == 0`` alone cannot be reported to an operator: it is "this app owned
-    nothing", "a gateway owns the map, so nothing was attempted", and "the write
-    itself failed", and those need different messages — the first is complete, the
-    other two leave a pointer a reinstall will resume. ``declined`` and ``failed``
-    are what separate them.
+    ``dropped == 0`` alone is ambiguous: nothing owned (complete), a gateway owns the
+    map (``declined``), or the write failed (``failed``); the last two leave a pointer
+    a reinstall will resume.
 
-    ``failed`` covers the case the clear could not PERSIST: the sid clear and the
-    suppression flag are both mutations of a file that has to be written, so an
-    ENOSPC or a permission error leaves the pointer on disk while the count says
-    nothing was owned. It also covers a lock that could not be used at all
-    (:class:`~kiro_crew.gateway_lock.LockFileError`: ``gateway.lock`` is not a
-    regular file, or it or the home could not be opened, created or measured),
-    because no gateway owns the map then and stopping one would not help. Reported
-    rather than raised — the uninstall itself already
-    succeeded, and bookkeeping must not fail it — but not reported as clean either.
+    ``failed`` means the clear did not persist (ENOSPC, a permission error), or the
+    lock was unusable (:class:`~kiro_crew.gateway_lock.LockFileError`), where stopping
+    a gateway would not help. Reported, not raised: the uninstall already succeeded.
     """
 
     dropped: int = 0
@@ -487,43 +461,22 @@ class SessionPointerCleanup:
 def discard_app_session_pointers(app_name: str) -> SessionPointerCleanup:
     """Drop the resume pointer of every conversation this app owned. CLI PATH ONLY.
 
-    Called by the UNINSTALL paths only, and deliberately NOT from
-    :func:`deregister_app`: that runs on **disable** too (the CLI's disable action,
-    the disable route, and the enable/update reconcile), and disable is how an app
-    is routinely restarted — App Store Sync is a disable/enable pair. Clearing
-    pointers there would discard the accumulated context of every long-lived
-    conversation the app owns, on every sync.
+    Uninstall paths only, NOT :func:`deregister_app`: that also runs on disable, and
+    App Store Sync is a disable/enable pair, so clearing there would wipe every
+    long-lived conversation's context on each sync.
 
-    ``clear_sid``, not ``delete``: the entry also carries the Slack thread/channel
-    linkage and the reverse index built from it, so dropping the whole row would
-    silently unlink a mirrored session. The cleared value is stashed as
-    ``discarded_sid``, so this is diagnosable and reversible by hand — the native
-    conversation itself is untouched on disk.
+    ``clear_sid``, not ``delete``: the row also carries the Slack thread/channel link
+    and its reverse index. The old value is kept as ``discarded_sid`` so the clear can
+    be undone by hand; the conversation on disk is untouched.
 
-    **Holds the gateway lock across the whole scan and write, and that is the
-    mechanism, not a courtesy.** This writes through a throwaway ``SessionMap``,
-    which is only sound when no other instance holds the file: a running gateway
-    keeps a long-lived map whose ``_data`` loaded at startup and whose every write
-    rewrites the whole file from that snapshot, so two writers do not merge — the
-    loser's rows vanish. Writing anyway would both fail to drop the pointer (the
-    live map's next write restores it) and drop whatever that map recorded since
-    this process read, costing an unrelated session its sid or its channel link.
-    Merely *asking* whether a gateway is up cannot establish that: a gateway
-    starting between the question and the write lands in exactly the case the
-    question was meant to exclude. Taking the same lock the gateway takes makes the
-    exclusion real in both directions — while we hold it no gateway can start, and
-    if one is already up we cannot take it and decline instead. Doing nothing is
-    the pre-existing behaviour; corrupting a stranger's session is not.
+    Holds the gateway lock across the scan and write. A running gateway's map rewrites
+    the whole file from its startup snapshot, so a second writer's rows vanish and the
+    pointer comes back. Asking whether a gateway is up races a gateway starting; taking
+    its lock means none can start meanwhile, and if one is up this declines. A gateway
+    starting inside that short window is refused.
 
-    The cost is stated rather than hidden: a gateway attempting to start inside this
-    window is refused as it would be by any other holder. The window is one scan
-    plus one write, and the alternative is losing another session's row.
-
-    The in-gateway route does not come through here at all — it clears through the
-    live map, inside the app lifecycle lock.
-
-    Returns what it did, not just how much: a declined clear leaves a pointer behind
-    and the caller has to be able to say so.
+    The in-gateway route clears through the live map instead, inside the app lifecycle
+    lock. Returns what it did so the caller can report a declined clear.
     """
     try:
         with GatewayLock(config_dir()):

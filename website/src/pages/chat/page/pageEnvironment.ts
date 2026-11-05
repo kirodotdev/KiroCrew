@@ -19,6 +19,7 @@ import { useMoveSlotToFolder } from '../../../hooks/useMoveSlotToFolder'
 import { setFileDraft } from '../../../utils/chatFileDrafts'
 import type { ChatMessage, ChatSlot } from '../../../types'
 import { crewModeView } from '../../../lib/crewMode'
+import { useCrewMode } from '../../../hooks/usePreviewFlag'
 import { useConnectionsUiEnabled } from '../../../hooks/useConnectionsUi'
 import { isChatPageSurface } from '../../../utils/channelOrigin'
 import { useGuidePredicate, useGuideSelection } from '../../../guide/guidePredicates'
@@ -145,7 +146,10 @@ export function useChatPageEnvironment({
   const filteredSlots = useMemo(() => chatPageSlots(slots), [slots])
   // The person's rows: what the collapsed-sidebar flyout lists and the unread
   // count counts. The sidebar filters its own prop the same way.
-  const personSlots = useMemo(() => personChatPageSlots(filteredSlots), [filteredSlots])
+  // Keyed on the Crew Mode preview too, which decides whether crew members are
+  // left out: off, `crewModeView` hands the rows back unchanged.
+  const crewMode = useCrewMode()
+  const personSlots = useMemo(() => (crewMode ? personChatPageSlots(filteredSlots) : filteredSlots), [filteredSlots, crewMode])
   const filteredSlotsRef = useRef(filteredSlots)
   filteredSlotsRef.current = filteredSlots
   // Live guide predicates the sessions sidebar toggle needs to be drawn (see

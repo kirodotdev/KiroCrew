@@ -50,6 +50,7 @@ globalThis.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} 
 import SidePanel, { newMenuSections, NEW_MENU_LABEL_KEY } from '../pages/chat/SidePanel'
 import { usePanelTabs, __resetPanelTabs } from '../hooks/usePanelTabs'
 import { LONG_PRESS_MS } from '../hooks/useLongPressReorder'
+import { PREVIEW_CREW_MODE, setPreviewFlag } from '../utils/previewFlags'
 
 let panelController: ReturnType<typeof usePanelTabs>
 
@@ -95,7 +96,7 @@ describe('side panel + menu (shadcn dropdown)', () => {
     expect(screen.queryByRole('menu')).toBeNull()
     openMenu()
     expect(screen.getByRole('menu')).toBeTruthy()
-    for (const label of ['Pins', 'Issues', 'Subagents', 'Workflows', 'Side Chat', 'Browser']) {
+    for (const label of ['Pins', 'Issues', 'Subagents', 'Workflows', 'Side Chat', 'Preview']) {
       expect(screen.getByRole('menuitem', { name: label })).toBeTruthy()
     }
     // The permanently pinned views are always in the strip already, so they must
@@ -128,7 +129,7 @@ describe('side panel + menu (shadcn dropdown)', () => {
     const marked = document.body.querySelectorAll('[data-ui-location="chat.side-panel.browser"]')
     expect(marked).toHaveLength(1)
     expect(marked[0].getAttribute('role')).toBe('menuitem')
-    expect(marked[0].textContent).toBe('Browser')
+    expect(marked[0].textContent).toBe('Preview')
     expect(screen.getByRole('menuitem', { name: 'Workflows' }).hasAttribute('data-ui-location')).toBe(false)
   })
 
@@ -174,6 +175,44 @@ describe('side panel Dashboard view', () => {
       </QueryClientProvider>,
     )
     expect(screen.getByRole('tab', { name: /Dashboard/ })).toBeTruthy()
+  })
+})
+
+describe('side panel Crew tab with the Crew Mode preview off', () => {
+  beforeEach(() => { localStorage.clear() })
+  // A bucket restored from storage, as `usePanelTabs` does on a reload.
+  const Seeded = () => {
+    const tabsCtl = usePanelTabs('slot-a')
+    panelController = tabsCtl
+    if (!tabsCtl.tabs.some(t => t.kind === 'workers')) tabsCtl.openView('workers')
+    return <SidePanel tabsCtl={tabsCtl} slot="slot-a" onFileSave={async () => {}} onClose={() => {}} />
+  }
+  const renderSeeded = () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
+    render(
+      <QueryClientProvider client={queryClient}>
+        <Provider store={createTestStore()}>
+          <Seeded />
+        </Provider>
+      </QueryClientProvider>,
+    )
+  }
+
+  it('withholds a stored Crew tab, keeps it in the bucket, and neither the strip nor the + menu offers it', () => {
+    renderSeeded()
+    expect(screen.queryByRole('tab', { name: /^Board/ })).toBeNull()
+    expect(screen.queryByTestId('crew-workers-none')).toBeNull()
+    // Withheld, not closed: the stored tab is still there for when the preview comes back.
+    expect(panelController.tabs.some(t => t.kind === 'workers')).toBe(true)
+    openMenu()
+    expect(screen.queryByRole('menuitem', { name: 'Board' })).toBeNull()
+  })
+
+  it('shows the stored Crew tab again when the preview is turned on', () => {
+    renderSeeded()
+    expect(screen.queryByRole('tab', { name: /^Board/ })).toBeNull()
+    act(() => { setPreviewFlag(PREVIEW_CREW_MODE, true) })
+    expect(screen.getByRole('tab', { name: /^Board/ })).toBeTruthy()
   })
 })
 
@@ -284,10 +323,10 @@ describe('workspace tab close menu', () => {
       panelController.openView('browser')
       panelController.openView('workflows')
     })
-    fireEvent.contextMenu(screen.getByRole('tab', { name: /Browser/ }), { clientX: 50, clientY: 50 })
+    fireEvent.contextMenu(screen.getByRole('tab', { name: /Preview/ }), { clientX: 50, clientY: 50 })
     fireEvent.click(screen.getByRole('menuitem', { name: 'Close tabs to the right' }))
     await waitFor(() => expect(screen.queryByRole('tab', { name: /Workflows/ })).toBeNull())
-    expect(screen.getByRole('tab', { name: /Browser/ })).toBeTruthy()
+    expect(screen.getByRole('tab', { name: /Preview/ })).toBeTruthy()
     expect(screen.getByRole('tab', { name: /Issues/ })).toBeTruthy()
     expect(screen.getByRole('tab', { name: 'Files' })).toBeTruthy()
   })
@@ -300,7 +339,7 @@ describe('workspace tab close menu', () => {
     })
     fireEvent.contextMenu(screen.getByRole('tab', { name: /Issues/ }))
     fireEvent.click(screen.getByRole('menuitem', { name: 'Close other tabs' }))
-    await waitFor(() => expect(screen.queryByRole('tab', { name: /Browser/ })).toBeNull())
+    await waitFor(() => expect(screen.queryByRole('tab', { name: /Preview/ })).toBeNull())
     expect(screen.getByRole('tab', { name: /Issues/ })).toBeTruthy()
     expect(screen.getByRole('tab', { name: 'Files' })).toBeTruthy()
   })
@@ -312,34 +351,39 @@ describe('workspace tab close menu', () => {
       panelController.patchTab('file:/tmp/draft.md', { content: 'unsaved' })
       panelController.openView('browser')
     })
-    fireEvent.contextMenu(screen.getByRole('tab', { name: /Browser/ }))
+    fireEvent.contextMenu(screen.getByRole('tab', { name: /Preview/ }))
     fireEvent.click(screen.getByRole('menuitem', { name: 'Close all tabs' }))
     expect(await screen.findByText('Discard unsaved changes?')).toBeTruthy()
     // The dialog names what is lost rather than asking blind.
     expect(within(screen.getByRole('dialog')).getByText('draft.md')).toHaveAttribute('title', '/tmp/draft.md')
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
     expect(screen.getByRole('tab', { name: /draft.md/ })).toBeTruthy()
-    expect(screen.getByRole('tab', { name: /Browser/ })).toBeTruthy()
-    fireEvent.contextMenu(screen.getByRole('tab', { name: /Browser/ }))
+    expect(screen.getByRole('tab', { name: /Preview/ })).toBeTruthy()
+    fireEvent.contextMenu(screen.getByRole('tab', { name: /Preview/ }))
     fireEvent.click(screen.getByRole('menuitem', { name: 'Close all tabs' }))
     fireEvent.click(await screen.findByRole('button', { name: 'Discard changes' }))
     await waitFor(() => expect(screen.queryByRole('tab', { name: /draft.md/ })).toBeNull())
-    expect(screen.queryByRole('tab', { name: /Browser/ })).toBeNull()
+    expect(screen.queryByRole('tab', { name: /Preview/ })).toBeNull()
     expect(screen.getByRole('tab', { name: 'Files' })).toBeTruthy()
   })
 
-  it('the single × closes a dirty tab directly, without a confirmation', async () => {
-    // The frozen Goal says the single × is unchanged: it closes one tab the way
-    // it did on main, so even a dirty file goes straight through handleCloseTab.
-    // Only the close MENU items run through the batch path that confirms.
+  it('the single × asks before it discards a dirty tab', async () => {
+    // The editor is stubbed out here, so no tab guard is mounted and the ×
+    // takes the batch preflight; `sidePanelTabChipCloseGuard.test.tsx` covers
+    // the × asking through a mounted editor's own guard.
     renderPanel()
     act(() => {
       panelController.openFile('/tmp/draft.md', 'saved')
       panelController.patchTab('file:/tmp/draft.md', { content: 'unsaved' })
     })
     fireEvent.click(screen.getByRole('button', { name: 'Close tab' }))
+    const dialog = await screen.findByRole('dialog')
+    expect(within(dialog).getByText('draft.md')).toBeTruthy()
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+    expect(screen.getByRole('tab', { name: /draft.md/ })).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Close tab' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Discard changes' }))
     await waitFor(() => expect(screen.queryByRole('tab', { name: /draft.md/ })).toBeNull())
-    expect(screen.queryByRole('dialog')).toBeNull()
   })
 
   it('asks before a bulk close discards a clean file whose disk copy is gone', async () => {
@@ -350,7 +394,7 @@ describe('workspace tab close menu', () => {
       panelController.openFile('/tmp/gone.md', 'saved contents')  // clean: content === savedContent
       panelController.openView('browser')
     })
-    fireEvent.contextMenu(screen.getByRole('tab', { name: /Browser/ }))
+    fireEvent.contextMenu(screen.getByRole('tab', { name: /Preview/ }))
     fireEvent.click(screen.getByRole('menuitem', { name: 'Close all tabs' }))
     // The batch does not close the clean tab silently — it names it as a last copy.
     expect(await screen.findByText('Discard unsaved changes?')).toBeTruthy()
@@ -368,7 +412,7 @@ describe('workspace tab close menu', () => {
       panelController.openWorkingTreeDiff('/tmp/deleted.ts', 'working tree contents')
       panelController.openView('browser')
     })
-    fireEvent.contextMenu(screen.getByRole('tab', { name: /Browser/ }))
+    fireEvent.contextMenu(screen.getByRole('tab', { name: /Preview/ }))
     fireEvent.click(screen.getByRole('menuitem', { name: 'Close all tabs' }))
     expect(await screen.findByText('Discard unsaved changes?')).toBeTruthy()
     expect(within(screen.getByRole('dialog')).getByText('deleted.ts (working tree)')).toBeTruthy()
@@ -385,7 +429,7 @@ describe('workspace tab close menu', () => {
       panelController.openFile('/tmp/locked.md', 'saved contents')
       panelController.openView('browser')
     })
-    fireEvent.contextMenu(screen.getByRole('tab', { name: /Browser/ }))
+    fireEvent.contextMenu(screen.getByRole('tab', { name: /Preview/ }))
     fireEvent.click(screen.getByRole('menuitem', { name: 'Close all tabs' }))
     expect(await screen.findByText('Discard unsaved changes?')).toBeTruthy()
     const dialog = screen.getByRole('dialog')
@@ -399,7 +443,7 @@ describe('workspace tab close menu', () => {
   it('says in the menu that the fixed views stay open', () => {
     renderPanel()
     act(() => { panelController.openView('browser') })
-    fireEvent.contextMenu(screen.getByRole('tab', { name: /Browser/ }))
+    fireEvent.contextMenu(screen.getByRole('tab', { name: /Preview/ }))
     expect(within(screen.getByRole('menu')).getByText('The Changes, Artifacts and Files views stay open')).toBeTruthy()
   })
 
@@ -412,7 +456,7 @@ describe('workspace tab close menu', () => {
       panelController.openFile('/tmp/truncated.log', 'first 10k bytes', null, { partial: true })
       panelController.openView('browser')
     })
-    fireEvent.contextMenu(screen.getByRole('tab', { name: /Browser/ }))
+    fireEvent.contextMenu(screen.getByRole('tab', { name: /Preview/ }))
     fireEvent.click(screen.getByRole('menuitem', { name: 'Close all tabs' }))
     expect(await screen.findByText('Discard unsaved changes?')).toBeTruthy()
     expect(within(screen.getByRole('dialog')).getByText('truncated.log')).toBeTruthy()
@@ -431,7 +475,7 @@ describe('workspace tab close menu', () => {
       panelController.openFile('/tmp/edited.md', 'saved contents')  // clean at snapshot time
       panelController.openView('browser')
     })
-    fireEvent.contextMenu(screen.getByRole('tab', { name: /Browser/ }))
+    fireEvent.contextMenu(screen.getByRole('tab', { name: /Preview/ }))
     fireEvent.click(screen.getByRole('menuitem', { name: 'Close all tabs' }))
     // While the read is pending, the user edits the file — it is now dirty.
     act(() => { panelController.patchTab('file:/tmp/edited.md', { content: 'edited while closing' }) })
@@ -450,7 +494,7 @@ describe('workspace tab close menu', () => {
       panelController.openFile('/tmp/present.md', 'saved contents')
       panelController.openView('browser')
     })
-    fireEvent.contextMenu(screen.getByRole('tab', { name: /Browser/ }))
+    fireEvent.contextMenu(screen.getByRole('tab', { name: /Preview/ }))
     fireEvent.click(screen.getByRole('menuitem', { name: 'Close all tabs' }))
     // No confirmation: nothing unsaved and the file is safe on disk.
     await waitFor(() => expect(screen.queryByRole('tab', { name: /present.md/ })).toBeNull())
@@ -466,7 +510,7 @@ describe('workspace tab close menu', () => {
       panelController.openTerminal()
       panelController.openView('browser')
     })
-    fireEvent.contextMenu(screen.getByRole('tab', { name: /Browser/ }))
+    fireEvent.contextMenu(screen.getByRole('tab', { name: /Preview/ }))
     fireEvent.click(screen.getByRole('menuitem', { name: 'Close all tabs' }))
     // One dialog states both losses, in its title as well as its body...
     expect(await screen.findByText('Discard edits and close terminals?')).toBeTruthy()
@@ -487,12 +531,12 @@ describe('workspace tab close menu', () => {
     act(() => { panelController.openTerminal() })
     act(() => { panelController.openView('browser') })
     expect(screen.getAllByRole('tab', { name: /Terminal/ })).toHaveLength(2)
-    fireEvent.contextMenu(screen.getByRole('tab', { name: /Browser/ }))
+    fireEvent.contextMenu(screen.getByRole('tab', { name: /Preview/ }))
     fireEvent.click(screen.getByRole('menuitem', { name: 'Close all tabs' }))
     expect(await screen.findByText('2 terminals will close and their running shells will stop.')).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: 'Close terminals' }))
     await waitFor(() => expect(screen.queryByRole('tab', { name: /Terminal/ })).toBeNull())
-    expect(screen.queryByRole('tab', { name: /Browser/ })).toBeNull()
+    expect(screen.queryByRole('tab', { name: /Preview/ })).toBeNull()
   })
 
   // Same hold as the terminal strip: lifting in place opens the menu, and the
@@ -505,7 +549,7 @@ describe('workspace tab close menu', () => {
     })
     vi.useFakeTimers()
     try {
-      fireEvent.pointerDown(screen.getByRole('tab', { name: /Browser/ }), { pointerType: 'touch', button: 0, clientX: 50, clientY: 50 })
+      fireEvent.pointerDown(screen.getByRole('tab', { name: /Preview/ }), { pointerType: 'touch', button: 0, clientX: 50, clientY: 50 })
       act(() => { vi.advanceTimersByTime(LONG_PRESS_MS + 700) })
       expect(screen.queryByRole('menu')).toBeNull()
       fireEvent.pointerUp(window, { clientX: 50, clientY: 50 })

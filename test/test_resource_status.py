@@ -7,6 +7,7 @@ disable switch, fail-open) and the ``resource_status`` pull tool wired into
 
 from __future__ import annotations
 
+import shutil
 from types import SimpleNamespace
 
 import pytest
@@ -37,10 +38,20 @@ def _unmeasurable_slice(monkeypatch: pytest.MonkeyPatch) -> None:
     :data:`_REAL_SLICE_PROBE`, captured past this default.
     """
     monkeypatch.setattr(rs, "_read_agent_slice_tasks", lambda: (-1, -1, -1))
+    # A pressured probe also asks whether the agent slice binds; a host whose
+    # slice is near its ceiling would otherwise reword every pressured line.
+    monkeypatch.setattr(rs, "_read_agent_ceiling", lambda: None, raising=False)
+    # The pull tool also reads the spawn gate's own figure; pin it clear of any
+    # floor so a tool case never turns on the CI host's free memory.
+    monkeypatch.setattr(rs, "_read_spawn_floor_figure", lambda _min_gb: (32.0, ""))
+    # And the learned settled figures from the cost log: none, a fresh install.
+    monkeypatch.setattr(rs, "_read_learned_settled", lambda: {})
 
 
 #: The genuine probe, bound at import before the autouse default can replace it.
 _REAL_SLICE_PROBE = rs._read_agent_slice_tasks
+#: The genuine cost-log reader, bound the same way.
+_REAL_LEARNED_SETTLED = rs._read_learned_settled
 
 
 # ── _classify ────────────────────────────────────────────────────────────────
@@ -155,6 +166,91 @@ def test_summary_lines_unknown(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "unknown" in joined.lower()
 
 
+# ── a figure the agent slice's ceiling binds ───────────────────────────────────
+
+
+def _full_slice() -> rs.AgentCeiling:
+    """The incident's shape: agents at their 370 GB ceiling with 89 GB of it in
+    tmpfs files, while the host still had 165 GB available."""
+    return rs.AgentCeiling(ceiling_gb=370.0, host_available_gb=165.0, shmem_gb=89.0)
+
+
+_FULL = object()  # sentinel: "the incident's ceiling", resolved at call time
+
+
+def _slice_bound(monkeypatch: pytest.MonkeyPatch, available_gb: float, ceiling=_FULL):
+    reading = _full_slice() if ceiling is _FULL else ceiling
+    monkeypatch.setattr(rs, "_read_available_gb", lambda: available_gb)
+    monkeypatch.setattr(rs, "_read_agent_ceiling", lambda: reading, raising=False)
+    return rs.probe(_cfg(4.0, 2.0))
+
+
+def test_ample_probe_never_reads_the_ceiling(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _must_not_run() -> rs.AgentCeiling:
+        raise AssertionError("the ceiling is read only on a pressured probe")
+
+    monkeypatch.setattr(rs, "_read_available_gb", lambda: 32.0)
+    monkeypatch.setattr(rs, "_read_agent_ceiling", _must_not_run)
+    assert rs.probe(_cfg(4.0, 2.0)).agent_ceiling is None
+
+
+def test_pressured_probe_carries_the_ceiling(monkeypatch: pytest.MonkeyPatch) -> None:
+    status = _slice_bound(monkeypatch, 0.0)
+    assert status.posture == rs.POSTURE_CRITICAL
+    assert status.agent_ceiling == _full_slice()
+    assert status.memory_subject == "Agent memory"
+
+
+def test_slice_bound_context_line_names_the_ceiling_and_the_host(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    line = _slice_bound(monkeypatch, 0.0).context_line()
+    assert line.startswith("[RESOURCES] Agent memory is CRITICALLY low (~0.0 GB left under")
+    assert "370 GB agent memory ceiling" in line
+    assert "~165 GB free on the host" in line
+    assert "Host memory" not in line
+
+
+def test_slice_bound_remote_line_names_the_ceiling(monkeypatch: pytest.MonkeyPatch) -> None:
+    line = _slice_bound(monkeypatch, 3.0).context_line(remote=True)
+    assert "is tight on memory (~3.0 GB left under the 370 GB agent memory ceiling" in line
+
+
+def test_host_bound_wording_is_unchanged(monkeypatch: pytest.MonkeyPatch) -> None:
+    line = _slice_bound(monkeypatch, 1.0, ceiling=None).context_line()
+    assert line.startswith("[RESOURCES] Host memory is CRITICALLY low (~1.0 GB free")
+
+
+def test_slice_bound_summary_names_ceiling_host_and_shared_memory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    joined = "\n".join(_slice_bound(monkeypatch, 0.0).summary_lines())
+    assert "Measured against the agent memory ceiling (370 GB)" in joined
+    assert "the host has 165.0 GB available" in joined
+    assert "89 GB of agent memory is shared memory" in joined
+    assert "/dev/shm" in joined
+
+
+def test_a_small_host_reads_in_tenths(monkeypatch: pytest.MonkeyPatch) -> None:
+    small = rs.AgentCeiling(ceiling_gb=3.0, host_available_gb=2.4, shmem_gb=0.0)
+    line = _slice_bound(monkeypatch, 0.3, ceiling=small).context_line()
+    assert "(~0.3 GB left under the 3.0 GB agent memory ceiling, ~2.4 GB free on the host" in line
+
+
+@pytest.mark.parametrize(
+    ("shmem_gb", "named"),
+    [
+        pytest.param(36.9, False, id="test_shmem_under_a_tenth_is_not_named"),
+        pytest.param(37.0, True, id="test_shmem_at_a_tenth_is_named"),
+        pytest.param(0.0, False, id="test_no_shmem_is_not_named"),
+    ],
+)
+def test_shared_memory_is_named_only_when_it_holds_a_tenth(shmem_gb, named) -> None:
+    ceiling = rs.AgentCeiling(ceiling_gb=370.0, host_available_gb=165.0, shmem_gb=shmem_gb)
+    assert ceiling.shmem_notable is named
+    assert bool(ceiling.shmem_sentence()) is named
+
+
 # ── mcp_core pull tool ──────────────────────────────────────────────────────────
 
 
@@ -238,7 +334,30 @@ def test_temp_headroom_unmeasurable_is_none(monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.setattr(rs.os, "statvfs", _gone, raising=False)
     assert rs.temp_headroom("/missing") is None
     monkeypatch.delattr(rs.os, "statvfs", raising=False)
-    assert rs.temp_headroom("/tmp") is None
+    monkeypatch.setattr(shutil, "disk_usage", _gone)
+    assert rs.temp_headroom("C:\\Missing") is None
+
+
+def test_temp_headroom_without_statvfs_measures_disk_usage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Native Windows has no ``os.statvfs``; free space still comes through."""
+    monkeypatch.delattr(rs.os, "statvfs", raising=False)
+    usage = SimpleNamespace(total=1000, used=913, free=87)
+    monkeypatch.setattr(shutil, "disk_usage", lambda root: usage)
+    monkeypatch.setattr(rs, "temp_roots", lambda: ["C:\\Temp"])
+
+    reading = rs.temp_headroom("C:\\Temp")
+    assert reading is not None and reading.low
+    assert reading.text() == "LOW on space, 9% space free, no inode limit"
+
+    monkeypatch.delenv("KIROCREW_SCRATCH", raising=False)
+    lines = rs.temp_headroom_lines()
+    assert lines[:2] == [
+        "Temp space (advisory):",
+        "  C:\\Temp: LOW on space, 9% space free, no inode limit",
+    ]
+    assert any(line.startswith("\nGuidance: temp space is low on C:\\Temp") for line in lines)
 
 
 def _fake_devices(monkeypatch: pytest.MonkeyPatch, devices: dict[str, int]) -> None:
@@ -1078,3 +1197,166 @@ def test_both_tight_reports_each_machine_with_its_own_advice():
 def test_both_healthy_stays_silent():
     assert _status(20.0).context_line(remote=True, workspace_memory=(12 * _GIB, 16 * _GIB)) == ""
     assert _status(20.0).context_line(remote=True) == ""
+
+
+# ── the spawn floor ─────────────────────────────────────────────────────────
+
+
+def _spawn_cfg(floor: float, cost: float = 0.5) -> SimpleNamespace:
+    return SimpleNamespace(agent=SimpleNamespace(spawn_min_memory_gb=floor, subagent_cost_gb=cost))
+
+
+def _gate_figure(monkeypatch: pytest.MonkeyPatch, avail: float, cause: str = "") -> list[float]:
+    asked: list[float] = []
+
+    def read(min_gb: float) -> tuple[float, str]:
+        asked.append(min_gb)
+        return avail, cause
+
+    monkeypatch.setattr(rs, "_read_spawn_floor_figure", read)
+    return asked
+
+
+def test_spawn_floor_prices_starts_with_the_gate_helpers(monkeypatch) -> None:
+    from kiro_crew.subagent import _UNLEARNED_DEDICATED_START_GB, _shared_start_price_gb
+
+    asked = _gate_figure(monkeypatch, 8.0)
+    reading = rs.spawn_floor_reading(_spawn_cfg(2.0))
+    assert reading.floor_gb == 2.0
+    # Nothing learned: the gate prices a start at the unlearned figure, not
+    # the lower ``subagent_cost_gb``.
+    assert reading.min_start_gb == pytest.approx(
+        2.0 + _shared_start_price_gb(_UNLEARNED_DEDICATED_START_GB)
+    )
+    # The gate's figure is read against the cheapest bar, as the gate reads it.
+    assert asked == [pytest.approx(reading.min_start_gb)]
+    assert not reading.blocked
+    assert "BLOCKED" not in reading.summary_line()
+
+
+def test_a_fresh_install_is_blocked_between_the_cost_bar_and_the_gate_bar(monkeypatch) -> None:
+    """Floor 2 GB, cost 0.5, nothing learned: the gate's bar is 2.65 GB, so
+    2.4 GB holds every start even though it clears floor + shared(cost)."""
+    _gate_figure(monkeypatch, 2.4)
+    reading = rs.spawn_floor_reading(_spawn_cfg(2.0))
+    assert reading.blocked
+    assert "BLOCKED" in reading.summary_line()
+
+
+def test_a_learned_lighter_bucket_lowers_the_bar_to_its_price(monkeypatch) -> None:
+    from kiro_crew.subagent import _shared_start_price_gb
+
+    monkeypatch.setattr(rs, "_read_learned_settled", lambda: {"kirocrew": 0.8, "heavy": 1.6})
+    _gate_figure(monkeypatch, 8.0)
+    reading = rs.spawn_floor_reading(_spawn_cfg(2.0))
+    assert reading.min_start_gb == pytest.approx(2.0 + _shared_start_price_gb(0.8))
+
+
+def test_a_remote_bucket_never_sets_the_local_bar(monkeypatch) -> None:
+    from kiro_crew.subagent import (
+        _UNLEARNED_DEDICATED_START_GB,
+        REMOTE_COST_BUCKET_SUFFIX,
+        _shared_start_price_gb,
+    )
+
+    monkeypatch.setattr(
+        rs, "_read_learned_settled", lambda: {"kirocrew" + REMOTE_COST_BUCKET_SUFFIX: 0.3}
+    )
+    _gate_figure(monkeypatch, 8.0)
+    reading = rs.spawn_floor_reading(_spawn_cfg(2.0))
+    assert reading.min_start_gb == pytest.approx(
+        2.0 + _shared_start_price_gb(_UNLEARNED_DEDICATED_START_GB)
+    )
+
+
+def test_an_unreadable_cost_log_falls_back_to_the_configured_cost(monkeypatch) -> None:
+    from kiro_crew.subagent import _shared_start_price_gb
+
+    monkeypatch.setattr(rs, "_read_learned_settled", lambda: None)
+    _gate_figure(monkeypatch, 8.0)
+    reading = rs.spawn_floor_reading(_spawn_cfg(2.0))
+    assert reading.min_start_gb == pytest.approx(2.0 + _shared_start_price_gb(0.5))
+
+
+def test_an_incomplete_cost_log_read_falls_back_to_the_configured_cost(monkeypatch) -> None:
+    """A partial read may miss a figure the manager still holds, so it must not
+    raise the bar to the unlearned price."""
+    from kiro_crew import subagent_cost
+    from kiro_crew.subagent import _shared_start_price_gb
+
+    monkeypatch.setattr(rs, "_read_learned_settled", _REAL_LEARNED_SETTLED)
+    monkeypatch.setattr(subagent_cost, "read_learned_costs_checked", lambda *a, **k: ({}, False))
+    assert rs._read_learned_settled() is None
+    _gate_figure(monkeypatch, 8.0)
+    reading = rs.spawn_floor_reading(_spawn_cfg(2.0))
+    assert reading.min_start_gb == pytest.approx(2.0 + _shared_start_price_gb(0.5))
+
+
+def test_a_floor_above_the_gate_figure_is_blocked(monkeypatch) -> None:
+    """The reported case: a 4 GB floor with ~3.3 GB available holds every start."""
+    _gate_figure(monkeypatch, 3.3)
+    reading = rs.spawn_floor_reading(_spawn_cfg(4.0))
+    assert reading.blocked
+    assert "BLOCKED: new top-level subagents wait in the queue" in reading.summary_line()
+    assert "the gate reads 3.3 GB" in reading.blocked_sentence()
+    # Scoped to top-level starts: a running subagent's shared nested start
+    # skips its own start charge, so it can clear a lower bar.
+    assert "new top-level subagents cannot start now" in reading.blocked_sentence()
+
+
+def test_a_remote_caller_takes_no_reading_and_is_never_blocked(monkeypatch) -> None:
+    """The gate prices a remote session's children without the floor
+    (``remote_child``), so the tool must not report the floor as holding them."""
+    asked = _gate_figure(monkeypatch, 0.5)
+    reading = rs.spawn_floor_reading(_spawn_cfg(4.0), remote=True)
+    assert asked == []
+    assert not reading.blocked
+    assert reading.blocked_sentence() == ""
+    assert "not applied to this session's subagents" in reading.summary_line()
+
+
+def test_a_disabled_floor_takes_no_reading(monkeypatch) -> None:
+    asked = _gate_figure(monkeypatch, 0.1)
+    reading = rs.spawn_floor_reading(_spawn_cfg(0.0))
+    assert asked == []
+    assert not reading.blocked
+    assert reading.summary_line() == "  Subagent spawn floor: off (agent.spawn_min_memory_gb is 0)"
+
+
+def test_an_unmeasurable_gate_figure_fails_open_like_the_gate(monkeypatch) -> None:
+    _gate_figure(monkeypatch, -1.0)
+    reading = rs.spawn_floor_reading(_spawn_cfg(2.0))
+    assert not reading.blocked
+    assert "starts are not held" in reading.summary_line()
+
+
+def test_an_unreadable_cgroup_usage_is_blocked_with_its_cause(monkeypatch) -> None:
+    from kiro_crew.subagent import MEMORY_CAUSE_CGROUP_USAGE_UNREADABLE
+
+    _gate_figure(monkeypatch, 0.0, MEMORY_CAUSE_CGROUP_USAGE_UNREADABLE)
+    reading = rs.spawn_floor_reading(_spawn_cfg(2.0))
+    assert reading.blocked
+    assert "usage is unreadable" in reading.blocked_sentence()
+
+
+def test_tool_says_spawning_is_blocked_on_an_ample_posture(monkeypatch) -> None:
+    """End to end through the tool: AMPLE on the posture's figure, while the
+    gate's own figure misses the floor, must not read as ample headroom."""
+    from kiro_crew import mcp_core
+
+    fake = rs.ResourceStatus(
+        available_gb=8.0,
+        cpu_count=8,
+        load_per_cpu=0.5,
+        posture=rs.POSTURE_AMPLE,
+        pressure_gb=4.0,
+        critical_gb=2.0,
+    )
+    monkeypatch.setattr(rs, "probe", lambda cfg=None: fake)
+    monkeypatch.setattr(rs, "_load_config", lambda: _spawn_cfg(4.0))
+    _gate_figure(monkeypatch, 3.3)
+    out = mcp_core._call_tool_inner("resource_status", {})
+    assert "Posture: AMPLE" in out
+    assert "Subagent spawn floor: 4 GB must stay free after a start" in out
+    assert "Guidance: new top-level subagents cannot start now" in out
+    assert "ample headroom" not in out

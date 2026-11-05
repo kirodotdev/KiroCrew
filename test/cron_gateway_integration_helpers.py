@@ -26,6 +26,7 @@ def _make_gw():
     gw._owner_id = "U000"
     gw.subagent_mgr = None
     gw._cron_injecting = {}
+    gw._cron_runs_holding = set()
     gw._running_script_ids = set()
     gw._no_crons = False
     gw.cron_svc = MagicMock()
@@ -69,9 +70,7 @@ async def _run_script_callback(gw, job, script_result=None, vet_reason=None, sid
     """Run the cron callback with a mocked run_script_sandboxed result.
 
     ``vet_reason`` feeds the fire-time governance gate (None = job may run);
-    patching vet_job_at_fire_time also stands in for the script-path
-    resolution it performs, which the removed gateway-level
-    resolve_script_path call also covered.
+    patching vet_job_at_fire_time also stands in for its script-path resolution.
 
     Pass ``side_effect`` to make the mocked call raise instead of returning.
     """
@@ -177,6 +176,7 @@ def _make_gw_for_llm():
     gw._owner_id = "U000"
     gw.subagent_mgr = None
     gw._cron_injecting = {}
+    gw._cron_runs_holding = set()
     gw._running_script_ids = set()
     gw._no_crons = False
     gw.cron_svc = MagicMock()

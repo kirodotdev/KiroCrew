@@ -189,6 +189,35 @@ describe('kirocrew-conductor page', () => {
     expect(text('#cb-meter')).toContain('1 of 3 accepted by the conductor')
   })
 
+  it('calls a progress task working only while the host says its worker runs', () => {
+    mount({
+      items: [
+        item({ item_id: 'a', title: 'mid-turn', worker: 'running', stale: false }),
+        item({ item_id: 'b', title: 'turn ended', worker: 'idle', stale: false }),
+        item({ item_id: 'c', title: 'chat closed', worker: 'closed', stale: true }),
+        item({ item_id: 'd', title: 'no host facts' }),
+      ],
+    })
+    const cards = all('#cb-tasks .card')
+    expect(cards.map((c) => c.querySelector('.pill')?.textContent)).toEqual([
+      'working',
+      'waiting',
+      'waiting',
+      'working',
+    ])
+    // Only the running card and the old-rule card pulse; the meter counts them alone.
+    expect(cards.map((c) => c.querySelector('.dot') !== null)).toEqual([true, false, false, true])
+    expect(text('#cb-meter')).toContain('2 working')
+  })
+
+  it('stops calling a task working once its worker goes idle', () => {
+    mount({ items: [item({ title: 'one', worker: 'running', stale: false })] })
+    expect(text('#cb-tasks .card .pill')).toBe('working')
+    refill({ items: [item({ title: 'one', worker: 'idle', stale: false })] })
+    expect(text('#cb-tasks .card .pill')).toBe('waiting')
+    expect(text('#cb-meter')).toContain('0 working')
+  })
+
   it('keeps a title that looks like markup as text', () => {
     mount({ items: [item({ title: HOSTILE, summary: HOSTILE })] })
     expect(document.querySelector('#cb-tasks img')).toBeNull()
@@ -201,7 +230,7 @@ describe('kirocrew-conductor page', () => {
     const band = document.querySelector('#cb-you .band')
     expect(band).not.toBeNull()
     expect(all('#cb-you .v').map((n) => n.textContent)).toEqual(['Approve the merge of PR 4', HOSTILE])
-    expect(text('#cb-you .tag')).toBe('your mate wrote this')
+    expect(text('#cb-you .tag')).toBe('your Bot wrote this')
     expect(text('#cb-you .band')).toContain('Nothing sends until you press send.')
     expect(document.querySelector('#cb-you img')).toBeNull()
   })
@@ -239,7 +268,7 @@ describe('kirocrew-conductor page', () => {
     expect(text('#cb-you .v')).toBe('stuck one \u2014 is stuck (approval)')
   })
 
-  it('shows the published note as the mate wrote it', () => {
+  it('shows the published note as the Bot wrote it', () => {
     mount({
       items: [],
       note: { next: 'rebase PR 4', needs_you: HOSTILE, tasks: [] },
@@ -252,7 +281,7 @@ describe('kirocrew-conductor page', () => {
     // The stamp is shown in the reader's own format, never as the raw string.
     expect(note?.textContent).toContain('sent ')
     expect(note?.textContent).not.toContain('2026-10-13T02:00:00')
-    expect(text('#cb-note .tag')).toBe('your mate wrote this')
+    expect(text('#cb-note .tag')).toBe('your Bot wrote this')
     expect(document.querySelector('#cb-note img')).toBeNull()
   })
 
@@ -365,7 +394,7 @@ describe('kirocrew-conductor page', () => {
 
   it('says there is no goal yet instead of a dash', () => {
     mount({})
-    expect(text('h1')).toBe('No goal yet. Give this mate one in chat.')
+    expect(text('h1')).toBe('No goal yet. Give this Bot one in chat.')
   })
 
   it('says so when the board is empty and nothing needs the reader', () => {

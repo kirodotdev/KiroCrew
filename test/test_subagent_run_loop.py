@@ -25,6 +25,10 @@ from kiro_crew.testing.wait import await_until
 # looks short of memory, which is the runner's state, not this test's input.
 pytestmark = pytest.mark.usefixtures("healthy_host_memory")
 
+# Bound on draining the held usage-row task; it ends on its own once its
+# worker-thread append returns.
+_USAGE_ROW_WAIT_SECS = 30.0
+
 
 class TestSubagentPostToolUseHook:
     """PostToolUse hook fires on EVENT_TOOL_RESULT in subagent loop.
@@ -496,14 +500,14 @@ class TestSubagentUsageRow:
             provider.last_prompt_stats = AcpPromptStats(credits=0.75)
             if interruption_site == "stream":
                 entered.set()
-                # flake-ok: pre-existing gate the test releases by cancelling the run moved verbatim; tracked for a de-flake pass
+                # Parked until the test cancels the run; the cleanup sets it too.
                 await blocked.wait()
             yield AcpEvent(kind=EVENT_TEXT_CHUNK, text="partial")
 
         async def on_event(kind, info, extra):
             if kind == "subagent_chunk":
                 entered.set()
-                # flake-ok: pre-existing gate the test releases by cancelling the run moved verbatim; tracked for a de-flake pass
+                # Parked until the test cancels the run; the cleanup sets it too.
                 await blocked.wait()
 
         stream_iter = stream()
@@ -523,14 +527,17 @@ class TestSubagentUsageRow:
             try:
                 await await_until(entered)
                 task.cancel()
+                done, _ = await asyncio.wait({task}, timeout=30)
+                assert task in done, "cancelled subagent run did not finish within 30 s"
                 with pytest.raises(asyncio.CancelledError):
-                    # flake-ok: pre-existing await of the task this test cancelled moved verbatim; tracked for a de-flake pass
-                    await task
+                    task.result()
                 assert info.credits == pytest.approx(0.75)
             finally:
                 task.cancel()
-                # flake-ok: pre-existing cleanup await of the cancelled run moved verbatim; tracked for a de-flake pass
-                await asyncio.gather(task, return_exceptions=True)
+                # Release any stub still parked on its gate, then bound the wait.
+                blocked.set()
+                await asyncio.wait({task}, timeout=30)
+                assert task.done(), "cleanup: subagent run still running after 30 s"
                 await stream_iter.aclose()
 
     @pytest.mark.asyncio
@@ -730,11 +737,16 @@ class TestSubagentUsageRow:
         )
         manager._log_spawned(info)
 
-        persist = AsyncMock()
+        # The real record builder runs; only the file append is replaced, so the
+        # assertion reads the usage row the turn would have written.
+        written: list[dict] = []
         with (
             patch("kiro_crew.subagent.Stats"),
             patch("kiro_crew.subagent.sel"),
-            patch("kiro_crew.dashboard.handlers.usage.persist_token_record_async", persist),
+            patch(
+                "kiro_crew.dashboard.handlers.usage._write_token_record",
+                side_effect=lambda record, _now: written.append(record),
+            ),
             patch(
                 "kiro_crew.dashboard.handlers.usage.read_context_tokens",
                 MagicMock(return_value=(1, 2)),
@@ -748,9 +760,13 @@ class TestSubagentUsageRow:
             ),
         ):
             await manager._run_inner(info, "subagent:usage02")
+            # The usage row is written by a held task whose append runs on a
+            # worker thread; drain it while the patched append is in force.
+            await asyncio.wait_for(
+                asyncio.gather(*manager._report_tasks), timeout=_USAGE_ROW_WAIT_SECS
+            )
 
-        persist.assert_awaited_once()
-        assert persist.await_args.kwargs["agent"] == "researcher"
+        assert [record["agent"] for record in written] == ["researcher"]
 
 
 class TestIdentityTrustedChildParentPolicyAuto:
@@ -854,6 +870,8 @@ class TestIdentityTrustedChildParentPolicyAuto:
         """Identity verification is not itself a grant: with no auto policy
         (and no interactive approver) the event stays fail-closed."""
         event = self._child_mcp_event()
+        # The identity IS verified, so the refusal below comes from the missing grant.
+        assert event.child_low_fidelity and event.child_mcp_identity_trusted
         manager, info, provider = self._manager_and_stream(event)
         manager._sessions.get_approval_policy = MagicMock(return_value="")
 
@@ -955,6 +973,8 @@ class TestIdentityTrustedChildHookIdentityGrant:
         from kiro_crew.hooks import ToolHookResult
 
         event = self._child_mcp_event()
+        # The identity IS verified, so the refusal below comes from the grant's provenance.
+        assert event.child_low_fidelity and event.child_mcp_identity_trusted
         manager, info, provider = self._manager_and_stream(event, ToolHookResult.auto_approve())
         p1, p2, p3, p4 = self._patches()
         with p1, p2, p3, p4:

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef, type ReactNode } from 'react'
+import { useState, useEffect, useCallback, useRef, useId, type ReactNode } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { ExternalLink, Check, AlertTriangle, Lock } from 'lucide-react'
 import { SettingsSection, SettingsCard, SettingsInput, SettingsSelect, SettingsToggle } from '../../components/settings'
@@ -10,6 +10,7 @@ import { TagListEditor } from './SlackPanel'
 
 import { i18nT } from '../../i18n/t'
 import { ChannelFolderBackfill } from './ChannelFolderBackfill'
+import { parseWholeNumber } from '../../utils/wholeNumber'
 /** Config shape shared by every bot-token channel (Discord, Telegram, …). */
 export interface BotChannelConfigData {
   connected: boolean
@@ -161,14 +162,15 @@ export interface BotChannelSpec {
   /**
    * Optional reasoning toggle. Present only for a channel that can render a
    * collapsed quote after the answer; a channel that omits it never sends the
-   * field, so its save payload is unchanged.
+   * field, so its save payload is unchanged. `description` goes in the info
+   * tip; the optional `summary` is the short line shown on the row.
    */
-  showThinking?: { label: string; description: string }
+  showThinking?: { label: string; description: string; summary?: string }
   /**
    * Optional spoken-answer toggle. Present only for a channel that can upload
    * synthesized audio; a channel that omits it never sends the field.
    */
-  voiceReplies?: { label: string; description: string }
+  voiceReplies?: { label: string; description: string; summary?: string }
   /** Optional shared-thread allow-list rendered below user access controls. */
   threadAllowlist?: {
     label: string
@@ -345,10 +347,10 @@ function draftFrom(c: BotChannelConfigData): Draft {
 /** Status pill mirroring the run state of the channel. */
 function StatusBadge({ config }: { config: BotChannelConfigData }) {
   const [dot, text, cls] = config.connected
-    ? ['var(--ok)', 'Connected', 'text-ok']
+    ? ['var(--ok)', i18nT('pages.settings.channelsPanel.connected'), 'text-ok']
     : config.configured
-      ? ['var(--warn)', 'Not connected', 'text-warn']
-      : ['var(--muted)', 'Needs setup', 'text-muted']
+      ? ['var(--warn)', i18nT('pages.settings.channelsPanel.not_connected'), 'text-warn']
+      : ['var(--muted)', i18nT('pages.settings.channelsPanel.needs_setup'), 'text-muted']
   return (
     <span className={`inline-flex items-center gap-1.5 text-[12px] font-medium ${cls}`}>
       <span className="w-1.5 h-1.5 rounded-full" style={{ background: dot }} />
@@ -421,6 +423,7 @@ export function BotChannelPanel({ spec }: { spec: BotChannelSpec }) {
   // nothing to diagnose.
   const [saveError, setSaveError] = useState('')
   const [thresholdError, setThresholdError] = useState('')
+  const thresholdErrorId = useId()
 
   // Sync the local draft when server config arrives. Guarded so only the
   // initial load and post-save invalidation reseed it — a background refetch
@@ -469,8 +472,8 @@ export function BotChannelPanel({ spec }: { spec: BotChannelSpec }) {
     if (!draft) return
     setSaveError('')
     setThresholdError('')
-    const pct = parseInt(draft.soft_threshold_pct, 10)
-    if (!Number.isInteger(pct) || pct < 1 || pct > 100) {
+    const pct = parseWholeNumber(draft.soft_threshold_pct)
+    if (pct === null || pct < 1 || pct > 100) {
       setThresholdError(i18nT('pages.settings.botChannelPanel.soft_context_threshold_must_be_a_number_between'))
       setTimeout(() => setThresholdError(''), 8000)
       return
@@ -516,13 +519,13 @@ export function BotChannelPanel({ spec }: { spec: BotChannelSpec }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `spec` is excluded on purpose: the owning panel rebuilds it on every render (a module const cannot hold localised copy), and the fields read here are the channel's CAPABILITY flags, which are the same shape on every rebuild for a mounted panel. Listing it would recreate this handler every render while changing nothing it computes, and the spec's contract is that it appears in no dependency array.
   }, [draft, botToken, botClear, botId, botIdClear, saveMut])
 
-  if (isLoading) return <p className="text-[13px] text-muted p-4">{i18nT('pages.settings.botChannelPanel.loading')} {spec.name} {i18nT('pages.settings.botChannelPanel.config')}</p>
+  if (isLoading) return <p className="text-[13px] text-muted p-4">{i18nT('pages.settings.botChannelPanel.loading_channel_config', { channel: spec.name })}</p>
   // Nothing to lose here: the form is not mounted in this branch.
   if (isError || !data || !draft) {
     return (
       <ErrorNotice
         className="m-4"
-        message={`${i18nT('pages.settings.botChannelPanel.cannot_load')} ${spec.name} ${i18nT('pages.settings.botChannelPanel.config_is_the_gateway_running')}`}
+        message={i18nT('pages.settings.botChannelPanel.cannot_load_channel_config', { channel: spec.name })}
         askAgent
       />
     )
@@ -565,7 +568,7 @@ export function BotChannelPanel({ spec }: { spec: BotChannelSpec }) {
         <div className="flex items-center gap-2 rounded-md border border-border bg-bg-elevated px-3 py-2 mb-3">
           <Lock size={13} className="text-muted flex-none" />
           <span className="text-[12px] text-muted">
-            {spec.name} {i18nT('pages.settings.botChannelPanel.settings_are_managed_on_the_machine_running_kiro')}
+            {i18nT('pages.settings.botChannelPanel.channel_settings_read_only', { channel: spec.name })}
           </span>
         </div>
       )}
@@ -600,7 +603,7 @@ export function BotChannelPanel({ spec }: { spec: BotChannelSpec }) {
         <SettingsCard index={1}>
           <SettingsToggle
             label={i18nT('pages.settings.botChannelPanel.enable', { channel: spec.name })}
-            description={i18nT('pages.settings.botChannelPanel.start_the_channel_at_gateway_startup', { channel: spec.name })}
+            hint={i18nT('pages.settings.botChannelPanel.start_the_channel_at_gateway_startup', { channel: spec.name })}
             checked={draft.enabled}
             onChange={v => upd({ enabled: v })}
             disabled={ro}
@@ -711,7 +714,7 @@ export function BotChannelPanel({ spec }: { spec: BotChannelSpec }) {
             <div className="border-t border-border mt-4 pt-4">
               <SettingsToggle
                 label={spec.sharedChannels.autoThreadLabel}
-                description={spec.sharedChannels.autoThreadDescription}
+                hint={spec.sharedChannels.autoThreadDescription}
                 configKey={spec.sharedChannels.autoThreadConfigKey}
                 checked={draft.auto_thread}
                 onChange={v => upd({ auto_thread: v })}
@@ -818,12 +821,13 @@ export function BotChannelPanel({ spec }: { spec: BotChannelSpec }) {
             onChange={v => upd({ soft_threshold_pct: v })}
             placeholder="80"
             disabled={ro}
+            invalidMessageId={thresholdError ? thresholdErrorId : undefined}
           />
           {spec.progressDisplay && (
             <>
               <SettingsToggle
                 label={spec.progressDisplay.reactionsLabel}
-                description={spec.progressDisplay.reactionsDescription}
+                hint={spec.progressDisplay.reactionsDescription}
                 configKey={spec.progressDisplay.reactionsConfigKey}
                 checked={draft.reactions_enabled}
                 onChange={v => upd({ reactions_enabled: v })}
@@ -831,7 +835,7 @@ export function BotChannelPanel({ spec }: { spec: BotChannelSpec }) {
               />
               <SettingsToggle
                 label={spec.progressDisplay.thinkingLabel}
-                description={spec.progressDisplay.thinkingDescription}
+                hint={spec.progressDisplay.thinkingDescription}
                 configKey={spec.progressDisplay.thinkingConfigKey}
                 checked={draft.show_thinking}
                 onChange={v => upd({ show_thinking: v })}
@@ -843,7 +847,8 @@ export function BotChannelPanel({ spec }: { spec: BotChannelSpec }) {
             <div className="border-t border-border mt-4 pt-4">
               <SettingsToggle
                 label={spec.showThinking.label}
-                description={spec.showThinking.description}
+                description={spec.showThinking.summary}
+                hint={spec.showThinking.description}
                 checked={draft.show_thinking}
                 onChange={v => upd({ show_thinking: v })}
                 disabled={ro}
@@ -854,7 +859,8 @@ export function BotChannelPanel({ spec }: { spec: BotChannelSpec }) {
             <div className="border-t border-border mt-4 pt-4">
               <SettingsToggle
                 label={spec.voiceReplies.label}
-                description={spec.voiceReplies.description}
+                description={spec.voiceReplies.summary}
+                hint={spec.voiceReplies.description}
                 checked={draft.voice_replies}
                 onChange={v => upd({ voice_replies: v })}
                 disabled={ro}
@@ -866,7 +872,7 @@ export function BotChannelPanel({ spec }: { spec: BotChannelSpec }) {
           <div className="border-t border-border mt-4 pt-4">
             <SettingsToggle
               label={i18nT('pages.settings.botChannelPanel.file_sessions_in_folder')}
-              description={i18nT('pages.settings.botChannelPanel.file_sessions_in_folder_desc', { channel: spec.name })}
+              hint={i18nT('pages.settings.botChannelPanel.file_sessions_in_folder_desc', { channel: spec.name })}
               checked={draft.session_folder_on}
               onChange={v => upd({ session_folder_on: v })}
               disabled={ro}
@@ -875,7 +881,7 @@ export function BotChannelPanel({ spec }: { spec: BotChannelSpec }) {
               <div className="mt-4">
                 <SettingsInput
                   label={i18nT('pages.settings.botChannelPanel.session_folder_name')}
-                  description={i18nT('pages.settings.botChannelPanel.session_folder_name_desc')}
+                  hint={i18nT('pages.settings.botChannelPanel.session_folder_name_desc')}
                   value={draft.session_folder}
                   onChange={v => upd({ session_folder: v })}
                   placeholder={spec.name}
@@ -913,8 +919,8 @@ export function BotChannelPanel({ spec }: { spec: BotChannelSpec }) {
         {/* Client-side validation hint (the threshold never left the browser) —
             not an error surface, so it stays plain text rather than ErrorNotice. */}
         {thresholdError && (
-          <span className="inline-flex items-center gap-1.5 text-[12px] text-danger">
-            <AlertTriangle size={14} /> {thresholdError}
+          <span id={thresholdErrorId} role="alert" className="inline-flex items-center gap-1.5 text-[12px] text-danger">
+            <AlertTriangle size={14} aria-hidden="true" /> {thresholdError}
           </span>
         )}
         {/* No hand-off: `botToken` / `botId` (SecretField drafts, never persisted)

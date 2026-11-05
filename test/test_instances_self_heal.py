@@ -315,6 +315,31 @@ class TestSelfHealRefreshRestart:
         )
 
     @pytest.mark.asyncio
+    async def test_a_recovery_for_a_removed_instance_leaves_a_line(self, tmp_path, caplog):
+        """The one recovery exit that wrote nothing: an instance left down must name why."""
+        import logging
+
+        _reg, mgr = self._mgr(tmp_path)
+        with caplog.at_level(logging.INFO, logger="kiro_crew.instances.ssh_tunnel_manager"):
+            await mgr._recover("gone-1")
+        assert "Self-heal for gone-1 not run" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_a_barrier_raised_during_the_backoff_leaves_a_line(self, tmp_path, caplog):
+        """Same line ``_on_tunnel_exit`` writes for its own skip, so the exit is visible."""
+        import logging
+
+        reg, mgr = self._mgr(tmp_path)
+        reg.add(name="CD", ssh_host="cd-1-alias", instance_id="cd-1")
+        mgr._reconfiguring.add("cd-1")
+        try:
+            with caplog.at_level(logging.INFO, logger="kiro_crew.instances.ssh_tunnel_manager"):
+                await mgr._recover_after("cd-1", 0)
+        finally:
+            mgr._reconfiguring.discard("cd-1")
+        assert "Skipping self-heal for cd-1: reconfiguration in progress" in caplog.text
+
+    @pytest.mark.asyncio
     async def test_recover_tier1_then_tier2(self, tmp_path):
         from kiro_crew.instances.ssh_tunnel_manager import TunnelState
 
@@ -506,9 +531,11 @@ class TestSelfHealRefreshRestart:
             def __init__(self):
                 self.returncode = None
                 self.stderr = self
+                self._chunks = [b"bind [127.0.0.1]:53991: Address already in use\r\n"]
 
-            async def read(self):
-                return b"bind [127.0.0.1]:53991: Address already in use\r\n"
+            async def read(self, n=-1):
+                # A real stream: the bytes once, then EOF.
+                return self._chunks.pop(0) if self._chunks else b""
 
         t = _SshTunnel("cd-1", "cd-1-alias", 53991, 7777, connect_timeout_secs=1.0)
         t._proc = _Proc()
@@ -523,6 +550,123 @@ class TestSelfHealRefreshRestart:
         assert t.status.state == TunnelState.ERROR
         assert "in use" in t.status.error.lower()
         assert "post-quantum" not in t.status.error.lower()
+
+    @staticmethod
+    async def _timeout_error_for_live_child(*, tunable=True, **kwargs):
+        from kiro_crew.instances.ssh_tunnel_manager import _SshTunnel
+
+        class _LiveProc:
+            returncode = None  # never exits: still connecting at the deadline
+
+        t = _SshTunnel("cd-1", "cd-1-alias", 53992, 7777, connect_timeout_secs=0.05, **kwargs)
+        t._timeout_tunable = tunable
+        t._proc = _LiveProc()
+
+        async def never_reachable():
+            return False
+
+        t._port_reachable = never_reachable  # type: ignore[assignment]
+        assert await t._wait_until_ready() is False
+        return t.status.error.lower()
+
+    @pytest.mark.asyncio
+    async def test_wait_until_ready_timeout_with_live_child_names_the_tunable(self):
+        # A live ssh child at the deadline may be a slow proxy handshake or an
+        # unreachable host: the message names both and the timeout tunable.
+        err = await self._timeout_error_for_live_child()
+        assert "timed out after 0.05s waiting for the ssh forward" in err
+        assert "proxy handshake" in err
+        assert "unreachable" in err
+        assert "instances.connect_timeout_secs" in err
+        assert "ssm" not in err
+
+    @pytest.mark.asyncio
+    async def test_wait_until_ready_timeout_on_ssm_names_the_ssm_session(self):
+        # The SSM transport has no ssh proxy: its live-child timeout speaks of
+        # the SSM session and agent, and still names the timeout tunable.
+        err = await self._timeout_error_for_live_child(
+            transport="ssm", ssm_target="i-0123456789abcdef0"
+        )
+        assert "timed out after 0.05s waiting for the ssm port forward" in err
+        assert "ssm agent" in err
+        assert "instances.connect_timeout_secs" in err
+        assert "ssh" not in err
+        assert "proxy" not in err
+
+    def test_ready_timeout_at_ceiling_does_not_suggest_raising_it(self):
+        # A budget already at the ceiling cannot be raised: the message points
+        # at reachability and omits the tunable.
+        from kiro_crew.instances.constants import CONNECT_TIMEOUT_CEILING_SECS
+        from kiro_crew.instances.ssh_tunnel_manager import _SshTunnel
+
+        class _LiveProc:
+            returncode = None
+
+        t = _SshTunnel(
+            "cd-1", "cd-1-alias", 53994, 7777, connect_timeout_secs=CONNECT_TIMEOUT_CEILING_SECS
+        )
+        t._timeout_tunable = True
+        t._proc = _LiveProc()
+        err = t._ready_timeout_error().lower()
+        assert "already at its maximum" in err
+        assert "reachable" in err
+        assert "instances.connect_timeout_secs" not in err
+
+    @pytest.mark.parametrize("kwargs", [{}, {"transport": "ssm", "ssm_target": "i-0abc"}])
+    @pytest.mark.asyncio
+    async def test_ready_timeout_on_an_untunable_tunnel_names_no_setting(self, kwargs):
+        # A tunnel whose budget does not come from instances.connect_timeout_secs
+        # (the desktop tunnel keeper's) keeps the cause text but never tells the
+        # user to raise a setting that would change nothing.
+        err = await self._timeout_error_for_live_child(tunable=False, **kwargs)
+        assert "timed out after 0.05s" in err
+        assert "reachable" in err
+        assert "instances.connect_timeout_secs" not in err
+        assert "kirocrew config set" not in err
+
+    @pytest.mark.asyncio
+    async def test_a_bare_tunnel_is_untunable_and_the_manager_marks_its_own(self, tmp_path):
+        # The default is off, so a tunnel built outside the manager (tunnel_keeper's
+        # make_tunnel) names no setting. The manager reads the setting into the
+        # budget, so connect() and a self-heal rebuild both turn it on.
+        from kiro_crew.instances.ssh_tunnel_manager import TunnelState, _SshTunnel
+
+        assert _SshTunnel("cd-1", "cd-1-alias", 53995, 7777)._timeout_tunable is False
+        reg, mgr = self._mgr(tmp_path)
+        reg.add(name="CD", ssh_host="cd-1-alias", instance_id="cd-1")
+        await mgr.connect("cd-1")
+        assert mgr._tunnels["cd-1"]._timeout_tunable is True
+        mgr._tunnels["cd-1"].status.state = TunnelState.ERROR
+        await mgr._recover("cd-1")
+        assert mgr._tunnels["cd-1"]._timeout_tunable is True
+
+    @pytest.mark.asyncio
+    async def test_wait_until_ready_timeout_with_dead_child_stays_generic(self):
+        # A child that exited in the same tick the loop gave up (too late for
+        # _failed_on_child_exit to classify) keeps the generic wording rather
+        # than guessing the proxy-handshake cause.
+        from kiro_crew.instances.ssh_tunnel_manager import _SshTunnel
+
+        class _DeadProc:
+            returncode = 255  # already gone by the deadline
+
+        t = _SshTunnel("cd-1", "cd-1-alias", 53993, 7777, connect_timeout_secs=0.05)
+        t._proc = _DeadProc()
+
+        async def never_reachable():
+            return False
+
+        async def never_classified():
+            # Keep the loop from ending early so it reaches the timeout path,
+            # where _proc.returncode is already set (child gone).
+            return False
+
+        t._port_reachable = never_reachable  # type: ignore[assignment]
+        t._failed_on_child_exit = never_classified  # type: ignore[assignment]
+        assert await t._wait_until_ready() is False
+        err = t.status.error.lower()
+        assert "timed out after 0.05s waiting for forward" in err
+        assert "instances.connect_timeout_secs" not in err
 
     def test_exit_error_strips_post_quantum_noise(self):
         from kiro_crew.instances.ssh_tunnel_manager import _SshTunnel
@@ -613,9 +757,13 @@ class TestSelfHealRefreshRestart:
             def __init__(self):
                 self.returncode = 255
                 self.stderr = self
+                self._chunks = [
+                    b"Connection closed by UNKNOWN port 65535\r\nConnection reset by peer\r\n"
+                ]
 
-            async def read(self):
-                return b"Connection closed by UNKNOWN port 65535\r\nConnection reset by peer\r\n"
+            async def read(self, n=-1):
+                # A real stream: the bytes once, then EOF.
+                return self._chunks.pop(0) if self._chunks else b""
 
         t = _SshTunnel("cd-1", "stale-alias", 53991, 7777, connect_timeout_secs=1.0)
         t._proc = _Proc()
@@ -1147,6 +1295,7 @@ class TestSelfHealRefreshRestart:
             marker_port=None,
             timeout_secs=60.0,
             connect_timeout_secs=10.0,
+            stdout_tail=False,
         ):
             calls["a"] = (host, sub, marker_port, connect_timeout_secs)
             return (0, "")
@@ -1158,7 +1307,13 @@ class TestSelfHealRefreshRestart:
         # so the ssh default from constants.DEFAULT_MINT_TIMEOUT_SECS), not the
         # 10s ssh-exec fail-fast fallback -- a restart
         # on a slow-proxy host must reuse the same budget the mint itself gets.
-        assert r["ok"] and calls["a"] == ("cd-1-alias", "restart", 5476, 30.0)
+        # The restart waits for the crew's in-flight work: one idle check.
+        assert r["ok"] and calls["a"] == (
+            "cd-1-alias",
+            "restart --when-idle --max-wait 0",
+            5476,
+            30.0,
+        )
         # validation failure
         r = asyncio.run(mgr.restart_remote("bad"))
         assert not r["ok"] and "invalid ssh settings" in r["message"]

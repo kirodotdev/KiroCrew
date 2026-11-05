@@ -65,6 +65,10 @@ const SEPARATE: LocalSidebarRow = localRow({
 })
 
 const reparented = params.get('reparent') === '1'
+// &title=<text>: the backend still remembers the closed conductor's last-known title
+// and sends it as `parent.title`; omitted, the payload is the base one.
+const closedTitle = params.get('title')
+const named = closedTitle ? { title: closedTitle } : {}
 
 const crew: LocalSidebarRow[] = CREW.map(({ key, title, note, waiting }, i) =>
   localRow({
@@ -80,8 +84,8 @@ const crew: LocalSidebarRow[] = CREW.map(({ key, title, note, waiting }, i) =>
     // conductor really did open it. Only `key` is the server's answer, and only
     // `ancestor` says the two now name different sessions.
     parent: reparented
-      ? { slot: CONDUCTOR, key: LEAD, ancestor: true }
-      : { slot: CONDUCTOR, key: null },
+      ? { slot: CONDUCTOR, key: LEAD, ancestor: true, ...named }
+      : { slot: CONDUCTOR, key: null, ...named },
   }),
 )
 

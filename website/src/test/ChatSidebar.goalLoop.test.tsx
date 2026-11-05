@@ -74,6 +74,7 @@ Object.defineProperty(window, 'matchMedia', {
 import ChatSidebar from '../pages/ChatSidebar'
 import type { RootState } from '../store'
 import type { ChatSlot, SubagentActivity } from '../types'
+import { expectLoopIcon } from './GoalLoopIconTestUtils'
 
 const UNREAD_DOT_TITLE = 'Agent finished — your turn'
 
@@ -145,16 +146,20 @@ afterEach(() => vi.clearAllMocks())
 describe('chat sidebar — goal-loop progress subtitle', () => {
   it('shows bounded cycle progress composed with the last message', () => {
     const slots = [{ key: 'k', title: 'loop', running: false, messages: 5, last_message: 'pulled 24/24 halves' }]
-    const { getByText } = renderSidebar(slots, { goalLoops: { k: { cycle_count: 7, max_cycles: 24 } } })
-    expect(getByText('Loop 7/24')).toBeTruthy()
+    const { container, getByText } = renderSidebar(slots, { goalLoops: { k: { cycle_count: 7, max_cycles: 24 } } })
+    expectLoopIcon(container, 7, 24)
     // Composed, not replaced — the last message survives beside the progress.
     expect(getByText(/pulled 24\/24 halves/)).toBeTruthy()
   })
 
   it('drops the denominator for an unlimited loop (max_cycles === 0)', () => {
     const slots = [{ key: 'k', title: 'loop', running: false, messages: 5 }]
-    const { getByText, queryByText } = renderSidebar(slots, { goalLoops: { k: { cycle_count: 31, max_cycles: 0 } } })
-    expect(getByText('Loop · 31')).toBeTruthy()
+    const { container, queryByText } = renderSidebar(slots, { goalLoops: { k: { cycle_count: 31, max_cycles: 0 } } })
+    const icon = container.querySelector('[data-testid="goal-loop-icon"]')
+    expect(icon!.getAttribute('aria-label')).toBe('Goal loop · cycle 31 (no cap)')
+    expect(icon!.getAttribute('title')).toBe('Goal loop · cycle 31 (no cap)')
+    // The count is not visible text any more, with or without a cap.
+    expect(queryByText(/Loop · 31/)).toBeNull()
     expect(queryByText(/Loop 31\/0/)).toBeNull()
   })
 
@@ -162,23 +167,23 @@ describe('chat sidebar — goal-loop progress subtitle', () => {
     // The case the feature exists for: a looping session is mid-turn most of the
     // time, so gating on !running would hide the indicator almost always.
     const slots = [{ key: 'k', title: 'loop', running: true, messages: 5, last_message: 'stale' }]
-    const { getByText, queryByText } = renderSidebar(
+    const { container, getByText, queryByText } = renderSidebar(
       slots,
       { activeSlot: 'k', goalLoops: { k: { cycle_count: 3, max_cycles: 24 } }, slotStatusDetail: { k: { kind: 'tool', purpose: 'Reading gateway.log' } } },
       { activeSlotProp: 'k' },
     )
-    expect(getByText('Loop 3/24')).toBeTruthy()
+    expectLoopIcon(container, 3, 24)
     expect(getByText(/Reading gateway\.log/)).toBeTruthy()
     expect(queryByText(/stale/)).toBeNull() // live detail wins over last_message
   })
 
   it('carries the subagent label as its detail when a wave is running', () => {
     const slots = [{ key: 'k', title: 'loop', running: false, messages: 5 }]
-    const { getByText } = renderSidebar(slots, {
+    const { container, getByText } = renderSidebar(slots, {
       goalLoops: { k: { cycle_count: 9, max_cycles: 24 } },
       slotActivity: { k: { toolLog: [], subagents: { a: sa('running'), b: sa('running') } } },
     })
-    expect(getByText('Loop 9/24')).toBeTruthy()
+    expectLoopIcon(container, 9, 24)
     expect(getByText(/2 agents running/)).toBeTruthy()
   })
 
@@ -334,11 +339,12 @@ describe('chat sidebar — interrupted goal loop', () => {
     // error row → summary interrupted=true) and the pill kept pulsing as if a
     // cycle were executing — for up to idle_secs, until the next fire.
     const slots = [{ key: 'k', title: 'loop', running: false, messages: 5, interrupted: true, last_message: 'cycle output' }]
-    const { getByText, getByTitle, container } = renderSidebar(
+    const { getByText, queryByText, getByTitle, container } = renderSidebar(
       slots,
       { goalLoops: { k: { cycle_count: 47, max_cycles: 72 } } },
     )
-    expect(getByText(/Loop 47\/72 — interrupted/)).toBeTruthy()
+    expect(getByText('interrupted')).toBeTruthy()
+    expect(queryByText(/Loop 47\/72/)).toBeNull()
     const pill = getByTitle(STALLED_TITLE)
     expect(pill).toBeTruthy()
     // The pulse MEANS "work is happening" — the stalled glyph is STATIC danger
@@ -351,17 +357,18 @@ describe('chat sidebar — interrupted goal loop', () => {
     const row = container.querySelector('[data-session-row="k"]')
     expect(row).toBeTruthy()
     expect(row!.classList.contains('session-loop-stalled')).toBe(true)
-    expect(container.querySelector('[title="Goal loop · cycle 47 of 72"]')).toBeNull()
+    // The stalled title owns the line; the count stays on the glyph's own tooltip.
+    expect(container.querySelector('[data-testid="goal-loop-icon"]')!.getAttribute('aria-label')).toBe('Goal loop · cycle 47 of 72')
   })
 
   it('keeps the pulse mid-turn — a trailing error row is superseded once a new turn runs', () => {
     const slots = [{ key: 'k', title: 'loop', running: true, messages: 5, interrupted: false }]
-    const { getByText, getByTitle, container } = renderSidebar(
+    const { getByTitle, container } = renderSidebar(
       slots,
       { activeSlot: 'k', goalLoops: { k: { cycle_count: 47, max_cycles: 72 } }, slotStatusDetail: { k: { kind: 'tool', purpose: 'Reading gateway.log' } } },
       { activeSlotProp: 'k' },
     )
-    expect(getByText('Loop 47/72')).toBeTruthy()
+    expectLoopIcon(container, 47, 72)
     expect(getByTitle('Goal loop · cycle 47 of 72')).toBeTruthy()
     // Pulse lives on the gutter Goal glyph now (moved off the inline subtitle dot).
     expect(container.querySelector('.lucide-goal.animate-pulse')).toBeTruthy()

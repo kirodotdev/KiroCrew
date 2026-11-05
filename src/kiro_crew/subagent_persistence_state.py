@@ -94,6 +94,7 @@ def create_agent_folder(
     app="",
     execution_context=None,
     backend=None,
+    depth=None,
 ) -> Path:
     from kiro_crew.execution_context import ExecutionContext, execution_for_store
 
@@ -131,6 +132,9 @@ def create_agent_folder(
         # The per-spawn backend, so a continuation after a restart resumes the
         # conversation on the harness that holds it. Absent = the default.
         **({"backend": backend} if isinstance(backend, str) else {}),
+        # The lineage depth, so a continuation after a restart carries it back
+        # into admission instead of restarting the count. Absent = unknown.
+        **({"depth": depth} if type(depth) is int else {}),
         "execution_context": execution.to_record(),
         "memory_store": execution.store.legacy_name,
         "memory_mode": execution.memory_mode,

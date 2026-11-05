@@ -1,7 +1,7 @@
 """Recursive-force ``rm`` seatbelt behind the two ``local-destructive-rm-rf-*`` rows.
 
-Refuses the common respellings of ``rm -rf /`` and ``rm -rf ~`` the rows miss. A
-seatbelt, not a parser: other shell shapes stay with the rows and the OS sandbox.
+Refuses the common respellings of ``rm -rf /`` and ``rm -rf ~`` the rows miss, nested
+shells included. A seatbelt, not a parser: other shapes stay with the rows and the sandbox.
 """
 
 from __future__ import annotations
@@ -36,6 +36,7 @@ _RM_WORD_RE = re.compile(r"(?<![\w.-])r[^\w\s/]*m(?![\w.-])")  # rm as its own w
 #: reports ``(is_redirection, consumes_next_word)``; it reads a WHOLE token, so
 #: :func:`_segments` keeps a redirection and its fd prefix in one word (below).
 _HOME_WORDS = frozenset({"~", "$HOME", "${HOME}"})
+_LITERAL_SHELLS = _shell._NESTED_SHELL_PROGRAMS - {"busybox"}  # busybox's next word is the applet
 _SUBST = _commands.SUBST  # a substitution: may expand to nothing, unlike a literal ``\0``
 #: an unquoted parameter (``$x``, ``${…}``, ``$1``): an unset one expands to nothing
 _PARAM_RE = re.compile(r"\$(?:\{[^}]*\}|[A-Za-z_]\w*|[0-9@*#?$!-])")
@@ -64,9 +65,10 @@ def _can_fire(command: str) -> bool:
 
 
 def _names_rm_word(command: str) -> bool:
-    """``rm`` as its own word in *command*, or once ``${X:-…}`` defaults are resolved."""
+    """``rm`` as its own word in *command*, once ``${X:-…}`` defaults are resolved, or
+    once unquoted parameters are dropped (an unset ``$1`` glued to ``rm`` runs ``rm``)."""
     resolved = _shell._resolve_param_defaults(command)
-    return bool(_RM_WORD_RE.search(command) or _RM_WORD_RE.search(resolved))
+    return any(_RM_WORD_RE.search(text) for text in (command, resolved, _PARAM_RE.sub("", command)))
 
 
 def _target_kind(word: str) -> "str | None":
@@ -86,18 +88,20 @@ def _segments(command: str, track: bool = True) -> "list[str]":
     ``\\0`` so it can never read as ``$HOME`` or ``~``.
     """
     out = []
-    for cmd in _commands.read_commands(command, track):
-        seg: list[str] = []
-        for step in cmd.steps:
-            if step.redirect:
-                seg.append(" " + _pull_trailing_fd_prefix(seg) + step.text)
-            elif step.char in "$~" and (
-                len(step.text) == 2 or step.state == 1 or (step.char == "~" and step.state)
-            ):
-                seg.append("\0")
-            else:
-                seg.append(step.text)
-        out.append("".join(seg))
+    # ``&>`` is one redirect in bash but a background ``&`` then ``>`` in dash
+    for text in dict.fromkeys((command, command.replace("&>", "& >"))):
+        for cmd in _commands.read_commands(text, track):
+            seg: list[str] = []
+            for step in cmd.steps:
+                if step.redirect:
+                    seg.append(" " + _pull_trailing_fd_prefix(seg) + step.text)
+                elif step.char in "$~" and (
+                    len(step.text) == 2 or step.state == 1 or (step.char == "~" and step.state)
+                ):
+                    seg.append("\0")
+                else:
+                    seg.append(step.text)
+            out.append("".join(seg))
     return out
 
 
@@ -150,4 +154,123 @@ def _rm_wipe_targets(command: str) -> "set[str]":
                 force = force or "f" in arg
         if recursive and force:
             kinds |= {kind for arg in operands if (kind := _target_kind(arg))}
+    return kinds
+
+
+def _after_shell_verb(tokens: "list[str]", programs: "list[str]", index: int) -> bool:
+    """True when *tokens[index]* is the argument of ``eval`` / ``source`` / ``.``."""
+    before = index - 1
+    while before >= 0 and tokens[before] == "--":
+        before -= 1
+    if before < 0 or programs[before] != tokens[before]:
+        return False  # a redirect target named ``eval`` is a file, not the verb
+    verbs = _shell._NESTED_SHELL_VERBS
+    return tokens[before] in verbs or _shell._program_basename(tokens[before]) in verbs
+
+
+def _command_lines(text: str) -> "list[str]":
+    """*text* cut at each live newline, a comment cut off; it ends after a live ``<<``
+    heredoc line (not a ``<<<`` herestring), whose body is data."""
+    lines: list[str] = []
+    pos, heredoc = 0, False
+    while pos <= len(text) and not heredoc:
+        rest, cut, end = text[pos:], len(text), len(text)
+        for step in _shell._iter_shell_chars(rest):
+            at = step.offset
+            if step.active and rest.startswith("<<", at):
+                heredoc = heredoc or not (rest.startswith("<<<", at) or rest[at - 1 : at] == "<")
+            if step.active and step.char == "#" and _shell._opens_comment(rest, at):
+                newline = rest.find("\n", at)
+                cut, end = pos + at, len(text) if newline < 0 else pos + newline
+                break
+            if step.active and step.char == "\n":
+                cut = end = pos + at
+                break
+        lines.append(text[pos:cut])
+        pos = end + 1
+    return lines
+
+
+def _expands_nothing(command: str) -> bool:
+    """*command* is one command and bash hands it on verbatim: it holds a ``\\$``, every
+    ``$`` is single-quoted, and there is no ``"``, backtick or ``\\\\``. Read once per call."""
+    if "\\$" not in command or any(mark in command for mark in ('"', "`", "\\\\")):
+        return False
+    if len(_commands.read_commands(command)) != 1:
+        return False
+    return all(c.state == 1 for c in _shell._iter_shell_chars(command) if c.char == "$")
+
+
+def _literal_shell_script(tokens: "list[str]") -> "str | None":
+    """The script of exactly ``<shell> -c '<script>'`` or ``<shell> <<< '<script>'``
+    (``bash``, ``sh`` …, never ``busybox``). Only that script, in a command that
+    :func:`_expands_nothing`, keeps its ``\\$`` literal; any other payload (a forwarded
+    ``sed …/e``, ``env -S``, ``xargs``) may be unescaped, so it keeps the fail-closed view."""
+    if len(tokens) != 3 or _shell._program_basename(tokens[0]) not in _LITERAL_SHELLS:
+        return None
+    if tokens[1] != "<<<" and not _shell._is_shell_command_flag(tokens[1]):
+        return None
+    return tokens[2]
+
+
+def _command_tokens(text: str) -> "list[list[str]]":
+    """Dequoted argv of each command the shared reader finds in each line, read every
+    way so each reading only adds payloads; a command stopped at ``<<`` runs to the
+    line's end (a herestring is a payload)."""
+    out: list[list[str]] = []
+    for line in _command_lines(text):
+        for part in dict.fromkeys((line, _shell._fold_line_continuations(line))):
+            for plain in dict.fromkeys((part, _commands.without_substitutions(part))):
+                for track in (True, False) if "${" in plain or "$[" in plain else (True,):
+                    for cmd in _commands.read_commands(plain, track):
+                        words = " ".join(plain[word.start : word.end] for word in cmd.argv)
+                        if cmd.separator == "<<":  # the read stops there; the line runs on
+                            words = plain[cmd.steps[0].start if cmd.steps else 0 :]
+                        out.append(_shell._shell_tokens(words))
+                        if "<<<" in plain and (s := cmd.steps):  # its own words, herestring kept
+                            out.append(_shell._shell_tokens(plain[s[0].start : s[-1].end]))
+    return out
+
+
+def _rm_wipe_targets_nested(command: str) -> "set[str]":
+    """:func:`_rm_wipe_targets` over *command* and each nested-shell payload in it.
+
+    A payload inert in its own command (``echo bash -c '...'``) or an ``eval`` / ``source``
+    argument is skipped. A payload is shorter than its parent, so the walk ends.
+    """
+    kinds: set[str] = set()
+    pending, seen = [command], {command}
+    verbatim = _expands_nothing(command)
+    while pending:
+        source = pending.pop()
+        kinds |= _rm_wipe_targets(source)
+        folded = _shell._fold_line_continuations(source)
+        kinds |= _rm_wipe_targets(folded) if folded != source else set()  # bash folds them
+        for tokens in _command_tokens(source):
+            payloads = _shell._nested_shell_payloads(tokens, allow_join=False)
+            if not payloads:
+                continue
+            script = _literal_shell_script(tokens) if source == command and verbatim else None
+            programs = _shell._argv_programs(tokens)
+            disqualified = _shell._data_consumer_command_disqualified(tokens)
+            joined = "\0".join(tokens)
+            for payload in dict.fromkeys(payloads):
+                spots = [i for i, token in enumerate(tokens) if token == payload]
+                # a skip needs no glued copy elsewhere (``bash<<<'x'``)
+                spots = spots if joined.count(payload) == len(spots) else []
+                if spots and all(_after_shell_verb(tokens, programs, i) for i in spots):
+                    continue  # an ``eval`` / ``source`` argument
+                if spots and all(
+                    _shell._data_consumer_exempt(
+                        i, payload, programs, tokens, command_disqualified=disqualified
+                    )
+                    for i in spots
+                ):
+                    continue
+                literal = payload == script
+                views = (payload,) if literal else (payload, payload.replace("\\$", "$"))
+                for view in views:
+                    if len(view) < len(source) and view not in seen:
+                        seen.add(view)
+                        pending.append(view)
     return kinds

@@ -44,6 +44,7 @@ DOMAIN_MODULES: tuple[str, ...] = (
     "workflows",
     "apps",
     "browser",
+    "server_request",
 )
 
 

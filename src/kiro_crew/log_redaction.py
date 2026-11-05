@@ -6,8 +6,8 @@ redacted output. This module performs ZERO vault I/O — the caller resolves
 any literal secret values and passes them in via ``install_log_redaction``.
 
 Currently the only caller (``cli._setup_cli_logging``) passes an empty list,
-so the built-in patterns — Bearer tokens, AWS access key IDs, and standalone
-JWTs — are what is redacted in practice. Wiring resolved
+so the built-in patterns — Bearer tokens, AWS access key IDs, standalone JWTs
+and ``token`` URL parameter values — are what is redacted in practice. Wiring resolved
 vault secret values into the filter at gateway boot is a follow-up.
 
 Records are mutated only when redaction changes the rendered message — for
@@ -37,7 +37,7 @@ import logging
 import re
 from typing import Callable, Optional
 
-from kiro_crew.credential_patterns import AWS_KEY_ID_REDACTION, JWT_MULTI_SEGMENT
+from kiro_crew.credential_patterns import AWS_KEY_ID_REDACTION, JWT_MULTI_SEGMENT, TOKEN_PARAMETER
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +66,15 @@ _AWS_KEY_ID_RE = re.compile(AWS_KEY_ID_REDACTION)
 # assignment-style. Same string object as the scrubber's JWS/JWE branch.
 _JWT_RE = re.compile(JWT_MULTI_SEGMENT)
 
+# ``?token=`` / ``&token=`` values: the scrubber's own spelling. Only the value is
+# replaced, so a redacted URL still reads as a token URL. None of the scrubber's
+# skips or exemptions apply here: over-masking a log line is the safe direction.
+_TOKEN_PARAM_RE = re.compile(TOKEN_PARAMETER)
+
+
+def _mask_token_value(m: re.Match[str]) -> str:
+    return m.group()[: m.start(1) - m.start()] + "[REDACTED]"
+
 
 class SecretRedactionFilter:
     """Redacts secret patterns and Bearer tokens from log records.
@@ -92,7 +101,7 @@ class SecretRedactionFilter:
         )
 
     def redact(self, text: str) -> str:
-        """Replace secret values, Bearer tokens, AWS key IDs, and JWTs.
+        """Replace secret values, Bearer tokens, AWS key IDs, JWTs and ``token`` values.
 
         Zero I/O — only applies pre-compiled patterns.
         """
@@ -101,6 +110,7 @@ class SecretRedactionFilter:
         text = _BEARER_RE.sub("Bearer [REDACTED]", text)
         text = _AWS_KEY_ID_RE.sub("[REDACTED]", text)
         text = _JWT_RE.sub("[REDACTED]", text)
+        text = _TOKEN_PARAM_RE.sub(_mask_token_value, text)
         return text
 
 

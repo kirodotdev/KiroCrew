@@ -155,19 +155,39 @@ listed. Each entry:
 - `mode: "off"` — keep the entry, mute the group.
 
 Listing a group lets the agent speak there. It does not let every member drive
-it: in a configured group only you and the numbers in `whatsapp.allowed_wa_ids`
+it: in a configured group only you and the numbers on that group's allowlist
 can make the agent reply, whether by @-mention, by replying to it, or through
 `rules` mode. A message from anyone else is dropped silently (and audited),
 whatever `dm_policy` is set to. Add a number to the allowlist to let that person
 use the agent in the group.
+
+A group's allowlist is the global `whatsapp.allowed_wa_ids` unless the group
+entry has its own `allowed_wa_ids`. A group's own list replaces the global one
+for that group, so you can admit a colleague to a work group without admitting
+them to a family group:
+
+```json
+"groups": [
+  {"jid": "120363000000000001@g.us", "name": "Work", "allowed_wa_ids": ["447700900111"]},
+  {"jid": "120363000000000002@g.us", "name": "Family"}
+]
+```
+
+Here `447700900111` can use the agent in Work only; Family uses the global list.
+An empty list (`"allowed_wa_ids": []`) admits nobody but you in that group, even
+if the global list has numbers, and so does a value that is not a list. Numbers
+are digits only, with the country code and no `+`; anything else is ignored.
+Attachments follow the same answer: files are downloaded only for numbers that
+group admits.
 
 A turn from anyone other than you runs with no tools at all, and only the default
 `kiro-cli` backend and `kas` can run such a turn. On any other
 `agent.acp_backend`, every message from someone else is refused with "This
 account cannot answer you on its current setup. Ask its owner." The gateway warns
 about this at startup when your settings admit other people. It also warns when
-a group is configured but `whatsapp.allowed_wa_ids` is empty, since then only
-you can make the agent reply there.
+a configured group's allowlist is empty (its own `allowed_wa_ids`, or the global
+one for a group without its own list), since then only you can make the agent
+reply there.
 
 Groups are configured from **Settings → Messaging Channels → WhatsApp → Groups** rather
 than by hand. The picker lists the groups the linked account has joined, which the
@@ -259,8 +279,8 @@ and exact, so `/stop the presses` reaches the agent as a sentence.
 |---|---|---|
 | `whatsapp.enabled` | `false` | Main switch for the channel. |
 | `whatsapp.dm_policy` | `"self"` | DM access policy (see above). |
-| `whatsapp.allowed_wa_ids` | `[]` | Extra numbers admitted in DMs under `allowlist` and in every configured group (digits, country code, no `+`). |
-| `whatsapp.groups` | `[]` | Per-group participation rules (see above). |
+| `whatsapp.allowed_wa_ids` | `[]` | Extra numbers admitted in DMs under `allowlist` and in every configured group without its own `allowed_wa_ids` (digits, country code, no `+`). |
+| `whatsapp.groups` | `[]` | Per-group participation rules, including an optional per-group `allowed_wa_ids` (see above). |
 | `whatsapp.db_path` | `""` | Read-only. The session store always lives at `<data home>/whatsapp/session.db`, because that path is what the sensitive-path protection matches. |
 | `whatsapp.soft_threshold_pct` | `80` | Nudge you to `/compact` or `/new` once context passes this usage, checked at the end of each turn. |
 | `whatsapp.hard_threshold_pct` | `95` | Compact automatically once context passes this usage, checked at the end of each turn. |
@@ -296,7 +316,8 @@ and exact, so `/stop the presses` reaches the agent as a sentence.
   naming configured groups that are not groups this account is in. A JID copied by
   hand is the usual cause; the group picker writes the exact form the gate matches.
 - **An attachment in a group was not opened** - files are downloaded only for the
-  account owner and numbers in `whatsapp.allowed_wa_ids`, the same people whose
+  account owner and numbers on that group's allowlist (its own `allowed_wa_ids`,
+  else `whatsapp.allowed_wa_ids`), the same people whose
   messages the agent answers in a group. Add the number to the allowlist if you
   want that person's messages, photos and documents handled.
 

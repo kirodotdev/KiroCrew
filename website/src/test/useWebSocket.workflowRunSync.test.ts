@@ -76,7 +76,9 @@ describe('useWebSocket workflow run reconcile', () => {
 
   /** A live run in the store, put there the only way the app can: WS frames. */
   const liveRun = (run_id = 'wf_000025') => {
-    testStore.dispatch(sseWorkflowEvent({ run_id, session_key: 'dashboard:chat-1', type: 'run_started', data: { name: 'perf audit' } }))
+    act(() => {
+      testStore.dispatch(sseWorkflowEvent({ run_id, session_key: 'dashboard:chat-1', type: 'run_started', data: { name: 'perf audit' } }))
+    })
   }
 
   async function connect() {

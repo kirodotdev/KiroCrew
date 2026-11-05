@@ -33,6 +33,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_KIRO,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
+    ACP_BACKEND_STRANDS,
 )
 
 # Backends on which a Side Chat turn may EXECUTE read-only tools under
@@ -75,6 +76,18 @@ from kiro_crew.agent_sdk.backends import (
 #   ``REJECT_ALL``.
 # * deepseek uses Crew's verified gate plugin, which turns stock dsh tool allows
 #   into asks. The owner proof below limits the read grant to stock dsh tools.
+# * strands: the CLI has no pre-approval store in project mode. Crew's gate module
+#   (``agent_sdk/gate_extensions/strands``) makes every Strands ``Agent`` raise one
+#   interrupt per tool call, and its envelope names the tool's owner, read off the
+#   tool object Strands resolved. Captured live on Strands CLI 0.2.3 through a
+#   real ``side_read_only`` session under READ_ONLY
+#   (``test/fixtures/acp_frames/strands/side-read-only-live.jsonl``): the built-in
+#   ``read`` of an absolute path ran, ``shell`` running ``ls`` and ``write`` were
+#   refused, and the refused write left no file. The side session mounts no MCP
+#   server, and
+#   only the harness's own ``read`` of an absolute path is named ``fs_read``
+#   (``acp._dispatch.is_strands_side_read``); every other call, a read-only shell
+#   command included, is refused before the gate (``side_read_only_refusal``).
 #
 # Off this set the side turn runs ``REJECT_ALL``, the pre-allowance posture, and
 # its footer says tools are unavailable there.
@@ -139,7 +152,14 @@ from kiro_crew.agent_sdk.backends import (
 # shadowed, MCP and command tools fail closed. The capture is
 # ``test/fixtures/acp_frames/deepseek/side-read-only-live.jsonl``.
 ACP_BACKENDS_SIDE_READONLY = frozenset(
-    {ACP_BACKEND_KIRO, ACP_BACKEND_KAS, ACP_BACKEND_CLAUDE, ACP_BACKEND_GOOSE, ACP_BACKEND_DEEPSEEK}
+    {
+        ACP_BACKEND_KIRO,
+        ACP_BACKEND_KAS,
+        ACP_BACKEND_CLAUDE,
+        ACP_BACKEND_GOOSE,
+        ACP_BACKEND_DEEPSEEK,
+        ACP_BACKEND_STRANDS,
+    }
 )
 
 # Harnesses opted into the fail-closed approval posture: a ``tool_call`` frame carrying
@@ -197,6 +217,33 @@ ACP_BACKENDS_META_IDENTITY: FrozenSet[str] = frozenset({ACP_BACKEND_GOOSE})
 # non-member's parser receives none and the frame's own ``kind`` stands.
 ACP_BACKENDS_PERMISSION_KIND_FROM_TOOL_CALL: FrozenSet[str] = frozenset({ACP_BACKEND_KAS})
 
+# Backends whose sub-agent calls the direct ``AcpClient`` tells apart from the
+# parent's (``acp.client_permissions._is_child_permission_frame``): a frame under a
+# foreign ``sessionId`` (kiro-cli's sub-agents run in their own session), or a
+# Claude tool call stamped ``_meta.claudeCode.parentToolUseId``. That fixture
+# (``test/fixtures/claude_native_subagents/agent-task-0.94.0.jsonl``) records the
+# stamp on ``session/update`` frames only; no ``session/request_permission`` frame
+# carrying it has been recorded. For Claude, what keeps a child's call out today is
+# the dashboard's ``_native_child_tc`` set, filled from those update frames and read
+# by ``dashboard.chat_turn.tool_approval`` before any override is offered. Only a member
+# is offered a deny-rule override card or a session waiver
+# (``security.deny_waiver.child_calls_marked``): on any other backend a child's call
+# would look like the parent's, so it fails closed to today's refusal. KAS is not a
+# member because the direct client does not serve it; the shared runtime's set
+# below covers KAS.
+ACP_BACKENDS_DIRECT_CLIENT_CHILD_CALLS_MARKED: FrozenSet[str] = frozenset(
+    {ACP_BACKEND_KIRO, ACP_BACKEND_CLAUDE}
+)
+
+# The same question for the shared runtime's ``AcpSessionHandle``
+# (``acp.session_handle_permissions._build_permission_event``): a frame under a
+# foreign ``sessionId``, or a native KAS sub-agent's call, told apart by the id its
+# ``agentSubtaskId`` frame recorded. It reads no Claude parent stamp, so Claude is
+# not a member here; kiro-cli and KAS are.
+ACP_BACKENDS_SHARED_RUNTIME_CHILD_CALLS_MARKED: FrozenSet[str] = frozenset(
+    {ACP_BACKEND_KIRO, ACP_BACKEND_KAS}
+)
+
 # Backends whose child may ask THIS host for an access token over the
 # ``_kiro/auth/getAccessToken`` connection-level request, to be answered from Kiro
 # Crew's own credential vault (:mod:`kiro_crew.auth`). KAS is the member: when Crew
@@ -233,7 +280,10 @@ ACP_BACKENDS_HOST_AUTH_CALLBACK = frozenset({ACP_BACKEND_KAS})
 #: ``_kiro/mcp/resetServer``. Membership makes the handshake-declared channel
 #: live: the reader loop answers that request and the session starts sign-ins.
 #: KAS is the only member; it declares ``openExternalUrl`` in
-#: ``KAS_CLIENT_CAPABILITIES``.
+#: ``KAS_CLIENT_CAPABILITIES``. KAS 0.66.70 (kiro-cli 2.36.0) live: after
+#: ``_kiro/mcp/resetServer`` with ``startOAuth`` on an OAuth-gated http server, the
+#: engine sent the consent URL as ``_kiro/openExternalUrl`` {url}
+#: (acp_frames/kas/open-external-url-live.jsonl).
 #: kiro-cli is not a member: its engine runs the OAuth flow itself and reports the
 #: URL as ``_kiro.dev/mcp/oauth_request``.
 #: claude, codex, opencode, pi, goose and deepseek are not members: none of them
@@ -274,8 +324,34 @@ ACP_BACKENDS_HOOKS_LIST = frozenset({ACP_BACKEND_KAS})
 #: through :mod:`kiro_crew.acp.harness_tool_names`. claude and codex are NOT: each
 #: approves some calls inside the harness without asking, so a PreToolUse hook
 #: would be skipped on exactly those calls until Crew makes them ask.
+#:
+#: strands is a member: the CLI has no Kiro hook runner, and Crew's gate module
+#: makes every Strands tool call ask (``Routing.VERIFIED_GATE_EXTENSION``). Its
+#: matchers meet the Strands built-in names through
+#: :data:`kiro_crew.acp.harness_tool_names.STRANDS_TOOL_IDS_BY_KIRO_TOOL`, for a
+#: call the gate proved is that built-in only.
 ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS = frozenset(
-    {ACP_BACKEND_KAS, ACP_BACKEND_GOOSE, ACP_BACKEND_OPENCODE}
+    {ACP_BACKEND_KAS, ACP_BACKEND_GOOSE, ACP_BACKEND_OPENCODE, ACP_BACKEND_STRANDS}
+)
+
+#: Backends whose session never runs the agent spec's own ``hooks``, so Crew's turn
+#: loop fires the events that cannot refuse a tool call: ``postToolUse``,
+#: ``userPromptSubmit``, ``agentSpawn`` and ``stop``. Every member of
+#: ``ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS`` is one, since Crew fires all five there.
+#:
+#: claude is a member of this set alone. Its harness is handed no spec, so nothing
+#: else runs the field, and none of these four events needs a permission request to
+#: fire on. ``preToolUse`` does: claude approves some calls inside the harness
+#: without asking, so a gating hook would be skipped on exactly those, and its
+#: ``preToolUse`` entries keep the session-start notice that says they do not run.
+#: That is why claude stays out of the gating set, whose every branch (the
+#: unreadable-spec block, the permission-request gate, the skipped informational
+#: fire) assumes each covered call reaches Crew as a permission request.
+#:
+#: kiro-cli is NOT a member and must never become one: it runs the field itself,
+#: so membership would run every spec hook twice.
+ACP_BACKENDS_CREW_FIRES_SPEC_OBSERVER_HOOKS = ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS | frozenset(
+    {ACP_BACKEND_CLAUDE}
 )
 
 
@@ -394,6 +470,12 @@ ACP_BACKEND_ROUTING: dict = {
     # that switch as an ACP v1 session config option (``allow_all``) on every
     # session/new and session/load -- Codex's mechanism, applied the same way.
     ACP_BACKEND_COPILOT: Routing.SESSION_CONFIG,
+    # The Strands CLI's Python-project ACP mode forwards a Strands interrupt as
+    # ``session/request_permission`` and raises none for a tool call itself, so Crew
+    # loads the project through its own gate module, which raises one per call --
+    # pi's and deepseek's member. Live capture:
+    # ``test/fixtures/acp_frames/strands/permission-deny-allow-live.jsonl``.
+    ACP_BACKEND_STRANDS: Routing.VERIFIED_GATE_EXTENSION,
 }
 
 
@@ -462,6 +544,9 @@ ACP_BACKEND_GATE_PROBE_COMMAND: dict = {
     # composition has no command registry to register into -- see
     # ``ACP_BACKEND_GATE_READBACK`` below for which read-back looks for it.
     ACP_BACKEND_DEEPSEEK: "kiro-crew-tool-gate",
+    # The gate MODULE's own name: like deepseek's, a composition with no command
+    # registry, so the gate reports itself through a load marker.
+    ACP_BACKEND_STRANDS: "kiro-crew-strands-gate",
 }
 
 
@@ -507,6 +592,7 @@ class Readback(str, Enum):
 ACP_BACKEND_GATE_READBACK: dict = {
     ACP_BACKEND_PI: Readback.COMMAND_REGISTRY,
     ACP_BACKEND_DEEPSEEK: Readback.LOAD_MARKER,
+    ACP_BACKEND_STRANDS: Readback.LOAD_MARKER,
 }
 
 

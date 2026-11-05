@@ -56,7 +56,10 @@ from .store_parts.fulltext_index import FTS_INDEX_VERSION  # noqa: F401
 from .store_parts.item_ownership import _DOC_STATE_KEY_COL  # noqa: F401
 from .store_parts.item_ownership import _DOC_STATE_TABLES  # noqa: F401
 from .store_parts.item_ownership import _OWNERSHIP_HASH_COL  # noqa: F401
+from .store_parts.item_ownership import LiveSourceHoldsNoItems  # noqa: F401
 from .store_parts.maintenance_sweeps import _RECLAIM_CHUNK  # noqa: F401
+from .store_parts.source_rows import _ACCOUNT_BOUND_SOURCE_TYPE  # noqa: F401
+from .store_parts.source_rows import _ACCOUNT_BOUND_URI_PREFIX  # noqa: F401
 from .store_parts.source_rows import _WALKING_SOURCE_TYPES  # noqa: F401
 from .store_parts.source_rows import AUTO_ADDED_PROP  # noqa: F401
 from .store_parts.source_rows import AUTO_REGISTRATION_RETIRED_PROP  # noqa: F401
@@ -211,8 +214,9 @@ class IngestionGate:
                     break
             if self._maintenance:
                 logger.warning(
-                    "Knowledge maintenance skipped: another maintenance window "
-                    "held for %.0fs", timeout)
+                    "Knowledge maintenance skipped: another maintenance window " "held for %.0fs",
+                    timeout,
+                )
                 yield False
                 return
             self._maintenance = True
@@ -224,8 +228,10 @@ class IngestionGate:
                 self._maintenance = False
                 self._cond.notify_all()
                 logger.warning(
-                    "Knowledge maintenance skipped: %d ingestion(s) still in flight "
-                    "after %.0fs", self._ingesting, timeout)
+                    "Knowledge maintenance skipped: %d ingestion(s) still in flight " "after %.0fs",
+                    self._ingesting,
+                    timeout,
+                )
                 yield False
                 return
         try:
@@ -362,7 +368,7 @@ class KnowledgeStore:
         # `reclaim_orphans()`, kicked from a worker thread by `start_dashboard`
         # once the listener is up. What remains here is the schema DDL and the
         # per-column ALTERs, which are O(schema), not O(data).
-        # The suppression ends with the block: the six non-constructor
+        # The suppression ends with the block: the non-constructor
         # `_load_graph()` call sites and every query path stay fully guarded.
         if read_only:
             return
@@ -537,8 +543,7 @@ class KnowledgeStore:
         a reader is indistinguishable from "this entity has no neighbours",
         which is the failure mode worth paying a stall to avoid.
         """
-        self.ensure_graph_loaded()
-        return self._graph
+        return self.ensure_graph_loaded()
 
     # States a sources row may legitimately START in: the DURABLE ones, which a
     # caller (or a restored bundle) can assert about a source before any work has
@@ -625,6 +630,7 @@ class KnowledgeStore:
     ensure_graph_loaded = _entity_graph.ensure_graph_loaded
     _load_graph = _entity_graph._load_graph
     reload_graph = _entity_graph.reload_graph
+    mark_graph_stale = _entity_graph.mark_graph_stale
     add_entity = _entity_graph.add_entity
     find_entity = _entity_graph.find_entity
     merge_entities = _entity_graph.merge_entities
@@ -663,6 +669,8 @@ class KnowledgeStore:
     add_source_location = _item_ownership.add_source_location
     add_source_location_in_txn = _item_ownership.add_source_location_in_txn
     sources_holding_item = _item_ownership.sources_holding_item
+    _refuse_live_source = _item_ownership._refuse_live_source
+    _reassignment_candidates = _item_ownership._reassignment_candidates
     reassign_item_source = _item_ownership.reassign_item_source
 
     # Item rows and deletes: ``kiro_crew.knowledge.store_parts.item_rows``.

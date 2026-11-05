@@ -38,12 +38,12 @@ over and what changes.
 | [Research Lab](research-lab.md) | Autonomous multi-cycle research campaigns with scoping, adaptive agent execution, and exportable reports |
 | [Issue Radar Pipeline](issue-radar-pipeline.md) | Which step of automated triage every issue is sitting in, how long it has been there, and what each agent session cost |
 | [Apps](apps.md) | Twenty-four apps ship in the package — enable one from the App Store and it can bring its own pages, agents, skills, and MCP tools |
-| [Connections](connections.md) | MCP servers and OAuth'd services on one page: the 29-provider catalogue, adding your own stdio or remote server, what a health badge means, and why a tool's name may differ |
+| [Connections](connections.md) | MCP servers and OAuth'd services on one page: the 36-provider catalogue, adding your own stdio or remote server, what a health badge means, and why a tool's name may differ |
 | [Dashboard](dashboard.md) | React web UI with multi-session chat, memory management, and live system metrics |
 | [Agent Questions](agent-questions.md) | Let an agent pause mid-turn and ask you a clickable multiple-choice question |
 | [Chat Channels](#chat-channels) | DM-based chat with tool approval on ten messaging platforms; the list and per-channel guides are under [Chat Channels](#chat-channels) below |
 | [Agents](agents.md) | Switch between specialized agents per conversation, thread, or cron job |
-| [Crew Members](crew-members.md) | Keep named mates — each with its own workspace, memory, template and model — talk to each in a standing thread, and route work to one |
+| [Bots](crew-members.md) | Keep named Bots — each with its own workspace, memory, template and model — talk to each in a standing thread, and route work to one |
 | [Remote Crew](remote-crew.md) | Reach other machines running their own Kiro Crew gateway from one hub — switch panes, run a session on one, and search every connected machine's history |
 | [Skills](skills.md) | Drop-in markdown knowledge packs for domain-specific workflows |
 | [Steering, Prompts & Hooks](steering-and-hooks.md) | Standing markdown conventions the agent reads every session, saved prompts you call up by name, and shell commands that fire on chat lifecycle events |
@@ -99,7 +99,7 @@ documented by their own in-panel help.
 | Security | The sandbox, denied commands, and the audit log | [Blocked commands](blocked-commands.md) |
 | OAuth Apps | OAuth apps for providers that need a registered client; MCP servers live on Customize → Connections | [Connections](connections.md) |
 | Secrets | The encrypted credential vault | [Secrets vault](secrets-vault.md) |
-| Developer | A list of pages: Feature Previews (with an optional local-gateway toggle), then logs, metrics, storage, MCP Management and the other developer views | [Dashboard](dashboard.md) |
+| Developer | A list of pages: Feature Previews (with an optional local-gateway toggle), then logs, metrics, storage and the other developer views | [Dashboard](dashboard.md) |
 | Releases | Release notes for each version | — |
 | About | Version, update channel, check for updates, and license | [Getting Started](getting-started.md) |
 

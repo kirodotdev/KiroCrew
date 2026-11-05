@@ -227,19 +227,12 @@ async def _drain_state_writer_impl(
                         info.id,
                         _STATE_DRAIN_TIMEOUT,
                     )
-                    # The abandoned worker is a live stale writer whose
-                    # rewrite is whole-file, so it can roll back the pid /
-                    # session_id a cancel-respawn recovery run writes ON the
-                    # loop (no per-agent lock there) — and a lost pid means
-                    # an orphan the reaper cannot reach. Consume the
-                    # one-shot recovery so this cancellation finalizes
-                    # instead of respawning: losing one best-effort
-                    # auto-continue on an FS already wedged past the
-                    # deadline is strictly cheaper than resurrecting stale
-                    # state. Uniform across sites — the blast radius is set
-                    # by the whole-file rewrite, not by which fields this
-                    # particular caller named. The conversation hold above
-                    # outlives this branch and is released by _settled.
+                    # The abandoned worker's whole-file rewrite can roll back
+                    # the pid / session_id a recovery run writes on the loop,
+                    # and a lost pid is an orphan the reaper cannot reach. So
+                    # consume the one-shot recovery: this cancellation
+                    # finalizes instead of respawning. The conversation hold
+                    # outlives this branch; _settled releases it.
                     info._cancel_retry_used = True
                     break
                 try:
@@ -262,18 +255,11 @@ def _hold_for_detached_writer_impl(
     when its final cap starts another, and the hold lasts until the LAST
     of them lands. Registering the same worker twice holds it once.
     """
-    # Hold this run's conversation for the WHOLE window in which the
-    # worker may still write, which starts here and not at the drain
-    # deadline: on Python 3.10 a second outer cancel can deliver _run's
-    # finalization mid-drain, so the run can go `done` while the writer
-    # is live, and a continuation reaching a released gate would then
-    # write `keep` for that writer's stale whole-file rewrite to erase.
-    # `keep` is written on the loop and takes no per-agent lock,
-    # so ordering is the only thing protecting it. The worker's own
-    # done-callback releases the hold, so it lasts exactly as long as the
-    # worker does -- milliseconds on a healthy FS. Recorded on the
-    # MANAGER, not on `info`: `evict_completed_agents` prunes completed
-    # runs out of `_agents`, and an eviction must not release the hold.
+    # The hold starts here, not at the drain deadline: on Python 3.10 the run
+    # can go `done` mid-drain, and a continuation would then write `keep` (on
+    # the loop, no per-agent lock) for this worker's stale rewrite to erase.
+    # The worker's done-callback releases it. Kept on the MANAGER, not `info`,
+    # because `evict_completed_agents` must not release it.
     held = self._manager._abandoned_state_writers.setdefault(info.id, set())
     if writer in held:
         return

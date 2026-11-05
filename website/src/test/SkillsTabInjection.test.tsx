@@ -32,6 +32,8 @@ const BASE = {
   deliveries: 616,
 }
 
+const OTHER = { ...BASE, key: 'other-skill', name: 'other-skill', description: 'Another', size_bytes: 200, deliveries: 2 }
+
 function mount(skills: Record<string, unknown>[]) {
   mockApi.skills.mockResolvedValue(skills)
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } })
@@ -111,6 +113,34 @@ describe('injection control on the Skills page', () => {
     fireEvent.click(await findToggle())
 
     expect(await screen.findByText(/could not update this skill/i)).toBeTruthy()
+  })
+
+  it('does not carry a failed write over to the next selected skill', async () => {
+    mockApi.setSkillInjectOnTrigger.mockRejectedValue(new Error('boom'))
+    mount([BASE, OTHER])
+
+    fireEvent.click(await findToggle())
+    expect(await screen.findByText(/could not update this skill/i)).toBeTruthy()
+
+    fireEvent.click(screen.getByText('other-skill'))
+
+    await screen.findByText(/delivered 2×/)
+    expect(screen.queryByText(/could not update this skill/i)).toBeNull()
+  })
+
+  it('does not lock the next selected skill while a write is still in flight', async () => {
+    /* Never settles: the row stays pending for the first skill. */
+    mockApi.setSkillInjectOnTrigger.mockReturnValue(new Promise(() => {}))
+    mount([BASE, OTHER])
+
+    const first = await findToggle()
+    fireEvent.click(first)
+    await waitFor(() => expect(first.getAttribute('aria-disabled')).toBe('true'))
+
+    fireEvent.click(screen.getByText('other-skill'))
+
+    await screen.findByText(/delivered 2×/)
+    expect((await findToggle()).getAttribute('aria-disabled')).toBeNull()
   })
 
   it('states what the ON position actually does', async () => {

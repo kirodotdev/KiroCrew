@@ -130,9 +130,10 @@ class GitError(RuntimeError):
 #: git ends EVERY fetch/push failure with the same access-rights boilerplate, and
 #: an SSH transport failure prints its diagnosis FIRST, so a last-3-lines tail
 #: reports a permission problem the operator does not have. Concretely, for a
-#: remote reachable only through a ``ProxyCommand`` in ``~/.ssh/config`` the
-#: sandbox's ``ssh -F /dev/null`` (see :mod:`kiro_crew.sandbox`) discards that
-#: config, DNS then fails, and the whole diagnosis is one line above the tail:
+#: remote reachable only through a ``ProxyCommand`` in ``~/.ssh/config``, where
+#: the sandbox falls back to ``ssh -F /dev/null`` (a strict tier, or a config ssh
+#: would refuse there; see :mod:`kiro_crew.sandbox`), that config is discarded,
+#: DNS then fails, and the whole diagnosis is one line above the tail:
 #:
 #:     ssh: Could not resolve hostname <host>: Name or service not known
 #:     fatal: Could not read from remote repository.
@@ -305,11 +306,42 @@ _GIT_NEUTRALIZERS: list[tuple[str, str]] = [
     ("pull.verifySignatures", "false"),
     # Local/file transports exec the config-named pack programs directly —
     # GIT_ALLOW_PROTOCOL does not gate them because they are not a protocol.
-    # Every invocation here uses the literal remote name `origin`, so pinning
-    # these two keys restores git's own defaults over anything in .git/config.
+    # These two pins are NOT the guarantee: git keeps the FIRST value it reads
+    # for `remote.<name>.uploadpack`/`.receivepack`, and `.git/config` is read
+    # before any `-c`/GIT_CONFIG_* entry, so a vault-set value wins over them.
+    # The `--upload-pack`/`--receive-pack` flags from `_pack_program_args` are
+    # what closes it.
     ("remote.origin.uploadpack", "git-upload-pack"),
     ("remote.origin.receivepack", "git-receive-pack"),
 ]
+
+
+#: The remote-side program each subcommand would run, pinned by a command-line
+#: flag. The flag beats every config file for that invocation, whatever value
+#: the vault's ``.git/config`` sets and whichever remote is selected.
+_PACK_PROGRAM_FLAGS: dict[str, str] = {
+    "push": "--receive-pack=git-receive-pack",
+    "pull": "--upload-pack=git-upload-pack",
+    "fetch": "--upload-pack=git-upload-pack",
+    "ls-remote": "--upload-pack=git-upload-pack",
+    "clone": "--upload-pack=git-upload-pack",
+}
+
+
+def _pack_program_args(args: list[str]) -> list[str]:
+    """Insert the pack-program pin right after the subcommand, when it takes one.
+
+    Applied in :func:`run_git`, the one chokepoint every git call here passes
+    through, so a new remote-speaking call site cannot forget it. Only these
+    subcommands accept the flag; others (``status``, ``add``, a ``-c``-prefixed
+    ``merge``) are returned unchanged.
+    """
+    if not args:
+        return list(args)
+    flag = _PACK_PROGRAM_FLAGS.get(args[0])
+    if flag is None:
+        return list(args)
+    return [args[0], flag, *args[1:]]
 
 
 def _auth_env(pat: Optional[str]) -> dict[str, str]:
@@ -494,7 +526,7 @@ async def run_git(
     proc = await asyncio.create_subprocess_exec(
         _git_bin(),
         *hook_off,
-        *args,
+        *_pack_program_args(args),
         cwd=cwd,
         env=env,
         stdout=asyncio.subprocess.PIPE,

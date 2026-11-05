@@ -546,9 +546,9 @@ class TestAConcurrentEditIsNeverLost:
             fh = real_open(file, *a, **k)
             return _CountingReads(fh) if str(file) == str(p) else fh
 
-        monkeypatch.setattr(builtins, "open", counting_open)
-        loaded = CloudConfig.load(p)
-        monkeypatch.undo()
+        with monkeypatch.context() as mp:
+            mp.setattr(builtins, "open", counting_open)
+            loaded = CloudConfig.load(p)
 
         assert pulled, "the loader never read the file, so nothing here tested the bound"
         assert max(pulled) <= _MAX_FILE_BYTES + 1, (
@@ -582,7 +582,7 @@ class TestAConcurrentEditIsNeverLost:
     def test_the_precondition_caller_cannot_resolve_an_empty_tag(self, monkeypatch):
         """Merging from displaced bytes stays out of reach of a caller with a precondition.
 
-        `_on_disk_tag` answers the default for a file that cannot be parsed, so a caller
+        The on-disk tag read answers the default for a file that cannot be parsed, so a caller
         naming the default tag would be the one way a precondition could be satisfied by a
         tag nobody read. The only production caller of `expect_last_tag` resolves its tag
         through a path that exits rather than yielding an empty one, which is what closes

@@ -54,6 +54,79 @@ class TestConfig:
         assert c.repo_hint is None
         assert c.worktrees_root is None
 
+    @staticmethod
+    def _default_parts(
+        home: Path, monkeypatch: pytest.MonkeyPatch, *, mise_data_dir: str | None = None
+    ) -> list[str]:
+        """The default gateway PATH ``PodConfig.load`` derives for *home*."""
+        for k in list(os.environ):
+            if k.startswith("KIROCREW_POD_"):
+                monkeypatch.delenv(k, raising=False)
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+        monkeypatch.delenv("XDG_DATA_HOME", raising=False)
+        if mise_data_dir is None:
+            monkeypatch.delenv("MISE_DATA_DIR", raising=False)
+        else:
+            monkeypatch.setenv("MISE_DATA_DIR", mise_data_dir)
+        return PodConfig.load().gateway_path.split(os.pathsep)
+
+    def test_default_gateway_path_reaches_user_tool_managers(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A pod finds a CLI installed through a user-level tool manager.
+
+        The pod gateway gets ONLY this PATH, so a ``glab`` behind a mise shim or
+        in ``~/.volta/bin`` was invisible in every pod while the host gateway
+        found it.
+        """
+        parts = self._default_parts(tmp_path, monkeypatch)
+        assert str(tmp_path / ".local" / "share" / "mise" / "shims") in parts
+        assert str(tmp_path / ".volta" / "bin") in parts
+        # ~/.local/bin still leads and the system dirs still close the list.
+        assert parts[0] == str(tmp_path / ".local" / "bin")
+        assert parts[-2:] == ["/usr/bin", "/bin"]
+        assert len(parts) == len(set(parts))
+
+    def test_default_gateway_path_never_copies_the_live_path(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Whatever leads the operator's PATH at install time stays out of pods."""
+        planted = str(tmp_path / "worktree" / ".venv" / "bin")
+        monkeypatch.setenv("PATH", os.pathsep.join([planted, "/usr/bin"]))
+        assert planted not in self._default_parts(tmp_path, monkeypatch)
+
+    def test_default_gateway_path_drops_a_relative_mise_dir(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A relative MISE_DATA_DIR would put a cwd-relative entry on the pod PATH."""
+        parts = self._default_parts(tmp_path, monkeypatch, mise_data_dir="relative/mise")
+        assert all(os.path.isabs(p) for p in parts)
+        # The rest of the default survives the dropped entry.
+        assert str(tmp_path / ".volta" / "bin") in parts
+
+    def test_default_gateway_path_carries_the_hosts_tool_dirs(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Pods and the host share one tool-manager list, so they cannot drift."""
+        from kiro_crew.env import user_tool_bin_dirs
+
+        parts = self._default_parts(tmp_path, monkeypatch)
+        missing = [d for d in user_tool_bin_dirs(str(tmp_path)) if d not in parts]
+        assert missing == []
+
+    def test_tool_bin_dirs_are_in_native_normal_form(self, tmp_path: Path) -> None:
+        """Entries are in native normal form, never mixing ``/`` into a ``\\`` home."""
+        from kiro_crew.env import user_tool_bin_dirs
+
+        dirs = user_tool_bin_dirs(os.path.join(str(tmp_path), "x", os.pardir))
+        assert dirs
+        assert dirs == [os.path.normpath(d) for d in dirs]
+        assert str(tmp_path / ".volta" / "bin") in dirs
+
+    def test_explicit_pod_path_still_wins(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("KIROCREW_POD_PATH", "/only/this")
+        assert PodConfig.load().gateway_path == "/only/this"
+
     def test_env_overrides_build_a_hermetic_plane(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("KIROCREW_POD_UNIT_PREFIX", "kirocrew-podtest")
         monkeypatch.setenv("KIROCREW_POD_BASE_PORT", "7300")
@@ -74,6 +147,53 @@ class TestConfig:
         assert c.pod_root.is_absolute()
         assert c.live_port == 9999
         assert rt.pod_unit(c, "foo") == "kirocrew-podtest@foo.service"
+
+    # U+00B2 SUPERSCRIPT TWO passes isdigit but int() refuses it.
+    @pytest.mark.parametrize(
+        "raw",
+        ["-1", "0", "70000", "\u00b2", "7a", "9" * 5000],
+        ids=["neg", "zero", "high", "sup2", "alnum", "long"],
+    )
+    def test_an_unusable_port_env_falls_back_with_a_warning(
+        self, raw: str, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        monkeypatch.setenv("KIROCREW_POD_BASE_PORT", raw)
+        monkeypatch.setenv("KIROCREW_POD_LIVE_PORT", raw)
+        with caplog.at_level("WARNING", logger="kiro_crew.pod.config"):
+            c = PodConfig.load()
+        assert c.base_port == DEFAULT_BASE_PORT
+        assert c.live_port == DEFAULT_LIVE_PORT
+        logged = " ".join(r.getMessage() for r in caplog.records)
+        assert "KIROCREW_POD_BASE_PORT" in logged
+        assert "KIROCREW_POD_LIVE_PORT" in logged
+
+    @pytest.mark.parametrize("raw", ["", "   "])
+    def test_a_blank_port_env_reads_as_unset(
+        self, raw: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("KIROCREW_POD_BASE_PORT", raw)
+        assert PodConfig.load().base_port == DEFAULT_BASE_PORT
+
+    @pytest.mark.parametrize("raw,want", [("1", 1), (" 7300 ", 7300), ("65535", 65535)])
+    def test_a_live_port_env_in_range_still_wins(
+        self, raw: str, want: int, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("KIROCREW_POD_LIVE_PORT", raw)
+        assert PodConfig.load().live_port == want
+
+    @pytest.mark.parametrize("raw,want", [("1", 1), (" 7300 ", 7300), ("65336", 65336)])
+    def test_a_base_port_env_whose_band_fits_still_wins(
+        self, raw: str, want: int, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("KIROCREW_POD_BASE_PORT", raw)
+        assert PodConfig.load().base_port == want
+
+    def test_a_base_port_whose_band_overflows_falls_back(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # 65337 + 199 is 65536: the band's top port would not bind.
+        monkeypatch.setenv("KIROCREW_POD_BASE_PORT", "65337")
+        assert PodConfig.load().base_port == DEFAULT_BASE_PORT
 
 
 class TestPathOverridesAreAnchoredNotCwdRelative:
@@ -1043,7 +1163,7 @@ class TestEnvFileAndPin:
         monkeypatch.setenv("KIROCREW_POD_ENV_DIR", str(tmp_path))
         c = PodConfig.load()
         rt.pin_checkout(c, "x", Path("/abs/co"))
-        assert rt.read_env_file(c, "x")["CHECKOUT"] == "/abs/co"
+        assert rt.read_env_file(c, "x")["CHECKOUT"] == str(Path("/abs/co"))
 
 
 class TestWorktreeResolution:

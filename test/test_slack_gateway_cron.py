@@ -9,7 +9,6 @@ retry, acked items, a failed Slack delivery, and ``_deliver_cron_response``.
 from __future__ import annotations
 
 import json
-import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -21,6 +20,7 @@ from slack_gateway_helpers import (
     _mock_sessions,
 )
 
+from kiro_crew.slack import gateway as gw
 from kiro_crew.slack.gateway import (
     _CRON_MSG_LIMIT,
     _EPOCH_RE,
@@ -641,7 +641,7 @@ class TestInitCron:
         assert secret[:8] not in delivered, "a credential fragment reached Slack"
 
     @pytest.mark.asyncio
-    async def test_cron_callback_dedup_suppresses(self):
+    async def test_cron_callback_dedup_suppresses(self, monkeypatch, manual_clock):
         """Duplicate result suppresses Slack delivery."""
         orch = _make_orchestrator(slack_enabled=True, owner_id="U1")
         orch.sessions = _mock_sessions()
@@ -688,8 +688,9 @@ class TestInitCron:
         job.thread_ts = None
         job.last_posted_hash = _result_hash("stable output")
         job.consecutive_dupes = 1
-        # flake-ok: pre-existing real-clock stamp inside the dedup window, moved verbatim; tracked for a de-flake pass
-        job.last_posted_at = time.time()
+        # The dedup window is read on the gateway's own clock, so the stamp comes from it too.
+        manual_clock.install(monkeypatch, gw)
+        job.last_posted_at = manual_clock.time()
         job.last_failure_hash = ""
         job.last_failure_at = 0.0
         job.consecutive_failures = 0
@@ -876,6 +877,8 @@ class TestCronFailurePaths:
         job.last_failure_at = 0.0
         job.consecutive_failures = 0
         job.auto_paused = False
+        job.auto_pause_limit.return_value = 5
+        job.alert_after_limit.return_value = 1
         job._acp_retried = False
 
         with patch(
@@ -898,7 +901,7 @@ class TestCronFailurePaths:
         job.record_failure.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_cron_callback_failure_dedup_suppresses(self):
+    async def test_cron_callback_failure_dedup_suppresses(self, monkeypatch, manual_clock):
         """Duplicate failure within window suppresses Slack."""
         orch = _make_orchestrator(slack_enabled=True, owner_id="U1")
         orch.sessions = _mock_sessions()
@@ -947,10 +950,13 @@ class TestCronFailurePaths:
         job.last_posted_at = 0.0
         # Pre-set failure hash to match what will be generated
         job.last_failure_hash = _result_hash("RuntimeError: boom")
-        # flake-ok: pre-existing real-clock stamp inside the dedup window, moved verbatim; tracked for a de-flake pass
-        job.last_failure_at = time.time()
+        # The dedup window is read on the gateway's own clock, so the stamp comes from it too.
+        manual_clock.install(monkeypatch, gw)
+        job.last_failure_at = manual_clock.time()
         job.consecutive_failures = 1
         job.auto_paused = False
+        job.auto_pause_limit.return_value = 5
+        job.alert_after_limit.return_value = 1
         job._acp_retried = False
 
         with patch(
@@ -1049,7 +1055,7 @@ class TestCronSuccessReminder:
     """Cron dedup reminder after 24h."""
 
     @pytest.mark.asyncio
-    async def test_success_reminder_after_24h(self):
+    async def test_success_reminder_after_24h(self, monkeypatch, manual_clock):
         """After 24h of same result, re-posts with warning."""
         orch = _make_orchestrator(slack_enabled=True, owner_id="U1")
         orch.sessions = _mock_sessions()
@@ -1096,9 +1102,9 @@ class TestCronSuccessReminder:
         job.thread_ts = None
         job.last_posted_hash = _result_hash("same output")
         job.consecutive_dupes = 5
-        # Posted more than 24h ago
-        # flake-ok: pre-existing real-clock stamp past the reminder window, moved verbatim; tracked for a de-flake pass
-        job.last_posted_at = time.time() - _SUCCESS_REMINDER_SECS - 100
+        # Posted more than 24h ago, on the gateway's own clock (the one the reminder reads)
+        manual_clock.install(monkeypatch, gw)
+        job.last_posted_at = manual_clock.time() - _SUCCESS_REMINDER_SECS - 100
         job.last_failure_hash = ""
         job.last_failure_at = 0.0
         job.consecutive_failures = 0

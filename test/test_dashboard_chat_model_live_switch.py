@@ -12,6 +12,52 @@ from chat_test_helpers import _make_state
 from kiro_crew.acp.types import ACP_BACKEND_CLAUDE, ACP_BACKEND_KIRO
 from kiro_crew.agent_sdk.capabilities import capabilities_for
 from kiro_crew.dashboard.state import DashboardState
+from kiro_crew.testing.wait import until_parked
+
+
+class TestCrewmatePicksOnItsHarness:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "route,field,pick",
+        [
+            ("model", "model", "gpt-5.6-sol"),
+            ("reasoning-effort", "reasoning_effort", "max"),
+        ],
+    )
+    async def test_same_harness_still_applies_live(self, tmp_path, monkeypatch, route, field, pick):
+        from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS
+        from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig
+        from kiro_crew.dashboard import chat_handlers
+
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot(
+            "member-atlas-0123456789ab", mode="member", model="claude-opus-4.8"
+        )
+        provider = TestSlotModelLiveSwitch._provider(supports_effort=True)
+        provider.capabilities = capabilities_for(ACP_BACKEND_KAS)
+        provider.accepts_effort_level.return_value = True
+        state.sessions.get_provider = MagicMock(return_value=provider)
+        state.sessions.reset = AsyncMock()
+        cfg = KiroCrewConfig.load()
+        cfg.agents["atlas"] = KiroCrewAgentConfig(
+            member_id="atlas-0123456789ab", kiro_agent="atlas", acp_backend="kas"
+        )
+        monkeypatch.setattr(chat_handlers.KiroCrewConfig, "load", lambda: cfg)
+        app = TestSlotModelLiveSwitch._app(state)
+        app.router.add_post(
+            "/api/chat/slots/{slot}/reasoning-effort", chat_handlers.api_chat_slot_reasoning_effort
+        )
+        async with TestClient(TestServer(app, host="127.0.0.1")) as client:
+            resp = await client.post(f"/api/chat/slots/{slot.key}/{route}", json={field: pick})
+            data = await resp.json()
+
+        assert resp.status == 200, data
+        assert getattr(slot, field) == pick
+        if field == "model":
+            provider.client.set_model.assert_awaited_once_with(pick)
+        else:
+            provider.change_effort.assert_awaited_once_with(pick)
+        state.sessions.reset.assert_not_awaited()
 
 
 class TestSlotModelLiveSwitch:
@@ -475,6 +521,28 @@ class TestSlotModelLiveSwitch:
         assert state._slots["a"].model == "gpt-5.6-sol"
 
     @pytest.mark.asyncio
+    async def test_a_relaunch_refusal_is_4xx_and_keeps_the_model(self, tmp_path):
+        """A relaunching harness (Strands) put the prior model back on the same chat.
+        A reset would cold-start on the refused model and fail the same way."""
+        state = _make_state(tmp_path)
+        state.sessions.reset = AsyncMock()
+        provider = self._provider()
+        provider.switches_by_relaunch = True
+        provider.client.set_model = AsyncMock(side_effect=RuntimeError("cannot run that model"))
+        state.sessions.get_provider = MagicMock(return_value=provider)
+        state.get_or_create_slot("a", model="gpt-5.6-sol")
+        state.push_slots_update = MagicMock()
+
+        async with TestClient(TestServer(self._app(state))) as client:
+            resp = await client.post("/api/chat/slots/a/model", json={"model": "claude-opus-4.8"})
+            body = await resp.json()
+
+        assert resp.status == 400
+        assert body["code"] == "model_switch_refused"
+        state.sessions.reset.assert_not_awaited()
+        assert state._slots["a"].model == "gpt-5.6-sol"
+
+    @pytest.mark.asyncio
     async def test_refused_pick_rolls_back_the_pick_generation(self, tmp_path):
         """A refused pick changed nothing, so the
         explicit-pick generation must roll back with the model. Leaving the
@@ -541,15 +609,13 @@ class TestSlotModelLiveSwitch:
             slow = asyncio.create_task(
                 client.post("/api/chat/slots/a/model", json={"model": "claude-opus-4.8"})
             )
-            # flake-ok: the pick parks on the slot's lock and sets no signal to await
-            # nosemgrep: kirocrew.test-sleep-as-barrier -- the pick parks on the slot's lock and sets no signal to await
-            await asyncio.sleep(0.05)  # slow pick holds the lock, parked at its await
+            # slow pick holds the lock, parked at its await
+            await until_parked(release_slow)
             fast = asyncio.create_task(
                 client.post("/api/chat/slots/a/model", json={"model": "deepseek-3.2"})
             )
-            # flake-ok: the pick parks on the slot's lock and sets no signal to await
-            # nosemgrep: kirocrew.test-sleep-as-barrier -- the pick parks on the slot's lock and sets no signal to await
-            await asyncio.sleep(0.05)  # fast pick queued on the lock
+            # fast pick queued on the lock
+            await until_parked(slot._lock)
             release_slow.set()
             slow_resp = await slow
             fast_resp = await fast
@@ -601,15 +667,11 @@ class TestSlotModelLiveSwitch:
             first = asyncio.create_task(
                 client.post("/api/chat/slots/a/model", json={"model": "claude-opus-4.8"})
             )
-            # flake-ok: the pick parks on the slot's lock and sets no signal to await
-            # nosemgrep: kirocrew.test-sleep-as-barrier -- the pick parks on the slot's lock and sets no signal to await
-            await asyncio.sleep(0.05)
+            await until_parked(release_first)
             second = asyncio.create_task(
                 client.post("/api/chat/slots/a/model", json={"model": "deepseek-3.2"})
             )
-            # flake-ok: the pick parks on the slot's lock and sets no signal to await
-            # nosemgrep: kirocrew.test-sleep-as-barrier -- the pick parks on the slot's lock and sets no signal to await
-            await asyncio.sleep(0.05)
+            await until_parked(slot._lock)
             # First refusal completes while the second pick is still pending.
             release_first.set()
             first_resp = await first
@@ -1070,3 +1132,46 @@ class TestDeferredModelSwitchAtTheBoundary:
 
         assert await sc.apply_deferred_model_switch(state, slot) is True
         assert slot._pending_reset_history_key
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("live", [False, True])
+async def test_stored_harness_secret_never_reaches_model_response_or_log(
+    tmp_path, monkeypatch, caplog, live
+):
+    from kiro_crew import model_registry
+    from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig
+    from kiro_crew.dashboard import chat_handlers
+
+    secret = "sk-test-not-a-real-secret-0000"
+    cfg = KiroCrewConfig()
+    cfg.agents["atlas"] = KiroCrewAgentConfig(
+        member_id="atlas-0123456789ab", kiro_agent="atlas", acp_backend=secret
+    )
+    monkeypatch.setattr(chat_handlers.KiroCrewConfig, "load", lambda: cfg)
+    monkeypatch.setattr(model_registry, "is_canonical_key", lambda model: True)
+    monkeypatch.setattr(model_registry, "get_entry", lambda model: {})
+    monkeypatch.setattr(model_registry, "acp_id_correction", lambda model: None)
+    state = _make_state(tmp_path)
+    slot = state.get_or_create_slot("member-atlas-0123456789ab", mode="member", model="auto")
+    provider = TestSlotModelLiveSwitch._provider() if live else None
+    state.sessions.get_provider = MagicMock(return_value=provider)
+    state.sessions.reset = AsyncMock()
+    async with TestClient(
+        TestServer(TestSlotModelLiveSwitch._app(state), host="127.0.0.1")
+    ) as client:
+        response = await client.post(
+            f"/api/chat/slots/{slot.key}/model",
+            json={"model": "test-display-only"},
+        )
+        assert response.status == 400
+        text = await response.text()
+        data = await response.json()
+    assert secret not in text + caplog.text
+    assert "unknown" in data["error"]
+    assert "model rejected" in caplog.text
+    assert cfg.agents["atlas"].acp_backend == secret
+    assert slot.model == "auto"
+    state.sessions.reset.assert_not_awaited()
+    if provider is not None:
+        provider.client.set_model.assert_not_awaited()

@@ -477,7 +477,7 @@ def questions() -> list[Question]:
 
     The per-tier rubric rides in the provider's own per-option ``criteria`` map,
     keyed by the option it describes, rather than being flattened into the prompt.
-    Both backends know how to carry it -- ``impl_jev`` sends it as the ``criteria``
+    Both backends know how to carry it -- ``impl_systemone`` sends it as the ``criteria``
     map and ``impl_llm`` renders it beside each option -- so ``Choice`` behaves the
     same whichever oracle answers. At runtime, though, only ``nudge.wake`` is served
     by the LLM lane, so for ``model.route`` it is Jev that receives the rubric; the

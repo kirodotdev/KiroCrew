@@ -335,6 +335,12 @@ async def _run_task(args: argparse.Namespace) -> None:
         print(f"❌ Spec file not found: {spec_path}", file=sys.stderr)
         sys.exit(1)
 
+    # A stored Kiro CLI pick runs on KAS where kiro-cli offers v3; this process
+    # never ran the gateway's KAS floor, so establish that evidence before the
+    # load reads the pick. Probes only for a Kiro CLI pick; off the event loop.
+    from kiro_crew.agent_sdk.backends import ensure_kiro_cli_kas_verdict
+
+    await asyncio.to_thread(ensure_kiro_cli_kas_verdict)
     cfg = KiroCrewConfig.load()
     factory = build_provider_factory(cfg)
     sessions = SessionManager(cfg, provider_factory=factory)  # type: ignore[arg-type]
@@ -567,7 +573,7 @@ def _logs_cmd(args: argparse.Namespace) -> None:
       4. ``~/.kiro/crew/gateway.log`` (foreground gateway)
     """
     follow = bool(getattr(args, "follow", False))
-    lines = int(getattr(args, "lines", 100) or 100)
+    lines = int(getattr(args, "lines", 100))
     plat = current_platform()
     unit = f"{SERVICE_NAME}.service"
 
@@ -848,6 +854,8 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         desktop_app_supervisor,
     )
     from kiro_crew.cli_server_update import (  # noqa: F401
+        _DETACHED_BRANCH_ORDER,
+        _detached_upstream_branch,
         _refresh_agent_config,
         _revalidate_gateway_update_check,
         _snapshot_memory_or_exit,
@@ -856,3 +864,4 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _update_wheel,
     )
     from kiro_crew.dashboard.tailnet import POLICY_OFF_DETAIL, policy_off  # noqa: F401
+    from kiro_crew.platform import release_apply  # noqa: F401

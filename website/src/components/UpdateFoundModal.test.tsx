@@ -404,6 +404,18 @@ describe('UpdateFoundModal — gateway source', () => {
     expect(screen.getByText('0.4.0rc14')).toBeInTheDocument()
   })
 
+  it('names no version when a behind-only checkout reports the running one', async () => {
+    // A git checkout behind its upstream at the same version string: the
+    // candidate is the build already running, so "0.13.0 is available" lies.
+    await mount(undefined, gatewayStore({
+      version: '0.13.0', update_available: true, update_latest_version: '0.13.0',
+      update_latest_version_display: '0.13.0', update_can_apply: true, update_commits_behind: 3,
+    }))
+    await waitFor(() => expect(dialog()).toBeInTheDocument())
+    expect(screen.getByText(i18nT('pages.settings.aboutPanel.a_newer_version_is_available'))).toBeInTheDocument()
+    expect(screen.queryByText('0.13.0')).not.toBeInTheDocument()
+  })
+
   it('opens with Update now when the gateway can apply in-process', async () => {
     mockedApi.checkUpdate.mockResolvedValue({ changes: 'zzq gw notes' } as never)
     await mount(undefined, gatewayStore({

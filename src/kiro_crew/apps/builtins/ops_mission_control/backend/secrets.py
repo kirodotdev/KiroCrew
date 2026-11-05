@@ -164,7 +164,7 @@ class _SecretLock:
 
     def __enter__(self) -> "_SecretLock":
         self._lock_path.parent.mkdir(parents=True, exist_ok=True)
-        self._fd = os.open(str(self._lock_path), os.O_CREAT | os.O_RDWR, 0o600)
+        self._fd = platform_compat.open_create_or_existing(str(self._lock_path), os.O_RDWR, 0o600)
         platform_compat.acquire_lock(self._fd, exclusive=True)
         return self
 

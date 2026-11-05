@@ -127,10 +127,14 @@ async def api_chat_slot_queue_edit(request: web.Request) -> web.Response:
             },
             status=409,
         )
+    from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+
     if not slot.queue_edit_by_id(
         queue_id,
         content,
         directive_user_origin=not bool(request.get("app", "")),
+        # The replacement words are the editor's: see ``api_chat``.
+        directive_owner_origin=is_owner_dashboard_request(request),
     ):
         return web.json_response({"error": "queue item not found"}, status=404)
     # The stored text is what the edit normalized to (attachment markers are

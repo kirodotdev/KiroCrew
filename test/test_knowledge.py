@@ -909,6 +909,20 @@ class TestFileReader:
         assert "utf16 page body" in text
         assert "\x00" not in text
 
+    def test_a_utf8_bom_does_not_hide_the_first_heading(self, tmp_path):
+        # Notepad and PowerShell `-Encoding utf8` write a UTF-8 BOM. Kept as a
+        # U+FEFF, it sits before the first `#`, so the heading is not a heading
+        # and its section folds into the next one's title.
+        from kiro_crew.knowledge.chunker import HeadingAwareChunker
+
+        f = tmp_path / "notes.md"
+        f.write_bytes(codecs.BOM_UTF8 + b"# Intro\n\nhello\n\n# Usage\n\nrun it\n")
+        text, meta = FileReader().read(str(f))
+        assert meta["format"] == "md"
+        assert text.startswith("# Intro")
+        chunks = HeadingAwareChunker(target_size=6).chunk_markdown(text)
+        assert [c["section_title"] for c in chunks] == ["Intro", "Usage"]
+
 
 def _make_pdf(text: str = "Hello PDF regression") -> bytes:
     """Build a structurally valid single-page PDF with a text object.

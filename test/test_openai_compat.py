@@ -207,6 +207,11 @@ def _make_slot():
     """Create a minimal mock slot that behaves like _ChatSlot."""
     slot = MagicMock()
     slot.key = "test-slot"
+    # A real slot's defaults: unlinked and not channel-born. A bare MagicMock
+    # attribute is truthy, which the app ownership check reads as a link to
+    # another conversation.
+    slot.linked_session_key = ""
+    slot.channel_origin = False
     slot.agent = ""
     slot.task = None
     slot.running = False
@@ -408,12 +413,16 @@ class TestSlotTargeting:
             slot._pending.append({"cls": "done"})
             slot.event.set()
 
-        with patch("kiro_crew.dashboard.openai_compat._run_chat", side_effect=fake_run_chat):
+        with (
+            patch("kiro_crew.dashboard.openai_compat._run_chat", side_effect=fake_run_chat),
+            patch("kiro_crew.dashboard.openai_compat._sync_dashboard_slots") as sync,
+        ):
             await api_completions(request)
 
-        # Ephemeral slot name starts with oai-
+        # Ephemeral slot name starts with oai-, and its removal publishes the smaller set
         call_arg = state.get_or_create_slot.call_args[0][0]
         assert call_arg.startswith("oai-chatcmpl-")
+        sync.assert_called_once_with(state)
 
 
 @pytest.mark.asyncio
@@ -549,11 +558,13 @@ class TestStreamingResponse:
         with (
             patch("kiro_crew.dashboard.openai_compat._run_chat", side_effect=fake_run_chat),
             patch("kiro_crew.dashboard.openai_compat.web.StreamResponse", return_value=mock_resp),
+            patch("kiro_crew.dashboard.openai_compat._sync_dashboard_slots") as sync,
         ):
             await api_completions(request)
 
-        # Ephemeral slot should be cleaned up
+        # Ephemeral slot should be cleaned up, and the smaller slot set published
         assert slot.key not in state._slots
+        sync.assert_called_once_with(state)
 
     async def test_stream_named_slot_not_cleaned(self):
         slot = _make_slot()

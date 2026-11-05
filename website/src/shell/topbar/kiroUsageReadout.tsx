@@ -2,7 +2,7 @@ import { useEffect, useState, type ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Coins, Info, Loader2 } from 'lucide-react'
 import { api } from '../../api/client'
-import { isAccountOnly, parseKiroUsagePayload, type KiroUsageState } from '../../api/kiroUsage'
+import { isAccountOnly, parseKiroUsagePayload, kiroUsageRefetchInterval, type KiroUsageState } from '../../api/kiroUsage'
 import { isKiroBackend, type AcpBackendConfig } from '../../api/acpBackend'
 import type { KiroAccountUsage } from '../../components/KiroAccountModal'
 import { fmtCompact } from '../../i18n/format'
@@ -32,7 +32,18 @@ export function useKiroUsageReadout() {
     // The parser is shared with the account modal's Refresh button, which
     // writes its POST result into this same query: one normalization for both.
     queryFn: () => api.sessionsUsage().then(parseKiroUsagePayload),
-    refetchInterval: 30_000,
+    // The GET warms the gateway's cache in the background, so a reopen hits an
+    // empty cache (`null`) and, before kiro-cli readiness is verified, a 503 the
+    // query surfaces as an error. Poll fast while the state is unsettled so the
+    // pill fills in a couple of seconds instead of waiting a full interval for
+    // each of those reads; drop to the steady cadence once a reading (or a
+    // terminal state) lands.
+    refetchInterval: (query) =>
+      kiroUsageRefetchInterval(
+        query.state.data ?? null,
+        query.state.status === 'error',
+        query.state.dataUpdateCount + query.state.errorUpdateCount,
+      ),
   })
   // ONE derivation feeds both the capsule segment and the account modal, so the
   // drill-in can never report a different state from the pill that opened it —

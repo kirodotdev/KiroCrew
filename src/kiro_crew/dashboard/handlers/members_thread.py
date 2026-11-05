@@ -102,7 +102,9 @@ async def _bind_member_workspace(
     slot.workspace = member_workspace
     slot.project = project
     if old_project != project:
-        slot._pending_reset_history_key = effective_session_key(slot)
+        from kiro_crew.dashboard.transcript_binding import arm_project_reset
+
+        arm_project_reset(state, slot, effective_session_key(slot))
     slot._dirty = True
     state.push_slots_update()
 
@@ -280,7 +282,7 @@ async def api_member_thread(request: web.Request) -> web.Response:
                 )
     if not member_name:
         return web.json_response(
-            {"error": "no crew member for this slug", "code": "member_not_found"}, status=404
+            {"error": "no Bot for this slug", "code": "member_not_found"}, status=404
         )
 
     slot = state._slots.get(slot_key)
@@ -620,6 +622,8 @@ def _seed_member_approval(state: DashboardState, slot: Any, mode: str) -> None:
                 sharing._trust = True
             else:
                 sharing._trust_reads = True
+            # The Profile decides this slot's mode, not its creator's changes.
+            sharing._posture_inherited = False
     state.sessions.set_approval_policy(key, "auto" if effective == "trust" else "")
     try:
         _sel().log_api_access(

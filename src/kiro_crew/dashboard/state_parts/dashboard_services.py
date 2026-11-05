@@ -36,7 +36,7 @@ from kiro_crew.dashboard.notification_coordinator import (
     _serialized_bytes,
     native_notification_tag,
 )
-from kiro_crew.dashboard.slot_registry import SlotRegistry
+from kiro_crew.dashboard.slot_registry import SlotRegistry, TakeoverBasis
 from kiro_crew.dashboard.state_parts.notification_log import (
     _MAX_PERSISTED_NOTIFICATIONS,
     _notification_io_executor,
@@ -474,6 +474,8 @@ def _audit_and_broadcast_approval(
     approval_id: str,
     approved: bool,
     decision: str = "",
+    *,
+    instance: str = "",
 ) -> None:
     """Audit and broadcast one approval decision."""
     _approvals_for(self).audit_and_broadcast(
@@ -483,6 +485,7 @@ def _audit_and_broadcast_approval(
         approved,
         decision,
         audit_provider=sel,
+        instance=instance,
     )
 
 
@@ -655,14 +658,25 @@ async def request_question(
 
 
 def resolve_question(
-    self: DashboardState, ask_id: str, answers: dict[str, str] | None, *, reason: str | None = None
+    self: DashboardState,
+    ask_id: str,
+    answers: dict[str, str] | None,
+    *,
+    reason: str | None = None,
+    responder: Any = None,
+    response_id: str = "",
 ) -> bool:
     """Resolve one blocking question future if it is still pending.
 
     ``reason`` says why a ``None`` answer ended the wait (``dismissed``,
     ``composer``, ...); only a blocking MCP ask reports it back to the agent.
+    ``responder`` is the verified Shared Crew principal answering through the
+    dashboard; with it the resolution goes through the shared decision
+    registry (first valid response wins once).
     """
-    return _questions_for(self).resolve(self, ask_id, answers, reason=reason)
+    return _questions_for(self).resolve(
+        self, ask_id, answers, reason=reason, responder=responder, response_id=response_id
+    )
 
 
 async def open_agent_ask(
@@ -697,8 +711,10 @@ async def _flush_loop(self: DashboardState) -> None:
     await _persistence_for(self)._flush_loop(self)
 
 
-def flush_slot_now(self: DashboardState, slot: _ChatSlot) -> None:
-    _persistence_for(self).flush_slot_now(self, slot)
+def flush_slot_now(
+    self: DashboardState, slot: _ChatSlot, takeover_basis: TakeoverBasis | None = None
+) -> None:
+    _persistence_for(self).flush_slot_now(self, slot, takeover_basis=takeover_basis)
 
 
 def _flush_dirty_slots(self: DashboardState) -> None:
@@ -756,7 +772,10 @@ def _fan_out_web_push(self: DashboardState, note: dict[str, Any]) -> None:
     """
     running = self._running_loop()
     if running is not None:
-        running.create_task(self._send_web_push_all(note))
+        # Held until done: the loop keeps only a weak reference to a task.
+        task = running.create_task(self._send_web_push_all(note))
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
         return
     loop = self.serving_loop
     if loop is None or loop.is_closed():

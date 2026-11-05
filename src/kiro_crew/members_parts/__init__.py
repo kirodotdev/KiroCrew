@@ -10,7 +10,7 @@ layer first, and a module imports only the ones before it, never the facade:
   first-welcome marker a new member's directory carries;
 * ``member_sessions`` -- a member's pinned DM session: its key and alias, the backend it
   routes to, the session-level MCP mounts, and the per-turn lifecycle verdict;
-* ``dm_bindings`` -- the crew-to-thread binding under ``trust/``, and the identity it
+* ``dm_bindings`` -- the crew-to-thread binding under ``member-records/``, and the identity it
   answers for a session;
 * ``self_edit`` -- the fields a crewmate may change on its own record, their cleaning, the
   update, its undo and the rename;

@@ -90,6 +90,7 @@ from kiro_crew.config.sections import (
 from kiro_crew.config.superseded_defaults import ack_explicit_write
 from kiro_crew.context_management import RESULT_FILE_MAX_BYTES
 from kiro_crew.dashboard.chat_utils import drained_to_thread, run_config_write
+from kiro_crew.dashboard.dist_file_response import DistFileResponse
 from kiro_crew.dashboard.handlers._shared import (
     _owner_denial_response,
     _pip_install_channel_available,
@@ -262,8 +263,11 @@ async def logo(request: web.Request) -> web.StreamResponse:
         if _h.is_sensitive_path(cfg.dashboard.avatar):
             return web.Response(status=404)
         validated = validate_file_path(cfg.dashboard.avatar)
-        if validated and Path(validated).is_file():
-            return web.FileResponse(validated)
+        # Two ifs, not `validated and await ...`: mypy infers the right operand of
+        # `and` in the left operand's type (str | None), which rejects is_file's bool.
+        if validated:
+            if await asyncio.to_thread(Path(validated).is_file):
+                return DistFileResponse(Path(validated))
     # The DEFAULT logo is channel-aware: nightly builds serve the night-sky
     # variant so the whole in-app surface -- sidebar logo, browser favicon,
     # and native-notification avatar all resolve through /logo.png -- matches
@@ -277,8 +281,8 @@ async def logo(request: web.Request) -> web.StreamResponse:
         names.insert(0, "kirocrew-logo-nightly.png")
     for name in names:
         path = _h._STATIC_DIR / name
-        if path.is_file():
-            return web.FileResponse(path)
+        if await asyncio.to_thread(path.is_file):
+            return DistFileResponse(path)
     return web.Response(status=404)
 
 
@@ -289,11 +293,19 @@ async def api_branding(request: web.Request) -> web.Response:
     # direct-local (loopback, no proxy) caller. The dashboard reads it to gate
     # OS-desktop file actions (open/reveal); any future consumer of origin
     # posture should reuse this flag rather than invent a second home.
+    #
+    # `desktop_launcher` is the other half of that gate: whether this host can
+    # open a file manager right now (the launcher those actions start, and on
+    # Linux a desktop session for it). Without that, `/api/reveal` can only
+    # answer a clipboard copy, so the dashboard does not offer them. It is a
+    # fact about this gateway process, read in a worker thread (a stat of a
+    # fixed system path), and no part of the request decides it.
     return web.json_response(
         {
             "bot_name": cfg.dashboard.bot_name or "Kiro Crew",
             "avatar": "/logo.png",
             "direct_local": is_direct_local_request(request),
+            "desktop_launcher": await asyncio.to_thread(platform_compat.desktop_launcher_available),
         }
     )
 
@@ -335,6 +347,17 @@ async def _liveness_payload(request: web.Request) -> dict[str, object]:
                 "gateway_id": await asyncio.to_thread(gateway_id),
             }
         )
+        # The off-loop watchdog's sustained-lag reading, for a local probe
+        # telling a slow gateway from a dead one.
+        from kiro_crew.dashboard.loop_watchdog import LoopStallWatchdog
+
+        state = request.app.get("state")
+        watchdog = getattr(state, "_loop_watchdog", None)
+        if isinstance(watchdog, LoopStallWatchdog):
+            payload["loop"] = {
+                "lagging": bool(watchdog.lagging),
+                "sustained_lag_episodes": int(watchdog.sustained_lag_episodes),
+            }
     return payload
 
 
@@ -597,8 +620,12 @@ async def pwa_file(request: web.Request) -> web.StreamResponse:
     path = _DIST_DIR / name
     # Resolve both sides so a symlinked _DIST_DIR (dev-backend.sh points it
     # at KiroCrewWebsite/dist) still passes the traversal guard.
-    if path.is_file() and _DIST_DIR.resolve() in path.resolve().parents:
-        return web.FileResponse(path)
+    if (
+        await asyncio.to_thread(path.is_file)
+        and await asyncio.to_thread(_DIST_DIR.resolve)
+        in (await asyncio.to_thread(path.resolve)).parents
+    ):
+        return DistFileResponse(path)
     raise web.HTTPNotFound()
 
 
@@ -653,7 +680,11 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _beacon_governance_pinned_off,
         _check_default_profile_is_saved,
         _ConfigKeyAlreadySet,
+        _drop_dangling_default_profile,
         _keep_omitted_session_environment_keys,
+        _keep_saved_profiles,
+        _profile_ids,
+        _session_environment_key_validators,
         _tailnet_governance_pinned_off,
         _UnknownDefaultProfile,
         api_kirocrew_config_patch,
@@ -665,6 +696,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _acp_backend_patch_values,
         _agent_values,
         _editable_config_spec,
+        _preview,
         _selectable_acp_backends,
         _tier,
     )
@@ -674,6 +706,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _changed_paths_need_restart,
         _hot_apply_after_write,
         _mask_agent_free_text,
+        _mask_strings,
         _masked_config_dict,
         api_kirocrew_config,
     )
@@ -859,29 +892,38 @@ async def api_session_agent_stream(request: web.Request) -> web.StreamResponse:
     resp.headers["Cache-Control"] = "no-cache"
     await resp.prepare(request)
 
-    last_pos = 0
     from kiro_crew.security import redact_credentials, redact_exfiltration_urls  # noqa: F811
+    from kiro_crew.session_workspace_tail import ResultTail  # noqa: F811
 
-    for _ in range(1200):  # 20 min max
-        try:
-            if path.exists():
-                content = path.read_text(encoding="utf-8")
-                if len(content) > last_pos:
-                    chunk = content[last_pos:]
-                    last_pos = len(content)
-                    chunk, _ = redact_exfiltration_urls(chunk)
-                    chunk, _ = redact_credentials(chunk)
-                    await resp.write(f"data: {json.dumps(chunk)}\n\n".encode())
+    # Each poll reads only the bytes appended since the last one, in a thread:
+    # re-reading the whole file every second on the loop grows with its square.
+    tail = ResultTail(path)
+
+    async def _send(chunk: str) -> None:
+        if chunk:
+            chunk, _ = redact_exfiltration_urls(chunk)
+            chunk, _ = redact_credentials(chunk)
+            await resp.write(f"data: {json.dumps(chunk)}\n\n".encode())
+
+    polls = 1200  # 20 min max
+    try:
+        for poll in range(polls):
+            chunk = await asyncio.to_thread(tail.read_new)
             # Check if the subagent is done.
             state: DashboardState = request.app["state"]
-            if state.subagents:
-                info = state.subagents.get(agent_id)
-                if info and info.done:
-                    await resp.write(b"event: done\ndata: {}\n\n")
-                    break
-        except (ConnectionResetError, ClientConnectionResetError):
-            break
-        await asyncio.sleep(1)
+            info = state.subagents.get(agent_id) if state.subagents else None
+            done = bool(info and info.done)
+            if done or poll == polls - 1:
+                # The decoder may still hold a final "\r"; it belongs to this
+                # last chunk, as the whole-file read gave it.
+                chunk += tail.finish()
+            await _send(chunk)
+            if done:
+                await resp.write(b"event: done\ndata: {}\n\n")
+                break
+            await asyncio.sleep(1)
+    except (ConnectionResetError, ClientConnectionResetError):
+        pass
     return resp
 
 

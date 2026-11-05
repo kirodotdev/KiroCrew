@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest'
+import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest'
 import type { ReactNode } from 'react'
 import { render, screen, waitFor, within } from '@testing-library/react'
 import type { RootState } from '../store'
@@ -51,6 +51,9 @@ Object.defineProperty(window, 'matchMedia', {
 })
 
 import ChatPane from '../components/ChatPane'
+import { crewModePreviewOn } from './crewModePreview'
+import { setCrewModeCatalog } from '../lib/crewMode'
+import { PREVIEW_CREW_MODE } from '../utils/previewFlags'
 
 const permission = { role: 'permission', content: 'Shell', cls: '', meta: { approval_id: 'rid-1', tool_input: 'printf hi', request_id: 'rid-1' } }
 const row = (key: string, extra: Record<string, unknown> = {}) => ({
@@ -113,3 +116,31 @@ describe('ChatPane in Split View (Crew Mode)', () => {
     expect(within(cards).getByRole('button', { name: /Reject/ })).toBeInTheDocument()
   })
 })
+
+describe('ChatPane in Split View with the Crew Mode preview off', () => {
+  // The gateway still runs Crew Mode; the device has the preview off.
+  beforeEach(() => {
+    setCrewModeCatalog('kirocrew-conductor', ['kirocrew-conductor'])
+    localStorage.removeItem(PREVIEW_CREW_MODE)
+  })
+  afterEach(() => setCrewModeCatalog(undefined, undefined))
+
+  it('offers no agent picker on a Crew Mode root pane that has a message, since the gateway keeps it on its conductor', async () => {
+    renderPane('c1', [row('c1', { title: 'Conductor', agent: 'kirocrew-conductor', agent_kind: 'template', crew_mode_root: true })], [{ role: 'user', content: 'go', cls: '' }])
+    await waitFor(() => expect(screen.getAllByRole('textbox').length).toBeGreaterThan(0))
+    expect(screen.queryByRole('button', { name: /^Agent: / })).toBeNull()
+  })
+
+  it('keeps the agent picker on a conductor pane with a message that is no Crew Mode root (Incognito)', async () => {
+    renderPane('c1', [row('c1', { title: 'Conductor', agent: 'kirocrew-conductor', agent_kind: 'template', memory_mode: 'incognito' })], [{ role: 'user', content: 'go', cls: '' }])
+    expect(await screen.findByRole('button', { name: /^Agent: kirocrew-conductor/ })).toBeInTheDocument()
+  })
+
+  it('still offers the agent picker on a conductor pane with no message yet', async () => {
+    renderPane('c1', [row('c1', { title: 'Conductor', agent: 'kirocrew-conductor', agent_kind: 'template' })], [])
+    expect(await screen.findByRole('button', { name: /^Agent: kirocrew-conductor/ })).toBeInTheDocument()
+  })
+})
+
+// Last, after the file's own hooks that clear localStorage: Crew Mode is a feature preview.
+crewModePreviewOn()

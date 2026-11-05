@@ -96,6 +96,12 @@ _STEER_STATE_REQUEUED = "requeued"
 _STEER_STATE_RETRACTED = "retracted"
 _STEER_STATES_NOT_TAKEN = frozenset({_STEER_STATE_REQUEUED, _STEER_STATE_RETRACTED})
 
+# The ``meta.injectKind`` values of an ``inject`` row that continues the turn above
+# it rather than opening one: a recovery (a Resume press, an automatic retry) and a
+# replay of the user's own words (``_TURN_CONTINUING_INJECT_KINDS`` in the
+# dashboard's transcript rows; same reason for the spelling, and a test pins them).
+_CONTINUING_INJECT_KINDS = frozenset({"recovery", "user_replay"})
+
 
 def _is_steer_row(row: dict) -> bool:
     """Whether *row* is a mid-turn steer: a ``user`` row whose ``meta.steer`` is True,
@@ -126,6 +132,53 @@ def _interrupted_opener_kind(row: dict) -> str:
         "mcp_app": "an app message",
         "synthesis": "a sub-agent synthesis",
     }.get(kind if isinstance(kind, str) else "", "an automated message")
+
+
+def _partial_turn_output(rows: list[dict], *, user_cap: int, assist_cap: int) -> str:
+    """The partial output of an unfinished turn: its assistant text and the steers it took.
+
+    *rows* are the rows after the one that opened the turn, in order. Both
+    restores (Resume and Stop) read the partial output through this one rule, so
+    the cap and a requeued steer are handled the same way in each.
+    """
+    # *assist_cap* bounds the assistant text alone, measured as if its chunks were
+    # joined on their own, so a turn with no steer is cut exactly where it always
+    # was. A steer line never spends that budget: a redirect the user sent after a
+    # long stream is the line the model most needs, and a head cut would drop it.
+    assistant_parts: list[str] = []
+    assist_used = 0
+    assist_full = False
+    last_assist = -1
+    for m in rows:
+        text = str(m.get("content") or "").strip()
+        if not text:
+            continue
+        if m.get("role") == "assistant":
+            if assist_full:
+                continue
+            start = assist_used + (1 if last_assist >= 0 else 0)
+            if start + len(text) <= assist_cap:
+                assistant_parts.append(text)
+                assist_used = start + len(text)
+                last_assist = len(assistant_parts) - 1
+                continue
+            assist_full = True
+            keep = assist_cap - start
+            if keep >= 0:
+                assistant_parts.append(text[:keep] + "… [truncated]")
+            else:
+                # The cap fell on the separator itself: the kept text ends with the
+                # previous chunk, so the marker closes that chunk.
+                assistant_parts[last_assist] += "… [truncated]"
+        elif _is_steer_row(m) and m["meta"].get("steerState") not in _STEER_STATES_NOT_TAKEN:
+            # A requeued steer did not redirect this turn: it waits in the queue as
+            # its own turn, or the user dismissed it. Carrying it would have the
+            # model act on it here and again when it drains. A taken-back steer
+            # never reached the turn at all.
+            if len(text) > user_cap:
+                text = text[:user_cap] + "… [truncated]"
+            assistant_parts.append(f"{_STEER_LABEL} {text}")
+    return "\n".join(assistant_parts)
 
 
 def build_interrupted_turn_preamble(
@@ -182,44 +235,9 @@ def build_interrupted_turn_preamble(
     user_text = str(messages[opener_idx].get("content") or "").strip()
     if not user_text:
         return ""
-    # *assist_cap* bounds the assistant text alone, measured as if its chunks were
-    # joined on their own, so a turn with no steer is cut exactly where it always
-    # was. A steer line never spends that budget: a redirect the user sent after a
-    # long stream is the line the model most needs, and a head cut would drop it.
-    assistant_parts: list[str] = []
-    assist_used = 0
-    assist_full = False
-    last_assist = -1
-    for m in messages[opener_idx + 1 : end]:
-        text = str(m.get("content") or "").strip()
-        if not text:
-            continue
-        if m.get("role") == "assistant":
-            if assist_full:
-                continue
-            start = assist_used + (1 if last_assist >= 0 else 0)
-            if start + len(text) <= assist_cap:
-                assistant_parts.append(text)
-                assist_used = start + len(text)
-                last_assist = len(assistant_parts) - 1
-                continue
-            assist_full = True
-            keep = assist_cap - start
-            if keep >= 0:
-                assistant_parts.append(text[:keep] + "… [truncated]")
-            else:
-                # The cap fell on the separator itself: the kept text ends with the
-                # previous chunk, so the marker closes that chunk.
-                assistant_parts[last_assist] += "… [truncated]"
-        elif _is_steer_row(m) and m["meta"].get("steerState") not in _STEER_STATES_NOT_TAKEN:
-            # A requeued steer did not redirect this turn: it waits in the queue as
-            # its own turn, or the user dismissed it. Carrying it would have the
-            # model act on it here and again when it drains. A taken-back steer
-            # never reached the turn at all.
-            if len(text) > user_cap:
-                text = text[:user_cap] + "… [truncated]"
-            assistant_parts.append(f"{_STEER_LABEL} {text}")
-    assistant_text = "\n".join(assistant_parts)
+    assistant_text = _partial_turn_output(
+        messages[opener_idx + 1 : end], user_cap=user_cap, assist_cap=assist_cap
+    )
     if len(user_text) > user_cap:
         user_text = user_text[:user_cap] + "… [truncated]"
     # The frame is minted outside the prompt's egress scrub, so its payload is
@@ -315,16 +333,31 @@ def _replay_identity(row: dict) -> tuple | None:
     return None
 
 
-def _merge_replay_rows(disk: list[dict], pending: list[dict], current: dict | None) -> list[dict]:
-    """Reconcile one snapshot before quota selection, budgeting and formatting."""
+def _merge_replay_rows(
+    disk: list[dict],
+    pending: list[dict],
+    current: dict | None,
+    excluded: list[dict] | None = None,
+) -> list[dict]:
+    """Reconcile one snapshot before quota selection, budgeting and formatting.
+
+    *excluded* rows are left out of both sides, by object and by delivery
+    identity: a Regenerate's previous reply stays in the window and on disk
+    while the turn re-asks its question, and must not reach the replay as an
+    answer to nothing.
+    """
     from kiro_crew.history import transcript_sort_key
 
     current_id = _replay_identity(current) if current is not None else None
+    excluded_objs = {id(row) for row in excluded or ()}
+    excluded_ids = {i for i in (_replay_identity(row) for row in excluded or ()) if i is not None}
     rows: list[dict] = []
     positions: dict[tuple, deque[int]] = defaultdict(deque)
     for row in disk:
         identity = _replay_identity(row)
         if current_id is not None and identity == current_id:
+            continue
+        if identity is not None and identity in excluded_ids:
             continue
         if identity is not None:
             positions[identity].append(len(rows))
@@ -332,6 +365,8 @@ def _merge_replay_rows(disk: list[dict], pending: list[dict], current: dict | No
     for row in pending:
         identity = _replay_identity(row)
         if row is current or (current_id is not None and identity == current_id):
+            continue
+        if id(row) in excluded_objs or (identity is not None and identity in excluded_ids):
             continue
         matches = positions.get(identity) if identity is not None else None
         if matches:
@@ -522,9 +557,10 @@ def cancelled_turn_preamble(recent: list[dict], *, user_cap: int, assist_cap: in
     """The ``[PREVIOUS TURN WAS CANCELLED …]`` restore for *recent* rows, or ``""``.
 
     Scans backwards for a ``stop_event`` marker, then takes the user message
-    immediately before it plus any assistant text in between. A steer the person
-    took back (``steerState: retracted``) keeps its row with its text cleared and
-    is stepped past, so *recent* must carry each row's ``meta``.
+    that opened the turn before it plus the assistant text and any mid-turn
+    steers in between. A steer the person took back (``steerState: retracted``)
+    keeps its row with its text cleared and is stepped past, so *recent* must
+    carry each row's ``meta``.
     """
     if not recent:
         return ""
@@ -562,22 +598,37 @@ def cancelled_turn_preamble(recent: list[dict], *, user_cap: int, assist_cap: in
             continue
         user_idx = i
         break
+    # A steer is a user row, but it was injected into the turn rather than opening
+    # it. When the newest user row is one, the request the turn answered is the
+    # nearest row before it that could have opened a turn, provided that row is a
+    # plain user row. A recovery or user-replay inject continues the turn, so the
+    # walk steps past it. A nudge, a sub-agent completion or any other inject row
+    # may be the opener, and a window that holds no opener has none to name: both
+    # keep the steer as the request.
+    if user_idx >= 0 and _is_steer_row(recent[user_idx]):
+        for i in range(user_idx - 1, -1, -1):
+            role = recent[i].get("role")
+            meta = recent[i].get("meta")
+            continuing = (
+                isinstance(meta, dict) and meta.get("injectKind") in _CONTINUING_INJECT_KINDS
+            )
+            if (role == "inject" and not continuing) or (
+                role in _TURN_OPENER_ROLES and not _is_steer_row(recent[i])
+            ):
+                if role == "user":
+                    user_idx = i
+                break
     if user_idx < 0:
         return ""
-    # Collect any assistant text between user_idx and the boundary.
+    # Collect the partial output between user_idx and the boundary: the assistant
+    # text and the steers the turn took, by the same rule as the Resume restore.
     boundary = stop_idx if stop_idx >= 0 else len(recent)
     user_text = (recent[user_idx].get("content") or "").strip()
-    assistant_parts: list[str] = []
-    for i in range(user_idx + 1, boundary):
-        if recent[i].get("role") == "assistant":
-            t = (recent[i].get("content") or "").strip()
-            if t:
-                assistant_parts.append(t)
-    assistant_text = "\n".join(assistant_parts)
+    assistant_text = _partial_turn_output(
+        recent[user_idx + 1 : boundary], user_cap=user_cap, assist_cap=assist_cap
+    )
     if len(user_text) > user_cap:
         user_text = user_text[:user_cap] + "… [truncated]"
-    if len(assistant_text) > assist_cap:
-        assistant_text = assistant_text[:assist_cap] + "… [truncated]"
     lines = [
         "[PREVIOUS TURN WAS CANCELLED BY THE USER — context restore]",
         "The following user request was interrupted mid-response. "

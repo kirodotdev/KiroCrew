@@ -11,15 +11,15 @@
  * a component's effects in registration order, so moving one is a behaviour
  * change even when every test of the moved code still passes.
  */
-import { useCallback, useEffect, useRef, useState, type MutableRefObject } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type MutableRefObject } from 'react'
 import { type NavigateFunction, type Location, type NavigationType } from 'react-router-dom'
 import { type MemberRosterRow } from '../../api/client'
 import { createPortal, flushSync } from 'react-dom'
 import { useMotionValue, useTransform } from 'framer-motion'
 import {
   useDrawerSwipe, animateDrawer, registerDrawerTargets, takeOverDrawer, safeAreaLeft,
-  COMMIT_DRAG_SHARE, COMMIT_VELOCITY, VELOCITY_MIN_SPAN_MS,
 } from '../../hooks/useDrawerSwipe'
+import { idleTrackpadDrag, moveTrackpadDrag, releaseTrackpadDrag, settleTrackpadDrag, speedCommitTrackpadDrag, type TrackpadPanelDrag } from '../../hooks/trackpadPanelDrag'
 import { useMobileNavRail } from '../../components/MobileNavRailContext'
 import { useVisualViewport } from '../../hooks/useVisualViewport'
 import { isTrapEntry } from '../../lib/routeHistoryPosition'
@@ -28,7 +28,8 @@ import { type MembersPageLayout } from './useMembersPageLayout'
 import { type MembersPageTeamsRead } from './useMembersPageTeams'
 import type { MembersPageProfileState } from './MembersPageProfile'
 import type { MembersPageSidePanelState } from './MembersPageSidePanel'
-import { useTrackpadSwipe } from '../../hooks/useTrackpadSwipe'
+import { shownWithin, useTrackpadSwipe } from '../../hooks/useTrackpadSwipe'
+import { beginPanelSlide, retirePanelSlide } from '../../utils/panelSlide'
 
 /** How long a drawer pick waits for the router to report the pop of the
  *  drawer's duplicate entry. Past it the pick is dropped, never run on the
@@ -229,6 +230,9 @@ export function useMembersPageDrawers({
   const [deskSlide, setDeskSlide] = useState(false)
   const deskSlideRef = useRef(deskSlide)
   deskSlideRef.current = deskSlide
+  // A docked panel's drag changes the thread's width every frame: hold the
+  // per-frame work that width would cause until it rests (utils/panelSlide).
+  useLayoutEffect(() => (deskSlide ? beginPanelSlide() : undefined), [deskSlide])
   const panelSlides = isMobile || deskSlide
   // A phone's panel fills the window. A desktop panel keeps its own width, so
   // a drag travels exactly that far.
@@ -486,9 +490,6 @@ interface MembersPageTrackpadSwipeOptions {
   membersRootRef: MutableRefObject<HTMLDivElement | null>
 }
 
-/** The finger phase a release speed is read over, ms before the lift-off. */
-const TRACKPAD_VELOCITY_WINDOW_MS = 60
-
 /**
  * Desktop: the phone's side-panel drag, driven by a two-finger trackpad swipe.
  *
@@ -532,9 +533,7 @@ export function useMembersPageTrackpadSwipe({
   now.current = { panelVisible, onDashboard, beside, togglePanel, revealPanelThen, closeDocked, closeOverlay, focusPanelTab }
   /** The drag in progress: where it started, its travel, and the fingers'
    *  (offset, time) samples for the release speed. */
-  const drag = useRef<{
-    on: boolean; startedOpen: boolean; travel: number; base: number; samples: { x: number; t: number }[]
-  }>({ on: false, startedOpen: false, travel: 0, base: 0, samples: [] })
+  const drag = useRef<TrackpadPanelDrag>(idleTrackpadDrag())
   /** Where a settle in flight is heading (true: open), or null when none is.
    *  A new run may grab the panel mid-settle, as a phone's drag can. */
   const settleTo = useRef<boolean | null>(null)
@@ -568,15 +567,26 @@ export function useMembersPageTrackpadSwipe({
     if (!isMobile || !deskSlideRef.current) return
     drag.current.on = false
     settleTo.current = null
+    retirePanelSlide()
     deskSlideRef.current = false
     setDeskSlide(false)
   }, [isMobile, deskSlideRef, setDeskSlide])
+
+  /** End the drag and settle where it committed (or fell back). */
+  const settleDrag = (open: boolean, velocity: number) => {
+    const d = drag.current
+    d.on = false
+    settleTo.current = open
+    settleTrackpadDrag(sidePanelX, open ? 0 : d.travel, () => { settleTo.current = null; land(open) }, velocity)
+  }
 
   useTrackpadSwipe(membersRootRef, {
     enabled,
     wants: (dir, fromFrame) => {
       const n = now.current
-      if (fromFrame) return dir === 'right' && n.onDashboard
+      // A frame in the panel (the Dashboard, or an artifact tab) relays only
+      // what its own content does not scroll, and may only start the close.
+      if (fromFrame) return dir === 'right' && n.panelVisible
       // Mid-settle, either way grabs the panel where it is.
       if (settleTo.current !== null) return true
       return dir === 'left' ? !n.onDashboard : n.panelVisible
@@ -631,46 +641,18 @@ export function useMembersPageTrackpadSwipe({
     },
     onDragMove: (sumX, at) => {
       const d = drag.current
-      if (!d.on) return
-      // Fingers moving left report a positive deltaX, which pulls the panel in.
-      const x = Math.min(d.travel, Math.max(0, d.base - sumX))
-      sidePanelX.set(x)
-      d.samples.push({ x, t: at })
-      if (d.samples.length > 32) d.samples.splice(0, d.samples.length - 32)
+      if (!d.on) return false
+      sidePanelX.set(moveTrackpadDrag(d, sumX, at))
+      // Fast enough toward a side: commit there now (rule C, trackpadPanelDrag).
+      const now = speedCommitTrackpadDrag(d)
+      if (!now) return false
+      settleDrag(now.open, now.velocity)
+      return true
     },
     onDragEnd: (how, at) => {
-      const d = drag.current
-      if (!d.on) return
-      d.on = false
-      const x = sidePanelX.get()
-      // The lift-off: the last move for a recognised tail; the decision time for
-      // a gap, where fingers that had stopped before they left carry no speed;
-      // the shell's reported lift-off for `lift`, so the last 60ms are the
-      // fingers' own and a pause before lifting carries no speed either.
-      const last = d.samples[d.samples.length - 1]
-      const liftAt = how === 'momentum' && last ? last.t : at
-      let first: { x: number; t: number } | undefined
-      for (let i = 0; i < d.samples.length; i++) {
-        if (liftAt - d.samples[i].t <= TRACKPAD_VELOCITY_WINDOW_MS) {
-          first = d.samples[i]
-          if (liftAt - first.t < VELOCITY_MIN_SPAN_MS && i > 0) first = d.samples[i - 1]
-          break
-        }
-      }
-      const span = first && last ? last.t - first.t : 0
-      const v = first && last && span > 0 ? (last.x - first.x) / span : 0
-      // The phone's rule, for a panel anchored right (a smaller offset is open):
-      // a flick decides; else moving past the share decides by its direction;
-      // else the panel goes back to the state it started from (or, grabbed
-      // mid-settle, the one it was heading for).
-      const dragged = Math.abs(x - d.base) / Math.max(1, d.travel)
-      let open: boolean
-      if (-v > COMMIT_VELOCITY) open = true
-      else if (v > COMMIT_VELOCITY) open = false
-      else if (dragged > COMMIT_DRAG_SHARE) open = x < d.base
-      else open = d.startedOpen
-      settleTo.current = open
-      animateDrawer(sidePanelX, open ? 0 : d.travel, () => { settleTo.current = null; land(open) }, v)
+      if (!drag.current.on) return
+      const { open, velocity } = releaseTrackpadDrag(drag.current, sidePanelX.get(), how, at)
+      settleDrag(open, velocity)
     },
     onSwipe: (dir) => {
       // Reduced motion, a leftward swipe over a panel on another tab: Dashboard
@@ -678,7 +660,11 @@ export function useMembersPageTrackpadSwipe({
       if (dir === 'left' && now.current.panelVisible) { now.current.focusPanelTab(CREW_DASHBOARD_TAB_ID); return }
       land(dir === 'left')
     },
-    // Only a frame in the Dashboard tab while that tab is on screen.
-    acceptFrame: (frame) => now.current.onDashboard && !!frame.closest('#member-side-panel [data-testid="member-dashboard"]'),
+    // Only a frame in the panel, in the tab on screen (a Dashboard kept
+    // mounted behind another tab is hidden, so it cannot drive the panel).
+    acceptFrame: (frame) => {
+      const panel = document.getElementById('member-side-panel')
+      return now.current.panelVisible && !!panel && shownWithin(frame, panel)
+    },
   })
 }

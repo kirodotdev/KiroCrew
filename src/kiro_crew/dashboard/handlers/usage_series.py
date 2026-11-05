@@ -218,7 +218,7 @@ def _shard_rows(path: Path, budget: int) -> tuple[list[_Row], int]:
         for line in bounded_records(fh, path, label="usage"):
             try:
                 obj = json.loads(line)
-            except ValueError:
+            except (ValueError, RecursionError):  # past the nesting limit
                 continue
             if not isinstance(obj, dict):
                 continue

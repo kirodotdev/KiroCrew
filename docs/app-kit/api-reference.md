@@ -98,6 +98,43 @@ permission denials into refresh attempts or automatically replay writes.
 
 For the full hook list see [getting-started.md](getting-started.md#app-sdk-hooks).
 
+`useChatLauncher().openChat(options)` also accepts two options for a NEW session,
+both ignored when `slotKey` is set:
+
+- `memoryMode`: `'persistent'`, `'incognito'` or `'temporary'`, in place of the
+  owner's default. An unknown value is ignored.
+- `sessionFolder: false`: keep the session out of a per-chat session folder even when
+  the owner turned those on.
+
+Either one opens a new draft session, as `autoSend: false` does: the `message` is
+staged in the composer for the user to send. A host older than these options opens an
+ordinary new chat instead.
+
+Level-1 additions to the SDK, each also re-exported by the vendor stub an app's bundle
+resolves through:
+
+| Export | From | What |
+|---|---|---|
+| `fmtCurrency(value, currency = 'USD', options?)` | `@kirocrew/app-sdk` | Money in the host's locale. |
+| `APP_SDK_LEVEL` | `@kirocrew/app-sdk` | The seam level, equal to the gateway's `ctx.sdk_level`. |
+| `Select` | `@kirocrew/app-sdk/ui` | A themed inline dropdown: `options`, `optionLabels?`, `value`, `onChange`, `clearLabel?`, `disabled?`, `aria-label?`, `title?`, `className?`. Native list on touch devices. |
+| `guideCaution` | `@kirocrew/app-sdk/ui` | Spread onto a control that removes something (`<Btn {...guideCaution}>`), so a dashboard guide shows its caution line before a press there. |
+
+`useSessionPane()` returns the binding of the session whose main pane this bundle is
+drawing, for a `contributes.sessionKinds` entry
+([manifest-reference.md](manifest-reference.md)): `slotKey` (the dashboard slot),
+`sessionKey` (`dashboard:<slotKey>`, the identity every scoped request already
+carries), `app`, `kind`, and `object`, the id the gateway minted for this session when
+it was created. Key the record your app keeps for the session by `object`. On a routed
+page, a side-panel tab or anywhere else it returns `null`, and a host nested inside a
+pane does not inherit the pane's binding. The vendor stub re-exports it like every
+other hook. It is a level-2 addition: a bundle that must also load on a level-1 host
+reads it through a namespace import and checks `sdk.APP_SDK_LEVEL >= 2`.
+
+A bundle that must also load on an older host reads these through a namespace import
+(`import * as sdk from '@kirocrew/app-sdk'`) and falls back when one is `undefined`. A
+named import of a name the host lacks fails the whole bundle at load time.
+
 ## Embedded Chat
 
 `ChatEmbed` mounts Kiro Crew's native transcript and compact composer for an
@@ -128,6 +165,58 @@ shown as text, only as the header's hover tooltip.
 | `onFileOpen` | `(path: string, opts?: { line?: number; endLine?: number }) => void` | none | Opens a file the transcript names; without it the tool-row file chip is hidden and path links stay plain (see below). |
 | `onArtifactOpen` | `(slug: string) => void` | none | Opens a saved artifact from a link in a reply; without it artifact links follow their href. |
 | `hide` | `readonly ChatEmbedHideKey[]` | none | Parts of the embed not to mount (see [Hiding parts](#hiding-parts)). |
+| `renderers` | `readonly MessageRenderer[]` | none | Transcript row renderers, handed to the embed's `ChatMessageList` and merged over the built-ins (see [Restyling rows](#restyling-rows)). |
+
+### Restyling rows
+
+`renderers` changes how transcript rows look while the embed keeps its
+composer, Stop, queue, approvals and follow-up chips. It takes the same entries
+as [`ChatMessageList`](#chat-transcript-rendering), merged by
+`mergeRenderers`: kind-matched built-ins (stop events, sub-agent results)
+first, then your entries, then the role-keyed built-ins. Renderers only draw
+rows; to remove a part of the embed use `hide`.
+
+Two things decide what an entry takes over:
+
+- Reusing a built-in `id` removes that built-in entirely, with every role it
+  drew. The built-in `assistant` entry draws both `assistant` and the live
+  `streaming` tail, so an `id: 'assistant'` entry claiming only `assistant`
+  leaves the reply invisible until the turn ends.
+- A role claim without `match` outranks that role's role-keyed refinements. An
+  entry claiming `assistant` with no `match` also takes the compaction and
+  session-reload notices, which the built-ins fold into a card.
+
+To restyle the reply, claim exactly the rows the built-in `assistant` entry
+draws and wrap its own render, so the bubble content, the streaming caret and
+the notice cards all stay as they are:
+
+```tsx
+import {
+  ChatEmbed,
+  defaultMessageRenderers,
+  resolveRenderer,
+  type MessageRenderer,
+} from '@kirocrew/app-sdk'
+
+const BUILTIN_ASSISTANT = defaultMessageRenderers.find(r => r.id === 'assistant')!
+
+// A module constant (or a useMemo): the list merges the registry once per
+// array identity, so a new array on every render redraws every row.
+const RENDERERS: MessageRenderer[] = [{
+  id: 'bubbled-assistant',
+  roles: BUILTIN_ASSISTANT.roles,
+  match: m => resolveRenderer(m, defaultMessageRenderers) === BUILTIN_ASSISTANT,
+  render: (m, ctx) => BUILTIN_ASSISTANT.render(m, {
+    ...ctx,
+    wrapper: (children, isUser) => ctx.wrapper(
+      <div className="flex gap-2"><AgentAvatar /><div className="bubble">{children}</div></div>,
+      isUser,
+    ),
+  }),
+}]
+
+<ChatEmbed slotKey="coder-abc123" renderers={RENDERERS} />
+```
 
 ### Hiding parts
 
@@ -170,6 +259,13 @@ API-path check for each of these calls:
   polled every 1.5 s while a turn runs and every 10 s when idle.
 - `POST /api/chat/slots/{slot}/question/answer` — answer or decline a blocking card
   (`{ask_id, answers}` or `{ask_id, dismissed: true}`).
+- `POST /api/chat/slots/{slot}/question/steer` — answer a native mid-turn card
+  (`native: true`, a `card_id`, no `ask_id`) by steering the answer into the
+  slot's own running turn (`{card_id, message}`). Replies `{steered: true}` when
+  it landed, or `{unavailable: true}` when no turn is running so the embed hands
+  the answer back to the message box.
+- `POST /api/chat/slots/{slot}/question/dismiss` — retire a native card's
+  `needs_input` status without answering it (`{card_id}`).
 
 File attachments upload to `POST /api/upload/file`, which `/api/chat` does not
 cover: it is a separate, optional grant (see [Attachments](#attachments)).
@@ -199,10 +295,19 @@ into it, the typed answer is put back in the message box, unsent, with a notice.
 A question read that keeps failing for another reason (offline, a server error)
 shows a notice while the poll retries.
 
-The embed shows the blocking cards of the `ask_question` tool only. A kiro-cli
-native question raised mid-turn (`native: true`, no `ask_id`) needs its answer
-steered into the running turn, which the embed cannot do, so it shows only in the
-dashboard.
+The embed shows both the blocking cards of the `ask_question` tool and the
+kiro-cli native question raised mid-turn (`native: true`, a `card_id`, no
+`ask_id`). A blocking card is answered through `/question/answer`; a native card
+is answered by steering the chosen or typed answer into the slot's own running
+turn (`/question/steer`), or retired without answering (`/question/dismiss`).
+Both native routes need the same `permissions.sessionApproval` and reach only
+slots the app owns, exactly like the question read. The answer carries the app's
+own provenance, not the session human's, and the card is retired on delivery, so
+a second steer of the same `card_id` is a `404`. A native answer that is requeued
+(the turn ended as it arrived) drains as plain text, never a run command, so an
+answer like `/clear` is sent as the literal words. When no turn is running the
+steer replies `unavailable` and the typed answer is put back in the message box,
+unsent, rather than dropped.
 
 What the embed does not do today, one line each:
 
@@ -344,7 +449,8 @@ as usual.
 
 A file the agent sends with `file_send` appears in the transcript as the same
 card the main chat shows: a download card, or an inline player or image for
-audio, video and pictures. The card links to `/api/outbox/<filename>` as an
+audio, video and pictures. The card links to `/api/outbox/<filename>` (its
+Save adds `?download=1`, which the gateway answers as an attachment) as an
 ordinary same-origin URL, so the browser fetches it with the viewer's dashboard
 sign-in and the gateway's own download checks apply. It does not go through
 `useAppApi`, so the app needs no `allowedApiPaths` entry for it. A `file` row
@@ -693,7 +799,9 @@ Three rules the registry relies on:
 A failed approval decision, a refused tool-output copy and a failed MCP sign-in banner render an
 `ErrorNotice` with the "Ask the agent" hand-off, which navigates to the main chat. A host holding unsaved local state that the
 navigation would drop passes `handOff={false}` to `ChatMessageList`: those notices then render
-without the button, and renderers see `ctx.handOff === false`. `ChatEmbed` does this because its
+without the button, and renderers see `ctx.handOff === false`. The failed sign-in banner then
+names where to sign in again (Customize → Connections → MCP Servers) as plain text, not a link,
+so it still offers a next step without navigating away. `ChatEmbed` does this because its
 composer draft lives only in the embed; `ChatPane` does too, for its staged message quote. `ToolCallPill` takes the same switch as `askAgent`.
 Default is `true`, so a host with nothing to lose keeps the hand-off.
 
@@ -705,7 +813,7 @@ Default is `true`, so a host with nothing to lose keeps the hand-off.
 | `defaultMessageRenderers` | value | the built-in registry, in resolution order |
 | `mergeRenderers(extra)` | function | shape-matched defaults, then host entries, then the rest |
 | `resolveRenderer(message, renderers)` | function | first entry that claims the message |
-| `ToolCallPill` | component | the store-free tool row the default registry uses; expanded, it shows the persisted `meta.input` / `meta.output` in the main chat's Input/Output panel, and falls back to the row's `content` only when both are empty; with a payload, its Copy control copies input and output together whichever tab is showing, and says so in a visible "Copy input and output" label, while a fallback row keeps the icon-only Copy |
+| `ToolCallPill` | component | the store-free tool row the default registry uses; expanded, it shows the persisted `meta.input` / `meta.output` in the main chat's Input/Output panel, and falls back to the row's `content` only when both are empty; with a payload, its Copy control copies input and output together whichever tab is showing, and says so in a visible "Copy input and output" label, while a fallback row keeps the icon-only Copy; the panel's left rail takes its colour from `toolRailColor` (`utils/toolRailColor.ts`), the one store-free mapping the main chat's tool row also uses (rejected > auto-denied > done > awaiting approval > running, at a 70% `color-mix`), while each row derives its own status flags |
 | `GROUPED_ROLES` | value | frozen array of the roles grouped before per-row resolution (see the limitation above) |
 | `MessageRenderer` | type | `{ id, roles, match?, render }` |
 | `MessageRenderContext` | type | what `render` is handed |
@@ -791,6 +899,22 @@ WebSocket event types include `chat_chunk`, `chat_thinking`, `chat_status`,
 `subagent_done`. `src/kiro_crew/dashboard/ws_event_scope.py` owns the full set of
 emitted types and how each is scoped to an app; read it rather than this list
 when you need every type.
+
+An `approval_resolved` frame says a pending approval is no longer waiting. Its
+`data` carries:
+
+- `id`: the approval id. The id is the requester's and can recur, so it alone
+  does not name one request.
+- `approved`: `true` when the request was approved. `false` covers a
+  rejection and an expiry alike, so read `decision` before reporting a
+  rejection.
+- `slot`: the owning session, on an expiry of an approval that has one and on
+  a slot-level decision. A decided coordinator approval's frame carries no
+  `slot`, so match those by `id` and `instance`.
+- `instance`: present on a coordinator approval. It names the one request that
+  ended, so a card raised for a later request under the same id stays live.
+- `decision`: absent for an ordinary decision. `"expired"` means the wait timed
+  out and the request was denied.
 
 The app `slots` event (`mc:app:slots`) fires after the dashboard applies each
 `slots` or `slot_patch` frame. Its `detail` is `null`: the event says the slot
@@ -1109,6 +1233,85 @@ hook does not hand the object to a teardown whose startup never held it. Declare
 `on_shutdown` whenever you declare `on_startup`: anything you spawn outlives the
 startup call, and teardown is the only thing that stops it.
 
+### Owner gate (`ctx.require_owner`)
+
+Refuses a write to anyone but the dashboard owner, with the host's own refusal:
+
+```python
+async def save_item(request, ctx):
+    denied = await ctx.require_owner(request, "save_item")
+    if denied is not None:
+        return denied          # the host's 403 owner_only, or 401 for a stale session
+    ...
+```
+
+It returns `None` when the caller is the dashboard owner and the response to return
+otherwise. That response is the one the host's own owner-only routes send: a 403 with
+code `owner_only`, or a 401 when a pre-owner session is stale. A denial is audited
+with operation `<app>.<operation>`. The app half comes from the context, so a row
+cannot be attributed to another app. An `operation` that is not a short identifier
+(letters, digits, `_ . : -`, at most 64 characters) is recorded as `<app>.unnamed`;
+the request is still denied.
+
+The gate is strict: an app token is not the owner, so it is refused too. To keep an
+app token (which the token middleware already confines to your `permissions.api`)
+on its existing path, call the gate only for dashboard callers, which carry no app
+claim:
+
+```python
+if not request.get("app"):
+    denied = await ctx.require_owner(request, "save_item")
+```
+
+No permission gates it, because it only removes access. On a host without it, refuse
+the write (fail closed) rather than allow it:
+
+```python
+gate = getattr(ctx, "require_owner", None)
+if gate is None:
+    return web.json_response({"error": "owner authorization required", "code": "owner_only"}, status=403)
+```
+
+### Shared embedder (`ctx.embed`)
+
+The model the host's own memory embeds with, and the bounded pool its embedding work
+runs on. Use it so your stored vectors share the host's model and width, and so your
+app does not load a second copy of the model.
+
+```python
+def _index(store, text):            # runs on the embed pool, off the event loop
+    vector = ctx.embed.embed_sync(text)   # None: no model can serve; use keywords
+    store.save(text, vector, model=ctx.embed.model_id)
+
+async def add_item(request, ctx):
+    await ctx.embed.run(_index, store, text)
+```
+
+| Member | Returns |
+|---|---|
+| `available()` | `True` when the model is loaded, or can load on demand. May read model metadata, so call it off the loop. |
+| `model_id` | The vector space's model id, or `""` with no backend. Store it with each vector; a different value later means old vectors are not comparable. |
+| `embed_sync(text)` | A `list[float]`, or `None` when no model can serve or the embed failed. **Blocking**: call it only inside `run()` or another worker. Called on the event loop it returns `None`. |
+| `await run(func, *args, **kwargs)` | `func(*args, **kwargs)`, run on the host's bounded embed pool. |
+
+It never raises into your code: a missing embedding extra, a model that cannot load
+and a failing embed all read as `None`, and the first failure is logged once per
+process. It is always present, like `ctx.scrub`, because it adds no reach your
+in-gateway code lacks. On an older host, `getattr(ctx, "embed", None)` is `None`;
+fall back to `asyncio.to_thread` and keyword search.
+
+### App Kit seam level (`ctx.sdk_level`)
+
+An `int`, the App Kit seam level this host provides. Level 1 means the owner gate,
+the shared embedder, structural routes (see `backend.hooks.routes` in
+[manifest-reference.md](manifest-reference.md)) and the dashboard SDK additions
+listed under [App SDK Hooks](#app-sdk-hooks-dashboard-ui) are all present. Level 2
+adds `contributes.sessionKinds` (see [manifest-reference.md](manifest-reference.md))
+and the dashboard's `useSessionPane()`. Read it
+with `getattr(ctx, "sdk_level", 0)`. When it is lower than your app needs, call
+`ctx.health.mark_degraded(...)` with the consequence and keep serving what you can.
+The dashboard exports the same number as `APP_SDK_LEVEL`.
+
 ### Lessons
 
 | Method | Returns | Description |
@@ -1288,7 +1491,8 @@ Use these main-package helpers in Python app backends:
 | `proxy_secret()` | `str` | Read the injected `KIROCREW_PROXY_SECRET`, or an empty string |
 | `verify_proxy_request(header, *, method, target, body, secret=None, now=None)` | `bool` | Verify the body-bound HMAC and fixed ±60-second freshness window; fail closed on malformed input |
 | `verify_proxy_principal_claim(header, *, method, target, body, replay_cache, secret=None, now=None)` | `ProxyPrincipalClaim \| None` | Verify and consume one `X-KiroCrew-Principal` claim for an app that sets `backend.signedPrincipal`. Returns `None` for any malformed, stale, mismatched or replayed claim. See [Signed principal claim](#signed-principal-claim) |
-| `ProxyPrincipalReplayCache(*, max_entries=4096)` | cache | The replay cache the verifier needs. Create one per backend process |
+| `verify_proxy_request_v2(header, nonce, *, method, target, body, replay_cache, secret=None, now=None)` | `bool` | Verify and consume one `X-KiroCrew-Proxy-V2` signature and its `X-KiroCrew-Proxy-Nonce`. Refuses a nonce it has already accepted. See [Replay-proof v2 signature](#replay-proof-v2-signature) |
+| `ProxyPrincipalReplayCache(*, max_entries=4096)` | cache | The replay cache the verifiers need. Create one per backend process |
 
 ---
 
@@ -1588,6 +1792,123 @@ the value in the `X-KiroCrew-Proxy` header (constant-time), rejecting stale time
 > HMACs fails verification against any verifier that omits the body hash, so a
 > backend that implements the HMAC itself has to be updated in lockstep with the gateway.
 
+#### Replay-proof v2 signature
+
+`X-KiroCrew-Proxy` has no nonce. Anyone who sees one signed request can send the
+same bytes to the backend port again, and a v1 verifier accepts the copy until the
+60-second window closes. To close that gap, the gateway also sends two more headers
+on every proxied request, to every app, with no manifest change:
+
+```text
+X-KiroCrew-Proxy-Nonce: <32 lowercase hex characters, fresh per request>
+X-KiroCrew-Proxy-V2: <timestamp>:<hmac-sha256>
+```
+
+The v2 HMAC uses the app secret as the key, over:
+
+```text
+v2:<timestamp>:<nonce>:<method>:<raw-target>:<sha256(body)>
+```
+
+`<timestamp>`, `<raw-target>` and `<sha256(body)>` are the same values v1 signs.
+The `v2:` prefix keeps the two MACs apart, so neither header can stand in for the
+other. A backend that accepts a request only once per nonce refuses a replay.
+
+v1 still works. `X-KiroCrew-Proxy` keeps its name, its value and its signed string,
+and a backend that does not know the new headers ignores them. Moving to v2 is
+optional and adds replay protection. The gateway strips any copy of either new
+header that the caller sent, so a page cannot pick its own nonce.
+
+A Python backend that can import `kiro_crew` verifies v2 with the gateway's helper:
+
+```python
+from kiro_crew.apps.proxy_auth import (
+    ProxyPrincipalReplayCache,
+    raw_request_target,
+    verify_proxy_request_v2,
+)
+
+proxy_replays = ProxyPrincipalReplayCache()  # one per process, not per request
+
+body = await request.read()
+if not verify_proxy_request_v2(
+    request.headers.get('X-KiroCrew-Proxy-V2', ''),
+    request.headers.get('X-KiroCrew-Proxy-Nonce', ''),
+    method=request.method,
+    target=raw_request_target(request),
+    body=body,
+    replay_cache=proxy_replays,
+):
+    return Response(status=401)
+```
+
+The cache keeps each accepted nonce until its 60-second window closes. When it is
+full, it refuses new requests instead of evicting a live nonce, because an evicted
+nonce could be replayed. Each nonce stays in the cache for 60 seconds, so the
+default `max_entries=4096` holds about 68 requests a second. Above that rate the
+verifier refuses real traffic with 401. A busier backend sets `max_entries` to at
+least 60 times its peak requests per second.
+
+A Node.js backend has no SDK package to import. This dependency-free reference
+verifier does the same checks; copy it into the backend:
+
+```js
+import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
+
+const MAX_SKEW_SECONDS = 60;
+const NONCE_RE = /^[0-9a-f]{32}$/;
+const TIMESTAMP_RE = /^[0-9]{1,12}$/;
+
+// Create one verifier per backend process, so its nonce cache outlives each request.
+export function createProxyV2Verifier(secret, { maxEntries = 4096 } = {}) {
+  const seen = new Map(); // nonce -> expiry, in epoch seconds
+
+  // signature: the X-KiroCrew-Proxy-V2 header. nonce: X-KiroCrew-Proxy-Nonce.
+  // target: req.url, which is the raw request-target. body: the raw body as a Buffer.
+  return function verify({ method, target, body, signature, nonce, now = Date.now() / 1000 }) {
+    if (!secret || typeof signature !== 'string' || typeof nonce !== 'string') return false;
+    if (!NONCE_RE.test(nonce)) return false;
+    const sep = signature.indexOf(':');
+    if (sep < 0) return false;
+    const ts = signature.slice(0, sep);
+    const given = Buffer.from(signature.slice(sep + 1), 'utf8');
+    if (!TIMESTAMP_RE.test(ts) || Math.abs(now - Number(ts)) > MAX_SKEW_SECONDS) return false;
+
+    const bodyHash = createHash('sha256').update(body ?? Buffer.alloc(0)).digest('hex');
+    const expected = Buffer.from(
+      createHmac('sha256', secret)
+        .update(`v2:${ts}:${nonce}:${method}:${target}:${bodyHash}`)
+        .digest('hex'),
+      'utf8',
+    );
+    if (given.length !== expected.length || !timingSafeEqual(given, expected)) return false;
+
+    // Record the nonce last, so only a request that passed every check takes an entry.
+    for (const [key, expiry] of seen) if (expiry < now) seen.delete(key);
+    if (seen.has(nonce) || seen.size >= maxEntries) return false;
+    seen.set(nonce, Number(ts) + MAX_SKEW_SECONDS);
+    return true;
+  };
+}
+```
+
+Call it from the request handler after reading the whole body:
+
+```js
+const verifyProxy = createProxyV2Verifier(process.env.KIROCREW_PROXY_SECRET ?? '');
+
+if (!verifyProxy({
+  method: req.method,
+  target: req.url,
+  body: rawBody,
+  signature: req.headers['x-kirocrew-proxy-v2'],
+  nonce: req.headers['x-kirocrew-proxy-nonce'],
+})) {
+  res.writeHead(401).end();
+  return;
+}
+```
+
 #### Signed principal claim
 
 `X-KiroCrew-Proxy` proves that the gateway forwarded a request. It does not say who
@@ -1595,8 +1916,9 @@ the gateway authenticated. An app that needs to know sets
 [`backend.signedPrincipal: true`](manifest-reference.md) in its manifest. The gateway
 then adds `X-KiroCrew-Principal` to every request it proxies to that backend. An app
 without that exact opt-in receives no new header, and its `X-KiroCrew-Proxy` bytes
-do not change. The gateway strips any `X-KiroCrew-Proxy` or `X-KiroCrew-Principal`
-header the caller sent, so a backend only ever sees the gateway's own values.
+do not change. The gateway strips any `X-KiroCrew-Proxy`, `X-KiroCrew-Proxy-V2`,
+`X-KiroCrew-Proxy-Nonce` or `X-KiroCrew-Principal` header the caller sent, so a
+backend only ever sees the gateway's own values.
 
 The header value is the encoded claim, a period, and an HMAC:
 
@@ -1637,7 +1959,7 @@ The gateway assigns the first kind that matches:
 |---|---|---|
 | `agent-tool` | Internal authentication granted the call. MCP tools, agents, subagents and crons reach admitted gateway routes this way. | empty |
 | `app-token` | The caller authenticated with an app token. | empty |
-| `owner-session` | A dashboard session cookie authenticated the request, the request is not a `?token=` link exchange, and the caller is the dashboard owner. | the owner's user id |
+| `owner-session` | A dashboard session cookie authenticated the request, the request is not a `?token=` link exchange, and the caller is the dashboard owner. The owner of a personal Crew reaching it through the Kiro relay is this kind too. | the owner's user id |
 | `none` | Any other request, such as a `?token=` link exchange or an authenticated non-owner. | empty |
 
 `agent-tool` is checked first, so an internal caller never becomes `owner-session`,

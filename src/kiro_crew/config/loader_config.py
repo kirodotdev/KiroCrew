@@ -16,7 +16,10 @@ from pathlib import Path
 import kiro_crew.config.resolution as _resolution
 from kiro_crew import model_registry, model_scope, platform_compat
 from kiro_crew.agent_sdk.backends import (
+    ACP_BACKENDS_EFFORT_AT_LAUNCH,
     ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION,
+    effort_config_option_clear_value,
+    launch_effort_supported,
     resolve_cc_permission_mode,
 )
 from kiro_crew.agent_sdk.capabilities import MODEL_NAMESPACE_ACP, capabilities_for
@@ -68,13 +71,18 @@ from kiro_crew.config.loader_snapshots import (
     publish_config_timezone,
 )
 from kiro_crew.config.paths import config_package_dir, kiro_agents_dir
-from kiro_crew.config.resolution import _subtract_overlay
+from kiro_crew.config.resolution import (
+    _canonical_renamed_keys,
+    _restore_stored_renamed_spellings,
+    _subtract_overlay,
+)
 from kiro_crew.config.sections import (
     ACTIVATION_ALWAYS,
     ACTIVATION_MENTION,
     BACKGROUND_WORKER_AGENTS,
     DEFAULT_MODEL,
     AgentConfig,
+    BrowserConfig,
     ChannelConfig,
     ComputerUseConfig,
     CronHistoryConfig,
@@ -231,6 +239,14 @@ class KiroCrewConfig:
             "its default.",
         ),
     )
+    browser: BrowserConfig = field(
+        default_factory=BrowserConfig,
+        metadata=_meta(
+            "Browser",
+            "Which browser the agent drives and how its live view streams into the "
+            "chat. Settings -> Browser edits every key; nothing here is gated by it.",
+        ),
+    )
     decisions: DecisionsConfig = field(
         default_factory=DecisionsConfig,
         metadata=_meta(
@@ -365,6 +381,36 @@ class KiroCrewConfig:
                         "restart": True,
                     },
                 },
+                "batch_write_guard": {
+                    "type": "boolean",
+                    "default": False,
+                    "x-meta": {
+                        "label": "Batch write guard",
+                        "help": (
+                            "Off by default. When on, refuse a write-class tool call "
+                            "issued in the same parallel tool batch as a read-class "
+                            "call, so the model cannot write arguments that quote a "
+                            "read it has not seen returned yet. A discipline guard, not "
+                            "a security control: the security floor runs first and is "
+                            "unchanged."
+                        ),
+                    },
+                },
+                "batch_write_guard_commands": {
+                    "type": "array",
+                    "default": [],
+                    "x-meta": {
+                        "label": "Batch write guard commands",
+                        "help": (
+                            "Empty by default. Extra write-command prefixes (e.g. "
+                            '"myctl apply") that the batch write guard treats as '
+                            "write-class for tools only a local install knows. Matched "
+                            "on the command's program and subcommand words, never on "
+                            "argument text. Has no effect unless the batch write guard "
+                            "is on."
+                        ),
+                    },
+                },
             },
         ),
     )
@@ -492,8 +538,9 @@ class KiroCrewConfig:
         default="",
         metadata=_meta(
             "Timezone",
-            "IANA timezone name (e.g. 'America/Los_Angeles'). "
-            "Used to display cron schedules in local time.",
+            "IANA timezone name (e.g. 'America/Los_Angeles'), or 'local' to follow "
+            "this computer's time zone wherever it travels. The default zone for cron "
+            "jobs that name none and for the agent's sense of 'now'. Empty means 'local'.",
         ),
     )
     snapshot_dir: str = field(
@@ -696,6 +743,7 @@ class KiroCrewConfig:
             "heartbeat": asdict(self.heartbeat),
             "monitoring": asdict(self.monitoring),
             "decisions": asdict(self.decisions),
+            "browser": asdict(self.browser),
             "skills": asdict(self.skills),
             "session_summary": asdict(self.session_summary),
             "session_environments": asdict(self.session_environments),
@@ -844,7 +892,10 @@ class KiroCrewConfig:
         # A stored edition STT provider this snapshot degraded to ``off`` (it was
         # loaded before the edition registered it) is written back as stored.
         _restore_stored_stt_provider(d)
-        # Strip overlay-owned values so they don't leak into config.json
+        # Strip overlay-owned values so they don't leak into config.json. The
+        # subtraction itself runs under the write lock below, against the base
+        # read there, so a leaf config.json stores keeps its own value.
+        overlay_owned: dict | None = None
         local_path = config_local_path()
         if local_path.is_file():
             try:
@@ -869,11 +920,10 @@ class KiroCrewConfig:
                                 k: canonical[k] for k in rl_overlay if k in canonical
                             },
                         }
-                    d = _subtract_overlay(d, raw_local)
-            except (json.JSONDecodeError, OSError):
+                    # Renamed keys compare under the name save() emits.
+                    overlay_owned = _canonical_renamed_keys(raw_local)
+            except (json.JSONDecodeError, UnicodeDecodeError, OSError):
                 pass
-        # An equal overlay value must not erase a choice the base file owns.
-        _restore_stored_harness_fields(d)
 
         # Atomic + mode-preserving: a concurrent reader must never observe a
         # half-written config, and the write must not widen who can read a file
@@ -900,8 +950,16 @@ class KiroCrewConfig:
                     f"refusing to save over {p}: this snapshot was loaded while the "
                     "file did not parse, so it holds defaults, not the saved settings"
                 )
-            if p.exists():
-                read_config_for_update(p)
+            stored = read_config_for_update(p) if p.exists() else {}
+            if overlay_owned is not None:
+                # What config.json stores keeps its own value under an
+                # overlay-owned leaf, so dropping the overlay later still finds it.
+                d = _subtract_overlay(d, overlay_owned, stored)
+                # A renamed key config.json stores under an older spelling goes
+                # back under that spelling.
+                _restore_stored_renamed_spellings(d, stored, overlay_owned)
+                # An equal overlay value must not erase a choice the base file owns.
+                _restore_stored_harness_fields(d)
             write_config_atomically(p, stamp_config_meta(d))
         # Drop the validated-data cache so the next load() re-reads this write.
         # mtime-keying already detects the change; this makes it immediate even
@@ -936,7 +994,7 @@ class KiroCrewConfig:
                 model = bundled_data.get("model", "")
                 if model:
                     return model
-            except (json.JSONDecodeError, OSError):
+            except (json.JSONDecodeError, UnicodeDecodeError, OSError):
                 pass
         return DEFAULT_MODEL
 
@@ -1157,11 +1215,10 @@ class KiroCrewConfig:
             return ""
         # Stable sort: JSON rows first, filename order preserved within each group.
         rows.sort(key=lambda row: row[1].suffix.lower() != ".json")
-        for ad, af in rows:
-            # Skip stray non-object JSON a user may have dropped in the dir.
-            if isinstance(ad, dict) and (ad.get("name") == agent or af.stem == agent):
-                return ad.get("model") or ""
-        return ""
+        from kiro_crew.agent_spec_pins import pick_spec_row  # the pin chooses among claimants
+
+        picked = pick_spec_row(rows, agent)
+        return (picked.get("model") or "") if isinstance(picked, dict) else ""
 
     def load_credentials(self, *, propagate: bool = True) -> dict[str, str]:
         """Load credentials from ~/.kiro/crew/.env and environment variables.
@@ -1436,14 +1493,30 @@ class KiroCrewConfig:
             # kiro -- the member thread then runs as plain chat and the mount
             # step logs why.
             # circular import: members sits above config in the layering.
+            from kiro_crew.acp_backends import ACP_BACKEND_KAS
+            from kiro_crew.crewmate_harness import crewmate_backend_pin
             from kiro_crew.members import select_provider_backend
 
+            # A crewmate's own harness pin outranks the member route and fails
+            # closed before the gate (H17), but only when it selects the harness.
+            # An explicit override outranks it, including "" (Kiro CLI), so an
+            # unstartable lower-priority pin must not block that choice (H3).
             _backend = select_provider_backend(
                 session_key,
                 self.agent.member_acp_backend,
                 self.agent.acp_backend,
                 backend_override=backend_override,
+                crew_backend=(
+                    crewmate_backend_pin(self, session_key) if backend_override is None else None
+                ),
             )
+            # Enterprise (RFC D6): a session on KAS is refused here, before any process
+            # exists, when boot proved KAS cannot start on this host. KAS sessions only:
+            # the Kiro CLI path gains nothing (H13), and the gate above never raises (H3).
+            if _backend == ACP_BACKEND_KAS:
+                from kiro_crew.enterprise_boot import refuse_unstartable_kas
+
+                refuse_unstartable_kas()
             # Resolved BEFORE the model, and threaded into the resolution: the
             # model's namespace translation and its pin-scope check both have to
             # key on the backend this session actually gets, not on the
@@ -1469,6 +1542,14 @@ class KiroCrewConfig:
             # dashboard slot's effort, or a sub-agent's resolved "subagent"
             # effort) still wins over all of it.
             _eff = reasoning_effort_override or self.resolve_session_effort(agent, crew_agent)
+            # What a live clear of the slot's level falls back to; read only by a
+            # harness with a clear value, which may drop the level live only when
+            # nothing is inherited (``acp_model_effort._clear_effort_live``).
+            _inherited_effort = (
+                self.resolve_session_effort(agent, crew_agent)
+                if effort_config_option_clear_value(_backend) is not None
+                else ""
+            )
             # On a harness whose effort capability and vocabulary come from the
             # option it ADVERTISES, neither check below can answer here. This
             # factory runs before any session exists, the registry carries none of
@@ -1480,7 +1561,20 @@ class KiroCrewConfig:
             # every cold start, and the session then runs the adapter's own default
             # while the dashboard still shows the level the operator picked.
             _from_option = _backend in ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION
-            _registry_ok = is_valid_effort(_eff) and model_supports_effort(m)
+            # A launch-effort harness (Strands) takes the level for any model id it
+            # runs, and the registry knows none of them: a level its CLI takes is
+            # carried, pinned or not -- the same vocabulary a live change accepts.
+            _at_launch = _backend in ACP_BACKENDS_EFFORT_AT_LAUNCH
+            if _at_launch:
+                # Only a level picked for this session reaches the launch argv. An
+                # inherited default (agent.reasoning_effort, a crew or role effort)
+                # was set for other harnesses, and a project that cannot take a
+                # launch effort would refuse every start on it.
+                _eff = reasoning_effort_override or ""
+                _launch_ok = launch_effort_supported(_backend, _eff)
+            else:
+                _launch_ok = False
+            _registry_ok = _launch_ok or (is_valid_effort(_eff) and model_supports_effort(m))
             # With nothing pinned there is no model id to key the level under
             # yet: the backend picks the model and reports it on ``session/new``.
             # The level is carried unkeyed and the provider binds it to the
@@ -1489,7 +1583,7 @@ class KiroCrewConfig:
             _unbound_effort = ""
             if m and _eff and (_from_option or _registry_ok):
                 _eff_per_model[m] = _eff
-            elif not m and _eff and (_from_option or is_valid_effort(_eff)):
+            elif not m and _eff and (_from_option or _launch_ok or is_valid_effort(_eff)):
                 _unbound_effort = _eff
             elif _eff and is_valid_effort(_eff):
                 # Single-authority drop warning: a valid requested effort is
@@ -1532,6 +1626,7 @@ class KiroCrewConfig:
                 acp_backend=_backend,
                 effort_per_model=_eff_per_model,
                 unbound_effort=_unbound_effort,
+                inherited_effort=_inherited_effort,
                 tool_search=tool_search,
                 tool_search_min_pct=tool_search_min_pct,
                 tool_search_min_tokens=tool_search_min_tokens,

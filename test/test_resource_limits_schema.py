@@ -380,7 +380,7 @@ class TestSliceConsumer:
         ):
             mem, tasks = self._limits(raw)
             assert mem == sb._default_max_total_memory_mb()
-            assert tasks == sb._CGROUP_DEFAULT_MAX_TOTAL_TASKS
+            assert tasks == sb._default_max_total_tasks()
 
 
 class TestRlimitConsumer:

@@ -61,6 +61,7 @@ from kiro_crew.monitoring.models import (
     MonitorBudgets,
     MonitorOutcome,
     MonitorState,
+    monitor_frontend_contract,
     monitor_state_public_dict,
 )
 from kiro_crew.monitoring.registry import (
@@ -559,6 +560,28 @@ def _monitor_config(
     )
 
 
+async def api_monitor_contract(request: web.Request) -> web.Response:
+    """GET /api/monitor-contract — the monitor data contract, built at runtime.
+
+    The dashboard bundle ships a checked-in snapshot of this contract
+    (``website/src/monitoring/contract.json``) and treats a monitor whose kind is
+    absent from it as an unsupported, non-actionable record. An edition can
+    contribute its own pull-request-shaped kind at boot (``register_monitor_kind``),
+    and the backend probes it, so the snapshot's ``pullRequestMonitorKinds`` can
+    lag the kinds the gateway actually serves. This route returns the live
+    contract (``monitor_frontend_contract()``), and the dashboard prefers it over
+    the bundled copy, so a contributed kind shows its real state rather than
+    "blocked".
+
+    A read with no secret: it is the same vocabulary the bundle already carries,
+    carries no per-session or owner data, and is served under the browser's cookie
+    auth like the neighbouring ``GET /api/autonudge`` (deliberately NOT on
+    ``_STRICT_INTERNAL_API_PATHS``). An older gateway has no such route, so the
+    dashboard falls back to the bundled snapshot on 404.
+    """
+    return web.json_response(monitor_frontend_contract())
+
+
 async def api_autonudge_list(request: web.Request) -> web.Response:
     """GET /api/autonudge — list every loop, structured monitors included.
 
@@ -989,6 +1012,10 @@ async def api_autonudge_start(request: web.Request) -> web.Response:
         body = await request.json()
     except Exception:
         return web.json_response({"error": "invalid JSON"}, status=400)
+    from kiro_crew.dashboard.handlers._shared import body_not_object_error
+
+    if (not_object := body_not_object_error(body)) is not None:
+        return not_object
     # idle_secs/max_cycles/max_runtime_secs come straight from the request
     # body: body_int raises ValueError on "abc" and on float("inf") (1e309 is
     # legal JSON in aiohttp's parser) and TypeError on null/list, any of which
@@ -1114,6 +1141,10 @@ async def api_autonudge_update(request: web.Request) -> web.Response:
         body = await request.json()
     except Exception:
         return web.json_response({"error": "invalid JSON"}, status=400)
+    from kiro_crew.dashboard.handlers._shared import body_not_object_error
+
+    if (not_object := body_not_object_error(body)) is not None:
+        return not_object
     # The goal baseline the popover read when it opened (``goal_token``). Absent skips
     # the store's stale check; a present one is compared under the store's
     # lock, so a goal another writer saved meanwhile is refused instead of overwritten.

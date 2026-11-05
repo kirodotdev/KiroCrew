@@ -607,7 +607,7 @@ class TestAgentsSliceLimits:
         with patch("kiro_crew.config.loader._raw_config", return_value={}):
             mem, tasks = sb._slice_limits_from_config()
         assert mem == sb._default_max_total_memory_mb()
-        assert tasks == sb._CGROUP_DEFAULT_MAX_TOTAL_TASKS
+        assert tasks == sb._default_max_total_tasks()
         with patch(
             "kiro_crew.config.loader._raw_config",
             return_value={
@@ -619,7 +619,7 @@ class TestAgentsSliceLimits:
         ):
             mem, tasks = sb._slice_limits_from_config()
         assert mem == sb._default_max_total_memory_mb()
-        assert tasks == sb._CGROUP_DEFAULT_MAX_TOTAL_TASKS
+        assert tasks == sb._default_max_total_tasks()
         # Fractional values pass a naive `> 0` check but truncate to 0, which
         # would emit MemoryMax=0M and kill every agent scope — must fall back.
         with patch(
@@ -633,7 +633,7 @@ class TestAgentsSliceLimits:
         ):
             mem, tasks = sb._slice_limits_from_config()
         assert mem == sb._default_max_total_memory_mb()
-        assert tasks == sb._CGROUP_DEFAULT_MAX_TOTAL_TASKS
+        assert tasks == sb._default_max_total_tasks()
 
     @_POSIX_ONLY
     def test_default_total_memory_fraction_and_fallback(self):

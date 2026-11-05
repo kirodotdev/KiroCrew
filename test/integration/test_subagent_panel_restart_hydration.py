@@ -239,6 +239,9 @@ async def _subscribe_subagents_until(gw, *, until_done_id: str) -> dict[str, dic
     Returns the collected ``subagent_done`` frames keyed by run id.
     """
     done: dict[str, dict] = {}
+    # The dashboard-only end of the in-memory replay. It comes before the
+    # durable fold, which runs later on the socket's replay queue.
+    saw_replay_done = False
     async with aiohttp.ClientSession() as session:
         async with session.ws_connect(
             f"{gw.base_url}/api/ws", headers={"Cookie": gw._cookie}
@@ -263,6 +266,9 @@ async def _subscribe_subagents_until(gw, *, until_done_id: str) -> dict[str, dic
                 if message.type != aiohttp.WSMsgType.TEXT:
                     continue
                 event = json.loads(message.data)
+                if event.get("type") == "subagent_replay_done":
+                    saw_replay_done = True
+                    continue
                 items = (
                     event.get("data", {}).get("items", [])
                     if event.get("type") == "subagent_snapshot_batch"
@@ -275,6 +281,7 @@ async def _subscribe_subagents_until(gw, *, until_done_id: str) -> dict[str, dic
         f"owner WS closed before the beacon {until_done_id!r} replayed; "
         f"collected={sorted(done)}"
     )
+    assert saw_replay_done, "the owner WS never received subagent_replay_done"
     return done
 
 

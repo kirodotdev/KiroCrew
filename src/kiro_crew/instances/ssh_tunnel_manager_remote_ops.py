@@ -10,7 +10,8 @@ name, so the instance state, every patch of a method and every ``__new__`` build
 on the one class.
 
 
-Instance fields read: ``_registry``, ``_remote_update_verify_interval_secs``,
+Instance fields read: ``_registry``, ``_remote_update_idle_poll_secs``,
+``_remote_update_idle_wait_secs``, ``_remote_update_verify_interval_secs``,
 ``_remote_update_verify_secs``, ``_remote_updates``, ``_tunnels``.
 """
 
@@ -31,14 +32,19 @@ from kiro_crew.instances.diagnostics import (
 )
 from kiro_crew.instances.registry import CONNECTION_METHODS, Instance
 from kiro_crew.instances.remote_update import (
+    FAIL_IDLE_CHECK_FAILED,
+    FAIL_PEER_CANNOT_WAIT,
+    FAIL_STILL_BUSY,
     PHASE_RESTARTING,
     PHASE_VERIFYING,
     REMOTE_UPDATE_TIMEOUT_SECS,
+    RESTART_WHEN_IDLE_SUBCOMMAND,
     STATE_SUCCEEDED,
     STATE_UNCHANGED,
     STATE_UNVERIFIED,
     RemoteUpdateJob,
     clean_version,
+    read_gate_answer,
 )
 from kiro_crew.instances.ssh_tunnel_manager_transport import (
     _transport_method,
@@ -145,7 +151,7 @@ async def diagnose(self: SshTunnelManager, instance_id: str) -> dict | None:
     return diag
 
 
-async def restart_remote(self: SshTunnelManager, instance_id: str) -> dict:
+async def restart_remote(self: SshTunnelManager, instance_id: str, *, force: bool = False) -> dict:
     """Restart the remote Kiro Crew gateway over the instance's transport.
 
     Uses the remote ``kirocrew restart`` (itself systemd/launchd-aware),
@@ -155,18 +161,60 @@ async def restart_remote(self: SshTunnelManager, instance_id: str) -> dict:
     uninstalled worktree. Validates the transport params first. After a
     restart the remote dashboard port bounces, so the local tunnel's health
     probe detects the drop and self-heals (Stage 2) — no manual reconnect
-    needed. Returns ``{ok, message}``.
+    needed. Returns ``{ok, message}``, with ``code`` on a refusal.
+
+    Unless *force*, the remote runs ``restart --when-idle`` with no wait: one
+    check of its in-flight work, and a restart only if there is none. This
+    route answers synchronously, so a busy crew is refused ``busy`` with its
+    counts rather than waited on, and a crew too old to check is refused
+    ``peer_cannot_wait``. *force* runs the bare ``restart``.
     """
     target = await self._remote_command_target(instance_id, "restart")
     if isinstance(target, dict):
         return {"ok": False, "message": target["message"]}
     inst, params = target
-    rc, err = await self._run_remote_subcommand(inst, params, "restart")
+    if not force:
+        rc, err = await self._run_remote_subcommand(
+            inst, params, RESTART_WHEN_IDLE_SUBCOMMAND, stdout_tail=True
+        )
+        answer = read_gate_answer(rc, err)
+        if answer.outcome == "busy":
+            logger.info("Remote restart for %s refused: the crew is busy", instance_id)
+            return {
+                "ok": False,
+                "code": "busy",
+                "turns": answer.turns,
+                "background": answer.background,
+                "message": (
+                    f"{inst.name} is running {answer.turns} chat turn(s) and "
+                    f"{answer.background} background task(s); restart it when it is idle, "
+                    "or force the restart to stop that work"
+                ),
+            }
+        if answer.outcome == "unsupported":
+            return {
+                "ok": False,
+                "code": FAIL_PEER_CANNOT_WAIT,
+                "message": _cannot_wait_message(inst.name, "restart"),
+            }
+        if answer.outcome == "refused":
+            return {"ok": False, "code": FAIL_IDLE_CHECK_FAILED, "message": err}
+    else:
+        rc, err = await self._run_remote_subcommand(inst, params, "restart")
     if rc == 0:
         logger.info("Restarted remote gateway for %s", instance_id)
         return {"ok": True, "message": "remote gateway restart requested"}
     logger.warning("Remote restart for %s failed (rc=%s): %s", instance_id, rc, err)
     return {"ok": False, "message": err or f"restart exited {rc}"}
+
+
+def _cannot_wait_message(name: str, verb: str) -> str:
+    """The refusal for a crew whose build has no idle check: do *verb* there instead."""
+    return (
+        f"{name} runs a version that cannot report its in-flight work, so it was not "
+        f"restarted. {verb.capitalize()} it from its own dashboard, or force the restart "
+        "to stop whatever is running"
+    )
 
 
 async def _remote_command_target(
@@ -262,7 +310,9 @@ async def _run_remote_subcommand(
     )
 
 
-async def start_remote_update(self: SshTunnelManager, instance_id: str) -> dict:
+async def start_remote_update(
+    self: SshTunnelManager, instance_id: str, *, force: bool = False
+) -> dict:
     """Start the explicit "Update remote" job, or say why it cannot start.
 
     Refused exactly like :meth:`restart_remote` (unknown, invalid transport,
@@ -271,15 +321,21 @@ async def start_remote_update(self: SshTunnelManager, instance_id: str) -> dict:
     refused ``already_running`` rather than queued. Otherwise the job runs
     in the background (:meth:`_update_then_restart`) and this returns
     ``{ok: True, job}`` at once. Returns ``{ok: False, code, message}`` on
-    a refusal.
+    a refusal. *force* is the "Restart now" a job that stopped short of its
+    restart offers: it skips the update that job already installed and
+    restarts the crew without waiting for its in-flight work.
     """
     target = await self._remote_command_target(instance_id, "update")
     if isinstance(target, dict):
         return {"ok": False, **target}
     inst, params = target
+
     job = self._remote_updates.start(
         instance_id, lambda j: self._update_then_restart(j, inst, params)
     )
+    if job is not None:
+        # Set before the body's first step runs: the task starts on a later turn.
+        job.force = force
     if job is None:
         return {
             "ok": False,
@@ -293,7 +349,10 @@ async def start_remote_update(self: SshTunnelManager, instance_id: str) -> dict:
 async def _update_then_restart(
     self: SshTunnelManager, job: RemoteUpdateJob, inst: Instance, params: _TransportParams
 ) -> None:
-    """The job body: ``kirocrew update``, ``kirocrew restart``, then a version check.
+    """The job body: ``kirocrew update``, a restart once idle, then a version check.
+
+    The restart waits for the crew's in-flight work (:meth:`_restart_when_idle`).
+    A job started with ``force`` skips the update and runs the bare ``restart``.
 
     ``update`` gets the long :data:`REMOTE_UPDATE_TIMEOUT_SECS` budget (a
     wheel download plus install) and a redacted stdout tail on failure,
@@ -312,22 +371,28 @@ async def _update_then_restart(
     """
     iid = inst.id
     job.version_before = await self._peer_version(iid)
-    rc, err = await self._run_remote_subcommand(
-        inst,
-        params,
-        "update",
-        timeout_secs=REMOTE_UPDATE_TIMEOUT_SECS,
-        stdout_tail=True,
-    )
-    if rc != 0:
-        logger.warning("Remote update for %s failed (rc=%s): %s", iid, rc, err)
-        job.fail(err or f"update exited {rc}")
-        return
+    # "Restart now" (``force``) follows a job that already installed the update
+    # and stopped short of its restart, so it restarts without updating again.
+    if not job.force:
+        rc, err = await self._run_remote_subcommand(
+            inst,
+            params,
+            "update",
+            timeout_secs=REMOTE_UPDATE_TIMEOUT_SECS,
+            stdout_tail=True,
+        )
+        if rc != 0:
+            logger.warning("Remote update for %s failed (rc=%s): %s", iid, rc, err)
+            job.fail(err or f"update exited {rc}")
+            return
     job.advance(PHASE_RESTARTING)
-    rc, err = await self._run_remote_subcommand(inst, params, "restart")
-    if rc != 0:
-        logger.warning("Remote restart after update for %s failed (rc=%s): %s", iid, rc, err)
-        job.fail(err or f"restart exited {rc}")
+    if job.force:
+        rc, err = await self._run_remote_subcommand(inst, params, "restart")
+        if rc != 0:
+            logger.warning("Remote restart after update for %s failed (rc=%s): %s", iid, rc, err)
+            job.fail(err or f"restart exited {rc}")
+            return
+    elif not await self._restart_when_idle(job, inst, params):
         return
     job.advance(PHASE_VERIFYING)
     after = await self._await_peer_version_change(iid, job.version_before)
@@ -341,6 +406,59 @@ async def _update_then_restart(
         "Remote update for %s finished: %s (%s -> %s)", iid, outcome, job.version_before, after
     )
     job.finish(outcome, version_after=after)
+
+
+async def _restart_when_idle(
+    self: SshTunnelManager, job: RemoteUpdateJob, inst: Instance, params: _TransportParams
+) -> bool:
+    """Restart the crew once it reports no in-flight work; ``False`` if it did not.
+
+    Each ask is one remote ``restart --when-idle --max-wait 0``: the crew checks
+    its own turns, subagents and workflows, and restarts only when there are
+    none. While it is busy the job shows ``waiting_for_idle`` with the counts
+    and asks again every ``_remote_update_idle_poll_secs``, for up to
+    ``_remote_update_idle_wait_secs``; then it fails ``still_busy``. A crew
+    whose build has no idle check fails ``peer_cannot_wait``. Either is
+    retried with ``force``, which restarts at once.
+    """
+    iid = inst.id
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + self._remote_update_idle_wait_secs
+    while True:
+        # With the stdout tail: the answer's marker is the CLI's last stdout line.
+        rc, err = await self._run_remote_subcommand(
+            inst, params, RESTART_WHEN_IDLE_SUBCOMMAND, stdout_tail=True
+        )
+        answer = read_gate_answer(rc, err)
+        if answer.outcome == "restarted":
+            job.advance(PHASE_RESTARTING)
+            return True
+        if answer.outcome == "unsupported":
+            logger.info("Remote update for %s: the crew cannot wait for its work", iid)
+            job.fail(_cannot_wait_message(inst.name, "update"), code=FAIL_PEER_CANNOT_WAIT)
+            return False
+        if answer.outcome == "refused":
+            # The crew could not tell whether it is idle, so it restarted
+            # nothing; only a forced restart gets past that.
+            logger.info("Remote update for %s: the crew could not check its work", iid)
+            job.advance(PHASE_RESTARTING)
+            job.fail(err, code=FAIL_IDLE_CHECK_FAILED)
+            return False
+        if answer.outcome == "failed":
+            logger.warning("Remote restart after update for %s failed (rc=%s): %s", iid, rc, err)
+            job.advance(PHASE_RESTARTING)
+            job.fail(err or f"restart exited {rc}")
+            return False
+        job.wait_for_idle(answer.turns, answer.background)
+        if loop.time() >= deadline:
+            logger.info("Remote update for %s: still busy when the wait ran out", iid)
+            job.fail(
+                f"{inst.name} was still running {answer.turns} chat turn(s) and "
+                f"{answer.background} background task(s), so it was not restarted",
+                code=FAIL_STILL_BUSY,
+            )
+            return False
+        await asyncio.sleep(self._remote_update_idle_poll_secs)
 
 
 async def _peer_version(self: SshTunnelManager, instance_id: str) -> str:

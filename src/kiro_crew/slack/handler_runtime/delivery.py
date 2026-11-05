@@ -347,71 +347,39 @@ async def _deliver_answer(turn: _SlackTurn) -> None:
             return
 
         # ── Answer delivery, then exactly one verdict ──────────────────────────
-        # THE turn invariant, in one place. Read it before touching accounting:
+        # The turn invariant. Read it before touching accounting:
         #
-        #   answer-reached = the reader has the answer. The evidence differs by
-        #     path, on purpose:
-        #       * Streaming: the answer is delivered incrementally as it arrives,
-        #         and a refused append is recoverable delivery-debt (a designed
-        #         follow-up), not a turn failure -- so a stream that was used is
-        #         answer-reached.
-        #       * No-stream: the answer is delivered ONLY by the final send, so
-        #         answer-reached requires that send to RETURN (not raise). A
-        #         truthy placeholder handle is not evidence -- the send itself is.
-        #       * No answer text to send (a tool-only turn): nothing to deliver,
-        #         answer-reached by definition.
+        #   answer-reached = the reader has the answer:
+        #       * Streaming: a stream with at least one confirmed real-text
+        #         append; a later refused append is recoverable delivery-debt.
+        #       * No-stream: the final send RETURNED (not raised).
+        #       * No answer text (tool-only turn): reached by definition.
         #
-        #   send classification (explicit, not implied by which try block a call
-        #     sits in):
-        #       answer-carrying -> stream appends; the no-stream fallback send
-        #         (``_safe_final_update`` / ``post_message``); and the timing
-        #         footer WHEN it carries an [OPTIONS] control, because the trailer
-        #         was stripped from the answer and the choices ride only in the
-        #         footer.
-        #       decoration -> the ``stop_stream`` seal (text is already on screen),
-        #         the redaction overwrite on an already-delivered stream, thinking
-        #         posts, the credential notice, and a footer with no options.
+        #   answer-carrying sends: stream appends, the no-stream fallback send
+        #     (``_safe_final_update`` / ``post_message``), and the timing footer
+        #     WHEN it carries [OPTIONS], whose choices ride only there.
+        #   decoration sends: the ``stop_stream`` seal, the redaction overwrite of
+        #     a delivered stream, thinking posts, the credential notice, and a
+        #     footer with no options.
         #
-        #   verdict -> exactly one per turn, on every exit including exceptions and
-        #     cancellation: a failed answer-carrying send books a failure, a
-        #     reached answer books a success, a failed decoration send books
-        #     nothing and logs. ``_verdict_booked`` (defined above, shared with the
-        #     review path) guarantees the "exactly one" so no path double-books and
-        #     none books zero.
+        #   verdict: exactly one per turn, on every exit including cancellation.
+        #     A failed answer-carrying send books a failure, a reached answer a
+        #     success, a failed decoration nothing. ``_verdict_booked`` enforces it.
         #
-        # A ``clean_text`` of the ``_NO_RESPONSE`` placeholder is NOT answer text
-        # to deliver: a reasoning-only / tool-only turn renders empty and picks up
-        # the ``_No response._`` sentinel upstream (4429), so treating it as real
-        # answer text would demand a confirmed stream append that legitimately
-        # never happens, and the wholly-refused-stream predicate below would book
-        # such an ordinary turn a FAILURE — driving the consecutive-failure breaker
-        # toward a session-resetting trip. There is nothing to deliver, so the
-        # (placeholder) answer reaches trivially.
+        # The ``_NO_RESPONSE`` placeholder is not answer text: a reasoning-only
+        # turn has no append to confirm, and counting it would book a failure and
+        # push the consecutive-failure breaker toward a session reset.
         _answer_text_to_send = bool(clean_text) and clean_text != _NO_RESPONSE
         _answer_reached = not _answer_text_to_send
 
         try:
             if answer.use_slack_stream and answer.stream_ts:
                 await answer.finish(_untrimmed)
-                # On the streaming path the answer is delivered incrementally as
-                # it arrives, and a refused append on a stream that DID land text
-                # is recoverable delivery-debt (a designed follow-up), NOT a turn
-                # failure: the model produced a complete answer and the drop is
-                # transient. So a stream that delivered at least one real-text
-                # append counts as answer-reached. But a stream on which EVERY
-                # append was refused (a Slack outage for the whole turn) delivered
-                # nothing to the reader, and booking that as a success would count
-                # an answer that never arrived. ``answer.delivered``
-                # rises only on a confirmed real-text append, so it separates the
-                # two: used stream -> reached, wholly-refused stream -> failure.
-                # A turn with no answer text to send (``_answer_text_to_send``
-                # False: empty body or the ``_NO_RESPONSE`` placeholder) opened the
-                # stream for reasoning/tools but has nothing to deliver, so no
-                # append lands and ``answer.delivered`` is legitimately False;
-                # clobbering ``_answer_reached`` to False there would book an
-                # ordinary reasoning/tool-only turn a failure. Only apply the
-                # wholly-refused-stream predicate when there WAS answer text.
-                # Read after the seal: it sends the last held run of text.
+                # ``answer.delivered`` rises only on a confirmed real-text append,
+                # so a stream whose every append was refused (a Slack outage) is a
+                # failure. Applied only when there was answer text, since a
+                # reasoning-only stream lands no append. Read after the seal,
+                # which sends the last held run of text.
                 await answer.seal(
                     clean_text, redacted=bool(_render_redacted or exfil_warnings or cred_warnings)
                 )
@@ -454,33 +422,18 @@ async def _deliver_answer(turn: _SlackTurn) -> None:
             turn.release_permit()
             return
 
-        # Exactly one verdict, from the predicate: a reached answer on a clean
-        # completion is a success; a clean completion whose answer did NOT reach
-        # the reader (every append refused, no fallback) is a failure. A turn that
-        # already booked a failure in ``_run_turn``'s except blocks (a model-level
-        # error) is left as-is by the idempotent guard.
+        # Exactly one verdict: a reached answer on a clean completion is a
+        # success, an unreached one a failure. A failure ``_run_turn`` already
+        # booked stays (the guard is idempotent).
         #
-        # OPTIONS exception: when the reply carries an [OPTIONS] control the
-        # choices were stripped from the answer body and ride ONLY in the footer,
-        # so that footer (or its fallback) is itself answer-carrying. For such a
-        # turn the verdict and the permit release are DEFERRED to the footer site
-        # below, which books success only once one of the two OPTIONS deliveries
-        # returns — and books a failure if both fail. The permit stays held across
-        # the intervening decorations (fast, best-effort) so the deferred verdict
-        # is still written under it.
-        # Pin the record for the naming turn while the permit is still held. Every
-        # release below is followed by Slack round-trips before the auto-title block,
-        # and a queued turn that takes the released permit can delete this key's
-        # record and re-mint it in that span. A pin read down there reads the
-        # REPLACEMENT, the guard matches it, and the title generated from this turn
-        # names a conversation it never ran in. While the permit is held no other
-        # turn for this key runs, so the identity read here is the record this turn
-        # is about. The same cheap ``is_titled`` peek the block below uses gates it,
-        # so an already-named conversation pays no thread hop.
+        # OPTIONS exception: the choices ride ONLY in the footer, so the verdict
+        # and permit release are DEFERRED to the footer site, which books success
+        # once either OPTIONS delivery returns and failure if both fail.
         #
-        # A key whose record has not landed yet pins ABSENT here and is re-pinned
-        # below once this turn's own row is written: with no record there is nothing
-        # a replacement can be mistaken for, and the first exchange stays nameable.
+        # Pin the record for auto-title while the permit is held: once released, a
+        # queued turn can delete and re-mint this key's record, and a later pin
+        # would name the replacement after this turn. A key with no record yet
+        # pins ABSENT and is re-pinned below after this turn's row is written.
         if (
             not turn._had_error
             and not _is_slack_restricted(session_key)
@@ -498,23 +451,11 @@ async def _deliver_answer(turn: _SlackTurn) -> None:
             # below touch no verdict state on this path.
             turn.release_permit()
     finally:
-        # F2/F1: a cancellation (BaseException, uncaught by ``except Exception``)
-        # raised AFTER the answer reached the reader — at the first
-        # ``await asyncio.sleep(0)`` on a stream that already delivered, or inside
-        # the best-effort ``stop_stream`` await — but before the verdict step,
-        # propagates straight here leaving the turn with no verdict booked though
-        # delivery succeeded. Book the decided success so that window is not a
-        # verdict hole (a missing success-reset that leaves the consecutive-
-        # failure counter stale). The delivered signal is ``_answer_reached OR
-        # answer.delivered``: ``_answer_reached`` is recomputed only at the
-        # delivery step (past ``sleep(0)``), but ``answer.delivered`` rises at the
-        # first confirmed real-text append — before that first await — so it makes
-        # a fully-streamed turn cancelled at the ``sleep(0)`` yield book its
-        # success too, closing the whole cancellation-at-any-await class rather
-        # than one await at a time. Idempotent via ``_verdict_booked``; gated on
-        # ``not _options_present`` because on an OPTIONS turn the choices ride only
-        # in the footer whose verdict is owned by the footer site, so a
-        # cancellation before the footer delivers must NOT book success here.
+        # A cancellation after the answer reached the reader but before the
+        # verdict lands here with none booked, leaving the failure counter stale.
+        # ``answer.delivered`` rises at the first confirmed append, before any
+        # await, so it covers a cancel at any later await. Not on an OPTIONS
+        # turn: the footer site owns that verdict.
         if (
             (_answer_reached or answer.delivered)
             and not turn._verdict_booked
@@ -733,18 +674,10 @@ async def _deliver_answer(turn: _SlackTurn) -> None:
             except Exception:
                 logger.debug("Failed to record OPTIONS control", exc_info=True)
 
-            # The conversation can move on while post_blocks is in flight -- a queued
-            # message can acquire the permit this turn already released and run a whole
-            # turn underneath us. The control we just posted would then be asking a
-            # question nobody is on any more.
-            #
-            # Judged by the SAME predicate the click paths use, against the token that
-            # went out on the control. That is the whole point of minting it: the
-            # question "has this conversation moved past this control" has one answer,
-            # computed one way, whether it is asked here or when a click arrives.
-            #
-            # Cosmetic. A click on a superseded control is refused on its own terms, so
-            # failing to strike it through leaves the thread untidy, not unsafe.
+            # A queued turn can take the released permit and run while post_blocks
+            # is in flight, leaving the new control asking a stale question. Judged
+            # by the same predicate the click paths use. Cosmetic: a click on a
+            # superseded control is refused anyway.
             _superseded = _options_token is not None and await options_control_is_stale(
                 cast("DashboardState | None", get_dashboard_state()),
                 _options_token,
@@ -798,27 +731,14 @@ async def _deliver_answer(turn: _SlackTurn) -> None:
         # message retries. A message arriving between claim and unclaim is
         # intentionally skipped (no duplicate).
         if not turn._had_error and not _skip_writes and not auto_title.is_titled(session_key):
-            # The ``is_titled`` peek above is a cheap synchronous membership test on
-            # the same tracker ``try_claim`` checks below: once a key is claimed or
-            # titled the claim cannot be taken again, so without the peek the pin's
-            # thread hop would be paid and then discarded on every later message of
-            # every already-named conversation.
+            # The ``is_titled`` peek skips the pin's thread hop for an already-named
+            # conversation. Pin BEFORE claiming: the pin awaits a thread, and a
+            # ``!stop`` there would strand a process-wide claim until restart. The
+            # pin still precedes ``create_task`` (see ``pin_record``).
             #
-            # Pin BEFORE claiming, and both before the task is scheduled. The pin
-            # read suspends on a thread, so claiming first would leave the claim
-            # held across that await with nothing scheduled yet to release it: a
-            # cancellation there (``!stop``) would strand it, and the claim is
-            # process-wide, so this key could not be auto-titled again until the
-            # gateway restarts. The pin still precedes ``create_task``, which is
-            # what closes the scheduling-tick window -- see ``pin_record``.
-            #
-            # The pin itself is the one taken under the permit, well above here:
-            # reading it at this point would sit after the release and after the
-            # Slack round-trips in between, which is the window a replacement
-            # record slips through. ABSENT is the one state worth re-reading, and
-            # only because a key with no record has no replacement to confuse:
-            # this turn's own row has landed by now, so the re-read is what makes a
-            # brand-new conversation nameable from its first exchange.
+            # Use the pin taken under the permit; only ABSENT is re-read, because
+            # this turn's own row has landed by now and a brand-new conversation
+            # becomes nameable from its first exchange.
             _title_pin = _title_pin_held
             if _title_pin is None or _title_pin.state == auto_title.RECORD_ABSENT:
                 _title_pin = await auto_title.pin_record(conversation_log, session_key)

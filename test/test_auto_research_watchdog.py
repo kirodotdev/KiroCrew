@@ -9,7 +9,6 @@ import asyncio
 import json
 import logging
 import threading
-import time
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -23,8 +22,9 @@ from kiro_crew.apps.builtins.auto_research.handlers import (
     get_campaign,
     update_campaign_status,
 )
+from kiro_crew.testing.clock import ManualClock
 from kiro_crew.testing.fixtures import one_pool_thread  # noqa: F401 (fixture)
-from kiro_crew.testing.wait import async_wait_until, await_until, default_timeout
+from kiro_crew.testing.wait import async_wait_until, await_until, default_timeout, finished
 
 # --- Watchdog unresponsive grace ---
 
@@ -232,20 +232,27 @@ class TestWatchdogStopTombstone:
         task = asyncio.create_task(
             h._settle_campaign_from_watchdog(cid, [], {}, {}, observed_started_at=1.0)
         )
+        pending_at_removal: list[bool] = []
+        real_remove = svc.remove
+
+        async def _remove(loop_id: str) -> None:
+            # The removal starts after the release, which follows the cancel, so the
+            # cancel has been delivered to the settlement task by the time it runs.
+            pending_at_removal.append(not task.done())
+            await real_remove(loop_id)
+
+        monkeypatch.setattr(svc, "remove", _remove)
         await async_wait_until(
             status_write_started.is_set,
             describe=lambda: "the terminal status write never started",
         )
 
         task.cancel()
-        # flake-ok: one-turn yield barrier before a negative assert, pre-existing shape, moved verbatim; tracked for a de-flake pass
-        await asyncio.sleep(0)
-        assert not task.done()
         release_status_write.set()
         with pytest.raises(asyncio.CancelledError):
-            # flake-ok: unbounded await of a task this test just released, pre-existing shape, moved verbatim; tracked for a de-flake pass
-            await task
+            await await_until(task, what="the cancelled settlement finishing")
 
+        assert pending_at_removal == [True]
         assert svc.get_by_slot(f"research-{cid}") is None
         assert loop.id not in svc._timers
         svc.stop()
@@ -306,8 +313,7 @@ class TestWatchdogStopTombstone:
         )
         assert replacement.id != old_loop.id
         release_status_write.set()
-        # flake-ok: unbounded await of a task this test just released, pre-existing shape, moved verbatim; tracked for a de-flake pass
-        await settlement
+        await await_until(settlement, what="the terminal settlement")
 
         assert svc.get_by_slot(slot_key) is replacement
         svc.stop()
@@ -674,8 +680,7 @@ class TestWatchdogStopTombstone:
         slot = SimpleNamespace(_trust=True, running=False)
         state = SimpleNamespace(_slots={f"research-{cid}": slot})
 
-        # flake-ok: unbounded await of the watchdog loop the patched sleep ends, pre-existing shape, moved verbatim; tracked for a de-flake pass
-        await h._watchdog_loop({"state": state})
+        await finished(h._watchdog_loop({"state": state}), "the watchdog loop")
 
         assert get_campaign(cid)["status"] == CampaignStatus.RUNNING
         svc.update.assert_not_awaited()
@@ -696,11 +701,14 @@ class TestWatchdogStopTombstone:
         )
         cid = campaign["id"]
         update_campaign_status(cid, CampaignStatus.RUNNING)
+        # The watchdog reads the clock installed on its module; the run started one
+        # second past the trust TTL on that clock.
+        clock = ManualClock()
+        clock.install(monkeypatch, h.watchdog)
         db = h._get_db()
         db.execute(
             "UPDATE campaigns SET started_at=? WHERE id=?",
-            # flake-ok: wall-clock backdate one second past the trust TTL, pre-existing shape, moved verbatim; tracked for a de-flake pass
-            (time.time() - h._TRUST_TTL_SECS - 1, cid),
+            (clock.time() - h._TRUST_TTL_SECS - 1, cid),
         )
         db.commit()
         db.close()
@@ -765,8 +773,7 @@ class TestWatchdogStopTombstone:
         monkeypatch.setattr(h, "_list_cycle_files", _list_cycle_files_off_loop)
         state = SimpleNamespace(_slots={f"research-{cid}": slot})
 
-        # flake-ok: unbounded await of the watchdog loop the patched sleep ends, pre-existing shape, moved verbatim; tracked for a de-flake pass
-        await h._watchdog_loop({"state": state})
+        await finished(h._watchdog_loop({"state": state}), "the watchdog loop")
 
         settled = get_campaign(cid)
         assert settled["status"] == CampaignStatus.STOPPED

@@ -38,6 +38,7 @@ import { threadLiveStore } from '../state/threadLiveStore'
 import { _resetSlotReadRelayForTest } from '../lib/slotReadRelay'
 import { holdStreamingFlushes, releaseStreamingFlushes } from '../lib/streamHold'
 import type { ChatSlot } from '../types'
+import { setViewedThreadSlot, _resetViewedThreadForTests } from '../lib/viewedThread'
 
 vi.mock('../api/client', () => ({
   api: {
@@ -324,6 +325,7 @@ const FRAME_CASES: Array<[string, Frame[], Frame[]]> = [
   ['pins_changed', [], [{ type: 'pins_changed', data: { slot_key: ACTIVE } }, { type: 'pins_changed', data: {} }]],
   ['artifact_update', [], [{ type: 'artifact_update', data: { slug: 'doc' } }]],
   ['artifact_update deleted', [], [{ type: 'artifact_update', data: { slug: 'doc', deleted: true } }, { type: 'artifact_update', data: {} }]],
+  ['resume_all_done', [], [{ type: 'resume_all_done', data: { run_id: 'run-1', total: 1, resumed: [ACTIVE], skipped: [], failed: [] } }]],
   ['notification', [], [{ type: 'notification', data: { kind: 'info', title: 'Hello', ts: '1790000001' } }]],
   ['notification silenced and passive', [], [
     { type: 'notification', data: { kind: 'info', title: 'Muted', ts: '1790000002', silenced: true } },
@@ -547,6 +549,33 @@ describe('useWebSocket frame routing trace', () => {
     expect(got).toEqual(EXPECTED_FRAMES[name])
   })
 
+  it('chat_done in the active slot refreshes Explore once it has been read (session-keyed)', async () => {
+    const { ws } = await mountOpen()
+    // What useMilestones caches: the key carries the session.
+    qc.setQueryData(['milestones', `dashboard:${ACTIVE}`], { enabled: true })
+    act(() => { ws.frame({ type: 'chat_chunk', data: { slot: ACTIVE, seq: 1, content: 'answer' } }) })
+    act(() => { drainFrames() })
+    trace = []
+    act(() => { ws.frame({ type: 'chat_done', data: { slot: ACTIVE, ts: TS } }) })
+    act(() => { drainFrames() })
+    expect(trace).toContain('query invalidateQueries ["milestones"]')
+  })
+
+  it('refreshes Explore when the thread a non-chat page shows ends a turn (the Mate DM on Members)', async () => {
+    const { ws } = await mountOpen()
+    qc.setQueryData(['milestones', `dashboard:${ACTIVE}`], { enabled: true })
+    // Members registers the thread it renders; the chat's activeSlot is another one.
+    setViewedThreadSlot(BACKGROUND)
+    try {
+      trace = []
+      act(() => { ws.frame({ type: 'chat_done', data: { slot: BACKGROUND, ts: TS } }) })
+      act(() => { drainFrames() })
+      expect(trace).toContain('query invalidateQueries ["milestones"]')
+    } finally {
+      _resetViewedThreadForTests()
+    }
+  })
+
   it('swallows a malformed frame and keeps routing the next one', async () => {
     const { ws } = await mountOpen()
     act(() => {
@@ -689,19 +718,20 @@ describe('useWebSocket lifecycle trace', () => {
   it('uses a secure socket on https and keeps the socket across a re-render', async () => {
     const original = window.location
     const { ws, view } = await mountOpen()
-    expect(ws.url).toMatch(/^ws:\/\/[^/]+\/api\/ws\?caps=slot_patch,fold_delta\.1,fold_delta\.2$/)
+    expect(ws.url).toMatch(/^ws:\/\/[^/]+\/api\/ws\?caps=slot_patch,slot_diff\.1,fold_delta\.1,fold_delta\.2$/)
     // A re-render keeps the socket: no owner identity changes, so neither
     // the mount effect nor the connect it runs fires again.
     act(() => { view.rerender() })
     expect(WS_INSTANCES).toHaveLength(1)
     view.unmount()
-    vi.stubGlobal('location', { ...original, protocol: 'https:', host: 'crew.test' })
+    // A spread copies no Location getters, so `pathname` is carried over by hand.
+    vi.stubGlobal('location', { ...original, pathname: original.pathname, protocol: 'https:', host: 'crew.test' })
     WS_INSTANCES.length = 0
     renderHook(() => useWebSocket(), {
       wrapper: ({ children }) => createElement(Provider, { store: testStore },
         createElement(QueryClientProvider, { client: qc }, children)),
     })
-    expect(WS_INSTANCES[0].url).toBe('wss://crew.test/api/ws?caps=slot_patch,fold_delta.1,fold_delta.2')
+    expect(WS_INSTANCES[0].url).toBe('wss://crew.test/api/ws?caps=slot_patch,slot_diff.1,fold_delta.1,fold_delta.2')
   })
 
   it('unmount', async () => {
@@ -1066,6 +1096,9 @@ const EXPECTED_FRAMES: Record<string, string[]> = {
     'query invalidateQueries ["artifacts"]',
     'query invalidateQueries ["command-center","artifacts"]',
   ],
+  "resume_all_done": [
+    'event kirocrew:resume-all-done {"run_id":"run-1","total":1,"resumed":["slot-a"],"skipped":[],"failed":[]}',
+  ],
   "notification": [
     'action notifications/addNotification {"kind":"info","title":"Hello","ts":"1790000001"}',
     'event mc-notification {"kind":"info"}',
@@ -1088,48 +1121,48 @@ const EXPECTED_FRAMES: Record<string, string[]> = {
   "approval in the owning slot": [
     'query invalidateQueries ["global-approvals"]',
     'event mc-notification {"kind":"approval"}',
-    "action notifications/addNotification {\"kind\":\"approval\",\"title\":\"Tool approval: shell\",\"body\":\"**Source:** agent\\n\\n```approval-command\\nls\\n```\\n\\nList files\",\"ts\":\"1790000000\",\"approval_id\":\"ap-1\",\"slot\":\"slot-a\"}",
-    "event mc-live-notification {\"note\":{\"kind\":\"approval\",\"title\":\"Tool approval: shell\",\"body\":\"**Source:** agent\\n\\n```approval-command\\nls\\n```\\n\\nList files\",\"ts\":\"1790000000\",\"approval_id\":\"ap-1\",\"slot\":\"slot-a\"}}",
+    "action notifications/addNotification {\"kind\":\"approval\",\"title\":\"Tool approval: shell\",\"body\":\"**Source:** agent\\n\\n```approval-command\\nls\\n```\\n\\nList files\",\"ts\":\"1790000000\",\"approval_id\":\"ap-1\",\"_local\":true,\"slot\":\"slot-a\"}",
+    "event mc-live-notification {\"note\":{\"kind\":\"approval\",\"title\":\"Tool approval: shell\",\"body\":\"**Source:** agent\\n\\n```approval-command\\nls\\n```\\n\\nList files\",\"ts\":\"1790000000\",\"approval_id\":\"ap-1\",\"_local\":true,\"slot\":\"slot-a\"}}",
     'action chat/sseChatMessage {"slot":"slot-a","role":"permission","content":"[agent] shell","ts":"1790000000","meta":{"tool_input":"ls","approval_id":"ap-1","source":"agent","registry":"coordinator","tool_call_id":"tc-1"}}',
     'action chat/sseActivityEvent {"slot":"slot-a","kind":"approval","text":"shell","approval_id":"ap-1","approval_type":"chat"}',
   ],
   "approval for a spawn": [
     'query invalidateQueries ["global-approvals"]',
     'event mc-notification {"kind":"approval"}',
-    'action notifications/addNotification {"kind":"approval","title":"Tool approval: spawn_run(write docs)","body":"**Source:** agent","ts":"1790000004","approval_id":"spawn:agent-1","slot":"slot-a"}',
-    'event mc-live-notification {"note":{"kind":"approval","title":"Tool approval: spawn_run(write docs)","body":"**Source:** agent","ts":"1790000004","approval_id":"spawn:agent-1","slot":"slot-a"}}',
+    'action notifications/addNotification {"kind":"approval","title":"Tool approval: spawn_run(write docs)","body":"**Source:** agent","ts":"1790000004","approval_id":"spawn:agent-1","_local":true,"slot":"slot-a"}',
+    'event mc-live-notification {"note":{"kind":"approval","title":"Tool approval: spawn_run(write docs)","body":"**Source:** agent","ts":"1790000004","approval_id":"spawn:agent-1","_local":true,"slot":"slot-a"}}',
     'action chat/sseChatMessage {"slot":"slot-a","role":"permission","content":"[agent] spawn_run(write docs)","ts":"1790000004","meta":{"tool_input":"","approval_id":"spawn:agent-1","source":"agent","registry":"coordinator"}}',
     'action chat/sseSubagentPending {"slot":"slot-a","id":"agent-1","task":"write docs","approval_id":"spawn:agent-1"}',
   ],
   "approval from a subagent": [
     'query invalidateQueries ["global-approvals"]',
     'event mc-notification {"kind":"approval"}',
-    'action notifications/addNotification {"kind":"approval","title":"Tool approval: shell","body":"**Source:** subagent","ts":"1790000005","approval_id":"ap-sub","slot":"slot-a"}',
-    'event mc-live-notification {"note":{"kind":"approval","title":"Tool approval: shell","body":"**Source:** subagent","ts":"1790000005","approval_id":"ap-sub","slot":"slot-a"}}',
+    'action notifications/addNotification {"kind":"approval","title":"Tool approval: shell","body":"**Source:** subagent","ts":"1790000005","approval_id":"ap-sub","_local":true,"slot":"slot-a"}',
+    'event mc-live-notification {"note":{"kind":"approval","title":"Tool approval: shell","body":"**Source:** subagent","ts":"1790000005","approval_id":"ap-sub","_local":true,"slot":"slot-a"}}',
     'action chat/sseChatMessage {"slot":"slot-a","role":"permission","content":"[subagent] shell","ts":"1790000005","meta":{"tool_input":"","approval_id":"ap-sub","source":"subagent","registry":"coordinator"}}',
   ],
   "approval with no slot": [
     'query invalidateQueries ["global-approvals"]',
     'event mc-notification {"kind":"approval"}',
-    'action notifications/addNotification {"kind":"approval","title":"Tool approval: shell","body":"**Source:** cron","ts":"1790000006","approval_id":"ap-free"}',
-    'event mc-live-notification {"note":{"kind":"approval","title":"Tool approval: shell","body":"**Source:** cron","ts":"1790000006","approval_id":"ap-free"}}',
+    'action notifications/addNotification {"kind":"approval","title":"Tool approval: shell","body":"**Source:** cron","ts":"1790000006","approval_id":"ap-free","_local":true}',
+    'event mc-live-notification {"note":{"kind":"approval","title":"Tool approval: shell","body":"**Source:** cron","ts":"1790000006","approval_id":"ap-free","_local":true}}',
   ],
   "approval_resolved for a coordinator approval": [
     'query invalidateQueries ["global-approvals"]',
-    'action notifications/removeNotificationByTs "1790000000"',
+    'action notifications/endApprovalRow "1790000000"',
     'action chat/resolveByApprovalId {"id":"ap-1","slot":"slot-a","decision":"approved","registry":"coordinator"}',
     'action chat/sseActivityEvent {"slot":"slot-a","kind":"approval_resolved","text":"","approval_id":"ap-1","approval_type":"chat"}',
   ],
   "approval_resolved expired spawn": [
     'query invalidateQueries ["global-approvals"]',
-    'action notifications/removeNotificationByTs "1790000007"',
+    'action notifications/endApprovalRow "1790000007"',
     'action chat/resolveByApprovalId {"id":"spawn:agent-2","slot":"slot-a","decision":"stale","registry":"coordinator"}',
     'action chat/sseActivityEvent {"slot":"slot-a","kind":"approval_resolved","text":"","approval_id":"spawn:agent-2","approval_type":"spawn"}',
     'action chat/sseSubagentDone {"slot":"slot-a","id":"agent-2","elapsed":0,"error":"The approval wait expired, so the request was denied."}',
   ],
   "approval_resolved without a slot": [
     'query invalidateQueries ["global-approvals"]',
-    'action notifications/removeNotificationByTs "1790000000"',
+    'action notifications/endApprovalRow "1790000000"',
     'action chat/resolveByApprovalId {"id":"ap-1","slot":"slot-a","decision":"rejected","registry":"coordinator"}',
     'action chat/sseActivityEvent {"slot":"slot-a","kind":"approval_resolved","text":"","approval_id":"ap-1","approval_type":"chat"}',
   ],
@@ -1488,8 +1521,8 @@ const EXPECTED_FRAMES: Record<string, string[]> = {
   "approval without an id": [
     'query invalidateQueries ["global-approvals"]',
     'event mc-notification {"kind":"approval"}',
-    'action notifications/addNotification {"kind":"approval","title":"Tool approval: shell","body":"**Source:** agent","ts":"1790000008","slot":"slot-a"}',
-    'event mc-live-notification {"note":{"kind":"approval","title":"Tool approval: shell","body":"**Source:** agent","ts":"1790000008","slot":"slot-a"}}',
+    'action notifications/addNotification {"kind":"approval","title":"Tool approval: shell","body":"**Source:** agent","ts":"1790000008","_local":true,"slot":"slot-a"}',
+    'event mc-live-notification {"note":{"kind":"approval","title":"Tool approval: shell","body":"**Source:** agent","ts":"1790000008","_local":true,"slot":"slot-a"}}',
     'action chat/sseChatMessage {"slot":"slot-a","role":"permission","content":"[agent] shell","ts":"1790000008","meta":{"tool_input":"","source":"agent","registry":"coordinator"}}',
     'action chat/sseActivityEvent {"slot":"slot-a","kind":"approval","text":"shell","approval_type":"chat"}',
   ],
@@ -1498,8 +1531,9 @@ const EXPECTED_FRAMES: Record<string, string[]> = {
 
 const EXPECTED_LIFECYCLE: Record<string, string[]> = {
   "first connect": [
-    'connect ws:/api/ws?caps=slot_patch,fold_delta.1,fold_delta.2',
+    'connect ws:/api/ws?caps=slot_patch,slot_diff.1,fold_delta.1,fold_delta.2',
     'query invalidateQueries ["crew-log-projections"] {"cancelRefetch":false}',
+    'query invalidateQueries ["shared-crew"] {"cancelRefetch":false}',
     'action dashboard/sseConnected undefined',
     'query fetchQuery ["automation-seed","legacy"] {"staleTime":0,"retry":false}',
     'query fetchQuery ["automation-seed","structured"] {"staleTime":0,"retry":false}',
@@ -1518,8 +1552,9 @@ const EXPECTED_LIFECYCLE: Record<string, string[]> = {
   ],
   "reconnect catch-up": [
     'action dashboard/sseDisconnected undefined',
-    'connect ws:/api/ws?caps=slot_patch,fold_delta.1,fold_delta.2',
+    'connect ws:/api/ws?caps=slot_patch,slot_diff.1,fold_delta.1,fold_delta.2',
     'query invalidateQueries ["crew-log-projections"] {"cancelRefetch":false}',
+    'query invalidateQueries ["shared-crew"] {"cancelRefetch":false}',
     'action stream/flush {"slots":[{"slot":"slot-a","thinking":"kept","status":{"content":true,"thinking":true}}],"subagents":[],"recency":[]}',
     'cancel-frame 1',
     'action dashboard/sseConnected undefined',
@@ -1531,11 +1566,14 @@ const EXPECTED_LIFECYCLE: Record<string, string[]> = {
     'query invalidateQueries ["artifacts"]',
     'query invalidateQueries ["artifact-folders"]',
     'query invalidateQueries ["kirocrewConfig"]',
+    'query invalidateQueries ["monitor-contract"]',
     'query fetchQuery ["credential-redaction"] {"staleTime":0}',
     'query invalidateQueries ["chat-thread"]',
     'query invalidateQueries ["chat-threads"]',
     'query invalidateQueries ["guide-pending"]',
     'query invalidateQueries ["change-cards"]',
+    'query invalidateQueries ["member-dashboard"]',
+    'query invalidateQueries ["session-dashboard"]',
     'query removeQueries ["member-thread"] <predicate>',
     'query fetchQuery ["automation-seed","legacy"] {"staleTime":0,"retry":false}',
     'query fetchQuery ["automation-seed","structured"] {"staleTime":0,"retry":false}',
@@ -1556,8 +1594,9 @@ const EXPECTED_LIFECYCLE: Record<string, string[]> = {
   ],
   "reconnect after an update restart reloads": [
     'action dashboard/sseDisconnected undefined',
-    'connect ws:/api/ws?caps=slot_patch,fold_delta.1,fold_delta.2',
+    'connect ws:/api/ws?caps=slot_patch,slot_diff.1,fold_delta.1,fold_delta.2',
     'query invalidateQueries ["crew-log-projections"] {"cancelRefetch":false}',
+    'query invalidateQueries ["shared-crew"] {"cancelRefetch":false}',
     'reload',
   ],
   "unmount": [
@@ -1568,8 +1607,9 @@ const EXPECTED_LIFECYCLE: Record<string, string[]> = {
   ],
   "forceReconnect": [
     'close',
-    'connect ws:/api/ws?caps=slot_patch,fold_delta.1,fold_delta.2',
+    'connect ws:/api/ws?caps=slot_patch,slot_diff.1,fold_delta.1,fold_delta.2',
     'query invalidateQueries ["crew-log-projections"] {"cancelRefetch":false}',
+    'query invalidateQueries ["shared-crew"] {"cancelRefetch":false}',
     'action dashboard/sseConnected undefined',
     'action dashboard/fetchSlots/pending',
     'query invalidateQueries ["session-summary"]',
@@ -1579,11 +1619,14 @@ const EXPECTED_LIFECYCLE: Record<string, string[]> = {
     'query invalidateQueries ["artifacts"]',
     'query invalidateQueries ["artifact-folders"]',
     'query invalidateQueries ["kirocrewConfig"]',
+    'query invalidateQueries ["monitor-contract"]',
     'query fetchQuery ["credential-redaction"] {"staleTime":0}',
     'query invalidateQueries ["chat-thread"]',
     'query invalidateQueries ["chat-threads"]',
     'query invalidateQueries ["guide-pending"]',
     'query invalidateQueries ["change-cards"]',
+    'query invalidateQueries ["member-dashboard"]',
+    'query invalidateQueries ["session-dashboard"]',
     'query removeQueries ["member-thread"] <predicate>',
     'query fetchQuery ["automation-seed","legacy"] {"staleTime":0,"retry":false}',
     'query fetchQuery ["automation-seed","structured"] {"staleTime":0,"retry":false}',
@@ -1603,11 +1646,12 @@ const EXPECTED_LIFECYCLE: Record<string, string[]> = {
     'action chat/refreshSlot/fulfilled',
   ],
   "StrictMode mounts twice and connects once": [
-    'connect ws:/api/ws?caps=slot_patch,fold_delta.1,fold_delta.2',
+    'connect ws:/api/ws?caps=slot_patch,slot_diff.1,fold_delta.1,fold_delta.2',
     'close',
     'action chat/setVoicePlaying false',
-    'connect ws:/api/ws?caps=slot_patch,fold_delta.1,fold_delta.2',
+    'connect ws:/api/ws?caps=slot_patch,slot_diff.1,fold_delta.1,fold_delta.2',
     'query invalidateQueries ["crew-log-projections"] {"cancelRefetch":false}',
+    'query invalidateQueries ["shared-crew"] {"cancelRefetch":false}',
     'action dashboard/sseConnected undefined',
     'query fetchQuery ["automation-seed","legacy"] {"staleTime":0,"retry":false}',
     'query fetchQuery ["automation-seed","structured"] {"staleTime":0,"retry":false}',
@@ -1659,7 +1703,7 @@ const EXPECTED_LIFECYCLE: Record<string, string[]> = {
     'action notifications/addNotification {"kind":"info","title":"Replayed","ts":"1790000009"}',
     'event mc-notification {"kind":"info"}',
     'query invalidateQueries ["global-approvals"]',
-    "action notifications/addNotification {\"kind\":\"approval\",\"title\":\"Tool approval: shell\",\"body\":\"**Source:** agent\\n\\n```approval-command\\nls\\n```\",\"ts\":\"1790000000\",\"approval_id\":\"ap-replay\",\"slot\":\"slot-a\"}",
+    "action notifications/addNotification {\"kind\":\"approval\",\"title\":\"Tool approval: shell\",\"body\":\"**Source:** agent\\n\\n```approval-command\\nls\\n```\",\"ts\":\"1790000000\",\"approval_id\":\"ap-replay\",\"_local\":true,\"slot\":\"slot-a\"}",
     'action chat/sseChatMessage {"slot":"slot-a","role":"permission","content":"[agent] shell","ts":"1790000000","meta":{"tool_input":"ls","approval_id":"ap-replay","source":"agent","registry":"coordinator"}}',
     'action chat/sseActivityEvent {"slot":"slot-a","kind":"approval","text":"shell","approval_id":"ap-replay","approval_type":"chat"}',
     'action chat/sseChatMessage {"slot":"slot-b","role":"assistant","content":"old","ts":"2026-09-01T00:00:00.000Z"}',
@@ -1699,9 +1743,10 @@ const EXPECTED_LIFECYCLE: Record<string, string[]> = {
     'send {"type":"slot_focused","slot":"slot-b"}',
     'send {"type":"slot_focused","slot":"pane-slot"}',
     'send {"type":"slot_focused","slot":null}',
-    'send {"type":"slot_focused","slot":"slot-b"}',
+    // A reveal re-announces the focused split-view pane, not activeSlot.
+    'send {"type":"slot_focused","slot":"pane-slot"}',
     'send {"type":"slot_read","slot":"slot-b","read_ts":"2026-09-01T00:00:00.000Z"}',
-    'send {"type":"slot_focused","slot":"slot-b"}',
+    'send {"type":"slot_focused","slot":"pane-slot"}',
     'close',
   ],
 }

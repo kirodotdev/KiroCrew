@@ -55,7 +55,7 @@ function renderCard(onLayoutChange = vi.fn()) {
         />
       </QueryClientProvider>,
     )
-  return { ...utils, rerenderWithTurnCount, onLayoutChange }
+  return { ...utils, rerenderWithTurnCount, onLayoutChange, qc }
 }
 
 /** Crosses the 10-turn eligibility threshold and waits for the card to show. */
@@ -414,11 +414,13 @@ describe('SessionPulseSurveyCard (eligibility fails closed)', () => {
       ),
       http.post('/api/feedback/submit', () => HttpResponse.json({ ok: true })),
     )
-    const { rerenderWithTurnCount } = renderCard()
+    const { rerenderWithTurnCount, qc } = renderCard()
     rerenderWithTurnCount(10)
-    // Give the (now failing) eligibility query time to resolve so this isn't
-    // just "we didn't wait long enough".
-    await new Promise((r) => setTimeout(r, 100))
+    // Wait for the failing eligibility query to settle, so this is not just
+    // "we did not wait long enough".
+    await waitFor(() =>
+      expect(qc.getQueryData(['sessionPulseSurveyEligible', 'chat-1-1786589233'])).toBe(false),
+    )
     expect(screen.queryByText(RATING_QUESTION)).not.toBeInTheDocument()
   })
 
@@ -427,9 +429,11 @@ describe('SessionPulseSurveyCard (eligibility fails closed)', () => {
       http.get('/api/feedback/eligible', () => HttpResponse.error()),
       http.post('/api/feedback/submit', () => HttpResponse.json({ ok: true })),
     )
-    const { rerenderWithTurnCount } = renderCard()
+    const { rerenderWithTurnCount, qc } = renderCard()
     rerenderWithTurnCount(10)
-    await new Promise((r) => setTimeout(r, 100))
+    await waitFor(() =>
+      expect(qc.getQueryData(['sessionPulseSurveyEligible', 'chat-1-1786589233'])).toBe(false),
+    )
     expect(screen.queryByText(RATING_QUESTION)).not.toBeInTheDocument()
   })
 })

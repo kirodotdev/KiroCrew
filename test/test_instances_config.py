@@ -45,6 +45,7 @@ class TestConfig:
         d = KiroCrewConfig().to_dict()
         assert d["instances"] == {
             "enabled": False,
+            "crew_reads_enabled": False,
             "warm_set_cap": 0,
             "tunnel_base_port": 7778,
             "ssh_compression": True,
@@ -59,6 +60,7 @@ class TestConfig:
         for p in (
             "instances",
             "instances.enabled",
+            "instances.crew_reads_enabled",
             "instances.warm_set_cap",
             "instances.tunnel_base_port",
             "instances.ssh_compression",

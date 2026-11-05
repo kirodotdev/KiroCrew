@@ -501,16 +501,11 @@ async def test_dead_does_not_skip_two_sweep_when_a_sibling_shares_the_runtime():
 
 @pytest.mark.asyncio
 async def test_dead_does_not_skip_two_sweep_for_a_lone_agent_in_a_shared_runtime():
-    """A LONE session-sharing subagent must also lose the fast path.
+    """A lone session-sharing subagent must also lose the fast path.
 
-    The confusable co-tenant is not only a sibling. ``_create_shared_session``
-    puts the subagent on the PARENT's AcpRuntime — one process hosts everything —
-    so ``info._pid`` is the parent's process and the parent's own tool children
-    are descendants of it. ``_live_shared_count`` iterates the subagent registry
-    and cannot see the parent, so gating on a sibling count > 1 left this agent
-    on the fast path while it could still cmdline-match the parent's child and
-    flag the instant that child exited. A shared runtime always contains the
-    parent, so every session-sharing agent takes the two-sweep path.
+    ``_create_shared_session`` puts it on the parent's AcpRuntime, so ``info._pid`` is the
+    parent's process and its tool children are descendants. ``_live_shared_count`` cannot
+    see the parent, so every session-sharing agent takes the two-sweep path.
     """
     mgr = _make_manager(stall_idle_secs=10)
     now = 1_000.0

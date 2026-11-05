@@ -18,6 +18,7 @@ from aiohttp import web
 
 from kiro_crew import members
 from kiro_crew.dashboard.chat_delivery import (
+    CHAT_BANNER_META_KEY,
     attachment_meta,
     normalize_send_id,
     queue_for_next_turn,
@@ -49,7 +50,7 @@ RESPONSIVE_KEY = "_responsive_human"
 QUEUED_ROW_META_KEY = "queuedEntryId"
 
 RESPONSE_GUIDANCE = (
-    "For this turn, the person is waiting in your crewmate conversation. "
+    "For this turn, the person is waiting in your Bot conversation. "
     "Start with a brief text reply to the person before calling tools: give the useful "
     "answer when it is already known, or acknowledge their message when it needs work. "
     "Tool checks and other substantial work follow that first reply. "
@@ -427,8 +428,12 @@ def prompt_context(recovery: list[dict[str, str]]) -> str:
     )
 
 
-def notify_user_input(request: web.Request, slot: Any) -> None:
-    """Apply the direct-send nudge semantics using authenticated request claims."""
+def notify_user_input(request: web.Request, slot: Any, *, person: bool = True) -> None:
+    """Apply the direct-send nudge semantics using authenticated request claims.
+
+    *person* False (an agent-origin send) never counts as the human, whatever the
+    request's claims say: it can only narrow.
+    """
     try:
         from kiro_crew.autonudge import get_instance
 
@@ -436,11 +441,23 @@ def notify_user_input(request: web.Request, slot: Any) -> None:
         if autonudge is not None:
             autonudge.notify_user_input(
                 slot.key,
-                human=request.get("is_dashboard_user") is True
+                human=person
+                and request.get("is_dashboard_user") is True
                 and request.get("internal_auth") is not True,
             )
     except Exception:
         logger.warning("autonudge.notify_user_input failed", exc_info=True)
+
+
+def _owner_sent(request: web.Request) -> bool:
+    """Whether this send is the OWNER's, the mark its turn needs for a crew read.
+
+    :func:`eligible` already requires it, so this is True on every path that
+    reaches here today; it is re-read rather than assumed so the mark the turn
+    inherits is always the request's own and never a consequence of the gate's
+    ordering.
+    """
+    return is_owner_dashboard_request(request)
 
 
 def observe_user_message(request: web.Request, message: str) -> None:
@@ -479,15 +496,36 @@ async def accept(
         steered = await _steer_first(request, state, slot, turn, message, meta)
         if steered is not None:
             return web.json_response(steered)
+    # Shared Crew: a queued responsive send is admitted and charged to its
+    # sender like any other queued send (``chat_send``'s queue path), and the
+    # server-derived author rides the entry so the drained turn is theirs.
+    from kiro_crew.shared_crew import admission_entry as _sc_entry
+    from kiro_crew.shared_crew.attribution import author_meta
+    from kiro_crew.shared_crew.identity import actor_of
+
+    queued_admission = await _sc_entry.admit_queued_send(
+        request, session_key=effective_session_key(slot), slot_key=slot.key, message=message
+    )
+    if queued_admission.rejected:
+        return queued_admission.refusal_response()
+    if queued_admission.replayed:
+        return _sc_entry.chat_replay_response(queued_admission, slot_key=slot.key)
+    if (closed := await _sc_entry.refuse_if_slot_closed(state, slot, queued_admission)) is not None:
+        return closed
     qid = queue_for_next_turn(
         state,
         slot,
         message,
         directive_user_origin=True,
+        directive_owner_origin=_owner_sent(request),
         send_id=normalize_send_id((meta or {}).get("sendId")),
         attachments=attachment_meta(meta),
         quote=quote_meta(meta).get("quote"),
+        author=author_meta(actor_of(request)),
+        # Validated by the send handler; the user row reads it off the entry.
+        banner=str((meta or {}).get(CHAT_BANNER_META_KEY) or ""),
     )
+    _sc_entry.stamp_queued_work(slot, qid, queued_admission)
     entry = next(item for item in slot._queue if item["id"] == qid)
     entry[RESPONSIVE_KEY] = True
     entry["_responsive_protected"] = slot.turn_running or slot._turn_admission_reserved
@@ -673,10 +711,12 @@ async def _steer_first(
         message,
         send_id=(meta or {}).get("sendId"),
         user_origin=True,
+        owner_origin=_owner_sent(request),
         admission=containment_meta(state, slot),
         attachments=meta,
         delivery_id=delivery_id,
         responsive=True,
+        banner=str((meta or {}).get(CHAT_BANNER_META_KEY) or ""),
     )
     if outcome not in (STEER_STEERED, STEER_REQUEUED):
         return None

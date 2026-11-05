@@ -233,7 +233,7 @@ async function ready() {
   hapticMock.mockClear()
 }
 
-const dragStart = (id: string, data: Record<string, unknown>) => act(() => {
+const dragStart = (id: string, data: Record<string, unknown>) => act(async () => {
   dnd.active = { id }
   dnd.onDragStart?.({ active: { id, data: { current: data } } })
 })
@@ -241,7 +241,7 @@ const dragStart = (id: string, data: Record<string, unknown>) => act(() => {
 const dragEnd = (
   active: { id: string; data: Record<string, unknown> },
   over: { id: string; data: Record<string, unknown> } | null,
-) => act(() => {
+) => act(async () => {
   dnd.active = null
   dnd.onDragEnd?.({
     active: { id: active.id, data: { current: active.data } },
@@ -281,17 +281,17 @@ describe('haptic — drag start', () => {
   it('plays one medium tap when a row is picked up', async () => {
     renderSidebar()
     await ready()
-    dragStart(`session:${LOOSE}`, { type: 'session', key: LOOSE })
+    await dragStart(`session:${LOOSE}`, { type: 'session', key: LOOSE })
     expect(taps()).toEqual(['medium'])
   })
 
   it('stays silent when a picked-up row is cancelled', async () => {
     renderSidebar()
     await ready()
-    dragStart(`session:${LOOSE}`, { type: 'session', key: LOOSE })
+    await dragStart(`session:${LOOSE}`, { type: 'session', key: LOOSE })
     hapticMock.mockClear()
     expect(dnd.onDragCancel).toBeTruthy()
-    act(() => {
+    await act(async () => {
       dnd.active = null
       dnd.onDragCancel?.({ active: { id: `session:${LOOSE}`, data: { current: { type: 'session', key: LOOSE } } }, over: null })
     })
@@ -327,7 +327,7 @@ describe('haptic — pinned reorder', () => {
     renderSidebar()
     await ready()
     const active = { id: `session:${PIN_A}`, data: { type: 'session', key: PIN_A, pinned: true, container: 'root' } }
-    dragEnd(active, { id: `pinned-session:list:${PIN_B}`, data: { type: 'pinned-session', key: PIN_B, container: 'root' } })
+    await dragEnd(active, { id: `pinned-session:list:${PIN_B}`, data: { type: 'pinned-session', key: PIN_B, container: 'root' } })
     expect(taps()).toEqual(['light'])
   })
 })
@@ -336,7 +336,7 @@ describe('haptic — sibling folder reorder', () => {
   it('plays a light tap when the known Custom order renumbers two root folders', async () => {
     renderSidebar()
     await ready()
-    dragEnd({ id: 'f1', data: { type: 'folder' } }, { id: 'f2', data: { type: 'folder' } })
+    await dragEnd({ id: 'f1', data: { type: 'folder' } }, { id: 'f2', data: { type: 'folder' } })
     expect(taps()).toEqual(['light'])
     await waitFor(() => expect(mocks.reorderChatFolders).toHaveBeenCalledTimes(1))
   })
@@ -344,9 +344,9 @@ describe('haptic — sibling folder reorder', () => {
   it('stays silent when nothing renumbers: a folder onto itself, or a reorder across containers', async () => {
     renderSidebar()
     await ready()
-    dragEnd({ id: 'f1', data: { type: 'folder' } }, { id: 'f1', data: { type: 'folder' } })
+    await dragEnd({ id: 'f1', data: { type: 'folder' } }, { id: 'f1', data: { type: 'folder' } })
     // f3 lives under f2, so a sortable hit on root f1 is outside its ring.
-    dragEnd({ id: 'f3', data: { type: 'folder', nested: true } }, { id: 'f1', data: { type: 'folder' } })
+    await dragEnd({ id: 'f3', data: { type: 'folder', nested: true } }, { id: 'f1', data: { type: 'folder' } })
     expect(taps()).toEqual([])
     expect(mocks.reorderChatFolders).not.toHaveBeenCalled()
   })
@@ -354,13 +354,13 @@ describe('haptic — sibling folder reorder', () => {
   it('stays silent outside the Custom order, known or still being read', async () => {
     const byName = renderSidebar({ folderSort: 'name' })
     await ready()
-    dragEnd({ id: 'f1', data: { type: 'folder' } }, { id: 'f2', data: { type: 'folder' } })
+    await dragEnd({ id: 'f1', data: { type: 'folder' } }, { id: 'f2', data: { type: 'folder' } })
     expect(taps()).toEqual([])
     byName.unmount()
 
     renderSidebar({ folderSort: null })
     await ready()
-    dragEnd({ id: 'f1', data: { type: 'folder' } }, { id: 'f2', data: { type: 'folder' } })
+    await dragEnd({ id: 'f1', data: { type: 'folder' } }, { id: 'f2', data: { type: 'folder' } })
     expect(taps()).toEqual([])
     expect(mocks.reorderChatFolders).not.toHaveBeenCalled()
   })
@@ -370,12 +370,12 @@ describe('haptic — session dropped on a folder', () => {
   it('plays a light tap when the session lands somewhere new', async () => {
     renderSidebar()
     await ready()
-    dragEnd({ id: `session:${LOOSE}`, data: { type: 'session', key: LOOSE } },
+    await dragEnd({ id: `session:${LOOSE}`, data: { type: 'session', key: LOOSE } },
       { id: 'folder-drop:f1', data: { type: 'folder-drop', folderId: 'f1' } })
     expect(taps()).toEqual(['light'])
 
     hapticMock.mockClear()
-    dragEnd({ id: `session:${IN_F1}`, data: { type: 'session', key: IN_F1 } },
+    await dragEnd({ id: `session:${IN_F1}`, data: { type: 'session', key: IN_F1 } },
       { id: 'root-lane', data: { type: 'folder-drop', folderId: null } })
     expect(taps()).toEqual(['light'])
   })
@@ -383,13 +383,11 @@ describe('haptic — session dropped on a folder', () => {
   it('stays silent when the session is dropped back on its own folder', async () => {
     renderSidebar()
     await ready()
-    dragEnd({ id: `session:${IN_F1}`, data: { type: 'session', key: IN_F1 } },
+    await dragEnd({ id: `session:${IN_F1}`, data: { type: 'session', key: IN_F1 } },
       { id: 'folder-drop:f1', data: { type: 'folder-drop', folderId: 'f1' } })
-    dragEnd({ id: `session:${IN_F1}`, data: { type: 'session', key: IN_F1 } },
+    await dragEnd({ id: `session:${IN_F1}`, data: { type: 'session', key: IN_F1 } },
       { id: 'f1', data: { type: 'folder' } })
     expect(taps()).toEqual([])
-    // Let any mutation the drop might have queued run before asserting it never fired.
-    await act(async () => {})
     expect(mocks.setSlotFolder).not.toHaveBeenCalled()
   })
 })
@@ -398,7 +396,7 @@ describe('haptic — subfolder re-parented by drag', () => {
   it('plays a light tap when the subfolder moves under a new parent', async () => {
     renderSidebar()
     await ready()
-    dragEnd({ id: 'f3', data: { type: 'folder', nested: true } },
+    await dragEnd({ id: 'f3', data: { type: 'folder', nested: true } },
       { id: 'folder-drop:f1', data: { type: 'folder-drop', folderId: 'f1' } })
     expect(taps()).toEqual(['light'])
     await waitFor(() => expect(mocks.updateChatFolder).toHaveBeenCalledWith('f3', { parent_id: 'f1' }))
@@ -407,13 +405,12 @@ describe('haptic — subfolder re-parented by drag', () => {
   it('stays silent for its current parent and for its own subtree', async () => {
     renderSidebar()
     await ready()
-    dragEnd({ id: 'f3', data: { type: 'folder', nested: true } },
+    await dragEnd({ id: 'f3', data: { type: 'folder', nested: true } },
       { id: 'folder-drop:f2', data: { type: 'folder-drop', folderId: 'f2' } })
     // f2 dropped into its own child f3.
-    dragEnd({ id: 'f2', data: { type: 'folder' } },
+    await dragEnd({ id: 'f2', data: { type: 'folder' } },
       { id: 'folder-drop:f3', data: { type: 'folder-drop', folderId: 'f3' } })
     expect(taps()).toEqual([])
-    await act(async () => {})
     expect(mocks.updateChatFolder).not.toHaveBeenCalled()
   })
 })
@@ -425,7 +422,7 @@ describe('haptic — session dropped on the chat pane', () => {
     const onDropSessionRef = vi.fn()
     renderSidebar({ onDropSessionRef })
     await ready()
-    dragEnd({ id: `session:${IN_F1}`, data: { type: 'session', key: IN_F1 } }, PANE)
+    await dragEnd({ id: `session:${IN_F1}`, data: { type: 'session', key: IN_F1 } }, PANE)
     expect(taps()).toEqual(['light'])
     expect(onDropSessionRef).toHaveBeenCalledTimes(1)
   })
@@ -434,13 +431,13 @@ describe('haptic — session dropped on the chat pane', () => {
     const onDropSessionRef = vi.fn()
     const privateDrop = renderSidebar({ onDropSessionRef })
     await ready()
-    dragEnd({ id: `session:${PRIVATE}`, data: { type: 'session', key: PRIVATE } }, PANE)
+    await dragEnd({ id: `session:${PRIVATE}`, data: { type: 'session', key: PRIVATE } }, PANE)
     expect(taps()).toEqual([])
     privateDrop.unmount()
 
     renderSidebar({ onDropSessionRef, activeSlot: LOOSE })
     await ready()
-    dragEnd({ id: `session:${LOOSE}`, data: { type: 'session', key: LOOSE } }, PANE)
+    await dragEnd({ id: `session:${LOOSE}`, data: { type: 'session', key: LOOSE } }, PANE)
     expect(taps()).toEqual([])
     expect(onDropSessionRef).not.toHaveBeenCalled()
   })
@@ -477,14 +474,14 @@ describe('drag lifecycle order', () => {
 
     // Picking A up drops the hold first, so the order frozen for the drop math is
     // the TRUE order, not the one displaced by the hover.
-    dragStart('session:chat-a', { type: 'session', key: 'chat-a' })
+    await dragStart('session:chat-a', { type: 'session', key: 'chat-a' })
     expect(renderedKeys()).toEqual(['chat-c', 'chat-a', 'chat-b'])
 
     // Frozen: A becoming the newest mid-drag does not move anything.
     rerenderSlots([A_BUMPED, B, C_BUMPED])
     expect(renderedKeys()).toEqual(['chat-c', 'chat-a', 'chat-b'])
 
-    dragEnd({ id: 'session:chat-a', data: { type: 'session', key: 'chat-a' } }, null)
+    await dragEnd({ id: 'session:chat-a', data: { type: 'session', key: 'chat-a' } }, null)
     expect(renderedKeys()).toEqual(['chat-a', 'chat-c', 'chat-b'])
   })
 })

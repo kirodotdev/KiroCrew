@@ -328,7 +328,8 @@ class TestDeferredSubmission:
         assert text == (
             "Spawned 2 subagent(s). Results will arrive as completion events:\n"
             "  s1: one\n  s2: two\n\n"
-            "END YOUR TURN now: this caller has no confirmed parent-work delivery "
+            "Reply with one line saying what you started, then END YOUR TURN: this "
+            "caller has no confirmed parent-work delivery "
             "boundary. Wait for the [Subagent completion event] messages. "
             "Dispatch is not completion."
         )

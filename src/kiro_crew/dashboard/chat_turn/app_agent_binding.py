@@ -154,10 +154,10 @@ def _launched_copy_names(provider: Any) -> set[str]:
     The allocation stamps it on the provider (``app_launch_agent``) and the Kiro
     runtime keeps it (``_launch_agent``); the agent's own name stays on ``_agent``.
     """
-    from kiro_crew.dashboard.handlers.usage import _wrapper_chain
+    from kiro_crew.wrapper_chain import wrapper_chain
 
     names: set[str] = set()
-    for node in _wrapper_chain(provider):
+    for node in wrapper_chain(provider):
         for attr in ("app_launch_agent", "_launch_agent"):
             name = getattr(node, attr, None)
             if isinstance(name, str) and name:
@@ -191,7 +191,14 @@ async def _app_agent_turn_backend(
         return _provider_backend(provider)
     if cfg is None:
         cfg = await asyncio.to_thread(KiroCrewConfig.load)
-    return select_provider_backend(session_key, cfg.agent.member_acp_backend, cfg.agent.acp_backend)
+    from kiro_crew.crewmate_harness import crewmate_backend_pin
+
+    return select_provider_backend(
+        session_key,
+        cfg.agent.member_acp_backend,
+        cfg.agent.acp_backend,
+        crew_backend=crewmate_backend_pin(cfg, session_key),
+    )
 
 
 async def _on_app_agent_not_loaded(turn: _ChatTurn, exc) -> None:

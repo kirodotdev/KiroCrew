@@ -312,6 +312,15 @@ class TestApiSpawn:
 
             monkeypatch.setattr("kiro_crew.execution_context.read_session_execution", inherited)
 
+        # Shared Crew fair admission reads its own config off-loop too; this test
+        # counts only the memory lookups, so admission answers pass-through.
+        from kiro_crew.shared_crew import admission_entry
+        from kiro_crew.shared_crew.admission_gate import Admission
+
+        async def _passthrough(*_a, **_kw):
+            return Admission(None, "passthrough")
+
+        monkeypatch.setattr(admission_entry, "admit_subagent", _passthrough)
         response = _run(mod.api_spawn, _Req(state, body))
 
         # A parent's privacy admission reads its execution before spawn derives
@@ -577,11 +586,13 @@ class TestApiSpawnMarkCollected:
 
     def test_records_ids_bounded_and_skips_non_strings(self) -> None:
         slot = SimpleNamespace(_subagents_inline_collected=set(), _queue=[])
-        state = _state()
+        child = SimpleNamespace(parent_session_key="dashboard:chat-1")
+        state = _state(subagents=_mgr())
+        state.subagents.get.return_value = child
         state.get_slot.return_value = slot
         ids: list[Any] = [f"a{i}" for i in range(250)] + ["", 7]
-        req = _Req(state, {"ids": ids, "parent_session": "dashboard:chat-1"})
-        resp = _run(mod.api_spawn_mark_collected, req)
+        body = {"ids": ids, "parent_session": "dashboard:chat-1", "written": True}
+        resp = _run(mod.api_spawn_mark_collected, _Req(state, body))
         assert _payload(resp) == {"status": "ok", "marked": len(ids)}
         assert len(slot._subagents_inline_collected) == 200
 
@@ -993,6 +1004,26 @@ class TestApiSpawnRetry:
         with (
             patch.object(
                 mod, "warm_project_agents_for_spawn", AsyncMock(side_effect=RuntimeError("x"))
+            ),
+            pytest.raises(RuntimeError),
+        ):
+            _run(mod.api_spawn_retry, self._req(mgr))
+        assert mgr.settle_retry.call_args_list == [((old, None),)]
+        mgr.spawn.assert_not_called()
+
+    def test_an_admission_that_raises_releases_the_claim(self) -> None:
+        """An unreadable task store during admission started nothing."""
+        from kiro_crew.shared_crew import admission_entry
+
+        mgr = _mgr()
+        old = _info(done=True, outcome="failed", _raw_task="t")
+        mgr.get.return_value = old
+        mgr.claim_retry.return_value = ""
+        with (
+            patch.object(
+                admission_entry,
+                "admit_subagent",
+                AsyncMock(side_effect=RuntimeError("task store unavailable")),
             ),
             pytest.raises(RuntimeError),
         ):

@@ -13,7 +13,7 @@ Instance fields written: ``_claude_inline_settings``,
 ``_claude_settings_written``, ``_permission_surface_share_validated``.
 
 Instance fields read: ``_agent``, ``_model``, ``_permission_mode``, ``_seed_owner``,
-``_work_dir``.
+``_session_key``, ``_work_dir``.
 """
 
 from __future__ import annotations
@@ -274,8 +274,18 @@ def _render_claude_settings_payload(self: AcpClient) -> str:
     if self._permission_mode:
         perms["defaultMode"] = self._permission_mode
     # Same resolution as the wire array: a project-only agent's disabledTools
-    # are a restriction, and resolving only the user level would drop them.
-    deny_rules = session_mcp_deny_rules(self._agent, work_dir=self._work_dir)
+    # are a restriction, and resolving only the user level would drop them. A
+    # crewmate's worker reads its own per-session spec, keyed by the session.
+    from kiro_crew.acp.session_mcp_crewmate import crewmate_worker_deny_rules
+
+    deny_rules = crewmate_worker_deny_rules(
+        self._agent,
+        work_dir=self._work_dir,
+        session_key=self._session_key or "",
+        backend=self.backend,
+    )
+    if deny_rules is None:
+        deny_rules = session_mcp_deny_rules(self._agent, work_dir=self._work_dir)
     if deny_rules:
         perms["deny"] = list(deny_rules)
     if perms:

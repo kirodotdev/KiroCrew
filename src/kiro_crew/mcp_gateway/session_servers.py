@@ -55,6 +55,7 @@ from typing import Any
 from kiro_crew.mcp_cleanup import CONTROL_PLANE_SERVERS
 from kiro_crew.mcp_gateway.claim import STUB_SESSION_TOKEN_ENV
 from kiro_crew.mcp_gateway.hashing import STUB_FLAGS_FLAG, encode_target_args, expand_stub_flags
+from kiro_crew.mcp_gateway.mate_overlays import MATE_WORKER_AGENT, worker_overlay_spec
 from kiro_crew.mcp_gateway.rewriter import _WRAPPER_MARKER, _WRAPPER_MARKER_LEGACY
 from kiro_crew.mcp_gateway.rewriter_spec import is_unpoolable
 
@@ -254,14 +255,74 @@ def _project_spec_for_agent(
         return None
 
 
+def _pinned_overlay(overlay_dir: Path, agent: str) -> tuple[bool, dict[str, Any] | None]:
+    """Whether ``agent.spec_pins`` pins *agent*, and the pinned file's overlay.
+
+    The rewriter writes every overlay, from a ``.json`` or a ``.md`` source alike,
+    as ``<source stem>.json``, so the pinned file's overlay is
+    ``<overlay_dir>/<pin stem>.json``, used only when it declares *agent*. With a
+    pin the answer is that overlay or ``None`` (missing, unreadable, declares
+    another name): another overlay that declares *agent* belongs to a file the
+    session does not run, so it is never consulted. ``(False, None)`` means the pin
+    does not choose: there is none, or it names the only file in the user agents
+    directory that declares *agent*, so the session runs that file
+    (:func:`kiro_crew.agent_discovery.declared_spec_claim`) and the plain lookup finds
+    its overlay.
+    """
+    from kiro_crew import agent_spec_pins
+    from kiro_crew.agent import kiro_agents_dir_path
+    from kiro_crew.agent_discovery import AmbiguousAgentSpecError, declared_spec_claim
+
+    if agent_spec_pins.spec_pin_for(agent) is None:
+        return False, None
+    try:
+        claim = declared_spec_claim(
+            kiro_agents_dir_path(), agent, operation="mcp_overlay_pin", source="unknown"
+        )
+    except AmbiguousAgentSpecError:
+        # A broken pin or an unpinned contest: the session start is refused, so no
+        # other claimant's overlay is offered in its place.
+        return True, None
+    if claim is None or not claim.pinned:
+        return False, None
+    pin = claim.path.name
+    path = overlay_dir / f"{Path(pin).stem}.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        data = None
+    except (OSError, ValueError):
+        logger.warning("MCP-gateway: cannot read the pinned overlay spec %s", path, exc_info=True)
+        data = None
+    if isinstance(data, dict) and data.get("name") == agent:
+        return True, data
+    logger.info(
+        "MCP-gateway: agent.spec_pins pins %r to %r, and %s is not an overlay declaring "
+        "that name, so no overlay is pooled for it",
+        agent,
+        pin,
+        path,
+    )
+    return True, None
+
+
 def _load_overlay_for_agent(
     overlay_dir: Path,
     agent: str,
     work_dir: str | Path | None = None,
     markdown_specs: bool = False,
     dispatchable_only: bool = True,
+    kas_worker_session_key: str | None = None,
 ) -> dict[str, Any] | None:
     """Locate the rewritten overlay spec for *agent*, or ``None``.
+
+    *kas_worker_session_key* is set only on KAS, by
+    ``acp.runtime_session_setup._pooled_session_servers_and_ref_spec``'s positive
+    ``backend == kas`` check. With it, a crewmate's worker
+    (``kirocrew-mate-worker``) is not looked up by that shared name: its overlay
+    is the session's own crewmate's
+    (:func:`kiro_crew.mcp_gateway.mate_overlays.worker_overlay_spec`). Without it
+    -- every other host -- the lookup below runs exactly as before.
 
     Package-installed agents are written to the overlay directory under a
     package-qualified filename (e.g. ``Pkg-gpu-dev.json``) while the session
@@ -284,6 +345,8 @@ def _load_overlay_for_agent(
     Fail-soft: an unreadable/malformed overlay yields ``None`` (unpooled), never
     an exception.
     """
+    if kas_worker_session_key and agent == MATE_WORKER_AGENT:
+        return worker_overlay_spec(overlay_dir, kas_worker_session_key)
     project = _project_spec_for_agent(agent, work_dir, markdown_specs, dispatchable_only)
     if project is not None:
         # WARNING, not debug. This is not an error path: it is the posture this
@@ -305,6 +368,9 @@ def _load_overlay_for_agent(
             overlay_dir,
         )
         return None
+    has_pin, pinned = _pinned_overlay(overlay_dir, agent)
+    if has_pin:
+        return pinned
     direct = overlay_dir / f"{agent}.json"
     try:
         return json.loads(direct.read_text(encoding="utf-8"))
@@ -399,6 +465,7 @@ def pooled_session_servers(
     work_dir: str | Path | None = None,
     markdown_specs: bool = False,
     dispatchable_only: bool = True,
+    kas_worker_session_key: str | None = None,
 ) -> list[dict[str, Any]]:
     """Return ACP ``session/new`` entries for *agent*'s broker stubs.
 
@@ -426,13 +493,24 @@ def pooled_session_servers(
     agree on which file the session's agent is, or the stub set and the spec it
     shadows are read from different agents.
 
+    ``kas_worker_session_key`` names a KAS session, for the one agent whose
+    overlay is the session's rather than the agent's: a crewmate's worker
+    (:func:`_load_overlay_for_agent`). Every other agent, and every other host,
+    ignores it. KAS subtracts the names of exactly the entries this returns
+    (``acp/harness/kas.py``), so the two sets come from this one lookup.
+
     Fail-soft by design: any unreadable or malformed overlay yields ``[]``, so a
     bad rewrite degrades to unpooled operation rather than breaking the spawn.
     """
     if not overlay_dir or not agent:
         return []
     spec = _load_overlay_for_agent(
-        Path(overlay_dir), agent, work_dir, markdown_specs, dispatchable_only
+        Path(overlay_dir),
+        agent,
+        work_dir,
+        markdown_specs,
+        dispatchable_only,
+        kas_worker_session_key,
     )
     if not isinstance(spec, dict):
         return []
@@ -460,7 +538,9 @@ def pooled_session_servers(
         shaped = _acp_server_entry(str(name), entry, channel_id)
         if shaped is not None:
             out.append(shaped)
-    return out
+    from kiro_crew import agent as agent_mod
+
+    return agent_mod.govern_shared_template_injected_servers(agent, out)
 
 
 def injection_server_names(
@@ -488,6 +568,9 @@ def injection_server_names(
 
     This is deliberately cheap (one file read, no shaping) so it can be called
     as a post-launch health check without adding latency to the session path.
+    It never answers for a crewmate's worker on KAS: that host subtracts the
+    names of the entries :func:`pooled_session_servers` already returned for the
+    session, so no second lookup can disagree with the first.
     """
     if not overlay_dir or not agent:
         return frozenset()

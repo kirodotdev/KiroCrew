@@ -32,6 +32,13 @@ export interface SessionTabsApi {
   openInNewTab: (key: string) => void
   /** Close `key`; returns the session to activate, or null when none is left. */
   closeTab: (key: string) => string | null
+  /**
+   * Replace the order with `keys`. Ignored unless `keys` holds exactly the
+   * open tabs: the strip reports an order computed from what it last
+   * rendered, and a tab opened or closed since then must not be dropped or
+   * resurrected by it. Activation is unchanged.
+   */
+  reorderTabs: (keys: string[]) => void
 }
 
 /** Stable identity so a disabled surface never re-renders on a new empty array. */
@@ -164,5 +171,17 @@ export function useSessionTabs(
     return nextActive
   }, [])
 
-  return { tabs: enabled ? tabs : EMPTY_TABS, cue: enabled ? cue : null, openInNewTab, closeTab }
+  // Functional for the same reason as the activation effect: a prune queued in
+  // the same flush must not be undone by writing back a stale array.
+  const reorderTabs = useCallback((keys: string[]) => {
+    if (!enabledRef.current) return
+    setTabs(latest => {
+      if (keys.length !== latest.length) return latest
+      const members = new Set(latest)
+      if (new Set(keys).size !== keys.length || !keys.every(k => members.has(k))) return latest
+      return keys.every((k, i) => k === latest[i]) ? latest : [...keys]
+    })
+  }, [])
+
+  return { tabs: enabled ? tabs : EMPTY_TABS, cue: enabled ? cue : null, openInNewTab, closeTab, reorderTabs }
 }

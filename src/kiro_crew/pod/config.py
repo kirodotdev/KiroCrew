@@ -8,11 +8,17 @@ collide with a developer's live pods.
 
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
 
 from kiro_crew.config.paths import _default_home
+
+logger = logging.getLogger(__name__)
+
+#: Highest TCP port.
+_MAX_PORT = 65535
 
 # The canonical live gateway port a pod must never bind. Overridable for hosts
 # that run their live plane elsewhere.
@@ -20,6 +26,9 @@ DEFAULT_LIVE_PORT = 5476
 
 # Pod ports are derived as BASE + (cksum(name) % 199) + 1, i.e. BASE+1 .. BASE+199.
 DEFAULT_BASE_PORT = 7810
+
+#: Highest base whose whole BASE+1 .. BASE+199 band is still bindable.
+_MAX_BASE_PORT = _MAX_PORT - 199
 
 # systemd --user template unit. ``<prefix>@<wt>.service`` is one pod.
 DEFAULT_UNIT_PREFIX = "kirocrew-pod"
@@ -102,11 +111,64 @@ def _env_path_opt(key: str) -> Path | None:
     return _canonical_override(val) if val else None
 
 
-def _env_int(key: str, default: int) -> int:
+def _env_int(key: str, default: int, high: int = _MAX_PORT) -> int:
+    """Port *key* from the environment, or *default* when unset or unusable.
+
+    ``isdigit`` admits characters ``int()`` refuses (U+00B2 SUPERSCRIPT TWO,
+    and any run past ``int()``'s 4300-digit limit), so the conversion is
+    guarded: unguarded, one such value took every pod command down with a
+    traceback. A value outside 1..*high* (``-1``, ``0``, ``70000``) names no
+    usable port, so it falls back to *default* with a warning rather than
+    deriving ports no socket can bind. *high* is 65535 for a port and
+    :data:`_MAX_BASE_PORT` for the derivation base. Blank reads as unset.
+
+    ``pod-e2e.sh`` evaluates this same predicate, conversion and range to find
+    the live plane, and ``test_pod_e2e_harness_paths`` pins the shared
+    expressions, so a change here is carried there in the same commit.
+    """
     val = os.environ.get(key)
-    if val and val.strip().lstrip("-").isdigit():
-        return int(val.strip())
-    return default
+    if not val:
+        return default
+    port = None
+    if val.strip().lstrip("-").isdigit():
+        try:
+            port = int(val.strip())
+        except ValueError:
+            port = None
+    if port is None or not 1 <= port <= high:
+        logger.warning("ignoring %s=%r: not a port in 1-%d; using %d", key, val, high, default)
+        return default
+    return port
+
+
+def default_gateway_path(home: Path, standard: list[str]) -> str:
+    """The ``PATH`` a booted pod's gateway gets when ``KIROCREW_POD_PATH`` is unset.
+
+    *standard* is the pod's base list: ``~/.local/bin`` followed by the system
+    dirs. The host's user tool-manager bins go in front of it, duplicates dropped.
+
+    A pod starts from the service manager's clean environment, so this list is
+    ALL the gateway can find tools on: Issue Radar's ``glab``/``gh``/``az``, the
+    source-provider panels, and every shell its agent runs. Without the
+    tool-manager bins, a CLI the operator installed through a user-level tool
+    manager would be missing in every pod while the host gateway, whose
+    ``augmented_path`` covers those managers, finds it.
+
+    The added entries are exactly the host's own tool-manager list
+    (``env.user_tool_bin_dirs``, i.e. ``env._EXTRA_PATH_DIRS``), so a directory
+    added there for the host reaches pods too and the two cannot drift. They are
+    fixed, home-rooted install locations, never the operator's live ``PATH``:
+    copying that would carry whatever happened to lead it at ``pod install``
+    time (a worktree venv, a project ``node_modules/.bin``) into every pod. That
+    list already starts with ``~/.local/bin``, and *standard*'s system dirs close
+    the result. A tool resolved from here still goes through its own provenance
+    check (``_validate_provider_executable`` for provider CLIs), so being on
+    ``PATH`` does not make a binary trusted.
+    """
+    # Deferred: kiro_crew.env pulls in heavier optional imports than this module.
+    from kiro_crew.env import user_tool_bin_dirs
+
+    return os.pathsep.join(dict.fromkeys([*user_tool_bin_dirs(str(home)), *standard]))
 
 
 def environment_vars(cfg: PodConfig) -> dict[str, str]:
@@ -210,19 +272,20 @@ class PodConfig:
         # pod registry into the pod's throwaway home.
         pods_dir = _env_path("KIROCREW_POD_ENV_DIR", _default_home() / "pods")
         artifacts_dir = _env_path("KIROCREW_POD_ARTIFACTS_DIR", pod_root / ".e2e-artifacts")
-        default_path = os.pathsep.join(
+        default_path = default_gateway_path(
+            home,
             [
                 str(home / ".local" / "bin"),
                 "/usr/local/bin",
                 "/usr/bin",
                 "/bin",
-            ]
+            ],
         )
         return cls(
             pod_root=pod_root,
             pods_dir=pods_dir,
             artifacts_dir=artifacts_dir,
-            base_port=_env_int("KIROCREW_POD_BASE_PORT", DEFAULT_BASE_PORT),
+            base_port=_env_int("KIROCREW_POD_BASE_PORT", DEFAULT_BASE_PORT, _MAX_BASE_PORT),
             live_port=_env_int("KIROCREW_POD_LIVE_PORT", DEFAULT_LIVE_PORT),
             unit_prefix=os.environ.get("KIROCREW_POD_UNIT_PREFIX", DEFAULT_UNIT_PREFIX),
             gateway_path=os.environ.get("KIROCREW_POD_PATH", default_path),

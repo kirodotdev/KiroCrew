@@ -133,6 +133,7 @@ async def test_the_rss_recycle_still_resets_a_listed_session() -> None:
 
     manager.reset.assert_awaited_once()
     assert manager.reset.await_args.args[0] == EXEMPT_KEY
+    assert set(manager._cleanup_boundary().state.rss_recycled) == {EXEMPT_KEY}
 
 
 def test_the_loader_keeps_only_non_empty_key_strings() -> None:

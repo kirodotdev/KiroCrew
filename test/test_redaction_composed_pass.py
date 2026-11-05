@@ -44,7 +44,9 @@ def test_url_match_never_ends_inside_a_word(text: str) -> None:
     assert "K7MDENGbPxRfiCY" not in out
 
 
-_PAD = "a" * 40  # enough query to make the URL pass flag the address
+# Enough query to make the URL pass flag the address. ``x`` and not a hex
+# letter: a 40-run of hex is a git object name and is kept.
+_PAD = "x" * 40
 
 
 @pytest.mark.parametrize(

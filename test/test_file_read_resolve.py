@@ -90,8 +90,8 @@ class TestFileReadResolve:
                 resp = await client.get("/api/file-read?path=test.txt&resolve=1")
                 assert resp.status == 200
                 # Verify the resolved path (not "test.txt") was logged
-                calls = [str(c) for c in mock_sel.log_tool_invocation.call_args_list]
-                assert any(str(proj) in c for c in calls)
+                logged = [c.kwargs.get("resources") for c in mock_sel.log_tool_invocation.call_args_list]
+                assert any(str(proj) in str(r) for r in logged if r)
 
     @pytest.mark.asyncio
     async def test_resolve_rejects_traversal(self, tmp_path, mock_sel, home_patch):

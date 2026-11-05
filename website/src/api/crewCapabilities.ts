@@ -80,7 +80,8 @@ export interface WorkerKitView {
 }
 export interface WorkerKitChange {
   /** `disabledTools` / `disabledServers`: a limit on a server the worker base declares. */
-  section: 'prompt' | 'mcpServers' | 'resources' | 'skills' | 'allowedTools' | 'excludedTools' | 'disabledTools' | 'disabledServers' | 'tools'
+  /** `hooks` / `permissions` / `toolsSettings`: run on the crewmate's worker only. */
+  section: 'prompt' | 'mcpServers' | 'resources' | 'skills' | 'allowedTools' | 'excludedTools' | 'disabledTools' | 'disabledServers' | 'tools' | 'hooks' | 'permissions' | 'toolsSettings'
   id: string
   /** `added`: written by the add. `skipped`: already present, so left alone. */
   /** `replaced`: the behaviour-directions slot already holds other directions. */

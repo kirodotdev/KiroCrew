@@ -37,8 +37,8 @@ CRON = (
     "with `ctx.notify()`, raise `Skip()` to retry, `Done(msg)` to deliver/remove, "
     "`Report(msg)` to deliver/keep. Dry-run: "
     "`kirocrew cron preview <script:function> -m <message>`; synchronous runner "
-    "refuses `async def`. For wall-clock times pass an IANA `timezone`; `cron_expr` "
-    "otherwise uses global config timezone, then UTC. Polling/scanner/digest: "
+    "refuses `async def`. For wall-clock times pass an IANA `timezone`, or `local` to "
+    "follow the user's computer; otherwise global config timezone, then `local`. Polling/scanner/digest: "
     "`persistent_session=false`, `minimal_context=true` (~200 tokens/wake, not "
     "30-55k), `hide_in_chat=true`; conversational reminders keep all three "
     "defaults for continuity. `timeout` bounds the script/command subprocess; "
@@ -59,7 +59,10 @@ GUIDE = (
     "opens guides and cards in the dashboard.\n"
     "- `find_ui`, `search_docs`, guides, cards: for where-is, how-to and setting "
     "questions about Kiro Crew itself, call these first and follow each result's "
-    "`next`; guides and cards need a message the user sent from the dashboard."
+    "`next`; guides and cards need a message the user sent from the dashboard.\n"
+    "- Write no text before these calls: the user reads every word, so a line such "
+    'as "Let me check the layout first" is shown to them. Call the tool, then write '
+    "only the answer, or offer the guide or card."
 )
 
 SESSION_CONTROL = (
@@ -67,8 +70,9 @@ SESSION_CONTROL = (
     "that must outlive this turn and stay visible to the user.\n"
     "- `session_create` / `session_send` / `session_read_message` / `session_stop` "
     "/ `session_close` / `session_revive`, sidebar `chat_folder_*`. Use for work "
-    "that must outlive your turn and stay visible for user takeover/closure. New "
-    "sessions are EMPTY: seed with `session_send`, poll `session_read_message`. "
+    "that must outlive your turn and stay visible for user takeover/closure. Seed "
+    "a new session with `session_create`'s `message` (on `message_needs_send_approval`, "
+    "create, then `session_send`); poll `session_read_message`. "
     "`session_revive` brings an ARCHIVED (history) session back into the sidebar "
     "with its transcript; use it instead of re-creating when a closed session is "
     "the right home."

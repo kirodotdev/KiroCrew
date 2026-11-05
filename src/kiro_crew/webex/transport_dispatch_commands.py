@@ -103,7 +103,10 @@ async def _handle_model(self: WebexDispatcher, inbound: "WebexInbound") -> None:
         lines += ["", "Reply `/model <number>` to switch."]
         await self._reply(inbound, "\n".join(lines))
         return
-    if not arg.isdigit() or not 1 <= int(arg) <= len(choices):
+    # Typed text, so refuse what int() would raise on: "²".isdigit() is True
+    # while int("²") raises, and so does int() past sys.get_int_max_str_digits().
+    numeric = arg.isascii() and arg.isdigit() and len(arg) <= 3
+    if not numeric or not 1 <= int(arg) <= len(choices):
         await self._reply(
             inbound,
             f"❌ Pick a number between 1 and {len(choices)} — send `/model` for the list.",

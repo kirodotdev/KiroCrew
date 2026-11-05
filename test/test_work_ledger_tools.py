@@ -27,6 +27,7 @@ from aiohttp.test_utils import make_mocked_request
 from kiro_crew import validation
 from kiro_crew import work_ledger as wl
 from kiro_crew.dashboard.handlers import work_ledger as routes
+from kiro_crew.work_vocab import worker_statuses
 
 #: The real implementation, captured before the autouse fixture stubs the name.
 #: A test that drives the true branch has to reach past its own default.
@@ -56,7 +57,8 @@ def _open_route(monkeypatch):
     with the same caveat: the real probe reads the session store, which a
     ``make_mocked_request`` slot cannot answer, and it FAILS CLOSED — so leaving it
     live would make every test's caller read as mirrored and refused.
-    ``test_an_outbound_mirrored_session_is_refused`` drives the true branch.
+    ``test_an_outbound_mirrored_session_is_refused_like_a_channel_one`` drives the
+    true branch.
     """
 
     async def _recognized(*a: Any, **k: Any) -> None:
@@ -398,12 +400,14 @@ async def test_every_store_code_maps_to_the_status_the_rfc_tabulates():
         "no_ledger": 404,
         "unknown_item": 404,
         "already_bound": 409,
+        "duplicate_item": 409,
         "item_closed": 409,
         "item_cap_exceeded": 409,
         "goal_concurrency_cap_reached": 409,
         "depth_exceeded": 409,
         "crew_log_incomplete": 409,
         "cache_dirty": 409,
+        "retired_history_full": 409,
         "field_too_long": 400,
         "invalid_action": 400,
         "invalid_status": 400,
@@ -998,7 +1002,14 @@ def test_the_schema_caps_restate_the_stores_own():
     pr = next(f for f in report.fields if f.name == "pr")
     assert (pr.min_val, pr.max_val) == (wl.MIN_PR, wl.MAX_PR)
     status = next(f for f in report.fields if f.name == "status")
-    assert status.allowed == wl.WORKER_STATUSES
+    assert status.allowed == frozenset(worker_statuses(False))
+    preview = validation.WORK_REPORT_REMOTE_DISPATCH_SCHEMA
+    assert next(f for f in preview.fields if f.name == "status").allowed == wl.WORKER_STATUSES
+    # Every field but ``status`` is the very same spec, so the two cannot drift.
+    assert [f for f in preview.fields if f.name != "status"] == [
+        f for f in report.fields if f.name != "status"
+    ]
+    assert preview.custom_validator is report.custom_validator
 
     record = validation.WORK_LEDGER_RECORD_SCHEMA
     assert next(f for f in record.fields if f.name == "title").max_len == wl.MAX_TITLE_CHARS

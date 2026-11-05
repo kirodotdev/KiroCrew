@@ -18,9 +18,7 @@ from pipeline_conductor_fleet_probe_helpers import proc_pid, stat_fields
 
 from conftest import make_dir_link
 
-# --------------------------------------------------------------------------
 # Comparing paths, and who owns a process
-# --------------------------------------------------------------------------
 
 
 def test_norm_path_strips_the_extended_length_prefix(mod):
@@ -189,9 +187,7 @@ def test_a_root_that_cannot_be_resolved_reads_as_unknown_not_as_fleet(mod, tmp_p
     assert mod._program_class("/usr/bin/python3 -m pytest", [elsewhere]) == "unknown"
 
 
-# --------------------------------------------------------------------------
 # Process age, bound to one incarnation of a pid
-# --------------------------------------------------------------------------
 
 
 def test_starttime_survives_a_comm_containing_parentheses(mod, tmp_path):

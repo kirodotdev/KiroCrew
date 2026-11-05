@@ -115,6 +115,37 @@ _CONSOLIDATION_BUSY = _ConsolidationRefusedSentinel()
 #: back with no reply or an unparseable one, or it could not be dispatched. Nothing was
 #: extracted, so the window stays pending and the caller arms its own backoff.
 _CONSOLIDATION_EMPTY = _ConsolidationRefusedSentinel()
+#: The turn was billed, but the conversation moved on (a newer user row, or the
+#: transcript changed) before the result could be written, so it was discarded.
+#: The window stays pending; the threshold caller waits before it tries again.
+_CONSOLIDATION_STALE = _ConsolidationRefusedSentinel()
+
+
+class PrefsWindow:
+    """Where a preference-only pass starts, and where the one it ran stopped.
+
+    The preference-only window has no durable marker: the threshold caller
+    tracks it as an in-memory offset. It hands the offset in as ``start`` (an
+    absolute message count), and the pass prompts one budget-sized,
+    message-aligned chunk from there and writes the absolute count it covered
+    to ``end``. The caller advances its offset to ``end``, so a tail larger
+    than the budget drains over later passes instead of being skipped.
+    ``end`` stays ``None`` until the pass knows its span.
+
+    ``start`` counts rows of one transcript generation: a rotation or rewrite
+    replaces the rows it counted. ``generation`` is the ``rotation_generation``
+    it was recorded under (``None``: unknown, read as current). A pass whose
+    snapshot is of another generation starts at the snapshot's own offset
+    instead, and writes the generation it read to ``snapshot_generation``.
+    """
+
+    __slots__ = ("end", "generation", "snapshot_generation", "start")
+
+    def __init__(self, start: int, generation: int | None = None) -> None:
+        self.start = start
+        self.generation = generation
+        self.end: int | None = None
+        self.snapshot_generation: int | None = None
 
 
 def _no_pass_ran(outcome: object) -> bool:

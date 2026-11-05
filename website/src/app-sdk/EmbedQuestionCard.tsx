@@ -9,14 +9,20 @@
  * which admit the slot's owner app (with `permissions.sessionApproval`, the grant
  * approvals need) and nobody else's:
  *
- * - `GET  /api/chat/slots/{slot}/question`          the slot's pending cards
- * - `POST /api/chat/slots/{slot}/question/answer`   answer or decline a blocking card
+ * - `GET  /api/chat/slots/{slot}/question`           the slot's pending cards
+ * - `POST /api/chat/slots/{slot}/question/answer`    answer or decline a BLOCKING card
+ * - `POST /api/chat/slots/{slot}/question/steer`     steer a NATIVE card's answer
+ * - `POST /api/chat/slots/{slot}/question/dismiss`   retire a NATIVE card's status
  *
- * Only BLOCKING cards (an `ask_id`, the MCP `ask_question` tool) are shown. A
- * stateless card is kiro-cli's native mid-turn `AskUserQuestion`, whose answer
- * must be steered into the running turn; the embed has no steer path, and a
- * plain send would queue the answer behind the very turn waiting for it. Those
- * cards stay a dashboard surface.
+ * Two kinds of card are shown. A BLOCKING card (an `ask_id`, the MCP
+ * `ask_question` tool) parks a wait; its answer goes to `/answer`. A NATIVE card
+ * (kiro-cli's mid-turn `AskUserQuestion`: `native: true`, a `card_id`, no
+ * `ask_id`) is raised while its own turn is still running and waiting on the
+ * answer, so a plain send would queue behind that turn and the question would
+ * never be consumed. Its answer STEERS into the running turn (`/steer`, with the
+ * app's own provenance server-side), exactly as the dashboard's
+ * `onDirectQuestionSend` steers it. When the turn has already ended the steer is
+ * `unavailable`, and the answer goes back to the composer so it is never lost.
  *
  * The rendering is the shared `QuestionCard`. A 404 on an answer means the wait
  * is gone, so the typed answer goes back to the composer, unsent. So does a
@@ -40,13 +46,29 @@ interface EmbedQuestion {
   multiSelect?: boolean
 }
 
-/** One blocking entry of `GET /api/chat/slots/{slot}/question`. */
+/** One entry of `GET /api/chat/slots/{slot}/question`.
+ *  A blocking card carries an `ask_id`; a native mid-turn card carries a
+ *  `card_id` and `native: true` and no `ask_id`. */
 export interface EmbedPendingQuestion {
-  ask_id: string
+  /** Set only on a blocking card (the MCP `ask_question` tool's wait). */
+  ask_id?: string
+  /** Set only on a native mid-turn card (`AskUserQuestion`). */
+  card_id?: string
+  /** True on a native mid-turn card; its answer steers into the running turn. */
+  native?: boolean
   slot: string
   questions: EmbedQuestion[]
   ts?: number
 }
+
+/** The stable identity a card is keyed by: its `ask_id`, or a native card's
+ *  `card_id`. Both routes key drafts, in-flight sends and settled sets by it. */
+const cardIdentity = (c: { ask_id?: string; card_id?: string } | null | undefined): string =>
+  (c?.ask_id || c?.card_id || '')
+
+/** A native card has no `ask_id`: its answer steers rather than resolving a wait. */
+const isNative = (c: { ask_id?: string; native?: boolean } | null | undefined): boolean =>
+  !!c && !c.ask_id && c.native === true
 
 /** Poll cadence while a turn runs (a blocking ask parks inside one) and while idle. */
 export const EMBED_QUESTION_POLL_RUNNING_MS = 1500
@@ -81,8 +103,14 @@ export function useEmbedPendingQuestion(api: AppApi, slot: string, running: bool
     queryFn: async () => {
       const res = await api.get<{ pending?: Partial<EmbedPendingQuestion>[] }>(embedQuestionPath(slot))
       const rows = Array.isArray(res?.pending) ? res.pending : []
-      return rows.filter((c): c is EmbedPendingQuestion =>
-        typeof c.ask_id === 'string' && !!c.ask_id && Array.isArray(c.questions) && c.questions.length > 0)
+      // Keep a blocking card (a non-empty `ask_id`) and a native mid-turn card
+      // (a non-empty `card_id` + `native: true`, no `ask_id`); both must carry
+      // questions to render. A status-only record (no questions) is skipped.
+      return rows.filter((c): c is EmbedPendingQuestion => {
+        if (!Array.isArray(c.questions) || c.questions.length === 0) return false
+        if (typeof c.ask_id === 'string' && c.ask_id) return true
+        return typeof c.card_id === 'string' && !!c.card_id && c.native === true
+      })
     },
     // A refusal is the answer for this app and slot, so it is not retried or
     // polled again: an app without the grant simply shows no card.
@@ -116,7 +144,7 @@ interface EmbedQuestionCardProps {
 
 export default function EmbedQuestionCard({ api, slot, pending, loadFailed, onRestore }: EmbedQuestionCardProps) {
   const queryClient = useQueryClient()
-  const identity = pending?.ask_id ?? ''
+  const identity = cardIdentity(pending)
   const [busyFor, setBusyFor] = useState<string | null>(null)
   const [failure, setFailure] = useState<{ id: string; message: string } | null>(null)
   // Cards this component already settled, so the next poll cannot repaint one.
@@ -146,11 +174,12 @@ export default function EmbedQuestionCard({ api, slot, pending, loadFailed, onRe
   useEffect(() => {
     const previous = shown.current
     shown.current = pending
-    if (!previous || previous.ask_id === pending?.ask_id) return
-    if (inFlight.current.has(previous.ask_id)) return
-    const draft = drafts.current.get(previous.ask_id)
-    drafts.current.delete(previous.ask_id)
-    if (!draft) return
+    const prevId = cardIdentity(previous)
+    if (!prevId || prevId === cardIdentity(pending)) return
+    if (inFlight.current.has(prevId)) return
+    const draft = drafts.current.get(prevId)
+    drafts.current.delete(prevId)
+    if (!draft || !previous) return
     const text = answersAsText(draft)
     if (!text.trim()) return
     const message = answerRestoredNotice(previous.questions)
@@ -160,11 +189,11 @@ export default function EmbedQuestionCard({ api, slot, pending, loadFailed, onRe
   const busy = busyFor === identity
   const base = embedQuestionPath(slot)
 
-  const settle = (askId: string) => {
-    drafts.current.delete(askId)
-    setSettled(prev => new Set(prev).add(askId))
+  const settle = (id: string) => {
+    drafts.current.delete(id)
+    setSettled(prev => new Set(prev).add(id))
     queryClient.setQueryData<EmbedPendingQuestion[]>(queryKey(slot), prev =>
-      (prev ?? []).filter(c => c.ask_id !== askId))
+      (prev ?? []).filter(c => cardIdentity(c) !== id))
     void queryClient.invalidateQueries({ queryKey: queryKey(slot) })
   }
 
@@ -194,7 +223,11 @@ export default function EmbedQuestionCard({ api, slot, pending, loadFailed, onRe
   if (!pending || settled.has(identity)) return sideNotices
 
   const answer = (answers: Record<string, string> | undefined) => {
-    const askId = pending.ask_id
+    // A native mid-turn card steers its answer into the running turn; a blocking
+    // ask resolves its wait through /answer. The branch is the only difference —
+    // drafts, in-flight tracking and settling are keyed by the same identity.
+    if (isNative(pending)) { steerNative(answers); return }
+    const askId = cardIdentity(pending)
     if (busy) return
     inFlight.current.add(askId)
     drafts.current.delete(askId)
@@ -234,7 +267,7 @@ export default function EmbedQuestionCard({ api, slot, pending, loadFailed, onRe
         // this card's draft again, so a retry or a later retirement still has it.
         // If the card already left the poll while the POST was out, hand it back now.
         if (answers && answersAsText(answers).trim()) {
-          if (shown.current?.ask_id === askId) drafts.current.set(askId, answers)
+          if (cardIdentity(shown.current) === askId) drafts.current.set(askId, answers)
           else {
             const message = answerRestoredNotice(pending.questions)
             if (restoreRef.current(slot, answersAsText(answers), message)) setRestored({ message, failed: true })
@@ -244,6 +277,122 @@ export default function EmbedQuestionCard({ api, slot, pending, loadFailed, onRe
         setFailure({ id: askId, message: i18nT(answerFailureKey(err)) })
       })
       .finally(() => setBusyFor(current => (current === askId ? null : current)))
+  }
+
+  // A native mid-turn card: its answer must reach the RUNNING turn waiting on it.
+  // `answers` undefined is a Dismiss, which retires the card's status
+  // (`/dismiss`); otherwise the answer text steers into the turn (`/steer`).
+  const steerNative = (answers: Record<string, string> | undefined) => {
+    const cardId = cardIdentity(pending)
+    if (busy) return
+    const text = answers ? answersAsText(answers) : ''
+    // A submit with no selected answer is a no-op, not a dismiss: the card stays.
+    if (answers && !text.trim()) return
+    inFlight.current.add(cardId)
+    drafts.current.delete(cardId)
+    setRestored(null)
+    setBusyFor(cardId)
+    setFailure(null)
+    // Dismiss: retire the card's needs_input status; the agent reads nothing.
+    if (!answers) {
+      api.post(`${base}/dismiss`, { card_id: cardId })
+        .then(() => { inFlight.current.delete(cardId); settle(cardId) })
+        .catch((err) => {
+          inFlight.current.delete(cardId)
+          // A 2xx whose body could not be read: the gateway took the dismiss, so
+          // it is settled — UNLESS the 2xx came from something in front of the
+          // gateway (an auth proxy's login page), where nothing was retired and
+          // settling would hide a card the next poll still returns. Same
+          // provenance rule the answer/steer paths apply (utils/sendDelivery).
+          if (err instanceof AcceptedBodyUnreadable) {
+            if (err.response && answeredByIntermediary(err.response, `${base}/dismiss`)) {
+              setFailure({ id: cardId, message: i18nT(answerFailureKey(err)) })
+            } else {
+              settle(cardId)
+            }
+            return
+          }
+          // A 404 means the card already retired (answered/replaced): same as done.
+          if (err instanceof ApiError && err.status === 404) { settle(cardId); return }
+          setFailure({ id: cardId, message: i18nT(answerFailureKey(err)) })
+        })
+        .finally(() => setBusyFor(current => (current === cardId ? null : current)))
+      return
+    }
+    // Steer the answer into the running turn. The server keeps app provenance and
+    // checks slot ownership; it replies `steered` when it landed, or
+    // `unavailable` when no turn is running (the turn ended before Submit) so the
+    // answer is handed back to the composer rather than dropped.
+    api.post<{ ok?: boolean; steered?: boolean; unavailable?: boolean }>(`${base}/steer`, { card_id: cardId, message: text })
+      .then((res) => {
+        inFlight.current.delete(cardId)
+        if (res && res.steered) { settle(cardId); return }
+        // Not steered (no live turn): hand the answer to the composer, not lost.
+        // The card stayed editable while the POST was out, so a later edit (kept
+        // in `drafts`) wins over the submitted snapshot — captured BEFORE settle,
+        // which deletes the draft. The card is cleared, so a later user send is
+        // the only route left for it.
+        const edited = drafts.current.get(cardId)
+        const handBack = edited && answersAsText(edited).trim() ? answersAsText(edited) : text
+        settle(cardId)
+        const message = answerRestoredNotice(pending.questions)
+        if (restoreRef.current(slot, handBack, message)) setRestored({ message, failed: false })
+      })
+      .catch((err) => {
+        inFlight.current.delete(cardId)
+        // The card stays editable while the POST is out, so the latest edit (kept
+        // in `drafts` meanwhile) wins over the submitted snapshot.
+        const edited = drafts.current.get(cardId)
+        if (edited && answersAsText(edited).trim()) answers = edited
+        // A 2xx whose body could not be read: for a STEER the body is the only
+        // thing that says `steered` vs `unavailable`, so an unreadable one is
+        // indeterminate — never settle-and-drop it. The agent may still be
+        // waiting, so the answer is handed back to the composer (or kept as this
+        // card's draft while the card is still shown), exactly like a
+        // not-delivered outcome below. An intermediary 200 (auth proxy) is the
+        // same: nothing reached the gateway.
+        if (err instanceof AcceptedBodyUnreadable) {
+          if (answers && answersAsText(answers).trim()) {
+            if (cardIdentity(shown.current) === cardId) {
+              // Card still shown: keep the latest answer as its draft AND
+              // surface the failure, exactly as the /answer path does — an
+              // unreadable 2xx is indeterminate, so the user must see it was not
+              // confirmed rather than have the card silently sit as if sent.
+              drafts.current.set(cardId, answers)
+              setFailure({ id: cardId, message: i18nT(answerFailureKey(err)) })
+              return
+            }
+            settle(cardId)
+            const message = answerRestoredNotice(pending.questions)
+            if (restoreRef.current(slot, answersAsText(answers), message)) setRestored({ message, failed: true })
+          } else {
+            settle(cardId)
+          }
+          return
+        }
+        if (err instanceof ApiError && err.status === 404) {
+          // The card retired (the turn consumed or replaced it). Hand the typed
+          // answer back to the composer so it is not lost.
+          settle(cardId)
+          const t = answers ? answersAsText(answers) : ''
+          if (!t.trim()) return
+          const message = answerRestoredNotice(pending.questions)
+          if (restoreRef.current(slot, t, message)) setRestored({ message, failed: true })
+          return
+        }
+        // Not delivered, agent may still wait: keep the draft (or hand back if the
+        // card already left the poll), as the blocking path does.
+        if (answers && answersAsText(answers).trim()) {
+          if (cardIdentity(shown.current) === cardId) drafts.current.set(cardId, answers)
+          else {
+            const message = answerRestoredNotice(pending.questions)
+            if (restoreRef.current(slot, answersAsText(answers), message)) setRestored({ message, failed: true })
+            return
+          }
+        }
+        setFailure({ id: cardId, message: i18nT(answerFailureKey(err)) })
+      })
+      .finally(() => setBusyFor(current => (current === cardId ? null : current)))
   }
 
   return (

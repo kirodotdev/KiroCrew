@@ -503,7 +503,15 @@ def _write_merged_crons(
     *dst_fd* itself, opened read-write, so the inode and its ACL are kept.
     """
     from kiro_crew.atomic_write import atomic_write, pinned_parent_replace_supported
+    from kiro_crew.cron_service.zone_default_migration import settle_documents_before_merge
 
+    # A backup from before "local" became the default keeps its unzoned jobs on UTC.
+    if not settle_documents_before_merge(src, dst):
+        print(
+            "  ⚠️  config.json could not be read, so cron jobs from before the local "
+            "time zone default cannot be settled — skipping cron merge"
+        )
+        return False
     existing = {j.get("name") for j in dst.get("jobs", [])}
     imported = 0
     for job in src.get("jobs", []):

@@ -11,6 +11,7 @@ requests and a real store from ``artifacts_handlers_helpers.py``.
 from __future__ import annotations
 
 import json
+import os
 
 import pytest
 from artifacts_handlers_helpers import (  # noqa: F401 -- fixtures are requested by name
@@ -19,6 +20,7 @@ from artifacts_handlers_helpers import (  # noqa: F401 -- fixtures are requested
     isolated_store_fixture,
     patch_restricted_fixture,
 )
+from stray_line_helpers import cyclic_gc_quiesced  # noqa: F401 - fixture
 
 from kiro_crew import artifacts as art_mod
 from kiro_crew.artifacts import ArtifactStore
@@ -431,15 +433,14 @@ class TestTeardown:
     """Tests for _handle_teardown restricted-session deny + confirm gate."""
 
     @pytest.fixture(autouse=True)
-    # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- pre-existing autouse class-scoped restricted-session patch moved verbatim; no test in this class calls monkeypatch.undo()
-    def patch_deploy_restricted(self, monkeypatch):
+    def patch_deploy_restricted(self, _floor_monkeypatch):
         """Patch _is_restricted_session at the import point used by deploy handlers."""
         from kiro_crew.dashboard.handlers import _shared
 
         def _stub(_state, req) -> bool:
             return req.app.get("_restricted_session", False)
 
-        monkeypatch.setattr(_shared, "_is_restricted_session", _stub)
+        _floor_monkeypatch.setattr(_shared, "_is_restricted_session", _stub)
 
     @pytest.mark.asyncio
     async def test_restricted_session_denied(self, isolated_store, patch_restricted) -> None:
@@ -466,6 +467,34 @@ class TestTeardown:
         req = _request(match={"slug": "x"}, body={"confirm": False})
         resp = await _handle_teardown(req)
         assert resp.status == 400
+
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(
+        os.name == "nt", reason="teardown answers its POSIX-shell refusal before the confirm gate"
+    )
+    @pytest.mark.usefixtures("cyclic_gc_quiesced")
+    @pytest.mark.parametrize(
+        "raw",
+        [b"[]", b"[true]", b"5", b'"confirm"', b"null", "nested", b'{"n": ' + b"9" * 5000 + b"}"],
+        ids=["list", "list-of-true", "number", "string", "null", "nested", "over-digit-limit"],
+    )
+    async def test_a_body_that_is_no_object_still_needs_confirm(
+        self, isolated_store, patch_restricted, raw
+    ) -> None:
+        """A body ``json.loads`` refuses, or one that is not an object, carries no
+        confirm: the same 400 a missing confirm gets, not a 500."""
+        from stray_line_helpers import too_deep_to_decode
+
+        from kiro_crew.deploy.handlers import _handle_teardown
+
+        body = too_deep_to_decode().encode("ascii") if raw == "nested" else raw
+        req = _request(match={"slug": "x"}, body=body)
+        try:
+            resp = await _handle_teardown(req)
+        except (AttributeError, RecursionError, ValueError) as exc:
+            pytest.fail(f"teardown raised {type(exc).__name__}")
+        assert resp.status == 400
+        assert "confirm" in json.loads(resp.body)["error"]
 
     @pytest.mark.asyncio
     async def test_not_found_returns_404(self, isolated_store, patch_restricted) -> None:

@@ -89,7 +89,9 @@ SCREENS = frozenset({"first_linked_ancestor", "is_link_or_junction", "is_reparse
 #: ``open_lock_file_for_sweep`` is the same shape -- it opens the lock by name
 #: (``os.open`` on POSIX, ``CreateFileW`` on Windows) past the one-hop reach -- so
 #: the orphan-lock sweep's screen-then-open site survives the ratchet only while
-#: it too is named here.
+#: it too is named here. Every by-name lock-sidecar open in the package calls
+#: ``open_create_or_existing`` directly, so naming it keeps each of those sites a
+#: USE exactly as the ``os.open`` it stands in for.
 PRIMITIVES = frozenset(
     {
         "open_create_or_existing",

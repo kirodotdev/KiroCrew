@@ -154,6 +154,25 @@ describe('voiceTranscriptInbox — many subscribers, one delivery', () => {
  * request, Discard and a new recording let it go. */
 describe('voiceTranscriptInbox — the audio of a failed request', () => {
   const capture = (retryable = true) => ({ blob: new Blob(['x'.repeat(200)], { type: 'audio/webm' }), ext: 'webm', retryable })
+
+  it('an exclusive owner keeps its session failures, and their held audio, to its owners', async () => {
+    const box = { ...sink(id => id === 'box-1'), exclusive: true }
+    const chat = sink(id => id === 'slot-a')
+    unsubs.push(subscribeTranscripts(box), subscribeTranscripts(chat))
+    const req = beginTranscription('box-1')
+    settleTranscription({ id: req.id, error: 'failed', sessionId: 'box-1', capture: capture() })
+    expect(box.settles).toEqual([[req.id, true]])
+    expect(chat.settles).toEqual([[req.id, false]])
+    const late = sink(id => id === 'slot-b')
+    unsubs.push(subscribeTranscripts(late))
+    await Promise.resolve()
+    expect(late.settles).toEqual([])
+    // A chat failure still reaches every subscriber.
+    const other = beginTranscription('slot-a')
+    settleTranscription({ id: other.id, error: 'boom', sessionId: 'slot-a' })
+    expect(box.settles.at(-1)).toEqual([other.id, true])
+    expect(late.settles.at(-1)).toEqual([other.id, true])
+  })
   type R = S & { released: number[]; results: TranscriptResult[] }
   function keeper(): R {
     const s = sink(() => true) as R

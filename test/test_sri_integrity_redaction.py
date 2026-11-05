@@ -202,6 +202,58 @@ def test_a_delta_split_sri_value_saves_the_reply_not_the_withheld_notice(value: 
     assert digest not in saved and TAG in saved
 
 
+def test_a_delta_split_digest_does_not_redact_the_whole_ones_beside_it() -> None:
+    """One cut digest in a streamed lockfile must not cost the whole digests beside it."""
+    rng = random.Random(25229)
+    digests = (_sri("sha512", rng.randbytes(64)) for _ in range(20))
+    # Each fires the bare-secret pass on its own, as almost every digest does.
+    values = [v for v in digests if _redaction._text_contains_bare_secret(v[7:])]
+    entries = [f'      "integrity": "{v}"\n' for v in values[:4]]
+    cut = entries[0].index("sha512-") + 20
+    deltas = [entries[0][:cut], entries[0][cut:], *entries[1:]]
+    saved = _flush_streamed(deltas)
+    # The cut digest is judged as its own delta was; every whole one is kept.
+    assert values[0] not in saved and TAG in saved
+    for value in values[1:4]:
+        assert value in saved
+
+
+def test_only_a_key_long_judged_value_costs_a_digest_its_exemption() -> None:
+    """A short removed value (a `token=` piece) matching inside a digest by chance does not count."""
+    value = FIRING_VALUES[0]
+    digest = value.removeprefix("sha256-")
+    text = f'integrity = "{value}"'
+    for short in (digest[5:8], digest[:39]):
+        assert (
+            _redaction.redact_credentials_with_records(text, judged_sri_values=(short,))[0] == text
+        )
+    out = _redaction.redact_credentials_with_records(text, judged_sri_values=(digest[:40],))[0]
+    assert digest not in out and TAG in out
+
+
+def test_past_the_work_budget_the_split_digest_retry_is_not_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The retry's digest-by-value scan is the cost the budget bounds, so it never runs past it."""
+    from kiro_crew.dashboard import chat_runner
+    from kiro_crew.dashboard.chat_turn.segment_flush import _SEGMENT_UNCHECKED_TEXT
+
+    real = chat_runner._redact_segment_text
+    judged: list[object] = []
+
+    def spy(slot, text, judged_sri_values=(), **kwargs):  # type: ignore[no-untyped-def]
+        if judged_sri_values:
+            judged.append(judged_sri_values)
+        return real(slot, text, judged_sri_values, **kwargs)
+
+    monkeypatch.setattr(chat_runner, "_SEGMENT_CHECK_MAX_WORK", 1)
+    monkeypatch.setattr(chat_runner, "_redact_segment_text", spy)
+    value = FIRING_VALUES[0]
+    saved = _flush_streamed(['integrity = "sha256-', value.removeprefix("sha256-"), '"'])
+    assert saved == _SEGMENT_UNCHECKED_TEXT
+    assert judged == []
+
+
 def test_a_delta_split_sri_value_beside_a_key_keeps_the_key_redacted() -> None:
     value = FIRING_VALUES[1]
     digest = value.removeprefix("sha256-")

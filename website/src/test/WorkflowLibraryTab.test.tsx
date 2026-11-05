@@ -380,3 +380,87 @@ describe('WorkflowLibraryTab', () => {
     ).toHaveValue(latest.source)
   })
 })
+
+
+describe('WorkflowLibraryTab list-load failure', () => {
+  it('announces the error through role=alert and offers a retry that refetches', async () => {
+    mockApi.workflowDefinitions
+      .mockRejectedValueOnce(new Error('workflow service is unreachable'))
+      .mockResolvedValueOnce({ definitions: [DEFINITION] })
+
+    renderTab()
+
+    // The failure renders through ErrorNotice (role="alert"), not a bare
+    // text-danger paragraph, so assistive tech announces it.
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent(/workflow service is unreachable|request failed/i)
+
+    expect(mockApi.workflowDefinitions).toHaveBeenCalledTimes(1)
+    fireEvent.click(screen.getByRole('button', { name: /retry/i }))
+    await waitFor(() => expect(mockApi.workflowDefinitions).toHaveBeenCalledTimes(2))
+
+    // After the successful refetch the list renders and the alert clears.
+    // Assert the list ROW specifically (a button): once a definition loads the
+    // detail pane auto-selects it and renders its name again in a heading, so a
+    // bare findByText('Debug Project') now matches two nodes.
+    await screen.findByRole('button', { name: /Debug Project/ })
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  it('offers the agent hand-off on the error when nothing is unsaved', async () => {
+    mockApi.workflowDefinitions.mockReset()
+    mockApi.workflowDefinitions.mockRejectedValue(new Error('workflow service is unreachable'))
+
+    renderTab()
+
+    await screen.findByRole('alert')
+    // No draft in flight, so following the hand-off loses nothing: it is offered.
+    expect(screen.getByRole('button', { name: /ask the agent/i })).toBeInTheDocument()
+  })
+
+  it('withholds the hand-off while a new draft is being authored', async () => {
+    // First load succeeds so the user can start a draft; the next list read
+    // (a refetch) fails while that unsaved draft is in the editor.
+    mockApi.workflowDefinitions.mockReset()
+    mockApi.workflowDefinitions
+      .mockResolvedValueOnce({ definitions: [DEFINITION] })
+      .mockRejectedValue(new Error('workflow service is unreachable'))
+
+    const { client } = renderTab()
+    await screen.findByRole('button', { name: /Debug Project/ })
+
+    // Author a new draft (sets `creating`), then force a list refetch failure.
+    fireEvent.click(screen.getByRole('button', { name: /new workflow/i }))
+    await act(async () => {
+      await client.refetchQueries({ queryKey: ['workflow-definitions'] })
+    })
+
+    const alert = await screen.findByRole('alert')
+    expect(alert).toBeInTheDocument()
+    // Following "Ask the agent" would unmount the tab and discard the draft, so
+    // the hand-off is withheld while the draft is unsaved.
+    expect(screen.queryByRole('button', { name: /ask the agent/i })).not.toBeInTheDocument()
+  })
+
+  it('withholds the hand-off while an unsent run input is typed', async () => {
+    // A clean selected definition (editor not dirty) but a typed-but-unsent run
+    // payload: a background refetch failure must not offer a hand-off that would
+    // discard it.
+    mockApi.workflowDefinitions.mockReset()
+    mockApi.workflowDefinitions
+      .mockResolvedValueOnce({ definitions: [DEFINITION] })
+      .mockRejectedValue(new Error('workflow service is unreachable'))
+
+    const { client } = renderTab()
+    await screen.findByRole('button', { name: /Debug Project/ })
+
+    const runInput = document.getElementById('workflow-run-input') as HTMLInputElement
+    fireEvent.change(runInput, { target: { value: 'unsent payload' } })
+    await act(async () => {
+      await client.refetchQueries({ queryKey: ['workflow-definitions'] })
+    })
+
+    await screen.findByRole('alert')
+    expect(screen.queryByRole('button', { name: /ask the agent/i })).not.toBeInTheDocument()
+  })
+})

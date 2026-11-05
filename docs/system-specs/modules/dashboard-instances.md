@@ -473,16 +473,24 @@ shows the same text (`GET /api/members/{slug}/briefing` `upkeep`). Decision:
 `rfc-crewmate-dashboard-upkeep-skill.md`.
 
 
-## A field that does not resolve is the mate's to fix, and only the mate is told
+## A field that does not resolve is the mate's to fix; the person sees only that it is not current
 
 The Dashboard frame (`dashboard_frame.compose`) draws NO band about field values, in any
 state: no "Some numbers are older" line, no `data-dashboard-stale` attribute. A cell
-whose value did not resolve keeps the last value the page drew and is dimmed through
-`data-dashboard-missing`; a cell that never resolved stays empty and dimmed. `missing`
-wins over presence on every fill, because a patch carries the fields it did not move
-forward from the read before it: a cell named in the patch's `missing` is dimmed even
-though its old value is still in `window.kirocrew.fields`. The person
-cannot fix a binding, so telling them about one only teaches them to ignore the page.
+whose value did not resolve keeps the last value the page drew, is dimmed through
+`data-dashboard-missing`, and carries `data-dashboard-missing-label`: a "not current"
+marker in the reader's language (`dashboard_frame._MISSING_LABELS`) that the host CSS
+draws after the value. A cell that never resolved keeps the template's placeholder and
+carries the same marker, which is why it says "not current" and not "older value".
+`missing` wins over presence on every fill, because a patch carries the fields it did
+not move forward from the read before it: a cell named in the patch's `missing` is
+marked even though its old value is still in `window.kirocrew.fields`. A
+`window.kirocrew.subscribe` callback is called `cb(value, name, meta)` with
+`meta = {missing}`: when a field it was given goes missing it is called again with the
+value it already had and `missing: true`, and once more with `missing: false` when the
+field resolves (a patch that only drops it from `missing` counts). A field it was never
+given does not call back. The person cannot fix a binding, so the marker says only
+that the value is not current, never why; the reason goes to the mate.
 The read carries no `stale` key, and no shipped template draws a freshness or
 staleness message of its own: no badge from a read flag, no quiet band from a fold
 stamp, no live/"no new entry" indicator (`test_no_shipped_page_reads_stale` and

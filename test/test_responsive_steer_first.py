@@ -8,7 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from test_responsive_chat import _busy
+from test_responsive_chat import _busy, _OwnerRequest
 from test_responsive_chat import fixture as responsive_fixture  # noqa: F401  (registers it)
 
 from kiro_crew.dashboard import chat_runner
@@ -410,7 +410,7 @@ async def test_real_turn_steer_first_delivers_exactly_once(tmp_path, monkeypatch
         return "acked"
 
     state.sessions.cancel_owned_turn = AsyncMock(side_effect=cancel)
-    request = SimpleNamespace(app={"state": state})
+    request = _OwnerRequest(state)
     original = await _run_original(state, slot)
     try:
         await asyncio.wait_for(entered.wait(), timeout=30)

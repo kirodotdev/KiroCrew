@@ -185,7 +185,10 @@ class TestRunChatLocalCommands:
             await _drive(state, slot, "/todos")
 
         select_backend.assert_called_once_with(
-            chat_runner.effective_session_key(slot), cfg.agent.member_acp_backend, acp_backend
+            chat_runner.effective_session_key(slot),
+            cfg.agent.member_acp_backend,
+            acp_backend,
+            crew_backend=None,
         )
 
         notices = [
@@ -610,7 +613,7 @@ class TestRunChatLocalCommands:
             select_backend.assert_not_called()
         else:
             select_backend.assert_called_once_with(
-                chat_runner.effective_session_key(slot), "claude", ""
+                chat_runner.effective_session_key(slot), "claude", "", crew_backend=None
             )
 
     @pytest.mark.asyncio

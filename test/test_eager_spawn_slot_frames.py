@@ -171,6 +171,7 @@ class TestSlotFocusedFrame:
         state.sessions.resumable_hint = MagicMock(return_value=False)
         with patch.object(chat_runner.KiroCrewConfig, "load", _cfg(True)):
             await chat_runner._eager_spawn(state, slot, allow_resume=True)
+        assert chat_runner._armed_prefetches == {}
         state.sessions.get_or_create.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -195,8 +196,10 @@ class TestSlotFocusedFrame:
             assert not pending.cancelled()
         finally:
             fresh.set_result(None)
-            # flake-ok: pre-existing task await with no timeout, moved verbatim; the set_result() just before it releases it
-            await pending
+            # The set_result() above releases the task. The ceiling only names a hang.
+            _done, still_pending = await asyncio.wait({pending}, timeout=30.0)
+            assert not still_pending, "pending fresh spawn task did not finish"
+            pending.result()
 
     @pytest.mark.asyncio
     async def test_running_turn_schedules_nothing(self):
@@ -212,8 +215,10 @@ class TestSlotFocusedFrame:
             assert _handle_slot_focused(state, "t1", None, owner=True) is None
         finally:
             _turn.set_result(None)
-            # flake-ok: pre-existing task await with no timeout, moved verbatim; the set_result() just before it releases it
-            await _task
+            # The set_result() above releases the task. The ceiling only names a hang.
+            _done, still_pending = await asyncio.wait({_task}, timeout=30.0)
+            assert not still_pending, "running turn task did not finish"
+            _task.result()
 
     @pytest.mark.asyncio
     async def test_non_owner_socket_schedules_nothing_and_cancels_nothing(self):

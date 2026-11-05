@@ -58,6 +58,26 @@ describe('inferLane precedence', () => {
     expect(inferLane({ has_options: true })).toBe('waiting')
   })
 
+  it('files a conductor whose crew still moves under working, despite its options line', () => {
+    expect(inferLane({ has_options: true }, { crewBusy: true })).toBe('working')
+    expect(inferLane({}, { crewBusy: true })).toBe('working')
+  })
+
+  it('files a conductor whose ledger work is still moving under idle, despite its options line', () => {
+    expect(inferLane({ has_options: true }, { crewOpenWork: true })).toBe('idle')
+    // Its armed patrol does not make that crew read as working either.
+    expect(inferLane({ has_options: true }, { crewOpenWork: true, goalLoopActive: true })).toBe('idle')
+  })
+
+  it('keeps a conductor whose own turn runs under working, even with quiet ledger work', () => {
+    expect(inferLane({ running: true }, { crewStalled: true })).toBe('working')
+    expect(inferLane({}, { crewStalled: true })).toBe('waiting')
+  })
+
+  it('files a conductor whose ledger names the person under waiting, even with its crew moving', () => {
+    expect(inferLane({}, { crewPerson: true, crewBusy: true })).toBe('waiting')
+  })
+
   it('treats an interrupted turn as waiting, not idle', () => {
     // The session sits dead until the user resumes it; idle would imply nothing
     // is owed.

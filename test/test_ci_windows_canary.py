@@ -76,17 +76,30 @@ def test_all_actual_routes_require_repository_event_and_admitted_actor(
     for step_id in ("runner", "windows-runner"):
         step = next(s for s in jobs["changes"]["steps"] if s.get("id") == step_id)
         assert _expression(step["env"]["ELIGIBLE"], context) == expected
+    # Fleet admission is what this test pins; the destination a REJECTED run
+    # takes is two-valued and depends only on where the run executes. In this
+    # repository it is the larger-runner group's own label, which keeps the run
+    # off the enterprise-shared standard pool. Anywhere else -- a fork running
+    # this workflow on its own `main` -- no organization runner group is
+    # reachable, so the hosted image is the only destination that can serve it.
     for name in ("changes", "await-fast-gate"):
         assert _expression(jobs[name]["runs-on"], context) == (
-            "codebuild-kirocrew-gha-linux-100-2" if expected else "ubuntu-latest"
+            "codebuild-kirocrew-gha-linux-100-2"
+            if expected
+            else ("kirocrew-linux-4-core" if repository == _REPO else "ubuntu-latest")
         )
 
 
 @pytest.mark.parametrize("eligible", [False, True])
 @pytest.mark.parametrize("attempt", [1, 2])
+# `in_repo` is the repository the run EXECUTES in, which decides whether the
+# organization's larger-runner group is reachable at all. False is a fork
+# running its own CI: it must land on the hosted image, because a group label it
+# cannot reach would leave every consumer queued until GitHub cancelled it.
+@pytest.mark.parametrize("in_repo", [True, False])
 @pytest.mark.parametrize("step_id,platform", [("runner", "linux"), ("windows-runner", "windows")])
 def test_real_resolver_shell_emits_large_and_hosted_fallback(
-    jobs, tmp_path, eligible, attempt, step_id, platform
+    jobs, tmp_path, eligible, in_repo, attempt, step_id, platform
 ):
     step = next(s for s in jobs["changes"]["steps"] if s.get("id") == step_id)
     # The helper rejects Windows' WSL launcher. Assert rather than skip: routing
@@ -104,7 +117,11 @@ def test_real_resolver_shell_emits_large_and_hosted_fallback(
         [shell, "-e", "-c", step["run"]],
         cwd=tmp_path,
         env=dict(
-            os.environ, ELIGIBLE=str(eligible).lower(), LABEL=label, GITHUB_OUTPUT=output.as_posix()
+            os.environ,
+            ELIGIBLE=str(eligible).lower(),
+            IN_REPO=str(in_repo).lower(),
+            LABEL=label,
+            GITHUB_OUTPUT=output.as_posix(),
         ),
         capture_output=True,
         text=True,
@@ -113,7 +130,15 @@ def test_real_resolver_shell_emits_large_and_hosted_fallback(
     )
     assert result.returncode == 0, result.stderr
     actual = dict(line.split("=", 1) for line in output.read_text(encoding="utf-8").splitlines())
-    fallback = "ubuntu-latest" if platform == "linux" else "windows-latest"
+    # Each platform lands on its own group's runner label, but only when the
+    # run executes in this repository and can therefore reach that group. A
+    # fork running its own CI gets the hosted image, because a label no runner
+    # there carries would queue every consumer until GitHub cancelled it.
+    group_label, hosted = {
+        "linux": ("kirocrew-linux-4-core", "ubuntu-latest"),
+        "windows": ("kirocrew-windows-4-core", "windows-latest"),
+    }[platform]
+    fallback = group_label if in_repo else hosted
     expected = {
         f"{platform}_runner": (
             (label + (" instance-size:large" if platform == "windows" else ""))
@@ -179,7 +204,7 @@ def test_shard_selection_and_checks_stay_intact(jobs):
     assert command == (
         "-p scripts.ci_pytest_progress -p scripts.ci_file_shards "
         '--ci-progress-dir "$RUNNER_TEMP/pytest-progress" '
-        '-q -n auto --timeout=180 --no-cov --max-worker-restart=0 -m "not ipv6_required" '
+        '-q -n auto --timeout=180 --no-cov --max-worker-restart=0 -m "not ipv6_required and not real_venv" '
         '--file-shards "$SHARD_COUNT" --file-shard ${{ matrix.group }}'
     )
     assert step["shell"] == "bash"

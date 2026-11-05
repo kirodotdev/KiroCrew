@@ -46,17 +46,17 @@ const rowOnlySignals = (m: MemberRosterRow): MemberSignals => ({
  * always the chip's accessible name); open, it is a searchable list of every
  * crewmate, the current one marked, and a "New crewmate" footer that opens the same create dialog the
  * old column's "+" did (one write path, one more front door). A second footer
- * Under the chip the page draws `CrewmateUnreadColumn` (below): one small pill
- * per crewmate with an UNREAD message who is not the open one (issue #19045).
- * The word "Crewmates" and the roster count the chip used to carry said what
- * the page is and how big the crew is — neither is what a reader comes to this
- * corner for, which is "who said something I have not read".
- *
  * action, "Show the full roster", brings the roster column back beside the
  * thread: this list holds crewmates only, and the column is where the team
  * headers, the star, the filters and the sort live — on desktop,
  * with the thread's back control hidden, nothing else reaches them. While the
  * column is showing the same action reads "Hide the roster".
+ *
+ * Under the chip the page draws `CrewmateUnreadColumn` (below): one small pill
+ * per crewmate with an UNREAD message who is not the open one (issue #19045).
+ * The word "Crewmates" and the roster count the chip used to carry said what
+ * the page is and how big the crew is — neither is what a reader comes to this
+ * corner for, which is "who said something I have not read".
  *
  * Switching here REPLACES the open crewmate the same way a roster row click did:
  * the parent owns the URL, so this component only reports the pick.
@@ -265,8 +265,8 @@ export default function CrewmateSwitcher({
           <input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder={t('pages.membersPage.find_crewmate')}
-            aria-label={t('pages.membersPage.find_crewmate')}
+            placeholder={t('pages.membersPage.search_members')}
+            aria-label={t('pages.membersPage.search_members')}
             className="flex-1 min-w-0 bg-transparent outline-hidden text-[13px] text-text placeholder:text-muted"
             data-testid="crewmate-switcher-search"
             autoFocus

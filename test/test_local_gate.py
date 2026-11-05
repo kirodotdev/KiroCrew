@@ -296,6 +296,10 @@ def test_gate_env_supplies_the_i18n_base_ref(gate, monkeypatch) -> None:
     """Without I18N_BASE_REF the [changed-values] style tests skip green, so a
     local run passed catalog values CI failed. The gate supplies the merge-base."""
     monkeypatch.delenv("I18N_BASE_REF", raising=False)
+    # The cap assertion below is about the bound the gate COMPUTES, and
+    # `pytest_worker_env` keeps a tighter inherited one on purpose, so an ambient
+    # value -- which Kiro Crew seeds at every agent spawn -- would decide it.
+    monkeypatch.delenv("PYTEST_XDIST_AUTO_NUM_WORKERS", raising=False)
     calls: list[list[str]] = []
 
     def fake_run(cmd, **_kwargs):

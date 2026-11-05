@@ -51,6 +51,7 @@ _REBOUND_STATE = (
     "_MATERIALIZED_COMPLETE",
     "_MATERIALIZED_REFRESH_APPLIED",
     "_MATERIALIZED_REFRESH_ISSUED",
+    "_MATERIALIZED_SKIPPED",
 )
 _STATE_NAMES = (*_REBOUND_STATE, "_MATERIALIZED_SEEN", "_MATERIALIZED_STEMS")
 
@@ -237,6 +238,7 @@ class TestTheSnapshotStateHasOneHome:
             "_MATERIALIZED_COMPLETE": False,
             "_MATERIALIZED_REFRESH_APPLIED": 0,
             "_MATERIALIZED_REFRESH_ISSUED": 1000,
+            "_MATERIALIZED_SKIPPED": None,
         }.items():
             restored_state.setattr(loader, preset, value)
         restored_state.setattr(loader, "kiro_agents_dir", lambda: tmp_path)
@@ -259,6 +261,7 @@ class TestTheSnapshotStateHasOneHome:
             "_MATERIALIZED_COMPLETE": (loader.refresh_materialized_agents, [], True),
             "_MATERIALIZED_REFRESH_APPLIED": (loader.refresh_materialized_agents, [], 1001),
             "_MATERIALIZED_REFRESH_ISSUED": (loader.refresh_materialized_agents, [], 1001),
+            "_MATERIALIZED_SKIPPED": (loader.refresh_materialized_agents, [], frozenset()),
         }
         rebind, args, expected = rebinds[name]
         rebind(*args)

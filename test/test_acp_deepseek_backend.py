@@ -1,18 +1,9 @@
-"""DeepSeek Harness as an ACP backend: the decisions that must not drift.
+"""DeepSeek Harness as an ACP backend: the gate-routing pins.
 
-The harness is a plugin host and ACP is one of the profiles it boots, so most of
-what this file pins is ordinary onboarding vocabulary. Three things are not:
-
-* it serves ``session/resume`` and REJECTS ``session/load``, so the shared restore
-  path has to pick both the capability it reads and the verb it sends from one
-  membership set;
-* its gate plugin turns each tool decision into an ACP permission request, and a
-  bounded no-follow load-marker read verifies that routing before it is offered;
-* it advertises reasoning effort under its own option id, so the id is read from a
-  table rather than spelled at each site.
-
-The gate-routing pins live here; the restore verb, spawn, effort, provider-key and
-enforcement pins live in the ``test_acp_deepseek_backend_*`` siblings.
+Its gate plugin turns each tool decision into an ACP permission request, and a
+load-marker read verifies that routing before it is offered. The restore verb, spawn,
+effort, provider-key and enforcement pins live in the ``test_acp_deepseek_backend_*``
+siblings.
 """
 
 from __future__ import annotations
@@ -37,6 +28,7 @@ from kiro_crew.acp import launch as launch_mod
 from kiro_crew.acp.client import AcpClient
 from kiro_crew.acp.harness import deepseek as deepseek_mod
 from kiro_crew.acp.harness import pi as pi_mod
+from kiro_crew.acp.transport_errors import AcpError
 from kiro_crew.acp_backends import (
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_DEEPSEEK,
@@ -115,13 +107,10 @@ def test_the_effort_option_id_is_this_harness_own_spelling() -> None:
 
 
 def test_the_session_mcp_array_membership_rests_on_a_captured_round_trip() -> None:
-    """Membership here is load-bearing, so it is pinned to evidence rather than prose.
+    """Stdio MCP membership is pinned to a captured round trip, not prose.
 
-    If this harness did NOT mount stdio, ``session/new`` would fail whole rather than
-    degrade -- a broken backend, not a tool-less one -- and its ``initialize``
-    advertises ``mcpCapabilities: {"http": true}`` with no stdio flag, which reads
-    like a refusal. The capture is what settles it: a real stdio MCP server was
-    mounted, its tool was called, and its result came back.
+    ``initialize`` advertises ``mcpCapabilities: {"http": true}`` with no stdio flag,
+    which reads like a refusal; the capture shows a stdio server mounted and called.
     """
     frames = _fixture_frames("mcp-stdio-mount-live.jsonl")
 
@@ -178,12 +167,8 @@ def test_an_unstartable_mcp_element_fails_the_whole_session() -> None:
 def _gate_extension_path(tmp_path):
     """The gate module this test's fake probe speaks for, as a real path under *tmp_path*.
 
-    Both sides of the read-back's file comparison are brought to one spelling with
-    ``realpath`` + ``normcase``, so a bare ``/sealed/gate.mjs`` is not a usable
-    stand-in: on Windows the expected side becomes ``c:\\sealed\\gate.mjs`` while a
-    marker string that is not a ``file://`` URL is never normalised, and the two
-    disagree for a reason production never has. An absolute path under ``tmp_path``
-    normalises identically on every platform.
+    A bare ``/sealed/gate.mjs`` fails on Windows: ``normcase`` makes the expected side
+    ``c:\\sealed\\gate.mjs`` while a non-``file://`` marker is never normalised.
     """
     return tmp_path / "gate.mjs"
 
@@ -191,15 +176,10 @@ def _gate_extension_path(tmp_path):
 def _good_gate_marker(module: str = "/sealed/gate.mjs", names: tuple[str, ...] = ()) -> dict:
     """The complete marker emitted by the shipped plugin on a clean ACP profile.
 
-    *module* defaults to a plain path for the callers that hand this marker straight
-    to :func:`~kiro_crew.acp_tool_gate.gate_marker_issue`, which compares strings.
-    Anything going through ``_verify_deepseek_gate`` must pass the ``file://`` URL of
-    :func:`_gate_extension_path` instead, because that is what the shipped plugin
-    writes (``import.meta.url``) and the only shape the read-back normalises.
-
-    *names* are the vault-fed env names the probe asked the plugin to check; the
-    clean marker reports every one present in the harness's own environment and
-    absent from the child it spawned through the harness's subprocess service.
+    Callers going through ``_verify_deepseek_gate`` must pass the ``file://`` URL of
+    :func:`_gate_extension_path`: the plugin writes ``import.meta.url``, the only shape
+    the read-back normalises. *names* are reported present in the harness, absent in
+    its child.
     """
     return {
         "plugin": "kiro-crew-tool-gate",
@@ -229,11 +209,8 @@ def _good_gate_marker(module: str = "/sealed/gate.mjs", names: tuple[str, ...] =
 class _FakeProbeProcess:
     """A stand-in for the harness the probe boots: writes the marker, then waits for EOF.
 
-    The real plugin writes its marker only once the harness has settled AND its
-    child-spawn check has finished, which is why the probe holds stdin open until
-    the marker exists and closes it afterwards -- stdin EOF is the profile's own
-    shutdown, and one that arrived earlier would tear the harness down under the
-    check. ``stdin_closed_after_marker`` records that order.
+    Stdin EOF shuts the profile down, so the probe must close stdin only after the
+    marker exists. ``stdin_closed_after_marker`` records that order.
     """
 
     instances: list["_FakeProbeProcess"] = []
@@ -362,12 +339,9 @@ def test_the_probe_hands_the_plugin_a_canary_under_each_vault_fed_name_and_never
 ) -> None:
     """The scrub PROPERTY is verified per configured name, on a value that is not the key.
 
-    The plugin can only observe whether a name reaches a harness child if the name
-    is SET in the harness's own environment, so the probe sets each vault-fed name
-    -- to a canary carrying this probe's nonce, never to the vault's plaintext,
-    because the probe boots a third-party plugin host that needs no provider key.
-    The names themselves ride in a dedicated variable so the plugin checks exactly
-    the set Crew configured and the marker cannot claim a different one.
+    Each vault-fed name is set to a nonce canary, never the plaintext, since the probe
+    boots a third-party host. The names ride in their own variable so the marker cannot
+    claim a different set.
     """
     from kiro_crew.acp import client as client_module
 
@@ -511,12 +485,8 @@ def test_a_fifo_at_the_marker_path_is_refused_without_blocking(tmp_path, monkeyp
 def test_the_routing_is_a_verified_gate_extension_and_therefore_enforced() -> None:
     """``VERIFIED_GATE_EXTENSION`` is the honest member once Crew ships the gate.
 
-    This harness's sandbox decides an action
-    itself, and its own ``session/request_permission`` carries only a
-    model-initiated escalation, so there is no SETTING to seed -- which is why this
-    is not ``VERIFIED_SEEDED_SETTINGS``. What makes it routed is a plugin Kiro Crew
-    composes into it, answering the harness's own ``tools/pre-execute`` waterfall,
-    and a read-back that confirms the plugin loaded before the first prompt.
+    There is no setting to seed, so not ``VERIFIED_SEEDED_SETTINGS``: routing comes from
+    a composed plugin on ``tools/pre-execute`` plus a read-back before the first prompt.
     """
     from kiro_crew import acp_tool_gate as gate
 
@@ -533,11 +503,8 @@ def test_the_routing_is_a_verified_gate_extension_and_therefore_enforced() -> No
 def test_the_gate_is_read_back_through_its_load_marker() -> None:
     """The style is declared as data, and it is the weaker of the two on purpose.
 
-    This harness's ACP profile adds no method, capability or ``_meta`` field, so
-    there is no registry to ask the way pi is asked. The marker closes the same
-    precondition from the other side, and each of its three fields refuses a
-    distinct failure: a foreign marker, a stale one, and one written by a plugin
-    that is not Kiro Crew's.
+    The profile has no registry to ask the way pi is asked. Each marker field refuses
+    one failure: a foreign marker, a stale one, or another plugin's.
     """
     from kiro_crew import acp_tool_gate as gate
     from kiro_crew.acp_backends import Readback, gate_readback_for
@@ -565,12 +532,9 @@ def test_the_gate_is_read_back_through_its_load_marker() -> None:
 def test_the_marker_must_report_the_composed_tool_presentation_as_native() -> None:
     """The ``native`` pin is VERIFIED from the composed service, not trusted to precedence.
 
-    The per-launch patch pins ``tools.mode: native`` and wins because a ``--patch``
-    overlay is applied after the operator layer -- an ordering observed at one
-    harness version. The plugin snapshots the mode the tools service actually
-    composed, and Crew requires ``native`` the same way it requires approval policy
-    ``ask``: under ``ptc`` or ``both`` the model reaches Node's own APIs through one
-    ``run_code`` call the gate cannot read inside.
+    The patch wins only by an overlay ordering seen at one harness version, so the
+    composed mode is checked. Under ``ptc`` or ``both`` one ``run_code`` call reaches
+    Node's APIs where the gate cannot read.
     """
     from kiro_crew import acp_tool_gate as gate
 
@@ -593,14 +557,9 @@ def test_the_marker_must_report_the_composed_tool_presentation_as_native() -> No
 def test_the_marker_must_prove_each_vault_fed_name_is_absent_from_a_harness_child() -> None:
     """The child-env scrub is a PROPERTY read off a real child, not a regex Crew mirrors.
 
-    ``host_vault`` promises the provider key is invisible to the shells the model
-    drives. That rests on the harness's own ``scrubbedParentEnv()``, which a harness
-    release can narrow or drop with no in-band signal -- so the plugin spawns one
-    trivial child through the harness's own subprocess service during the probe and
-    records, per vault-fed name, whether it reached that child. Crew refuses when any
-    did, when a name was not even set in the harness's own environment (nothing was
-    verified), when the plugin checked a different set of names than Crew
-    configured, or when the child could not be run at all.
+    The harness's ``scrubbedParentEnv()`` can change silently, so the probe spawns a
+    child and records each name. Crew refuses a leaked name, an unset name, a different
+    name set, or a child that could not run.
     """
     from kiro_crew import acp_tool_gate as gate
 
@@ -682,13 +641,8 @@ def test_the_shipped_plugin_snapshots_the_tools_mode_and_proves_the_child_scrub(
 def test_the_session_writes_no_forensic_marker_of_its_own(monkeypatch, tmp_path) -> None:
     """The only load marker is the probe's, which is the verification.
 
-    An earlier revision also had the SESSION write a marker into its own private
-    window and refused the session when no window had been allocated. Nothing ever
-    read that marker -- the gate is verified against the probe's -- so the write was
-    a new refusal path with no consumer, justified only by symmetry with the probe.
-    It is gone: the plugin skips the write when its marker variable is unset, the
-    session sets none, and a session without a private window is treated the way
-    every other backend treats it, as hygiene the shared site already tolerates.
+    The session sets no marker variable, so the plugin writes nothing; a session marker
+    would have no reader and only add a refusal path.
     """
     from kiro_crew.acp import client as client_module
 
@@ -749,14 +703,10 @@ def test_the_shipped_gate_plugin_matches_the_pinned_digest() -> None:
 
 
 def test_the_gate_writers_share_one_seal_and_one_publish_block(monkeypatch, tmp_path) -> None:
-    """Three writers, one seal and one publish -- so the two cannot drift again.
+    """Three writers, one seal and one publish, so their bodies cannot drift apart.
 
-    The pi seal, the DeepSeek seal and the DeepSeek patch writer once each carried
-    their own read -> LF-normalize -> digest -> write-if-changed -> stage/chmod/replace
-    body, and had already diverged: pi's guarded ``chmod`` for Windows, the two new
-    copies did not. Each writer is observed going through the one seal and the one
-    publish, each resolving the artifact directory through the strict resolver, and
-    each artifact lands there read-only.
+    Each writer goes through the one seal and publish, resolves the artifact directory
+    strictly, and lands its artifact read-only.
     """
     artifact_dir = tmp_path / "pi-gate"
     artifact_dir.mkdir()
@@ -885,15 +835,9 @@ def test_the_per_launch_patch_composes_only_the_sealed_plugin() -> None:
 def test_the_patch_pins_the_tool_presentation_to_native() -> None:
     """``run_code`` must never be on the menu, because the gate cannot read inside it.
 
-    Under ``ptc`` or ``both`` this harness replaces native tool schemas with one
-    reserved ``run_code`` transport, and a program inside it reaches Node's own
-    filesystem, network and subprocess APIs directly. Those are not tool calls, so
-    they never traverse ``tools/pre-execute`` and no command or path rule can apply
-    to them -- the gate would see a single opaque call. ``native`` is the harness's
-    own default, so this row changes nothing on a default install; it exists so an
-    operator layer cannot select a mode that carries side effects around the gate,
-    and a ``--patch`` overlay is applied after the profile's own layer so the pin
-    wins.
+    Under ``ptc`` or ``both`` a program in ``run_code`` reaches Node's APIs without
+    passing ``tools/pre-execute``. ``native`` is the default; the pin stops an operator
+    layer from changing it.
     """
     from kiro_crew.acp import client as client_module
 
@@ -929,16 +873,9 @@ def test_a_spawn_that_cannot_resolve_its_binary_leaves_no_scratch_behind(
 ) -> None:
     """A failed spawn must not leave a scratch directory the sweep will keep forever.
 
-    ``allocate_scratch`` records the SPAWNING process -- the gateway -- as the
-    directory's provisional owner, and the sweep deletes a directory only when its
-    recorded owner's process group is DEAD and the tree has been idle. The gateway
-    is long-lived, so a directory allocated and then abandoned by a failing spawn is
-    retained for the gateway's whole lifetime, and one more is retained per retry.
-
-    The kiro construction path is where that matters most: it must gain no failure
-    point in service of an adapter (harness-parity H13). So this drives the kiro
-    backend to the one failure every host can reach -- an unresolvable binary -- and
-    asserts the managed root gained nothing.
+    The sweep deletes only directories whose owner is dead, and the owner recorded is
+    the long-lived gateway. Driven on kiro via an unresolvable binary (harness-parity
+    H13).
     """
     import asyncio
 
@@ -950,13 +887,16 @@ def test_a_spawn_that_cannot_resolve_its_binary_leaves_no_scratch_behind(
     root.mkdir(mode=0o700, parents=True, exist_ok=True)
     before = {p.name for p in root.iterdir()}
 
-    client = AcpClient(work_dir=tmp_path)
+    # The workspace sits beside the data home, not around it: on macOS the kiro arm
+    # first refuses a workspace that contains the voice runtime under KIROCREW_HOME,
+    # and that refusal is a RuntimeError, raised before the binary is resolved.
+    client = AcpClient(work_dir=tmp_path / "work")
     # The resolution the kiro arm performs, made to fail the way a host without
     # kiro-cli fails: resolved to nothing rather than raised, so the arm takes its
     # own not-found path instead of an exception from the resolver.
     monkeypatch.setattr(client_module, "_resolve_kiro_bin_for_spawn", AsyncMock(return_value=None))
 
-    with pytest.raises(Exception):
+    with pytest.raises(AcpError):
         asyncio.run(client._spawn())
 
     after = {p.name for p in root.iterdir()}
@@ -971,15 +911,8 @@ def test_a_spawn_that_cannot_resolve_its_binary_leaves_no_scratch_behind(
 def _deepseek_readback_spawn(tmp_path, monkeypatch, *, readback):
     """Drive a deepseek ``_spawn`` through its read-back with nothing real spawned.
 
-    The gate's read-back owns a THROWAWAY scratch window of its own, so
-    ``allocate_scratch`` is the one thing here left real -- it is the subject. The
-    launch resolution, the credential-mask preflight, the seal/patch writers and the
-    sandbox wrap are all replaced, and the wrap raises on its SECOND call (the real
-    child's) so the spawn ends immediately after the arm instead of reaching a
-    process start.
-
-    Returns ``(client, root, before)``: the client, the managed scratch root, and the
-    set of directory names that existed before the spawn.
+    Only ``allocate_scratch`` stays real. The wrap raises on its second call (the real
+    child's), so the spawn ends right after the arm. Returns ``(client, root, before)``.
     """
     import asyncio
 
@@ -1036,13 +969,8 @@ def _probe_dirs(root) -> list[str]:
 def test_a_successful_read_back_removes_its_own_probe_window(tmp_path, monkeypatch) -> None:
     """The probe's window is removed by the arm, because nothing else ever will.
 
-    ``allocate_scratch`` records the SPAWNING process -- the long-lived gateway --
-    as the window's provisional owner, and the sweep reclaims only
-    owned-and-dead-and-idle directories. So a probe window left behind is retained
-    for the gateway's whole lifetime, and one more per session start. What remains
-    after a read-back that PASSED is the session's own window and nothing else: the
-    two are deliberately separate allocations, which is what keeps the shared
-    construction site free of this adapter (harness-parity H13).
+    Its recorded owner is the long-lived gateway, so the sweep would never reclaim it.
+    Only the session's own, separate window remains (harness-parity H13).
     """
     client, root, before, wrapped, asyncio_mod = _deepseek_readback_spawn(
         tmp_path, monkeypatch, readback=("", "")
@@ -1090,14 +1018,8 @@ def test_a_refused_read_back_removes_its_own_probe_window(tmp_path, monkeypatch)
 def test_a_session_with_no_private_window_is_started_not_refused(tmp_path, monkeypatch) -> None:
     """A session without a private scratch window is hygiene, exactly as on every backend.
 
-    The read-back refuses a PROBE that gets no window, because the probe's marker is
-    the verification and it has to land somewhere. The SESSION writes no marker at
-    all -- an earlier revision had it write a forensic one nothing read, and refused
-    the session when no window had been allocated, a refusal path with zero
-    consumers. So the shared site's fail-open allocation stands for this harness
-    too: the child is built with the nonce (the tripwire keys on it) and no marker
-    path, and the launcher the wrap wrote is handed to the process start rather than
-    discarded.
+    Only the probe needs a window, for its marker. The child gets the nonce (the
+    tripwire keys on it) and no marker path, and the wrap's launcher is still used.
     """
     from kiro_crew import agent_scratch
     from kiro_crew.acp import client as client_module

@@ -221,38 +221,6 @@ def test_disable_args_stop_the_hook_even_with_an_event_named_hook(
     assert not marker.exists()
 
 
-# ── auto_improvement (git_safety) ──
-
-
-def test_git_safety_argv_carries_the_disable(repo: Path, tmp_path: Path) -> None:
-    from kiro_crew.apps.builtins.auto_improvement.spine import gate, git_safety
-
-    _plant(repo, tmp_path / "marker")
-    assert "hook.pwn.enabled=false" in git_safety.git_argv(repo, "status")
-    assert "hook.pwn.enabled=false" in gate._git_argv(repo, "add", "-A")
-
-
-def test_git_safety_scan_failure_is_a_git_safety_error(repo: Path) -> None:
-    from kiro_crew.apps.builtins.auto_improvement.spine import git_safety
-
-    with (repo / ".git" / "config").open("a") as fh:
-        fh.write('[hook "a=b"]\n\tcommand = true\n')
-    with pytest.raises(git_safety.GitSafetyError):
-        git_safety.hook_off_args(repo)
-
-
-@needs_config_hooks
-def test_git_safety_commit_does_not_fire(repo: Path, tmp_path: Path) -> None:
-    from kiro_crew.apps.builtins.auto_improvement.spine import gate
-
-    marker = tmp_path / "marker"
-    _plant(repo, marker)
-    (repo / "a.txt").write_text("b\n")
-    for args in (("add", "-A"), ("commit", "-qm", "x"), ("status", "--porcelain")):
-        subprocess.run(gate._git_argv(repo, *args), check=True, capture_output=True)
-    assert not marker.exists()
-
-
 # ── md_notebook ──
 
 

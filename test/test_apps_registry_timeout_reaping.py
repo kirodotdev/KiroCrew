@@ -223,6 +223,7 @@ async def test_fetch_app_manifest_reaps_clone_tree_on_timeout(monkeypatch):
 @pytest.mark.asyncio
 async def test_list_registry_reaps_detect_probe_tree_on_timeout(monkeypatch):
     entry = {"name": "probeapp", "repo": "x", "detectInstalled": "true"}
+    monkeypatch.setattr(registry, "_manifest_shell_platform_refusal", lambda: None)
     monkeypatch.setattr(registry, "_load_registry_file", lambda: [entry])
 
     async def _no_external():
@@ -289,6 +290,7 @@ async def test_install_from_registry_reaps_detect_probe_tree_on_timeout(monkeypa
         "repo": "https://example.com/demo.git",
         "detectInstalled": "true",
     }
+    monkeypatch.setattr(registry, "_manifest_shell_platform_refusal", lambda: None)
     monkeypatch.setattr(registry, "get_registry_app", lambda n: entry)
     monkeypatch.setattr(registry, "_entry_git_url", lambda e: "https://example.com/demo.git")
 

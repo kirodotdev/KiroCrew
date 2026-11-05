@@ -66,14 +66,10 @@ def _turn(actor: str, depth: int = 0) -> dict[str, Any]:
 
 
 class TestTheDashboardTypeDeclaration:
-    """``test_dashboard_types.py::TestTheThreeStates::test_no_object_passes_as_having_no_keys``
-    is the gate this class exists to keep green: every object-shaped leaf a fold
-    renders must be declared either as a known set of properties or as OPAQUE
-    (``dashboard_types._OPAQUE``). ``turns`` is keyed by an actor value with no bound
-    on which actors appear first, so it is opaque -- this pins the declaration rather
-    than relying on catching its absence only in the cross-cutting dashboard-types
-    suite, which S1 missed once already (see the PR history for why this class
-    exists).
+    """``turns`` is declared OPAQUE (``dashboard_types._OPAQUE``): it is keyed by actor.
+
+    Pinned here as well as in
+    ``test_dashboard_types.py::TestTheThreeStates::test_no_object_passes_as_having_no_keys``.
     """
 
     def test_otel_usage_turns_is_declared_opaque(self) -> None:
@@ -303,15 +299,10 @@ class TestTheClosedVocabularies:
     def test_agent_kind_reads_no_filesystem_or_config(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """agent_kind classification stays a pure function of the raw agent string plus
-        code constants -- it never reads a file or crew config.
+        """agent_kind classification never reads a file or crew config.
 
-        The fold itself only folds ``session/opened.agent`` (a log field), so its replay
-        is deterministic; this pins the one place the raw name is turned into the closed
-        ``agent_kind`` enum. If classification ever started reading a config or spec file,
-        the same log would classify differently depending on what was on disk at read
-        time, which is exactly the replay-nondeterminism the design review flags. Here
-        ``open`` raises, so any classification that opened a file would fail the test.
+        Reading disk would make replay of the same log nondeterministic. ``open`` is
+        patched to raise, so any file read fails the test.
         """
 
         def _no_open(*_a: Any, **_k: Any) -> Any:
@@ -1202,15 +1193,10 @@ class TestTheRealAppendPath:
         assert resumed.value == _otel_usage_render(cold_state)
 
     def test_a_raw_agent_name_never_reaches_state_render_or_savepoint(self) -> None:
-        """Design-review 1.4 (privacy): the raw ``session/opened.agent`` is folded to the
-        closed ``agent_kind`` in ``step`` and only the enum is kept, so a distinctive
-        agent string appears nowhere this fold writes -- not its live state, not its
-        render, and not the savepoint persisted to disk.
+        """Privacy: only the ``agent_kind`` enum is kept, never ``session/opened.agent``.
 
-        The same holds for the opening entry's ``slot``, which the step reads for the
-        crewmate shape: the real append path below opens with a distinctive member slug
-        in that field, and the slug has to be as absent from the savepoint as the agent
-        name is.
+        The raw name and the opening entry's member ``slot`` must be absent from live
+        state, render and the savepoint on disk.
         """
         unique = "zzq-private-agent-name-7f3a2b9c"
         unique_slot = "member-zzq-private-slug-7f3a2b9c"

@@ -170,5 +170,32 @@
     },
     "spawn_label": "pi-acp via /opt/lib/pi-acp/index.js",
     "stderr_label": "pi-acp via /opt/lib/pi-acp/index.js"
+  },
+  "strands": {
+    "argv": [
+      "/opt/bin/strands",
+      "--acp-server",
+      "--agent",
+      "/opt/run/strands/agent.py"
+    ],
+    "env_added": {
+      "KIROCREW_RUNTIME_PYTHON": "<interpreter>",
+      "KIROCREW_SCRATCH": "<scratch>",
+      "KIROCREW_SESSION_KEY": "golden-session",
+      "KIROCREW_SPAWNED": "1",
+      "KIROCREW_STRANDS_GATE_SESSION": "<nonce>",
+      "KIROCREW_STRANDS_STATE_DIR": "<state-dir>",
+      "KIROCREW_STRANDS_WITHHELD": "ANTHROPIC_API_KEY:AWS_ACCESS_KEY_ID:AWS_BEARER_TOKEN_BEDROCK:AWS_SECRET_ACCESS_KEY:AWS_SESSION_TOKEN:GEMINI_API_KEY:LITELLM_API_KEY:OPENAI_API_KEY",
+      "KIROCREW_STUB_SESSION_TOKEN": "<session-token>",
+      "KIRO_CHAT_LOG_FILE": "<scratch-log>",
+      "PATH": "<augmented-path>",
+      "STRANDS_CLI_MCP_DISCOVERY": "off",
+      "STRANDS_CLI_SKILL_DISCOVERY": "off",
+      "TEMP": "<scratch>",
+      "TMP": "<scratch>",
+      "TMPDIR": "<scratch>"
+    },
+    "spawn_label": "strands --acp-server --agent /opt/run/strands/agent.py",
+    "stderr_label": "strands --acp-server --agent /opt/run/strands/agent.py"
   }
 }

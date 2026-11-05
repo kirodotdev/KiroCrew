@@ -643,6 +643,11 @@ LOCAL_COMMAND_JOBS = frozenset(
         "Backend Lint & Type Check (3.12)",
         "Backend Lint & Type Check",
         "Frontend Lint & Type Check",
+        # ci.yml's baselined ratchets, off lint-gate's path. Each step runs a
+        # script a contributor runs locally, so a push red only here is as
+        # avoidable as one red only in a lint job.
+        "Backend Ratchets & Boundaries",
+        "Frontend Ratchets & i18n",
         # fast-gate.yml's fourteen stdlib gates run as steps of this one job,
         # so a red on any of them reaches the census under this single name.
         "Source Gates",

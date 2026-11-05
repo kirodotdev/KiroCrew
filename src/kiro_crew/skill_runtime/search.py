@@ -90,32 +90,38 @@ def _body_matches(
     indexed = None
     started = time.monotonic()
     if unconfined and loader._search_index is not None:
+        # The index row id IS the path, not the key: scopes mapping different
+        # copies of one key must not overwrite each other's entry.
+        key_of = {str(s.get("path", "")): str(s["key"]) for s in unconfined}
         rows = []
         for skill in unconfined:
             path = str(skill.get("path", ""))
             fingerprint = skill.get("fingerprint") or sk.body_fingerprint(path)
             if fingerprint:
-                rows.append((str(skill["key"]), path, fingerprint))
+                rows.append((path, path, fingerprint))
         # A scoped query cannot evict the other agents' persistent entries.
         outcome = loader._search_index.sync(
             rows,
             budget_seconds=0.25,
             canonical_roots={
-                str(s["key"]): str(s["mapping_root"]) for s in unconfined if s.get("mapping_root")
+                str(s.get("path", "")): str(s["mapping_root"])
+                for s in unconfined
+                if s.get("mapping_root")
             },
         )
         if outcome is not None:
             deferred, pending = outcome
-            answered = [str(s["key"]) for s in unconfined if str(s["key"]) not in deferred]
-            indexed = loader._search_index.body_matches(answered, terms)
-            if indexed is not None:
+            answered = [path for path in key_of if path not in deferred]
+            matches = loader._search_index.body_matches(answered, terms)
+            if matches is not None:
+                indexed = {key_of[path]: found for path, found in matches.items()}
                 # Pending bodies are unread only on this branch: without index
                 # hits every unconfined body joins the direct read below.
                 incomplete = bool(pending)
                 fallback += [
                     s
                     for s in unconfined
-                    if str(s["key"]) in deferred and str(s["key"]) not in pending
+                    if str(s.get("path", "")) in deferred and str(s.get("path", "")) not in pending
                 ]
     logger.debug("skill body index refresh/query: %.2fms", (time.monotonic() - started) * 1000)
     if indexed is None:
@@ -175,16 +181,21 @@ def _exact_read_while_building(
     if loader.catalog_status(project_dir) != "building" or not loader._safe_name(key):
         return None
     disabled_apps = loader._get_disabled_app_names()
-    for root in (loader._dir, *loader._extra_paths):
+    loader_roots = [loader._dir, *loader._extra_paths]
+    for root in loader_roots:
         candidate = root / key / "SKILL.md"
         if not candidate.is_file():
             continue
-        # Precedence is the enumeration's: the first root holding the key wins,
-        # so a refusal here is final rather than a reason to try a lower root.
-        if only is not None and not _catalog._matches_any(
-            str(candidate), _catalog._with_canonical_globs(only, project_dir)
-        ):
-            return None
+        # Only the first root's copy is served here, because the body below is
+        # read by key and a key read returns that copy. A mapping that names a
+        # lower root's copy is refused until the walk can serve it by path.
+        if only is not None:
+            globs = _catalog._with_canonical_globs(only, project_dir)
+            if not (
+                _catalog._matches_any(str(candidate), globs)
+                or _catalog._alias_matches(candidate, globs, loader_roots)
+            ):
+                return None
         if disabled_apps and loader._owning_app(key, candidate) in disabled_apps:
             return None
         return loader.load_skill(

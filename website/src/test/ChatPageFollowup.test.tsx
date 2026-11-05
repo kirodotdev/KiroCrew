@@ -28,6 +28,15 @@ vi.mock('react-virtuoso', () => ({
 }))
 vi.mock('../api/client', () => ({
   api: {
+    // A gateway without the Shared Crew routes: every read answers "not here".
+    sharedCrewCapabilities: vi.fn().mockResolvedValue(null),
+    sharedCrewMode: vi.fn().mockResolvedValue(null),
+    sharedCrewPeople: vi.fn().mockResolvedValue(null),
+    sharedCrewViewer: vi.fn().mockResolvedValue(null),
+    sharedCrewSendState: vi.fn().mockResolvedValue(null),
+    sharedCrewTypingLease: vi.fn().mockResolvedValue(null),
+    sharedCrewPresence: vi.fn().mockResolvedValue(null),
+    sharedCrewDecisions: vi.fn().mockResolvedValue(null),
     // The composer's project pill reads the project's AWS profile binding.
     projectAwsProfile: vi.fn().mockResolvedValue({ path: '/repo', profile: null, boundDir: null, profiles: [], status: null }),
     // Both slots: the created one must be listed or `switchSlot` cannot activate it.
@@ -76,7 +85,6 @@ vi.mock('../api/client', () => ({
   },
   SEARCH_MIN_CHARS: 2,
 }))
-vi.mock('../api/reactions', async () => await import('./__mocks__/reactionsApi')) // empty reactions, so no extra load-failure alert
 vi.mock('../hooks/useVoiceInput', () => ({ useVoiceInput: () => ({ recording: false, transcribing: false, toggle: vi.fn() }), voiceInputSupported: false }))
 vi.mock('../hooks/useBranding', () => ({ useBranding: () => ({ botName: 'Test', avatar: '' }) }))
 vi.mock('../hooks/useAgents', () => ({ useAgents: () => ({ agents: [], defaultAgent: 'default' }) }))

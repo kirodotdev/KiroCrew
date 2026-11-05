@@ -25,7 +25,7 @@ from unittest.mock import patch
 
 import pytest
 
-from kiro_crew import history_search
+from kiro_crew import history_listing_memo, history_search
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.history import (
     _SESSION_KEEP_LINES,
@@ -143,7 +143,8 @@ class TestConversationLog:
 
     def test_mark_consolidated_nonexistent(self, tmp_path):
         log = ConversationLog(base_dir=tmp_path)
-        log.mark_consolidated("nonexistent", 5)  # should not raise
+        log.mark_consolidated("nonexistent", 5)
+        assert not log._path("nonexistent").exists()
 
     def test_caches_refresh_after_mtime_preserving_external_rewrite(self, tmp_path):
         writer = ConversationLog(base_dir=tmp_path)
@@ -353,11 +354,14 @@ class TestConversationLog:
         ],
     )
     def test_list_sessions_status_distinguishes_vanished_and_unreadable_entries(
-        self, tmp_path, error, expected_complete
+        self, tmp_path, monkeypatch, error, expected_complete
     ):
         log = ConversationLog(base_dir=tmp_path)
         log.append("visible", "user", "positive control")
         assert log.list_sessions_status()[1] is True
+        # The patched scandir below changes no directory mtime, so the
+        # whole-listing memo would answer; expire it to reach the scan.
+        monkeypatch.setattr(history_listing_memo, "TTL_SECS", 0.0)
 
         broken_path = os.fspath(tmp_path / "broken.jsonl")
 

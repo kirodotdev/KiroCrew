@@ -12,12 +12,14 @@ outcome. Every state write goes through the transition table in ``model``.
 The store keeps no dispatch state in memory: the bounded dispatch window is the
 CALLER's list (``TaskStore.window`` is the size it should be bounded to), and
 :meth:`fetch_dispatchable` refills it from the rows on disk in FIFO order. The
-one in-memory fact it does keep is an index, not a decision: the ids of the
-rows that are accepted and not yet started (:meth:`is_unstarted`), written
+in-memory facts it does keep are an index and a debt, not a decision: the ids of
+the rows that are accepted and not yet started (:meth:`is_unstarted`), written
 through after every committed write that moves a row into or out of that set
 and loaded at :meth:`open`, so an
 event-loop caller can ask "is this id still pending?" without the SQLite read
-the loop must never take.
+the loop must never take; and the ``queued`` rows whose artifact-recorded ending
+the boot reconcile could not write (:meth:`hold_until_settled`), kept out of
+every claim until a dispatch read lands that write.
 
 WAL is the default journal. A data home on a network filesystem gets
 ``journal_mode=DELETE`` instead -- WAL relies on shared memory the NFS/SMB
@@ -55,6 +57,7 @@ from . import migrate
 from . import store_events as _store_events
 from . import store_reads as _store_reads
 from . import store_waits as _store_waits
+from . import store_work as _store_work
 from .model import ADOPTED_RESUME_EVENT  # noqa: F401
 from .model import RUNNING  # noqa: F401
 from .model import TaskEvent  # noqa: F401
@@ -63,6 +66,8 @@ from .model import (
     ADMITTED,
     CANCELLED,
     CLAIMABLE,
+    FAILED,
+    KIND_SUBAGENT,
     LEASE_SECS,
     QUEUED,
     RECOVERING,
@@ -87,6 +92,7 @@ from .store_vocab import (
     _typed_read,
 )
 from .store_waits import _SQL_WAITING  # noqa: F401
+from .store_work import WorkRow  # noqa: F401
 
 logger = logging.getLogger(__name__)
 
@@ -101,6 +107,7 @@ _STORE_OWNERS = (
     "kiro_crew.taskq.store_events",
     "kiro_crew.taskq.store_waits",
     "kiro_crew.taskq.store_reads",
+    "kiro_crew.taskq.store_work",
 )
 
 #: Default bound on the in-memory dispatch window (``agent.task_dispatch_window``).
@@ -241,7 +248,11 @@ def _linux_mount_type(path: Path) -> str | None:
             continue
         mount = parts[1].replace("\\040", " ")
         if target == mount or target.startswith(mount.rstrip("/") + "/") or mount == "/":
-            if best is None or len(mount) > best[0]:
+            # ``>=`` so that, among mounts sharing the longest matching point,
+            # the LAST wins: /proc/mounts lists an over-mount after the mount it
+            # covers, so the last same-length entry is the one visible at that
+            # path (a tmpfs over an ext4 /tmp reads as tmpfs).
+            if best is None or len(mount) >= best[0]:
                 best = (len(mount), parts[2])
     return best[1] if best else None
 
@@ -399,6 +410,24 @@ class TaskStore:
         #: reader is the event loop, and ``_lock`` is held across the busy wait.
         self._unstarted_ids: set[str] = set()
         self._unstarted_lock = threading.Lock()
+        #: Queued rows whose artifact-recorded ending the boot reconcile could
+        #: not write (``reconcile_on_boot``'s queued pass hit
+        #: :class:`TaskStoreUnavailable`), mapped to the terminal state they
+        #: owe. A row here is a refusal or a stop the caller was already told
+        #: about, so it is excluded from every claim until that write lands;
+        #: each dispatch read retries the write first
+        #: (:meth:`_release_settled_holds`). Guarded by its own lock, as the
+        #: index above is: the hold is read on the dispatch path, under
+        #: ``_lock``, and written at boot and on release.
+        self._settle_holds: set[str] = set()
+        self._settle_holds_lock = threading.Lock()
+        #: Set while the boot reconcile's queued pass is INCOMPLETE -- its read of
+        #: the queued rows raised :class:`TaskStoreUnavailable` -- to the callable
+        #: that re-runs the pass. A queued row the pass never read may owe the
+        #: terminal write ``_settle_holds`` exists for, so until the re-run
+        #: returns True no row is published (:meth:`dispatch_open`). Guarded by
+        #: ``_settle_holds_lock``, the dispatch path's lock for both.
+        self._dispatch_fence: Callable[[], bool] | None = None
 
     # -- lifecycle -----------------------------------------------------------
 
@@ -521,6 +550,82 @@ class TaskStore:
         """
         with self._unstarted_lock:
             return task_id in self._unstarted_ids
+
+    def hold_until_settled(self, task_id: str) -> None:
+        """Keep *task_id* out of every claim until its ``failed`` write lands.
+
+        Called for a refused row whose ``failed`` write raised
+        :class:`TaskStoreUnavailable` -- by the boot reconcile's queued pass for
+        a ``queued`` row whose refusal tombstone records the ending, and by the
+        live settle once that tombstone is confirmed: the caller was already
+        told the outcome, so the row must not be published to the dispatcher on
+        the strength of a write that has not happened. Each dispatch read
+        retries the write before it reads (:meth:`_release_settled_holds`); the
+        hold ends when one lands, or when the row is found already settled.
+        """
+        with self._settle_holds_lock:
+            self._settle_holds.add(task_id)
+
+    def fence_dispatch(self, until: Callable[[], bool]) -> None:
+        """Publish no ``subagent`` row until *until* returns True; retried at each dispatch read.
+
+        The boot reconcile calls this when its queued pass could not read the
+        queued rows: the rows it never examined may owe a terminal write, and a
+        hold needs the row's id, so the kind's whole dispatch is fenced instead
+        until the pass has run to completion. Only ``subagent`` rows are fenced:
+        the refusal marker that pass settles on is written for a refused spawn
+        alone, so no other kind can owe it. Logged when it engages and when it
+        lifts, so an operator can see why no sub-agent starts.
+        """
+        with self._settle_holds_lock:
+            self._dispatch_fence = until
+        logger.warning(
+            "taskq dispatch fenced: the boot queued pass could not read the queued rows; "
+            "no subagent row is published until a dispatch read completes it"
+        )
+
+    def dispatch_open(self, kind: str) -> bool:
+        """Whether a dispatch read of *kind* may publish rows: unfenced, or the re-run completed."""
+        if kind != KIND_SUBAGENT:
+            return True
+        with self._settle_holds_lock:
+            fence = self._dispatch_fence
+        if fence is None:
+            return True
+        if not fence():
+            return False
+        with self._settle_holds_lock:
+            if self._dispatch_fence is fence:
+                self._dispatch_fence = None
+        logger.info("taskq dispatch fence lifted: the boot queued pass ran to completion")
+        return True
+
+    def held_until_settled(self) -> list[str]:
+        """Ids of the rows :meth:`hold_until_settled` still keeps out of dispatch."""
+        with self._settle_holds_lock:
+            return list(self._settle_holds)
+
+    def _release_settled_holds(self) -> list[str]:
+        """Retry every held row's terminal write; return the ids still held.
+
+        Called at the head of each dispatch read, OUTSIDE ``_lock``: the writes
+        take it themselves. A write that lands, or finds nothing left to settle
+        (the row is already terminal, or gone), releases the hold; the first
+        write the store refuses ends the pass with the rest still held, since
+        the store is the thing that is down.
+        """
+        with self._settle_holds_lock:
+            pending = sorted(self._settle_holds)
+        if not pending:
+            return []
+        for task_id in pending:
+            try:
+                self.transition(task_id, FAILED, detail={"reconciled": "artifact"})
+            except TaskStoreUnavailable:
+                break
+            with self._settle_holds_lock:
+                self._settle_holds.discard(task_id)
+        return self.held_until_settled()
 
     def _open_connection(self) -> sqlite3.Connection:
         conn: sqlite3.Connection | None = None
@@ -814,7 +919,7 @@ class TaskStore:
             try:
                 conn.execute("BEGIN IMMEDIATE")
                 for rec in batch:
-                    if rec.state != QUEUED and rec.state not in CLAIMABLE:
+                    if rec.state not in CLAIMABLE:
                         raise ValueError(f"accept() only takes claimable rows, got {rec.state!r}")
                     if not rec.created_at:
                         rec.created_at = ts
@@ -886,6 +991,27 @@ class TaskStore:
         ts = self.now()
         lease = self._lease_secs if lease_secs is None else float(lease_secs)
         who = owner or self._incarnation
+        # A row owing a terminal write is not claimable, whatever the table
+        # says: the write is retried here, and the row stays out until it lands;
+        # while the boot queued pass is incomplete, no subagent row is.
+        if task_id in self._release_settled_holds():
+            return None
+        with self._lock:
+            try:
+                kind_row = (
+                    self._c().execute("SELECT kind FROM tasks WHERE id=?", (task_id,)).fetchone()
+                )
+            except sqlite3.Error as exc:
+                raise TaskStoreUnavailable(f"task claim failed: {exc}") from exc
+        if kind_row is None:
+            return None
+        if not self.dispatch_open(str(kind_row["kind"])):
+            # Not a refusal: the store could not read what the row may owe, so
+            # the caller leaves it queued for the pump rather than reporting it
+            # stopped. It is dispatched once the queued pass runs to completion.
+            raise TaskStoreUnavailable(
+                f"task claim of {task_id} fenced: the boot queued pass has not completed"
+            )
         with self._lock:
             conn = self._c()
             try:
@@ -1422,6 +1548,16 @@ class TaskStore:
     waiting_rows: Callable[..., Any] = _store_waits.waiting_rows
     orphaned_children: Callable[..., Any] = _store_waits.orphaned_children
 
+    # Accepted-work admission rows: ``kiro_crew.taskq.store_work``.
+    work_insert_or_get = _store_work.work_insert_or_get
+    work_compare_and_set = _store_work.work_compare_and_set
+    work_get: Callable[..., Any] = _store_work.work_get
+    work_by_scope: Callable[..., Any] = _store_work.work_by_scope
+    work_rows: Callable[..., Any] = _store_work.work_rows
+    work_purge = _store_work.work_purge
+    storage_charge = _store_work.storage_charge
+    storage_bytes: Callable[..., Any] = _store_work.storage_bytes
+
     # Row reads, dispatch reads and counts: ``kiro_crew.taskq.store_reads``.
     get: Callable[..., Any] = _store_reads.get
     state_of: Callable[..., Any] = _store_reads.state_of
@@ -1437,6 +1573,7 @@ class TaskStore:
     count: Callable[..., Any] = _store_reads.count
     count_by_state: Callable[..., Any] = _store_reads.count_by_state
     list_rows: Callable[..., Any] = _store_reads.list_rows
+    queued_rows: Callable[..., Any] = _store_reads.queued_rows
     active_rows: Callable[..., Any] = _store_reads.active_rows
     oldest_wait_secs: Callable[..., Any] = _store_reads.oldest_wait_secs
     overdue_unleased_rows: Callable[..., Any] = _store_reads.overdue_unleased_rows

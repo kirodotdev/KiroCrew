@@ -552,7 +552,9 @@ class SecretVault:
         """
         self._config_dir.mkdir(parents=True, exist_ok=True)
         lock_path = self._store_path.with_name(".secrets.enc.lock")
-        lock_fd = os.open(str(lock_path), os.O_CREAT | os.O_WRONLY, 0o600)
+        from kiro_crew.platform_compat import open_create_or_existing
+
+        lock_fd = open_create_or_existing(str(lock_path), os.O_WRONLY, 0o600)
         try:
             with file_lock(lock_fd, exclusive=True):
                 yield

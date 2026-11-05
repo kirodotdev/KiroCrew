@@ -128,7 +128,11 @@ session_key=...)`). Session claimers (a sharing sub-agent's turn, a task run) pa
 their key; the OAuth mint child passes none and binds nothing. The claim is the
 record that binds a sharing sub-agent's `X-Session-Key` to its process: a
 sub-agent holds no lease, so without the claim nothing would place its session on
-the pid (`tenant_keys_on_pid`, read through `session_keys_bound_to_pid`).
+the pid (`tenant_keys_on_pid`, read through `session_keys_bound_to_pid`). So a
+sub-agent turn whose claim cannot be recorded does not run: `_claim_shared_turn`
+logs a warning and raises `AcpProcessDied`, the answer callers already handle by
+getting another runtime, rather than running a turn whose every stub call would be
+refused `peer_session_unbound`.
 
 The two tables are separate for a reason a single refcount cannot express: a
 tenancy has to outlive the lease. A principal's last release forgets the lease
@@ -294,7 +298,10 @@ A verdict is a statement about the past, so an authorized kill also takes a
 barrier before it signals: `tenancy_epoch` is read right after the allow and
 `commit_runtime_teardown` is called immediately before the first signal. A claim
 that lands in between makes the commit fail and the kill is **abandoned**, because
-the signal would land on a live turn that is never retried. A claim arriving after
+the signal would land on a live turn that is never retried. A commit refused by a
+live tenant records the same debt `refuse_for_tenants` does, on every live claim in
+the same critical section, so the last tenant to leave is handed the runtime
+(`test_runtime_ownership.py::test_a_teardown_refused_by_a_live_tenant_is_handed_back_by_the_last_one`). The provider killer (`_sync_kill_provider`) asks once more with `idle_only=True` when refused (live claims checked and the barrier raised under one lock, epoch not consulted): its provider is already out of every registry, so a refusal on the epoch alone would have no later drain. A tenant on the pid still refuses that second ask (`test_runtime_ownership.py::test_the_provider_killer_commits_once_the_turn_that_came_and_went_has_left`). A claim arriving after
 the commit is refused with `RuntimeTeardownCommitted` rather than granted. The
 barrier is dropped on every exit from the signal path, including a raise — a pid
 left committed is one no tenant can claim for the life of the gateway.
@@ -469,7 +476,7 @@ merely counted (`RuntimeReconciler._why_not_yet`, `_reconcile_unowned`):
    equal to that default so the setting can only lower the budget and never raise
    it; the budget is re-read on every cleanup tick. At `0` the arm evaluates the
    local conditions (two-pass confirmation, argv, spawn marker, age, unclaimed,
-   unchanged identity), counts each full candidate in `would_kill`, and signals
+   no live owned spawn instance, unchanged identity), counts each full candidate in `would_kill`, and signals
    nothing. The ownership gate and the teardown barrier are deliberately not
    consulted there, so no kill authorization is logged. A reconciler that is wrong about a whole population is wrong slowly
    enough to be noticed;
@@ -494,13 +501,24 @@ merely counted (`RuntimeReconciler._why_not_yet`, `_reconcile_unowned`):
 5. it is older than `runtime_reconcile.DEFAULT_MIN_AGE_SECS` — the same
    registration window seen from the other side;
 6. neither table claims the pid, and an unreadable table counts as claimed;
-7. its process identity has not changed since classification, re-read in the
+7. no live owned pid outside its own tree carries its `KIROCREW_SPAWN_INSTANCE`
+   (`RuntimeReconciler._instance_held_by_live_owner`, refusal reason "its spawn
+   instance belongs to a live recorded runtime"). The stamp is inherited, so a
+   `kiro-cli` an agent's shell tool starts carries its parent runtime's instance
+   while appearing in no record of its own, and would otherwise be killed while the
+   session that started it waits on it. Only a holder this pass found recorded and
+   alive, leased or claimed can shelter a candidate, so a leaked tree cannot shelter
+   itself and a tree whose recorded runtime died is still reclaimed. The anchor set
+   is rebuilt each pass; until it is, the condition withholds. An unreadable instance
+   on the candidate adds no refusal (the confirmed reclaim already refuses such a
+   runtime); an unreadable process table, once a holder matches, withholds;
+8. its process identity has not changed since classification, re-read in the
    instant before the signal;
-8. the gate allows it — asked LAST among the authorities, because the allow path
+9. the gate allows it — asked LAST among the authorities, because the allow path
    writes the kill attribution, so asking earlier would record a kill that never
    happened;
-9. the teardown barrier commits, so a tenancy claimed after the verdict abandons
-   the kill.
+10. the teardown barrier commits, so a tenancy claimed after the verdict abandons
+    the kill.
 
 What the kill line records is the seam's own COUNT over the tree it walked, not a
 verdict about the root: the seam signals every managed descendant it discovered and
@@ -704,9 +722,6 @@ recover.
   declarer.** All four construction sites take the single-tenant reading, so the
   model-wait DEAD verdict is not degraded on a shared runtime. Wiring it means
   passing a lease-plus-claim count from each site.
-- **A shared runtime dying during session start advances every auto-nudge loop's
-  start-failure streak on that process** (issue #14657). The start path raises
-  without carrying the runtime's identity, so the death cannot be attributed.
 - **`providers/base.py` still exposes process-shaped members.** Abort does not use
   them: it takes the opaque `RuntimeAbortTarget` from `runtime_abort_target()`. The remaining members are the bulk of what the pid
   reader ratchet still counts; each needs classifying as a session-level question,

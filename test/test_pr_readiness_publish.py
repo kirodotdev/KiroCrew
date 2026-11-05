@@ -287,6 +287,7 @@ class Runner:
                 "DESCRIPTION": description,
             },
             text=True,
+            encoding="utf-8",
             capture_output=True,
         )
         return Result(proc, self.fixtures)

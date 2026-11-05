@@ -887,16 +887,11 @@ def test_read_manifest_rejects_a_manifest_for_another_digest(cache):
 
 
 def test_soffice_path_returns_none_when_nothing_is_discovered(monkeypatch):
-    """No candidate on PATH or at the fixed install root: the lazy app lookup
-    returns falsy and `soffice_path` passes it straight back (the deck degrades
-    to the text outline) without calling the validator."""
-    fake_engine = MagicMock()
-    fake_engine.optional_dep_path.return_value = ""
+    """No candidate on PATH or at the fixed install root: core discovery returns
+    falsy and `soffice_path` passes it straight back (the deck degrades to the text
+    outline) without calling the validator."""
     with (
-        patch.dict(
-            "sys.modules",
-            {"kiro_crew.apps.builtins.pptx_maker.backend": MagicMock(engine=fake_engine)},
-        ),
+        patch.object(mod.soffice_discovery, "find_soffice", return_value=""),
         patch(f"{_MOD}.validate_provider_executable") as validate,
     ):
         assert mod.soffice_path() == ""
@@ -908,13 +903,8 @@ def test_soffice_path_refuses_an_executable_that_fails_the_provenance_check(monk
     (planted by an agent on a writable PATH dir, wrong owner, world-writable)
     must NOT run: `soffice_path` swallows the rejection and returns None so the
     deck degrades instead of executing an attacker's binary."""
-    fake_engine = MagicMock()
-    fake_engine.optional_dep_path.return_value = "/tmp/planted/soffice"
     with (
-        patch.dict(
-            "sys.modules",
-            {"kiro_crew.apps.builtins.pptx_maker.backend": MagicMock(engine=fake_engine)},
-        ),
+        patch.object(mod.soffice_discovery, "find_soffice", return_value="/tmp/planted/soffice"),
         patch(
             f"{_MOD}.validate_provider_executable",
             side_effect=Exception("refused: agent-writable path"),
@@ -926,29 +916,31 @@ def test_soffice_path_refuses_an_executable_that_fails_the_provenance_check(monk
 def test_soffice_path_returns_the_validated_canonical_path(monkeypatch):
     """When discovery finds a real `soffice` that passes provenance, its
     validated canonical path is what runs."""
-    fake_engine = MagicMock()
-    fake_engine.optional_dep_path.return_value = "/usr/bin/soffice"
     with (
-        patch.dict(
-            "sys.modules",
-            {"kiro_crew.apps.builtins.pptx_maker.backend": MagicMock(engine=fake_engine)},
-        ),
+        patch.object(mod.soffice_discovery, "find_soffice", return_value="/usr/bin/soffice"),
         patch(f"{_MOD}.validate_provider_executable", return_value="/usr/bin/soffice") as validate,
     ):
         assert mod.soffice_path() == "/usr/bin/soffice"
     validate.assert_called_once_with("/usr/bin/soffice")
 
 
-def test_soffice_hint_delegates_to_the_app(monkeypatch):
-    """The install command shown for a missing `soffice` comes from the app's
-    own per-OS hint, not a second copy here."""
-    fake_preview = MagicMock()
-    fake_preview.soffice_hint.return_value = "apt-get install libreoffice"
-    with patch.dict(
-        "sys.modules",
-        {"kiro_crew.apps.builtins.pptx_maker.backend": MagicMock(preview_tools=fake_preview)},
+def test_soffice_discovery_needs_no_app(monkeypatch):
+    """Slide previews resolve `soffice` and its hint with no app package importable:
+    the discovery is a core capability, so no core feature depends on an app."""
+    blocked = {
+        "kiro_crew.apps.builtins.pptx_maker": None,
+        "kiro_crew.apps.builtins.pptx_maker.backend": None,
+    }
+    with (
+        patch.dict("sys.modules", blocked),
+        patch.object(mod.soffice_discovery.shutil, "which", return_value="/usr/bin/soffice"),
+        patch(f"{_MOD}.validate_provider_executable", side_effect=lambda p: p),
+        patch.object(
+            mod.soffice_discovery, "soffice_install_hint", return_value="apt-get install x"
+        ),
     ):
-        assert mod.soffice_hint() == "apt-get install libreoffice"
+        assert mod.soffice_path() == "/usr/bin/soffice"
+        assert mod.soffice_hint() == "apt-get install x"
 
 
 # --- eviction: the by-name fallback for platforms without descriptor ops ------

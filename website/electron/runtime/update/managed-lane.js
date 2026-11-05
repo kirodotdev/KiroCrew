@@ -33,6 +33,11 @@ function createManagedLane({
   // lane must also stand down: the policy provider and the EXTERNALLY-MANAGED
   // command would otherwise both try to apply updates on the same install.
   isPolicyGoverned = () => false,
+  // On Windows, BaseWindow emits 'session-end' but App does not, so the
+  // session-end notice listens on the main window this provider returns.
+  getMainWindow = () => null,
+  Notification,
+  osPlatform = process.platform,
   log,
 }) {
   // MANAGED AUTO-UPDATE (marker-driven): the marker carries the very
@@ -61,10 +66,34 @@ function createManagedLane({
   // macOS/Windows/Linux.
   log.info(`[update] externally managed${managed.managedBy ? ` by ${managed.managedBy}` : ""} — managed auto-update (self-contained commands)`);
 
+  // Bring the app back after a successful apply. A bare app.relaunch() re-runs
+  // the command line this process was started with, and a macOS app opened
+  // from the Dock was started as its version's own payload path, so it comes
+  // back on the version the apply just replaced and offers Restart to update
+  // again (#22774). When the marker names a relaunchPath (the binary behind a
+  // packager's stable launch link), relaunch that with the same arguments. A
+  // relaunchPath that is not on disk would bring nothing back, so it falls back
+  // to the bare relaunch.
+  const relaunchAfterApply = () => {
+    const target = managed.relaunchPath || "";
+    if (target) {
+      let present = false;
+      try { present = require("fs").existsSync(target); } catch { present = false; }
+      if (present) {
+        log.info(`[update] managed relaunch through the marker's relaunchPath ${target}`);
+        app.relaunch({ execPath: target, args: process.argv.slice(1) });
+        return;
+      }
+      log.error(`[update] marker relaunchPath ${target} is not on disk — relaunching the path this app was started as`);
+    }
+    app.relaunch();
+  };
+
   let foundVersion = null; // last version discovered by the checkCommand, awaiting apply
   let stagedVersion = null; // version the user took Download for (the ready dialog's version)
   let managedQuitArmed = false; // is a before-quit auto-apply handler installed?
   let managedInstalling = false; // an apply is in progress — pause the poll
+  let sessionEndWindow = null; // window holding the session-end notice listener
 
   // Mirror the feed lane's emitError renderer contract: a failure WITH ITS
   // PHASE so the card can distinguish check from install failures.
@@ -247,6 +276,22 @@ function createManagedLane({
   // Bounded by a ceiling timeout so a wedged package manager cannot hang quit.
   const runUpdateCommand = () => runManagedCommand(managed.updateCommand, { timeout: MANAGED_APPLY_TIMEOUT_MS });
 
+  // An update command that exits 0 but leaves the install as it was would
+  // relaunch into the same check and the same apply on every quit. So the
+  // check runs again after an apply: true only when it still offers the version
+  // the apply was for. A re-check that cannot run, finds nothing, or offers
+  // another version is not that loop, and the relaunch goes ahead.
+  const applyChangedNothing = async (appliedVersion) => {
+    if (!appliedVersion || !managed.checkCommand) return false;
+    const { code, stdout, failed } = await runManagedCommand(managed.checkCommand, {
+      timeout: MANAGED_CHECK_TIMEOUT_MS,
+    });
+    if (failed || code !== 0) return false;
+    return stdout.trim().slice(0, MANAGED_VERSION_CAP) === appliedVersion;
+  };
+  const unchangedMessage = (version) =>
+    `the update command finished, but the check still offers ${version}: the install did not change`;
+
   // Fresh-read the auto-download preference; a throwing reader fails toward
   // NOT auto-installing (same direction as the feed path's deferred handler).
   const autoDownloadOn = () => {
@@ -281,6 +326,7 @@ function createManagedLane({
       return;
     }
     event.preventDefault();
+    const appliedVersion = foundVersion;
     (async () => {
       managedInstalling = true;
       emit("installing", { version: foundVersion });
@@ -305,8 +351,13 @@ function createManagedLane({
         return;
       }
       const { code } = await runUpdateCommand();
-      if (code === 0) {
-        app.relaunch();
+      if (code === 0 && await applyChangedNothing(appliedVersion)) {
+        // The user asked to quit, so honor that, WITHOUT relaunching into the
+        // same version and the same apply.
+        log.error(`[update] managed deferred install: ${unchangedMessage(appliedVersion)} — quitting without relaunch`);
+        try { if (onInstallFailed) onInstallFailed(); } catch { /* advisory */ }
+      } else if (code === 0) {
+        relaunchAfterApply();
       } else {
         // The apply failed; the user asked to quit, so honor that and exit
         // WITHOUT relaunching into a version that did not install.
@@ -329,7 +380,55 @@ function createManagedLane({
       app.removeListener("before-quit", managedInstallOnQuit);
       managedQuitArmed = false;
     }
+    disarmSessionEndNotice();
   };
+
+  // Windows session-end notice. Windows shutdown, restart and sign-out never
+  // emit before-quit, so managedInstallOnQuit is unreachable on those paths.
+  // The notice tells the user the found update is waiting and never runs
+  // updateCommand: Windows gives a process a few seconds at session end, an
+  // apply may run up to MANAGED_APPLY_TIMEOUT_MS, and an external command
+  // killed partway can leave a half-applied install. The toast persists in
+  // Action Center across the session boundary.
+  function armSessionEndNotice() {
+    if (osPlatform !== "win32") return;
+    disarmSessionEndNotice();
+    let win = null;
+    try { win = getMainWindow(); } catch { win = null; }
+    if (!win || (typeof win.isDestroyed === "function" && win.isDestroyed())) return;
+    win.once("session-end", sessionEndPendingNotice);
+    sessionEndWindow = win;
+  }
+
+  function disarmSessionEndNotice() {
+    const win = sessionEndWindow;
+    sessionEndWindow = null;
+    if (!win) return;
+    try {
+      if (!(typeof win.isDestroyed === "function" && win.isDestroyed())) {
+        win.removeListener("session-end", sessionEndPendingNotice);
+      }
+    } catch { /* a torn-down window holds no listener */ }
+  }
+
+  function sessionEndPendingNotice() {
+    // Registered with once(): the window has already dropped it.
+    sessionEndWindow = null;
+    if (!foundVersion || managedInstalling || isPolicyGoverned()) return;
+    // Same opt-out check as managedInstallOnQuit: a quit from the tray applies
+    // the update only while auto-download is on, so the notice says so only
+    // then.
+    let stillOn = false;
+    try { stillOn = !!getAutoDownloadPreference(); } catch { return; }
+    if (!stillOn) return;
+    try {
+      new Notification({
+        title: "Kiro Crew update ready",
+        body: `An update (version ${foundVersion}) was found but not installed, because Windows was closing. Quit Kiro Crew from the tray to install it.`,
+      }).show();
+    } catch { /* notifications optional */ }
+    log.info("[update] managed session-end — notified user of pending update (install on next quit)");
+  }
 
   // ONE check at a time. The launch timer, the poll and the renderer's Check
   // button all land here, and the commands are slow (up to
@@ -455,10 +554,15 @@ function createManagedLane({
       emit("found", { version });
     }
     // Auto-on-restart: if the user allows auto-download, arm a one-shot
-    // before-quit handler that applies on the natural quit.
-    if (autoDownloadOn() && !managedQuitArmed) {
-      managedQuitArmed = true;
-      app.once("before-quit", managedInstallOnQuit);
+    // before-quit handler that applies on the natural quit, and on Windows the
+    // session-end notice for the shutdown, restart and sign-out paths that
+    // skip before-quit.
+    if (autoDownloadOn()) {
+      if (!managedQuitArmed) {
+        managedQuitArmed = true;
+        app.once("before-quit", managedInstallOnQuit);
+      }
+      if (!sessionEndWindow) armSessionEndNotice();
     }
   }
 
@@ -476,7 +580,11 @@ function createManagedLane({
   }
 
   async function managedInstall() {
+    const appliedVersion = foundVersion;
     managedInstalling = true;
+    // The install owns the update now; a session end mid-install must not
+    // advertise "quit to install".
+    disarmSessionEndNotice();
     emit("installing", { version: foundVersion });
     try { if (onInstallDispatched) onInstallDispatched(); } catch { /* advisory */ }
     try { if (stopGateway) await stopGateway(); } catch (err) {
@@ -499,9 +607,17 @@ function createManagedLane({
       return;
     }
     const { code } = await runUpdateCommand();
+    if (code === 0 && await applyChangedNothing(appliedVersion)) {
+      const message = unchangedMessage(appliedVersion);
+      log.error(`[update] managed install: ${message} — not relaunching`);
+      managedInstalling = false;
+      try { if (onInstallFailed) onInstallFailed(); } catch { /* advisory */ }
+      emitManagedError("install", new Error(message));
+      return;
+    }
     if (code === 0) {
       log.info("[update] managed install succeeded — relaunching");
-      app.relaunch();
+      relaunchAfterApply();
       app.exit(0);
       return;
     }

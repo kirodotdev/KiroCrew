@@ -21,6 +21,7 @@ from kiro_crew.acp_backends import (
     ACP_BACKEND_DEEPSEEK,
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
+    ACP_BACKENDS_MATE_WORKER_MCP_TOOL_LIMITS,
     ACP_BACKENDS_MATE_WORKER_TOOL_LIMITS,
 )
 from kiro_crew.mate_worker import MATE_WORKER_AGENT
@@ -111,8 +112,8 @@ def test_kas_keeps_the_per_session_wire_spec(pixel_worker):
 def test_a_stored_kiro_member_backend_runs_the_worker_on_kas():
     """The loader reads a stored ``kiro`` member backend as KAS (test_acp_backend_kas),
     and the worker takes that backend."""
-    agent = SimpleNamespace(member_acp_backend=ACP_BACKEND_KAS)
-    assert mate_worker.crewmate_worker_backend(agent) == ACP_BACKEND_KAS
+    config = SimpleNamespace(agent=SimpleNamespace(member_acp_backend=ACP_BACKEND_KAS))
+    assert mate_worker.crewmate_worker_backend(config) == ACP_BACKEND_KAS
 
 
 def test_kiro_cli_cannot_carry_the_worker_and_refuses_it():
@@ -135,15 +136,76 @@ def test_kiro_cli_cannot_carry_the_worker_and_refuses_it():
     assert AcpSessionProvider.mate_worker_kit_supported.fget(session) is True
 
 
-@pytest.mark.parametrize("backend", [ACP_BACKEND_CODEX, ACP_BACKEND_DEEPSEEK])
-def test_codex_and_deepseek_refuse_the_worker_until_captured(backend):
-    """No live capture of a worker session yet, so neither is in the kit set."""
+def test_deepseek_refuses_the_worker_until_captured():
+    """No live capture of a worker session yet, so deepseek is not in the kit set."""
     from kiro_crew.acp.session_provider import AcpSessionProvider
 
-    refusal = mate_worker.worker_kit_backend_refusal(backend)
-    assert refusal is not None and f"({backend})" in refusal
-    session = SimpleNamespace(_runtime=SimpleNamespace(acp_backend=backend))
+    refusal = mate_worker.worker_kit_backend_refusal(ACP_BACKEND_DEEPSEEK)
+    assert refusal is not None and f"({ACP_BACKEND_DEEPSEEK})" in refusal
+    session = SimpleNamespace(_runtime=SimpleNamespace(acp_backend=ACP_BACKEND_DEEPSEEK))
     assert AcpSessionProvider.mate_worker_kit_supported.fget(session) is False
+
+
+def test_codex_carries_the_worker_kit(pixel_worker):
+    """codex is in the kit set (codex/worker-kit-live.jsonl), and its mirror hands the
+    session key down, so the worker's array mounts the crewmate's own server."""
+    from kiro_crew.acp.session_provider import AcpSessionProvider
+    from kiro_crew.acp_backends import ACP_BACKENDS_MATE_WORKER_PROMPT_IN_CONTEXT
+    from kiro_crew.providers.acp import AcpProvider
+    from kiro_crew.providers.mirrors.codex import codex_projection
+
+    assert mate_worker.worker_kit_backend_refusal(ACP_BACKEND_CODEX) is None
+    session = SimpleNamespace(_runtime=SimpleNamespace(acp_backend=ACP_BACKEND_CODEX))
+    assert AcpSessionProvider.mate_worker_kit_supported.fget(session) is True
+    assert AcpSessionProvider.mate_worker_prompt_in_context.fget(session) is True
+    assert AcpSessionProvider.mate_worker_tool_limits_supported.fget(session) is False
+    client = SimpleNamespace(backend=ACP_BACKEND_CODEX)
+    assert AcpProvider.mate_worker_kit_supported.fget(SimpleNamespace(_client=client)) is True
+    assert ACP_BACKEND_CODEX in ACP_BACKENDS_MATE_WORKER_PROMPT_IN_CONTEXT
+    assert ACP_BACKEND_CODEX not in ACP_BACKENDS_MATE_WORKER_TOOL_LIMITS
+
+    def names(**kw):
+        return {
+            e.get("name") for e in codex_projection(MATE_WORKER_AGENT, **kw).params["mcpServers"]
+        }
+
+    assert "jira" in names(session_key="dashboard:chat-9")
+    # Without the session the projection is the bare base every worker shares.
+    assert "jira" not in names()
+
+
+@pytest.mark.parametrize(
+    "limits",
+    [
+        {"mcpServers": {"jira": {"command": "jira-mcp", "disabledTools": ["x"]}}},
+        {"excludedTools": ["@jira/delete_issue"]},
+        {"excludedTools": ["fs_write"]},
+    ],
+    ids=["disabledTools", "excluded-server-tool", "excluded-native-tool"],
+)
+def test_codex_refuses_a_tool_limited_worker(pixel_worker, limits):
+    """Single-tool limits stay KAS-only: the codex projection refuses a worker whose
+    crewmate's file sets any, on the very read it would build the worker from."""
+    from kiro_crew.providers.mirrors.codex import codex_projection
+    from kiro_crew.session_capabilities import CapabilityStartupError
+
+    (pixel_worker / "pixel.json").write_text(json.dumps({**PIXEL, **limits}), encoding="utf-8")
+    with pytest.raises(CapabilityStartupError) as refused:
+        codex_projection(MATE_WORKER_AGENT, session_key="dashboard:chat-9")
+    assert str(refused.value) == "capability_tool_limits_unsupported"
+
+
+def test_codex_gets_the_crewmates_prompt_in_the_context_block(pixel_worker):
+    """The codex mirror projects no spec prompt, so the block carries the worker's
+    principles and the crewmate's prompt, as on claude."""
+    from kiro_crew.context_assembly.agent_spec import _crewmate_worker_prompt
+    from kiro_crew.mate_worker import MATE_WORKER_PROMPT
+
+    with_prompt = {**PIXEL, "prompt": "Follow the release SOP."}
+    (pixel_worker / "pixel.json").write_text(json.dumps(with_prompt), encoding="utf-8")
+    _served_by(ACP_BACKEND_CODEX, "dashboard:chat-9")
+    block = _crewmate_worker_prompt(MATE_WORKER_AGENT, BASE["prompt"], "dashboard:chat-9")
+    assert block == f"You are the worker.\n\n{MATE_WORKER_PROMPT}\n\nFollow the release SOP."
 
 
 def test_a_crewmate_turning_off_single_tools_names_the_server(pixel_worker):
@@ -285,8 +347,8 @@ def test_the_resolved_contract_block_carries_the_crewmates_prompt(
     assert resolve("dashboard:chat-9") == "You are the worker."
 
 
-def _claude_worker_provider(key, **_kwargs):
-    """A provider that answers the two worker questions the way claude's does."""
+def _claude_worker_provider(key, backend=ACP_BACKEND_CLAUDE, **_kwargs):
+    """A provider that answers the worker questions the way *backend*'s does."""
     from kiro_crew.acp_backends import ACP_BACKENDS_MATE_WORKER_KIT
     from kiro_crew.providers.base import LLMProvider
 
@@ -321,17 +383,21 @@ def _claude_worker_provider(key, **_kwargs):
 
         @property
         def mate_worker_kit_supported(self):
-            return ACP_BACKEND_CLAUDE in ACP_BACKENDS_MATE_WORKER_KIT
+            return backend in ACP_BACKENDS_MATE_WORKER_KIT
 
         @property
         def mate_worker_prompt_in_context(self):
             from kiro_crew.acp_backends import ACP_BACKENDS_MATE_WORKER_PROMPT_IN_CONTEXT
 
-            return ACP_BACKEND_CLAUDE in ACP_BACKENDS_MATE_WORKER_PROMPT_IN_CONTEXT
+            return backend in ACP_BACKENDS_MATE_WORKER_PROMPT_IN_CONTEXT
 
         @property
         def mate_worker_tool_limits_supported(self):
-            return ACP_BACKEND_CLAUDE in ACP_BACKENDS_MATE_WORKER_TOOL_LIMITS
+            return backend in ACP_BACKENDS_MATE_WORKER_TOOL_LIMITS
+
+        @property
+        def mate_worker_mcp_tool_limits_supported(self):
+            return backend in ACP_BACKENDS_MATE_WORKER_MCP_TOOL_LIMITS
 
     return _ClaudeWorker()
 
@@ -346,11 +412,15 @@ def _claude_worker_provider(key, **_kwargs):
     ],
     ids=["disabledTools", "excluded-server-tool", "excluded-native-tool"],
 )
-async def test_the_allocation_refuses_a_tool_limited_worker_on_claude(
-    pixel_worker, tmp_path, monkeypatch, limits
+@pytest.mark.parametrize("backend", [ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX])
+async def test_the_allocation_refuses_a_tool_limited_worker_on_a_mirror(
+    pixel_worker, tmp_path, monkeypatch, limits, backend
 ):
     """The allocation itself, not only its source: a worker whose crewmate's file
-    turns off single tools is refused on claude before anything starts."""
+    turns off single tools is refused on codex before anything starts, and on
+    claude when a limit is a native tool, which no MCP deny carries; claude starts
+    a worker whose limits are all MCP tools, and the same worker with no limits
+    starts on both."""
     from kiro_crew.config.loader import KiroCrewConfig
     from kiro_crew.members_parts import member_sessions
     from kiro_crew.session import SessionManager
@@ -370,12 +440,17 @@ async def test_the_allocation_refuses_a_tool_limited_worker_on_claude(
     made = []
 
     def factory(key, **kwargs):
-        provider = _claude_worker_provider(key, **kwargs)
+        provider = _claude_worker_provider(key, backend, **kwargs)
         made.append(provider)
         return provider
 
     manager = SessionManager(KiroCrewConfig.load(), provider_factory=factory)
+    native = any(not ref.startswith("@") for ref in limits.get("excludedTools", []))
     try:
+        if backend in ACP_BACKENDS_MATE_WORKER_MCP_TOOL_LIMITS and not native:
+            await manager.get_or_create(key, agent=MATE_WORKER_AGENT, cwd=str(tmp_path))
+            assert made and made[0].starts == 1
+            return
         with pytest.raises(CapabilityStartupError) as refused:
             await manager.get_or_create(key, agent=MATE_WORKER_AGENT, cwd=str(tmp_path))
         assert str(refused.value) == "capability_tool_limits_unsupported"
@@ -416,7 +491,7 @@ def test_the_prompt_channel_follows_the_live_provider_not_the_config(
         key, AcpSessionProvider.mate_worker_prompt_in_context.fget(provider)
     )
     at_start = _crewmate_worker_prompt(MATE_WORKER_AGENT, BASE["prompt"], key)
-    monkeypatch.setattr(mate_worker, "crewmate_worker_backend", lambda _a: flipped_to)
+    monkeypatch.setattr(mate_worker, "crewmate_worker_backend", lambda *_a: flipped_to)
     after_compaction = _crewmate_worker_prompt(MATE_WORKER_AGENT, BASE["prompt"], key)
     assert after_compaction == at_start
     if started_on == ACP_BACKEND_CLAUDE:

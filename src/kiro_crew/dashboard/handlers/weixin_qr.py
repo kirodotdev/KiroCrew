@@ -67,6 +67,11 @@ logger = logging.getLogger(__name__)
 _SESSIONS: Dict[str, Dict[str, Any]] = {}
 _SESSION_TTL_SECONDS = 600
 
+#: Strong references to the expired clients' close tasks. The event loop keeps
+#: only a weak reference to a task, so one nothing holds can be garbage-collected
+#: before ``close()`` finishes. Each task removes itself when it is done.
+_CLOSE_TASKS: set[asyncio.Task[Any]] = set()
+
 
 def _render_qr_data_uri(scan_data: str) -> str:
     """Encode ``scan_data`` (the iLink login URL) into a PNG data URI.
@@ -89,7 +94,9 @@ def _prune_sessions() -> None:
             if client is not None:
                 # best-effort close; the event loop owns the coroutine
                 try:
-                    asyncio.create_task(client.close())
+                    task = asyncio.create_task(client.close())
+                    _CLOSE_TASKS.add(task)
+                    task.add_done_callback(_CLOSE_TASKS.discard)
                 except Exception:
                     pass
             _SESSIONS.pop(sid, None)
@@ -313,7 +320,7 @@ def _commit_credential_and_config(cp: Path, serialized: str, token: str) -> None
     from kiro_crew.secrets.migrate import _env_lock_path
 
     lock_path = _env_lock_path(ep)
-    lock_fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+    lock_fd = platform_compat.open_create_or_existing(lock_path, os.O_RDWR, 0o600)
     try:
         if not platform_compat.try_acquire_lock(lock_fd, exclusive=True):
             raise OSError(

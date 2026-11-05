@@ -77,7 +77,10 @@ from kiro_crew.discord.commands import (
 from kiro_crew.discord.renderer import (  # noqa: F401
     _STYLE_DANGER,
     _STYLE_SUCCESS,
-    DiscordApprovalDecider,
+)
+from kiro_crew.discord.renderer import DiscordApprovalDecider
+from kiro_crew.discord.renderer import DiscordApprovalDecider as _APPROVAL_REGISTRY
+from kiro_crew.discord.renderer import (  # noqa: F401
     DiscordRenderer,
     build_model_components,
     session_provenance_tag,
@@ -393,7 +396,14 @@ class DiscordDispatcher:
             restricted=self._session_restricted,
             conv_log=self.conv_log,
             slot_state=lambda: getattr(self._session_resume, "dashboard_state", None),
-            approvals=Approvals(discard=DiscordApprovalDecider.discard_session),
+            # ``_APPROVAL_REGISTRY`` is ``DiscordApprovalDecider`` under a second
+            # name. Reservations are class state, so the sweep has to reach the
+            # class holding them, and the construction name is a seam callers and
+            # tests substitute to observe the decider a turn builds. Sweeping
+            # through that name aims at the substitute: it raises on a plain
+            # function, and on a stand-in class it clears an empty registry and
+            # leaves the real window armed past the end of its turn.
+            approvals=Approvals(discard=_APPROVAL_REGISTRY.discard_session),
             drift=DISCORD_DRIFT,
         )
 
@@ -865,6 +875,7 @@ class DiscordDispatcher:
                 or self._session_key(user_id, thread_id) == monitor_session_key
             )
 
+        _pick_before = self._model_pref.get(scope_id)
         try:
             outcome = await self._channel_turns().answer(
                 Asker(
@@ -889,7 +900,7 @@ class DiscordDispatcher:
                     # ``model`` applies only when this turn COLD-STARTS the session:
                     # the fast path returns a reused session before it consults the
                     # argument, which is exactly what ``!model``'s reply promises.
-                    model=self._model_pref.get(scope_id) or None,
+                    model=_pick_before or None,
                     # A resumed session runs its own persisted agent.
                     agent=None if resumed_key is not None else self._resolve_agent(scope_id),
                 ),
@@ -904,6 +915,20 @@ class DiscordDispatcher:
                 ),
                 skill_trigger_text=skill_trigger_text,
             )
+            if resumed_key is None and outcome.stop_reason is not None:
+                # The pick is what `!model` shows and a cold start re-applies, so
+                # it follows a promotion from a prompt this call ran (a BUSY or
+                # refused wake may be reading another turn's walk), before any
+                # await lets the next prompt reset the walk. Imported here because
+                # this facade's bound names are pinned (composition test).
+                from kiro_crew.agent_sdk.drivers.acp_vocab import follow_engine_promotion
+
+                follow_engine_promotion(
+                    self._model_pref,
+                    scope_id,
+                    self.sessions.get_provider(session_key),
+                    before=_pick_before,
+                )
         finally:
             # Identity-checked: a later turn on this key may have published its own.
             if built and self._active_renderers.get(session_key) is built[0]:

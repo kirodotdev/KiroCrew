@@ -1,6 +1,6 @@
 {
   "name": "kirocrew-desktop",
-  "version": "0.12.0",
+  "version": "0.13.0",
   "description": "Kiro Crew \u2014 AI agent desktop app",
   "homepage": "https://github.com/kirodotdev/KiroCrew",
   "desktopName": "kirocrew-desktop.desktop",
@@ -29,6 +29,14 @@
   "build": {
     "appId": "com.amazon.kiro.crew",
     "productName": "KiroCrew",
+    "protocols": [
+      {
+        "name": "KiroCrew",
+        "schemes": [
+          "kirocrew"
+        ]
+      }
+    ],
     "toolsets": {
       "appimage": "1.0.3"
     },
@@ -82,6 +90,7 @@
         "libnss3",
         "libxss1",
         "libxtst6",
+        "libgbm1",
         "xdg-utils",
         "libatspi2.0-0 | libatspi2.0-0t64",
         "libuuid1",
@@ -105,6 +114,7 @@
         "nss",
         "libXScrnSaver",
         "libXtst",
+        "mesa-libgbm",
         "xdg-utils",
         "at-spi2-core",
         "libuuid",
@@ -137,6 +147,7 @@
     "files": [
       "main.js",
       "gateway-supervisor.js",
+      "shell-bundle-watch.js",
       "runtime/gateway/launch-preflight.js",
       "runtime/gateway/port-holders.js",
       "runtime/gateway/family-takeover.js",
@@ -148,6 +159,8 @@
       "runtime/gateway/holder-decision.js",
       "runtime/gateway/shutdown.js",
       "runtime/gateway/reconnect.js",
+      "runtime/gateway/remote-switch.js",
+      "runtime/gateway/respawn-owner.js",
       "window-lifecycle.js",
       "runtime/window/chrome.js",
       "runtime/window/prompts.js",
@@ -164,6 +177,7 @@
       "zoom.js",
       "instance-guard.js",
       "singleton-lock.js",
+      "linux-desktop-integration.js",
       "context-menu.js",
       "find-bin.js",
       "external-terminal.js",
@@ -243,11 +257,11 @@
       "focus-cursor.js",
       "permission-handler.js",
       "browser-view.js",
-      "browser-control.js",
-      "browser-ops.js",
       "browser-annotate.js",
-      "browser-agent-channel.js",
+      "browser-page-helpers.js",
       "external-scheme.js",
+      "deep-link.js",
+      "deep-link-handler.js",
       "validation.js",
       "context-menu.js",
       "preload.js",

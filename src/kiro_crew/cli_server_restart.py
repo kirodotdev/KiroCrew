@@ -216,8 +216,9 @@ _GatewayLogMark = tuple[int | None, int | None, int]
 def _gateway_log_mark() -> _GatewayLogMark | None:
     """Record which file gateway.log is and how long it is, before a replacement spawns.
 
-    The replacement rotates a non-empty gateway.log to gateway.log.prev at boot
-    (``cli._setup_cli_logging``) and writes everything after that into a fresh file, so
+    The replacement rotates a non-empty gateway.log to gateway.log.prev once it holds
+    the gateway lock (``cli_logging._start_gateway_log_after_lock``) and writes
+    everything after that into a fresh file, so
     a size alone cannot say where its output starts: the identity says whether the file
     read later is still the one measured here. ``None`` when gateway.log cannot be
     stat'ed, which makes the relay print nothing rather than an older gateway's lines

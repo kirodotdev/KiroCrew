@@ -8,7 +8,7 @@ import type { ChatSlot, SessionInfo } from '../../types'
 import { api } from '../../api/client'
 import { resolveDefaultMemoryMode } from '../../api/queryClient'
 import { addSlotOptimistic, updateSlot } from '../dashboardSlice'
-import { resolveDefaultColor } from '../../utils/sessionColors'
+import { paletteSize, resolveDefaultColor } from '../../utils/sessionColors'
 import { isChatPageSurface } from '../../utils/channelOrigin'
 import { mergePreservedPastes } from '../../utils/pasteTokens'
 import { findReport, parseErrorCode } from '../../utils/errorReport'
@@ -42,7 +42,7 @@ const configuredDefaultMemoryMode = () =>
 
 export const createSlot = createAsyncThunk<
   ChatSlot,
-  { agent?: string; agent_kind?: 'member' | 'template'; appAgentOwner?: string; model?: string; mode?: string; memory_mode?: string; folder_id?: string | null; title?: string; color_index?: number | null; color_hex?: string | null; project?: string | null; activate?: boolean; sessionFolder?: boolean; defaultFolder?: boolean; prefill?: string; automatic?: boolean; doc?: boolean; docKind?: 'board' | 'codebase' | 'dashboard' } | string | undefined,
+  { agent?: string; agent_kind?: 'member' | 'template'; appAgentOwner?: string; model?: string; mode?: string; memory_mode?: string; folder_id?: string | null; title?: string; color_index?: number | null; color_hex?: string | null; project?: string | null; activate?: boolean; sessionFolder?: boolean; defaultFolder?: boolean; prefill?: string; automatic?: boolean; doc?: boolean; docKind?: 'board' | 'codebase' | 'dashboard'; sessionKind?: { app: string; kind: string } } | string | undefined,
   { fulfilledMeta: Required<OriginMeta> & { activate: boolean; prefillStaged?: boolean; automatic?: boolean } }
 >(
   'chat/createSlot',
@@ -100,7 +100,10 @@ export const createSlot = createAsyncThunk<
     // A doc session: the slot's pane is a markdown document instead of a chat.
     const doc = typeof opts === 'object' && opts.doc === true
     const docKind = typeof opts === 'object' && (opts.docKind === 'board' || opts.docKind === 'codebase' || opts.docKind === 'dashboard') ? opts.docKind : undefined
-    const slot = await api.createChatSlot(undefined, agent, model, mode, memory_mode, title, undefined, folderId || undefined, agentKind, skipSessionFolder, appAgentOwner, useDefaultFolder, doc, docKind)
+    // An app-drawn session: the slot's main pane is the declaring app's entry, bound
+    // to `{ app, kind }` here and to the object the server mints (CONTRACT §8).
+    const sessionKind = typeof opts === 'object' && opts.sessionKind ? { app: opts.sessionKind.app, kind: opts.sessionKind.kind } : undefined
+    const slot = await api.createChatSlot(undefined, agent, model, mode, memory_mode, title, undefined, folderId || undefined, agentKind, skipSessionFolder, appAgentOwner, useDefaultFolder, doc, docKind, sessionKind)
     const dashState = (getState() as RootState).dashboard
     // An explicit color (e.g. carried from a slot being recreated on a
     // mode switch) wins; otherwise fall back to the default-color policy.
@@ -123,7 +126,11 @@ export const createSlot = createAsyncThunk<
         throw err
       }
     } else {
-      const ci = explicitColor != null ? explicitColor : resolveDefaultColor(dashState.sessionDefaultColor, dashState.slots.length)
+      const ci = explicitColor != null ? explicitColor : resolveDefaultColor(
+        dashState.sessionDefaultColor,
+        dashState.slots.length,
+        paletteSize(dashState.sessionColorsPalette),
+      )
       if (ci != null) {
         slot.color_index = ci
         if (explicitColor != null) {
@@ -200,7 +207,7 @@ export const PENDING_OPEN_LEASE_MS = 10_000
 
 export const resumeFromHistory = createAsyncThunk<
   { ok: boolean; key: string; surface: string; nextBefore: number; messages: ReturnType<typeof filterMessages>; hasMore: boolean; total: number; folderId: string },
-  { key: string; title: string },
+  { key: string; title: string; leaveSplit?: boolean },
   { pendingMeta: { startedAt: number }; fulfilledMeta: Required<OriginMeta> }
 >(
   'chat/resumeFromHistory',
@@ -211,7 +218,7 @@ export const resumeFromHistory = createAsyncThunk<
     const origin = captureForkOrigin(getState() as RootState)
     const d = await api.resumeChatSlot(key, title)
     if (d.ok) {
-      dispatch(addSlotOptimistic({ key: d.key, title: title || d.key, messages: 0, running: false, memory_mode: d.memory_mode, mode: d.mode, surface: d.surface ?? d.mode, pending_approval: false, waiting_for_input: false, last_activity_ts: undefined, ...(d.folder_id ? { folder_id: d.folder_id } : {}) }))
+      dispatch(addSlotOptimistic({ key: d.key, title: title || d.key, messages: 0, running: false, memory_mode: d.memory_mode, mode: d.mode, surface: d.surface ?? d.mode, pending_approval: false, waiting_for_input: false, last_activity_ts: undefined, ...(d.folder_id ? { folder_id: d.folder_id } : {}), ...(d.history_key ? { history_key: d.history_key } : {}) }))
       dispatch(updateSlot({ key: d.key, mode: d.mode, surface: d.surface ?? d.mode }))
     }
     // Without a cursor this response cannot be paged, so do not advertise more:
@@ -650,7 +657,7 @@ export function addLifecycleCases(builder: ActionReducerMapBuilder<ChatState>): 
         const origin = entry?.origin ?? originFromMeta(state, action.meta)
         if (!latest || !forkMayOpen({ chat: state }, origin)) return
         noteRequestActivation(state, origin)
-        state.lastResumeActivation = { requestId: action.meta.requestId, replaced: state.activeSlot }
+        state.lastResumeActivation = { requestId: action.meta.requestId, replaced: state.activeSlot, ...(action.meta.arg.leaveSplit ? { leaveSplit: true } : {}) }
         state.slotHistory = state.slotHistory.filter(k => k !== action.payload.key)
         if (state.activeSlot) {
           state.slotActivity[state.activeSlot] = { toolLog: state.toolLog, subagents: state.subagents, activityTab: state.activityTab, activityOpen: state.activityOpen }

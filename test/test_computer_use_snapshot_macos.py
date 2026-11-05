@@ -390,7 +390,12 @@ class TestPermissions:
         """The dashboard serialises this straight into a JSON response."""
         import json
 
-        json.dumps(permissions.probe_dict())
+        probe = permissions.probe()
+        assert json.loads(json.dumps(permissions.probe_dict())) == {
+            permissions.KEY_ACCESSIBILITY: probe.accessibility,
+            permissions.KEY_SCREEN_RECORDING: probe.screen_recording,
+            permissions.KEY_RESPONSIBLE_HINT: probe.responsible_hint,
+        }
 
     def test_settings_urls_are_empty_off_macos(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setattr(permissions.platform_compat, "IS_MACOS", False, raising=False)

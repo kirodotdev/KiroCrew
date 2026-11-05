@@ -134,6 +134,47 @@ class TestSplitMessage:
         assert not parts[-1].endswith(CONTINUATION)
 
 
+class TestSplitMessageSkipsAnEarlyBreak:
+    """A line break too near the chunk's start must not cost a whole message."""
+
+    CHUNK = SLACK_MSG_LIMIT - len(CONTINUATION)
+
+    def test_a_short_first_line_before_one_long_line_costs_no_message(self):
+        parts = split_message("Hi\n" + "x" * 5000)
+        assert parts == ["Hi\n" + "x" * (self.CHUNK - 3) + CONTINUATION, "x" * (5003 - self.CHUNK)]
+
+    def test_a_short_first_line_before_long_prose_costs_no_message(self):
+        text = "Hi\n" + "word " * 1500
+        parts = split_message(text)
+        assert len(parts) == 2
+        assert parts[0].startswith("Hi\nword word")
+        assert "".join(p.removesuffix(CONTINUATION) for p in parts) == text
+
+    def test_a_line_break_a_quarter_in_is_still_taken(self):
+        parts = split_message("a" * 1000 + "\n" + "b" * 3500)
+        assert parts == ["a" * 1000 + CONTINUATION, "b" * 3500]
+
+    def test_an_early_line_break_falls_through_to_a_later_one(self):
+        text = "Title\n" + "w" * 2000 + "\n" + "z" * 2500
+        assert split_message(text) == ["Title\n" + "w" * 2000 + CONTINUATION, "z" * 2500]
+
+    def test_a_line_that_fits_a_chunk_behind_a_short_lead_in_moves_whole(self):
+        url = "https://example.com/" + "a" * (self.CHUNK - 23)
+        parts = split_message("Open:\n" + url + "\n" + "t" * 100)
+        assert parts[:2] == ["Open:" + CONTINUATION, url + CONTINUATION]
+
+    def test_a_last_line_that_fits_the_last_post_moves_whole(self):
+        # The last post has no CONTINUATION, so it holds up to SLACK_MSG_LIMIT.
+        url = "https://example.com/" + "a" * (SLACK_MSG_LIMIT - 30)
+        assert self.CHUNK < len(url) <= SLACK_MSG_LIMIT
+        assert split_message("Lead-in line\n" + url) == ["Lead-in line" + CONTINUATION, url]
+
+    def test_link_prose_behind_a_short_lead_in_is_cut_hard_not_at_a_space(self):
+        text = "Hi\n" + "[a link label](https://example.com) " * 150
+        parts = split_message(text)
+        assert parts[0] == text[: self.CHUNK] + CONTINUATION
+
+
 class TestCronMessageSplitting:
     """Tests for cron message splitting — long cron output sent as multiple messages."""
 
@@ -472,6 +513,67 @@ class TestToSlackMrkdwnTruncation:
 
         assert to_slack_mrkdwn("hello world") == "hello world"
 
+    def test_an_early_line_break_does_not_cut_away_the_text(self):
+        from kiro_crew.slack.format import SLACK_MAX_TEXT, to_slack_mrkdwn
+
+        text = "Hi\n" + "x" * (SLACK_MAX_TEXT + 5000)
+        out = to_slack_mrkdwn(text)
+        assert out == text[:SLACK_MAX_TEXT] + f"\n\n_…truncated ({len(text)} chars total)_"
+
+    def test_a_line_break_a_quarter_in_is_still_the_cut(self):
+        from kiro_crew.slack.format import SLACK_MAX_TEXT, to_slack_mrkdwn
+
+        head = "a" * (SLACK_MAX_TEXT // 2)
+        text = head + "\n" + "b" * SLACK_MAX_TEXT
+        assert to_slack_mrkdwn(text) == head + f"\n\n_…truncated ({len(text)} chars total)_"
+
+
+class TestTruncatedOverflowCut:
+    """``_truncated`` keeps one message's worth of text and announces the rest."""
+
+    def test_an_early_line_break_does_not_cut_away_the_text(self):
+        from kiro_crew.slack.format import _truncated
+
+        text = "Hi\n" + "x" * 5000
+        notice = f"\n\n_…truncated ({len(text)} chars total)_"
+        assert _truncated(text, 3900) == [text[: 3900 - len(notice)] + notice]
+
+    def test_a_line_break_a_quarter_in_is_still_the_cut(self):
+        from kiro_crew.slack.format import _truncated
+
+        text = "a" * 2000 + "\n" + "b" * 3000
+        assert _truncated(text, 3900) == [
+            "a" * 2000 + f"\n\n_…truncated ({len(text)} chars total)_"
+        ]
+
+
+class TestToSlackMrkdwnInlineCode:
+    """Slack shows inline code as written, so its markers are never rewritten."""
+
+    def test_bold_and_strike_markers_inside_inline_code_are_kept(self):
+        from kiro_crew.slack.format import to_slack_mrkdwn
+
+        assert to_slack_mrkdwn("call `f(**kwargs)` now") == "call `f(**kwargs)` now"
+        assert to_slack_mrkdwn("`a~~b~~c` and ~~gone~~") == "`a~~b~~c` and ~gone~"
+
+    def test_emphasis_around_a_code_span_still_converts(self):
+        from kiro_crew.slack.format import to_slack_mrkdwn
+
+        assert to_slack_mrkdwn("**a `b` c**") == "*a `b` c*"
+        assert to_slack_mrkdwn("~~a `x` b~~") == "~a `x` b~"
+
+    def test_a_backslash_inside_code_does_not_reach_past_the_span(self):
+        """A backslash is literal inside code, so `C:\\` closes on its own."""
+        from kiro_crew.slack.format import to_slack_mrkdwn
+
+        out = to_slack_mrkdwn("Use `C:\\` then **bold** and `x`.")
+        assert out == "Use `C:\\` then *bold* and `x`."
+
+    def test_an_escaped_backtick_outside_code_opens_nothing(self):
+        from kiro_crew.slack.format import to_slack_mrkdwn
+
+        assert to_slack_mrkdwn("\\`a **b** `c`") == "\\`a *b* `c`"
+
 
 class TestToSlackMrkdwnKeepTables:
     """Tests for the keep_tables parameter in to_slack_mrkdwn."""
@@ -491,6 +593,39 @@ class TestToSlackMrkdwnKeepTables:
         result = to_slack_mrkdwn(self.TABLE, keep_tables=True)
         assert "| Model | Cost |" in result
         assert "•" not in result
+
+    def test_a_lone_pipe_row_is_never_swallowed(self):
+        """A pipe line with no separator under it is prose, not a header."""
+        from kiro_crew.slack.format import to_slack_mrkdwn
+
+        assert to_slack_mrkdwn("Legend:\n| a | b |\nend") == "Legend:\n| a | b |\nend"
+
+    def test_a_table_inside_a_code_fence_is_left_alone(self):
+        from kiro_crew.slack.format import to_slack_mrkdwn
+
+        src = "```\n| a | b |\n|---|---|\n| 1 | 2 |\n```"
+        assert to_slack_mrkdwn(src) == src
+
+    def test_a_table_in_a_tilde_or_longer_fence_is_left_alone(self):
+        from kiro_crew.slack.format import _convert_tables
+
+        table = "| a | b |\n|---|---|\n| 1 | 2 |"
+        for src in (f"~~~\n{table}\n~~~", f"````\n```\n{table}\n````"):
+            assert _convert_tables(src) == src
+
+    def test_escaped_and_inline_code_pipes_stay_in_their_cell(self):
+        from kiro_crew.slack.format import to_slack_mrkdwn
+
+        escaped = to_slack_mrkdwn("| op | meaning |\n|---|---|\n| a \\| b | or |")
+        assert escaped == "• *op:* a | b | *meaning:* or"
+        code = to_slack_mrkdwn("| op | meaning |\n|---|---|\n| `a|b` | or |")
+        assert code == "• *op:* `a|b` | *meaning:* or"
+
+    def test_an_empty_row_keeps_its_place(self):
+        from kiro_crew.slack.format import to_slack_mrkdwn
+
+        out = to_slack_mrkdwn("| a | b |\n|---|---|\n| 1 | 2 |\n|  |  |\n| 3 | 4 |")
+        assert out == "• *a:* 1 | *b:* 2\n• —\n• *a:* 3 | *b:* 4"
 
     def test_keep_tables_still_converts_headings(self):
         from kiro_crew.slack.format import to_slack_mrkdwn
@@ -587,10 +722,9 @@ class TestMermaidSequenceArrows:
 
     @staticmethod
     def _seq(line: str) -> str:
-        from kiro_crew.slack.format import _mermaid_sequence
+        from kiro_crew.slack.format import _convert_mermaid
 
-        # _mermaid_sequence skips the first line ("sequenceDiagram")
-        return _mermaid_sequence("sequenceDiagram\n" + line)
+        return _convert_mermaid("```mermaid\nsequenceDiagram\n" + line + "\n```")
 
     def test_dashed_arrows_point_same_direction_as_solid(self):
         # All four arrow types describe A talking to B; none should point back at A.

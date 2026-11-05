@@ -14,7 +14,9 @@ vi.mock('../../pages/chat/command-center/CrewWorkerList', async importOriginal =
   reopenCrewWorker,
 }))
 
-import { CrewWorkerComposerGate, steerUnrecordedLine } from './CrewWorkerComposerGate'
+import { CrewSteerUnrecordedNotice, CrewWorkerComposerGate, steerUnrecordedLine } from './CrewWorkerComposerGate'
+import { crewRootOf } from '../../lib/crewMode'
+import { PREVIEW_CREW_MODE } from '../../utils/previewFlags'
 import { clearCrewSteerNotice, noteCrewSteerReceipt } from '../../lib/crewSteerNotice'
 
 async function renderGate(slots: unknown[], waitingForApproval = false) {
@@ -140,5 +142,27 @@ describe('CrewWorkerComposerGate (edge review R2)', () => {
     expect(screen.getByTestId('crew-worker-reopen-root')).toHaveTextContent('Open main chat')
     // The approval line gives way: nothing can be decided until the conductor is back.
     expect(screen.queryByTestId('crew-worker-approval-waiting')).toBeNull()
+  })
+})
+
+describe('CrewSteerUnrecordedNotice with the Crew Mode preview off', () => {
+  afterEach(() => { act(() => { clearCrewSteerNotice('w1') }); localStorage.removeItem(PREVIEW_CREW_MODE) })
+
+  it('a crew member\'s unrecorded steer still shows as an ErrorNotice when the gate is not mounted', async () => {
+    localStorage.removeItem(PREVIEW_CREW_MODE)
+    const worker = { key: 'w1', title: 'Worker B', crew_root: 'root' }
+    // Preview off: the hosts read no crew root, so they mount no gate (no Crew Mode chrome).
+    expect(crewRootOf(worker)).toBe('')
+    const store = createTestStore({ dashboard: { slots: [worker] } } as never)
+    await act(async () => {
+      render(<Provider store={store}><CrewSteerUnrecordedNotice worker="w1" workerTitle="Worker B" /></Provider>)
+    })
+    expect(screen.queryByTestId('crew-steer-not-recorded')).toBeNull()
+    act(() => { noteCrewSteerReceipt('w1', { ok: true, ledger_event: null, ledger_error: 'not_recorded' }) })
+    const notice = screen.getByTestId('crew-steer-not-recorded')
+    expect(notice.querySelector('[role="alert"]')).not.toBeNull()
+    expect(notice).toHaveTextContent(steerUnrecordedLine('not_recorded', 'Worker B'))
+    expect(screen.queryByTestId('crew-worker-approval-waiting')).toBeNull()
+    expect(screen.queryByTestId('crew-worker-root-closed')).toBeNull()
   })
 })

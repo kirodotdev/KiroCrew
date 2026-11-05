@@ -38,11 +38,8 @@ def _lost() -> AcpError:
 def _credential_dead() -> AcpError:
     """The answer a stale-credential backend gives, raised through the real path.
 
-    The Claude-on-Bedrock process answered, but the AWS credentials it cached
-    cannot be loaded any more -- so a retry on THIS process draws the answer
-    again and the remedy is the same fresh process a lost session gets. Built
-    through ``_raise_acp_error`` because that is the path ``AcpClient`` raises
-    the real frame through; the fakes here stand in for that client.
+    The process's cached AWS credentials fail to load, so only a fresh process helps.
+    Built through ``_raise_acp_error``, the path ``AcpClient`` raises the real frame through.
     """
     from kiro_crew.acp.transport_errors import _raise_acp_error
 
@@ -117,6 +114,28 @@ async def test_slack_lost_session_resets_and_replays_once():
 
 
 @pytest.mark.asyncio
+async def test_slack_lost_session_ends_the_lost_attempt_before_its_reset():
+    """The lost turn never landed, so its attempt ends before the reset and what
+    it received inline is revoked before the replay runs."""
+    from test_slack_handler import FakeSessionManager, MockSlackClient
+
+    from kiro_crew.slack.handler import handle_message
+
+    class _Settling(FakeSessionManager):
+        def settle_turn(self, key):
+            self.removed.append(f"settle:{key}")
+
+    provider = _ScriptedSlackProvider([[_lost()], _answer()])
+    sessions = _Settling(provider)
+
+    await handle_message(MockSlackClient(), sessions, "C1", "hello", "thread1", "msg1", "U1")
+
+    assert provider.turns == 2
+    assert sessions.removed.count("settle:thread1") == 1
+    assert sessions.removed.index("settle:thread1") < sessions.removed.index("reset:thread1")
+
+
+@pytest.mark.asyncio
 async def test_slack_second_loss_ends_on_a_clear_error():
     from test_slack_handler import FakeSessionManager, MockSlackClient, _visible_texts
 
@@ -155,12 +174,8 @@ async def test_slack_lost_after_output_is_not_replayed():
 async def test_slack_stale_credential_error_recycles_and_replays_once():
     """``cloud_credential_error`` rides the same replace-the-process seam.
 
-    The process is alive but its credential cache is stale: the tag
-    (``AcpError.credential_reload``, set from the structured frame field)
-    routes through ``acp_error_is_session_not_found``, so the binding is
-    dropped once and the replay's claim spawns a fresh process, which loads
-    fresh credentials and answers. One replay, never a loop -- a second
-    failure ends the turn on the give-up text.
+    ``AcpError.credential_reload`` routes through ``acp_error_is_session_not_found``, so the
+    binding drops once and the replay spawns a fresh process. A second failure gives up.
     """
     from test_slack_handler import FakeSessionManager, MockSlackClient, _visible_texts
 
@@ -435,6 +450,41 @@ def test_cron_sequence_step_defers_reset_when_subagents_pending(gw_and_cb):  # n
     # The retry path's unconditional reset was skipped; _subagent_done owns it.
     reset_keys = [c.args[0] for c in gw.sessions.reset.await_args_list]
     assert reset_keys.count("cron:seqdef:a") == 0
+
+
+def test_cron_sequence_step_loss_does_not_reset_a_key_another_turn_holds(gw_and_cb):  # noqa: F811
+    """A lost step whose key another turn took after the release (the job's
+    dashboard tab shares it) leaves that turn running: neither reset tears
+    it down, and the step is given up rather than re-run on the stale
+    binding."""
+    gw, get_cb, capture_cron = gw_and_cb
+    gw.cron_svc = None
+    held = {"cron:seqbusy:a"}
+
+    async def reset(key, *, skip_if_busy=False, skip_if_injecting=False):
+        return not (skip_if_busy and key in held)
+
+    gw.sessions.reset = AsyncMock(side_effect=reset)
+    gw.sessions.is_busy = MagicMock(side_effect=lambda key: key in held)
+    calls = 0
+
+    async def resume(_c, _m, **_k):
+        nonlocal calls
+        calls += 1
+        raise _lost()
+
+    with pytest.raises(AcpError, match=SESSION_NOT_FOUND_GIVE_UP_TEXT):
+        _run_cron(
+            gw, get_cb, capture_cron, _job(agent_sequence=["a", "b"], id="seqbusy"), resume=resume
+        )
+    assert calls == 1
+    resets = gw.sessions.reset.await_args_list
+    assert [c.args[0] for c in resets] == ["cron:seqbusy:a", "cron:seqbusy:a"]
+    # The step's end-of-run reset, then the lost-session retry's own.
+    assert [c.kwargs for c in resets] == [
+        {"skip_if_busy": True, "skip_if_injecting": True},
+        {"skip_if_busy": True},
+    ]
 
 
 # ── subagent run ────────────────────────────────────────────────────────────

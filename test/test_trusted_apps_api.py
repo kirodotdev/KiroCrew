@@ -1267,7 +1267,7 @@ async def test_a_failing_on_disable_warns_but_never_refuses_the_withdrawal(
     _install(tmp_path, _APP, enabled=True)
     # `enabled: True` matters: teardown only runs the app's OWN shutdown code
     # when there is reason to believe it is running. The not-running case is
-    # covered by test_a_disabled_apps_own_code_is_not_launched_by_a_revoke.
+    # covered by test_a_disabled_apps_own_code_is_not_launched_by_an_ordinary_disable.
     record = {
         "resources": "app",
         "enabled": True,

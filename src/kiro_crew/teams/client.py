@@ -24,6 +24,7 @@ import asyncio
 import ipaddress
 import json
 import logging
+import math
 import socket
 import time
 import urllib.parse
@@ -1533,13 +1534,17 @@ class TeamsClient:
         otherwise backs off exponentially. Deliberately unjittered: the retry
         budget is 2 attempts against a per-conversation limit, so there is no
         thundering herd to spread, and a deterministic delay keeps the wait
-        assertable in tests.
+        assertable in tests. A non-finite value (``nan``, ``inf``) counts as
+        absent: NaN passes through ``min``/``max`` unchanged and would make
+        ``asyncio.sleep`` wait forever.
         """
         if retry_after:
             try:
-                return min(max(float(retry_after), 0.5), _RETRY_AFTER_CAP_SECS)
+                value = float(retry_after)
             except (TypeError, ValueError):
-                pass
+                value = math.nan
+            if math.isfinite(value):
+                return min(max(value, 0.5), _RETRY_AFTER_CAP_SECS)
         return min(0.5 * (2**attempt), _RETRY_AFTER_CAP_SECS)
 
     def _record_send_success(self) -> None:

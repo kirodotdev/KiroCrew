@@ -74,6 +74,14 @@ def register(app: web.Application) -> None:
     app.router.add_post(
         "/api/chat/slots/{slot}/question/answer", slot_question.api_chat_slot_question_answer
     )
+    # The native mid-turn card's two routes: steer its answer into the running
+    # turn (app provenance), and retire its needs_input status.
+    app.router.add_post(
+        "/api/chat/slots/{slot}/question/steer", slot_question.api_chat_slot_question_steer
+    )
+    app.router.add_post(
+        "/api/chat/slots/{slot}/question/dismiss", slot_question.api_chat_slot_question_dismiss
+    )
     app.router.add_post(
         "/api/chat/slots/{slot}/elicitation", chat_elicitation.api_chat_slot_elicitation
     )
@@ -95,6 +103,8 @@ def register(app: web.Application) -> None:
     app.router.add_post("/api/project-scaffold/scan", chat.api_chat_folders_scan)
     app.router.add_post("/api/project-scaffold/create", chat.api_chat_folders_scaffold)
     app.router.add_patch("/api/chat/folders/{id}", chat.api_chat_folder_update)
+    # Auto-generate in the folder modal: returns an emoji, saves nothing.
+    app.router.add_post("/api/chat/folders/{id}/icon-preview", chat.api_chat_folder_icon_preview)
     # Atomic multi-folder reorder -- one transaction for a whole sidebar drag or
     # tool renumber, so a partial failure cannot leave a mix of old and new
     # order numbers. Registered BEFORE the "{id}" delete so its literal path is
@@ -153,10 +163,6 @@ def register(app: web.Application) -> None:
     app.router.add_post("/api/chat/pins", chat.api_chat_pins_create)
     app.router.add_delete("/api/chat/pins/by-query", chat.api_chat_pins_delete_by_query)
     app.router.add_delete("/api/chat/pins/{id}", chat.api_chat_pins_delete)
-    # Message reactions — fixed emoji set, toggled per (slot, mid, emoji).
-    app.router.add_get("/api/chat/reactions", chat.api_chat_reactions_list)
-    app.router.add_post("/api/chat/reactions", chat.api_chat_reactions_create)
-    app.router.add_delete("/api/chat/reactions", chat.api_chat_reactions_delete_by_query)
     # Tags
     app.router.add_get("/api/chat/tags", chat.api_chat_tags)
     app.router.add_post("/api/chat/tags", chat.api_chat_tag_create)

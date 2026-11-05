@@ -44,7 +44,7 @@ vi.mock('../../hooks/useVoiceInput', () => ({
   useVoiceInput: () => fx.engineFor(fx.state.renderingInstance),
   voiceInputSupported: true,
 }))
-vi.mock('../../hooks/usePushToTalk', () => ({ usePushToTalk: () => undefined }))
+vi.mock('../../hooks/usePushToTalk', () => ({ usePushToTalk: () => ({ config: { enabled: false, mode: 'hybrid', binding: { code: 'AltRight' }, holdMs: 500 }, phase: 'idle', holding: false }) }))
 vi.mock('../../api/client', () => ({
   api: { sttConfig: vi.fn().mockResolvedValue({ enabled: true, available: true, streaming: false, dictation_panel: true, provider: 'local' }) },
 }))
@@ -73,6 +73,24 @@ function mountInstance(idx: number, sessionId: string) {
 }
 
 beforeEach(() => { engines.length = 0; _resetMicOwner() })
+
+describe('useComposerVoice: a typing-locked composer', () => {
+  it('starts no capture while startBlocked, and starts again once it lifts', async () => {
+    const inputRef = { current: 'kept draft' }
+    let blocked = true
+    const h = renderHook(() => {
+      fx.state.renderingInstance = 0
+      return useComposerVoice({ sessionId: 'slot-a', inputRef, setInput: (v: string) => { inputRef.current = v }, startBlocked: blocked })
+    }, { wrapper: makeWrapper() })
+    await act(async () => { await h.result.current.startVoice({ silent: true }) })
+    expect(engines[0].start).not.toHaveBeenCalled()
+    expect(h.result.current.setup.open).toBe(false)
+    blocked = false
+    h.rerender()
+    await act(async () => { await h.result.current.startVoice() })
+    expect(engines[0].start).toHaveBeenCalledTimes(1)
+  })
+})
 
 describe('useComposerVoice — one microphone across instances', () => {
   it('a second composer cannot start while the first holds the capture, and reads busy', async () => {

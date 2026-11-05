@@ -62,13 +62,8 @@ def pin_kiro_cli_harness() -> None:
 def move_transcript_past(log: ConversationLog, key: str, sig: float) -> None:
     """Deterministically advance a transcript's mtime past *sig*.
 
-    Two consecutive filesystem writes can land inside one timestamp tick
-    (~15.6 ms on Windows), leaving the second write with an mtime identical
-    to the first -- a staged "transcript moved on" then has not moved on at
-    all, and any staleness assertion keyed on the mtime signature becomes a
-    coin flip. Pinning the mtime makes the test
-    exercise the signature COMPARISON rather than the platform's clock
-    resolution (testing-conventions.md § Determinism).
+    Two writes can share one mtime tick (~15.6 ms on Windows), so the mtime is pinned
+    (testing-conventions.md § Determinism).
     """
     path = log._path(key)
     os.utime(path, (sig + 1, sig + 1))
@@ -77,14 +72,8 @@ def move_transcript_past(log: ConversationLog, key: str, sig: float) -> None:
 def close_before_resume(log: ConversationLog, key: str) -> None:
     """Backdate a closed session's ``closed_at`` so it predates any resume that follows.
 
-    A resume clears ``closed`` only when ``closed_at`` is strictly earlier than the
-    moment the resume started (``clear_closed(only_if_closed_before=...)``); a tie
-    keeps the marker on purpose and the resume answers ``resume_conflict``. Both
-    values come from ``time.time()``, which moves every ~15.6 ms on Windows CPython
-    3.12, so a close followed at once by a resume ties there and not on Linux. The
-    precondition a close-then-resume test means is "closed BEFORE the resume
-    begins", so it is stated here rather than left to clock granularity, the way
-    ``session_control_revive_helpers._archive`` states it.
+    A resume clears ``closed`` only when ``closed_at`` is strictly earlier; a tie answers
+    ``resume_conflict``. ``time.time()`` ticks every ~15.6 ms on Windows, so it ties there.
     """
     meta = log.get_metadata(key)
     assert meta.get("closed"), f"{key} is not closed"
@@ -95,31 +84,10 @@ def close_before_resume(log: ConversationLog, key: str) -> None:
 async def drain_background_tasks(state) -> None:
     """Await every task *state* spawned, so an assertion cannot race one.
 
-    Handlers that must answer the request before their work finishes hand it to
-    ``asyncio.create_task`` and register it in ``state._background_tasks`` — the
-    Slack link-time backfill (``_spawn_slack_backfill``) is the one this exists for.
-    The response arriving therefore proves only that the task was CREATED, so reading
-    the Slack mock straight afterwards races it: it usually wins on an idle machine and
-    loses under load. That flake surfaces as a plain count mismatch (``assert 0 == 2``)
-    or as ``'NoneType' object has no attribute 'args'``, on a DIFFERENT test in the
-    class each run, and names neither the task nor the race.
-
-    Awaiting the not-yet-done members is an exact wait on the real completion
-    condition rather than a sleep. An empty set means the task already finished; a
-    done-callback discards each task, so the set is snapshotted before awaiting.
-
-    Never a ``sleep``: a sleep long enough to be reliable on the slowest runner is
-    paid by every run, and it is still only a guess.
-
-    Exceptions are re-raised, so a task that died silently fails its own test
-    instead of surfacing later as an unretrieved-exception warning.
-
-    Scope: this awaits EVERY task in ``state._background_tasks``, which several other
-    handlers also register (``handlers/sessions.py``, ``taskrunner.py``,
-    ``handlers/mcp.py``). That is right for a state a test built and will discard, and
-    wrong for one carrying a long-lived task -- a subscription or a poller would never
-    complete and the wait would run to the pytest timeout. Drain a specific task
-    directly in that case.
+    A response proves only that a task like ``_spawn_slack_backfill`` was CREATED, so
+    reading the mock straight after races it. A done-callback discards each task, so the
+    set is snapshotted first; exceptions are re-raised so the owning test fails. It awaits
+    EVERY task, so for a state holding a long-lived poller, drain that one task directly.
     """
     for _ in range(_DRAIN_ROUNDS):
         pending = [t for t in list(getattr(state, "_background_tasks", ())) if not t.done()]
@@ -184,12 +152,8 @@ def _make_ready_kiro_prerequisite() -> KiroPrerequisiteService:
 def stub_readonly_spec_publisher(monkeypatch) -> list[tuple[str, str | None]]:
     """Stand in for the side turn's derived-spec publisher.
 
-    ``_run_side_turn`` derives ``<agent>--readonly`` from the live kiro agent
-    registry before it creates the side session; under a test home that
-    registry holds no base spec, so the real publisher would refuse every turn
-    (``base_spec_missing``). The stub answers with the derived name and a fixed
-    digest and records the base it was asked for. The real derivation and
-    publication are covered by ``test_side_readonly_spec.py``.
+    A test home holds no base spec, so the real publisher refuses (``base_spec_missing``).
+    The real one is covered by ``test_side_readonly_spec.py``.
     """
     from kiro_crew.dashboard.side_readonly_spec import PublishedSpec
 

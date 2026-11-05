@@ -1,6 +1,7 @@
 """Adapter log labels preserve the seam and identify the resolved program."""
 
-from unittest.mock import AsyncMock, patch
+import logging
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -122,26 +123,30 @@ def test_resolved_adapter_argv_is_not_confused_with_a_sandbox_launcher():
     assert _adapter_spawn_label(wrapped_argv, CODEX_ACP_BIN) == "codex-acp via env"
 
 
+def _stderr_log_lines(caplog) -> list[str]:
+    return [r.getMessage() for r in caplog.records if r.name == "kiro_crew.acp.client"]
+
+
 @pytest.mark.asyncio
-async def test_kiro_stderr_keeps_its_existing_prefix():
+async def test_kiro_stderr_keeps_its_existing_prefix(caplog):
     client = AcpClient()
     reader = AsyncMock(spec=["readline"])
-    reader.readline = AsyncMock(side_effect=[b"adapter warning\\n", b""])
+    reader.readline = AsyncMock(side_effect=[b"adapter warning\n", b""])
 
-    with patch("kiro_crew.acp.client.logger") as logger:
+    with caplog.at_level(logging.WARNING, logger="kiro_crew.acp.client"):
         await client._drain_stderr(reader)
 
-    assert logger.warning.call_args.args[1] == "kiro-cli"
+    assert _stderr_log_lines(caplog) == ["kiro-cli stderr: adapter warning"]
 
 
 @pytest.mark.asyncio
-async def test_adapter_stderr_uses_the_label_its_call_site_resolved():
+async def test_adapter_stderr_uses_the_label_its_call_site_resolved(caplog):
     """The spawn passes the resolved adapter label; nothing re-derives it here."""
     client = AcpClient()
     reader = AsyncMock(spec=["readline"])
-    reader.readline = AsyncMock(side_effect=[b"adapter warning\\n", b""])
+    reader.readline = AsyncMock(side_effect=[b"adapter warning\n", b""])
 
-    with patch("kiro_crew.acp.client.logger") as logger:
+    with caplog.at_level(logging.WARNING, logger="kiro_crew.acp.client"):
         await client._drain_stderr(reader, label="codex-acp via /opt/acp/codex-acp")
 
-    assert logger.warning.call_args.args[1] == "codex-acp via /opt/acp/codex-acp"
+    assert _stderr_log_lines(caplog) == ["codex-acp via /opt/acp/codex-acp stderr: adapter warning"]

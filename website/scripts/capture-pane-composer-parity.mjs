@@ -148,9 +148,9 @@ try {
     // AFTER — mic present; STT off on this pod → the setup modal on click.
     {
       const { ctx, page } = await session(browser, after, theme)
-      await page.getByRole('button', { name: /^(Voice input|Stop recording|Switch to voice)$/ }).first().waitFor({ timeout: 10_000 })
+      await page.getByRole('button', { name: /^(Voice input( \(.+\))?|Stop recording|Switch to voice)$/ }).first().waitFor({ timeout: 10_000 })
       await shoot(page, path.join(out, `crew-dm-composer-after-${theme}.png`), await composerClip(page, 40))
-      await page.getByRole('button', { name: /^(Voice input|Stop recording|Switch to voice)$/ }).first().click()
+      await page.getByRole('button', { name: /^(Voice input( \(.+\))?|Stop recording|Switch to voice)$/ }).first().click()
       await page.getByRole('dialog').waitFor({ timeout: 10_000 })
       await page.waitForTimeout(400)
       await shoot(page, path.join(out, `crew-dm-voice-setup-${theme}.png`))
@@ -160,7 +160,7 @@ try {
     // AFTER with STT on — recording (dictation panel at pane width).
     {
       const { ctx, page } = await session(browser, after, theme, { stt: true })
-      const mic = page.getByRole('button', { name: /^(Voice input|Stop recording|Switch to voice)$/ }).first()
+      const mic = page.getByRole('button', { name: /^(Voice input( \(.+\))?|Stop recording|Switch to voice)$/ }).first()
       await mic.click()
       // The dictation panel / pulsing mic is driven by the real MediaRecorder.
       await page.waitForTimeout(1500)
@@ -173,7 +173,7 @@ try {
     // ErrorNotice above the composer, dismissible.
     {
       const { ctx, page } = await session(browser, after, theme, { stt: true, micDenied: true })
-      await page.getByRole('button', { name: /^(Voice input|Stop recording|Switch to voice)$/ }).first().click()
+      await page.getByRole('button', { name: /^(Voice input( \(.+\))?|Stop recording|Switch to voice)$/ }).first().click()
       await page.getByTestId('voice-status-error').waitFor({ timeout: 10_000 })
       await page.waitForTimeout(400)
       await shoot(page, path.join(out, `crew-dm-mic-error-${theme}.png`), await composerClip(page, 60))

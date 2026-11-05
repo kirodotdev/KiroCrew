@@ -36,6 +36,7 @@ from kiro_crew.apps.registry import (
 )
 from kiro_crew.apps.routes_lifecycle import (
     _app_may_run_after_install,
+    _backend_platform_refusal,
     _check_min_version,
     _deregister_app_off_loop,
     _refuse_while_startup_hook_runs,
@@ -53,7 +54,10 @@ logger = logging.getLogger("kiro_crew.apps.routes")
 
 async def handle_update_app(request: web.Request) -> web.Response:
     """POST /api/apps/{name}/update — update an installed app from its source path."""
-    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+    from kiro_crew.dashboard.handlers._shared import (
+        body_not_object_error,
+        require_owner_dashboard_request,
+    )
 
     denied = await require_owner_dashboard_request(request, "app_update")
     if denied is not None:
@@ -77,6 +81,9 @@ async def handle_update_app(request: web.Request) -> web.Response:
         body = await request.json()
     except json.JSONDecodeError:
         body = {}
+    not_object = body_not_object_error(body)
+    if not_object is not None:
+        return not_object
 
     source = body.get("source", info.get("source", ""))
 
@@ -110,7 +117,9 @@ async def handle_update_app(request: web.Request) -> web.Response:
 
             reg_install = await install_from_registry(registry_name)
             if not reg_install.get("ok"):
-                await _restore_app_after_failed_update(name)
+                restore_refused = await _restore_app_after_failed_update(name)
+                if restore_refused:
+                    reg_install["backend_refused"] = restore_refused
                 sel().log_api_access(
                     caller="dashboard",
                     operation="app_update",
@@ -125,10 +134,13 @@ async def handle_update_app(request: web.Request) -> web.Response:
             still_enabled = await _app_may_run_after_install(name)
             if still_enabled:
                 reg_result = await _register_app_off_loop(name)
-                await asyncio.get_running_loop().run_in_executor(
+                backend = await asyncio.get_running_loop().run_in_executor(
                     subprocess_executor(), start_app_backend, name
                 )
                 reg_install["registration"] = reg_result.to_dict()
+                backend_refused = await _backend_platform_refusal(name, backend)
+                if backend_refused:
+                    reg_install["backend_refused"] = backend_refused
         sel().log_api_access(
             caller="dashboard", operation="app_update", outcome="completed", resources=name
         )
@@ -166,7 +178,7 @@ async def handle_update_app(request: web.Request) -> web.Response:
             subprocess_executor(), lambda: update_app(source, expected_name=name)
         )
         if not up_result.ok:
-            await _restore_app_after_failed_update(name)
+            restore_refused = await _restore_app_after_failed_update(name)
             sel().log_api_access(
                 caller="dashboard",
                 operation="app_update",
@@ -174,13 +186,17 @@ async def handle_update_app(request: web.Request) -> web.Response:
                 resources=name,
                 error=up_result.error,
             )
-            return web.json_response(up_result.to_dict(), status=400)
+            failed_body = up_result.to_dict()
+            if restore_refused:
+                failed_body["backend_refused"] = restore_refused
+            return web.json_response(failed_body, status=400)
 
         # Re-register with the new manifest only if the app is STILL enabled.
         # ``update_app`` drops ``enabled`` when the new version adds
         # ``permissions.sessionApproval``, so the pre-update ``info`` snapshot
         # would start a backend the user has not re-consented to.
         up_reg = None
+        backend_refused = None
         still_enabled = await _app_may_run_after_install(name)
         if still_enabled:
             up_reg = await _register_app_off_loop(name)
@@ -195,9 +211,10 @@ async def handle_update_app(request: web.Request) -> web.Response:
             # and registry are already current, and the next registration
             # pass applies the same definitions.
             await _resync_app_crons_after_update(request, name)
-            await asyncio.get_running_loop().run_in_executor(
+            backend = await asyncio.get_running_loop().run_in_executor(
                 subprocess_executor(), start_app_backend, name
             )
+            backend_refused = await _backend_platform_refusal(name, backend)
 
     sel().log_api_access(
         caller="dashboard", operation="app_update", outcome="completed", resources=name
@@ -205,6 +222,8 @@ async def handle_update_app(request: web.Request) -> web.Response:
     resp: dict[str, Any] = up_result.to_dict()
     if up_reg:
         resp["registration"] = up_reg.to_dict()
+    if backend_refused:
+        resp["backend_refused"] = backend_refused
     return web.json_response(resp)
 
 
@@ -249,7 +268,10 @@ async def handle_register_external(request: web.Request) -> web.Response:
     Body: { name, version, displayName, source?, manifest? }
     """
     # local import: avoids a circular import with dashboard.handlers
-    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+    from kiro_crew.dashboard.handlers._shared import (
+        body_not_object_error,
+        require_owner_dashboard_request,
+    )
 
     denied = await require_owner_dashboard_request(request, "app_register_external")
     if denied is not None:
@@ -258,6 +280,9 @@ async def handle_register_external(request: web.Request) -> web.Response:
         body = await request.json()
     except json.JSONDecodeError:
         return web.json_response({"error": "invalid JSON"}, status=400)
+    not_object = body_not_object_error(body)
+    if not_object is not None:
+        return not_object
 
     name = body.get("name", "")
     version = body.get("version", "")
@@ -326,7 +351,10 @@ async def handle_register_external(request: web.Request) -> web.Response:
 
 async def handle_install_app(request: web.Request) -> web.Response:
     """POST /api/apps/install — install an app from a local path."""
-    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+    from kiro_crew.dashboard.handlers._shared import (
+        body_not_object_error,
+        require_owner_dashboard_request,
+    )
 
     denied = await require_owner_dashboard_request(request, "app_install")
     if denied is not None:
@@ -335,6 +363,9 @@ async def handle_install_app(request: web.Request) -> web.Response:
         body = await request.json()
     except json.JSONDecodeError:
         return web.json_response({"error": "invalid JSON"}, status=400)
+    not_object = body_not_object_error(body)
+    if not_object is not None:
+        return not_object
 
     source = body.get("source", "")
     if not source:
@@ -368,13 +399,32 @@ async def handle_install_app(request: web.Request) -> web.Response:
             manifest_data = json.loads(
                 await asyncio.to_thread(manifest_path.read_text, encoding="utf-8")
             )
+            if not isinstance(manifest_data, dict):
+                # Valid JSON that is not an object is a settled invalid manifest,
+                # not a manifest caught mid-write, so it gets install_app's own
+                # invalid-manifest answer instead of the retryable 409 below.
+                detail = (
+                    "invalid app.json: app.json must be a JSON object, "
+                    f"got {type(manifest_data).__name__}"
+                )
+                sel().log_api_access(
+                    caller="dashboard",
+                    operation="app_install",
+                    outcome="failed",
+                    resources=str(source_path),
+                    error=detail,
+                )
+                return web.json_response(
+                    {"ok": False, "name": "", "error": detail, "code": "manifest_not_object"},
+                    status=400,
+                )
             ver_err = _check_min_version(manifest_data)
             if ver_err:
                 return web.json_response({"error": ver_err}, status=400)
             raw_name = manifest_data.get("name")
             if isinstance(raw_name, str) and raw_name:
                 lock_name = raw_name
-        except (json.JSONDecodeError, OSError):
+        except (json.JSONDecodeError, UnicodeDecodeError, OSError):
             pass
 
     # A path is not an app identity: install_app may observe a manifest created
@@ -436,16 +486,14 @@ async def handle_install_app(request: web.Request) -> web.Response:
             reg = await _register_app_off_loop(result.name)
             # Spawn the backend now so the app is reachable without a gateway
             # reboot (see _start_backend_after_install). No-op for backend-less apps.
-            await _start_backend_after_install(result.name)
+            backend_refused = await _start_backend_after_install(result.name)
         else:
             reg = await _suspend_app_for_session_approval_reconsent(result.name)
+            backend_refused = None
     sel().log_api_access(
         caller="dashboard", operation="app_install", outcome="completed", resources=result.name
     )
-    return web.json_response(
-        {
-            **result.to_dict(),
-            "registration": reg.to_dict(),
-        },
-        status=201,
-    )
+    install_body: dict[str, Any] = {**result.to_dict(), "registration": reg.to_dict()}
+    if backend_refused:
+        install_body["backend_refused"] = backend_refused
+    return web.json_response(install_body, status=201)

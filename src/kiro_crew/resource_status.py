@@ -17,7 +17,9 @@ the tradeoff of a cheap, zero-tuning guard. One narrow enforcement point sits
 on top: :func:`admission_check` gates *background* work admission (scheduled
 cron firings, task-runner steps) while posture is CRITICAL, so the scheduler
 stops piling work onto a host that is about to freeze. Subagent spawns are not
-gated here: they admit on their own memory floor (``agent.spawn_min_memory_gb``). Direct user chat turns
+gated here: they admit on their own memory floor (``agent.spawn_min_memory_gb``),
+which the pull tool reports on the gate's own figure (:func:`spawn_floor_reading`)
+because the posture can read AMPLE while that floor holds every start. Direct user chat turns
 and the gateway's own operation are never gated, and the gate fails open on an
 unknown posture. (A hard, cross-session admission lease is a separate, heavier
 design.)
@@ -49,6 +51,7 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
 import sys
 import tempfile
 import threading
@@ -60,6 +63,8 @@ from pathlib import Path
 from kiro_crew import platform_compat
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.cpu_affinity import affinity_cpu_count
+from kiro_crew.resource_status_agent_ceiling import AgentCeiling, gb_text
+from kiro_crew.resource_status_agent_ceiling import read_agent_ceiling as _read_agent_ceiling
 from kiro_crew.subagent_wait_reasons import MEMORY_PRESSURE_PHRASE
 
 logger = logging.getLogger(__name__)
@@ -395,6 +400,29 @@ class ResourceStatus:
     # None off macOS or when unreadable. Reported beside the posture, never
     # folded into it.
     memory_pressure_level: int | None = None
+    # Set when ``available_gb`` is the agent slice's headroom rather than the
+    # host's (see AgentCeiling). Read only under pressure, so None on an ample
+    # reading whatever binds.
+    agent_ceiling: AgentCeiling | None = None
+
+    @property
+    def memory_subject(self) -> str:
+        """What the memory figure measures: "Agent memory" or "Host memory"."""
+        return "Agent memory" if self.agent_ceiling is not None else "Host memory"
+
+    def memory_reading(self) -> str:
+        """The free-memory figure as the advisories print it, naming its ceiling.
+
+        A slice-bound figure is printed with the host's own figure beside it, so
+        a reader comparing it with the dashboard's host gauge sees why they differ.
+        """
+        figure = f"~{self.available_gb:.1f} GB"
+        if self.agent_ceiling is None:
+            return f"{figure} free"
+        return (
+            f"{figure} left under the {gb_text(self.agent_ceiling.ceiling_gb)} GB agent memory "
+            f"ceiling, ~{gb_text(self.agent_ceiling.host_available_gb)} GB free on the host"
+        )
 
     @property
     def memory_pressure_held(self) -> bool:
@@ -493,19 +521,18 @@ class ResourceStatus:
             if self.memory_pressure_held:
                 return self._kernel_pressure_line()
             return self._tasks_only_line()
-        gb = f"{self.available_gb:.1f}"
-        load = self._load_suffix()
+        reading = f"{self.memory_reading()}{self._load_suffix()}"
         suffix = self._pressure_clause() + self._tasks_clause()
         if self.posture == POSTURE_CRITICAL:
             return (
-                f"[RESOURCES] Host memory is CRITICALLY low (~{gb} GB free{load}). "
+                f"[RESOURCES] {self.memory_subject} is CRITICALLY low ({reading}). "
                 "Do NOT start heavy work now (full test suites, large builds, big "
                 "parallel sub-agent waves) — it may fail or destabilize other "
                 "sessions on this host. Run only the lightest necessary steps, or "
                 "wait for memory to free. Call the resource_status tool to re-check."
             ) + suffix
         return (
-            f"[RESOURCES] Host memory is tight (~{gb} GB free{load}). Before heavy "
+            f"[RESOURCES] {self.memory_subject} is tight ({reading}). Before heavy "
             "work, prefer the lighter path: run targeted tests instead of the full "
             "suite, avoid large parallel sub-agent waves, and serialize or defer "
             "memory-heavy builds/test runs. Call the resource_status tool to "
@@ -561,7 +588,7 @@ class ResourceStatus:
             level = "CRITICALLY low" if self.posture == POSTURE_CRITICAL else "tight"
             parts.append(
                 f"The gateway machine (where this session's engine and subagents run) "
-                f"is {level} on memory (~{self.available_gb:.1f} GB free"
+                f"is {level} on memory ({self.memory_reading()}"
                 f"{self._load_suffix()}), so keep sub-agent waves small." + self._pressure_clause()
             )
         elif gateway_pressed:
@@ -634,6 +661,14 @@ class ResourceStatus:
                 f"  Available memory: {self.available_gb:.1f} GB "
                 f"(tight \u2264 {self.pressure_gb:g} GB, critical \u2264 {self.critical_gb:g} GB)"
             )
+        ceiling = self.agent_ceiling
+        if ceiling is not None:
+            lines.append(
+                f"  Measured against the agent memory ceiling ({gb_text(ceiling.ceiling_gb)} GB); "
+                f"the host has {ceiling.host_available_gb:.1f} GB available"
+            )
+            if ceiling.shmem_notable:
+                lines.append(f"  {ceiling.shmem_sentence()}")
         load = f"{self.load_per_cpu}/core" if self.load_per_cpu is not None else "unknown"
         lines.append(f"  CPU cores: {self.cpu_count}   1-min load: {load}")
         lines.append(f"  Posture: {self.posture.upper()}")
@@ -747,11 +782,18 @@ def temp_headroom(root: str) -> TempHeadroom | None:
 
     A filesystem without inode accounting (``f_files == 0``: btrfs, some FUSE
     mounts) cannot run out of inodes, so it reads as fully free on that axis
-    and never trips the absolute floor.
+    and never trips the absolute floor. A host without ``os.statvfs`` (native
+    Windows) still measures free space through ``shutil.disk_usage`` and reads
+    the same way, since NTFS keeps no inode limit to report.
     """
     statvfs = getattr(os, "statvfs", None)
     if statvfs is None:
-        return None
+        try:
+            usage = shutil.disk_usage(root)
+        except OSError:
+            return None
+        free_pct = 100.0 * usage.free / usage.total if usage.total else 100.0
+        return TempHeadroom(root, free_pct, 100.0, TEMP_FREE_INODES_FLOOR, counts_inodes=False)
     try:
         st = statvfs(root)
     except OSError:
@@ -769,8 +811,8 @@ def temp_headroom(root: str) -> TempHeadroom | None:
 def temp_headroom_lines() -> list[str]:
     """The pull tool's temp-space block, plus a guidance line when one is low.
 
-    Empty when no root can be measured, so a host without ``statvfs`` prints
-    nothing rather than an "unknown" line on every call.
+    Empty when no root can be measured, so an unreadable root prints nothing
+    rather than an "unknown" line on every call.
     """
     readings = [r for r in (temp_headroom(root) for root in temp_roots()) if r is not None]
     if not readings:
@@ -912,6 +954,7 @@ def adaptive_summary_lines(state: dict | None = None) -> list[str]:
             lines.append(
                 f"  Provider throttling (scoped, not a host signal): {', '.join(throttled)}"
             )
+    lines.extend(_health_lines(state.get("health"), state.get("last_sample")))
     recent = state.get("recent_decisions")
     if isinstance(recent, list) and recent:
         lines.append("  Recent cap changes (newest last):")
@@ -934,6 +977,43 @@ def adaptive_summary_lines(state: dict | None = None) -> list[str]:
     if counts:
         lines.append("  Decisions: " + ", ".join(f"{k}={v}" for k, v in sorted(counts.items())))
     return lines
+
+
+def _health_reading(value: object, digits: int | None = None) -> str:
+    if not isinstance(value, (int, float)) or isinstance(value, bool) or value < 0:
+        return "-"
+    return f"{value:.{digits}f}" if digits is not None else f"{value}"
+
+
+def _health_lines(health: object, last_sample: object) -> list[str]:
+    if not isinstance(health, dict):
+        return []
+    sample = last_sample if isinstance(last_sample, dict) else {}
+    age = health.get("age_secs")
+    age_text = f"{age:.0f}s old" if isinstance(age, (int, float)) else "age unknown"
+    if health.get("stale"):
+        limit = health.get("max_age_secs")
+        limit_text = f", limit {limit:.0f}s" if isinstance(limit, (int, float)) else ""
+        return [f"  Health (advisory): sample stale ({age_text}{limit_text}); readings withheld"]
+    readings = (
+        f"sessions {_health_reading(sample.get('active_sessions'))}   "
+        f"cron queue {_health_reading(sample.get('cron_queue_depth'))}   "
+        f"cpu/core {_health_reading(sample.get('cpu_pressure'), 2)}   "
+        f"loop lag {_health_reading(sample.get('loop_lag_ms'), 0)}ms"
+    )
+    signals = ",".join(health.get("signals") or []) or "none"
+    suspected = [
+        name
+        for flag, name in (
+            (health.get("cron_collision_suspected"), "cron collision"),
+            (health.get("renderer_suspected"), "renderer"),
+        )
+        if flag
+    ]
+    return [
+        f"  Health (advisory, sample {age_text}): {readings}",
+        f"  Health signals: {signals}; suspected: {', '.join(suspected) or 'none'}",
+    ]
 
 
 def _resolve_thresholds(cfg: object | None) -> tuple[float, float]:
@@ -973,6 +1053,169 @@ def _classify(available_gb: float, pressure_gb: float, critical_gb: float) -> st
     return POSTURE_AMPLE
 
 
+#: What a blocked reading means, on the summary line. Scoped to local top-level
+#: starts: a running subagent's shared nested start skips its own start charge,
+#: and a remote session's children owe no floor at all.
+_BLOCKED_NOTE = "new top-level subagents wait in the queue"
+
+
+@dataclass(frozen=True)
+class SpawnFloorReading:
+    """The subagent spawn floor checked against the gate's own memory figure.
+
+    The posture reads the reclaimable sum (``_available_memory_gb``) against
+    ``resource_pressure_gb``; the spawn gate reads its own, stricter figure
+    (``check_memory_available``) against ``agent.spawn_min_memory_gb`` plus the
+    price of the start (``subagent_manager/admission/gate.py``). The two can
+    disagree, so a posture of AMPLE does not say a subagent can start. This
+    reading says it with the gate's own figure and prices.
+
+    The bar assumes nothing is warming and the cheapest start: the live reserve
+    for starts still warming lives in the gateway's manager, so it is a lower
+    bound.
+    """
+
+    floor_gb: float  # agent.spawn_min_memory_gb; <= 0 disables the gate
+    available_gb: float  # the gate's figure; -1.0 when unmeasurable (gate fails open)
+    min_start_gb: float  # floor plus the lowest price a top-level start can carry
+    unknown_note: str = ""  # set when the gate defers on a figure it cannot read
+    remote: bool = False  # the caller's workspace is remote: its children owe no floor
+
+    @property
+    def enabled(self) -> bool:
+        return self.floor_gb > 0
+
+    @property
+    def blocked(self) -> bool:
+        """True when no local top-level subagent start can be admitted right now."""
+        if not self.enabled or self.remote:
+            return False
+        if self.unknown_note:
+            return True
+        return 0 <= self.available_gb < self.min_start_gb
+
+    def summary_line(self) -> str:
+        """The pull tool's line for the floor, stated against the gate's figure."""
+        if not self.enabled:
+            return "  Subagent spawn floor: off (agent.spawn_min_memory_gb is 0)"
+        head = f"  Subagent spawn floor: {self.floor_gb:g} GB must stay free after a start"
+        if self.remote:
+            return (
+                f"{head}; not applied to this session's subagents, whose workspace is "
+                "remote (only their engines start here)"
+            )
+        if self.unknown_note:
+            return f"{head}; {self.unknown_note} — BLOCKED: {_BLOCKED_NOTE}"
+        if self.available_gb < 0:
+            return f"{head}; the gate's memory figure is unreadable here, so starts are not held"
+        line = (
+            f"{head}; the gate reads {self.available_gb:.1f} GB, a top-level start needs at least "
+            f"{self.min_start_gb:.2f} GB (more for a dedicated one or while other "
+            "starts are warming)"
+        )
+        if self.blocked:
+            return line + f" — BLOCKED: {_BLOCKED_NOTE}"
+        return line
+
+    def blocked_sentence(self) -> str:
+        """One sentence saying spawning is blocked and why, or ``""``."""
+        if not self.blocked:
+            return ""
+        if self.unknown_note:
+            return (
+                f"new top-level subagents cannot start now ({self.unknown_note}); "
+                "they wait in the queue"
+            )
+        return (
+            f"new top-level subagents cannot start now — the gate reads "
+            f"{self.available_gb:.1f} GB and one needs at least {self.min_start_gb:.2f} GB; "
+            "they wait in the queue until memory frees"
+        )
+
+
+def _read_spawn_floor_figure(min_gb: float) -> tuple[float, str]:
+    """The spawn gate's own memory figure (GB, -1 unmeasurable) and its cause."""
+    from kiro_crew.subagent import check_memory_available, pop_memory_check_cause
+
+    pop_memory_check_cause()  # drop a cause left by any earlier reading
+    _ok, avail = check_memory_available(min_gb=min_gb)
+    return avail, pop_memory_check_cause()
+
+
+def _read_learned_settled() -> dict[str, float] | None:
+    """The learned settled figures the gate prices dedicated starts from, or
+    ``None`` when the cost log cannot be read whole. Same read as the manager's."""
+    try:
+        from kiro_crew.subagent_cost import SETTLED_SAMPLE_MAX_AGE_SECS, read_learned_costs_checked
+
+        costs, complete = read_learned_costs_checked(
+            "settled_gb",
+            dedicated_only=True,
+            max_age_secs=SETTLED_SAMPLE_MAX_AGE_SECS,
+        )
+        # A partial read can miss a figure the manager still holds from an
+        # earlier read, so only a complete one may raise the bar.
+        if not complete:
+            return None
+        return dict(costs or {})
+    except Exception:
+        logger.debug("learned settled figures unreadable", exc_info=True)
+        return None
+
+
+def _cheapest_dedicated_price_gb(cost_gb: float) -> float:
+    """The lowest price the gate gives a local dedicated start of any bucket.
+
+    A bucket with no learned figure is priced at ``_UNLEARNED_DEDICATED_START_GB``
+    at least; a learned one at its figure. When the figures cannot be read, the
+    bare ``cost_gb`` is the only bound known, so it is used.
+    """
+    from kiro_crew.subagent import REMOTE_COST_BUCKET_SUFFIX, _dedicated_start_price_gb
+
+    settled = _read_learned_settled()
+    if settled is None:
+        return cost_gb
+    local = [b for b in settled if not b.endswith(REMOTE_COST_BUCKET_SUFFIX)]
+    # The empty-string key is never written (it normalizes to the default
+    # agent), so it stands for a bucket with nothing learned.
+    unlearned = _dedicated_start_price_gb(cost_gb, {}, "")
+    return min([unlearned] + [_dedicated_start_price_gb(cost_gb, settled, b) for b in local])
+
+
+def spawn_floor_reading(cfg: object | None = None, *, remote: bool = False) -> SpawnFloorReading:
+    """Check ``agent.spawn_min_memory_gb`` against the gate's figure. Never raises.
+
+    The prices are the gate's helpers (``start_pricing``): the cheapest
+    top-level start is a shared one at the lowest dedicated price the gate gives
+    any local bucket (:func:`_cheapest_dedicated_price_gb`). *remote* is set when the calling session's workspace
+    is remote: the gate prices that session's children without the floor, so no
+    reading is taken and nothing is reported as blocked. A failure reads as a
+    disabled floor, so the tool says nothing it did not measure.
+    """
+    try:
+        from kiro_crew.subagent import (
+            MEMORY_CAUSE_CGROUP_USAGE_UNREADABLE,
+            _shared_start_price_gb,
+            _spawn_memory_floor_and_cost,
+        )
+
+        agent_cfg = getattr(cfg if cfg is not None else _load_config(), "agent", None)
+        floor_gb, cost_gb = _spawn_memory_floor_and_cost(agent_cfg)
+        if floor_gb <= 0 or remote:
+            return SpawnFloorReading(floor_gb, -1.0, floor_gb, remote=remote)
+        min_start = floor_gb + _shared_start_price_gb(_cheapest_dedicated_price_gb(cost_gb))
+        avail, cause = _read_spawn_floor_figure(min_start)
+        note = (
+            "memory headroom unknown: a cgroup memory limit is set but its usage is unreadable"
+            if cause == MEMORY_CAUSE_CGROUP_USAGE_UNREADABLE
+            else ""
+        )
+        return SpawnFloorReading(floor_gb, avail, min_start, note)
+    except Exception:  # pragma: no cover - defensive; the probe must never raise
+        logger.debug("spawn floor reading failed", exc_info=True)
+        return SpawnFloorReading(0.0, -1.0, 0.0)
+
+
 def _load_config() -> object | None:
     """The ``KiroCrewConfig`` every threshold reader here resolves against.
 
@@ -1000,6 +1243,9 @@ def probe(cfg: object | None = None) -> ResourceStatus:
     load_per_cpu = _read_load_per_cpu(cpu_count)
     posture = _classify(available_gb, pressure_gb, critical_gb)
     slice_tasks, slice_tasks_limit, slice_tasks_own = _read_agent_slice_tasks()
+    # Only a pressured reading is worded, so only a pressured probe pays for the
+    # attribution reads.
+    agent_ceiling = _read_agent_ceiling() if posture in (POSTURE_TIGHT, POSTURE_CRITICAL) else None
     return ResourceStatus(
         available_gb=available_gb,
         cpu_count=cpu_count,
@@ -1011,6 +1257,7 @@ def probe(cfg: object | None = None) -> ResourceStatus:
         slice_tasks_limit=slice_tasks_limit,
         slice_tasks_own=slice_tasks_own,
         memory_pressure_level=read_memory_pressure_level(),
+        agent_ceiling=agent_ceiling,
     )
 
 
@@ -1186,7 +1433,7 @@ def admission_check(cfg: object | None = None) -> AdmissionDecision:
                 posture=status.posture,
                 available_gb=status.available_gb,
                 reason=(
-                    f"host memory is critical (~{status.available_gb:.1f} GB free, "
+                    f"{status.memory_subject.lower()} is critical ({status.memory_reading()}, "
                     f"critical \u2264 {status.critical_gb:g} GB) — retry when memory frees"
                 ),
             )

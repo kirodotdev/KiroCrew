@@ -31,7 +31,7 @@ import {
  *  `evictMcpApps`. */
 const slotKeyedMaps = (state: ChatState) => [
   state.slotMessages, state.slotActivity, state.slotRun, state.slotHydrated,
-  state.slotSide, state.slotSideClosed, state.slotSideRestored ?? {}, state.slotSideReading ?? {}, state.slotStatusDetail,
+  state.slotSide, state.slotSideClosed, state.slotSideRestored ?? {}, state.slotSideReading ?? {}, state.slotSideClosedElsewhere ?? {}, state.slotStatusDetail,
   state.slotContextPct, state.slotContextTokens, state.stopPressedAt,
   state.endedTurn,
   state.followups, state.folderSuggestions, state.restoredQuestionNotices,
@@ -47,6 +47,7 @@ const slotKeyedMaps = (state: ChatState) => [
   state.slotPaneNextBefore ?? {}, state.slotPaneLoadingOlder ?? {}, state.slotPaneOlderError ?? {},
   state.slotPaneRemovedQueueIds ?? {},
   state.thinkingOrphans,
+  state.sendAttempts ?? {},
 ].filter(Boolean)
 
 /** Every slot key that still has residue anywhere in chat state.

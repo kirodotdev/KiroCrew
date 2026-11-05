@@ -97,8 +97,13 @@ export interface MemberRosterRow {
    *  the crew manager), 'builtin', or 'package' (agent-sync-installed; the
    *  legacy 'aim' spelling and any unknown value collapse to this). */
   source?: 'kirocrew' | 'builtin' | 'package' | string
-  /** User's favourite mark; toggled via PUT /api/agents/{name}. */
+  /** User's favourite mark; toggled via PUT /api/agents/{name}. A starred
+   *  crewmate is also a row in the left dock. */
   starred?: boolean
+  /** The starred crewmate's place in the left dock: 1 is the top, 0 is not
+   *  placed yet (sorts last). Written by dragging a dock row. Absent on an
+   *  older gateway. */
+  star_order?: number
   /** The person created this crewmate (the Crewmates page's create, or an
    *  approved `crewmate.create` / `crewmate.import` card): `source` is
    *  `kirocrew` AND the record carries a member id. Never true for the reserved
@@ -139,12 +144,46 @@ export interface MemberRosterRow {
 /** One entry of GET /api/members/{slug}/activity — a recorded engagement.
  *  `via` distinguishes a session the user opened with the member ('chat'),
  *  an orchestrator routing decision ('select_crew', intent, not a run), a
- *  delegated `spawn_run(crew=...)` run ('spawn') and an auto-improvement
- *  run ('auto-improvement'). */
+ *  delegated `spawn_run(crew=...)` run ('spawn') and a run an app's own runner
+ *  made (that app's id). */
+/** `GET /api/agents/resolved-model`: what a new session on a crew runs. The
+ *  harness fields come only for the owner and only for a configured crew: the
+ *  crewmate's pin is read here and nowhere else (`GET /api/agents` leaves it out). */
+export interface AgentResolvedModel {
+  model: string
+  agent: string
+  kiro_agent: string
+  pinned: boolean
+  reasoning_effort: string
+  effort_pinned: boolean
+  /** The stored pin in the config spelling (`kiro`, `kas`, ...); `''` inherits. */
+  acp_backend?: string
+  /** What clearing the pin would run on (the install's member harness), same spelling. */
+  inherited_harness?: string
+  /** What the crewmate's chat runs on, same spelling; `''` when the pin cannot start. */
+  harness?: string
+  /** The model a crew with a `member_id` starts its DM on (`''` when the harness picks); absent otherwise. */
+  harness_model?: string
+  /** Why the pinned harness cannot start, when it cannot. */
+  harness_error?: string
+  /** Every harness a crewmate may be pinned to. */
+  harnesses?: string[]
+  /** The harnesses a crewmate's worker sessions can run on. */
+  worker_harnesses?: string[]
+  /** The harness whose own model list the editor offers, when it is not the configured one. */
+  models_backend?: string
+  /** The id that harness serves the pin as (`''` for none); absent until a session advertises. */
+  pin_served_as?: string
+  /** Whether a pair-id harness's build takes an effort pin; `null` until a live session answers. */
+  effort_supported?: boolean | null
+  /** The levels that build takes, when it answered. */
+  effort_levels?: string[]
+}
+
 export interface MemberActivityEntry {
   /** Epoch seconds (UTC) the engagement was recorded. */
   ts: number
-  via: 'chat' | 'select_crew' | 'spawn' | 'auto-improvement' | string
+  via: 'chat' | 'select_crew' | 'spawn' | string
   project?: string
 }
 
@@ -288,7 +327,7 @@ export interface DashboardManifest {
   fields: Record<string, DashboardFieldSpec>
 }
 
-export function createAgentsEndpoints({ post, put, del, j, jfetch: fetch, sessionKeyHeader: _sk }: ClientTransport) {
+export function createAgentsEndpoints({ post, put, del, j, jfetch: fetch, jMembers, sessionKeyHeader: _sk }: ClientTransport) {
   const crew = {
     // Agents
     agentsInstalled: () => fetch('/api/agents/installed').then(j),
@@ -326,7 +365,7 @@ export function createAgentsEndpoints({ post, put, del, j, jfetch: fetch, sessio
      *  app's own model setting. */
     agentResolvedModel: (agent: string, app?: string) =>
       fetch('/api/agents/resolved-model?agent=' + encodeURIComponent(agent)
-        + (app ? '&app=' + encodeURIComponent(app) : '')).then(j),
+        + (app ? '&app=' + encodeURIComponent(app) : '')).then(j) as Promise<AgentResolvedModel>,
     /** Execution choices for a chat: configured members AND installed shared
      *  templates, each row tagged with its `selection_kind`. Read-only -- unlike
      *  the sync route it enrols nothing and allocates no member memory, so
@@ -356,8 +395,9 @@ export function createAgentsEndpoints({ post, put, del, j, jfetch: fetch, sessio
       (extra ? post('/api/agents', body, undefined, extra) : post('/api/agents', body)).then(j),
     // Crew Members page — roster of GLOBAL crews with DM-thread binding and the
     // cheap live-status fields the backend can answer without IO (richer live
-    // detail rides the already-subscribed WS `slots` frames).
-    members: () => fetch('/api/members').then(j) as Promise<{ members: MemberRosterRow[] }>,
+    // detail rides the already-subscribed WS `slots` frames). A non-owner's 403
+    // `owner_only` still throws but is not journaled (see `jMembers` in client.ts).
+    members: () => fetch('/api/members').then(jMembers) as Promise<{ members: MemberRosterRow[] }>,
     // Idempotent get-or-create of a member's pinned DM thread. Member slots are
     // born ONLY through this route (the generic slot-create endpoint refuses
     // mode="member"), so this is also the only place a member slot key comes from.

@@ -121,7 +121,9 @@ describe('connecting a new provider', () => {
 
     fireEvent.click(await waitFor(() => within(card('notion')).getByRole('button', { name: 'Connect' })))
 
-    await waitFor(() => expect(mcpCustomAdd).toHaveBeenCalledWith({ notion: { url: NOTION_URL } }, true))
+    // The new entry requests the registry's scopes, the same list the warm path
+    // sends, so the cold mint does not fall back to the provider's default grant.
+    await waitFor(() => expect(mcpCustomAdd).toHaveBeenCalledWith({ notion: { url: NOTION_URL, scopes: ['default'] } }, true))
     expect(mcpProbe).toHaveBeenCalled()
     await waitFor(() => expect(card('notion')).toHaveAttribute('data-state', 'waiting-for-approval'))
     // jsdom grants no window, so `window.open` returns null and this click lands
@@ -716,11 +718,14 @@ describe('the authorization status feed', () => {
     // is opened.
     expect(within(card('notion')).queryByText(/shares its stored authorization/i)).not.toBeInTheDocument()
     const icon = await waitFor(() =>
-      within(card('notion')).getByRole('button', { name: 'Notion prerequisites' }),
+      within(card('notion')).getByRole('button', { name: 'Notion shared sign-in' }),
     )
     fireEvent.mouseEnter(icon)
     const bubble = screen.getByRole('tooltip')
-    expect(within(bubble).getByText('Before you connect')).toBeInTheDocument()
+    // #26890: the card is already connected, so the tip names the Disconnect
+    // it qualifies, never the pre-connect "Before you connect".
+    expect(within(bubble).getByText('Before you disconnect')).toBeInTheDocument()
+    expect(within(bubble).queryByText('Before you connect')).not.toBeInTheDocument()
     expect(bubble).toHaveTextContent(/shares its stored authorization with: atlassian/i)
     // and the caveat about what Disconnect does, in the same bubble
     expect(bubble).toHaveTextContent(/reconnecting reuses it/i)
@@ -741,10 +746,11 @@ describe('the authorization status feed', () => {
 
     await waitFor(() => expect(card('notion')).toHaveAttribute('data-state', 'connected'))
     const icon = await waitFor(() =>
-      within(card('notion')).getByRole('button', { name: 'Notion prerequisites' }),
+      within(card('notion')).getByRole('button', { name: 'Notion shared sign-in' }),
     )
     fireEvent.mouseEnter(icon)
     const bubble = screen.getByRole('tooltip')
+    expect(within(bubble).getByText('Before you disconnect')).toBeInTheDocument()
     expect(bubble).toHaveTextContent(/could not be read to confirm/i)
   })
 
@@ -759,7 +765,7 @@ describe('the authorization status feed', () => {
     await waitFor(() => expect(card('notion')).toHaveAttribute('data-state', 'connected'))
     expect(within(card('notion')).queryByText(/shares its stored authorization/i)).not.toBeInTheDocument()
     // No sharer and no hedge: the Disconnect-side caveat triangle is absent too.
-    expect(within(card('notion')).queryByRole('button', { name: 'Notion prerequisites' })).not.toBeInTheDocument()
+    expect(within(card('notion')).queryByRole('button', { name: 'Notion shared sign-in' })).not.toBeInTheDocument()
   })
 
   it('cancel escapes the waiting card even while the poll cached awaiting_consent', async () => {

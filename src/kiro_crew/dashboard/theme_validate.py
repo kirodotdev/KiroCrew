@@ -20,6 +20,7 @@ from typing import Any
 from kiro_crew.config.loader import config_dir
 from kiro_crew.hooks import safe_read_file_bytes_nolink
 from kiro_crew.slugs import slug_hash_fallback
+from kiro_crew.user_json import loads_user_json
 
 # ── Custom Themes — validation & parsing core ──
 
@@ -467,13 +468,24 @@ def _topbar_height_ok(height: Any) -> bool:
 
 
 # ── Audio manifest (audio/manifest.json, §3.3) ──
-# 7-name trigger taxonomy; the per-trigger duration caps (seconds) bound how
-# long a one-shot cue may run. ``ambient`` is the looping bed (no upper cap).
-_THEME_AUDIO_TRIGGERS = frozenset(
-    {
-        "activate", "deactivate", "message-sent", "message-received",
-        "error", "notification", "ambient",
-    }
+# 7-name trigger taxonomy plus one ``category:<name>`` trigger per notification
+# sound category; the per-trigger duration caps (seconds) bound how long a
+# one-shot cue may run. ``ambient`` is the looping bed (no upper cap).
+# The category names mirror SOUND_CATEGORIES in
+# website/src/hooks/useNotificationSound.ts (minus its ``all`` fallback, which
+# the plain ``notification`` trigger plays); a category trigger is capped like
+# ``notification``, the sound it replaces.
+_THEME_AUDIO_NOTIFICATION_CATEGORIES = (
+    "turn",
+    "dictation",
+    "agent",
+    "cron",
+    "approval",
+    "hook",
+    "heartbeat",
+    "subagent",
+    "taskrunner",
+    "skills",
 )
 _THEME_AUDIO_TRIGGER_CAPS = {
     "activate": 5,
@@ -482,7 +494,9 @@ _THEME_AUDIO_TRIGGER_CAPS = {
     "message-received": 1,
     "error": 3,
     "notification": 2,
+    **{f"category:{c}": 2 for c in _THEME_AUDIO_NOTIFICATION_CATEGORIES},
 }
+_THEME_AUDIO_TRIGGERS = frozenset({"ambient", *_THEME_AUDIO_TRIGGER_CAPS})
 _THEME_AUDIO_SRC_RE = re.compile(r"^(?:audio/)?([a-z0-9_-]{1,64}\.(?:mp3|ogg|wav))$")
 
 
@@ -500,7 +514,7 @@ def _read_json_file(path: Path, max_bytes: int) -> tuple[Any, str | None]:
     if len(raw) > max_bytes:
         return None, f"{path.name} too large (max {max_bytes} bytes)"
     try:
-        return json.loads(raw.decode("utf-8")), None
+        return loads_user_json(raw.decode("utf-8")), None
     except (UnicodeDecodeError, json.JSONDecodeError) as e:
         return None, f"{path.name} is not valid JSON: {e}"
 

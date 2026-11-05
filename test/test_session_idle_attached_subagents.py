@@ -1,17 +1,9 @@
 """The idle sweep must consult the attached-sub-agent probe before a reset.
 
-``_rss_threshold_check`` already does: a free semaphore only proves the
-parent's own turn is over, and sub-agents dispatched by that turn keep running
-on the parent's runtime, so a reset discards their work. ``_expire_idle``
-opened with the same semaphore check and reset without asking the probe, on
-both its branches. The orphan branch is the reachable one: it ignores the
-clock, so a parent whose tab closed while its background sub-agents were still
-running was reaped on the very next sweep.
-
-These tests install a probe that answers "attached" and pin that neither branch
-resets the session, that a probe which raises keeps the session (fail closed,
-as on the RSS path), and that a probe answering "none" still lets the sweep
-expire the session so the guard does not turn into a leak.
+A free semaphore only proves the parent's own turn is over; its sub-agents keep running
+on the parent's runtime. The orphan branch ignores the clock, so it would reap a closed
+tab's parent while its sub-agents still run. A probe that raises keeps the session, and
+one answering "none" still lets it expire.
 """
 
 from __future__ import annotations
@@ -205,11 +197,9 @@ class TestIdleSweepAttachedSubagentGuard:
 class TestIdleSweepRejudgesAfterTheProbe:
     """The probe await sits before the expiry side effects, on both axes.
 
-    ``on_session_expire`` consolidates the transcript. A turn that begins inside
-    the await has already flushed its user row into that transcript, so a
-    consolidation on the stale idle verdict marks an unanswered prompt as done
-    even though ``reset`` then declines on the busy semaphore. The sweep must
-    re-judge the candidate after the probe and stop BEFORE the callback.
+    A turn that begins during the await has flushed its user row, so consolidating on
+    the stale verdict would mark an unanswered prompt done. The sweep re-judges after
+    the probe and stops before ``on_session_expire``.
     """
 
     @pytest.mark.asyncio
@@ -360,11 +350,8 @@ class TestIdleSweepRejudgesAfterTheProbe:
 class TestProbeFailureVisibility:
     """Fail-closed must not be silent: a broken probe holds every reap.
 
-    A probe that raises keeps every candidate on the idle sweep and the RSS
-    recycle alike, so a probe broken system-wide disables both without
-    reaping a thing. That surfaces at WARNING -- but bounded to one line per
-    interval across all keys, never one per candidate per tick, which is the
-    noise a debug-only line was avoiding.
+    A probe broken system-wide disables both reapers, so it logs at WARNING, bounded
+    to one line per interval across all keys rather than one per candidate per tick.
     """
 
     @pytest.mark.asyncio

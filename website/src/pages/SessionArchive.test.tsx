@@ -44,3 +44,21 @@ describe('SessionArchive empty state', () => {
     })
   })
 })
+
+describe('SessionArchive list', () => {
+  it('labels an archive size with the shared byte formatter', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ archives: [{ name: 'a.jsonl', key: 'chat-1', stamp: '20261103T101500', size: 2_000 }] }),
+    })) as unknown as typeof fetch)
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const { findByText } = render(
+      <QueryClientProvider client={qc}>
+        <MemoryRouter>
+          <SessionArchive />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+    expect(await findByText('2kB')).toBeTruthy()
+  })
+})

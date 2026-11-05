@@ -10,6 +10,7 @@ import type {
   RemoteDirListing,
   RemoteEnvironmentHealth,
   RemoteFileContent,
+  RemoteGitResult,
   SessionEnvironmentsCheck,
   SessionEnvironmentWorkspace,
   SlotEnvironment,
@@ -39,16 +40,27 @@ export interface FollowDefaultCount {
   titles: string[]
 }
 
-export function createChatSlotSettingsEndpoints({ get, post, put, j, jfetch: fetch }: ClientTransport) {
+export function createChatSlotSettingsEndpoints({ get, post, put, j, jfetch: fetch, jSlotEnvironment }: ClientTransport) {
   const selection = {
-    models: () => fetch('/api/models').then(j),
+    /** The configured backend's model list, or `backend`'s own (config spelling: `kiro`, `claude`, ...). */
+    models: (backend?: string) =>
+      fetch(backend === undefined ? '/api/models' : '/api/models?backend=' + encodeURIComponent(backend)).then(j),
+    /** One harness's own model list (`?backend=` in the config spelling: `kiro`,
+     *  `kas`, `claude`, ...), for a picker that pins a crewmate to that harness. */
+    harnessModels: (backend: string) =>
+      fetch('/api/models?backend=' + encodeURIComponent(backend)).then(j) as Promise<
+        { model_name: string; display_name?: string; description?: string }[]
+      >,
     chatSlotSelectionCapabilities: (slot: string) =>
       fetch('/api/chat/slots/' + encodeURIComponent(slot) + '/selection-capabilities').then(j) as Promise<{
         known: boolean
         backend?: string
-        effort_supported?: boolean
+        /** `null` before a session reports, where only a live session on its harness can say. */
+        effort_supported?: boolean | null
         effort_levels?: string[]
         model_effort_pair_ids?: boolean
+        /** Present when this session's harness lists other models than the configured backend. */
+        models_backend?: string
       }>,
     effortLevels: (slot?: string) =>
       fetch('/api/effort-levels' + (slot ? '?slot=' + encodeURIComponent(slot) : '')).then(j) as Promise<string[]>,
@@ -76,7 +88,8 @@ export function createChatSlotSettingsEndpoints({ get, post, put, j, jfetch: fet
     /** This slot's auto-compact threshold override (null = follows a default:
      *  `agent_pct` when the session's agent declares one, else `global_pct`).
      *  `harness_managed` names the backend when the session compacts on its
-     *  own (KAS), where this threshold does not apply. */
+     *  own (KAS); there the global threshold is left to the backend, and an
+     *  override or agent default compacts sooner. */
     chatSlotAutocompact: (slot: string) =>
       fetch('/api/chat/slots/' + encodeURIComponent(slot) + '/autocompact').then(j) as Promise<{ pct: number | null; global_pct: number; agent_pct?: number | null; agent?: string | null; harness_managed?: string | null; min: number; max: number }>,
     /** Set (number) or clear (null) this slot's auto-compact threshold override. */
@@ -108,7 +121,7 @@ export function createChatSlotSettingsEndpoints({ get, post, put, j, jfetch: fet
     /** Which Session Environment this slot's session runs on (`profile: null` =
      *  this machine) plus the configured profiles to choose from. Owner-only. */
     chatSlotEnvironment: (slot: string) =>
-      get('/api/chat/slots/' + encodeURIComponent(slot) + '/environment').then(j) as Promise<SlotEnvironment>,
+      get('/api/chat/slots/' + encodeURIComponent(slot) + '/environment').then(jSlotEnvironment) as Promise<SlotEnvironment>,
     /** Read-only view of a REMOTE session's workspace: list a directory or read a
      *  file, relative to the profile's working directory. Owner-only. */
     chatSlotEnvironmentList: (slot: string, path: string) =>
@@ -118,6 +131,10 @@ export function createChatSlotSettingsEndpoints({ get, post, put, j, jfetch: fet
     /** State and machine metrics of a remote session's workspace (never starts it). */
     chatSlotEnvironmentHealth: (slot: string) =>
       get('/api/chat/slots/' + encodeURIComponent(slot) + '/environment/health').then(j) as Promise<RemoteEnvironmentHealth>,
+    /** Read-only git view of a remote session's workspace root. `from` is a
+     *  renamed file's old path, so its diff reads the HEAD side there. */
+    chatSlotEnvironmentGit: (slot: string, op: 'git_status' | 'git_log' | 'git_diff', path = '.', from?: string) =>
+      get('/api/chat/slots/' + encodeURIComponent(slot) + '/environment/browse?op=' + op + '&path=' + encodeURIComponent(path) + (from ? '&from=' + encodeURIComponent(from) : '')).then(j) as Promise<RemoteGitResult>,
     /** Read-only readiness check: Coder sign-in, each profile's template, git logins. */
     sessionEnvironmentsCheck: () =>
       post('/api/session-environments/check').then(j) as Promise<SessionEnvironmentsCheck>,

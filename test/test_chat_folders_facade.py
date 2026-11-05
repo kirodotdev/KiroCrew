@@ -97,11 +97,8 @@ def unexpected_imports(
 ) -> list[str]:
     """Names *source* binds by a runtime import beyond the frozen inventory.
 
-    The inventory is the BASE imports, the glue's own, and from each owner module only
-    names that owner defines. An import beyond them is accounted for when the family's
-    code reads the name, so a later change can import what it uses here. Imports under
-    ``if TYPE_CHECKING:`` bind nothing at run time and are the mirror guard's business,
-    so they are skipped.
+    An import beyond the inventory is accounted for when the family's code reads the name.
+    ``if TYPE_CHECKING:`` imports bind nothing at run time and are skipped.
     """
     found: list[str] = []
     for node in ast.parse(source).body:

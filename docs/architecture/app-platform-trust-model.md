@@ -121,6 +121,17 @@ are **deny-by-default** confined by the dashboard auth middleware
 independently re-checks that the caller's token app matches the target app, since
 the proxy signs requests with the target app's secret.
 
+That signature is how a backend tells a gateway-forwarded request from a direct
+connection to its loopback port. The v1 `X-KiroCrew-Proxy` HMAC carries no nonce,
+so a copy of one signed request verifies again for up to 60 seconds. Every
+forwarded request therefore also carries `X-KiroCrew-Proxy-Nonce` and an
+`X-KiroCrew-Proxy-V2` HMAC that binds that nonce. A backend that verifies v2 with a
+process-lifetime replay cache accepts each request once. v1 is unchanged and still
+verifies, so a backend that never moves to v2 keeps working but stays replayable
+inside the window. The proxy strips caller-sent copies of all these headers, so a
+page cannot choose the nonce. Wire format and verifiers:
+[api-reference](../app-kit/api-reference.md#replay-proof-v2-signature).
+
 User-session routes add a second, semantic check. An enabled app must declare
 `permissions.sessionApproval: true` before its app token can send a message to
 an existing local user-owned session, choose a generated response option,

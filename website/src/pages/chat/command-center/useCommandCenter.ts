@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import { api } from '../../../api/client'
 import { CREW_BOARD_POLL_MS } from '../../../api/crewBoard'
 import { crewModeView } from '../../../lib/crewMode'
+import { useCrewMode } from '../../../hooks/usePreviewFlag'
 import { fmtList } from '../../../i18n/format'
 import { i18nT } from '../../../i18n/t'
 import { useAppDispatch, useAppSelector } from '../../../store'
@@ -76,10 +77,13 @@ export function useCommandCenter(root: string | null, enabled = true, scope: 'ta
   // The fleet page lists the person's sessions: a Crew Mode worker is its
   // conductor's, and its approval is decided on that conductor's card, so it gets
   // no session card and no attention card here (edge review R2 F4).
-  const scoped = useMemo(() => fleet ? crewModeView(slots) : root ? scopedSlots(slots, root) : [], [slots, root, fleet])
+  const crewMode = useCrewMode()
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- crewMode stands for the preview crewModeView reads
+  const scoped = useMemo(() => fleet ? crewModeView(slots) : root ? scopedSlots(slots, root) : [], [slots, root, fleet, crewMode])
   // Read over the full slot set, before the workers are left out: the conductor
   // of a worker waiting on approval reads as needing a tool decision (R3 Z2).
-  const crewWaiting = useMemo(() => fleet ? crewWaitingApprovals(slots) : undefined, [slots, fleet])
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- crewMode stands for the preview crewWaitingApprovals reads
+  const crewWaiting = useMemo(() => fleet ? crewWaitingApprovals(slots) : undefined, [slots, fleet, crewMode])
   // These slots' subagent runs are drawn here, finished ones included, so the
   // gateway's durable replay is asked for them (it covers only named slots).
   const scopedKeys = useMemo(() => scoped.map(s => s.key).join('\n'), [scoped])

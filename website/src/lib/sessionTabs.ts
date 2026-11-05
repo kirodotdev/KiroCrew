@@ -166,6 +166,22 @@ export function replaceSessionTab(tabs: readonly string[], oldKey: string | null
   return next
 }
 
+/**
+ * Move `key` to `toIndex`, every other tab keeping its relative order. The
+ * index is clamped to the strip, so a caller stepping past either end gets the
+ * end rather than a hole. A key that is not a tab leaves the set unchanged.
+ */
+export function moveSessionTab(tabs: readonly string[], key: string, toIndex: number): string[] {
+  const from = tabs.indexOf(key)
+  if (from === -1) return [...tabs]
+  const to = Math.max(0, Math.min(tabs.length - 1, toIndex))
+  if (to === from) return [...tabs]
+  const next = [...tabs]
+  next.splice(from, 1)
+  next.splice(to, 0, key)
+  return next
+}
+
 /** The set without `key`. */
 export function closeSessionTab(tabs: readonly string[], key: string): string[] {
   return tabs.filter(k => k !== key)

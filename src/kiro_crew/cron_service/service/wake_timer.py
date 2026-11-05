@@ -22,7 +22,7 @@ import asyncio
 import logging
 from typing import TYPE_CHECKING
 
-from kiro_crew import shutdown_event
+from kiro_crew import host_timezone, shutdown_event
 from kiro_crew.cron_service.model import CronJob
 from kiro_crew.cron_service.schedule import _TIMER_POLL_SECS, next_wake_secs
 from kiro_crew.cron_service.store import CronStoreBusy
@@ -66,19 +66,11 @@ def _effective_delay(self: CronService) -> float:
 
 
 def _arm_timer(self: CronService) -> None:
-    # Re-arming creates/cancels asyncio tasks, which is only legal on the
-    # event loop thread. When this is reached OFF the loop — a locked core
-    # running in an asyncio.to_thread worker whose _sync()->_load() wants to
-    # re-arm, an app-hook/SDK mutation offloaded via asyncio.to_thread, or a
-    # purely synchronous (CLI/test) context — there is no running loop here.
-    # Creating a task would raise RuntimeError, and a blind cancel could
-    # stop the existing timer WITHOUT rearming it, silently halting every
-    # scheduled job. So off-loop we cancel/create nothing and instead hand
-    # the arm back to the bound event loop (captured in create()/start())
-    # via loop.call_soon_threadsafe(self._arm_timer): the arm then runs ON
-    # the loop and (re)arms for real. Arming is thus owned by the service —
-    # no caller has to remember a drain step. In a genuinely loop-less
-    # process (self._loop is None) there is no scheduler to arm.
+    # Creating or cancelling asyncio tasks is legal only on the loop thread.
+    # Off the loop (a to_thread worker, or a CLI/test context) a task create
+    # raises and a lone cancel would halt every job, so hand the arm to the
+    # loop bound in create()/start() via call_soon_threadsafe. A loop-less
+    # process (self._loop is None) has no scheduler to arm.
     try:
         loop: asyncio.AbstractEventLoop | None = asyncio.get_running_loop()
     except RuntimeError:
@@ -89,31 +81,14 @@ def _arm_timer(self: CronService) -> None:
             bound.call_soon_threadsafe(self._arm_timer)
         return
     current = asyncio.current_task()
-    # Never cancel the timer task if we ARE that task. The tick's own
-    # `finally` re-arms while the tick coroutine is still executing, so a
-    # blind `self._timer_task.cancel()` there fires a CancelledError back
-    # into the running tick — aborting the in-flight `_on_timer` dispatch
-    # (dropping any due jobs not yet spawned) and leaving a half-processed
-    # sweep. We skip the cancel in that self-referential case and simply
-    # create the replacement task below; the finishing tick exits normally.
-    # A *different* caller rescheduling while the tick merely waits on
-    # shutdown_event still cancels correctly (current is not the timer task).
+    # Never cancel the timer task from inside itself: the tick's `finally`
+    # re-arms while it still runs, and a cancel would abort due jobs not yet
+    # spawned. Skip the cancel and just create the replacement.
     #
-    # A DIFFERENT hazard, same root cause, needs a second guard: a job's
-    # own completion handler calls _arm_timer() (see _run_job_isolated) to
-    # re-arm promptly instead of waiting out the rest of the poll cap, but
-    # that call runs on the JOB's task, not the timer's — so `current is
-    # not self._timer_task` above is true even while _on_timer is still
-    # mid-sweep (yielded at its own to_thread scan). Cancelling here would
-    # abort that sweep exactly as the self-referential case above
-    # describes, just reached from a different caller. Neither cancelling
-    # NOR creating a replacement task is safe in that window (creating one
-    # too would leave two timer tasks alive and double-fire the next
-    # tick), so this arm is dropped entirely: _on_timer's own tick already
-    # unconditionally re-arms in its `finally` once the sweep completes
-    # (by which point the completed job has released its claim),
-    # so the delay this caller wanted still gets picked up, just a moment
-    # later rather than being computed twice.
+    # A job's completion handler (_run_job_isolated) also re-arms, from its
+    # own task, possibly while _on_timer is mid-sweep. Cancelling would abort
+    # the sweep and a second task would double-fire, so drop this arm: the
+    # tick's `finally` re-arms once the sweep is done.
     if self._on_timer_running and current is not self._timer_task:
         return
     if self._timer_task and not self._timer_task.done() and self._timer_task is not current:
@@ -146,24 +121,19 @@ def _arm_timer(self: CronService) -> None:
 def _tick_scan_locked(self: CronService) -> list[CronJob]:
     """Locked store refresh + deferred-removal drain + snapshot. WORKER-THREAD ONLY.
 
-    The timer tick's blocking work — the bounded ``_file_lock`` spin, the
-    ``_sync()`` that ``read_bytes()`` + blake2b-hashes the WHOLE
-    ``crons.json``, and the deferred one-shot delete+save — runs here so it
-    can be offloaded off the event loop via ``asyncio.to_thread`` (see
-    :meth:`_on_timer`). Returns a snapshot of the current jobs; the loop
-    then runs the mutation-free, claim-aware due-scan against it.
+    The tick's blocking work (lock spin, whole-file read + hash, deferred
+    one-shot delete + save) runs here in a ``to_thread`` worker; the loop then
+    runs the due-scan on the returned snapshot.
 
-    Drains deferred removals BEFORE snapshotting so a completed
-    ``delete_after_run`` job whose immediate removal hit a busy store (see
-    :meth:`defer_removal`) is deleted here and can never appear due — even
-    though the ``_sync`` above may have re-derived it as enabled. If the
-    store is too contended to lock this tick, degrades to the in-memory
-    snapshot without draining (the next tick retries; ``defer_removal``'s
-    in-memory disable keeps a completed one-shot from re-firing meanwhile).
-    A worker-thread ``_sync()`` reload may reach ``_arm_timer``, which hands
-    the (re)arm back to the bound event loop thread-safely (see
-    :meth:`_arm_timer`) — no caller-side drain is required.
+    Drains deferred removals BEFORE the snapshot so a finished
+    ``delete_after_run`` job (see :meth:`defer_removal`) can never look due,
+    even if ``_sync`` re-read it as enabled. On a busy store it returns the
+    in-memory snapshot undrained; the next tick retries.
     """
+    # A laptop that travels changes zone under a running gateway; this re-read
+    # is what a "local" schedule follows. Here because this is the tick's one
+    # worker-thread hop: the read is filesystem (or registry) I/O.
+    host_timezone.refresh_host_timezone()
     drained: list[str] = []
     try:
         with self._file_lock():
@@ -214,40 +184,20 @@ async def _on_timer(self: CronService) -> None:
         if not due and not self._admission_deferring:
             return
 
-        # Posture-gated admission: while host memory is CRITICAL, defer this
-        # tick's ``every``/``at`` firings instead of admitting more work onto
-        # a host that cannot absorb it. The verdict is computed off-loop
-        # (config + procfs reads must not stall the event loop). Deferral is
-        # deliberately STATELESS and only applies to schedule kinds that stay
-        # due on their own (``last_run_ts`` untouched, so a deferred job fires
-        # on the first admitted tick). A cron-expression job is only due while
-        # its expression matches the current minute, so it cannot be deferred
-        # statelessly: an in-memory catch-up marker loses the occurrence on
-        # gateway restart, and dropping it silently loses the occurrence
-        # outright — so cron-expression jobs run normally even under critical
-        # posture (persisted deferral markers are a possible follow-up).
-        # Manual runs (run_job / cron_trigger) never pass through this scan
-        # and are not deferred. Fails open on unknown posture. The INFO log
-        # fires once per deferral episode and re-fires every 15 minutes so a
-        # long suspension stays diagnosable.
+        # While host memory is CRITICAL, defer this tick's ``every``/``at``
+        # firings (verdict computed off-loop). Deferral is stateless: those
+        # kinds stay due, so they fire on the first admitted tick. A
+        # cron-expression job is due only in its minute and would be lost, so
+        # it runs anyway. Manual runs skip this scan. Fails open on unknown
+        # posture; the INFO log fires once per episode, then every 15 minutes.
         decision = await asyncio.to_thread(seams.admission_check)
 
-        # The admission await yielded the loop, so the due snapshot may be
-        # stale: a manual run (run_job / cron_trigger) can have claimed — or
-        # even completed — a job meanwhile, and a job can have been edited,
-        # disabled, or queued for removal. Rebuild the due list from the LIVE
-        # job objects and re-run the due check BEFORE the deferral partition
-        # below: classifying by the stale snapshot's schedule kind would let
-        # an interval job edited into a matching cron expression during the
-        # await be deferred-and-dropped (its occurrence lost), and dispatching
-        # the snapshot object would execute a stale definition. An id-only
-        # check would double-fire a job whose manual run already finished.
-        # The re-check deliberately reuses the scan-time ``now``: a live
-        # ``last_run_ts`` advanced by a finished manual run still fails it
-        # (interval math for ``every``/``at``, the same-minute guard for cron
-        # expressions), while a minute boundary crossed during the await
-        # cannot drop a cron-expression occurrence that was genuinely due at
-        # scan time.
+        # The await yielded the loop: a manual run may have claimed or finished
+        # a job, and a job may have been edited or disabled. Rebuild the due
+        # list from the LIVE jobs and re-check before the deferral split, so a
+        # stale schedule kind or definition is never used and a finished manual
+        # run is not fired twice. Reuse the scan-time ``now`` so a minute
+        # boundary crossed during the await cannot drop a due cron occurrence.
         live_by_id = {j.id: j for j in self._jobs if j.enabled}
         due = [
             live_by_id[j.id]

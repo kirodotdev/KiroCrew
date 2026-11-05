@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     import asyncio
     import re
+    import uuid
 
     from kiro_crew.slack.gateway import (
         _BACKGROUND_APPROVAL_SOURCES,
@@ -140,8 +141,20 @@ def _interactive_approval(
         _child_grant_eligible = (not _child_lf) or (
             getattr(event, "child_unconditional_grant_eligible", False) is True
         )
+        # A tool request's id is the backend's JSON-RPC id, counted per connection,
+        # so two runtimes ask with the same one (each sub-agent's first is ``1``).
+        # Every background source shares the dashboard's approval registry, so the
+        # id registered there names THIS call; a reused id would replace the other
+        # request's record and leave it waiting with no card. The backend is still
+        # answered through the event's own id. A spawn id already names one agent,
+        # and the spawn card and ``slot_resolver`` read its form, so it is kept.
+        approval_id = (
+            request_id
+            if request_id.startswith("spawn:")
+            else f"{request_id}-{uuid.uuid4().hex[:12]}"
+        )
         # Background callers pass the authoritative parent session key. Prefer it
-        # over a request-ID resolver because tool permission IDs are opaque UUIDs,
+        # over a request-ID resolver because a tool permission ID names no agent,
         # unlike spawn approvals (``spawn:<agent_id>``). Treating a tool request ID
         # as an agent ID loses the dashboard slot and hides the approval prompt.
         # ``dashboard_slot_key`` answers "which tab shows this conversation?", so a
@@ -299,22 +312,10 @@ def _interactive_approval(
                 # re-checked here per request and never renewed from here.
                 _ps_trusted = bool(_ps) and _slot_is_trusted(_ps)
                 _ps_via_scope = _ps_trusted and _auto_approve_reason(_ps, False) == "trust_scope"
-                # A Crew Mode card trust ("Trust this worker") covers THAT
-                # worker's own tools only (decided per event by chat_runner).
-                # Everything that reaches this gate on its behalf -- its
-                # spawn_run, its subagents' tools -- still asks, so the request
-                # reaches the conductor's card.
-                from kiro_crew.dashboard.approval_posture import trust_carries
-
-                _ps_card_scoped = _ps_trusted and not _ps_via_scope and not trust_carries(_ps)
-                if _ps_card_scoped:
-                    _sel_log(
-                        caller=f"slot:{_parent_slot_key}",
-                        operation=f"{source}.card_trust_not_inherited",
-                        outcome="not_auto_approved",
-                        resources=_safe_title,
-                    )
-                elif _ps_trusted and not _child_grant_eligible:
+                # A Crew Mode card trust ("Trust this worker") is a slot trust
+                # here like any other (``_slot_is_trusted``): it covers the
+                # worker's spawn_run and its subagents' tools.
+                if _ps_trusted and not _child_grant_eligible:
                     # Slot IS trusted; the fidelity gate is what blocks
                     # the auto-approve. A distinct audit reason — an
                     # auditor reading "not_trusted" for a trusted slot
@@ -413,7 +414,7 @@ def _interactive_approval(
                         ).get(approval_slot, ("", False))[0]
                     )
             except Exception:
-                logger.debug("crew member check failed for %s", approval_slot, exc_info=True)
+                logger.debug("Bot check failed for %s", approval_slot, exc_info=True)
         if self.slack and self._owner_id and not _crew_member:
             try:
                 # Resolve parent thread context for threaded approval prompts
@@ -468,7 +469,7 @@ def _interactive_approval(
                 if self.dashboard_state:
                     dashboard_future = asyncio.ensure_future(
                         self.dashboard_state.request_approval(
-                            request_id,
+                            approval_id,
                             source,
                             event.title,
                             tool_input=event.tool_input,
@@ -522,7 +523,7 @@ def _interactive_approval(
                     _pending_approvals.pop(key, None)
                     # Resolve dashboard approval if Slack responded first
                     if self.dashboard_state:
-                        self.dashboard_state.resolve_approval(request_id, outcome == "approved")
+                        self.dashboard_state.resolve_approval(approval_id, outcome == "approved")
                     if dashboard_future and not dashboard_future.done():
                         dashboard_future.cancel()
 
@@ -550,7 +551,7 @@ def _interactive_approval(
             if raise_when_unreachable and not self._dashboard_client_attached():
                 raise SpawnApprovalUnreachable("no dashboard client is connected")
             return await self.dashboard_state.request_approval(
-                request_id,
+                approval_id,
                 source,
                 event.title,
                 tool_input=event.tool_input,

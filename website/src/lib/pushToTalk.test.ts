@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest'
 
+import { i18next } from '../i18n/all'
+
 import {
   BARE_CODE_LABEL_KEY,
   bareCodeLabelKeys,
@@ -352,5 +354,17 @@ describe('toSeconds', () => {
     expect(toSeconds(857)).toBe('0.9')
     expect(toSeconds(849)).toBe('0.8')
     expect(toSeconds(0)).toBe('0.0')
+  })
+
+  it('writes the decimal separator of the active locale', async () => {
+    // "Hold for {{secs}} seconds" interpolates this string, so a fixed "." read
+    // "0.5 Sekunden" in German instead of "0,5 Sekunden".
+    await i18next.changeLanguage('de')
+    try {
+      expect(toSeconds(500)).toBe('0,5')
+      expect(toSeconds(1500)).toBe('1,5')
+    } finally {
+      await i18next.changeLanguage('en')
+    }
   })
 })

@@ -10,14 +10,15 @@ module never imports that facade.
 
 from __future__ import annotations
 
+from kiro_crew.apps import builtin_agent_tools as _builtin_agent_tools
 from kiro_crew.validation_parts.app_schemas import (
-    DESIGN_TWEAK_UPDATE_THREAD_SCHEMA,
     ISSUE_RADAR_CREW_READ_SCHEMA,
     ISSUE_RADAR_CREW_RECORD_SCHEMA,
     ISSUE_RADAR_RECORD_INVESTIGATION_SCHEMA,
     OPS_MISSION_CONTROL_API_SCHEMA,
     POD_DOWN_SCHEMA,
     POD_LS_SCHEMA,
+    POD_RESTART_SCHEMA,
     POD_STATUS_SCHEMA,
     POD_UP_SCHEMA,
 )
@@ -42,7 +43,6 @@ from kiro_crew.validation_parts.artifact_schemas import (
     ARTIFACT_VERSIONS_SCHEMA,
     CHAT_FOLDER_CREATE_SCHEMA,
     CHAT_FOLDER_DELETE_SCHEMA,
-    CHAT_FOLDER_FILE_SELF_SCHEMA,
     CHAT_FOLDER_MOVE_SCHEMA,
     CHAT_FOLDER_MOVE_SESSION_SCHEMA,
     CHAT_FOLDER_TREE_SCHEMA,
@@ -84,6 +84,7 @@ from kiro_crew.validation_parts.core_turn_schemas import (
     CHAT_TAG_SCHEMA,
     DELETE_MESSAGE_SCHEMA,
     NOTHING_TO_DO_SCHEMA,
+    REQUEST_SERVER_SCHEMA,
     RESET_CONVERSATION_SCHEMA,
     SET_PROJECT_SCHEMA,
     SKILL_DISCOVER_SCHEMA,
@@ -134,6 +135,7 @@ from kiro_crew.validation_parts.messaging_session_schemas import (
     SESSION_STOP_SCHEMA,
     SESSION_SUMMARY_SCHEMA,
     WAIT_SCHEMA,
+    WORK_DISPATCH_SCHEMA,
 )
 
 # ── Schema Registry ──
@@ -180,6 +182,7 @@ MCP_CORE_SCHEMAS: dict[str, ToolSchema] = {
     "set_project": SET_PROJECT_SCHEMA,
     "reset_conversation": RESET_CONVERSATION_SCHEMA,
     "chat_tag": CHAT_TAG_SCHEMA,
+    "request_server": REQUEST_SERVER_SCHEMA,
     "suggest_followup": SUGGEST_FOLLOWUP_SCHEMA,
     "artifact_save": ARTIFACT_SAVE_SCHEMA,
     "artifact_get": ARTIFACT_GET_SCHEMA,
@@ -215,8 +218,8 @@ MCP_CORE_SCHEMAS: dict[str, ToolSchema] = {
     "deploy_artifact": DEPLOY_ARTIFACT_SCHEMA,
     "issue_radar_record_investigation": ISSUE_RADAR_RECORD_INVESTIGATION_SCHEMA,
     "ops_mission_control_api": OPS_MISSION_CONTROL_API_SCHEMA,
-    "design_tweak_update_thread": DESIGN_TWEAK_UPDATE_THREAD_SCHEMA,
     "pod_up": POD_UP_SCHEMA,
+    "pod_restart": POD_RESTART_SCHEMA,
     "pod_down": POD_DOWN_SCHEMA,
     "pod_status": POD_STATUS_SCHEMA,
     "pod_ls": POD_LS_SCHEMA,
@@ -226,6 +229,8 @@ MCP_CORE_SCHEMAS: dict[str, ToolSchema] = {
     # crash that takes the whole kirocrew-core server down for the session.
     "issue_radar_crew_read": ISSUE_RADAR_CREW_READ_SCHEMA,
     "issue_radar_crew_record": ISSUE_RADAR_CREW_RECORD_SCHEMA,
+    # The tools a built-in app declares as data, each checked by its declared fields.
+    **_builtin_agent_tools.tool_schemas(),
 }
 
 
@@ -260,13 +265,13 @@ MCP_DASHBOARD_SCHEMAS: dict[str, ToolSchema] = {
     "session_release": SESSION_RELEASE_SCHEMA,
     "session_read_message": SESSION_READ_MESSAGE_SCHEMA,
     "session_summary": SESSION_SUMMARY_SCHEMA,
+    "work_dispatch": WORK_DISPATCH_SCHEMA,
     "chat_folder_tree": CHAT_FOLDER_TREE_SCHEMA,
     "chat_folder_create": CHAT_FOLDER_CREATE_SCHEMA,
     "chat_folder_move": CHAT_FOLDER_MOVE_SCHEMA,
     "chat_folder_update": CHAT_FOLDER_UPDATE_SCHEMA,
     "chat_folder_move_session": CHAT_FOLDER_MOVE_SESSION_SCHEMA,
     "chat_folder_delete": CHAT_FOLDER_DELETE_SCHEMA,
-    "chat_folder_file_self": CHAT_FOLDER_FILE_SELF_SCHEMA,
     "chat_session_pin_move": CHAT_SESSION_PIN_MOVE_SCHEMA,
     "chat_tag_list": CHAT_TAG_LIST_SCHEMA,
     "chat_tag_create": CHAT_TAG_CREATE_SCHEMA,

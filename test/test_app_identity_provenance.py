@@ -1,17 +1,12 @@
 """App identity + install provenance for registry installs.
 
-Two defects are covered here:
+1. ``install_from_registry`` must install under the catalog entry's name only when the
+   CLONED manifest agrees, or a repo listed as X could run as Y.
+2. The persisted marker must name the registry source, not a bare
+   ``registry:<name>``, so a same-named entry elsewhere cannot capture an update.
 
-1. ``install_from_registry`` resolved a catalog entry by name, cloned its repo,
-   then installed under the CLONED manifest's name with no check that the two
-   agreed — so a repo listed as X could install, register and run as Y.
-2. Only a bare ``registry:<name>`` marker was persisted, so an update
-   re-resolved the bare name and a same-named entry from a different registry
-   source could capture it.
-
-Mirrors the collaborator-patching style of ``test_apps_registry.py`` /
-``test_external_registry.py``: no real git, no real network, everything isolated
-via ``tmp_path`` + ``monkeypatch`` (so no xdist group marker is needed).
+No real git or network; everything isolated via ``tmp_path`` + ``monkeypatch`` (so no
+xdist group marker is needed).
 """
 
 from __future__ import annotations
@@ -41,12 +36,8 @@ def _admit_registry_execution(monkeypatch):
 def _catalog_absent(monkeypatch):
     """Pin "official catalog reachable, app absent" for the whole module.
 
-    ``get_registry_app`` is patched to a per-test stub everywhere in this file, but
-    its real implementation is upstream of ``official_catalog.inventory_for_install``,
-    whose real lookup performs a fresh uncached HTTPS fetch on every call. Without
-    this guard, any test added here later that forgets to stub ``get_registry_app``
-    (or exercises the real lookup path some other way) would silently depend on the
-    runner's live network being up.
+    The real ``official_catalog.inventory_for_install`` does an uncached HTTPS fetch per
+    call, so a test that forgets to stub ``get_registry_app`` would need live network.
     """
     monkeypatch.setattr(
         "kiro_crew.apps.official_catalog.inventory_for_install",
@@ -114,9 +105,7 @@ def _forbid_spawn(monkeypatch) -> None:
     monkeypatch.setattr(registry, "create_subprocess_limited", _boom)
 
 
-# ---------------------------------------------------------------------------
 # (a) Name squatting — entry X whose repo declares Y
-# ---------------------------------------------------------------------------
 
 
 class TestIdentityGate:
@@ -188,9 +177,7 @@ class TestIdentityGate:
         assert "identity_mismatch" not in _audited_operations(sel_calls)
 
 
-# ---------------------------------------------------------------------------
 # (b) Fresh install persists structured provenance
-# ---------------------------------------------------------------------------
 
 
 class TestProvenanceCapture:
@@ -330,9 +317,7 @@ class TestResolvedCloneCommit:
         assert registry._resolved_clone_commit(clone) == ""
 
 
-# ---------------------------------------------------------------------------
 # (c) Updates resolve through provenance, (d) legacy records keep old behaviour
-# ---------------------------------------------------------------------------
 
 
 def _install_with_provenance(

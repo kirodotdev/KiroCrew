@@ -19,10 +19,12 @@ from typing import Any
 from kiro_crew.work_vocab import (
     WORK_BLOCKED_REASONS,
     WORK_ITEM_STATES,
+    WORK_MAX_ARTIFACT_VALUE_CHARS,
     WORK_MAX_DEPTH_DEFAULT,
     WORK_STORED_ITEM_LIMIT,
     WORK_VERDICTS,
     WORK_WORKER_STATUSES,
+    coerce_retired_bindings,
 )
 
 # Named for the module callers import, so every record the store's owners log carries
@@ -88,12 +90,19 @@ ACCEPTANCE_READ_FIELDS: dict[str, tuple[str, ...]] = {
     "file": ("path", "exists"),
     "human_approval": (),
     "cmd": (),
+    "edition_check": ("check", "ref"),
 }
 
 #: ``accept_eval.py``'s own ``pr_merged`` ``repo`` pattern, mirrored so a bar it can
 #: only answer ``error`` to is not called concrete. Applied with ``fullmatch``, as
 #: there. A test pins the two equal.
 ACCEPTANCE_GH_REPO = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9._-]{1,100}")
+
+#: ``accept_eval.py``'s own ``edition_check`` field patterns, mirrored so a bar it
+#: can only answer ``error`` to is not called concrete. Applied with ``fullmatch``,
+#: as there. A test pins both equal to the script's.
+ACCEPTANCE_CHECK_NAME = re.compile(r"[a-z][a-z0-9-]{0,31}")
+ACCEPTANCE_CHECK_REF = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 
 #: The ``kind`` values that script dispatches on at all. Anything else is an error-only
 #: spec (its closing ``return ("error", f"unknown accept kind ...")``), so it is not
@@ -106,7 +115,7 @@ ACCEPTANCE_KINDS: frozenset[str] = frozenset(ACCEPTANCE_READ_FIELDS)
 #: is the only kind a worker can produce; ``steer`` is the only kind a person's
 #: steer from a Crew Mode side panel produces, and it moves no field.
 EVENT_KINDS: frozenset[str] = frozenset(
-    {"create", "bind", "report", "decision", "verdict", "close", "steer"}
+    {"create", "bind", "report", "decision", "verdict", "close", "steer", "retire", "destroy"}
 )
 
 #: The conductor's disjoint operations. One action per call, because the field sets
@@ -187,7 +196,7 @@ MAX_EVENT_TEXT_CHARS = 500
 
 MAX_ARTIFACT_KEYS = 16
 MAX_ARTIFACT_KEY_CHARS = 64
-MAX_ARTIFACT_VALUE_CHARS = 512
+MAX_ARTIFACT_VALUE_CHARS = WORK_MAX_ARTIFACT_VALUE_CHARS
 
 MIN_PR = 1
 MAX_PR = 1_000_000_000
@@ -216,6 +225,8 @@ PENDING_BUDGET_SECS = 24 * 60 * 60.0
 CODE_NO_LEDGER = "no_ledger"
 CODE_UNKNOWN_ITEM = "unknown_item"
 CODE_ALREADY_BOUND = "already_bound"
+#: A caller-chosen item id the board already holds (``create_bound_item``).
+CODE_DUPLICATE_ITEM = "duplicate_item"
 CODE_ITEM_CLOSED = "item_closed"
 CODE_ITEM_CAP_EXCEEDED = "item_cap_exceeded"
 CODE_GOAL_CONCURRENCY_CAP_REACHED = "goal_concurrency_cap_reached"
@@ -316,8 +327,8 @@ class ConductorRecord:
 
         True from the first create past the cap, not at the cap: a goal at twenty
         of twenty has spent what it was allowed. Advisory -- the read reports it beside
-        ``items used: N of M`` and the conductor tells the user; nothing blocks on
-        it. False on a board that never recorded a goal, which has no goal to
+        ``goal_items_used`` and the conductor tells the user once when it turns
+        true; nothing blocks on it. False on a board that never recorded a goal, which has no goal to
         measure: a queue board's count is its whole history.
         """
         return self.goal_version > 0 and self.goal_items_used > self.item_cap
@@ -432,6 +443,17 @@ class WorkItem:
     verdict: str | None = None
     decision: str = ""
     worker_session_key: str | None = None
+    #: The remote crew the worker runs on (rfc-conductor-remote-dispatch §3), set by
+    #: a remote bind beside ``worker_session_key`` (then the PEER's slot key), else
+    #: ``None``. Serialized only when set, so a board with no remote item is stored
+    #: and read exactly as before the field existed.
+    worker_instance_id: str | None = None
+    #: Remote bindings the hub retired (rfc-conductor-remote-dispatch §5b), oldest
+    #: first: each ``{worker_session_key, worker_instance_id, branch, state, reason,
+    #: retired_at, destroyed_at}``, ``state`` ``retired`` or ``destroyed``. The
+    #: current binding is the pair above, never listed here. Serialized only when
+    #: non-empty, so an item that was never retired is stored exactly as before.
+    retired_bindings: list[dict[str, Any]] = field(default_factory=list)
     round: int = 0
     fails: int = 0
     status: str | None = None
@@ -463,6 +485,14 @@ class WorkItem:
         return self.state in TERMINAL_ITEM_STATES
 
     def to_dict(self) -> dict[str, Any]:
+        out = self._base_dict()
+        if self.worker_instance_id:
+            out["worker_instance_id"] = self.worker_instance_id
+        if self.retired_bindings:
+            out["retired_bindings"] = [dict(b) for b in self.retired_bindings]
+        return out
+
+    def _base_dict(self) -> dict[str, Any]:
         return {
             "schema": self.schema,
             "item_id": self.item_id,
@@ -510,6 +540,8 @@ class WorkItem:
             verdict=verdict if verdict in VERDICTS else None,
             decision=_as_str(raw.get("decision")),
             worker_session_key=_as_opt_str(raw.get("worker_session_key")),
+            worker_instance_id=_as_opt_str(raw.get("worker_instance_id")) or None,
+            retired_bindings=coerce_retired_bindings(raw.get("retired_bindings")),
             round=_as_int(raw.get("round"), 0),
             fails=_as_int(raw.get("fails"), 0),
             status=status if status in WORKER_STATUSES else None,

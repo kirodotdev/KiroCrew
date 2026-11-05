@@ -237,8 +237,11 @@ class TestPeakRssIsThisProcesss:
         assert pc.proc_cpu_nanos_for_pid(-1) is None
 
     def test_raise_nofile_soft_limit_is_safe(self):
-        # No-op on Windows; best-effort raise on POSIX. Must never raise.
+        # No-op on Windows; best-effort raise on POSIX. Must never raise, and must
+        # never lower a soft limit that is already above the target.
+        before = pc.nofile_soft_limit()
         pc.raise_nofile_soft_limit(4096)
+        assert pc.nofile_soft_limit() >= before
 
 
 class TestResourceShimFailures:
@@ -265,7 +268,7 @@ class TestResourceShimFailures:
         # The peak reading has ONE source per POSIX platform: VmHWM on Linux,
         # getrusage elsewhere. That source failing is a plain 0, and on Linux
         # the failure must not fall through to getrusage, whose ru_maxrss is
-        # the parent's inherited peak (test_linux_peak_is_its_own_vmhwm).
+        # the parent's inherited peak (test_linux_peak_is_its_own_vmhwm_never_getrusage).
         if not pc.IS_POSIX:
             pytest.skip("POSIX peak-RSS branch")
 

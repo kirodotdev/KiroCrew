@@ -18,7 +18,8 @@ import os
 from pathlib import Path
 
 from kiro_crew.config.loader import config_dir
-from kiro_crew.security import is_unverifiable_path_refusal, sensitive_path_refusal
+from kiro_crew.platform_compat import strip_extended_length_prefix
+from kiro_crew.security import canonical_path_refusal, is_unverifiable_path_refusal
 
 
 def _split_script_spec(script_path: str) -> tuple[str, str]:
@@ -199,12 +200,16 @@ def resolve_script_path(
     file_path = Path(os.path.expanduser(module_part)).resolve()
     if not file_path.exists():
         raise FileNotFoundError(f"Script file not found: {file_path}")
-    if reason := sensitive_path_refusal(str(file_path)):
+    if reason := canonical_path_refusal(str(file_path)):
         if is_unverifiable_path_refusal(reason):
             raise PermissionError(reason)
         raise PermissionError(f"Script path blocked by security policy: {file_path}")
     crons_dir = (config_dir() / "crons").resolve()
-    if app_root is None and file_path.is_relative_to(crons_dir):
+    # Compared with Windows' ``\\?\`` prefix folded off both sides: a file
+    # resolved mid-replace can come back prefixed while the root does not, and
+    # the lone prefix would read as an escape. The fold is lexical.
+    plain_file = strip_extended_length_prefix(file_path)
+    if app_root is None and plain_file.is_relative_to(strip_extended_length_prefix(crons_dir)):
         return str(file_path), func_name
     if app_root is not None:
         bundle_roots: tuple[Path, ...] = (app_root.resolve(),)
@@ -213,7 +218,7 @@ def resolve_script_path(
     else:
         bundle_roots = ()
     for root in bundle_roots:
-        if not file_path.is_relative_to(root):
+        if not plain_file.is_relative_to(strip_extended_length_prefix(root)):
             continue
         if file_path.suffix.lower() != ".py":
             raise PermissionError(f"App bundle script must be a .py file, got: {file_path}")

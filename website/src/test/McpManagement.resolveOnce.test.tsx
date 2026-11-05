@@ -11,7 +11,7 @@
 // - the button disables itself while a pass is in flight, so a second press
 //   cannot start the duplicate the backend would refuse with a 409 anyway
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -50,7 +50,7 @@ function stubPage() {
 
 const pressUpdate = async () => {
   const button = await screen.findByRole('button', { name: M('resolve_update_now') })
-  button.click()
+  act(() => { button.click() })
   return button
 }
 
@@ -212,7 +212,7 @@ describe('McpManagement pre-resolve', () => {
     })
 
     refresh.mockRejectedValueOnce(new Error('boom'))
-    button.click()
+    act(() => { button.click() })
 
     await waitFor(() => {
       expect(screen.getByRole('alert')).toBeTruthy()

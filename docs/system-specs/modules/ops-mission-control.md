@@ -5,6 +5,52 @@ An autonomous ops first responder shipped as a **builtin app** (`origin: builtin
 investigates it in a chat session mirrored to Slack, matches it against a
 compounding knowledge ledger, and proposes an action. Read-only by default.
 
+## Repository boundary
+
+The whole app is meant to leave this repository intact: the package under
+`apps/builtins/ops_mission_control/` and the UI under `website/src/apps/ops-mission-control/`.
+Kiro Crew core does not import either. What the app needs from the core it imports from
+the core: the `webhooks` governance gate (`webhook_sources.source_refusal`), the
+notification bus, the redactor, the grapheme-safe cut and the hidden-leaf staging. The
+app's tests of those pins live in its own `tests/` (`test_webhook_governance.py`,
+`test_notify_clip.py`, `test_github_issues_stderr_excerpts.py`,
+`test_masked_leaf_staged_publish.py`, `test_ledger_sync_coverage.py`,
+`test_sop_facts.py`), and its dashboard tests live beside the UI.
+
+`test/test_core_ops_mission_control_decoupling.py` keeps it that way, on the shared
+`test/core_app_independence.py` scans: no core module or script imports the app, and the
+core strings still naming it are a pinned list (`KNOWN_NAME_REFERENCES`) that may only
+shrink. Each row is deleted in the change that removes what it names:
+
+* **The `ops_mission_control_api` MCP tool.** Its descriptor, `TOOL_APPS` row, handler and
+  allowlist (`mcp_tools/apps.py`), its `MCP_CORE_SCHEMAS` validation row
+  (`validation_parts/`), its channel deny of `POST /rotation/arm` (`channel.py`), its title
+  (`data/mcp_tool_titles.json`) and the exact internal-secret admission of the routes it
+  reaches (`dashboard/server_internal_paths.py`). The built-in agent-tool seam
+  (`app-kit-platform.md`, section 30.1) carries only one POST route under the app proxy,
+  and this tool is a GET/POST dispatcher over `/api/apps/ops-mission-control`, so it stays
+  core until an app-contributed tool seam can carry it with the same name and permission
+  key. `apps.builtin_adoption_checks.core_named_apps` reads `TOOL_APPS` and the channel
+  table, so until then the app is not adopted from its own repository.
+* **The `ops-mission-control` webhook source id** in `webhook_sources.py`: the core's
+  governance vocabulary, which a policy names and an app may not choose for itself.
+* **The sandbox leaf tables** (`sandbox_leaves.py`, `sandbox_aliases.py`,
+  `security/paths_lists.py`) that hide the secret store, hold the autonomy ceiling
+  read-only and write-protect the rotation schedule and the incident index.
+* **The `security_posture*.py` rows** that classify the app's files: the core's audit of
+  the app's code.
+* **The packaged skill** `builtin_skills/ops-mission-control/` and its row in the closed
+  skill-id list (`metrics/feature_usage.py`), and the `scripts/docs_lint.py` allowlist of
+  the two runtime-data paths `security.md` cites.
+
+The dashboard half is `website/src/apps/ops-mission-control/opsMissionControlBoundary.test.ts`:
+outside that directory only `apps/builtinRegistry.ts` imports the UI. Also left in core
+for this wave, and not imports: the app-store row in `appManifest.ts`, the
+`apps.opsMissionControl.*` catalog keys, the Playwright spec and capture scripts, the
+`golden-paths.json` rows for the app's crons, and the whole-tree inventories under
+`test/` (spawn audit, persistence writers, lenient-read ratchet, Slack call sites) whose
+rows name the app's files.
+
 ## Durable contracts
 
 These are persisted-data or security contracts. Changing one requires updating
@@ -300,7 +346,7 @@ model loads in the background; dispatch never calls `wait_ready`, and semantic r
 remains optional to claiming and fingerprint matches.
 
 **Five rules only a real two-instance roundtrip against a bare remote exercises** — mocked
-git passes without any of them (`test/test_omc_ledger_sync_coverage.py`):
+git passes without any of them (`tests/test_ledger_sync_coverage.py`):
 
 1. **The first push in a fresh process retries a transient spawn fault.** The sandbox backend
    probe defers off the event loop on a cold cache and raises a self-described *transient*
@@ -3129,7 +3175,7 @@ line-anchored so a genuinely internal reference in that file is still caught.
 
 ## Tests
 
-`src/kiro_crew/apps/builtins/ops_mission_control/tests/` — 34 test files, including:
+`src/kiro_crew/apps/builtins/ops_mission_control/tests/` — the app's own suite, including:
 
 - `test_models.py` — fingerprint stability, normalization fallbacks, transition
   grammar, mode algebra
@@ -3184,6 +3230,6 @@ line-anchored so a genuinely internal reference in that file is still caught.
   /providers/{id}/secret`: a non-owner subject and every app token are refused `403`
   `owner_only` before the body is read
 
-Frontend: `website/src/test/opsMissionControl.test.ts` (route registration, panel-parity
+Frontend: `website/src/apps/ops-mission-control/opsMissionControl.test.ts` (route registration, panel-parity
 assertions read from the .tsx source, and the pure helpers `describeSourceHealth` /
 `describeVerification` / `entryIsProven` exercised directly).

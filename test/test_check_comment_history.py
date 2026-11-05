@@ -15,6 +15,7 @@ import importlib.util
 import tokenize
 from pathlib import Path
 
+import gate_script_checks
 import pytest
 import yaml
 
@@ -97,7 +98,7 @@ class TestCiWiring:
         assert "comment-history-baseline.json" not in text, "the baseline is gone"
 
 
-class TestRuleFamilies:
+class TestRuleFamilies(gate_script_checks.SelfTestPasses):
     """One probe per rule family, through the real detector."""
 
     def _found(self, source: str) -> list[tuple[int, str]]:
@@ -186,9 +187,6 @@ class TestRuleFamilies:
         # pins both.
         with pytest.raises((SyntaxError, tokenize.TokenError)):
             self._found(broken)
-
-    def test_self_test_passes(self) -> None:
-        assert gate._self_test() == 0
 
     def test_prefilter_cannot_fall_behind_the_pattern_tuple(self) -> None:
         # The pre-filter skips tokenize/ast for a file it cannot match, so a

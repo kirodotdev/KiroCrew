@@ -1178,6 +1178,8 @@ class TestSkillDetectionFullWindow:
             with patch.object(c, "_process_auto_skills"):
                 await c._run_skill_detection(key)
                 assert m1.call_count == 1  # first pass evaluates
+                # The guard keys on (rotation generation, message count).
+                assert c._last_skillgen_marker[key] == (0, 6)
                 await c._run_skill_detection(key)
                 assert m1.call_count == 1, (
                     "an unchanged session must NOT be re-judged on the next "
@@ -1308,6 +1310,7 @@ class TestSkillDetectionFullWindow:
                     "a rotation (generation bump) must force a fresh detection "
                     "pass even when the message count is unchanged"
                 )
+                assert c._last_skillgen_marker[key] == (meta["rotation_generation"], 6)
 
 
 @pytest.mark.asyncio
@@ -1339,7 +1342,7 @@ async def test_dedupe_candidate_falls_back_to_lexical_without_judge_model(tmp_pa
 
 @pytest.mark.asyncio
 async def test_dedupe_candidate_uses_judge_when_configured(tmp_path):
-    """judge_model set → _dedupe_candidate drives metadata_dedupe through the
+    """judge_model set → _dedupe_candidate drives metadata_dedupe_verdict through the
     async judge, bridged from the worker thread back onto the loop."""
     from unittest.mock import MagicMock
 

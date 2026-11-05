@@ -891,26 +891,25 @@ class TestTheFoldIsSerializedAcrossProcesses:
 
         svc_mod.set_service(None)
         legacy = self._legacy("orla", [{"ts": 1, "via": "cli", "project": "p"}])
-        monkeypatch.setattr(
-            svc_mod.MemberEventLogService, "_hold_unit", staticmethod(lambda _s: None)
-        )
-        svc = svc_mod.get_service()
-        svc.ensure("orla", "Orla")
+        # The refusal is scoped to this block: the patch restores itself on exit,
+        # and KIROCREW_HOME stays pinned for the control pass below.
+        with monkeypatch.context() as refused:
+            refused.setattr(
+                svc_mod.MemberEventLogService, "_hold_unit", staticmethod(lambda _s: None)
+            )
+            svc = svc_mod.get_service()
+            svc.ensure("orla", "Orla")
 
-        rows = [e for e in svc.history("orla", limit=None) if e["type"] == ACTIVITY_RECORD]
-        assert rows == [], "a refused lease must fold nothing"
-        assert legacy.exists(), (
-            "a refused lease retired the source, so the rows it held are gone and "
-            "the next ensure has nothing to fold"
-        )
+            rows = [e for e in svc.history("orla", limit=None) if e["type"] == ACTIVITY_RECORD]
+            assert rows == [], "a refused lease must fold nothing"
+            assert legacy.exists(), (
+                "a refused lease retired the source, so the rows it held are gone and "
+                "the next ensure has nothing to fold"
+            )
 
         # CONTROL. With the lease available the same member folds and retires, so
         # the assertions above cannot pass by the fold being broken outright.
         svc_mod.set_service(None)
-        # flake-ok: pre-existing reset before the control pass, moved verbatim; the next line re-pins KIROCREW_HOME and the control re-reads the log from disk
-        # nosemgrep: kirocrew.test-bare-monkeypatch-undo -- pre-existing reset before the control pass, moved verbatim; the next line re-pins KIROCREW_HOME to tmp_path
-        monkeypatch.undo()
-        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
         svc = svc_mod.get_service()
         svc.ensure("orla", "Orla")
         rows = [e for e in svc.history("orla", limit=None) if e["type"] == ACTIVITY_RECORD]

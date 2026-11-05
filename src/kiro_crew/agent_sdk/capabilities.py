@@ -56,11 +56,14 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKENDS_ACP_CLIENT_SPAWNABLE,
     ACP_BACKENDS_ADVERTISED_MODEL_SELECTION,
     ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS,
+    ACP_BACKENDS_CREW_FIRES_SPEC_OBSERVER_HOOKS,
     ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION,
+    ACP_BACKENDS_HARNESS_OWNED_SLASH_COMMANDS,
     ACP_BACKENDS_HONOR_ZERO_TOOL_BAN,
     ACP_BACKENDS_INLINE_COMPACTION,
     ACP_BACKENDS_KIRO_SLASH_COMMANDS,
     ACP_BACKENDS_NATIVE_TODOS,
+    ACP_BACKENDS_REMOTE_MCP_OAUTH,
     model_registry_namespace,
 )
 from kiro_crew.agent_sdk.provider_identity import PROVIDER_ACP, PROVIDER_CLAUDE_CODE
@@ -155,12 +158,30 @@ class SessionCapabilities:
     #: itself, and firing them here too would run each one twice.
     crew_fires_spec_hooks: bool
 
+    #: Whether Crew's turn loop must fire the agent spec's hooks on the events that
+    #: cannot refuse a tool call (``postToolUse``, ``userPromptSubmit``,
+    #: ``agentSpawn``, ``stop``).
+    #:
+    #: True wherever :attr:`crew_fires_spec_hooks` is, and on claude, whose harness
+    #: is handed no spec but approves some calls without asking, so only these
+    #: events are fired there and ``preToolUse`` runs nowhere. False where the
+    #: harness runs the field itself.
+    crew_fires_spec_observer_hooks: bool
+
     #: Whether this harness interprets ``/todos`` as its native task-list command.
     #:
     #: This is deliberately narrower than general slash-command transport: the
     #: kiro-cli has a native slash RPC but does not implement this command.
     #: Unknown and newly registered backends remain False until they opt in.
     supports_native_todos: bool
+
+    #: Whether this harness runs ANY leading-slash prompt as one of its own commands.
+    #:
+    #: True where the adapter resolves the name itself (Claude Code's ``/review``,
+    #: ``/init``, skills, ``.claude/commands``), so the dashboard forwards every
+    #: leading-slash word raw instead of only kiro-cli's command names. Unknown and
+    #: newly registered backends remain False until they opt in.
+    runs_own_slash_commands: bool
 
     #: Whether an agent spec's ``"tools": []`` is honoured as a total ban -- no
     #: MCP server AND no harness-native tool -- on this backend.
@@ -189,6 +210,16 @@ class SessionCapabilities:
     #: resolved backend on.
     acp_client_spawnable: bool
 
+    #: Whether a remote MCP entry's ``oauth`` block reaches the engine, so a
+    #: provider whose OAuth client is pre-registered (no dynamic client
+    #: registration) can sign in on this backend.
+    #:
+    #: False on KAS: its agent schema has no slot for the block, and the engine
+    #: falls back to registering a client the provider refuses. The Connections
+    #: page reads it to mark those providers kiro-cli only rather than offer a
+    #: Connect that cannot finish.
+    honors_remote_mcp_oauth: bool
+
 
 def capabilities_for(backend: str) -> SessionCapabilities:
     """The capabilities of *backend*, fail-closed for an id this build cannot name.
@@ -211,9 +242,12 @@ def capabilities_for(backend: str) -> SessionCapabilities:
         effort_via_slash_command=backend in ACP_BACKENDS_KIRO_SLASH_COMMANDS,
         compacts_inline=backend in ACP_BACKENDS_INLINE_COMPACTION,
         crew_fires_spec_hooks=backend in ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS,
+        crew_fires_spec_observer_hooks=backend in ACP_BACKENDS_CREW_FIRES_SPEC_OBSERVER_HOOKS,
         supports_native_todos=backend in ACP_BACKENDS_NATIVE_TODOS,
+        runs_own_slash_commands=backend in ACP_BACKENDS_HARNESS_OWNED_SLASH_COMMANDS,
         honors_zero_tool_ban=backend in ACP_BACKENDS_HONOR_ZERO_TOOL_BAN,
         acp_client_spawnable=backend in ACP_BACKENDS_ACP_CLIENT_SPAWNABLE,
+        honors_remote_mcp_oauth=backend in ACP_BACKENDS_REMOTE_MCP_OAUTH,
     )
 
 
@@ -239,9 +273,12 @@ UNKNOWN_BACKEND_CAPABILITIES = SessionCapabilities(
     effort_via_slash_command=False,
     compacts_inline=False,
     crew_fires_spec_hooks=False,
+    crew_fires_spec_observer_hooks=False,
     supports_native_todos=False,
+    runs_own_slash_commands=False,
     honors_zero_tool_ban=False,
     acp_client_spawnable=False,
+    honors_remote_mcp_oauth=False,
 )
 
 

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import json
 import sys
 from types import SimpleNamespace
 from typing import Any
@@ -180,6 +181,22 @@ def _request(body: dict) -> tuple[Any, MagicMock]:
     return request, mgr
 
 
+def _real_request(body: dict) -> tuple[Any, Any]:
+    """Like ``_request``, but on a real manager whose runs never start."""
+    mgr = _mgr()
+    mgr._run = AsyncMock()  # type: ignore[method-assign]
+    state = SimpleNamespace(subagents=mgr, conversation_log=MagicMock())
+    request = MagicMock()
+    request.app = {"state": state}
+    request.headers = {}
+
+    async def _json() -> dict:
+        return body
+
+    request.json = _json
+    return request, mgr
+
+
 class TestSpawnEndpoint:
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
@@ -194,17 +211,51 @@ class TestSpawnEndpoint:
     async def test_an_admitted_backend_reaches_spawn(self, selectable, name, reaches):
         from kiro_crew.dashboard.handlers.messaging import api_spawn
 
-        request, mgr = _request({"task": "x", "backend": name})
-        await api_spawn(request)
-        assert mgr.spawn.call_args.kwargs["backend"] == reaches
+        request, mgr = _real_request({"task": "x", "backend": name})
+        resp = await api_spawn(request)
+        assert mgr.get(json.loads(resp.text)["id"]).backend == reaches
+
+    @pytest.mark.asyncio
+    async def test_the_parent_scope_is_read_before_the_backend_probe(
+        self, selectable, monkeypatch, tmp_path
+    ):
+        """The parent's session ends while the route awaits its backend probe:
+        the spawn still carries the project scope the parent had when it asked."""
+        from kiro_crew import subagent
+        from kiro_crew.dashboard.handlers import messaging
+
+        live = [str(tmp_path)]
+        monkeypatch.setattr(
+            subagent,
+            "_parent_project_resolver",
+            lambda key: list(live) if key == "dashboard:p" else [],
+        )
+        real_probe = messaging._requested_backend
+
+        async def _probe_then_end_parent(raw):
+            live.clear()
+            return await real_probe(raw)
+
+        monkeypatch.setattr(messaging, "_requested_backend", _probe_then_end_parent)
+
+        async def _persistent(*_a):
+            return "persistent"
+
+        monkeypatch.setattr(messaging, "_spawn_request_memory_mode", _persistent)
+        request, mgr = _request({"task": "x", "backend": "claude", "parent_session": "dashboard:p"})
+        request.app["state"]._slots = {}
+        response = await messaging.api_spawn(request)
+        assert response.status == 200, response.text
+        assert not live, "the backend probe did not run"
+        assert mgr.spawn.call_args.kwargs["_parent_project_dirs"] == [str(tmp_path)]
 
     @pytest.mark.asyncio
     async def test_no_backend_reaches_spawn_as_none(self, selectable):
         from kiro_crew.dashboard.handlers.messaging import api_spawn
 
-        request, mgr = _request({"task": "x"})
-        await api_spawn(request)
-        assert mgr.spawn.call_args.kwargs["backend"] is None
+        request, mgr = _real_request({"task": "x"})
+        resp = await api_spawn(request)
+        assert mgr.get(json.loads(resp.text)["id"]).backend is None
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("name", ["goose", "nonesuch"])
@@ -256,6 +307,221 @@ class TestSpawnEndpoint:
         payload = json.loads(resp.body)
         assert payload["code"] == "backend_restart_required"
         assert "kas" not in payload["backends"]
+
+
+# ── Spawn-time failover (RFC Phase 1) ─────────────────────────────────────────
+
+
+class TestSpawnFailover:
+    """An unavailable chosen backend starts on a later member of the operator's
+    ``agent.acp_failover`` chain, and the receipt names both. A disabled, invalid
+    or exhausted chain falls through to the usual typed refusal, never Kiro."""
+
+    def _failover(self, monkeypatch, block: dict) -> None:
+        """Make the endpoint read *block* as ``agent.acp_failover``.
+
+        A copy of the loaded config carries it, so the cached instance other
+        tests read is never mutated.
+        """
+        import copy
+        import dataclasses
+
+        from kiro_crew.config import KiroCrewConfig
+
+        real_load = KiroCrewConfig.load.__func__  # type: ignore[attr-defined]
+
+        def _load(c):
+            loaded = copy.copy(real_load(c))
+            loaded.agent = dataclasses.replace(loaded.agent, acp_failover=dict(block))
+            return loaded
+
+        monkeypatch.setattr(KiroCrewConfig, "load", classmethod(_load))
+
+    async def _spawn(self, body: dict):
+        from kiro_crew.dashboard.handlers.messaging import api_spawn
+
+        request, mgr = _real_request(body)
+        resp = await api_spawn(request)
+        return resp, mgr
+
+    @pytest.mark.asyncio
+    async def test_an_uninstalled_backend_starts_on_the_next_and_says_so(
+        self, selectable, monkeypatch
+    ):
+        self._failover(monkeypatch, {"enabled": True, "chain": ["pi", "claude"]})
+        resp, mgr = await self._spawn({"task": "x", "backend": "pi"})
+        assert resp.status == 200, resp.text
+        payload = json.loads(resp.text)
+        assert payload["backend"] == "claude"
+        assert payload["failover_from"] == "pi"
+        info = mgr.get(payload["id"])
+        assert (info.backend, info.failover_from) == ("claude", "pi")
+
+    @pytest.mark.asyncio
+    async def test_a_restart_required_backend_fails_over(self, selectable, monkeypatch):
+        self._failover(monkeypatch, {"enabled": True, "chain": ["kas", "claude"]})
+        resp, mgr = await self._spawn({"task": "x", "backend": "kas"})
+        assert resp.status == 200, resp.text
+        payload = json.loads(resp.text)
+        assert (payload["backend"], payload["failover_from"]) == ("claude", "kas")
+
+    @pytest.mark.asyncio
+    async def test_kiro_is_a_chain_member_by_its_config_spelling(self, selectable, monkeypatch):
+        self._failover(monkeypatch, {"enabled": True, "chain": ["pi", "kiro"]})
+        resp, mgr = await self._spawn({"task": "x", "backend": "pi"})
+        assert resp.status == 200, resp.text
+        payload = json.loads(resp.text)
+        assert payload["backend"] == "kiro"
+        assert mgr.get(payload["id"]).backend == ""
+
+    @pytest.mark.asyncio
+    async def test_a_member_that_cannot_be_selected_is_skipped(self, selectable, monkeypatch):
+        # goose is a backend this gateway does not allow: skipped, not fatal.
+        self._failover(monkeypatch, {"enabled": True, "chain": ["pi", "goose", "codex"]})
+        resp, mgr = await self._spawn({"task": "x", "backend": "pi"})
+        assert resp.status == 200, resp.text
+        assert json.loads(resp.text)["backend"] == "codex"
+
+    @pytest.mark.asyncio
+    async def test_a_member_a_ceiling_denies_later_is_never_tried(self, selectable, monkeypatch):
+        # codex was selectable when the chain was written; a ceiling then denies
+        # it. The spawn skips it without probing it and starts on claude.
+        from kiro_crew.agent_sdk import backend_install
+
+        self._failover(monkeypatch, {"enabled": True, "chain": ["pi", "codex", "claude"]})
+        selectable.remove("codex")
+        real_probe = backend_install.probe_backend
+        probed: list[str] = []
+
+        def _recording_probe(b):
+            probed.append(b)
+            return real_probe(b)
+
+        monkeypatch.setattr(backend_install, "probe_backend", _recording_probe)
+        resp, mgr = await self._spawn({"task": "x", "backend": "pi"})
+        assert resp.status == 200, resp.text
+        payload = json.loads(resp.text)
+        assert (payload["backend"], payload["failover_from"]) == ("claude", "pi")
+        assert "codex" not in probed
+        assert mgr.get(payload["id"]).backend == "claude"
+
+    @pytest.mark.asyncio
+    async def test_a_spawn_that_did_not_hop_names_its_backend_only(self, selectable, monkeypatch):
+        self._failover(monkeypatch, {"enabled": True, "chain": ["claude", "codex"]})
+        resp, _mgr = await self._spawn({"task": "x", "backend": "claude"})
+        payload = json.loads(resp.text)
+        assert payload["backend"] == "claude"
+        assert "failover_from" not in payload
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "block",
+        [
+            {"enabled": False, "chain": ["pi", "claude"]},
+            # A repeated name makes the block invalid, so it reads as off.
+            {"enabled": True, "chain": ["pi", "kas", "pi", "claude"]},
+            # Phase 2 triggers are refused, so the block reads as off.
+            {"enabled": True, "chain": ["pi", "claude"], "triggers": ["usage_limit"]},
+            # The refusal is backend_not_installed; only restart is a trigger.
+            {"enabled": True, "chain": ["pi", "claude"], "triggers": ["backend_restart_required"]},
+            # Every later member is unavailable: exhausted, never Kiro.
+            {"enabled": True, "chain": ["pi", "kas"]},
+        ],
+        ids=["disabled", "repeated-name", "phase2-trigger", "trigger-omitted", "exhausted"],
+    )
+    async def test_no_hop_keeps_the_typed_refusal(self, selectable, monkeypatch, block):
+        from kiro_crew.dashboard.handlers.messaging import api_spawn
+
+        self._failover(monkeypatch, block)
+        request, mgr = _request({"task": "x", "backend": "pi"})
+        resp = await api_spawn(request)
+        assert resp.status == 400
+        mgr.spawn.assert_not_called()
+        payload = json.loads(resp.body)
+        assert payload["code"] == "backend_not_installed"
+        # Only a chain that was actually walked is named.
+        walked = (
+            block["enabled"] is True
+            and block.get("triggers") is None
+            and len(set(block["chain"])) == len(block["chain"])
+        )
+        assert bool(payload["failover_chain"]) is walked
+
+    @pytest.mark.asyncio
+    async def test_an_exhausted_chain_is_named_in_the_refusal(self, selectable, monkeypatch):
+        from kiro_crew.dashboard.handlers.messaging import api_spawn
+
+        self._failover(monkeypatch, {"enabled": True, "chain": ["pi", "kas"]})
+        request, _mgr = _request({"task": "x", "backend": "pi"})
+        payload = json.loads((await api_spawn(request)).body)
+        # Only the members the walk tried, never the requested backend itself.
+        assert payload["failover_chain"] == ["kas"]
+        assert "agent.acp_failover also tried ['kas'], and none can start" in payload["error"]
+
+    @pytest.mark.asyncio
+    async def test_the_last_chain_member_names_no_tried_members(self, selectable, monkeypatch):
+        # claude can start, but it comes BEFORE pi: nothing after pi is tried, so the
+        # refusal must not claim the chain has no member that can start.
+        from kiro_crew.dashboard.handlers.messaging import api_spawn
+
+        self._failover(monkeypatch, {"enabled": True, "chain": ["claude", "pi"]})
+        request, mgr = _request({"task": "x", "backend": "pi"})
+        payload = json.loads((await api_spawn(request)).body)
+        assert payload["code"] == "backend_not_installed"
+        assert payload["failover_chain"] == []
+        assert "acp_failover" not in payload["error"]
+        mgr.spawn.assert_not_called()
+
+    def test_status_and_list_name_a_hop(self):
+        from kiro_crew.dashboard.messaging_api.run_views import _failover_fields
+        from kiro_crew.subagent import SubagentInfo
+
+        moved = SubagentInfo(id="a", task="t", backend="", failover_from="pi")
+        assert _failover_fields(moved) == {"failover_from": "pi", "backend": "kiro"}
+        assert _failover_fields(SubagentInfo(id="b", task="t", backend="claude")) == {}
+
+    def test_spawn_status_and_spawn_list_render_a_hop(self):
+        from unittest.mock import patch
+
+        from kiro_crew import mcp_core
+        from kiro_crew.mcp_tools.spawn_parts import listing
+
+        status = {
+            "id": "a1",
+            "done": True,
+            "result": "ok",
+            "backend": "claude",
+            "failover_from": "pi",
+        }
+        with patch.object(mcp_core, "_get", return_value=status):
+            out = listing.spawn_status("spawn_status", {"agent_id": "a1"})
+        assert "(ran on 'claude': 'pi' could not start, agent.acp_failover)" in out
+        row = {"id": "a1", "task": "t", "done": True, "backend": "claude", "failover_from": "pi"}
+        with (
+            patch.object(mcp_core, "_get", return_value={"agents": [row]}),
+            patch.object(mcp_core, "list_agents", return_value=[]),
+        ):
+            listed = listing.spawn_list("spawn_list", {})
+        assert "failover: pi→claude" in listed
+
+    @pytest.mark.asyncio
+    async def test_an_unknown_backend_never_fails_over(self, selectable, monkeypatch):
+        from kiro_crew.dashboard.handlers.messaging import api_spawn
+
+        self._failover(monkeypatch, {"enabled": True, "chain": ["nonesuch", "claude"]})
+        request, mgr = _request({"task": "x", "backend": "nonesuch"})
+        resp = await api_spawn(request)
+        assert resp.status == 400
+        assert json.loads(resp.body)["code"] == "unknown_backend"
+
+    @pytest.mark.asyncio
+    async def test_a_continuation_after_a_hop_stays_on_the_backend_that_ran(
+        self, selectable, monkeypatch
+    ):
+        self._failover(monkeypatch, {"enabled": True, "chain": ["pi", "claude"]})
+        resp, mgr = await self._spawn({"task": "x", "backend": "pi"})
+        run_id = json.loads(resp.text)["id"]
+        assert TestFollowUps()._continue(mgr, monkeypatch, run_id)["backend"] == "claude"
 
 
 # ── The manager ───────────────────────────────────────────────────────────────
@@ -614,36 +880,24 @@ class TestFollowUps:
     async def test_a_retry_runs_on_the_original_backend(self):
         from kiro_crew.dashboard.handlers.messaging import api_spawn_retry
         from kiro_crew.execution_context import ExecutionContext, MemoryStoreRef
+        from kiro_crew.subagent import SubagentInfo
 
-        old = SimpleNamespace(
+        mgr = _mgr()
+        mgr._run = AsyncMock()  # type: ignore[method-assign]
+        mgr._agents["a1"] = SubagentInfo(
             id="a1",
             task="t",
             _raw_task="t",
             parent_session_key="dash:1",
-            agent="",
-            max_turns=0,
-            cwd="",
-            model="",
-            reasoning_effort="",
             backend="claude",
-            approval_mode="",
-            silent=False,
-            delegation={},
-            include_memory=True,
-            include_lessons=True,
-            include_project=True,
-            memory_store="",
-            crew="",
             done=True,
-            outcome="failed",
+            error="boom",
             execution_context=ExecutionContext(None, MemoryStoreRef("default"), "template", "k"),
         )
-        mgr = MagicMock()
-        mgr.get.return_value = old
-        mgr.spawn.return_value = SimpleNamespace(id="a2", done=False, error="")
         request = MagicMock()
         request.app = {"state": SimpleNamespace(subagents=mgr)}
         request.headers = {}
         request.match_info = {"agent_id": "a1"}
-        await api_spawn_retry(request)
-        assert mgr.spawn.call_args.kwargs["backend"] == "claude"
+        resp = await api_spawn_retry(request)
+        retried = mgr.get(json.loads(resp.text)["id"])
+        assert retried.backend == "claude"

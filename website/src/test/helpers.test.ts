@@ -62,6 +62,12 @@ describe('fmtSpeed', () => {
     expect(fmtSpeed(976)).toBe('999kB/s')
     expect(fmtSpeed(977)).toBe('1.0MB/s')
   })
+  it('rolls a speed that rounds to 1000 kB up to MB (999,950 B/s)', () => {
+    expect(fmtSpeed(976.513671875)).toBe('1.0MB/s')
+  })
+  it('control: 999,400 B/s still rounds below the ceiling and stays in kB', () => {
+    expect(fmtSpeed(999_400 / 1024)).toBe('999kB/s')
+  })
 })
 
 import { parseTags } from '../pages/overview/VectorMemoryCard'

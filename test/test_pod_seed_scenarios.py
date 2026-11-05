@@ -812,3 +812,34 @@ class TestUpRefusesAnUnknownScenario:
         )
         with pytest.raises(SystemExit):
             pod_cli._up(PodConfig.load(), args)
+
+
+class TestSeedEnablesInstances:
+    """`pod up --seed <dir>` can make the Remote Crew Set-up tab reachable.
+
+    A fresh pod home boots with the product default `instances.enabled=false`,
+    so `GET /api/instances` answers 403 and `RemoteCrewPanel` renders the
+    "off" card instead of its tabs -- a pod-e2e spec driving the "Set up a new
+    one" launch form times out on a locator that never mounts. The flag is
+    restart-marked, so it cannot be flipped on a running gateway; a seed dir
+    whose `config.json` sets it ON is the supported way to reach the surface,
+    WITHOUT changing the shipped product default.
+    """
+
+    def test_sanitized_seed_config_keeps_instances_on(self, tmp_path: Path) -> None:
+        """A `--seed <dir>` whose config enables `instances` boots with it on.
+
+        `instances` is deliberately absent from `SEED_DISABLED_SECTIONS`, so the
+        public sanitizer the pod boot calls leaves a seeded `instances.enabled`
+        alone -- unlike a self-activating channel, which it forces off (pinned
+        for every section by `test_pod_env.py::test_forces_every_disabled_section_off`).
+        If `instances` is ever added to that tuple, a seeded enable stops
+        working and this fails loudly rather than as a mystifying pod-e2e
+        timeout.
+        """
+        (tmp_path / "config.json").write_text(json.dumps({"instances": {"enabled": True}}))
+        sanitized = rt.sanitized_seed_config(tmp_path)
+        assert sanitized is not None
+        assert (
+            sanitized["instances"]["enabled"] is True
+        ), "a seeded instances.enabled=true must survive the pod seed floor"

@@ -77,7 +77,7 @@ export function runFirstConnect(ws: WebSocket, ctx: CatchUpContext): void {
   ctx.syncWorkflowRuns()
   // The same gap for Side Chat: a side turn that ended between a panel's
   // restore read and this socket's registration sent its final frame to no
-  // socket of this tab, so a panel still waiting on it reads it again.
+  // socket of this tab, so every restored panel reads its conversation again.
   void dispatch(resyncWaitingSideConversations())
   // Eagerly subscribe to subagent events on first connect too.
   dispatch(clearSubagentsForSnapshot())
@@ -134,7 +134,8 @@ export function runReconnectCatchUp(ws: WebSocket, ctx: CatchUpContext): void {
   // and a run that STARTED while it was down has no row at all.
   ctx.syncWorkflowRuns()
   // A side turn that ended while the socket was down sent its final frame to
-  // nobody here, so a Side Chat panel still waiting on it reads it again.
+  // nobody here, and so did every other side frame, so each restored Side Chat
+  // panel reads its conversation again.
   void dispatch(resyncWaitingSideConversations())
   // Re-fetch active slot messages to recover from missed chunks
   const active = store.getState().chat.activeSlot

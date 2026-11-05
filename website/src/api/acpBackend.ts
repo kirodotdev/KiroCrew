@@ -53,6 +53,18 @@ export function isKiroBackend(cfg: AcpBackendConfig | undefined): boolean {
 }
 
 /**
+ * True only when a LOADED config runs KAS. A Settings MCP sign-in lands in
+ * kiro-cli's own sign-in cache, which a KAS chat never reads: the chat asks for
+ * its own sign-in with the Authorize card (#24693). That holds with
+ * `agent.kas_persist_mcp_sign_in` on too, since its vault is filled only by the
+ * engine itself, so the setting does not enter this check.
+ */
+export function kasChatOwnsMcpSignIn(cfg: AcpBackendConfig | undefined): boolean {
+  if (cfg === undefined) return false
+  return configuredAcpBackend(cfg) === ACP_BACKEND_KAS
+}
+
+/**
  * True only when a LOADED config names a harness that bills in credits — the
  * unit the Usage tab's spend chart stacks. kiro-cli and its KAS relay both
  * report a turn's credits (`TurnUsage.credits` on the gateway); every other
@@ -77,12 +89,21 @@ export function isKiroHarness(cfg: AcpBackendConfig | undefined): boolean {
   return KIRO_HARNESS_BACKENDS.includes(configuredAcpBackend(cfg))
 }
 
-/** Shared translated harness labels; unknown harnesses keep the server's policy name. */
+/** Shared translated harness labels, one per harness the gateway knows
+ *  (`ACP_BACKENDS_KNOWN`; `test_harness_names_cover_every_known_backend` holds
+ *  the list). A harness an edition registers later keeps the server's policy name. */
 export function acpBackendName(backend: { id: string; policy_id?: string }): string {
   switch (backend.id) {
     case ACP_BACKEND_KIRO: return i18nT('pages.developer.agentBackendTab.kiro_cli')
     case 'claude': return i18nT('pages.developer.agentBackendTab.claude_code')
     case ACP_BACKEND_KAS: return i18nT('pages.developer.agentBackendTab.kas_kiro_agent')
+    case 'codex': return i18nT('pages.developer.agentBackendTab.codex')
+    case 'copilot': return i18nT('pages.developer.agentBackendTab.copilot')
+    case 'deepseek': return i18nT('pages.developer.agentBackendTab.deepseek')
+    case 'goose': return i18nT('pages.developer.agentBackendTab.goose')
+    case 'opencode': return i18nT('pages.developer.agentBackendTab.opencode')
+    case 'pi': return i18nT('pages.developer.agentBackendTab.pi')
+    case 'strands': return i18nT('pages.developer.agentBackendTab.strands')
     default: return backend.policy_id || backend.id
   }
 }

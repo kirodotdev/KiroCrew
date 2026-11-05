@@ -7,8 +7,11 @@ binary, no Messages database, no Mac.
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import gc
 import json
 import logging
+import weakref
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +32,7 @@ from kiro_crew.imessage.client import (
 )
 from kiro_crew.imessage.rpc import RpcError, RpcTransportError
 from kiro_crew.imessage.transport import IMessageTransport
+from kiro_crew.testing.wait import await_until
 
 #: The handle every fixture message comes from, and the one the self-chat tests
 #: put on the allowlist -- in that case it is the user's OWN handle.
@@ -490,6 +494,9 @@ class TestOverflowResume:
         ]
         await peers[0].notify("watch.overflow", {"subscription": 1, "resume_after_rowid": 1})
         await _until(lambda: len(peers[0].params_for("watch.subscribe")) == 3)
+        # The retry's answer becomes the live watch.
+        await _until(lambda: imc._subscription is not None)
+        assert imc._subscription == 4
         await imc.close()
 
     @pytest.mark.asyncio
@@ -500,6 +507,8 @@ class TestOverflowResume:
         peers[0].replies["watch.subscribe"] = [{"subscription": 2}]
         await peers[0].notify("watch.overflow", {"subscription": 1})
         await _until(lambda: len(peers[0].params_for("watch.subscribe")) == 2)
+        await _until(lambda: imc._subscription is not None)
+        assert imc._subscription == 2
         await imc.close()
 
 
@@ -629,6 +638,38 @@ class TestBridgeExit:
                 break
             await asyncio.sleep(0)
         assert len(peers) > 1, "reconnect did not spawn a new peer"
+        await imc.close()
+
+    @pytest.mark.asyncio
+    async def test_the_lost_peer_close_survives_a_gc_pass(
+        self, tmp_path: Path, peers: list[StubPeer]
+    ) -> None:
+        # The loop holds a task only weakly. A close parked on a future that
+        # nothing else references is a garbage cycle unless the client keeps it.
+        imc = await _client(tmp_path)
+        parked = asyncio.Event()
+        refs: list[weakref.ref[asyncio.Task[Any]]] = []
+
+        async def _close_that_parks() -> None:
+            current = asyncio.current_task()
+            assert current is not None
+            refs.append(weakref.ref(current))
+            del current
+            parked.set()
+            await asyncio.get_running_loop().create_future()
+
+        peers[0].close = _close_that_parks  # type: ignore[method-assign]
+        peers[0].on_disconnect("bridge exited")
+        await await_until(parked, what="the lost peer's close to park")
+        (ref,) = refs
+        gc.collect()
+        task = ref()
+        assert task is not None, "the lost peer's close task was garbage-collected"
+        assert task in client_mod._PEER_CLOSE_TASKS
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await await_until(task, what="the cancelled close task")
+        assert task not in client_mod._PEER_CLOSE_TASKS
         await imc.close()
 
     @pytest.mark.asyncio

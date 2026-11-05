@@ -14,6 +14,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
 import { createTestStore } from './helpers'
+import { namedCeiling } from './namedCeiling'
 import { ThemeProvider } from '../hooks/useTheme'
 import type { RootState } from '../store'
 import type { ChatFolder } from '../types'
@@ -95,6 +96,7 @@ Object.defineProperty(window, 'matchMedia', {
 
 import ChatSidebar from '../pages/ChatSidebar'
 import { requestSlotReveal } from '../store/chatSlice'
+import { stubAppConfirm } from './appConfirmStub'
 
 interface TestSlot {
   key: string
@@ -121,6 +123,9 @@ const FOLDERS: ChatFolder[] = [
   { id: 'f1', name: 'Alpha', order: 0 },
   { id: 'f2', name: 'Beta', order: 1 },
 ]
+
+// The query client of the sidebar the test last rendered, for `settleSidebarReads`.
+let sidebarClient: QueryClient | undefined
 
 function renderSidebar(opts: {
   slots?: TestSlot[]
@@ -187,6 +192,7 @@ function renderSidebar(opts: {
   // by default because the board-lane tests here depend on their queries
   // refetching.
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
+  sidebarClient = qc
   qc.setQueryData(['chat-folders'], folders)
   qc.setQueryData(['tag-columns'], [])
   const view = render(
@@ -212,9 +218,16 @@ function openHeaderMenu() {
   fireEvent.keyDown(screen.getAllByLabelText('More options')[0], { key: 'Enter' })
 }
 
+/** Wait out the reads an opened panel starts, so their state updates land inside the wait: the
+ *  model roster the Switch All panel fetches when it opens. */
+async function settleSidebarReads() {
+  await waitFor(() => expect(sidebarClient?.isFetching()).toBe(0), namedCeiling('SIDEBAR_READS_SETTLED', 5000))
+}
+
 async function openHeaderPanel(itemText: string) {
   openHeaderMenu()
   fireEvent.click(await screen.findByText(itemText))
+  await settleSidebarReads()
 }
 
 /** Expand the Older Sessions pane. */
@@ -259,6 +272,10 @@ describe('ChatSidebar — Clean Up Sessions panel', () => {
     await waitFor(() => expect(mocks.cleanupSessions).toHaveBeenCalledWith(7, '', true))
     fireEvent.click(screen.getByText('1 day'))
     await waitFor(() => expect(mocks.cleanupSessions).toHaveBeenCalledWith(1, '', true))
+    fireEvent.click(screen.getByText('14 days'))
+    await waitFor(() => expect(mocks.cleanupSessions).toHaveBeenCalledWith(14, '', true))
+    fireEvent.click(screen.getByText('30 days'))
+    await waitFor(() => expect(mocks.cleanupSessions).toHaveBeenCalledWith(30, '', true))
   })
 
   it('says so when nothing is stale, and keeps Archive disabled', async () => {
@@ -287,8 +304,58 @@ describe('ChatSidebar — Clean Up Sessions panel', () => {
     renderSidebar({ slots: SLOTS })
     await openHeaderPanel('Clean up sessions')
     fireEvent.click(await screen.findByText('Archive 1 session'))
-    expect(await screen.findByText('1 session(s) failed to archive')).toBeTruthy()
+    expect(await screen.findByText('1 session failed to archive')).toBeTruthy()
     expect(screen.getByText('Clean Up Sessions')).toBeTruthy()
+  })
+
+  it('words the partial-failure count through the catalog plural', async () => {
+    const two: TestSlot[] = [
+      ...SLOTS,
+      { key: 'k-stale-2', title: 'Stale two', running: false, messages: 2, last_ts: '2020-01-01T00:00:00Z' },
+    ]
+    mocks.cleanupSessions.mockImplementation((_days: number, _active: string, dry?: boolean) =>
+      Promise.resolve(dry
+        ? { ok: true, archived: 0, keys: ['k-stale', 'k-stale-2'], failed: [], active_is_stale: false }
+        : { ok: true, archived: 0, keys: [], failed: ['k-stale', 'k-stale-2'] }))
+    renderSidebar({ slots: two })
+    await openHeaderPanel('Clean up sessions')
+    fireEvent.click(await screen.findByText('Archive 2 sessions'))
+    expect(await screen.findByText('2 sessions failed to archive')).toBeTruthy()
+  })
+
+  it('marks only the chosen inactivity window as pressed', async () => {
+    mocks.cleanupSessions.mockResolvedValue({ ok: true, archived: 0, keys: [], failed: [], active_is_stale: false })
+    renderSidebar({ slots: SLOTS })
+    await openHeaderPanel('Clean up sessions')
+    const chip = (label: string) => screen.getByRole('radio', { name: label })
+    await screen.findByText('7 days')
+    // The panel opens on the 3-day window.
+    expect(chip('3 days').getAttribute('aria-checked')).toBe('true')
+    for (const other of ['1 day', '7 days', '14 days', '30 days']) {
+      expect(chip(other).getAttribute('aria-checked')).toBe('false')
+    }
+    fireEvent.click(chip('14 days'))
+    expect(chip('14 days').getAttribute('aria-checked')).toBe('true')
+    expect(chip('3 days').getAttribute('aria-checked')).toBe('false')
+  })
+
+  it('exposes the Show/Hide list toggle as an expandable control', async () => {
+    mocks.cleanupSessions.mockResolvedValue({ ok: true, archived: 0, keys: ['k-stale'], failed: [], active_is_stale: false })
+    renderSidebar({ slots: SLOTS })
+    await openHeaderPanel('Clean up sessions')
+    const toggle = await screen.findByRole('button', { name: /^Show 1 session/ })
+    expect(toggle.getAttribute('aria-expanded')).toBe('false')
+    const listId = toggle.getAttribute('aria-controls')
+    expect(listId).toBeTruthy()
+    fireEvent.click(toggle)
+    const open = screen.getByRole('button', { name: /^Hide 1 session/ })
+    expect(open.getAttribute('aria-expanded')).toBe('true')
+    const list = document.getElementById(listId!)
+    expect(list).toBeTruthy()
+    expect(within(list!).getByText('Stale one')).toBeTruthy()
+    fireEvent.click(open)
+    expect(screen.getByRole('button', { name: /^Show 1 session/ }).getAttribute('aria-expanded')).toBe('false')
+    expect(document.getElementById(listId!)).toBeNull()
   })
 
   it('closes the panel when every archive succeeds', async () => {
@@ -658,33 +725,31 @@ describe('ChatSidebar — Older Sessions pane', () => {
   })
 
   it('deletes one history session behind a confirmation', async () => {
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    const confirmSpy = stubAppConfirm(false)
     renderSidebar({ history: HISTORY })
     openHistory()
     fireEvent.click(screen.getAllByLabelText('Delete history session')[0])
     expect(mocks.deleteSession).not.toHaveBeenCalled()
-    confirmSpy.mockReturnValue(true)
+    confirmSpy.mockImplementation(() => Promise.resolve(true))
     fireEvent.click(screen.getAllByLabelText('Delete history session')[0])
     await waitFor(() => expect(mocks.deleteSession).toHaveBeenCalledWith('h1'))
-    confirmSpy.mockRestore()
   })
 
   it('clears all closed sessions behind a confirmation', async () => {
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    stubAppConfirm(true)
     const { store } = renderSidebar({ history: HISTORY })
     openHistory()
     fireEvent.click(screen.getByText('Delete all'))
     await waitFor(() => expect(mocks.clearSessions).toHaveBeenCalled())
     await waitFor(() => expect(mocks.sessions).toHaveBeenCalled())
     expect(store.getState().chat.undeletableHistory).toBeNull()
-    confirmSpy.mockRestore()
   })
 
   // The gateway answers a partial clear with 200 and `ok: false`. A handler
   // that only awaits the call reads that as success; the shortfall must reach
   // the shared refused-delete notice.
   it('reports a Delete all that left sessions behind', async () => {
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    stubAppConfirm(true)
     mocks.clearSessions.mockResolvedValueOnce({
       ok: false, cleared: 1, skipped: 0, failed: 2, undeletable: [],
     })
@@ -694,7 +759,6 @@ describe('ChatSidebar — Older Sessions pane', () => {
     await waitFor(() => expect(store.getState().chat.undeletableHistory).toEqual({
       key: '', title: '', code: '', bulk: { left: 2, cleared: 1, rows: [] },
     }))
-    confirmSpy.mockRestore()
   })
 
   it('loads another page when more history exists', async () => {

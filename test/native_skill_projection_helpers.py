@@ -11,6 +11,7 @@ from __future__ import annotations
 import gc
 import json
 import os
+import threading
 import time
 import weakref
 from types import SimpleNamespace
@@ -18,6 +19,10 @@ from types import SimpleNamespace
 import pytest
 
 from kiro_crew.acp import skill_projection as projection
+from kiro_crew.acp.skill_projection_parts import alias_reclaim as _reaper_owner
+
+# The queue the reaper thread drains, read before any test can swap it out.
+_REAPER_QUEUE = projection._COLLECTED_ENDS
 
 
 def _hold_the_prune_clock(monkeypatch):
@@ -36,6 +41,13 @@ def _hold_the_prune_clock(monkeypatch):
     other name (``sleep``, ``time``, ...) falls through to the real module. The
     shared stdlib ``time.monotonic`` is left untouched, so unrelated readers --
     asyncio's ``loop.time()`` among them -- keep the real clock.
+
+    Because ``skill_projection`` is a facade module backed by
+    ``_facade_mirror.MirroredModule``, ``monkeypatch.setattr(projection, "time",
+    proxy)`` propagates to every owner in ``_OWNERS``, including
+    ``alias_reclaim``.  A single call therefore freezes both
+    ``projection.time.monotonic`` and ``alias_reclaim.time.monotonic`` through
+    the same proxy -- no second setattr is needed or wanted.
     """
 
     class _FrozenMonotonicTime:
@@ -111,6 +123,21 @@ def _end_projections_started_since(before: dict[int, weakref.ref]) -> None:
         earlier = before.get(key)
         if earlier is None or earlier() is not each:
             each.release()
+    # A projection the test dropped has already left the weak registry above, so
+    # its end is queued on the reaper rather than released here, and that end's
+    # prune can still recreate the agents directory after tmp_path is removed.
+    # Collect what is left, then wait for the reaper to pass a marker queued
+    # behind every such end: it runs them in order.
+    # A test that swaps in its own queue (or stubs ``_reaper_alive``) queued its
+    # ends where no reaper reads, so there is nothing to wait for; the real
+    # thread and queue are read directly for that reason. The thread is read
+    # from the module that starts it: the facade keeps the value it had at import.
+    gc.collect()
+    reaper = _reaper_owner._REAPER
+    if projection._COLLECTED_ENDS is _REAPER_QUEUE and reaper is not None and reaper.is_alive():
+        drained = threading.Event()
+        _REAPER_QUEUE.put(drained.set)
+        assert drained.wait(30), "the reaper never reached the test's dropped projections"
 
 
 @pytest.fixture(autouse=True)

@@ -17,7 +17,8 @@
  * explicitly and the "silent" case relies on none of them.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { renderHook, act } from '@testing-library/react'
+import { renderHook, act, waitFor } from '@testing-library/react'
+import { api } from '../api/client'
 import { createElement } from 'react'
 import { Provider } from 'react-redux'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -212,7 +213,7 @@ describe('one approval frame yields exactly one OS toast', () => {
 
   /** Both hooks, as `App.tsx` mounts them: the socket layer produces the
    *  approval, the feed watcher is the one constructor. */
-  function mountApp() {
+  async function mountApp() {
     const store = createTestStore()
     function wrapper({ children }: { children: React.ReactNode }) {
       return createElement(Provider, { store },
@@ -224,12 +225,15 @@ describe('one approval frame yields exactly one OS toast', () => {
     }, { wrapper })
     const ws = WS_INSTANCES[0]
     act(() => { ws.simulateOpen() })
+    // Opening the socket starts an approval reconcile that resolves after this
+    // point; wait for its request so its state update lands inside the test.
+    await waitFor(() => expect(api.approvals).toHaveBeenCalled())
     return { store, ws }
   }
 
-  it('hidden window: one toast, tagged with the approval id, silent', () => {
+  it('hidden window: one toast, tagged with the approval id, silent', async () => {
     setHidden(true)
-    const { store, ws } = mountApp()
+    const { store, ws } = await mountApp()
 
     act(() => {
       ws.simulateMessage({
@@ -247,10 +251,10 @@ describe('one approval frame yields exactly one OS toast', () => {
     expect(CONSTRUCTED[0].title).toContain('Bash')
   })
 
-  it('focused window: no toast at all; the feed entry and in-app surfaces carry it', () => {
+  it('focused window: no toast at all; the feed entry and in-app surfaces carry it', async () => {
     setHidden(false)
     vi.spyOn(document, 'hasFocus').mockReturnValue(true)
-    const { store, ws } = mountApp()
+    const { store, ws } = await mountApp()
 
     act(() => {
       ws.simulateMessage({

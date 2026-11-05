@@ -853,9 +853,10 @@ class TestKiroPrerequisiteHelpers:
 
         def run(*extra: str) -> str:
             done = subprocess.run(  # noqa: S603 - fixed argv, test-local
-                [sys.executable, "-I", "-c", code, *extra, real_python, "-c", probe],
+                [sys.executable, "-X", "utf8", "-I", "-c", code, *extra, real_python, "-c", probe],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
                 timeout=60,
                 start_new_session=True,
             )
@@ -879,6 +880,8 @@ class TestKiroPrerequisiteHelpers:
         done = subprocess.run(  # noqa: S603 - fixed argv, test-local
             [
                 sys.executable,
+                "-X",
+                "utf8",
                 "-I",
                 "-c",
                 code,
@@ -888,6 +891,7 @@ class TestKiroPrerequisiteHelpers:
             ],
             capture_output=True,
             text=True,
+            encoding="utf-8",
             timeout=60,
             start_new_session=True,
         )

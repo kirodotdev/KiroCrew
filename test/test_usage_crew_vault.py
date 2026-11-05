@@ -48,6 +48,7 @@ def _reset():
         sessions_mod._usage_cache_ts = 0.0
         sessions_mod._usage_fetching = False
         sessions_mod._usage_cache_vault_fp = ""
+        sessions_mod._vault_signin_marker = None
 
     reset()
     yield
@@ -267,6 +268,7 @@ class TestVaultOwnership:
     @staticmethod
     def _store(token):
         store = MagicMock()
+        store.holds_no_identity.return_value = token is None
         store.resolve.return_value = token
         return patch("kiro_crew.auth.bridge.default_token_store", return_value=store)
 
@@ -274,6 +276,8 @@ class TestVaultOwnership:
     def _token(usable: bool):
         tok = MagicMock()
         tok.is_usable.return_value = usable
+        tok.is_expired.return_value = not usable
+        tok.profile_arn = "arn:aws:codewhisperer:us-east-1:1:profile/p"
         return tok
 
     @staticmethod
@@ -306,15 +310,17 @@ class TestVaultOwnership:
             assert sessions_mod._vault_owns_usage_sync() is False
         holds.assert_called_once_with(warn=False)
 
-    def test_unusable_vault_identity_does_not_own_and_does_not_warn(self, caplog):
+    def test_unusable_vault_identity_still_owns_and_does_not_warn(self, caplog):
         # This probe runs on every poll; the spawn-time WARNING must not repeat
-        # here. Drives the real predicate over a store holding an unusable entry.
+        # here. Drives the real predicate over a store holding an unusable entry:
+        # the vault is still the sign-in (the spawn never falls back to kiro-cli),
+        # so usage never relabels kiro-cli's account as this one's.
         with (
             patch("kiro_crew.config.loader.KiroCrewConfig.load", return_value=_config("kas")),
             self._store(self._token(False)),
             caplog.at_level("DEBUG", logger="kiro_crew.auth.bridge"),
         ):
-            assert sessions_mod._vault_owns_usage_sync() is False
+            assert sessions_mod._vault_owns_usage_sync() is True
         assert not [r for r in caplog.records if r.levelno >= 30]
         # The predicate did reach the unusable entry: its diagnostic is at DEBUG.
         assert any(
@@ -563,6 +569,115 @@ class TestUsageGateBypass:
             )
         gate.assert_not_called()
         fetch.assert_awaited_once_with(vault_owned=True)
+
+
+def _stamps(*values):
+    """Patch the vault write stamp to return ``values`` in order (last one repeats)."""
+    seq = list(values)
+
+    def stamp():
+        return seq.pop(0) if len(seq) > 1 else seq[0]
+
+    return patch.object(sessions_mod, "_vault_write_stamp", AsyncMock(side_effect=stamp))
+
+
+class TestSigninMarkerAfterResignIn:
+    """A "sign in again" marker must not outlive a sign-in by a whole interval."""
+
+    async def _poll(self):
+        fetch = AsyncMock(return_value=None)
+        with (
+            patch.object(sessions_mod, "_vault_owns_usage", AsyncMock(return_value=True)),
+            patch.object(sessions_mod, "_fetch_usage_bg", fetch),
+        ):
+            resp = await sessions_mod.api_sessions_usage(_request())
+            await asyncio.sleep(0)
+        return resp, fetch
+
+    @pytest.mark.asyncio
+    async def test_failed_refresh_records_the_stamp_taken_before_it(self):
+        current = AsyncMock(side_effect=sessions_mod_not_authenticated())
+        with _stamps("s1", "s2"):
+            await _run(_vault(current=current))
+        assert sessions_mod._usage_cache == {"available": False, "reason": "signin_required"}
+        marker = sessions_mod._vault_signin_marker
+        assert marker is not None and marker[0] is sessions_mod._usage_cache
+        assert marker[1] == "s1"
+
+    @pytest.mark.asyncio
+    async def test_marker_refreshes_at_once_after_the_vault_is_rewritten(self):
+        current = AsyncMock(side_effect=sessions_mod_not_authenticated())
+        with _stamps("s1"):
+            await _run(_vault(current=current))
+        sessions_mod._usage_cache_ts = 10**12  # fresh: the timer would not refresh
+        with _stamps("s2"):  # the user signed in again: the vault was rewritten
+            resp, fetch = await self._poll()
+        # The marker is still what this poll serves; the refresh replaces it.
+        assert json.loads(resp.body)["usage"]["reason"] == "signin_required"
+        fetch.assert_awaited_once_with(vault_owned=True)
+
+    @pytest.mark.asyncio
+    async def test_unchanged_vault_does_not_refresh_on_every_poll(self):
+        current = AsyncMock(side_effect=sessions_mod_not_authenticated())
+        with _stamps("s1"):
+            await _run(_vault(current=current))
+        sessions_mod._usage_cache_ts = 10**12
+        with _stamps("s1"):
+            _resp_, fetch = await self._poll()
+        fetch.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_kiro_cli_marker_refreshes_once_the_vault_owns_usage(self):
+        # kiro-cli's "sign in again" says nothing about Crew's own sign-in.
+        sessions_mod._usage_cache = {"available": False, "reason": "signin_required"}
+        sessions_mod._usage_cache_ts = 10**12
+        stamp = AsyncMock(return_value="s1")
+        with patch.object(sessions_mod, "_vault_write_stamp", stamp):
+            _resp_, fetch = await self._poll()
+        fetch.assert_awaited_once_with(vault_owned=True)
+        stamp.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_other_markers_never_read_the_stamp(self):
+        sessions_mod._usage_cache = {"available": False}
+        sessions_mod._usage_cache_ts = 10**12
+        stamp = AsyncMock(return_value="s1")
+        with patch.object(sessions_mod, "_vault_write_stamp", stamp):
+            _resp_, fetch = await self._poll()
+        fetch.assert_not_called()
+        stamp.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_later_publish_drops_the_marker(self):
+        current = AsyncMock(side_effect=sessions_mod_not_authenticated())
+        with _stamps("s1"):
+            await _run(_vault(current=current))
+        sessions_mod._publish_usage({"credits_plan": 5.0}, vault_fp=_FP_A)
+        assert sessions_mod._vault_signin_marker is None
+
+
+def sessions_mod_not_authenticated():
+    from kiro_crew.auth.provider import NotAuthenticated
+
+    return NotAuthenticated("signed out")
+
+
+class TestTokenStoreWriteStamp:
+    def test_absent_vault(self, tmp_path):
+        from kiro_crew.auth.store import TokenStore
+
+        assert TokenStore(tmp_path).write_stamp() == "absent"
+
+    def test_changes_when_the_vault_is_rewritten(self, tmp_path):
+        from kiro_crew.auth.store import TokenStore
+
+        store = TokenStore(tmp_path)
+        store._vault.set_sync("social", "one")
+        first = store.write_stamp()
+        assert first not in ("", "absent")
+        assert store.write_stamp() == first
+        store._vault.set_sync("social", "two")
+        assert store.write_stamp() != first
 
 
 def _resp(status, body):

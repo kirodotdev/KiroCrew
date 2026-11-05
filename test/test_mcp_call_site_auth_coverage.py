@@ -1,44 +1,21 @@
 """Every internal-secret call site into the dashboard must be allowlisted.
 
-Registering a dashboard route and granting it internal access are two separate
-manual edits, and nothing couples them. When they disagree the failure only shows
-up at runtime: the caller sends ``X-Internal-Secret``, the middleware does not
-find the path in either internal allowlist, and the call 403s. Nothing fails at
-import, review, or build time. This test is the missing coupling.
+A route missing from ``_STRICT_INTERNAL_API_PATHS`` and ``_MIXED_INTERNAL_API_PATHS``
+(matched by prefix) answers ``X-Internal-Secret`` callers with a 403 only at runtime.
 
-Callers reach the dashboard three ways, and ALL are in scope. Most go through the
-``_post``/``_get``/``_put``/``_patch``/``_delete`` helpers in ``mcp_core``, which
-attach the secret centrally. A few build their own ``urllib.request.Request`` and
-set the header themselves (``mcp_computer``, ``cron_script``, the code-review-sage
-driver). And a server built on ``mcp_tools.table.ToolTable`` (``mcp_dashboard``)
-reaches it through the ``DashboardClient`` port: each tool row DECLARES the routes
-it may reach, and the client the table hands the tool refuses any other before
-sending it. For those, the declared routes are the paths the loopback client's
-sites forward, so the walk resolves them from the rows (``_TABLE_SERVERS``) instead
-of from the tool bodies. The middleware grants any of them only for paths in
-``_STRICT_INTERNAL_API_PATHS`` or ``_MIXED_INTERNAL_API_PATHS``, matched by
-prefix. A path in neither set falls through to ordinary token auth and is
-unreachable for that caller. The population is therefore "sends the internal
-secret", not "is an MCP module" -- naming it after MCP is what let
-``mcp_computer.py`` sit outside an earlier revision of ``_SOURCES``.
+Callers are in scope by "sends the internal secret", not "is an MCP module": the
+``mcp_core`` helpers (``_post``/``_get``/``_put``/``_patch``/``_delete``), modules that
+build their own ``urllib.request.Request`` (``mcp_computer``, ``cron_script``, the
+code-review-sage driver), and ``mcp_tools.table.ToolTable`` servers, whose rows declare
+their routes and are resolved from ``_TABLE_SERVERS``.
 
-EXHAUSTIVENESS IS THE WHOLE POINT, so this file must never quietly skip a call
-site it cannot understand. A guard that skips the calls it cannot resolve reads
-green while those calls go unchecked, which is worse than no guard because it
-manufactures confidence. So every transport call must resolve to an ``/api``
-path, and ``test_every_transport_call_resolves_to_a_path`` FAILS on any that does
-not, except for the small reviewed set in ``_KNOWN_UNRESOLVED``.
+The scan must never skip a call site it cannot understand, since a guard that does reads
+green while checking nothing. ``test_every_transport_call_resolves_to_a_path`` fails on
+any unresolved call outside ``_KNOWN_UNRESOLVED``, and ``test_no_secret_caller_is_unscanned``
+fails on any module outside ``_SOURCES`` that reaches the dashboard (by header, helper
+import or qualified call). A module with its own private ``_get`` matches neither.
 
-``_SOURCES`` is a hand-listed set, so the same reasoning applies to the list
-itself: ``test_no_secret_caller_is_unscanned`` fails if ANY module outside it
-reaches the dashboard, by any of the three routes (setting the secret header,
-bare-importing a helper, or calling one qualified). Keying that check on the
-capability rather than on one call shape is what makes it escape-proof, and it
-is why no same-name exemption list is needed: a module with its own private
-``_get`` neither imports ``mcp_core`` nor sets the header, so it never matches.
-
-Resolving the path argument therefore has to follow the shapes these modules
-really use, not just literals:
+Path arguments are resolved in the shapes these modules use:
 
 * a literal, or an f-string whose interpolations are unknown at rest
 * a module-level constant, including one interpolated into an f-string
@@ -47,24 +24,13 @@ really use, not just literals:
   ``+`` concatenation (``"/api/apps/ops-mission-control" + _omc_path``) or
   extended with ``+=``
 
-An unknown span becomes the marker ``{X}``. Where a marker occupies a whole path
-segment the path is still CONCRETE and is matched against the allowlists exactly
-as the middleware would. Where a marker is glued to the tail of a segment the
-runtime path is only known up to that point, so the path is treated as a PREFIX
-and the assertion weakens honestly: some allowlist entry must begin with the
-literal head. That is what covers the Ops Mission Control family, whose thirteen
-endpoints are allowlisted individually and deliberately not by bare prefix.
+An unknown span becomes ``{X}``. A whole-segment marker keeps the path concrete. A
+marker glued to a segment's tail makes it a PREFIX: some allowlist entry must start with
+the literal head (this covers the individually allowlisted Ops Mission Control routes).
 
-Scope, and what this deliberately does not check:
-
-* Membership, not bucket choice. It asserts a path is in strict OR mixed, not
-  that it is in the RIGHT one. A browser-polled route wrongly placed in strict
-  passes here and still hard-denies forwarded browsers at runtime.
-* For a PREFIX path it proves the family is granted, not that the specific
-  endpoint is. An unallowlisted endpoint added under an already-granted prefix
-  would pass here.
-* Bucket disjointness already has its own guard in
-  ``test_internal_path_bucket_disjointness.py``. This file does not repeat it.
+Not checked: which bucket (strict or mixed) a path is in; that a specific endpoint under
+a granted prefix is granted; bucket disjointness, which
+``test_internal_path_bucket_disjointness.py`` covers.
 """
 
 from __future__ import annotations
@@ -126,6 +92,7 @@ _SOURCES = (
     _SRC / "cli_server_requests.py",
     _SRC / "cli_server_stop.py",
     _SRC / "cli_server_restart.py",
+    _SRC / "cli_restart_idle.py",
     _SRC / "cli_server_update.py",
     _SRC / "cron_script.py",
     *sorted(_SRC.glob("cron_script_*.py")),
@@ -133,6 +100,7 @@ _SOURCES = (
     _SRC / "apps/builtins/code_review_sage/sage_lib/review_driver.py",
     _SRC / "computer_use/screencast.py",
     _SRC / "doctor_checks/workload.py",
+    _SRC / "subagent_read_collected.py",
     *sorted((_SRC / "mcp_tools").rglob("*.py")),
 )
 
@@ -365,17 +333,13 @@ def _sends_secret(text: str, tree: ast.Module) -> bool:
 def _wrapper_path_arg_index() -> dict[str, dict[str, int]]:
     """Path-argument position for every wrapper that forwards a path to the wire.
 
-    Keyed by MODULE then function, because these names are not unique across the
-    tree: ``mcp_core._send(path)`` forwards a path, while ``cron_script._send(msg)``
-    is an unrelated JSON-RPC sender taking a dict. A flat name-keyed index treated
-    the latter as a transport call and reported its callers unresolved.
+    Keyed by module then function: ``mcp_core._send(path)`` forwards a path, while
+    ``cron_script._send(msg)`` is an unrelated JSON-RPC sender.
 
-    Derived from the CODE -- any function taking a ``path`` parameter that itself
-    performs a transport call -- and deliberately NOT from ``_KNOWN_UNRESOLVED``.
-    Those are two different questions, and conflating them left a hole: a wrapper
-    whose own site happens to resolve is absent from that list, so its callers went
-    unscanned and a literal they passed was never checked. ``cli_commands._request``
-    is exactly that shape, and its path sits at index 1, not 0.
+    Derived from the code (a function with a ``path`` parameter that makes a transport
+    call), not from ``_KNOWN_UNRESOLVED``: a wrapper whose own site resolves is absent
+    there, yet its callers' literals still need checking (``cli_commands._request``,
+    path at index 1).
     """
     index: dict[str, dict[str, int]] = {}
     for src in _SOURCES:
@@ -453,13 +417,9 @@ _HELPER_METHODS = {
 def _call_method(call: ast.Call, called: str) -> str:
     """The HTTP method a transport/``Request`` call uses.
 
-    Needed only to validate a path granted by the method-scoped bypass map:
-    that map grants a route for one method (POST for the self-authenticating
-    loopback/webhook routes), and a call on the same path under another method
-    is still refused by the middleware. A transport helper names its verb; a raw
-    ``urllib.request.Request`` carries it in ``method=`` (a literal), else defaults
-    to GET; a path-forwarding wrapper's verb belongs to its caller, so it is
-    reported unknown. Unknown never asserts a match — the caller fails closed.
+    Used only for the method-scoped bypass map. A raw ``urllib.request.Request`` reads
+    a literal ``method=`` or defaults to GET; a path-forwarding wrapper's verb is unknown,
+    and unknown never matches, so the caller fails closed.
     """
     if called in _HELPER_METHODS:
         return _HELPER_METHODS[called]
@@ -520,6 +480,22 @@ def _declared_dashboard_routes() -> dict[str, set[str]]:
     return out
 
 
+#: The one handler every tool a built-in declares as data runs
+#: (``mcp_tools.apps.builtin_agent_tool``). Its URL is the declared tool's own, read off
+#: the declaration, so the walk cannot resolve it from source.
+_BUILTIN_AGENT_TOOL_SITE = "apps.py:builtin_agent_tool"
+
+
+def _declared_agent_tool_routes() -> dict[str, set[str]]:
+    """``{gateway path: {"<tool>:POST"}}`` over every tool a built-in app declares."""
+    from kiro_crew.apps import builtin_agent_tools
+
+    out: dict[str, set[str]] = {}
+    for tool in builtin_agent_tools.agent_tools():
+        out.setdefault(tool.url, set()).add(f"{tool.name}:POST")
+    return out
+
+
 def _loopback_verbs() -> dict[str, str]:
     """``{"dashboard_client.py:<verb>": METHOD}`` for each verb of the loopback client.
 
@@ -577,17 +553,10 @@ def _scan() -> tuple[dict[str, set[str]], set[str]]:
                                 cands = []
                             for cand in cands:
                                 norm = _normalise(cand)
-                                # A transport call normally addresses the gateway
-                                # API surface at ``/api/...``, so the resolved path
-                                # is anchored at its first ``/api/``. One shape is
-                                # NOT ``/api``-rooted: the dashboard app reverse
-                                # proxy ``/apps/{name}/api/{path}`` (handle_app_api_proxy),
-                                # which an internal-secret MCP caller
-                                # (design_tweak_update_thread) now reaches. Slicing
-                                # that at its inner ``/api/`` would check a fragment
-                                # (``/api/thread``) instead of the real admitted
-                                # path, so a ``/apps/`` route is kept whole and must
-                                # itself appear in an internal allowlist.
+                                # Anchor at the first ``/api/``, except the app
+                                # reverse proxy ``/apps/{name}/api/{path}``
+                                # (handle_app_api_proxy): slicing it would check a
+                                # fragment, so a ``/apps/`` route is kept whole.
                                 at = 0 if norm.startswith("/apps/") else norm.find("/api/")
                                 if at >= 0:
                                     method = _call_method(child, called)
@@ -625,6 +594,14 @@ def _scan() -> tuple[dict[str, set[str]], set[str]]:
             for site in sites:
                 if site.endswith(f":{method}"):
                     paths.setdefault(path, set()).add(f"{key}<-{site}")
+
+    # The declared-tool handler posts only to a declared tool's URL, which it reads off
+    # the declaration by the tool's name, so its site reaches exactly those URLs.
+    if _BUILTIN_AGENT_TOOL_SITE in unresolved:
+        unresolved.discard(_BUILTIN_AGENT_TOOL_SITE)
+        for path, sites in _declared_agent_tool_routes().items():
+            for site in sites:
+                paths.setdefault(path, set()).add(f"{_BUILTIN_AGENT_TOOL_SITE}<-{site}")
     return paths, unresolved
 
 
@@ -645,14 +622,9 @@ def _is_allowlisted(path: str) -> bool:
 def _is_reachable(path: str, methods: frozenset[str]) -> bool:
     """Allowlisted, path-only-exempt, or method-exempt for the methods used.
 
-    Mirrors the middleware, which admits a tokenless call whose path is in the
-    path-only ``_BYPASS_EXACT`` (any method) OR in the method-scoped
-    ``_BYPASS_EXACT_METHODS`` for the specific method being called. A wrong-method
-    call to a POST-only bypass is NOT reachable — the middleware still rejects it —
-    so the method scope is enforced here rather than treating any presence in the
-    map as a grant. ``methods`` is the set of HTTP verbs the scan saw at this
-    path's call sites; ``"?"`` (a verb the scan could not read) never satisfies a
-    method-scoped grant, so such a call fails closed.
+    Mirrors the middleware: ``_BYPASS_EXACT`` admits any method, ``_BYPASS_EXACT_METHODS``
+    only the listed one. ``methods`` holds the verbs seen at the call sites; ``"?"``
+    never satisfies a method-scoped grant, so such a call fails closed.
     """
     if _is_allowlisted(path) or path in _BYPASS_EXACT:
         return True
@@ -686,6 +658,29 @@ def _is_granted(path: str, methods: frozenset[str]) -> bool:
 def _methods_for(sites: set[str]) -> frozenset[str]:
     """The HTTP verbs recorded across a path's call sites (site tail ``:METHOD``)."""
     return frozenset(s.rsplit(":", 1)[1] for s in sites)
+
+
+class TestDeclaredAgentToolRoutes:
+    """The declared-tool handler's call site is every declared tool's URL."""
+
+    def test_each_declared_tool_url_is_a_resolved_post_site(self):
+        declared = _declared_agent_tool_routes()
+        assert declared, "no built-in declares an agent tool, so this check would pass free"
+        sites = _call_sites()
+        for path in declared:
+            assert path in sites, f"declared tool URL {path} is not a resolved call site"
+            assert _methods_for(sites[path]) >= {"POST"}, path
+
+    def test_the_resolved_site_is_the_handler_every_declared_tool_runs(self):
+        """A renamed handler leaves its new site unresolved, never silently granted."""
+        from kiro_crew.apps import builtin_agent_tools
+        from kiro_crew.mcp_tools import apps
+
+        handler = apps.builtin_agent_tool
+        assert _BUILTIN_AGENT_TOOL_SITE == f"apps.py:{handler.__name__}"
+        for tool in builtin_agent_tools.agent_tools():
+            assert apps.HANDLERS[tool.name] is handler
+        assert _BUILTIN_AGENT_TOOL_SITE not in _KNOWN_UNRESOLVED
 
 
 class TestDeclaredDashboardRoutes:
@@ -885,7 +880,7 @@ class TestMcpCallSiteAuthCoverage:
             ("/api/artifacts/{X}/comments", "f-string with an interpolation"),
             ("/api/session-tool-policy", "direct urllib Request, leading f-string"),
             ("/api/apps/issue-radar/crew", "path held in a module-level constant"),
-            ("/api/browser/command", "module constant interpolated into an f-string"),
+            ("/api/browser/op", "module constant interpolated into an f-string"),
             ("/api/computer-use/invoke", "own Request + header, outside mcp_tools"),
             ("/api/computer-use/frame", "path returned by a zero-arg URL builder"),
             ("/api/artifacts", "literal passed to an exempted wrapper's caller"),

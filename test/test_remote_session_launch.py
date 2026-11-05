@@ -14,6 +14,7 @@ import os
 import runpy
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 from pathlib import Path
@@ -26,6 +27,7 @@ from kiro_crew.acp.kas_permissions import KAS_TOOL_IDS_BY_KIRO_TOOL
 from kiro_crew.acp.runtime import AcpRuntime, AcpRuntimeError
 from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS
 from kiro_crew.coder import remote_worker
+from kiro_crew.coder.client import CoderClientError
 from kiro_crew.remote_session import link as link_mod
 from kiro_crew.remote_session import workspace_tools
 from kiro_crew.remote_session.link import RemoteLink
@@ -274,12 +276,31 @@ async def test_link_reports_lost_when_worker_is_gone(tmp_path):
         os.killpg(pid, signal.SIGKILL)  # setsid made it a group leader (Linux)
     except (ProcessLookupError, PermissionError):
         os.kill(pid, signal.SIGKILL)  # no setsid (macOS): its engine sees EOF and exits
+    # Hold the freed port, bound but not listening, so every dial is refused at
+    # connect. Left free, the kernel can hand it to another test's worker, whose
+    # hello names a different session: the link then ends REFUSED, not LOST.
+    hold = await async_wait_until(lambda: _bind_loopback(port), ignoring=(OSError,))
     link = _link(launch, "sess-lost", secret, port)
     try:
         ended = (link_mod.LOST, link_mod.RETIRING)
         await async_wait_until(lambda: link.state in ended, describe=lambda: link.state)
     finally:
         await link.aclose()
+        hold.close()
+
+
+def _bind_loopback(port: int) -> socket.socket:
+    """A socket bound to ``127.0.0.1:port`` that never listens.
+
+    No ``SO_REUSEADDR``, so no other socket can bind the port while this one holds it.
+    """
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        sock.bind(("127.0.0.1", port))
+    except OSError:
+        sock.close()
+        raise
+    return sock
 
 
 @pytest.mark.skipif(shutil.which("python3.9") is None, reason="no python3.9 on this host")
@@ -313,7 +334,7 @@ def test_hostile_values_are_rejected_or_quoted():
         remote_worker._start_command("x; rm -rf ~", ["kiro-cli"], 60)
     command = remote_worker._start_command("ok", ["kiro-cli", "$(touch /tmp/p)"], 60)
     assert "'$(touch /tmp/p)'" in command
-    with pytest.raises(Exception):
+    with pytest.raises(CoderClientError):
         remote_worker.CoderShell("coder", "bad name; id", "https://coder.example")
 
 
@@ -405,6 +426,19 @@ def test_remote_workspace_grants_follow_the_agents_own_allowlist(tools, expected
         _runtime(), [{"id": "a", "tools": tools}], [{"name": "workspace"}]
     )
     assert agent["tools"] == expected
+
+
+@pytest.mark.parametrize("key", ["_crewShellAllowlist", "_crewWriteAllowlist"])
+def test_an_agent_with_a_spec_allowlist_is_refused_on_a_remote_workspace(key):
+    """The gate binds those allowlists to built-in calls, which a remote workspace
+    replaces with MCP tools, so the agent would run without them."""
+    from kiro_crew.session_environment import REMOTE_AGENT_RESTRICTED
+
+    with pytest.raises(AcpRuntimeError, match="limit shell commands or file paths"):
+        AcpRuntime._remote_workspace_agents(
+            _runtime(), [{"id": "a", "tools": "*", key: []}], [{"name": "workspace"}]
+        )
+    assert "remote workspace cannot enforce" in REMOTE_AGENT_RESTRICTED
 
 
 def test_every_mapped_workspace_tool_is_one_the_guest_server_serves():

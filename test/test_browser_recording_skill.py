@@ -14,6 +14,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from loopback_servers import LoopbackHTTPServer
 
 ROOT = Path(__file__).resolve().parent.parent
 SKILL_DIR = ROOT / "src" / "kiro_crew" / "builtin_skills" / "browser-recording"
@@ -68,7 +69,7 @@ class TestRunnerValidation:
 
     def _run(self, *argv: str) -> subprocess.CompletedProcess:
         return subprocess.run(
-            [sys.executable, str(RUNNER), *argv], capture_output=True, text=True
+            [sys.executable, "-X", "utf8", str(RUNNER), *argv], capture_output=True, text=True, encoding="utf-8"
         )
 
     def test_rejects_non_http_url(self) -> None:
@@ -179,7 +180,7 @@ class TestEndToEnd:
 
         page = tmp_path / "index.html"
         page.write_text("<html><body><h1 id='t'>hello</h1></body></html>")
-        httpd = http.server.HTTPServer(
+        httpd = LoopbackHTTPServer(
             ("127.0.0.1", 0),
             lambda *a, **kw: http.server.SimpleHTTPRequestHandler(
                 *a, directory=str(tmp_path), **kw
@@ -190,13 +191,13 @@ class TestEndToEnd:
             out = tmp_path / "out"
             p = subprocess.run(
                 [
-                    sys.executable, str(RUNNER),
+                    sys.executable, "-X", "utf8", str(RUNNER),
                     "--url", f"http://127.0.0.1:{httpd.server_port}/",
                     "--project", str(ROOT / "website"),
                     "--out", str(out), "--name", "e2e", "--size", "640x480",
                     "--settle-ms", "200", "--tail-ms", "200",
                 ],
-                capture_output=True, text=True, timeout=300,
+                capture_output=True, text=True, encoding="utf-8", timeout=300,
             )
             if p.returncode != 0 and "Executable doesn't exist" in p.stderr:
                 pytest.skip("playwright package present but chromium binaries not installed")

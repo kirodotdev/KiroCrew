@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
-from source_providers_helpers import _clear_issue_cache  # noqa: F401
+from source_providers_helpers import _clear_shared_fetch_state  # noqa: F401
 from source_providers_helpers import _mock_source_sel_fixture  # noqa: F401
 from source_providers_helpers import _no_visibility_refresh_side_task  # noqa: F401
 from source_providers_helpers import _app
@@ -841,3 +841,40 @@ async def test_resolve_handler_rejects_bad_thread_id(monkeypatch) -> None:
         source="dashboard",
         error="invalid_request",
     )
+
+
+@pytest.mark.parametrize(
+    ("path", "fetcher", "reply"),
+    [
+        ("/api/source/pull-request", "fetch_pull_request", {"url": "u"}),
+        ("/api/source/issue", "fetch_issue", {"url": "u"}),
+        ("/api/source/contributors", "fetch_app_contributors", []),
+    ],
+)
+@pytest.mark.parametrize(
+    ("sent", "read"),
+    [
+        ("false", False),
+        ("0", False),
+        ("Off", False),
+        ("no", False),
+        ("true", True),
+        (1, True),
+        (None, False),
+        ("yes please", True),
+    ],
+)
+@pytest.mark.asyncio
+async def test_a_spelled_refresh_reads_as_it_spells(
+    monkeypatch, path, fetcher, reply, sent, read
+) -> None:
+    """``bool("false")`` is True; a spelled false must not bypass the cache."""
+    url = "https://github.com/acme/repo/pull/12"
+    fetch = AsyncMock(return_value=reply)
+    monkeypatch.setattr(source, fetcher, fetch)
+
+    async with TestClient(TestServer(_app())) as client:
+        response = await client.post(path, json={"url": url, "refresh": sent})
+        assert response.status == 200
+
+    fetch.assert_awaited_once_with(url, refresh=read)

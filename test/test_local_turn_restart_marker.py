@@ -11,7 +11,9 @@ existing interruption row.
 from __future__ import annotations
 
 import asyncio
+import errno
 import json
+import os
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -37,6 +39,50 @@ from kiro_crew.history import SLOT_OWNED_META_KEYS
 from kiro_crew.testing.wait import async_wait_until, await_until
 
 _RESTART_KIND = "gateway_restart_interruption"
+
+
+async def _save_off_loop(state, slot) -> bool:
+    """An ``async`` test's seeding save, run on a worker thread like the gateway's.
+
+    A forced save ends in ``atomic_write.replace_with_retry``, whose Windows
+    sharing-violation retry is skipped on the event-loop thread by design. Called
+    straight from an ``async def`` body, one scanner handle on the fresh temp file
+    fails the test's own setup with WinError 5; off the loop the bounded retry
+    applies, as it does for the admission's own offloaded writes.
+    """
+    return await asyncio.to_thread(_save_slot_to_history, state, slot, force=True)
+
+
+@pytest.fixture
+def every_rename_contended_once(monkeypatch):
+    """Windows rename semantics with each atomic rename refused on its first attempt.
+
+    Every tmp-file-plus-rename writer stages a fresh temp name, so refusing the
+    first attempt per source path contends every write exactly once: the window an
+    indexer or AV scanner opens on a just-written file. A write that rides the
+    retry lands; one made on the event-loop thread re-raises.
+    """
+    from kiro_crew import atomic_write, platform_compat
+
+    real_replace = os.replace
+    refused: set[str] = set()
+
+    class _AsOnWindows:
+        IS_WINDOWS = True
+
+        def __getattr__(self, name):
+            return getattr(platform_compat, name)
+
+    def _replace(src, dst):
+        if str(src) not in refused:
+            refused.add(str(src))
+            raise PermissionError(errno.EACCES, "sharing violation", str(dst))
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(atomic_write, "platform_compat", _AsOnWindows())
+    monkeypatch.setattr(atomic_write, "_REPLACE_BACKOFF_SECONDS", 0)
+    monkeypatch.setattr(atomic_write.os, "replace", _replace)
+    return refused
 
 
 def _restart_rows(messages: list[dict]) -> list[dict]:
@@ -134,7 +180,7 @@ async def test_admission_writes_only_metadata_when_the_transcript_exists(tmp_pat
     slot = state.get_or_create_slot("chat-1")
     slot.append("user", "first", "msg msg-u")
     slot.append("assistant", "answered", "msg msg-a")
-    assert _save_slot_to_history(state, slot, force=True)
+    assert await _save_off_loop(state, slot)
     slot.append("user", "second", "msg msg-u")
     assert state.conversation_log is not None
     before = state.conversation_log.read_messages("dashboard:chat-1")
@@ -179,10 +225,10 @@ async def test_admission_merge_refuses_once_a_replacement_owns_the_key(tmp_path)
     slot = state.get_or_create_slot("chat-1")
     slot.append("user", "first", "msg msg-u")
     slot.append("assistant", "answered", "msg msg-a")
-    assert _save_slot_to_history(state, slot, force=True)
+    assert await _save_off_loop(state, slot)
     replacement = _replace_slot_under_same_key(state, slot)
     replacement.append("user", "the replacement's turn", "msg msg-u")
-    assert _save_slot_to_history(state, replacement, force=True)
+    assert await _save_off_loop(state, replacement)
     assert state.conversation_log is not None
     before = state.conversation_log.read_messages("dashboard:chat-1")
 
@@ -204,7 +250,7 @@ async def test_admission_merge_refuses_once_the_slot_is_closing(tmp_path):
     slot = state.get_or_create_slot("chat-1")
     slot.append("user", "first", "msg msg-u")
     slot.append("assistant", "answered", "msg msg-a")
-    assert _save_slot_to_history(state, slot, force=True)
+    assert await _save_off_loop(state, slot)
     assert state.conversation_log is not None
     before = dict(state.conversation_log.get_metadata("dashboard:chat-1"))
     slot.append("user", "second", "msg msg-u")
@@ -229,7 +275,7 @@ async def test_admission_merge_is_a_guarded_history_write(tmp_path):
     slot = state.get_or_create_slot("chat-1")
     slot.append("user", "first", "msg msg-u")
     slot.append("assistant", "answered", "msg msg-a")
-    assert _save_slot_to_history(state, slot, force=True)
+    assert await _save_off_loop(state, slot)
     slot.append("user", "second", "msg msg-u")
     assert state.conversation_log is not None
     log = state.conversation_log
@@ -262,7 +308,7 @@ async def test_newborn_forced_save_refuses_once_a_replacement_owns_the_key(tmp_p
     slot.append("user", "predecessor's first row", "msg msg-u")
     replacement = _replace_slot_under_same_key(state, slot)
     replacement.append("user", "the replacement's turn", "msg msg-u")
-    assert _save_slot_to_history(state, replacement, force=True)
+    assert await _save_off_loop(state, replacement)
     assert state.conversation_log is not None
 
     # ``require_existing`` is satisfied by the replacement's file, so the merge
@@ -315,7 +361,7 @@ async def test_a_cancelled_admission_write_lands_before_the_cancel_propagates(
     state = _make_state(tmp_path)
     slot = state.get_or_create_slot("chat-1")
     slot.append("user", "first", "msg msg-u")
-    assert _save_slot_to_history(state, slot, force=True)
+    assert await _save_off_loop(state, slot)
     assert state.conversation_log is not None
     log = state.conversation_log
     real_merge = log.update_metadata_if
@@ -354,7 +400,7 @@ async def test_repeated_cancellation_still_waits_for_the_admission_write(tmp_pat
     state = _make_state(tmp_path)
     slot = state.get_or_create_slot("chat-1")
     slot.append("user", "first", "msg msg-u")
-    assert _save_slot_to_history(state, slot, force=True)
+    assert await _save_off_loop(state, slot)
     assert state.conversation_log is not None
     log = state.conversation_log
     real_merge = log.update_metadata_if
@@ -386,7 +432,7 @@ async def test_a_failed_metadata_merge_never_refuses_the_turn(tmp_path, monkeypa
     state = _make_state(tmp_path)
     slot = state.get_or_create_slot("chat-1")
     slot.append("user", "first", "msg msg-u")
-    assert _save_slot_to_history(state, slot, force=True)
+    assert await _save_off_loop(state, slot)
     slot._dirty = False
     assert state.conversation_log is not None
     monkeypatch.setattr(
@@ -874,7 +920,7 @@ async def test_admission_carries_the_opening_row_and_the_clear_drops_it(tmp_path
     state = _make_state(tmp_path)
     slot = state.get_or_create_slot("chat-1")
     slot.append("assistant", "earlier answer", "msg msg-a")
-    assert _save_slot_to_history(state, slot, force=True)
+    assert await _save_off_loop(state, slot)
     user_row = slot.append("user", "the prompt that opens this turn", "msg msg-u")
     slot._turn_generation = 3
 
@@ -1305,18 +1351,23 @@ def test_a_cron_openers_json_cls_does_not_round_trip(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_admission_without_a_copy_clears_a_stale_copy_on_disk(tmp_path):
+@pytest.mark.parametrize("contended", [False, True], ids=["uncontended", "rename-contended"])
+async def test_admission_without_a_copy_clears_a_stale_copy_on_disk(tmp_path, request, contended):
     # The merge cannot delete a key. A previous turn whose clear failed left its
     # copy on the line; the next admission carries no copy (oversize opener), so
     # it must write None or a restart would restore the previous prompt as this
-    # turn's opener.
+    # turn's opener. The contended case refuses every rename's first attempt, as
+    # a scanner on a fresh temp file does on Windows: the seeding writes run off
+    # the loop, so they ride the retry instead of failing the setup.
+    refused = request.getfixturevalue("every_rename_contended_once") if contended else None
     state = _make_state(tmp_path)
     slot = state.get_or_create_slot("chat-1")
     slot.append("user", "first", "msg msg-u")
     slot.append("assistant", "answered", "msg msg-a")
-    assert _save_slot_to_history(state, slot, force=True)
+    assert await _save_off_loop(state, slot)
     assert state.conversation_log is not None
-    state.conversation_log.update_metadata(
+    await asyncio.to_thread(
+        state.conversation_log.update_metadata,
         "dashboard:chat-1",
         {
             "turn_in_flight_generation": 2,
@@ -1342,6 +1393,8 @@ async def test_admission_without_a_copy_clears_a_stale_copy_on_disk(tmp_path):
     assert restored is not None
     assert all(m["content"] != "stale prompt" for m in restored.messages)
     assert restored.messages[-1]["meta"]["kind"] == _RESTART_KIND
+    if refused is not None:
+        assert len(refused) >= 2, "the seeding save and merge must each have been refused once"
 
 
 @pytest.mark.asyncio
@@ -1357,7 +1410,7 @@ async def test_a_restricted_session_gets_and_clears_the_marker(tmp_path, mode):
     slot.memory_mode = mode
     slot.append("user", "earlier, while restricted", "msg msg-u")
     slot.append("assistant", "answered", "msg msg-a")
-    assert _save_slot_to_history(state, slot, force=True)
+    assert await _save_off_loop(state, slot)
     assert state.conversation_log is not None
     slot.append("user", "a private prompt", "msg msg-u")
     slot._turn_generation = 4
@@ -1388,7 +1441,7 @@ async def test_a_restricted_session_killed_mid_turn_restores_resume(tmp_path, mo
     slot.memory_mode = mode
     slot.append("user", "earlier, while restricted", "msg msg-u")
     slot.append("assistant", "answered", "msg msg-a")
-    assert _save_slot_to_history(state, slot, force=True)
+    assert await _save_off_loop(state, slot)
     slot.append("user", "a private prompt", "msg msg-u")
     slot._turn_generation = 5
 

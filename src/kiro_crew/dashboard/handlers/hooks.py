@@ -71,12 +71,15 @@ from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.execution_context import ExecutionContext, clear_session_execution
 from kiro_crew.executors import run_in_embed_pool, run_in_tool_gate_pool
 from kiro_crew.memory_startup import MemoryStartupUnavailable, wait_for_memory_preparation
+from kiro_crew.metrics.usage_attrs import ORIGIN_WEBHOOK, TRIGGER_WEBHOOK
 from kiro_crew.permission_floor import (
     OUTCOME_PENDING_APPROVAL,
     OUTCOME_REJECTED_TRANSPORT_FLOOR,
 )
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.session_capabilities import CapabilityStartupError
+from kiro_crew.shared_crew.admission import OperationKind
+from kiro_crew.shared_crew.turn_gate import TurnRefused, run_admitted_or_raise
 from kiro_crew.tool_gate_busy import hook_gate_busy
 
 logger = logging.getLogger(__name__)
@@ -663,7 +666,7 @@ def _capability_refusal_text(
     a save or could not be verified after the process ran, which a resend may
     clear, so its text asks for a resend first.
     """
-    member = (getattr(exc, "member", "") or agent or "").strip() or "this crew member"
+    member = (getattr(exc, "member", "") or agent or "").strip() or "this Bot"
     if isinstance(exc, CapabilityStartupError):
         return (
             f"Hook agent did not run: the start of {member} could not be verified "
@@ -767,6 +770,8 @@ async def _run_hook_inner(
             message,
             is_new,
             session_key,
+            # Unattended: a webhook turn has no user reading it live.
+            interactive=False,
             agent=agent,
             resumed=resumed,
             # Fallback label only: with the session's provider passed below,
@@ -982,6 +987,8 @@ async def _run_hook_inner(
             context_window=_window,
             elapsed_ms=int((time.monotonic() - _turn_t0) * 1000),
             model_source=client,
+            trigger=TRIGGER_WEBHOOK,
+            origin=ORIGIN_WEBHOOK,
         )
     except Exception:
         logger.debug("usage row (webhook) persist failed", exc_info=True)
@@ -1053,17 +1060,30 @@ async def _run_hook_agent(
         # instead of failing on its first read.
         await wait_for_memory_preparation(getattr(state, "memory_startup_task", None))
 
+        # Shared Crew fair admission, charged to Crew automation (a webhook
+        # caller has no principal); a refusal raises ``TurnRefused``.
         result_text = await asyncio.wait_for(
-            _run_hook_inner(
-                state,
-                session_key,
-                message,
-                agent,
-                execution_context=execution_context,
-                on_client=clients.append,
+            run_admitted_or_raise(
+                _run_hook_inner(
+                    state,
+                    session_key,
+                    message,
+                    agent,
+                    execution_context=execution_context,
+                    on_client=clients.append,
+                ),
+                session_key=session_key,
+                text=message,
+                automation=True,
+                operation=OperationKind.BACKGROUND,
             ),
             timeout=timeout_secs,
         )
+    except TurnRefused as exc:
+        outcome = "error"
+        result_text = str(exc)
+        detail = result_text
+        logger.info("Hook agent %s did not start: %s", session_key, result_text)
     except asyncio.TimeoutError:
         outcome = "timeout"
         result_text = f"Hook agent timed out after {timeout_secs}s"

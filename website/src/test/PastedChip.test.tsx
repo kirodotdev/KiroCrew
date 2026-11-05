@@ -1,6 +1,7 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest'
 import { render, screen, fireEvent, waitFor, cleanup, act } from '@testing-library/react'
 import PastedChip from '../components/PastedChip'
+import { i18next } from '../i18n/all'
 import type { PasteBlock } from '../utils/pasteTokens'
 
 // Mock isTouchDevice — mirror ChatInput.test.tsx pattern.
@@ -190,5 +191,21 @@ describe('PastedChip hover preview', () => {
     hover(btn)
     const panel = screen.getByTestId('paste-preview-2')
     expect(btn).toHaveAttribute('aria-describedby', panel.id)
+  })
+})
+
+describe('PastedChip: localized name', () => {
+  it('names the chip in the active language with a plural line count', async () => {
+    const previous = i18next.language
+    await i18next.changeLanguage('de')
+    try {
+      render(<PastedChip block={block} />)
+      expect(screen.getByRole('button')).toHaveAttribute('aria-label', '42 eingefügte Zeilen ausklappen')
+      cleanup()
+      render(<PastedChip block={{ ...block, lines: 1 }} />)
+      expect(screen.getByRole('button')).toHaveAttribute('aria-label', '1 eingefügte Zeile ausklappen')
+    } finally {
+      await i18next.changeLanguage(previous)
+    }
   })
 })

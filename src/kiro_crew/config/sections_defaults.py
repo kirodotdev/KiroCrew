@@ -67,6 +67,9 @@ class SectionReader:
 
 DEFAULT_MODEL = "auto"
 DEFAULT_SESSION_TIMEOUT = 3600  # 60 min
+# ``session.harness_background_hold_secs``: how long after a harness launches
+# background work the idle sweep and the RSS recycle still keep its session.
+DEFAULT_HARNESS_BACKGROUND_HOLD_SECS = 3600
 # Auto-compaction threshold, as a percentage of the context window. Named
 # because two code paths need it — the dataclass field default (used only when
 # there is no config file) and the dict-load fallback in ``load()`` (used when
@@ -106,12 +109,13 @@ CONTEXT_WARN_MARGIN_PCT = 10.0
 # invisible on disk — this constant is the only place the value is written.
 DEFAULT_POOL_SIZE = 0
 # Per-session process-tree RSS ceiling (MiB) the cleanup watchdog recycles an
-# idle session at. 0 disables, and that is the default: a fixed ceiling cannot
-# tell a leak from a healthy session that loads many MCP servers. An agent with
-# six MCP servers measured ~1.4 GB of tree RSS thirteen seconds after start, so
-# the old 1536 default recycled ordinary sessions after one heavy turn. An
-# operator who wants a bound sets one sized to their own agents.
-DEFAULT_WATCHDOG_RSS_MAX_MB = 0
+# idle session at; 0 disables it. An agent with six MCP servers measured ~1.4 GB
+# of tree RSS thirteen seconds after start and workflow trees read 2.4-2.6 GB, so
+# the old 1536 default recycled ordinary sessions after one heavy turn. 4096
+# sits above those healthy sizes and still bounds a runaway tree, which with no
+# ceiling at all grows until the host runs out of memory. A recycled session
+# keeps its history and restarts on its next message.
+DEFAULT_WATCHDOG_RSS_MAX_MB = 4096
 # session.reconcile_max_kills — root candidates the runtime reconciler may signal
 # the tree of in one pass. Defaults to the budget the arm already ships with, so an
 # unconfigured host behaves exactly as before; the field's ceiling equals that same
@@ -131,3 +135,8 @@ DEFAULT_WATCHDOG_RSS_MAX_MB = 0
 # process holds. Measured on such a host: 250-504 unowned pids per pass against 4
 # genuine strays in 6.5 hours. Setting 0 takes the reading without the signal.
 DEFAULT_RECONCILE_MAX_KILLS = 5
+# session.search_scan_window -- how many of the most recently changed transcripts
+# a session search reads. The fold and snippet memos are
+# capped in bytes, so the count bounds per-search I/O, not memory; this default
+# keeps the default window of ordinary sessions inside the fold budget.
+DEFAULT_SEARCH_SCAN_WINDOW = 2000

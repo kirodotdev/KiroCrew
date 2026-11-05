@@ -17,7 +17,7 @@
 // are hand-set on the rows the pane renders.
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, act, screen } from '@testing-library/react'
+import { render, act, screen, waitFor } from '@testing-library/react'
 import type { RootState } from '../store'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
@@ -57,6 +57,7 @@ Object.defineProperty(window, 'matchMedia', {
 })
 
 import ChatPane from '../components/ChatPane'
+import { modelsDegraded } from '../providers/modelListHealth'
 import { hydrateSlotMessages } from '../store/chatSlice'
 import type { ChatMessage } from '../types'
 
@@ -171,8 +172,12 @@ afterEach(() => {
 })
 
 describe('ChatPane pinned prompt (chat-core P5-d)', () => {
-  it('numbers its transcript rows and mounts the fold sentinel', () => {
+  it('numbers its transcript rows and mounts the fold sentinel', async () => {
     const { container } = renderPane()
+    // The first mount in the file fetches the model list; the mocked empty answer flips the
+    // module-level degraded flag, which re-renders the pane (and the footer's theme observer
+    // fires in the same microtask turn). Wait for the flag so both land inside the wait.
+    await waitFor(() => expect(modelsDegraded('acp')).toBe(true))
     const rows = container.querySelectorAll('[data-display-index]')
     expect(rows.length).toBe(MESSAGES.length)
     expect(Array.from(rows).map(r => r.getAttribute('data-display-index'))).toEqual(['0', '1', '2', '3', '4'])

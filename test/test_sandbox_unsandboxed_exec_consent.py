@@ -443,6 +443,19 @@ class TestSetupSandboxConsentOnADefaultAllowPlatform:
         )
         assert result == {"agent": {"sandbox_allow_unsandboxed_exec": False}}
 
+    def test_the_lockdown_is_acked_so_the_windows_adoption_keeps_it(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """Unacked, the next Windows load would drop this false as the stale one."""
+        from kiro_crew.config import superseded_defaults as SD
+
+        _run_consent(tmp_path, monkeypatch, kind="no_backend", answer="y", platform_allows=True)
+        assert SD.acked_superseded() == {"agent.sandbox_allow_unsandboxed_exec": False}
+        # The ack is the drift filter auto_adoptable applies first.
+        monkeypatch.setattr("sys.platform", "win32")
+        stored = {"agent": {"sandbox_allow_unsandboxed_exec": False}}
+        assert SD.auto_adoptable(stored, adopted={}) == []
+
     def test_declining_writes_nothing(self, tmp_path, monkeypatch) -> None:
         """Writing the current default on a decline would freeze it silently, so a
         later change to that default could never reach this host."""

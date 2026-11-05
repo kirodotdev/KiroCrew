@@ -72,6 +72,7 @@ def _build_gw():  # type: ignore[no-untyped-def]
     gw.dashboard_state = None
     gw._owner_id = "U000"
     gw._cron_injecting = {}
+    gw._cron_runs_holding = set()
     gw._batch_progress = {}
     gw._cfg = MagicMock()
     gw._cfg.agent.max_subagents = 5

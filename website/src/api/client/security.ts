@@ -459,9 +459,17 @@ export function createSecurityEndpoints({ get, post, put, del, patch, j, jfetch:
     // Paid-AWS-service consent (Amazon Polly for TTS, Amazon Transcribe for STT).
     // The GET reports what would be billed AND performs the identity probe, so it
     // is the call that surfaces the account before the operator agrees to it.
-    awsConsent: (service: string) =>
-      fetch('/api/aws/consent?service=' + encodeURIComponent(service)).then(j) as Promise<AwsConsentStatus>,
-    grantAwsConsent: (service: string, shown: { profile: string; region: string; account: string }) =>
+    awsConsent: (service: string, target?: { profile: string; region: string }) =>
+      fetch('/api/aws/consent?service=' + encodeURIComponent(service)
+        // bedrock-kb only: the target lives in the add-source form until the
+        // source is saved, so the card probes the requested target explicitly.
+        // Both fields must be real strings — a malformed target is dropped
+        // rather than serialized into the URL.
+        + (target && typeof target.profile === 'string' && typeof target.region === 'string'
+          ? '&profile=' + encodeURIComponent(target.profile) + '&region=' + encodeURIComponent(target.region)
+          : '')
+      ).then(j) as Promise<AwsConsentStatus>,
+    grantAwsConsent: (service: string, shown: { profile: string; region: string; account: string }, target?: { profile: string; region: string }) =>
       post('/api/aws/consent', {
         service,
         // Echo back exactly what was on screen. The backend rejects a mismatch, so
@@ -469,6 +477,7 @@ export function createSecurityEndpoints({ get, post, put, del, patch, j, jfetch:
         expectedProfile: shown.profile,
         expectedRegion: shown.region,
         expectedAccount: shown.account,
+        ...(target ? { targetProfile: target.profile, targetRegion: target.region } : {}),
       }).then(j) as Promise<{ ok?: boolean; error?: string; code?: string; identityDetail?: string }>,
     revokeAwsConsent: (service: string) =>
       del('/api/aws/consent?service=' + encodeURIComponent(service)).then(j) as Promise<{ ok?: boolean; removed?: boolean }>,
@@ -481,6 +490,11 @@ export function createSecurityEndpoints({ get, post, put, del, patch, j, jfetch:
       fetch('/api/security/credential-redaction').then(j) as Promise<CredentialRedactionState>,
     setCredentialRedaction: (enabled: boolean) =>
       put('/api/security/credential-redaction', { enabled }).then(j) as Promise<CredentialRedactionState>,
+    /** Reveal one removed credential to the owner. The value lives only in
+     *  gateway memory; a 410 means it is gone (restart or expiry). The caller
+     *  keeps the answer in memory only: never in storage or a query cache. */
+    revealRedactedValue: (slot: string, id: string) =>
+      post('/api/security/redacted-value', { slot, id }).then(j) as Promise<{ value: string }>,
   }
 
   return { posture, policies, secrets, consents }

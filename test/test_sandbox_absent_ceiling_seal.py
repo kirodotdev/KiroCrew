@@ -784,7 +784,7 @@ class TestADanglingSymlinkRefusesTheSpawn:
 
 @_POSIX_ONLY
 class TestGatewayLauncherDirectoryNeedsARealLeaf:
-    @pytest.mark.parametrize("leaf", ("playwright-cli", "subagents", "member-memory-bindings"))
+    @pytest.mark.parametrize("leaf", ("browser-harness", "subagents", "member-memory-bindings"))
     def test_a_resolving_symlink_refuses_the_spawn(self, crew_home, tmp_path, leaf):
         real = tmp_path / "attacker-controlled"
         real.mkdir()
@@ -797,7 +797,7 @@ class TestGatewayLauncherDirectoryNeedsARealLeaf:
         assert target.is_symlink(), "the operator must remove the refused link"
 
     def test_a_symlink_winning_the_create_race_refuses(self, crew_home, tmp_path, monkeypatch):
-        target = crew_home / "playwright-cli"
+        target = crew_home / "browser-harness"
         real = tmp_path / "race-winner"
         real.mkdir()
         real_mkdir = os.mkdir

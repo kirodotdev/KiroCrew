@@ -33,9 +33,11 @@ import { ARTIFACTS_ROW_LIMIT, COPY_KEY, DEBOUNCE_MS, ENTER_KEY, SKELETON_WIDTHS,
 import { useCommandBarOverlayEngines } from './useCommandBarOverlayEngines'
 import { useCommandBarOverlayRootRows } from './CommandBarOverlayRootRows'
 import { crewWaitingApprovals } from '../../pages/chat/command-center/model'
+import { useCrewMode } from '../../hooks/usePreviewFlag'
 import { useCommandBarOverlaySlots } from './useCommandBarOverlaySlots'
 import { useCommandBarOverlayActivation } from './useCommandBarOverlayActivation'
 import { commandBarOverlaySlotRenderer } from './CommandBarOverlaySlot'
+import { isQuickSearchToggleEvent } from '../../lib/quickSearchShortcut'
 
 /**
  * Command Bar — the ⌘K launcher.
@@ -184,7 +186,9 @@ export default function CommandBarOverlay({
   // What those hidden workers owe the person, carried by their root: a worker's
   // tool approval is counted on its conductor over the FULL slot set, so Needs
   // You still names it (the fleet page counts the same way, `crewWaitingApprovals`).
-  const crewWaiting = useMemo(() => crewWaitingApprovals(liveSlots), [liveSlots])
+  const crewMode = useCrewMode()
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- crewMode stands for the preview crewWaitingApprovals reads
+  const crewWaiting = useMemo(() => crewWaitingApprovals(liveSlots), [liveSlots, crewMode])
   const unreadSlots = useAppSelector(s => s.dashboard.unreadSlots)
   const slotStatusDetail = useAppSelector(s => s.chat.slotStatusDetail ?? {})
   const subagentQueued = useAppSelector(s => s.chat.subagentQueued)
@@ -627,7 +631,7 @@ export default function CommandBarOverlay({
         if (e.target === e.currentTarget) onClose()
       }}
     >
-      {/* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- a dialog owns the keyboard dismissal of its own subtree; the handler below is Escape only, and every gesture inside is on a real control */}
+      {/* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- a dialog owns the keyboard dismissal of its own subtree; the handler below dismisses on Escape and keeps every other key from reaching the page's global shortcuts, and every gesture inside is on a real control */}
       <div
         ref={dialogRef}
         // 680px, up from 576: at the narrower width a settings row's title and its
@@ -647,8 +651,17 @@ export default function CommandBarOverlay({
         // not any more: Tab reaches the scope chip and the Retry button, and Escape
         // must dismiss from either. Keydown from the input bubbles here, so this is
         // one owner rather than two.
+        //
+        // Every OTHER key stops here, so the page's global shortcuts (bubble-phase
+        // `document` listeners such as the Settings chord) do not act behind the bar,
+        // as the shared `Modal` keeps them out of its panel. The bar's own keys are
+        // handled on the input below, before they bubble here. The one key let through
+        // is the quick-search gesture, whose `window` listener toggles this bar shut.
         onKeyDown={e => {
-          if (e.key !== 'Escape') return
+          if (e.key !== 'Escape') {
+            if (!isQuickSearchToggleEvent(e.nativeEvent)) e.stopPropagation()
+            return
+          }
           // An Escape mid-composition belongs to the IME — it cancels the candidate
           // list, not the search scope or the bar. The claim owns the whole decline
           // contract (a declined key keeps its default for the IME and is stopped

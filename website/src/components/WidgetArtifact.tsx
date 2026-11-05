@@ -214,7 +214,7 @@ export function WidgetArtifactTitle({ title, artifact, className }: {
         <a
           href={`/artifacts/${artifact.existingSlug}`}
           className="text-text hover:text-accent hover:underline"
-          title={`Open artifact "${artifact.existingSlug}"`}
+          title={i18nT('components.widgetFrame.open_artifact_named', { slug: artifact.existingSlug })}
         >{title}</a>
       ) : (
         title

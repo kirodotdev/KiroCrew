@@ -221,6 +221,9 @@ class TestDashboardLink:
             await d.handle_message(_inbound(f"/kirocrew {arg}"))
 
         assert gen.call_args.kwargs["ttl_seconds"] == 3600
+        # The user is told the window they actually got.
+        reply = d.client.sent[-1][1]
+        assert "token=TOK" in reply and "(valid 1h)" in reply
 
     def test_the_ttl_is_clamped_to_the_server_maximum(self) -> None:
         # A user-supplied duration must not be able to widen the login window.
@@ -448,6 +451,14 @@ class TestModelCommand:
         d = _dispatcher(FakeSessions(ModelProvider()), FakeCtx(), FakeClient())
         await d.handle_message(_inbound("/model sonnet"))
         assert "Pick a number" in d.client.sent[-1][1]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("arg", ["²", "١", "1" * 5000])
+    async def test_a_pick_int_cannot_read_is_refused(self, arg: str) -> None:
+        """``"²".isdigit()`` is True but ``int("²")`` raises; reply, never crash."""
+        d = _dispatcher(FakeSessions(ModelProvider()), FakeCtx(), FakeClient())
+        await d.handle_message(_inbound(f"/model {arg}"))
+        assert "Pick a number between 1 and 2" in d.client.sent[-1][1]
 
     @pytest.mark.asyncio
     async def test_a_pick_switches_the_live_conversation(self) -> None:

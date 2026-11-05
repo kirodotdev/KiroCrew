@@ -20,7 +20,7 @@ The user-facing surface is ``kirocrew pod <verb>`` (see :mod:`kiro_crew.pod.cli`
     status <wt>    up/down + health
     token <wt>     (re)mint a dashboard token for a running pod
     url <wt>       print its base_url
-    logs <wt>      tail its journal
+    logs <wt>      tail its log (the user journal on Linux, log files elsewhere)
     provision <wt> build the worktree's venv + dist so it can be podded
     install        lay down the systemd template unit (Linux only; a no-op elsewhere)
 

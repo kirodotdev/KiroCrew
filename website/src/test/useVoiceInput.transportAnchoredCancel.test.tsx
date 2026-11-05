@@ -410,3 +410,33 @@ describe('the recording flag reports the live request, not the setting', () => {
     expect(live?.state).toBe('inactive')
   })
 })
+
+describe('ownership is kept through a mode flip under a live batch capture', () => {
+  it('the owner survives the setting flipping to streaming while a batch recorder runs', async () => {
+    const useVoiceInput = await loadHook()
+    const { result, rerender } = renderHook(
+      ({ streaming }: { streaming: boolean }) =>
+        // The slot that starts the capture is the one that must keep owning it.
+        useVoiceInput(vi.fn(), { streaming, sessionId: 'slot-A' }),
+      // Batch, because a batch recorder can only start while streaming is off.
+      { initialProps: { streaming: false } },
+    )
+    await act(async () => { await result.current.start() })
+    await waitFor(() => expect(result.current.recording).toBe(true))
+    // Ownership is assigned when capture actually begins.
+    expect(result.current.sessionOwner).toBe('slot-A')
+
+    // The user turns streaming ON in Settings while this capture is still live.
+    // The ownership-clear effect fires on the `streamEnabled` change. Guarded on
+    // the saved setting alone it reads "streaming is the transport and no stream
+    // session exists, so nobody owns one" — which is equally true of this live
+    // batch capture, and it nulls the owner of a recording that is still running.
+    rerender({ streaming: true })
+
+    // The owner is intact, the recorder is still hot, and the flag the mic button
+    // reads still reports the capture — so the button cannot show idle mid-record.
+    expect(result.current.sessionOwner).toBe('slot-A')
+    expect(lastRecorder()?.state).toBe('recording')
+    expect(result.current.recording).toBe(true)
+  })
+})

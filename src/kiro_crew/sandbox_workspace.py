@@ -89,10 +89,30 @@ def prime_voice_runtime_sandbox_paths() -> str:
         _ensure_voice_runtime_directory(canonical_run)
         _ensure_voice_runtime_directory(canonical_root)
 
+        # The run-dir pointer lives in the default home, so seal it under a relocated one too.
+        from kiro_crew.instances import run_marker
+
+        default_run = os.path.normpath(str(run_marker._DEFAULT_RUN_DIR))
+
+        try:
+            os.makedirs(os.path.dirname(default_run), mode=0o700, exist_ok=True)
+            canonical_default_run = os.path.join(
+                os.path.realpath(os.path.dirname(default_run)), "run"
+            )
+            _ensure_voice_runtime_directory(canonical_default_run)
+        except OSError as exc:
+            # Never skip the seal: its agents may later create what this user cannot now.
+            fix = f"make {default_run} a directory owned by this user, mode 0700"
+            if exc.errno is None:
+                raise OSError(f"{exc}; {fix}") from exc
+            raise OSError(exc.errno, f"{exc.strerror}; {fix}", exc.filename) from exc
+
         lexical_run = os.path.join(lexical_home, "run")
         lexical_root = os.path.join(lexical_home, _VOICE_RUNTIME_LEAF)
         roots = tuple(dict.fromkeys((lexical_root, canonical_root)))
-        parents = tuple(dict.fromkeys((lexical_run, canonical_run)))
+        parents = tuple(
+            dict.fromkeys((lexical_run, canonical_run, default_run, canonical_default_run))
+        )
         guards = _literal_ancestor_guards(parents)
         _voice_runtime_paths_cache = (
             lexical_home,

@@ -299,10 +299,10 @@ def origin_rows(
             where = (
                 "the MCP registry ("
                 + display(origin["registry_id"])
-                + "), installed into this crewmate only"
+                + "), installed into this Bot only"
             )
         else:
-            where = "defined on this card, for this crewmate only"
+            where = "defined on this card, for this Bot only"
         rows.append({"label": f"{name}: comes from", "after": where})
         tools = granted.get(name) or []
         if name in whole:

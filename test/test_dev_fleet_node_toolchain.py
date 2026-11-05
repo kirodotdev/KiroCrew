@@ -276,7 +276,7 @@ def test_toolchain_bin_returns_none_when_nothing_resolves():
         assert runtime._toolchain_bin("does-not-exist-anywhere") is None
 
 
-def test_toolchain_bin_searches_the_trusted_path_as_its_base():
+def test_toolchain_bin_searches_the_trusted_path_as_its_base(tmp_path, monkeypatch):
     """find_node_tool must not be handed the inherited service PATH, whose
     leading entries are agent-writable."""
     with (
@@ -285,6 +285,23 @@ def test_toolchain_bin_searches_the_trusted_path_as_its_base():
     ):
         runtime._toolchain_bin("npm")
     assert fnt.call_args.args == ("npm", runtime._TRUSTED_PATH)
+
+    # Through the real resolver: an npm planted on the inherited PATH is not returned.
+    planted = tmp_path / "agent-writable"
+    planted.mkdir()
+    for name in ("npm", "npm.cmd"):
+        shim = planted / name
+        shim.write_text("echo planted\n", encoding="utf-8")
+        shim.chmod(0o755)
+    trusted = tmp_path / "trusted"
+    trusted.mkdir()
+    monkeypatch.setenv("PATH", str(planted))
+    monkeypatch.setattr("kiro_crew.env.node_bin_dirs", lambda: [])
+    with (
+        patch.object(runtime, "_TRUSTED_PATH", str(trusted)),
+        patch.object(runtime, "_trusted_bin", return_value=None),
+    ):
+        assert runtime._toolchain_bin("npm") is None
 
 
 def test_git_resolution_is_untouched_by_the_toolchain_tier():

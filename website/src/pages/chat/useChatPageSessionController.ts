@@ -6,10 +6,12 @@ import type { NavigateFunction, NavigationType } from 'react-router-dom'
 
 import { api } from '../../api/client'
 import type { ChatLaunchOptions } from '../../app-sdk'
+import { chatLaunchMemoryMode, chatLaunchOpensDraft } from '../../app-sdk/chatLaunch'
 import { i18nT } from '../../i18n/t'
 import { useSessionTabs } from '../../hooks/useSessionTabs'
 import { useAppSelector, useAppStore, type AppDispatch } from '../../store'
 import {
+  clearSwitchSlotGone,
   createSlot,
   deleteSlot,
   fetchHistory,
@@ -17,6 +19,7 @@ import {
   setActiveSlot,
   dropActiveSlot,
   setPendingInput,
+  setSwitchSlotGone,
   switchSlot,
 } from '../../store/chatSlice'
 import type { ChatSlot, SessionInfo } from '../../types'
@@ -277,6 +280,9 @@ export function useChatPageSessionController({
   const initialNewRef = useRef(searchParams.get('new') === '1')
   const newRequestConsumedRef = useRef(false)
   const appDraftAgentRef = useRef<string | undefined>(undefined)
+  // The claimed launch's new-session shape (`openChat`'s `memoryMode` /
+  // `sessionFolder`), spent with the create exactly like the agent above.
+  const appDraftSlotOptionsRef = useRef<{ memory_mode?: string; sessionFolder?: false }>({})
   /**
    * A prompt to seed the new session's composer with, carried by the SAME cold
    * URL that asks for the session: `/chat?new=1&prefill=<text>`. This is the deep
@@ -412,7 +418,7 @@ export function useChatPageSessionController({
     // onSuccess would land after that read, so nothing would consume it.
     mutationFn: async () => {
       const prompt = initialPrefillRef.current
-      const action = await dispatch(createSlot({ mode, agent: appDraftAgentRef.current, prefill: prompt || undefined }))
+      const action = await dispatch(createSlot({ mode, agent: appDraftAgentRef.current, ...appDraftSlotOptionsRef.current, prefill: prompt || undefined }))
       // A rejected create throws here and keeps the prompt for the retry.
       const slot = unwrapResult(action)
       // Spent once: a retry of a failed create still carries the same intent, but
@@ -462,16 +468,29 @@ export function useChatPageSessionController({
     initialNewRef.current = false
     initialPrefillRef.current = searchParams.get('prefill') ?? initialPrefillRef.current
     const launchWindow = window as Window & {
-      __mc_chat_launch?: { ts?: number; message?: string; agent?: string; slotKey?: string; autoSend?: boolean }
+      __mc_chat_launch?: {
+        ts?: number; message?: string; agent?: string; slotKey?: string; autoSend?: boolean
+        memoryMode?: unknown; sessionFolder?: unknown
+      }
     }
     const launch = launchWindow.__mc_chat_launch
     appDraftAgentRef.current = undefined
-    if (!embedded && launch?.autoSend === false && !launch.slotKey
+    appDraftSlotOptionsRef.current = {}
+    // A launch that shapes the NEW session (memory mode, no session folder) is a
+    // draft too: its message is staged, never sent, so the session's mode is
+    // settled before a first turn could read or write memory.
+    const launchMemoryMode = chatLaunchMemoryMode(launch?.memoryMode)
+    const launchNoSessionFolder = launch?.sessionFolder === false
+    if (!embedded && launch && chatLaunchOpensDraft(launch)
       && Date.now() - (launch.ts ?? 0) <= 10_000) {
       // Retain the claimed draft through create failure/retry. The create
       // mutation is the single owner of the prefill handoff.
       initialPrefillRef.current = launch.message ?? ''
       appDraftAgentRef.current = launch.agent
+      appDraftSlotOptionsRef.current = {
+        ...(launchMemoryMode ? { memory_mode: launchMemoryMode } : {}),
+        ...(launchNoSessionFolder ? { sessionFolder: false as const } : {}),
+      }
       delete launchWindow.__mc_chat_launch
     }
     newSessionRef.current = true
@@ -746,6 +765,9 @@ export function useChatPageSessionController({
       return
     }
     if (filteredSlots.some(s => s.key === urlSid)) {
+      // A plain switch keeps the pane notice. A Back or Forward is a new gesture,
+      // so clear it as a sidebar click does, the closed notice raised below too.
+      dispatch(clearSwitchSlotGone())
       popInFlightRef.current = true
       dispatch(switchSlot(urlSid))
       return
@@ -753,18 +775,17 @@ export function useChatPageSessionController({
     if (embedMode || !activeSlotRef.current || slots.some(s => s.key === urlSid)) return
     // A durable `removed` frame is post-pop truth for this tab, so repair this
     // history entry immediately even while its row hold is still retained.
-    if (urlSidRemoved) {
-      popInFlightRef.current = true
-      repairPoppedSid()
-      return
-    }
     // Without that frame, keep the budget-plus-one-list fallback: another tab
     // may have resumed the key while the hold filters its row.
-    if (urlSidClose !== 'none' || (confirmedClosedRef.current.has(urlSid) && !rewriteEligible(urlSid))) {
-      closeLandingRef.current = { sid: urlSid, landing: activeSlotRef.current }
-      return
+    if (!urlSidRemoved) {
+      if (urlSidClose !== 'none' || (confirmedClosedRef.current.has(urlSid) && !rewriteEligible(urlSid))) {
+        closeLandingRef.current = { sid: urlSid, landing: activeSlotRef.current }
+        return
+      }
+      if (!rewriteEligible(urlSid)) return
     }
-    if (!rewriteEligible(urlSid)) return
+    // Tell the user, or a Back or Forward onto a closed session looks dead (#14762).
+    dispatch(setSwitchSlotGone({ name: '', kind: 'closed' }))
     popInFlightRef.current = true
     repairPoppedSid()
   }, [searchParams, filteredSlots, slots, slotsGeneration, urlSidClose, urlSidRemoved, rewriteEligible, activeSlot, activeSlotRef, dispatch, embedMode, navigationType, locationKey, locationPathname, locationHash, connected, noUrlSync, navigate, isMobile, popOverWriteTick])
@@ -1152,12 +1173,16 @@ export function useChatPageSessionController({
   const switchInFlightKey = useAppSelector(s => (s.chat.slotSwitchRequestId !== null ? s.chat.slotSwitchTarget : null))
   useEffect(() => { if (!deepLinkPendingRef.current && activeSlot && switchInFlightKey !== activeSlot && !newSessionRef.current && filteredSlotsRef.current.find(s => s.key === activeSlot)) dispatch(switchSlot(activeSlot)) }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
+  // A popout's chat the server removed (its `removed` patch) is dropped even
+  // when it was the only slot, so the auto-select effect below can show the
+  // closed-session notice instead of staying bound to a removed chat.
+  const activeSlotRemoved = useAppSelector(s => !!(popout && activeSlot && s.dashboard.durablyRemoved?.[activeSlot]))
   // Clear activeSlot when it belongs to a different mode (page switch)
   useEffect(() => {
-    if (activeSlot && slots.length > 0 && !filteredSlots.find(s => s.key === activeSlot)) {
+    if (activeSlot && (slots.length > 0 || activeSlotRemoved) && !filteredSlots.find(s => s.key === activeSlot)) {
       dispatch(dropActiveSlot())
     }
-  }, [activeSlot, slots.length, filteredSlots, dispatch])
+  }, [activeSlot, activeSlotRemoved, slots.length, filteredSlots, dispatch])
 
   // Auto-select slot after refresh — restore from localStorage or pick first
   // If no slots exist at all, auto-create one so the user lands in a ready chat
@@ -1172,6 +1197,22 @@ export function useChatPageSessionController({
   // as an effect dependency it would re-run the pick it just made.
   const slotHistory = useAppSelector(s => s.chat.slotHistory)
   const slotHistoryRef = useRef(slotHistory); slotHistoryRef.current = slotHistory
+  // The popout's own chat once the server confirmed it was closed or deleted
+  // somewhere else. The empty state shows the closed-session notice for it.
+  const [ownChatClosedElsewhere, setOwnChatClosedElsewhere] = useState<string | null>(null)
+  // Only this window's own `deleteSlot` holds a key in `closingSlots`. A close
+  // started here gets no notice.
+  const closingSlots = useAppSelector(s => s.dashboard.closingSlots)
+  const closingSlotsRef = useRef(closingSlots); closingSlotsRef.current = closingSlots
+  const closedHereRef = useRef<string | null>(null)
+  // An omission alone proves nothing: a stale or reconnect-time frame can drop
+  // a live chat for a while. Only the server's `removed` patch, which
+  // `_close_slot` sends on a real close, confirms it (`durablyRemoved`). A list
+  // read cannot: after a gateway restart the open-tab restore adds tabs to the
+  // list one at a time, and a tab whose restore read failed is open but never
+  // listed, and the reply carries no flag that tells either apart from a
+  // close. Without the patch the popout keeps the plain empty state.
+  const durablyRemoved = useAppSelector(s => s.dashboard.durablyRemoved)
   // The hub's record of this pane's last chat (#16009), used for the first
   // pick only. A soft hint, unlike ?sid=: a chat that is gone falls through.
   const slotHintRef = useRef(embedded ? null : searchParams.get(PANE_SLOT_HINT_PARAM))
@@ -1200,6 +1241,8 @@ export function useChatPageSessionController({
       hadActiveSlotRef.current = true
       lastShownSlotRef.current = activeSlot
       slotHintRef.current = null
+      closedHereRef.current = null
+      setOwnChatClosedElsewhere(null)
       return
     }
     // The user asked for a new chat and it is on its way. Opening another
@@ -1218,7 +1261,16 @@ export function useChatPageSessionController({
     // shows no chat and creates none, also after a reload, and it reopens the
     // chat when a later frame lists it again.
     const bound = popout && hadActiveSlotRef.current ? lastShownSlotRef.current : null
-    if (popout && !(bound && listed.has(bound))) return
+    if (popout && !(bound && listed.has(bound))) {
+      if (bound) {
+        // Latched: the hold leaves `closingSlots` once the close is confirmed,
+        // and a later frame must not relabel this window's own close.
+        if (closingSlotsRef.current?.[bound]) closedHereRef.current = bound
+        const confirmed = closedHereRef.current !== bound && !!durablyRemoved?.[bound]
+        setOwnChatClosedElsewhere(confirmed ? bound : null)
+      }
+      return
+    }
     if (!bound && (searchParams.get('slot') || searchParams.get('sid') || initialSidRef.current)) return
     // A crash-recovery reload opens nothing. The remembered chat -- or the first
     // one, which is often the same busy chat -- may be what froze the renderer,
@@ -1250,7 +1302,7 @@ export function useChatPageSessionController({
       // which leaves a create or fork the user started free to open.
       dispatch(createSlot({ mode, automatic: true }))
     }
-  }, [activeSlot, filteredSlots, searchParams, dispatch, slotStorageKey, connected, slotsLoaded, mode, newSlotFailed, newSessionRef, tokenConsumingRef, popout, openPending, openWaitLapsed])
+  }, [activeSlot, filteredSlots, searchParams, dispatch, slotStorageKey, connected, slotsLoaded, mode, newSlotFailed, newSessionRef, tokenConsumingRef, popout, openPending, openWaitLapsed, durablyRemoved])
 
   // Slot switch: the virtualizer (keyed on sessionId = activeSlot) owns entry
   // placement — it force-pins to the bottom (arming follow) or restores a
@@ -1313,5 +1365,6 @@ export function useChatPageSessionController({
     sidMatches,
     setSidMatches,
     openShortNameMatch,
+    ownChatClosedElsewhere,
   }
 }

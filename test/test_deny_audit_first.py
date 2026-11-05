@@ -32,6 +32,7 @@ is an unmeetable compliance guarantee.
 from __future__ import annotations
 
 import asyncio
+import json
 import pathlib
 import re
 from unittest import mock
@@ -108,6 +109,21 @@ class _HealthyClient(_StalledRejectClient):
         self._order.append("reject")
 
 
+def _real_audit(tmp_path, monkeypatch) -> mock.MagicMock:
+    """A real SecurityEventLog under *tmp_path*, wrapped so the mock checks still read."""
+    from kiro_crew.sel import SecurityEventLog
+
+    monkeypatch.setattr(SecurityEventLog, "_instance", None)
+    monkeypatch.setattr(SecurityEventLog, "_initialized", False)
+    return mock.MagicMock(wraps=SecurityEventLog(base_dir=tmp_path, sync=True))
+
+
+def _audit_rows(tmp_path) -> list[tuple[str, str]]:
+    path = tmp_path / "security_events.jsonl"
+    text = path.read_text("utf-8") if path.exists() else ""
+    return [(row["outcome"], row["request_id"]) for row in map(json.loads, text.splitlines())]
+
+
 async def _cancelled_at_the_turn_deadline(coro) -> None:
     """Run ``coro`` until it parks on the stalled pipe, then cancel it."""
     task = asyncio.get_running_loop().create_task(coro)
@@ -147,9 +163,9 @@ class TestAuditSurvivesStalledPipe:
             assert kwargs["request_id"] == "req-1"
 
     @pytest.mark.asyncio
-    async def test_invalid_tool_audit_lands_before_the_stalled_reject(self):
+    async def test_invalid_tool_audit_lands_before_the_stalled_reject(self, tmp_path, monkeypatch):
         with mock.patch.object(chat_runner, "sel") as sel_factory:
-            audit = sel_factory.return_value
+            audit = sel_factory.return_value = _real_audit(tmp_path, monkeypatch)
             await _cancelled_at_the_turn_deadline(
                 _reject_invalid_tool(
                     _StalledRejectClient(),
@@ -161,13 +177,14 @@ class TestAuditSurvivesStalledPipe:
                     refusal_notices=None,
                 )
             )
+            assert _audit_rows(tmp_path) == [("denied", "req-1")]
             assert audit.log_tool_invocation.called
             assert audit.log_tool_invocation.call_args.kwargs["outcome"] == "denied"
 
     @pytest.mark.asyncio
-    async def test_hook_error_audit_lands_before_the_stalled_reject(self):
+    async def test_hook_error_audit_lands_before_the_stalled_reject(self, tmp_path, monkeypatch):
         with mock.patch.object(chat_runner, "sel") as sel_factory:
-            audit = sel_factory.return_value
+            audit = sel_factory.return_value = _real_audit(tmp_path, monkeypatch)
             await _cancelled_at_the_turn_deadline(
                 _reject_hook_error(
                     _StalledRejectClient(),
@@ -179,15 +196,18 @@ class TestAuditSurvivesStalledPipe:
                     refusal_notices=None,
                 )
             )
+            assert _audit_rows(tmp_path) == [("hook_error", "req-1")]
             assert audit.log_tool_invocation.called
             assert audit.log_tool_invocation.call_args.kwargs["outcome"] == "hook_error"
 
     @pytest.mark.asyncio
-    async def test_audit_lands_even_when_the_steer_is_the_await_that_stalls(self):
+    async def test_audit_lands_even_when_the_steer_is_the_await_that_stalls(
+        self, tmp_path, monkeypatch
+    ):
         # The steer is wire I/O for the same decision and runs FIRST on notice
         # paths, so audit-after-reject and audit-between would both lose here.
         with mock.patch.object(chat_runner, "sel") as sel_factory:
-            audit = sel_factory.return_value
+            audit = sel_factory.return_value = _real_audit(tmp_path, monkeypatch)
             await _cancelled_at_the_turn_deadline(
                 _reject_hook_blocked(
                     _StalledSteerClient(),
@@ -199,6 +219,7 @@ class TestAuditSurvivesStalledPipe:
                     refusal_notices=[],
                 )
             )
+            assert _audit_rows(tmp_path) == [("hook_blocked", "req-1")]
             assert audit.log_tool_invocation.called, (
                 "the stall hit the steer (the decision's first wire await) and the "
                 "audit record is missing -- the SEL write must precede ALL wire I/O"

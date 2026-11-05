@@ -24,7 +24,10 @@ from kiro_crew.config.loader import (
     SUBAGENT_MAX_TURNS_CEILING,
     KiroCrewConfig,
 )
-from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+from kiro_crew.dashboard.handlers._shared import (
+    body_not_object_error,
+    require_owner_dashboard_request,
+)
 from kiro_crew.dashboard.handlers.core_security import _sel
 from kiro_crew.external_text import redact_external_text as _redact_external
 
@@ -68,6 +71,9 @@ _AGENT_UNTRUSTED_TEXT_FIELDS = (
     "memory_store",
     "model",
     "worker_model",
+    # A crewmate's harness pin is kept as written so the selection gate can
+    # refuse it with its reason, so any string a hand edit left can arrive here.
+    "acp_backend",
     "source",
     "telegram_account",
 )
@@ -103,6 +109,17 @@ def _mask_agent_free_text(value: object) -> object:
     # unchanged, so ``""`` compares equal and passes through — a ``value and``
     # guard here would only look like the fail-open bug class without being it.
     if _redact_external(value) != value:
+        return _SENSITIVE_MASK
+    return value
+
+
+def _mask_strings(value: object) -> object:
+    """*value* with every non-empty string inside it masked; structure kept."""
+    if isinstance(value, dict):
+        return {key: _mask_strings(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_mask_strings(item) for item in value]
+    if isinstance(value, str) and value:
         return _SENSITIVE_MASK
     return value
 
@@ -175,9 +192,16 @@ def _masked_config_dict(cfg: KiroCrewConfig) -> dict:
                     sub = entries
                 if not isinstance(sub, dict):
                     continue
+                sensitive = sub.get("x-meta", {}).get("sensitive", False)
                 if isinstance(val, (dict, list)):
-                    _walk(val, sub)
-                elif isinstance(val, str) and val and sub.get("x-meta", {}).get("sensitive", False):
+                    # A container marked sensitive (``telemetry.otlp_endpoints``)
+                    # masks every string under it: its items have no schema of
+                    # their own to mark which value is the secret.
+                    if sensitive:
+                        node[key] = _mask_strings(val)
+                    else:
+                        _walk(val, sub)
+                elif isinstance(val, str) and val and sensitive:
                     node[key] = _SENSITIVE_MASK
         elif isinstance(node, list):
             items = schema.get("items")
@@ -313,6 +337,9 @@ async def api_kirocrew_config(request: web.Request) -> web.Response:
             body = await request.json()
         except Exception:
             return _deny("invalid JSON")
+        if body_not_object_error(body) is not None:
+            # The same answer, through ``_deny`` so it is audited like every refusal.
+            return _deny("body must be a JSON object", code="body_not_object")
         agent_settings = body.get("agent")
         if not isinstance(agent_settings, dict):
             return _deny("agent must be an object")

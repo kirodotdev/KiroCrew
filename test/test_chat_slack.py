@@ -145,17 +145,9 @@ class TestSlackUnlink:
     ):
         """The teardown is conditional on what the map holds after the flush.
 
-        The durability wait is a real thread hop, and a second same-slot
-        ``slack-link`` can run its whole handler inside it (the existing-thread
-        branch reaches ``link_slack`` with no network await). An unconditional
-        teardown afterwards stripped that NEW link's fields and reverse-index
-        entry while the map kept asserting it, and a re-link then short-circuited
-        on ``already_linked`` -- no in-process recovery. Now the route reads the
-        map once the await returns: a link there is the newer write (the route
-        cleared the old one), so its fields and index stand, the thread gets no
-        "unlinked" note and no struck control, and the answer says ``relinked``.
-        Both a different thread and the very same thread relinked -- the latter
-        is the case a field-by-field compare cannot see.
+        A second ``slack-link`` can run its whole handler inside the durability wait. A
+        link in the map afterwards is the newer write, so it stands and the answer says
+        ``relinked``. The same-thread case is one a field-by-field compare cannot see.
         """
         from kiro_crew.session_map import SessionMap
 
@@ -259,16 +251,9 @@ class TestSlackUnlink:
     ):
         """The in-process teardown follows the map's clear, in failure too.
 
-        The route clears the persisted link, then awaits the map's durability
-        point before it tells the user. ``SessionMap.aflush`` re-raises a
-        failed write (a full or read-only data home), and the failure must
-        surface -- but the map is already clear in memory, so a teardown
-        skipped by the raise would leave the slot's fields and the thread's
-        reverse-index entry asserting a thread the map does not hold: the
-        row keeps rendering, a reply in the thread still resolves here, and a
-        retried Unlink is 409 with nothing left to compare. Driven against a
-        REAL map with the debounce held off, so the route's own flush is the
-        write that fails.
+        ``SessionMap.aflush`` re-raises a failed write after the map is clear in memory, so
+        a skipped teardown would leave fields asserting a link the map does not hold. A REAL
+        map with the debounce held off makes the route's own flush the failing write.
         """
         import errno
         import os
@@ -365,12 +350,8 @@ class TestSlackUnlink:
     async def test_a_stale_row_cannot_unlink_a_relinked_thread(self, tmp_path, monkeypatch):
         """Same guard as mirror-unlink, on the Slack fields the row is drawn from.
 
-        The thread id is the only discriminator a Slack link has: a re-link after
-        an unlink (or a Slack-side resume) lands in the SAME owner DM channel on
-        a fresh thread. A tab still showing the old thread's row must not tear
-        down the replacement: the old row's token is a 409 ``mirror_changed``
-        that clears nothing, the current row's token unlinks, and no body keeps
-        the unconditional clear.
+        A re-link lands in the SAME owner DM channel on a fresh thread, so the thread id is
+        the only discriminator. The old row's token is a 409 ``mirror_changed``.
         """
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
@@ -472,11 +453,8 @@ class TestSlackUnlink:
     ):
         """A thread re-linked to the SAME coordinates after an unlink is a new binding.
 
-        Same ABA as the mirror side: the coordinates alone cannot tell the old
-        binding from its byte-identical recreation, so the row's token digests
-        the link's own persisted nonce -- minted by ``set_slack_link`` on every
-        create or rebind, dropped by ``clear_slack_link`` -- and a delayed unlink
-        naming the old row is refused instead of tearing down the new link.
+        Coordinates cannot tell the old binding from its recreation, so the row's token
+        digests the nonce ``set_slack_link`` mints on every create or rebind.
         """
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
@@ -575,13 +553,10 @@ class TestSlackUnlink:
 class TestSlackLinkUnlinkRoundTrip:
     @pytest.mark.asyncio
     async def test_link_then_unlink_real_session_map(self, tmp_path, monkeypatch):
-        """End-to-end with a REAL SessionMap: link then unlink leaves
-        get_slack_link == (None, None) and drops the reverse index.
+        """With a REAL SessionMap, link then unlink clears the link and the reverse index.
 
-        The slack endpoints only call the slack-link delegation methods
-        (get/set/clear_slack_link, get_session_for_thread), all of which
-        SessionMap implements directly — so a raw SessionMap stands in for
-        the SessionManager here.
+        The endpoints call only slack-link methods SessionMap implements, so it stands in
+        for the SessionManager.
         """
         from unittest.mock import patch
 

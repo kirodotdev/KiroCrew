@@ -25,7 +25,9 @@ def _section(**extra):
     return {"coder_url": "https://c.example.com", "profiles": [CODER], **extra}
 
 
-def test_the_default_must_name_a_profile_this_save_keeps():
+def test_the_validator_checks_the_defaults_shape_not_which_profile_it_names():
+    # Membership is judged at write time on the merged section (a save may omit
+    # a provider list that holds the default): see the vm-providers tests.
     validated = se.validate_session_environments(_section(default_profile="dev"))
     assert validated["default_profile"] == "dev"
     ok = se.validate_session_environments(
@@ -35,8 +37,10 @@ def test_the_default_must_name_a_profile_this_save_keeps():
     # "" (and null) mean this machine.
     assert se.validate_session_environments(_section(default_profile=""))["default_profile"] == ""
     assert se.validate_session_environments(_section(default_profile=None))["default_profile"] == ""
-    with pytest.raises(se.SessionEnvironmentsError, match="not one of the saved profiles"):
-        se.validate_session_environments(_section(default_profile="gone"))
+    assert (
+        se.validate_session_environments(_section(default_profile="gone"))["default_profile"]
+        == "gone"
+    )
     with pytest.raises(se.SessionEnvironmentsError, match="profile id or empty"):
         se.validate_session_environments(_section(default_profile="--flag"))
     # A hand edit that breaks it loads as this machine rather than failing.

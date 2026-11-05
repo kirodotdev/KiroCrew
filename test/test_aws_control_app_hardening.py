@@ -87,17 +87,9 @@ class TestStaleMappingGuard:
     def test_a_cached_identity_cannot_authorize_a_read(self):
         """The probe must not answer an authorization question from memory.
 
-        The test above mocks ``probe_identity`` outright, so it proves the refusal
-        and says nothing about WHERE the identity came from. The real function
-        memoises per ``(profile, region)`` for 30 seconds, which is why this one
-        drives the actual cache: it primes an answer of ACCOUNT, repoints the
-        underlying credentials at another account, and then asks for ACCOUNT.
-
-        Against a cached probe the route reads ACCOUNT's inventory out of the
-        OTHER account, and nothing anywhere reports a problem: the caller asked
-        for an account they own, the check passed, and the rows came back. That is
-        disclosure, and it is silent, which is why the assertion below is that no
-        AWS read was attempted at all.
+        ``probe_identity`` memoises per ``(profile, region)`` for 30 seconds, so this
+        drives the real cache: prime ACCOUNT, repoint the credentials elsewhere, ask
+        again. A cached answer would silently read the OTHER account's inventory.
         """
         handlers = _registered()
         other = "444455556666"
@@ -1101,15 +1093,16 @@ class TestRound36Hardening:
 
         from kiro_crew.apps.builtins.aws_control.backend import backup
 
-        # flake-ok: pre-existing UTC wall-clock read, moved verbatim; the product reads the same clock and the due window is about a day
-        recent = _dt.datetime.now(_dt.timezone.utc).replace(tzinfo=None).isoformat()
+        # A pinned instant, so the stamp sits one hour before it on every host.
+        now = _dt.datetime(2026, 1, 1, 12, 0, tzinfo=_dt.timezone.utc)
+        recent = (now - _dt.timedelta(hours=1)).replace(tzinfo=None).isoformat()
         with (
             mock.patch.object(backup, "nightly_enabled", return_value=True),
             mock.patch.object(
                 backup, "last_runs", return_value={backup.KIND_SNAPSHOT: {"at": recent}}
             ),
         ):
-            assert backup.due_for_nightly(ACCOUNT) is False
+            assert backup.due_for_nightly(ACCOUNT, now=now) is False
 
     def test_a_non_string_last_run_reads_as_due(self):
         from kiro_crew.apps.builtins.aws_control.backend import backup

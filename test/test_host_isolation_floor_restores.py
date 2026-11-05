@@ -342,8 +342,7 @@ class TestTheLogQueueListenerIsRestored:
     """
 
     @pytest.fixture(autouse=True)
-    # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- no test in this module undoes the shared monkeypatch
-    def _isolated_cli_logging(self, monkeypatch):
+    def _isolated_cli_logging(self, _floor_monkeypatch):
         """Foreground mode, and remove the handlers these tests' real setup calls attach.
 
         Driving the real ``_setup_cli_logging`` is the point -- a test that assigned the
@@ -355,7 +354,7 @@ class TestTheLogQueueListenerIsRestored:
         a setup-phase list back during teardown would drop the one it is capturing
         through.
         """
-        monkeypatch.setattr("kiro_crew.cli._fd_targets_file", lambda fd, path: False)
+        _floor_monkeypatch.setattr("kiro_crew.cli._fd_targets_file", lambda fd, path: False)
         loggers = (logging.getLogger(), logging.getLogger("kiro_crew"))
         saved = [(lgr, lgr.handlers[:]) for lgr in loggers]
         yield

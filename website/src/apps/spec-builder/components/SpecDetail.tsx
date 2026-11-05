@@ -24,6 +24,8 @@ import {
 import { ACCENT, SEL_BG, SEL_BORDER, PULSE_MOTION, Btn } from './shared'
 import SegmentedControl, { type Segment } from '../../../components/SegmentedControl'
 import { useIsMobile } from '../../../hooks/useIsMobile'
+import { usePointerDrag } from '../../../hooks/usePointerDrag'
+import ResizeHandle from '../../../components/ResizeHandle'
 import ChatColumn from './ChatColumn'
 import DocView, { type Selection as DocSelection } from './DocView'
 import { DOC_CSS } from '../inlineStyles'
@@ -39,6 +41,13 @@ import ErrorNotice from '../../../components/ErrorNotice'
 
 import { i18nT } from '../../../i18n/t'
 import { guideCaution } from '../../../guide/trustRoot'
+
+/** Undo the body-wide cursor and selection lock the divider drag takes. */
+function releaseDividerLock() {
+  document.body.style.cursor = ''
+  document.body.style.userSelect = ''
+}
+
 export interface ReviewComment {
   id: string
   file: string
@@ -175,40 +184,30 @@ export default function SpecDetail({ name, setErr, onDeleted, onDuplicated }: Sp
     try { const v = Number(localStorage.getItem(LS.docPct)); return v >= 25 && v <= 75 ? v : 44 } catch { return 44 }
   })
   const setDocPct = (v: number) => { setDocPctRaw(v); try { localStorage.setItem(LS.docPct, String(v)) } catch { /* ignore */ } }
-  // Held so an unmount mid-drag can drop the window listeners and restore the
-  // cursor; without this the next pointer move would keep resizing a gone pane.
-  const stopDividerDrag = useRef<(() => void) | null>(null)
-  const onDividerDown = (e: React.MouseEvent) => {
-    e.preventDefault()
-    stopDividerDrag.current?.()
-    const onMove = (ev: MouseEvent) => {
+  const clampDocPct = (v: number) => Math.min(75, Math.max(25, v))
+  // The divider's pointer drag (mouse, touch and pen, with pointer capture).
+  // Text selection is locked for the drag -- without it, moving the pointer
+  // over the document selects prose (and can raise the selection-to-comment
+  // pill); Issue Radar's splitter does the same. Released on end, and on an
+  // unmount mid-drag (`releaseDividerLock`).
+  const dividerDrag = usePointerDrag({
+    threshold: 0,
+    onStart: () => {
+      document.body.style.cursor = 'col-resize'
+      document.body.style.userSelect = 'none'
+    },
+    onMove: ({ x }) => {
       if (!bodyRef.current) return
       const r = bodyRef.current.getBoundingClientRect()
-      setDocPct(Math.min(75, Math.max(25, ((r.right - ev.clientX) / r.width) * 100)))
-    }
-    const onUp = () => {
-      window.removeEventListener('mousemove', onMove)
-      window.removeEventListener('mouseup', onUp)
-      document.body.style.cursor = ''
-      document.body.style.userSelect = ''
-      stopDividerDrag.current = null
-    }
-    stopDividerDrag.current = onUp
-    document.body.style.cursor = 'col-resize'
-    // Lock text selection for the duration of the drag — without this, moving
-    // the pointer over the document selects prose (and can raise the
-    // selection-to-comment pill). Issue Radar's splitter does the same.
-    document.body.style.userSelect = 'none'
-    window.addEventListener('mousemove', onMove)
-    window.addEventListener('mouseup', onUp)
-  }
-  useEffect(() => () => { stopDividerDrag.current?.() }, [])
-  // Keyboard resize — the divider must be operable without a pointer.
-  const onDividerKey = (e: React.KeyboardEvent) => {
-    if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return
-    e.preventDefault()
-    setDocPct(Math.min(75, Math.max(25, docPct + (e.key === 'ArrowLeft' ? 4 : -4))))
-  }
+      setDocPct(clampDocPct(((r.right - x) / r.width) * 100))
+    },
+    onEnd: releaseDividerLock,
+  })
+  useEffect(() => releaseDividerLock, [])
+  // Keyboard resize -- the divider must be operable without a pointer.
+  // ResizeHandle nudges in px (16, or 64 with Shift); a 16px step is 4% of the
+  // split here, and moving the divider left widens the docs column.
+  const nudgeDivider = (dx: number) => setDocPct(clampDocPct(docPct - dx / 4))
 
   // Esc closes the fullscreen review overlay. Suppressed while the delete
   // confirm is up so the stacked dialog gets the key first (Modal already
@@ -794,27 +793,19 @@ export default function SpecDetail({ name, setErr, onDeleted, onDuplicated }: Sp
             : <ChatColumnSkeleton />}
         </div>
       </section>
-      {/* Resizable splitter. eslint's non-interactive heuristics don't model
-          the W3C APG "window splitter" pattern, which is precisely
-          role="separator" + tabIndex + aria-valuenow/min/max and IS
-          interactive once focusable — arrow keys resize it. Suppressed
-          rather than reshaped, because a <button> here would announce the
-          wrong role and lose the value semantics. */}
-      {/* eslint-disable jsx-a11y/no-noninteractive-element-interactions, jsx-a11y/no-noninteractive-tabindex */}
-        <div
-          onMouseDown={onDividerDown}
-          onKeyDown={onDividerKey}
-          role="separator"
-          aria-orientation="vertical"
-          aria-label={i18nT('apps.specBuilder.components.specDetail.resize_document_panel')}
-          aria-valuenow={Math.round(docPct)}
-          aria-valuemin={25}
-          aria-valuemax={75}
-          tabIndex={0}
+      {/* Resizable splitter: the shared window-splitter grip, so this edge
+          matches every other column edge. Hidden on a phone, where the document
+          opens in the review overlay instead. */}
+        <ResizeHandle
+          handleProps={dividerDrag}
+          label={i18nT('apps.specBuilder.components.specDetail.resize_document_panel')}
           title={i18nT('apps.specBuilder.components.specDetail.drag_or_use_to_resize')}
-          className={`w-1.5 shrink-0 cursor-col-resize hover:bg-accent/30 transition-colors focus-ring ${isMobile ? 'hidden' : ''}`}
+          onNudge={nudgeDivider}
+          value={Math.round(docPct)}
+          min={25}
+          max={75}
+          className={isMobile ? 'hidden' : undefined}
         />
-        {/* eslint-enable jsx-a11y/no-noninteractive-element-interactions, jsx-a11y/no-noninteractive-tabindex */}
         {/* ── Docs column ──
             A flush panel with a left border, not a floating card: the card
             treatment made two peer columns look like different kinds of surface

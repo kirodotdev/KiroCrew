@@ -5,10 +5,13 @@ import { MessageSquareQuote, MessageCircleQuestionMark, MessageSquarePlus, X, Co
 import { copyToClipboard } from '../utils/clipboard'
 import { isTouchDevice } from '../utils/isTouchDevice'
 import { containedSelectionRange } from '../utils/selectionContainment'
+import { selectionTouchesHostOnly } from '../utils/visibleText'
 import { codePassagePosition, plainCodeFenceAtRangeStart, shadowSelectionRange } from '../utils/pierreShadow'
 import { useImeGuard } from '../hooks/useImeGuard'
 import { measureAutoGrowTextarea } from '../hooks/useAutoGrowTextarea'
 import ErrorNotice from './ErrorNotice'
+import { CommentVoiceButton } from './CommentVoiceButton'
+import { spliceDictationText } from '../lib/dictationText'
 import { i18nT } from '../i18n/t'
 import { isEditableTarget } from '../utils/editableTarget'
 
@@ -428,6 +431,11 @@ interface SelectionToolbarProps {
    * with no `copy` action copies nothing.
    */
   copyOnSelect?: boolean
+  /**
+   * Items installed apps add (`contributes.selectionActions`), drawn in their own
+   * row under `actions`, so the host's row never grows. Plain rows only.
+   */
+  appActions?: SelectionAction[]
 }
 
 /** Gap between the docked row and whatever it sits on (composer or screen edge). */
@@ -466,7 +474,7 @@ function safeAreaBottomPx(): number {
 
 /** Generic floating toolbar that appears when user selects text within a container.
  *  Extensible — pass any actions (quote, copy, etc.) via the `actions` prop. */
-export default function SelectionToolbar({ containerRef, actions, externalSelection, composer, suspended: suspendedProp = false, externalOnly = false, dock: dockProp = false, codeSelection = false, copyOnSelect = false }: SelectionToolbarProps) {
+export default function SelectionToolbar({ containerRef, actions, externalSelection, composer, suspended: suspendedProp = false, externalOnly = false, dock: dockProp = false, codeSelection = false, copyOnSelect = false, appActions }: SelectionToolbarProps) {
   // Behind a remote Crew the toolbar is hidden with its Crew (components/overlayRoot)
   // and suspends like a hidden tab, so a key aimed at the Crew in front cannot
   // reach it. The draft survives and returns with the Crew.
@@ -538,6 +546,9 @@ export default function SelectionToolbar({ containerRef, actions, externalSelect
   // double-click word selection carries its trailing space, and "copy" that
   // drops it is a copy the user has to repair.
   const rawSelectedTextRef = useRef('')
+  // What app items are handed: only the one range inside this container, so a
+  // Firefox ctrl+drag that also selects text elsewhere never reaches an app.
+  const appTextRef = useRef('')
   const toolbarRef = useRef<HTMLDivElement>(null)
   const sourceRef = useRef<'dom' | 'external' | null>(null)
 
@@ -551,6 +562,7 @@ export default function SelectionToolbar({ containerRef, actions, externalSelect
   // visibility effect never call a stale closure.
   const composerRef = useRef(composer)
   useEffect(() => { composerRef.current = composer }, [composer])
+  const hasAppRow = !!appActions && appActions.length > 0
   // `onClose` fires exactly once per open. Starts "closed" so the mount-time
   // run of the visibility effect below does not fire it for a composer that
   // was never open. A submit sets it before hiding, so the host is told about
@@ -571,6 +583,8 @@ export default function SelectionToolbar({ containerRef, actions, externalSelect
   // still under its drag handles (focus collapses them and summons the
   // keyboard). Those open the box unfocused; Enter, or a tap, moves in.
   const [composerAutoFocus, setComposerAutoFocus] = useState(true)
+  // Bumped on every open of the composer over a passage: the dictation key.
+  const [composerOpenSeq, setComposerOpenSeq] = useState(0)
   // The composer's textarea, for the Enter-to-focus path above.
   const composerInputRef = useRef<HTMLTextAreaElement>(null)
   // Whether the input holds unsaved text. A click-away with a draft keeps the
@@ -657,6 +671,13 @@ export default function SelectionToolbar({ containerRef, actions, externalSelect
       setVisible(false)
       return
     }
+    // Host-only content (the owner's revealed credential) never feeds Quote,
+    // Ask or an app's selection action: a selection touching it gets no
+    // toolbar. The owner's own Copy button and the browser's copy still work.
+    if (selectionTouchesHostOnly(sel, container)) {
+      setVisible(false)
+      return
+    }
 
     // The composer anchors its comment by offsets taken from `measureRange`
     // (below), so its text must come from that same contiguous range: on a
@@ -674,6 +695,10 @@ export default function SelectionToolbar({ containerRef, actions, externalSelect
     // (above), but a copy that silently drops the other ranges of a Firefox
     // ctrl+drag selection is a copy the user has to redo.
     rawSelectedTextRef.current = sel.toString()
+    // App items get the characters the user selected in range 0, as shown: no
+    // link-card URL substitution, which would hand over address parts the user
+    // never selected.
+    appTextRef.current = measureRange.toString().trim()
 
     const rect = measureRange.getBoundingClientRect()
     selectionRectRef.current = rect
@@ -729,6 +754,7 @@ export default function SelectionToolbar({ containerRef, actions, externalSelect
       // A notice from an earlier copy or post attempt does not belong to this selection.
       setCopyFailed(false)
       setSubmitFailed(false)
+      setComposerOpenSeq(n => n + 1)
       activeComposer.onOpen?.(text)
       restoreDraft(text)
     }
@@ -813,7 +839,9 @@ export default function SelectionToolbar({ containerRef, actions, externalSelect
     // `suspended` likewise: a hidden tab does not render the box, so a resize
     // while hidden leaves `pos` untouched, and resuming must re-clamp against
     // the viewport it comes back to rather than the one it left.
-  }, [visible, pos, composerGrowTick, composer, copyFailed, submitFailed, suspended, containerRef, dock])
+    // `hasAppRow` likewise: the app row can appear while the toolbar is open
+    // (the app list read lands), and a docked toolbar must move up for it.
+  }, [visible, pos, composerGrowTick, composer, copyFailed, submitFailed, suspended, containerRef, dock, hasAppRow])
 
   // A docked row hangs off the composer, not the selection, so it re-measures
   // when the viewport changes under it (rotation, the address bar collapsing).
@@ -1006,6 +1034,15 @@ export default function SelectionToolbar({ containerRef, actions, externalSelect
     }, 1500)
   }, [])
 
+  /** An app item: handed only the contained single-range text (`appTextRef`). */
+  const handleAppAction = useCallback((action: SelectionAction) => {
+    const text = appTextRef.current
+    if (!text) return
+    action.onClick(text, selectionRectRef.current || new DOMRect(0, 0, 0, 0))
+    setVisible(false)
+    window.getSelection()?.removeAllRanges()
+  }, [])
+
   const handleAction = useCallback((action: SelectionAction) => {
     const text = selectedTextRef.current
     if (!text) return
@@ -1092,6 +1129,8 @@ export default function SelectionToolbar({ containerRef, actions, externalSelect
     if (visibleRef.current && composerRef.current && composerDraftRef.current) return
     selectedTextRef.current = externalSelection.text
     rawSelectedTextRef.current = externalSelection.text
+    // No DOM range to check against the container: app items get nothing.
+    appTextRef.current = ''
     // The point handed over is the selection's BOTTOM-left; its height is not
     // known, so the composer's above-the-selection placement (which measures
     // from the rect's top) would end exactly over the annotated line. With no
@@ -1112,6 +1151,7 @@ export default function SelectionToolbar({ containerRef, actions, externalSelect
       setComposerAutoFocus(!isTouchDevice())
       setCopyFailed(false)
       setSubmitFailed(false)
+      setComposerOpenSeq(n => n + 1)
       activeComposer.onOpen?.(externalSelection.text)
       restoreDraft(externalSelection.text)
     }
@@ -1339,6 +1379,7 @@ export default function SelectionToolbar({ containerRef, actions, externalSelect
               submitting={submitting}
               submitFailed={submitFailed}
               onDismissSubmitFailed={dismissSubmitFailed}
+              voiceTarget={composerOpenSeq}
             />
           ) : (
           <div
@@ -1365,6 +1406,29 @@ export default function SelectionToolbar({ containerRef, actions, externalSelect
                 {action.hint && <span id={`${hintIdBase}-${action.id}`} className="sr-only">{action.hint}</span>}
               </Fragment>
             ))}
+            {hasAppRow && appActions && (
+              <div data-testid="selection-app-row" className="basis-full min-w-0 max-w-full flex flex-wrap items-center gap-0.5 border-t border-border pt-0.5">
+                {appActions.map(action => (
+                  <Fragment key={action.id}>
+                  <button
+                    // An app title can be long: the button never outgrows the row,
+                    // and the label truncates inside it (the full name stays in
+                    // aria-label and the tooltip).
+                    className={`flex min-w-0 max-w-full items-center gap-1.5 rounded-md font-medium text-text hover:text-accent hover:bg-bg-hover transition-colors cursor-pointer whitespace-nowrap ${dock ? 'px-3.5 min-h-10 text-[13px]' : 'px-2.5 py-1.5 text-[12px]'}`}
+                    onMouseDown={e => e.preventDefault()}
+                    onClick={() => handleAppAction(action)}
+                    aria-label={action.label}
+                    aria-describedby={action.hint ? `${hintIdBase}-${action.id}` : undefined}
+                    title={action.hint ?? action.label}
+                  >
+                    <span className="shrink-0">{action.icon}</span>
+                    <span className="min-w-0 truncate">{action.label}</span>
+                  </button>
+                  {action.hint && <span id={`${hintIdBase}-${action.id}`} className="sr-only">{action.hint}</span>}
+                  </Fragment>
+                ))}
+              </div>
+            )}
             {/* No hand-off: this row floats over a chat whose composer may hold
                 an unsent draft; the hand-off navigates and would discard it. A
                 refused clipboard write is recoverable in place anyway. */}
@@ -1416,7 +1480,7 @@ const COMPOSER_MAX_INPUT_H = 160
  */
 /** The comment box itself, exported so a box drawn on an image opens the same
  *  composer a text selection does rather than a look-alike that drifts from it. */
-export function ComposerBox({ inputRef, autoFocus, actions, copiedId, hintIdBase, onAction, onSubmit, onEscape, onCopyShortcut, onGrow, text, onTextChange, copyFailed, onDismissCopyFailed, submitting, submitFailed, onDismissSubmitFailed, inputLabel }: {
+export function ComposerBox({ inputRef, autoFocus, actions, copiedId, hintIdBase, onAction, onSubmit, onEscape, onCopyShortcut, onGrow, text, onTextChange, copyFailed, onDismissCopyFailed, submitting, submitFailed, onDismissSubmitFailed, inputLabel, voiceTarget }: {
   inputRef: React.RefObject<HTMLTextAreaElement>
   autoFocus: boolean
   actions: SelectionAction[]
@@ -1442,6 +1506,9 @@ export function ComposerBox({ inputRef, autoFocus, actions, copiedId, hintIdBase
   /** The input's accessible name. Defaults to the text-selection wording; a
    *  caller commenting on something other than selected text names its own. */
   inputLabel?: string
+  /** What the comment is about (a passage open, an image box). A new value
+   *  starts a fresh dictation session and drops one still in flight. */
+  voiceTarget?: string | number
 }) {
   const ime = useImeGuard()
   const stacked = useStackedComposer()
@@ -1476,6 +1543,20 @@ export function ComposerBox({ inputRef, autoFocus, actions, copiedId, hintIdBase
     onGrow()
   }, [onGrow])
 
+  // Read when a transcript lands, which can be renders after the press.
+  const textRef = useRef(text)
+  textRef.current = text
+  // The input is read-only while the post is in flight, and a transcript that
+  // settles then is dropped too: written, it would land in the draft slot after
+  // the posted text and outlive the post as a draft of an already-stored comment.
+  const submittingRef = useRef(submitting)
+  submittingRef.current = submitting
+  const [voiceError, setVoiceError] = useState<string | null>(null)
+  // A notice about a dictation for another passage does not belong here.
+  const [errorTarget, setErrorTarget] = useState(voiceTarget)
+  if (errorTarget !== voiceTarget) { setErrorTarget(voiceTarget); setVoiceError(null) }
+  // Re-clamp after the notice changes the rendered box height.
+  useLayoutEffect(() => { onGrow() }, [voiceError, onGrow])
   const canSubmit = text.trim().length > 0 && !submitting
   // The button names the state while the host has the post in flight: a
   // spinner alone reads as "could be loading"; "Saving…" says wait, not retry.
@@ -1503,6 +1584,19 @@ export function ComposerBox({ inputRef, autoFocus, actions, copiedId, hintIdBase
           has the post in flight, so a slow network reads as saving, not as a
           frozen box. */}
         {submitting ? <Loader2 size={13} className="animate-spin" data-testid="composer-submitting" /> : <MessageSquarePlus size={13} />}{submitLabel}</button>
+      {/* Dictation ADDS to the draft; the person still reads it and adds it.
+          Keyed by the passage, so a dictation started for one never lands in
+          the box after it moved to another. */}
+      <CommentVoiceButton
+        key={voiceTarget}
+        disabled={submitting}
+        onError={setVoiceError}
+        onText={t => {
+          if (submittingRef.current) return
+          onTextChange(spliceDictationText(textRef.current, t.trim(), null).value)
+          requestAnimationFrame(() => { const el = inputRef.current; if (el) { autoGrow(el); el.focus() } })
+        }}
+      />
       <div
         role="group"
         aria-label={i18nT('components.selectionToolbar.more_actions')}
@@ -1604,6 +1698,17 @@ export function ComposerBox({ inputRef, autoFocus, actions, copiedId, hintIdBase
           className="basis-full"
           message={i18nT('components.selectionToolbar.copy_failed')}
           onDismiss={onDismissCopyFailed}
+        />
+      )}
+      {/* No hand-off: the comment draft in this box is unsaved, and the agent
+          hand-off navigates to the chat, which would discard it. Pressing the
+          mic again is the retry. */}
+      {voiceError && (
+        <ErrorNotice
+          variant="inline"
+          className="basis-full"
+          message={voiceError}
+          onDismiss={() => setVoiceError(null)}
         />
       )}
       {/* No hand-off here either: the text the post refused is still in this

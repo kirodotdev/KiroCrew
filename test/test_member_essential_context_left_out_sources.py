@@ -217,7 +217,7 @@ def test_over_budget_declared_resources_leave_out_the_tail_and_the_turn_runs(env
     names = [f"context/g{i}.md" for i in range(4)]
     (env.project / "context").mkdir()
     for i, name in enumerate(names):
-        (env.project / name).write_text(f"GUIDE_{i}_HEAD\n" + "y" * 25_000, encoding="utf-8")
+        (env.project / name).write_text(f"GUIDE_{i}_HEAD\n" + "y" * 24_000, encoding="utf-8")
     _declare_resources(env, names)
     with caplog.at_level("WARNING"):
         message = _member_message(env)
@@ -225,9 +225,9 @@ def test_over_budget_declared_resources_leave_out_the_tail_and_the_turn_runs(env
     assert "GUIDE_2_HEAD" not in message and "GUIDE_3_HEAD" not in message
     assert "[Essential source: essential-context#omitted]" in message
     for name in names[2:]:
-        assert f"{env.project / name} (25,013 characters)" in message
+        assert f"{env.project / name} (24,013 characters)" in message
     for name in names[:2]:
-        assert f"{env.project / name} (25,013 characters)" not in message
+        assert f"{env.project / name} (24,013 characters)" not in message
     for core in (
         "Bound Soul: preserve the user's voice.",
         "Project Soul: write with empathy.",
@@ -361,6 +361,112 @@ def test_projected_resources_skip_an_absent_file_in_an_empty_cwd(env, tmp_path):
     assert projected_resource_documents(definition, str(cwd)) == {
         str(cwd.resolve() / "README.md"): "PRESENT_README"
     }
+
+
+def _link_workplace(env, tmp_path) -> Path:
+    """The cloud-desktop layout: ``~/workplace`` links to a volume outside home."""
+    volume = tmp_path / "workplace-volume"
+    (volume / "kb").mkdir(parents=True)
+    (volume / "kb" / "Structure.md").write_text("WORKPLACE_KB_BODY", encoding="utf-8")
+    make_dir_link(Path.home() / "workplace", volume)
+    return Path.home() / "workplace" / "kb" / "Structure.md"
+
+
+@requires_symlinks
+def test_absolute_declared_resource_through_a_linked_home_folder_is_named_not_refused(
+    env, tmp_path
+):
+    """A Mate whose template declares a file under a linked ``~/workplace`` still starts.
+
+    kiro-cli follows the link and loads the file; the snapshot leaves it out
+    unread and names it, and the plain declared file beside it still loads.
+    """
+    declared = _link_workplace(env, tmp_path)
+    inside = Path.home() / "notes.md"
+    inside.write_text("INSIDE_DECLARED_BODY", encoding="utf-8")
+    agents = Path.home() / ".kiro" / "agents"
+    agents.mkdir(parents=True, exist_ok=True)
+    (agents / "kb-mate.json").write_text(
+        json.dumps(
+            {
+                "name": "kb-mate",
+                "prompt": "KB persona.",
+                "resources": [f"file://{declared.as_posix()}", f"file://{inside.as_posix()}"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    for project in (None, str(env.project)):
+        documents = _mec.documents_for_member("kb-mate", project)
+        text = "\n".join(body for _, body in documents)
+        assert "WORKPLACE_KB_BODY" not in text
+        assert "INSIDE_DECLARED_BODY" in text
+        notes = [b for s, b in documents if s == f"{_mec.ESSENTIAL_OUTSIDE_SKIP_SOURCE}:kb-mate"]
+        assert len(notes) == 1
+        assert "DECLARED RESOURCES NOT IN THIS SNAPSHOT. 1 path" in notes[0]
+        assert str(declared) in notes[0]
+    native = _mec.documents_for_member("kb-mate", None, native_only=True)
+    assert not any(s.startswith(_mec.ESSENTIAL_OUTSIDE_SKIP_SOURCE) for s, _ in native)
+
+
+@requires_symlinks
+def test_projected_resources_skip_an_absolute_file_through_a_linked_home_folder(env, tmp_path):
+    declared = _link_workplace(env, tmp_path)
+    definition = {"id": "worker", "resources": [f"file://{declared.as_posix()}"]}
+    assert _mec.projected_resource_documents(definition, str(env.project)) == {}
+
+
+@requires_symlinks
+def test_absolute_declared_resource_through_a_home_link_into_managed_state_still_refuses(
+    env, tmp_path
+):
+    """Leaving an outside file out never outranks the managed-state refusal.
+
+    The declared spelling sits under home, so only the resolved path shows it is a
+    configured workspace's ``memory/`` folder outside home; that must refuse, not skip.
+    """
+    from kiro_crew.config.loader import KiroCrewConfig, WorkspaceConfig
+
+    workspace = tmp_path / "external-workspace"
+    (workspace / "memory").mkdir(parents=True)
+    (workspace / "memory" / "notes.md").write_text("MANAGED_MEMORY_BODY", encoding="utf-8")
+    cfg = KiroCrewConfig.load()
+    cfg.workspaces["external"] = WorkspaceConfig(dir=str(workspace))
+    cfg.save()
+    make_dir_link(Path.home() / "workplace", workspace)
+    declared = Path.home() / "workplace" / "memory" / "notes.md"
+    agents = Path.home() / ".kiro" / "agents"
+    agents.mkdir(parents=True, exist_ok=True)
+    (agents / "kb-mate.json").write_text(
+        json.dumps(
+            {
+                "name": "kb-mate",
+                "prompt": "KB persona.",
+                "resources": [f"file://{declared.as_posix()}"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    for project in (None, str(env.project)):
+        with pytest.raises(MemberEssentialContextError, match="managed memory/member state"):
+            _mec.documents_for_member("kb-mate", project)
+    definition = {"id": "worker", "resources": [f"file://{declared.as_posix()}"]}
+    with pytest.raises(MemberEssentialContextError, match="managed memory/member state"):
+        _mec.projected_resource_documents(definition, str(env.project))
+
+
+@requires_symlinks
+def test_relative_declared_resource_through_a_link_still_refuses(env, tmp_path):
+    """Only ABSOLUTE declarations degrade; a project-relative link keeps failing closed."""
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "GUIDE.md").write_text("OUTSIDE_SECRET", encoding="utf-8")
+    make_dir_link(env.project / "notes", outside)
+    _declare(env, ["file://notes/GUIDE.md"])
+    with pytest.raises(MemberEssentialContextError, match="outside the admitted document root"):
+        env.builder.build_message(
+            "Continue", False, memory_store=env.store, member=env.member, project=str(env.project)
+        )
 
 
 @requires_symlinks

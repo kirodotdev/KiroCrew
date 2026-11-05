@@ -295,6 +295,26 @@ describe('SourcesList — row actions', () => {
     expect(await screen.findByText('doc.md')).toBeTruthy()
   })
 
+  it('a refused delete puts back only its own row, not one another delete removed meanwhile', async () => {
+    confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    let refuse!: (e: Error) => void
+    handler = (path: string, opts?: RequestInit) => {
+      if (path === '/sources') return [src(), src({ id: 's2', name: 'other.md', uri: '/tmp/other.md' })]
+      if (path === '/sources/s1' && opts?.method === 'DELETE') return new Promise((_, reject) => { refuse = reject })
+      return { ok: true }
+    }
+    const { queryClient } = renderList()
+    await screen.findByText('doc.md')
+    // The rows render in list order, so the first Remove control is doc.md's.
+    fireEvent.click(screen.getAllByLabelText('Remove source')[0])
+    await waitFor(() => expect(callsTo('/sources/s1', 'DELETE')).toHaveLength(1))
+    // A second delete lands while the first is in flight.
+    act(() => { queryClient.setQueryData<Source[]>(['knowledge-sources'], old => old?.filter(s => s.id !== 's2')) })
+    await act(async () => { refuse(new Error('gateway said no')) })
+    await waitFor(() => expect(queryClient.getQueryData<Source[]>(['knowledge-sources'])?.map(s => s.id)).toEqual(['s1']))
+    expect(screen.queryByText('other.md')).toBeNull()
+  })
+
   it('does not delete when the user declines the prompt', async () => {
     confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
     handler = (path: string) => {
@@ -379,6 +399,7 @@ describe('SourcesList — row metadata', () => {
         src({ id: 's1', name: 'Short', properties: JSON.stringify({ word_count: 500 }) }),
         src({ id: 's2', name: 'Long', properties: JSON.stringify({ word_count: 2500 }) }),
         src({ id: 's3', name: 'Unknown', properties: JSON.stringify({}) }),
+        src({ id: 's4', name: 'Single', properties: JSON.stringify({ word_count: 1 }) }),
       ]
       return { ok: true }
     }
@@ -386,8 +407,10 @@ describe('SourcesList — row metadata', () => {
     await screen.findByText('Short')
 
     expect(screen.getByText('500 words')).toBeTruthy()
-    expect(screen.getByText('~3k words')).toBeTruthy()
-    expect(screen.getAllByText(/words/)).toHaveLength(2)
+    expect(screen.getByText('~2.5K words')).toBeTruthy()
+    // The plural comes from the catalog, so one word is not "1 words".
+    expect(screen.getByText('1 word')).toBeTruthy()
+    expect(screen.getAllByText(/words?$/)).toHaveLength(3)
   })
 
   it('shows a summary topic even when the stored themes are unreadable', async () => {
@@ -414,7 +437,7 @@ describe('SourcesList — add-source dialog, file branch', () => {
   }
 
   const dropZone = () =>
-    screen.getByText('Drop files here or click to upload').closest('[role="button"]') as HTMLElement
+    screen.getByText('Drop files or a folder here, or click to choose files').closest('[role="button"]') as HTMLElement
 
   it('highlights the drop zone while a drag is over it and clears the highlight on leave', async () => {
     await openAddDialog()
@@ -436,7 +459,7 @@ describe('SourcesList — add-source dialog, file branch', () => {
 
     expect(onIngest).toHaveBeenCalledTimes(1)
     expect(onIngest.mock.calls[0][0]).toEqual([file])
-    expect(screen.queryByText('Drop files here or click to upload')).toBeNull()
+    expect(screen.queryByText('Drop files or a folder here, or click to choose files')).toBeNull()
   })
 
   it('ingests files chosen through the picker', async () => {
@@ -460,15 +483,17 @@ describe('SourcesList — add-source dialog, file branch', () => {
     await openAddDialog({
       ingestionJobs: [
         { name: 'alpha.md', status: 'done' },
-        { name: 'bravo.md', status: 'error: too large' },
-        { name: 'charlie.md', status: 'chunking' },
+        { name: 'bravo.md', status: 'error', error: 'too large' },
+        { name: 'charlie.md', status: 'uploading' },
       ],
     })
 
     expect(screen.getByText('alpha.md')).toBeTruthy()
     expect(screen.getByText('done')).toBeTruthy()
-    expect(screen.getByText('error: too large')).toBeTruthy()
-    expect(screen.getByText('chunking')).toBeTruthy()
+    // A failed row is an error, so its detail renders through ErrorNotice.
+    expect(screen.getByRole('alert').textContent).toContain('too large')
+    expect(screen.getByText('bravo.md')).toBeTruthy()
+    expect(screen.getByText('uploading')).toBeTruthy()
   })
 
   it('reports a typed namespace up to the caller', async () => {
@@ -494,7 +519,8 @@ describe('SourcesList — add-source dialog, folder branch', () => {
     }
     const utils = renderList()
     fireEvent.click(await screen.findByText('+ Add Source'))
-    fireEvent.click(screen.getByText('Local Folder'))
+    // With a native picker the button opens it; without one it adds by path.
+    fireEvent.click(await screen.findByRole('button', { name: opts.folderPicker ? /Choose folder/ : /Add folder by path/ }))
     return utils
   }
 
@@ -515,8 +541,9 @@ describe('SourcesList — add-source dialog, folder branch', () => {
       },
     })
 
-    fireEvent.click(await screen.findByLabelText('Browse for a folder'))
+    // Choose folder opened the native picker straight away.
     expect(await screen.findByText('Opening...')).toBeTruthy()
+    expect(callsTo('/pick-folder', 'POST')).toHaveLength(1)
 
     releasePick({ path: '/home/user/notes' })
     await waitFor(() =>
@@ -529,7 +556,6 @@ describe('SourcesList — add-source dialog, folder branch', () => {
       extra: (path) => (path === '/pick-folder' ? { path: null } : { ok: true }),
     })
 
-    fireEvent.click(await screen.findByLabelText('Browse for a folder'))
     await waitFor(() => expect(callsTo('/pick-folder', 'POST')).toHaveLength(1))
     expect(screen.getByLabelText('Folder path')).toHaveProperty('value', '')
   })
@@ -620,7 +646,7 @@ describe('SourcesList — pending folder confirmation', () => {
     }
     const utils = renderList()
     fireEvent.click(await screen.findByText('+ Add Source'))
-    fireEvent.click(screen.getByText('Local Folder'))
+    fireEvent.click(await screen.findByRole('button', { name: /Add folder by path/ }))
     fireEvent.change(screen.getByLabelText('Folder path'), { target: { value: '/tmp/huge' } })
     fireEvent.click(screen.getByText('Add Folder'))
     return utils

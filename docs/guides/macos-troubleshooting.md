@@ -40,11 +40,13 @@ never reaches launchd. That is why the general fix below is a `launchctl
 setenv`, not another rc-file edit.
 
 If **only an MCP server launcher** is missing, prefer the narrower
-`mcp.extra_path_dirs` config list. It extends MCP resolution and the MCP gateway
-daemon without changing GUI applications' general `PATH`; entries must be
-absolute, and a gateway restart is required because the daemon inherits its
-`PATH` at spawn. It does not affect ordinary agent shell commands. When those are
-missing too, either add the directories as a `PATH=` line in `~/.kiro/crew/.env`
+`mcp.extra_path_dirs` config list. It extends MCP resolution without changing GUI
+applications' general `PATH`; entries must be absolute. The directories are also
+appended last to the `PATH` of each agent child process, read at every spawn, so
+the next session picks up an edit and agent shell commands find a name there only
+when it is on no earlier `PATH` entry. The MCP gateway daemon inherits its `PATH`
+when it starts, so it needs a gateway restart. When other tools are missing too,
+either add the directories as a `PATH=` line in `~/.kiro/crew/.env`
 ([Credentials](../../src/kiro_crew/docs/configuration.md#credentials)), which is
 appended behind the app's `PATH`, or use the launchd fix below.
 
@@ -172,7 +174,7 @@ which case it found.
 ## Chat shows "Connection unstable — please try again." behind a corporate proxy
 
 **Symptoms:** every chat turn fails with a "Connection unstable — please try
-again." banner (the gateway log calls it a "transient error (HTTP 5xx)"), while `kiro-cli` in a Terminal window and the
+again." banner (the error card reads "Could not reach the model backend"), while `kiro-cli` in a Terminal window and the
 Kiro IDE on the same machine work fine. The log shows `dispatch failure …
 error sending request for url (https://q.us-east-1.amazonaws.com/)`.
 

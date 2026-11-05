@@ -124,7 +124,7 @@ def read_issue_ai_cache(
         return None
     try:
         data = json.loads(read_bytes_with_retry(path).decode("utf-8"))
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, UnicodeDecodeError):
         return None
     if not isinstance(data, dict):
         return None
@@ -237,7 +237,7 @@ def read_pr_ai_cache(
         return None
     try:
         data = json.loads(read_bytes_with_retry(path).decode("utf-8"))
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, UnicodeDecodeError):
         return None
     # A syntactically VALID but non-object root (``[]``, a bare string) would blow
     # up on .get() and keep failing every request until the file is deleted by
@@ -323,7 +323,7 @@ def read_recommendations_cache(
         return None
     try:
         data = json.loads(read_bytes_with_retry(path).decode("utf-8"))
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, UnicodeDecodeError):
         return None
     if not isinstance(data, dict):
         return None
@@ -361,7 +361,7 @@ def _tagging_cache_lock(owner: str, repo: str, root: Path | None = None):
     path = tagging_cache_path(owner, repo, root)
     path.parent.mkdir(parents=True, exist_ok=True)
     lock_path = path.with_suffix(".json.lock")
-    lock_path.touch(exist_ok=True)
+    lock_path.touch(mode=0o600, exist_ok=True)
     with open(lock_path, "r+") as fd:
         with platform_compat.file_lock(fd.fileno(), exclusive=True):
             yield
@@ -414,7 +414,7 @@ def read_tagging_cache(owner: str, repo: str, root: Path | None = None) -> dict 
         return None
     try:
         data = json.loads(read_bytes_with_retry(path).decode("utf-8"))
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, UnicodeDecodeError):
         return None
     if not isinstance(data, dict) or data.get("schema") != TAGGING_CACHE_SCHEMA:
         return None
@@ -598,6 +598,9 @@ def read_investigation(
     path = investigation_path(owner, repo, number, root, kind=kind)
     if not path.is_file():
         return None
+    # Not a cache: ``write_investigation`` merges into what this returns and
+    # rewrites the whole record, so a record that does not decode is left to
+    # raise rather than read as absent and be replaced.
     try:
         return json.loads(read_bytes_with_retry(path).decode("utf-8"))
     except json.JSONDecodeError:
@@ -757,7 +760,7 @@ def write_investigation(
     now = _now_iso()
     lock_path = investigation_path(owner, repo, number, root, kind=kind).with_suffix(".lock")
     lock_path.parent.mkdir(parents=True, exist_ok=True)
-    lock_path.touch(exist_ok=True)
+    lock_path.touch(mode=0o600, exist_ok=True)
     with open(lock_path, "r+") as fd:
         with platform_compat.file_lock(fd.fileno(), exclusive=True):
             existing = read_investigation(owner, repo, number, root, kind=kind) or {}

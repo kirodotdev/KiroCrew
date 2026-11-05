@@ -12,6 +12,7 @@ import { renderHookWithProviders } from './helpers'
 import { useAgents } from '../hooks/useAgents'
 import { resetCrewModeCatalog } from '../lib/crewMode'
 import { api } from '../api/client'
+import { crewModePreviewOn } from './crewModePreview'
 
 vi.mock('../api/client', () => ({
   api: {
@@ -62,3 +63,6 @@ describe('useAgents follows a conductor change with the roster unchanged', () =>
     expect(names(result.current.agents)).toEqual(['kirocrew', 'lead-a', 'lead-b'])
   })
 })
+
+// Last, after the file's own hooks that clear localStorage: Crew Mode is a feature preview.
+crewModePreviewOn()

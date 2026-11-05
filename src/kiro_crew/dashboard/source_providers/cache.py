@@ -155,6 +155,43 @@ def _finish_inflight(store: dict[str, asyncio.Task[_T]], url: str, task: asyncio
             task.exception()
 
 
+def _prune_fetch_state_from_other_loops(loop: asyncio.AbstractEventLoop) -> None:
+    """Drop shared-fetch bookkeeping bound to a loop other than the running one.
+
+    These module globals outlive their loop (an embedded gateway restart, or a
+    test loop per test). A task whose loop was torn down never runs its done
+    callbacks, so without this its in-flight entry would be reused for the same
+    URL and awaited from the wrong loop, and its task-set membership and
+    reservation would count against the direct-fetch ceilings forever. A capacity
+    waiter from such a loop can never be woken there either, and setting its
+    result would fail on the closed loop.
+    """
+    stores: tuple[dict[str, asyncio.Task[Any]], ...] = (
+        _FULL_FETCH_INFLIGHT,
+        _CHECKS_FETCH_INFLIGHT,
+        _ISSUE_FETCH_INFLIGHT,
+        _contributors_inflight,
+    )
+    for store in stores:
+        for key, task in list(store.items()):
+            if task.get_loop() is not loop:
+                del store[key]
+    for url, full_tasks in list(_FULL_FETCH_TASKS.items()):
+        full_tasks.difference_update({t for t in full_tasks if t.get_loop() is not loop})
+        if not full_tasks:
+            # As ``finish_full_fetch`` does when the last task for a URL ends.
+            del _FULL_FETCH_TASKS[url]
+            _FULL_FETCH_GENERATIONS.pop(url, None)
+    for url, issue_tasks in list(_ISSUE_FETCH_TASKS.items()):
+        issue_tasks.difference_update({t for t in issue_tasks if t.get_loop() is not loop})
+        if not issue_tasks:
+            del _ISSUE_FETCH_TASKS[url]
+    for task in list(_DIRECT_FETCH_RESERVATIONS):
+        if task.get_loop() is not loop:
+            del _DIRECT_FETCH_RESERVATIONS[task]
+    _DIRECT_FETCH_WAITERS[:] = [w for w in _DIRECT_FETCH_WAITERS if w.get_loop() is loop]
+
+
 def _direct_fetch_tasks() -> set[asyncio.Task[Any]]:
     """Snapshot unique direct full/issue/check tasks, including detached stale work.
 
@@ -274,6 +311,7 @@ async def fetch_pull_request_checks(raw_url: str) -> list[dict[str, Any]]:
     ref = links._require_change_ref(links.parse_source_url(raw_url))
     deadline = time.monotonic() + _DIRECT_FETCH_WAIT_SECS
     while True:
+        _prune_fetch_state_from_other_loops(asyncio.get_running_loop())
         task = _CHECKS_FETCH_INFLIGHT.get(ref.url)
         if task is not None:
             break
@@ -582,6 +620,7 @@ async def fetch_pull_request(raw_url: str, *, refresh: bool = False) -> dict[str
     deadline = now + _DIRECT_FETCH_WAIT_SECS
     while True:
         async with _CACHE_LOCK:
+            _prune_fetch_state_from_other_loops(asyncio.get_running_loop())
             cached = _CACHE.get(ref.url)
             revalidate = cached is not None and not refresh and _revalidation_applies(ref)
             if cached and not refresh:
@@ -685,6 +724,7 @@ async def fetch_issue(raw_url: str, *, refresh: bool = False) -> dict[str, Any]:
     deadline = now + _DIRECT_FETCH_WAIT_SECS
     while True:
         async with _ISSUE_CACHE_LOCK:
+            _prune_fetch_state_from_other_loops(asyncio.get_running_loop())
             cached = _ISSUE_CACHE.get(ref.url)
             if not refresh and cached and time.monotonic() - cached[0] < _CACHE_TTL_SECS:
                 return cached[2]
@@ -791,6 +831,7 @@ async def fetch_app_contributors(url: str, *, refresh: bool = False) -> list[dic
         return []
     key = f"{ref.host}/{ref.owner}/{ref.repo}"
     async with _contributors_lock:
+        _prune_fetch_state_from_other_loops(asyncio.get_running_loop())
         cached = _contributors_cache.get(key)
         if not refresh and cached and time.monotonic() - cached[0] < _CONTRIBUTORS_TTL_SECS:
             return cached[1]

@@ -7,9 +7,14 @@ _subagent_done routes cron-spawned subagent results via session injection.
 from __future__ import annotations
 
 import asyncio
+import itertools
 from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
+from idle_tab_drain_helpers import (  # noqa: F401 -- the autouse fixture registers by import
+    _idle_tab_drains_head_as_turn,
+    open_idle_tab,
+)
 
 from kiro_crew.cron import CronJob, CronSchedule
 from kiro_crew.session_map import SessionMap
@@ -34,6 +39,7 @@ def _make_gateway():
     gateway.dashboard_state = MagicMock()
     gateway._owner_id = "U000"
     gateway._cron_injecting = {}
+    gateway._cron_runs_holding = set()
     gateway._no_crons = False
     gateway.subagent_mgr = MagicMock()
     gateway.subagent_mgr.running = []
@@ -104,6 +110,7 @@ def _use_real_slots(gateway) -> dict:
     def get_or_create_slot(name=None, agent="", origin=""):
         if name not in slots:
             slot = MagicMock()
+            open_idle_tab(slot)
             slot.key = name
             slot.linked_session_key = ""
             slot.messages = []
@@ -230,16 +237,11 @@ class TestCronCallbackStoresThread:
         assert gateway.slack.post_blocks.await_args.args[0] == "C123"
         assert store.get_slack_link("cron:j1") == (None, None)
 
-    # ── Regression: a cron must NOT claim a thread it did not create ──
+    # ── A cron must NOT claim a thread it did not create ──
     #
-    # When a run delivers into an INHERITED or explicit ``job.thread_ts`` -- a
-    # human's own Slack thread, keyed ``slack:<ts>`` -- claiming it for
-    # ``cron:<id>`` via ``set_thread`` evicts the human's owner from the
-    # thread->session index permanently (``cron:`` is not self-derived, so
-    # ``set_slack_link`` sweeps rivals), and the human's next message in their
-    # own thread then runs in the cron session. The cron may claim the thread
-    # ONLY when it created it itself (no ``job.thread_ts``, so ``thread_root`` is
-    # this run's own newly-posted ``parent_ts``).
+    # Claiming a human's ``slack:<ts>`` thread for ``cron:<id>`` makes ``set_slack_link``
+    # sweep the human's owner, so their next message runs in the cron session. Claim
+    # only when there is no ``job.thread_ts`` and ``thread_root`` is this run's ``parent_ts``.
 
     def test_does_not_claim_inherited_thread(self) -> None:
         # job.thread_ts is set (inherited from the caller or explicit): the cron
@@ -322,30 +324,6 @@ class TestSubagentDoneCronRouting:
         gateway.sessions.get_or_create.assert_awaited_once_with("cron:j1")
         gateway.sessions.release.assert_called_once_with("cron:j1")
         assert getattr(info, "_report_undelivered", False) is False
-
-    @pytest.mark.asyncio
-    async def test_resets_session_when_last_subagent(self) -> None:
-        gateway = _make_gateway()
-        subagent_done = _capture_subagent_done(gateway)
-        info = SubagentInfo(
-            id="sub2",
-            task="check status",
-            parent_session_key="cron:j1",
-        )
-        info.result = "all good"
-        info.done = True
-        with (
-            patch("kiro_crew.slack.gateway.redact_exfiltration_urls", return_value=("", False)),
-            patch("kiro_crew.slack.gateway.redact_credentials", return_value=("", False)),
-            patch(
-                "kiro_crew.slack.gateway.stream_and_collect",
-                new_callable=AsyncMock,
-                return_value="done",
-            ),
-        ):
-            await subagent_done(info)
-
-        gateway.sessions.reset.assert_awaited_once_with("cron:j1")
 
     @pytest.mark.asyncio
     async def test_injection_failure_does_not_propagate(self) -> None:
@@ -530,6 +508,9 @@ class TestSubagentDoneCancelsBeforeRelease:
             p1, p2,
         ):
             await subagent_done(info)
+        # The injection's own count is returned, so a later reset is not held back.
+        assert gateway._cron_injecting == {}
+        assert getattr(info, "_report_undelivered", False) is False
         gateway.sessions.release.assert_called_once_with("cron:j1")
 
 
@@ -550,6 +531,7 @@ class TestDashboardInjectionRoutesRunChat:
         """Idle slot triggers _run_chat with the announce message."""
         gateway = _make_gateway()
         slot = MagicMock()
+        open_idle_tab(slot)
         slot.running = False
         slot.key = "chat-1-123"
         slot.task = None
@@ -561,7 +543,7 @@ class TestDashboardInjectionRoutesRunChat:
         info.done = True
         p1, p2 = self._patches()
         with (
-            patch("kiro_crew.slack.gateway._run_chat", new_callable=AsyncMock),
+            patch("kiro_crew.dashboard.chat_runner._run_chat", new_callable=AsyncMock),
             p1, p2,
         ):
             await subagent_done(info)
@@ -593,10 +575,13 @@ class TestDashboardInjectionRoutesRunChat:
 
         gateway = _make_gateway()
         slot = MagicMock()
+        open_idle_tab(slot)
         _done_future: asyncio.Future[None] = asyncio.get_running_loop().create_future()
         _done_future.set_result(None)
-        # First access: True (enters busy branch), second access: False (re-check passes)
-        type(slot).running = PropertyMock(side_effect=[True, False])
+        # First access: True (enters busy branch), then False (the re-checks pass)
+        type(slot).running = PropertyMock(
+            side_effect=itertools.chain([True], itertools.repeat(False))
+        )
         slot.task = _done_future
         slot.key = "chat-1-busy"
         gateway.dashboard_state.get_slot = MagicMock(return_value=slot)
@@ -608,7 +593,7 @@ class TestDashboardInjectionRoutesRunChat:
         p1, p2 = self._patches()
         _mock_run_chat = AsyncMock(return_value=None)
         with (
-            patch("kiro_crew.slack.gateway._run_chat", _mock_run_chat),
+            patch("kiro_crew.dashboard.chat_runner._run_chat", _mock_run_chat),
             p1, p2,
         ):
             await subagent_done(info)
@@ -621,6 +606,7 @@ class TestDashboardInjectionRoutesRunChat:
         """If busy slot doesn't finish within timeout, result is queued."""
         gateway = _make_gateway()
         slot = MagicMock()
+        open_idle_tab(slot)
         slot.running = True  # stays busy even after timeout
         _stuck = asyncio.get_running_loop().create_future()
         slot.task = _stuck
@@ -650,6 +636,7 @@ class TestDashboardInjectionRoutesRunChat:
         """_on_inject_done calls notify_injection_failed with redacted reason."""
         gateway = _make_gateway()
         slot = MagicMock()
+        open_idle_tab(slot)
         slot.running = False
         slot.key = "chat-1-err"
         slot.task = None
@@ -663,7 +650,7 @@ class TestDashboardInjectionRoutesRunChat:
         _mock_run_chat = AsyncMock(side_effect=RuntimeError("provider crashed"))
         p1, p2 = self._patches()
         with (
-            patch("kiro_crew.slack.gateway._run_chat", _mock_run_chat),
+            patch("kiro_crew.dashboard.chat_runner._run_chat", _mock_run_chat),
             p1, p2,
         ):
             await subagent_done(info)

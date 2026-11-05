@@ -431,7 +431,7 @@ class _SettleableDelivery(Protocol):
     """The shape a held delivery has, without importing the class that defines it.
 
     ``SubagentDelivery`` lives in ``subagent``, which imports this module, so naming
-    it here would close a cycle. The three fields are the whole contract.
+    it here would close a cycle. The four fields are the whole contract.
 
     Declared as read-only properties, not as attributes: ``SubagentDelivery`` is a
     frozen dataclass, so its fields do not satisfy a protocol that asks for
@@ -447,6 +447,9 @@ class _SettleableDelivery(Protocol):
 
     @property
     def credits(self) -> float: ...
+
+    @property
+    def leaked_process(self) -> bool: ...
 
 
 def settle_delivered_batch(
@@ -483,7 +486,20 @@ def settle_delivered_batch(
     write = mark_delivered if writer is None else writer
     for delivery in deliveries:
         try:
-            write(delivery.agent_id, elapsed=delivery.elapsed, credits=delivery.credits)
+            if delivery.leaked_process:
+                # A completed run whose teardown could not end its process: the
+                # tombstone keeps the flag, so the next start ends the survivor,
+                # and the run's ``completed`` outcome, which no earlier tombstone
+                # carries forward. Only completed runs owe a ``delivered`` mark.
+                write(
+                    delivery.agent_id,
+                    elapsed=delivery.elapsed,
+                    credits=delivery.credits,
+                    leaked_process=True,
+                    outcome="completed",
+                )
+            else:
+                write(delivery.agent_id, elapsed=delivery.elapsed, credits=delivery.credits)
         except Exception:
             logger.debug("Failed to settle delivered subagent %s", delivery.agent_id, exc_info=True)
 

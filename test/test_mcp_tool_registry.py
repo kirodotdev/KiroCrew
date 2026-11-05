@@ -200,7 +200,8 @@ def test_the_session_control_rows_are_the_strict_rows() -> None:
 
     table = _dashboard_table()
     assert SESSION_CONTROL_TOOLS == table.names("strict")
-    assert {n for n in table.names() if n.startswith("session_")} == set(SESSION_CONTROL_TOOLS)
+    session_rows = {n for n in table.names() if n.startswith("session_") or n == "work_dispatch"}
+    assert session_rows == set(SESSION_CONTROL_TOOLS)
 
 
 def test_every_dashboard_row_is_well_formed() -> None:

@@ -174,7 +174,7 @@ def test_the_cleanup_tick_runs_the_sweep_off_the_event_loop() -> None:
     assert loop_thread[0] != main_thread
 
 
-def test_a_failing_sweep_does_not_break_the_tick() -> None:
+def test_a_failing_sweep_does_not_break_the_tick(caplog: pytest.LogCaptureFixture) -> None:
     from types import SimpleNamespace
 
     from kiro_crew.session_cleanup import SessionCleanup
@@ -189,11 +189,14 @@ def test_a_failing_sweep_does_not_break_the_tick() -> None:
         logger=logging.getLogger("test.staging_sweep"),
     )
     try:
-        asyncio.run(
-            SessionCleanup._sweep_session_staging_temps(SimpleNamespace(_deps=deps))  # type: ignore[arg-type]
-        )
+        with caplog.at_level(logging.DEBUG, logger="test.staging_sweep"):
+            asyncio.run(
+                SessionCleanup._sweep_session_staging_temps(SimpleNamespace(_deps=deps))  # type: ignore[arg-type]
+            )
     finally:
         pool.shutdown(wait=True)
+    own = [r.getMessage() for r in caplog.records if r.name == "test.staging_sweep"]
+    assert own == ["session staging temp sweep failed: OSError"]
 
 
 # ── *.jsonl.lock sentinels ────────────────────────────────────────────────────

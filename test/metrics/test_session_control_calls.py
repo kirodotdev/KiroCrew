@@ -377,13 +377,17 @@ class TestExactlyOnce:
         assert response.status == 200
         assert _calls(rec)[0]["attrs"]["caller"] == "other"
 
-    def test_a_failing_recorder_does_not_raise(self):
+    def test_a_failing_recorder_does_not_raise(self, caplog):
         class _Boom:
             def counter(self, *_a, **_k):
                 raise RuntimeError("recorder down")
 
+        name = "kiro_crew.metrics.session_control_calls"
         with patch("kiro_crew.metrics.provider.get_recorder", return_value=_Boom()):
-            scc.record_session_control_call("send", caller="worker", outcome="ok")
+            with caplog.at_level("DEBUG", logger=name):
+                scc.record_session_control_call("send", caller="worker", outcome="ok")
+        logged = [r.getMessage() for r in caplog.records if r.name == name]
+        assert logged == ["session-control call counter emit failed"]
 
     def test_an_out_of_set_attribute_is_folded_at_the_emit_site(self, rec):
         """The emit site is the only place that has to be right about the bound."""

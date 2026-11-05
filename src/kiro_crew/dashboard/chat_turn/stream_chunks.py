@@ -14,6 +14,7 @@ if TYPE_CHECKING:
         crew_log_emit,
         logger,
     )
+    from kiro_crew.dashboard.chat_turn.regenerate_swap import note_regenerate_notice
     from kiro_crew.dashboard.chat_turn.segment_flush import _accumulate_segment_raw, _redact_delta
     from kiro_crew.dashboard.chat_turn.turn_ledgers import _report_consumed
     from kiro_crew.dashboard.chat_turn.turn_locals import _ChatTurn
@@ -152,10 +153,10 @@ async def _on_text_chunk(turn: _ChatTurn, event) -> None:
     if event.message_id:
         slot.segment_message_id = event.message_id
     _accumulate_segment_raw(slot, event.text, safe_chunk, _removed)
-    if not turn.assistant_text:
+    if not turn.has_assistant_text:
         _compaction_text_offset = 0
         turn._compaction_text_offset = _compaction_text_offset
-    turn.assistant_text += safe_chunk
+    turn.append_assistant_text(safe_chunk)
     if event.control_notice:
         # A backend control notice that arrived as assistant text
         # (the claude adapter's "Compacting..."). It accumulates,
@@ -167,6 +168,9 @@ async def _on_text_chunk(turn: _ChatTurn, event) -> None:
         # counted as an answer would shadow the continuation branch
         # and leave the request unanswered.
         _compaction_notice_chunks.append(safe_chunk)
+        # A Regenerate tells its reply from a control frame the same way: a
+        # notice-only row must not replace the previous reply.
+        note_regenerate_notice(slot, safe_chunk)
     # Set BEFORE the `_turn_emitted` flip: the consumption report
     # below must stay adjacent to that flip (pinned by
     # test_subagent_delivery_ttl_anchor), so a diagnostic flag goes

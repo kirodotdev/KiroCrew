@@ -371,6 +371,12 @@ class LoopStallWatchdog:
 
     # Floor between heartbeat-lag captures, across episodes.
     _LAG_CAPTURE_COOLDOWN_SECS = 60.0
+    # Sustained lag: a loop that keeps answering late, never long enough for a
+    # stall dump, still makes every request take seconds. The heartbeat sleeps
+    # this long between beats, so a gap past it is lag.
+    _HEARTBEAT_INTERVAL_SECS = 5.0
+    _SUSTAINED_LAG_SECS = 2.0
+    _SUSTAINED_LAG_SAMPLES = 3
 
     def __init__(
         self,
@@ -406,6 +412,14 @@ class LoopStallWatchdog:
         self._lag_next_at = 0.0
         self._log = log or logger
         self._last_beat = now()
+        # The gap the latest beat closed (loop thread writes, daemon reads).
+        self._last_gap: float | None = None
+        # Sustained-lag state, read and written on the daemon thread only.
+        self._lag_sampled_generation = 0
+        self._lag_streak = 0
+        self._lag_episode_max = 0.0
+        self.lagging = False
+        self.sustained_lag_episodes = 0
         # ``threading.get_ident()`` of the thread that last beat: the loop
         # thread the enrichment locates.  None until the first beat.
         self._loop_thread_id: int | None = None
@@ -443,7 +457,9 @@ class LoopStallWatchdog:
         beats — i.e. a real wedge, not a transient lag.  It also records the
         calling thread as the loop thread the stall enrichment locates.
         """
-        self._last_beat = self._now()
+        beat_at = self._now()
+        self._last_gap = beat_at - self._last_beat
+        self._last_beat = beat_at
         self._loop_thread_id = threading.get_ident()
         self._loop_native_thread_id = threading.get_native_id()
         self._beat_generation += 1
@@ -490,6 +506,47 @@ class LoopStallWatchdog:
                 return False
             return True
 
+    def _note_sustained_lag(self) -> None:
+        """Warn once per episode when the loop keeps beating late.
+
+        One sample per new beat: the gap that beat closed, past the heartbeat's
+        own sleep. ``_SUSTAINED_LAG_SAMPLES`` samples in a row over
+        ``_SUSTAINED_LAG_SECS`` open an episode. A loop that stops beating
+        altogether is the stall path below, not this one. Logged from this
+        thread, so the warning reaches the journal while the loop is the thing
+        that is slow.
+        """
+        generation = self._beat_generation
+        gap = self._last_gap
+        if generation == self._lag_sampled_generation or gap is None:
+            return
+        # Polls run every few seconds and beats about as often, so two beats
+        # can land between polls; the newest gap stands for both.
+        self._lag_sampled_generation = generation
+        lag = gap - self._HEARTBEAT_INTERVAL_SECS
+        if lag < self._SUSTAINED_LAG_SECS:
+            self._lag_streak = 0
+            if self.lagging:
+                self.lagging = False
+                self._log.info(
+                    "event loop recovered from sustained lag (worst %.1fs)",
+                    self._lag_episode_max,
+                )
+            self._lag_episode_max = 0.0
+            return
+        self._lag_streak += 1
+        self._lag_episode_max = max(self._lag_episode_max, lag)
+        if not self.lagging and self._lag_streak >= self._SUSTAINED_LAG_SAMPLES:
+            self.lagging = True
+            self.sustained_lag_episodes += 1
+            self._log.warning(
+                "event loop lagging: %d heartbeats in a row ran %.1fs+ late (latest %.1fs); "
+                "every request waits that long",
+                self._lag_streak,
+                self._SUSTAINED_LAG_SECS,
+                lag,
+            )
+
     def check(self) -> bool:
         """Evaluate liveness once.  Returns ``True`` iff a soft dump was emitted.
 
@@ -520,6 +577,7 @@ class LoopStallWatchdog:
         mono = self._now()
         self._note_resume(mono)
         silence = mono - self._last_beat
+        self._note_sustained_lag()
         self._defer_exit_while_paging(silence)
         if silence >= self._enrich_after and not self._enriched:
             self._enriched = True
@@ -565,9 +623,7 @@ class LoopStallWatchdog:
             return False
         # Healthy / recovered — silence is back below the first threshold.
         if self._dumped:
-            self._log.warning(
-                "event loop recovered after stall (last beat %.1fs ago)", silence
-            )
+            self._log.warning("event loop recovered after stall (last beat %.1fs ago)", silence)
         if self._enriched and not self._dumped:
             self._log.warning(
                 "event loop recovered after stall enrichment (last beat %.1fs ago)",
@@ -726,9 +782,7 @@ class LoopStallWatchdog:
             except Exception:  # pragma: no cover - degrade to soft dump only
                 self._log.exception("loop watchdog failed to arm the stall alarm")
                 self._later_active = False
-        self._thread = threading.Thread(
-            target=self._run, name="loop-stall-watchdog", daemon=True
-        )
+        self._thread = threading.Thread(target=self._run, name="loop-stall-watchdog", daemon=True)
         self._thread.start()
         if self._exit_after is not None and self._enrich_after >= self._exit_after:
             # Not fatal — enrichment just never lands before the exit.  Flag it

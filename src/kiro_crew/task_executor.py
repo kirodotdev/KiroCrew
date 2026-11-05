@@ -38,6 +38,7 @@ from kiro_crew.agent_sdk.spec_hooks import (
 )
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.constants import DENY_CAUSE_SURFACE_POLICY
+from kiro_crew.context_assembly.budget import window_for_provider_client
 from kiro_crew.executors import run_in_embed_pool
 from kiro_crew.hooks import (
     fire_tool_hooks,
@@ -56,6 +57,7 @@ from kiro_crew.messaging.dispatch import (
     rollback_skill_bodies,
 )
 from kiro_crew.messaging.link import telemetry_channel_of
+from kiro_crew.parent_turns import note_turn_landed
 from kiro_crew.providers.base import (
     EVENT_AGENT_SWITCHED,
     EVENT_COMPLETE,
@@ -847,13 +849,23 @@ async def execute_task(
                     task_prompt,
                     is_new,
                     session_key,
+                    # No user reads this turn live, so the [OPTIONS:] and
+                    # reply-format guidance a chat turn gets does not apply.
+                    interactive=False,
                     agent=agent or None,
                     project=str(work_dir) if work_dir else None,
                     provider_type=KiroCrewConfig.load().agent.provider,
                     memory_store=memory_store,
+                    # Size the injected context to this step's model, which
+                    # may be pinned smaller than the 1M reference window.
+                    model_window=window_for_provider_client(client),
                     context_provider=client,
                     resumed=_resumed,
                     needs_reinjection=_needs_reinjection,
+                    # Triggers read only what this step asks for, not the role
+                    # text, the plan's other steps, the spec or the instructions
+                    # build_task_prompt wraps it in.
+                    skill_trigger_text=task_trigger_text(task),
                 )
             else:
                 full_prompt = task_prompt
@@ -982,6 +994,7 @@ async def execute_task(
             # completion, never gets here: the raises above hand those to the
             # retry ladder, and the finally re-arms.
             _turn_landed = True
+            note_turn_landed(sessions, session_key)
             # The ONE place the resume hint is cleared: an attempt completed
             # normally, so nothing it steered is left undone. See Task.resume_hint.
             task.resume_hint = ""
@@ -1020,6 +1033,7 @@ async def execute_task(
                     context_window=_window,
                     elapsed_ms=int((_time.monotonic() - _turn_t0) * 1000),
                     model_source=client,
+                    trigger="workflow",
                 )
             except Exception:
                 logger.debug("usage row (taskrunner) persist failed", exc_info=True)
@@ -1454,6 +1468,13 @@ async def execute_task(
     return False
 
 
+def task_trigger_text(task: Task) -> str:
+    """The text a step's skill triggers match: its own title and description."""
+    if task.description and task.description != task.title:
+        return f"{task.title}\n\n{task.description}"
+    return task.title
+
+
 async def build_task_prompt(run: Project, task: Task, attempt: int, work_dir: Path) -> str:
     """Build the prompt for executing a task."""
     parts: list[str] = []
@@ -1676,6 +1697,7 @@ async def self_review(
                 context_window=_window,
                 elapsed_ms=int((_time.monotonic() - _review_t0) * 1000),
                 model_source=client,
+                trigger="workflow",
             )
         except Exception:
             logger.debug("usage row (self_review) persist failed", exc_info=True)

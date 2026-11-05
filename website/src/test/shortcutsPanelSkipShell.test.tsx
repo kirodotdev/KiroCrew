@@ -14,7 +14,7 @@
  * removing the set without replacing this disclosure fails here.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { screen } from '@testing-library/react'
+import { act, screen } from '@testing-library/react'
 
 import { ShortcutsPanel } from '../pages/settings/ShortcutsPanel'
 import { PANEL_TOGGLES_SKIPPING_SHELL, PANEL_TOGGLE_SHORTCUTS_KEY } from '../lib/panelToggleShortcuts'
@@ -28,7 +28,10 @@ describe('Settings → Shortcuts: skip-shell disclosure', () => {
     localStorage.clear()
     setTerminalEnabledFlag(true)
   })
-  afterEach(() => setTerminalEnabledFlag(false))
+  afterEach(() => {
+    // Flipping the flag re-renders the still-mounted panel, so it is an action the test causes.
+    act(() => { setTerminalEnabledFlag(false) })
+  })
 
   it('warns on exactly the rows whose chord is taken from the PTY', () => {
     renderWithProviders(<ShortcutsPanel />)

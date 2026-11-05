@@ -20,11 +20,12 @@ through on its way to a session (the conductor installers, and the spawn of a
 template Kiro Crew does not write). It only ADDS: a server name the template already
 carries is left exactly as the template has it.
 
-The default agent and the worker are not covered, by design. ``kirocrew.json``
-already holds every server installed through the MCP page, and the worker mirrors
-it, so neither needs this record; both are refused (:data:`DEFAULT_REASON`). Every
-other template Kiro Crew writes takes no additions either (:data:`BUILT_IN_REASON`,
-:data:`CREWMATE_REASON`).
+The default agent is covered only for a MOUNT-ONLY addition, recorded under
+``kirocrew`` and mirrored by the worker: the MCP page's add also approves every
+tool, and a mid-chat request must not become a second grant path. A normal
+addition there, and any addition to the worker, is refused
+(:data:`DEFAULT_REASON`), as is every other template Kiro Crew writes
+(:data:`BUILT_IN_REASON`, :data:`CREWMATE_REASON`).
 
 The file is owner-only, every write is atomic, and every read-modify-write holds
 an in-process lock plus a cross-process advisory lock on a sidecar file.
@@ -63,7 +64,8 @@ RECORD_MAX_BYTES = 1024 * 1024
 
 #: The only keys an addition's server entry may carry: how to launch or reach the
 #: server. Nothing here grants a tool. ``autoApprove`` / ``allowedTools`` /
-#: ``disabledTools`` and anything else are refused on write and dropped on merge.
+#: ``disabledTools`` and anything else are refused on write and dropped on merge;
+#: the merge then layers the MCP page's own ``disabledTools`` switch back on.
 ENTRY_KEYS: frozenset[str] = frozenset(
     {"command", "args", "env", "url", "headers", "type", "timeout"}
 )
@@ -87,6 +89,9 @@ _lock = threading.RLock()
 #: MCP page: the default agent's spec holds every server installed there, and the
 #: worker mirrors it.
 DEFAULT_TEMPLATES: frozenset[str] = frozenset({"kirocrew", "kirocrew-worker"})
+#: The one default template a mount-only addition is recorded under: the worker
+#: mirrors the default agent's spec, so one record reaches both.
+DEFAULT_TEMPLATE = "kirocrew"
 #: Templates whose installer rebuilds their spec and merges the record into it.
 #: Every template Kiro Crew does not write is merged at spawn instead, never into its
 #: spec file (:func:`merge_at_spawn`).
@@ -116,14 +121,23 @@ class McpAddition:
     approved_by: str
     approved_at: str
     card_id: str
+    #: True for a record on the default agent: it mounts the server but never
+    #: grants its tools. The default agent/worker normally take their servers
+    #: from the MCP page, which approves every tool; a mid-chat request must not
+    #: do that. Every other template records a normal addition, whose tools
+    #: prompt until the user grants them through the existing paths.
+    mount_only: bool = False
 
     def to_record(self) -> dict[str, Any]:
-        return {
+        record: dict[str, Any] = {
             "entry": copy.deepcopy(dict(self.entry)),
             "approved_by": self.approved_by,
             "approved_at": self.approved_at,
             "card_id": self.card_id,
         }
+        if self.mount_only:
+            record["mount_only"] = True
+        return record
 
 
 # --------------------------------------------------------------------------- #
@@ -170,13 +184,18 @@ def add_addition(
     approved_by: str,
     card_id: str,
     approved_at: str | None = None,
-) -> McpAddition:
+    only_if_absent: bool = False,
+    mount_only: bool = False,
+) -> McpAddition | None:
     """Record *server* on *template* and return the stored addition.
 
     *entry* must be the gateway-resolved server entry (never an agent-supplied
     launch line) and carry only :data:`ENTRY_KEYS`; a trust key is refused with
     ``AdditionError("trust_key:<key>")``. Recording a server the template already
-    has an addition for replaces that addition (the newer approval wins).
+    has an addition for replaces that addition (the newer approval wins), unless
+    *only_if_absent*: then an existing addition is left as it is and ``None`` is
+    returned, decided under the same lock as the write (a rollback restoring an
+    older record never overwrites a newer approval).
     Raises :class:`AdditionError` on a refused input and ``OSError`` /
     ``ValueError`` when an existing record cannot be read (it is never overwritten
     blind).
@@ -184,7 +203,7 @@ def add_addition(
     _check_template(template)
     _check_server(server)
     template = _TEMPLATE_ALIASES.get(template, template)
-    _check_covered(template)
+    _check_covered(template, mount_only=mount_only)
     clean = validate_entry(entry)
     who = _check_text(approved_by, "approved_by")
     card = _check_text(card_id, "card_id")
@@ -197,6 +216,7 @@ def add_addition(
         approved_by=who,
         approved_at=when,
         card_id=card,
+        mount_only=bool(mount_only),
     )
     with _locked():
         data = _read(strict=True)
@@ -206,6 +226,8 @@ def add_addition(
         bucket = templates.setdefault(template, {})
         if not isinstance(bucket, dict):
             raise ValueError("template_mcp_additions_invalid")
+        if only_if_absent and server in bucket:
+            return None
         bucket[server] = addition.to_record()
         _write(data)
     return addition
@@ -240,7 +262,12 @@ def remove_addition(template: str, server: str, *, card_id: str | None = None) -
     return True
 
 
-def merge_into(template: str, servers: Mapping[str, Any] | None) -> dict[str, Any]:
+def merge_into(
+    template: str,
+    servers: Mapping[str, Any] | None,
+    *,
+    recorded: Mapping[str, McpAddition] | None = None,
+) -> dict[str, Any]:
     """*servers* plus *template*'s recorded additions, as a new map.
 
     ADD-only: a server name *servers* already declares keeps the template's own entry.
@@ -249,19 +276,58 @@ def merge_into(template: str, servers: Mapping[str, Any] | None) -> dict[str, An
     approved entry is its launch, and the restriction is layered on top, so it still
     narrows the server instead of withholding it whole. Each added entry is rebuilt
     from :data:`ENTRY_KEYS` alone, so no trust key reaches a spec even from a
-    hand-edited record. *servers* is not mutated.
+    hand-edited record, and then takes the MCP page's current tool switch-offs for
+    that server (:func:`_page_switch_offs`), so an addition never brings back a tool
+    the owner turned off. *servers* is not mutated.
     """
     merged: dict[str, Any] = dict(servers or {})
-    for name, addition in read_additions(template).items():
+    if recorded is None:
+        recorded = read_additions(template)
+    switched_off = _page_switch_offs(recorded) if recorded else {}
+    for name, addition in recorded.items():
         existing = merged.get(name)
         if isinstance(existing, dict) and _restriction_only(existing):
             kept = {k: copy.deepcopy(existing[k]) for k in RESTRICTION_KEYS if k in existing}
-            merged[name] = {**copy.deepcopy(dict(addition.entry)), **kept}
+            merged[name] = _with_switch_offs(
+                {**copy.deepcopy(dict(addition.entry)), **kept}, switched_off.get(name)
+            )
             continue
         if name in merged:
             continue
-        merged[name] = copy.deepcopy(dict(addition.entry))
+        merged[name] = _with_switch_offs(
+            copy.deepcopy(dict(addition.entry)), switched_off.get(name)
+        )
     return merged
+
+
+def _page_switch_offs(names: Any) -> dict[str, list[str]]:
+    """The tools the owner switched off on the MCP page, per server in *names*. Blocking.
+
+    An approved addition is the gateway's launch line for a server, and the page's
+    ``disabledTools`` switch is a guard on that server wherever it runs, so every
+    merge layers the page's current switch-offs onto it. The page is read by the
+    one reader the crewmate path already uses (``mate_worker.globally_disabled_refs``,
+    ``@server/tool`` refs), grouped here per server. Read live, so a tool switched
+    off later is off here too.
+    """
+    from kiro_crew.mate_worker import globally_disabled_refs
+
+    out: dict[str, list[str]] = {}
+    for ref in globally_disabled_refs(names):
+        server, _, tool = ref[1:].partition("/")
+        if server and tool:
+            out.setdefault(server, []).append(tool)
+    return out
+
+
+def _with_switch_offs(entry: dict[str, Any], tools: list[str] | None) -> dict[str, Any]:
+    """*entry* with *tools* added to its ``disabledTools`` (a union; never fewer)."""
+    if not tools:
+        return entry
+    have = entry.get("disabledTools")
+    have = [t for t in have if isinstance(t, str)] if isinstance(have, list) else []
+    entry["disabledTools"] = list(dict.fromkeys([*have, *tools]))
+    return entry
 
 
 #: The keys a restriction-only entry may carry onto an approved one. Both only narrow:
@@ -343,7 +409,7 @@ DEFAULT_REASON = (
 #: The refusal for a crewmate's own service template, whose servers come from the
 #: crewmate's capability path rather than from this record.
 CREWMATE_REASON = (
-    "This agent belongs to a crewmate. A crewmate's servers are changed through its own "
+    "This agent belongs to a Bot. A Bot's servers are changed through its own "
     "capabilities, not added here."
 )
 
@@ -382,11 +448,13 @@ NO_SPEC_SERVERS_REASON = (
 )
 
 
-def _template_support(template: str) -> AdditionSupport | None:
+def _template_support(template: str, *, mount_only: bool = False) -> AdditionSupport | None:
     """The refusal for a template this record does not cover, or ``None`` if it does."""
     from kiro_crew.agent_files import is_mate_service_agent
 
     if template in DEFAULT_TEMPLATES:
+        if template == "kirocrew" and mount_only:
+            return None
         return AdditionSupport(False, DEFAULT_REASON)
     if is_mate_service_agent(template):
         return AdditionSupport(False, CREWMATE_REASON)
@@ -395,7 +463,7 @@ def _template_support(template: str) -> AdditionSupport | None:
     return None
 
 
-def addition_support(template: str, backend: str) -> AdditionSupport:
+def addition_support(template: str, backend: str, *, mount_only: bool = False) -> AdditionSupport:
     """Whether an addition to *template* reaches its sessions on *backend*.
 
     Refused for a template the record does not cover: the default agent and the
@@ -414,9 +482,15 @@ def addition_support(template: str, backend: str) -> AdditionSupport:
     if not isinstance(template, str) or not _TEMPLATE_RE.fullmatch(template):
         return AdditionSupport(False, "That agent name is not valid.")
     template = _TEMPLATE_ALIASES.get(template, template)
-    refused = _template_support(template)
+    refused = _template_support(template, mount_only=mount_only)
     if refused is not None:
         return refused
+    if template in DEFAULT_TEMPLATES:
+        from kiro_crew.agent_sdk.drivers.acp import backend_delivers_spec_servers
+
+        if backend_delivers_spec_servers(backend):
+            return AdditionSupport(True)
+        return AdditionSupport(False, NO_SPEC_SERVERS_REASON)
     if template in INSTALLER_MERGED_TEMPLATES:
         from kiro_crew.agent_sdk.drivers.acp import backend_delivers_spec_servers
 
@@ -456,7 +530,7 @@ def merge_at_spawn(template: str | None, spec: dict[str, Any] | None) -> dict[st
     return out
 
 
-def addition_reach(template: str) -> tuple[str, ...]:
+def addition_reach(template: str, *, mount_only: bool = False) -> tuple[str, ...]:
     """Every template one addition to *template* reaches, *template* first.
 
     Two tables decide it, and a test pins both to their owners so this cannot drift:
@@ -476,9 +550,101 @@ def addition_reach(template: str) -> tuple[str, ...]:
     ):
         if name not in reach:
             reach.append(name)
-    if _template_support(canonical) is not None:
+    if _template_support(canonical, mount_only=mount_only) is not None:
         return ()
+    if mount_only and canonical == "kirocrew" and "kirocrew-worker" not in reach:
+        reach.append("kirocrew-worker")
     return tuple(reach)
+
+
+def mount_only_names(template: str) -> frozenset[str]:
+    """Servers recorded mount-only on *template*; empty when none are."""
+    return frozenset(
+        name for name, addition in read_additions(template).items() if addition.mount_only
+    )
+
+
+#: The key the rebuild stamps on a server entry it merged into the default
+#: agent's spec from this record. ``kirocrew.json`` is rebuilt ON TOP of itself
+#: (user customizations are kept), so without the stamp a server whose record was
+#: removed (the card's Undo) would stay mounted for good. The stamp only ever
+#: lets the rebuild REMOVE an entry, never grant one, so a stamp planted by hand
+#: costs that entry and nothing else.
+MERGED_MARK = "x-kirocrew-card-addition"
+
+
+def page_launched_names(*scopes: Mapping[str, Any]) -> frozenset[str]:
+    """The server names an MCP page scope LAUNCHES: an entry with a ``command`` or ``url``.
+
+    A page toggle writes a stub such as ``{}`` or ``{"disabledTools": [...]}`` for a
+    server it lists, including one a card added. A stub launches nothing, so it is
+    not the page owning that server: counting it would keep a card-added server
+    mounted after its Undo, and the page's own grant would then approve its tools.
+    """
+    names: set[str] = set()
+    for scope in scopes:
+        if not isinstance(scope, Mapping):
+            continue
+        for name, entry in scope.items():
+            if isinstance(entry, Mapping) and any(
+                isinstance(entry.get(key), str) and entry.get(key) for key in ("command", "url")
+            ):
+                names.add(name)
+    return frozenset(names)
+
+
+def reconcile_default_spec(
+    spec: dict[str, Any], page_names: frozenset[str]
+) -> tuple[list[str], list[str], frozenset[str]]:
+    """Make the default spec's merged additions match the record; ``(added, removed, mount_only)``.
+
+    *mount_only* is the set of servers recorded mount-only in the SAME read of the
+    record the merge used, for the rebuild's grant pass. A second read could miss a
+    record an Undo removed in between while this pass kept its entry, and that
+    entry would then take the page's whole-server grant.
+
+    Every entry carrying :data:`MERGED_MARK` whose server the record does not hold
+    is removed with its bare ``@server`` ref in ``tools`` and ``allowedTools``,
+    unless an MCP page scope launches a server of that name (*page_names*, from
+    :func:`page_launched_names`), which then owns it and only loses the stamp. A
+    per-tool ``@server/tool`` ref is the user's own and is kept: with no server of
+    that name it reaches nothing, and the card that adds one again lists it under
+    "Already approved". Keeping it is also what lets a failed Undo, whose record
+    is put back, return the server with the grants it had. Every recorded server
+    the spec lacks is then merged (:func:`merge_into_spec`) and stamped. IN PLACE;
+    never writes a file.
+    """
+    servers = spec.get("mcpServers")
+    if not isinstance(servers, dict):
+        return [], [], frozenset()
+    recorded = read_additions(DEFAULT_TEMPLATE)
+    mount_only = frozenset(name for name, add in recorded.items() if add.mount_only)
+    removed: list[str] = []
+    for name in list(servers):
+        entry = servers[name]
+        if not isinstance(entry, dict) or MERGED_MARK not in entry:
+            continue
+        if name in recorded:
+            continue
+        if name in page_names:
+            entry.pop(MERGED_MARK, None)
+            continue
+        del servers[name]
+        removed.append(name)
+        for key in ("tools", "allowedTools"):
+            refs = spec.get(key)
+            if isinstance(refs, list):
+                refs[:] = [r for r in refs if r != f"@{name}"]
+    added = merge_into(DEFAULT_TEMPLATE, servers, recorded=recorded)
+    names = [name for name in added if added[name] is not servers.get(name)]
+    spec["mcpServers"] = added
+    tools = spec.get("tools")
+    for name in names:
+        if isinstance(added.get(name), dict):
+            added[name][MERGED_MARK] = True
+        if isinstance(tools, list) and f"@{name}" not in tools:
+            tools.append(f"@{name}")
+    return names, removed, mount_only
 
 
 def validate_entry(entry: object) -> dict[str, Any]:
@@ -549,6 +715,7 @@ def _parse_template(template: str, bucket: Any) -> dict[str, McpAddition]:
                 approved_by=_check_text(stored.get("approved_by"), "approved_by"),
                 approved_at=_check_text(stored.get("approved_at"), "approved_at"),
                 card_id=_check_text(stored.get("card_id"), "card_id"),
+                mount_only=_parse_mount_only(template, stored),
             )
         except AdditionError as exc:
             logger.warning(
@@ -565,11 +732,38 @@ def _check_template(template: object) -> None:
         raise AdditionError("template_invalid")
 
 
-def _check_covered(template: str) -> None:
-    """Refuse a template this record does not cover (``AdditionError``)."""
-    support = _template_support(template)
+def _check_covered(template: str, *, mount_only: bool = False) -> None:
+    """Refuse a template this record does not cover (``AdditionError``).
+
+    The default agent and its worker are covered only for a mount-only record:
+    their normal servers come from the MCP page, whose add also approves every
+    tool, and this record must never become a second path to that grant.
+    """
+    support = _template_support(template, mount_only=mount_only)
     if support is not None:
         raise AdditionError(f"template_not_covered:{template}")
+
+
+def _parse_mount_only(template: str, stored: Mapping[str, Any]) -> bool:
+    """The stored disposition, refusing a default-agent entry without one.
+
+    A hand-edited default-agent entry with no ``mount_only`` would otherwise be
+    merged and, if the same name is also on the MCP page, granted on the next
+    rebuild. The record is owner-only; an entry that does not state the one
+    disposition the default agent allows is unusable.
+    """
+    raw = stored.get("mount_only")
+    if raw is None:
+        if template in DEFAULT_TEMPLATES:
+            raise AdditionError("default_template_requires_mount_only")
+        return False
+    if not isinstance(raw, bool):
+        raise AdditionError("mount_only_invalid")
+    if template == "kirocrew-worker":
+        raise AdditionError("worker_addition_not_recordable")
+    if template in DEFAULT_TEMPLATES and not raw:
+        raise AdditionError("default_template_requires_mount_only")
+    return raw
 
 
 def _check_server(server: object) -> None:
@@ -604,15 +798,15 @@ def _now() -> str:
 def _locked() -> Iterator[None]:
     """In-process lock plus a cross-process advisory lock on a sidecar file."""
     with _lock:
-        from kiro_crew.platform_compat import file_lock
+        from kiro_crew.platform_compat import file_lock, open_create_or_existing
 
         lock_path = record_path().with_suffix(".json.lock")
         # ``0700`` under any umask: the record directory is owner-only, and this is
         # usually the first thing to create it.
         mkdirs_owner_only(lock_path.parent)
-        fd = os.open(
+        fd = open_create_or_existing(
             lock_path,
-            os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0),
+            os.O_RDWR | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0),
             0o600,
         )
         try:

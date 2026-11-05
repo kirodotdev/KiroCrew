@@ -176,13 +176,22 @@ export function useUndoHistory({ value, pasteBlocks, autoFocusKey, composerContr
   const stepUndoHistory = useCallback((direction: 'undo' | 'redo'): boolean => {
     if (optimizingRef.current) return false
     const hist = undoHistoryRef.current
-    let ptr = undoPointerRef.current
-    if (direction === 'undo' && ptr > 0) ptr -= 1
-    else if (direction === 'redo' && ptr < hist.length - 1) ptr += 1
-    else return false // nothing to undo/redo
+    const current = hist[undoPointerRef.current]
+    // Step past entries identical to what is on screen (same text, same paste
+    // blocks). A typing burst merged into the tip can end on the entry below
+    // it, and applying that entry would change nothing.
+    const unchanged = (s: UndoSnap) =>
+      current !== undefined && s.value === current.value && sameBlocks(s.blocks, current.blocks)
+    const step = direction === 'undo' ? -1 : 1
+    let ptr = undoPointerRef.current + step
+    while (ptr >= 0 && ptr < hist.length && unchanged(hist[ptr])) ptr += step
+    if (ptr < 0 || ptr >= hist.length) return false // nothing to undo/redo
     undoPointerRef.current = ptr
     const snap = hist[ptr]
-    applyingUndoRef.current = true
+    // Only a text change commits a new value, and only that commit runs the
+    // recorder that clears this flag. Arming it for a blocks-only step would
+    // leave it set and swallow the next real edit.
+    if (snap.value !== current?.value) applyingUndoRef.current = true
     onChange(snap.value)
     // Restore the paste blocks captured in this snapshot so a `[ Paste #N ]`
     // token brought back by the undo has its backing content again. Only

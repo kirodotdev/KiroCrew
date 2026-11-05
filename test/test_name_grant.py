@@ -528,8 +528,16 @@ class TestPathFormPrograms:
         # The contract is total: whatever a caller passes, this returns a verdict.
         system_dir, _ = world
         _program(system_dir, "head")
-        name_grant.name_grant_refusal(command)
-        name_grant.program_names(command)
+        # A NUL in an operand leaves the program inspectable; one in a program
+        # position is refused as uninspectable.
+        expected_code, expected_names = {
+            "head /tmp/a\x00b": (None, ["head"]),
+            "/tmp/a\x00b": (name_grant.UNINSPECTABLE, ["/tmp/a\x00b"]),
+            "head file; /tmp/a\x00b": (name_grant.UNINSPECTABLE, ["head", "/tmp/a\x00b"]),
+        }[command]
+        refusal = name_grant.name_grant_refusal(command)
+        assert (refusal and refusal.code) == expected_code
+        assert name_grant.program_names(command) == expected_names
 
     def test_an_alias_for_a_dispatcher_is_refused(self, world, monkeypatch):
         # GPT 5.6 round-19. The dispatcher rule read the name as WRITTEN, so an
@@ -1149,12 +1157,6 @@ class TestDispatchers:
         _program(system_dir, program)
         refusal = name_grant.name_grant_refusal(f"{program} --version")
         assert refusal is None or refusal.code != name_grant.DISPATCHER
-
-    def test_the_windows_dispatcher_table_stays_out_of_the_shared_one(self):
-        # The Windows entries live in their own set so POSIX behaviour is
-        # identical to base. Guards against a future edit dropping one back into
-        # `_DISPATCHERS`, where it would refuse the same name on POSIX.
-        assert name_grant._DISPATCHERS.isdisjoint(name_grant._WINDOWS_DISPATCHERS)
 
 
 class TestInheritedHostEnvironment:

@@ -95,6 +95,40 @@ class TestBrowseFiles:
             assert dir_names == {".worktrees"}
 
     @pytest.mark.asyncio
+    async def test_hidden_param_lists_dot_files(self, tmp_path, mock_sel):
+        # The Files panel's "Show hidden files" toggle: ``hidden=1`` lists
+        # dot-files such as .env. The skip set still applies to directories.
+        (tmp_path / ".git").mkdir()
+        (tmp_path / ".env").write_text("K=v")
+        (tmp_path / "visible.txt").write_text("y")
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.get(f"/api/browse-files?path={tmp_path}&hidden=1")
+            data = await resp.json()
+            assert {f["name"] for f in data["files"]} == {".env", "visible.txt"}
+            assert {d["name"] for d in data["dirs"]} == set()
+
+    @pytest.mark.asyncio
+    @requires_symlinks
+    async def test_hidden_param_keeps_the_sensitive_fence(self, tmp_path, mock_sel):
+        # A dot-file link into a credential store stays out with the toggle on.
+        secret_target = tmp_path / "secret_target.ini"
+        secret_target.write_text("x")
+        os.symlink(secret_target, tmp_path / ".creds")
+        (tmp_path / ".env").write_text("K=v")
+
+        def is_sens(p: str) -> bool:
+            return os.path.realpath(p) == str(secret_target)
+
+        with patch(
+            "kiro_crew.dashboard.handlers.files.is_sensitive_canonical_path",
+            side_effect=is_sens,
+        ):
+            async with TestClient(TestServer(_make_app())) as client:
+                resp = await client.get(f"/api/browse-files?path={tmp_path}&hidden=1")
+                data = await resp.json()
+                assert {f["name"] for f in data["files"]} == {".env"}
+
+    @pytest.mark.asyncio
     @requires_symlinks
     async def test_dot_dir_linked_to_a_sensitive_path_filtered(self, tmp_path, mock_sel):
         secret = tmp_path / "secret_store"
@@ -363,9 +397,9 @@ class TestBrowseFiles:
         loop_thread = threading.get_ident()
         ran_on: list[int] = []
 
-        def spy(base: str, skip: set[str]) -> tuple[list[dict], list[dict]]:
+        def spy(base: str, skip: set[str], show_hidden: bool) -> tuple[list[dict], list[dict]]:
             ran_on.append(threading.get_ident())
-            return _browse_files_sync(base, skip)
+            return _browse_files_sync(base, skip, show_hidden)
 
         with patch("kiro_crew.dashboard.handlers.files._browse_files_sync", spy):
             async with TestClient(TestServer(_make_app())) as client:

@@ -8,6 +8,7 @@ import ChatMessageList from '../app-sdk/ChatMessageList'
 import AssistantMessage from '../pages/chat/AssistantMessage'
 import MarkdownRenderer from '../components/MarkdownRenderer'
 import TranscriptScrollShell, { PANE_WIDTH_PROPERTY } from '../pages/chat/TranscriptScrollShell'
+import { beginPanelSlide } from '../utils/panelSlide'
 import { readIndexCss } from './indexCssSource'
 
 const TABLE = '| Signal | Value |\n| --- | --- |\n| `sample.daily.messages` | 42 |'
@@ -172,9 +173,11 @@ describe('transcript table breakout contract', () => {
 
 describe('transcript scroll shell pane width', () => {
   class FakeResizeObserver {
+    /** The pane-width observer: the first one the shell creates (its slide
+     *  anchor makes another). */
     static instance: FakeResizeObserver | undefined
     disconnected = false
-    constructor(readonly callback: ResizeObserverCallback) { FakeResizeObserver.instance = this }
+    constructor(readonly callback: ResizeObserverCallback) { FakeResizeObserver.instance ??= this }
     observe() {}
     disconnect() { this.disconnected = true }
     fire() { this.callback([], this as unknown as ResizeObserver) }
@@ -224,6 +227,26 @@ describe('transcript scroll shell pane width', () => {
 
     unmount()
     expect(FakeResizeObserver.instance?.disconnected).toBe(true)
+  })
+
+  it('holds the width while a side panel slides and publishes the final one when it rests', () => {
+    const { container } = render(<Shell />)
+    const scroller = container.querySelector<HTMLElement>('.chat-container')!
+    const end = beginPanelSlide()
+    try {
+      // Every frame of a slide resizes the scroller: an inherited property set
+      // on each one restyled the whole transcript per frame.
+      for (const w of [1180, 1100, 1010]) {
+        act(() => { paneWidth = w; FakeResizeObserver.instance?.fire() })
+        expect(scroller.style.getPropertyValue(PANE_WIDTH_PROPERTY)).toBe('1220px')
+      }
+    } finally {
+      act(() => { end() })
+    }
+    expect(scroller.style.getPropertyValue(PANE_WIDTH_PROPERTY)).toBe('1010px')
+    // Resting again: a resize publishes at once.
+    act(() => { paneWidth = 990; FakeResizeObserver.instance?.fire() })
+    expect(scroller.style.getPropertyValue(PANE_WIDTH_PROPERTY)).toBe('990px')
   })
 })
 

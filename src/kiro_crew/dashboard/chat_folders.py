@@ -45,7 +45,7 @@ from kiro_crew.dashboard.folder_ownership import (  # re-exported: callers impor
     _is_descendant,
     _subtree_holds_foreign_folder,
 )
-from kiro_crew.dashboard.handlers._shared import read_bounded_json
+from kiro_crew.dashboard.handlers._shared import body_not_object_error, read_bounded_json
 from kiro_crew.dashboard.slot_ownership import (
     audit_app_slot_denial,
     deny_app_slot_access,
@@ -127,6 +127,33 @@ async def _subagent_work_pending(subagents: Any, parent_session_key: str) -> boo
     return bool(subagents.has_pending_work_for(parent_session_key))
 
 
+def _refuse_mate_move_out(
+    state: DashboardState, request: web.Request, folder_id: str, current_folder_id: str = ""
+) -> web.Response | None:
+    """A 403 when a chat would cross a mate's home folder boundary, else ``None``.
+
+    A mate files its chats only inside its own home folder, nobody else files a
+    chat into one, and nobody else moves a chat out of one.
+    """
+    from kiro_crew.dashboard.mate_folders import in_mate_home, is_mate_principal, refuses_refile
+
+    principal = folder_principal(state, request)
+    if refuses_refile(state._folders, current_folder_id, folder_id, principal):
+        return web.json_response(
+            {
+                "error": "this folder belongs to a Bot and is managed for you",
+                "code": "mate_home_locked",
+            },
+            status=403,
+        )
+    if not is_mate_principal(principal) or in_mate_home(state._folders, folder_id, principal):
+        return None
+    return web.json_response(
+        {"error": "a Bot's chats stay inside its own folder", "code": "mate_folder_scope"},
+        status=403,
+    )
+
+
 async def api_chat_slot_folder(request: web.Request) -> web.Response:
     """PATCH /api/chat/slots/{slot}/folder — assign slot to a folder."""
 
@@ -178,12 +205,20 @@ async def api_chat_slot_folder(request: web.Request) -> web.Response:
         body = await request.json()
     except Exception:
         return web.json_response({"error": "invalid JSON"}, status=400)
+    if (not_object := body_not_object_error(body)) is not None:
+        return not_object
     folder_id = str(body.get("folder_id") or "")
     if folder_id and not any(f["id"] == folder_id for f in state._folders):
         return web.json_response({"error": "folder not found"}, status=400)
+    if (
+        mate_refusal := _refuse_mate_move_out(
+            state, request, folder_id, str(getattr(slot, "folder_id", "") or "")
+        )
+    ) is not None:
+        return mate_refusal
     # Optional generation token. The identity re-check below covers THIS
     # request's own awaits, but a caller that resolved the slot in an earlier
-    # request (``chat_folder_file_self`` reads ``/api/chat/slots`` first) has a
+    # request (an MCP tool that reads ``/api/chat/slots`` first) has a
     # gap this handler cannot see: its tab can close and the same slot key be
     # recreated for a different conversation before its PATCH arrives, and the
     # recreated slot carries the same ``dashboard:<key>`` transcript key, so the
@@ -330,6 +365,8 @@ async def api_chat_slot_pin(request: web.Request) -> web.Response:
         body = await request.json()
     except Exception:
         return web.json_response({"error": "invalid JSON"}, status=400)
+    if (not_object := body_not_object_error(body)) is not None:
+        return not_object
     # Optional generation token, the same one api_chat_slot_folder reads: the
     # ``chat_session_pin`` MCP tool resolves the slot from an earlier
     # ``/api/chat/slots`` read, and the slot key can be recreated for a
@@ -1114,6 +1151,8 @@ async def api_chat_slot_mode(request: web.Request) -> web.Response:
         body = await request.json()
     except Exception:
         return web.json_response({"error": "invalid JSON"}, status=400)
+    if (not_object := body_not_object_error(body)) is not None:
+        return not_object
     mode = _coerce_requested_mode(body.get("mode", ""))
     if mode not in _VALID_MODES:
         return web.json_response({"error": "invalid mode"}, status=400)
@@ -1262,16 +1301,19 @@ __all__ = sorted(n for n in set(globals()) | set(_EXPORTS) if not n.startswith("
 if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and IDEs
     from kiro_crew.dashboard.chat_folders_icons import (  # noqa: F401
         _CHAT_FOLDER_ICON_EPOCHS,
+        _CHAT_FOLDER_ICON_PREVIEWS,
         _CHAT_FOLDER_ICON_TASKS,
         _CHAT_FOLDER_PENDING_ICON_TASKS,
         _FOLDER_COLOR_PALETTE,
         _FOLDER_ICON_MODEL,
+        MAX_ICON_PREVIEW_AVOID,
         _bump_icon_epoch,
         _folder_icon_lock,
         _is_single_emoji,
         _is_valid_folder_color,
         _spawn_chat_folder_icon_task,
         generate_emoji_for_name,
+        icon_preview_avoid,
     )
     from kiro_crew.dashboard.chat_folders_paths import (  # noqa: F401
         MAX_FOLDER_STEERING_DIR_LEN,
@@ -1281,6 +1323,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _refuse_principal_steering_dirs,
         _resolve_folder_project_dir,
         _resolve_folder_steering_dirs,
+        _sensitive_refusal,
         _validate_project_dir,
         _validate_steering_dirs,
         resolve_folder_project_dir_off_loop,
@@ -1289,9 +1332,11 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.dashboard.chat_folders_records import (  # noqa: F401
         _KNOWN_INTERNAL_CALLERS,
         CREATED_BY_SESSION,
+        LAYOUT_ONLY_FIELDS,
         MAX_CHAT_FOLDERS,
         FolderCapError,
         FolderCreateError,
+        FolderMateHomeLockedError,
         FolderNameExistsError,
         FolderOwnershipError,
         _caller_reaches_a_channel,
@@ -1309,11 +1354,13 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         live_slot_names_in_folders,
     )
     from kiro_crew.dashboard.chat_folders_routes import (  # noqa: F401
-        _LAYOUT_ONLY_FIELDS,
+        _ICON_PREVIEW_ATTEMPTS,
         _MAX_REORDER_BODY_BYTES,
         _MAX_REORDER_ENTRIES,
+        _mate_home_locked,
         api_chat_folder_create,
         api_chat_folder_delete,
+        api_chat_folder_icon_preview,
         api_chat_folder_reorder,
         api_chat_folder_update,
         api_chat_folders,

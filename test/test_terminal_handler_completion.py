@@ -12,7 +12,6 @@ import contextlib
 import json
 import os
 import threading
-import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -407,24 +406,32 @@ class TestVettedCompletionDir:
 
 
 class TestSessionCwdCached:
+    """The memo's TTL is read from the handler module's own ``time`` binding,
+    which these tests replace with a ManualClock. The first call stamps the
+    memo before its executor hop, so on the real clock a loaded runner whose
+    hop outlasts the 0.4 s TTL would expire the memo before the second call."""
+
     @pytest.mark.asyncio
-    async def test_probes_once_within_ttl(self):
+    async def test_probes_once_within_ttl(self, manual_clock, monkeypatch):
+        manual_clock.install(monkeypatch, terminal)
         sess = _make_session()
         with patch.object(terminal, "_session_cwd", return_value="/tmp/a") as probe:
             assert await terminal._session_cwd_cached(sess) == "/tmp/a"
-            # flake-ok: pre-existing memo hit that holds only while this second call lands inside the 0.4 s real-clock TTL across an executor hop, moved verbatim; tracked for a de-flake pass
+            manual_clock.advance(terminal._CWD_PROBE_TTL_S / 2)
             assert await terminal._session_cwd_cached(sess) == "/tmp/a"
         assert probe.call_count == 1
 
     @pytest.mark.asyncio
-    async def test_reprobes_after_ttl_expires(self):
+    async def test_reprobes_after_ttl_expires(self, manual_clock, monkeypatch):
         # A `cd` must be visible to the next completion — a stale memo would
         # list the previous directory.
+        manual_clock.install(monkeypatch, terminal)
         sess = _make_session()
-        # flake-ok: pre-existing real-clock stamp past the 0.4 s TTL so the memoized cwd reads as expired and is reprobed, moved verbatim; tracked for a de-flake pass
-        sess.cwd_probe = (time.monotonic() - terminal._CWD_PROBE_TTL_S - 1, "/tmp/old")
-        with patch.object(terminal, "_session_cwd", return_value="/tmp/new"):
+        with patch.object(terminal, "_session_cwd", side_effect=["/tmp/old", "/tmp/new"]) as probe:
+            assert await terminal._session_cwd_cached(sess) == "/tmp/old"
+            manual_clock.advance(terminal._CWD_PROBE_TTL_S + 0.01)
             assert await terminal._session_cwd_cached(sess) == "/tmp/new"
+        assert probe.call_count == 2
 
 
 class TestApiTerminalComplete:

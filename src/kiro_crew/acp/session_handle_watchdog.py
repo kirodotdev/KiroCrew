@@ -32,6 +32,7 @@ from kiro_crew.acp.liveness import (
     EVIDENCE_PLATFORM_LIMITED,
     EVIDENCE_REMOTE_FLAT,
     EVIDENCE_SHELL_CHILD_ABSENT,
+    EVIDENCE_WINDOWS_TREE_MOVED,
     INTERACTIVE_NARROWING_RISKS,
     VERDICT_STUCK_INPUT,
     VERDICT_UNKNOWN,
@@ -494,16 +495,19 @@ async def _consult_oracle_offloaded(self: AcpSessionHandle, *, model_wait: bool)
 def _working_tool_bound_reached(self: AcpSessionHandle, evidence: str, tool_idle: float) -> bool:
     """Whether a tool-branch WORKING reading has run out of forbearance.
 
-    Only the opaque-MCP reading is bounded. It says some process in the
-    runtime's tree moved, which a warm sibling MCP server does too, so a
-    call whose result frame was lost would otherwise hold the turn to its
-    deadline. The bound is ``watchdog.tool_stall_hard_cap_secs``, the same
-    ceiling an UNKNOWN reading gets, measured on the session's own frame
-    clock. A matched shell child, the declared-duration ``wait`` verdict
-    and a kirocrew-core tool that pings the session keepalive
+    Only the readings that cannot be tied to the tool are bounded: the
+    opaque-MCP one, which says some process in the runtime's tree moved
+    (a warm sibling MCP server does too), and the Windows shell-tool one,
+    which says some process started since the dispatch moved (another
+    session's may). Either would otherwise hold a call whose result frame
+    was lost to the turn's deadline. The bound is
+    ``watchdog.tool_stall_hard_cap_secs``, the same ceiling an UNKNOWN
+    reading gets, measured on the session's own frame clock. A matched
+    shell child, the declared-duration ``wait`` verdict and a kirocrew-core
+    tool that pings the session keepalive
     (:meth:`ToolCallState.is_trusted_keepalive_tool`) keep deferring.
     """
-    if not evidence.startswith(EVIDENCE_MCP_SUBTREE_ACTIVE):
+    if not evidence.startswith((EVIDENCE_MCP_SUBTREE_ACTIVE, EVIDENCE_WINDOWS_TREE_MOVED)):
         return False
     tool = self._inflight_tool
     if tool is not None and tool.is_trusted_keepalive_tool():

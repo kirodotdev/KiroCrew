@@ -19,16 +19,14 @@ from kiro_crew.dashboard.handlers import source_providers as source
 
 
 @pytest.fixture(autouse=True, name="_mock_source_sel")
-# nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- the autouse SEL stub of test_source_providers.py and the modules split out of it, moved verbatim; none of them calls monkeypatch.undo()
-def _mock_source_sel_fixture(monkeypatch):
+def _mock_source_sel_fixture(_floor_monkeypatch):
     audit = MagicMock()
-    monkeypatch.setattr(source, "_sel", lambda: audit)
+    _floor_monkeypatch.setattr(source, "_sel", lambda: audit)
     return audit
 
 
 @pytest.fixture(autouse=True)
-# nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- the autouse visibility recorder of test_source_providers.py and the modules split out of it, moved verbatim; none of them calls monkeypatch.undo()
-def _no_visibility_refresh_side_task(monkeypatch):
+def _no_visibility_refresh_side_task(_floor_monkeypatch):
     """Keep the repo-visibility refresh out of tests that are not about it.
 
     A cache write-through schedules ``_refresh_repo_visibility`` as a detached
@@ -43,7 +41,7 @@ def _no_visibility_refresh_side_task(monkeypatch):
     task is never spawned, and nothing outlives the test.
     """
     scheduled: list[tuple] = []
-    monkeypatch.setattr(
+    _floor_monkeypatch.setattr(
         source,
         "schedule_visibility_refresh",
         lambda urls, *a, **k: scheduled.append((tuple(urls), a, k)),
@@ -104,15 +102,26 @@ def _app(
     return app
 
 
+def _clear_fetch_collections() -> None:
+    source._ISSUE_CACHE.clear()
+    source._ISSUE_FETCH_INFLIGHT.clear()
+    source._ISSUE_FETCH_TASKS.clear()
+    source._FULL_FETCH_INFLIGHT.clear()
+    source._FULL_FETCH_TASKS.clear()
+    source._FULL_FETCH_GENERATIONS.clear()
+    source._CHECKS_FETCH_INFLIGHT.clear()
+    source._contributors_inflight.clear()
+    source._DIRECT_FETCH_RESERVATIONS.clear()
+    source._DIRECT_FETCH_WAITERS.clear()
+
+
 @pytest.fixture(autouse=True)
-def _clear_issue_cache():
-    source._ISSUE_CACHE.clear()
-    source._ISSUE_FETCH_INFLIGHT.clear()
-    source._ISSUE_FETCH_TASKS.clear()
+def _clear_shared_fetch_state():
+    # The shared-fetch tasks, leases and waiters are module globals that outlive
+    # each test's loop; the issue cache is cleared with them.
+    _clear_fetch_collections()
     yield
-    source._ISSUE_CACHE.clear()
-    source._ISSUE_FETCH_INFLIGHT.clear()
-    source._ISSUE_FETCH_TASKS.clear()
+    _clear_fetch_collections()
 
 
 # An issue URL: every pull-request-only entry point must refuse it.

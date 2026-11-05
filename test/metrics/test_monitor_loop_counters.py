@@ -766,7 +766,7 @@ class TestLoopsStopped:
         ml.record_loop_stopped(record)
 
         attrs = _named(rec, ml.LOOPS_STOPPED)[-1]["attrs"]
-        assert set(attrs) == {"kind", "reason", "ran"}
+        assert set(attrs) == {"kind", "reason", "ran", "ended_by"}
         assert "credentials" not in "".join(attrs.values())
 
     @pytest.mark.parametrize(
@@ -1173,3 +1173,48 @@ def _case_for(decision: str) -> tuple[MonitorState, MonitorObservation]:
         if want.value == decision:
             return state, observation
     raise AssertionError(f"no case reaches {decision!r}")
+
+
+class TestEndedBy:
+    """``ended_by`` groups every closed stop reason, and adds no series."""
+
+    def test_values_are_pinned(self):
+        assert ml.ENDED_BY_VALUES == (
+            "agent_stop",
+            "user_stop",
+            "budget",
+            "subject_done",
+            "stalled",
+            "error",
+            "other",
+        )
+
+    def test_every_stop_reason_has_exactly_one_group(self):
+        """A new stop reason cannot ship unmapped."""
+        assert set(ml.ENDED_BY) == set(ml.STOP_REASON_VALUES)
+        assert set(ml.ENDED_BY.values()) <= set(ml.ENDED_BY_VALUES)
+
+    @pytest.mark.parametrize(
+        "reason,group",
+        [
+            ("autonudge_stop", "agent_stop"),
+            ("user_stop", "user_stop"),
+            ("cycle_cap", "budget"),
+            ("success", "subject_done"),
+            ("approval_stall", "stalled"),
+            ("model_refused", "error"),
+            ("unspecified", "other"),
+            ("never-seen", "other"),
+        ],
+    )
+    def test_grouping(self, reason, group):
+        assert ml.ended_by(reason) == group
+
+    def test_the_stop_counter_carries_the_group_of_its_reason(self, rec):
+        ml.record_loop_stopped({"kind": "loop", "reason": "cycle_cap", "ran_secs": 10})
+        ml.record_loop_stopped({"kind": "monitor", "reason": "free text here", "ran_secs": 10})
+        calls = _named(rec, ml.LOOPS_STOPPED)
+        assert [(c["attrs"]["reason"], c["attrs"]["ended_by"]) for c in calls] == [
+            ("cycle_cap", "budget"),
+            ("other", "other"),
+        ]

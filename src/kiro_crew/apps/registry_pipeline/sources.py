@@ -786,7 +786,7 @@ def _load_registry_file() -> list[dict[str, Any]]:
                 rows = data
             else:
                 logger.warning("Registry file is not a JSON array")
-        except (json.JSONDecodeError, OSError) as exc:
+        except (json.JSONDecodeError, UnicodeDecodeError, OSError) as exc:
             logger.warning("Failed to load registry: %s", exc)
 
     seen = {r.get("name") for r in rows if isinstance(r, dict)}

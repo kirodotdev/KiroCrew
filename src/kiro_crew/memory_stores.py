@@ -643,16 +643,6 @@ def create_declared_store(store: str) -> tuple[Path, bool]:
     return target, not existed
 
 
-def member_memory_identity(store: str) -> tuple[str, int]:
-    """Read the canonical database identity without any filesystem manifest."""
-    from kiro_crew.vector_memory import read_member_database_identity
-
-    member_id, store_id = read_member_database_identity(_named_store_dir(store) / MEMORY_DB_FILE)
-    if store_id != store:
-        raise UnknownMemoryStore("Member database store identity does not match its location")
-    return member_id, 2
-
-
 def memory_store_version(store: str) -> int:
     """Use the explicit declaration; an invalid member store never becomes V1."""
     if store in ("", DEFAULT_MEMORY_STORE):
@@ -748,7 +738,7 @@ def require_member_memory_store(config, member: str, *, require_directory: bool 
         return DEFAULT_MEMORY_STORE
     agent = config.agents.get(member)
     if agent is None:
-        raise UnknownMemoryStore(f"Unknown Crew Member {member!r}; Global was not used")
+        raise UnknownMemoryStore(f"Unknown Bot {member!r}; Global was not used")
     store = require_memory_store(
         agent.memory_store, config=config, require_directory=require_directory
     )
@@ -778,8 +768,9 @@ def unusable_legacy_binding(config, member: str) -> str | None:
     binding and stays refused by the callers: ownership cannot be verified for a
     store that has no path, and a refusal is the only answer that adopts nothing.
 
-    Pure -- no filesystem call and no config load -- so the dashboard handler and
-    the CLI can both ask with the config they already hold.
+    Pure -- no filesystem call and no config load. Neither update surface moves
+    such a binding: the dashboard PUT and ``kirocrew agent update`` refuse every
+    changed ``memory_store``.
     """
     agent = config.agents.get(member)
     if agent is None:
@@ -881,7 +872,9 @@ def _open_namespace_lock(directory: Path, path: Path, *, read_only_ok: bool) -> 
         platform_compat.make_owner_only_dir(directory)
         if path.resolve() != path:
             raise UnknownMemoryStore("memory store namespace lock is redirected")
-        fd = os.open(path, os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
+        fd = platform_compat.open_create_or_existing(
+            path, os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600
+        )
     except OSError as exc:
         if not (read_only_ok and is_lock_write_refusal(exc)):
             raise
@@ -1046,7 +1039,7 @@ LEGACY_OWNER_MEMBER_META_KEY = "owner_member"
 #: What an operator does about a V2 store the upgrade refuses to touch. One
 #: string so the boot log and ``kirocrew doctor`` say the same thing.
 LEGACY_MEMBER_STORE_REMEDY = (
-    "edit config.json so exactly one Crew Member has memory_store set to this store "
+    "edit config.json so exactly one Bot has memory_store set to this store "
     "and an empty member_id, and make the store's owner_member name that member"
 )
 
@@ -1064,9 +1057,14 @@ def _legacy_member_manifest_owner(directory: Path) -> tuple[bool, str]:
         return False, ""
     except OSError as exc:
         raise UnknownMemoryStore(f"{LEGACY_MEMBER_MANIFEST} is unreadable: {exc}") from exc
+    except UnicodeDecodeError as exc:
+        # A ValueError, not an OSError: without this arm it escapes the
+        # per-store refusal and ends the upgrade scan for every other store.
+        raise UnknownMemoryStore(f"{LEGACY_MEMBER_MANIFEST} is not UTF-8") from exc
     try:
         value = json.loads(raw)
-    except ValueError as exc:
+    except (ValueError, RecursionError) as exc:
+        # RecursionError: nesting past the interpreter's limit, a hand-edited file.
         raise UnknownMemoryStore(f"{LEGACY_MEMBER_MANIFEST} is not valid JSON") from exc
     owner = value.get("owner_member") if isinstance(value, dict) else None
     if not isinstance(owner, str) or not owner:
@@ -1241,14 +1239,14 @@ def _legacy_member_store_candidates(config) -> dict[str, tuple[str, str, str]]:
                 raise UnknownMemoryStore("the default store cannot be a member store")
             if len(bound) != 1:
                 raise UnknownMemoryStore(
-                    "no Crew Member is bound to it"
+                    "no Bot is bound to it"
                     if not bound
-                    else f"{len(bound)} Crew Members are bound to it: {', '.join(sorted(bound))}"
+                    else f"{len(bound)} Bots are bound to it: {', '.join(sorted(bound))}"
                 )
             alias = bound[0]
             agent = config.agents[alias]
             if not isinstance(agent.member_id, str):
-                raise UnknownMemoryStore("its Crew Member's member_id is not a string")
+                raise UnknownMemoryStore("its Bot's member_id is not a string")
             directory = _named_store_dir(name)
             # Every owner label the old build left behind must name the member
             # bound today. Accepting a manifest that merely agrees with the
@@ -1276,7 +1274,7 @@ def _legacy_member_store_candidates(config) -> dict[str, tuple[str, str, str]]:
             resuming = bool(member_id) and agent.member_id == member_id
             if agent.member_id and not resuming:
                 raise UnknownMemoryStore(
-                    f"its Crew Member {alias!r} already carries member_id {agent.member_id!r}"
+                    f"its Bot {alias!r} already carries member_id {agent.member_id!r}"
                 )
             if member_id:
                 claimed = any(
@@ -1589,17 +1587,24 @@ def repair_legacy_member_stores() -> list[str]:
         return []
 
 
-def provision_member_memory(config, member: str) -> str:
-    """Validate configuration before allocating or acquiring a store write lock."""
+def provision_member_memory(config, member: str, *, upgrade: bool = False) -> str:
+    """Validate configuration before allocating or acquiring a store write lock.
+
+    *upgrade* is for a LIVE row that predates durable ids being given one (the crewmate
+    migration): the id is allocated as the upgrade allocates it
+    (``_allocate_member_id(refuse_damaged=False)``), so the row keeps the
+    name-derived slug its DM binding, member directory and thread already use. A
+    create never passes it: a same-name binding there is a deleted predecessor's.
+    """
     from kiro_crew.config.resolution import DEGRADED_WHOLE_CONFIG
 
     if set(getattr(config, "degraded_sections", ())) & {"memory", DEGRADED_WHOLE_CONFIG}:
         raise UnknownMemoryStore("Memory configuration is unreadable")
     with memory_store_namespace_lock():
-        return _provision_member_memory(config, member)
+        return _provision_member_memory(config, member, upgrade=upgrade)
 
 
-def _provision_member_memory(config, member: str) -> str:
+def _provision_member_memory(config, member: str, *, upgrade: bool = False) -> str:
     from kiro_crew import platform_compat
     from kiro_crew.config.sections import MemoryStoreConfig
     from kiro_crew.vector_memory import create_member_database
@@ -1615,7 +1620,7 @@ def _provision_member_memory(config, member: str) -> str:
         raise UnknownMemoryStore("Existing member identity has no valid store; allocation refused")
     if current is not None and (current.owner_member_id or current.owner_member):
         raise UnknownMemoryStore("Existing member store identity is invalid")
-    member_id = _allocate_member_id(config, member)
+    member_id = _allocate_member_id(config, member, refuse_damaged=not upgrade)
     root = memory_stores_root()
     platform_compat.make_owner_only_dir(root)
     while True:
@@ -1713,11 +1718,46 @@ class MemberApprovalConflict(Exception):
         self.current = current
 
 
+def _refuse_moved_approval_mode(current: object, expected_approval_mode: str) -> None:
+    """Raise :class:`MemberApprovalConflict` when the stored record's mode is not the expected one."""
+    from kiro_crew.config.sections import coerce_member_approval_mode
+
+    stored_mode = coerce_member_approval_mode(
+        current.get("approval_mode") if isinstance(current, dict) else None
+    )
+    if stored_mode != expected_approval_mode:
+        raise MemberApprovalConflict(stored_mode)
+
+
+def check_member_approval_mode(member: str, expected_approval_mode: str | None) -> None:
+    """Run :func:`persist_member_config`'s permission compare-and-set without writing.
+
+    Reads the record on disk under the cross-process config lock and raises
+    :class:`MemberApprovalConflict` exactly when that write would, so a caller
+    with side effects before the write (a chat reload) can refuse first. The
+    write itself still checks again and stays authoritative. A missing record
+    is left to the write, which refuses it with its own error. Blocks on the
+    file lock: call it from a worker thread.
+    """
+    if expected_approval_mode is None:
+        return
+    from kiro_crew.config.loader import update_config_locked
+
+    def check(data: dict) -> None:
+        agents = data.get("agents")
+        current = agents.get(member) if isinstance(agents, dict) else None
+        if isinstance(current, dict):
+            _refuse_moved_approval_mode(current, expected_approval_mode)
+        return None
+
+    update_config_locked(mutate=check)
+
+
 class MemberFieldConflict(Exception):
     """A stored field is not the value the writer expected to find (compare-and-set)."""
 
     def __init__(self, field: str) -> None:
-        super().__init__(f"the crewmate's {field} changed since it was read")
+        super().__init__(f"the Bot's {field} changed since it was read")
         self.field = field
 
 
@@ -1802,7 +1842,7 @@ def persist_member_config(
         config.agents[member].workspace != new_workspace or new_workspace not in config.workspaces
     ):
         raise UnknownMemoryStore(
-            f"workspace {new_workspace!r} is not the binding of Crew Member {member!r}"
+            f"workspace {new_workspace!r} is not the binding of Bot {member!r}"
         )
     workspace_entry = config.workspaces[new_workspace] if new_workspace else None
 
@@ -1815,32 +1855,22 @@ def persist_member_config(
             agents[DEFAULT_MEMORY_STORE] = asdict(config.agents[DEFAULT_MEMORY_STORE])
         current = agents.get(member)
         if create and member in agents:
-            raise MemberAlreadyExists(
-                f"Crew Member {member!r} was created concurrently; reload the roster"
-            )
+            raise MemberAlreadyExists(f"Bot {member!r} was created concurrently; reload the roster")
         if not create and current is None:
-            raise UnknownMemoryStore(
-                f"Crew Member {member!r} was removed concurrently; reload the roster"
-            )
+            raise UnknownMemoryStore(f"Bot {member!r} was removed concurrently; reload the roster")
         if not create and current is not None:
             if (
                 not isinstance(current, dict)
                 or current.get("memory_store", DEFAULT_MEMORY_STORE) != expected_store
             ):
                 raise UnknownMemoryStore(
-                    f"Crew Member {member!r} memory changed concurrently; reload the roster"
+                    f"Bot {member!r} memory changed concurrently; reload the roster"
                 )
         if expected_approval_mode is not None and not create:
             # Compare-and-set against the record on disk, inside the
             # cross-process lock: a CLI or other-process write that landed
             # after the caller loaded its snapshot wins, and this one is refused.
-            from kiro_crew.config.sections import coerce_member_approval_mode
-
-            stored_mode = coerce_member_approval_mode(
-                current.get("approval_mode") if isinstance(current, dict) else None
-            )
-            if stored_mode != expected_approval_mode:
-                raise MemberApprovalConflict(stored_mode)
+            _refuse_moved_approval_mode(current, expected_approval_mode)
         if expected_values and not create and isinstance(current, dict):
             # The same compare-and-set for any field the caller read: the
             # value on disk, under this lock, must still be the one it saw.

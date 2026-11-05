@@ -40,9 +40,9 @@ _ACTOR_PREDICATE = "contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.
 # event tests; this one decides only which non-fleet destination is reachable,
 # so neither can be derived from the other.
 #
-# Not every constant below carries this tail yet. The ones that do not are the
-# ones whose workflows have not moved, and their literal hosted fallback is the
-# current contract, not an oversight.
+# Every ROUTING constant carries this tail. The resolver-consumer constants do
+# not, for an unrelated reason: an EMPTY resolver output means the resolver did
+# not run, and hosted is the only safe answer there.
 _GROUP_THEN_HOSTED_TAIL = (
     "|| github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' "
     "|| 'ubuntu-latest' }}"
@@ -54,7 +54,7 @@ _CANONICAL_ROUTING_EXPR = (
     "(github.event.action == 'opened' || github.event.action == 'synchronize') && "
     "github.event.pull_request.head.repo.full_name == github.repository)) && "
     "format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) "
-    "|| 'ubuntu-latest' }}"
+    + _GROUP_THEN_HOSTED_TAIL
 )
 # The workflows the merge queue runs. A merge_group run's actor is the person
 # who queued the pull request, so the same actor predicate admits it; the event
@@ -67,7 +67,7 @@ _CANONICAL_MERGE_GROUP_ROUTING_EXPR = (
     "(github.event.action == 'opened' || github.event.action == 'synchronize') && "
     "github.event.pull_request.head.repo.full_name == github.repository)) && "
     "format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) "
-    "|| 'ubuntu-latest' }}"
+    + _GROUP_THEN_HOSTED_TAIL
 )
 _CANONICAL_PUSH_EXPR = (
     "${{ github.repository == 'kirodotdev/KiroCrew' && "
@@ -90,18 +90,19 @@ _CANONICAL_BASE_ONLY_PR_EXPR = (
     + _ACTOR_PREDICATE
     + " && github.event.pull_request.head.repo.full_name == github.repository && "
     "format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) "
-    "|| 'ubuntu-latest' }}"
+    + _GROUP_THEN_HOSTED_TAIL
 )
 # PR Readiness runs only default-branch code too. Only its pull_request_target
 # runs use the fleet: workflow_run carries the in_progress merge-guard hold,
-# and workflow_dispatch names no head to check, so both stay hosted.
+# and workflow_dispatch names no head to check. Both take the group label
+# instead, which is what keeps this lane's bursts off the shared standard pool.
 _CANONICAL_READINESS_EXPR = (
     "${{ github.repository == 'kirodotdev/KiroCrew' && "
     + _ACTOR_PREDICATE
     + " && github.event_name == 'pull_request_target' && "
     "github.event.pull_request.head.repo.full_name == github.repository && "
     "format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) "
-    "|| 'ubuntu-latest' }}"
+    + _GROUP_THEN_HOSTED_TAIL
 )
 # The ratchet audit: push, manual dispatch, and the merge group, which is the
 # integrated tree one step before it lands.
@@ -111,7 +112,7 @@ _CANONICAL_DISPATCH_MERGE_GROUP_EXPR = (
     + " && (github.event_name == 'push' || github.event_name == 'workflow_dispatch' || "
     "github.event_name == 'merge_group') && "
     "format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) "
-    "|| 'ubuntu-latest' }}"
+    + _GROUP_THEN_HOSTED_TAIL
 )
 
 # These lanes take no fleet route: untrusted-content model execution,
@@ -155,14 +156,58 @@ _PERMANENT_EXCEPTIONS = {
     ("fork-pr-description.yml", "describe"),
     ("fork-workflow-guard.yml", "guard"),
     ("fork-workflow-guard.yml", "strip-stale-override"),
+    # The merge-path utility lanes, with `disposition-deferral-check` above
+    # already a member. Each is seconds of work whose wall clock is almost all
+    # queue wait, and each sits where a human is waiting to merge, so they moved
+    # to the larger-runner group for queue position. Membership here is what
+    # lets the pin below exist: a runner may only be pinned for a job this set
+    # names.
+    ("issue-gate.yml", "issue-gate"),
+    ("pr-size-override.yml", "record"),
+    ("sensitive-change-review-comment.yml", "rerun"),
+    # Scheduled lanes whose schedule event carries no live collaborator actor for
+    # the AWS webhook allowlist to check, so a fleet dispatch would queue until it
+    # was rejected. Neither fires on a pull request or declares merge_group.
+    ("merge-queue-ruleset.yml", "check"),
+    # The same no-actor reason, reached by a workflow_run completion rather than a
+    # schedule: the event names the finished run, never a collaborator. It takes
+    # the group by LABEL, not `group:`, because the trigger carries no
+    # head-repository guard and a fork's own watched workflows fire it in the fork.
+    ("scheduled-failure-watch.yml", "surface"),
+    # Dispatch-only, and never fleet-routed. The allowlist reason above does not
+    # apply: a workflow_dispatch does carry an actor, which is why pages.yml can
+    # route one to the fleet through the same actor predicate.
+    ("test-durations.yml", "refresh"),
+    # Release and publish carve off the shared standard pool for latency, not
+    # for an isolation contract: they are human-blocking and low-volume, and a
+    # release cannot wait on a pool nobody here can expedite. Every one is
+    # workflow_call, a v* tag push, workflow_dispatch, or (publish-installer) a
+    # path-filtered push to main, so none adds pull-request volume to the group.
+    ("publish-cli.yml", "publish-cli"),
+    ("publish-docker.yml", "publish-docker"),
+    ("publish-installer.yml", "publish-installer"),
+    ("publish-linux.yml", "publish-linux"),
+    ("publish-windows.yml", "publish-windows"),
+    ("release.yml", "release-candidate-tests"),
+    ("release.yml", "record-stable-promotion"),
 }
 
 # A permanent exception stays OFF the CodeBuild fleet; it does not have to stay
 # on the shared standard runner. These lanes moved to the `kirocrew-runners`
-# larger-runner group, which is still a GitHub-hosted Ubuntu VM with the same
-# filesystem layout and no fleet credentials, so every isolation contract above
+# larger-runner group (with a hosted fork fallback where pinned below), still
+# GitHub-hosted Ubuntu VMs with the same filesystem layout and no fleet
+# credentials, so every isolation contract above
 # still holds. Pinned per job rather than waived: a lane that drifts to some
 # third runner must still fail this check.
+#
+# Two spellings reach the same group. `group:` resolves only inside the owning
+# organization, so a fork running its own copy of the workflow finds no runner
+# and the job waits forever; the LABEL spelling carries its own fork fallback in
+# the `||` leg. A lane a fork never runs may use either, so both appear here.
+_GROUP_LABEL_EXPR = (
+    "${{ github.repository == 'kirodotdev/KiroCrew' && "
+    "'kirocrew-linux-4-core' || 'ubuntu-latest' }}"
+)
 _HOSTED_EXCEPTION_RUNNERS: dict[tuple[str, str], object] = {
     ("first-principles-review.yml", "first-principles-review"): {"group": "kirocrew-runners"},
     ("ux-review.yml", "ux-review"): {"group": "kirocrew-runners"},
@@ -176,6 +221,83 @@ _HOSTED_EXCEPTION_RUNNERS: dict[tuple[str, str], object] = {
     ("fork-pr-description.yml", "describe"): {"group": "kirocrew-runners"},
     ("fork-workflow-guard.yml", "guard"): {"group": "kirocrew-runners"},
     ("fork-workflow-guard.yml", "strip-stale-override"): {"group": "kirocrew-runners"},
+    ("issue-summary.yml", "summarize"): _GROUP_LABEL_EXPR,
+    ("issue-triage.yml", "triage"): _GROUP_LABEL_EXPR,
+    # The AI-review override handler: same `issue_comment` trigger and the same
+    # actor-allowlist reason for staying off the fleet as the two above.
+    ("ai-review-human-override.yml", "record"): _GROUP_LABEL_EXPR,
+    ("nightly.yml", "version"): _GROUP_LABEL_EXPR,
+    ("ci-runner-watchdog.yml", "watchdog"): {"group": "kirocrew-runners"},
+    ("merge-queue-ruleset.yml", "check"): {"group": "kirocrew-runners"},
+    ("scheduled-failure-watch.yml", "surface"): _GROUP_LABEL_EXPR,
+    # The two nightly publish callees a fork can start take the LABEL spelling,
+    # for the fork-fallback reason given above; the rest are repository-only.
+    ("publish-cli.yml", "publish-cli"): _GROUP_LABEL_EXPR,
+    ("publish-docker.yml", "publish-docker"): _GROUP_LABEL_EXPR,
+    ("publish-installer.yml", "publish-installer"): {"group": "kirocrew-runners"},
+    ("publish-linux.yml", "publish-linux"): {"group": "kirocrew-runners"},
+    ("publish-windows.yml", "publish-windows"): {"group": "kirocrew-runners"},
+    ("release.yml", "release-candidate-tests"): {"group": "kirocrew-runners"},
+    ("release.yml", "record-stable-promotion"): {"group": "kirocrew-runners"},
+    # These dispatchable jobs use the group label upstream, but a personal
+    # fork cannot reach the org group and must retain the hosted fallback.
+    ("memory-benchmark.yml", "accept"): (
+        "${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}"
+    ),
+    ("add-contributor.yml", "add"): (
+        "${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}"
+    ),
+    ("connections-l0.yml", "probe"): (
+        "${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}"
+    ),
+    ("deferred-findings-audit.yml", "audit"): (
+        "${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}"
+    ),
+    ("fix-loop-analysis.yml", "metrics"): (
+        "${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}"
+    ),
+    ("fix-loop-analysis.yml", "analyze"): (
+        "${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}"
+    ),
+    ("ship-report.yml", "report"): (
+        "${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}"
+    ),
+    ("test-durations.yml", "refresh"): (
+        "${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}"
+    ),
+    # A personal fork cannot reach the org group; preserve its hosted fallback.
+    ("issue-gate.yml", "issue-gate"): (
+        "${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' "
+        "|| 'ubuntu-latest' }}"
+    ),
+    ("pr-size-override.yml", "record"): (
+        "${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' "
+        "|| 'ubuntu-latest' }}"
+    ),
+    ("disposition-deferral-check.yml", "validate-deferral"): (
+        "${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' "
+        "|| 'ubuntu-latest' }}"
+    ),
+    ("sensitive-change-review-comment.yml", "rerun"): (
+        "${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' "
+        "|| 'ubuntu-latest' }}"
+    ),
+    # The same-repo scope lane's three non-matrix jobs. They keep their place in
+    # _PERMANENT_EXCEPTIONS because none of them takes a fleet route, and a group
+    # label is not a fleet route. `generate` has its own documented reason to
+    # stay off the fleet, which its comment in the workflow states; the other two
+    # are simply not argued onto it. The label form rather than `group:` is
+    # required because the workflow fires on `pull_request`, so a contributor's
+    # own fork runs it where an organization group is unreachable.
+    ("security-scope-review.yml", "generate"): (
+        "${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}"
+    ),
+    ("security-scope-review.yml", "validate"): (
+        "${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}"
+    ),
+    ("security-scope-review.yml", "publish"): (
+        "${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}"
+    ),
 }
 _DEFAULT_HOSTED_EXCEPTION_RUNNER = "ubuntu-latest"
 
@@ -211,6 +333,9 @@ _EXPECTED_ROUTED_JOBS = {
     ("dependency-vulnerability.yml", "audit-production-dependencies"),
     ("sensitive-change-review.yml", "sensitive-change-review"),
     ("pr-readiness.yml", "readiness"),
+    # The reusable OIDC content scan. Its caller carries no `runs-on` of its
+    # own, so this route is the whole lane's destination.
+    ("internal-content-scan.yml", "scan"),
 }
 _PUSH_ONLY_WORKFLOWS = {
     "release.yml",
@@ -224,9 +349,21 @@ _READINESS_WORKFLOWS = {"pr-readiness.yml"}
 _DISPATCH_MERGE_GROUP_WORKFLOWS = {"main-ratchet-audit.yml"}
 # The fleet-routed workflows that declare a `merge_group` trigger.
 _MERGE_GROUP_WORKFLOWS = {"ci.yml", "fast-gate.yml", "build.yml"}
-# merge_group-triggered workflows with no fleet route: the queue's required
-# check (a hosted poll), the OIDC content scan (a reusable-workflow call) and
-# the hosted Python client suite.
+# Fleet-routed `workflow_call` callees that take the SAME expression without
+# declaring any trigger of their own. A callee's `github.event_name` is the
+# caller's, so its event set is the caller's: internal-content-scan-gate.yml
+# fires on merge_group, pull_request and push, which is exactly the merge-group
+# routing policy. Kept apart from the set above because the trigger-parity check
+# reads declared triggers, and a callee declares none.
+_MERGE_GROUP_CALLEE_WORKFLOWS = {"internal-content-scan.yml"}
+# merge_group-triggered workflows with no fleet route of their own: the queue's
+# required check (a poll), the OIDC content scan's caller and the Python client
+# suite. "No fleet route IN THIS FILE" is what this list means, and it is the
+# only thing it means. The poll and the client suite both carry the
+# `kirocrew-runners` group's label in this repository, so a group label does not
+# remove an entry. The content scan's caller is a bare `uses:` job with no
+# `runs-on` at all; the route for that lane lives in the callee it names, which
+# _MERGE_GROUP_CALLEE_WORKFLOWS pins.
 _MERGE_GROUP_HOSTED_WORKFLOWS = {
     "merge-queue-readiness.yml",
     "internal-content-scan-gate.yml",
@@ -251,6 +388,10 @@ _CANONICAL_BOOT_MATRIX_EXPR = (
 _EXPECTED_RESOLVER_CONSUMER_JOBS = {
     ("ci.yml", "lint-gate"): _CANONICAL_CONSUMER_EXPR,
     ("ci.yml", "backend-lint"): _CANONICAL_CONSUMER_EXPR_LARGE,
+    # Default Linux, not large: black is the only backend gate that needs the
+    # large fleet for its process pool, and it runs in backend-lint.
+    ("ci.yml", "backend-ratchets"): _CANONICAL_CONSUMER_EXPR,
+    ("ci.yml", "frontend-ratchets"): _CANONICAL_CONSUMER_EXPR,
     ("ci.yml", "backend-test"): _CANONICAL_CONSUMER_EXPR_LARGE,
     ("ci.yml", "backend-test-windows"): _CANONICAL_WINDOWS_CONSUMER_EXPR,
     ("ci.yml", "backend-test-windows-fail-closed"): _CANONICAL_WINDOWS_CONSUMER_EXPR,
@@ -260,6 +401,8 @@ _EXPECTED_RESOLVER_CONSUMER_JOBS = {
     ("ci.yml", "frontend-lint"): _CANONICAL_CONSUMER_EXPR,
     ("ci.yml", "lockfile-engines-floor"): _CANONICAL_CONSUMER_EXPR,
     ("ci.yml", "cfn-lint"): _CANONICAL_CONSUMER_EXPR,
+    # Needs the Rust toolchain step it carries: the fleet image has no `cargo`.
+    ("ci.yml", "native-redaction-gate"): _CANONICAL_CONSUMER_EXPR,
     ("ci.yml", "electron-test"): _CANONICAL_CONSUMER_EXPR,
     ("ci.yml", "electron-test-windows"): _CANONICAL_WINDOWS_CONSUMER_EXPR,
     ("ci.yml", "frontend-test"): _CANONICAL_CONSUMER_EXPR_LARGE,
@@ -270,6 +413,8 @@ _EXPECTED_RESOLVER_CONSUMER_JOBS = {
     ("ci.yml", "integration"): _CANONICAL_CONSUMER_EXPR_LARGE,
     ("ci.yml", "e2e-boot-matrix"): _CANONICAL_BOOT_MATRIX_EXPR,
     ("ci.yml", "real-adapter-contract"): _CANONICAL_CONSUMER_EXPR,
+    # Default Linux: `pip download` only, so neither tier binds.
+    ("ci.yml", "wheel-closure"): _CANONICAL_CONSUMER_EXPR,
 }
 
 
@@ -288,7 +433,7 @@ def _expected_inline_expression(workflow_name: str) -> str:
         return _CANONICAL_DISPATCH_EXPR
     if workflow_name in _DISPATCH_MERGE_GROUP_WORKFLOWS:
         return _CANONICAL_DISPATCH_MERGE_GROUP_EXPR
-    if workflow_name in _MERGE_GROUP_WORKFLOWS:
+    if workflow_name in _MERGE_GROUP_WORKFLOWS | _MERGE_GROUP_CALLEE_WORKFLOWS:
         return _CANONICAL_MERGE_GROUP_ROUTING_EXPR
     return _CANONICAL_ROUTING_EXPR
 
@@ -444,7 +589,27 @@ def test_ci_resolvers_share_actor_policy_and_emit_large_labels() -> None:
         script = step["run"]
         assert 'if [ "$ELIGIBLE" = "true" ]; then' in script
         assert f'echo "{output}=$LABEL instance-size:large"' in script
-        hosted = "ubuntu-latest" if os_name == "linux" else "windows-latest"
+        # Both resolvers carry the SAME three branches, and all three must
+        # exist on each. A run executing in this repository takes its
+        # platform's larger-runner label, keeping the matrix off the
+        # enterprise-shared standard pool. A run executing anywhere else -- a
+        # fork's own CI -- cannot reach an organization group, so it must stay
+        # on the hosted image rather than request a label no runner carries.
+        # Pinned together because dropping the third branch strands every
+        # consumer in every fork, which no other check in this file would
+        # catch.
+        #
+        # Each platform names its OWN group's runner by LABEL. The label form
+        # matters beyond fork reachability: a bare `group:` dispatches to any
+        # member, so one group holding both platforms would let a Linux
+        # consumer land on Windows. Two groups plus two labels cannot.
+        group_label, hosted = {
+            "linux": ("kirocrew-linux-4-core", "ubuntu-latest"),
+            "windows": ("kirocrew-windows-4-core", "windows-latest"),
+        }[os_name]
+        assert step["env"]["IN_REPO"] == "${{ github.repository == 'kirodotdev/KiroCrew' }}"
+        assert 'elif [ "$IN_REPO" = "true" ]; then' in script
+        assert f'echo "{output}={group_label}"' in script
         assert f'echo "{output}={hosted}"' in script
 
 
@@ -480,6 +645,46 @@ def test_build_desktop_routes_only_the_x64_leg_through_the_shared_policy() -> No
     # The release matrix (nightly/release) builds the shipped bytes on hosted.
     release = yaml.safe_load((_WORKFLOWS_DIR / "build-desktop.yml").read_text(encoding="utf-8"))
     assert release["jobs"]["build-desktop"]["runs-on"] == "${{ matrix.os }}"
+
+
+def test_both_ci_label_matrix_lanes_route_each_leg_to_its_own_group() -> None:
+    """`backend-test-ipv6` and `new-test-stability` share ONE routing string.
+
+    Both run a Linux and a Windows leg off `matrix.os` and reach the two
+    larger-runner groups by LABEL inside a `github.repository` conditional, so a
+    fork running its own copy -- which cannot reach an organization group --
+    degrades to the hosted image instead of queueing until the 24-hour cancel.
+
+    Pinned as one shared string across both jobs because the lanes are not
+    equally protected on their own: `test_ci_ipv6_routing.py` pins
+    `backend-test-ipv6`, while nothing else reads `new-test-stability`'s line.
+    The trailing `|| matrix.os` makes a dropped arm quiet rather than fatal --
+    the leg still runs, just back on the enterprise-shared pool -- and dropping
+    the Windows arm on `new-test-stability` alone would otherwise let
+    `New-test stability (windows-latest)` keep reporting green with no check
+    saying it had moved.
+    """
+    workflow = yaml.safe_load((_WORKFLOWS_DIR / "ci.yml").read_text(encoding="utf-8"))
+    expected = (
+        "${{ matrix.os == 'ubuntu-latest' && "
+        "(github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' "
+        "|| 'ubuntu-latest') || matrix.os == 'windows-latest' && "
+        "(github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-windows-4-core' "
+        "|| 'windows-latest') || matrix.os }}"
+    )
+    for job_name, rendered in (
+        ("backend-test-ipv6", "Backend Tests (IPv6, ${{ matrix.os }})"),
+        ("new-test-stability", "New-test stability (${{ matrix.os }})"),
+    ):
+        job = workflow["jobs"][job_name]
+        assert job["runs-on"] == expected, job_name
+        # `matrix.os` itself must stay the hosted image names: the rendered
+        # check name interpolates it, so changing a value renames the context
+        # branch protection and the readiness poll look for.
+        matrix = job["strategy"]["matrix"]
+        legs = matrix["os"] if "os" in matrix else [e["os"] for e in matrix["include"]]
+        assert legs == ["ubuntu-latest", "windows-latest"], job_name
+        assert job["name"] == rendered, job_name
 
 
 def test_merge_queue_readiness_budget_covers_ci_critical_path() -> None:
@@ -528,12 +733,23 @@ def test_merge_queue_readiness_budget_covers_ci_critical_path() -> None:
         legs -= len(matrix.get("exclude") or [])
         return max(1, -(-legs // cap))
 
+    def cap_minutes(spec: dict) -> int:
+        # Like max-parallel, timeout-minutes may be a CodeBuild-routed
+        # conditional; on the hosted/off-CodeBuild fallback it evaluates to the
+        # `|| N` value, which is the worst case the budget must cover.
+        value = spec["timeout-minutes"]
+        if isinstance(value, str):
+            m = re.search(r"\|\|\s*(\d+)\s*\}\}", value)
+            assert m, f"unparseable timeout-minutes expression: {value!r}"
+            return int(m.group(1))
+        return int(value)
+
     def longest_path(job_id: str) -> int:
         spec = jobs[job_id]
         needs = spec.get("needs", [])
         needs = [needs] if isinstance(needs, str) else list(needs)
         upstream = max((longest_path(n) for n in needs), default=0)
-        return upstream + rounds(spec) * int(spec["timeout-minutes"])
+        return upstream + rounds(spec) * cap_minutes(spec)
 
     critical_path = max(longest_path(job_id) for job_id in jobs)
     assert budget_minutes >= critical_path, (
@@ -562,8 +778,8 @@ def test_merge_queue_readiness_rollout_values() -> None:
     job = _readiness_job()
     (step,) = job["steps"]
     values = dict(re.findall(r"^\s*(TOTAL_BUDGET|MAX_RERUNS)=(\d+)\s*$", step["run"], re.MULTILINE))
-    assert values == {"TOTAL_BUDGET": "12000"}
-    assert job["timeout-minutes"] == 205
+    assert values == {"TOTAL_BUDGET": "13200"}
+    assert job["timeout-minutes"] == 225
 
 
 def test_merge_queue_readiness_reads_runs_and_never_reruns_them() -> None:

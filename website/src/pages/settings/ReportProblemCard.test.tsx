@@ -57,7 +57,7 @@ describe('ReportProblemCard', () => {
     renderCard()
 
     fireEvent.click(screen.getByRole('button', { name: /report a problem/i }))
-    fireEvent.click(screen.getByRole('button', { name: /create report/i }))
+    fireEvent.click(screen.getByRole('button', { name: /prepare issue/i }))
 
     await waitFor(() =>
       expect(screen.getByText(/3 secret\(s\) redacted/i)).toBeInTheDocument(),
@@ -84,7 +84,7 @@ describe('ReportProblemCard', () => {
     renderCard()
 
     fireEvent.click(screen.getByRole('button', { name: /report a problem/i }))
-    fireEvent.click(screen.getByRole('button', { name: /create report/i }))
+    fireEvent.click(screen.getByRole('button', { name: /prepare issue/i }))
 
     await waitFor(() =>
       expect(screen.getByText(/failed to collect diagnostics/i)).toBeInTheDocument(),

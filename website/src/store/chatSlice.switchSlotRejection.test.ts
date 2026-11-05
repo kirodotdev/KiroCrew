@@ -1,7 +1,7 @@
 /**
  * The switchSlot thunk boundary carries the numeric HTTP status (#6199).
  *
- * The classifier tests in `../test/agentSessionResumeMissingSlot.test.ts` feed
+ * The classifier tests in `../apps/issue-radar/agentSessionResumeMissingSlot.test.ts` feed
  * `isMissingSlotError` its payload directly, and the flow tests there fake
  * `unwrap()` — so neither would notice if `switchSlot` itself stopped producing
  * the payload. This file pins the WIRING: the real thunk, dispatched against a

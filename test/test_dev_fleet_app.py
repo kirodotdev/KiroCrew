@@ -736,8 +736,9 @@ async def test_sync_refuses_a_configured_non_kirocrew_repo():
 
 
 @pytest.mark.asyncio
-async def test_status_refresher_idles_for_a_configured_non_kirocrew_repo():
+async def test_status_refresher_idles_for_a_configured_non_kirocrew_repo(caplog):
     run = AsyncMock(return_value=(0, "", ""))
+    caplog.set_level("INFO", logger="kiro_crew.apps.builtins.dev_fleet.server")
     with (
         patch.object(repository_mod, "MAIN_REPO", "/some/other/repo"),
         patch.object(
@@ -746,6 +747,16 @@ async def test_status_refresher_idles_for_a_configured_non_kirocrew_repo():
         patch.object(runtime_mod, "_run_cmd", new=run),
     ):
         await mod._status_refresher()
+    # The refresher says why it went idle, naming the refused checkout.
+    idle = [
+        r.getMessage()
+        for r in caplog.records
+        if r.name == "kiro_crew.apps.builtins.dev_fleet.server"
+        and "status refresher idle" in r.getMessage()
+    ]
+    assert idle == [
+        "dev-fleet: status refresher idle — not a Kiro Crew checkout: /some/other/repo ..."
+    ]
     # Returned without fetching: no git ran against the unrelated repository.
     run.assert_not_awaited()
 

@@ -9,10 +9,20 @@ import { api } from '../../api/client'
 import { Btn } from '../../components/ui'
 import { fmtRelativeTime, slotActivityTs } from '../chat/sessionOrder'
 import { i18nT } from '../../i18n/t'
+import { fmtNumber } from '../../i18n/format'
 import type { Slot } from './types'
 import type { QueryClient } from '@tanstack/react-query'
 import type { AppDispatch } from '../../store'
 import type { SidebarScope } from './scope'
+import { RadioChipGroup, radioChip } from '../../components/RadioChipGroup'
+
+/** Inactivity windows offered by the cleanup panel, in days. The backend accepts any
+ *  value >= 1, so this list is purely the set of presets the picker renders. */
+const CLEANUP_WINDOW_DAYS = [1, 3, 7, 14, 30] as const
+
+/** Id of the archivable-session list the Show/Hide toggle controls. The header
+ *  menu opens at most one cleanup panel, so a fixed id cannot collide. */
+const CLEANUP_LIST_ID = 'session-cleanup-archivable-list'
 
 /** The cleanup panel's state, preview read and archive write. */
 export function useSessionCleanup({ cleanupOpen, setCleanupOpen, activeSlot, dispatch, queryClient }: {
@@ -41,7 +51,7 @@ export function useSessionCleanup({ cleanupOpen, setCleanupOpen, activeSlot, dis
         dispatch(fetchHistory(false))
       }
       if (res.failed?.length) {
-        setCleanupError(`${res.failed.length} session(s) failed to archive`)
+        setCleanupError(i18nT('pages.chatSidebar.session_failed_to_archive', { count: res.failed.length }))
       } else {
         setCleanupOpen(false)
       }
@@ -62,14 +72,14 @@ export function renderSessionCleanupPanel(shell: SidebarScope): React.ReactNode 
         return (
           <div className="mx-2 mb-2 p-3 rounded-lg bg-bg border border-border shadow-md text-sm animate-rise">
             <div className="font-medium text-text-strong mb-2"><BrushCleaning size={14} className="lucide-inline" /> {i18nT('pages.chatSidebar.clean_up_sessions_2')}</div>
-            <div className="text-muted text-[12px] mb-2">{i18nT('pages.chatSidebar.archive_sessions_with_no_activity_in_the_last')}</div>
-            <div className="flex items-center gap-2 mb-3">
-              {[1, 3, 7].map(d => (
-                <button key={d} className={`px-2.5 py-1 rounded-md text-[12px] border transition-all cursor-pointer ${
+            <div className="text-muted text-[12px] mb-2" id="session-cleanup-window-label">{i18nT('pages.chatSidebar.archive_sessions_with_no_activity_in_the_last')}</div>
+            <RadioChipGroup className="flex items-center gap-2 mb-3 flex-wrap" ariaLabelledBy="session-cleanup-window-label">
+              {CLEANUP_WINDOW_DAYS.map(d => (
+                <button key={d} type="button" {...radioChip(cleanupDays === d)} className={`px-2.5 py-1 rounded-md text-[12px] border transition-all cursor-pointer ${
                   cleanupDays === d ? 'bg-accent text-accent-fg border-accent' : 'bg-transparent text-muted border-border hover:border-border-strong hover:text-text'
                 }`} onClick={() => setCleanupDays(d)}>{i18nT('pages.chatSidebar.day', { count: d })}</button>
               ))}
-            </div>
+            </RadioChipGroup>
             <div className="text-[12px] text-muted mb-3">
               {cleanupPreviewLoading
                 ? i18nT('pages.chatSidebar.checking')
@@ -86,14 +96,16 @@ export function renderSessionCleanupPanel(shell: SidebarScope): React.ReactNode 
                   : noStale
                     ? i18nT('pages.chatSidebar.no_inactive_sessions_to_archive')
                     : cleanupPreview != null && <>
-                      {i18nT('pages.chatSidebar.session', { count: archivable.length })} {i18nT('pages.chatSidebar.will_be_moved_to_older_sessions')}{activeIsStale ? ` ${i18nT('pages.chatSidebar.1_skipped_currently_selected')}` : ''} {i18nT('pages.chatSidebar.pinned_sessions_are_kept')}
+                      {i18nT('pages.chatSidebar.cleanup_move_count', { count: archivable.length, n: fmtNumber(archivable.length) })}{activeIsStale ? ` ${i18nT('pages.chatSidebar.1_skipped_currently_selected')}` : ''} {i18nT('pages.chatSidebar.pinned_sessions_are_kept')}
                       {archivable.length > 0 && (
-                        <button className="ml-1 text-accent hover:underline cursor-pointer bg-transparent border-none p-0 text-[12px]" onClick={() => setCleanupExpanded(!cleanupExpanded)}>
-                          {cleanupExpanded ? i18nT('pages.chatSidebar.hide') : i18nT('pages.chatSidebar.show')} {i18nT('pages.chatSidebar.session', { count: archivable.length })} ▸
+                        <button type="button" aria-expanded={cleanupExpanded} aria-controls={CLEANUP_LIST_ID} className="ml-1 text-accent hover:underline cursor-pointer bg-transparent border-none p-0 text-[12px]" onClick={() => setCleanupExpanded(!cleanupExpanded)}>
+                          {cleanupExpanded
+                            ? i18nT('pages.chatSidebar.hide_sessions_count', { count: archivable.length, n: fmtNumber(archivable.length) })
+                            : i18nT('pages.chatSidebar.show_sessions_count', { count: archivable.length, n: fmtNumber(archivable.length) })} ▸
                         </button>
                       )}
                       {cleanupExpanded && archivable.length > 0 && (
-                        <div className="mt-2 max-h-32 overflow-y-auto rounded-md border border-border bg-bg-elevated p-1.5">
+                        <div id={CLEANUP_LIST_ID} className="mt-2 max-h-32 overflow-y-auto rounded-md border border-border bg-bg-elevated p-1.5">
                           {archivable.map(s => (
                             <div key={s.key} className="text-[12px] text-muted truncate py-0.5 px-1">
                               {s.title && s.title !== s.key ? s.title : s.key}

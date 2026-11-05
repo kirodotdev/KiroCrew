@@ -498,7 +498,7 @@ def migrate_env_secrets(
     # "stale vault authoritative after aborted rewrite" window).
     new_text = _rewrite_env_text(text, set(to_migrate))
     lock_path = _env_lock_path(ep)
-    lock_fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+    lock_fd = platform_compat.open_create_or_existing(lock_path, os.O_RDWR, 0o600)
     try:
         if not platform_compat.try_acquire_lock(lock_fd, exclusive=True):
             raise MigrationConflictError(

@@ -10,6 +10,7 @@ import type { usePreviewFlag } from '../../hooks/usePreviewFlag'
 import type { ScrollEdges } from '../../hooks/useScrollEdges'
 import type { RootState, useAppDispatch } from '../../store'
 import type { ChatFolder } from '../../types'
+import type { KindSections } from './kindSections'
 import type { SortKey } from '../chat/sessionOrder'
 import type { useSessionRowWindowRoot } from '../chat/sessionRowWindow'
 import type { useCollapsedCrewSpaces, useCollapsedCrews, useCrewEnable } from './CrewGroups'
@@ -18,6 +19,7 @@ import type { useBoardColumnMutations, useBoardColumns, useBoardFolderCollapse, 
 import type { useBulkModelSwitch } from './bulkModelSwitch'
 import type { useConductorLane } from './conductor'
 import type { useFolderChatCreate, useSessionCreate } from './create'
+import type { SessionKindDescriptor } from '../../hooks/sessionKindRegistry'
 import type { useFolderDropOps, useNativeSessionDrag, useSidebarDragHandlers, useSidebarMoveUndo } from './dnd/useSidebarDrag'
 import type { useSessionFilterState, useSessionStatusFilters } from './filters'
 import type { useFolderFilterReveal, useFolderFilterRows, useFolderMutations, useFolderSort, useFolderTree, useFolderVisibility, useRootFolderLanes } from './folders'
@@ -28,6 +30,7 @@ import type { useSidebarModels } from './models'
 import type { usePinnedKeyboardReorder, usePinnedSessionOrder } from './pinnedOrder'
 import type { useFolderRename, useSessionAutoTitle, useSessionRename } from './rename'
 import type { useSidebarResize } from './resize'
+import type { useResumeAll } from './resumeAll'
 import type { useSidebarReveal } from './reveal'
 import type { SidebarRows } from './rows'
 import type { useSearchMatches } from './search'
@@ -264,6 +267,8 @@ export interface SidebarScope {
 
   // From `useSessionSources`
   historySearchResults: ReturnType<typeof useSessionSources>['historySearchResults']
+  historySearchFailed: ReturnType<typeof useSessionSources>['historySearchFailed']
+  historySearchScan: ReturnType<typeof useSessionSources>['historySearchScan']
   instanceSessions: ReturnType<typeof useSessionSources>['instanceSessions']
   remoteSessionsError: ReturnType<typeof useSessionSources>['remoteSessionsError']
   selectInstance: ReturnType<typeof useSessionSources>['selectInstance']
@@ -292,6 +297,10 @@ export interface SidebarScope {
   toggleTagFilter: ReturnType<typeof useSessionFilterState>['toggleTagFilter']
   clearTagFilter: ReturnType<typeof useSessionFilterState>['clearTagFilter']
   foldersShelved: ReturnType<typeof useSessionFilterState>['foldersShelved']
+  groupByKind: ReturnType<typeof useSessionFilterState>['groupByKind']
+  toggleGroupByKind: ReturnType<typeof useSessionFilterState>['toggleGroupByKind']
+  /** "Group by kind" while it applies (./kindSections), or null. */
+  kindSections: KindSections | null
   setFoldersShelved: ReturnType<typeof useSessionFilterState>['setFoldersShelved']
   toggleFoldersShelved: ReturnType<typeof useSessionFilterState>['toggleFoldersShelved']
   toggleFilter: ReturnType<typeof useSessionFilterState>['toggleFilter']
@@ -329,6 +338,9 @@ export interface SidebarScope {
 
   // From `useBulkModelSwitch`
   bulkModel: ReturnType<typeof useBulkModelSwitch>
+
+  // From `useResumeAll`
+  resumeAll: ReturnType<typeof useResumeAll>
 
   // From `usePinnedSessionOrder`
   pinned: ReturnType<typeof usePinnedSessionOrder>['pinned']
@@ -417,6 +429,8 @@ export interface SidebarScope {
   slotFolders: ReturnType<typeof useFolderVisibility>['slotFolders']
   foldersWithActiveSubtree: ReturnType<typeof useFolderVisibility>['foldersWithActiveSubtree']
   isFolderHidden: ReturnType<typeof useFolderVisibility>['isFolderHidden']
+  pinnedFolderSubtree: ReturnType<typeof useFolderVisibility>['pinnedFolderSubtree']
+  pinnedFolderAncestors: ReturnType<typeof useFolderVisibility>['pinnedFolderAncestors']
 
   // From `useSearchMatches`
   searchRanked: ReturnType<typeof useSearchMatches>['searchRanked']
@@ -522,6 +536,10 @@ export interface SidebarScope {
   createRemoteChatMutation: ReturnType<typeof useSessionCreate>['createRemoteChatMutation']
   createEphemeralChatMutation: ReturnType<typeof useSessionCreate>['createEphemeralChatMutation']
   createDocMutation: ReturnType<typeof useSessionCreate>['createDocMutation']
+  createSessionKindMutation: ReturnType<typeof useSessionCreate>['createSessionKindMutation']
+
+  // From `useSessionKindDescriptors`: the app-contributed kinds the create menu offers.
+  sessionKindDescriptors: SessionKindDescriptor[]
 
   // From `useNavigate`
   navigate: ReturnType<typeof useNavigate>

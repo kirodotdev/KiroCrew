@@ -11,10 +11,10 @@ from __future__ import annotations
 
 from aiohttp import web
 
-from kiro_crew.dashboard import handlers, ws
+from kiro_crew.dashboard import handlers, milestones_api, ws
 from kiro_crew.feature_videos import (
     api_feature_videos_feedback,
-    api_feature_videos_next,
+    api_feature_videos_library,
     api_feature_videos_status,
 )
 from kiro_crew.feature_videos_cache import (
@@ -135,7 +135,7 @@ def register(app: web.Application) -> None:
     app.router.add_post("/api/tips/feedback", api_tips_feedback)
 
     # Feature videos (feature-intro clips, sibling of tips above)
-    app.router.add_get("/api/feature-videos/next", api_feature_videos_next)
+    app.router.add_get("/api/feature-videos/library", api_feature_videos_library)
     app.router.add_get("/api/feature-videos/status", api_feature_videos_status)
     app.router.add_post("/api/feature-videos/feedback", api_feature_videos_feedback)
     app.router.add_post("/api/feature-videos/fetch-all", api_feature_videos_fetch_all)
@@ -143,3 +143,6 @@ def register(app: web.Application) -> None:
     # is in the user's data home, so this serves one validated file per request
     # and never a directory listing (``feature_videos_cache``).
     app.router.add_get("/feature-videos/{release}/{name}", api_feature_video_file)
+
+    # Milestones (new-feature and usage milestones, same auth as feature videos)
+    milestones_api.register(app)

@@ -16,8 +16,11 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, fireEvent, waitFor, cleanup, act, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 
 import type { PackMeta } from '../lib/appearancePacks/types'
+import { GALLERY_PAD } from '../apps/crew-companion/constants'
+import { PANEL_RADIUS } from '../apps/crew-companion/panelSkin'
 
 // ── Bridge double ──────────────────────────────────────────────────────────
 
@@ -192,12 +195,19 @@ async function mount() {
   return utils
 }
 
-/** The grid card for a pack — a role=button div wrapping the pack's name. */
+/** The grid card's "use this pack" button — it wraps the pack's name. */
 const cardFor = (name: string): HTMLElement => {
   const grid = document.querySelector('[style*="grid-template-columns"]') as HTMLElement
-  const card = within(grid).getByText(name).closest('[role="button"]')
+  const card = within(grid).getByText(name).closest('button')
   if (!card) throw new Error(`no card for ${name}`)
-  return card as HTMLElement
+  return card
+}
+
+/** The whole grid card: its "use this pack" button and, beside it, Manage. */
+const tileFor = (name: string): HTMLElement => {
+  const tile = cardFor(name).parentElement
+  if (!tile) throw new Error(`no card tile for ${name}`)
+  return tile
 }
 
 /** The dim layer a dialog is painted on — its click target for "outside". */
@@ -211,7 +221,7 @@ const EDIT = /Edit/
 
 /** Open a custom pack's detail sheet through its Manage affordance. */
 async function openDetail(name: string) {
-  const manage = cardFor(name).querySelector('button[aria-label="Manage"]')
+  const manage = tileFor(name).querySelector('button[aria-label="Manage"]')
   fireEvent.click(manage as HTMLElement)
   await waitFor(() => expect(screen.getByRole('dialog')).toBeInTheDocument())
 }
@@ -262,8 +272,19 @@ describe('gallery grid', () => {
 
   it('offers Manage on custom packs only — a built-in has nothing to manage', async () => {
     await mount()
-    expect(cardFor('Boba').querySelector('button[aria-label="Manage"]')).not.toBeNull()
-    expect(cardFor('Kiro').querySelector('button[aria-label="Manage"]')).toBeNull()
+    expect(tileFor('Boba').querySelector('button[aria-label="Manage"]')).not.toBeNull()
+    expect(tileFor('Kiro').querySelector('button[aria-label="Manage"]')).toBeNull()
+  })
+
+  it('lets the "use this pack" button fill its whole card, so every strip of it applies', async () => {
+    await mount()
+    // jsdom has no layout: assert the style that makes the button fill a card
+    // stretched to a taller neighbour's row height (the card is a flex column).
+    for (const name of ['Kiro', 'Boba']) {
+      expect(tileFor(name).style.flexDirection).toBe('column')
+      expect(cardFor(name).style.flexGrow).toBe('1')
+      expect(cardFor(name).style.width).toBe('100%')
+    }
   })
 
   it('surfaces a failed pack list as a dismissable banner', async () => {
@@ -304,15 +325,34 @@ describe('applying a pack from its card', () => {
   })
 
   it('applies on Enter, so the grid is reachable without a mouse', async () => {
+    const user = userEvent.setup()
     await mount()
-    fireEvent.keyDown(cardFor('Boba'), { key: 'Enter' })
+    cardFor('Boba').focus()
+    await user.keyboard('{Enter}')
     await waitFor(() => expect(api.gallerySetActive).toHaveBeenCalledWith('boba-pack'))
   })
 
+  it.each(['{Enter}', ' '])('opens Manage from the keyboard (%s) without applying the pack', async (key) => {
+    const user = userEvent.setup()
+    await mount()
+    const manage = tileFor('Boba').querySelector('button[aria-label="Manage"]') as HTMLElement
+    manage.focus()
+    await user.keyboard(key)
+
+    await waitFor(() => expect(screen.getByRole('dialog')).toBeInTheDocument())
+    // The card used to be a role="button" whose key handler took this keystroke
+    // and switched the avatar instead of opening Manage.
+    expect(api.gallerySetActive).not.toHaveBeenCalled()
+    // Manage must not sit inside another control.
+    expect(manage.parentElement?.closest('button, [role="button"]')).toBeNull()
+  })
+
   it('ignores a tap on the pack that is already active', async () => {
+    const user = userEvent.setup()
     await mount()
     fireEvent.click(cardFor('Kiro'))
-    fireEvent.keyDown(cardFor('Kiro'), { key: ' ' })
+    cardFor('Kiro').focus()
+    await user.keyboard(' ')
     await waitFor(() => expect(screen.getByText('Kiro')).toBeInTheDocument())
     expect(api.gallerySetActive).not.toHaveBeenCalled()
   })
@@ -400,6 +440,13 @@ describe('pack detail sheet', () => {
     expect(screen.getByRole('button', { name: 'Delete' })).toBeInTheDocument()
   })
 
+  it('is named by the pack it shows', async () => {
+    await mount()
+    await openDetail('Boba')
+    const dialog = screen.getByRole('dialog', { name: 'Boba' })
+    await waitFor(() => expect(dialog.contains(document.activeElement)).toBe(true))
+  })
+
   it('lists only the optional groups the pack actually provides', async () => {
     api.galleryGetPackDetail.mockResolvedValue(
       detailFor(custom, { idle: SVG, done: SVG, walking: SVG }),
@@ -428,7 +475,7 @@ describe('pack detail sheet', () => {
 
   it('toggles closed when Manage is pressed a second time', async () => {
     await mount()
-    const manage = cardFor('Boba').querySelector('button[aria-label="Manage"]') as HTMLElement
+    const manage = tileFor('Boba').querySelector('button[aria-label="Manage"]') as HTMLElement
     await openDetail('Boba')
     fireEvent.click(manage)
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
@@ -454,7 +501,7 @@ describe('pack detail sheet', () => {
         : Promise.resolve(detailFor(builtin, {})),
     )
     await mount()
-    fireEvent.click(cardFor('Boba').querySelector('button[aria-label="Manage"]') as HTMLElement)
+    fireEvent.click(tileFor('Boba').querySelector('button[aria-label="Manage"]') as HTMLElement)
 
     expect(await screen.findByText('that manifest is corrupt')).toBeInTheDocument()
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
@@ -463,7 +510,7 @@ describe('pack detail sheet', () => {
   it('opens no sheet, and blames nothing, when the pack has no detail at all', async () => {
     await mount()
     api.galleryGetPackDetail.mockResolvedValue(null)
-    fireEvent.click(cardFor('Boba').querySelector('button[aria-label="Manage"]') as HTMLElement)
+    fireEvent.click(tileFor('Boba').querySelector('button[aria-label="Manage"]') as HTMLElement)
 
     await waitFor(() => expect(api.galleryGetPackDetail).toHaveBeenLastCalledWith('boba-pack'))
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
@@ -525,23 +572,60 @@ describe('pack detail sheet', () => {
 
 // ── Deleting a pack ────────────────────────────────────────────────────────
 
+async function answerDelete(answer: 'Delete' | 'Cancel') {
+  const question = await screen.findByRole('dialog', { name: /Delete appearance pack/ })
+  await act(async () => { fireEvent.click(within(question).getByRole('button', { name: answer })) })
+}
+
 describe('deleting a pack', () => {
   it('asks first, and does nothing when the user declines', async () => {
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
     await mount()
     await openDetail('Boba')
     fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
 
-    expect(confirmSpy).toHaveBeenCalledWith('Delete appearance pack “Boba”? This cannot be undone.')
+    const question = screen.getByRole('dialog', { name: 'Delete appearance pack “Boba”? This cannot be undone.' })
+    expect(question).toHaveFocus()
+    const backdrop = question.parentElement?.previousElementSibling as HTMLElement
+    expect(backdrop.style.inset).toBe(`${GALLERY_PAD}px`)
+    expect(backdrop.style.borderRadius).toBe(`${PANEL_RADIUS.card}px`)
+    expect(api.galleryDelete).not.toHaveBeenCalled()
+    await answerDelete('Cancel')
     expect(api.galleryDelete).not.toHaveBeenCalled()
     expect(screen.getByRole('dialog')).toBeInTheDocument()
   })
 
-  it('deletes an inactive pack and closes the sheet', async () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
+  it('cancels on Escape without closing the gallery window', async () => {
     await mount()
     await openDetail('Boba')
     fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
+    const question = await screen.findByRole('dialog', { name: /Delete appearance pack/ })
+    await act(async () => { fireEvent.keyDown(question, { key: 'Escape' }) })
+    expect(screen.queryByRole('dialog', { name: /Delete appearance pack/ })).not.toBeInTheDocument()
+    expect(screen.getByRole('dialog', { name: 'Boba' })).toBeInTheDocument()
+    expect(api.galleryDelete).not.toHaveBeenCalled()
+    expect(api.closeGallery).not.toHaveBeenCalled()
+    fireEvent.keyDown(window, { key: 'Escape' })
+    expect(api.closeGallery).toHaveBeenCalledTimes(1)
+  })
+
+  it('deletes the pack asked about when another pack is selected before the answer', async () => {
+    api.galleryListPacks.mockResolvedValue([builtin, custom, spritePack])
+    await mount()
+    await openDetail('Boba')
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
+    await screen.findByRole('dialog', { name: /Delete appearance pack “Boba”/ })
+    fireEvent.click(tileFor('Pixel Pal').querySelector('button[aria-label="Manage"]') as HTMLElement)
+    await screen.findByRole('dialog', { name: 'Pixel Pal' })
+    expect(api.galleryDelete).not.toHaveBeenCalled()
+    await answerDelete('Delete')
+    expect(api.galleryDelete).toHaveBeenCalledExactlyOnceWith('boba-pack')
+  })
+
+  it('deletes an inactive pack and closes the sheet', async () => {
+    await mount()
+    await openDetail('Boba')
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
+    await answerDelete('Delete')
 
     await waitFor(() => expect(api.galleryDelete).toHaveBeenCalledWith('boba-pack'))
     // Inactive pack: no need to repoint the active reference.
@@ -551,11 +635,11 @@ describe('deleting a pack', () => {
   })
 
   it('repoints the active reference to the built-in BEFORE deleting the active pack', async () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
     api.getCrewCompanionConfig.mockResolvedValue({ activeAppearance: custom.id })
     await mount()
     await openDetail('Boba')
     fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
+    await answerDelete('Delete')
 
     await waitFor(() => expect(api.galleryDelete).toHaveBeenCalledWith('boba-pack'))
     expect(api.gallerySetActive).toHaveBeenCalledWith(BUILTIN_ID)
@@ -566,35 +650,50 @@ describe('deleting a pack', () => {
     expect(switched).toBeLessThan(deleted)
   })
 
+  it('repairs a pack activated in the same batch as its delete confirmation answer', async () => {
+    await mount()
+    await openDetail('Boba')
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
+    const question = await screen.findByRole('dialog', { name: /Delete appearance pack/ })
+    const confirm = within(question).getByRole('button', { name: 'Delete' })
+    await act(async () => {
+      mocks.listeners.active?.({ packId: custom.id })
+      fireEvent.click(confirm)
+    })
+    expect(api.gallerySetActive).toHaveBeenCalledExactlyOnceWith(BUILTIN_ID)
+    expect(api.galleryDelete).toHaveBeenCalledExactlyOnceWith(custom.id)
+    expect(api.gallerySetActive.mock.invocationCallOrder[0]).toBeLessThan(api.galleryDelete.mock.invocationCallOrder[0])
+  })
+
   it('aborts the delete when the pre-delete switch fails', async () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
     api.getCrewCompanionConfig.mockResolvedValue({ activeAppearance: custom.id })
     api.gallerySetActive.mockResolvedValue({ ok: false })
     await mount()
     await openDetail('Boba')
     fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
+    await answerDelete('Delete')
 
     expect(await screen.findByText('Delete failed')).toBeInTheDocument()
     expect(api.galleryDelete).not.toHaveBeenCalled()
   })
 
   it('reports a refused delete', async () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
     api.galleryDelete.mockResolvedValue(null)
     await mount()
     await openDetail('Boba')
     fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
+    await answerDelete('Delete')
 
     expect(await screen.findByText('Delete failed')).toBeInTheDocument()
     expect(screen.getByRole('dialog')).toBeInTheDocument()
   })
 
   it('reports a thrown delete', async () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
     api.galleryDelete.mockRejectedValue(new Error('the file is locked'))
     await mount()
     await openDetail('Boba')
     fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
+    await answerDelete('Delete')
     expect(await screen.findByText('the file is locked')).toBeInTheDocument()
   })
 })
@@ -716,6 +815,36 @@ describe('importing a pet from PetDex', () => {
       description: 'round cat',
       spriteBase64: 'AAAA',
     })
+  })
+
+  it('gives focus back to the Import button when the dialog closes', async () => {
+    render(<GalleryPanel />)
+    await tick(0)
+    await tick(0)
+    const opener = screen.getByRole('button', { name: 'Import from PetDex' })
+    opener.focus()
+    fireEvent.click(opener)
+    const dialog = screen.getByRole('dialog', { name: 'Import a companion' })
+    await tick(0)
+    fireEvent.click(within(dialog).getByRole('button', { name: /Close/ }))
+    await tick(0)
+    expect(screen.queryByRole('dialog', { name: 'Import a companion' })).toBeNull()
+    expect(document.activeElement).toBe(opener)
+  })
+
+  it('is a dialog named by its heading', async () => {
+    await openImport()
+    const dialog = screen.getByRole('dialog', { name: 'Import a companion' })
+    await tick(0)
+    // The trap must not take focus away from the field the user types into.
+    expect(document.activeElement).toBe(dialog.querySelector('input'))
+    // Tab from the last control wraps to the first instead of leaving the modal.
+    const controls = Array.from(
+      dialog.querySelectorAll<HTMLElement>('button:not([disabled]), input:not([disabled])'),
+    )
+    controls[controls.length - 1].focus()
+    fireEvent.keyDown(controls[controls.length - 1], { key: 'Tab' })
+    expect(document.activeElement).toBe(controls[0])
   })
 
   it('looks the pet up only after typing settles, then shows what it found', async () => {

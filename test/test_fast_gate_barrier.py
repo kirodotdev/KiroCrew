@@ -111,6 +111,22 @@ _LINT_JOBS = ("backend-lint", "frontend-lint")
 _NOT_BEHIND_LINT: dict[str, str] = {
     "lockfile-engines-floor": "10-minute lockfile check; cheaper than the wait",
     "cfn-lint": "10-minute template lint; gives its own early verdict",
+    # These two hold the baselined ratchets. They are OFF the gate path
+    # deliberately, and the trade is real: a ratchet failure does not SAVE the
+    # matrix, it reds the pull request alongside it. What is bought is the
+    # gate's wait -- behind `lint-gate`, the slowest ratchet would hold every
+    # test shard for a verdict that is not part of the decision the gate makes. The split line is whether a failure makes a test
+    # RESULT meaningless: a type error or a malformed import does, an over-cap
+    # file or a missing `encoding=` does not.
+    "backend-ratchets": "baselined ratchets; a failure reds the PR, not the matrix",
+    "frontend-ratchets": "baselined ratchets; a failure reds the PR, not the matrix",
+}
+#: The ratchet siblings, which must mirror their source lint job's surface
+#: condition exactly: a moved gate that stops inheriting it runs on diffs it
+#: cannot apply to, or stops running on the diffs it exists for.
+_RATCHET_SIBLINGS: dict[str, str] = {
+    "backend-ratchets": "backend-lint",
+    "frontend-ratchets": "frontend-lint",
 }
 
 _STATUS_FUNCTION = re.compile(r"\b(?:always|cancelled|failure|success)\(\)")
@@ -263,7 +279,20 @@ _REACHES_BUT_SURVIVES_A_SKIP: dict[str, str] = {
     ),
 }
 
-_EDGE_EXEMPT: dict[str, str] = {**_MUST_NOT_REACH, **_REACHES_BUT_SURVIVES_A_SKIP}
+# These run BESIDE the barrier. They are what `lint-gate` aggregates, and
+# `lint-gate` itself needs `await-fast-gate`, so every heavy job still waits for
+# both verdicts; behind the barrier the two waits added up on the path to every
+# test shard. test_the_lint_gate_still_needs_the_barrier pins the other half.
+_RUNS_BESIDE_THE_BARRIER: dict[str, str] = {
+    "backend-lint": "aggregated by lint-gate, which needs the barrier itself",
+    "frontend-lint": "aggregated by lint-gate, which needs the barrier itself",
+}
+
+_EDGE_EXEMPT: dict[str, str] = {
+    **_MUST_NOT_REACH,
+    **_REACHES_BUT_SURVIVES_A_SKIP,
+    **_RUNS_BESIDE_THE_BARRIER,
+}
 
 
 def _workflow(path: Path) -> dict:
@@ -924,6 +953,16 @@ class TestTheEdgeReachesEveryExpensiveJob:
             "exemption list has grown until the contract checks almost nothing"
         )
 
+    def test_the_lint_gate_still_needs_the_barrier(self, ci: dict) -> None:
+        # The lint jobs may skip the barrier only because the gate the heavy jobs
+        # wait for does not: without this edge a Fast Gate red would release the
+        # matrix as soon as lint passed.
+        gate = ci["jobs"][_LINT_GATE]
+        assert "await-fast-gate" in self._needs(ci, _LINT_GATE)
+        assert _BARRIER_PASSED in str(gate["if"])
+        for job in _RUNS_BESIDE_THE_BARRIER:
+            assert job in self._needs(ci, _LINT_GATE), job
+
     @pytest.mark.parametrize("job", sorted(_MUST_NOT_REACH))
     def test_a_job_that_must_not_reach_the_barrier_does_not(self, ci: dict, job: str) -> None:
         # Load-bearing in the other direction: wiring the edge into `changes` breaks
@@ -1239,6 +1278,34 @@ class TestLintRunsBeforeTheHeavyJobs:
             assert job in ci["jobs"], f"_NOT_BEHIND_LINT names a job that is gone: {job}"
             assert _LINT_GATE not in self._needs(ci, job), job
 
+    @pytest.mark.parametrize(("sibling", "source"), sorted(_RATCHET_SIBLINGS.items()))
+    def test_a_ratchet_sibling_is_off_the_gate_and_keeps_its_source_condition(
+        self, ci: dict, sibling: str, source: str
+    ) -> None:
+        """The sibling must not feed the gate, and must gate on the same surface.
+
+        Two failures this catches, both silent. Wiring a sibling back into
+        `lint-gate` (or behind it) undoes the whole change and nothing else
+        would report it. Letting its `if:` drift from its source lint job's is
+        worse: the gates it holds read one surface's files, so a sibling that
+        runs on the other surface judges a tree it cannot apply to, and one that
+        stops running on its own surface goes quiet -- a skipped job still
+        writes a green check run, so nothing downstream notices the gate left.
+        """
+        assert _LINT_GATE not in self._needs(ci, sibling)
+        assert not self._reaches(ci, sibling, _LINT_GATE), (
+            f"{sibling} reaches {_LINT_GATE}, so the gate still waits on it "
+            "transitively and moving its gates bought nothing"
+        )
+        assert sibling not in self._needs(ci, _LINT_GATE)
+        assert ci["jobs"][sibling]["if"] == ci["jobs"][source]["if"], (
+            f"{sibling} no longer carries {source}'s surface condition; its gates "
+            "would run on a diff they cannot apply to, or stop running on the "
+            "diff they exist for"
+        )
+        # The barrier still applies: these are not a way around the Fast Gate.
+        assert "await-fast-gate" in self._needs(ci, sibling)
+
     def test_the_heavy_jobs_do_not_override_the_skip(self, ci: dict) -> None:
         # A heavy job carrying `always()` / `!cancelled()` would run on a skipped
         # gate unless it also requires the gate's success. Only the jobs that fail
@@ -1283,14 +1350,22 @@ class TestLintRunsBeforeTheHeavyJobs:
                     "backend-test-kernel-lock-owner",
                     "backend-test-sandbox",
                     "backend-test-crew-container",
+                    "backend-ratchets",
                 },
-                {"frontend-lint", "bundle-size", "frontend-coverage-merge"},
+                {"frontend-lint", "frontend-ratchets", "bundle-size", "frontend-coverage-merge"},
             ),
             (
                 {"only_backend": "false", "only_frontend": "true"},
-                {"backend-test", "frontend-test", "bundle-size", "frontend-coverage-merge"},
+                {
+                    "backend-test",
+                    "frontend-test",
+                    "bundle-size",
+                    "frontend-coverage-merge",
+                    "frontend-ratchets",
+                },
                 {
                     "backend-lint",
+                    "backend-ratchets",
                     "coverage-combine",
                     "real-adapter-contract",
                     "backend-test-kernel-lock-owner",
@@ -1300,7 +1375,14 @@ class TestLintRunsBeforeTheHeavyJobs:
             ),
             (
                 {"only_backend": "false", "only_frontend": "false"},
-                {"backend-test", "frontend-test", "coverage-combine", "bundle-size"},
+                {
+                    "backend-test",
+                    "frontend-test",
+                    "coverage-combine",
+                    "bundle-size",
+                    "backend-ratchets",
+                    "frontend-ratchets",
+                },
                 set(),
             ),
         ],

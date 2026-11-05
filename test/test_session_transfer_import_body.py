@@ -30,7 +30,7 @@ from session_transfer_helpers import (  # noqa: F401 -- the autouse fixture regi
     _valid,
 )
 
-from kiro_crew.testing.wait import async_wait_until
+from kiro_crew.testing.wait import async_wait_until, await_until
 
 # ── install from a FILE: the body format ─────────────────────────────────
 
@@ -39,12 +39,9 @@ from kiro_crew.testing.wait import async_wait_until
 async def test_import_accepts_the_exact_bytes_the_export_endpoint_writes(monkeypatch):
     """The acceptance bar: an exported file installs with no step in between.
 
-    Compressed with the EXPORT MODULE'S OWN serialiser, not a local
-    ``gzip.compress`` that happens to look similar — the defect this closes was
-    precisely that the two halves of one product disagreed about a format, so a
-    test that re-implements the sending half could pass while the endpoint still
-    refuses the real file. ``GET .../export`` answers ``application/gzip``; the
-    importer read ``request.json()`` and rejected those bytes as malformed JSON.
+    Compressed with the export module's own serialiser, not a local ``gzip.compress``:
+    a test that re-implements the sending half could pass while the two halves
+    disagree about the format.
     """
     from kiro_crew.dashboard import session_transfer as st
 
@@ -132,11 +129,8 @@ async def test_import_has_no_size_ceiling(monkeypatch):
 def test_import_never_reads_the_whole_body_into_memory():
     """Source guard: the arrival path streams and must not buffer the whole body.
 
-    ``request.read()`` / ``.post()`` / ``.json()`` each materialise the entire body
-    in memory AND are the calls aiohttp enforces ``client_max_size`` in — using any
-    of them would both cap the size and defeat the streaming. Assert the handler and
-    its body reader never call them (comments stripped, so a comment mentioning one
-    does not mask a real call).
+    ``request.read()`` / ``.post()`` / ``.json()`` buffer the whole body and are where
+    aiohttp enforces ``client_max_size``, so the handler and its reader must not call them.
     """
     import ast
     from pathlib import Path as _Path
@@ -202,8 +196,7 @@ async def test_concurrent_expansions_are_bounded_and_the_excess_is_refused(monke
         if fn is st._gunzip_file:
             inside["now"] += 1
             inside["peak"] = max(inside["peak"], inside["now"])
-            # flake-ok: pre-existing park of the held gunzip until the test releases it, moved verbatim; tracked for a de-flake pass
-            await release.wait()
+            await await_until(release, what="the test to release the held gunzip")
             inside["now"] -= 1
             return fn(*args)
         return fn(*args)
@@ -239,13 +232,8 @@ async def test_concurrent_expansions_are_bounded_and_the_excess_is_refused(monke
 async def test_the_expansion_permit_outlives_the_decompression(monkeypatch):
     """A permit that ends at the gunzip bounds the CPU, not the memory.
 
-    A decompressed bundle stays resident -- first as bytes, then as the parsed
-    document -- through redaction and persistence, so what has to be bounded is
-    how many are resident AT ONCE, not how many are inflating at once. Measured
-    inside the post-decompression pass rather than at the gunzip: with the permit
-    released when the body has been read, every admitted caller frees its slot
-    immediately and they all pile into redaction together, which is precisely the
-    sum the bound exists to prevent.
+    A decompressed bundle stays resident through redaction and persistence, so the bound
+    is on how many are resident at once. Measured inside the post-decompression pass.
     """
     from kiro_crew.dashboard import session_transfer as st
 
@@ -260,8 +248,7 @@ async def test_the_expansion_permit_outlives_the_decompression(monkeypatch):
         if fn is st._build_redacted_rows:
             resident["now"] += 1
             resident["peak"] = max(resident["peak"], resident["now"])
-            # flake-ok: pre-existing park of the redaction pass until the test releases it, moved verbatim; tracked for a de-flake pass
-            await release.wait()
+            await await_until(release, what="the test to release the redaction pass")
             resident["now"] -= 1
         return fn(*args)
 
@@ -272,14 +259,21 @@ async def test_the_expansion_permit_outlives_the_decompression(monkeypatch):
         asyncio.create_task(_run_import(st, monkeypatch, None, gz=gz))
         for _ in range(st._MAX_CONCURRENT_EXPANSIONS + st._MAX_QUEUED_EXPANSIONS + 2)
     ]
-    # Wait for the first caller to park, then give the rest time to pile in
-    # behind it: a fixed sleep measures the harness's speed, not the permit.
+    # Wait for the first caller to park, then for every other caller to come to rest:
+    # refused, queued behind the permit, or parked in redaction. None is still on its
+    # way in, so what is resident now is everything the permit lets through; a fixed
+    # sleep measures the harness's speed, not the permit.
     await async_wait_until(
         lambda: resident["peak"], describe=lambda: f"resident peak so far: {resident['peak']}"
     )
-    # flake-ok: pre-existing 100 ms pile-in window behind the parked caller, moved verbatim; tracked for a de-flake pass
-    # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing 100 ms pile-in window behind the parked caller, moved verbatim; tracked for a de-flake pass
-    await asyncio.sleep(0.1)
+    await async_wait_until(
+        lambda: sum(t.done() for t in running) + resident["now"] + st._expansion_waiting
+        == len(running),
+        describe=lambda: (
+            f"{sum(t.done() for t in running)} refused or finished, {resident['now']} resident, "
+            f"{st._expansion_waiting} queued, of {len(running)} imports"
+        ),
+    )
     peak_while_parked = resident["peak"]
     release.set()
     await asyncio.gather(*running)
@@ -293,13 +287,9 @@ async def test_the_transcript_only_mark_reads_layer_b_skipped_not_absence(monkey
     """A file bundle MAY carry Layer B and usually will not — so the mark is
     driven by the sender's explicit signal, never inferred from absence.
 
-    Three cases, because inferring from absence gets two of them wrong:
-
-    * no Layer B and no signal — a session that never HAD a kiro-cli context.
-      Nothing was lost, so nothing is marked. Inference would mark it.
-    * no Layer B, ``layer_b_skipped`` set — context existed and was withheld
-      (the export's default-off posture, or a mid-turn source). Marked.
-    * Layer B present — full fidelity, not marked.
+    * no Layer B, no signal: the session never had a kiro-cli context; not marked.
+    * no Layer B, ``layer_b_skipped`` set: context was withheld; marked.
+    * Layer B present: not marked.
     """
     from kiro_crew.dashboard import session_transfer as st
 
@@ -323,16 +313,9 @@ async def test_the_transcript_only_mark_reads_layer_b_skipped_not_absence(monkey
 async def test_an_exported_file_installs_with_no_step_in_between(tmp_path):
     """The two halves of the feature, wired to each other over HTTP.
 
-    Every other test here stubs one side. This one stubs NEITHER: a real
-    ``DashboardState``, the real ``api_chat_slot_export``, the real
-    ``api_chat_slot_import``. It is the test whose absence let the defect ship —
-    each half was covered, the PAIR was not, and the pair is where they disagreed
-    about a format.
-
-    Also covers, in one pass, the two exit criteria that are about repetition
-    rather than about a single install: the same file installed twice yields TWO
-    separate sessions, and a plain-JSON body keeps working alongside gzip so the
-    tunnel is unregressed.
+    Neither side is stubbed: the real ``api_chat_slot_export`` feeds the real
+    ``api_chat_slot_import``. Also: one file installed twice yields two sessions, and a
+    plain-JSON body still works beside gzip.
     """
     import gzip
 
@@ -418,12 +401,8 @@ async def test_an_exported_file_installs_with_no_step_in_between(tmp_path):
 async def test_a_body_past_the_server_client_max_size_still_imports(tmp_path):
     """A body larger than the Application's ``client_max_size`` imports successfully.
 
-    The import path streams ``request.content`` to disk instead of calling
-    ``request.read()``, so aiohttp's ``client_max_size`` — which it enforces only in
-    the buffering reads — does not gate it, exactly as the streaming multipart upload
-    path bypasses the same limit. A valid bundle several times the (deliberately
-    tiny) server limit installs successfully rather than being told it is too large,
-    over BOTH transports.
+    The import streams ``request.content``, and aiohttp enforces ``client_max_size`` only
+    in the buffering reads. Checked over both transports with a deliberately tiny limit.
     """
     import gzip
 
@@ -594,7 +573,13 @@ async def test_a_second_import_waits_for_the_first_ones_reservation(monkeypatch)
     parsing at once."""
     from kiro_crew.dashboard import session_transfer as st
 
-    _fake_memory(st, monkeypatch, total_mib=100_000, available=iter(lambda: 400, None))
+    reads: list[int] = []
+
+    def _available() -> int:
+        reads.append(400)
+        return 400
+
+    _fake_memory(st, monkeypatch, total_mib=100_000, available=iter(_available, None))
     monkeypatch.setattr(st, "SESSION_IMPORT_MEMORY_WAIT_SECS", 5.0)
     order: list[str] = []
     first_in = asyncio.Event()
@@ -604,23 +589,23 @@ async def test_a_second_import_waits_for_the_first_ones_reservation(monkeypatch)
         async with st._memory_admission(100 * _MIB):  # 300 of 400
             order.append("first-in")
             first_in.set()
-            # flake-ok: pre-existing park of the first admission until the test releases it, moved verbatim; tracked for a de-flake pass
-            await release_first.wait()
+            await await_until(release_first, what="the test to release the first admission")
         order.append("first-out")
 
     async def second():
-        # flake-ok: pre-existing wait for the first admission's entry signal, moved verbatim; tracked for a de-flake pass
-        await first_in.wait()
+        await await_until(first_in, what="the first admission to be in")
         async with st._memory_admission(100 * _MIB):
             order.append("second-in")
 
     t1 = asyncio.create_task(first())
     t2 = asyncio.create_task(second())
-    # flake-ok: pre-existing wait for the first admission's entry signal, moved verbatim; tracked for a de-flake pass
-    await first_in.wait()
-    # flake-ok: pre-existing 50 ms window in which the second admission must stay out, moved verbatim; tracked for a de-flake pass
-    # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing 50 ms window in which the second admission must stay out, moved verbatim; tracked for a de-flake pass
-    await asyncio.sleep(0.05)
+    await await_until(first_in, what="the first admission to be in")
+    # The second admission read the host's memory once against the first's reservation and
+    # once more after being refused: it is waiting at the gate, not through it.
+    await async_wait_until(
+        lambda: len(reads) >= 3 or "second-in" in order,
+        describe=lambda: f"{len(reads)} memory reads so far, order {order!r}",
+    )
     assert order == ["first-in"], "the second must not be admitted beside the first"
     release_first.set()
     await asyncio.gather(t1, t2)
@@ -630,11 +615,15 @@ async def test_a_second_import_waits_for_the_first_ones_reservation(monkeypatch)
 @pytest.mark.asyncio
 async def test_an_unreadable_host_is_not_gated(monkeypatch):
     from kiro_crew.dashboard import session_transfer as st
+    from kiro_crew.dashboard import session_transfer_intake as intake
 
     _fake_memory(st, monkeypatch, total_mib=0, available=iter(lambda: 0, None))
+    before = intake._memory_reserved
 
     async with st._memory_admission(10_000 * _MIB):
-        pass
+        # Admitted without waiting, and still counted against later imports.
+        assert intake._memory_reserved == before + 10_000 * _MIB * intake._PARSE_MEMORY_FACTOR
+    assert intake._memory_reserved == before
 
 
 @pytest.mark.asyncio
@@ -977,16 +966,23 @@ async def test_one_emoji_raises_the_imports_reservation(monkeypatch, emoji, stat
 
 
 class _StalledContent:
-    """``request.content`` stand-in that sends *sent* chunks and then goes quiet."""
+    """``request.content`` stand-in that sends *sent* chunks and then goes quiet.
+
+    ``quiet`` is set once the reader is waiting on the silent sender. The silence holds
+    until ``release`` is set, which a test does in its cleanup: before that only the
+    reader's own deadline or the test's cancel ends the read.
+    """
 
     def __init__(self, sent: int = 1) -> None:
         self._sent = sent
+        self.quiet = asyncio.Event()
+        self.release = asyncio.Event()
 
     async def iter_chunked(self, _n: int):
         for _ in range(self._sent):
             yield b'{"bundle_version": 2'
-        # flake-ok: pre-existing never-ending sender, the condition under test; the reader's own deadline or the test's cancel ends the read, moved verbatim; tracked for a de-flake pass
-        await asyncio.Event().wait()
+        self.quiet.set()
+        await self.release.wait()
 
 
 @pytest.mark.asyncio
@@ -998,14 +994,18 @@ async def test_a_sender_that_goes_quiet_is_cut_off(tmp_path, monkeypatch, sent):
     from kiro_crew.dashboard import session_transfer as st
 
     monkeypatch.setattr(st, "DEFAULT_SESSION_TRANSFER_TIMEOUT_SECS", 0.05)
+    sender = _StalledContent(sent)
     task = asyncio.create_task(
-        st._stream_request_to_file(SimpleNamespace(content=_StalledContent(sent)), tmp_path / "b")
+        st._stream_request_to_file(SimpleNamespace(content=sender), tmp_path / "b")
     )
-    done, _ = await asyncio.wait({task}, timeout=5)
-    if not done:
-        task.cancel()
-    assert done, "the stalled read was never cut off"
-    assert isinstance(task.exception(), TimeoutError)
+    try:
+        done, _ = await asyncio.wait({task}, timeout=5)
+        if not done:
+            task.cancel()
+        assert done, "the stalled read was never cut off"
+        assert isinstance(task.exception(), TimeoutError)
+    finally:
+        sender.release.set()
 
 
 @pytest.mark.asyncio
@@ -1017,13 +1017,12 @@ async def test_an_upload_in_flight_holds_no_arrival_permit(tmp_path, monkeypatch
     monkeypatch.setattr(st, "_expansion_lock", None)
     monkeypatch.setattr(st, "_expansion_slots", None)
     monkeypatch.setattr(st, "_expansion_waiting", 0)
-    request = SimpleNamespace(content=_StalledContent())
+    sender = _StalledContent()
+    request = SimpleNamespace(content=sender)
     async with contextlib.AsyncExitStack() as keep:
         task = asyncio.create_task(st._read_bundle_body(request, keep))
-        # flake-ok: pre-existing 50 ms window for the stalled upload to reach its read, moved verbatim; tracked for a de-flake pass
-        # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing 50 ms window for the stalled upload to reach its read, moved verbatim; tracked for a de-flake pass
-        await asyncio.sleep(0.05)
         try:
+            await await_until(sender.quiet, what="the stalled upload to reach its read")
             assert not task.done()
             assert st._expansion_waiting == 0
             slots = st._expansion_slots
@@ -1032,6 +1031,7 @@ async def test_an_upload_in_flight_holds_no_arrival_permit(tmp_path, monkeypatch
             task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await task
+            sender.release.set()
 
 
 @pytest.mark.asyncio
@@ -1050,17 +1050,15 @@ async def test_uploads_past_the_cap_are_refused_before_a_file_is_opened(monkeypa
         return real_new(suffix)
 
     monkeypatch.setattr(st, "_new_import_temp", _counting_new)
+    senders = [_StalledContent() for _ in range(2)]
     async with contextlib.AsyncExitStack() as keep:
         stalled = [
-            asyncio.create_task(
-                st._read_bundle_body(SimpleNamespace(content=_StalledContent()), keep)
-            )
-            for _ in range(2)
+            asyncio.create_task(st._read_bundle_body(SimpleNamespace(content=sender), keep))
+            for sender in senders
         ]
-        # flake-ok: pre-existing 50 ms window for both stalled uploads to reach their read, moved verbatim; tracked for a de-flake pass
-        # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing 50 ms window for both stalled uploads to reach their read, moved verbatim; tracked for a de-flake pass
-        await asyncio.sleep(0.05)
         try:
+            for sender in senders:
+                await await_until(sender.quiet, what="a stalled upload to reach its read")
             assert st._uploads_in_flight == 2
             body, resp = await st._read_bundle_body(
                 SimpleNamespace(content=_StalledContent()), keep
@@ -1074,6 +1072,8 @@ async def test_uploads_past_the_cap_are_refused_before_a_file_is_opened(monkeypa
             for t in stalled:
                 with contextlib.suppress(asyncio.CancelledError):
                     await t
+            for sender in senders:
+                sender.release.set()
     assert st._uploads_in_flight == 0
 
 
@@ -1216,22 +1216,24 @@ async def test_a_reserved_write_releases_when_the_write_finishes(tmp_path, monke
     monkeypatch.setattr(st, "_disk_inflight", 0)
     monkeypatch.setattr(st.shutil, "disk_usage", lambda _p: SimpleNamespace(free=1 << 62))
     gate = threading.Event()
+    entered = threading.Event()
 
     class _SlowFile:
         def write(self, data):
+            entered.set()
             gate.wait(5)
             return len(data)
 
     write = await st._write_reserved(_SlowFile(), b"x" * 10, tmp_path / "body")
     waiter = asyncio.ensure_future(asyncio.shield(write))
     await asyncio.sleep(0)
+    # Cancel only once the worker is inside the write, and read the reservation only once
+    # the cancellation has landed: a release tied to the waiter would have happened by then.
+    await async_wait_until(entered.is_set, describe=lambda: "the write never reached its gate")
     waiter.cancel()
-    # flake-ok: pre-existing 50 ms window in which the cancelled waiter must not release the reservation, moved verbatim; tracked for a de-flake pass
-    # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing 50 ms window in which the cancelled waiter must not release the reservation, moved verbatim; tracked for a de-flake pass
-    await asyncio.sleep(0.05)
+    await async_wait_until(waiter.cancelled, describe=lambda: f"the waiter: {waiter!r}")
     assert st._disk_inflight == 10, "released while the write was still running"
     gate.set()
-    # flake-ok: pre-existing await of the reserved write, which ends once the gate is set (the fake's gate.wait is bounded at 5 s), moved verbatim; tracked for a de-flake pass
-    await write
+    await await_until(write, what="the reserved write to finish once the gate is set")
     await asyncio.sleep(0)
     assert st._disk_inflight == 0

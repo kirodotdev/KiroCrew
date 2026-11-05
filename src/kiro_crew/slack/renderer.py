@@ -63,6 +63,12 @@ from kiro_crew.messaging.renderer import (
 from kiro_crew.messaging.split import repaired_for_delivery, split_markdown_safe
 from kiro_crew.messaging.transport import TransportCapabilities
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.slack.approval_tokens import (  # noqa: F401 -- re-exported
+    _APPROVAL_TOKEN_SEP,
+    _approval_registry_key,
+    build_approval_token,
+    split_approval_token,
+)
 from kiro_crew.slack.files import (
     extract_outbound_with_audit,
     rejection_notes,
@@ -87,6 +93,7 @@ from kiro_crew.slack.handler import (
     build_timing_footer,
 )
 from kiro_crew.slack.outbound import PostedOptions
+from kiro_crew.slack.renderer_session_status import ApprovalSessionStatus
 from kiro_crew.slack.reply_pieces import (  # noqa: F401 -- re-exported
     _NARRATION_MAX_CHARS,
     _SPLIT_HEADROOM,
@@ -137,51 +144,6 @@ def _display_safe(text: str) -> str:
 #: Slack channel capabilities live in ``slack/transport.py`` (imported above).
 #: This module deliberately carries no second literal copy of the declaration;
 #: two literals for one fact is a drift hazard.
-
-
-def _approval_registry_key(session_key: str, request_id: str | int) -> str:
-    """Namespace a kiro-cli request id by session for the approval registry.
-
-    kiro-cli's JSON-RPC request id counter restarts at ``1`` for every session
-    (``acp/client.py``), so two concurrent Slack threads both produce
-    ``request_id == 1``. Keying the process-global registry (and the button
-    ``action_id``/``value``) by ``session_key:request_id`` keeps each thread's
-    approval isolated — a click resolves ONLY its own turn's pending tool.
-    Falls back to the bare id when no session is supplied (e.g. unit tests).
-    """
-    rid = str(request_id)
-    return f"{session_key}:{rid}" if session_key else rid
-
-
-#: Separates the registry key from the per-prompt nonce inside a button's token.
-#: ``|`` because a session key may contain ``:`` and the nonce is
-#: ``token_urlsafe``, whose alphabet is ``[A-Za-z0-9_-]`` -- so splitting on this
-#: from the right recovers both halves whatever either contains.
-_APPROVAL_TOKEN_SEP = "|"
-
-
-def build_approval_token(session_key: str, request_id: str | int, nonce: str) -> str:
-    """The value a button carries: the registry key plus this prompt's nonce.
-
-    The key alone identifies WHICH pending request a click is for; the nonce is
-    what says the click came from the buttons currently live for it. Both travel
-    together because the interaction handler has nothing else to go on.
-    """
-    key = _approval_registry_key(session_key, request_id)
-    return f"{key}{_APPROVAL_TOKEN_SEP}{nonce}" if nonce else key
-
-
-def split_approval_token(token: str) -> tuple[str, str]:
-    """Split a button's token back into ``(registry_key, nonce)``.
-
-    A token with no separator yields an EMPTY nonce rather than guessing, which
-    the decider then refuses -- so a button minted before this prompt carried a
-    nonce cannot resolve anything.
-    """
-    key, sep, nonce = str(token).rpartition(_APPROVAL_TOKEN_SEP)
-    if not sep:
-        return str(token), ""
-    return key, nonce
 
 
 def build_approval_blocks(
@@ -384,6 +346,21 @@ class SlackApprovalDecider:
         SlackApprovalDecider._NONCES[key] = nonce
         return nonce
 
+    def on_decided(self, request_id: str | int, callback: Callable[[], None]) -> bool:
+        """Run *callback* once the reserved window for *request_id* is decided.
+
+        Any end counts -- a click, the deny-by-default timeout, a teardown -- since
+        after each one the turn waits on nobody. A window already decided (a click
+        that beat this call) runs *callback* on the next loop pass. False when no
+        reservation is open (off the loop).
+        """
+        fut = self._futures.get(str(request_id))
+        if fut is None:
+            return False
+        # On a done future asyncio schedules the callback instead of dropping it.
+        fut.add_done_callback(lambda _f: callback())
+        return True
+
     def discard(self, request_id: str | int) -> None:
         """Close a window whose prompt never went out (idempotent).
 
@@ -521,7 +498,7 @@ class SlackApprovalDecider:
         return dec.session_key
 
 
-class SlackRenderer(Renderer):
+class SlackRenderer(ApprovalSessionStatus, Renderer):
     """Renders abstract output events onto a Slack thread.
 
     Holds (and exposes) the underlying ``SlackClientOps`` so the inline
@@ -689,6 +666,11 @@ class SlackRenderer(Renderer):
         self._uploads_allowed = uploads_allowed
         #: The session's cwd once known (``authorize_upload_root``), for step labels.
         self._label_root = self._upload_root
+        # The agent session is paused on a tool-approval prompt (``suspended``);
+        # the decision, or failing that the next output, puts it back to
+        # ``processing``. Only ever set while agent sessions are live.
+        self._suspended = False
+        self._resume_tasks: set[asyncio.Task[None]] = set()
 
     async def on_turn_start(self) -> None:
         # Native sets the working thread-status before streaming and, only where
@@ -1219,6 +1201,7 @@ class SlackRenderer(Renderer):
         turn's reaction to the error state.
         """
         self._cancel_tool_timer()
+        await self._cancel_resumes()
         if not self._finalized and self._controller is not None:
             try:
                 self._controller.finalize(error=True)
@@ -1342,6 +1325,7 @@ class SlackRenderer(Renderer):
         # Flush any accumulated reasoning as a 💭 reply first so it lands above
         # the answer (no-op when show_thinking is off or nothing accumulated).
         await self._maybe_post_thinking()
+        await self._resume_from_suspended()
         if text.strip() != UNFINISHED_TURN_NOTICE:
             # The driver's cut-off notice is not part of the turn it records.
             self._turn_raw += text
@@ -1664,6 +1648,8 @@ class SlackRenderer(Renderer):
                 self.decider.discard(request_id)
             raise
 
+        await self._suspend_for_approval(request_id, self.decider)
+
     async def on_compaction(self, context_usage_pct: float) -> None:
         # Best-effort: MUST NOT raise. Decoration only.
         try:
@@ -1880,6 +1866,8 @@ class SlackRenderer(Renderer):
         # MUST NOT raise: the answer is already delivered above — a
         # raising status clear must not convert a delivered turn into a
         # recorded failure.
+        self._suspended = False  # an approval decided after this must not re-arm it
+        await self._settle_resumes()
         try:
             await self.slack.set_thread_status(self.channel, self.thread_ts or "", "")
             self._status_cleared = True

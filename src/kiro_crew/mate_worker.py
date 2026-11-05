@@ -8,7 +8,9 @@ additively: its prompt after the base's, servers and skills the base lacks (a
 base server always wins), and the ``allowedTools`` and ``tools`` selectors for
 those servers. Its restrictions (``excludedTools``, ``disabledTools``, MCP-page
 switch-offs, :func:`globally_disabled_refs`) narrow whoever declared them;
-``model``, ``permissions`` and ``hooks`` are ignored. The merged spec is governed
+its ``hooks``, ``permissions`` and ``toolsSettings`` are layered on exactly
+(:mod:`kiro_crew.mate_spec_policy`); ``model`` is ignored. Nothing from the file
+reaches the conductor. The merged spec is governed
 and the projection re-applies the ceiling, so an addition never lifts the worker
 above POLICY ∩ PROFILE. Stateless.
 """
@@ -18,7 +20,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Iterable
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from kiro_crew import crewmate_prompts
 from kiro_crew.agent_files import (
@@ -27,6 +29,9 @@ from kiro_crew.agent_files import (
     is_mate_service_agent,
 )
 from kiro_crew.user_json import copy_json_document
+
+if TYPE_CHECKING:
+    from kiro_crew.config.loader import KiroCrewConfig
 
 logger = logging.getLogger(__name__)
 
@@ -47,9 +52,12 @@ MISSING_CAPABILITY_PREFIX = "MISSING CAPABILITY:"
 
 #: The worker's own principles, appended to its source-defined prompt
 #: (``service_agents._install_mate_worker_agent``). Its crewmate is the one that
-#: can ask the user for a tool, so a gap goes back to it, named.
-MATE_WORKER_PROMPT = crewmate_prompts.fill(
-    "worker.principles", missing_prefix=MISSING_CAPABILITY_PREFIX
+#: can ask the user for a tool, so a gap goes back to it, named. The coding rules
+#: after them are the same text ``kirocrew-worker`` carries.
+MATE_WORKER_PROMPT = (
+    crewmate_prompts.fill("worker.principles", missing_prefix=MISSING_CAPABILITY_PREFIX)
+    + "\n\n"
+    + crewmate_prompts.text("worker.coding_rules")
 )
 
 #: The sub-agent tools a crewmate's conductor does not mount. Its hand-off is a
@@ -396,6 +404,11 @@ def worker_additions(base: dict[str, Any], mate_spec: dict[str, Any]) -> dict[st
     # well. Only the NAME is carried: the base's entry keeps its transport, and the
     # merge mutes it. (A server the file adds keeps its own ``disabled`` above.)
     additions["disabledServers"] = disabled_base_servers(base, mate_spec)
+    # The file's hooks, permission rules and tool settings, kept whole: the
+    # merge layers them on exactly or refuses (``mate_spec_policy.layer_policy``).
+    from kiro_crew.mate_spec_policy import policy_of
+
+    additions.update(policy_of(mate_spec))
     return additions
 
 
@@ -483,6 +496,11 @@ def merge_worker_spec(base: dict[str, Any], additions: dict[str, Any]) -> dict[s
             if isinstance(approve, list) and tool in approve:
                 entry["autoApprove"] = [t for t in approve if t != tool]
     spec["allowedTools"] = allowed
+    from kiro_crew.mate_spec_policy import POLICY_KEYS, layer_policy
+
+    # Raises ``SpecPolicyUncarried`` (a ``WorkerKitUnreadable``) for a field that
+    # cannot land exactly, so the worker is refused rather than run looser.
+    layer_policy(spec, {k: additions[k] for k in POLICY_KEYS if k in additions}, worker=True)
     # The ceiling applies to the MERGED spec, not to the file alone: a grant the
     # file carries for a server it adds is withheld here exactly as it would be
     # on any other spec Crew writes.
@@ -563,7 +581,12 @@ def _with_global_tool_offs(base: dict[str, Any], additions: dict[str, Any]) -> d
 
 
 def resolve_worker_spec(
-    base: dict[str, Any], member_id: str | None, *, refuse_tool_limits: bool = False
+    base: dict[str, Any],
+    member_id: str | None,
+    *,
+    refuse_tool_limits: bool = False,
+    refuse_spec_policy: bool = False,
+    mcp_tool_limits_carried: bool = False,
 ) -> dict[str, Any]:
     """The worker spec a session of *member_id*'s worker runs on.
 
@@ -572,7 +595,13 @@ def resolve_worker_spec(
     absent or shadowed, or an unreadable file or record, raises
     :class:`WorkerKitUnreadable` (fail closed). With *refuse_tool_limits* (a host
     that cannot honour single-tool limits), a file that sets any refuses with
-    ``capability_tool_limits_unsupported``, judged on the same read the merge uses.
+    ``capability_tool_limits_unsupported``, judged on the same read the merge uses;
+    with *mcp_tool_limits_carried* too (a host that carries the MCP half,
+    ``ACP_BACKENDS_MATE_WORKER_MCP_TOOL_LIMITS``), only what
+    :func:`uncarried_tool_limits_of` names refuses.
+    With *refuse_spec_policy* (a host that applies none of ``hooks``, ``permissions``
+    and ``toolsSettings``), a file that sets any refuses with
+    :class:`~kiro_crew.mate_spec_policy.SpecPolicyUncarried` naming them.
     """
     from kiro_crew import mate_approval_revocations as revocations
 
@@ -583,7 +612,7 @@ def resolve_worker_spec(
         claimed = _claimed_file(member_id)
         if claimed:
             raise WorkerKitUnreadable(
-                f"crewmate {member_id!r}: its own file {claimed!r} is missing or shadowed "
+                f"Bot {member_id!r}: its own file {claimed!r} is missing or shadowed "
                 f"by a user-level agent, so its worker would run without its limits"
             )
         return revocations.strip(
@@ -607,19 +636,26 @@ def resolve_worker_spec(
             mate_spec["prompt"] = ""
     except agent_specs.AgentSpecUnreadable as exc:
         logger.warning(
-            "crewmate %r: its worker file %r is unreadable; refusing the worker",
+            "Bot %r: its worker file %r is unreadable; refusing the worker",
             member_id,
             name,
             exc_info=True,
         )
         raise WorkerKitUnreadable(
-            f"crewmate {member_id!r}: its worker file {name!r} cannot be read, so its "
-            f"worker would run without the crewmate's own limits; fix or re-save the file"
+            f"Bot {member_id!r}: its worker file {name!r} cannot be read, so its "
+            f"worker would run without the Bot's own limits; fix or re-save the file"
         ) from exc
-    if refuse_tool_limits and tool_limits_of(mate_spec):
+    limits_of = uncarried_tool_limits_of if mcp_tool_limits_carried else tool_limits_of
+    if refuse_tool_limits and limits_of(mate_spec):
         from kiro_crew.session_capabilities import CapabilityStartupError
 
         raise CapabilityStartupError("capability_tool_limits_unsupported")
+    if refuse_spec_policy:
+        from kiro_crew.mate_spec_policy import policy_of, uncarried
+
+        carried = policy_of(mate_spec)
+        if carried:
+            raise uncarried(sorted(carried), "this backend does not apply them; run the Bot on kas")
     additions = worker_additions(base, mate_spec)
     # An approval the owner took away in Approvals stays away, base-granted or not.
     return revocations.strip(
@@ -670,7 +706,7 @@ def _claimed_crewmate_file(member_id: str, config: Any = None) -> str:
     try:
         return claimed if crewmate_file_on_record(claimed) else ""
     except MateConfigError:
-        logger.warning("crewmate owner record unreadable; %r stays refused", claimed)
+        logger.warning("Bot owner record unreadable; %r stays refused", claimed)
         return claimed
 
 
@@ -681,15 +717,16 @@ def _revoked_or_refuse(member_id: str, file_id: str) -> list[str]:
         return revocations.revoked(file_id)
     except revocations.RevocationsUnreadable as exc:
         raise WorkerKitUnreadable(
-            f"crewmate {member_id!r}: the approvals its owner revoked cannot be read "
+            f"Bot {member_id!r}: the approvals its owner revoked cannot be read "
             f"(revoked-approvals.json), so its worker would run them again; fix the file"
         ) from exc
 
 
 def mate_service_scope_spec(agent: str, session_key: str) -> tuple[dict | None, Path] | None:
     """``(spec or None when unreadable, path)`` the crewmate conductor's or worker's
-    skill scope reads, else ``None``: their specs live in the crewmate folder, which
-    the roster does not list. A worker's is its session's merged spec."""
+    skill scope and Crew-fired spec hooks read, else ``None``: their specs live in
+    the crewmate folder, which the roster does not list. A worker's is its session's
+    merged spec; the conductor's is the stock spec."""
     from kiro_crew.agent_sdk import agent_specs
     from kiro_crew.config import paths as paths_mod
 
@@ -784,12 +821,17 @@ def note_worker_session(session_key: str, execution: Any) -> bool:
     if not is_own_worker_execution(execution):
         forget_crewmate_worker_session(session_key)
         return False
-    note_crewmate_worker_session(session_key)
+    note_crewmate_worker_session(session_key, str(execution.member_id))
     return True
 
 
 def worker_session_spec(
-    literal_base: dict[str, Any], session_key: str, *, refuse_tool_limits: bool = False
+    literal_base: dict[str, Any],
+    session_key: str,
+    *,
+    refuse_tool_limits: bool = False,
+    refuse_spec_policy: bool = False,
+    mcp_tool_limits_carried: bool = False,
 ) -> dict[str, Any]:
     """The spec a crewmate's worker session on *session_key* runs: base plus its kit.
 
@@ -813,29 +855,52 @@ def worker_session_spec(
         )
         raise WorkerKitUnreadable(
             f"worker session {session_key}: its execution record cannot be read, so "
-            f"its crewmate (and that crewmate's limits) is unknown"
+            f"its Bot (and that Bot's limits) is unknown"
         ) from exc
     if execution is not None:
         member_id = execution.member_id
     if not member_id:
         raise WorkerKitUnreadable(
-            f"worker session {session_key}: it names no crewmate, so whose limits apply is unknown"
+            f"worker session {session_key}: it names no Bot, so whose limits apply is unknown"
         )
-    if refuse_tool_limits:
-        return resolve_worker_spec(literal_base, member_id, refuse_tool_limits=True)
+    if refuse_tool_limits or refuse_spec_policy:
+        return resolve_worker_spec(
+            literal_base,
+            member_id,
+            refuse_tool_limits=refuse_tool_limits,
+            refuse_spec_policy=refuse_spec_policy,
+            mcp_tool_limits_carried=mcp_tool_limits_carried,
+        )
     return resolve_worker_spec(literal_base, member_id)
 
 
-def crewmate_worker_backend(agent_cfg: Any) -> str:
+def crewmate_worker_backend(config: KiroCrewConfig, crewmate: str | None = None) -> str:
     """The backend a crewmate's worker runs on: its crewmate's, through the one gate.
 
-    ``agent.member_acp_backend`` as the loader reads it (a stored ``kiro`` already
-    reads as KAS) crossed through ``resolve_selected_backend``, the same gate
-    ``members.select_provider_backend`` applies to the member route.
+    *crewmate* is the crewmate's ``config.agents`` key. Its own harness pin
+    (``agents.<name>.acp_backend``) wins and fails closed through the pre-gate
+    check (H17), raising
+    :class:`~kiro_crew.crewmate_harness.CrewmateHarnessUnavailable` as
+    ``crewmate_harness.crewmate_backend_pin`` does for the worker's own session
+    before ``members.select_provider_backend`` runs.
+    Without a pin it is ``agent.member_acp_backend`` as the loader reads it (a
+    stored ``kiro`` already reads as KAS) crossed through
+    ``resolve_selected_backend``, the same gate the member route applies.
+
+    *config* is the whole loaded config, never its ``agent`` section: the pin
+    lives in ``config.agents``, so a section passed here raises instead of
+    silently reading as no pin and no member route.
     """
     from kiro_crew.acp_backends import resolve_selected_backend
+    from kiro_crew.crewmate_harness import pinned_backend
 
-    return resolve_selected_backend(getattr(agent_cfg, "member_acp_backend", ""))
+    if not hasattr(config, "agent"):
+        raise TypeError("crewmate_worker_backend takes the whole config, not its agent section")
+    return pinned_backend(
+        config,
+        crewmate,
+        resolve_selected_backend(getattr(config.agent, "member_acp_backend", "")),
+    )
 
 
 def worker_kit_backend_refusal(backend: str) -> str | None:
@@ -849,14 +914,16 @@ def worker_kit_backend_refusal(backend: str) -> str | None:
         return None
     able = ", ".join(sorted(backend_to_stored(b) for b in ACP_BACKENDS_MATE_WORKER_KIT))
     return (
-        f"a crewmate's worker runs on its crewmate's backend "
+        f"a Bot's worker runs on its Bot's backend "
         f"({backend_to_stored(backend)}), which cannot carry the worker's own tools, "
         f"servers and switched-off tools for one session; set agent.member_acp_backend "
         f"to {able}"
     )
 
 
-def crewmate_tool_limited_servers(member_id: str) -> tuple[str, ...]:
+def crewmate_tool_limited_servers(
+    member_id: str, *, mcp_tool_limits_carried: bool = False
+) -> tuple[str, ...]:
     """What crewmate *member_id*'s own file narrows for its worker, sorted.
 
     The member rule on the file (``tool_limited_servers``: an entry's
@@ -864,7 +931,9 @@ def crewmate_tool_limited_servers(member_id: str) -> tuple[str, ...]:
     kit keeps them): the server an ``@server`` / ``@server/tool`` names, or the
     native tool itself. The worker spec carries all of them as ``excludedTools``
     (:func:`worker_additions`), which only ``ACP_BACKENDS_MATE_WORKER_TOOL_LIMITS``
-    honour. A server the file mutes whole is not counted. Blocking.
+    honour. A server the file mutes whole is not counted. With
+    *mcp_tool_limits_carried*, only what :func:`uncarried_tool_limits_of` names.
+    Blocking.
     """
     from kiro_crew.agent_sdk import agent_specs
     from kiro_crew.config import paths as paths_mod
@@ -876,7 +945,7 @@ def crewmate_tool_limited_servers(member_id: str) -> tuple[str, ...]:
         spec = agent_specs.load_agent_spec(paths_mod.mate_agents_dir(), name)
     except agent_specs.AgentSpecUnreadable:
         return ()
-    return tool_limits_of(spec)
+    return uncarried_tool_limits_of(spec) if mcp_tool_limits_carried else tool_limits_of(spec)
 
 
 def tool_limits_of(spec: dict[str, Any]) -> tuple[str, ...]:
@@ -896,6 +965,57 @@ def tool_limits_of(spec: dict[str, Any]) -> tuple[str, ...]:
         elif not (server in servers and mcp_entry_is_muted(servers[server])):
             limited.add(server)
     return tuple(sorted(limited))
+
+
+#: Characters that make an ``excludedTools`` entry a pattern rather than one name.
+_GLOB_CHARS = frozenset("*?[")
+
+#: The server kiro-cli reads ``@builtin`` / ``@builtin/<tool>`` as: its own native
+#: tools (``kas_permissions._BUILTIN_PREFIX``), which no MCP deny names.
+_BUILTIN_SERVER = "builtin"
+
+
+def _unreadable_tool_names(value: Any) -> bool:
+    """Whether a set ``disabledTools`` *value* is not a list of non-blank tool names."""
+    if not value:
+        return False
+    return not isinstance(value, list) or not all(
+        isinstance(tool, str) and tool.strip() for tool in value
+    )
+
+
+def uncarried_tool_limits_of(spec: dict[str, Any]) -> tuple[str, ...]:
+    """The ``excludedTools`` entries of crewmate file *spec* no MCP deny can carry.
+
+    A host in ``ACP_BACKENDS_MATE_WORKER_MCP_TOOL_LIMITS`` carries a switched-off
+    MCP tool (``disabledTools``, ``@server/tool``) and a whole excluded server
+    (``@server``) as a deny naming that tool or server. What is left is a native
+    tool (``shell``, ``fs_write``, or ``@builtin`` and ``@builtin/<tool>``, which
+    kiro-cli reads as its native tools) and any entry, ``disabledTools`` included, with a
+    wildcard or no tool after its ``/``, which names no one tool such a deny could
+    spell, so the worker is refused rather than run wider. A ``disabledTools`` that
+    is set but is not a list of tool names names that server, since no deny can be
+    read from it. A server the file mutes whole is not counted, as in
+    :func:`tool_limits_of`.
+    """
+    from kiro_crew.mcp_cleanup import mcp_entry_is_muted
+
+    servers = _servers(spec.get("mcpServers"))
+    refs = [*_strings(spec.get("excludedTools")), *disabled_tool_refs(servers)]
+    uncarried: set[str] = {
+        name
+        for name, entry in servers.items()
+        if _unreadable_tool_names(entry.get("disabledTools")) and not mcp_entry_is_muted(entry)
+    }
+    for ref in refs:
+        ref = ref.strip()
+        server = _server_of(ref)
+        if server and server in servers and mcp_entry_is_muted(servers[server]):
+            continue
+        native = not server or server.strip() == _BUILTIN_SERVER
+        if ref and (native or ref.endswith("/") or _GLOB_CHARS & set(ref)):
+            uncarried.add(ref)
+    return tuple(sorted(uncarried))
 
 
 def worker_prompt_in_context_block(session_key: str) -> bool:

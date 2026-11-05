@@ -10,7 +10,6 @@ Composed onto :mod:`kiro_crew.slack.handler`; see
 from __future__ import annotations
 
 import asyncio
-import json
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -22,9 +21,10 @@ if TYPE_CHECKING:
         _tts_available,
         _vc,
         _voice_reply_fn,
+        config_local_path,
         config_path,
         logger,
-        read_config_text,
+        read_merged_config_files,
         resolve_configured_provider,
         track_background_task,
         validated_config_string,
@@ -68,10 +68,8 @@ def load_voice_reply_config(cfg: "KiroCrewConfig | None" = None) -> None:
     """
     _vr: dict = cfg.raw.get("voice_reply", {}) if (cfg is not None and hasattr(cfg, "raw")) else {}
     if not _vr:
-        try:
-            _vr = json.loads(read_config_text(config_path())).get("voice_reply", {})
-        except Exception:
-            _vr = {}
+        # config.local.json is an overlay whose keys win, as the loader merges it.
+        _vr = read_merged_config_files(config_path(), config_local_path()).get("voice_reply", {})
     if not isinstance(_vr, dict):
         _vr = {}
     _enabled = bool(_vr.get("enabled", False))

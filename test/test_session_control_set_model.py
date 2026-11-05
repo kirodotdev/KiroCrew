@@ -218,7 +218,7 @@ def test_the_model_check_uses_the_targets_backend(tmp_path, monkeypatch):
 
     monkeypatch.setattr(chat_handlers, "_model_rejected_reason", _reason)
     monkeypatch.setattr(sc, "is_claude_code", lambda p: p == "claude-seam")
-    monkeypatch.setattr(sc, "select_provider_backend", lambda *_a: "claude-backend")
+    monkeypatch.setattr(sc, "select_provider_backend", lambda *_a, **_k: "claude-backend")
     monkeypatch.setattr(
         sc,
         "capabilities_for",
@@ -338,7 +338,7 @@ def test_the_alias_correction_follows_the_targets_own_backend(tmp_path, monkeypa
     target_key = effective_session_key(target)
     seen: list[str | None] = []
 
-    def _select(session_key, _member_backend, _default):
+    def _select(session_key, _member_backend, _default, **_kw):
         seen.append(session_key)
         return "member-kiro" if session_key == target_key else "default-other"
 
@@ -832,3 +832,29 @@ def test_a_pick_waits_while_an_alias_slot_runs_the_same_session(tmp_path):
     alias.task = None
     assert sc.apply_pending_model_pick(state, target) is True
     assert target.model == out["model"]
+
+
+def test_unknown_worker_harness_pin_refuses_without_echoing_it(tmp_path, monkeypatch, caplog):
+    from kiro_crew import members
+    from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig
+
+    secret = "sk-test-not-a-real-secret-0000"
+    cfg = KiroCrewConfig()
+    cfg.agents["atlas"] = KiroCrewAgentConfig(
+        member_id="atlas-0123456789ab", kiro_agent="atlas", acp_backend=secret
+    )
+    monkeypatch.setattr(KiroCrewConfig, "load", lambda: cfg)
+    state = _make_state(tmp_path)
+    caller = state.get_or_create_slot("chat-1")
+    target = state.get_or_create_slot("chat-2")
+    monkeypatch.setattr(members, "_CREWMATE_WORKER_SLOTS", set())
+    monkeypatch.setattr(members, "_CREWMATE_WORKER_MEMBERS", {})
+    members.note_crewmate_worker_session(_key(target), "atlas-0123456789ab")
+    with pytest.raises(sc.SessionControlError) as raised:
+        _set_model(state, caller, target.key, "some-model")
+    assert raised.value.status == 409
+    assert raised.value.code == "crewmate_harness_unavailable"
+    assert "an unknown harness" in raised.value.message
+    assert secret not in str(raised.value) + caplog.text
+    assert target._pending_model_pick is None
+    assert cfg.agents["atlas"].acp_backend == secret

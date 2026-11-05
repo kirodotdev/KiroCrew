@@ -1,6 +1,6 @@
 import { memo, useContext, useId, useState } from 'react'
 import { ReactReduxContext } from 'react-redux'
-import { Ban, CheckCircle, Clock, ExternalLink, Loader2, MessageSquareMore } from 'lucide-react'
+import { Ban, CheckCircle, Clock, ExternalLink, Loader2, MessageSquareMore, X } from 'lucide-react'
 import ErrorNotice from '../../components/ErrorNotice'
 import SimpleSelect from '../../components/SimpleSelect'
 import { approvalBtnClass } from '../../components/chat-input/approval'
@@ -152,14 +152,18 @@ export function clipCodePoints(text: string, max: number | undefined): string {
   return points.length > max ? points.slice(0, max).join('') : text
 }
 
-function FieldLabel({ field }: { field: ElicitationField }) {
+/** `descriptionId` names the description line, so the control can point at it
+ *  with `aria-describedby`: each control carries its own `aria-label`, which
+ *  replaces the label text as its name, so the description is otherwise never
+ *  read with it. */
+function FieldLabel({ field, descriptionId }: { field: ElicitationField; descriptionId?: string }) {
   return (
     <span className="flex flex-col gap-0.5 min-w-0">
       <span className="text-[12px] text-text font-medium">
         {field.title || field.name}
         {field.required && <span className="text-danger ml-0.5" aria-hidden="true">*</span>}
       </span>
-      {field.description && <span className="text-[11px] text-muted">{field.description}</span>}
+      {field.description && <span id={descriptionId} className="text-[11px] text-muted">{field.description}</span>}
     </span>
   )
 }
@@ -176,6 +180,7 @@ function FieldControl({ field, value, onChange, disabled }: {
   // may carry a field of the same name, and a shared id would send the second
   // label's click, and the typing after it, into the other session's form.
   const id = useId()
+  const descriptionId = field.description ? `${id}-description` : undefined
   if (field.kind === 'boolean') {
     return (
       <label className="flex items-start gap-2 cursor-pointer">
@@ -183,12 +188,13 @@ function FieldControl({ field, value, onChange, disabled }: {
           id={id}
           type="checkbox"
           aria-label={field.title || field.name}
+          aria-describedby={descriptionId}
           className="mt-0.5 accent-accent"
           checked={value === true}
           disabled={disabled}
           onChange={e => onChange(e.target.checked)}
         />
-        <FieldLabel field={field} />
+        <FieldLabel field={field} descriptionId={descriptionId} />
       </label>
     )
   }
@@ -196,10 +202,11 @@ function FieldControl({ field, value, onChange, disabled }: {
     const options = field.options ?? []
     return (
       <div className="flex flex-col gap-1">
-        <label htmlFor={id}><FieldLabel field={field} /></label>
+        <label htmlFor={id}><FieldLabel field={field} descriptionId={descriptionId} /></label>
         <SimpleSelect
           id={id}
           aria-label={field.title || field.name}
+          aria-describedby={descriptionId}
           options={options.map(o => o.value)}
           optionLabels={options.map(o => o.label)}
           value={typeof value === 'string' ? value : ENUM_UNSET}
@@ -241,11 +248,12 @@ function FieldControl({ field, value, onChange, disabled }: {
   const inputType = numeric ? 'number' : field.format === 'email' ? 'email' : field.format === 'uri' ? 'url' : field.format === 'date' ? 'date' : 'text'
   return (
     <label htmlFor={id} className="flex flex-col gap-1">
-      <FieldLabel field={field} />
+      <FieldLabel field={field} descriptionId={descriptionId} />
       <input
         id={id}
         type={inputType}
         aria-label={field.title || field.name}
+        aria-describedby={descriptionId}
         className={inputClass}
         value={value === undefined || typeof value === 'boolean' || Array.isArray(value) ? '' : String(value)}
         disabled={disabled}
@@ -277,6 +285,14 @@ export function answerSummary(fields: ElicitationField[], answer: Record<string,
   }
   return parts.join(' · ')
 }
+
+/**
+ * The three answers MCP lets a person give (`ElicitationResult.action`):
+ * `accept` with the form's content, `decline` as an explicit no, and `cancel`
+ * as "dismissed without choosing" -- the server reads the last two differently,
+ * so the card offers each on its own control.
+ */
+type ElicitationAction = 'accept' | 'decline' | 'cancel'
 
 export function resolvedLabel(resolved: string): string {
   if (resolved === 'accept') return i18nT('pages.chat.elicitationCard.resolved_accept')
@@ -311,7 +327,7 @@ export default memo(function ElicitationCard({ message, slot }: { message: ChatM
   const fields = meta.fields ?? []
   const isForm = meta.mode !== 'url'
   const [draft, setDraft] = useState<ElicitationDraft>(() => initialDraft(fields))
-  const [busy, setBusy] = useState<'accept' | 'decline' | null>(null)
+  const [busy, setBusy] = useState<ElicitationAction | null>(null)
   // Two different things a person reads under the form: a client-side hint
   // that a required field is still empty (plain text beside the field it
   // names), and a request that failed (the shared ErrorNotice surface). They
@@ -327,7 +343,7 @@ export default memo(function ElicitationCard({ message, slot }: { message: ChatM
   // row to stamp, and the gateway's frame is then its only resolution.
   const store = useContext(ReactReduxContext)?.store
 
-  const answer = async (action: 'accept' | 'decline') => {
+  const answer = async (action: ElicitationAction) => {
     if (!slot || !requestId || !requestMid) return
     let content: Record<string, unknown> | undefined
     if (action === 'accept' && isForm) {
@@ -450,7 +466,7 @@ export default memo(function ElicitationCard({ message, slot }: { message: ChatM
               </span>
             </span>
           ) : busy ? (
-            <span className="inline-flex items-center gap-1 text-[12px] text-muted/60">
+            <span className="inline-flex items-center gap-1 text-[12px] text-muted">
               <Loader2 size={12} className="animate-spin shrink-0" />{i18nT('pages.chat.elicitationCard.sending')}
             </span>
           ) : (
@@ -465,6 +481,25 @@ export default memo(function ElicitationCard({ message, slot }: { message: ChatM
             </>
           )}
         </div>
+        {!resolved && !busy && (
+          // `cancel`, MCP's third answer: the person closes the question
+          // without taking a position, which the server reads apart from
+          // Decline's explicit no. Its label is visible text so a reader knows
+          // what it does before clicking. It sits on its own line under the
+          // Submit / Decline row, muted, because it is "put the question away",
+          // not a third peer of yes / no.
+          <div className="pl-6">
+            <button
+              type="button"
+              onClick={() => void answer('cancel')}
+              className="inline-flex items-center gap-1 text-[12px] text-muted hover:text-text disabled:opacity-50 disabled:cursor-not-allowed"
+              disabled={!slot}
+              data-testid="elicitation-dismiss"
+            >
+              <X size={12} className="shrink-0" />{i18nT('pages.chat.elicitationCard.dismiss')}
+            </button>
+          </div>
+        )}
       </div>
     </div>
   )

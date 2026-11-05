@@ -1,19 +1,10 @@
 """Tests for the table-driven string-field validation at the cron persistence
 chokepoint.
 
-``_build_job`` and ``_update_job_locked`` iterate a single
-``_CRON_STRING_FIELD_CAPS`` table to enforce type+length on every
-caller-supplied string field. These tests lock that guarantee:
-
-- All fields in the table reject non-string truthy values (type gate).
-- All fields in the table reject strings exceeding their cap (length gate).
-- A value at the exact cap is accepted wherever the surface actually persists
-  it (all fields on create; the updatable subset on update; timezone via a
-  real IANA zone, since its semantic check rejects synthetic strings).
-- Falsy values (None, "") in an update are no-ops (falsy-skip semantics).
-- An anti-drift test enumerates CronJob str fields and asserts every
-  persisted caller-supplied field is covered by the validation table.
-- A typo guard asserts every name in the table is an actual CronJob field.
+``_build_job`` and ``_update_job_locked`` enforce type and length on every
+caller-supplied string field through one ``_CRON_STRING_FIELD_CAPS`` table. At-cap
+timezone values use a real IANA zone, since its semantic check rejects synthetic
+strings. Anti-drift and typo guards keep the table and CronJob's fields in step.
 """
 
 from __future__ import annotations
@@ -254,11 +245,8 @@ class TestFalsySkipSemantics:
 class TestCapAlignment:
     """Pins each table cap to its boundary-schema counterpart.
 
-    The table's caps are documented as "matching the REST/MCP boundary
-    schemas". Without this pin the claim can silently stop being true when
-    either side changes (the table entries are fresh literal copies of caps
-    spelled in validation.py). Fields with no CRON_ADD_SCHEMA entry are
-    pinned to MAX_SHORT_STRING, the general ID cap.
+    The table holds literal copies of the caps in validation.py, so either side can
+    drift. Fields with no CRON_ADD_SCHEMA entry are pinned to MAX_SHORT_STRING.
     """
 
     # table field -> CRON_ADD_SCHEMA field (where the names differ)
@@ -289,6 +277,9 @@ class TestCapAlignment:
         # from: written by register_app_crons_with_service alone, never via
         # CRON_ADD_SCHEMA or any operator update. General ID cap applies.
         "app_manifest_digest",
+        # A job's project directory: set from the CLI only, never via
+        # CRON_ADD_SCHEMA (MCP cron_add does not take it). General ID cap applies.
+        "project_path",
     }
 
     def test_table_caps_match_cron_add_schema(self):
@@ -358,6 +349,8 @@ class TestAntiDrift:
             "last_failure_hash",
             "approval_mode",
             "memory_store",
+            # Computed by ack_job / unack_job from acked_items; no caller sets it.
+            "acked_item_ids_digest",
         }
     )
 

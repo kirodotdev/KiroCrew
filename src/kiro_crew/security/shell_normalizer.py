@@ -704,6 +704,121 @@ def _next_stop_indexes(tokens: "list[str]", is_stop: "Callable[[str], bool]") ->
     return table
 
 
+#: The long options before ``-c`` that take a following word as their value.
+_SHELL_LONG_VALUE_OPTIONS = frozenset({"--rcfile", "--init-file"})
+#: A word that can only be a live redirection: its target has no blank or shell
+#: syntax. One that has them may be a dequoted script (``'2>/dev/null <cmd>'``) or
+#: a quoted target (``>'a b'``), so :func:`_nested_shell_payloads` reads it both ways.
+_PLAIN_REDIRECTION_RE = re.compile(r"(?:\d*|&|\{\w+\})(?:<<-|[<>][<>&|]*)[^\s;|&()<>]*\Z")
+
+
+#: The leading ``-``/``+`` option-letter run of a token, before any glued redirection,
+#: ``=`` value or quote (``-x`` in ``-x>/dev/null``, ``-co`` in ``-co'x'``).
+_OPTION_LETTERS_RE = re.compile(r"[-+][A-Za-z0-9]*")
+
+
+def _shell_option_value_count(token: str, *, bash_mode: bool) -> "int | None":
+    """How many FOLLOWING words *token* consumes as option values, or ``None`` when it
+    is not an option (so it is the script word).
+
+    bash reads each ``-o`` / ``-O`` in a cluster as taking the next word for its name
+    (``-oo pipefail errexit`` is ``-o pipefail -o errexit``); a getopt shell (ksh/zsh)
+    glues the name into the token (``-onoclobber``), so it takes none. A glued
+    redirection (``-x>/dev/null``) or ``=`` value is part of the token, not an extra
+    word. ``-`` / ``--`` are handled by the caller before this is reached.
+    """
+    if not token or token[0] not in "-+":
+        return None
+    if token.startswith("--"):
+        return 0 if "=" in token else int(token.lower() in _SHELL_LONG_VALUE_OPTIONS)
+    letters = _OPTION_LETTERS_RE.match(token).group()[1:]  # type: ignore[union-attr]
+    if not letters:
+        return None  # ``->x`` and the like are not an option cluster
+    if bash_mode:
+        return letters.lower().count("o")  # bash reads each ``-o`` as taking a word
+    return int(letters[-1] in "oO")  # a getopt shell glues a mid-cluster name
+
+
+def _shell_option_run(
+    tokens: "list[str]",
+    start: int,
+    limit: int,
+    *,
+    memo: "dict[int, int]",
+    bash_mode: bool,
+    emit: "Callable[[int], None] | None",
+) -> int:
+    """The index where a shell's option run that begins at *start* ends -- its ``-c``
+    script word, or ``limit`` when the run has no script -- in one forward walk.
+
+    A shell keeps reading options after ``-c``, so ``bash -c -x '<script>'`` runs
+    ``<script>``, the first word that is neither an option (a short cluster, zsh's
+    ``-1``, a glued option+redirection ``-x>/dev/null``, or a long ``--word``;
+    ``--rcfile`` / ``--init-file`` and each ``-o`` / ``-O`` take a value) nor a
+    redirection the outer shell strips wherever it sits. ``emit`` receives every script
+    CANDIDATE: the script word itself, and -- the over-approximating safe direction --
+    an AMBIGUOUS redirection (a dequoted word the lexer could read as a redirect,
+    ``>'a b'``, or as the script, ``'2>/dev/null <cmd>'``). *bash_mode* False follows a
+    getopt shell's reading of an ``-o`` name (glued, ``-onoclobber``); the caller unions
+    both. *memo* maps each visited position to the run end, so repeated carriers over
+    one command (``bash -c -o bash -c -o ... x``) stay O(n) instead of O(n^2); it must
+    be the memo built for this same ``bash_mode`` and ``emit`` identity.
+
+    ``emit`` is called once per position across the whole walk graph (its callback
+    dedupes), so a later walk that stops at a memoized position misses no candidate the
+    earlier walk already emitted there.
+    """
+
+    def skip_redirects(j: int) -> int:
+        while start <= j < limit:
+            is_redirection, consumes = _push_token_redirection(tokens[j])
+            if not is_redirection:
+                return j
+            if emit is not None and not _PLAIN_REDIRECTION_RE.match(tokens[j]):
+                emit(j)  # ambiguous: this word could be the script / the value
+            j = min(j + 1 + consumes, limit)
+        return j
+
+    path: "list[int]" = []
+    j = min(start, limit)
+    while True:
+        if j >= limit:
+            end = limit
+            break
+        if j in memo:
+            end = memo[j]
+            break
+        path.append(j)
+        token = tokens[j]
+        is_redirection, consumes = _push_token_redirection(token)
+        if is_redirection:
+            if emit is not None and not _PLAIN_REDIRECTION_RE.match(token):
+                emit(j)  # ambiguous redirection: could be the script
+            j = min(j + 1 + consumes, limit)
+            continue
+        if token in ("-", "--"):
+            j += 1  # options end; the script is the first operand after the run
+            while start <= j < limit and tokens[j] == "--":
+                j += 1
+            j = skip_redirects(j)
+            if emit is not None and j < limit:
+                emit(j)
+            end = min(j, limit)
+            break
+        values = _shell_option_value_count(token, bash_mode=bash_mode)
+        if values is None:
+            if emit is not None:
+                emit(j)  # the script word
+            end = j
+            break
+        j = min(j + 1, limit)
+        for _ in range(values):  # consume the option's value words
+            j = min(skip_redirects(j) + 1, limit)
+    for position in path:
+        memo[position] = end
+    return end
+
+
 def _xargs_reconstructed_command(tokens: "list[str]") -> str:
     """The command ``xargs`` will run, rebuilt from its argv plus the piped words.
 
@@ -1220,6 +1335,51 @@ def _nested_shell_payloads(
     # command flag is walked once per program token otherwise, which is quadratic even
     # though the two scans above are not.
     past_dashes = _next_stop_indexes(tokens, _is_not_double_dash)
+    # Only a ``-c`` inside the shell word's own leading run of options and redirections
+    # gets the extra reading -- a later ``grep -c -e '<text>'``, the arguments after a
+    # script file (``bash file -c ...``) or a data consumer's argument (``echo bash
+    # -c -x ...``) do not.
+    inert_cache: "list[tuple[list[str], bool]]" = []
+    # Per-mode position memos, so every shell word in one command shares the scan: a
+    # ``-c`` option run that reaches the command's end is walked once, not once per
+    # carrier (``bash -c -o bash -c -o ... x`` was O(n^2)). The scope walk emits
+    # nothing, so it keeps its own memos apart from the emitting one.
+    end_memos: "tuple[dict[int, int], dict[int, int]]" = ({}, {})
+    emit_memos: "tuple[dict[int, int], dict[int, int]]" = ({}, {})
+    emitted: "set[int]" = set()
+
+    def _emit(position: int) -> None:
+        if position not in emitted:
+            emitted.add(position)
+            payloads.append(tokens[position])
+
+    def _run_end(i: int) -> int:
+        # a shell word that is only a printer's argument opens no run: its words are
+        # data, so the plain first-word spelling keeps main's reading
+        if not inert_cache:
+            disqualified = _data_consumer_command_disqualified(tokens)
+            inert_cache.append((_argv_programs(tokens), disqualified))
+        programs, disqualified = inert_cache[0]
+        if _data_consumer_exempt(i, tokens[i], programs, tokens, command_disqualified=disqualified):
+            return i
+        return max(
+            _shell_option_run(tokens, i + 1, limit, memo=m, bash_mode=b, emit=None)
+            for b, m in ((True, end_memos[0]), (False, end_memos[1]))
+        )
+
+    def _c_script(start: int, avoid: "int | None") -> None:
+        # The words a shell runs after the options and redirections that follow ``-c``,
+        # as EXTRA payloads: the first-word reading above stays, so this only adds.
+        for b, m in ((True, emit_memos[0]), (False, emit_memos[1])):
+            _shell_option_run(
+                tokens,
+                start,
+                limit,
+                memo=m,
+                bash_mode=b,
+                emit=lambda position: None if position == avoid else _emit(position),
+            )
+
     # ``eval``'s argument join is bounded to one per walk; see the verb branch.
     joined_eval = False
     first_shell: "int | None" = None
@@ -1241,6 +1401,8 @@ def _nested_shell_payloads(
                 k = past_dashes[j + 1]
                 if k < limit:
                     payloads.append(tokens[k])
+                if j < _run_end(i):
+                    _c_script(j, k)  # from the carrier: ``-co pipefail`` takes a name
             # A HERESTRING feeds the script on stdin instead of as an argument
             # (``bash <<< '<script>'``), so its text is a command just the same.
             # Both the spaced and glued spellings arrive here.
@@ -1466,7 +1628,11 @@ def _shell_payload_walk(text_lower: str) -> "list[tuple[str, list[str]]]":
         # continuation that bash keeps literal stays literal in the body too.
         joined_here: set[str] = set()
         nested = _nested_shell_payloads(tokens, allow_join=allow_join, joined_out=joined_here)
-        for payload in list(nested) + _substitution_bodies(_fold_line_continuations(source)):
+        # A redirect before the ``-c`` operand hides the script from ``nested``.
+        from .shell_commands import redirect_hidden_payloads  # the reader imports this module
+
+        nested = list(nested) + redirect_hidden_payloads(source)
+        for payload in nested + _substitution_bodies(_fold_line_continuations(source)):
             # Descend through EVERY literal payload, to any depth.  Termination is
             # structural, not a cap: a payload is carried inside one token of its
             # parent, so it is strictly shorter than the parent's source text.

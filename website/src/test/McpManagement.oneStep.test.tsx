@@ -516,6 +516,54 @@ describe('the page-wide switch', () => {
     expect(within(dialog).queryByText('beta-mcp')).toBeNull()
   })
 
+  it('leaves out of its confirm a marked server its env will keep unshared once sharing is on', async () => {
+    vi.spyOn(api, 'mcpGatewayStatus').mockResolvedValue(
+      status({ enabled: false, stub: ['alpha-mcp', 'gamma-mcp'] }) as never,
+    )
+    vi.spyOn(api, 'mcpGatewayServers').mockResolvedValue({
+      servers: [
+        server({ stub: true, in_allowlist: true }),
+        server({
+          name: 'gamma-mcp',
+          stub: true,
+          in_allowlist: true,
+          pooling_blocked_by_env: false,
+          pooling_blocked_by_env_when_shared: true,
+        }),
+      ],
+    } as never)
+
+    mount()
+    const sharing = await screen.findByRole('switch', { name: M('hero_title') }, { timeout: 5000 })
+    await waitFor(() => expect((sharing as HTMLButtonElement).disabled).toBe(false), { timeout: 5000 })
+    fireEvent.click(sharing)
+    const dialog = await screen.findByRole('dialog', undefined, { timeout: 5000 })
+    expect(within(dialog).getByText('alpha-mcp')).toBeTruthy()
+    expect(within(dialog).queryByText('gamma-mcp')).toBeNull()
+  })
+
+  it('names as skipped, not shared, a server it would enable that its env keeps unshared', async () => {
+    vi.spyOn(api, 'mcpGatewayStatus').mockResolvedValue(status({ enabled: false, stub: ['alpha-mcp'] }) as never)
+    vi.spyOn(api, 'mcpGatewayServers').mockResolvedValue({
+      servers: [
+        server({ stub: true, in_allowlist: true }),
+        server({ name: 'gamma-mcp', pooling_blocked_by_env: false, pooling_blocked_by_env_when_shared: true }),
+      ],
+    } as never)
+    const preview = vi
+      .spyOn(api, 'mcpGatewayLaunchPreview')
+      .mockImplementation(async (name: string) => launch({ name }) as never)
+
+    mount()
+    const sharing = await screen.findByRole('switch', { name: M('hero_title') }, { timeout: 5000 })
+    await waitFor(() => expect((sharing as HTMLButtonElement).disabled).toBe(false), { timeout: 5000 })
+    fireEvent.click(sharing)
+    const dialog = await screen.findByRole('dialog', undefined, { timeout: 5000 })
+    expect(within(dialog).getByText('alpha-mcp')).toBeTruthy()
+    expect(within(dialog).getByText(M('enable_all_review_skipped_names', { names: 'gamma-mcp' }))).toBeTruthy()
+    expect(preview).not.toHaveBeenCalledWith('gamma-mcp')
+  })
+
   it('offers one Remove button, not an on switch, on a marked row its env keeps unshared', async () => {
     vi.spyOn(api, 'mcpGatewayStatus').mockResolvedValue(status({ enabled: true, stub: ['alpha-mcp'] }) as never)
     vi.spyOn(api, 'mcpGatewayServers').mockResolvedValue({

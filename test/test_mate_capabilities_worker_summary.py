@@ -175,9 +175,10 @@ def test_each_added_row_removes_the_stored_row_it_names(monkeypatch):
 
     A stored server or tool removes itself; a catalog skill is stored under
     ``skills`` by its key; a skill URI off the catalog is stored under
-    ``resources``; a ``@server`` selector derived from a stored ``*`` and an entry
-    of the spec's own ``skills`` list name no stored row, so they offer no Remove
-    (the live miss: the remove popped a key that did not exist and saved).
+    ``resources``; an entry of the spec's own ``skills`` list is removed from that
+    list; a ``@server`` selector derived from a stored ``*`` names no stored row,
+    so it offers no Remove (the live miss: the remove popped a key that did not
+    exist and saved).
     """
     base = {"name": "kirocrew-mate-worker", "mcpServers": {}, "tools": [], "resources": []}
     file_spec = {
@@ -210,8 +211,8 @@ def test_each_added_row_removes_the_stored_row_it_names(monkeypatch):
     assert remove[("skills", release)] == {"section": "resources", "id": release}
     # Derived from the stored "*": nothing of its own to remove.
     assert remove[("tools", "@jira")] is None
-    # The spec's own skills list has no editor row.
-    assert remove[("skills", "listed-skill")] is None
+    # An entry of the spec's own skills list is stored there and removed from it.
+    assert remove[("skills", "listed-skill")] == {"section": "skills", "id": "listed-skill"}
 
 
 def test_stored_wildcard_prevents_removing_any_tool_row(monkeypatch):
@@ -372,3 +373,65 @@ def test_a_glob_entry_withholds_remove_on_a_tool_it_still_grants(monkeypatch, se
     assert tools["@notes/write_note"]["remove"] is None
     assert tools[glob]["remove"] == {"section": section, "id": glob}
     assert file_spec[section] == [glob, "@notes/write_note"]
+
+
+def test_a_flat_listed_app_skill_the_base_app_wildcard_grants_comes_with(monkeypatch, tmp_path):
+    """An app skill listed under its flat link is granted by ``<app>/*/SKILL.md``."""
+    from kiro_crew.skills import skills_dir
+    from kiro_crew.testing.links import make_dir_link
+
+    root = skills_dir()
+    target = tmp_path / "bundle" / "a-first"
+    target.mkdir(parents=True)
+    (target / "SKILL.md").write_text("x", encoding="utf-8")
+    (root / "app").mkdir(parents=True)
+    make_dir_link(root / "a-first", target)
+    make_dir_link(root / "app" / "a-first", target)
+    wildcard = f"skill://{root.as_posix()}/app/*/SKILL.md"
+    flat = f"skill://{root.as_posix()}/a-first/SKILL.md"
+    base = {"mcpServers": {}, "tools": [], "resources": [wildcard]}
+    file_spec = {"resources": [flat]}
+    merged = mate_worker.merge_worker_spec(base, mate_worker.worker_additions(base, file_spec))
+    monkeypatch.setattr(mate_worker, "member_worker_spec", lambda member: merged)
+    monkeypatch.setattr(mate_capabilities, "_load_spec", lambda member: (None, file_spec))
+    _patch_base(monkeypatch, base)
+
+    rows = mate_capabilities.worker_summary("ben", {"a-first": flat})["rows"]
+    skills = {row["id"]: row for row in rows if row["section"] == "skills"}
+    assert skills["a-first"]["state"] == "inherited"
+    assert skills["a-first"]["remove"] is None
+
+
+def test_the_summary_resolves_the_skills_root_once_however_many_skill_links(monkeypatch):
+    """Resolving the skills root is a pooled sensitive-path check. Done once per
+    skill link it costs ~1.3 s per crewmate screen on a 74-skill home, so the
+    count must not grow with the catalog."""
+    from kiro_crew import skills as sk
+
+    root = sk.skills_dir()
+    wildcard = f"skill://{root.as_posix()}/app/*/SKILL.md"
+    base = {"mcpServers": {}, "tools": [], "resources": [wildcard]}
+    file_spec = {"resources": [wildcard]}
+    monkeypatch.setattr(mate_worker, "member_worker_spec", lambda member: dict(base))
+    monkeypatch.setattr(mate_capabilities, "_load_spec", lambda member: (None, file_spec))
+    _patch_base(monkeypatch, base)
+    real = sk.validate_file_path
+    calls: list[str] = []
+
+    def counting(path, *a, **kw):
+        if str(path) == str(root):
+            calls.append(path)
+        return real(path, *a, **kw)
+
+    monkeypatch.setattr(sk, "validate_file_path", counting)
+
+    def catalog(n):
+        return {f"s{i}": f"skill://{root.as_posix()}/s{i}/SKILL.md" for i in range(n)}
+
+    mate_capabilities.worker_summary("ben", catalog(1))
+    one = len(calls)
+    calls.clear()
+    mate_capabilities.worker_summary("ben", catalog(8))
+
+    assert one <= 1
+    assert len(calls) == one

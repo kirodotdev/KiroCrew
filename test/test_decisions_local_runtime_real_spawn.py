@@ -11,6 +11,7 @@ out of scope here: the stand-in replaces the model, and ``sys.executable`` the e
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import os
 import socket
@@ -29,20 +30,48 @@ from kiro_crew.testing.wait import wait_until
 
 pytestmark = pytest.mark.timeout(120)
 
+_LAUNCHERS = ("plumb_cpu.py", "strands_decider_cpu.py", "laya_cpu.py")
+_TETHER = ("_wait_for_end_of_input", "_exit_when_gateway_lets_go")
+
+
+def launcher_tether(name: str) -> str:
+    """The stdin tether functions of launcher *name*, as source.
+
+    Each launcher is copied into the model's environment alone, so each carries
+    its own copy of the tether; the stand-in runs that same code.
+    """
+    source = (lr.SERVERS_DIR / name).read_text(encoding="utf-8")
+    found = {
+        node.name: ast.get_source_segment(source, node)
+        for node in ast.parse(source).body
+        if isinstance(node, ast.FunctionDef) and node.name in _TETHER
+    }
+    assert set(found) == set(_TETHER), f"{name} defines {sorted(found)}"
+    return "\n\n".join(str(found[fn]) for fn in _TETHER)
+
+
 #: The stand-in server: the launcher contract of ``local_servers/*.py`` -- bind
 #: 127.0.0.1 on ``--port``, answer ``/kirocrew-attest`` with the secret, exit at
-#: end of stdin -- and nothing else.
-_STUB = textwrap.dedent("""
+#: end of stdin through the launchers' own tether -- and nothing else.
+_STUB_HEAD = textwrap.dedent("""
     import argparse, os, socketserver, sys, threading
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
     ATTEST = os.environ.pop("KIROCREW_LOCAL_ATTEST", "")
 
-    def _exit_when_gateway_lets_go():
-        sys.stdin.buffer.read()
-        os._exit(0)
+    """)
+_STUB_BODY = textwrap.dedent("""
+
 
     threading.Thread(target=_exit_when_gateway_lets_go, daemon=True).start()
+    if sys.platform == "win32":
+        # A launcher's native imports run while the tether waits. On Windows
+        # numpy's OpenBLAS DLL queries the stdin pipe as it loads, and such a
+        # query waits behind any read left pending on that pipe. PeekNamedPipe
+        # is one; the pause gives a blocking read time to become pending first.
+        import _winapi, msvcrt, time
+        time.sleep(1.0)
+        _winapi.PeekNamedPipe(msvcrt.get_osfhandle(sys.stdin.fileno()), 0)
     p = argparse.ArgumentParser()
     p.add_argument("--weights")
     p.add_argument("--port", type=int)
@@ -70,6 +99,15 @@ _STUB = textwrap.dedent("""
 
     S(("127.0.0.1", args.port), H).serve_forever()
     """)
+_STUB = _STUB_HEAD + launcher_tether(_LAUNCHERS[0]) + _STUB_BODY
+
+
+def test_every_launcher_carries_the_same_stdin_tether():
+    """The stand-in runs the first launcher's tether, so it must be every launcher's."""
+    tethers = {name: launcher_tether(name) for name in _LAUNCHERS}
+    assert sorted(p.name for p in lr.SERVERS_DIR.glob("*.py")) == sorted(_LAUNCHERS)
+    assert len(set(tethers.values())) == 1, "the launchers' stdin tethers differ"
+
 
 _WEIGHT = b"stand-in"
 

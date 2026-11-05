@@ -38,6 +38,30 @@ describe('annotationHighlight', () => {
     root.remove()
   })
 
+  it('leaves out text under a select-none element the range runs across, such as the Copy buttons under a table', async () => {
+    const { paintAnnotationHighlight, clearAnnotationHighlight } = await import('./annotationHighlight')
+    const root = document.createElement('div')
+    const cell = document.createElement('td'); cell.append('per change')
+    const row = document.createElement('div'); row.className = 'select-none'
+    const md = document.createElement('button'); md.append('Copy Markdown')
+    const copy = document.createElement('button'); copy.append('Copy CSV'); row.append(md, copy)
+    const para = document.createElement('p'); para.append('After-table paragraph.')
+    root.append(cell, row, para)
+    document.body.appendChild(root)
+    const range = document.createRange()
+    range.setStart(cell.firstChild as Text, 4)
+    range.setEnd(para.firstChild as Text, 11)
+    const owner = {}
+    paintAnnotationHighlight(owner, range)
+    expect(registry.get('mc-annotate')!.ranges.map(r => r.toString())).toEqual(['change', 'After-table'])
+    // A range wholly inside such an element has it as its common ancestor, and still paints.
+    const inside = document.createRange(); inside.setStart(md.firstChild as Text, 5); inside.setEnd(copy.firstChild as Text, 4)
+    paintAnnotationHighlight(owner, inside)
+    expect(registry.get('mc-annotate')!.ranges.map(r => r.toString())).toEqual(['Markdown', 'Copy'])
+    clearAnnotationHighlight(owner)
+    root.remove()
+  })
+
   it('is a no-op where the API is absent', async () => {
     delete (window as unknown as Record<string, unknown>).Highlight
     vi.resetModules()

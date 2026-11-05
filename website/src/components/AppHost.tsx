@@ -15,6 +15,7 @@ import React from 'react'
 import { useNavigate } from 'react-router-dom'
 import { ArrowLeft, RefreshCw, PowerOff, AlertTriangle, Package, Bot } from 'lucide-react'
 import { AppApiProvider, type AppUpdate } from '../app-sdk'
+import { SessionPaneProvider, type SessionPane } from '../app-sdk/sessionPane'
 import { Btn, PageHeader } from './ui'
 import AppLoadingFallback from './AppLoadingFallback'
 import { importAppBundle } from './appBundleImport'
@@ -37,6 +38,8 @@ export interface AppHostProps {
     displayName?: string
     enabled?: boolean
     origin?: string
+    /** Set when the gateway skipped this built-in at boot; its routes were never registered. */
+    unavailable?: { reason: string }
     /** Cached update state, carried by both `GET /api/apps` and
      *  `GET /api/apps/{name}` so a routed page and a side-panel tab publish the
      *  same answer. Absent whenever no cache has seen this app, so the SDK
@@ -59,6 +62,8 @@ export interface AppHostProps {
         api?: string[]
         events?: string[]
       }
+      /** The app's own listing copy per locale, read by the title helpers. */
+      l10n?: unknown
     }
   }
   /** Bundle to mount, overriding `manifest.ui.entry`. Resolved against the app's
@@ -80,6 +85,10 @@ export interface AppHostProps {
   /** The name the route asked for, shown when `app` is absent. The not-found
    *  title is "<name> isn't installed", so it needs the requested name. */
   requestedName?: string
+  /** Set when this host draws a chat session's main pane
+   *  (`contributes.sessionKinds`): the binding the app reads with
+   *  `useSessionPane()`. Every other host leaves it unset, which publishes `null`. */
+  sessionPane?: SessionPane
 }
 
 // ---------------------------------------------------------------------------
@@ -192,13 +201,33 @@ function AppDisabled({ app }: { app: AppHostProps['app'] }) {
   )
 }
 
+function AppUnavailable({ app }: { app: AppHostProps['app'] & { unavailable: { reason: string } } }) {
+  const navigate = useNavigate()
+  return (
+    <>
+      <PageHeader title={appDisplayName(app)} />
+      <div className="flex-1 flex items-center justify-center p-8">
+        <div className="max-w-md grid gap-4 justify-items-center">
+          {/* A caught import error, so it renders through ErrorNotice; leaving this
+              page loses nothing, so the agent hand-off is on. */}
+          <ErrorNotice
+            message={i18nT('pages.appDetailPage.unavailable_notice', { reason: app.unavailable.reason })}
+            askAgent
+          />
+          <Btn onClick={() => navigate('/apps')}><ArrowLeft size={14} /> {i18nT('components.appHost.apps')}</Btn>
+        </div>
+      </div>
+    </>
+  )
+}
+
 function AppNoUI({ app }: { app: AppHostProps['app'] }) {
   const navigate = useNavigate()
   return (
     <>
       <PageHeader
         title={appDisplayName(app)}
-        subtitle={appDescription({ name: app.name, description: app.manifest?.description, origin: app.origin })}
+        subtitle={appDescription({ name: app.name, description: app.manifest?.description, origin: app.origin, l10n: app.manifest?.l10n })}
       />
       <div className="flex-1 flex items-center justify-center p-8">
         <div className="text-center max-w-md">
@@ -218,7 +247,7 @@ function AppNoUI({ app }: { app: AppHostProps['app'] }) {
 // AppHost
 // ---------------------------------------------------------------------------
 
-function AppHostInner({ app, entry: entryOverride, active = true, sessionKey }: AppHostProps) {
+function AppHostInner({ app, entry: entryOverride, active = true, sessionKey, sessionPane }: AppHostProps) {
   const navigate = useNavigate()
   const [resetKey, setResetKey] = useState(0)
 
@@ -324,22 +353,26 @@ function AppHostInner({ app, entry: entryOverride, active = true, sessionKey }: 
         {/* `ui.loading` describes the app's routed page. A side-panel tab mounts
             its own bundle (`entry` override) in a narrow panel, so it keeps the
             default shape rather than borrowing the page's rail or split. */}
-        <Suspense fallback={<AppLoadingFallback appName={appDisplayName(app)} loading={entryOverride ? undefined : app.manifest?.ui?.loading} />}>
-          <LazyApp />
-        </Suspense>
+        <SessionPaneProvider value={sessionPane}>
+          <Suspense fallback={<AppLoadingFallback appName={appDisplayName(app)} loading={entryOverride ? undefined : app.manifest?.ui?.loading} />}>
+            <LazyApp />
+          </Suspense>
+        </SessionPaneProvider>
       </AppApiProvider>
     </AppErrorBoundary>
   )
 }
 
-export default function AppHost({ app, entry, active, sessionKey, requestedName }: AppHostProps) {
+export default function AppHost({ app, entry, active, sessionKey, requestedName, sessionPane }: AppHostProps) {
   // Guard: not installed
   if (!app) return <AppNotFound name={requestedName || 'unknown'} />
   // Guard: disabled
   if (app.enabled === false) return <AppDisabled app={app} />
+  // Guard: skipped at boot. Its bundle may load, but every route behind it is missing.
+  if (app.unavailable) return <AppUnavailable app={{ ...app, unavailable: app.unavailable }} />
   // Guard: no UI bundle. An explicit `entry` (a panel-tab body) is its own
   // bundle, so it does not require the app to also declare a routed `ui.entry`.
   if (!entry && !app.manifest?.ui?.entry) return <AppNoUI app={app} />
 
-  return <AppHostInner app={app} entry={entry} active={active} sessionKey={sessionKey} />
+  return <AppHostInner app={app} entry={entry} active={active} sessionKey={sessionKey} sessionPane={sessionPane} />
 }

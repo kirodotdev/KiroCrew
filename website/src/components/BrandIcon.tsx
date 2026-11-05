@@ -2,6 +2,8 @@ import type { CSSProperties } from 'react'
 import githubMarkUrl from '../assets/github-mark.svg'
 import discordMarkUrl from '../assets/discord-mark.svg'
 import coderMarkUrl from '../assets/coder-mark.svg'
+import flyMarkUrl from '../assets/fly-mark.svg'
+import boxdMarkUrl from '../assets/boxd-mark.svg'
 
 /**
  * Monochrome brand marks (GitHub, Discord, the Kiro ghost) tinted via CSS
@@ -66,4 +68,16 @@ export function DiscordIcon({ size = 16 }: { size?: number }) {
  * theme's currentColor in light and dark. The art is about 2.17:1 wide. */
 export function CoderIcon({ size = 16 }: { size?: number }) {
   return <BrandGlyph url={coderMarkUrl} size={Math.round(size * 2.17)} height={size} />
+}
+
+/** Fly.io balloon mark (Simple Icons artwork), for Sprites. Monochrome, so it is
+ * masked and follows the theme's currentColor like the Coder mark. */
+export function FlyIcon({ size = 16 }: { size?: number }) {
+  return <BrandGlyph url={flyMarkUrl} size={size} />
+}
+
+/** boxd's notched-box mark, without its wordmark. Monochrome, so it is masked
+ * and follows the theme's currentColor. */
+export function BoxdIcon({ size = 16 }: { size?: number }) {
+  return <BrandGlyph url={boxdMarkUrl} size={size} />
 }

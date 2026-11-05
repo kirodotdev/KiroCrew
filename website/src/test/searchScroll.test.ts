@@ -864,3 +864,72 @@ describe('scrollCurrentMatchIntoView: range-based target', () => {
     clearSearchHighlights(box); box.remove()
   })
 })
+
+describe('attachUserScrollIntent: a sideways wheel a page swipe claims', () => {
+  /** A scroller inside an ancestor that may cancel the wheel, as the chat
+   *  page's trackpad swipe (on the shell grid) does. */
+  const mount = (claim: boolean) => {
+    const root = document.createElement('div')
+    const scroller = document.createElement('div')
+    root.appendChild(scroller)
+    document.body.appendChild(root)
+    if (claim) root.addEventListener('wheel', (e) => e.preventDefault())
+    const calls: Array<[string | undefined, number | undefined]> = []
+    const detach = attachUserScrollIntent(scroller, (dir, px) => { calls.push([dir, px]) })
+    const wheel = (dx: number, dy: number) =>
+      scroller.dispatchEvent(new WheelEvent('wheel', { deltaX: dx, deltaY: dy, bubbles: true, cancelable: true }))
+    return { root, calls, wheel, done: () => { detach(); root.remove() } }
+  }
+
+  it('is not the reader\'s input once the page cancelled it: its drift names no direction', () => {
+    const m = mount(true)
+    m.wheel(20, -2)
+    m.wheel(-20, 3)
+    expect(m.calls).toEqual([])
+    m.done()
+  })
+
+  it('still counts when nothing claimed it', () => {
+    const m = mount(false)
+    m.wheel(20, -2)
+    expect(m.calls).toEqual([['up', 2]])
+    m.done()
+  })
+
+  it('a vertical wheel is the reader\'s, claimed or not, at once', () => {
+    const m = mount(true)
+    m.wheel(1, -30)
+    expect(m.calls).toEqual([['up', 30]])
+    m.done()
+  })
+
+  it('listening on the window, an uncancelled diagonal wheel AT the window is the reader\'s, every time', () => {
+    // The search centering poll listens on the window. A listener added to the
+    // window during that same dispatch never saw it, and then rejected the next
+    // wheel as not its own: the reader's scroll was never reported.
+    const calls: Array<[string | undefined, number | undefined]> = []
+    const detach = attachUserScrollIntent(window, (dir, px) => { calls.push([dir, px]) })
+    window.dispatchEvent(new WheelEvent('wheel', { deltaX: 20, deltaY: -5, bubbles: true, cancelable: true }))
+    window.dispatchEvent(new WheelEvent('wheel', { deltaX: 40, deltaY: -20, bubbles: true, cancelable: true }))
+    expect(calls).toEqual([['up', 5], ['up', 20]])
+    detach()
+  })
+
+  it('listening on the window, a wheel from inside is judged there: counted unless an ancestor cancelled it', () => {
+    const root = document.createElement('div')
+    const inner = document.createElement('div')
+    root.appendChild(inner)
+    document.body.appendChild(root)
+    const calls: Array<[string | undefined, number | undefined]> = []
+    const detach = attachUserScrollIntent(window, (dir, px) => { calls.push([dir, px]) })
+    inner.dispatchEvent(new WheelEvent('wheel', { deltaX: 20, deltaY: 4, bubbles: true, cancelable: true }))
+    expect(calls).toEqual([['down', 4]])
+    const claim = (e: Event) => e.preventDefault()
+    root.addEventListener('wheel', claim)
+    inner.dispatchEvent(new WheelEvent('wheel', { deltaX: 20, deltaY: 4, bubbles: true, cancelable: true }))
+    expect(calls).toEqual([['down', 4]])
+    root.removeEventListener('wheel', claim)
+    detach()
+    root.remove()
+  })
+})

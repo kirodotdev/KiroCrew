@@ -397,6 +397,44 @@ class TestAContractNobodyCanReadIsNeverAPass:
         assert "does not parse" in payload(result)["problems"][0]
 
     @pytest.mark.parametrize(
+        "bom, encoding",
+        [(b"\xff\xfe", "utf-16-le"), (b"\xfe\xff", "utf-16-be")],
+        ids=["utf-16-le", "utf-16-be"],
+    )
+    def test_a_utf16_contract_is_twenty_and_not_a_traceback(self, repo, bom, encoding) -> None:
+        """UTF-16 with its BOM, the default of Windows PowerShell 5.1 ``>``.
+
+        Neither BOM is valid UTF-8, so the decode raises ``UnicodeDecodeError``, a
+        ``ValueError`` the ``OSError`` clause never caught. (Without a BOM, ASCII JSON
+        in UTF-16 decodes as UTF-8 with NULs and already fails at the JSON parse.)
+        """
+        worktree = repo("utf16", committed=("test/test_x.py",))
+        (worktree / CONTRACT_FILENAME).write_bytes(bom + json.dumps(CONTRACT).encode(encoding))
+        result = run(worktree)
+        assert result.returncode == EXIT_UNREADABLE, result.stderr
+        assert "Traceback" not in result.stderr
+        body = payload(result)
+        assert body["verdict"] == "unreadable"
+        assert "not UTF-8" in body["problems"][0]
+
+    def test_load_contract_returns_a_utf16_problem_instead_of_raising(
+        self, mod, tmp_path: Path
+    ) -> None:
+        path = tmp_path / CONTRACT_FILENAME
+        path.write_bytes(json.dumps(CONTRACT).encode("utf-16"))
+        contract, problems = mod.load_contract(path)
+        assert contract == {}
+        assert len(problems) == 1 and "not UTF-8" in problems[0]
+
+    def test_a_utf8_bom_contract_keeps_its_parse_problem(self, repo) -> None:
+        """The BOM case is unchanged: still unreadable, still the JSON parser's reason."""
+        worktree = repo("utf8-bom", committed=("test/test_x.py",))
+        (worktree / CONTRACT_FILENAME).write_bytes(b"\xef\xbb\xbf" + json.dumps(CONTRACT).encode())
+        result = run(worktree)
+        assert result.returncode == EXIT_UNREADABLE
+        assert "Unexpected UTF-8 BOM" in payload(result)["problems"][0]
+
+    @pytest.mark.parametrize(
         "field, value",
         [
             ("finding_ids", "16"),

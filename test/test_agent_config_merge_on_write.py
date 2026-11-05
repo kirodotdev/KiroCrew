@@ -1,21 +1,12 @@
 """Merge-on-write semantics for the agent-config PUT.
 
-``PUT /api/agent/config`` persists a whole-file snapshot the client read earlier,
-and ``apps/bridges_mcp.py::_register_mcp_servers`` writes app MCP bridges into that
-same file under its own flock. A registration landing between the client's read
-and its PUT was therefore silently clobbered.
+``PUT /api/agent/config`` writes a snapshot the client read earlier, while
+``apps/bridges_mcp.py::_register_mcp_servers`` writes app MCP bridges into the same file.
 
-The rule under test: **preservation requires positive evidence of app or host
-ownership.** An on-disk ``mcpServers`` entry absent from the submission is kept
-only when its owner can be named -- a host-managed server, or one of the exact
-``<app>:<server>`` names an installed, ENABLED app's manifest declares; every
-other absent entry is the client's and is deleted. The ambiguity that makes the
-policy load-bearing is that a snapshot taken before an app registered its bridge
-is byte-identical to one where the user deliberately removed that entry, so
-ownership is the only disambiguator -- and an unclassifiable entry falls to
-DELETE, because preserving without evidence makes a directly-added entry
-permanently undeletable, while an ownership source that cannot be READ refuses
-the PUT rather than guessing in either direction.
+An on-disk ``mcpServers`` entry absent from the submission is kept only when its owner
+can be named: a host-managed server, or an exact ``<app>:<server>`` name an installed,
+ENABLED app declares. Anything else is deleted, since preserving without evidence makes
+a direct entry undeletable; an ownership source that cannot be read refuses the PUT.
 """
 
 from __future__ import annotations
@@ -77,22 +68,14 @@ async def _put(
 ) -> tuple[web.Response, dict]:
     """PUT *submitted* over an installed spec holding *on_disk*.
 
-    ``on_disk`` as a ``str`` is written verbatim, for the corrupt-spec case.
-    ``scope_names`` is what a readable mcp.json scope declares and
-    ``unreadable_scope`` reports the scope as unreadable instead; both are
-    injected at the census seam and BOTH must leave every verdict unchanged --
-    proven ownership decides, so re-introducing any scope-based exclusion ahead of
-    the ownership test trips the tests that set them. ``apps`` maps an INSTALLED
-    app name to the server names its manifest DECLARES, so ``{"demo": ("notes",)}``
-    makes ``demo:notes`` app-owned while ``demo:custom`` is not; ``apps_unreadable``
-    makes one manifest unreadable. ``managed`` are host-managed server names,
-    carrying no ``opt_in``/``spec_gate`` (the always-emitted shape);
-    ``managed_specs`` adds host-managed names with their REAL spec dicts, which is
-    how the opt-in and gated rows are exercised. ``extra_managed`` is what the
-    edition's ``_extra_mcp_servers`` contributes.
-    ``file_lock`` replaces bridges' flock, which is how the deregistration
-    interleaving is injected. ``govern=True`` leaves the real governance filter
-    in place instead of neutralizing it.
+    ``on_disk`` as a ``str`` is written verbatim (corrupt spec). ``scope_names`` and
+    ``unreadable_scope`` feed the census seam and must never change a verdict.
+    ``apps`` maps an installed app to the names its manifest declares
+    (``{"demo": ("notes",)}`` owns ``demo:notes``, not ``demo:custom``);
+    ``apps_unreadable`` breaks one manifest. ``managed`` are always-emitted host names,
+    ``managed_specs`` host names with real spec dicts (opt-in and gated rows),
+    ``extra_managed`` the edition's ``_extra_mcp_servers``. ``file_lock`` replaces
+    bridges' flock to inject interleavings; ``govern=True`` keeps the real governance filter.
     """
     if apps is None:
         apps = {"demo": ("notes",)}
@@ -282,21 +265,15 @@ async def _put(
     return response, written
 
 
-# ── (a) the concurrent register-vs-PUT race from the original finding ──────────
+# ── (a) the concurrent register-vs-PUT race ──────────
 
 
 @pytest.mark.asyncio
 async def test_app_bridge_registered_during_the_lock_wait_survives_the_put(tmp_path):
     """An app bridge registered during the lock wait survives the PUT.
 
-    The transaction lock is a cross-process flock whose wait is unbounded, so an
-    app enable queued ahead of this PUT commits its ``mcpServers`` entry strictly
-    after the client's read and strictly before this PUT's write. Pre-fix the
-    snapshot was persisted as read and the bridge was gone, with no error and no
-    log line — the app's tools simply stopped resolving.
-
-    Modelled deterministically rather than by timing: the fake lock registers the
-    bridge as it is acquired, which is exactly that window.
+    An app enable queued on the flock commits its entry after the client's read and
+    before this write. The fake lock registers the bridge as it is acquired.
     """
     installed = tmp_path / "kirocrew.json"
 
@@ -330,20 +307,11 @@ async def test_app_bridge_registered_during_the_lock_wait_survives_the_put(tmp_p
 
 @pytest.mark.asyncio
 async def test_app_deregistered_during_the_put_is_not_resurrected(tmp_path):
-    """FINDING 2: a bridge removed while the PUT runs must stay removed.
+    """A bridge removed while the PUT runs must stay removed.
 
-    App disable / uninstall / health demotion calls ``_deregister_mcp_servers``,
-    which read-modify-writes the installed spec under bridges' OWN flock. Pre-fix
-    the merge read ran BEFORE that flock was taken, so a deregistration landing
-    between the read and the final locked write had its entry re-inserted -- and
-    unlike the registration direction this does NOT self-heal, because
-    ``reconcile_enabled_app_resources`` only re-registers ENABLED apps and skips
-    the disabled or uninstalled one whose bridge just came back.
-
-    Deterministic interleaving, no sleeps: the fake flock performs the
-    deregistration at ACQUISITION. Pre-fix the merge has already read the file by
-    then and the entry is preserved; with the read moved inside the same lock
-    hold, the read happens after and sees the entry gone.
+    The merge read must happen inside bridges' flock: a re-inserted bridge of a disabled
+    app never self-heals, since reconciliation only re-registers ENABLED apps. The fake
+    flock deregisters at acquisition.
     """
     installed = tmp_path / "kirocrew.json"
 
@@ -382,17 +350,10 @@ async def test_app_deregistered_during_the_put_is_not_resurrected(tmp_path):
 
 @pytest.mark.asyncio
 async def test_direct_client_entry_deletes_on_a_sequential_add_then_remove(tmp_path):
-    """FINDING 1: a server the user typed into the raw editor must stay deletable.
+    """A server the user typed into the raw editor must stay deletable.
 
-    The ordinary lifecycle, with no race at all: the user adds ``myserver``
-    through this same editor (so it exists ONLY in the installed spec -- no
-    mcp.json scope declares it), then in a later, race-free PUT removes it.
-
-    Pre-fix the preserve test was "no scope declares it", and the installed spec
-    is not a scope, so this entry was re-inserted on every deletion attempt --
-    permanently undeletable, breaking the merge rule's own requirement 2 for the most
-    ordinary kind of client entry. Preservation now requires POSITIVE evidence of
-    app or host ownership, which a direct entry has none of.
+    ``myserver`` exists only in the installed spec (no mcp.json scope declares it) and
+    has no app or host owner, so a later PUT that omits it deletes it.
     """
     response, written = await _put(
         tmp_path,
@@ -451,18 +412,9 @@ async def test_client_owned_entry_absent_from_the_snapshot_is_deleted(tmp_path):
 async def test_entry_of_unknown_ownership_is_deleted(tmp_path):
     """THE PINNED UNKNOWN-KEY POLICY: unclassifiable ⇒ client-owned ⇒ delete.
 
-    This is the INVERSE of the policy the first cut shipped, and the inversion is
-    the point. Preservation now requires positive evidence of app or host
-    ownership, so an entry with no such evidence -- including one whose census
-    source could not be read -- is treated as the client's and deleted when
-    absent from the submission.
-
-    The direction matters because the two errors are not the ones the first cut
-    weighed. Preserving without evidence does not merely risk keeping something
-    the user wanted gone: for a direct entry it makes deletion IMPOSSIBLE, since
-    every retry re-reads the same unowned-looking entry and re-inserts it. An
-    app bridge, by contrast, is positively identifiable, so requiring evidence
-    costs it nothing.
+    An entry with no ownership evidence, even one whose census source is unreadable, is
+    the client's. Preserving it would make deletion impossible, since every retry
+    re-inserts it; an app bridge is positively identifiable, so this costs it nothing.
     """
     response, written = await _put(
         tmp_path,
@@ -482,16 +434,9 @@ async def test_entry_of_unknown_ownership_is_deleted(tmp_path):
 async def test_a_scope_declaration_does_not_defeat_proven_ownership(tmp_path):
     """A scope declaration must not delete a bridge the app really owns.
 
-    A scope census that subtracts every declared name from the candidates BEFORE
-    ownership is tested can only ever remove a name that IS provably owned, since
-    ownership is the EXACT set of manifest-declared names: app ``demo`` genuinely
-    registers ``demo:notes``, so a user who also declares ``demo:notes`` in their
-    own mcp.json would make every stale PUT delete the live bridge -- the exact
-    clobber the merge rule exists to prevent, reachable through a collision the
-    user cannot see.
-
-    The census seam stays injected here on purpose: re-introducing any
-    scope-based exclusion ahead of the ownership test trips this test.
+    App ``demo`` registers ``demo:notes`` and the user's mcp.json also declares it. A
+    scope exclusion ahead of the ownership test would let every stale PUT delete the
+    live bridge, so the census seam stays injected here.
     """
     response, written = await _put(
         tmp_path,
@@ -537,8 +482,7 @@ async def test_a_namespaced_entry_of_an_uninstalled_app_is_deleted(tmp_path):
     """``foo:bar`` is only a bridge when ``foo`` is an INSTALLED app.
 
     Otherwise the namespace test would let any hand-typed colon name become
-    undeletable -- the same defect as Finding 1, reachable through a different
-    spelling.
+    undeletable.
     """
     response, written = await _put(
         tmp_path,
@@ -555,11 +499,8 @@ async def test_a_namespaced_entry_of_an_uninstalled_app_is_deleted(tmp_path):
 async def test_host_managed_entry_is_preserved(tmp_path):
     """An ALWAYS-EMITTED host-managed server is positively owned, so it survives.
 
-    Not a new restriction, and the "always-emitted" qualifier is the whole of the
-    justification: a fresh rebuild re-adds ``kirocrew-core`` unconditionally, so
-    removing it through this editor never stuck. The two managed entries that are
-    NOT always emitted are covered by the three rows below, where preservation
-    would instead resurrect something the rebuild would leave out.
+    A rebuild re-adds ``kirocrew-core`` unconditionally, so removing it here never sticks.
+    The managed entries that are not always emitted are the rows below.
     """
     response, written = await _put(
         tmp_path,
@@ -576,14 +517,9 @@ async def test_host_managed_entry_is_preserved(tmp_path):
 async def test_an_opt_in_managed_server_omitted_from_the_snapshot_is_deleted(tmp_path):
     """An opt-in grant must be REVOCABLE through this editor.
 
-    ``kirocrew-dashboard`` carries ``opt_in``, which makes it an assignable set
-    rather than an always-on capability: ``build_agent_config`` never emits it and
-    ``_refresh_dynamic_fields`` keeps an EXISTING entry current without ever
-    re-introducing one. So the preserve rationale on the row above -- "the rebuild
-    re-adds it anyway, removing it here never stuck" -- is simply false for this
-    entry: nothing re-adds it. Preserving it made the grant UNDELETABLE through the
-    only surface that can revoke it, because each retry re-read the entry it had
-    just refused to drop.
+    ``kirocrew-dashboard`` carries ``opt_in``: ``build_agent_config`` never emits it and
+    ``_refresh_dynamic_fields`` never re-adds it, so preserving it would leave the grant
+    undeletable through the only surface that revokes it.
     """
     response, written = await _put(
         tmp_path,
@@ -603,12 +539,9 @@ async def test_an_opt_in_managed_server_omitted_from_the_snapshot_is_deleted(tmp
 async def test_a_gate_closed_managed_server_omitted_from_the_snapshot_is_deleted(tmp_path):
     """A CLOSED ``spec_gate`` means the rebuild would not re-add it.
 
-    ``kirocrew-computer``'s gate is consulted at emission time, and both spec
-    writers ``pop`` the entry while it is closed -- emitting it is what makes
-    kiro-cli spawn a backend for a capability that is off or has no driver on this
-    OS. Preserving such an entry here RESURRECTS exactly what the gate exists to
-    withhold, and the next rebuild would remove it again: the two surfaces
-    disagreed about the same config.
+    Both spec writers ``pop`` ``kirocrew-computer`` while its gate is closed, since
+    emitting it makes kiro-cli spawn a backend for a capability that is off. Preserving
+    it here would resurrect what the gate withholds.
     """
     response, written = await _put(
         tmp_path,
@@ -692,12 +625,8 @@ async def test_a_managed_server_whose_gate_raises_is_deleted(tmp_path):
 async def test_an_edition_extra_is_preserved(tmp_path, name, command):
     """An edition extra is host-owned and always emitted, so it is preserved.
 
-    ``build_agent_config`` merges every ``_extra_mcp_servers`` entry with no gate
-    and no opt-in test, so the rebuild re-adds it unconditionally -- the same
-    justification as the always-emitted managed row. The eligibility predicate is
-    applied to these entries UNIFORMLY rather than special-cased, so an extra that
-    ever did carry ``opt_in`` or a closed gate would fall to DELETE with the
-    managed rows instead of silently keeping the old blanket preserve.
+    ``build_agent_config`` merges every ``_extra_mcp_servers`` entry ungated. The same
+    eligibility predicate applies, so an extra with ``opt_in`` or a closed gate is deleted.
     """
     response, written = await _put(
         tmp_path,
@@ -712,15 +641,10 @@ async def test_an_edition_extra_is_preserved(tmp_path, name, command):
 
 @pytest.mark.asyncio
 async def test_a_malformed_host_spec_does_not_fail_the_put(tmp_path):
-    """A non-object host spec keeps its pre-fix verdict instead of crashing the PUT.
+    """A non-object host spec is treated as eligible instead of crashing the PUT.
 
-    Reading ``opt_in``/``spec_gate`` off the spec introduces a shape the old
-    keys-only union never touched, and the edition adapter behind
-    ``_extra_mcp_servers`` is the reachable producer of it. Only the HOST can
-    produce it at all, the name is host-owned either way, and this editor is the
-    user's repair path -- so it is treated as eligible, which is exactly what the
-    old code did, rather than raising ``AttributeError`` out of a commit unit whose
-    contract is that step (0a) leaves all three targets byte-identical.
+    The edition adapter behind ``_extra_mcp_servers`` can produce it, and reading
+    ``opt_in`` off it must not raise ``AttributeError`` out of the editor's repair path.
     """
     response, written = await _put(
         tmp_path,
@@ -737,12 +661,8 @@ async def test_a_malformed_host_spec_does_not_fail_the_put(tmp_path):
 async def test_client_entry_under_an_installed_apps_namespace_is_deleted(tmp_path):
     """Squatting an installed app's namespace must not confer ownership.
 
-    App ``demo`` is installed and declares only ``notes``. The client adds
-    ``demo:custom`` through this editor -- a name the app never registered -- and
-    later omits it. A prefix test (``name.split(":")[0] in installed``) read that
-    as app-owned and re-inserted it forever: F1's original defect, one branch
-    narrower. Ownership is now the EXACT ``<app>:<server>`` set the manifests
-    declare.
+    App ``demo`` declares only ``notes``; the client adds and later omits
+    ``demo:custom``. Ownership is the exact ``<app>:<server>`` set, not a prefix test.
     """
     response, written = await _put(
         tmp_path,
@@ -783,13 +703,8 @@ async def test_a_declared_app_server_is_still_preserved(tmp_path):
 async def test_unreadable_app_manifest_fails_the_put_and_writes_nothing(tmp_path):
     """An unreadable ownership source FAILS the PUT rather than guessing.
 
-    Both guesses are wrong, and each reintroduces one of the two defects this
-    span has already produced: preserving everything namespaced makes entries
-    permanently undeletable, and deleting everything namespaced clobbers live app
-    bridges under a fault that may be transient. So the PUT refuses.
-
-    The refusal is cheap and correct: step (0a) runs before every durable write,
-    so all three targets stay byte-identical and the client can simply retry.
+    Preserving makes entries undeletable; deleting clobbers live bridges on a fault that
+    may be transient. Step (0a) runs before any durable write, so the client can retry.
     """
     installed = tmp_path / "kirocrew.json"
     on_disk = {"name": "kirocrew", "mcpServers": {"demo:notes": {"command": "notes-mcp"}}}
@@ -816,12 +731,9 @@ async def test_unreadable_app_manifest_fails_the_put_and_writes_nothing(tmp_path
 async def test_corrupt_installed_metadata_fails_the_put_and_writes_nothing(tmp_path):
     """A malformed ``installed.json`` must refuse, not silently skip.
 
-    ``manager._read_installed`` returns None for BOTH a missing file and a parse
-    failure, so a bare ``is None: continue`` dropped a CORRUPT app out of the
-    ownership scan entirely -- its live bridges then classified as client-owned
-    and were deleted. Same asymmetric-failure class as the unreadable manifest,
-    one branch over: absence is a real "not installed" answer, corruption is
-    "cannot know".
+    ``manager._read_installed`` returns None for both a missing file and a parse failure.
+    Absence means "not installed"; corruption means "cannot know", and skipping it would
+    delete the app's live bridges.
     """
     installed = tmp_path / "kirocrew.json"
     on_disk = {"name": "kirocrew", "mcpServers": {"demo:notes": {"command": "notes-mcp"}}}
@@ -873,13 +785,8 @@ async def test_absent_installed_metadata_is_still_skipped(tmp_path):
 async def test_disabled_app_bridge_is_deleted(tmp_path):
     """A DISABLED app's stale bridge must be cleanable, not protected.
 
-    A disabled app is still installed, so an installed-only ownership test keeps
-    its declared names app-owned. That protects the exact entry the disable
-    lifecycle was supposed to remove: when ``_deregister_mcp_servers`` FAILS
-    during disable the entry survives, and startup reconciliation only
-    re-registers ENABLED apps so it never revisits it. Every subsequent PUT would
-    then re-insert it, leaving a disabled app's code launchable through the
-    retained bridge forever. Ownership requires installed AND enabled.
+    When ``_deregister_mcp_servers`` fails during disable the entry survives, and
+    reconciliation never revisits disabled apps. Ownership requires installed AND enabled.
     """
     response, written = await _put(
         tmp_path,
@@ -900,15 +807,8 @@ async def test_disabled_app_bridge_is_deleted(tmp_path):
 async def test_absent_enabled_field_counts_as_enabled(tmp_path):
     """A legacy record with no ``enabled`` field is ENABLED, matching the manager.
 
-    ``InstalledApp.from_dict`` reads ``bool(data.get("enabled", True))``
-    (manager_records.py) over a dataclass defaulting to ``enabled: bool = True``
-    (``InstalledApp.enabled``), so every other reader in the tree treats such a record as
-    running. Disagreeing here would delete the live bridges of an app the rest of
-    the system considers enabled.
-
-    The record is written WITHOUT the key and parsed by the real
-    ``app_enabled_state``, so this pins the manager's own default rather than a
-    stub's.
+    ``InstalledApp.from_dict`` defaults ``enabled`` to True. The record is written without
+    the key and parsed by the real ``app_enabled_state``, pinning the manager's default.
     """
     response, written = await _put(
         tmp_path,
@@ -974,11 +874,8 @@ async def _assert_refused_and_intact(tmp_path, **kwargs):
 async def test_installed_metadata_as_a_broken_symlink_fails_the_put(tmp_path):
     """A DANGLING installed.json symlink is unreadable, not absent.
 
-    ``Path.is_file()`` follows the link, finds nothing, and answers False -- the
-    same False it gives for genuine absence -- so the app read as not installed
-    and its live bridges became deletable. Absence is proven only by ``lstat``
-    raising ``FileNotFoundError``; the link itself exists, so this is the
-    cannot-read case and must refuse.
+    ``Path.is_file()`` answers False as for absence. Only ``lstat`` raising
+    ``FileNotFoundError`` proves absence; the link exists, so this must refuse.
     """
     await _assert_refused_and_intact(tmp_path, installed_shape="broken_symlink")
 
@@ -1007,15 +904,9 @@ async def test_apps_root_as_a_regular_file_fails_the_put(tmp_path):
 async def test_an_unstattable_apps_root_child_fails_the_put(tmp_path):
     """A child the listing returns but cannot stat is unreadable.
 
-    The enumeration screened its children with ``Path.is_dir()``, which routes
-    the fault through pathlib's ``_ignore_error`` and answers a plain False for
-    ENOENT, ENOTDIR, EBADF and ELOOP alike -- the same False it gives for a
-    regular file. So a child that is a symlink LOOP was skipped as "not an app",
-    and the absent bridge of the app living under that name was deleted: the
-    cannot-read-becomes-not-owned defect one level inside the shapes the
-    dangling-symlink screen already covers, and the same loop shape that screen refuses for
-    ``installed.json``. Only a resolved stat may exclude a child, and only by
-    PROVING it is not a directory.
+    ``Path.is_dir()`` answers False for ELOOP as for a regular file, so a symlink loop
+    must not be skipped as "not an app". Only a resolved stat proving it is not a
+    directory may exclude a child.
     """
     await _assert_refused_and_intact(tmp_path, apps_child_unstattable=True)
 
@@ -1037,15 +928,9 @@ async def test_an_unstattable_apps_root_child_fails_the_put(tmp_path):
 async def test_a_link_ish_app_root_fails_the_put(tmp_path, shape):
     """A DANGLING app-root link OCCUPIES the name, so it is unreadable, not absent.
 
-    The child screen reached its skip through a single ``child.stat()``, which
-    FOLLOWS the link -- so it answered ``FileNotFoundError`` both for a name
-    nothing occupies and for a name a dangling link still occupies, and skipped
-    both as "not an app". The second is the opposite answer: something is standing
-    where the app root belongs, its manifest is unreachable, and what it declares
-    is therefore UNKNOWN rather than empty. Empty is what deletes its live
-    bridges, which is the cannot-read-becomes-not-owned defect this whole function
-    exists to refuse -- and it already refuses exactly this shape one position out,
-    for ``installed.json``, via ``_require_present_shape``.
+    ``child.stat()`` follows the link and raises ``FileNotFoundError`` as for an empty
+    name. Here the manifest is unreachable, so what the app declares is unknown, not
+    empty; ``installed.json`` gets the same rule via ``_require_present_shape``.
     """
     await _assert_refused_and_intact(tmp_path, app_root_shape=shape)
 
@@ -1054,16 +939,11 @@ async def test_a_link_ish_app_root_fails_the_put(tmp_path, shape):
 async def test_an_apps_root_child_that_vanished_after_the_listing_still_skips(tmp_path):
     """The overshoot guard: a name that is genuinely GONE stays a skip.
 
-    Distinguishing the dangling link above must not turn the ordinary uninstall
-    race into a 500. An uninstall completing between ``iterdir`` and the screen
-    leaves a listed name with nothing at it, ``lstat`` raises
-    ``FileNotFoundError`` for the entry ITSELF, and that is the one proof of
-    absence. Needs no symlink privilege, so it carries this row on every platform
-    the dangling-link test may skip on.
+    An uninstall between ``iterdir`` and the screen must not become a 500: ``lstat``
+    raising ``FileNotFoundError`` proves absence. Needs no symlink privilege.
 
-    ``mcpServers`` is submitted EMPTY on purpose: a submitted entry always wins, so
-    resubmitting ``demo:notes`` would decide the verdict without ever consulting
-    the walk and the row would pass however the screen behaved.
+    ``mcpServers`` is submitted empty: a submitted entry always wins and would decide
+    the verdict without the walk.
     """
     response, written = await _put(
         tmp_path,
@@ -1105,14 +985,10 @@ def test_a_dangling_app_root_link_is_not_absence(tmp_path):
 async def test_a_plain_file_where_an_app_root_belongs_still_skips(tmp_path):
     """The overshoot guard: refusing link-ish non-directories must spare plain ones.
 
-    A file BESIDE the app directories is an ordinary member of a healthy apps
-    root. So the screen must split on link-ness, not on "is not a directory" --
-    refusing every non-directory would turn any stray file in the apps root into
-    a 500.
+    A stray file in the apps root is normal, so the screen splits on link-ness.
 
-    ``mcpServers`` is submitted EMPTY on purpose: a submitted entry always wins, so
-    resubmitting ``demo:notes`` would decide the verdict without ever consulting the
-    walk and the row would pass however the screen behaved.
+    ``mcpServers`` is submitted empty: a submitted entry always wins and would decide
+    the verdict without the walk.
     """
     response, written = await _put(
         tmp_path,
@@ -1233,11 +1109,8 @@ async def test_non_mcp_keys_are_still_replaced_wholesale(tmp_path):
 async def test_unreadable_installed_spec_still_accepts_the_snapshot(tmp_path):
     """A corrupt spec must stay repairable through this editor.
 
-    Best-effort by design: a corrupt file has no parseable entries to preserve,
-    and this endpoint is the user's repair path for exactly that state. Failing
-    closed would leave a broken agent with no way to fix it from the dashboard;
-    enabled apps re-register their servers on the next gateway start, so the loss
-    self-heals.
+    This endpoint is the repair path, so it is best-effort; enabled apps re-register on
+    the next gateway start.
     """
     response, written = await _put(
         tmp_path,
@@ -1306,32 +1179,18 @@ async def test_preserved_entries_go_through_the_governance_filter(tmp_path, monk
 
 # ── (d) the stale-snapshot axis: entries PRESENT in the submission ─────
 #
-# The mirror of section (b). There the submission OMITS a name and the question is
-# whether to KEEP it; here the submission CONTAINS a namespaced name absent from
-# disk and the question is whether the client may CREATE one. It may not: only
-# ``_register_mcp_servers`` writes the ``<app>:<server>`` region, so absence from
-# disk is a verdict the platform reached (uninstall, disable, or a deliberate
-# skip) rather than a gap for a snapshot to fill.
-#
-# Where the name is on disk AND submitted, the submitted row still wins untouched
-# -- see ``test_app_owned_entry_present_in_the_snapshot_is_updated`` in section
-# (c). This axis deletes; it never rewrites a submitted value.
+# The client may not CREATE a namespaced name absent from disk: only
+# ``_register_mcp_servers`` writes the ``<app>:<server>`` region. When the name is on
+# disk too, the submitted row wins (section (c)); this axis never rewrites a value.
 
 
 @pytest.mark.asyncio
 async def test_a_stale_snapshot_cannot_resurrect_an_uninstalled_apps_bridge(tmp_path):
     """The headline case: the app went away, the editor tab did not.
 
-    The tab loaded while app ``demoapp`` was installed and running, so its
-    snapshot holds ``demoapp:tool``. The app was then uninstalled --
-    ``_deregister_mcp_servers`` removed the bridge and the app directory is gone,
-    so nothing on disk or under apps/ mentions it. Pre-fix the snapshot was
-    persisted verbatim and the bridge came back live, with nothing logged; and it
-    stayed back, because ``reconcile_enabled_app_resources`` only re-registers
-    ENABLED apps and there is no app here at all.
-
-    The user's own plain entry in the same submission is untouched, which is what
-    makes this specifically the app-namespace axis rather than a blanket refusal.
+    The snapshot holds ``demoapp:tool`` from before the uninstall; nothing on disk names
+    it, and reconciliation would never remove a resurrected bridge. The user's plain
+    entry is kept, so this is not a blanket refusal.
     """
     response, written = await _put(
         tmp_path,
@@ -1359,14 +1218,8 @@ async def test_a_stale_snapshot_cannot_resurrect_an_uninstalled_apps_bridge(tmp_
 async def test_a_stale_snapshot_cannot_resurrect_a_disabled_apps_bridge(tmp_path):
     """Installed but DISABLED, the case reconciliation provably never repairs.
 
-    Disable calls ``_deregister_mcp_servers``, so the bridge is off disk while the
-    app directory and its manifest remain. Resurrecting it keeps a disabled app's
-    code launchable through the retained bridge indefinitely -- startup
-    reconciliation skips disabled apps, so nothing ever removes it again.
-
-    ``scope_names`` declares the same name in the user's own mcp.json to pin that a
-    scope declaration does not rescue it, matching the absent-axis rule where
-    proven ownership -- not a declaration -- is what decides.
+    Disable removed the bridge but the manifest remains. ``scope_names`` declares the
+    same name to pin that a scope declaration does not rescue it.
     """
     response, written = await _put(
         tmp_path,
@@ -1389,16 +1242,9 @@ async def test_a_stale_snapshot_cannot_resurrect_a_disabled_apps_bridge(tmp_path
 async def test_a_stale_snapshot_cannot_rewrite_a_deliberately_skipped_http_bridge(tmp_path):
     """ENABLED and DECLARED, yet absent from disk on purpose -- still dropped.
 
-    ``_register_mcp_servers`` refuses to write an HTTP server with no resolvable
-    live port and scrubs any stale entry for it, because a manifest's illustrative
-    port is a reachable-LOOKING dead URL that kiro-cli dials on every request:
-    a connect failure there breaks EVERY kiro session, not just this app's.
-
-    So this row also pins that the declared-name census is NOT consulted on this
-    axis. The app is installed, enabled, and declares ``notes`` -- every ingredient
-    the absent-axis ownership test needs -- and the entry is still dropped, because
-    the only question here is whether the platform PUT IT ON DISK, which it
-    deliberately did not.
+    ``_register_mcp_servers`` skips an HTTP server with no live port, since a dead URL
+    breaks every kiro session. The declared-name census is not consulted on this axis:
+    only whether the platform put the entry on disk.
     """
     response, written = await _put(
         tmp_path,
@@ -1425,16 +1271,8 @@ async def test_a_stale_snapshot_cannot_rewrite_a_deliberately_skipped_http_bridg
 async def test_both_directions_decide_from_one_baseline_in_a_single_put(tmp_path):
     """The two rules compose, and they read the same on-disk map to do it.
 
-    One realistic save carries both faults at once: the tab is old enough that its
-    snapshot still holds a bridge of an app that has since gone away
-    (``gone:tool``), and old enough that it predates a bridge that has since been
-    registered (``demo:notes``). The stale one must be dropped and the new one
-    preserved in the same PUT, off a single read -- two reads could only agree by
-    luck, and a rule pair disagreeing about its baseline would show up here as a
-    name both preserved and dropped.
-
-    ``apps`` installs only ``demo``, so ``gone`` has no owner to name while
-    ``demo:notes`` has one.
+    One old snapshot holds ``gone:tool`` (app removed) and lacks ``demo:notes`` (since
+    registered). Both rules must act off a single read in the same PUT.
     """
     response, written = await _put(
         tmp_path,
@@ -1487,11 +1325,8 @@ async def test_a_plain_client_entry_the_client_adds_is_still_persisted(tmp_path)
 async def test_a_namespaced_edition_extra_the_client_resubmits_is_left_alone(tmp_path):
     """A ``:`` in the key does not always mean an app owns it.
 
-    An edition's ``_extra_mcp_servers`` may contribute a key containing ``:``, and
-    that key is the HOST's. The absent-axis rule already preserves such an entry by
-    host ownership; this axis must not delete the same entry when the client
-    resubmits it while the rebuild has yet to write it, so host-owned names are
-    excluded here and the host contract is left exactly as it was.
+    An ``_extra_mcp_servers`` key may contain ``:`` and is the host's, so this axis must
+    not drop it when resubmitted before the rebuild writes it.
     """
     response, written = await _put(
         tmp_path,
@@ -1511,11 +1346,8 @@ async def test_a_namespaced_edition_extra_the_client_resubmits_is_left_alone(tmp
 async def test_a_readable_spec_with_no_servers_still_drops_a_namespaced_addition(tmp_path):
     """``{}`` on disk is an ANSWER, and this is the row that makes it one.
 
-    A spec that reads cleanly and holds no ``mcpServers`` is definite: the platform
-    has written no bridge, so a namespaced name in the submission is an addition to
-    a region the client does not author. Collapsing this state with "could not
-    read" would silently reopen the whole axis for the commonest shape of all -- a
-    spec whose app bridges have just been deregistered.
+    A clean spec with no bridges means the platform wrote none, so a submitted
+    namespaced name is dropped. Treating it as unreadable would reopen the axis.
     """
     response, written = await _put(
         tmp_path,
@@ -1535,12 +1367,8 @@ async def test_a_readable_spec_with_no_servers_still_drops_a_namespaced_addition
 async def test_a_spec_with_no_mcpservers_key_still_drops_a_namespaced_addition(tmp_path):
     """A KEYLESS spec is ``{}``, not "unknown".
 
-    Reading a missing ``mcpServers`` key as unreadable hands this rule a reason to
-    stand down and lets the resurrection straight through. The state is reachable
-    from this handler: a PUT whose submission omits ``mcpServers`` is persisted
-    verbatim, and ``_deregister_mcp_servers`` pops entries out of
-    ``get("mcpServers", {})`` without ever adding the key back -- so the spec can sit
-    keyless while an old editor tab still holds the bridge.
+    Reachable: a PUT omitting ``mcpServers`` is persisted verbatim, and
+    ``_deregister_mcp_servers`` never adds the key back.
     """
     response, written = await _put(
         tmp_path,
@@ -1584,11 +1412,8 @@ async def test_a_malformed_mcpservers_value_on_disk_decides_nothing(tmp_path):
 async def test_an_unreadable_spec_still_persists_a_namespaced_entry(tmp_path):
     """BEST-EFFORT holds on this axis too, for the same reason as the merge's.
 
-    A corrupt spec is precisely the state this editor exists to repair. Refusing
-    the PUT, or deleting what the user submitted, would leave a broken agent with
-    no way to fix it from the dashboard -- so an unreadable baseline decides
-    nothing and the snapshot lands as it did pre-fix. Enabled apps re-register on
-    the next gateway start, so the residue self-heals.
+    The editor is the repair path for a corrupt spec, so an unreadable baseline decides
+    nothing. Enabled apps re-register on the next gateway start.
     """
     response, written = await _put(
         tmp_path,
@@ -1611,24 +1436,11 @@ async def test_an_unreadable_spec_still_persists_a_namespaced_entry(tmp_path):
 async def test_the_app_namespace_region_decides_every_axis_it_claims_to(tmp_path):
     """Every axis of the app-namespace region in ONE table, so a missing one shows.
 
-    THE FAILURE THIS EXISTS TO CATCH is a rule set that reads as complete and is
-    not: one axis can ship while its mirror axis is never enumerated, passing
-    review only because nothing named it. A per-axis test cannot prevent that on
-    its own -- each one passes in isolation -- so the axes are gathered here, and
-    a region whose behaviour changes on any axis has to come through this table.
-
-    The three cells and who decides each:
-
-    * EXISTENCE, name ABSENT from the submission -> ON DISK decides
-      (``_merge_unowned_servers``): an owned bridge is kept.
-    * EXISTENCE, name PRESENT in the submission with no row on disk -> ON DISK
-      decides (``_drop_unbacked_app_entries``): the addition is dropped.
-    * CONTENT, name on BOTH sides -> the SUBMISSION decides. **This cell is
-      OPEN**: a stale editor snapshot reverts a definition the platform
-      had already corrected. It is asserted here as it BEHAVES, not as it should,
-      because reversing it reverses the editor-snapshot-wins contract -- a
-      maintainer ruling, not a review-time call. When that ruling lands, this is
-      the assertion that changes.
+    * Name absent from the submission: disk decides (``_merge_unowned_servers``).
+    * Name submitted, no row on disk: disk decides (``_drop_unbacked_app_entries``).
+    * Name on both sides: the submission decides. This cell is OPEN (a stale snapshot
+      reverts a corrected definition) and is asserted as it behaves; changing it
+      reverses the editor-snapshot-wins contract, which is a maintainer ruling.
     """
     submitted_only = {"name": "kirocrew", "mcpServers": {"demo:ghost": {"command": "ghost"}}}
     matrix = [
@@ -1670,23 +1482,11 @@ async def test_the_app_namespace_region_decides_every_axis_it_claims_to(tmp_path
 async def test_a_stale_snapshot_reverts_a_live_http_bridge_to_a_dead_url(tmp_path):
     """What the open content cell costs, in the instance that makes it load-bearing.
 
-    A ``backend.port:"auto"`` app gets a free port at spawn time and
-    ``_register_mcp_servers`` rewrites its manifest url to that live port
-    (``_resolve_live_mcp_url``). An editor tab opened before that rewrite still
-    holds the manifest's ILLUSTRATIVE port, and saving it writes that port back.
-
-    The reverted value is therefore the exact artefact the registration path
-    refuses to write and scrubs on sight -- a reachable-LOOKING dead URL -- whose
-    cost ``_drop_unbacked_app_entries`` states as breaking every kiro session,
-    not just this app's. Two things narrow it and neither removes it: the PUT's
-    own tail drains every session and the warm pool, so the next cold start reads
-    the reverted row; and the only writer that restores the live port is
-    ``reconcile_enabled_app_resources``, whose single call site is the gateway
-    boot path -- so the window is until the next restart.
-
-    Asserted as it BEHAVES. This is the same open cell as the content row of
-    :func:`test_the_app_namespace_region_decides_every_axis_it_claims_to`, kept
-    separate because the severity, not the verdict, is what it records.
+    A ``backend.port:"auto"`` app's url is rewritten to the live port at spawn
+    (``_resolve_live_mcp_url``); an older tab saves the illustrative port back, a dead
+    URL that breaks every kiro session until ``reconcile_enabled_app_resources`` runs
+    at the next boot. Asserted as it behaves, like the content row of
+    :func:`test_the_app_namespace_region_decides_every_axis_it_claims_to`.
     """
     live = "http://127.0.0.1:9137/mcp"  # the port the backend actually got
     illustrative = "http://127.0.0.1:9100/mcp"  # what the manifest, and the tab, hold

@@ -29,6 +29,8 @@ import types
 from pathlib import Path
 from types import SimpleNamespace
 
+import composition_contract_checks
+
 from kiro_crew.dashboard import chat_persistence as cp
 
 FACADE = "kiro_crew.dashboard.chat_persistence"
@@ -78,12 +80,14 @@ _COMPOSED: dict[str, str] = {
     "wait_for_unwinding_turns": "save_transaction",
     "_apply_recent_session": "slot_builders",
     "_apply_restored_open_slot": "slot_builders",
+    "_await_takeover_ordering_settled": "slot_builders",
     "_IDENTITY_UNRESOLVED": "slot_builders",
     "_load_rehydrated_window": "slot_builders",
     "_PendingWindow": "slot_builders",
     "_prefetch_recent_session": "slot_builders",
     "_prefetch_rehydrate_inputs": "slot_builders",
     "_rehydrate_slot_from_history": "slot_builders",
+    "_rehydrate_slot_from_history_noted": "slot_builders",
     "rehydrate_slot_from_history_async": "slot_builders",
 }
 
@@ -302,14 +306,10 @@ def _part_names() -> dict[str, set[str]]:
     return {f"{PARTS_PACKAGE}.{stem}": _defined(_tree(PARTS_DIR / f"{stem}.py")) for stem in PARTS}
 
 
-class TestPackage:
-    def test_the_package_holds_exactly_the_composed_parts(self) -> None:
-        assert {path.stem for path in PARTS_DIR.glob("*.py")} == {*PARTS, "__init__"}
-
-    def test_the_package_init_holds_only_its_docstring(self) -> None:
-        body = _tree(PARTS_DIR / "__init__.py").body
-        assert len(body) == 1 and isinstance(body[0], ast.Expr)
-        assert isinstance(body[0].value, ast.Constant) and isinstance(body[0].value.value, str)
+class TestPackage(
+    composition_contract_checks.ThePackageHoldsExactlyTheComposedParts,
+    composition_contract_checks.ThePackageInitHoldsOnlyItsDocstring,
+):
 
     def test_the_facade_composes_every_part_through_the_shared_helper(self) -> None:
         tree = _tree(Path(cp.__file__))
@@ -575,7 +575,9 @@ class TestPatchReach:
     def test_the_shutdown_save_dispatches_through_the_facade(self, monkeypatch) -> None:
         saved: list[object] = []
         monkeypatch.setattr(
-            cp, "_save_slot_to_history", lambda state, slot, force: saved.append(slot)
+            cp,
+            "_save_slot_to_history",
+            lambda state, slot, force, takeover_basis=None: saved.append(slot),
         )
         slot = SimpleNamespace(key="k")
         state = SimpleNamespace(

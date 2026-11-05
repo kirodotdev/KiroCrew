@@ -49,6 +49,19 @@ def fixture(tmp_path, monkeypatch):
     return state, slot, request, cfg, binding, claims
 
 
+class _OwnerRequest(dict):
+    """The owner's dashboard request for a path that skips ``eligible``.
+
+    ``accept`` and ``_steer_first`` read the owner predicate for the turn's owner
+    mark, so the double carries the claims by key (``user`` / ``app``) and the
+    state under ``.app`` like the real request does.
+    """
+
+    def __init__(self, state):
+        super().__init__(user="local-app", app="")
+        self.app = {"state": state}
+
+
 def _busy(slot):
     slot.task = asyncio.get_running_loop().create_future()
     rc.begin_turn(slot, protected=False)
@@ -584,7 +597,7 @@ async def test_real_turn_keeps_a_waiting_send_where_it_was_sent(fixture, tmp_pat
     state, client = _runner_state(tmp_path)
     slot = _slot("responsive-order")
     state._slots[slot.key] = slot
-    request = SimpleNamespace(app={"state": state})
+    request = _OwnerRequest(state)
     client.client = SimpleNamespace(
         pop_pending_oauth_requests=lambda: [],
         awaiting_permission=False,
@@ -660,7 +673,7 @@ async def test_real_running_turn_hands_one_message_to_same_parent(fixture, tmp_p
     state, client = _runner_state(tmp_path)
     slot = _slot("responsive-handoff")
     state._slots[slot.key] = slot
-    request = SimpleNamespace(app={"state": state})
+    request = _OwnerRequest(state)
     inner = SimpleNamespace(
         pop_pending_oauth_requests=lambda: [],
         awaiting_permission=False,

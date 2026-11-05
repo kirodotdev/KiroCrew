@@ -49,8 +49,7 @@ function renderBody(kind: Artifact['kind'], content: string) {
  *  node until none is left, which is what a reader does to read a package. */
 function expandAll(container: HTMLElement) {
   for (let pass = 0; pass < 10; pass++) {
-    const closed = [...container.querySelectorAll('button')]
-      .filter(b => b.textContent?.startsWith('▶'))
+    const closed = [...container.querySelectorAll('button[aria-expanded="false"]')]
     if (closed.length === 0) return
     closed.forEach(b => fireEvent.click(b))
   }

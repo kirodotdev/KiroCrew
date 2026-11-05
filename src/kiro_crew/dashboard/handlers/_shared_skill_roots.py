@@ -196,7 +196,15 @@ LEAF_SYMLINK_PREFIX = "kiro-user/"
 
 
 def _path_at_or_under(path: Path, root: Path) -> bool:
-    """Whether *path* IS *root* or sits under it. Both must be resolved."""
+    """Whether *path* IS *root* or sits under it. Both must be resolved.
+
+    Windows' extended-length prefix is folded off both first: two separate resolves
+    can disagree on it, and the lone prefix would read as an escape.
+    """
+    from kiro_crew.platform_compat import strip_extended_length_prefix
+
+    path = strip_extended_length_prefix(path)
+    root = strip_extended_length_prefix(root)
     return path == root or root in path.parents
 
 

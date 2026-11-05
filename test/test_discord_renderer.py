@@ -31,7 +31,7 @@ from kiro_crew.discord.renderer import (
 from kiro_crew.discord.transport import DISCORD_CAPABILITIES
 from kiro_crew.messaging.display_safety import canonicalize_display, severs_a_credential
 from kiro_crew.messaging.split import split_markdown_safe
-from kiro_crew.testing.wait import finished
+from kiro_crew.testing.wait import async_wait_until, await_until, finished
 
 # ── renderer.py streaming/finalization ───────────────────────────────────
 
@@ -529,19 +529,25 @@ class TestRenderer:
 # ── DiscordApprovalDecider ───────────────────────────────────────────────
 
 
+async def _registered(decider_task: "asyncio.Future[bool]", key: str) -> None:
+    """Wait until the decider's own call has put its future in the registry."""
+    await async_wait_until(
+        lambda: key in DiscordApprovalDecider._REGISTRY,
+        describe=lambda: f"no future registered under {key!r}; decider task: {decider_task!r}",
+    )
+
+
 class TestApprovalDecider:
     @pytest.mark.asyncio
     async def test_resolve_approves_with_valid_nonce(self) -> None:
         decider = DiscordApprovalDecider(session_key="sk")
         ev = SimpleNamespace(request_id="r1")
-        task = asyncio.ensure_future(decider(ev))
-        # flake-ok: zero-delay yield so the decider registers its future; moved verbatim
-        await asyncio.sleep(0)  # let the Future register
         key = DiscordApprovalDecider.key("sk", "r1")
+        task = asyncio.ensure_future(decider(ev))
+        await _registered(task, key)
         nonce = DiscordApprovalDecider.register_nonce(key)
         assert DiscordApprovalDecider.resolve_global(key, True, nonce=nonce)
-        # flake-ok: awaits a task the line above resolved; moved verbatim
-        assert await task is True
+        assert await await_until(task, what="the decider returning the approval") is True
 
     @pytest.mark.asyncio
     async def test_stale_nonce_fails_closed(self) -> None:
@@ -549,10 +555,9 @@ class TestApprovalDecider:
         a new pending request — the nonce must match the CURRENT prompt's."""
         decider = DiscordApprovalDecider(session_key="sk")
         ev = SimpleNamespace(request_id="r1")
-        task = asyncio.ensure_future(decider(ev))
-        # flake-ok: zero-delay yield so the decider registers its future; moved verbatim
-        await asyncio.sleep(0)
         key = DiscordApprovalDecider.key("sk", "r1")
+        task = asyncio.ensure_future(decider(ev))
+        await _registered(task, key)
         DiscordApprovalDecider.register_nonce(key)  # current prompt's nonce
         # Press carries an OLD nonce (from a prompt before a restart).
         assert not DiscordApprovalDecider.resolve_global(key, True, nonce="deadbeefdeadbeef")
@@ -561,8 +566,7 @@ class TestApprovalDecider:
         assert not DiscordApprovalDecider.resolve_global(key, True)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
-            # flake-ok: awaits a task the test cancelled above; moved verbatim
-            await task
+            await await_until(task, what="the cancelled decider ending")
         DiscordApprovalDecider._NONCES.pop(key, None)
 
     @pytest.mark.asyncio
@@ -585,11 +589,13 @@ class TestApprovalDecider:
             "get_instance",
             lambda: SimpleNamespace(notify_approval_stalled=recorded.append),
         )
-        # flake-ok: the test lets a 10 ms production timeout expire on purpose; moved verbatim
+        # Nobody resolves the decider's future, so the 10 ms window always expires,
+        # however slow the host is.
         monkeypatch.setattr(_rend, "_APPROVAL_TIMEOUT_S", 0.01)
 
         decider = DiscordApprovalDecider(session_key="discord:a:direct:7")
-        assert await decider(SimpleNamespace(request_id="r-timeout")) is False
+        ev = SimpleNamespace(request_id="r-timeout")
+        assert await finished(decider(ev), "the approval window expiring") is False
 
         assert recorded == ["discord:a:direct:7"], "the stall was not recorded"
 
@@ -611,15 +617,13 @@ class TestApprovalDecider:
 
         decider = DiscordApprovalDecider(session_key="discord:a:direct:7")
         ev = SimpleNamespace(request_id="r-deny")
-        task = asyncio.ensure_future(decider(ev))
-        # flake-ok: zero-delay yield so the decider registers its future; moved verbatim
-        await asyncio.sleep(0)
         key = DiscordApprovalDecider.key("discord:a:direct:7", "r-deny")
+        task = asyncio.ensure_future(decider(ev))
+        await _registered(task, key)
         nonce = DiscordApprovalDecider.register_nonce(key)
         assert DiscordApprovalDecider.resolve_global(key, False, nonce=nonce)
 
-        # flake-ok: awaits a task the test resolved above; moved verbatim
-        assert await task is False
+        assert await await_until(task, what="the decider returning the denial") is False
         assert recorded == [], "a pressed deny must not count as an unanswered prompt"
 
 
@@ -794,14 +798,12 @@ class TestWindowStillFailsClosed:
     async def test_a_second_arm_does_not_orphan_a_live_waiter(self) -> None:
         """Re-arming keeps the future the waiter is blocked on."""
         decider = DiscordApprovalDecider(session_key="sk")
-        task = asyncio.ensure_future(decider(SimpleNamespace(request_id="r7")))
-        # flake-ok: zero-delay yield so the decider registers its future; moved verbatim
-        await asyncio.sleep(0)
         key = DiscordApprovalDecider.key("sk", "r7")
+        task = asyncio.ensure_future(decider(SimpleNamespace(request_id="r7")))
+        await _registered(task, key)
         nonce = DiscordApprovalDecider.register_nonce(key)
         assert DiscordApprovalDecider.resolve_global(key, True, nonce=nonce) is True
-        # flake-ok: awaits a task the line above resolved; moved verbatim
-        assert await task is True
+        assert await await_until(task, what="the decider returning the approval") is True
 
 
 @pytest.mark.usefixtures("_clean_approval_registry")
@@ -858,13 +860,15 @@ class TestPromptThatNeverWentOut:
     async def test_no_press_still_denies_when_the_window_elapses(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # flake-ok: the test lets a 10 ms production timeout expire on purpose; moved verbatim
+        # Nobody presses the prompt's buttons, so the 10 ms window always expires,
+        # however slow the host is.
         monkeypatch.setattr(discord_renderer, "_APPROVAL_TIMEOUT_S", 0.01)
         cli = _SendCapture()
         key = DiscordApprovalDecider.key("sk", "r10")
         await _approval_renderer(cli).on_prompt_choice([], "r10", tool_title="shell")
         decider = DiscordApprovalDecider(session_key="sk")
-        assert await decider(SimpleNamespace(request_id="r10")) is False
+        ev = SimpleNamespace(request_id="r10")
+        assert await finished(decider(ev), "the approval window expiring") is False
         assert key not in DiscordApprovalDecider._REGISTRY
         assert key not in DiscordApprovalDecider._NONCES
 
@@ -906,6 +910,79 @@ class TestTurnTeardown:
         DiscordApprovalDecider.discard_session("sk")
         decider = DiscordApprovalDecider(session_key="sk")
         assert await finished(decider(SimpleNamespace(request_id="r15")), "the decision") is True
+
+
+def _future_on_a_closed_loop() -> "asyncio.Future[bool]":
+    """A future whose loop is gone, as a turn on an earlier loop leaves behind."""
+    dead = asyncio.new_event_loop()
+    try:
+        return dead.create_future()
+    finally:
+        dead.close()
+
+
+@pytest.mark.usefixtures("_clean_approval_registry")
+class TestAReservationFromAClosedLoop:
+    """A registry entry outliving its event loop is not a reservation.
+
+    The registry is process-global and outlives any one loop. Awaiting a future
+    from a closed loop raises ``attached to a different loop``, and a verdict on
+    it belongs to an ended turn, so both adoption sites must open a fresh window.
+    """
+
+    @pytest.mark.asyncio
+    async def test_arming_replaces_a_reservation_from_a_dead_loop(self) -> None:
+        key = DiscordApprovalDecider.key("sk", "r20")
+        DiscordApprovalDecider._REGISTRY[key] = _future_on_a_closed_loop()
+        nonce = DiscordApprovalDecider.register_nonce(key)
+        assert DiscordApprovalDecider._REGISTRY[key].get_loop() is asyncio.get_running_loop()
+        decider = DiscordApprovalDecider(session_key="sk")
+        task = asyncio.ensure_future(decider(SimpleNamespace(request_id="r20")))
+        await asyncio.sleep(0)
+        assert DiscordApprovalDecider.resolve_global(key, True, nonce=nonce) is True
+        assert await finished(task, "the decision") is True
+
+    @pytest.mark.asyncio
+    async def test_the_wait_denies_rather_than_raising_on_a_dead_reservation(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """With no arm on this loop, the wait still must not await the foreign future."""
+        monkeypatch.setattr(discord_renderer, "_APPROVAL_TIMEOUT_S", 0.01)
+        key = DiscordApprovalDecider.key("sk", "r21")
+        DiscordApprovalDecider._REGISTRY[key] = _future_on_a_closed_loop()
+        decider = DiscordApprovalDecider(session_key="sk")
+        assert await finished(decider(SimpleNamespace(request_id="r21")), "the denial") is False
+
+    @pytest.mark.asyncio
+    async def test_a_verdict_recorded_on_a_dead_loop_is_not_adopted(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A decision belongs to the turn that asked for it, not a later request."""
+        monkeypatch.setattr(discord_renderer, "_APPROVAL_TIMEOUT_S", 0.01)
+        key = DiscordApprovalDecider.key("sk", "r22")
+        stale = _future_on_a_closed_loop()
+        stale.set_result(True)
+        DiscordApprovalDecider._REGISTRY[key] = stale
+        decider = DiscordApprovalDecider(session_key="sk")
+        assert await finished(decider(SimpleNamespace(request_id="r22")), "the denial") is False
+
+
+class TestTheSweepReachesTheRealRegistry:
+    """The end-of-turn sweep must not travel through the construction seam."""
+
+    def test_the_discord_sweep_is_the_class_that_holds_the_reservations(self) -> None:
+        from kiro_crew.discord import transport_dispatch as discord_dispatch
+
+        assert discord_dispatch._APPROVAL_REGISTRY is DiscordApprovalDecider
+
+    def test_the_dispatcher_does_not_sweep_through_its_construction_seam(self) -> None:
+        import inspect
+
+        from kiro_crew.discord import transport_dispatch as discord_dispatch
+
+        source = inspect.getsource(discord_dispatch)
+        assert "DiscordApprovalDecider.discard_session" not in source
+        assert "_APPROVAL_REGISTRY.discard_session" in source
 
 
 class TestRedactionNotice:

@@ -9,7 +9,7 @@ import re
 import uuid
 from collections import OrderedDict
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from aiohttp import web
 
@@ -31,6 +31,7 @@ from kiro_crew.security import (
     redact_credentials,
     redact_exfiltration_urls,
 )
+from kiro_crew.shared_crew.turn_gate import TurnRefused
 from kiro_crew.start_priority import StartPriority
 from kiro_crew.task_planner import plan_to_yaml
 from kiro_crew.taskrunner import WorkflowInitializing
@@ -416,6 +417,26 @@ async def _claim_plan_dir(work_dir: Path) -> tuple[str, Path]:
         raise cancelled
 
 
+class _RunNotLinked(Exception):
+    """The admitted record could not take the run's id, so the run must not start."""
+
+
+def _not_linked_response() -> web.Response:
+    from kiro_crew.shared_crew.admission_gate import Admission
+
+    return Admission(None, "rejected", store_unavailable=True).refusal_response()
+
+
+async def _link_existing_run(run_admission: Any, task_id: str) -> web.Response | None:
+    """Link a resumed run's id before the runner sets it running; a refusal if it cannot."""
+    from kiro_crew.shared_crew.admission_run_link import link_run
+
+    if await link_run(run_admission, task_id):
+        return None
+    await run_admission.abandon()
+    return _not_linked_response()
+
+
 async def api_taskrunner_start(request: web.Request) -> web.Response:
     """POST /api/taskrunner — start a task from a spec file path or inline content.
 
@@ -441,6 +462,10 @@ async def api_taskrunner_start(request: web.Request) -> web.Response:
     spec_path = body.get("spec", "")
     if not spec_path:
         return web.json_response({"error": "spec path required"}, status=400)
+    if not isinstance(spec_path, str):
+        return web.json_response(
+            {"error": "spec must be a string", "code": "invalid_field_type"}, status=400
+        )
 
     # Validate non-inline paths against traversal, then forward the *validated*
     # resolved path (not the raw input) to the sink below so the guard and the
@@ -466,28 +491,59 @@ async def api_taskrunner_start(request: web.Request) -> web.Response:
             {"error": TASK_RUNNER_DISABLED_MESSAGE, "code": "app_disabled"}, status=409
         )
 
+    # Fair admission (Shared Crew): a background run starts now or is refused,
+    # before the inline spec is written so a refusal leaves nothing behind.
+    from kiro_crew.shared_crew.admission import OperationKind
+    from kiro_crew.shared_crew.admission_entry import admit_background_run, taskrunner_probe
+    from kiro_crew.shared_crew.admission_run_link import link_run
+    from kiro_crew.shared_crew.containment import principal_scope
+
+    runner = state.task_runner
+    run_admission = await admit_background_run(
+        request,
+        operation=OperationKind.TASK,
+        session_key=origin,
+        probe=taskrunner_probe(runner),
+        cancel=lambda task_id: runner.cancel(task_id, exact=True),
+        body=(
+            spec_path,
+            body.get("agent", ""),
+            body.get("name", ""),
+            body.get("workspace_dir", ""),
+            body.get("source"),
+            body.get("auto_approve") is True,
+        ),
+    )
+    if run_admission.rejected:
+        return run_admission.refusal_response()
+    if run_admission.replayed:
+        from kiro_crew.shared_crew.admission_entry import background_replay_response
+
+        return background_replay_response(run_admission, execution_key="task_id")
+    run_principal = None if run_admission.work is None else run_admission.work.budget_key
+
     # Handle inline spec content
     created_spec: Path | None = None
     inline_content: str | None = None
-    if spec_path.startswith("__inline__:"):
-        content = spec_path[len("__inline__:") :]
-        if not content.strip():
-            return web.json_response({"error": "empty spec content"}, status=400)
-        work_dir = state.task_runner._work_dir
-        if execution.memory_mode == "persistent":
-            # The write goes through the shielded helper so a cancelled request
-            # cannot orphan a half-written spec in the work dir.
-            created_spec = await _materialize_inline_spec(work_dir, content)
-            fpath = created_spec
-        else:
-            # A restricted run keeps the body in memory and must leave no
-            # TASK_*.md behind, so this name is never written -- it only gives
-            # ``spec_path`` below a value, as it had before the off-loop move.
-            inline_content = content
-            fpath = Path(work_dir) / f"TASK_{uuid.uuid4().hex[:8]}.md"
-        spec_path = str(fpath)
-
     try:
+        if spec_path.startswith("__inline__:"):
+            content = spec_path[len("__inline__:") :]
+            if not content.strip():
+                await run_admission.abandon()
+                return web.json_response({"error": "empty spec content"}, status=400)
+            work_dir = state.task_runner._work_dir
+            if execution.memory_mode == "persistent":
+                # The write goes through the shielded helper so a cancelled request
+                # cannot orphan a half-written spec in the work dir.
+                created_spec = await _materialize_inline_spec(work_dir, content)
+                fpath = created_spec
+            else:
+                # A restricted run keeps the body in memory and must leave no
+                # TASK_*.md behind; the unwritten path identifies its spec.
+                inline_content = content
+                fpath = Path(work_dir) / f"TASK_{uuid.uuid4().hex[:8]}.md"
+            spec_path = str(fpath)
+
         agent = body.get("agent", "")
         task_name = body.get("name", "")
         workspace_dir = body.get("workspace_dir", "")
@@ -498,18 +554,26 @@ async def api_taskrunner_start(request: web.Request) -> web.Response:
         auto_approve = await _gate_auto_approve(
             request, body.get("auto_approve") is True, claimed_source, endpoint="start"
         )
-        task_id = await state.task_runner.start_background(
-            spec_path,
-            agent=agent,
-            name=task_name,
-            source=source,
-            workspace_dir=workspace_dir,
-            auto_approve=auto_approve,
-            session_key=origin,
-            execution_context=execution,
-            **({"input_content": inline_content} if inline_content is not None else {}),
-        )
+        # The runner persists the run before ``attach_child``, and resumes a run
+        # it finds running after a restart: the record names the id first.
+        run_id = "" if run_principal is None else str(runner.mint_task_id(spec_path))
+        if run_id and not await link_run(run_admission, run_id):
+            raise _RunNotLinked
+        with principal_scope(run_principal):
+            task_id = await state.task_runner.start_background(
+                spec_path,
+                agent=agent,
+                name=task_name,
+                source=source,
+                workspace_dir=workspace_dir,
+                auto_approve=auto_approve,
+                session_key=origin,
+                execution_context=execution,
+                **({"input_content": inline_content} if inline_content is not None else {}),
+                **({"task_id": run_id} if run_id else {}),
+            )
     except BaseException as exc:
+        await run_admission.abandon()
         # The handler owns the temp file ONLY when it created it AND no run
         # retains it: a rejected start must not strand TASK_*.md orphans in
         # the work dir, an external spec the caller passed by path must never
@@ -538,9 +602,15 @@ async def api_taskrunner_start(request: web.Request) -> web.Response:
                 )
         if not isinstance(exc, Exception):
             raise  # CancelledError and friends: propagate after cleanup.
+        if isinstance(exc, _RunNotLinked):
+            return _not_linked_response()
         if isinstance(exc, WorkflowInitializing):
             return web.json_response({"error": str(exc), "code": exc.code}, status=503)
         return web.json_response({"error": str(exc)}, status=400)
+    # The run's workers use ``taskrunner:<id>:...`` keys, which inherit this binding.
+    await run_admission.attach_child(
+        str(task_id), session_key=origin, also=(f"taskrunner:{task_id}",)
+    )
     return web.json_response({"ok": True, "spec": spec_path, "task_id": task_id})
 
 
@@ -648,6 +718,16 @@ async def api_taskrunner_delete(request: web.Request) -> web.Response:
     return web.json_response({"ok": True})
 
 
+def parse_run_name(value: object) -> tuple[str | None, str | None]:
+    """Return ``(value.strip(), None)`` for a string run name, else ``(None, error)``.
+
+    The trimmed name may be empty; each caller keeps its own rule for that.
+    """
+    if not isinstance(value, str):
+        return None, "name must be a string"
+    return value.strip(), None
+
+
 async def api_taskrunner_rename(request: web.Request) -> web.Response:
     """PATCH /api/taskrunner/{task_id}/name — rename a task run."""
     owner_denied = await _require_taskrunner_owner(request, "taskrunner.rename")
@@ -664,7 +744,9 @@ async def api_taskrunner_rename(request: web.Request) -> web.Response:
     if data_err is not None:
         return data_err
     assert data is not None  # read_bounded_json returns (dict, None) on success
-    name = data.get("name", "").strip()
+    name, name_err = parse_run_name(data.get("name", ""))
+    if name is None:
+        return web.json_response({"error": name_err, "code": "invalid_name"}, status=400)
     if not name:
         return web.json_response({"error": "name required"}, status=400)
     run.name = name
@@ -717,6 +799,29 @@ async def api_taskrunner_update_task(request: web.Request) -> web.Response:
         return web.json_response({"error": str(exc)}, status=409)
 
 
+async def _admit_existing_run(
+    request: web.Request, state: DashboardState, task_id: str, *, action: str, body: object
+) -> Any:
+    """Fair admission (Shared Crew) for a run that resumes executing steps.
+
+    Same contract as ``/start``: the run starts now or is refused, and the
+    caller attaches the run id once the runner accepted it or abandons the slot.
+    """
+    from kiro_crew.shared_crew.admission import OperationKind
+    from kiro_crew.shared_crew.admission_entry import admit_background_run, taskrunner_probe
+
+    runner = state.task_runner
+    assert runner is not None  # the callers refused a gateway without one
+    return await admit_background_run(
+        request,
+        operation=OperationKind.TASK,
+        session_key=f"taskrunner:{task_id}",
+        probe=taskrunner_probe(runner),
+        cancel=lambda run_id: runner.cancel(run_id, exact=True),
+        body=(action, body),
+    )
+
+
 async def api_taskrunner_retry(request: web.Request) -> web.Response:
     """POST /api/taskrunner/{task_id}/retry — retry from a specific step."""
     owner_denied = await _require_taskrunner_owner(request, "taskrunner.retry")
@@ -731,15 +836,36 @@ async def api_taskrunner_retry(request: web.Request) -> web.Response:
         return body_err
     assert body is not None  # read_bounded_json returns (dict, None) on success
     from_step = body.get("from_step", 1)
+    run_admission = await _admit_existing_run(
+        request, state, task_id, action="retry", body=(from_step,)
+    )
+    if run_admission.rejected:
+        return run_admission.refusal_response()
+    if run_admission.replayed:
+        from kiro_crew.shared_crew.admission_entry import background_replay_response
+
+        return background_replay_response(run_admission, execution_key="task_id")
+    from kiro_crew.shared_crew.containment import principal_scope
+
+    run_principal = None if run_admission.work is None else run_admission.work.budget_key
+    if (refused := await _link_existing_run(run_admission, str(task_id))) is not None:
+        return refused
     try:
-        await state.task_runner.retry_from_task(
-            task_id, from_step, agent=state.task_runner._agent or ""
-        )
-        return web.json_response({"ok": True, "task_id": task_id})
+        with principal_scope(run_principal):
+            await state.task_runner.retry_from_task(
+                task_id, from_step, agent=state.task_runner._agent or ""
+            )
     except WorkflowInitializing as exc:
+        await run_admission.abandon()
         return web.json_response({"error": str(exc), "code": exc.code}, status=503)
     except ValueError as exc:
+        await run_admission.abandon()
         return web.json_response({"error": str(exc)}, status=400)
+    except BaseException:
+        await run_admission.abandon()
+        raise
+    await run_admission.attach_child(str(task_id), session_key=f"taskrunner:{task_id}")
+    return web.json_response({"ok": True, "task_id": task_id})
 
 
 async def api_taskrunner_plan_context(request: web.Request) -> web.Response:
@@ -960,7 +1086,21 @@ async def api_taskrunner_plan(request: web.Request) -> web.Response:
             start_priority=owner_start_priority(request),
         )
         state.task_runner._plan_task = asyncio.current_task()
-        run = await plan_coro
+        # Shared Crew fair admission for the planning model call, charged to the
+        # person who pressed Plan; a refusal answers 429 with the limit named.
+        from kiro_crew.shared_crew.admission import OperationKind
+        from kiro_crew.shared_crew.admission_gate import actor_budget
+        from kiro_crew.shared_crew.turn_gate import run_admitted_or_raise
+
+        run = await run_admitted_or_raise(
+            plan_coro,
+            session_key=origin,
+            text=str(input_text or ""),
+            budget_key=actor_budget(request),
+            operation=OperationKind.TASK,
+        )
+    except TurnRefused as exc:
+        return web.json_response({"error": str(exc), "code": "plan_not_admitted"}, status=429)
     except WorkflowInitializing as exc:
         return web.json_response({"error": str(exc), "code": exc.code}, status=503)
     except asyncio.CancelledError:
@@ -1087,18 +1227,45 @@ async def api_taskrunner_execute_plan(request: web.Request) -> web.Response:
     auto_approve = await _gate_auto_approve(
         request, body.get("auto_approve") is True, None, endpoint="execute"
     )
+    run_admission = await _admit_existing_run(
+        request,
+        state,
+        task_id,
+        action="execute",
+        body=(agent, fresh, workspace_dir, auto_approve),
+    )
+    if run_admission.rejected:
+        return run_admission.refusal_response()
+    if run_admission.replayed:
+        from kiro_crew.shared_crew.admission_entry import background_replay_response
+
+        return background_replay_response(run_admission, execution_key="task_id")
+    from kiro_crew.shared_crew.containment import principal_scope
+
+    run_principal = None if run_admission.work is None else run_admission.work.budget_key
+    # The run's canonical id: the probe looks a run up by it, not by its name.
+    run_id = _canonical_task_reference(state.task_runner, task_id)
+    if (refused := await _link_existing_run(run_admission, run_id)) is not None:
+        return refused
     try:
-        await state.task_runner.execute_plan(
-            task_id,
-            agent=agent,
-            fresh=fresh,
-            workspace_dir=workspace_dir,
-            auto_approve=auto_approve,
-        )
+        with principal_scope(run_principal):
+            await state.task_runner.execute_plan(
+                task_id,
+                agent=agent,
+                fresh=fresh,
+                workspace_dir=workspace_dir,
+                auto_approve=auto_approve,
+            )
     except WorkflowInitializing as exc:
+        await run_admission.abandon()
         return web.json_response({"error": str(exc), "code": exc.code}, status=503)
     except ValueError as exc:
+        await run_admission.abandon()
         return web.json_response({"error": str(exc)}, status=400)
+    except BaseException:
+        await run_admission.abandon()
+        raise
+    await run_admission.attach_child(run_id, session_key=f"taskrunner:{run_id}")
     return web.json_response({"ok": True, "task_id": task_id})
 
 
@@ -1343,7 +1510,12 @@ async def api_taskrunner_refine(request: web.Request) -> web.Response:
     if body_err is not None:
         return body_err
     assert body is not None  # read_bounded_json returns (dict, None) on success
-    user_input = body.get("input", "").strip()
+    from kiro_crew.dashboard.handlers._shared import string_field_error
+
+    user_input = body.get("input", "")
+    if (not_string := string_field_error("input", user_input)) is not None:
+        return not_string
+    user_input = user_input.strip()
     if not user_input:
         return web.json_response({"error": "input is required"}, status=400)
 
@@ -1400,7 +1572,12 @@ async def api_taskrunner_refine_answer(request: web.Request) -> web.Response:
     if body_err is not None:
         return body_err
     assert body is not None  # read_bounded_json returns (dict, None) on success
-    answer = body.get("answer", "").strip()
+    from kiro_crew.dashboard.handlers._shared import string_field_error
+
+    answer = body.get("answer", "")
+    if (not_string := string_field_error("answer", answer)) is not None:
+        return not_string
+    answer = answer.strip()
     if not answer:
         return web.json_response({"error": "answer required"}, status=400)
     future = getattr(state, "_refine_answer_future", None)

@@ -221,7 +221,9 @@ class WeixinTransport(MessagingTransport):
     ) -> str:
         ctx_token = self._ctx.get(self._account_id, conversation_id)
         last = ""
-        for i, part in enumerate(_chunk(content, WEIXIN_CAPABILITIES.max_message_chars)):
+        # OFF the loop, like the renderer's own send: the split grades credential seams.
+        parts = await asyncio.to_thread(_chunk, content, WEIXIN_CAPABILITIES.max_message_chars)
+        for i, part in enumerate(parts):
             if i:
                 await asyncio.sleep(0.3)  # avoid iLink rate-limit drops
             client_id = uuid.uuid4().hex
@@ -417,6 +419,20 @@ class WeixinTransport(MessagingTransport):
                         self._client._handler_tasks.add(task)
                     try:
                         await self.receive(msg)
+                    except asyncio.CancelledError:
+                        # Shutdown: let it propagate so teardown is not mistaken
+                        # for loop death (see the outer handler).
+                        raise
+                    except Exception:
+                        # Guard EACH message on its own. ``_sync_buf`` already
+                        # advanced to this batch's cursor ABOVE, and the next
+                        # poll confirms it to the server -- so a raising
+                        # ``receive`` that escaped to the outer ``except`` would
+                        # drop every LATER message in this batch with no
+                        # redelivery. One bad message must cost only itself.
+                        logger.warning(
+                            "weixin: dropping one message that failed to process", exc_info=True
+                        )
                     finally:
                         if task is not None:
                             self._client._handler_tasks.discard(task)

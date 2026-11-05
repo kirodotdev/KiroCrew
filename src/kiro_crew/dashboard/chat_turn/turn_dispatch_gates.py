@@ -6,6 +6,7 @@ import asyncio
 import time
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.agent_files import ASSISTANT_MEMBER_NAME
 from kiro_crew.context_blocks import (
     PHASE_PER_TURN,
     PHASE_SESSION_START,
@@ -18,9 +19,17 @@ from kiro_crew.dashboard.chat_utils import (
     STEER_POSSIBLY_DELIVERED_NOTE,
     slack_mirror_is_paused,
 )
-from kiro_crew.dashboard.recovery_replays import ReplayRevocation, cancel_notice, replays_of
+from kiro_crew.dashboard.recovery_replays import (
+    ReplayRevocation,
+    cancel_notice,
+    cancel_notice_meta,
+    replays_of,
+)
 from kiro_crew.dashboard.state import row_mid
 from kiro_crew.hooks import HOOK_EVENT_AGENT_SPAWN, HOOK_EVENT_USER_PROMPT_SUBMIT
+from kiro_crew.members import DM_SLOT_MODE
+from kiro_crew.metrics.feature_usage import record_context_composition
+from kiro_crew.milestones import record_user_turn
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_runner import (
@@ -29,13 +38,16 @@ if TYPE_CHECKING:
         SessionClosingError,
         StructuredStatus,
         classify_stop_reason,
+        code_channel_post_thread,
         crew_log_emit,
         injection_receipts,
         logger,
+        notify_code_channel_turn_start,
         read_context_tokens,
         sel,
         telemetry_channel_of,
     )
+    from kiro_crew.dashboard.chat_turn.agent_started import _agent_turn_still_pending
     from kiro_crew.dashboard.chat_turn.crew_log_attribution import _crew_log_model
     from kiro_crew.dashboard.chat_turn.decisions_hooks import (
         _jev_route_armed,
@@ -81,7 +93,11 @@ async def _turn_dispatch_prep(turn: _ChatTurn) -> None:
     session_key = turn.session_key
     slot = turn.slot
     state = turn.state
-    if not is_slash and (_responsive_human or _responsive_recovery):
+    # A turn the agent started sends no prompt, so nothing this function reads
+    # into one (the recovery context, a change card's or an undo's report) may be
+    # taken by it: the next prompt still owes them.
+    _sends_prompt = not turn._agent_started
+    if _sends_prompt and not is_slash and (_responsive_human or _responsive_recovery):
         _request_prefix_context = await asyncio.to_thread(
             responsive_chat.prompt_context, _responsive_recovery
         )
@@ -125,7 +141,7 @@ async def _turn_dispatch_prep(turn: _ChatTurn) -> None:
     # was applied, cancelled, undone...). Read and marked heard in one step,
     # so the next turn does not repeat them. Reference data only: it never
     # starts a turn of its own, and a card never carries a secret value.
-    if not is_slash and _prompt_depth < 1:
+    if _sends_prompt and not is_slash and _prompt_depth < 1:
         try:
             from kiro_crew.context_blocks import render_change_card_results
             from kiro_crew.dashboard.change_cards import card_store_for
@@ -192,6 +208,10 @@ async def _turn_dispatch_prep(turn: _ChatTurn) -> None:
     turn._span_probe = _span_probe
     _span_base_len = -1
     turn._span_base_len = _span_base_len
+    # build_message's provenance segments for the prompt it returned, before
+    # the dashboard's own prefixes; empty when no context builder ran.
+    _prompt_segments: tuple = ()
+    turn._prompt_segments = _prompt_segments
     # Snapshot the ContextBuilder output before any dashboard-only prefixes
     # are added. Final prefix scrubbing can then preserve this trusted tail
     # (including its sole minted reply-format marker) byte-for-byte.
@@ -252,6 +272,7 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
     _steer_possibly_delivered = turn._steer_possibly_delivered
     _stop_reason = turn._stop_reason
     _synthetic_recovery_turn = turn._synthetic_recovery_turn
+    _slash_withholds_mirror = turn._slash_withholds_mirror
     _todo_recovery_carried = turn._todo_recovery_carried
     _todo_sync_rendered = turn._todo_sync_rendered
     _trusted_prompt_tail = turn._trusted_prompt_tail
@@ -281,12 +302,19 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
     turn_exit = turn.turn_exit
     user_typed_len = turn.user_typed_len
     user_typed_message = turn.user_typed_message
-    if is_new:
+    # A turn the agent started sends no prompt: nothing below that writes one, or
+    # tells another surface one was sent, runs for it. It reads a turn the session
+    # already holds, so one whose session holds none (a prompt read it first, or
+    # the claim cold-started a new process) ends here, before it opens.
+    _sends_prompt = not turn._agent_started
+    if not _sends_prompt and not _agent_turn_still_pending(client):
+        return _Flow.END
+    if is_new and _sends_prompt:
         spawn_injected = await _fire(turn, HOOK_EVENT_AGENT_SPAWN, session_key)
     else:
         spawn_injected = []
 
-    injected = await _fire(turn, HOOK_EVENT_USER_PROMPT_SUBMIT, message)
+    injected = await _fire(turn, HOOK_EVENT_USER_PROMPT_SUBMIT, message) if _sends_prompt else []
     all_injected = spawn_injected + injected
     if all_injected:
         hook_ctx = "\n\n".join(all_injected)
@@ -302,7 +330,7 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
     # PREPEND. Scrub that complete dashboard-only prefix in one off-loop
     # pass so history, hook output, and future prepend sources cannot forge
     # reply, request, critical-rules, or session-context authority.
-    if not is_slash:
+    if _sends_prompt and not is_slash:
         full_message = await _scrub_dashboard_prefix(full_message, _trusted_prompt_tail)
         turn.full_message = full_message
 
@@ -326,7 +354,7 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
     # the person ticked in the pill since its last snapshot (todo_sync_prompt),
     # which is how a click reaches a live agent instead of being reverted by
     # its next full snapshot.
-    if not is_slash:
+    if _sends_prompt and not is_slash:
         full_message, _todo_sync_rendered, _todo_recovery_carried = await _checklist_resync(
             slot,
             full_message,
@@ -341,57 +369,15 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
 
     # Slash commands use _kiro.dev/commands/execute for full native output;
     # regular messages use session/prompt.
-    # Attribute the FINAL prompt back to the blocks that produced it, after every
-    # prefix from _turn_build_prompt's context build and this phase is applied. Classifying
-    # the OUTPUT rather than counting at each of the ~30 append sites means the
-    # breakdown cannot drift from what was actually sent, and an unrecognised
-    # block surfaces as `unclassified` instead of being folded into a neighbour.
-    ctx_len = len(full_message) - len(message)
-    if ctx_len > 0:
-        # Re-derive the user span against the FINAL prompt: everything added
-        # after build_message is a pure prepend, so the whole shift is the
-        # length delta. Accept it only when the shifted slice still holds the
-        # same text — otherwise fall back to the reconstruction below.
-        _span_arg: tuple[int, int] | None = None
-        if len(_user_span) == 2 and _span_base_len >= 0:
-            _shift = len(full_message) - _span_base_len
-            _s, _e = _user_span[0] + _shift, _user_span[1] + _shift
-            if 0 <= _s <= _e <= len(full_message) and full_message[_s:_e] == _span_probe:
-                _span_arg = (_s, _e)
-            else:
-                logger.warning(
-                    "context breakdown: user span did not survive post-assembly "
-                    "prefixes (shift=%d); falling back to reconstruction",
-                    _shift,
-                )
-        slot_ctx_blocks = split_blocks(
-            full_message,
-            user_chars=attributable_user_chars(user_typed_len, prompt_expanded=prompt_expanded),
-            user_offset=_user_prepend_offset,
-            user_span=_span_arg,
-        )
-        turn.slot_ctx_blocks = slot_ctx_blocks
-        slot_ctx_phase = PHASE_SESSION_START if _context_is_new else PHASE_PER_TURN
-        turn.slot_ctx_phase = slot_ctx_phase
-        # Named rather than counted: naming only four blocks by hand
-        # under-describes most of the bytes being reported.
-        _named = ", ".join(
-            label.replace("_", " ")
-            for label, _ in sorted(slot_ctx_blocks.items(), key=lambda kv: -kv[1])
-            if label != USER_LABEL
-        )
-        state.broadcast_ws(
-            "activity_event",
-            {
-                "slot": slot.key,
-                "kind": "context",
-                "text": (
-                    f"Injected {ctx_len:,} chars of context ({_named})"
-                    if _named
-                    else f"Injected {ctx_len:,} chars of context"
-                ),
-            },
-        )
+    # The prompt was assembled on the model serving before this probe and the Jev
+    # routing below, and either can move the session; its [ACTIVE MODEL] line is
+    # restated after both, before the prompt is attributed. Only build_message's
+    # own segments can carry the line.
+    from kiro_crew.llm_helpers import ActiveModelLine
+    from kiro_crew.prompt_segments import SegmentedPrompt, segments_of
+
+    _assembled = getattr(turn, "_prompt_segments", ())
+    _assembled_line = ActiveModelLine(SegmentedPrompt(_assembled), client) if _assembled else None
 
     # ── Model-fallback restore probe (agent.fallback_model) ──
     # A prior turn's throttle fallback is sticky for the session; at the
@@ -404,7 +390,8 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
     # post-token CONTINUE replay is a runner-authored continuation of an
     # interrupted turn — restoring there would swap the model mid-answer.
     if (
-        slot._active_fallback_model
+        _sends_prompt
+        and slot._active_fallback_model
         and slot._fallback_candidate_idx == 0
         and message not in _SYNTHETIC_RECOVERY_MSGS
     ):
@@ -469,6 +456,68 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
             retried=bool(regenerate_hint),
         )
 
+    if _assembled_line is not None:
+        # Every step after build_message is a pure prepend, so the assembled
+        # prompt is the sent tail, and the runner re-applies its segments.
+        _restated = _assembled_line.restate_tail(full_message)
+        if _restated is not None:
+            full_message = _restated[0]
+            turn.full_message = full_message
+            _prompt_segments = segments_of(_restated[1])
+            turn._prompt_segments = _prompt_segments
+
+    # Attribute the FINAL prompt back to the blocks that produced it, after every
+    # prefix from _turn_build_prompt's context build and this phase is applied. Classifying
+    # the OUTPUT rather than counting at each of the ~30 append sites means the
+    # breakdown cannot drift from what was actually sent, and an unrecognised
+    # block surfaces as `unclassified` instead of being folded into a neighbour.
+    ctx_len = len(full_message) - len(message)
+    if ctx_len > 0:
+        # Re-derive the user span against the FINAL prompt: everything added
+        # after build_message is a pure prepend, so the whole shift is the
+        # length delta. Accept it only when the shifted slice still holds the
+        # same text — otherwise fall back to the reconstruction below.
+        _span_arg: tuple[int, int] | None = None
+        if len(_user_span) == 2 and _span_base_len >= 0:
+            _shift = len(full_message) - _span_base_len
+            _s, _e = _user_span[0] + _shift, _user_span[1] + _shift
+            if 0 <= _s <= _e <= len(full_message) and full_message[_s:_e] == _span_probe:
+                _span_arg = (_s, _e)
+            else:
+                logger.warning(
+                    "context breakdown: user span did not survive post-assembly "
+                    "prefixes (shift=%d); falling back to reconstruction",
+                    _shift,
+                )
+        slot_ctx_blocks = split_blocks(
+            full_message,
+            user_chars=attributable_user_chars(user_typed_len, prompt_expanded=prompt_expanded),
+            user_offset=_user_prepend_offset,
+            user_span=_span_arg,
+        )
+        turn.slot_ctx_blocks = slot_ctx_blocks
+        slot_ctx_phase = PHASE_SESSION_START if _context_is_new else PHASE_PER_TURN
+        turn.slot_ctx_phase = slot_ctx_phase
+        # Named rather than counted: naming only four blocks by hand
+        # under-describes most of the bytes being reported.
+        _named = ", ".join(
+            label.replace("_", " ")
+            for label, _ in sorted(slot_ctx_blocks.items(), key=lambda kv: -kv[1])
+            if label != USER_LABEL
+        )
+        state.broadcast_ws(
+            "activity_event",
+            {
+                "slot": slot.key,
+                "kind": "context",
+                "text": (
+                    f"Injected {ctx_len:,} chars of context ({_named})"
+                    if _named
+                    else f"Injected {ctx_len:,} chars of context"
+                ),
+            },
+        )
+
     state.broadcast_ws("chat_status", {"slot": slot.key, "status": "Thinking…"})
     state.broadcast_ws("activity_event", {"slot": slot.key, "kind": "status", "text": "Thinking…"})
 
@@ -482,12 +531,36 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
     # `_mirror_chan` stay empty, which is what silences the echo, the tool
     # stream, the assistant reply and the stream teardown together. Disconnect
     # is the user saying "not into this conversation", which applies to the
-    # answer as much as to the echo — so it is one gate, not four.
-    if state.slack_client and not is_slash and not slack_mirror_is_paused(state, session_key):
+    # answer as much as to the echo — so it is one gate, not four. A turn the
+    # agent started resolves it too: its reply is owed to the thread, and the
+    # echo below skips it (``_prompt_typed_in_dashboard`` reads actor ``agent``).
+    if (
+        state.slack_client
+        and not _slash_withholds_mirror
+        and not slack_mirror_is_paused(state, session_key)
+    ):
         _mirror_thread, _mirror_chan = state.sessions.get_slack_link(session_key)
         turn._mirror_chan = _mirror_chan
         turn._mirror_thread = _mirror_thread
+        _mirror_post_ts = code_channel_post_thread(_mirror_chan, _mirror_thread)
+        turn._mirror_post_ts = _mirror_post_ts
         if _mirror_thread and _mirror_chan:
+
+            def _owe_code_channel_turn_end() -> None:
+                # Recorded before the start subscribers run, so a cancel that
+                # lands inside them still gets its end in the session hand-back.
+                turn._code_channel_turn = True
+
+            try:
+                turn._code_channel_turn = await notify_code_channel_turn_start(
+                    _mirror_chan,
+                    _mirror_thread,
+                    session_key,
+                    source="slack" if slot._turn_channel_origin else "dashboard",
+                    on_bound=_owe_code_channel_turn_end,
+                )
+            except Exception:
+                logger.debug("code channel turn-start hooks failed", exc_info=True)
             try:
                 # Only a prompt a person typed in the dashboard is quoted into
                 # the thread (see `_prompt_typed_in_dashboard`): a patrol wake,
@@ -507,7 +580,7 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
                     await state.slack_client.post_message(
                         _mirror_chan,
                         mirror_prompt_echo(_prepare_mirror_msg(_user_msg_for_mirror)),
-                        _mirror_thread,
+                        _mirror_post_ts,
                     )
                 # A separate placeholder, not the task stream's opening text:
                 # a stream only appends, so a "Thinking…" written into it stays
@@ -517,7 +590,7 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
                 # at turn end, whichever comes first.
                 turn._mirror_thinking_ts = (
                     await state.slack_client.post_message(
-                        _mirror_chan, _MIRROR_THINKING, _mirror_thread
+                        _mirror_chan, _MIRROR_THINKING, _mirror_post_ts
                     )
                     or ""
                 )
@@ -530,7 +603,7 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
     # Channel-neutral leg: mirror the user message to a linked non-Slack
     # proactive channel (e.g. Telegram) so the remote conversation reads
     # coherently (question then reply), matching the Slack echo above.
-    if not is_slash and _prompt_typed_in_dashboard(turn):
+    if not _slash_withholds_mirror and _prompt_typed_in_dashboard(turn):
         await _deliver_cross_surface_user_message(state, session_key, _user_msg_for_mirror)
     # Past this point every echo this turn owes has been made (or the surfaces it
     # would go to were unlinked), so a recovery requeue of it owes none.
@@ -607,10 +680,11 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
     # messages for the stats attach, which is a different question from which
     # turn this is. The two were already decoupled once, for the stats bug.
     #
-    # Regenerate and rewind keep their retry semantics for free. Both truncate
-    # the window before dispatching, so _turn_admit's hoisted expression returns the ordinal of
-    # the turn being re-run and the emitter's `attempt` increments -- no ordinal
-    # has to be threaded through either path.
+    # Rewind keeps its retry semantics for free: it truncates the window before
+    # dispatching, so _turn_admit's hoisted expression returns the ordinal of
+    # the turn being re-run and the emitter's `attempt` increments. Regenerate
+    # keeps the previous reply live until its turn ends, so the ordinal is
+    # computed without it (``rows_before_regenerate_target``) to the same effect.
     # `durable_row_count` is the SHARED counting rule every site that sets or
     # advances that base uses, so the ordinal cannot disagree with the base
     # about which rows are durable. It is resolved ONCE, in _turn_admit above its
@@ -629,14 +703,15 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
     # gates (see the block below where ``on_request_configured`` /
     # ``on_context_composed`` are called), because a refused dispatch assembled a
     # prompt nothing ever saw and must not publish a composition for it.
-    crew_log_emit.on_message_received(
-        _crew_log_sid,
-        _crew_log_turn_no,
-        role="user",
-        text=user_typed_message,
-        source=telemetry_channel_of(session_key),
-        attachments=_attachments,
-    )
+    if _sends_prompt:
+        crew_log_emit.on_message_received(
+            _crew_log_sid,
+            _crew_log_turn_no,
+            role="user",
+            text=user_typed_message,
+            source=telemetry_channel_of(session_key),
+            attachments=_attachments,
+        )
     # Lease-dispatch race gate: this session's semaphore lease was taken
     # by get_or_create in _turn_admit, but the provider turn only opens on
     # the first iteration of _run_chat's stream loop. If a gateway restart / Make-Live
@@ -683,7 +758,17 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
     # turn-entry snapshots — the same durable signal the stop-hook
     # suppression uses. Synchronous, beside the begin_turn gate, so no await
     # separates the read from the stream's turn registration.
-    if _stop_pressed(turn):
+    if _stop_pressed(turn) and turn._agent_started:
+        # The agent's cycle is already running natively, and only its open
+        # stream gives the cancel a turn to stop, so this turn opens it and
+        # sends the cancel at its first event instead of ending here.
+        logger.info(
+            "Stop was pressed while the agent-started turn for %s was being "
+            "prepared; cancelling it once its stream is open",
+            session_key,
+        )
+        turn._agent_cancel_owed = True
+    elif _stop_pressed(turn):
         logger.info(
             "Aborting dispatch for %s — Stop was pressed while the turn "
             "was still being prepared (no session existed to cancel yet)",
@@ -712,6 +797,7 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
             "notice",
             cancel_notice(ReplayFamily.CONTENT_FILTER, ReplayRevocation(superseded=True)),
             "msg msg-info",
+            meta=cancel_notice_meta(ReplayFamily.CONTENT_FILTER, ReplayRevocation(superseded=True)),
         )
         logger.info(
             "Aborting refusal replay for %s — a correction was queued while "
@@ -771,6 +857,9 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
         phase=slot_ctx_phase,
         omitted=slot_ctx_omitted,
     )
+    # Memory and lesson use, for the same reason: only an admitted turn's
+    # composition reached the model. An in-memory add; never raises.
+    record_context_composition(slot_ctx_blocks, slot_ctx_receipts)
     # Which lessons this composition carried, for the same reason the composition
     # is written here: only an ADMITTED turn put them in front of the model. The
     # write goes to a worker thread, so this adds no suspension point either.
@@ -793,6 +882,31 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
         turn._crew_log_actor,
         depth=_prompt_depth,
     )
+    # Milestones count admitted, persistent human turns from dashboard or channel
+    # openers. Depth re-entries, synthetic recovery and replay turns must not count
+    # the same message again. ``_directive_user_origin`` alone is not enough: a
+    # script cron's ``ctx.send_to_session`` reaches /api/chat with it True, so the
+    # turn's structural actor must also be ``user`` (as the attended-turn checks
+    # above require). The write runs off-loop and never raises, adding no
+    # suspension point here.
+    from kiro_crew.dashboard.handlers._shared import is_restricted_session_key
+
+    if (
+        _prompt_depth == 0
+        and not _is_refusal_retry_turn
+        and not turn._synthetic_recovery_turn
+        and not turn._replay
+        and turn._directive_user_origin is True
+        and turn._crew_log_actor == "user"
+        and not is_restricted_session_key(turn.state, session_key)
+    ):
+        record_user_turn(
+            mate_thread=(
+                getattr(slot, "mode", "") == DM_SLOT_MODE
+                and getattr(slot, "agent", "") == ASSISTANT_MEMBER_NAME
+            ),
+            crew_mode=bool(getattr(slot, "crew_mode_agent", "")),
+        )
     # From here the turn owes a closer, and _turn_close_crew_log
     # (chat_turn/crew_log_attribution.py), from _run_chat's finally, is what pays it: a
     # `turn/started` left open in the file is read as a turn whose writer died,

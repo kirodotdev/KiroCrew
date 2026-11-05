@@ -172,12 +172,25 @@ export function useArtifactDetailPageEditor({
     setRenaming(true)
   }, [artifact, setNameDraft, setRenaming])
 
-  const commitRename = useCallback(async () => {
-    const next = nameDraft.trim()
+  // The input is about to unmount, which would drop keyboard focus to the body
+  // and lose the user's place. A keyboard close (Enter/Escape) hands it back to
+  // the title it was opened from; a pointer blur moves nothing, because
+  // redirecting focus off the element the user clicked is the context change
+  // WCAG 3.2.2 forbids. Only focus the unmount dropped is taken back.
+  const closeRename = useCallback((restore: boolean) => {
     setRenaming(false)
-    // The input is about to unmount, which would drop keyboard focus to the body
-    // and lose the user's place. Hand it back to the control they opened it from.
-    requestAnimationFrame(() => titleButtonRef.current?.focus())
+    if (!restore) return
+    requestAnimationFrame(() => {
+      const at = document.activeElement
+      if (at === null || at === document.body) titleButtonRef.current?.focus({ preventScroll: true })
+    })
+  }, [setRenaming])
+  const cancelRename = useCallback(() => closeRename(true), [closeRename])
+
+  // restore=true for a keyboard commit (Enter); a pointer blur passes false.
+  const commitRename = useCallback(async (restore = false) => {
+    const next = nameDraft.trim()
+    closeRename(restore)
     if (!artifact || !next || next === artifact.name) return
     // Mark BEFORE awaiting: an unmount racing this PATCH would otherwise see a
     setSaveError(null)
@@ -190,7 +203,7 @@ export function useArtifactDetailPageEditor({
     } catch (err) {
       setSaveError(err instanceof Error ? err.message : String(err))
     }
-  }, [artifact, nameDraft, queryClient, slug, setRenaming, setSaveError])
+  }, [artifact, closeRename, nameDraft, queryClient, slug, setSaveError])
 
   // ── Edit / save / cancel / revert handlers ────────────────────────────────
   const startEditing = useCallback(() => {
@@ -541,7 +554,7 @@ export function useArtifactDetailPageEditor({
 
   return {
     reprobing, reprobeError, reprobeNotice, addTag, removeTag, pinning, togglePin, changingKind, changeKind,
-    titleButtonRef, startRenaming, commitRename, startEditing, endEditing, cancelEditing, handleSave,
+    titleButtonRef, startRenaming, commitRename, cancelRename, startEditing, endEditing, cancelEditing, handleSave,
     flushLiveEdits, handleSnapshotLive,
   }
 }

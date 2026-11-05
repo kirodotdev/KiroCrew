@@ -49,6 +49,12 @@ from kiro_crew.subagent_manager.admission.gate import _GateMixin
 
 pytestmark = pytest.mark.xdist_group(name="tree_scan_gate_bindings")
 
+SHARED_BINDINGS_CHECKS = (
+    "the_member_set_is_the_frozen_inventory",
+    "the_resolution_scan_can_fail",
+    "nothing_else_in_src_imports_an_owner",
+)
+
 _PACKAGE = "kiro_crew.subagent_manager.admission"
 _GATE = f"{_PACKAGE}.gate"
 _OWNERS = ("gate_execution", "gate_pressure", "gate_reporting")
@@ -97,7 +103,7 @@ _MEMBERS: dict[str, tuple[str, str, str]] = {
     "_record_crew_log_dispatch": (
         "function",
         "(self, info: 'SubagentInfo', *, from_queue: 'bool',"
-        " asked: \"'tuple[str, int] | None'\" = None) -> 'None'",
+        " asked: \"'Sequence[Any] | None'\" = None) -> 'None'",
         "gate_reporting",
     ),
     "_record_crew_log_spawn_started": (
@@ -165,10 +171,6 @@ def test_the_kind_reader_tells_a_coroutine_from_a_function() -> None:
         "function",
         "data",
     )
-
-
-def test_the_member_set_is_the_frozen_inventory() -> None:
-    assert sorted(_members()) == sorted(_MEMBERS)
 
 
 @pytest.mark.parametrize("name", sorted(_MEMBERS))
@@ -239,13 +241,6 @@ def _unresolved(function: FunctionType) -> list[str]:
         for name in _global_loads(function.__code__)
         if name not in namespace and not hasattr(builtins, name)
     )
-
-
-def test_the_resolution_scan_can_fail() -> None:
-    def reads_a_missing_global(self: object) -> object:
-        return _a_name_no_module_binds  # type: ignore[name-defined]  # noqa: F821
-
-    assert _unresolved(reads_a_missing_global) == ["_a_name_no_module_binds"]
 
 
 @pytest.mark.parametrize("name", sorted(n for n in _MEMBERS if n.endswith("_impl")))
@@ -404,10 +399,6 @@ def test_the_owner_importer_scan_can_fail(tmp_path: Path) -> None:
         "kiro_crew.other",
         "kiro_crew.subagent_manager.admission.pump",
     ]
-
-
-def test_nothing_else_in_src_imports_an_owner() -> None:
-    assert _owner_importers(_REPO_ROOT / "src") == []
 
 
 # --------------------------------------------------------------------------- #

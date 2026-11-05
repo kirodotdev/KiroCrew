@@ -205,7 +205,7 @@ def test_a_row_without_a_note_renders_exactly_as_before():
 # Old values a pre-0.8 install materialized for defaults that moved later, each
 # report-only for the reason its registry row gives.
 _LATER_MOVED = [
-    ("session", "watchdog_rss_max_mb", 1536, 0),
+    ("session", "watchdog_rss_max_mb", 1536, 4096),
     ("stt", "language_code", "en-US", "auto"),
     ("decisions", "history_budget_chars", 0, 2000),
     ("watchdog", "stale_window_secs", 300.0, 600.0),
@@ -620,6 +620,10 @@ def test_every_registered_key_ends_at_the_live_default():
     for dotted, entry in newest.items():
         section, field = dotted.split(".")
         live = getattr(getattr(KiroCrewConfig(), section), field)
+        if dotted == "agent.sandbox_allow_unsandboxed_exec":
+            # An undeclared key resolves through the platform, not the dataclass;
+            # test_the_windows_exec_row_ends_at_the_windows_default pins that end.
+            continue
         assert live == entry.new_default, (
             f"{dotted}: registry says the current default is "
             f"{entry.new_default!r} but the loader applies {live!r} -- append a "
@@ -628,6 +632,16 @@ def test_every_registered_key_ends_at_the_live_default():
         assert any(
             f.name == field for f in dc_fields(getattr(KiroCrewConfig(), section))
         ), f"{dotted}: no such field on the {section} config"
+
+
+def test_the_windows_exec_row_ends_at_the_windows_default(monkeypatch):
+    """The exec row's end is what an UNDECLARED key resolves to where it applies."""
+    from kiro_crew.config.loader_document import unsandboxed_exec_platform_default
+
+    entry = _row("agent.sandbox_allow_unsandboxed_exec")
+    monkeypatch.setattr("sys.platform", "win32")
+    assert entry.applies is not None and entry.applies({})
+    assert unsandboxed_exec_platform_default() is entry.new_default
 
 
 def test_an_install_still_storing_the_old_ceiling_is_reported():
@@ -647,16 +661,17 @@ def test_a_deliberately_chosen_value_is_not_reported():
     assert superseded_default_drift({"session": {"autocompact_pct": 85.0}}) == []
 
 
-def test_session_recycling_is_off_by_default():
-    """A fresh install never recycles a session for its memory."""
-    assert KiroCrewConfig().session.watchdog_rss_max_mb == 0
+def test_session_recycling_has_a_ceiling_by_default():
+    """A fresh install bounds a runaway session tree, well above a healthy one."""
+    assert KiroCrewConfig().session.watchdog_rss_max_mb == 4096
 
 
 def test_a_stored_off_switch_or_custom_ceiling_is_not_drift():
-    """0 is the current default and the documented off switch; any other value
-    is an operator's own ceiling. Only the old 1536 is reported (``_LATER_MOVED``)."""
+    """0 is the documented off switch and 4096 the current default; any other
+    value is an operator's own ceiling. Only the old 1536 is reported (``_LATER_MOVED``)."""
     assert superseded_default_drift({"session": {"watchdog_rss_max_mb": 0}}) == []
     assert superseded_default_drift({"session": {"watchdog_rss_max_mb": 4096}}) == []
+    assert superseded_default_drift({"session": {"watchdog_rss_max_mb": 8192}}) == []
 
 
 def test_the_autocompact_summary_names_both_values_and_the_release():
@@ -1020,6 +1035,13 @@ def test_only_unpinned_broken_budgets_adopt_themselves():
         # the admission tests' 4.0 inputs set a floor, they do not pin a stored
         # 4.0 as supported, and the opt-out is 0, not the old default.
         "agent.spawn_min_memory_gb",
+        # A stored false asks for every remote MCP sign-in again in each new KAS
+        # session; false was the default until the flip, so nobody had a reason
+        # to write it, and a false set back after the adoption is kept.
+        "agent.kas_persist_mcp_sign_in",
+        # Windows only: a pre-0.6.0 save wrote false on every host, and under KAS
+        # it refuses every Windows spawn; no build asked a Windows owner for it.
+        "agent.sandbox_allow_unsandboxed_exec",
     }
     # The other side as an exact set too, so an appended row has to be placed on
     # one side by name. Each of these keeps its old value because that value is a
@@ -1466,18 +1488,18 @@ def test_the_running_config_never_diverges_from_the_stored_one(tmp_path, monkeyp
     ALSO still change memory on the success path, and a test that only pinned the
     failure could be satisfied by never touching memory at all.
     """
-    _point_home(tmp_path, monkeypatch)
-    _write_config(tmp_path, {"agent": {"subagent_timeout_secs": 1800}})
+    with monkeypatch.context() as mp:
+        _point_home(tmp_path, mp)
+        _write_config(tmp_path, {"agent": {"subagent_timeout_secs": 1800}})
 
-    def _refuse(_values):
-        raise OSError("read-only data home")
+        def _refuse(_values):
+            raise OSError("read-only data home")
 
-    monkeypatch.setattr(L, "record_adoptions", _refuse)
-    failed = KiroCrewConfig.load()
-    assert failed.agent.subagent_timeout_secs == 1800
-    assert _on_disk(tmp_path)["agent"]["subagent_timeout_secs"] == 1800
+        mp.setattr(L, "record_adoptions", _refuse)
+        failed = KiroCrewConfig.load()
+        assert failed.agent.subagent_timeout_secs == 1800
+        assert _on_disk(tmp_path)["agent"]["subagent_timeout_secs"] == 1800
 
-    monkeypatch.undo()
     _point_home(tmp_path, monkeypatch)
     L._invalidate_config_cache()
     ok = KiroCrewConfig.load()
@@ -1500,22 +1522,22 @@ def test_a_failed_write_keeps_the_value_and_does_not_re_adopt_later(tmp_path, mo
     side, including the part that matters most: a later load must not delete the value
     again.
     """
-    _point_home(tmp_path, monkeypatch)
-    _write_config(tmp_path, {"agent": {"subagent_timeout_secs": 1800}})
+    with monkeypatch.context() as mp:
+        _point_home(tmp_path, mp)
+        _write_config(tmp_path, {"agent": {"subagent_timeout_secs": 1800}})
 
-    def _fail_backup(_path):
-        raise OSError("no space left on device")
+        def _fail_backup(_path):
+            raise OSError("no space left on device")
 
-    monkeypatch.setattr(L, "_write_migration_backup", _fail_backup)
-    with caplog.at_level(logging.WARNING, logger=L.__name__):
-        failed = KiroCrewConfig.load()
+        mp.setattr(L, "_write_migration_backup", _fail_backup)
+        with caplog.at_level(logging.WARNING, logger=L.__name__):
+            failed = KiroCrewConfig.load()
 
-    # Nothing was destroyed, and memory did not run ahead of the file.
-    assert _on_disk(tmp_path)["agent"]["subagent_timeout_secs"] == 1800
-    assert failed.agent.subagent_timeout_secs == 1800
-    assert not any("adopted current default" in r.getMessage() for r in caplog.records)
+        # Nothing was destroyed, and memory did not run ahead of the file.
+        assert _on_disk(tmp_path)["agent"]["subagent_timeout_secs"] == 1800
+        assert failed.agent.subagent_timeout_secs == 1800
+        assert not any("adopted current default" in r.getMessage() for r in caplog.records)
 
-    monkeypatch.undo()
     _point_home(tmp_path, monkeypatch)
     L._invalidate_config_cache()
     later = KiroCrewConfig.load()
@@ -1603,6 +1625,106 @@ def test_load_adopts_the_stale_spawn_floor_once_and_keeps_what_is_set_back(tmp_p
     _write_config(tmp_path, {"agent": {"spawn_min_memory_gb": 4.0}})
     assert KiroCrewConfig.load().agent.spawn_min_memory_gb == 4.0
     assert _on_disk(tmp_path)["agent"]["spawn_min_memory_gb"] == 4.0
+
+
+def test_load_adopts_the_stale_sign_in_opt_in_once_and_keeps_a_false_set_back(
+    tmp_path, monkeypatch
+):
+    """A materialized ``kas_persist_mcp_sign_in: false`` follows the true default once.
+
+    Every install that saved settings while false was the default holds it on disk,
+    so without the adoption the default change would reach almost nobody. A false
+    the owner sets after that is their opt-out and survives every later load.
+    """
+    _point_home(tmp_path, monkeypatch)
+    _write_config(tmp_path, {"agent": {"kas_persist_mcp_sign_in": False}})
+
+    cfg = KiroCrewConfig.load()
+
+    assert cfg.agent.kas_persist_mcp_sign_in is True
+    assert "kas_persist_mcp_sign_in" not in _on_disk(tmp_path).get("agent", {})
+    assert SD.adopted_superseded() == {"agent.kas_persist_mcp_sign_in": False}
+
+    _write_config(tmp_path, {"agent": {"kas_persist_mcp_sign_in": False}})
+    assert KiroCrewConfig.load().agent.kas_persist_mcp_sign_in is False
+    assert KiroCrewConfig.load().agent.kas_persist_mcp_sign_in is False
+    assert _on_disk(tmp_path)["agent"]["kas_persist_mcp_sign_in"] is False
+
+
+@pytest.fixture
+def explicit_cli_write(tmp_path, monkeypatch):
+    """Exercise the real CLI writer and loader in an isolated, never-adopted home."""
+    import argparse
+    from unittest.mock import Mock
+
+    from kiro_crew import cli_config
+
+    _point_home(tmp_path, monkeypatch)
+    monkeypatch.setattr(cli_config, "config_path", L.config_path)
+    monkeypatch.setattr(cli_config, "config_local_path", L.config_local_path)
+    monkeypatch.setattr(cli_config, "sel", Mock())
+    _write_config(tmp_path, {"agent": {"kas_persist_mcp_sign_in": True}})
+    _write_local(tmp_path, {})
+    KiroCrewConfig.load()
+    assert SD.adopted_superseded() == {}
+
+    def run(mode):
+        agent = {"kas_persist_mcp_sign_in": False, "subagent_timeout_secs": 1800}
+        args = argparse.Namespace(
+            config_action="set",
+            key="agent.kas_persist_mcp_sign_in",
+            value="false",
+            local=mode.startswith("local"),
+            file=None,
+        )
+        if mode.endswith("section"):
+            args.key = "agent"
+            args.value = json.dumps(agent)
+        elif mode == "file":
+            fp = tmp_path / "input.json"
+            fp.write_text(
+                json.dumps({"agent": agent, "mcp_gateway": {"forward_declared_env": False}}),
+                encoding="utf-8",
+            )
+            args.file = str(fp)
+        cli_config._config_cmd(args)
+
+    return run
+
+
+@pytest.mark.parametrize("mode", ["base", "local", "base-section", "local-section", "file"])
+def test_cli_explicit_old_default_survives_load(tmp_path, explicit_cli_write, mode):
+    explicit_cli_write(mode)
+
+    # Check the load before the ledger: without the ack, base writes really flip
+    # back to True. An overlay already wins, but must record the explicit choice too.
+    L._invalidate_config_cache()
+    assert KiroCrewConfig.load().agent.kas_persist_mcp_sign_in is False
+    expected = {"agent.kas_persist_mcp_sign_in": False}
+    if mode.endswith("section") or mode == "file":
+        assert KiroCrewConfig.load().agent.subagent_timeout_secs == 1800
+        expected["agent.subagent_timeout_secs"] = 1800
+    if L.unsandboxed_exec_platform_default():
+        # On Windows the fixture's first load, with the key absent, closes the
+        # exec row's one-shot by acking false (windows_exec_adoption).
+        expected["agent.sandbox_allow_unsandboxed_exec"] = False
+    assert SD.acked_superseded() == expected
+    assert SD.adopted_superseded() == {}
+    path = tmp_path / ("config.local.json" if mode.startswith("local") else "config.json")
+    assert json.loads(path.read_text(encoding="utf-8"))["agent"]["kas_persist_mcp_sign_in"] is False
+
+
+@pytest.mark.parametrize("mode", ["base", "local", "base-section", "local-section", "file"])
+def test_cli_ack_refusal_aborts_config_write(tmp_path, monkeypatch, explicit_cli_write, mode):
+    before = {name: (tmp_path / name).read_bytes() for name in ("config.json", "config.local.json")}
+
+    def refuse_ack(_mutate):
+        raise OSError("ack write refused")
+
+    monkeypatch.setattr(SD, "_update_acked", refuse_ack)
+    with pytest.raises(OSError, match="ack write refused"):
+        explicit_cli_write(mode)
+    assert {name: (tmp_path / name).read_bytes() for name in before} == before
 
 
 @pytest.mark.parametrize("stored", [3.0, 4, 0.0])

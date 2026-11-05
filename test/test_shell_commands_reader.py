@@ -238,6 +238,10 @@ class TestParity:
     @pytest.mark.parametrize("track", [True, False])
     def test_rm_segments_match_the_replaced_walk(self, track):
         for command in [*_HAND_CORPUS, *_random_corpus(4000)]:
+            if "&>" in command or ">|" in command or "<<<" in command:
+                # one redirect operator to bash (``<<<`` too, where the old walk stopped
+                # as at a heredoc); the target and verdict parity tests still cover these
+                continue
             old = _outcome(_oracle_segments, command, track)
             new = _outcome(rm_floor._segments, command, track)
             # ``&&`` / ``||`` end ONE command now, where the old walk left an empty

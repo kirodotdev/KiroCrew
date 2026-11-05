@@ -37,7 +37,7 @@ export default function AppNavStateIcon({
       <img
         src={inactiveSrc}
         alt=""
-        className="app-nav-icon-idle w-4 h-4 rounded-sm object-contain"
+        className="app-nav-icon-idle w-5 h-5 rounded-sm object-contain"
         onError={() => setFailed(true)}
       />
     </>

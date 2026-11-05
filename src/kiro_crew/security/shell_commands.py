@@ -15,6 +15,8 @@ that command keeps one :data:`SUBST` step in its place.
 
 from __future__ import annotations
 
+import functools
+from contextvars import ContextVar
 from typing import NamedTuple
 
 from . import shell_normalizer as _shell
@@ -79,7 +81,7 @@ class ShellWord(NamedTuple):
         if at is None:
             return False
         rest = self.steps[at + 1 :]
-        return all(step.active and step.char in "<>&" for step in rest)
+        return all(step.active and step.char in "<>&|" for step in rest)
 
 
 class ShellCommand(NamedTuple):
@@ -145,13 +147,16 @@ def _is_fd_prefix(raw: str) -> bool:
     return raw[:1] == "{" and raw[-1:] == "}" and name.isidentifier() and name.isascii()
 
 
-def read_commands(command: str, track: bool = True, _base: int = 0) -> "list[ShellCommand]":
+def read_commands(
+    command: str, track: bool = True, _base: int = 0, nested: bool = True
+) -> "list[ShellCommand]":
     """*command* as the commands a shell would run, in reading order.
 
     *track* follows open ``${…}`` / ``$[…]`` spans (opened by an odd run of live
     ``$``), inside which a ``#`` or ``<<`` is data; a caller that cannot trust that
-    tracking reads the text both ways. The list is never empty: the last command
-    holds whatever follows the last separator.
+    tracking reads the text both ways; *nested* False skips the commands of a quoted
+    substitution body (its :data:`SUBST` step stays). The list is never empty: the last
+    command holds whatever follows the last separator.
     """
     out: list[ShellCommand] = []
     steps: list[ShellStep] = []
@@ -175,7 +180,8 @@ def read_commands(command: str, track: bool = True, _base: int = 0) -> "list[She
             at = _base + pos + step.offset
             dollars = dollars + 1 if step.active and step.char == "$" else 0
             live_syntax = step.active and not expansion
-            if live_syntax and text.startswith("<<", step.offset):
+            near = text[max(step.offset - 1, 0) : step.offset + 3]  # ``<<<`` takes one word
+            if live_syntax and text.startswith("<<", step.offset) and "<<<" not in near:
                 stop = "<<"
                 break
             if live_syntax and step.char == "#" and _shell._opens_comment(text, step.offset):
@@ -186,7 +192,8 @@ def read_commands(command: str, track: bool = True, _base: int = 0) -> "list[She
                 # bash reads "$(…)" from an unquoted start, then the double quote resumes
                 body = text[step.offset + 2 :]
                 close, proven = _shell._matching_close_paren(body, 0)
-                out.extend(read_commands(body[: close - 1 if proven else close], track, at + 2))
+                if nested:
+                    out.extend(read_commands(body[: close - 1 if proven else close], track, at + 2))
                 end = pos + step.offset + 2 + close
                 steps.append(ShellStep(at, _base + end, SUBST, SUBST, 2, False, False))
                 in_redirect = False
@@ -197,7 +204,8 @@ def read_commands(command: str, track: bool = True, _base: int = 0) -> "list[She
                 closer = _shell._backtick_closer(text, step.offset + 1)
                 closed = closer != -1
                 end = closer + 1 if closed else len(text)
-                out.extend(read_commands(text[step.offset + 1 : end - closed], track, at + 1))
+                if nested:
+                    out.extend(read_commands(text[step.offset + 1 : end - closed], track, at + 1))
                 steps.append(ShellStep(at, _base + pos + end, SUBST, SUBST, 2, False, False))
                 in_redirect = False
                 resume, resume_state = pos + end, 2
@@ -207,8 +215,12 @@ def read_commands(command: str, track: bool = True, _base: int = 0) -> "list[She
             elif step.active and expansion and step.char == expansion[-1]:
                 expansion.pop()
             redirect = False
-            if step.active and in_redirect and step.char == "&":
-                pass  # fd-dup operator (``2>&1``), not a command separator
+            prev = steps[-1].char if steps else ""
+            amp_opens = step.char == "&" and text.startswith(">", step.offset + 1)  # ``&>``
+            if step.active and in_redirect and step.char + prev in ("&&", "&>", "&<", "|>"):
+                pass  # ``2>&1`` duplicates, ``>|`` clobbers: one operator, no separator
+            elif step.active and amp_opens and (steps or not out or out[-1].separator != "&"):
+                redirect = in_redirect = True  # ``&>`` / ``&>>``; ``&&>`` stays a separator
             elif step.active and step.char in _CUT_CHARS:
                 cut(step.char)
                 in_redirect = False
@@ -226,3 +238,64 @@ def read_commands(command: str, track: bool = True, _base: int = 0) -> "list[She
         pos, state = resume, resume_state
     out.append(ShellCommand(tuple(steps), stop))
     return out
+
+
+def redirect_free_views(command: str) -> "list[str]":
+    """Each command with a live redirection before an argv word, without its redirections:
+    ``sh -c 2>/dev/null '<script>'`` runs ``<script>``. Read once per frame, without quoted
+    substitution bodies (each is a frame of its own), and only when a ``<`` / ``>`` exists."""
+    if "<" not in command and ">" not in command:
+        return []
+    folded = _shell._fold_line_continuations(command) if "\\\n" in command else command
+    reads = [(folded, read_commands(folded, nested=False))]
+    if any(cmd.separator == "(" for cmd in reads[0][1]):  # ``2>$(x)`` cut its command
+        plain = without_substitutions(folded)
+        reads.append((plain, read_commands(plain, nested=False)))
+    return [
+        " ".join(text[word.start : word.end] for word in argv)
+        for text, commands in reads
+        for argv, redirects in (cmd._parts() for cmd in commands)
+        if redirects and argv and argv[-1].start > redirects[0][0].end
+    ]
+
+
+#: One gate call's payloads per frame text, shared by its walks; unset outside a call.
+_CALL_VIEWS: "ContextVar[dict[str, list[str]] | None]" = ContextVar("call_views", default=None)
+
+
+def sharing_views(fn):  # type: ignore[no-untyped-def]  # one view cache per call of fn
+    @functools.wraps(fn)
+    def run(*args, **kwargs):  # type: ignore[no-untyped-def]
+        scope = _CALL_VIEWS.set({})
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            _CALL_VIEWS.reset(scope)
+
+    return run
+
+
+def redirect_hidden_payloads(command: str) -> "list[str]":
+    """Each :func:`redirect_free_views` view's payloads, for a walk to add to its frame's."""
+    cache = {} if (shared := _CALL_VIEWS.get()) is None else shared
+    if command not in cache:
+        views, nested = redirect_free_views(command), _shell._nested_shell_payloads
+        cache[command] = [
+            p for v in views for p in nested(_shell._shell_tokens(v), allow_join=False)
+        ]
+    return cache[command]
+
+
+def without_substitutions(command: str) -> str:
+    """*command* with each unquoted ``$(…)`` / ``<(…)`` / ``>(…)`` as the word ``_``, which
+    :func:`read_commands` would cut (``bash -c 2>$(x) '<script>'``)."""
+    out: list[str] = []
+    pos = 0
+    while True:
+        steps = _shell._iter_shell_chars(command[pos:])
+        opens = (pos + s.offset for s in steps if s.active and s.char in "$<>")
+        hit = next((at for at in opens if command.startswith("(", at + 1)), None)
+        if hit is None:
+            return "".join(out) + command[pos:]
+        out.append(command[pos:hit] + "_")
+        pos = _shell._matching_close_paren(command, hit + 2)[0]

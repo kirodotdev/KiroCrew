@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import type React from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { ChevronDown, ChevronRight, MessageSquarePlus, Plug } from 'lucide-react'
+import { ChevronDown, ChevronRight, MessageSquarePlus, Plug, Rows2 } from 'lucide-react'
 
 import { api } from '../../api/client'
 import SessionActionsMenu from '../../components/SessionActionsMenu'
@@ -19,12 +19,13 @@ import { i18nT } from '../../i18n/t'
 import { deriveLoadedMcpTools } from '../../lib/mcpLoadedTools'
 import { useAppSelector } from '../../store'
 import type { McpServer } from '../../types'
+import InitialPromptSubmenu from './InitialPromptSubmenu'
 import McpToolsPanel from './McpToolsPanel'
 
 /** The session header's dropdown: reveal, rename, auto-title, mode, the MCP
- *  servers submenu and the rest of SessionActionsMenu. Header chrome, so it
+ *  servers and initial-prompt submenus and the rest of SessionActionsMenu. Header chrome, so it
  *  lives beside the page, not in the message-content module. */
-export function ChatHeaderMenu({ activeSlot, agent, onReveal, onRename, onAutoTitle, mode, sidebarOnScreen, omitPopout, triggerLabel, newSessionHere }: {
+export function ChatHeaderMenu({ activeSlot, agent, onReveal, onRename, onAutoTitle, mode, sidebarOnScreen, omitPopout, triggerLabel, newSessionHere, onSplitDown }: {
   activeSlot: string | null; agent?: string; onReveal?: () => void; onRename?: () => void; onAutoTitle?: () => void; mode?: string
   /** Whether the sidebar (and its folder-order banner) is on screen -- see SessionActionsMenu. */
   sidebarOnScreen?: boolean
@@ -39,6 +40,14 @@ export function ChatHeaderMenu({ activeSlot, agent, onReveal, onRename, onAutoTi
    *  session's folder. It lives in this menu, not beside it, because the phone
    *  bar's centre cell holds two controls (AUTOSDE `max-two-buttons-per-row`). */
   newSessionHere?: { label: string; disabled?: boolean; onSelect: () => void }
+  /** Desktop only: start split view with the new pane below this session. The
+   *  split view button already starts the side-by-side one, so this menu has no
+   *  Split right row. The Split down row sits after Pop out to window, not at the
+   *  top, so Rename and Pin keep their place. It lives in this menu, not beside the
+   *  split view button, because that header group already holds three buttons (the
+   *  `max-two-buttons-per-row` rule). Absent when split view is off or the session
+   *  already belongs to a saved split. */
+  onSplitDown?: () => void
 }) {
   // Controlled open state: lets the colour-swatch row (not a Radix menu item)
   // close the menu after a pick, via the onColorPicked hook passed below.
@@ -92,13 +101,13 @@ export function ChatHeaderMenu({ activeSlot, agent, onReveal, onRename, onAutoTi
           /* No aria-label here: the visible title IS the accessible name, and the
              menu's role is appended as sr-only text -- an aria-label would replace
              the title, which on the phone this trigger is the only copy of. */
-          <button data-testid="session-title-menu" className="flex min-w-0 items-center gap-1 px-1 py-1 rounded-md text-text-strong cursor-pointer bg-transparent border-none transition-colors hover:bg-bg-hover" aria-haspopup="menu">
+          <button data-testid="session-title-menu" data-chat-header-focus className="flex min-w-0 items-center gap-1 px-1 py-1 rounded-md text-text-strong cursor-pointer bg-transparent border-none transition-colors hover:bg-bg-hover" aria-haspopup="menu">
             <span className="session-header-title text-[15px] font-semibold truncate min-w-0">{triggerLabel}</span>
             <span className="sr-only">, {i18nT('pages.chatPage.session_options')}</span>
             <ChevronDown size={16} className="shrink-0 text-muted" />
           </button>
         ) : (
-          <button className="px-0.5 py-1 rounded-md text-muted hover:text-text cursor-pointer bg-transparent border-none transition-all" aria-label={i18nT('pages.chatPage.session_options')}>
+          <button data-chat-header-focus className="px-0.5 py-1 rounded-md text-muted hover:text-text cursor-pointer bg-transparent border-none transition-all" aria-label={i18nT('pages.chatPage.session_options')}>
             <ChevronDown size={14} />
           </button>
         )}
@@ -144,7 +153,15 @@ export function ChatHeaderMenu({ activeSlot, agent, onReveal, onRename, onAutoTi
                 />
               </DropdownMenuSubContent>
             </DropdownMenuSub>,
+            // The session's first prompt, with Copy and "New session from this
+            // prompt" (#25977). Read lazily from the start of the transcript.
+            <InitialPromptSubmenu key="initial-prompt" slotKey={activeSlot} mode={mode} onStarted={() => setOpen(false)} />,
           ]}
+          layoutSlot={onSplitDown ? (
+            <DropdownMenuItem key="split-down" onSelect={() => onSplitDown()}>
+              <Rows2 size={13} className="shrink-0 text-muted" /> {i18nT('components.chatPane.split_down')}
+            </DropdownMenuItem>
+          ) : undefined}
           onReveal={onReveal}
           onAutoTitle={onAutoTitle}
           onRename={onRename}

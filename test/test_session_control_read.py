@@ -1,14 +1,8 @@
 """Reading another session's transcript through ``session_control.read_messages``.
 
-Covers the cursor contract: ``total`` excludes ``done`` markers and streaming
-``chunk`` rows, and on a trimmed session ``total``, row ``index`` and
-``next_since`` count the durable frozen prefix, so consecutive ``since`` pages
-do not overlap. A ``since`` past the end or below that prefix is refused with a
-409 ``cursor_unavailable``, and the fallback tail read returns the newest rows.
-
-Also covers the ``limit`` tail read, the ``streaming`` and ``queue_depth``
-fields, truncation at ``MAX_READ_CONTENT_CHARS`` after credential redaction, and
-the refusal of a ``limit`` above ``MAX_READ_MESSAGES``.
+Covers the cursor contract (positions count the durable prefix; an unservable
+``since`` gets a 409 ``cursor_unavailable``), the ``limit`` tail read, and redaction
+before truncation at ``MAX_READ_CONTENT_CHARS``.
 """
 
 from __future__ import annotations
@@ -32,8 +26,8 @@ from kiro_crew.dashboard import session_control as sc
 def test_completion_markers_never_advance_the_cursor(tmp_path):
     """``done`` rows are appended but never persisted, so counting them drifts.
 
-    Mutation guard: a cursor that counts them names a position rehydration
-    cannot reproduce, so ``since=total`` skips real messages after a restart.
+    Rehydration cannot reproduce such a position, so ``since=total`` would skip real
+    messages after a restart.
     """
     state = _make_state(tmp_path)
     caller = _slot(state, "chat-1")
@@ -50,13 +44,8 @@ def test_completion_markers_never_advance_the_cursor(tmp_path):
 def test_a_cursor_past_the_end_is_refused_rather_than_clamped(tmp_path):
     """A shrunk transcript must not silently drop the rows that replaced the old tail.
 
-    Rewind and regenerate move ``total`` backwards under a caller still holding the
-    old position. Clamping that cursor to ``total`` starts the read at the end, so
-    every replacement row below it is skipped permanently and nothing in the
-    response says so -- the same silent-mis-window failure the trimmed-session
-    guard already refuses loudly.
-
-    Mutation guard: restoring `min(since, total)` returns rows instead of raising.
+    Rewind and regenerate move ``total`` backwards; clamping the old cursor to it
+    would silently skip every replacement row.
     """
     state = _make_state(tmp_path)
     caller = _slot(state, "chat-1")
@@ -74,8 +63,7 @@ def test_a_cursor_past_the_end_is_refused_rather_than_clamped(tmp_path):
 def test_a_credential_at_the_truncation_boundary_is_still_redacted(tmp_path):
     """Redaction runs over the whole message, then the slice happens.
 
-    Mutation guard: truncating first cuts the secret into a prefix the scanner
-    does not match, and that fragment ships to the caller.
+    Truncating first would cut the secret into a prefix the scanner does not match.
     """
     state = _make_state(tmp_path)
     caller = _slot(state, "chat-1")
@@ -99,9 +87,8 @@ def test_a_credential_at_the_truncation_boundary_is_still_redacted(tmp_path):
 def test_the_cursor_stops_before_the_streaming_tail(tmp_path):
     """Chunk rows are deleted when the segment flushes, so the cursor skips them.
 
-    Mutation guard: counting them inflates ``total``; the flush shrinks the list
-    back under it, and the next ``since=total`` read misses the finished reply
-    permanently.
+    Counting them inflates ``total``, and after the flush the next ``since=total`` read
+    misses the finished reply.
     """
     state = _make_state(tmp_path)
     caller = _slot(state, "chat-1")
@@ -166,12 +153,8 @@ def test_read_since_returns_only_what_arrived_after(tmp_path):
 def test_a_stale_cursor_after_a_shrink_is_recoverable(tmp_path):
     """A compacted transcript shrinks; the poller must be able to SEE what replaced it.
 
-    Clamping the stale cursor to ``total`` looks friendlier -- it answers
-    ``messages: []`` and hands back a plausible cursor -- but the rows below the
-    clamp are the replacement content, and a cursor never moves backwards, so they
-    are skipped permanently while the response reads as "nothing new". Refusing
-    sends the caller to a tail read, which actually returns that content, so the
-    loud answer is the recoverable one.
+    Clamping would answer "nothing new" and skip the replacement rows for good.
+    Refusing sends the caller to a tail read, which returns them.
     """
     state = _make_state(tmp_path)
     caller = _slot(state, "chat-1")
@@ -221,10 +204,8 @@ def test_read_rejects_an_out_of_range_limit(tmp_path):
 def test_the_read_cursor_is_absolute_across_a_trimmed_window(tmp_path):
     """Window length freezes at the retention cap; `total` and the indexes must not.
 
-    Mutation guard: deriving `total` from `len(slot.messages)` makes it freeze at
-    the cap, so a caller cannot tell how much history exists. Basing it on
-    `_disk_older_count` instead of the durable counter shifts every position by
-    the transient rows that were trimmed (here: 20), which this pins.
+    `len(slot.messages)` would freeze at the cap, and `_disk_older_count` would shift
+    every position by the trimmed transient rows (here: 20).
     """
     state = _make_state(tmp_path)
     caller = _slot(state, "chat-1")
@@ -249,15 +230,8 @@ def test_the_read_cursor_is_absolute_across_a_trimmed_window(tmp_path):
 def test_cursor_pagination_stays_exact_once_rows_have_been_trimmed(tmp_path):
     """Two consecutive `since` pages on a trimmed session never overlap.
 
-    This is the regression the durable counter exists for: `_disk_older_count`
-    counts every trimmed row including transient ones, so basing positions on it
-    advances the base with no durable row behind it — every position shifts and
-    a `since` read serves a durable message the caller already had. Basing on
-    the durable-only counter keeps the two spaces aligned.
-
-    Mutation guard: swapping the base back to `_disk_older_count` makes the
-    second page re-serve the first page's rows (an overlap this asserts away);
-    on the pre-fix code the first `since` read raised `cursor_unavailable`.
+    `_disk_older_count` also counts trimmed transient rows, so basing positions on it
+    shifts them and a `since` page re-serves rows; the durable-only counter is used.
     """
     state = _make_state(tmp_path)
     caller = _slot(state, "chat-1")
@@ -315,13 +289,8 @@ def test_a_since_read_on_a_trimmed_session_returns_a_cursor_not_a_409(tmp_path):
 def test_a_cursor_under_the_trimmed_prefix_is_refused_not_skipped_over(tmp_path):
     """A `since` below the durable base cannot be served from memory.
 
-    The rows in ``[since, base)`` exist only on disk; starting the read at the
-    window instead would silently skip them, which is the same silent-gap
-    failure the past-the-end refusal exists for. Refusing loudly sends the
-    caller to a tail read.
-
-    Mutation guard: clamping the offset to 0 returns the window as if it were
-    the rows asked for.
+    The rows in ``[since, base)`` exist only on disk; starting at the window would
+    silently skip them, so the caller is sent to a tail read.
     """
     state = _make_state(tmp_path)
     caller = _slot(state, "chat-1")
@@ -343,11 +312,8 @@ def test_a_cursor_under_the_trimmed_prefix_is_refused_not_skipped_over(tmp_path)
 def test_an_untrimmed_session_still_reports_a_gap_free_cursor(tmp_path):
     """With nothing trimmed the cursor is exact, which is the common case.
 
-    An even older version of this test asserted a `trimmed` gap report on a
-    session whose rows HAD aged out — that gap count was derived from the mixed
-    all-rows counter that made the positions wrong. Positions are now based on
-    the durable-only prefix counter, so trimmed sessions get exact cursors too
-    (see the trimmed-window tests above) and no gap report exists on any path.
+    Positions use the durable-only prefix counter, so trimmed sessions get exact
+    cursors too and no path reports a gap.
     """
     state = _make_state(tmp_path)
     caller = _slot(state, "chat-1")

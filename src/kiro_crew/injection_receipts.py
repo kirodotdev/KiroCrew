@@ -33,7 +33,7 @@ from pathlib import Path
 from typing import Any, Final
 
 from kiro_crew.config.paths import data_home
-from kiro_crew.owner_only_files import owner_only_opener_for
+from kiro_crew.owner_only_files import mkdirs_owner_only, owner_only_opener_for
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +65,27 @@ def collect() -> Iterator[dict[str, dict[str, Any]]]:
         yield sink
     finally:
         _SINK.reset(token)
+
+
+def replay(records: dict[str, dict[str, Any]]) -> None:
+    """Record tiers another process rendered, as if they were rendered here.
+
+    The twin of :func:`kiro_crew.context_omissions.replay`, for a read done in a
+    recall child: its records were gathered there and belong to the build that took
+    the result. Kinds outside :data:`KINDS` are ignored. Outside a collection this is
+    a no-op, like :func:`record`.
+    """
+    sink = _SINK.get()
+    if sink is None:
+        return
+    for kind, entry in records.items():
+        if kind in KINDS and isinstance(entry, dict):
+            ids = entry.get("ids")
+            omitted = entry.get("omitted")
+            sink[kind] = {
+                "ids": [i for i in ids if isinstance(i, str)] if isinstance(ids, list) else [],
+                "omitted": max(0, omitted) if isinstance(omitted, int) else 0,
+            }
 
 
 def row_key(row: object) -> str:
@@ -175,7 +196,7 @@ def write_line(line: dict[str, Any]) -> None:
         stamp = datetime.fromisoformat(str(line["ts"]).replace("Z", "+00:00"))
         path = _receipt_dir() / f"{stamp.astimezone().strftime('%Y-%m-%d')}.jsonl"
         if not path.parent.exists():
-            path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            mkdirs_owner_only(path.parent)
         text = json.dumps(line, ensure_ascii=False, separators=(",", ":"))
         with open(path, "a", encoding="utf-8", opener=owner_only_opener_for(path)) as fh:
             fh.write(text + "\n")

@@ -25,6 +25,7 @@ from kiro_crew.atomic_write import atomic_write, on_event_loop
 from kiro_crew.aws_project_profiles import PROJECT_PROFILES_KEY, project_profile_refusals
 from kiro_crew.config import migration as _migration
 from kiro_crew.config import sections as _sections
+from kiro_crew.config import write_provenance
 from kiro_crew.config.loader_locations import config_local_path, config_path, read_config_text
 from kiro_crew.config.migration import CONNECTIONS_UI_MIGRATION_MARKER
 from kiro_crew.config.paths import config_dir
@@ -49,13 +50,13 @@ def unsandboxed_exec_platform_default() -> bool:
     unconfined there would hide a repairable host.
 
     Resolved HERE, into the dataclass value, rather than downstream from whether
-    the key is present. Presence cannot carry the meaning safely:
-    :meth:`KiroCrewConfig.save` publishes the whole in-memory snapshot through
-    ``to_dict()`` -> ``asdict(self.agent)``, so every full-document write (the boot
-    default-config write, CLI one-shots) materializes this key. Were the effective
-    policy keyed on presence, that write would silently turn "never decided" into a
-    declared lockdown and re-brick every Windows spawn. Resolving into the value
-    makes such a round-trip write ``true`` on Windows, which changes nothing.
+    the key is present, so every reader takes the effective policy from one field.
+    :meth:`KiroCrewConfig.save` builds the whole in-memory snapshot through
+    ``to_dict()`` -> ``asdict(self.agent)``, which holds this resolved value, and
+    strips the key before writing unless :func:`unsandboxed_exec_declared` says the
+    operator recorded it. If the key were written, every full-document write (the boot
+    default-config write, CLI one-shots) would turn "never decided" into a
+    declaration that outranks the platform default.
 
     A function rather than a module constant so tests can pin the verdict without
     patching ``sys.platform`` process-wide.
@@ -73,9 +74,9 @@ def unsandboxed_exec_declared() -> bool:
     resolved dataclass value (see :func:`unsandboxed_exec_platform_default`); this
     exists so a message can tell "you set this to false" apart from "you never set
     it", and so the audit event can name an operator grant rather than a platform
-    one. Because a full-document ``save()`` materializes the key, a host that never
-    answered can read as declared afterwards — acceptable for a label, and the
-    reason this must not decide anything.
+    one. :meth:`KiroCrewConfig.save` reads it too, to leave an undeclared key off
+    disk, so a host that never answered still reads as undeclared after a
+    full-document write.
 
     An unreadable or non-object document contributes nothing: a corrupt config is
     not a declaration.
@@ -114,6 +115,17 @@ def acp_backend_stored_as_kiro() -> bool:
     from kiro_crew.acp_backends import STORED_BACKEND_KIRO
 
     return _stored_agent_value("acp_backend") == STORED_BACKEND_KIRO
+
+
+def acp_backend_bundle_route() -> bool:
+    """Whether the stored ``agent.kas_bundle`` is on (the bundled KAS engine route).
+
+    Reads the documents (overlay winning) like :func:`acp_backend_stored_as_kiro`.
+    On the bundle route a Kiro CLI pick stays on kiro-cli: KAS there spawns Crew's
+    own bundled engine, which kiro-cli's own v3 support says nothing about, so the
+    gateway floor and the per-process probe both decline to promote the pick.
+    """
+    return bool(_stored_agent_value("kas_bundle") is True)
 
 
 def acp_backend_overlay_owned() -> bool:
@@ -202,7 +214,7 @@ def _raw_config() -> dict:
         return {}
     try:
         raw = json.loads(read_config_text(p))
-    except (json.JSONDecodeError, OSError):
+    except (json.JSONDecodeError, UnicodeDecodeError, OSError):
         return {}
     return raw if isinstance(raw, dict) else {}
 
@@ -291,11 +303,25 @@ def _refuse_unpublishable(data: dict, path: Path) -> None:
     through the same function is untouched -- it has neither mapping.
     """
     _refuse_deepseek_env_plaintext(data, path)
+    _refuse_vault_env_plaintext(data, path, "strands_env", "a Strands session")
     _refuse_agent_env_entries(data, path)
 
 
 def _refuse_deepseek_env_plaintext(data: dict, path: Path) -> None:
     """Refuse a plaintext provider key under ``agent.deepseek_env``.
+
+    One of the maps :func:`_refuse_vault_env_plaintext` guards; kept by this name
+    because the loader re-exports it.
+    """
+    _refuse_vault_env_plaintext(data, path, "deepseek_env", "a DeepSeek session")
+
+
+def _refuse_vault_env_plaintext(data: dict, path: Path, key: str, refused_session: str) -> None:
+    """Refuse a plaintext provider key under ``agent.<key>``.
+
+    The rule every ``secret://``-only provider-key map shares
+    (``agent.deepseek_env``, ``agent.strands_env``); *refused_session* names the
+    session the spawn-time validator refuses while a plaintext stands.
 
     That mapping takes ``secret://`` references only, and a plaintext that reaches
     disk is already the defect the spawn-time validator would later name.
@@ -315,23 +341,25 @@ def _refuse_deepseek_env_plaintext(data: dict, path: Path) -> None:
     absent or unparseable file fails closed.
     """
     agent = data.get("agent") if isinstance(data, dict) else None
-    mapping = agent.get("deepseek_env") if isinstance(agent, dict) else None
+    mapping = agent.get(key) if isinstance(agent, dict) else None
     plaintext = _sections.deepseek_env_plaintext_keys(mapping)
     if not plaintext:
         return
-    names = ", ".join(repr(key) for key in plaintext)
-    if _deepseek_env_on_disk(path) == mapping:
+    names = ", ".join(repr(name) for name in plaintext)
+    if _agent_key_on_disk(path, key) == mapping:
         logger.warning(
-            "config.json already holds a literal value under agent.deepseek_env entry %s; "
+            "config.json already holds a literal value under agent.%s entry %s; "
             "this write left that mapping as it found it. That mapping takes a "
-            "'secret://<vault name>' reference only, and a DeepSeek session is refused "
+            "'secret://<vault name>' reference only, and %s is refused "
             "while it stands: save the key under Settings > Secrets, then map it as "
             "'secret://<vault name>'.",
+            key,
             names,
+            refused_session,
         )
         return
     raise ConfigWriteRefused(
-        f"agent.deepseek_env entry {names} holds a literal value, so the config "
+        f"agent.{key} entry {names} holds a literal value, so the config "
         "write was refused: this mapping takes a 'secret://<vault name>' reference "
         "only, and no provider key is ever stored in config.json. Save the key "
         "under Settings > Secrets, then map it as 'secret://<vault name>'."
@@ -500,6 +528,9 @@ def write_config_atomically(path: Path, data: dict, *, fsync: bool = False) -> N
     """
     _refuse_unpublishable(data, path)
     _refuse_aws_project_profiles(data, path)
+    # The name the caller asked for, before a symlinked config is resolved below: the
+    # sandbox seals the NAME, so that is what the publication record is keyed by.
+    name_as_given = path
     # Resolve BEFORE stat/write so a symlinked config keeps pointing at its
     # target (and the mode preserved is the target's, not the link's).
     try:
@@ -564,7 +595,17 @@ def write_config_atomically(path: Path, data: dict, *, fsync: bool = False) -> N
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = json.dumps(data, indent=2) + "\n"
     if platform_compat.IS_POSIX:
-        atomic_write(path, payload, fsync=fsync, mode=mode)
+        # Vouch for the staged inode before it is published, so a Linux sandbox whose
+        # pre-spawn pass recorded the previous one does not refuse the gateway's own
+        # save. Only the POSIX branch: no other platform runs the namespace launcher
+        # that reads the record.
+        atomic_write(
+            path,
+            payload,
+            fsync=fsync,
+            mode=mode,
+            on_staged=write_provenance.staging_hook(name_as_given),
+        )
     elif lock_down:
         # Windows: the mode bits above are inert (fchmod_safe is a documented
         # no-op), so there is nothing to preserve and no conflict with
@@ -702,7 +743,7 @@ def _config_write_lock(p: Path, *, wait: bool = True) -> Iterator[None]:
     """
     lock_path = p.parent / (p.name + ".lock")
     p.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(str(lock_path), os.O_RDWR | os.O_CREAT, 0o600)
+    fd = platform_compat.open_create_or_existing(str(lock_path), os.O_RDWR, 0o600)
     try:
         with platform_compat.file_lock(fd, exclusive=True, wait=wait):
             yield

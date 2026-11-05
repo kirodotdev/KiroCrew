@@ -812,14 +812,54 @@ def _snapshot_sqlite_pinned(
                     os.close(fd)
 
 
+#: Opens a staged file without following a link at the leaf or blocking on a FIFO.
+_STAGE_OPEN_FLAGS = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+
+
+def _staged_file_mode(src_mode: int) -> int:
+    """The owner-only mode a staged file gets: ``0o700`` if the source is owner-executable.
+
+    kiro-cli runs its engine with the ``node`` binary it keeps in this store, so a
+    staged copy without owner execute makes the pod's kiro-cli exit at boot. Only
+    ``S_IXUSR`` is read from the source. Group and other bits are never granted.
+    """
+    return 0o700 if src_mode & stat.S_IXUSR else 0o600
+
+
+def _restore_owner_exec_pinned(dst_dir_fd: int, name: str) -> None:
+    """Give owner execute back to a ``0o600`` copy that an earlier boot staged.
+
+    A restart reuses the pod's os-home and staging is create-only, so such a copy
+    would stay unrunnable on every later boot. Only a regular file with one link,
+    opened without following a link, at exactly ``0o600`` changes. Any other mode is
+    the pod's own choice. ``fchmod`` on that descriptor cannot reach another inode,
+    and the pod's bytes are never replaced. Best-effort, like the rest of staging.
+    """
+    try:
+        fd = os.open(name, _STAGE_OPEN_FLAGS, dir_fd=dst_dir_fd)
+    except OSError:
+        return
+    try:
+        st = os.fstat(fd)
+        if stat.S_ISREG(st.st_mode) and st.st_nlink == 1 and stat.S_IMODE(st.st_mode) == 0o600:
+            os.fchmod(fd, stat.S_IRWXU)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+
+
 def _stage_runtime_auth_store(os_home: Path, mapping: StoreMapping) -> int:
     """Mirror one HOME-relative runtime auth store into *os_home*. Best-effort.
 
     Same discipline as the SSO-cache staging above: every directory is created
     through a PINNED no-follow descriptor so a link planted at any component cannot
     redirect the copy, every level is forced to ``0o700`` and every file to
-    ``0o600``, and copies are create-only so a pod that already refreshed its own
-    credential is not clobbered.
+    ``0o600``, or ``0o700`` when the source is owner-executable (see
+    :func:`_staged_file_mode`), and copies are create-only so a pod that already
+    refreshed its own credential is not clobbered. The one exception to
+    create-only is :func:`_restore_owner_exec_pinned`, which gives owner execute
+    back to an executable an earlier boot staged at ``0o600``.
 
     A SQLite database is SNAPSHOTTED rather than copied, and its ``-wal`` / ``-shm``
     / ``-journal`` sidecars are skipped entirely -- see
@@ -909,18 +949,37 @@ def _stage_runtime_auth_store(os_home: Path, mapping: StoreMapping) -> int:
                         f"{_RUNTIME_AUTH_STORE_FILE_CAP} files; staging stopped"
                     )
                     return staged
+                # Opened here so the mode comes from the inode whose bytes are
+                # copied. copy_file_pinned takes ownership of the descriptor.
                 try:
-                    pinned_fs.copy_file_pinned(
+                    src_fd = os.open(name, _STAGE_OPEN_FLAGS, dir_fd=src_dir_fd)
+                except OSError:
+                    continue
+                try:
+                    src_st = os.fstat(src_fd)
+                except OSError:
+                    os.close(src_fd)
+                    continue
+                try:
+                    copied = pinned_fs.copy_file_pinned(
                         str(Path(dirpath) / name),
-                        dir_fd=src_dir_fd,
-                        name=name,
+                        src_fd=src_fd,
                         dst_dir_fd=dst_dir_fd,
                         dst_name=name,
                         skip_existing=True,
-                        force_mode=0o600,
+                        force_mode=_staged_file_mode(src_st.st_mode),
                     )
                 except OSError:
                     continue
+                # copy_file_pinned's own source screen: a source it refuses to
+                # copy cannot cause a repair either.
+                if (
+                    not copied
+                    and stat.S_ISREG(src_st.st_mode)
+                    and src_st.st_nlink == 1
+                    and src_st.st_mode & stat.S_IXUSR
+                ):
+                    _restore_owner_exec_pinned(dst_dir_fd, name)
                 staged += 1
     finally:
         pinned_fs.close_all(fds)
@@ -1185,6 +1244,9 @@ def _stage_runtime_auth_store_windows(os_home: Path, mapping: StoreMapping) -> i
                         str(target / name),
                         src_fd=src_fd,
                         skip_existing=True,
+                        # No exec-bit rule, unlike the POSIX twin: Windows decides
+                        # executability by extension, so a staged node.exe runs at
+                        # any mode, and NTFS keeps no POSIX mode to repair.
                         force_mode=0o600,
                     )
                 except (OSError, ValueError):

@@ -3,8 +3,10 @@
  *
  * Contract under test:
  * - The tab is a SubNav: Feature Previews first, then the internals pages
- *   (Logs, System, Telemetry, Storage, MCP Pool, Memory, Config, Debug Tools,
- *   Archive), every one listed with no consent gate in front of it
+ *   (Logs, System, Telemetry, Storage, Memory, Config, Debug Tools, Archive),
+ *   every one listed with no consent gate in front of it
+ * - MCP Management is not one of them: its old page key redirects to
+ *   Customize → Connections → MCP Servers
  * - There is no Developer Mode toggle and no Updates section
  * - The Feature Previews page holds Developer Tools, Feature Previews and
  *   (desktop only) Gateway
@@ -18,7 +20,7 @@ import { api } from '../api/client'
 
 function LocationProbe() {
   const loc = useLocation()
-  return <div data-testid="loc">{loc.pathname}</div>
+  return <div data-testid="loc">{loc.pathname + loc.search + loc.hash}</div>
 }
 
 // The Feature Previews section this panel mounts carries one card whose switch is
@@ -36,7 +38,7 @@ function renderPanel(path = '/settings/developer/feature-previews') {
   )
 }
 
-const PAGES = ['Feature Previews', 'Logs', 'System', 'Telemetry', 'Storage', 'MCP Management', 'Memory', 'Config', 'Debug tools', 'Archive']
+const PAGES = ['Feature Previews', 'Logs', 'System', 'Telemetry', 'Storage', 'Memory', 'Config', 'Debug tools', 'Archive']
 
 describe('DeveloperPanel', () => {
   beforeEach(() => {
@@ -60,6 +62,13 @@ describe('DeveloperPanel', () => {
     expect(names).toEqual(PAGES)
   })
 
+  it('sends the old MCP Management page key to Customize → Connections → MCP Servers', async () => {
+    renderPanel('/settings/developer/mcp-pool')
+    await waitFor(() =>
+      expect(screen.getByTestId('loc').textContent).toBe('/capabilities?tab=mcp&view=mcp-servers#mcp-management'),
+    )
+  })
+
   it('choosing a page navigates to its path segment', () => {
     renderPanel()
     fireEvent.click(screen.getByRole('option', { name: 'Storage' }))
@@ -77,7 +86,7 @@ describe('DeveloperPanel', () => {
       renderPanel()
       expect(screen.getByRole('heading', { name: 'Feature Previews' })).toBeInTheDocument()
       expect(screen.getByRole('switch', { name: 'Webhooks' })).toHaveAttribute('aria-checked', 'false')
-      expect(screen.queryByRole('switch', { name: 'Mates' })).toBeNull()
+      expect(screen.queryByRole('switch', { name: 'Bots' })).toBeNull()
       expect(screen.getByRole('switch', { name: 'Chat on a crew' })).toHaveAttribute('aria-checked', 'false')
     })
 
@@ -145,13 +154,22 @@ describe('DeveloperPanel', () => {
       installBridge({ get: () => Promise.resolve(true), set: vi.fn(() => Promise.resolve(false)) })
       renderPanel()
       await screen.findByRole('switch', { name: 'Run a local gateway' })
-      expect(screen.getByText(/already reaches a crew on another machine/)).toBeInTheDocument()
+      // The visible line names the prerequisite and the cost of skipping it. A
+      // Remote Crew connection is "a crew on another machine" too, so a line
+      // that only says that reads as permission to turn this off.
+      expect(
+        screen.getByText(
+          'Leave it on unless “Set Remote Host…” and a tunnel already reach a crew. Otherwise the app cannot connect.',
+        ),
+      ).toBeInTheDocument()
+      expect(screen.queryByText(/connects to a crew on another machine/)).not.toBeInTheDocument()
+      expect(screen.getByTitle(/already reaches a crew on another machine/)).toBeInTheDocument()
       // A hand-run tunnel alone is refused as a foreign holder (#3810 review),
       // so the copy must say the crew is saved for the port AND name where
       // the app-held tunnel is switched on.
-      expect(screen.getByText(/“Set Remote Host…” in the Connection menu/)).toBeInTheDocument()
-      expect(screen.getByText(/Keep an SSH tunnel to this crew open/)).toBeInTheDocument()
-      expect(screen.getByText(/Settings → Remote Crew connections stop when this is off/)).toBeInTheDocument()
+      expect(screen.getByTitle(/“Set Remote Host…” in the Connection menu/)).toBeInTheDocument()
+      expect(screen.getByTitle(/Keep an SSH tunnel to this crew open/)).toBeInTheDocument()
+      expect(screen.getByTitle(/Settings → Remote Crew connections stop when this is off/)).toBeInTheDocument()
       const link = screen.getByRole('link', { name: /How to set up an SSH tunnel/ })
       expect(link).toHaveAttribute(
         'href',

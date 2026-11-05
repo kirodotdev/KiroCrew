@@ -535,7 +535,8 @@ class TestOrphanForwarderReclaim:
             "s.listen(1)\n"
             "sys.stdout.write('%d\\n' % s.getsockname()[1])\n"
             "sys.stdout.flush()\n"
-            "time.sleep(120)\n"
+            "time.sleep(120)\n",
+            encoding="utf-8",
         )
         script.chmod(0o700)
         proc = subprocess.Popen(

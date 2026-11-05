@@ -779,15 +779,15 @@ class TestLogsCmdOtherSources:
         assert "No gateway logs found" in capsys.readouterr().err
         assert sel_rec.operations == ["logs"]
 
-    def test_zero_lines_argument_falls_back_to_the_default(
+    def test_zero_lines_argument_shows_no_backlog(
         self, monkeypatch, tmp_path, sel_rec, capsys
     ) -> None:
-        """``lines=0`` selects the default tail length on an unsupported service host."""
+        """``lines=0`` prints none of the existing log on an unsupported service host."""
         monkeypatch.setattr(cli_server, "current_platform", lambda: Platform.UNSUPPORTED)
         monkeypatch.setattr(cli_server, "config_dir", lambda: tmp_path)
         (tmp_path / "gateway.log").write_text("x\n", encoding="utf-8", newline="\n")
         cli_server._logs_cmd(argparse.Namespace(follow=False, lines=0))
-        assert capsys.readouterr().out == "x\n"
+        assert capsys.readouterr().out == ""
 
 
 # --------------------------------------------------------------------------

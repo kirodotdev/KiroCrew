@@ -15,14 +15,16 @@ import { createTabModeForClick } from './chrome'
 import type { SidebarScope } from './scope'
 import OfflineMenuReason from '../../components/OfflineMenuReason'
 import { offlineMenuRow, offlineProps } from '../../utils/offline'
+import { isMateManaged } from '../../utils/mateFolders'
+import { appIcon } from '../../apps/appIcons'
 
 /** The header row. */
 export function renderSidebarHeader(shell: SidebarScope): React.ReactNode {
   const { cleanupOpen, collapsible, connected, createChatInFolder, createChatMutation, createDocMutation, createEphemeralChatMutation,
-    createRemoteChatMutation, creatingSlot, folderCleanupOpen, folderCompare, folders, isMobile,
+    createRemoteChatMutation, createSessionKindMutation, creatingSlot, folderCleanupOpen, folderCompare, folders, isMobile,
     missingLanes, navigate, newChatMenuOpen, onMenuCloseAutoFocus, onOpenSlotInNewTab,
     paintedSidebarWidth, rawColumns, refuseCreateOffline, remoteCrewChatPreview, remoteCrewError, remoteCrewErrorId,
-    restorePreBoardWidth, seedStateLanesMutation, setCleanupOpen, setFolderCleanupOpen, setFolderModal,
+    restorePreBoardWidth, seedStateLanesMutation, sessionKindDescriptors, setCleanupOpen, setFolderCleanupOpen, setFolderModal,
     setBroadcastOpen, setManageTagsOpen, setNewChatMenuOpen, setRemoteCrewError, setSeedError, setToggleSaveFailed,
     tagColumnsEnabled, warmCrews } = shell
   const { setCleanupError, setCleanupExpanded } = shell.sessionCleanup
@@ -199,6 +201,33 @@ export function renderSidebarHeader(shell: SidebarScope): React.ReactNode {
                 <DropdownMenuItem data-testid="new-folder" {...offlineMenuRow(connected, i18nT('utils.offline.create_folders'), i18nT('pages.chatSidebar.new_folder'), () => { setFolderModal({ mode: 'create', parentId: '' }) })} {...uiLocation('sessions.create-menu.new-folder')}>
                   <FolderPlus size={14} className="text-muted" /> {i18nT('pages.chatSidebar.new_folder')}
                 </DropdownMenuItem>
+                {/* App-contributed kinds of session (contributes.sessionKinds), in
+                 *  their own group under the two everyday creates. Each label is the
+                 *  app's own literal: the core has no catalog key for a kind it does
+                 *  not know. No enabled app declaring one ⇒ no group at all. */}
+                {sessionKindDescriptors.length > 0 && (
+                  <>
+                    <DropdownMenuSeparator />
+                    {sessionKindDescriptors.map(d => (
+                      <DropdownMenuItem
+                        key={`${d.appName}:${d.kindId}`}
+                        className={d.menuDescription ? 'items-start' : undefined}
+                        data-testid={`new-session-kind-${d.appName}-${d.kindId}`}
+                        disabled={creatingSlot}
+                        {...offlineMenuRow(connected, i18nT('utils.offline.create_sessions'), d.menuLabel, () => { createSessionKindMutation.mutate(d) })}
+                      >
+                        <span className={`text-muted shrink-0 inline-flex${d.menuDescription ? ' mt-px' : ''}`} aria-hidden="true">{appIcon(d.icon)}</span>
+                        {/* The one-line gloss sits under the label, as the private modes' does. */}
+                        {d.menuDescription ? (
+                          <span className="flex min-w-0 flex-col gap-px">
+                            <span>{d.menuLabel}</span>
+                            <span className="whitespace-normal text-[11px] leading-snug text-muted">{d.menuDescription}</span>
+                          </span>
+                        ) : d.menuLabel}
+                      </DropdownMenuItem>
+                    ))}
+                  </>
+                )}
                 <DropdownMenuSeparator />
                 {/* The two private modes are top-level rows, each naming its own
                  *  action and what it does with memory. They used to share a
@@ -214,10 +243,14 @@ export function renderSidebarHeader(shell: SidebarScope): React.ReactNode {
                  *  rather than only in a per-session ⋯ menu that has to be opened
                  *  on some unrelated session first. */}
                 <ImportSessionItem Item={DropdownMenuItem} />
-                {folders.length > 0 && (() => {
+                {/* A mate's folder (its home and everything under it) takes no
+                 *  chat a person starts, so the picker does not offer it. */}
+                {(() => {
+                  const pickable = folders.filter(f => !isMateManaged(f, folders))
+                  if (pickable.length === 0) return null
                   const folderRows = (() => {
-                    const roots = folders.filter(f => !f.parent_id).sort(folderCompare)
-                    const childrenOf = (pid: string) => folders.filter(f => f.parent_id === pid).sort(folderCompare)
+                    const roots = pickable.filter(f => !f.parent_id).sort(folderCompare)
+                    const childrenOf = (pid: string) => pickable.filter(f => f.parent_id === pid).sort(folderCompare)
                     const items: { f: ChatFolder; depth: number }[] = []
                     const walk = (list: ChatFolder[], depth: number) => { for (const f of list) { items.push({ f, depth }); walk(childrenOf(f.id), depth + 1) } }
                     walk(roots, 0)

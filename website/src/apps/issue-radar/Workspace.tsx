@@ -37,6 +37,7 @@ import PrDetail from './components/PrDetail'
 import CrewList from './components/CrewList'
 import CrewEditor from './components/CrewEditor'
 import CrewPageView from './views/CrewPageView'
+import RetiredCrewNotice from './components/RetiredCrewNotice'
 import SettingsView from './views/SettingsView'
 import { dashboardComponent } from './views/registry'
 import { providerTerms } from './lib/links'
@@ -280,7 +281,10 @@ export default function Workspace() {
             {narrowBack(i18nT('apps.issueRadar.views.crews.rail_section'))}
             {/* The scroll container moves off <main> onto this wrapper so the
                 Back row stays pinned instead of scrolling away with the page. */}
-            <div className="flex-1 min-h-0 overflow-y-auto">
+            {/* A flex column, so the empty-state placeholder below takes the
+                height the retired notice leaves rather than all of it. */}
+            <div className="flex-1 min-h-0 overflow-y-auto flex flex-col">
+            <RetiredCrewNotice />
             {crewView.kind === 'crew'
               ? <CrewPageView crewId={crewView.id} onEdit={(crew) => setCrewEditor({ crew })} />
               : (
@@ -288,7 +292,7 @@ export default function Workspace() {
                 // first crew as soon as the roster has one. Same placeholder shape
                 // as the issue and PR panes, so an unaddressed main column reads
                 // the same way everywhere in this app.
-                <div className="h-full flex flex-col items-center justify-center text-muted gap-2">
+                <div className="flex-1 flex flex-col items-center justify-center text-muted gap-2">
                   <Users size={26} strokeWidth={1.5} className="opacity-50" />
                   {/* Assembled the same way the PR pane assembles its own
                       placeholder, so the two read identically and the noun comes

@@ -60,6 +60,38 @@ def _fake_transport(channel_type: str = "telegram", proactive: bool = True, may_
     )
 
 
+@pytest.fixture
+def audit(tmp_path, monkeypatch):
+    """A real SEL under tmp_path that both legs' audit writes land in.
+
+    The governance decision (``vet_and_audit``) looks ``sel`` up on ``kiro_crew.sel`` and
+    the recipient decision on the chat runner, so both names are pointed at this log.
+    """
+    import kiro_crew.sel as sel_mod
+    from kiro_crew.dashboard import chat_runner
+
+    (tmp_path / "sel").mkdir()
+    # The class is a singleton: clear it first so this log is a new one under tmp_path,
+    # and again after so no other caller is handed it.
+    monkeypatch.setattr(sel_mod.SecurityEventLog, "_instance", None)
+    monkeypatch.setattr(sel_mod.SecurityEventLog, "_initialized", False)
+    log = sel_mod.SecurityEventLog(base_dir=tmp_path / "sel", sync=True)
+    sel_mod.SecurityEventLog._instance = None
+    sel_mod.SecurityEventLog._initialized = False
+    monkeypatch.setattr(sel_mod, "sel", lambda: log)
+    monkeypatch.setattr(chat_runner, "sel", lambda: log)
+    return log
+
+
+def _mirror_decisions(log) -> list[tuple[str, str]]:
+    """The stored governance decisions for the mirror leg, as ``(outcome, channel)``."""
+    return [
+        (e["outcome"], e["resources"])
+        for e in log.recent()
+        if e["event_type"] == "governance_decision" and e["operation"] == "chat.channel_mirror"
+    ]
+
+
 def test_the_pinned_proactive_channel_still_declares_proactive_send() -> None:
     """Guards the two delivery assertions below from becoming vacuous.
 
@@ -83,7 +115,7 @@ class TestGovernanceDegradationFailsClosed:
     """
 
     @pytest.mark.asyncio
-    async def test_degraded_evaluation_blocks_delivery(self, tmp_path, monkeypatch):
+    async def test_degraded_evaluation_blocks_delivery(self, tmp_path, monkeypatch, audit):
         monkeypatch.setattr(
             "kiro_crew.platform.governance_profiles.resolve_active_scope",
             lambda *a, **k: (_ for _ in ()).throw(RuntimeError("profile store down")),
@@ -97,10 +129,13 @@ class TestGovernanceDegradationFailsClosed:
 
         await _deliver_cross_surface_reply(state, "dashboard:chat-1", "hi there")
 
+        assert _mirror_decisions(audit) == [("denied", "telegram")]
         tp.send_message.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_decision_without_permitted_attr_blocks_delivery(self, tmp_path, monkeypatch):
+    async def test_decision_without_permitted_attr_blocks_delivery(
+        self, tmp_path, monkeypatch, audit
+    ):
         monkeypatch.setattr(
             "kiro_crew.platform.governance_profiles.governance_permits",
             lambda *a, **k: SimpleNamespace(),
@@ -114,6 +149,8 @@ class TestGovernanceDegradationFailsClosed:
 
         await _deliver_cross_surface_reply(state, "dashboard:chat-1", "hi there")
 
+        # The audit trail records the unusable answer as a denial, not a grant.
+        assert _mirror_decisions(audit) == [("denied", "telegram")]
         tp.send_message.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -172,7 +209,7 @@ class TestRegistrySeam:
 
 class TestDeliverCrossSurfaceReply:
     @pytest.mark.asyncio
-    async def test_delivers_to_telegram(self, tmp_path):
+    async def test_delivers_to_telegram(self, tmp_path, audit):
         state = _make_state(tmp_path)
         tp = _fake_transport("telegram")
         state.register_channel_transport(tp)
@@ -180,10 +217,12 @@ class TestDeliverCrossSurfaceReply:
             return_value=ChannelLink("telegram", channel_id="123", thread_id=None)
         )
         await _deliver_cross_surface_reply(state, "dashboard:chat-1", "hi there")
+        # The grant this send rests on is in the audit trail.
+        assert _mirror_decisions(audit) == [("allowed", "telegram")]
         tp.send_message.assert_awaited_once_with("123", "hi there", thread_id=None)
 
     @pytest.mark.asyncio
-    async def test_passes_thread_id(self, tmp_path):
+    async def test_passes_thread_id(self, tmp_path, audit):
         state = _make_state(tmp_path)
         tp = _fake_transport("telegram")
         state.register_channel_transport(tp)
@@ -191,10 +230,11 @@ class TestDeliverCrossSurfaceReply:
             return_value=ChannelLink("telegram", channel_id="C", thread_id="T")
         )
         await _deliver_cross_surface_reply(state, "k", "x")
+        assert _mirror_decisions(audit) == [("allowed", "telegram")]
         tp.send_message.assert_awaited_once_with("C", "x", thread_id="T")
 
     @pytest.mark.asyncio
-    async def test_skips_slack(self, tmp_path):
+    async def test_skips_slack(self, tmp_path, audit):
         state = _make_state(tmp_path)
         tp = _fake_transport("slack")
         state.register_channel_transport(tp)
@@ -202,6 +242,8 @@ class TestDeliverCrossSurfaceReply:
             return_value=ChannelLink("slack", channel_id="C1", thread_id="ts")
         )
         await _deliver_cross_surface_reply(state, "k", "hi")
+        # Slack is left before any decision is taken, so none is recorded.
+        assert _mirror_decisions(audit) == []
         tp.send_message.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -239,7 +281,7 @@ class TestDeliverCrossSurfaceReply:
         tp.send_message.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_delivers_when_real_capabilities_allow_it(self, tmp_path):
+    async def test_delivers_when_real_capabilities_allow_it(self, tmp_path, audit):
         """The positive counterpart, on real capabilities rather than a fake."""
         state = _make_state(tmp_path)
         tp = _real_caps_transport(PROACTIVE_CHANNEL)
@@ -248,10 +290,11 @@ class TestDeliverCrossSurfaceReply:
             return_value=ChannelLink(PROACTIVE_CHANNEL, channel_id="u1")
         )
         await _deliver_cross_surface_reply(state, "k", "hi")
+        assert _mirror_decisions(audit) == [("allowed", PROACTIVE_CHANNEL)]
         tp.send_message.assert_awaited_once_with("u1", "hi", thread_id=None)
 
     @pytest.mark.asyncio
-    async def test_skips_empty_text(self, tmp_path):
+    async def test_skips_empty_text(self, tmp_path, audit):
         state = _make_state(tmp_path)
         tp = _fake_transport("telegram")
         state.register_channel_transport(tp)
@@ -259,6 +302,7 @@ class TestDeliverCrossSurfaceReply:
             return_value=ChannelLink("telegram", channel_id="123")
         )
         await _deliver_cross_surface_reply(state, "k", "")
+        assert _mirror_decisions(audit) == []
         tp.send_message.assert_not_awaited()
         state.sessions.get_mirror_link.assert_not_called()
 
@@ -360,7 +404,7 @@ class TestDeliverCrossSurfaceReply:
 
 class TestDeliverCrossSurfaceUserMessage:
     @pytest.mark.asyncio
-    async def test_delivers_with_prefix(self, tmp_path):
+    async def test_delivers_with_prefix(self, tmp_path, audit):
         state = _make_state(tmp_path)
         tp = _fake_transport("telegram")
         state.register_channel_transport(tp)
@@ -368,10 +412,11 @@ class TestDeliverCrossSurfaceUserMessage:
             return_value=ChannelLink("telegram", channel_id="123", thread_id=None)
         )
         await _deliver_cross_surface_user_message(state, "k", "hello there")
+        assert _mirror_decisions(audit) == [("allowed", "telegram")]
         tp.send_message.assert_awaited_once_with("123", "💬 hello there", thread_id=None)
 
     @pytest.mark.asyncio
-    async def test_passes_thread_id(self, tmp_path):
+    async def test_passes_thread_id(self, tmp_path, audit):
         state = _make_state(tmp_path)
         tp = _fake_transport("telegram")
         state.register_channel_transport(tp)
@@ -379,10 +424,11 @@ class TestDeliverCrossSurfaceUserMessage:
             return_value=ChannelLink("telegram", channel_id="C", thread_id="T")
         )
         await _deliver_cross_surface_user_message(state, "k", "x")
+        assert _mirror_decisions(audit) == [("allowed", "telegram")]
         tp.send_message.assert_awaited_once_with("C", "💬 x", thread_id="T")
 
     @pytest.mark.asyncio
-    async def test_skips_slack(self, tmp_path):
+    async def test_skips_slack(self, tmp_path, audit):
         state = _make_state(tmp_path)
         tp = _fake_transport("slack")
         state.register_channel_transport(tp)
@@ -390,6 +436,7 @@ class TestDeliverCrossSurfaceUserMessage:
             return_value=ChannelLink("slack", channel_id="C1", thread_id="ts")
         )
         await _deliver_cross_surface_user_message(state, "k", "hi")
+        assert _mirror_decisions(audit) == []
         tp.send_message.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -420,7 +467,7 @@ class TestDeliverCrossSurfaceUserMessage:
         tp.send_message.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_delivers_when_real_capabilities_allow_it(self, tmp_path):
+    async def test_delivers_when_real_capabilities_allow_it(self, tmp_path, audit):
         state = _make_state(tmp_path)
         tp = _real_caps_transport(PROACTIVE_CHANNEL)
         state.register_channel_transport(tp)
@@ -428,10 +475,11 @@ class TestDeliverCrossSurfaceUserMessage:
             return_value=ChannelLink(PROACTIVE_CHANNEL, channel_id="u1")
         )
         await _deliver_cross_surface_user_message(state, "k", "hi")
+        assert _mirror_decisions(audit) == [("allowed", PROACTIVE_CHANNEL)]
         tp.send_message.assert_awaited_once_with("u1", "💬 hi", thread_id=None)
 
     @pytest.mark.asyncio
-    async def test_skips_empty_message(self, tmp_path):
+    async def test_skips_empty_message(self, tmp_path, audit):
         state = _make_state(tmp_path)
         tp = _fake_transport("telegram")
         state.register_channel_transport(tp)
@@ -439,6 +487,7 @@ class TestDeliverCrossSurfaceUserMessage:
             return_value=ChannelLink("telegram", channel_id="123")
         )
         await _deliver_cross_surface_user_message(state, "k", "")
+        assert _mirror_decisions(audit) == []
         tp.send_message.assert_not_awaited()
         state.sessions.get_mirror_link.assert_not_called()
 

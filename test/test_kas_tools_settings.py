@@ -97,6 +97,20 @@ class TestTranslation:
             "execute_bash.deniedCommands"
         ]
 
+    @pytest.mark.parametrize("regex", [r"^.*>.*\.kiro/.*$", ".*>.*", ".*<.*", "cat <.*"])
+    def test_a_deny_aimed_at_a_redirect_travels_but_is_named(self, regex):
+        # KAS matches a shell glob against the command's words, never a redirect
+        # or its target, so the deny cannot stop `echo x > f`: it still travels
+        # (it stops the character inside a word) and is named as not carried.
+        settings = {"execute_bash": {"deniedCommands": [regex]}}
+        assert _rules(settings) == [
+            {"capability": "shell", "match": [_regex_to_glob(regex)], "effect": "deny"}
+        ]
+        assert _lost(settings) == ["execute_bash.deniedCommands"]
+
+    def test_a_deny_without_a_redirect_is_not_named(self):
+        assert _lost({"shell": {"deniedCommands": ["git push .*", "rm -rf .*"]}}) == []
+
     def test_a_bare_path_also_denies_its_subtree(self):
         # KAS globs match a path exactly, so a bare directory gets a `/**` twin.
         assert _rules({"read": {"deniedPaths": ["~/.ssh", "~/.aws/", "~/k/*"]}}) == [
@@ -118,16 +132,23 @@ class TestTranslation:
         # (`test_kas_allowed_commands.py`), so only the path allows are named.
         assert _lost(settings) == ["read.allowedPaths", "write.allowedPaths"]
 
-    def test_deny_by_default_is_reported_not_translated(self):
+    def test_deny_by_default_is_carried_as_no_rule(self):
+        """Crew's gate enforces it (``spec_shell_allowlist``), so the notice does not
+        name it; the engine still gets no rule for it."""
         settings = {"shell": {"allowedCommands": ["git status"], "denyByDefault": True}}
         assert _rules(settings) == []
-        assert _lost(settings) == ["shell.denyByDefault"]
+        assert _lost(settings) == []
 
-    def test_write_fallback_deny_is_reported_not_translated(self):
+    def test_write_fallback_deny_is_carried_as_no_rule(self):
+        """Crew's gate enforces it (``spec_write_allowlist``), so the notice does not
+        name it; the engine still gets no rule for it, and ``allowedPaths`` stays
+        named because a covered write still prompts on KAS."""
         settings = {"fs_write": {"allowedPaths": ["./out/**"], "fallbackAction": "deny"}}
         assert _rules(settings) == []
-        assert _lost(settings) == ["fs_write.allowedPaths", "fs_write.fallbackAction"]
+        assert _lost(settings) == ["fs_write.allowedPaths"]
         assert _lost({"fs_write": {"fallbackAction": "interactive"}}) == []
+        # A value the gate does not read as deny is still named.
+        assert _lost({"fs_write": {"fallbackAction": "ask-me"}}) == ["fs_write.fallbackAction"]
 
     def test_web_fetch_blocked_matches_the_host_only(self):
         settings = {"web_fetch": {"blocked": [r".*pastebin\.com.*", r"https://evil\.com/.*"]}}

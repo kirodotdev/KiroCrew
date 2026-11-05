@@ -160,7 +160,10 @@ def classify_raw_error(error: object, *, scope: str = SCOPE_DEFAULT) -> Dependen
     """A raw JSON-RPC ``{code, message, data}`` error frame -> signal."""
     if not isinstance(error, dict):
         return None
-    data = str(error.get("data", "") or "")
+    from kiro_crew.agent_sdk.drivers.acp import provider_data_text
+
+    # A structured `data` (Kiro CLI 3.0.0) reads its provider sentence from `message`.
+    data = provider_data_text(error)
     message = str(error.get("message", "") or "")
     client = _client()
     hint = (

@@ -21,6 +21,10 @@ from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
+from idle_tab_drain_helpers import (  # noqa: F401 -- the autouse fixture registers by import
+    _idle_tab_drains_head_as_turn,
+    open_idle_tab,
+)
 from subagent_scale_helpers import _make_orchestrator, _mock_dashboard_state
 from subagent_scale_helpers import _mock_sessions as _scale_sessions
 from subagent_stop_reason_helpers import (
@@ -141,6 +145,7 @@ async def test_the_wave_digest_names_an_empty_turn_after_work_as_its_cause():
     orch.ctx_builder.hooks = MagicMock()
     orch.dashboard_state = _mock_dashboard_state()
     slot = MagicMock()
+    open_idle_tab(slot)
     slot.mode = "chat"
     slot.running = False
     slot.task = None
@@ -180,7 +185,7 @@ async def test_the_wave_digest_names_an_empty_turn_after_work_as_its_cause():
         injected.append(text)
 
     with (
-        patch("kiro_crew.slack.gateway._run_chat", side_effect=_fake_run_chat),
+        patch("kiro_crew.dashboard.chat_runner._run_chat", side_effect=_fake_run_chat),
         patch("kiro_crew.subagent_persistence.mark_delivered"),
     ):
         mgr.batch_members_pending = MagicMock(return_value=True)

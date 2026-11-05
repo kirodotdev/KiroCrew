@@ -149,10 +149,9 @@ class TestSourceRootBarrier:
 
         proj, src = project_file
         src.write_text("ORIGINAL", encoding="utf-8")
-        monkeypatch.setattr(_os, "supports_dir_fd", set(), raising=False)
-        assert home_store._try_write_source_path(str(src), "new body", str(proj)) is True
-        # nosemgrep: kirocrew.test-bare-monkeypatch-undo -- pre-existing undo that lifts the test's os patch, and home_store's Path.home pin, before the tmp-path file is read back; moved with its test
-        monkeypatch.undo()
+        with monkeypatch.context() as mp:
+            mp.setattr(_os, "supports_dir_fd", set(), raising=False)
+            assert home_store._try_write_source_path(str(src), "new body", str(proj)) is True
         assert src.read_text(encoding="utf-8") == "new body"
         # No staging litter left behind on this path either.
         assert not list(src.parent.glob(".*kirocrew-*"))
@@ -197,10 +196,9 @@ class TestSourceRootBarrier:
                 return _Fake()
             return st
 
-        monkeypatch.setattr(_os, "stat", lying_stat)
-        assert home_store._try_write_source_path(str(src), "new body", str(proj)) is False
-        # nosemgrep: kirocrew.test-bare-monkeypatch-undo -- pre-existing undo that lifts the test's os patch, and home_store's Path.home pin, before the tmp-path file is read back; moved with its test
-        monkeypatch.undo()
+        with monkeypatch.context() as mp:
+            mp.setattr(_os, "stat", lying_stat)
+            assert home_store._try_write_source_path(str(src), "new body", str(proj)) is False
         assert src.read_text(encoding="utf-8") == "ORIGINAL"
 
     @pytest.mark.skipif(
@@ -283,18 +281,14 @@ class TestSourceRootBarrier:
         if real_list is None:  # pragma: no cover - platform without xattrs
             pytest.skip("no xattr support on this platform")
 
-        monkeypatch.setattr(
-            _os, "listxattr", lambda *a, **k: ["system.posix_acl_access"], raising=False
-        )
-        monkeypatch.setattr(_os, "getxattr", lambda *a, **k: b"acl-bytes", raising=False)
-
         def refuse_setxattr(*a, **k):
             raise OSError(1, "Operation not permitted")
 
-        monkeypatch.setattr(_os, "setxattr", refuse_setxattr, raising=False)
-        assert home_store._try_write_source_path(str(src), "new body", str(proj)) is False
-        # nosemgrep: kirocrew.test-bare-monkeypatch-undo -- pre-existing undo that lifts the test's os patch, and home_store's Path.home pin, before the tmp-path file is read back; moved with its test
-        monkeypatch.undo()
+        with monkeypatch.context() as mp:
+            mp.setattr(_os, "listxattr", lambda *a, **k: ["system.posix_acl_access"], raising=False)
+            mp.setattr(_os, "getxattr", lambda *a, **k: b"acl-bytes", raising=False)
+            mp.setattr(_os, "setxattr", refuse_setxattr, raising=False)
+            assert home_store._try_write_source_path(str(src), "new body", str(proj)) is False
         assert src.read_text(encoding="utf-8") == "ORIGINAL"
 
     def test_write_proceeds_when_only_an_informational_attribute_fails(
@@ -308,16 +302,14 @@ class TestSourceRootBarrier:
         if not hasattr(_os, "listxattr"):  # pragma: no cover
             pytest.skip("no xattr support on this platform")
 
-        monkeypatch.setattr(_os, "listxattr", lambda *a, **k: ["user.note"], raising=False)
-        monkeypatch.setattr(_os, "getxattr", lambda *a, **k: b"x", raising=False)
-
         def refuse_setxattr(*a, **k):
             raise OSError(95, "Operation not supported")
 
-        monkeypatch.setattr(_os, "setxattr", refuse_setxattr, raising=False)
-        assert home_store._try_write_source_path(str(src), "new body", str(proj)) is True
-        # nosemgrep: kirocrew.test-bare-monkeypatch-undo -- pre-existing undo that lifts the test's os patch, and home_store's Path.home pin, before the tmp-path file is read back; moved with its test
-        monkeypatch.undo()
+        with monkeypatch.context() as mp:
+            mp.setattr(_os, "listxattr", lambda *a, **k: ["user.note"], raising=False)
+            mp.setattr(_os, "getxattr", lambda *a, **k: b"x", raising=False)
+            mp.setattr(_os, "setxattr", refuse_setxattr, raising=False)
+            assert home_store._try_write_source_path(str(src), "new body", str(proj)) is True
         assert src.read_text(encoding="utf-8") == "new body"
 
     def test_write_refuses_when_the_attribute_list_cannot_be_read(
@@ -340,10 +332,9 @@ class TestSourceRootBarrier:
         def failing_list(*a, **k):
             raise OSError(_errno.EACCES, "Permission denied")
 
-        monkeypatch.setattr(_os, "listxattr", failing_list, raising=False)
-        assert home_store._try_write_source_path(str(src), "new body", str(proj)) is False
-        # nosemgrep: kirocrew.test-bare-monkeypatch-undo -- pre-existing undo that lifts the test's os patch, and home_store's Path.home pin, before the tmp-path file is read back; moved with its test
-        monkeypatch.undo()
+        with monkeypatch.context() as mp:
+            mp.setattr(_os, "listxattr", failing_list, raising=False)
+            assert home_store._try_write_source_path(str(src), "new body", str(proj)) is False
         assert src.read_text(encoding="utf-8") == "ORIGINAL"
 
     def test_write_proceeds_where_the_filesystem_has_no_xattrs(
@@ -362,10 +353,9 @@ class TestSourceRootBarrier:
         def unsupported(*a, **k):
             raise OSError(_errno.ENOTSUP, "Operation not supported")
 
-        monkeypatch.setattr(_os, "listxattr", unsupported, raising=False)
-        assert home_store._try_write_source_path(str(src), "new body", str(proj)) is True
-        # nosemgrep: kirocrew.test-bare-monkeypatch-undo -- pre-existing undo that lifts the test's os patch, and home_store's Path.home pin, before the tmp-path file is read back; moved with its test
-        monkeypatch.undo()
+        with monkeypatch.context() as mp:
+            mp.setattr(_os, "listxattr", unsupported, raising=False)
+            assert home_store._try_write_source_path(str(src), "new body", str(proj)) is True
         assert src.read_text(encoding="utf-8") == "new body"
 
     def test_write_preserves_extended_attributes(self, home_store, project_file) -> None:
@@ -418,10 +408,9 @@ class TestSourceRootBarrier:
 
         proj, src = project_file
         src.write_text("ORIGINAL", encoding="utf-8")
-        monkeypatch.setattr(_os, "supports_dir_fd", set(), raising=False)
-        assert home_store._try_write_source_path(str(src), "fallback body", str(proj)) is True
-        # nosemgrep: kirocrew.test-bare-monkeypatch-undo -- pre-existing undo that lifts the test's os patch, and home_store's Path.home pin, before the tmp-path file is read back; moved with its test
-        monkeypatch.undo()
+        with monkeypatch.context() as mp:
+            mp.setattr(_os, "supports_dir_fd", set(), raising=False)
+            assert home_store._try_write_source_path(str(src), "fallback body", str(proj)) is True
         assert src.read_text(encoding="utf-8") == "fallback body"
 
     def test_a_file_owned_by_someone_else_is_still_mirrored(
@@ -451,10 +440,9 @@ class TestSourceRootBarrier:
 
             return _Foreign()
 
-        monkeypatch.setattr(_os, "fstat", fstat_foreign)
-        assert home_store._try_write_source_path(str(src), "new body", str(proj)) is True
-        # nosemgrep: kirocrew.test-bare-monkeypatch-undo -- pre-existing undo that lifts the test's os patch, and home_store's Path.home pin, before the tmp-path file is read back; moved with its test
-        monkeypatch.undo()
+        with monkeypatch.context() as mp:
+            mp.setattr(_os, "fstat", fstat_foreign)
+            assert home_store._try_write_source_path(str(src), "new body", str(proj)) is True
         assert src.read_text(encoding="utf-8") == "new body"
 
     @pytest.mark.skipif(
@@ -490,10 +478,9 @@ class TestSourceRootBarrier:
                 newer.write_text("A NEWER SAVE FROM THE EDITOR", encoding="utf-8")
                 _os.replace(str(newer), str(src))
 
-        monkeypatch.setattr(_os, "fsync", fsync_then_replace)
-        assert home_store._try_write_source_path(str(src), "our body", str(proj)) is False
-        # nosemgrep: kirocrew.test-bare-monkeypatch-undo -- pre-existing undo that lifts the test's os patch, and home_store's Path.home pin, before the tmp-path file is read back; moved with its test
-        monkeypatch.undo()
+        with monkeypatch.context() as mp:
+            mp.setattr(_os, "fsync", fsync_then_replace)
+            assert home_store._try_write_source_path(str(src), "our body", str(proj)) is False
         # The editor's newer content survived; ours was refused.
         assert src.read_text(encoding="utf-8") == "A NEWER SAVE FROM THE EDITOR"
 

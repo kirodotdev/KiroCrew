@@ -22,6 +22,7 @@ def on_subagent_spawned(
     turn: int,
     *,
     agent_id: str,
+    attempt: int = 0,
     agent: str = "",
     model: str = "",
     task: str = "",
@@ -52,6 +53,13 @@ def on_subagent_spawned(
     recorded: it is a real child of that session, and losing it to keep a field
     populated would be the worse trade.
 
+    ``attempt`` is which try at ``turn`` asked: a regenerate or a rewind reruns the
+    same ordinal, and ``(turn, attempt)`` is what ``turn/started`` is grouped on. It is
+    written only beside a turn and only when observed, so ABSENT means unknown. It is
+    not the "attempt 1" that an absent ``turn/started`` attempt means, because the
+    attempt is derived on the writer thread and a dispatch early in a turn can be
+    pinned before it is.
+
     ``task`` is what the child was asked to do, redacted and clipped on the same
     terms as ``plan/updated``'s item text -- the other place this module records
     text a person wrote. It is the one thing a reader needs to tell two children
@@ -68,6 +76,10 @@ def on_subagent_spawned(
     data: dict[str, Any] = {"agent_id": agent_id}
     if turn:
         data["turn"] = int(turn)
+        # Which try at that ordinal asked. Written even at 1, unlike turn/started,
+        # because absent here means the attempt was not observed.
+        if attempt > 0:
+            data["attempt"] = int(attempt)
     if agent:
         data["agent"] = agent
     if model:

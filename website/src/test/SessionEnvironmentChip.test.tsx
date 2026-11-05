@@ -183,7 +183,9 @@ describe('SessionEnvironmentChip', () => {
 
   it("shows each profile's provider mark, and the chosen one on the chip", async () => {
     const old = { id: 'old', name: 'Older gateway', provider: '', workdir: '/w' }
-    mockEnv(envResponse('dev', [{ ...DEV, template: 'python-dev' }, old]))
+    const fly = { id: 'fly', name: 'Fly box', provider: 'sprites', workdir: '/w' }
+    const box = { id: 'bx', name: 'Boxd box', provider: 'boxd', workdir: '/w' }
+    mockEnv(envResponse('dev', [{ ...DEV, template: 'python-dev' }, old, fly, box]))
     const u = userEvent.setup()
     chip()
     const picker = await button('Runs on Coder MicroVM')
@@ -199,6 +201,8 @@ describe('SessionEnvironmentChip', () => {
     expect(item(/Coder MicroVM/).querySelector('.lucide-check')).not.toBeNull()
     expect(item(/Older gateway/).querySelector('.lucide-check')).toBeNull()
     expect(item(/Coder MicroVM/).querySelector('[data-testid="provider-mark-coder"]')).not.toBeNull()
+    expect(item(/Fly box/).querySelector('[data-testid="provider-mark-sprites"]')).not.toBeNull()
+    expect(item(/Boxd box/).querySelector('[data-testid="provider-mark-boxd"]')).not.toBeNull()
     // An unknown provider keeps the generic cloud rather than guessing a brand.
     expect(item(/Older gateway/).querySelector('[data-testid^="provider-mark-"]')).toBeNull()
   })
@@ -282,6 +286,18 @@ describe('SessionEnvironmentChip', () => {
     expect(put).not.toHaveBeenCalled()
   })
 
+  it('names a Kiro Cloud profile by its repositories, or the sandbox when it has none', async () => {
+    const cloud = { id: 'cloud', name: 'Kiro Cloud', provider: 'kiro_cloud', workdir: '', repositories: ['acme/web', 'acme/api'] }
+    const empty = { ...cloud, id: 'blank', name: 'Empty sandbox', repositories: [] }
+    vi.spyOn(api, 'chatSlotEnvironment').mockResolvedValue(envResponse(null, [DEV, cloud, empty]))
+    const u = userEvent.setup()
+    wrap(<SessionEnvironmentChip slot="chat-1" />)
+    await u.click(await screen.findByRole('button', { name: 'Runs on This machine' }))
+    expect(await screen.findByRole('menuitemradio', { name: /Kiro Cloud/ })).toHaveTextContent('acme/web, acme/api')
+    // No repositories and no directory: the row says the workspace starts empty.
+    expect(screen.getByRole('menuitemradio', { name: /Empty sandbox/ })).toHaveTextContent('Empty workspace')
+  })
+
   it('keeps a fixed LOCAL chip a plain muted status with no card', async () => {
     mockEnv({ ...envResponse(null), locked: true })
     const health = vi.spyOn(api, 'chatSlotEnvironmentHealth')
@@ -291,6 +307,23 @@ describe('SessionEnvironmentChip', () => {
     expect(el.querySelector('.lucide-lock')).not.toBeNull()
     expect(el).toHaveClass('text-muted')
     expect(screen.queryByRole('button', { name: /This machine/ })).toBeNull()
+    expect(health).not.toHaveBeenCalled()
+  })
+
+  it('keeps a fixed Kiro Cloud chip a plain status with no metrics card', async () => {
+    // Only the sandbox's own agent reaches it, so there are no metrics to show.
+    const cloud = { id: 'cloud', name: 'Kiro Cloud', provider: 'kiro_cloud', workdir: '', repositories: ['acme/web'] }
+    mockEnv({ ...envResponse('cloud', [DEV, cloud]), provider: 'kiro_cloud', locked: true })
+    const health = vi.spyOn(api, 'chatSlotEnvironmentHealth')
+    const u = userEvent.setup()
+    chip()
+    const el = await screen.findByTestId('composer-environment-chip')
+    expect(el.tagName).toBe('SPAN')
+    expect(el).toHaveTextContent('Kiro Cloud')
+    expect(el.querySelector('.lucide-lock')).not.toBeNull()
+    await u.hover(el)
+    await u.click(el)
+    expect(screen.queryByTestId('environment-health-card')).toBeNull()
     expect(health).not.toHaveBeenCalled()
   })
 
@@ -317,7 +350,37 @@ describe('SessionEnvironmentChip', () => {
     await waitFor(() => expect(card).toHaveTextContent('Running'), { timeout: 5000 })
     expect(card).toHaveTextContent('crewenv-devuser-abc')
     expect(card).toHaveTextContent('aarch64')
-    expect(screen.getAllByRole('progressbar', { name: 'Memory' })[0]).toHaveAttribute('aria-valuenow', '25')
+    const memory = screen.getAllByRole('progressbar', { name: 'Memory' })[0]
+    expect(memory).toHaveAttribute('aria-valuenow', '25')
+    // Plain headings, load read against the core count, the provider's own
+    // mark, and a healthy meter left uncoloured.
+    expect(card).toHaveTextContent('Workspace status')
+    expect(card).toHaveTextContent('Workspace name')
+    expect(card).toHaveTextContent('Busy cores (1, 5, 15 min)')
+    expect(card).toHaveTextContent('0.1 · 0.2 · 0.3 of 2')
+    expect(within(card).getByTestId('provider-mark-coder')).toBeInTheDocument()
+    expect(memory.firstElementChild).toHaveClass('bg-muted')
+    expect(card).not.toHaveTextContent('Memory is low.')
+  })
+
+  it('advises on low memory and colours only a warning meter', async () => {
+    vi.spyOn(api, 'chatSlotEnvironment').mockResolvedValue({ ...envResponse('dev'), locked: true })
+    vi.spyOn(api, 'chatSlotEnvironmentHealth').mockResolvedValue({
+      state: 'running',
+      stats: {
+        arch: 'x86_64', cpus: 4,
+        memory: { total_bytes: 4_000_000_000, available_bytes: 600_000_000 },
+        disk: { total_bytes: 20_000_000_000, free_bytes: 15_000_000_000 },
+      },
+    })
+    const u = userEvent.setup()
+    wrap(<SessionEnvironmentChip slot="chat-1" />)
+    await u.hover(await screen.findByTestId('composer-environment-chip'))
+    const card = await screen.findByTestId('environment-health-card')
+    // 85% used, past the 80% line: the warning tone and the advice line show.
+    await waitFor(() => expect(card).toHaveTextContent('Memory is low. Heavy builds may fail.'), { timeout: 5000 })
+    expect(screen.getAllByRole('progressbar', { name: 'Memory' })[0].firstElementChild).toHaveClass('bg-warn')
+    expect(screen.getAllByRole('progressbar', { name: 'Disk' })[0].firstElementChild).toHaveClass('bg-muted')
   })
 
   it('keeps the hover-opened card open when the fixed chip is then clicked', async () => {
@@ -439,6 +502,25 @@ describe('SessionEnvironmentChip', () => {
     expect(alert).not.toHaveTextContent('choices_unreadable')
   })
 
+  it('says why an incognito or temporary chat cannot move to Kiro Cloud', async () => {
+    const cloud = { id: 'cloud', name: 'Kiro Cloud', provider: 'kiro_cloud', workdir: '', repositories: ['acme/web'] }
+    mockEnv(envResponse(null, [DEV, cloud]))
+    vi.spyOn(api, 'setChatSlotEnvironment').mockRejectedValue(new ApiError(
+      400,
+      "Kiro Cloud Sessions aren't available in incognito or temporary chats; choose another session environment",
+      '{"code":"choice_refused","reason":"private_chat"}',
+    ))
+    const u = userEvent.setup()
+    chip()
+    await u.click(await button('Runs on This machine'))
+    await u.click(await radio(/Kiro Cloud/))
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent(/Couldn't switch to Kiro Cloud, so this chat still runs on This machine\./)
+    // The catalog's own sentence, not the gateway's English text.
+    expect(alert).toHaveTextContent("Kiro Cloud Sessions aren't available in incognito or temporary chats.")
+    expect(alert).not.toHaveTextContent('choose another session environment')
+  })
+
   it('keeps a switch refusal visible when the chat locks while it waits', async () => {
     const get = mockEnv(envResponse(null))
     let refuse!: (error: Error) => void
@@ -470,6 +552,11 @@ describe('SessionEnvironmentChip', () => {
     await act(async () => { await qc.invalidateQueries({ queryKey: slotEnvironmentQueryKey('chat-1') }) })
     // Bound remote, so the locked chip is the health-card trigger even while the pick waits.
     await waitFor(() => expect(chipEl().tagName).toBe('BUTTON'))
+    // It names the bound environment, never the refused pick's target.
+    expect(chipEl()).toHaveTextContent('Coder MicroVM')
+    expect(chipEl()).not.toHaveTextContent('This machine')
+    expect(chipEl()).toHaveAccessibleName('Runs on Coder MicroVM. Fixed for this chat.')
+    expect(within(chipEl()).getByTestId('provider-mark-coder')).toBeInTheDocument()
     await act(async () => { refuse(new ApiError(409, 'environment_locked', '{"code":"environment_locked"}')) })
     const alert = await screen.findByRole('alert')
     expect(alert).toHaveTextContent(/Couldn't switch to This machine, so this chat still runs on Coder MicroVM\./)

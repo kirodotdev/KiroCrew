@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from loopback_servers import LoopbackHTTPServer
 from mcp_computer_helpers import home_fixture  # noqa: F401
 from mcp_computer_helpers import keystone_fixture  # noqa: F401
 from mcp_computer_helpers import _enable
@@ -27,32 +28,36 @@ from mcp_computer_helpers import _enable
 from kiro_crew import mcp_computer, mcp_core
 from kiro_crew.computer_use.types import ERROR_PREFIX, TOOL_LIST_APPS, AppRef
 from kiro_crew.mcp_caller import CallerContext, set_current_caller, set_current_tenant_nonce
+from kiro_crew.testing.wait import DEFAULT_INTERVAL_SECS, default_timeout
+
+
+def _serve_in_background(server: http.server.HTTPServer) -> None:
+    """Run ``serve_forever`` on a daemon thread that re-reads its stop flag every tick."""
+    threading.Thread(
+        target=server.serve_forever, kwargs={"poll_interval": DEFAULT_INTERVAL_SECS}, daemon=True
+    ).start()
+
+
+def _stop_listener(server: http.server.HTTPServer) -> None:
+    """Stop a listener started by ``_serve_in_background`` and close its socket.
+
+    ``shutdown()`` waits on an event that only the serve loop sets, with no bound of its
+    own. It runs on a helper thread joined under the lost-run bound, so a loop that never
+    leaves ``serve_forever`` fails here by name instead of hanging the worker.
+    """
+    stopper = threading.Thread(target=server.shutdown, daemon=True)
+    stopper.start()
+    stopper.join(timeout=default_timeout())
+    assert not stopper.is_alive(), "the loopback listener never left serve_forever"
+    server.server_close()
 
 
 class TestUnresolvedSessionsAreNamespaced:
-    """GPT 5.6 BLOCKING, and the aliasing half of it was real.
+    """Unresolved sessions get distinct ``SnapshotIndex`` keys, and none is refused.
 
-    ``SnapshotIndex`` namespaces entries by ``(session_key, window_key)``. With an
-    EMPTY key, every unresolved session shared the single ``("", window)`` slot — and
-    on macOS unresolved is the normal case, since neither accepted identity source
-    exists for a GUI-launched kiro-cli. Two concurrent sessions observing the same
-    window therefore overwrote each other's element indices, and each one's own
-    fingerprint check still passed, because both trees describe the same window. That
-    is a wrong-target action with nothing reporting it.
-
-    **GPT's prescribed fix was to refuse an empty key. Not taken** — that is exactly
-    the refusal removed by product decision, and it made the feature unusable on its
-    only supported platform. The aliasing is fixed by NAMESPACING instead: kiro-cli
-    spawns one shim process per session, so the shim's own pid separates the
-    namespaces precisely as far as the sessions are genuinely separate, and nothing is
-    refused. The security posture is unchanged; only the cache key is.
-
-    The POOLED half of the same aliasing: "One shim process per session" is
-    the 1:1 topology's premise, and a pooled backend breaks it: one process serves N
-    connections, so the pid separates nothing and every unnamed co-tenant collapsed
-    back onto a single ``unresolved:<pid>`` key. The pid is now joined by the
-    gateway-minted per-CONNECTION nonce, which separates them again — still a
-    separator, still not attribution, and still nothing refused.
+    On macOS unresolved is the normal case; a shared empty key let two sessions on one
+    window overwrite each other's element indices unseen. The key is the shim pid plus
+    the gateway's per-connection nonce, since a pooled backend serves many sessions.
     """
 
     @pytest.fixture(autouse=True)
@@ -102,11 +107,8 @@ class TestUnresolvedSessionsAreNamespaced:
     def test_two_unnamed_co_tenants_of_ONE_process_do_not_share_a_slot(self, monkeypatch):
         """The pooled aliasing at the layer it lives in — one pid, two connections.
 
-        Both co-tenants run in the SAME shim process, so ``os.getpid()`` is pinned to
-        one value here deliberately: that is the whole premise the pooled topology
-        breaks. Without the nonce half both keys are the same string and the second
-        snapshot answers the first session's lookup — the wrong-target action the
-        fingerprint check cannot catch, because both trees describe the same window.
+        ``os.getpid()`` is pinned to one value on purpose. Without the nonce both keys
+        match and the fingerprint check cannot catch it: both trees describe one window.
         """
         from kiro_crew.computer_use.index import SnapshotIndex
         from kiro_crew.computer_use.types import ElementRec, Snapshot
@@ -150,12 +152,9 @@ class TestUnresolvedSessionsAreNamespaced:
     def test_the_nonce_never_becomes_an_IDENTITY(self, monkeypatch):
         """A separator must not be promoted to attribution.
 
-        The nonce names a connection, not a principal. If the strict resolver ever
-        read it, an unnamed caller would arrive at every consumer of a session key —
-        cron ownership, callback routing, audit — carrying a key that names nobody
-        while LOOKING resolved. So with a nonce installed and no identity source,
-        strict resolution must still come back empty, and the shim must still take
-        the unresolved path.
+        The nonce names a connection, not a principal; read as identity it would reach
+        cron ownership, callback routing and audit looking resolved. With no identity
+        source, strict resolution stays empty.
         """
         monkeypatch.delenv("KIROCREW_SESSION_KEY", raising=False)
         monkeypatch.delenv("KIROCREW_HOST_PID", raising=False)
@@ -228,19 +227,10 @@ class TestUnresolvedSessionsAreNamespaced:
 class TestTheInvokeCallIsNeverProxied:
     """``_invoke``'s HTTP body, exercised for real against two live listeners.
 
-    Every other test in this file patches ``mcp_computer._invoke`` wholesale, so
-    the request-building and opener code inside it had NO coverage — the leak this
-    guards could have been reintroduced without a single failure. That matters
-    more here than at a typical loopback site: this route's request carries
-    ``X-Internal-Secret``, and the gateway handler behind it is the authoritative
-    fail-CLOSED computer-use gate, so a proxy that could answer it is a proxy that
-    could authorise reading a password field.
-
-    Real sockets on port 0 following ``test_cron_trigger.py``: the kernel hands
-    out free ports, so no ``xdist_group`` marker is needed. ``_API`` and
-    ``_internal_secret`` are patched on ``mcp_computer``'s own namespace (it
-    imports both FROM ``mcp_core``, binding local names), which keeps the real
-    secret file out of the test entirely.
+    Other tests patch ``_invoke`` wholesale. The request carries ``X-Internal-Secret``
+    to the fail-closed computer-use gate, so a proxy that answered it could authorise
+    reading a password field. ``_API`` and ``_internal_secret`` are patched on
+    ``mcp_computer``, which binds both from ``mcp_core``, keeping the real secret out.
     """
 
     CANARY = "canary-not-a-real-secret"
@@ -286,8 +276,8 @@ class TestTheInvokeCallIsNeverProxied:
             def log_message(self, fmt, *args):
                 pass  # keep pytest output clean
 
-        server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
-        threading.Thread(target=server.serve_forever, daemon=True).start()
+        server = LoopbackHTTPServer(("127.0.0.1", 0), Handler)
+        _serve_in_background(server)
         return server, server.server_address[1]
 
     def test_the_secret_reaches_the_gateway_and_not_the_proxy(self, monkeypatch):
@@ -312,9 +302,8 @@ class TestTheInvokeCallIsNeverProxied:
 
             decoded = mcp_computer._invoke("dashboard:main", TOOL_LIST_APPS, {})
         finally:
-            # flake-ok: shutdown() of a port-0 loopback listener returns at serve_forever's next 0.5 s poll; moved verbatim, tracked for a de-flake pass
-            gateway.shutdown()
-            proxy.shutdown()
+            _stop_listener(gateway)
+            _stop_listener(proxy)
 
         assert proxy_hits == [], f"the internal secret reached the proxy: {proxy_hits}"
         assert [h["secret"] for h in gateway_hits] == [self.CANARY]
@@ -352,9 +341,8 @@ class TestTheInvokeCallIsNeverProxied:
 
             mcp_computer._invoke("dashboard:main", TOOL_LIST_APPS, {})
         finally:
-            # flake-ok: shutdown() of a port-0 loopback listener returns at serve_forever's next 0.5 s poll; moved verbatim, tracked for a de-flake pass
-            gateway.shutdown()
-            proxy.shutdown()
+            _stop_listener(gateway)
+            _stop_listener(proxy)
 
         assert proxy_hits == [], f"the secret proxied despite no_proxy=localhost: {proxy_hits}"
         assert [h["secret"] for h in gateway_hits] == [self.CANARY]
@@ -363,17 +351,10 @@ class TestTheInvokeCallIsNeverProxied:
 class TestUnresolvedKeysAreNeverDeclared:
     """The ``unresolved:`` placeholder rides in the body, never in ``X-Session-Key``.
 
-    The header is an identity CLAIM. On the AF_UNIX leg ``token_auth._verify_unix_peer``
-    kernel-resolves the peer pid's ``session_pid_<pid>`` ancestry and denies
-    ``403 peer_session_mismatch`` when the recovered key differs from the declared one.
-    A placeholder names no session, so it can never match, and declaring it makes every
-    dashboard-launched Computer Use call on macOS fail with a bare ``Error: Forbidden``
-    while ``kirocrew computer apps`` (which never takes that leg) works. The
-    empty-header arm of that gate is "nothing session-scoped is claimed, nothing to
-    verify", which is the truth of an unnamed shim.
-
-    Asserted at the WIRE, on a real listener, so a refactor that rebuilds the header
-    dict cannot pass by accident.
+    The header is an identity claim: ``token_auth._verify_unix_peer`` denies
+    ``403 peer_session_mismatch`` when the kernel-resolved key differs, and a
+    placeholder never matches. An empty header claims nothing, which is true of an
+    unnamed shim. Asserted on a real listener.
     """
 
     @pytest.fixture(autouse=True)
@@ -409,8 +390,8 @@ class TestUnresolvedKeysAreNeverDeclared:
             def log_message(self, fmt, *args):
                 pass
 
-        server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
-        threading.Thread(target=server.serve_forever, daemon=True).start()
+        server = LoopbackHTTPServer(("127.0.0.1", 0), Handler)
+        _serve_in_background(server)
         return server, server.server_address[1]
 
     def _invoke_through(self, monkeypatch, session_key: str) -> dict:
@@ -423,8 +404,7 @@ class TestUnresolvedKeysAreNeverDeclared:
             monkeypatch.setattr(mcp_computer, "_internal_secret", lambda: "not-a-secret")
             decoded = mcp_computer._invoke(session_key, TOOL_LIST_APPS, {})
         finally:
-            # flake-ok: shutdown() of a port-0 loopback listener returns at serve_forever's next 0.5 s poll; moved verbatim, tracked for a de-flake pass
-            server.shutdown()
+            _stop_listener(server)
         assert decoded == {"text": "ok"}
         assert len(hits) == 1
         return hits[0]
@@ -454,13 +434,9 @@ class TestUnresolvedKeysAreNeverDeclared:
     def test_a_declared_key_carries_its_session_token(self, monkeypatch):
         """HEADLINE: the token travels WITH the key, at the wire.
 
-        On a pid hosting several sessions the peer check cannot tell which of them
-        holds the socket from kernel credentials, so it requires a token naming
-        exactly the declared key and refuses the declaration otherwise. Without
-        this header every computer-use call on a shared runtime is refused -- the
-        founder's included, which worked before that demand existed. Asserted on a
-        real listener so a refactor that rebuilds the header dict cannot drop it
-        silently, which is how it was missing in the first place.
+        On a pid hosting several sessions the peer check needs a token naming the
+        declared key, so without this header every call on a shared runtime is refused.
+        Asserted on a real listener so a rebuilt header dict cannot drop it silently.
         """
         monkeypatch.setattr(
             mcp_computer, "_session_token_header", lambda: {"X-Session-Token": "a-signed-token"}

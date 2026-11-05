@@ -68,10 +68,6 @@ def register(app: web.Application) -> None:
     app.router.add_post("/api/projects", handlers_project.api_project_create)
     app.router.add_put("/api/projects/{id}", handlers_project.api_project_update)
     app.router.add_delete("/api/projects/{id}", handlers_project.api_project_delete)
-    app.router.add_get("/api/activities", handlers_project.api_activities_list)
-    app.router.add_post("/api/comments", handlers_project.api_comment_add)
-    app.router.add_get("/api/comments", handlers_project.api_comments_list)
-    app.router.add_delete("/api/comments/{id}", handlers_project.api_comment_delete)
 
     # Channels
     app.router.add_get("/api/channels/presets", handlers_channel.api_channel_presets)

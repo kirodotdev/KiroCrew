@@ -321,13 +321,17 @@ class KiroPrerequisiteService:
 
     @staticmethod
     def _kas_bundle_route() -> bool:
-        """Whether ``agent.kas_bundle`` is on, read from the config at call time."""
-        from kiro_crew.config import KiroCrewConfig
+        """The shared bundle-route predicate, ``agent_sdk.kas_bundle.kas_bundle_route``.
 
-        try:
-            return bool(KiroCrewConfig.load().agent.kas_bundle)
-        except Exception:
-            return False
+        Its one caller already requires ``backend == kas``, and both callers of that
+        method pass the CONFIGURED backend, so the predicate's backend half is
+        settled here and the answer is the route: ``agent.kas_bundle`` on, or the
+        automatic switch when kiro-cli's relay cannot run (``acp/kas_route.py``).
+        Unreadable config answers False, as before.
+        """
+        from kiro_crew.agent_sdk import kas_bundle
+
+        return kas_bundle.kas_bundle_route()
 
     async def record_independent_backend_setup(self, backend: str) -> bool:
         """Persist first-run completion after the configured harness is usable.
@@ -347,9 +351,9 @@ class KiroPrerequisiteService:
 
         On the BUNDLE route (``agent.kas_bundle`` on) KAS runs Crew's own installed
         engine and never kiro-cli, so none of the kiro-cli checks apply: the
-        prerequisite is the installed engine (``installed_bundle()``), and a host
-        with no kiro-cli at all completes here once ``kirocrew kas install`` has
-        run. The install probe below answers from the same reader on that route.
+        prerequisite is the installed engine (``installed_bundle()``) or a host
+        able to run it, since the first spawn installs it, and a host with no
+        kiro-cli at all completes here. The install probe below answers from the same reader on that route.
         """
         from kiro_crew.acp_backends import selectable_backend_values
         from kiro_crew.agent_sdk.backend_install import INSTALLED, probe_backend
@@ -358,10 +362,15 @@ class KiroPrerequisiteService:
             ACP_BACKENDS_INDEPENDENT_SETUP,
         )
 
-        if backend == ACP_BACKEND_KAS and self._kas_bundle_route():
-            from kiro_crew.agent_sdk import kas_bundle
+        # Off the loop: the route reads the vault and kiro-cli's sign-in store.
+        if backend == ACP_BACKEND_KAS and await asyncio.to_thread(self._kas_bundle_route):
+            from kiro_crew.agent_sdk import backend_install, kas_bundle
 
-            if await asyncio.to_thread(kas_bundle.installed_bundle) is None:
+            # An engine not installed yet is laid down by the first spawn
+            # (``acp/kas_engine_install.py``); only a host that cannot run it blocks.
+            if await asyncio.to_thread(
+                kas_bundle.installed_bundle
+            ) is None and not await asyncio.to_thread(backend_install._engine_installable_here):
                 return False
         elif backend == ACP_BACKEND_KAS:
             # KAS runs ON kiro-cli, so it is deliberately absent from

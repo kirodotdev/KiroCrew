@@ -33,16 +33,17 @@ it holds to another slot's key. So:
   lenient resolver. Fails closed to ``""`` on anything odd.
 
 Retraction belongs to ``session_pid._prune_stale_session_token_files`` rather than to a
-call at session teardown, and its lifecycle is worth stating exactly, because "sweep"
-suggests something it is not: it runs from ``cleanup_orphaned_sessions``, which is
-STARTUP AND GRACEFUL SHUTDOWN ONLY (``session_parts/sweeps.py`` says so in as many words). So a
-gateway that runs for a month prunes nothing in between, and the bound on the directory
-is one file per session started since the last boot or clean stop.
+call at session teardown, and its lifecycle is worth stating exactly: it runs from
+``cleanup_orphaned_sessions`` at startup and graceful shutdown, and from the session
+cleanup loop's periodic tick (``SessionCleanup._sweep_session_token_mappings``, at most
+``MAX_TICK_INTERVAL_SECS`` apart). A mapping goes once it is unrefreshed for the TTL, so
+the bound on the directory is one file per session active within that window, whether
+or not the gateway has restarted.
 
-That is a deliberate cost rather than an oversight. A mapping outliving its session is
+Removal is deliberately age-based rather than prompt. A mapping outliving its session is
 not a forgery risk — it names a session that does not exist, and any holder of its token
 is inside the boundary below — so what is owed is bounding accumulation, not prompt
-removal; and a boot-time pass covers the case a teardown hook structurally cannot, a
+removal; and an age-based pass covers the case a teardown hook structurally cannot, a
 gateway killed without running one. Pruning also cannot cost a LIVE session its
 identity at any cadence: the mapping is republished at the start of every turn, before
 anything in that turn can call a tool.
@@ -113,6 +114,7 @@ import hashlib
 import hmac
 import logging
 import os
+import threading
 from pathlib import Path
 
 from kiro_crew.atomic_write import atomic_write
@@ -286,6 +288,19 @@ def publish_session_token(token: str, session_key: str) -> None:
     cfg = config_dir()
     path = _sig_path(token, cfg)
     key = _load_hmac_key()
+    with MAPPING_WRITE_LOCK:
+        _write_mapping(path, key, token, session_key)
+
+
+#: Held around every write of a mapping in this process, and by the age-based
+#: prune (``session_pid._prune_stale_session_token_files``) around each file's
+#: age check and unlink, so the prune never removes a mapping written after it
+#: read the file's age. A ``threading`` lock: neither side runs on the event loop.
+MAPPING_WRITE_LOCK = threading.Lock()
+
+
+def _write_mapping(path: Path, key: bytes | None, token: str, session_key: str) -> None:
+    """Write (or, without a key, invalidate) one mapping. Caller holds the lock."""
     if key is None:
         _invalidate(path)
         return

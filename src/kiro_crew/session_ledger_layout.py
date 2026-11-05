@@ -473,7 +473,9 @@ def _locked(dir_path: Path, *, create: bool = True) -> Iterator[None]:
     lock_path = dir_path / _LOCK_FILE
     if create:
         dir_path.mkdir(parents=True, exist_ok=True)
-        fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o600)
+        from kiro_crew.platform_compat import open_create_or_existing
+
+        fd = open_create_or_existing(str(lock_path), os.O_RDWR, 0o600)
     else:
         fd = os.open(str(lock_path), os.O_RDWR)
     try:

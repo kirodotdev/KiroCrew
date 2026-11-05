@@ -104,7 +104,7 @@ class TestWeixinConformance:
 #   `test_wecom_wire.py`, which is where a shape assertion belongs.
 # * The cmd-less ACK's req_id echo -- the only thing that tells a pong from a
 #   stream-reply receipt -- is pinned by
-#   `test_the_same_shape_clears_a_pending_pong_when_the_req_id_was_a_ping`.
+#   `test_wecom_client_cov80.py::test_pong_ack_clears_the_pending_pong`.
 # * The unverified vendor semantics that a probe WOULD settle are recorded as such
 #   in each fixture's `_provenance`, including the load-bearing one: whether a
 #   non-empty `body.chatid` really means "group", which `wecom/transport.py::receive`

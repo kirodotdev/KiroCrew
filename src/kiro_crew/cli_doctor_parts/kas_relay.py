@@ -105,8 +105,11 @@ def _kiro_pick_runs_on_kas() -> bool:
     return offers_kas is True
 
 
-def _report_kas_bundle(issues: list[str]) -> None:
+def _report_kas_bundle(issues: list[str], *, automatic: bool = False) -> None:
     """The bundle route: Crew's own installed engine, no kiro-cli row at all.
+
+    *automatic* is whether the route was chosen because kiro-cli's relay cannot
+    run here; the missing-engine row then names no ``agent.kas_bundle`` switch.
 
     The route never runs kiro-cli, so a missing kiro-cli is not a problem here,
     and reporting one would send the operator to install a binary nothing will
@@ -118,9 +121,51 @@ def _report_kas_bundle(issues: list[str]) -> None:
 
     installed = kas_bundle.installed_bundle()  # type: ignore[misc]  # checked before kas_bundle
     if installed is None:
-        print(f"  bundle:      ❌ nothing installed under {kas_bundle.kas_engines_root()}")  # type: ignore[misc]
-        print("               Fix: kirocrew kas install   (or set agent.kas_bundle false)")
-        issues.append("agent.kas_bundle is on but no KAS engine bundle is installed")
+        # Not a failure on its own: the gateway installs the pinned engine at the
+        # first chat. Still a ⚠ with an issue, because an offline host fails then.
+        # Another version on disk is not "nothing installed": name what is there
+        # and what this release needs, which is what a release whose pin moved
+        # leaves behind when its engine refresh did not finish.
+        needed = kas_bundle.pinned_version()  # type: ignore[misc]
+        try:
+            on_disk = kas_bundle.installed_versions()  # type: ignore[misc]
+        except OSError as exc:
+            # An engines directory the doctor cannot list is its own finding: the
+            # first chat's install cannot write there either. The rest of the
+            # report still runs.
+            print(f"  bundle:      ❌ cannot read {kas_bundle.kas_engines_root()}: {exc}")  # type: ignore[misc]
+            print("               Fix: restore read access to it, then: kirocrew kas install")
+            issues.append(f"the KAS engine directory cannot be read: {exc}")
+            _report_kas_bundle_spec_permissions(None, issues)
+            return
+        if needed in on_disk:
+            # A directory at the pin's name that does not read back as an engine:
+            # an install refuses to overwrite it, so only --force replaces it.
+            print(f"  bundle:      ❌ KAS {needed} is on disk but incomplete")
+            print("               Fix: kirocrew kas install --force")
+            issues.append(f"the KAS engine directory for {needed} is incomplete")
+        elif on_disk:
+            print(
+                f"  bundle:      ⚠  KAS {', '.join(on_disk)} installed, but this release "
+                f"needs KAS {needed}"
+            )
+            issues.append(
+                f"Kiro Crew's KAS engine {needed} is not installed yet (the first chat "
+                f"downloads it); on disk: {', '.join(on_disk)}"
+                if automatic
+                else f"agent.kas_bundle is on but the KAS engine this release needs ({needed}) "
+                f"is not installed; on disk: {', '.join(on_disk)}"
+            )
+        else:
+            print(f"  bundle:      ⚠  not installed yet under {kas_bundle.kas_engines_root()}")  # type: ignore[misc]
+            issues.append(
+                "Kiro Crew's KAS engine is not installed yet (the first chat downloads it)"
+                if automatic
+                else "agent.kas_bundle is on but no KAS engine bundle is installed"
+            )
+        if needed not in on_disk:
+            print("               The gateway downloads it at the first chat. To do it now:")
+            print("               kirocrew kas install")
         _report_kas_bundle_spec_permissions(None, issues)
         return
     where = " (built into the app)" if installed.bundled else ""
@@ -257,8 +302,14 @@ def _report_kas_backend(issues: list[str]) -> None:
     positive ``== ACP_BACKEND_KAS`` rather than an early-return on inequality.
     """
     print("\nKAS backend")
-    if KiroCrewConfig.load().agent.kas_bundle:
-        _report_kas_bundle(issues)
+    from kiro_crew.agent_sdk import kas_bundle
+
+    route = kas_bundle.kas_route()
+    # The route first, and why: the bundle route can be chosen automatically when
+    # kiro-cli's relay cannot run, and that switch must be visible here.
+    print(f"  route:       {route.name} -- {route.describe()}")
+    if route.bundle:
+        _report_kas_bundle(issues, automatic=route.automatic)
         return
     binary = resolve_kiro_cli()
     if not binary:
@@ -298,6 +349,13 @@ def _report_kas_backend(issues: list[str]) -> None:
     # probe rejected -- that is exactly the one worth seeing.
     if identity_line:
         print(f"  crew vault:  {identity_line}")
+    if host_auth and not (identity_line or "").endswith("-> usable"):
+        # A stored vault entry is the sign-in even when it cannot be used: the
+        # spawn never falls back to kiro-cli's, so say how to get out of it.
+        print(
+            "               Sign in again with `kirocrew kas login --provider idc ...`, or"
+            " remove it with `kirocrew kas logout` to use kiro-cli's sign-in."
+        )
     # Before the help probe, not after: the row reads ``--version``, which is a
     # different spawn from ``acp --help``, so a failed help probe establishes
     # nothing about it. The early ``return`` below is for the ENGINE rows alone;

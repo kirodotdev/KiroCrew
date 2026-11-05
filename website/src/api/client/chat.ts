@@ -5,7 +5,7 @@
  * links, the send wire, and the composer autocomplete read.
  */
 
-import type { ChatSlot, ChatSlotDetailResponse, CrewTimeline, CrewWorker, SideSnapshot } from '../../types'
+import type { ChatSlot, ChatSlotDetailResponse, CrewTimeline, CrewWorker, CrewWorkerRecap, SideSnapshot } from '../../types'
 import type { SessionSummary } from '../../types/sessionSummary'
 import type { DynamicDashboardCard } from '../../types/dynamicDashboard'
 import type { CodebaseScanResponse } from '../../pages/chat/page/codebase/codebaseModel'
@@ -19,6 +19,13 @@ import { takeSessionFolderNotice } from '../../lib/sessionFolderNotice'
 import { noteCrewSteerReceipt } from '../../lib/crewSteerNotice'
 import { activeLocale } from '../../i18n/format'
 import type { ClientTransport } from './transport'
+
+/** Shared Crew first-submit-wins fields of one send (see `api/sendRace.ts`). */
+export interface SendRaceFields {
+  baseRevision?: number
+  sendNow?: boolean
+  idempotencyKey?: string
+}
 
 /**
  * Resolve the theme-consent token to transmit for an installed pack's chat.
@@ -79,8 +86,12 @@ export function createChatEndpoints({ post, put, del, patch, j, jAccepted, jfetc
      *  through another worker (`GET /api/chat/slots/{root}/crew-workers`). */
     /** A closed root (its tab gone) still answers, from saved data:
      *  `root_closed: true` and its saved `root_title`. */
-    crewWorkers: (root: string): Promise<{ root: string; workers: CrewWorker[]; root_closed?: boolean; root_title?: string }> =>
+    crewWorkers: (root: string): Promise<{ root: string; workers: CrewWorker[]; root_closed?: boolean; root_title?: string; root_kind?: 'mate' }> =>
       fetch('/api/chat/slots/' + encodeURIComponent(root) + '/crew-workers').then(j),
+    /** One session's recap under its root, from the ledger and its crew log only
+     *  (`GET .../crew-workers/{worker}/recap`). No model call. */
+    crewWorkerRecap: (root: string, worker: string): Promise<CrewWorkerRecap> =>
+      fetch('/api/chat/slots/' + encodeURIComponent(root) + '/crew-workers/' + encodeURIComponent(worker) + '/recap').then(j),
     /** One Crew Mode root's timeline: a lane per session, bars from recorded
      *  transcript rows only (`GET /api/chat/slots/{root}/crew-timeline`). */
     crewTimeline: (root: string): Promise<CrewTimeline> =>
@@ -162,7 +173,7 @@ export function createChatEndpoints({ post, put, del, patch, j, jAccepted, jfetc
     },
     /** Create a chat slot on this machine. A session on a connected crew is
      *  created on that crew and opened through its window, never here. */
-    createChatSlot: async (name?: string, agent?: string, model?: string, mode?: string, memory_mode?: string, title?: string, artifact?: string, folder_id?: string, agent_kind?: 'member' | 'template', no_session_folder?: boolean, app_agent_owner?: string, default_folder?: boolean, doc?: boolean, doc_kind?: 'board' | 'codebase' | 'dashboard') => {
+    createChatSlot: async (name?: string, agent?: string, model?: string, mode?: string, memory_mode?: string, title?: string, artifact?: string, folder_id?: string, agent_kind?: 'member' | 'template', no_session_folder?: boolean, app_agent_owner?: string, default_folder?: boolean, doc?: boolean, doc_kind?: 'board' | 'codebase' | 'dashboard', session_kind?: { app: string; kind: string }) => {
       // A doc session is always an ordinary persistent slot: the server refuses
       // a doc in incognito or temporary mode, so the person's default memory
       // mode never applies to one.
@@ -173,6 +184,10 @@ export function createChatEndpoints({ post, put, del, patch, j, jAccepted, jfetc
         ...(doc ? { doc: true } : {}),
         // A board or a codebase is a doc drawn as a whiteboard or a 3D model.
         ...(doc && doc_kind ? { doc_kind } : {}),
+        // An app-drawn session (`contributes.sessionKinds`): the server checks the
+        // app is enabled and declares the kind, then mints the bound object. The
+        // server refuses a create that also asks for a doc.
+        ...(session_kind ? { session_kind: { app: session_kind.app, kind: session_kind.kind } } : {}),
         ...(name ? { name } : {}),
         ...(agent ? { agent } : {}),
         // Only beside an agent: a namespace without a name selects nothing.
@@ -249,6 +264,11 @@ export function createChatEndpoints({ post, put, del, patch, j, jAccepted, jfetc
     regenerateSlot: (slot: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/regenerate').then(j),
     /** Pick an interrupted turn back up. NOT `/resume` — that path opens a history session into a tab. */
     continueSlot: (slot: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/continue').then(j),
+    /** The bulk form of `continueSlot`: Resume every idle session whose last turn ended without a reply (only those among `slots` when given). Owner-only. Starts a background run and answers at once (409 `resume_all_running` with that run's id and total while one is in flight); the outcome arrives as a `resume_all_done` frame. */
+    /** `crewMode`: this tab's Crew Mode preview is on, so its count left out the workers of listed roots and the run leaves them out too. */
+    chatSlotsResumeAll: (crewMode = false, slots?: string[]) => post('/api/chat/slots/resume-all', {
+      ...(crewMode ? { crew_mode: true } : {}), ...(slots ? { slots } : {}),
+    }).then(j) as Promise<{ ok: boolean; total: number; run_id: string }>,
     /** Drop the slot's native conversation; the next turn starts a fresh one seeded from a text replay of the transcript (`replay: true`). The transcript stays. */
     resetConversation: (slot: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/reset-conversation', { replay: true }).then(j) as Promise<{ slot: string; reset: boolean; replay: boolean }>,
     /** Downscale the oversized images in the slot's transcript in place, then re-issue the interrupted turn (recovery from the provider's many-image 2000px cap). No turns are lost, unlike `resetConversation`. */
@@ -282,7 +302,7 @@ export function createChatEndpoints({ post, put, del, patch, j, jAccepted, jfetc
   }
 
   const send = {
-    sendChat: (message: string, slot?: string, colorTheme?: string, signal?: AbortSignal, meta?: Record<string, unknown>, steer?: boolean | 'auto', responsive?: boolean) => {
+    sendChat: (message: string, slot?: string, colorTheme?: string, signal?: AbortSignal, meta?: Record<string, unknown>, steer?: boolean | 'auto', responsive?: boolean, race?: SendRaceFields) => {
       // theme_consent_sha is the WIRE TOKEN (two-tier consent). The client just
       // TRANSMITS the raw stored grant (see themeConsentSha) — the server verifies
       // content-binding, injecting the persona only when this token equals sha256
@@ -321,7 +341,12 @@ export function createChatEndpoints({ post, put, del, patch, j, jAccepted, jfetc
       // guide observation before Start asks this tab and no other. `X-UI-Lang`
       // is the language this tab renders, so the agent quotes dashboard labels
       // as this screen spells them (the gateway keeps only a shipped tag).
-      return fetch('/api/chat?ws=1', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Guide-Tab': TAB_ID, 'X-UI-Lang': activeLocale(), ..._sk }, body: JSON.stringify({ message, slot, ...(colorTheme ? { color_theme: colorTheme } : {}), ...(themeConsent ? { theme_consent_sha: themeConsent } : {}), ...(meta ? { meta } : {}), ...(steer ? { steer: steer === 'auto' ? 'auto' : true } : {}), ...(responsive ? { responsive: true } : {}) }), signal }).then(sendResponseAuthRecovery)
+      // `race` (Shared Crew first submit wins): the session revision this tab
+      // last saw, whether this is a deliberate Send now after a lost race (the
+      // gateway never steers it), and the per-send Idempotency-Key a retry
+      // reuses so the host answers it once.
+      const raceHeaders: Record<string, string> = race?.idempotencyKey ? { 'Idempotency-Key': race.idempotencyKey } : {}
+      return fetch('/api/chat?ws=1', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Guide-Tab': TAB_ID, 'X-UI-Lang': activeLocale(), ..._sk, ...raceHeaders }, body: JSON.stringify({ message, slot, ...(colorTheme ? { color_theme: colorTheme } : {}), ...(themeConsent ? { theme_consent_sha: themeConsent } : {}), ...(meta ? { meta } : {}), ...(steer && !race?.sendNow ? { steer: steer === 'auto' ? 'auto' : true } : {}), ...(responsive ? { responsive: true } : {}), ...(race?.baseRevision !== undefined ? { base_revision: race.baseRevision } : {}), ...(race?.sendNow ? { send_now: true } : {}) }), signal }).then(sendResponseAuthRecovery)
     },
   }
 

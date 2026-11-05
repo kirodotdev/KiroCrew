@@ -72,6 +72,7 @@ if TYPE_CHECKING:
         voice_runtime_workspace_conflict,
         wait_for_memory_preparation,
     )
+    from kiro_crew.remote_dispatch_mailbox import MailboxRequest
     from kiro_crew.session_agent_selection import SelectionChange
 
 
@@ -103,6 +104,17 @@ def _created_slot_row(state: Any, request: web.Request, slot: Any) -> dict[str, 
         for field in PIN_ORDER_FIELDS:
             row.pop(field, None)
     return row
+
+
+def _mate_home_locked_response() -> web.Response:
+    """The 403 for a create that would file a chat into, or out of, a mate's home."""
+    return web.json_response(
+        {
+            "error": "this folder belongs to a Bot and is managed for you",
+            "code": "mate_home_locked",
+        },
+        status=403,
+    )
 
 
 def _retract_failed_newborn(state: DashboardState, slot: _ChatSlot) -> bool:
@@ -175,8 +187,7 @@ async def _check_new_slot_assignment(
             member_store_ownership_holds, cfg, selected, store
         ):
             raise UnknownMemoryStore(
-                f"Crew Member {selected!r} does not own its private memory store; "
-                "no session was created"
+                f"Bot {selected!r} does not own its private memory store; " "no session was created"
             )
 
     chosen = await asyncio.to_thread(
@@ -210,6 +221,9 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
     # Refused before anything is read or written, so a stale client cannot stamp
     # a remote executor onto a new local slot. The answer is the same for every
     # caller and every state, so it discloses nothing.
+    from kiro_crew.shared_crew import admission_gate
+
+    _service = await admission_gate.current_service()
     if body.get("instance_id") or body.get("adopt_remote_slot"):
         return web.json_response(
             {
@@ -218,6 +232,15 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
             },
             status=400,
         )
+    # The title is applied after the mint, so its type is checked here: a
+    # non-string one would raise there, a 500 after the slot was made. Falsy
+    # values (null, "", 0, []) still mean "no title", as before.
+    from kiro_crew.dashboard.handlers._shared import string_field_error
+
+    raw_title = body.get("title") or ""
+    title_error = string_field_error("title", raw_title)
+    if title_error is not None:
+        return title_error
     # Remote-dispatch preview (RFC conductor-remote-dispatch §2b): an owner's
     # work-item create on a crew short of memory, CPU or disk is refused before
     # anything is read or minted, and every owner create reply carries the
@@ -227,6 +250,16 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
     busy, headroom = await create_admission(request, body)
     if busy is not None:
         return busy
+    # Remote dispatch (Feature Preview): a hub's work item this create binds, or
+    # None, which is also the answer with the preview off. Imported only for a body
+    # that names one, so a plain create and the boot path never load it.
+    work_item: MailboxRequest | None = None
+    if body.get("work_item") is not None:
+        from kiro_crew.dashboard.handlers.remote_work_item import work_item_for_create
+
+        work_item, work_item_refusal = await work_item_for_create(request, body)
+        if work_item_refusal is not None:
+            return work_item_refusal
     name = body.get("name")
     if name is not None and not isinstance(name, str):
         # `get_or_create_slot` normalizes the key with string operations, so a
@@ -270,12 +303,27 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
     # or two and it then jumps into the folder. Validated exactly as
     # PATCH /api/chat/slots/{slot}/folder validates it.
     folder_id = str(body.get("folder_id") or "")
+    from kiro_crew.dashboard.mate_folders import home_owner_of, refuses_refile
+
+    if home_owner_of(state._folders, folder_id):
+        # A mate's home folder holds only the chats that mate opens.
+        return _mate_home_locked_response()
     if folder_id and not any(f["id"] == folder_id for f in state._folders):
         return web.json_response(
             {"error": "folder not found", "code": "folder_not_found"}, status=400
         )
     existing_slot = state._slots.get(_normalize_slot_key(str(name))) if name else None
     request_app = request.get("app", "")
+    # A session whose main pane an installed app draws (`contributes.sessionKinds`).
+    # Judged before anything below reads a folder or builds a slot, so a refused
+    # kind creates nothing; the binding is minted onto the newborn further down.
+    from kiro_crew.dashboard import session_kinds
+
+    session_kind, session_kind_refusal = await session_kinds.session_kind_for_create(
+        body, name=name, owner=is_owner_dashboard_request(request), request_app=request_app
+    )
+    if session_kind_refusal is not None:
+        return session_kind_refusal
     # The person's default folder, for a dashboard New chat that named none.
     # Asked for explicitly (`default_folder: true`) so apps, crons, channels and
     # session_create keep the placement they have today, and applied only to a
@@ -327,10 +375,12 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
         return web.json_response({"error": "invalid mode", "code": "invalid_mode"}, status=400)
     # A doc session: the slot's pane is a markdown document (dashboard/doc_files.py)
     # instead of a chat. Only a person's own fresh, unnamed, ordinary create may
-    # make one; anything else is refused rather than half-applied.
+    # make one; anything else, an app-drawn session kind included, is refused
+    # rather than half-applied.
     want_doc = body.get("doc") is True
     if want_doc and (
         not is_owner_dashboard_request(request)
+        or session_kind is not None
         or name
         or request_app
         or body.get("artifact")
@@ -595,7 +645,7 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
             )
             if denied is not None:
                 return denied
-            is_new_slot = _requested_key not in state._slots
+        is_new_slot = not _requested_key or _requested_key not in state._slots
         # The binding is stamped only on the owner's own fresh local create below;
         # any request that would skip that branch is refused, never left unbound.
         if (app_agent_owner or want_doc) and not (
@@ -609,6 +659,16 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
                 {"error": "invalid app agent owner", "code": "invalid_app_agent_owner"},
                 status=400,
             )
+        # The gate above admits a kind only on an unnamed create, which always mints;
+        # re-asked here, where the mint decision is made, so a kind is never stamped
+        # onto a slot that already exists.
+        if session_kind is not None and not is_new_slot:
+            return session_kinds.invalid_session_kind_response()
+        # Charge only a new allocation, with no await between the check and mint.
+        if is_new_slot:
+            _rate = _service.check_session_create(admission_gate.actor_budget(request))
+            if _rate is not None:
+                return _rate.refusal_response()
         try:
             slot = state.get_or_create_slot(
                 name,
@@ -683,6 +743,23 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
             # Same attribution as the send auto-create: a cron-opened slot
             # carries its creator and never reads as a person's own tab.
             slot._created_by = cron_creator
+        if is_new_slot:
+            # Shared Crew creator: the actor the auth middleware published,
+            # write-once. Function-local: this module runs on the facade globals.
+            from kiro_crew.shared_crew.attribution import stamp_creator
+            from kiro_crew.shared_crew.audit import schedule_action_audit
+            from kiro_crew.shared_crew.contracts import ActionOutcome, ActionType
+            from kiro_crew.shared_crew.identity import actor_of
+
+            _sc_actor = actor_of(request)
+            stamp_creator(slot, _sc_actor)
+            schedule_action_audit(
+                ActionType.SESSION_CREATE,
+                session_key=slot.key,
+                initiator=_sc_actor,
+                outcome=ActionOutcome.APPLIED,
+                target=slot.key,
+            )
         if is_new_slot and cfg is not None:
             if is_owner_dashboard_request(request):
                 # Take the slot lock before the newborn's first await: a later
@@ -711,10 +788,17 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
             if is_new_slot:
                 _retract_failed_newborn(state, slot)
             return denied
+        # `name` can address a slot already filed in a mate's home; moving it to
+        # another folder from here would take it out of that home. Checked on
+        # the slot get_or_create_slot returned, before anything below writes it.
+        if folder_id and refuses_refile(state._folders, slot.folder_id, folder_id, ""):
+            if is_new_slot:
+                _retract_failed_newborn(state, slot)
+            return _mate_home_locked_response()
         # Pin title if explicitly provided (prevents auto-title from overwriting).
         # A cron caller uses this route as both create and reopen. Its title names
         # the new session, but a later reopen must not undo a user's rename.
-        title = (body.get("title") or "").strip()[:200] if isinstance(body, dict) else ""
+        title = raw_title.strip()[:200]
         if cron_creator and (not is_new_slot or reopening_persisted_cron):
             title = ""
         if title:
@@ -745,6 +829,10 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
 
             kind = body.get("doc_kind")
             slot._doc = mint_doc_id(kind if kind in DOC_KINDS else "doc")
+        if session_kind is not None:
+            # The server mints `object`, never the caller, so a new session can
+            # never claim an app record another session already holds.
+            slot._session_kind = session_kinds.mint_session_kind(*session_kind)
         # File the slot before the coalesced broadcast, so its first appearance
         # in every client is already inside the folder.
         folder_applied = False
@@ -974,9 +1062,11 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
         # A pinned title must persist too (not just a folder move): without the
         # write, a restart rehydrates the previous title with a refreshable
         # "auto" origin and the background refresh may rewrite the pin.
-        if app_agent_owner or slot._doc:
+        if app_agent_owner or slot._doc or slot._session_kind:
             # A doc session needs the same birth line: it never gets a message, so
-            # without one a restart would bring it back as an empty chat.
+            # without one a restart would bring it back as an empty chat. So does a
+            # session-kind binding: an app-drawn session may never get a message
+            # either, and would come back as an empty chat with no pane.
             #
             # The app-agent binding is what makes every turn re-check the agent,
             # and nothing else records it: the selection record omits it, and a
@@ -995,7 +1085,11 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
             # during the write keeps the slot (liveness over tidiness).
             # A shutdown mid-write is the same unbound newborn, retracted on the
             # way out by the unwind callback registered at the mint.
-            persisted = await _persist_app_agent_owner(state, slot)
+            persisted = await (
+                _persist_app_agent_owner(state, slot)
+                if app_agent_owner
+                else _persist_birth_line(state, slot)
+            )
             if not persisted:
                 if _retract_failed_newborn(state, slot):
                     # The pick recorded above names a key no slot holds now;
@@ -1008,7 +1102,83 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
                 return web.json_response(
                     {
                         "error": "Could not save the new session. Try again.",
-                        "code": "doc_unpersisted" if slot._doc else "app_agent_owner_unpersisted",
+                        "code": (
+                            "doc_unpersisted"
+                            if slot._doc
+                            else (
+                                "app_agent_owner_unpersisted"
+                                if app_agent_owner
+                                else "session_kind_unpersisted"
+                            )
+                        ),
+                    },
+                    status=503,
+                )
+        if work_item is not None and not is_new_slot:
+            # A work item binds only a slot this create minted, never an open one.
+            return web.json_response(
+                {
+                    "error": "a create with a work_item makes a new session",
+                    "code": "work_item_needs_new_slot",
+                },
+                status=400,
+            )
+        if work_item is not None:
+            # The last step that can refuse the create, so nothing below (the
+            # folder claim, the metadata save) runs for a refused one. Bound before
+            # the first frame, so no client sees the worker unbound.
+            from kiro_crew.dashboard.handlers.remote_work_item import (
+                bind_work_item,
+                discard_work_item,
+            )
+
+            bound_item = work_item
+
+            async def _unbind_retracted_worker(
+                exc_type: type[BaseException] | None,
+                exc: BaseException | None,
+                tb: TracebackType | None,
+            ) -> bool:
+                # Registered before the bind and run before the mint's own unwind:
+                # a newborn retracted on the way out, a cancellation included, takes
+                # its mailbox item and binding with it. The discard touches only a
+                # binding this slot holds, so a refused or unfinished bind is a no-op.
+                if exc_type is not None and _retract_failed_newborn(state, slot):
+                    # One drained step: the discard, then the selection restore.
+                    await discard_work_item(
+                        slot.key,
+                        bound_item,
+                        then=lambda: drained_to_thread(
+                            restore_agent_selection, assignment_key, selection_change
+                        ),
+                    )
+                return False
+
+            creation_stack.push_async_exit(_unbind_retracted_worker)
+            refusal = await bind_work_item(request, slot.key, work_item)
+            if refusal is not None:
+                if _retract_failed_newborn(state, slot):
+                    await drained_to_thread(
+                        restore_agent_selection, assignment_key, selection_change
+                    )
+                return refusal
+            # A bound worker must survive a restart before its first message, or its
+            # item would outlive it; the birth line is what brings a slot back.
+            if not await _persist_birth_line(state, slot):
+                if _retract_failed_newborn(state, slot):
+                    await discard_work_item(
+                        slot.key,
+                        work_item,
+                        then=lambda: drained_to_thread(
+                            restore_agent_selection, assignment_key, selection_change
+                        ),
+                    )
+                else:
+                    slot._dirty = True
+                return web.json_response(
+                    {
+                        "error": "Could not save the new session. Try again.",
+                        "code": "worker_unpersisted",
                     },
                     status=503,
                 )
@@ -1092,15 +1262,26 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
         created["session_folder_notice"] = session_folder_notice
     if headroom is not None:
         created["headroom"] = headroom
+    if work_item is not None:
+        created["work_item_id"] = work_item.item_id
     return web.json_response(created)
 
 
 async def _persist_app_agent_owner(state: DashboardState, slot: _ChatSlot) -> bool:
     """Durably record *slot*'s app-agent binding before its create is answered.
 
-    A line-less newborn gets the full metadata line a first save would write;
-    a slot that already has a line takes the force save, whose merge carries
-    the binding. False when neither write committed.
+    The birth line carries the binding; see :func:`_persist_birth_line`.
+    """
+    return await _persist_birth_line(state, slot)
+
+
+async def _persist_birth_line(state: DashboardState, slot: _ChatSlot) -> bool:
+    """Durably record *slot* before its create is answered, so a restart keeps it.
+
+    A message-less newborn otherwise has no metadata line, and a restart does not
+    bring it back. A line-less newborn gets the full metadata line a first save
+    would write; a slot that already has a line takes the force save. False when
+    neither write committed.
     """
     log = state.conversation_log
     if log is None:
@@ -1133,7 +1314,7 @@ async def _persist_app_agent_owner(state: DashboardState, slot: _ChatSlot) -> bo
         )
     except Exception:
         logger.warning(
-            "chat_slot_create: could not persist the app agent owner for slot=%s",
+            "chat_slot_create: could not persist the birth line for slot=%s",
             slot.key,
             exc_info=True,
         )

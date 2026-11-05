@@ -40,6 +40,9 @@ from kiro_crew.apps.manifest_containment import (  # noqa: F401
 from kiro_crew.apps.manifest_contributes import (  # noqa: F401
     _COMMAND_AGENT_RE,
     _COMMAND_SLUG_RE,
+    _COMPOSER_ACTION_ICON_RE,
+    _COMPOSER_ACTION_KEYS,
+    _COMPOSER_ACTION_POPOVER,
     _FILE_MENU_KINDS,
     _HOST_RE,
     _MAX_ARGUMENT_HOSTS,
@@ -47,26 +50,62 @@ from kiro_crew.apps.manifest_contributes import (  # noqa: F401
     _MAX_FILE_MENU_ITEMS_PER_APP,
     _MAX_KEYWORD,
     _MAX_KEYWORDS,
+    _MAX_LINK_OPEN_HOSTS,
+    _MAX_LINK_PREVIEW_HOSTS,
+    _MAX_MESSAGE_ACTION_TITLE,
     _MAX_PANEL_TABS_PER_APP,
     _MAX_PROMPT_TEMPLATE,
-    _MAX_TITLE,
+    _MAX_SELECTION_TITLE,
+    _MESSAGE_ACTION_KEYS,
+    _MESSAGE_ACTION_POPOVER_HEIGHT,
+    _MESSAGE_ACTION_POPOVER_WIDTH,
     _PANEL_TAB_ID_RE,
+    _POPOVER_KEYS,
+    _SELECTION_ICON_RE,
+    _SELECTION_POPOVER_HEIGHT,
+    _SELECTION_POPOVER_WIDTH,
     _SESSION_CONTROL_ID_RE,
     _SESSION_CONTROL_STATUS_PATH_RE,
+    _TEXT_PATTERN_FLAGS_RE,
+    _TEXT_PATTERN_KEYS,
     ARGUMENT_TOKEN,
     FILE_MENU_SURFACES,
+    MAX_COMPOSER_ACTION_STRING,
+    MAX_COMPOSER_ACTION_TITLE,
+    MAX_COMPOSER_ACTIONS_PER_APP,
+    MAX_LINK_OPEN_PER_APP,
+    MAX_LINK_PREVIEW_TEXT_PATTERN_LEN,
+    MAX_LINK_PREVIEW_TEXT_PATTERNS,
+    MAX_LINK_PREVIEWS_PER_APP,
+    MAX_MESSAGE_ACTION_CHARS,
+    MAX_MESSAGE_ACTIONS_PER_APP,
+    MAX_SELECTION_ACTIONS_PER_APP,
+    MAX_SELECTION_TEXT,
     MAX_SESSION_CONTROLS_PER_APP,
+    MESSAGE_ACTION_FORMATS,
+    MESSAGE_ACTION_ROLES,
+    SELECTION_EFFECTS,
+    SELECTION_SOURCES,
     CommandArgument,
     CommandContribution,
+    ComposerActionConfig,
     Contributes,
     FileMenuItemConfig,
     FileMenuWhen,
+    LinkOpenConfig,
+    LinkPreviewConfig,
+    MessageActionConfig,
     PanelTabConfig,
+    SelectionActionConfig,
     SessionControlContribution,
-    _mirrored_len,
+    _int_field,
+    _name_list,
     _normalize_status_path,
+    _strict_int,
 )
+from kiro_crew.apps.manifest_labels import _MAX_TITLE, _mirrored_len  # noqa: F401
 from kiro_crew.apps.manifest_names import (  # noqa: F401
+    APP_NAME_MAX_LENGTH,
     KEBAB_RE,
     RESERVED_APP_NAME_CODE,
     RESERVED_APP_NAMES,
@@ -79,7 +118,17 @@ from kiro_crew.apps.manifest_names import (  # noqa: F401
 )
 from kiro_crew.apps.manifest_sections import (  # noqa: F401
     _CHANNEL_PRIORITIES,
+    _L10N_QUOTED_CHARS,
+    _L10N_QUOTED_KEYS,
     _OVERLAY_SLUG_RE,
+    L10N_LOCALE_RE,
+    L10N_TEXT_CAPS,
+    LIFECYCLE_SCRIPT_TIMEOUT_DEFAULT,
+    LIFECYCLE_SCRIPT_TIMEOUT_MAX,
+    MAX_L10N_HIGHLIGHT_CHARS,
+    MAX_L10N_HIGHLIGHTS,
+    MAX_L10N_LOCALES,
+    MAX_L10N_WARNINGS,
     MAX_NOTIFICATION_CHANNELS,
     BackendConfig,
     CapabilityDependencies,
@@ -87,6 +136,8 @@ from kiro_crew.apps.manifest_sections import (  # noqa: F401
     CronEntry,
     Dependencies,
     HooksConfig,
+    L10nConfig,
+    L10nEntry,
     NotificationChannel,
     NotificationsConfig,
     Permissions,
@@ -98,7 +149,21 @@ from kiro_crew.apps.manifest_sections import (  # noqa: F401
     UIPage,
     UISidebar,
     _granted_list,
+    _l10n_quoted,
+    _sidebar_order,
+    clamp_lifecycle_timeout,
+    lifecycle_timeout_error,
+    lifecycle_timeout_seconds,
+    logger,
 )
+from kiro_crew.apps.manifest_session_kinds import (  # noqa: F401
+    _SESSION_KIND_AGENT_RE,
+    MAX_SESSION_KINDS_PER_APP,
+    SESSION_KIND_ID_RE,
+    SessionKindConfig,
+    session_kinds_errors,
+)
+from kiro_crew.apps.store_links import sanitize_links
 from kiro_crew.atomic_write import read_bytes_with_retry
 from kiro_crew.constants import WINDOWS_DEVICE_STEMS  # noqa: F401
 
@@ -113,6 +178,8 @@ from kiro_crew.constants import WINDOWS_DEVICE_STEMS  # noqa: F401
 #   ``manifest_containment`` -- app-root path containment and contributed-agent containment
 #   ``manifest_sections`` -- the typed ``app.json`` blocks other than ``contributes``
 #   ``manifest_contributes`` -- the ``contributes`` block and its caps
+#   ``manifest_session_kinds`` -- ``contributes.sessionKinds``, the app-drawn session panes
+#   ``manifest_labels`` -- how a contributed label is measured, and its cap
 
 
 # Expected JSON type per CronEntry field that from_dict type-gates; turns a
@@ -180,6 +247,7 @@ CORE_APP_ROUTE_SEGMENTS = frozenset(
         "dev",
         "disable",
         "enable",
+        "frames",
         "manifest",
         "migrate-cleanup",
         "open",
@@ -336,6 +404,7 @@ _KNOWN_FIELDS = frozenset(
         "publishProvider",
         "notifications",
         "contributes",
+        "l10n",
     }
 )
 
@@ -409,6 +478,9 @@ class AppManifest:
     # ``extra`` is by definition the un-checked bucket. Being a known field is what
     # makes ``validate()`` see it on every parse.
     contributes: Contributes = field(default_factory=Contributes)
+
+    # --- Listing copy per locale (content, never trust; see L10nConfig) ---
+    l10n: L10nConfig = field(default_factory=L10nConfig)
 
     # --- Discovery ---
     tags: list[str] = field(default_factory=list)
@@ -501,6 +573,40 @@ class AppManifest:
             refusal = path_refusal(tab.entry)
             if refusal:
                 report_path(refusal, f"contributes.panelTabs entry {refusal}: {tab.entry!r}")
+        # A link-preview entry is imported by the same ESM host, so same check.
+        for preview in self.contributes.linkPreviews:
+            refusal = path_refusal(preview.entry)
+            if refusal:
+                report_path(refusal, f"contributes.linkPreviews entry {refusal}: {preview.entry!r}")
+        # A message-action entry is imported by the same frame bootstrap.
+        for action in self.contributes.messageActions:
+            refusal = path_refusal(action.entry)
+            if refusal:
+                report_path(
+                    refusal, f"contributes.messageActions entry {refusal}: {action.entry!r}"
+                )
+        for link_open in self.contributes.linkOpen:
+            refusal = path_refusal(link_open.entry)
+            if refusal:
+                report_path(refusal, f"contributes.linkOpen entry {refusal}: {link_open.entry!r}")
+        # A composer-action entry is imported by the same frame bootstrap.
+        for composer in self.contributes.composerActions:
+            refusal = path_refusal(composer.entry)
+            if refusal:
+                report_path(
+                    refusal, f"contributes.composerActions entry {refusal}: {composer.entry!r}"
+                )
+        for selection in self.contributes.selectionActions:
+            refusal = path_refusal(selection.entry)
+            if refusal:
+                report_path(
+                    refusal, f"contributes.selectionActions entry {refusal}: {selection.entry!r}"
+                )
+        # A session kind's entry is mounted by the same ESM host as a panel tab's.
+        for kind in self.contributes.sessionKinds:
+            refusal = path_refusal(kind.entry)
+            if refusal:
+                report_path(refusal, f"contributes.sessionKinds entry {refusal}: {kind.entry!r}")
 
         # UI page validation
         for page in self.ui.pages:
@@ -562,9 +668,7 @@ class AppManifest:
                     refusal,
                     f"session control contribution entryPoint {refusal}: {ctl.entryPoint!r}",
                 )
-            if ctl.statusPath and not _SESSION_CONTROL_STATUS_PATH_RE.fullmatch(
-                ctl.statusPath
-            ):
+            if ctl.statusPath and not _SESSION_CONTROL_STATUS_PATH_RE.fullmatch(ctl.statusPath):
                 # Refused rather than ignored: a status route the dashboard
                 # declines to call would leave the chip permanently stateless
                 # with nothing saying why.
@@ -641,6 +745,9 @@ class AppManifest:
 
         # Backend hooks validation
         errors.extend(self.backend.hooks.validate())
+
+        # onEnable / onDisable timeouts that are not a number at all
+        errors.extend(self.setup.validate())
 
         # Platform names the install and enable gates compare against
         errors.extend(self.platform.validate())
@@ -734,6 +841,19 @@ class AppManifest:
             or self.contributes.sessionControls
             or self.contributes.panelTabs
             or self.contributes.fileMenuItems
+            # A link-preview `entry` is an ESM module the dashboard imports and runs
+            # in its own origin, like a panel tab's: same reason to sign it.
+            or self.contributes.linkPreviews
+            # A message action's roles and format decide which text the app is handed.
+            or self.contributes.messageActions
+            # A link-open `entry` is the same kind of module, and `hosts` decides which
+            # clicked links the app is handed.
+            or self.contributes.linkOpen
+            or self.contributes.composerActions
+            or self.contributes.selectionActions
+            # A session kind's `entry` is mounted in the dashboard's own origin as the
+            # session's whole pane, the panel-tab reason below.
+            or self.contributes.sessionKinds
         ):
             # A contributed command's `prompt` is sent to an agent with tools as if
             # the reader typed it, and `autoSend` fires it without a further
@@ -932,6 +1052,9 @@ class AppManifest:
         contrib_d = self.contributes.to_dict()
         if contrib_d:
             d["contributes"] = contrib_d
+        l10n_d = self.l10n.to_dict()
+        if l10n_d:
+            d["l10n"] = l10n_d
         if self.tags:
             d["tags"] = self.tags
         if self.jobFamilies:
@@ -952,6 +1075,12 @@ class AppManifest:
     def from_dict(cls, data: dict[str, Any]) -> AppManifest:
         """Parse from dict, preserving unknown fields in ``extra``."""
         extra = {k: v for k, v in data.items() if k not in _KNOWN_FIELDS}
+        if "links" in extra:
+            # Store-page links stay in ``extra`` (display copy, outside the signed
+            # body), but only the entries ``sanitize_links`` keeps get that far.
+            links = sanitize_links(extra.pop("links"), app_name=str(data.get("name", "")))
+            if links:
+                extra["links"] = links
 
         config_keys_raw = data.get("config_keys", [])
         if not isinstance(config_keys_raw, list):
@@ -1069,6 +1198,7 @@ class AppManifest:
             publishProvider=publish_provider,
             notifications=notifications,
             contributes=contributes,
+            l10n=L10nConfig.from_value(data.get("l10n")),
             tags=[
                 str(t) for t in (data["tags"] if isinstance(data.get("tags"), list) else []) if t
             ],
@@ -1183,9 +1313,7 @@ def has_stdio_mcp_server(manifest: AppManifest) -> bool:
     from the app's provisioned deps tree, which is why its presence is what
     makes ``bridges_mcp.py`` provision at registration.
     """
-    return any(
-        isinstance(cfg, dict) and not cfg.get("url") for cfg in manifest.mcpServers.values()
-    )
+    return any(isinstance(cfg, dict) and not cfg.get("url") for cfg in manifest.mcpServers.values())
 
 
 def file_entry_point_refusal(entry_point: str, app_root: Path) -> str:

@@ -26,6 +26,11 @@ class SemanticRejectCode(str, Enum):
     #: source already holds), kept out of semantic memory by
     #: ``memory.kind_routing = "enforce"`` (``kiro_crew.memory_kind_routing``).
     WORK_STATE = "work_state"
+    #: A consolidation value over ``_MAX_CONSOLIDATION_SEMANTIC_VALUE_CHARS``. Each
+    #: consolidation write path refuses it on the answer kind routing returned, before
+    #: its first write; ``validate_semantic`` never returns it, so owner edits and
+    #: imports cannot meet it.
+    CONSOLIDATION_VALUE_SIZE = "consolidation_value_size"
 
 
 class LessonWriteOutcome(str, Enum):

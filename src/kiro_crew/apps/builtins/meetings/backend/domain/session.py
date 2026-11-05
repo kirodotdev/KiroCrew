@@ -237,7 +237,20 @@ async def dispatch_to_agent(
             app=k.APP_NAME,
         )
 
-    turn_task = asyncio.create_task(_run_turn())
+    # Shared Crew fair admission: an unattended meeting turn is charged to Crew
+    # automation; a refusal raises (``TurnRefused``) for the circuit breaker.
+    from kiro_crew.shared_crew.admission import OperationKind
+    from kiro_crew.shared_crew.turn_gate import run_admitted_or_raise
+
+    turn_task = asyncio.create_task(
+        run_admitted_or_raise(
+            _run_turn(),
+            session_key=key,
+            text=text,
+            automation=True,
+            operation=OperationKind.BACKGROUND,
+        )
+    )
     try:
         if timeout_secs is None:
             await asyncio.shield(turn_task)

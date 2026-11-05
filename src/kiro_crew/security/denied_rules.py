@@ -214,6 +214,20 @@ def pinned_builtin_command_ids_for_snapshot() -> set[str]:
     return ids
 
 
+class EffectiveDenied(list[str]):
+    """The effective regex-tier deny list, plus which entries are shipped.
+
+    ``shipped`` holds the patterns present only because a shipped rule is enabled
+    or pinned, never one the operator also authored. Pattern text is not
+    provenance: an operator rule typed identical to a shipped one gets no
+    shipped-only narrowing. A plain list records nothing, so it narrows nothing.
+    """
+
+    def __init__(self, patterns: "Iterable[str]", shipped: "Iterable[str]") -> None:
+        super().__init__(patterns)
+        self.shipped: frozenset[str] = frozenset(shipped)
+
+
 def compute_effective_denied(
     rules: "list[DeniedCommandRule]",
     disabled_ids: "Iterable[str]",
@@ -233,18 +247,22 @@ def compute_effective_denied(
     2. Append every entry of ``user_added`` verbatim (the user's own regexes).
     3. De-duplicate preserving first-seen order.
 
+    The result is an :class:`EffectiveDenied` recording which entries came only
+    from step 1, so a caller that passes it on passes their provenance too.
+
     No I/O, no config reads, no globals mutated — callers (the hooks gate) own
     where ``disabled_ids`` / ``disable_all`` / ``user_added`` / ``governance_pins``
     come from.
     """
     disabled = set(disabled_ids)
     pins = set(governance_pins)
-    out: list[str] = []
+    shipped: list[str] = []
     for rule in rules:
         if (not disable_all and rule.id not in disabled) or rule.id in pins:
-            out.append(rule.pattern)
-    out.extend(user_added)
-    return list(dict.fromkeys(out))
+            shipped.append(rule.pattern)
+    authored = list(user_added)
+    own = set(authored)
+    return EffectiveDenied(dict.fromkeys(shipped + authored), (p for p in shipped if p not in own))
 
 
 def enabled_rule_ids(denied_regexes: "list[str] | None") -> "frozenset[str] | None":
@@ -523,68 +541,10 @@ _DENY_EXCEPTIONS: dict[str, list[str]] = {
     "rm -rf ~.*": list(_INERT_SEARCH_GLOBS),
 }
 
-
-# ── Permission-verb rules that an INERT MENTION may narrow (argv-structural) ──
-#
-# The rules below are the ``chmod``/``chown`` rows -- most naming a system
-# path, one naming the world-writable mode.  They are authored as
-# ``<verb>.*<target>.*`` and evaluated with ``re.search`` over
-# the WHOLE command text, which cannot tell a verb in PROGRAM position from the
-# same word handed to a search tool as a pattern.  So an ordinary audit of these
-# very rules is refused:
-#
-#     git show origin/main:src/x.py | grep -nE 'chmod|chown|/etc/' | head -50
-#     grep -rnE 'os\.chown|/etc/cron' src/ 2>/dev/null | head -60
-#     grep -n 'chmod 777' src/kiro_crew/security/denied_rules.py
-#
-# Neither changes a permission.  Denying them prevents nothing (the same search
-# completes by spelling the verb some other way) and surfaces to the agent as
-# ``User denied tool execution``, indistinguishable from a human cancelling.
-#
-# ``_DENY_EXCEPTIONS`` cannot reach these.  It is a TEXT glob gated by
-# :func:`_exception_eligible`, which requires the view to hold no shell-active
-# character at all -- and both commands above carry ``|`` or ``>``.  Widening
-# that glob table is the wrong instrument twice over: a glob cannot express
-# "this word sits at an argument position", and relaxing
-# ``_exception_eligible`` would relax it for the ``rm`` carve-out too.
-#
-# The narrowing therefore lives at the ARGV layer
-# (:func:`~.perm_verb_mention._perm_verb_mention_only`) and is consulted ONLY
-# for the patterns named here, so no other rule's behaviour can change.
-#
-# Derived, never hand-listed: the catalog is the single source of truth for
-# which rows exist, and a hand-maintained copy of those regex literals would
-# silently stop covering a row that is renamed or added.  The selector is
-# "``local-destructive`` row whose pattern BEGINS with a permission verb".
-#
-# It is deliberately blind to what the row matches AFTER the verb.  An earlier
-# revision of this selector required a rooted path, which excluded the mode row
-# and left an ordinary search for that very rule denied.  The mode row's own
-# pattern is also under revision to admit flag spellings, so a selector keyed on
-# the pattern's TAIL would drop the row on that rebase with no test noticing.
-# The verb anchor is the one part a row cannot change and still be the same rule.
-_PERM_VERB_RULE_RE = re.compile(r"^(ch(?:mod|own|grp))\b")
-
-_PERM_VERB_MENTION_RULES: tuple[DeniedCommandRule, ...] = tuple(
-    rule
-    for rule in BUILTIN_DENIED_RULES
-    if rule.category == "local-destructive" and _PERM_VERB_RULE_RE.match(rule.pattern)
-)
-
-#: Patterns whose deny an inert mention may narrow.  Membership is checked by
-#: ``is_denied`` before the argv predicate is consulted at all.
-_PERM_VERB_MENTION_PATTERNS: frozenset[str] = frozenset(
-    rule.pattern for rule in _PERM_VERB_MENTION_RULES
-)
-
-#: The verbs those rules are anchored on, taken from the same match.  The argv
-#: predicate looks for exactly these words, so a catalog row for a new verb
-#: brings its own vocabulary with it.
-_PERM_VERB_MENTION_VERBS: frozenset[str] = frozenset(
-    match.group(1)
-    for match in (_PERM_VERB_RULE_RE.match(rule.pattern) for rule in _PERM_VERB_MENTION_RULES)
-    if match is not None
-)
+# The ``chmod``/``chown`` rows are matched on argv, not as regexes: see
+# :mod:`~.argv_rules`. As text they could not tell a verb that runs from the same
+# word in another command's arguments (``grep -n 'chmod 777' f``) or a path that
+# belongs to another command (``chmod +x a && ls /usr/lib``).
 
 
 # ── ReDoS mitigation for the regex deny tier ──

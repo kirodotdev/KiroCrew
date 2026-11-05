@@ -123,12 +123,12 @@ class _Oracle:
 def answers(monkeypatch):
     """Pin the config snapshot to *cfg* and answer every question with *tier*."""
     import kiro_crew.decisions.gate as gate_mod
-    import kiro_crew.decisions.impl_jev as impl_mod
+    import kiro_crew.decisions.impl_systemone as impl_mod
 
     def _set(tier: str, cfg, p: float = 0.95) -> _Oracle:
         oracle = _Oracle(tier, p)
         monkeypatch.setattr(gate_mod, "_snapshot", lambda: cfg)
-        monkeypatch.setattr(impl_mod, "JevOracle", lambda provider: oracle)
+        monkeypatch.setattr(impl_mod, "SystemOneProvider", lambda provider: oracle)
         return oracle
 
     return _set
@@ -736,14 +736,18 @@ class TestTheSpawnBaseline:
 
 class TestTheUsageRowOfARoutedStart:
     @pytest.mark.asyncio
-    async def test_the_row_names_no_routed_id_the_child_may_have_withheld(self):
+    async def test_the_row_names_no_routed_id_the_child_may_have_withheld(
+        self, tmp_path, monkeypatch
+    ):
         """A routed id is a request, not proof of what served: the usage row keeps
         the caller's own pin (none here) and lets the served model be resolved."""
+        import json
         from unittest.mock import AsyncMock, MagicMock, patch
 
         from test_subagent import _mock_ctx_builder_auto_spawn, _mock_sessions
 
         from kiro_crew.acp.types import AcpEvent, TurnUsage
+        from kiro_crew.dashboard.handlers import usage
         from kiro_crew.execution_context import execution_for_store
         from kiro_crew.providers.base import EVENT_COMPLETE
         from kiro_crew.subagent import SubagentInfo, SubagentManager
@@ -767,14 +771,11 @@ class TestTheUsageRowOfARoutedStart:
             routed_tier="simple",
         )
         manager._log_spawned(info)
-        usage_rows = AsyncMock()
+        shard = tmp_path / "usage" / "tokens.jsonl"
+        monkeypatch.setattr(usage, "_shard_path_for", lambda _now: shard)
         with (
             patch("kiro_crew.subagent.Stats"),
             patch("kiro_crew.subagent.sel"),
-            patch(
-                "kiro_crew.dashboard.handlers.usage.persist_token_record_async",
-                usage_rows,
-            ),
             patch(
                 "kiro_crew.dashboard.handlers.usage.read_context_tokens",
                 MagicMock(return_value=(1, 200000)),
@@ -782,6 +783,15 @@ class TestTheUsageRowOfARoutedStart:
             ),
         ):
             await manager._run_inner(info, "subagent:routed01")
+            # The usage row is appended by a task the manager holds, off the
+            # run's own path, so the run can return before the row lands. Wait
+            # for it (bounded) before reading the shard.
+            pending = [t for t in set(manager._report_tasks) if not t.done()]
+            if pending:
+                _done, unfinished = await asyncio.wait(pending, timeout=30)
+                assert not unfinished, "the usage row write did not finish in 30s"
 
-        usage_rows.assert_awaited_once()
-        assert usage_rows.await_args.args[1] == ""
+        rows = [json.loads(line) for line in shard.read_text().splitlines() if line.strip()]
+        assert len(rows) == 1
+        assert "fake-mini" not in json.dumps(rows[0])
+        assert rows[0]["model"] != "fake-mini"

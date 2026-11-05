@@ -87,24 +87,23 @@ DATA_VERSION = 1
 class PinsCorruptError(Exception):
     """The stored pin list could not be read into something a mutation can merge into.
 
-    Raised only on the UPDATE path (:func:`read_pins_for_update`) so a mutation
-    abandons itself instead of rewriting the whole file from a list it was never
-    able to reconcile against what is on disk. Named and public because TWO
-    PROCESSES mutate this file -- the gateway service below and the MCP server's
-    ``pin_file`` / ``unpin_file`` -- and both have to recognise the refusal, so
-    a module-private name would leave the second writer destroying what the
-    first one just refused to touch.
+    Raised only by :func:`read_pins_for_update`, so a mutation abandons itself
+    rather than rewrite the whole file from a list it could not reconcile. Public
+    because TWO PROCESSES write this file (the gateway service below and the MCP
+    server's ``pin_file`` / ``unpin_file``) and both must recognise the refusal.
 
-    Modelled on ops-mission-control's ``CorruptDocumentError`` rather than the
-    bare ``json.JSONDecodeError`` the aws-control readers raise: that
-    app reached for the plain type only because the named one lived in another
-    app, which does not apply to a type declared in the module both writers
-    already import.
+    The startup :meth:`PinnedFilesService.load` path does NOT raise this: it
+    replaces a corrupt file after saving a ``.bak.<now_ms>`` copy
+    (:meth:`_backup_corrupted`).
+    """
 
-    The startup :meth:`PinnedFilesService.load` path deliberately does NOT raise
-    this. There a corrupt file is replaced on purpose and preserved as a
-    ``.bak.<now_ms>`` sidecar first (:meth:`_backup_corrupted`), which is a
-    decision with a recovery copy, not a silent loss under someone else's write.
+
+class PinsWriteError(Exception):
+    """A user-driven pin mutation could not be saved, so it was rolled back.
+
+    Raised by :meth:`PinnedFilesService.remove_pin` and
+    :meth:`PinnedFilesService.mark_seen` from inside the mutation lock, so a
+    caller never has to infer the failure from a later read of the list.
     """
 
 
@@ -115,34 +114,16 @@ def read_pins_for_update(file_path: str) -> list[Any] | None:
     one case where "nothing to carry forward" is true, so a first pin on a fresh
     install proceeds against an empty list.
 
-    Every caller rewrites the WHOLE file from what this returns, so a read that
-    failed must not degrade to a usable-looking answer: doing that writes the
-    caller's own list over rows another process wrote and this one never loaded,
-    and the unparseable file was their only remaining copy. Three shapes refuse,
-    because each one reaches that same whole-file rewrite:
+    Callers rewrite the WHOLE file from this, so any failed read refuses rather
+    than overwrite rows another process wrote. Refused: a parse failure (truncated
+    bytes are recoverable by hand), a filesystem read error (transient EACCES/EIO,
+    a Windows scanner holding the handle), and valid JSON whose root is not an
+    object or whose ``pins`` is not a list.
 
-    * a parse failure -- the truncated bytes still hold most of the records
-      verbatim, and only a person can recover them;
-    * a read error the filesystem raised (a transient EACCES/EIO, a scanner
-      holding the handle on Windows) -- the store is still there, this process
-      just could not see it this instant;
-    * valid JSON whose root is not an object, or whose ``pins`` is not a list --
-      no parse failure at all, so left uncaught it would be the quietest loss of
-      the three.
-
-    Decoding is STRICT here, unlike :meth:`PinnedFilesService.load` and the Node
-    original, which use ``errors="replace"``. That leniency only surfaces as a
-    parse failure when the bad byte falls OUTSIDE a JSON string; inside a quoted
-    value -- a pin label, or a path on a filesystem that does not enforce UTF-8 --
-    it becomes U+FFFD, ``json.loads`` SUCCEEDS, and the whole-file rewrite then
-    persists the mangled text. That is the same irreversible loss as the three
-    refusals above, reached without any parse failure to catch it, so an
-    undecodable byte is a fourth refusal rather than a repair.
-
-    ``load`` keeps the lenient decode: it does not write, and a corrupt file it
-    accepts is preserved as a ``.bak.<now_ms>`` sidecar first. A mangled label
-    read at startup can therefore reach memory, but it cannot reach DISK,
-    because every write path first re-reads through this reader and refuses.
+    Decoding is STRICT, unlike :meth:`PinnedFilesService.load` (``errors="replace"``):
+    a bad byte inside a JSON string becomes U+FFFD without a parse error, and the
+    rewrite would persist the mangled text. ``load`` stays lenient because it does
+    not write; every write path re-reads through this reader.
     """
     try:
         raw = Path(file_path).read_bytes().decode("utf-8")
@@ -219,7 +200,9 @@ def pins_mutation(file_path: str) -> Iterator[None]:
     replaced.
     """
     lock_path = Path(file_path).with_name(Path(file_path).name + ".lock")
-    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+    from kiro_crew.platform_compat import open_create_or_existing
+
+    fd = open_create_or_existing(lock_path, os.O_RDWR, 0o600)
     try:
         with file_lock(fd, exclusive=True):
             yield
@@ -364,8 +347,9 @@ class PinnedFilesService:
     def remove_pin(self, file_path: str) -> bool:
         """Remove a pin. False if not found.
 
-        Raises :class:`PinsCorruptError` when the stored list could not be read
-        -- distinct from the ``False`` above, which means the pin was not there.
+        Raises :class:`PinsCorruptError` when the stored list could not be read,
+        and :class:`PinsWriteError` when the removal could not be saved -- both
+        distinct from the ``False`` above, which means the pin was not there.
         """
         with pins_mutation(self._file_path):
             self._reload_pins_for_update()
@@ -379,7 +363,7 @@ class PinnedFilesService:
                 # Write failed — restore the pin so memory matches disk and report
                 # failure rather than a success that reverts on the next restart.
                 self._pins = before
-                return False
+                raise PinsWriteError("the pin list could not be saved")
 
         self._stop_watcher(file_path)
         self._broadcast("pinned:files-changed", self.get_pins())
@@ -393,7 +377,8 @@ class PinnedFilesService:
         """Clear a file's ``updatedAt``. Persists and broadcasts even when it was
         already unset — the original assigned ``undefined`` unconditionally.
 
-        Raises :class:`PinsCorruptError` when the stored list could not be read.
+        Raises :class:`PinsCorruptError` when the stored list could not be read,
+        and :class:`PinsWriteError` when the change could not be saved.
         Returning quietly would report success for a mutation that did not
         happen, which for this method is indistinguishable from the normal
         already-unset case.
@@ -408,7 +393,7 @@ class PinnedFilesService:
             entry.pop("updatedAt", None)
             if not self._persist():
                 self._pins = before  # roll back; nothing durably changed
-                return
+                raise PinsWriteError("the pin list could not be saved")
         self._broadcast("pinned:files-changed", self.get_pins())
 
     def get_watched_paths(self) -> set[str]:
@@ -453,21 +438,12 @@ class PinnedFilesService:
     def poll_file_changes(self, now_ms: int) -> None:
         """Detect changes to watched files and feed :meth:`on_watch_event`.
 
-        DEVIATION from the original, which used Node's ``fs.watch`` for push
-        notifications. Python has no stdlib file watcher, and the project rule is
-        to prefer stdlib over a third-party dependency, so the owner loop polls
-        mtime/size instead. Everything downstream is unchanged — this only
-        replaces the event SOURCE, so the 100ms debounce, the
-        ``pinned:file-updated`` / ``pinned:file-deleted`` broadcasts and the
-        atomic-save re-watch retry all still run through ``on_watch_event`` and
-        ``tick`` exactly as before.
+        Polls mtime/size from the owner loop (stdlib has no file watcher), so
+        detection lags by up to the loop's 1s cadence. The debounce, broadcasts
+        and re-watch retry still run through ``on_watch_event`` and ``tick``.
 
-        Cost of the deviation: detection latency is bounded by the owner loop's
-        cadence (1s) instead of being immediate. For the feature this drives —
-        marking a pinned file as changed — that is not observable.
-
-        Size is compared alongside mtime because a write inside the same
-        coarse mtime tick would otherwise be missed.
+        Size is compared too: a write within one coarse mtime tick would
+        otherwise be missed.
         """
         for file_path in list(self._watched):
             try:

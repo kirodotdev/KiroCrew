@@ -1,11 +1,8 @@
 """``ScriptContext`` opens and seeds dashboard sessions with the cron's own credential.
 
-A script cron that drives the dashboard cannot hold a dashboard token:
-``POST /api/token/local`` refuses a sandboxed child. These tests pin the five
-methods that call the ``/api/chat`` routes the internal secret already reaches,
-presenting the same ``X-Internal-Secret`` / ``X-Session-Key`` pair ``notify()``
-presents plus the run's signed session token. No bearer token is minted or
-handled anywhere on this path.
+``POST /api/token/local`` refuses a sandboxed child, so the five methods present the
+``X-Internal-Secret`` / ``X-Session-Key`` pair ``notify()`` uses plus the run's signed
+session token. No bearer token is minted on this path.
 """
 
 from __future__ import annotations
@@ -319,6 +316,21 @@ class TestCrewLogAppend:
             "token": "signed-run-token",
         }
 
+    def test_a_declared_max_age_rides_in_the_body_and_only_when_given(self, ctx, gateway):
+        """``max_age_s`` is the script's freshness promise; omitted, the body is unchanged."""
+        gateway.answers[("POST", "/api/agent-panel/dashboard/record")] = {"ok": True}
+
+        ctx.crew_log_append("stock_check", {"price": 1}, max_age_s=600)
+        ctx.crew_log_append("stock_check", {"price": 2})
+
+        first, second = gateway.seen
+        assert json.loads(first.data) == {
+            "type": "stock_check",
+            "data": {"price": 1},
+            "max_age_s": 600,
+        }
+        assert "max_age_s" not in json.loads(second.data)
+
     def test_the_record_is_redacted_like_a_notification(self, ctx, gateway):
         gateway.answers[("POST", "/api/agent-panel/dashboard/record")] = {"ok": True}
 
@@ -407,7 +419,7 @@ class TestCrewLogAppend:
     def test_a_cron_bound_to_no_crewmate_raises_with_the_gateway_code(self, ctx, gateway):
         body = json.dumps(
             {
-                "error": "this cron job is bound to no crewmate, so it has no crew log to append to",
+                "error": "this cron job is bound to no Bot, so it has no crew log to append to",
                 "code": "cron_not_member_bound",
             }
         ).encode()

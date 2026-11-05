@@ -22,8 +22,13 @@ vi.mock('../api/client', () => ({
 
 import { ThemeProvider, useTheme } from '../hooks/useTheme'
 
+let queryClient: QueryClient
+/** Wait for the installed-theme catalog read to settle in error, the state change
+ *  the refusal tests would otherwise let land after their last barrier. */
+const catalogErrored = () => waitFor(() => expect(queryClient.getQueryState(['custom-themes-catalog'])?.status).toBe('error'))
+
 const wrapper = ({ children }: { children: ReactNode }) => {
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return (
     <QueryClientProvider client={queryClient}>
       <ThemeProvider>{children}</ThemeProvider>
@@ -41,6 +46,14 @@ const detail = {
   light: { '--bg': '#f4f1de' },
   level: 1,
   assets: { branding: { botName: 'Godspeed' }, hasOverrides: false },
+}
+
+/** Mount the hook and wait for the workspace boot read to apply its colour theme,
+ *  the state update that otherwise lands after a test's last barrier. */
+async function renderBootedTheme() {
+  const view = renderHook(() => useTheme(), { wrapper })
+  await waitFor(() => expect(view.result.current.colorTheme).toBe(`custom-${SLUG}`))
+  return view
 }
 
 /** What `checkSessionExpired` does on a 403: start the silent refresh in the
@@ -112,9 +125,10 @@ describe('useTheme: installed-theme catalog replay after silent auth recovery', 
     const { settle } = installRefreshFetch()
     themesFn.mockImplementationOnce(authDeniedWithRefreshStarted).mockResolvedValue(catalog)
 
-    const { result } = renderHook(() => useTheme(), { wrapper })
+    const { result } = await renderBootedTheme()
     await waitFor(() => expect(themesFn).toHaveBeenCalledTimes(1))
     settle(401)
+    await catalogErrored()
 
     await new Promise((r) => setTimeout(r, 30))
     expect(themesFn).toHaveBeenCalledTimes(1)
@@ -164,9 +178,10 @@ describe('useTheme: installed-theme catalog replay after silent auth recovery', 
     const { settle } = installRefreshFetch()
     themesFn.mockImplementation(authDeniedWithRefreshStarted)
 
-    const { result } = renderHook(() => useTheme(), { wrapper })
+    const { result } = await renderBootedTheme()
     await waitFor(() => expect(themesFn).toHaveBeenCalledTimes(1))
     settle(401)
+    await catalogErrored()
 
     await new Promise((r) => setTimeout(r, 30))
     expect(result.current.customThemesLoadError).toBeNull()
@@ -178,7 +193,7 @@ describe('useTheme: installed-theme catalog replay after silent auth recovery', 
     const { fetchFn } = installRefreshFetch()
     themesFn.mockRejectedValueOnce(new ApiError(503, 'unavailable')).mockResolvedValue(catalog)
 
-    const { result } = renderHook(() => useTheme(), { wrapper })
+    const { result } = await renderBootedTheme()
     await waitFor(() => expect(themesFn).toHaveBeenCalledTimes(1))
 
     await new Promise((r) => setTimeout(r, 30))

@@ -4,6 +4,7 @@ import type { ResizeInfo } from '../../utils/resizeImage'
 import type { SendMode } from '../../pages/chat/ChatSettings'
 import type { AutomationRecord } from '../../monitoring/automation'
 import type { PasteBlock } from '../../utils/pasteTokens'
+import type { ComposerActionItem } from '../../composerActions/composerActionRegistry'
 import type { FileKind } from '../FilePickerMenu'
 import type { PromptHistoryItem } from '../composerPromptHistory'
 import type { ApprovalModeRemote } from '../ApprovalModePicker'
@@ -13,6 +14,18 @@ import type { MemorySource } from '../../lib/agentMemorySource'
    and re-exports `ComposerBusyMode`; the owners under this directory take the
    props they need as their own parameters, a few by indexed access
    (`ChatInputProps['onFileSelect']`). */
+/** Who holds the typing lease that locks this composer (`ChatInputProps.typingLock`). */
+export interface ComposerTypingLockView {
+  holderName: string
+  /** The holder took the lease over from this user: the banner says so. */
+  tookOver?: boolean
+  /** Shows Take over on the banner (Shared Crew preview only). */
+  onTakeOver?: () => void
+  takeOverPending?: boolean
+  /** A failed takeover, shown under the banner with the agent hand-off. */
+  takeOverError?: string
+}
+
 /** Busy-composer send affordance — see `ChatInputProps.busyMode`. */
 export type ComposerBusyMode = 'split' | 'steer-only' | 'responsive'
 
@@ -82,6 +95,14 @@ export interface ChatInputProps {
    * the host asks the gateway to prioritize the message, never stops locally. */
   busyMode?: ComposerBusyMode
   disabled?: boolean
+  /** Set while another collaborator holds the session's typing lease: the box
+   *  turns read-only (the draft in it is kept, and focus with it), the button
+   *  row gives way to a banner naming who is typing, and only Stop and Steer
+   *  stay for a running turn. Cleared the moment the lease ends. */
+  typingLock?: ComposerTypingLockView | null
+  /** Who else is in this shared session, drawn at the end of the context row
+   *  beside the model chip. Omitted when the session is not shared. */
+  presence?: React.ReactNode
   placeholder?: string
   /** Shown instead of the default "Stopping…" while `disabled` is set, naming
    *  why the composer is locked. */
@@ -235,6 +256,10 @@ export interface ChatInputProps {
   /** Session Environment chip for this slot (`SessionEnvironmentChip`). It owns
    *  its own separated shelf group and renders nothing until profiles exist. */
   environmentSlot?: string | null
+  /** App-contributed composer actions (contributes.composerActions in app.json):
+   *  rows in the "+" menu whose app offers text the composer inserts as visible
+   *  text, refused when it holds anything the composer would resolve. */
+  composerActions?: readonly ComposerActionItem[]
   /** App-contributed session controls (contributes.sessionControls in app.json). */
   sessionControls?: {
     key: string
@@ -269,6 +294,9 @@ export interface ChatInputProps {
    *  attached. A pick there cannot land at the next turn, because the deferred
    *  session reset stays armed while children share the runtime. */
   projectLocked?: boolean
+  /** A project pick is still waiting on its route (it holds the turn-
+   *  preparation lock): the chip shows a spinner and announces it (#20351). */
+  projectSwitching?: boolean
   onStop?: () => void
   /**
    * True when an EMPTY composer can hand the thread back to the agent, so the
@@ -304,6 +332,8 @@ export interface ChatInputProps {
   approvalMode?: string
   /** The approval-mode picker drives another machine's session (crew window). */
   approvalModeRemote?: ApprovalModeRemote
+  /** Drawn directly right of the approval-mode picker (the mid-chat Ultra Mode chip). */
+  afterApprovalMode?: React.ReactNode
   reasoningEffort?: string
   /** True when `reasoningEffort` is the configured default rather than a
    *  per-slot pick. Only the chip's hover / accessible name says so: outside

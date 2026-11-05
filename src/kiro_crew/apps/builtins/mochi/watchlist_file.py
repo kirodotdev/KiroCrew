@@ -181,7 +181,9 @@ def watchlist_mutation(file_path: str | Path) -> Iterator[None]:
     """
     target = Path(file_path)
     lock_path = target.with_name(target.name + ".lock")
-    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+    from kiro_crew.platform_compat import open_create_or_existing
+
+    fd = open_create_or_existing(lock_path, os.O_RDWR, 0o600)
     try:
         with file_lock(fd, exclusive=True):
             yield

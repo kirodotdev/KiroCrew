@@ -250,10 +250,16 @@ def test_comment_aware_recipes_are_finite_gated_with_the_judge_off_and_keep_repa
             "autonudge_stop",
         ):
             assert contract in recipe["message"]
-    assert (prepare["max_cycles"], prepare["max_runtime_secs"]) == (288, 86400)
+    # The interval paces the quiet floor as well as detection, so it is pinned
+    # beside the budgets it divides.
+    assert (
+        prepare["interval_secs"],
+        prepare["max_cycles"],
+        prepare["max_runtime_secs"],
+    ) == (600, 144, 86400)
     assert (legacy["max_cycles"], legacy["max_runtime_secs"]) == (48, 14400)
-    assert "`max_cycles=288` and `max_runtime_secs=86400`" in _text(PREPARE)
+    assert "`max_cycles=144` and `max_runtime_secs=86400`" in _text(PREPARE)
     # SKILL.md keeps the fixed arguments and points at the call that carries them.
     skill = " ".join(_text(PREPARE).split())
     assert "references/monitor-loop.md" in skill
-    assert "interval_secs=300, max_cycles=288, max_runtime_secs=86400, judge=False" in skill
+    assert "interval_secs=600, max_cycles=144, max_runtime_secs=86400, judge=False" in skill

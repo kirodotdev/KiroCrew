@@ -28,10 +28,11 @@ import kiro_crew
 from kiro_crew import platform_compat
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.config.paths import config_dir
+from kiro_crew.dashboard import system_windows_probes
 from kiro_crew.dashboard.state import (
     DashboardState,
 )
-from kiro_crew.dashboard.status_counts import cached_status_snapshot
+from kiro_crew.dashboard.status_counts import cached_status_snapshot, yolo_grant_fields
 from kiro_crew.embeddings import get_shared_embedder, model_file_present
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.loop_lock import LoopBoundLock
@@ -243,7 +244,6 @@ async def api_status(request: web.Request) -> web.Response:
             owner_hash = await loop.run_in_executor(None, _get_owner_hash, state)
         except Exception:
             owner_hash = "unknown"
-    so_status = safety_override().status()
     # Off-loop: the duration values hit the filesystem (see _yolo_duration_fields).
     yolo_duration, until_shutdown_ok, disabled_approval_modes = await asyncio.to_thread(
         _yolo_duration_fields
@@ -267,14 +267,7 @@ async def api_status(request: web.Request) -> web.Response:
             # operator opening the System page.
             "gateway_rss_mb": gateway_rss_mb,
             "watchdog_rss_max_mb": watchdog_rss_max_mb,
-            "yolo": so_status.active,
-            "yolo_active": so_status.active,
-            "yolo_expires_at": so_status.expires_at_iso or "",
-            "yolo_remaining_secs": so_status.remaining_secs,
-            # True when the live grant has no timed expiry at all (declared in
-            # config, or ad-hoc under yolo_duration: until_shutdown).
-            # ``yolo_remaining_secs`` is -1 and ``yolo_expires_at`` empty then.
-            "yolo_until_shutdown": so_status.permanent,
+            **yolo_grant_fields(),
             # The configured ad-hoc duration, and whether policy allows the
             # no-timed-expiry option — the Settings card lock-badges it when not.
             "yolo_duration": yolo_duration,
@@ -485,6 +478,8 @@ def _scan_mcp_processes() -> dict[str, object]:
               image. The final cmdline becomes "kiro-cli ..." and the
               "kirocrew_sandbox" string (only in the -f path arg) is lost.
               Sandbox count will be 0 even when sandboxes are running.
+      Windows: Win32_Process command lines from one PowerShell CIM query
+              (``system_windows_probes``), since there is no ``ps`` or ``/proc``.
     """
     try:
         _my = os.getpid()
@@ -507,6 +502,21 @@ def _scan_mcp_processes() -> dict[str, object]:
                         _seen.add(d)
                 except OSError:
                     pass
+        elif sys.platform == "win32":
+            _win_sigs = {"kirocrew_sandbox": "sandbox", "kiro-cli": "kiro_cli"}
+            rows = system_windows_probes.windows_process_command_lines(tuple(_win_sigs))
+            for pid, cmd in rows or ():
+                if pid == _my:
+                    continue
+                matched = False
+                # WQL LIKE matches case-insensitively, so this check does too.
+                folded = cmd.lower()
+                for sig, key in _win_sigs.items():
+                    if sig in folded:
+                        _counts[key] += 1
+                        matched = True
+                if matched:
+                    _seen.add(str(pid))
         else:
             _sigs = {
                 "kirocrew_sandbox": "sandbox",
@@ -517,6 +527,7 @@ def _scan_mcp_processes() -> dict[str, object]:
                     ["ps", "-eo", "pid,command"],
                     timeout=5,
                     text=True,
+                    encoding="utf-8",
                 )
                 for line in out.splitlines():
                     parts = line.split(None, 1)
@@ -714,6 +725,11 @@ def _collect_system_metrics() -> dict[str, object]:
                         tx_total += int(parts[9])
                     except (ValueError, IndexError):
                         pass
+        elif sys.platform == "win32":
+            octets = system_windows_probes.windows_network_octets()
+            if octets is None:
+                raise OSError("interface counters unavailable")
+            rx_total, tx_total = octets
         else:
             with open("/proc/net/dev") as f:
                 for line in f:

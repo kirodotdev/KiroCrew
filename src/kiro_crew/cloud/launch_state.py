@@ -47,6 +47,7 @@ from kiro_crew import platform_compat
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.cloud.config import DEFAULT_REGION, CloudConfig, tag_is_wellformed
 from kiro_crew.config.loader import config_dir
+from kiro_crew.owner_only_files import owner_only_opener_for
 from kiro_crew.sandbox import (
     SandboxCeilingUnsealable,
     require_unaliased_cloud_config,
@@ -379,7 +380,7 @@ def _writer_lock(p: Path) -> "Iterator[None]":
     """
     lock_path = p.with_name(p.name + ".lock")
     with contextlib.ExitStack() as stack:
-        fh = stack.enter_context(open(lock_path, "a+"))
+        fh = stack.enter_context(open(lock_path, "a+", opener=owner_only_opener_for(lock_path)))
         stack.enter_context(platform_compat.file_lock(fh.fileno(), exclusive=True))
         yield
 

@@ -24,6 +24,7 @@ from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
+from named_cases_helpers import named_cases
 
 import kiro_crew.mcp_shared as mcp_shared
 from kiro_crew.agent_sdk.mcp_refs import per_tool_grants
@@ -48,24 +49,35 @@ class TestPerToolGrants:
     @pytest.mark.parametrize(
         "tools",
         [
-            [f"@{CORE}"],
-            [f"@{CORE}/skill_search", f"@{CORE}"],
-            ["*", f"@{CORE}/skill_search"],
-            [f"@{CORE}/*"],
-            [f"@{CORE}/skill_search", f"@{CORE}/artifact_*"],
-            [f"@{CORE}/"],
+            *named_cases(
+                "test_a_whole_server_grant_names_no_include",
+                "tools",
+                [
+                    [f"@{CORE}"],
+                    [f"@{CORE}/skill_search", f"@{CORE}"],
+                    ["*", f"@{CORE}/skill_search"],
+                    [f"@{CORE}/*"],
+                    [f"@{CORE}/skill_search", f"@{CORE}/artifact_*"],
+                    [f"@{CORE}/"],
+                ],
+                ids=["bare", "bare-and-tool", "star", "server-glob", "tool-glob", "empty-tool"],
+            ),
+            *named_cases(
+                "test_no_ref_to_the_server_names_no_include",
+                "tools",
+                [[], ["fs_read"], ["@kirocrew-cron/cron_add"], [f"@{CORE}-extra/x"], None, "nope"],
+                ids=[
+                    "empty",
+                    "builtin-only",
+                    "other-server",
+                    "prefix-sibling",
+                    "none",
+                    "not-a-list",
+                ],
+            ),
         ],
-        ids=["bare", "bare-and-tool", "star", "server-glob", "tool-glob", "empty-tool"],
     )
-    def test_a_whole_server_grant_names_no_include(self, tools: list[str]) -> None:
-        assert per_tool_grants(tools, CORE) is None
-
-    @pytest.mark.parametrize(
-        "tools",
-        [[], ["fs_read"], ["@kirocrew-cron/cron_add"], [f"@{CORE}-extra/x"], None, "nope"],
-        ids=["empty", "builtin-only", "other-server", "prefix-sibling", "none", "not-a-list"],
-    )
-    def test_no_ref_to_the_server_names_no_include(self, tools: Any) -> None:
+    def test_no_include_is_named(self, tools: list[str]) -> None:
         assert per_tool_grants(tools, CORE) is None
 
 

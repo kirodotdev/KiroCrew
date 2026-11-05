@@ -146,8 +146,12 @@ function SignedInSummary({
  * relay alone, so on a build or policy that cannot select KAS there is nothing
  * to sign in for, and on a row that is not KAS it would be a sign-in for an
  * agent that never uses it. That is also why it is NOT on Settings > Overview
- * (its former home) nor indexed into Settings search: a sign-in chooser on the
- * landing page read as a required step to every user.
+ * (its former home): a sign-in chooser on the landing page read as a required
+ * step to every user. People look for sign-out and account switching in the
+ * account popup and in Settings search, so both link HERE instead of carrying a
+ * second copy of the flow: the Kiro account popup's "Sign out or switch account"
+ * and the search entry (`KIRO_SIGN_IN_SETTING_ID`), which waits on the
+ * `data-setting-id` this card carries.
  *
  * `compact` is that in-detail form: a section with a small heading rather than
  * a `Card` with a `CardTitle`, because the detail it sits in is already the
@@ -211,6 +215,8 @@ export function KiroSignInCard({ compact = false }: { compact?: boolean } = {}) 
         aria-label={title}
         className="border-t border-border pt-3"
         data-setting-key={KIRO_SIGN_IN_HIGHLIGHT_ANCHOR}
+        data-setting-id={KIRO_SIGN_IN_HIGHLIGHT_ANCHOR}
+        data-setting-label={i18nT('pages.developer.kiroSignInCard.search_label')}
         data-testid="kiro-sign-in-card"
       >
         <h3 className="mb-2 flex items-center gap-1.5 text-[13px] font-semibold text-text-strong">
@@ -222,7 +228,12 @@ export function KiroSignInCard({ compact = false }: { compact?: boolean } = {}) 
     )
   }
   return (
-    <Card data-setting-key={KIRO_SIGN_IN_HIGHLIGHT_ANCHOR} data-testid="kiro-sign-in-card">
+    <Card
+      data-setting-key={KIRO_SIGN_IN_HIGHLIGHT_ANCHOR}
+      data-setting-id={KIRO_SIGN_IN_HIGHLIGHT_ANCHOR}
+      data-setting-label={i18nT('pages.developer.kiroSignInCard.search_label')}
+      data-testid="kiro-sign-in-card"
+    >
       <CardTitle>
         <KeyRound className="lucide-inline" aria-hidden="true" />
         {title}

@@ -1,11 +1,11 @@
 /**
  * The worker breadcrumb on a phone: the root's name keeps a readable minimum and
- * a tooltip, the worker's name stays, the status is a dot with its word for
- * readers, and Back keeps its 44x44 target. jsdom has no layout, so the rules are
+ * a tooltip, the worker's name stays, and the status is a dot with its word for
+ * readers. The root and sub-conductor crumbs are links; the current member is text. jsdom has no layout, so the rules are
  * pinned on the classes that carry them; the pod check measures the pixels.
  */
 import { afterEach, describe, it, expect, vi } from 'vitest'
-import { act, render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { createTestStore } from '../../test/helpers'
@@ -30,17 +30,42 @@ function renderCrumb() {
 describe('CrewWorkerBreadcrumb on a phone', () => {
   afterEach(() => { vi.useRealTimers() })
 
-  it('clips the gradient to the title, never the crumb containing the ghost', () => {
+  it('reads as text: no ghost, no accent, a link only on hover or focus', () => {
     renderCrumb()
     const root = screen.getByTestId('crew-breadcrumb-root')
-    expect(root).not.toHaveClass('crew-grad-text', 'crew-eyebrow-text')
-    expect(screen.getByText('New Teammate Welcome Kit')).toHaveClass('crew-grad-text')
-    const badge = screen.getByTestId('crew-ghost-badge')
-    expect(badge.closest('.crew-grad-text, .crew-eyebrow-text')).toBeNull()
-    expect(screen.getByTestId('kiro-ghost-mark').closest('.crew-grad-text, .crew-eyebrow-text')).toBeNull()
+    expect(root).toHaveTextContent('New Teammate Welcome Kit')
+    expect(root).not.toHaveClass('crew-grad-text')
+    expect(root).toHaveClass('hover:underline', 'focus-visible:underline', 'cursor-pointer')
+    expect(root).not.toHaveClass('underline')
+    expect(screen.queryByTestId('crew-ghost-badge')).toBeNull()
+    expect(screen.getByRole('navigation', { name: 'Breadcrumb' })).toBe(screen.getByTestId('crew-worker-breadcrumb'))
   })
 
-  it('keeps the root readable, names both, and keeps Back a 44px target', () => {
+  it('goes back to the main chat from the root crumb', () => {
+    const store = createTestStore({ dashboard: { slots: [{ key: 'root', title: 'New Teammate Welcome Kit', crew_mode_root: true }, { key: 'w1', title: 'First-week checklist', crew_root: 'root' }] } } as never)
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={qc}><Provider store={store}>
+        <CrewWorkerBreadcrumb root="root" worker={{ key: 'w1', title: 'First-week checklist', running: false }} />
+      </Provider></QueryClientProvider>,
+    )
+    const back = screen.getByRole('button', { name: 'Back to New Teammate Welcome Kit' })
+    expect(back).toBe(screen.getByTestId('crew-breadcrumb-root'))
+    expect(store.getState().chat.activeSlot).not.toBe('root')
+    fireEvent.click(back)
+    expect(store.getState().chat.activeSlot).toBe('root')
+  })
+
+  it('keeps the current member and its status as plain text', () => {
+    renderCrumb()
+    const worker = screen.getByTestId('crew-breadcrumb-worker')
+    expect(worker.tagName).toBe('SPAN')
+    expect(worker).toHaveAttribute('aria-current', 'page')
+    expect(screen.getByTestId('crew-status').closest('button')).toBeNull()
+    expect(screen.getAllByRole('button')).toHaveLength(1)
+  })
+
+  it('keeps the root readable and names both', () => {
     renderCrumb()
     const rootCrumb = screen.getByTestId('crew-breadcrumb-root')
     expect(rootCrumb).toHaveClass('min-w-0', '@[18rem]/crumb:min-w-[5.5rem]')
@@ -48,8 +73,6 @@ describe('CrewWorkerBreadcrumb on a phone', () => {
     const worker = screen.getByTestId('crew-breadcrumb-worker')
     expect(worker).toHaveTextContent('First-week checklist')
     expect(worker).toHaveAttribute('title', 'First-week checklist')
-    const back = screen.getByTestId('crew-back-to-conductor')
-    expect(back).toHaveClass('min-h-11', 'min-w-11', 'md:min-h-8', 'md:min-w-0')
     // The status word is for readers only on a phone; the dot carries it.
     expect(screen.getByTestId('crew-status').querySelector('.sr-only')).not.toBeNull()
   })
@@ -62,7 +85,6 @@ describe('CrewWorkerBreadcrumb on a phone', () => {
       expect(label).toHaveTextContent('Waiting')
       expect(screen.getByTestId('crew-status')).toHaveClass('[&>span:last-child]:sr-only', '@[40rem]/crumb:[&>span:last-child]:not-sr-only')
       expect(screen.getByTestId('crew-breadcrumb-worker')).not.toHaveClass('@[30rem]/crumb:shrink-0')
-      expect(screen.getByTestId('crew-back-to-conductor').querySelector('span')).toHaveClass('hidden', '@[40rem]/crumb:inline')
     } finally {
       mobile.value = true
     }
@@ -161,7 +183,20 @@ describe('CrewWorkerBreadcrumb on a phone', () => {
 })
 
 describe('CrewWorkerBreadcrumb for a sub-conductor\'s crew (C)', () => {
-  it('reads main chat > sub-conductor > member, with Back its one control', async () => {
+  it('keeps a dispatcher the list does not hold yet as a label', async () => {
+    fail.on = false
+    fail.workers = [{ key: 'w1', title: 'First-week checklist', agent: 'kirocrew-worker', status: 'idle', group: 'done', last_activity: '', ledger_item: '', created_by: 'gone', dispatched_by: 'gone' }]
+    try {
+      renderCrumb()
+      const via = await screen.findByTestId('crew-breadcrumb-via')
+      expect(via.tagName).toBe('SPAN')
+      expect(screen.getAllByRole('button')).toHaveLength(1)
+    } finally {
+      fail.workers = []
+    }
+  })
+
+  it('reads main chat > sub-conductor > member; the sub-conductor crumb opens it', async () => {
     mobile.value = false
     fail.on = false
     fail.workers = [
@@ -180,13 +215,13 @@ describe('CrewWorkerBreadcrumb for a sub-conductor\'s crew (C)', () => {
     expect(crumbs.map(c => c.textContent)).toEqual(['New Teammate Welcome Kit', 'Sub conductor', 'First-week checklist'])
     // The middle crumb gives way first on a narrow header.
     expect(via.className).toContain('shrink-[3]')
-    // The crumbs are labels; Back is the breadcrumb's one control, so the header
-    // row (with the title row's side panel button) holds at most two actions.
-    expect(via.tagName).toBe('SPAN')
-    expect(screen.getByTestId('crew-breadcrumb-root').tagName).toBe('SPAN')
-    expect(screen.getByTestId('crew-worker-breadcrumb').querySelectorAll('button')).toHaveLength(1)
-    act(() => { screen.getByTestId('crew-back-to-conductor').click() })
-    expect(store.getState().chat.activeSlot).toBe('root')
+    // The root and the sub-conductor are links; the member on screen is not.
+    expect(via.tagName).toBe('BUTTON')
+    expect(screen.getByTestId('crew-breadcrumb-root').tagName).toBe('BUTTON')
+    expect(screen.getByTestId('crew-breadcrumb-worker').tagName).toBe('SPAN')
+    expect(store.getState().chat.activeSlot).not.toBe('root')
+    fireEvent.click(via)
+    expect(store.getState().chat.activeSlot).toBe('sub')
     fail.workers = []
     mobile.value = true
   })

@@ -10,11 +10,38 @@ import tempfile
 import unittest
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
+import pytest
 import yaml
 
-from scripts.ci_file_shards import file_shard
+from scripts import ci_file_shard_pins
+from scripts.ci_file_shards import file_shard, hash_shard, read_pins
 
 ROOT = Path(__file__).resolve().parents[1]
+_DEFAULT_SUBPROCESS_TIMEOUT_SECONDS = 45
+# Lost-run ceiling for the Windows `--surface backend` scan (testing-conventions
+# class 6). The slowest passing call in a windows-pytest-progress-7 artifact took
+# 42.251775s (run 39911553168); 10x is 422.5s, rounded up to 425s. Fifteen
+# consecutive green main runs (41234261776..41278128347) measured 18.2s-25.2s.
+_WINDOWS_BACKEND_SCOPE_TIMEOUT_SECONDS = 425
+# At most half the module timeout, so an expired scan fails by name instead of
+# pytest-timeout killing the xdist worker (Windows has no SIGALRM).
+pytestmark = pytest.mark.timeout(2 * _WINDOWS_BACKEND_SCOPE_TIMEOUT_SECONDS)
+
+
+def _backend_scope_timeout_seconds(*, windows: bool) -> int:
+    """Bound Windows scans from the measured shard time; others keep 45s."""
+    return (
+        _WINDOWS_BACKEND_SCOPE_TIMEOUT_SECONDS if windows else _DEFAULT_SUBPROCESS_TIMEOUT_SECONDS
+    )
+
+
+def _tail(output: str | bytes | None, limit: int = 2000) -> str:
+    """Last ``limit`` characters a timed-out child wrote, for the failure message."""
+    if output is None:
+        return ""
+    if isinstance(output, bytes):
+        output = output.decode("utf-8", "replace")
+    return output[-limit:]
 
 
 class TestFileShards(unittest.TestCase):
@@ -40,7 +67,7 @@ class TestFileShards(unittest.TestCase):
         path.write_text(content, encoding="utf-8")
         return path
 
-    def run_python(self, *extra):
+    def run_python(self, *extra, timeout=_DEFAULT_SUBPROCESS_TIMEOUT_SECONDS):
         env = dict(os.environ)
         env.pop("PYTEST_ADDOPTS", None)
         env.pop("PYTEST_PLUGINS", None)
@@ -53,15 +80,21 @@ class TestFileShards(unittest.TestCase):
         env["PYTHONDONTWRITEBYTECODE"] = "1"
         env["PYTHONPATH"] = str(ROOT)
         env["TMPDIR"] = env["TMP"] = env["TEMP"] = str(self.root)
-        return subprocess.run(
-            [sys.executable, "-B", *extra],
-            cwd=self.root,
-            env=env,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            timeout=45,
-        )
+        try:
+            return subprocess.run(
+                [sys.executable, "-B", *extra],
+                cwd=self.root,
+                env=env,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                timeout=timeout,
+            )
+        except subprocess.TimeoutExpired as exc:
+            self.fail(
+                f"{extra} still running when its {exc.timeout}s ceiling expired; "
+                f"stdout tail: {_tail(exc.stdout)!r}; stderr tail: {_tail(exc.stderr)!r}"
+            )
 
     def run_pytest(self, *extra):
         return self.run_python("-m", "pytest", "-p", "scripts.ci_file_shards", "-q", *extra)
@@ -137,8 +170,159 @@ class TestFileShards(unittest.TestCase):
         self.assertCountEqual(all_files, {item.split("::")[0] for item in baseline})
         self.assertEqual(len(all_files), 26)
 
+    def write_pins(self, name, count, pins):
+        lines = [f"# shards: {count}"] + [f"{owner} {path}" for path, owner in pins.items()]
+        return self.write(name, "\n".join(lines) + "\n")
+
+    def test_pinned_union_matches_unsharded_items_and_moves_only_pinned_files(self):
+        self.seed_suite()
+        self.write("test/a space/test_spaced.py", "def test_one(): pass\n")
+        self.assert_ok(self.run_pytest("--collect-only"))
+        baseline = self.items()
+        self.assertEqual(len(baseline), 55)
+        files = sorted({item.split("::")[0] for item in baseline})
+        hashed = {name: file_shard(self.root / name, self.root, 3) for name in files}
+        # Move every other file off its hash shard, the spaced path included. A
+        # stale pin (a deleted file) and the unpinned files must not matter.
+        pins = {name: hashed[name] % 3 + 1 for name in files[::2]}
+        pins["test/a space/test_spaced.py"] = hashed["test/a space/test_spaced.py"] % 3 + 1
+        pins["test/test_deleted.py"] = 1
+        pin_file = self.write_pins("pins.txt", 3, pins)
+        all_items = []
+        for index in range(1, 4):
+            self.assert_ok(
+                self.run_pytest(
+                    "--file-shards=3", f"--file-shard={index}", f"--file-shard-pins={pin_file}"
+                )
+            )
+            shard_items = self.items()
+            for item in shard_items:
+                name = item.split("::")[0]
+                self.assertEqual(pins.get(name, hashed[name]), index, item)
+            all_items.extend(shard_items)
+        self.assertCountEqual(all_items, baseline)
+        self.assertEqual(len(all_items), len(set(all_items)))
+
+    def test_pinned_xdist_workers_collect_identical_shards(self):
+        for index in range(6):
+            self.write(f"test/test_x_{index}.py", "def test_a(): pass\ndef test_b(): pass\n")
+        pins = {}
+        for index in range(0, 6, 2):
+            name = f"test/test_x_{index}.py"
+            pins[name] = file_shard(self.root / name, self.root, 2) % 2 + 1
+        pin_file = self.write_pins("pins.txt", 2, pins)
+        collected = []
+        for index in (1, 2):
+            self.assert_ok(
+                self.run_pytest(
+                    "-p",
+                    "xdist.plugin",
+                    "-n2",
+                    "--file-shards=2",
+                    f"--file-shard={index}",
+                    f"--file-shard-pins={pin_file}",
+                )
+            )
+            self.assertEqual(self.items("gw0"), self.items("gw1"))
+            collected.extend(self.items("gw0"))
+        self.assertEqual(len(collected), 12)
+        self.assertEqual(len(set(collected)), 12)
+
+    def test_malformed_pin_files_fail_instead_of_guessing_an_owner(self):
+        self.write("test/test_ok.py", "def test_ok(): pass\n")
+        cases = {
+            "count mismatch": self.write_pins("count.txt", 3, {"test/test_ok.py": 1}),
+            "no header": self.write("no-header.txt", "1 test/test_ok.py\n"),
+            "bad header": self.write("bad-header.txt", "# shards: eight\n"),
+            "owner out of range": self.write("range.txt", "# shards: 2\n3 test/test_ok.py\n"),
+            "owner zero": self.write("zero.txt", "# shards: 2\n0 test/test_ok.py\n"),
+            "no path": self.write("nopath.txt", "# shards: 2\n1\n"),
+            "pinned twice": self.write(
+                "twice.txt", "# shards: 2\n1 test/test_ok.py\n2 test/test_ok.py\n"
+            ),
+            "missing file": self.root / "absent.txt",
+        }
+        for label, path in cases.items():
+            with self.subTest(label):
+                result = self.run_pytest(
+                    "--file-shards=2", "--file-shard=1", f"--file-shard-pins={path}"
+                )
+                self.assertEqual(result.returncode, 4, result.stdout + result.stderr)
+        good = self.write_pins("good.txt", 2, {"test/test_ok.py": 1})
+        result = self.run_pytest(f"--file-shard-pins={good}")
+        self.assertEqual(result.returncode, 4, result.stdout + result.stderr)
+
+    def test_committed_pin_file_matches_the_workflow_shard_count(self):
+        workflow = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8"))
+        count = workflow["jobs"]["backend-test"]["env"]["SHARD_COUNT"]
+        pins = read_pins(ROOT / "scripts/ci_file_shard_pins.txt", count)
+        # The pins balance the shards only if every shard holds some of them.
+        self.assertEqual(set(pins.values()), set(range(1, count + 1)))
+
+    def test_pin_generator_balances_measured_seconds_and_is_deterministic(self):
+        runs = self.root / "runs"
+        heavy = {f"test/test_heavy_{i}.py": 100.0 - i for i in range(10)}
+        light = {f"test/test_light_{i}.py": 1.0 for i in range(40)}
+        weights = {**heavy, **light}
+        for run, factor in (("a", 1.0), ("b", 2.0), ("c", 1.0)):
+            shard_dir = runs / run / "linux-pytest-progress-1"
+            shard_dir.mkdir(parents=True)
+            records = [{"event": "collection_end", "elapsed": 9.0}]
+            for name, seconds in weights.items():
+                for phase in ("setup", "call", "teardown"):
+                    records.append(
+                        {
+                            "event": "phase_end",
+                            "module": name,
+                            "phase": phase,
+                            "elapsed": seconds * factor / 3,
+                        }
+                    )
+            # A record with no module (an unattributable test) is not a file.
+            records.append({"event": "phase_end", "test": "dynamic", "elapsed": 99.0})
+            (shard_dir / "gw0.jsonl").write_text(
+                "".join(json.dumps(r) + "\n" for r in records), encoding="utf-8"
+            )
+        for name in weights:
+            self.write(name, "def test_ok(): pass\n")
+        # Measured but since deleted: never pinned, however heavy it was.
+        records = [
+            {"event": "phase_end", "module": "test/test_gone.py", "phase": "call", "elapsed": 500.0}
+        ]
+        for run in "abc":
+            with (runs / run / "linux-pytest-progress-1" / "gw0.jsonl").open("a") as stream:
+                stream.write("".join(json.dumps(r) + "\n" for r in records))
+        out = self.root / "pins.txt"
+        argv = [str(runs / run) for run in "abc"]
+        argv += ["--shards=4", "--pins=10", f"--out={out}", f"--root={self.root}"]
+        self.assertEqual(ci_file_shard_pins.main(argv), 0)
+        first = out.read_text(encoding="utf-8")
+        self.assertEqual(ci_file_shard_pins.main(argv), 0)
+        self.assertEqual(out.read_text(encoding="utf-8"), first)
+        pins = read_pins(out, 4)
+        self.assertEqual(set(pins), set(heavy))
+        self.assertNotIn("test/test_gone.py", pins)
+        pinned = [0.0] * 4
+        hashed = [0.0] * 4
+        for name, seconds in weights.items():
+            pinned[pins.get(name, hash_shard(name, 4)) - 1] += seconds
+            hashed[hash_shard(name, 4) - 1] += seconds
+        self.assertLess(max(pinned) - min(pinned), max(hashed) - min(hashed))
+        self.assertLessEqual(max(pinned) - min(pinned), 100.0)
+
+    def test_reduced_backend_scope_timeout_accounts_for_windows(self):
+        self.assertEqual(
+            _backend_scope_timeout_seconds(windows=False), _DEFAULT_SUBPROCESS_TIMEOUT_SECONDS
+        )
+        self.assertEqual(
+            _backend_scope_timeout_seconds(windows=True), _WINDOWS_BACKEND_SCOPE_TIMEOUT_SECONDS
+        )
+
     def test_reduced_backend_scope_populates_every_ci_shard(self):
-        result = self.run_python(str(ROOT / "scripts/ci-surface-tests.py"), "--surface", "backend")
+        timeout = _backend_scope_timeout_seconds(windows=os.name == "nt")
+        result = self.run_python(
+            str(ROOT / "scripts/ci-surface-tests.py"), "--surface", "backend", timeout=timeout
+        )
         self.assert_ok(result)
         files = result.stdout.splitlines()
         self.assertTrue(files)
@@ -539,8 +723,17 @@ class TestFileShards(unittest.TestCase):
             self.assertNotIn("--splits", command)
             if name == "backend-test":
                 leaf = command.split('if [ "$LEAF" = "true" ]; then', 1)[1].split("exit 0", 1)[0]
-                self.assertNotIn("ci_file_shards", leaf)
+                # Corpus gates are sharded; changed files are not (they repeat on every job).
+                self.assertIn("ci_file_shards", leaf)
+                self.assertIn("leaf changed files, pass", leaf)
+                changed_loop = leaf.split("leaf changed files, pass", 1)[1]
+                self.assertNotIn("ci_file_shards", changed_loop)
                 self.assertIn('"${CHANGED[@]}"', leaf)
+                # Pins are measured on the full suite and apply to it alone; the
+                # leaf and reduced invocations keep pure hash ownership.
+                self.assertEqual(command.count("--file-shard-pins"), 1)
+                full = command.rsplit("exit 0", 1)[1]
+                self.assertIn("--file-shard-pins scripts/ci_file_shard_pins.txt", full)
                 self.assertCountEqual(
                     [word for word in command.split() if word.startswith("--cov=")],
                     [
@@ -550,6 +743,8 @@ class TestFileShards(unittest.TestCase):
                         "--cov=src/kiro_crew/apps/builtins/code_review_sage/tests",
                     ],
                 )
+            else:
+                self.assertNotIn("--file-shard-pins", command)
         for name, job in workflow["jobs"].items():
             if name not in ("backend-test", "backend-test-windows"):
                 self.assertNotIn("ci_file_shards", json.dumps(job))

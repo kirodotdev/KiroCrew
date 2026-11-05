@@ -68,15 +68,19 @@ _UNCLASSIFIED_LABELS = frozenset({""})
 
 #: Who caused a turn to run. Every value names a STRUCTURAL producer the
 #: dispatch layer identifies; ``user`` means a person typed the message,
-#: ``app`` means an installed app's backend sent it under its own token, and
-#: ``gateway`` means the gateway synthesized it and no narrower producer fits
-#: (a task-runner summary, an orchestrator stage). Anything unrecognised is
+#: ``app`` means an installed app's backend sent it under its own token,
+#: ``agent`` means the agent started the turn itself between prompts (an
+#: agent-started turn on the claude backend), and ``gateway`` means the gateway
+#: synthesized it and no narrower producer fits (a task-runner summary, an
+#: orchestrator stage). Anything unrecognised is
 #: recorded as ``other`` rather than guessed.
 #:
 #: A reader never gates on this field, so a producer landing later widens the
 #: set without breaking a reader built against the narrower one -- unlike an
 #: entry TYPE, which aborts reconstruction when a reader does not know it.
-ACTORS = frozenset({"user", "app", "crew", "cron", "autonudge", "subagent", "gateway", "other"})
+ACTORS = frozenset(
+    {"user", "app", "crew", "cron", "autonudge", "subagent", "agent", "gateway", "other"}
+)
 
 
 def close_open_tool_calls(
@@ -168,8 +172,12 @@ def on_turn_started(
     # module holds nothing, so a turn costs one env read. The RELEASE paths are
     # deliberately not guarded -- a flag turned off mid-turn must still free what
     # it allocated while on.
+    #
+    # ``begin`` returns the record this start owns, so its job below stamps the
+    # attempt on that record and on no later try's (``TurnTracker.note_attempt``).
+    record = None
     if session_id and enabled():
-        _tracker().begin(session_id, turn)
+        record = _tracker().begin(session_id, turn)
     data: dict[str, Any] = {
         "turn": int(turn),
         "actor": actor if actor in ACTORS else "other",
@@ -183,6 +191,10 @@ def on_turn_started(
     if not session_id or not enabled():
         return
 
+    # The attempt this job derived. The writer retries a failed append by running the
+    # same job again, and a second derivation would count the retry as another try.
+    derived: list[int] = []
+
     def _job() -> None:
         log = _handle(session_id)
         if log is None:
@@ -195,7 +207,12 @@ def on_turn_started(
         # resume then writes an attempt the file already holds. The alternative,
         # making the caller wait for a seeded event, puts a filesystem read in
         # front of the turn on the event loop.
-        n = attempt if attempt > 0 else _tracker().next_attempt(session_id, turn)
+        if not derived:
+            derived.append(attempt if attempt > 0 else _tracker().next_attempt(session_id, turn))
+        n = derived[0]
+        # Stamped on this start's own record, so a child dispatched by this try can
+        # name it and a later try's record is never stamped with this one.
+        _tracker().note_attempt(session_id, turn, n, record)
         payload = dict(data)
         # Which try this is at the same turn ordinal. Omitted at 1, which is every
         # turn that was never rerun -- the common case should not pay a field for

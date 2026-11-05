@@ -421,7 +421,7 @@ def _scratch_name_is_ignored(git: str, repo: str) -> bool:
     return proc.returncode == 0
 
 
-def _scratch_parent(repo: str) -> str | None:
+def _scratch_parent(repo: str) -> tuple[str | None, str | None]:
     """Where to create the probe's install, or ``None`` to use ``TMPDIR``.
 
     ``tempfile.mkdtemp()`` with no ``dir`` takes ``TMPDIR``, which on a default
@@ -449,21 +449,29 @@ def _scratch_parent(repo: str) -> str | None:
     :func:`_frontend_worktree_clean` reads -- so a directory left behind by a
     killed process cannot make the next sync's skip decision wrong.
 
-    ``None`` when the repo cannot host it (missing, or not writable -- a
-    read-only checkout), so the caller falls back to ``TMPDIR``: a checkout that
-    cannot hold a scratch directory still gets a probe.
+    Returns ``(parent, fallback)``. ``parent`` is ``None`` when the repo cannot
+    host the scratch (missing, or not writable -- a read-only checkout), so the
+    caller falls back to ``TMPDIR``: a checkout that cannot hold a scratch
+    directory still gets a probe. ``fallback`` is the reason, for the caller to
+    disclose on the operator-facing line -- a fallback REHEARSES THE WRONG
+    FILESYSTEM, so a bare pass would certify a room budget the real install is
+    not charged against. The two reasons are named apart because only
+    ``not writable`` cannot change under this checkout: ``missing`` is a path
+    that may yet appear, so the two merit different attention.
     """
     try:
         parent = Path(repo)
-        if not parent.is_dir() or not os.access(parent, os.W_OK):
-            return None
+        if not parent.is_dir():
+            return None, "the checkout path does not exist"
+        if not os.access(parent, os.W_OK):
+            return None, "the checkout is not writable"
     except OSError:
-        return None
-    return str(parent)
+        return None, "the checkout path could not be read"
+    return str(parent), None
 
 
-def _make_scratch(git: str, repo: str) -> tuple[Path | None, tuple[int, str] | None]:
-    """Create the probe's scratch directory. Returns ``(path, failure)``.
+def _make_scratch(git: str, repo: str) -> tuple[Path | None, tuple[int, str] | None, str | None]:
+    """Create the probe's scratch directory. Returns ``(path, failure, fallback)``.
 
     Falls back from the repo to ``TMPDIR`` only for a host condition that makes
     the repo unusable as a scratch host at all -- it cannot hold the directory,
@@ -473,6 +481,20 @@ def _make_scratch(git: str, repo: str) -> tuple[Path | None, tuple[int, str] | N
     certify a filesystem the install will never touch. ``_OUT_OF_ROOM_ERRNOS`` is
     what makes that hold under a per-user quota as well as a genuinely full disk.
 
+    ``fallback`` is ``None`` on the faithful path and a reason string whenever the
+    scratch landed in ``TMPDIR`` instead of the repo. It exists because a fallback
+    run rehearses on a filesystem the real ``npm ci`` never writes to, so its
+    pass answers a different question than the one the step is asked; the caller
+    surfaces the reason on the operator-facing line so a weaker guarantee is
+    visible at the moment it is given. There are FIVE reasons, each named at the
+    branch that knows it. Three come from :func:`_scratch_parent`: the checkout
+    path does not exist, the checkout is not writable, or the checkout path could
+    not be read (an ``OSError`` resolving it). Two are added here: git does not
+    yet hide the scratch name (the ignore rule ships separately from this code, so
+    a checkout on an older ref has none -- the one reason that self-heals when the
+    checkout advances), and the repo could host it but refused the directory with
+    a non-out-of-room error.
+
     Sweeps abandoned scratch directories first, so the room a killed run is still
     holding is returned to the budget the incoming install is measured against.
     The sweep runs whenever the repo COULD host one, including when the ignore
@@ -481,27 +503,33 @@ def _make_scratch(git: str, repo: str) -> tuple[Path | None, tuple[int, str] | N
     repo parent is swept: ``TMPDIR`` is age-cleaned by the host, and a fallback
     path is not one this module chose or can reason about.
     """
-    parent = _scratch_parent(repo)
+    parent, fallback = _scratch_parent(repo)
     if parent is not None:
         _sweep_stale_scratch(parent)
         if not _scratch_name_is_ignored(git, repo):
             parent = None
+            fallback = "the checkout's git does not yet hide the scratch name"
     try:
         made = Path(tempfile.mkdtemp(prefix=_SCRATCH_PREFIX, dir=parent))
         _mark_scratch_owned(made)
-        return made, None
+        return made, None, fallback
     except OSError as exc:
         if parent is None or getattr(exc, "errno", None) in _OUT_OF_ROOM_ERRNOS:
-            return None, (
-                _os_error_code(exc),
-                f"could not create a scratch directory: {exc}",
+            return (
+                None,
+                (_os_error_code(exc), f"could not create a scratch directory: {exc}"),
+                None,
             )
+    # ``parent`` was usable, but creating the directory in it raised an error that
+    # is NOT out of room -- a permission or platform refusal, not an answer about
+    # the lockfile. The repo cannot host the scratch after all, so fall back and
+    # say the repo refused it, distinct from a repo that was never a candidate.
     try:
         made = Path(tempfile.mkdtemp(prefix=_SCRATCH_PREFIX))
         _mark_scratch_owned(made)
-        return made, None
+        return made, None, "the checkout refused the scratch directory"
     except OSError as exc:
-        return None, (_os_error_code(exc), f"could not create a scratch directory: {exc}")
+        return None, (_os_error_code(exc), f"could not create a scratch directory: {exc}"), None
 
 
 def _extract(git: str, repo: str, ref: str, subdir: str, dest: Path) -> tuple[int, str] | None:
@@ -795,7 +823,7 @@ def probe(
     # with a traceback and no classified cause -- so the dashboard would be back
     # to showing whatever the last output line happened to be, which is the
     # defect this module exists to remove.
-    tmp, failure = _make_scratch(git, repo)
+    tmp, failure, fallback = _make_scratch(git, repo)
     if tmp is None:
         # _make_scratch always pairs a missing path with a classified failure;
         # the fallback keeps the type honest without asserting.
@@ -826,7 +854,12 @@ def probe(
         except OSError as exc:
             return EXIT_FAILED, f"could not run npm: {exc}"
         if proc.returncode == 0:
-            return EXIT_OK, ""
+            # A pass earned on TMPDIR measured a room budget the real install is
+            # not charged against, so it is a WEAKER guarantee than a pass on the
+            # checkout -- say so on the detail line rather than reporting a bare
+            # pass. The verdict is unchanged: the fallback already ran a probe
+            # where it could, and this discloses which filesystem answered.
+            return EXIT_OK, _fallback_detail(fallback)
         blob = "\n".join(
             (
                 (proc.stdout or b"").decode(errors="replace"),
@@ -837,6 +870,26 @@ def probe(
         return code, _first_error_line(blob) or f"npm exited {proc.returncode}"
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _fallback_detail(fallback: str | None) -> str:
+    """The pass detail, disclosing a ``TMPDIR`` rehearsal when one happened.
+
+    Empty on the faithful path, which :func:`main` renders as the generic pass
+    line. When the scratch fell back, the string LEADS with the same pass
+    affirmation the faithful path gets and then appends the disclosure, so a
+    reader still reads a pass -- the rehearsal in ``TMPDIR`` certified a
+    filesystem the real ``npm ci`` does not write to, which is a weaker
+    guarantee, not a failure. Keeping the affirmation is deliberate: dropping it
+    would leave only the disclosure, which reads like a warning rather than the
+    pass this still is.
+    """
+    if fallback is None:
+        return ""
+    return (
+        "incoming lockfile is installable; rehearsed in TMPDIR rather than the "
+        f"checkout's filesystem ({fallback})"
+    )
 
 
 def _first_error_line(blob: str) -> str:

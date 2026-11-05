@@ -424,15 +424,19 @@ class PreferenceStore:
 
         Same-name adds still return the original group instead of creating a
         duplicate, which is the idempotency a slug provides for free.
-        Matching is case-insensitive on the trimmed name.
+        Matching is case-insensitive on the trimmed name. It is done with
+        ``str.casefold`` in Python because SQLite's ``lower()`` folds ASCII
+        only, so ``Électronique`` and ``électronique`` would not match.
         """
         clean = name.strip()
+        key = clean.casefold()
         with self._lock:
-            row = self._conn.execute(
-                "SELECT id FROM groups WHERE lower(name) = lower(?)", (clean,)
-            ).fetchone()
-            if row is not None:
-                return str(row[0])
+            rows = self._conn.execute(
+                "SELECT id, name FROM groups ORDER BY sort_order"
+            ).fetchall()
+            for row in rows:
+                if str(row[1]).casefold() == key:
+                    return str(row[0])
 
             group_id = uuid.uuid4().hex[:8]
             max_order = self._conn.execute(

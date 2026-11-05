@@ -1,12 +1,8 @@
 """The agent's crew-log door: its identity gate, the dispatch fence, the post-read re-check.
 
-The door's caller name is pinned to the ``kirocrew-crew-log`` server's own, and a
-crew-log-off refusal names the flag and the env file the gateway reads. A session reads
-its own unit or one its recorded ``session/opened`` creator edge says it dispatched, keyed
-by slot; the classes ``session_control.authorize_target`` refuses are refused here too,
-and the grant is tested again when the offloaded read returns, through the one helper
-that re-checks before it shapes an answer. Shared fixtures and builders come from
-``crew_log_routes_helpers.py``.
+A session reads its own unit or one its recorded ``session/opened`` creator edge says it
+dispatched, keyed by slot. The grant is checked again when the offloaded read returns.
+Shared fixtures come from ``crew_log_routes_helpers.py``.
 """
 
 from __future__ import annotations
@@ -104,30 +100,31 @@ def test_the_session_ledger_refusal_names_the_env_file_the_gateway_reads(monkeyp
     "refusal",
     [
         "work_ledger",
-        "crew_store",
         "mcp_ledger",
     ],
 )
 def test_every_crew_log_off_refusal_names_the_env_file_the_gateway_reads(
     monkeypatch, tmp_path, refusal
 ):
-    """The same file, spelled once, in every place that tells an operator to edit it."""
+    """The same file, spelled once, in every place that tells an operator to edit it.
+
+    Issue Radar's crew store refuses the same way; the app pins its own refusal in
+    its ``tests/``.
+    """
     import importlib
     import inspect
 
     from kiro_crew import session_ledger
-    from kiro_crew.apps.builtins.issue_radar.backend import crew_store
     from kiro_crew.dashboard.handlers import work_ledger
     from kiro_crew.mcp_tools import ledger as mcp_ledger
 
     module = {
         "session_ledger": session_ledger,
         "work_ledger": work_ledger,
-        "crew_store": crew_store,
         "mcp_ledger": mcp_ledger,
     }[refusal]
     source = inspect.getsource(module)
-    if refusal in ("crew_store", "work_ledger"):  # mirror facades: code is in their owners
+    if refusal == "work_ledger":  # mirror facade: code is in its owners
         source += "".join(inspect.getsource(importlib.import_module(o)) for o in module._OWNERS)
     assert "~/.kiro/crew/.env" not in source
     assert "env_file_display()" in source
@@ -167,14 +164,9 @@ def test_a_read_with_the_flag_unset_is_not_refused(monkeypatch):
 class TestTheDispatchFence:
     """A strict session identity, and then a scope: own unit, or one it dispatched.
 
-    The entitlement is derived from the recorded ``session/opened`` creator edge, so
-    a conductor reaches its child and its grandchild while a session in another tree
-    reaches neither. The owner at a dashboard tab still reaches everything, which is
-    the case this module shipped with.
-
-    The caller classes ``session_control.authorize_target`` refuses are refused here
-    too, and for its reasons rather than for a general distrust of headless callers:
-    each one is about where a read LANDS.
+    The scope comes from the recorded ``session/opened`` creator edge; the owner's tab
+    still reaches everything. Caller classes ``session_control.authorize_target`` refuses
+    are refused here too, because each is about where a read lands.
     """
 
     def test_a_conductor_reads_the_unit_it_dispatched(self, monkeypatch):
@@ -195,12 +187,8 @@ class TestTheDispatchFence:
     def test_a_conductor_reads_a_descendant_forty_generations_down(self, monkeypatch):
         """MUTATION-SENSITIVE: the walk is bounded by the tree, not by a number.
 
-        The repeat check is the whole bound, and it ends the walk on every input: each
-        pass either returns or adds a slot to ``seen``, and ``seen`` draws only from a
-        finite node map. A fixed depth cap on top of that buys no termination safety and
-        costs correctness -- it answers "no creator above this" for an honest chain
-        longer than itself, refusing a grant the tree supports. This chain is 40 deep and
-        the top reads the bottom, so adding any fixed cap below 40 reddens it.
+        The repeat check on ``seen`` already ends the walk. A fixed depth cap would refuse
+        an honest chain longer than the cap; this chain is 40 deep.
         """
         _flag_on(monkeypatch)
         depth = 40
@@ -243,12 +231,8 @@ class TestTheDispatchFence:
     def test_a_conductor_keeps_its_children_across_a_gateway_restart(self, monkeypatch):
         """MUTATION-SENSITIVE: the fence keys on the recorded SLOT, not on the sid.
 
-        A gateway restart gives the same tab a NEW ACP session id, so the conductor's
-        work lands in a new unit while its slot is unchanged. The child's entry still
-        names the OLD unit as ``sid``, which is correct -- that is the log that held
-        the creating call -- and a sid-keyed fence would therefore lock the
-        re-attached conductor out of a child it dispatched minutes earlier. Only the
-        slot survives the restart, so admitting this read requires keying on it.
+        A restart gives the tab a new ACP session id while the child's entry still names
+        the old unit as ``sid``. Only the slot survives the restart.
         """
         _flag_on(monkeypatch)
         _dispatch_tree()
@@ -268,12 +252,8 @@ class TestTheDispatchFence:
     def test_a_target_whose_log_records_no_class_is_refused(self, monkeypatch):
         """MUTATION-SENSITIVE: the fail-closed half of the recorded-class test.
 
-        A log opened before the class was recorded cannot say whether its session was
-        app-owned, incognito or published to a channel, and a live lookup cannot
-        answer for it either once that session has closed. Admitting it would put
-        every pre-existing unit back inside the fence, so the absence REFUSES and the
-        refusal names the missing record. The caller here really did dispatch the
-        child, so nothing but this test can refuse the read.
+        A log with no recorded class cannot say whether it was app-owned, incognito or
+        published, and a closed session has no live answer, so the absence refuses.
         """
         _flag_on(monkeypatch)
         _dispatch_tree(record_class=False)
@@ -289,42 +269,20 @@ class TestTheDispatchFence:
     ):
         """MUTATION-SENSITIVE: the scan's fault bit reaches the refusal SITE, not the caller.
 
-        The conductor really did dispatch the grandchild, transitively, and the
-        grandchild's own log is intact -- nothing about this request is out of scope.
-        What breaks the chain is the CHILD in the middle: its announce record is
-        present and cannot be read as an entry, so the scan drops that unit's record
-        and the walk finds no node for its slot. ``dispatched_by`` answers False for a
-        missing node whatever put it there, so the only thing that can tell a real
-        absence of lineage from an edge the scan never read is the flag the reading
-        carries.
+        The middle child's announce record is unreadable. The caller gets the plain "out
+        of scope" (a different answer would be an existence oracle); only the operator's
+        log says the scan was incomplete.
 
-        What the caller is told is DELIBERATELY the same either way. This door passes
-        the requested unit as the scan's ``preferred``, and a named unit's own read
-        fault feeds the scan's flag, so a caller-visible distinction would let a
-        guessed id that exists-and-is-unreadable be told apart from one that does not
-        exist -- an existence oracle on the boundary this fence exists to keep closed.
-        So the assertion is on the OPERATOR's record: the refusal site says the scan
-        was incomplete, and the wire says only "out of scope".
-
-        Reverting ``dispatch_view`` to ``SessionTree.records()`` reddens it: that
-        accessor drops the fault bit, ``view.incomplete`` is then False, and nothing
-        is logged -- the refusal goes out with no account of why the tree was short.
-
-        The damage is planted as BYTES rather than monkeypatched, because this is the
-        non-transient case: a log is append-only, so a line that cannot be read as an
-        entry stays unreadable for the life of the file, and the scanner caches that
-        verdict. A patched read would exercise the transient case and leave the one
-        that never clears unpinned.
+        The damage is planted as bytes because the scanner caches an unreadable line's
+        verdict; a patched read would test only the transient case.
         """
         _flag_on(monkeypatch)
         _dispatch_tree()
         child_log = lg.crew_log_path(lg.KIND_SESSION, CHILD_UNIT)
         lines = child_log.read_bytes().split(b"\n")
-        # Line 1 is the header and stays intact, so the unit is still PROVABLE and is
-        # not simply skipped as a stray directory; line 2 is the announce record the
-        # creator edge lives on. It is replaced with a well-formed JSON object that is
-        # not an entry, which is what makes the head read "announced, unreadable"
-        # rather than "not announced yet".
+        # Line 1 (header) stays, so the unit is not skipped as a stray directory. Line 2,
+        # the announce record, becomes valid JSON that is not an entry: "announced,
+        # unreadable" rather than "not announced yet".
         assert len(lines) >= 2, lines
         lines[1] = b'{"not": "an entry"}'
         child_log.write_bytes(b"\n".join(lines))
@@ -338,21 +296,15 @@ class TestTheDispatchFence:
         with caplog.at_level(logging.WARNING, logger="kiro_crew.dashboard.handlers.crew_log"):
             response = asyncio.run(routes.api_crew_log_unit_page(request))
         assert response.status == 403
-        # The wire carries the ordinary refusal and nothing that distinguishes this
-        # case, which is the security half of the change.
+        # The wire carries only the ordinary refusal.
         assert "does not fall inside that scope" in json.loads(response.text)["error"]
-        # The operator's half: the fault bit reached the refusal site and was recorded
-        # there. This is what fails when the view stops carrying it.
+        # The operator's log records the fault bit at the refusal site.
         assert any("lineage scan was INCOMPLETE" in record.message for record in caplog.records)
 
     def test_an_intact_store_logs_no_incomplete_scan_when_it_refuses(self, monkeypatch, caplog):
-        """The allow-direction control: the operator signal discriminates.
+        """The control: an intact store refuses without an incomplete-scan record.
 
-        Without it, a refusal site that logged "INCOMPLETE" on every denial would
-        satisfy the assertion above while saying nothing true -- the same shape as a
-        guard verified only in its blocking direction. Nothing is damaged here, so the
-        scan is complete, a session in another tree is still refused, and no
-        incomplete-scan record is written.
+        Without it, logging "INCOMPLETE" on every denial would pass the test above.
         """
         _flag_on(monkeypatch)
         _dispatch_tree()
@@ -368,12 +320,8 @@ class TestTheDispatchFence:
     def test_the_refusal_text_is_identical_whether_the_scan_was_short(self, monkeypatch):
         """MUTATION-SENSITIVE: no existence oracle at this door.
 
-        The two cases above differ in exactly the way a caller could steer -- this
-        door passes the requested unit as the scan's ``preferred``, so a guessed id
-        that exists and cannot be read sets the flag while a guessed id that does not
-        exist does not. Re-introducing any caller-visible difference between them
-        reddens this: it compares the two bodies for equality rather than asserting a
-        phrase, so it catches a new wording however it is spelled.
+        The door passes the requested unit as the scan's ``preferred``, so a caller can
+        steer which case it hits. Comparing whole bodies catches any new wording.
         """
         _flag_on(monkeypatch)
         _dispatch_tree()
@@ -406,19 +354,9 @@ class TestTheDispatchFence:
     ):
         """MUTATION-SENSITIVE: the listing consumer gets an operator record too.
 
-        A caller that only LISTS never reaches the per-unit refusal door, so the
-        warning that door writes cannot account for the ``truncated`` it is handed.
-        And this fault never clears: a log is append-only, so the scanner caches the
-        verdict and every later reading is short for the life of the file. With no
-        record at the producer, such a caller sees ``truncated`` forever while nothing
-        anywhere says why -- the same failure indistinguishable to an operator that
-        this change exists to remove, one consumer over.
-
-        So the record is asserted at the layer that knows both the cause and WHICH
-        unit carries it, and asserted to fire ONCE across two scans. That second half
-        is the discriminating one: the cache serves every later scan without
-        re-judging, so a warning placed where the cache is READ would satisfy a
-        presence check while writing one line per scan for the life of the log.
+        A listing never reaches the refusal door, and the cached fault never clears, so
+        the producer must say which unit is unreadable. It must say so ONCE across two
+        scans: a warning where the cache is read would log on every scan.
         """
         _flag_on(monkeypatch)
         _dispatch_tree()
@@ -431,15 +369,13 @@ class TestTheDispatchFence:
 
         crew_log_read._TREE._heads.clear()
 
-        # The scope_slot is load-bearing: ``list_session_units`` builds its dispatch
-        # view only when a slot is in scope, so an unscoped owner listing never
-        # consults lineage and cannot reach this fault at all. The consumer the gap
-        # belongs to is a conductor listing what it dispatched.
+        # ``list_session_units`` builds its dispatch view only when a slot is in scope,
+        # so without scope_slot this fault is never reached.
         with caplog.at_level(logging.WARNING, logger="kiro_crew.crew_log.session_tree"):
             first = crew_log_read.list_session_units(limit=50, scope_slot=CONDUCTOR_SLOT)
             second = crew_log_read.list_session_units(limit=50, scope_slot=CONDUCTOR_SLOT)
 
-        # The listing still tells its caller the set is short, exactly as before.
+        # The listing still tells its caller the set is short.
         assert first["truncated"] is True
         assert second["truncated"] is True
         # The producer accounted for it, naming the unit whose bytes carry the fault.
@@ -461,10 +397,8 @@ class TestTheDispatchFence:
     def test_a_closed_targets_class_is_read_from_its_own_log(self, monkeypatch, recorded, word):
         """MUTATION-SENSITIVE: the recorded class decides a target with no live slot.
 
-        Nothing is writing the child's unit, which is the ordinary state of a
-        finished run, so the live target test has nothing to exclude on. The class is
-        on the child's own opening entry, which is the whole reason it is recorded
-        there, and each of these three closes a boundary a live-only test would miss.
+        A finished run has no live slot, so only the class on the child's opening entry
+        can refuse it.
         """
         _flag_on(monkeypatch)
         _dispatch_tree(**recorded)
@@ -478,12 +412,8 @@ class TestTheDispatchFence:
     def test_a_class_acquired_after_the_log_opened_refuses_a_closed_target(self, monkeypatch):
         """MUTATION-SENSITIVE: the whole reason the class history is folded, not read.
 
-        The child opens as an ordinary session and is given a channel surface later,
-        so the OPENING entry truthfully records no channel while the turns after it
-        carry a third party's words. Reading the opener alone admits this read; the
-        fold holds ``channel`` at the most restrictive value the log ever stated, so it
-        refuses. Nothing else in this suite catches it: the target has no live slot,
-        which is the ordinary state of a finished run.
+        The child gains a channel after opening, so the opener records none while later
+        turns carry a third party's words. The target has no live slot to check.
         """
         _flag_on(monkeypatch)
         _dispatch_tree()
@@ -498,10 +428,8 @@ class TestTheDispatchFence:
     def test_a_class_that_moved_back_stays_refused(self, monkeypatch):
         """MUTATION-SENSITIVE: the fold keeps the most restrictive value EVER held.
 
-        The link is dropped again, so the newest statement is clean -- and the turns
-        that ran while it was published are still in this log. A fold that took the
-        LATEST value would hand those words to the dispatcher, so taking the most
-        restrictive one is the honest reading rather than a conservative default.
+        The newest statement is clean, but the turns that ran while published are still in
+        this log.
         """
         _flag_on(monkeypatch)
         _dispatch_tree()
@@ -517,12 +445,8 @@ class TestTheDispatchFence:
     def test_a_class_history_with_no_beginning_is_refused(self, monkeypatch):
         """MUTATION-SENSITIVE: a fold that saw only moves cannot say what it moved FROM.
 
-        Retention can take the segment carrying the opening entry, leaving transitions
-        whose earliest class is unknown. The surviving part states a clean class, so a
-        reader that trusted it would admit on a log whose opener may have been
-        app-owned. ``complete`` is what refuses, and it doubles as the log's date: the
-        opening ``class`` object and this transition were declared together, so a log
-        stating the first was written by a build that records the second.
+        Retention can drop the opening entry, and the opener may have been app-owned.
+        ``complete`` refuses: a log with an opening ``class`` also records its transitions.
         """
         _flag_on(monkeypatch)
         _dispatch_tree(record_class=False)
@@ -537,10 +461,7 @@ class TestTheDispatchFence:
     def test_a_closed_target_whose_class_never_moved_is_still_read(self, monkeypatch):
         """The admitting direction, which is the feature this whole fence exists for.
 
-        An affirmatively clean history is an opening class plus no transition away
-        from it. Without this the three refusal tests above are satisfied by a gate
-        that refuses every closed target, which is what the ruling this implements
-        deliberately did not do.
+        Without it, a gate that refuses every closed target passes the refusal tests above.
         """
         _flag_on(monkeypatch)
         _dispatch_tree()
@@ -555,12 +476,8 @@ class TestTheDispatchFence:
     def test_a_class_fold_that_stopped_short_of_the_file_is_refused(self, monkeypatch):
         """MUTATION-SENSITIVE: a partial fold cannot answer a question about the whole log.
 
-        ``iter_from`` stops at an entry type it does not know, which a log written by a
-        newer build can carry. Stopping is safe for a fold that accumulates totals, and
-        unsafe for this one: a restrictive move recorded AFTER the unknown entry would
-        simply be unseen, so the fold would report the log as more readable than it is.
-        The fold is shortened here rather than a newer entry planted, because the
-        reader's rule is about the seq it reached, whatever stopped it.
+        ``iter_from`` stops at an unknown entry type, so a restrictive move after it would
+        be unseen. The fold is shortened directly: the rule is about the seq it reached.
         """
         _flag_on(monkeypatch)
         _dispatch_tree()
@@ -588,15 +505,8 @@ class TestTheDispatchFence:
     def test_a_target_whose_class_moves_mid_read_is_refused(self, monkeypatch):
         """MUTATION-SENSITIVE: the re-check RE-FOLDS the target's class.
 
-        The target is published to a channel while the payload is being built, takes a
-        channel turn, and is unlinked again. At the grant it was clean and at the answer
-        its live slot is clean again, so both live reads pass -- and the words of that
-        channel turn are in the payload. Only a fold taken AFTER the read sees the move,
-        and because the fold is held at the most restrictive value the log ever recorded
-        it stays refused rather than following the slot back to clean.
-
-        This is why reusing the grant's fold is not an optimisation: the two answers
-        differ exactly in the case the guard exists for.
+        The target is published and unlinked again during the read, so both live reads see
+        it clean while the payload holds a channel turn. Reusing the grant's fold misses it.
         """
         _flag_on(monkeypatch)
         _dispatch_tree()
@@ -618,10 +528,8 @@ class TestTheDispatchFence:
     def test_a_target_whose_class_holds_still_mid_read_is_still_answered(self, monkeypatch):
         """MUTATION-SENSITIVE: the re-fold is a TEST, not a second refusal.
 
-        The same hook runs and appends a move that changes nothing restrictive. Without
-        this case a re-fold that refused whenever the log grew during the read would
-        pass the test above while breaking every read of a session still working, which
-        is most of them.
+        Without it, refusing whenever the log grew during the read would pass the test
+        above and break every read of a working session.
         """
         _flag_on(monkeypatch)
         _dispatch_tree()
@@ -642,22 +550,12 @@ class TestTheDispatchFence:
     def test_a_target_whose_log_lost_its_front_segment_is_refused(self, monkeypatch):
         """MUTATION-SENSITIVE: a log that does not hold seq 1 cannot be dated.
 
-        Retention deletes whole segments off the FRONT, so a surviving log can begin
-        part-way through its own life. This log's own first opener recorded no class,
-        and the survivor is a RE-ATTACHMENT's opener, which does -- so within the file
-        that remains the stating opener genuinely is the first one the fold sees, and
-        the projection's own first-opener rule cannot help. Only the store can say the
-        file starts past seq 1, and the first seq is in each segment's NAME, so the
-        check costs a directory listing rather than a read.
+        Retention trims front segments. The survivor starts at a re-attachment's opener,
+        which states a class while the lost first opener did not; only the segment NAME
+        says the file starts past seq 1. The re-attachment keeps the dispatch edge, so
+        the class, not the scope, is why it is refused.
 
-        The re-attachment carries the dispatch edge too, which is what keeps this in
-        scope and makes the CLASS the reason it is refused -- a trim that took the edge
-        as well would be refused for being out of scope and prove nothing about dating.
-
-        The trimmed state is built on disk rather than by calling retention, because no
-        writer rotates yet: the surviving segment is named for the seq it starts at and
-        carries exactly the entries from that seq on, which is the layout a front trim
-        leaves.
+        The trim is built on disk because no writer rotates yet.
         """
         _flag_on(monkeypatch)
         _dispatch_tree(record_class=False)
@@ -674,10 +572,8 @@ class TestTheDispatchFence:
             i for i, line in enumerate(lines) if json.loads(line).get("type") == "session/opened"
         ]
         assert len(openers) == 2, f"expected an original opener and a re-attachment, got {openers}"
-        # Every segment carries a copy of the log HEADER as its own line 1, which is
-        # what lets a reader open one without the segment before it -- and what keeps
-        # the dispatch edge readable here, since the tree reads line 2 of the oldest
-        # surviving segment.
+        # Every segment starts with a copy of the log HEADER; the tree reads line 2 of the
+        # oldest surviving segment for the dispatch edge.
         kept = [lines[0]] + lines[openers[1] :]
         first_kept = json.loads(kept[1])["seq"]
         assert first_kept > 1, "a trim that keeps seq 1 is not a trim"
@@ -693,26 +589,16 @@ class TestTheDispatchFence:
         response = asyncio.run(routes.api_crew_log_unit_page(request))
         assert response.status == 403
         error = json.loads(response.text)["error"]
-        # The retention case gets its OWN text: the remedy differs, because nothing
-        # about this log will satisfy the read again, where an unrecorded class is
-        # fixed by the session recording one. Asserting the generic wording here
-        # would pass whether or not the two are told apart.
+        # The retention case gets its own text: unlike an unrecorded class, nothing can
+        # make this log readable again.
         assert "no longer holds its own beginning" in error, error
         assert "does not record what kind of session" not in error, error
 
     def test_a_bare_session_key_is_read_as_its_own_slot(self, monkeypatch):
         """MUTATION-SENSITIVE: a key with no colon is a bare SLOT name, not a broken key.
 
-        The crew log's own resolver states the premise and acts on it -- a key carrying
-        no colon cannot already be namespaced, since every namespace spelling carries
-        one -- so it retries a bare key in ``dashboard:`` form. Reading its slot half by
-        splitting on the colon and taking the SECOND part instead raises ``IndexError``
-        on exactly that key, which reaches the caller as a 500 on an ordinary read.
-
-        Resolving it as its own slot is not a widening: the class tests and the lineage
-        walk all still run on that slot, and the own-unit resolution already handled
-        this key shape, so refusing it here was the two halves disagreeing about who the
-        caller is rather than a boundary.
+        Splitting on the colon and taking the second part raises ``IndexError`` (a 500) on
+        such a key. It is not a widening: class tests and the lineage walk still run on it.
         """
         _flag_on(monkeypatch)
         _dispatch_tree()
@@ -730,20 +616,10 @@ class TestTheDispatchFence:
     def test_a_target_whose_log_has_a_damaged_line_is_refused(self, monkeypatch):
         """MUTATION-SENSITIVE: byte damage must not raise an authorization ceiling.
 
-        The restriction is written, then that line's bytes are destroyed while the line
-        COUNT and the tail seq are left alone. The store skips an unreadable interior
-        line on purpose and does not check interior seq continuity, so the fold still
-        reaches the file's tail: nothing stopped early, the short-fold refusal cannot
-        fire, and without the contiguity check the fold answers with the clean opening
-        class and the dispatcher receives the channel turn's message bodies.
-
-        The damage is planted rather than simulated because that is the only way to
-        reach the skipped-line path: no writer produces a line the reader cannot parse.
-        It is planted in the INTERIOR because the tail is a different case -- a damaged
-        LAST line lowers the tail seq too, so the fold and that seq agree, and nothing
-        can tell it from an append in flight. That case carries no exposure: a class is
-        recorded at the START of the turn that runs under it, so a move with nothing
-        after it is a move no turn has run under yet.
+        The store skips an unreadable interior line, so the fold still reaches the tail
+        and the short-fold refusal cannot fire; only the contiguity check refuses. The
+        damage is interior: a damaged last line looks like an append in flight, and a
+        move with nothing after it has no turn run under it yet.
         """
         _flag_on(monkeypatch)
         _dispatch_tree()
@@ -788,10 +664,7 @@ class TestTheDispatchFence:
     def test_a_mirrored_owner_tab_reads_only_its_own_unit(self, monkeypatch):
         """MUTATION-SENSITIVE: the owner arm is held to the caller classes too.
 
-        An owner's own tab publishes to the person at it, but a dashboard session
-        MIRRORED to a channel republishes every turn -- so the one caller entitled to
-        read every unit would otherwise be the one that publishes them. It keeps its
-        own unit, like every other excluded caller.
+        A tab mirrored to a channel republishes every turn, so it keeps only its own unit.
         """
         _flag_on(monkeypatch)
         _dispatch_tree()
@@ -837,11 +710,8 @@ class TestTheDispatchFence:
     def test_the_lineage_walk_runs_off_the_event_loop(self, monkeypatch):
         """MUTATION-SENSITIVE: the fold is the only arm that touches the filesystem.
 
-        It lists the store and stats every unit, so running it inline would put a
-        real filesystem scan on the loop for every cross-unit request. Asserting that
-        no loop is RUNNING where the fold executes is what distinguishes an offloaded
-        scan from an inline one; the verdict is asserted too, so a scan that never ran
-        cannot pass this.
+        It stats every unit, so it must not run on the loop. The verdict is asserted too,
+        so a scan that never ran cannot pass.
         """
         _flag_on(monkeypatch)
         _dispatch_tree()
@@ -896,10 +766,8 @@ class TestTheDispatchFence:
     def test_a_channel_linked_caller_is_refused(self, monkeypatch):
         """MUTATION-SENSITIVE: the mirrored caller-class exclusion.
 
-        A linked session's own conversation is a channel thread, so a peer's crew
-        log it reads is published to whoever is in that channel. This is the class
-        the "sessions belong to one operator" premise does not reach, and it is
-        refused on the child it really did dispatch.
+        A linked session's conversation is a channel thread, so a peer's log it reads is
+        published there. It is refused even on the child it dispatched.
         """
         _flag_on(monkeypatch)
         _dispatch_tree()
@@ -1062,12 +930,8 @@ class TestTheDispatchFence:
 class TestTheGrantIsRecheckedAfterTheRead:
     """A verdict about the TARGET's class must still hold when the payload returns.
 
-    Each unit route authorizes, then reads the entries off the loop. That offload is a
-    suspension point, so the target can append a class move while it runs -- and the
-    payload would then be a one-shot delivery of entries the refreshed class governs.
-    The caller's class is NOT re-tested here; where a caller's turn lands is decided
-    after this route answers, so such a test could not buy an invariant. It is tested
-    at the gate, which is where it decides whether the read happens at all.
+    The read runs off the loop, a suspension point during which the target can append a
+    class move.
     """
 
     def _links_during(self, monkeypatch, slot, name: str = "_read_page"):
@@ -1088,11 +952,8 @@ class TestTheGrantIsRecheckedAfterTheRead:
     def test_the_owner_arm_keeps_reading_a_target_the_lineage_arm_would_refuse(self, monkeypatch):
         """MUTATION-SENSITIVE: the re-check re-runs the tests the GRANT ran, no others.
 
-        The owner at a dashboard tab reads any unit, which is this door's recorded
-        product decision, so that arm runs no target test at all. This target records
-        no class, which the lineage arm refuses on -- so a re-check that ran the target
-        test unconditionally would withdraw a grant the gate correctly gave, and turn
-        the owner's ordinary read of an old unit into a refusal.
+        The owner arm runs no target test. This target records no class, so an
+        unconditional target re-check would refuse the owner's read of an old unit.
         """
         _flag_on(monkeypatch)
         _opened(_log("s-old", slot="chat-old"), slot="chat-old", record_class=False)
@@ -1104,12 +965,8 @@ class TestTheGrantIsRecheckedAfterTheRead:
     def test_a_payload_carrying_no_record_of_its_grant_is_refused(self, monkeypatch):
         """MUTATION-SENSITIVE: the re-check fails closed on a mark it cannot read.
 
-        Every arm that BUILDS a payload leaves a mark saying which target test its
-        grant ran. A request reaching the re-check without one is the gate and this
-        route having stopped agreeing, and the live test must not be run alone there:
-        for a target that HAS a live slot it would pass, and the recorded test would
-        never have been applied at all. So the absence refuses rather than falling
-        through to the weaker half.
+        Each granting arm marks which target test it ran. Without the mark, falling back
+        to the live test alone would skip the recorded test for a target with a live slot.
         """
         _flag_on(monkeypatch)
         _dispatch_tree()
@@ -1126,19 +983,9 @@ class TestTheGrantIsRecheckedAfterTheRead:
     def test_a_caller_that_links_to_a_channel_mid_read_is_refused(self, monkeypatch):
         """MUTATION-SENSITIVE: the caller half of the re-check on the page route.
 
-        This is the scenario in full: a prompt to paste a dispatched child's log, a
-        mirror bound while the payload read is suspended, and a reply that would
-        publish the private log to the channel. The gate cannot see it -- at the moment
-        it ran, the caller was unlinked and entitled.
-
-        What this buys is exact and no wider: the route does not hand another session's
-        content to a caller that is publishing AT THE HANDOFF, which is the act the
-        route performs and controls. A caller that links AFTER the payload returns
-        holds it in context and can publish it on a later turn; nothing at turn
-        emission inspects a turn for another session's log content, so that residual
-        is real and is named in ``_stale_grant_refusal``'s own docstring rather than
-        papered over. The two differ in kind: delivering INTO a published session
-        versus a session becoming published while holding what it was entitled to.
+        A mirror bound while the read is suspended would publish the child's log; the gate
+        saw an unlinked caller. Only the handoff is covered: a link after the payload
+        returns is a residual named in ``_stale_grant_refusal``'s docstring.
         """
         _flag_on(monkeypatch)
         _dispatch_tree()
@@ -1156,16 +1003,9 @@ class TestTheGrantIsRecheckedAfterTheRead:
     def test_a_caller_that_links_during_the_refold_offload_is_refused(self, monkeypatch):
         """MUTATION-SENSITIVE: the caller verdict is re-read AFTER the refold suspends.
 
-        A window narrower than the one above, and the reason it needs its own case: the
-        caller verdict is sampled before the arms run, and the lineage arm then suspends
-        AGAIN to refold the target. A link landing inside that second suspension is
-        invisible to the first sample, so answering on the incoming verdict alone leaves
-        this route's own smaller window open while it closes the payload-build one --
-        the same stale-read class the route exists to close.
-
-        Hooking ``recorded_class`` is what places the link after the sample rather than
-        before it: the sibling case hooks the payload read, which the gate's own sample
-        already sees.
+        The caller verdict is sampled before the arms run, and the lineage arm suspends
+        again to refold the target. Hooking ``recorded_class`` places the link inside that
+        second suspension, after the sample.
         """
         _flag_on(monkeypatch)
         _dispatch_tree()
@@ -1176,9 +1016,8 @@ class TestTheGrantIsRecheckedAfterTheRead:
         calls = []
 
         def _linking(*args, **kwargs):
-            # The gate folds the class too, and THAT call precedes the caller sample.
-            # Linking on it would be caught by the sample itself and the mutation
-            # would survive, so the link is placed on the re-check's own call.
+            # The gate's fold (call 1) precedes the caller sample, which would catch a
+            # link there; link on the re-check's call instead.
             calls.append(1)
             if len(calls) >= 2:
                 slot.linked_session_key = "telegram:-100999"
@@ -1198,11 +1037,8 @@ class TestTheGrantIsRecheckedAfterTheRead:
     def test_a_target_that_moves_mid_read_still_lets_a_caller_read_its_own_unit(self, monkeypatch):
         """MUTATION-SENSITIVE: the re-check is CONDITIONAL, not a blanket refusal.
 
-        The classes govern reading PAST one's own record, so the own-unit exemption
-        returns before any target test. Without this case a re-check that refused
-        unconditionally would pass every other case here while breaking every
-        self-read, which is the shipped behaviour on base. The mid-read event is a
-        class move on the unit BEING read, which is what this function now reads.
+        The own-unit exemption returns before any target test; without this case an
+        unconditional refusal would pass the others and break every self-read.
         """
         _flag_on(monkeypatch)
         _dispatch_tree()
@@ -1267,15 +1103,9 @@ class TestTheGrantIsRecheckedAfterTheRead:
     def test_every_offloading_route_rechecks_before_it_answers(self):
         """MUTATION-SENSITIVE: the guard is at the choke point, not at one call site.
 
-        This route set grows, and a route added without the re-check reads correctly
-        in review -- the defect is an ABSENT line, which no assertion about the
-        current routes can see. So the rule is asserted over the module's own source,
-        and it is asserted as a shape a new route cannot get wrong rather than as a
-        line each route must remember: the re-check has exactly ONE caller, which is
-        the helper that offloads, and the gate and that helper are the only places an
-        agent-door route is allowed to suspend. A route that wants to build a payload
-        off the loop therefore has one way in, and that way re-checks the grant before
-        the route's own shaping ever runs.
+        A new route missing the re-check is an absent line, so the rule is asserted over
+        the source: the re-check has ONE caller (the offload helper), and the gate and that
+        helper are the only places a door route may suspend.
         """
         import ast
         import importlib
@@ -1293,12 +1123,8 @@ class TestTheGrantIsRecheckedAfterTheRead:
         ]
 
         def _calls(node):
-            # Both spellings count. A bare ``_authorize_crew_log_read(...)`` and an
-            # attribute form such as ``self._authorize_crew_log_read(...)`` name the
-            # same gate, and detection is the permissive direction here: a route whose
-            # gate call goes unrecognised is not treated as a door at all, so none of
-            # the suspension rules below ever reach it. Matching the attribute tail as
-            # well keeps that escape shut.
+            # Bare and attribute calls both count: a gate call that goes unrecognised
+            # would exempt its route from the suspension rules below.
             names = set()
             for n in ast.walk(node):
                 if not isinstance(n, ast.Call):
@@ -1309,21 +1135,11 @@ class TestTheGrantIsRecheckedAfterTheRead:
                     names.add(n.func.attr)
             return names
 
-        # Suspension has three spellings -- ``await``, ``async with``, ``async for``
-        # -- and a route that reaches storage through any of them can answer under a
-        # grant taken before the read. Naming the storage calls to look for would
-        # cover whichever ones are spelled today and miss ``run_in_executor``, an
-        # awaited storage coroutine, or a gather. So the rule is stated from the other
-        # side: these are the only two suspension points a door route may hold, and
-        # anything else that suspends is named back. A route that genuinely needs a
-        # third has to say so here, which is the point at which somebody decides
-        # whether it owes a re-check.
+        # An allowlist of suspension points (``await``, ``async with``, ``async for``):
+        # listing storage calls instead would miss ``run_in_executor`` or a gather.
         allowed_awaits = {"_authorize_crew_log_read", "_offload_then_recheck"}
-        # The set holds bare names only, so an attribute-form await -- ``self.gate()``,
-        # ``mod._offload_then_recheck()`` -- is named back rather than admitted. That is
-        # the fail-closed direction on purpose: the ``ast.unparse`` branch below is there
-        # to print an offender readably, not to widen what passes. A door route that
-        # wants an attribute form spells its bare name here and says why.
+        # Bare names only, so an attribute-form await is named back (fail closed);
+        # ``ast.unparse`` below only prints the offender.
 
         def _suspends_outside(node):
             offenders = []
@@ -1366,9 +1182,8 @@ class TestTheGrantIsRecheckedAfterTheRead:
             "api_crew_log_unit_projection",
         ], f"the agent door's offloading routes are not the three expected: {folded}"
 
-        # A second control with a predictable answer: resolve is an agent-door route
-        # that answers from memory, so it owes no re-check and is admitted by all
-        # three rules above while appearing in none of them.
+        # Second control: resolve is a door route that answers from memory, so it owes
+        # no re-check.
         resolve = [f for f in doors if f.name == "api_crew_log_resolve"]
         assert len(resolve) == 1, "resolve is no longer an agent-door route"
         assert "_offload_then_recheck" not in _calls(resolve[0])
@@ -1379,10 +1194,8 @@ class TestTheGrantIsRecheckedAfterTheRead:
 class TestTheOffloadHelperOwnsTheOrder:
     """The three steps after the gate live in one helper, so the helper is pinned.
 
-    The route cases above prove the sequence end to end. These prove the helper
-    itself, and two of the steps it owns have no other cover: the mapping of a
-    storage refusal to a response, and the rule that the route's own shaping runs
-    only after the re-check has held.
+    Two steps have no other cover: mapping a storage refusal to a response, and shaping
+    only after the re-check holds.
     """
 
     def _request(self) -> object:
@@ -1403,10 +1216,8 @@ class TestTheOffloadHelperOwnsTheOrder:
     ):
         """MUTATION-SENSITIVE: the refusal is mapped, not raised and not flattened.
 
-        A read can refuse for reasons the caller can do something about -- a
-        malformed unit id is the caller's to fix, a log holding a line this build
-        does not parse is the deployment's -- so each keeps its own status and its
-        own code. Dropping the mapping turns all four into a 500 with no code.
+        Each refusal keeps its own status and code: a bad unit id is the caller's to fix,
+        an unparsed entry type is the deployment's.
         """
         _flag_on(monkeypatch)
         from kiro_crew.crew_log.errors import CrewLogError
@@ -1434,11 +1245,8 @@ class TestTheOffloadHelperOwnsTheOrder:
     def test_the_shaping_never_runs_when_the_grant_was_withdrawn(self, monkeypatch):
         """MUTATION-SENSITIVE: the re-check precedes the shaping, not just the return.
 
-        A helper that shaped first and returned the refusal afterwards would answer
-        correctly and still be wrong: the shaping is the ROUTE's, and running it on a
-        payload the caller may not have means route code has already touched content
-        the withdrawn grant does not cover. So the assertion is that it is not called
-        at all, which no assertion about the response can make.
+        Shaping first and refusing after would give the right response while route code
+        touched content the withdrawn grant does not cover.
         """
         _flag_on(monkeypatch)
         read: list = []

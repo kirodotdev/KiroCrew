@@ -83,7 +83,7 @@ Container or CI alternative: set the environment variables `KIROCREW_CONNECTIONS
 
 ## 6. Verify the connection
 
-1. Open **Capabilities → Connections** in the Kiro Crew dashboard. The Box card should now read **Connect** instead of **Needs configuration**.
+1. Open **Customize → Connections** in the Kiro Crew dashboard. The Box card should now read **Connect** instead of **Needs configuration**.
 2. Click **Connect**. A browser tab opens on `https://account.box.com/api/oauth2/authorize` showing Box's consent page for the app name you chose in section 1, with the scopes from section 3.
 3. Sign in with your Box account if asked, then click **Grant access to Box**.
 4. The browser lands on `http://127.0.0.1:48108/callback?...`. On a local install this completes automatically. On a remote install, copy the landing URL from the address bar and paste it into the dashboard when prompted.

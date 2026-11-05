@@ -321,7 +321,6 @@ class TestProvisioningFailureAudit:
 class TestBootOrdering:
     def test_boot_reaps_before_it_lists_any_app(self, monkeypatch: pytest.MonkeyPatch) -> None:
         order: list[str] = []
-        monkeypatch.setattr(bmod, "_DEV_FLEET_DEFERRED", False)
         monkeypatch.setattr(bmod, "_reap_stale_app_backends", lambda: order.append("reap") or 0)
         monkeypatch.setattr(bmod, "list_apps", lambda: order.append("list") or [])
         assert bmod.start_enabled_app_backends() == []
@@ -364,22 +363,6 @@ class TestBootOrdering:
         started = bmod._start_backends_concurrently(["adopted-app", "fresh-app"])
         assert sorted(started) == ["adopted-app", "fresh-app"]
         assert registered == [(adopted, True)]
-
-    def test_a_refused_deferred_spawn_does_not_re_arm(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        # The deferral is consumed before the re-checks: a Dev Fleet disabled in the
-        # window is not spawned later when it comes back.
-        spawned: list[list[str]] = []
-        monkeypatch.setattr(bmod, "_DEV_FLEET_DEFERRED", True)
-        monkeypatch.setattr(bmod, "_app_enabled_state", lambda name: False)
-        monkeypatch.setattr(
-            bmod, "_start_backends_concurrently", lambda names: spawned.append(names) or names
-        )
-        assert bmod.start_deferred_app_backends() == []
-        monkeypatch.setattr(bmod, "_app_enabled_state", lambda name: True)
-        assert bmod.start_deferred_app_backends() == []
-        assert spawned == [] and bmod._DEV_FLEET_DEFERRED is False
 
 
 # ---------------------------------------------------------------------------

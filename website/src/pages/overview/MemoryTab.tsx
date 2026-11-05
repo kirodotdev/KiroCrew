@@ -45,6 +45,15 @@ import { compareText, fmtDateTimeNumeric } from '../../i18n/format'
  *  request that failed. */
 const RESTRICTED_TARGET_CODE = 'restricted_target_session'
 
+/** Memory Settings bounds: the inputs' min/max, and the clamp
+ *  PUT /api/memory/settings applies (`handlers/memory.py`). */
+const IDLE_HOURS_MIN = 0.5
+const IDLE_HOURS_MAX = 24
+const MAX_DAYS_MIN = 7
+const MAX_DAYS_MAX = 365
+const clampSetting = (value: number, min: number, max: number) =>
+  Number.isFinite(value) ? Math.min(max, Math.max(min, value)) : min
+
 /** Machine-readable fields of a rejected consolidate call's JSON body: the
  *  backend `code`, and for a refused target the `mode` it was in -- both read
  *  through the error journal's own body parser (`parseErrorCode` /
@@ -224,6 +233,18 @@ function GlobalMemoryTab({ refreshTrigger, onDirtyChange, focusLessons = false }
     text: string
   } | null>(null)
   const [idleHours, setIdleHours] = useState(3); const [maxDays, setMaxDays] = useState(90); const [settingsSaved, setSettingsSaved] = useState(false)
+  const [settingsError, setSettingsError] = useState<string | null>(null)
+  // A failed first read, apart from a failed save: the boxes then hold defaults.
+  const [settingsLoadError, setSettingsLoadError] = useState<string | null>(null)
+  // Which fields were edited since the last load or save. Save sends only those,
+  // so a retention value set outside this tab (above the input's max) is never
+  // clamped down by a Save that only changed the idle hours.
+  const settingsTouched = useRef({ idle: false, days: false })
+  // Edited at all since mount: the first load must not overwrite such a box,
+  // even after a Save has consumed `settingsTouched`.
+  const settingsEdited = useRef({ idle: false, days: false })
+  const [settingsSaving, setSettingsSaving] = useState(false)
+  const [lessonRequestError, setLessonRequestError] = useState<string | null>(null)
   const [migrated, setMigrated] = useState(false)
   const [vectorActive, setVectorActive] = useState(false)
   // `vectorActive` reads false until the vector card's status answers, so the
@@ -325,7 +346,13 @@ function GlobalMemoryTab({ refreshTrigger, onDirtyChange, focusLessons = false }
   const recentLessons = useMemo(() => lessons.slice(-20), [lessons])
   const { sorted: sortedLessons, sort: lessonSort, toggle: toggleLessonSort } = useSortableTable(recentLessons, 'memory-lessons', lessonComparators, { key: 'ts', dir: 'desc' })
   useEffect(() => {
-    api.memorySettings().then(d => { setIdleHours(d.history_idle_hours ?? 3); setMaxDays(d.history_max_days ?? 90); setMigrated(d.migrated ?? false) })
+    api.memorySettings().then(d => {
+      // A box already edited keeps the edit: overwriting it would leave it marked
+      // edited and send the loaded value, clamped, on the next Save.
+      if (!settingsEdited.current.idle) setIdleHours(d.history_idle_hours ?? 3)
+      if (!settingsEdited.current.days) setMaxDays(d.history_max_days ?? 90)
+      setMigrated(d.migrated ?? false)
+    }, (e: unknown) => setSettingsLoadError(e instanceof Error ? e.message : String(e)))
     loadLessons()
   }, [loadLessons])
   // The page's own refresh signal. Invalidated by query-key PREFIX rather than
@@ -460,10 +487,55 @@ function GlobalMemoryTab({ refreshTrigger, onDirtyChange, focusLessons = false }
     setConsolidateStanding(failed === 0 && skipped > 0)
     if (failed === 0 && skipped === 0) consolidateClearRef.current = scheduleClear(() => { consolidateClearRef.current = null; setConsolidateMsg('') }, 4000)
   }
+  // Clamped to the inputs' own min/max (the server clamps to the same bounds),
+  // so an emptied box saves and shows the minimum rather than sending 0.
+  const saveSettings = async () => {
+    // Fresh flags before the request, so an edit made while it is in flight
+    // stays marked for the next Save; the sent ones come back if it fails.
+    const touched = settingsTouched.current
+    settingsTouched.current = { idle: false, days: false }
+    const changes: { history_idle_hours?: number; history_max_days?: number } = {}
+    if (touched.idle) {
+      changes.history_idle_hours = clampSetting(idleHours, IDLE_HOURS_MIN, IDLE_HOURS_MAX)
+      setIdleHours(changes.history_idle_hours)
+    }
+    if (touched.days) {
+      // Whole days, cut like the server's int().
+      changes.history_max_days = clampSetting(Math.trunc(maxDays), MAX_DAYS_MIN, MAX_DAYS_MAX)
+      setMaxDays(changes.history_max_days)
+    }
+    setSettingsError(null)
+    setSettingsSaved(false)
+    // One save at a time (the button is disabled), so "Saved" always answers
+    // the request that carried the edit.
+    setSettingsSaving(true)
+    try {
+      await api.saveMemorySettings(changes)
+    } catch (e) {
+      setSettingsSaving(false)
+      settingsTouched.current = {
+        idle: settingsTouched.current.idle || touched.idle,
+        days: settingsTouched.current.days || touched.days,
+      }
+      setSettingsError(e instanceof Error ? e.message : String(e))
+      return
+    }
+    setSettingsSaving(false)
+    setSettingsSaved(true); scheduleClear(() => setSettingsSaved(false), 2000)
+  }
   const addLesson = async () => {
-    if (!rule) return
+    const text = rule.trim()
+    if (!text) return
     setLessonFeedback(null)
-    const result = await api.createLesson(rule, cat)
+    setLessonRequestError(null)
+    let result: Awaited<ReturnType<typeof api.createLesson>>
+    try {
+      result = await api.createLesson(text, cat)
+    } catch (e) {
+      // A refused request (403 owner gate, 400 body): the draft stays for a retry.
+      setLessonRequestError(e instanceof Error ? e.message : String(e))
+      return
+    }
     if (result.outcome === 'inserted' || result.outcome === 'enriched') {
       setRule('')
       await loadLessons()
@@ -498,21 +570,36 @@ function GlobalMemoryTab({ refreshTrigger, onDirtyChange, focusLessons = false }
       <div className="flex gap-3 items-end flex-wrap">
         <label htmlFor="memory-idle-hours" className="flex flex-col gap-1 text-[13px] text-muted">
           <span>{i18nT('pages.overview.memoryTab.consolidation_idle_hours')}</span>
-          <input id="memory-idle-hours" aria-label={i18nT('pages.overview.memoryTab.consolidation_idle_hours')} type="number" min={0.5} max={24} step={0.5} className="w-24 bg-bg-elevated border border-border rounded-md px-3 py-2 text-text text-sm font-body outline-hidden transition-colors focus-ring" value={idleHours} onChange={e => setIdleHours(Number(e.target.value))} />
+          <input id="memory-idle-hours" aria-label={i18nT('pages.overview.memoryTab.consolidation_idle_hours')} type="number" min={IDLE_HOURS_MIN} max={IDLE_HOURS_MAX} step={0.5} className="w-24 bg-bg-elevated border border-border rounded-md px-3 py-2 text-text text-sm font-body outline-hidden transition-colors focus-ring" value={idleHours} onChange={e => { settingsTouched.current.idle = true; settingsEdited.current.idle = true; setIdleHours(Number(e.target.value)) }} />
         </label>
         {!migrated && (
           <label htmlFor="memory-max-days" className="flex flex-col gap-1 text-[13px] text-muted">
             <span>{i18nT('pages.overview.memoryTab.history_retention_days')}</span>
-            <input id="memory-max-days" aria-label={i18nT('pages.overview.memoryTab.history_retention_days')} type="number" min={7} max={365} step={1} className="w-24 bg-bg-elevated border border-border rounded-md px-3 py-2 text-text text-sm font-body outline-hidden transition-colors focus-ring" value={maxDays} onChange={e => setMaxDays(Number(e.target.value))} />
+            <input id="memory-max-days" aria-label={i18nT('pages.overview.memoryTab.history_retention_days')} type="number" min={MAX_DAYS_MIN} max={MAX_DAYS_MAX} step={1} className="w-24 bg-bg-elevated border border-border rounded-md px-3 py-2 text-text text-sm font-body outline-hidden transition-colors focus-ring" value={maxDays} onChange={e => { settingsTouched.current.days = true; settingsEdited.current.days = true; setMaxDays(Number(e.target.value)) }} />
           </label>
         )}
-        <Btn onClick={async () => { await api.saveMemorySettings({ history_idle_hours: idleHours, history_max_days: maxDays }); setSettingsSaved(true); scheduleClear(() => setSettingsSaved(false), 2000) }}>{settingsSaved ? <><Check className="lucide-inline" /> {i18nT('pages.overview.memoryTab.saved')}</> : i18nT('pages.overview.memoryTab.save')}</Btn>
+        <Btn onClick={saveSettings} disabled={settingsSaving}>{settingsSaved ? <><Check className="lucide-inline" /> {i18nT('pages.overview.memoryTab.saved')}</> : i18nT('pages.overview.memoryTab.save')}</Btn>
         <Btn onClick={consolidate} disabled={consolidating}>{consolidating ? <><Hourglass className="lucide-inline" /> {i18nT('pages.overview.memoryTab.running')}</> : <><RefreshCw className="lucide-inline" /> {i18nT('pages.overview.memoryTab.summarize_now')}</>}</Btn>
         {/* What the button does, under it on its own line: the blind reader
             hesitated over "summarize WHAT" without it and pressed with it (the
             UX lane's read of two heads). Names the button rather than saying
             "it", since the line sits under the whole row. */}
         <p className="basis-full m-0 text-[12px] text-muted" data-testid="summarize-now-help">{i18nT('pages.overview.memoryTab.summarize_now_help')}</p>
+        {/* No hand-off, for the same unsaved drafts as the notice below. */}
+        <ErrorNotice
+          className="basis-full"
+          title={i18nT('pages.overview.memoryTab.settings_load_failed')}
+          message={settingsLoadError}
+          onDismiss={() => setSettingsLoadError(null)}
+          askAgent={false}
+        />
+        <ErrorNotice
+          className="basis-full"
+          title={i18nT('pages.overview.memoryTab.settings_save_failed')}
+          message={settingsError}
+          onDismiss={() => setSettingsError(null)}
+          askAgent={false}
+        />
         {/* No hand-off: the tab holds unsaved drafts -- the lesson rule being
             typed below and the store text in the editors -- that the hand-off's
             navigation would discard. The block variant on its own flex line
@@ -660,7 +747,7 @@ function GlobalMemoryTab({ refreshTrigger, onDirtyChange, focusLessons = false }
     {!vectorActive && (
       <Card id={LESSONS_CARD_ID}><CardTitle>{i18nT('pages.overview.memoryTab.lessons')} <InfoTip text={i18nT('pages.overview.memoryTab.persistent_lessons_injected_into_every_session_a')} /></CardTitle>
       <div className="flex gap-2 items-center flex-wrap mb-3">
-        <Input placeholder={i18nT('pages.overview.memoryTab.rule_e_g_always_use_tabs_not_spaces')} style={{ flex: 2 }} value={rule} onChange={e => setRule(e.target.value)} />
+        <Input aria-label={i18nT('pages.overview.memoryTab.rule')} placeholder={i18nT('pages.overview.memoryTab.rule_e_g_always_use_tabs_not_spaces')} style={{ flex: 2 }} value={rule} onChange={e => setRule(e.target.value)} />
         <SimpleSelect
           aria-label={i18nT('pages.overview.memoryTab.category')}
           style={{ flex: '0 0 140px' }}
@@ -670,6 +757,14 @@ function GlobalMemoryTab({ refreshTrigger, onDirtyChange, focusLessons = false }
           onChange={setCat}
         />
         <SendBtn onClick={addLesson}>{i18nT('pages.overview.memoryTab.add')}</SendBtn>
+        {/* No hand-off: it would discard the unsaved rule draft in this row. */}
+        <ErrorNotice
+          className="basis-full"
+          title={i18nT('pages.overview.memoryTab.lesson_request_failed')}
+          message={lessonRequestError}
+          onDismiss={() => setLessonRequestError(null)}
+          askAgent={false}
+        />
         {lessonFeedback && (
           <span
             role={lessonFeedback.tone === 'error' ? 'alert' : 'status'}

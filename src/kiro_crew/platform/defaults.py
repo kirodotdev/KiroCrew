@@ -14,11 +14,12 @@ from __future__ import annotations
 import dataclasses
 import shutil
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Dict, FrozenSet, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Callable, Dict, FrozenSet, List, Optional, Sequence, Tuple
 
 if TYPE_CHECKING:
     from kiro_crew.publish_provider import PublishProvider
     from kiro_crew.platform.interfaces import (
+        BrowserCredentialTarget,
         ImportSource,
         InboundToken,
         McpScope,
@@ -494,8 +495,10 @@ class DefaultAppsLoader:
     """The open-source ``apps/builtins/`` set."""
 
     def bundled_app_names(self) -> List[str]:
-        # auto_research + file_explorer ship in the public core.
-        return ["auto_research", "file_explorer"]
+        # The public core names no app: its builtins are found by scanning
+        # ``apps/builtins/`` (``discover_builtin_apps``), which orphan detection
+        # already reads. A companion declares the feature apps it bundles here.
+        return []
 
     def manifest_sources(self) -> List[Path]:
         return []
@@ -578,22 +581,19 @@ class DefaultTelemetryProvider:
         return None
 
     def otlp_destinations(self, cfg: Any) -> "tuple[OtlpDestination, ...]":
-        # Byte-identical to the endpoint-only OTLP exporter this seam replaced:
-        # ONE destination when telemetry.otlp_endpoint is a non-empty string,
-        # NONE otherwise — so egress stays off by default and the standalone
-        # build reaches exactly the collector it reached before. Read with
-        # getattr so any telemetry-config shape works, and never logged here:
-        # the value can carry credentials in userinfo or query parameters.
-        endpoint = str(getattr(cfg, "otlp_endpoint", "") or "").strip()
-        if not endpoint:
-            return ()
-        return (
-            OtlpDestination(
-                name="telemetry.otlp_endpoint",
-                endpoint=endpoint,
-                signals=frozenset({"metrics"}),
-            ),
-        )
+        # One destination per configured entry, NONE when nothing is set -- so
+        # egress stays off by default. telemetry.otlp_endpoint, when it is a
+        # non-empty string, is the FIRST entry and is byte-identical to the one
+        # destination this method returned before the list existed (no
+        # narrowing). Each enabled telemetry.otlp_endpoints entry follows. Read
+        # with getattr so any telemetry-config shape works, and never logged
+        # here: an endpoint can carry credentials in userinfo or query
+        # parameters.
+        # circular import: this module loads during ``platform`` package init,
+        # and the parser reaches ``metrics`` (which imports ``platform``).
+        from kiro_crew.metrics import otlp_endpoints
+
+        return otlp_endpoints.config_destinations(cfg)
 
 
 class DefaultMemoryFilesProvider:
@@ -768,6 +768,32 @@ class DefaultFeedbackTrackerProvider:
         self, bundle: "BundleResult", note: str, *, prefill: bool
     ) -> Optional[str]:
         return None
+
+
+class DefaultBrowserCredentialProvider:
+    """No edition credentials: Kiro's Chromium starts with an empty profile.
+
+    ``name()`` answers ``None``, which tells the supervisor not to call the others,
+    so the public browser is unchanged by the seam's existence.
+    """
+
+    def name(self) -> Optional[str]:
+        return None
+
+    def domains(self) -> Sequence[str]:
+        return ()
+
+    def cookies(self, target: "BrowserCredentialTarget") -> Sequence[Dict[str, Any]]:
+        return []
+
+    def fingerprint(self) -> Optional[str]:
+        return None
+
+    def status(self) -> Optional[Dict[str, Any]]:
+        return None
+
+    def default_settings(self) -> Dict[str, Any]:
+        return {}
 
 
 class DefaultSpeechProviderRegistry:

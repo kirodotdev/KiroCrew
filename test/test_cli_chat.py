@@ -45,6 +45,52 @@ async def test_cancelled_turn_shuts_down_provider(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_stored_kiro_pick_runs_on_kas_in_cli_chat(monkeypatch, tmp_path) -> None:
+    """End-to-end: ``kirocrew chat`` runs a stored Kiro CLI pick on KAS.
+
+    The CLI does not run the gateway's KAS floor, so ``ensure_kiro_cli_kas_verdict``
+    is what establishes the v3 evidence a stored ``"kiro"`` pick needs to resolve to
+    KAS. Drive ``_chat`` with the probe answering v3-present and assert the backend
+    the factory is handed is KAS.
+    """
+    import json
+
+    from kiro_crew.acp.types import ACP_BACKEND_KAS
+    from kiro_crew.acp_backends import STORED_BACKEND_KIRO
+    from kiro_crew.agent_sdk import backends
+
+    # A fresh process: no floor verdict, nothing probed yet.
+    monkeypatch.setattr(backends, "_selectable", set(backends._selectable))
+    monkeypatch.setattr(backends, "_host_unservable", {})
+    monkeypatch.setattr(backends, "_kiro_cli_offers_kas", False)
+    monkeypatch.setattr(backends, "_kiro_cli_kas_probed", False)
+    # The host's kiro-cli offers v3 (positive probe), and the stored pick is Kiro CLI.
+    monkeypatch.setattr("kiro_crew.agent_sdk.kas_engine_verdict", lambda: (True, None))
+
+    cfg_file = tmp_path / "config.json"
+    cfg_file.write_text(json.dumps({"agent": {"acp_backend": STORED_BACKEND_KIRO}}), "utf-8")
+    # The real loader reads config_path(); point it at the file just written so
+    # ``_chat``'s own ``KiroCrewConfig.load()`` runs the remap against our pick.
+    monkeypatch.setattr(loader, "config_path", lambda: cfg_file)
+
+    seen = {}
+    provider = MagicMock()
+    provider.start = AsyncMock()
+    provider.shutdown = AsyncMock()
+
+    def _factory(config):
+        seen["backend"] = config.agent.acp_backend
+        return lambda *a, **k: provider
+
+    monkeypatch.setattr(cli_chat, "build_provider_factory", _factory)
+    monkeypatch.setattr(cli_chat, "_send_and_print", AsyncMock())
+
+    await cli_chat._chat("hello", None)
+
+    assert seen["backend"] == ACP_BACKEND_KAS
+
+
+@pytest.mark.asyncio
 async def test_default_chat_uses_canonical_agent_for_provider_and_gate(monkeypatch) -> None:
     """The default ACP agent's task profile must receive the same identity."""
     provider = MagicMock()

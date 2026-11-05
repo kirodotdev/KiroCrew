@@ -141,6 +141,8 @@ class TestProviderBindsTheLevel:
     @pytest.mark.asyncio
     async def test_no_served_model_logs_the_drop_naming_auto(self, caplog):
         provider = _provider(ACP_BACKEND_CLAUDE, unbound="high", served="")
+        # No effort option offering a level, so the pseudo-model takes none.
+        provider._client.get_valid_effort_levels = MagicMock(return_value=[])
         with caplog.at_level(logging.WARNING, logger="kiro_crew.providers.acp"):
             await provider.start()
         provider._client.set_config_option.assert_not_awaited()
@@ -263,3 +265,90 @@ class TestProviderBindsTheLevel:
         await provider.start()
         provider._client.set_config_option.assert_not_awaited()
         assert provider._effort_per_model == {}
+
+
+# claude-agent-acp's ``default`` pseudo-model heads its advertised list, and its
+# effort select is rebuilt for the model it actually serves.
+_CLAUDE_ADVERTISED = [{"modelId": "default"}, {"modelId": "claude-opus-4.7"}]
+_CLAUDE_LEVELS = ["default", "low", "medium", "high", "xhigh", "max"]
+
+
+def _claude_default(*, served: str, unbound: str = "high", levels=_CLAUDE_LEVELS) -> AcpProvider:
+    provider = _provider(ACP_BACKEND_CLAUDE, unbound=unbound, served=served)
+    provider._client.available_models = MagicMock(return_value=list(_CLAUDE_ADVERTISED))
+    provider._client.get_valid_effort_levels = MagicMock(return_value=list(levels))
+    return provider
+
+
+class TestClaudeDefaultPseudoModel:
+    def test_membership_is_exactly_claude(self):
+        from kiro_crew.agent_sdk.backends import (
+            ACP_BACKENDS_DEFAULT_PSEUDO_MODEL,
+            ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION,
+        )
+
+        assert ACP_BACKENDS_DEFAULT_PSEUDO_MODEL == frozenset({ACP_BACKEND_CLAUDE})
+        # The option answers only on the pseudo-model; a concrete id keeps the registry.
+        assert ACP_BACKEND_CLAUDE not in ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION
+
+    @pytest.mark.asyncio
+    async def test_the_level_reaches_a_session_serving_the_head_of_the_list(self):
+        provider = _claude_default(served="default")
+        await provider.start()
+        provider._client.set_config_option.assert_awaited_once_with("effort", "high")
+        assert provider.supports_effort() is True
+        assert provider._effort_per_model == {"default": "high"}
+
+    @pytest.mark.asyncio
+    async def test_the_level_reaches_a_session_serving_no_id_at_start(self):
+        provider = _claude_default(served="")
+        await provider.start()
+        provider._client.set_config_option.assert_awaited_once_with("effort", "high")
+        assert provider._effort_per_model == {"auto": "high"}
+
+    @pytest.mark.asyncio
+    async def test_a_live_change_reaches_a_session_serving_no_id(self):
+        provider = _claude_default(served="", unbound="")
+        provider._apply_effort_overlay = MagicMock(return_value=True)
+        assert provider.supports_effort() is True
+        assert await provider.change_effort("low") is True
+        provider._client.set_config_option.assert_awaited_once_with("effort", "low")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("levels", [[], ["default"]])
+    async def test_no_effort_option_offering_a_level_still_drops_it(self, levels):
+        provider = _claude_default(served="default", levels=levels)
+        await provider.start()
+        provider._client.set_config_option.assert_not_awaited()
+        assert provider.supports_effort() is False
+
+    @pytest.mark.asyncio
+    async def test_a_concrete_id_without_effort_keeps_the_registry_answer(self):
+        # An advertised select does not speak for a concrete id the registry names.
+        provider = _claude_default(served="deepseek-3.2")
+        await provider.start()
+        provider._client.set_config_option.assert_not_awaited()
+        assert provider.supports_effort() is False
+
+    @pytest.mark.asyncio
+    async def test_a_non_member_serving_the_head_keeps_the_registry_answer(self):
+        provider = _provider(ACP_BACKEND_KIRO, unbound="high", served="default")
+        provider._client.available_models = MagicMock(return_value=list(_CLAUDE_ADVERTISED))
+        provider._client._resolved_model_id = "default"
+        assert provider.supports_effort() is False
+
+
+class TestHarnessEffortBeforeTheSessionReports:
+    @pytest.mark.parametrize("model", ["", "auto"])
+    def test_an_unpinned_claude_session_is_unknown_not_unsupported(self, model):
+        from kiro_crew.dashboard.handlers.agents_harness_effort import harness_effort
+
+        assert harness_effort(None, ACP_BACKEND_CLAUDE, model) == {
+            "effort_supported": None,
+            "effort_levels": [],
+        }
+
+    def test_a_non_member_on_auto_keeps_the_registry_answer(self):
+        from kiro_crew.dashboard.handlers.agents_harness_effort import harness_effort
+
+        assert harness_effort(None, ACP_BACKEND_KIRO, "auto")["effort_supported"] is False

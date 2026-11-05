@@ -115,12 +115,12 @@ _BASE_MEMBERS: dict[str, tuple[str, bool, str]] = {
     "_audited_identity_probe": (
         "function",
         True,
-        "(self, executable: 'str', *, isolate_home: 'bool' = True) -> 'ProcessResult'",
+        "(self, executable: 'str', *, isolate_home: 'bool' = True, first_party_fixed_argv: 'bool' = False) -> 'ProcessResult'",
     ),
     "_audited_probe": (
         "function",
         True,
-        "(self, action: 'str', executable: 'str', args: 'list[str]') -> 'ProcessResult'",
+        "(self, action: 'str', executable: 'str', args: 'list[str]', *, first_party_fixed_argv: 'bool' = False) -> 'ProcessResult'",
     ),
     "_dashboard_snapshot": ("function", True, "(self) -> 'dict[str, Any]'"),
     "_kas_bundle_route": ("staticmethod", False, "() -> 'bool'"),
@@ -144,7 +144,7 @@ _BASE_MEMBERS: dict[str, tuple[str, bool, str]] = {
     "_run_auth_command": (
         "function",
         True,
-        "(self, executable: 'str', args: 'list[str]', *, base_env: 'dict[str, str]', timeout_secs: 'float', isolate_home: 'bool' = True) -> 'ProcessResult'",
+        "(self, executable: 'str', args: 'list[str]', *, base_env: 'dict[str, str]', timeout_secs: 'float', isolate_home: 'bool' = True, first_party_fixed_argv: 'bool' = False) -> 'ProcessResult'",
     ),
     "_set_terminal_audit": (
         "function",

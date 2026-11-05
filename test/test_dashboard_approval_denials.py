@@ -75,6 +75,36 @@ class TestBatchRejection:
         assert slot._batch_rejected is False  # reset in finally
 
     @pytest.mark.asyncio
+    async def test_the_rejection_log_lines_redact_the_tool_title(self, tmp_path, caplog):
+        """The title is model-written; a credential in it must not reach the log."""
+        import logging
+
+        token = "ghp_" + "a1B2" * 9
+        state, client = _make_state(tmp_path, context_builder=_context_builder())
+        slot = _make_slot()
+        evt1 = _permission_event(title=f"git push https://x:{token}@github.com/o/r")
+        evt1.request_id = "req-1"
+        evt1.tool_call_id = "tc-1"
+        evt2 = _permission_event(title=f"curl -H 'Authorization: token {token}' x")
+        evt2.request_id = "req-2"
+        evt2.tool_call_id = "tc-2"
+        _set_stream(client, [evt1, evt2, _complete_event()])
+
+        async def _reject_first() -> None:
+            await _answer_approval(slot, "req-1", "rejected")
+
+        rejecter = asyncio.get_event_loop().create_task(_reject_first())
+
+        with caplog.at_level(logging.WARNING, logger="kiro_crew"), _patch_stats():
+            await _run_chat(state, slot, "hello")
+        await _drain(rejecter)
+
+        lines = [r.getMessage() for r in caplog.records if "REJECTED tool=" in r.getMessage()]
+        assert any("PERM REJECTED" in line for line in lines), lines
+        assert any("AUTO-REJECTED" in line for line in lines), lines
+        assert all(token not in line for line in lines), lines
+
+    @pytest.mark.asyncio
     async def test_batch_rejected_reset_on_exception(self, tmp_path):
         """_batch_rejected is reset even if event loop raises."""
         state, client = _make_state(tmp_path, context_builder=_context_builder())
@@ -452,30 +482,40 @@ class TestDenyOnce:
         assert "rejected_once" in repr(log.warning.call_args)
 
     @pytest.mark.asyncio
-    async def test_api_reject_once_maps_to_decision_override(self):
+    async def test_api_reject_once_maps_to_decision_override(self, monkeypatch):
         """The HTTP seam: ``reject_once`` is a valid action and sets the flag.
 
         Pinned at the handler, not in redux: a frontend-only test passes even when
-        the action never reaches ``resolve_approval``, leaving Deny once wired to
-        the plain batch reject in production.
+        the action never reaches the resolver, leaving Deny once wired to the plain
+        batch reject in production. The handler resolves through the Shared Crew
+        decision registry, which is where the flag must arrive.
         """
+        from kiro_crew.shared_crew import decisions as shared_decisions
+
         state = MagicMock()
-        state.resolve_approval.return_value = True
+        seen: list[dict] = []
+
+        def _resolve(_state, _request, approval_id, **kwargs):
+            seen.append({"id": approval_id, **kwargs})
+            return 200, {"ok": True}
+
+        monkeypatch.setattr(shared_decisions, "resolve_approval_by_id", _resolve)
 
         async def _call(action: str):
             request = MagicMock()
             request.get = {"app": ""}.get  # the dashboard user: an empty app claim
             request.app = {"state": state}
             request.match_info = {"id": "req-9", "action": action}
+            request.can_read_body = False
             return await api_approval_resolve(request)
 
         assert (await _call("reject_once")).status == 200
-        assert state.resolve_approval.call_args.args == ("req-9", False)
-        assert state.resolve_approval.call_args.kwargs["rejected_once"] is True
+        assert (seen[-1]["id"], seen[-1]["approved"]) == ("req-9", False)
+        assert seen[-1]["rejected_once"] is True
 
         # Plain reject must keep the cascading behavior (no override).
         assert (await _call("reject")).status == 200
-        assert state.resolve_approval.call_args.kwargs["rejected_once"] is False
+        assert seen[-1]["rejected_once"] is False
 
         # Unknown actions are still refused.
         assert (await _call("reject_twice")).status == 400
@@ -634,6 +674,18 @@ class TestExpiredApprovalRetiresTheCard:
         return [c for c in state.broadcast_ws.call_args_list if c[0][0] == "approval_resolved"]
 
     @staticmethod
+    def _raised_instance(state, request_id: str) -> str:
+        """The instance the ``approval`` frame announced for *request_id*; its
+        ``approval_resolved`` frame names the same one."""
+        raised = [
+            c[0][1]
+            for c in state.broadcast_ws.call_args_list
+            if c[0][0] == "approval" and c[0][1]["id"] == request_id
+        ]
+        assert len(raised) == 1
+        return raised[0]["instance"]
+
+    @staticmethod
     async def _register_request(state, request_id: str, slot_key: str) -> asyncio.Task:
         """Start a real (unexpired) approval wait and return once it registered.
 
@@ -679,6 +731,7 @@ class TestExpiredApprovalRetiresTheCard:
             "approved": False,
             "slot": slot.key,
             "decision": "expired",
+            "instance": self._raised_instance(state, "req-exp"),
         }
         mock_sel.log_tool_invocation.assert_called_once_with(
             session_key=slot.key,
@@ -710,6 +763,7 @@ class TestExpiredApprovalRetiresTheCard:
             "approved": False,
             "slot": slot_key,
             "decision": "expired",
+            "instance": self._raised_instance(state, "req-removed-slot"),
         }
 
     @pytest.mark.asyncio
@@ -727,7 +781,12 @@ class TestExpiredApprovalRetiresTheCard:
         resolved = self._resolved_broadcasts(state)
         assert len(resolved) == 1
         # Session key "state" carries no slot in the payload.
-        assert resolved[0][0][1] == {"id": "req-bg", "approved": False, "decision": "expired"}
+        assert resolved[0][0][1] == {
+            "id": "req-bg",
+            "approved": False,
+            "decision": "expired",
+            "instance": self._raised_instance(state, "req-bg"),
+        }
         assert "req-bg" not in state._pending_approvals
         assert "req-bg" not in state._approval_futures
 
@@ -765,7 +824,11 @@ class TestExpiredApprovalRetiresTheCard:
         assert len(resolved) == 1
         # A decided approval carries no decision key: the client derives it.
         # ``resolve_state`` keys the broadcast "state", so no slot rides along.
-        assert resolved[0][0][1] == {"id": "req-ok", "approved": True}
+        assert resolved[0][0][1] == {
+            "id": "req-ok",
+            "approved": True,
+            "instance": self._raised_instance(state, "req-ok"),
+        }
         cls = json.loads(slot.messages[-1]["cls"])
         assert "resolved" not in cls
         assert "req-ok" not in state._pending_approvals
@@ -785,7 +848,11 @@ class TestExpiredApprovalRetiresTheCard:
         assert result is False
         resolved = self._resolved_broadcasts(state)
         assert len(resolved) == 1
-        assert resolved[0][0][1] == {"id": "req-no", "approved": False}
+        assert resolved[0][0][1] == {
+            "id": "req-no",
+            "approved": False,
+            "instance": self._raised_instance(state, "req-no"),
+        }
         assert "req-no" not in state._pending_approvals
         assert "req-no" not in state._approval_futures
 

@@ -277,9 +277,11 @@ async def _connect_slack(self: GatewayOrchestrator) -> bool:
         return True
     except Exception as exc:
         # Keep a short reason for status surfaces (settings badge). Slack
-        # API errors carry a stable code like "invalid_auth"; anything
-        # else (network/proxy) falls back to the exception class name.
-        reason = ""
+        # API errors carry a stable code like "invalid_auth"; an error that
+        # knows what the operator should change carries ``status_reason``
+        # (a SOCKS proxy nothing can speak); anything else (network/proxy)
+        # falls back to the exception class name.
+        reason = str(getattr(exc, "status_reason", "") or "")
         resp = getattr(exc, "response", None)
         if resp is not None:
             try:

@@ -58,7 +58,7 @@ from kiro_crew.dashboard.handlers.taskrunner import (
     api_taskrunner_update_task,
 )
 from kiro_crew.hooks import FileTooLargeError
-from kiro_crew.taskrunner import Step, StepStatus, TaskRun
+from kiro_crew.taskrunner import Step, StepStatus, TaskRun, TaskRunner
 from kiro_crew.testing.wait import await_until
 
 # ── GET /api/taskrunner ──
@@ -331,9 +331,17 @@ class TestCancel:
 
     @pytest.mark.asyncio
     async def test_task_id_cancels_one(self, tmp_path: Path) -> None:
-        runner = _runner(tmp_path)
-        await api_taskrunner_cancel(_request(_state(runner), json_body={"task_id": "t9"}))
-        runner.cancel.assert_called_once_with("t9")
+        runner = TaskRunner(sessions=MagicMock(), auto_test=False, work_dir=tmp_path)
+        runner._runs = {
+            tid: TaskRun(spec_path="s.md", spec_content="s", status="running", task_id=tid)
+            for tid in ("t9", "t8")
+        }
+        resp = await api_taskrunner_cancel(_request(_state(runner), json_body={"task_id": "t9"}))
+        assert resp.status == 200
+        assert {tid: run.status for tid, run in runner._runs.items()} == {
+            "t9": "cancelling",
+            "t8": "running",
+        }
 
 
 class TestPause:
@@ -445,6 +453,33 @@ class TestRename:
         )
         assert resp.status == 400
         assert _body(resp)["error"] == "name required"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("name", [5, None, ["a"]], ids=["int", "null", "list"])
+    async def test_non_string_name_is_400_and_not_stored(
+        self, tmp_path: Path, name: object
+    ) -> None:
+        runner = _runner(tmp_path)
+        run = TaskRun(spec_path="s.md", spec_content="s", task_id="t1", name="old")
+        runner._runs["t1"] = run
+        resp = await api_taskrunner_rename(
+            _request(_state(runner), match_info={"task_id": "t1"}, json_body={"name": name})
+        )
+        assert resp.status == 400
+        assert _body(resp) == {"error": "name must be a string", "code": "invalid_name"}
+        assert run.name == "old"
+        runner._apersist_runs.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_long_name_is_kept(self, tmp_path: Path) -> None:
+        runner = _runner(tmp_path)
+        run = TaskRun(spec_path="s.md", spec_content="s", task_id="t1")
+        runner._runs["t1"] = run
+        resp = await api_taskrunner_rename(
+            _request(_state(runner), match_info={"task_id": "t1"}, json_body={"name": "n" * 5000})
+        )
+        assert _body(resp) == {"ok": True, "name": "n" * 5000}
+        assert run.name == "n" * 5000
 
     @pytest.mark.asyncio
     async def test_rename_persists(self, tmp_path: Path) -> None:
@@ -933,9 +968,14 @@ class TestPlanCancel:
 
     @pytest.mark.asyncio
     async def test_delegates_to_runner(self, tmp_path: Path) -> None:
-        runner = _runner(tmp_path)
-        await api_taskrunner_plan_cancel(_request(_state(runner)))
-        runner.cancel_plan.assert_called_once_with()
+        runner = TaskRunner(sessions=MagicMock(), auto_test=False, work_dir=tmp_path)
+        plan = asyncio.ensure_future(asyncio.Event().wait())
+        runner._plan_task = plan
+        resp = await api_taskrunner_plan_cancel(_request(_state(runner)))
+        cancel_requests = plan.cancelling()
+        plan.cancel()
+        assert _body(resp) == {"ok": True}
+        assert cancel_requests == 1
 
 
 class TestUpdatePlan:

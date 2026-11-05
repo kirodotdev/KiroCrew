@@ -9,7 +9,7 @@
  * fallback -- a property of this test, not of the module runner's timing.
  */
 import { describe, it, expect, afterEach, vi } from 'vitest'
-import { render, cleanup } from '@testing-library/react'
+import { render, cleanup, waitFor } from '@testing-library/react'
 import { PierreEditor } from '../pierre'
 
 // Same shape as pierre.warmSwap.slowChunk.test.tsx: a suspending component
@@ -24,7 +24,7 @@ vi.mock('../pierre/PierreEditorImpl', () => {
 afterEach(cleanup)
 
 describe('PierreEditor Suspense fallback', () => {
-  it('carries the caller className onto the plain fallback', () => {
+  it('carries the caller className onto the plain fallback', async () => {
     const { container } = render(
       <PierreEditor
         file={{ name: 'snippet.txt', contents: 'a\nb\nc', cacheKey: 'k' }}
@@ -32,20 +32,26 @@ describe('PierreEditor Suspense fallback', () => {
         className="max-h-[480px]"
       />,
     )
-    const pre = container.querySelector('pre.pierre-plain')
-    expect(pre).not.toBeNull()
-    expect(pre!.className).toContain('max-h-[480px]')
+    const pre = await waitFor(() => {
+      const el = container.querySelector('pre.pierre-plain')
+      expect(el).not.toBeNull()
+      return el as HTMLElement
+    })
+    expect(pre.className).toContain('max-h-[480px]')
   })
 
-  it('adds nothing when the caller passes no className', () => {
+  it('adds nothing when the caller passes no className', async () => {
     const { container } = render(
       <PierreEditor
         file={{ name: 'snippet.txt', contents: 'a', cacheKey: 'k' }}
         onChange={() => {}}
       />,
     )
-    const pre = container.querySelector('pre.pierre-plain')
-    expect(pre).not.toBeNull()
-    expect(pre!.className.trim().endsWith('whitespace-pre')).toBe(true)
+    const pre = await waitFor(() => {
+      const el = container.querySelector('pre.pierre-plain')
+      expect(el).not.toBeNull()
+      return el as HTMLElement
+    })
+    expect(pre.className.trim().endsWith('whitespace-pre')).toBe(true)
   })
 })

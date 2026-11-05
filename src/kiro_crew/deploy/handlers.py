@@ -826,7 +826,12 @@ async def _handle_teardown(request: web.Request) -> web.Response:
     try:
         raw = await request.read()
         body = json.loads(raw) if raw else {}
-    except (json.JSONDecodeError, UnicodeDecodeError):
+    except (ValueError, RecursionError):
+        # Malformed, undecodable, or nested past the recursion limit: no confirm.
+        body = {}
+    if not isinstance(body, dict):
+        # Valid JSON that is not an object (a list, a number) carries no confirm
+        # either; without this ``body.get`` raised and the request answered 500.
         body = {}
     if body.get("confirm") is not True:
         return web.json_response(

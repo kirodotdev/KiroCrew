@@ -156,6 +156,19 @@ async def _remove_slot_for_history_key(
                 exc_info=True,
             )
 
+    # Remote dispatch: the hub item this transcript's slot was bound to closes with
+    # it, as on a plain close, whether the slot was live or already archived. Only
+    # an item bound to this key is touched, and not while a live slot holds the key.
+    # Imported here, never at boot.
+    from kiro_crew.session_ledger import ledger_key
+
+    worker_key = ledger_key(slot.key if slot is not None else key)
+    live_keys = {ledger_key(name) for name in tuple(state._slots)}
+    if worker_key not in live_keys and not live_slot_owns_session(worker_key):
+        from kiro_crew.dashboard.handlers.remote_work_item import close_work_item_for_slot
+
+        await close_work_item_for_slot(worker_key)
+
     # Pins, work ledgers, and autocompact overrides are independent state. A
     # transcript can be created or restored by another process after any owner
     # scan, so deleting those sidecars cannot be made atomic here. Preserve them:
@@ -223,6 +236,8 @@ async def _remove_slot_for_history_key(
             live_units=live_units,
         )
 
+    await _remove_browser_recordings(state, key, crew_log_slots)
+
     # Cron ownership is different from the independent sidecars above: every key
     # here came from the strict store scan or from linked_session_key while the
     # transcript lock was held. Re-check the live slot and SessionManager
@@ -263,6 +278,35 @@ async def _remove_slot_for_history_key(
 #: A timeout is not a failure -- the entry stays owed, so the unit becomes
 #: collectable by the retention sweep even when this pass is refused.
 _CREW_LOG_TEARDOWN_FLUSH_SECONDS = 2.0
+
+
+async def _remove_browser_recordings(
+    state: DashboardState, key: str, spellings: "set[str]"
+) -> None:
+    """Remove the deleted chat's turn replays (``browser_harness.recording``).
+
+    Recordings are keyed by the live card's slot key, so every spelling of the
+    deleted row is folded the way the card folds it. A key a live slot still holds
+    is left alone: that slot is a successor's, and so are its recordings. Over-
+    removal is the safe direction for a replay; a failure is logged, never raised.
+    """
+    from kiro_crew.browser_harness.recording import get_recorder
+    from kiro_crew.dashboard.state import _normalize_slot_key
+
+    keys = {(_normalize_slot_key(s) or s) for s in spellings if isinstance(s, str) and s}
+    recorder = get_recorder()
+    for slot_key in sorted(keys):
+        # Read again for each key: an earlier removal awaited, and a chat may have
+        # taken the key since.
+        if slot_key in set(getattr(state, "_slots", {}) or {}):
+            continue
+        try:
+            if await recorder.delete_session(slot_key):
+                logger.info("History delete: removed browser replays of %s", slot_key)
+        except Exception:
+            logger.warning(
+                "History delete: browser replay removal failed for %s", key, exc_info=True
+            )
 
 
 def _live_session_units(state: DashboardState) -> "frozenset[str]":

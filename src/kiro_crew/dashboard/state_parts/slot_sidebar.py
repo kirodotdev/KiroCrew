@@ -6,9 +6,9 @@ here) that every slot stamps at birth and on each tag edit.
 Instance fields of ``_ChatSlot`` this module reads and writes:
 
 Writes: ``_artifact``, ``_channel_folder_filed``, ``_doc``, ``_folder_changed``,
-``_folder_suggested``, ``color_hex``, ``color_index``, ``color_theme``, ``folder_id``,
-``muted``, ``mutes_opened``, ``pinned``, ``tags``, ``tags_revision``, ``theme_consent``,
-``theme_consent_sha``.
+``_folder_suggested``, ``_session_kind``, ``color_hex``, ``color_index``, ``color_theme``,
+``folder_id``, ``muted``, ``mutes_opened``, ``pinned``, ``tags``, ``tags_revision``,
+``theme_consent``, ``theme_consent_sha``.
 
 A function whose first parameter is ``self`` is a ``_ChatSlot`` method: the
 class binds it under the same name (``state_parts/chat_slot.py``), so it reads
@@ -167,6 +167,12 @@ def init_sidebar_fields(self: _ChatSlot) -> None:
     # changed. Serialized and persisted like ``_artifact``, so a doc reopens as a
     # doc after a restart.
     self._doc = ""
+    # App-drawn session binding (``dashboard/session_kinds.py``): ``{app, kind,
+    # object}`` when an installed app's ``contributes.sessionKinds`` entry draws
+    # this slot's main pane, else None. Set only at create, never changed, and
+    # serialized and persisted like ``_artifact``, so the session reopens as its
+    # kind after a restart. Not ``_app``, which is who OWNS the slot.
+    self._session_kind = None
     # True once per-channel default filing has been APPLIED to this
     # conversation (see kiro_crew.dashboard.channel_folders). Persisted,
     # because it is the only durable record that the automatic placement

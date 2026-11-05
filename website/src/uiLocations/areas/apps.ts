@@ -32,8 +32,9 @@ import type { UiLocationArea } from '../types'
 export const LOCATIONS = {
   'apps.refresh-store': {
     kind: 'button',
-    // Icon-only: the name is the aria-label.
-    label: { from: 'attr', attr: 'aria-label' },
+    // Icon-only: the name is the aria-label, which reads "Refreshing the
+    // store…" while a refresh runs; the idle name is the one people look for.
+    label: { from: 'attr', attr: 'aria-label', key: 'pages.appsPage.refresh_store' },
     terms: {
       en: ['refresh the app store', 'reload the app store', 'refresh apps', 'reload apps', 'check for new apps'],
       'zh-CN': ['刷新应用商店', '重新加载应用商店', '刷新应用列表', '检查新应用'],

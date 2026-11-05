@@ -543,15 +543,6 @@ BUILTIN_DENIED_RULES: list[DeniedCommandRule] = [
         ),
     ),
     DeniedCommandRule(
-        id="data-exfil-curl-upload",
-        pattern=".*curl.*(--upload-file|(^|\\s)-T\\s*\\S).*",
-        category="credential-exfil",
-        description=(
-            "Blocks a `curl` file upload (`--upload-file` / `-T file`), which sends a local file "
-            "to a remote endpoint."
-        ),
-    ),
-    DeniedCommandRule(
         id="data-exfil-wget-post-file",
         pattern=".*wget.*--post-file.*",
         category="credential-exfil",

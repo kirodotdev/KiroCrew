@@ -33,8 +33,51 @@ function isFolderNestBandHit(args: Parameters<CollisionDetection>[0], collision:
   // The band is measured from the header's LIVE top, not the block's: a sticky
   // header pinned to the lane sits below its block's top edge, so the block
   // offset would place the band over rows the header is not painted on.
-  const headerTop = headerRect?.top ?? rect.top
+  //
+  // Less the reorder shift the drag itself puts on the target (#28542). A reorder
+  // result slides the target block by about a row, and the nest result takes
+  // that slide away. Judged against the slid header, each result moves the
+  // header across the pointer and flips the next one. Judged where the header
+  // sits with no slide, which is where a nest leaves it, one pointer position
+  // gives one result in both states.
+  const node = collision?.data?.droppableContainer?.node?.current as HTMLElement | null | undefined
+  const headerTop = headerRect ? headerRect.top - sortableShiftY(node) : rect.top
   return isFolderNestBand(args.pointerCoordinates.y - headerTop, headerH)
+}
+
+/** Selectors of the sortable wrappers whose transform is a drag's reorder shift
+ *  (root list rows, nested list rows, board column rows). */
+const SORTABLE_WRAPPER_SELECTOR = '[data-folder-sortable], [data-subfolder-sortable], [data-col-folder-sortable]'
+
+/**
+ * The vertical reorder shift currently painted on `node`: the sum of the Y
+ * translations of the sortable wrappers around it. Read from the COMPUTED
+ * transform, so a shift still animating is read where it is painted, which is
+ * where the live header rect was measured. 0 when nothing is shifted.
+ */
+function sortableShiftY(node: HTMLElement | null | undefined): number {
+  let shift = 0
+  let el = node?.closest<HTMLElement>(SORTABLE_WRAPPER_SELECTOR) ?? null
+  while (el) {
+    shift += translateY(getComputedStyle(el).transform)
+    el = el.parentElement?.closest<HTMLElement>(SORTABLE_WRAPPER_SELECTOR) ?? null
+  }
+  return shift
+}
+
+/** The Y translation of a CSS transform value: `matrix()`, `matrix3d()`, or the
+ *  `translate3d()` form dnd-kit writes (what a computed style reports when no
+ *  layout engine resolves it). 0 for `none` or anything unparsed. */
+function translateY(transform: string | null | undefined): number {
+  if (!transform || transform === 'none') return 0
+  const nums = (s: string) => s.split(',').map(v => parseFloat(v))
+  let m = /^matrix3d\(([^)]*)\)/.exec(transform)
+  if (m) return nums(m[1])[13] || 0
+  m = /^matrix\(([^)]*)\)/.exec(transform)
+  if (m) return nums(m[1])[5] || 0
+  m = /translate3d\(([^)]*)\)/.exec(transform)
+  if (m) return nums(m[1])[1] || 0
+  return 0
 }
 
 /** The live rect of a `folder-drop` container's header row (the block's first
@@ -135,7 +178,14 @@ function folderDropHeaderHit(args: Parameters<CollisionDetection>[0], containers
 // Exported for a call-site unit test (ChatSidebar.folderNestBandCallSite.test.tsx):
 // asserts the collision uses the MEASURED header height, not
 // FOLDER_HEADER_DROP_BAND — the specific regression codex flagged in review.
-export const sidebarCollision: CollisionDetection = (args) => {
+export const sidebarCollision: CollisionDetection = (input) => {
+  // Nothing inside a closed folder body is a target, for any drag (#28543). A
+  // collapsed folder keeps its body mounted and hides it, but dnd-kit picks
+  // targets from measured boxes and ignores visibility, and the hidden boxes lie
+  // over the rows painted below the collapsed header. Without this a drop aimed
+  // at the gap below a collapsed folder could land in a subfolder (its
+  // `folder-drop`, its sortable row, its parent cue) that no one can see.
+  const args = { ...input, droppableContainers: input.droppableContainers.filter(c => !insideHiddenSubtree(c)) }
   const activeData = args.active?.data?.current as {
     type?: string
     nested?: boolean
@@ -295,6 +345,13 @@ export const sidebarCollision: CollisionDetection = (args) => {
   // height from its center, so closestCenter would hand the drop to a small
   // sibling instead.
   return closestEdge({ ...args, droppableContainers: sidebarContainers })
+}
+
+/** True when the droppable's node sits under an `[inert]` ancestor, the
+ *  sidebar's marker for a hidden row: a closed `FolderBody` sets it. */
+function insideHiddenSubtree(container: DroppableContainer): boolean {
+  const node = container.node?.current as HTMLElement | null | undefined
+  return !!node?.closest?.('[inert]')
 }
 
 /** Droppable `type` for the chat-pane target that stages a session reference in

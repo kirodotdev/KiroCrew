@@ -92,6 +92,7 @@ _TICK_SWEEPS = (
     "_sweep_session_roots",
     "_sweep_sandbox_artifacts",
     "_sweep_session_pid_mappings",
+    "_sweep_session_token_mappings",
     "_sweep_shell_audit_log",
     "_maybe_prune_pycache",
     "_sweep_periodic_pids",
@@ -176,12 +177,32 @@ class TestAdoptOnChange:
         assert "session.pool_agent" in SessionManager._FACTORY_CONFIG_PATHS
 
     @pytest.mark.asyncio
-    async def test_factory_bound_default_goes_through_refresh_defaults(self) -> None:
+    async def test_a_spec_pin_change_retires_the_warm_pool(self) -> None:
+        """A warm provider of a contested name runs the file pinned when it
+        started, so a pin change re-derives the pool instead of letting a new
+        chat claim a provider running a file the pin does not name."""
         mgr, _ = _make_manager()
         mgr.refresh_defaults = AsyncMock()  # type: ignore[method-assign]
         new_cfg = _make_cfg()
-        await mgr._on_config_change(_change(new_cfg, "agent.model"))
+        await mgr._on_config_change(_change(new_cfg, "agent.spec_pins"))
         mgr.refresh_defaults.assert_awaited_once_with(cfg=new_cfg)
+
+    @pytest.mark.asyncio
+    async def test_factory_bound_default_goes_through_refresh_defaults(self) -> None:
+        mgr, old_factory = _make_manager()
+        new_cfg = _make_cfg()
+        with (
+            patch.object(mgr, "refresh_defaults", wraps=mgr.refresh_defaults) as refresh,
+            patch("kiro_crew.session.KiroCrewConfig.load"),
+            patch("kiro_crew.session.default_project_dir", return_value="/ws"),
+            patch("kiro_crew.session.build_provider_factory", side_effect=_factory_for),
+            patch.object(mgr, "start_pool", AsyncMock()),
+            patch.object(mgr, "_retire_stale_backend_bg_runtime", AsyncMock()),
+        ):
+            await mgr._on_config_change(_change(new_cfg, "agent.model"))
+        refresh.assert_awaited_once_with(cfg=new_cfg)
+        assert mgr._cfg is new_cfg
+        assert mgr._provider_factory is not old_factory, "the factory was rebuilt"
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
@@ -199,10 +220,18 @@ class TestAdoptOnChange:
         ],
     )
     async def test_each_factory_path_triggers_a_refresh(self, path: str) -> None:
-        mgr, _ = _make_manager()
-        mgr.refresh_defaults = AsyncMock()  # type: ignore[method-assign]
-        await mgr._on_config_change(_change(_make_cfg(), path))
-        mgr.refresh_defaults.assert_awaited_once()
+        mgr, old_factory = _make_manager()
+        with (
+            patch.object(mgr, "refresh_defaults", wraps=mgr.refresh_defaults) as refresh,
+            patch("kiro_crew.session.KiroCrewConfig.load"),
+            patch("kiro_crew.session.default_project_dir", return_value="/ws"),
+            patch("kiro_crew.session.build_provider_factory", side_effect=_factory_for),
+            patch.object(mgr, "start_pool", AsyncMock()),
+            patch.object(mgr, "_retire_stale_backend_bg_runtime", AsyncMock()),
+        ):
+            await mgr._on_config_change(_change(_make_cfg(), path))
+        refresh.assert_awaited_once()
+        assert mgr._provider_factory is not old_factory, "the factory was rebuilt"
 
 
 class TestRefreshDefaultsRederivesThePool:
@@ -525,6 +554,58 @@ class TestCleanupLoopRereadsPolicy:
             "unlinks paths a same-uid agent can plant on, so it belongs on the "
             "maintenance executor"
         )
+
+    @pytest.mark.asyncio
+    async def test_the_tick_prunes_session_token_mappings_off_the_loop(self) -> None:
+        """The session-token mapping prune runs on the tick, on the maintenance pool.
+
+        ``cleanup_orphaned_sessions`` reaches the same prune only at startup and
+        shutdown, so without the tick a gateway that keeps running holds one
+        ``session_token_*.sig`` file per session it has started.
+        """
+        mgr, _ = _make_manager()
+        cleanup = mgr._cleanup_boundary()
+        signal = asyncio.Event()
+        loop_thread = threading.get_ident()
+        ran_on: list[int] = []
+
+        def prune() -> int:
+            ran_on.append(threading.get_ident())
+            return 2
+
+        ticks = 0
+
+        def adopt() -> float:
+            nonlocal ticks
+            ticks += 1
+            if ticks >= 3:
+                signal.set()
+            return 0.01
+
+        quiet = {
+            name: AsyncMock() for name in _TICK_SWEEPS if name != "_sweep_session_token_mappings"
+        }
+        mgr._watchdog = MagicMock(tick=AsyncMock())
+        pool = ThreadPoolExecutor(max_workers=1)
+        cleanup._deps = replace(
+            cleanup._deps,
+            prune_session_token_mappings=prune,
+            get_maintenance_executor=lambda: pool,
+        )
+        try:
+            with (
+                patch("kiro_crew.session.shutdown_event", signal),
+                patch.object(SessionCleanup, "_adopt_idle_policy", side_effect=adopt),
+                patch.multiple(SessionCleanup, **quiet),
+            ):
+                await finished(
+                    cleanup._run_cleanup_ticks(0.01), "the tick loop stopping on shutdown"
+                )
+        finally:
+            pool.shutdown(wait=True)
+
+        assert ran_on, "the cleanup tick never pruned the session token mappings"
+        assert loop_thread not in ran_on, "the token-mapping prune ran on the event-loop thread"
 
 
 class _FakeHandle:

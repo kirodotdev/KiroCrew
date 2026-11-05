@@ -342,11 +342,12 @@ class TestSampleReuse:
     def test_a_stale_sample_is_taken_again(self, monkeypatch: pytest.MonkeyPatch) -> None:
         clock = iter([100.0, 100.0, 106.0, 106.0])
         monkeypatch.setattr(scope_mod, "_clock", lambda: next(clock))
-        sample = AsyncMock(side_effect=[_payload(), _payload()])
+        first, fresh = _payload(), _payload()
+        sample = AsyncMock(side_effect=[first, fresh])
         state = SimpleNamespace(sessions=object(), subagents=object())
         with patch.object(scope_mod._scope_sampler, "sample", sample):
-            asyncio.run(scope_mod._host_sample(state))
-            asyncio.run(scope_mod._host_sample(state))
+            assert asyncio.run(scope_mod._host_sample(state)) is first
+            assert asyncio.run(scope_mod._host_sample(state)) is fresh
         assert sample.await_count == 2
 
 

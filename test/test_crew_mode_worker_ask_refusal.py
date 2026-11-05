@@ -149,3 +149,17 @@ def test_the_refusal_is_off_until_the_crew_panel_part_turns_it_on(_floor_monkeyp
     root = _slot("r", agent=CONDUCTOR)
     worker = _slot("w", created_by="r")
     assert _refusal(_state(root, worker), "w") is None
+
+
+def test_a_crewmates_session_still_asks_the_person():
+    """A session a crewmate thread dispatched is no Crew Mode crew member: its
+    question card reaches the person, and the mate chat shows it (RFC
+    rfc-crewmate-workers-under-the-crewmate.md, section 4). Paired with the crew
+    member above, refused under the same routing."""
+    mate = _slot("member-oncall")
+    mate.mode = crew_mode.MATE_SLOT_MODE
+    child = _slot("w", created_by="member-oncall")
+    grandchild = _slot("g", created_by="w")
+    state = _state(mate, child, grandchild)
+    assert _refusal(state, "w") is None
+    assert _refusal(state, "g") is None

@@ -1,7 +1,8 @@
-import type { MutableRefObject, Dispatch, SetStateAction } from 'react'
+import { forwardRef, type ComponentPropsWithoutRef, type MutableRefObject, type Dispatch, type SetStateAction } from 'react'
 import { CrewWorkerBreadcrumb } from '../../../components/crew/CrewWorkerBreadcrumb'
 import { Undo2, ExternalLink, Columns2 } from 'lucide-react'
 import type { SidePanelDock } from '../../../hooks/useSidePanelDock'
+import type { SplitDir } from '../../../hooks/useSessionGrid'
 import type { AppDispatch } from '../../../store'
 import type { ChatSlot } from '../../../types'
 import type { ErrorReport } from '../../../utils/errorReport'
@@ -11,15 +12,17 @@ import { ChatHeaderMenu } from '../ChatHeaderMenu'
 import type { useSteerDelivery } from './turnActions'
 import { SELECTION_INERT_ATTR } from '../useSelectionInertOverlays'
 import ChatHeaderChips from '../../../components/ChatHeaderChips'
+import { CodeChannelBadge, SlackThreadLink } from '../../../components/CodeChannelBadge'
 import { PinnedPrompt } from '..'
 import { pinCandidateKey } from '../usePinnedPrompt'
 import SessionTitleControl from '../SessionTitleControl'
 import { EdgeFade } from '../../../app-sdk/ChatScrollChrome'
 import { SidePanelGlyph } from '../../../components/SidePanelGlyph'
 import Clickable from '../../../components/Clickable'
-import type { useLabelTip } from '../../../components/InstantTip'
+import { useLabelTip } from '../../../components/InstantTip'
 import { i18nT } from '../../../i18n/t'
 import { uiLocation } from '../../../uiLocations/uiLocation'
+import { crewRootOf } from '../../../lib/crewMode'
 import { isCodebaseId } from './codebase/codebaseModel'
 import { isDashboardId } from './dashboard/dashboardModel'
 
@@ -48,11 +51,13 @@ interface ChatTitleOverlayProps {
   returnSelfToMain: () => void
   splitFeatureEnabled: boolean
   currentSlot: ChatSlot | undefined
+  /** CSS variables for the session colour band; absent for an uncoloured session. */
+  headerColorStyle?: Record<string, string>
   effectiveMode: string | undefined
   title: string
   activeIsSplitAnchor: boolean
   editingTitle: boolean
-  enterSplit: (anchor: string | null) => void
+  enterSplit: (anchor: string | null, dir?: SplitDir) => void
   setEditingTitleSlot: Dispatch<SetStateAction<string | null>>
   setSidebarPinned: Dispatch<SetStateAction<boolean>>
   sidebarAutoHidden: MutableRefObject<boolean | null>
@@ -66,19 +71,40 @@ interface ChatTitleOverlayProps {
   sidePanelWantsMount: boolean
   mobileNewSessionItem: { label: string; disabled: boolean; onSelect: () => void; }
   mobileSessionsToggle: JSX.Element
-  popOutTip: ReturnType<typeof useLabelTip>
-  activityTip: ReturnType<typeof useLabelTip>
 }
+
+/**
+ * An icon-only header control that shows its own aria-label in an InstantTip
+ * on hover or keyboard focus, at once, instead of a native title the browser
+ * holds back for about a second. The tip's state lives in this component, so
+ * it mounts and unmounts with the control: the pop-out and side-panel toggles
+ * each go away under the pointer when pressed, and a tip held above them
+ * would paint again, stale, when the control came back.
+ */
+// Forwards its ref so a `uiLocation` marker spread on it registers the real
+// control, as it did when the call sites rendered `Clickable` directly.
+const TipClickable = forwardRef<HTMLDivElement, ComponentPropsWithoutRef<typeof Clickable> & { 'aria-label': string }>(
+  function TipClickable({ children, ...props }, ref) {
+    const tip = useLabelTip(props['aria-label'])
+    return (
+      <Clickable ref={ref} {...props} {...tip.handlers}>
+        {children}
+        {tip.bubble}
+      </Clickable>
+    )
+  },
+)
 
 /**
  * The session title row over the transcript (header menu, title, pop-out, side panel and split controls, the header fade), the pinned-prompt fold sentinel, and the pinned prompt.
  */
 export default function ChatTitleOverlay({
   embedMode, popout, activeSlot, dispatch, filteredSlots, isMobile, titleInTopbar, activityOpen, setActionError, showActionError, onPinCollapsedHeight, pinCardRef, pinExpanded, pinFoldRef, pinned,
-  scrollToPinnedPrompt, scrollTranscriptBy, setPinExpanded, activePoppedOut, focusActivePopout, openActivePopout, returnSelfToMain, splitFeatureEnabled, currentSlot, effectiveMode, title,
+  scrollToPinnedPrompt, scrollTranscriptBy, setPinExpanded, activePoppedOut, focusActivePopout, openActivePopout, returnSelfToMain, splitFeatureEnabled, currentSlot, headerColorStyle, effectiveMode, title,
   activeIsSplitAnchor, editingTitle, enterSplit, setEditingTitleSlot, setSidebarPinned, sidebarAutoHidden, sidebarPinned, sidePanelDock, splitAnchorForActive, toggleAct, openSidebar, sidebarOnScreen,
-  sidebarOpen, sidePanelWantsMount, mobileNewSessionItem, mobileSessionsToggle, popOutTip, activityTip,
+  sidebarOpen, sidePanelWantsMount, mobileNewSessionItem, mobileSessionsToggle,
 }: ChatTitleOverlayProps) {
+  const currentCrewRoot = crewRootOf(currentSlot)
   // A doc, board, codebase or dashboard session: a page, not a transcript.
   const pageSession = !!currentSlot?.doc
   // A doc or board page has no fade under the title row, so a rule marks where the
@@ -98,7 +124,9 @@ export default function ChatTitleOverlay({
           what a phone keyboard does — where they painted over the caret.
           Scoping the lift to the edit is safe because opening the drawer
           blurs the input, which commits and closes the editor. */}
-      <div className={`absolute top-0 left-0 right-1.5 ${editingTitle ? 'z-[47]' : 'z-[45]'} pointer-events-none`} style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties} {...{ [SELECTION_INERT_ATTR]: '' }}>
+      {/* `data-transcript-top-overlay`: what the transcript scrolls under; a card
+          that must keep its header visible measures it (browserLiveClearance). */}
+      <div className={`absolute top-0 left-0 right-1.5 ${editingTitle ? 'z-[47]' : 'z-[45]'} pointer-events-none`} style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties} {...{ [SELECTION_INERT_ATTR]: '' }} data-transcript-top-overlay="">
         {/* The row's left padding GLIDES between its open (20px) and
             collapsed (60px, clearing the stationary toggle + divider)
             values on the same 320ms curve as the panel — an instant
@@ -111,9 +139,10 @@ export default function ChatTitleOverlay({
         {/* A Crew Mode worker in the main pane: the breadcrumb replaces the title
             row on every width (on a phone it sits under the shell bar), so whose
             worker this is and the way back are always on screen. */}
-        {currentSlot?.crew_root && (
+        {currentCrewRoot && currentSlot && (
           <div className={`relative pr-4 ${!isMobile && embedMode !== 'chat' && filteredSlots.length > 0 && !sidebarOpen ? 'pl-[60px]' : 'pl-4'} pt-[9px] pb-2 flex items-center bg-bg border-b border-border`} data-testid="crew-worker-header">
-            <CrewWorkerBreadcrumb root={currentSlot.crew_root} worker={currentSlot} />
+            {/* Keyed by member: a reopen-failed notice belongs to the member it was about. */}
+            <CrewWorkerBreadcrumb key={currentSlot.key} root={currentCrewRoot} worker={currentSlot} />
             {/* The panel's open control, which the title row carries and the
                 breadcrumb replaces: with the panel closed, one click brings the
                 Workers list back beside the worker. */}
@@ -129,8 +158,8 @@ export default function ChatTitleOverlay({
             )}
           </div>
         )}
-        {!titleInTopbar && !currentSlot?.crew_root && (
-        <div className={`@container/chathead relative pr-1.5 pt-[9px] pb-2 flex items-center gap-2 bg-bg pointer-events-none${ruledTitle ? ' border-b border-border' : ''} transition-[padding-left] duration-[240ms] [transition-timing-function:cubic-bezier(.32,.72,0,1)] ${!isMobile && embedMode !== 'chat' && filteredSlots.length > 0 && !sidebarOpen ? 'pl-[60px]' : isMobile ? (embedMode === 'chat' ? 'pl-4' : 'pl-3') : 'pl-5'}`}>
+        {!titleInTopbar && !currentCrewRoot && (
+        <div style={headerColorStyle} className={`@container/chathead relative pr-1.5 pt-[9px] pb-2 flex items-center gap-2 bg-bg pointer-events-none${ruledTitle ? ' border-b border-border' : ''} ${headerColorStyle ? 'chat-header-colored' : ''} transition-[padding-left] duration-[240ms] [transition-timing-function:cubic-bezier(.32,.72,0,1)] ${!isMobile && embedMode !== 'chat' && filteredSlots.length > 0 && !sidebarOpen ? 'pl-[60px]' : isMobile ? (embedMode === 'chat' ? 'pl-4' : 'pl-3') : 'pl-5'}`}>
           {/* Divider between toggle and title — ALWAYS mounted and
               absolute (zero width, no flex-gap participation) so it can
               never change the row's layout; it rides the row (title
@@ -140,6 +169,7 @@ export default function ChatTitleOverlay({
             <span aria-hidden="true" className={`absolute left-[52px] top-[13px] w-px h-5 bg-border transition-opacity ${sidebarOpen ? 'opacity-0 duration-100' : 'opacity-100 duration-150 delay-[90ms]'}`} />
           )}
           {embedMode !== 'chat' && isMobile && mobileSessionsToggle}
+          {headerColorStyle && <span className="chat-header-dot" aria-hidden="true" />}
           <div className="group/header flex min-w-0 items-stretch gap-0.5 pointer-events-auto">
           <div className="flex items-center rounded-l-md rounded-r-[2px] px-1.5 py-0.5 group-hover/header:bg-bg-hover transition-colors">
           <ChatHeaderMenu
@@ -164,6 +194,7 @@ export default function ChatTitleOverlay({
             mode={effectiveMode}
             sidebarOnScreen={sidebarOnScreen}
             newSessionHere={embedMode !== 'chat' && isMobile ? mobileNewSessionItem : undefined}
+            onSplitDown={!embedMode && splitFeatureEnabled && activeSlot && !(splitAnchorForActive && !activeIsSplitAnchor) ? () => enterSplit(activeSlot, 'down') : undefined}
           />
           </div>
           {/* Shared with every split-view pane header (#9727). The editor
@@ -179,6 +210,8 @@ export default function ChatTitleOverlay({
             />
           )}
           </div>
+        {currentSlot?.code_channel && <CodeChannelBadge info={currentSlot.code_channel} variant="header" />}
+        <SlackThreadLink slot={currentSlot} />
         <ChatHeaderChips slotKey={activeSlot} />
         {/* Trailing controls grouped under a single ml-auto so multiple
             right-aligned items don't each absorb free space (two ml-auto
@@ -204,10 +237,9 @@ export default function ChatTitleOverlay({
             <ExternalLink size={13} /> {i18nT('pages.chatPage.popped_out')}
           </Clickable>
         ) : (
-          <Clickable className="flex items-center justify-center w-7 h-7 rounded-md hover:bg-bg-hover transition-colors bg-transparent border-none cursor-pointer shrink-0 text-muted hover:text-text pointer-events-auto" onClick={() => openActivePopout(activeSlot, currentSlot?.title)} aria-label={i18nT('pages.chatPage.pop_out_session_to_its_own_window')} {...popOutTip.handlers}>
+          <TipClickable className="flex items-center justify-center w-7 h-7 rounded-md hover:bg-bg-hover transition-colors bg-transparent border-none cursor-pointer shrink-0 text-muted hover:text-text pointer-events-auto" onClick={() => openActivePopout(activeSlot, currentSlot?.title)} aria-label={i18nT('pages.chatPage.pop_out_session_to_its_own_window')}>
             <ExternalLink size={15} />
-            {popOutTip.bubble}
-          </Clickable>
+          </TipClickable>
         ))}
         {/* Activity panel open toggle — relocated here from the top bar
             (item 2.4) so opening the panel no longer narrows the now
@@ -217,16 +249,14 @@ export default function ChatTitleOverlay({
             above it opens beside the chat. There is no width at which
             the button does nothing. */}
         {!embedMode && !popout && !activityOpen && (
-          <Clickable
+          <TipClickable
             className="pi-morph flex items-center justify-center w-7 h-7 rounded-md transition-colors bg-transparent border-none shrink-0 pointer-events-auto text-muted hover:text-text hover:bg-bg-hover cursor-pointer"
             onClick={toggleAct}
             aria-label={i18nT('pages.chatPage.open_activity_panel')}
             {...uiLocation('chat.side-panel-open')}
-            {...activityTip.handlers}
           >
             <SidePanelGlyph size={15} />
-            {activityTip.bubble}
-          </Clickable>
+          </TipClickable>
         )}
         {!embedMode && splitFeatureEnabled && (splitAnchorForActive && !activeIsSplitAnchor ? (
           <Clickable className="flex items-center gap-1 text-accent bg-accent/10 hover:bg-accent/20 transition-colors cursor-pointer pointer-events-auto text-[11px] font-medium px-1.5 py-0.5 rounded" onClick={() => enterSplit(splitAnchorForActive)} title={i18nT('pages.chatPage.this_session_is_open_in_a_split_return_to_it')} aria-label={i18nT('pages.chatPage.return_to_split_view')}>

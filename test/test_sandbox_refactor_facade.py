@@ -164,7 +164,7 @@ _MOVED: dict[str, tuple[str, ...]] = {
     "kiro_crew.sandbox_tiers": tuple("""
         _resolved_kiro_agents_targets _PACKAGED_INSTALL_DIR_NAMES install_root_targets_for
         _install_root_targets_with _install_root_targets_cached _resolved_install_root_targets
-        _bundled_kas_targets_cached
+        _bundled_kas_targets_cached _bundled_kiro_cli_targets_cached _bundled_root_spellings
         _gateway_package_dir _APP_BACKEND_OWNED_LEAVES app_backend_visible_targets
         crew_home_visible_spellings carveout_chain_has_planted_link
         enterprise_policy_cache_view _caller_mask_contains _POLICY_CACHE_META_LEAF
@@ -213,6 +213,7 @@ _MOVED: dict[str, tuple[str, ...]] = {
         _migrate_md_notebook_legacy_state _member_records_move
         _AUTH_STORE_PUBLISHED_KEY_LEAF _AUTH_STORE_LEGACY_TEMP_PREFIX
         _reconcile_auth_store_staging_links _sweep_legacy_auth_store_temps
+        _LEGACY_AUTH_SWEEP_CLEAN _materialize_env_mask_target
         _sweep_one_md_notebook_state_dir _materialize_md_notebook_mask_targets
         """.split()),
     "kiro_crew.sandbox_workspace": tuple("""
@@ -248,7 +249,8 @@ _MOVED: dict[str, tuple[str, ...]] = {
         kiro_internal_sandbox_enabled kiro_internal_sandbox_switch SANDBOX_LAYER_CREW
         SANDBOX_LAYER_HARNESS wrapped_by_crew_sandbox sandbox_init_remediation
         delegated_workspace_exposes_sealed_target _spawns_kiro_cli
-        _delegate_to_kiro_internal_sandbox _command_log_label
+        _delegate_to_kiro_internal_sandbox _command_log_label _first_json_value
+        _kiro_settings_concat_warned
         """.split()),
     "kiro_crew.sandbox_probe": tuple("""
         _CLONE_NEWUSER _CLONE_NEWNS _PROBE_MS_REC _PROBE_MS_PRIVATE _TRANSIENT_PROBE_ERRNOS
@@ -283,8 +285,11 @@ _MOVED: dict[str, tuple[str, ...]] = {
         _TRUSTED_LAUNCHER_TIMEOUT_SECS LAUNCHER_EXEC_FAILURE_RE
         """.split()),
     "kiro_crew.sandbox_wrap": tuple("""
+        _INHERITED_USERNS_FAILURE_ENV _read_inherited_userns_failure
+        _set_inherited_userns_failure _inherited_unshare_failure
         _last_unshare_failure unavailable_remedy unavailable_reason remedy_guidance
-        _warm_thread _record_probe_failure _background_warm _kick_background_warm
+        _warm_thread _record_probe_failure _holds_inherited_unshare_failure
+        _background_warm _kick_background_warm
         prewarm_backend warm_backend _probe_unshare userns_available _backend
         unavailable_kind _warn_no_isolation detect_backend reset_backend wrap_argv
         """.split()),
@@ -313,7 +318,7 @@ _MOVED: dict[str, tuple[str, ...]] = {
         _warn_windows_inert_resource_limits_once apply_windows_resource_ceiling
         _SCOPE_UNIT_PREFIX _SCOPE_UNIT_TOKEN_SAFE scope_unit_name cgroup_scope_argv
         name_scope_unit _CGROUP_TOTAL_MEMORY_FRACTION _CGROUP_FALLBACK_MAX_TOTAL_MEMORY_MB
-        _CGROUP_DEFAULT_MAX_TOTAL_TASKS _default_max_total_memory_mb
+        _CGROUP_DEFAULT_MAX_TOTAL_TASKS _default_max_total_tasks _default_max_total_memory_mb
         _slice_limits_from_config _SLICE_LIMITS_APPLIED ensure_agents_slice_limits
         _USER_MANAGER_CGROUP_BASE _agents_slice_cgroup_dir _read_cgroup_counters
         read_cgroup_int _SLICE_THROTTLE_PROBE_SEEN _SLICE_THROTTLE_EDGE_AT

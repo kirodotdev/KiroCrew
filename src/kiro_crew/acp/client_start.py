@@ -19,7 +19,8 @@ Instance fields written: ``_activated_model``, ``_agent_accepts_image``,
 Instance fields read: ``_agent``, ``_available_mode_ids``, ``_channel_id``,
 ``_extra_env``, ``_modes_advertised``, ``_sandbox_mode``, ``_scratch_dir``,
 ``_session_key``, ``_session_mcp_snapshot``, ``_shared_scratch``, ``_side_read_only``,
-``_stdin_stalled``, ``_windows_tree_cleanup_failed``, ``_work_dir``, ``last_prompt_stats``.
+``_spec_zero_tools``, ``_stdin_stalled``, ``_windows_tree_cleanup_failed``, ``_work_dir``,
+``last_prompt_stats``.
 """
 
 from __future__ import annotations
@@ -40,6 +41,7 @@ from kiro_crew.acp._dispatch import agent_version_from_init
 from kiro_crew.acp.client_claude_session import (
     CLAUDE_ACP_FORK_POINT_MIN_VERSION,
     _adapter_version_at_least,
+    refuse_claude_zero_tool_mounts,
 )
 from kiro_crew.acp.client_native_children import client_capabilities_for
 from kiro_crew.acp.client_spawn_env import (
@@ -90,9 +92,11 @@ from kiro_crew.agent import (
     DerivedSpecSnapshot,
     DerivedSpecStale,
     ForkGovernanceUnresolved,
+    SharedTemplateOverCeiling,
     ensure_agent_materialized,
     require_fork_governance,
     require_fresh_derived_spec,
+    require_shared_template_within_ceiling,
     require_unchanged_derived_spec,
 )
 from kiro_crew.agent_sdk import host_auth
@@ -176,6 +180,25 @@ _PROTOCOL_VERSION_BY_BACKEND: dict[str, int | str] = {
     # its own release cadence, and none has a launch record to read.
     **{backend: record.protocol_version for backend, record in sorted(ACP_BACKEND_LAUNCH.items())},
 }
+
+
+def _roster_of(client: AcpClient, wire_servers: Any) -> Any:
+    """The MCP set a session actually starts with: the launch composition when the
+    harness took its servers at launch (``_launch_mcp_servers``), else the wire array."""
+    launched = client._launch_mcp_servers
+    return wire_servers if launched is None else launched
+
+
+def _jsonl_size(path: Path) -> int:
+    """Byte size of a kiro-cli session transcript, 0 when it is missing or unreadable.
+
+    Blocking: call it through ``asyncio.to_thread``. The tool-result reader seeks
+    to this offset, so a session reads only the results written after it starts.
+    """
+    try:
+        return path.stat().st_size
+    except OSError:
+        return 0
 
 
 async def _spawn(self: AcpClient) -> None:
@@ -328,16 +351,26 @@ async def _spawn(self: AcpClient) -> None:
             # start must find the launch agent's mode in availableModes even
             # with no prepared view (see NativeSkillProjection.frame).
             self._native_skill_projection.advertised_launch_name = self._agent
-        argv = [
-            kiro_bin,
-            KIRO_CLI_SUBCMD,
-            "--agent",
-            (
-                self._resolve_spawn_agent_argv()
-                if self._native_skill_projection is not None
-                else self._agent
-            ),
-        ]
+        launch_name = (
+            self._resolve_spawn_agent_argv()
+            if self._native_skill_projection is not None
+            else self._agent
+        )
+        # A harness that may read the spec file's own grants is refused on a
+        # crew-bound spec Crew does not own that the ceiling would narrow: Crew never
+        # rewrites such a file. Judged on the name kiro-cli is handed: a skill view is
+        # a Crew-owned copy with the ceiling applied, the authored name is the file.
+        try:
+            await asyncio.to_thread(
+                require_shared_template_within_ceiling,
+                self._agent,
+                self.backend,
+                launch_name=launch_name,
+                work_dir=self._work_dir,
+            )
+        except SharedTemplateOverCeiling as exc:
+            raise AcpError(str(exc)) from exc
+        argv = [kiro_bin, KIRO_CLI_SUBCMD, "--agent", launch_name]
         spawn_label = f"{KIRO_CLI_BIN} {KIRO_CLI_SUBCMD}"
         stderr_label = KIRO_CLI_BIN
         plan = SpawnPlan(argv=argv, spawn_label=spawn_label, stderr_label=stderr_label)
@@ -619,15 +652,20 @@ async def _new_session_following_substitution(self: AcpClient) -> dict:
     if self.backend in ACP_BACKENDS_PRUNE_UNSTARTABLE_MCP:
         new_params["mcpServers"] = await self._prune_unstartable_mcp(new_params["mcpServers"])
     if self._is_claude:
+        refuse_claude_zero_tool_mounts(
+            getattr(self, "_spec_zero_tools", False), new_params["mcpServers"]
+        )
         new_params["_meta"] = self._claude_session_meta()
 
     # The roster this session put ON THE WIRE. Distinct from the agent spec
     # on disk: the backend starts the spec's own servers too, so the frames
     # that come back are a superset of this list.
-    self._begin_session_report(new_params.get("mcpServers"))
+    # A harness whose servers ride a launch file (Strands) sends an empty wire
+    # array by design; its roster is the launch composition.
+    self._begin_session_report(_roster_of(self, new_params.get("mcpServers")))
     # AFTER begin_session_report, which clears the report: the guard writes a
     # row on it, and writing before the clear would erase the finding.
-    self._guard_unresolved_mcp_refs(new_params.get("mcpServers"))
+    self._guard_unresolved_mcp_refs(_roster_of(self, new_params.get("mcpServers")))
 
     self._last_substitution_model = None
     if self._is_pi:
@@ -699,9 +737,12 @@ async def _new_session_following_substitution(self: AcpClient) -> dict:
         # Rebuilt AFTER the array, from the same re-seed: the envelope carries
         # the setting sources the array was authorized under and the inline
         # settings naming the substitute model.
+        refuse_claude_zero_tool_mounts(
+            getattr(self, "_spec_zero_tools", False), new_params["mcpServers"]
+        )
         new_params["_meta"] = self._claude_session_meta()
-        self._begin_session_report(new_params.get("mcpServers"))
-        self._guard_unresolved_mcp_refs(new_params.get("mcpServers"))
+        self._begin_session_report(_roster_of(self, new_params.get("mcpServers")))
+        self._guard_unresolved_mcp_refs(_roster_of(self, new_params.get("mcpServers")))
         self._last_substitution_model = None
         retry_id = await self._send_request(METHOD_SESSION_NEW, new_params)
         session_resp = await self._wait_for_response(
@@ -780,8 +821,9 @@ async def _initialize_session(self: AcpClient) -> None:
         # Copilot CLI reads its launch MCP config when it boots (measured on 1.0.100:
         # the file deleted right after the initialize answer, the stdio server it
         # names still mounted and answered tools/call). It carries a session
-        # credential, so it goes now, on a failed handshake too.
-        if self._is_copilot:
+        # credential, so it goes now, on a failed handshake too. The Strands CLI reads
+        # its --mcp-config file at start as well, before it serves initialize.
+        if self._is_copilot or self._is_strands:
             await self._discard_copilot_mcp_config()
     logger.info("ACP initialized (protocol=%s)", init_resp.get("protocolVersion"))
 
@@ -879,7 +921,9 @@ async def _initialize_session(self: AcpClient) -> None:
             file_ok = True
         else:
             session_file = str(kiro_sessions_dir() / f"{resume_sid}.json")
-            file_ok = Path(session_file).exists()
+            # Off the loop: the sessions dir sits under the home directory,
+            # which can be a network mount, and this runs on every resume.
+            file_ok = await asyncio.to_thread(Path(session_file).exists)
         if file_ok:
             # WHICH restore verb, from the same membership set that chose the
             # capability above. The two calls share a contract --
@@ -928,6 +972,9 @@ async def _initialize_session(self: AcpClient) -> None:
                         load_params["mcpServers"]
                     )
                 if self._is_claude:
+                    refuse_claude_zero_tool_mounts(
+                        getattr(self, "_spec_zero_tools", False), load_params["mcpServers"]
+                    )
                     load_params["_meta"] = self._claude_session_meta()
                 elif self.backend not in ACP_BACKENDS_HARNESS_OWNED_SESSIONS:
                     # The kiro family reads its transcript path from _meta. A
@@ -935,10 +982,10 @@ async def _initialize_session(self: AcpClient) -> None:
                     # so it gets neither key rather than a kiro session_file
                     # it would not know what to do with.
                     load_params["_meta"] = {"_kiro.dev/session_file": session_file}
-                self._begin_session_report(load_params.get("mcpServers"))
+                self._begin_session_report(_roster_of(self, load_params.get("mcpServers")))
                 # A resumed session re-declares everything Crew mounts on it, so it
                 # can be short of a referenced server exactly as a fresh one can.
-                self._guard_unresolved_mcp_refs(load_params.get("mcpServers"))
+                self._guard_unresolved_mcp_refs(_roster_of(self, load_params.get("mcpServers")))
                 if self._is_pi:
                     await self._republish_pi_mcp_handoff()
                 load_id = await self._send_request(restore_method, load_params)
@@ -1056,18 +1103,16 @@ async def _initialize_session(self: AcpClient) -> None:
     if self._is_pi:
         await self._discard_pi_mcp_handoff()
     # Copilot CLI read its launch MCP config when its process started; the file
-    # carries a session credential and nothing reads it again.
-    if self._is_copilot:
+    # carries a session credential and nothing reads it again. Same for the Strands CLI.
+    if self._is_copilot or self._is_strands:
         await self._discard_copilot_mcp_config()
 
     # Seek to end of JSONL so we only read new tool results.
     # claude-agent-acp stores sessions via its own SDK, not ~/.kiro/ — skip.
     if self._session_id and self._is_kiro:
-        _jpath = kiro_sessions_dir() / f"{self._session_id}.jsonl"
-        try:
-            self._jsonl_pos = _jpath.stat().st_size if _jpath.exists() else 0
-        except OSError:
-            self._jsonl_pos = 0
+        self._jsonl_pos = await asyncio.to_thread(
+            _jsonl_size, kiro_sessions_dir() / f"{self._session_id}.jsonl"
+        )
 
     # The host has now consumed the ``mcpServers`` array, by whichever route created
     # the session -- ``session/load``, ``session/new``, or the substitution retry --

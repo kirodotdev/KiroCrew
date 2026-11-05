@@ -17,7 +17,7 @@ import json
 import os
 import stat
 import sys
-import time
+import threading
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -528,19 +528,41 @@ class TestPromptEditCompareAndSwap:
         _user_prompt(tmp_path, "p", "BASE\n")
         base = _sha("BASE\n")
 
-        real_read = _prompts_mod.safe_read_file_bytes_nolink
+        write_lock = _prompts_mod._PROMPT_WRITE_LOCK
 
-        def _slow_read(*a, **kw):
-            # Widen the check-to-write window so an unserialized race is
-            # certain, not lucky: both verifies complete before either write
-            # unless the lock forces them into sequence.
-            result = real_read(*a, **kw)
-            # flake-ok: pre-existing 200 ms delay inside the stubbed read that widens the check-to-write window, moved verbatim; tracked for a de-flake pass
-            # nosemgrep: kirocrew.test-sleep-as-barrier -- the stubbed read's own delay, moved verbatim; tracked for a de-flake pass
-            time.sleep(0.2)
-            return result
+        class _QueueingLock:
+            """The write lock, holding the first save inside until the second has
+            reached it. That keeps the check-to-write window open for as long as
+            the other save is outside, so an unserialized race is certain, not
+            lucky: both verifies complete before either write unless the lock
+            forces them into sequence."""
 
-        monkeypatch.setattr(_prompts_mod, "safe_read_file_bytes_nolink", _slow_read)
+            def __init__(self) -> None:
+                self.second_arrived = threading.Event()
+                self.most_inside = 0
+                self._arrivals = 0
+                self._inside = 0
+                self._counts = threading.Lock()
+
+            def __enter__(self):
+                with self._counts:
+                    self._arrivals += 1
+                    if self._arrivals == 2:
+                        self.second_arrived.set()
+                write_lock.__enter__()
+                with self._counts:
+                    self._inside += 1
+                    self.most_inside = max(self.most_inside, self._inside)
+                self.second_arrived.wait(timeout=30)
+                return self
+
+            def __exit__(self, *exc):
+                with self._counts:
+                    self._inside -= 1
+                return write_lock.__exit__(*exc)
+
+        queueing_lock = _QueueingLock()
+        monkeypatch.setattr(_prompts_mod, "_PROMPT_WRITE_LOCK", queueing_lock)
 
         async def _race():
             return await asyncio.gather(
@@ -553,6 +575,10 @@ class TestPromptEditCompareAndSwap:
             )
 
         resps = asyncio.run(_race())
+        assert (
+            queueing_lock.second_arrived.is_set()
+        ), "the second save never reached the write lock while the first held it"
+        assert queueing_lock.most_inside == 1, "two saves held the write lock together"
         statuses = sorted(r.status for r in resps)
         assert statuses == [200, 409], statuses
         # The file holds exactly the winner's write, never a torn or clobbered
@@ -1283,6 +1309,24 @@ class TestARefusedUpdateIsNotReportedAsSuccess:
         assert resp.status == 403
         assert json.loads(resp.body)["code"] == "write_refused"
         assert _outcomes(mock_sel)[-1] == "blocked"
+        assert (tmp_path / ".kiro" / "prompts" / "p.md").read_text() == "ORIGINAL\n"
+
+    def test_a_busy_file_answers_a_retryable_503_not_a_refusal(
+        self, tmp_path, mock_sel, monkeypatch
+    ):
+        """Another process holding the file at the rename is not a security refusal."""
+        _user_prompt(tmp_path, "p", "ORIGINAL\n")
+        monkeypatch.setattr(_prompts_mod, "verified_replace_file_nolink", lambda *a, **kw: "busy")
+        resp = asyncio.run(
+            api_prompt_detail(
+                _write_request(
+                    "PUT", "p", body={"content": "NEW\n", "base_hash": _sha("ORIGINAL\n")}
+                )
+            )
+        )
+        assert resp.status == 503
+        assert json.loads(resp.body)["code"] == "prompt_busy"
+        assert _outcomes(mock_sel)[-1] == "error"
         assert (tmp_path / ".kiro" / "prompts" / "p.md").read_text() == "ORIGINAL\n"
 
     def test_a_non_os_failure_in_the_scoped_read_is_still_audited(

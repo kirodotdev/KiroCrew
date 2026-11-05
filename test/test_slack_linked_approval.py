@@ -67,6 +67,7 @@ class _FakeSlot:
         self.key = key
         self.linked_session_key = ""
         self._trust = False
+        self._posture_inherited = True  # as session_create leaves a dispatched worker
         self.messages: list[dict[str, str]] = []
         if request_id:
             meta = {"request_id": request_id}
@@ -375,6 +376,9 @@ class TestLinkedTrustGrant:
         assert result == _ACTION_TRUST
         assert slot._trust is True
         assert other._trust is True
+        # A person's Trust is explicit: a later change on the creator leaves it.
+        assert slot._posture_inherited is False
+        assert other._posture_inherited is False
 
     @pytest.mark.asyncio
     async def test_trust_on_a_channel_born_session_reaches_the_slack_driver(self) -> None:

@@ -1,21 +1,17 @@
 """Coverage tests for ``kiro_crew.subagent`` helpers and manager bookkeeping.
 
-Focused on the module-level probes (memory / CPU / cgroup readers, env
-parsing, agent + governance vetting) and the ``SubagentManager`` bookkeeping
-surfaces — slot accounting, pid and cost records, stall detection, read
-surfaces, queue depth, the stagger gate — none of which need a real agent
-process. Every process boundary is stubbed: no test here launches a
-binary, opens a socket, or writes outside ``tmp_path`` / the autouse isolated
-``KIROCREW_HOME``.
-
-What a finished run delivers is covered in ``test_subagent_coverage_completion.py``;
-steering, cancelling and reaping a live run in ``test_subagent_coverage_live_runs.py``.
+Module-level probes (memory / CPU / cgroup readers, env parsing, agent and governance vetting)
+and ``SubagentManager`` bookkeeping (slots, pid and cost records, stall detection, reads,
+queue depth, the stagger gate). Process boundaries are stubbed; nothing writes outside
+``tmp_path`` / the isolated ``KIROCREW_HOME``. Finished runs are in
+``test_subagent_coverage_completion.py``, live runs in ``test_subagent_coverage_live_runs.py``.
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import math
 import os
 from pathlib import Path, PurePosixPath
@@ -28,6 +24,9 @@ from subagent_coverage_helpers import _info, _manager
 from conftest import absent_sysconf
 from kiro_crew import subagent as sa
 from kiro_crew.subagent import SubagentInfo, SubagentManager
+from kiro_crew.subagent_cost import _cost_log_path
+from kiro_crew.subagent_persistence_layout import _subagents_dir
+from kiro_crew.subagent_persistence_state import read_tombstone
 
 # ── _safe_fire ────────────────────────────────────────────────────────────
 
@@ -540,8 +539,13 @@ class TestPidHelpers:
     @pytest.mark.asyncio
     async def test_kill_orphan_calls_platform_kill(self) -> None:
         with patch.object(sa.platform_compat, "kill_pid") as kill:
-            await SubagentManager._kill_orphan_pid(4242)
+            # A kill that went out is reported as no failure.
+            assert await SubagentManager._kill_orphan_pid(4242) is None
         assert kill.call_args[0][0] == 4242
+        # Control: a kill the OS refuses is named, not reported as a success.
+        with patch.object(sa.platform_compat, "kill_pid", side_effect=PermissionError("denied")):
+            failure = await SubagentManager._kill_orphan_pid(4242)
+        assert failure is not None and failure.startswith("PermissionError")
 
 
 class TestLiveSharedCount:
@@ -727,27 +731,36 @@ class TestReaperOffloadsTheSweep:
         assert sample.called
 
 
+def _cost_records() -> list[dict]:
+    """Every record in the cost log under the test's own data home."""
+    path = _cost_log_path()
+    if not path.exists():
+        return []
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+
+
 class TestRecordCost:
     def test_unsampled_run_records_nothing(self) -> None:
         mgr = _manager()
         info = _info()
-        with patch.object(sa, "append_cost_sample") as append:
-            mgr._record_cost(info)
-            append.assert_not_called()
-            # The same run records once a sweep has sampled it, so the skip
-            # above was the never-sampled gate and not a dead path.
-            info.peak_cpu_cores = 0.5
-            mgr._record_cost(info)
-        assert append.call_count == 1
+        mgr._record_cost(info)
+        assert _cost_records() == []
+        # The same run records once a sweep has sampled it, so the skip
+        # above was the never-sampled gate and not a dead path.
+        info.peak_cpu_cores = 0.5
+        mgr._record_cost(info)
+        assert [r["cpu_cores"] for r in _cost_records()] == [0.5]
 
     def test_sampled_run_appends(self) -> None:
         mgr = _manager()
         info = _info(agent="scout")
         info.peak_rss_gb = 1.5
         info.peak_cpu_cores = 0.75
-        with patch.object(sa, "append_cost_sample") as append:
-            mgr._record_cost(info)
-        append.assert_called_once_with("scout", 1.5, 0.75, shared=False, settled_gb=0.0)
+        mgr._record_cost(info)
+        (rec,) = _cost_records()
+        assert (rec["agent"], rec["mem_gb"], rec["cpu_cores"]) == ("scout", 1.5, 0.75)
+        # A dedicated run with no settled reading writes neither optional field.
+        assert "shared" not in rec and "settled_gb" not in rec
 
     def test_store_failure_is_swallowed(self) -> None:
         mgr = _manager()
@@ -764,16 +777,22 @@ class TestRecordCost:
 
 class TestSlowCommandRecord:
     def test_records_redacted_fields(self) -> None:
-        info = _info(last_tool="read /tmp/x", tool_count=4, turns=2)
-        with patch.object(sa, "record_slow_command") as rec:
-            SubagentManager._record_slow_command(info, 300.0)
-        assert rec.call_args.kwargs["idle_secs"] == 300
+        info = _info(last_tool="read /tmp/x", tool_count=4, turns=2, parent_session_key="dash:1")
+        SubagentManager._record_slow_command(info, 300.0)
+        log = _subagents_dir() / "slow_commands.jsonl"
+        (entry,) = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+        assert entry["id"] == "a1"
+        assert (entry["idle_secs"], entry["tool_count"], entry["turns"]) == (300, 4, 2)
+        assert entry["parent_session"] == "dash:1"
 
-    def test_write_failure_is_swallowed(self) -> None:
+    def test_write_failure_is_swallowed(self, caplog: pytest.LogCaptureFixture) -> None:
+        caplog.set_level("DEBUG", logger="kiro_crew.subagent")
         with patch.object(sa, "record_slow_command", side_effect=OSError) as rec:
             SubagentManager._record_slow_command(_info("slow1"), 1.0)
         assert rec.call_args.args == ("slow1",)
-        assert rec.call_args.kwargs["idle_secs"] == 1
+        assert [r.getMessage() for r in caplog.records if r.name == "kiro_crew.subagent"] == [
+            "Failed to record slow command for slow1"
+        ]
 
 
 class TestWriteTombstone:
@@ -788,9 +807,10 @@ class TestWriteTombstone:
         assert info.elapsed >= 5
 
     def test_passes_outcome_through(self) -> None:
-        with patch.object(sa, "write_tombstone") as write:
-            SubagentManager._write_tombstone(_info(user_stopped=True), "user_stop")
-        assert write.call_args.kwargs["outcome"] == "stopped"
+        SubagentManager._write_tombstone(_info("ts2", user_stopped=True), "user_stop")
+        tomb = read_tombstone("ts2")
+        assert tomb is not None
+        assert (tomb["cause"], tomb["outcome"]) == ("user_stop", "stopped")
 
 
 # ── Manager: stall detection ──────────────────────────────────────────────
@@ -845,6 +865,20 @@ class TestReadSurfaces:
         mgr._agents["c"] = _info("c", parent_session_key="dash:1", done=True)
         rows = mgr.running_agents_for("dash:1")
         assert [r["id"] for r in rows] == ["a"]
+
+    def test_running_agents_for_marks_spawn_approval_park(self) -> None:
+        """Only a row parked on the spawn approval says so; a tool prompt does not."""
+        mgr = _manager()
+        parked = _info("parked", parent_session_key="dash:1")
+        parked._awaiting_approval = True
+        tool_prompt = _info("tool", parent_session_key="dash:1")
+        tool_prompt._awaiting_approval = True
+        tool_prompt._exec_started = 1.0
+        mgr._agents["parked"] = parked
+        mgr._agents["tool"] = tool_prompt
+        mgr._agents["plain"] = _info("plain", parent_session_key="dash:1")
+        rows = {r["id"]: r["awaitingSpawnApproval"] for r in mgr.running_agents_for("dash:1")}
+        assert rows == {"parked": True, "tool": False, "plain": False}
 
     def test_running_agents_for_redacts_task(self) -> None:
         mgr = _manager()
@@ -914,12 +948,9 @@ class TestReadSurfaces:
     def test_task_memory_rows_redact_before_truncate(self) -> None:
         """A credential straddling the 80-char cut must not leak a fragment.
 
-        The old spelling ``_redact(a.task[:80])`` sliced first, so a key cut at
-        the boundary loses its tail and does not match the credential regex —
-        the raw prefix escaped into the session-memory surface.
-        The fabricated AKIA-shaped literal is inlined rather than bound to a
-        ``secret``-named variable, which would trip CodeQL's name-based
-        sensitive-source heuristic on this real call path.
+        Redacting after slicing would leave a cut key the credential regex cannot match.
+        The AKIA-shaped literal is inlined because a ``secret``-named variable trips
+        CodeQL's name-based sensitive-source heuristic.
         """
         # cut lands 8 chars into the fabricated 20-char key
         task = "x" * 72 + "AKIAIOSFODNN7EXAMPLE" + " trailing"

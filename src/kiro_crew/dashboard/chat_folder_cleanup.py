@@ -21,6 +21,8 @@ A folder is removable when nothing that still runs would notice it going:
   are filed by looking that name up, and only a settings save creates the
   folder again, so deleting it would leave every later channel session
   unfiled.
+* it is not a mate's home folder or a folder inside one. Those belong to the
+  mate, and only deleting the mate releases them (``mate_folders``).
 
 Archived sessions do not keep a folder. Deleting the folder leaves them in
 Older Sessions, unfiled, the same as the single-folder delete does: a
@@ -52,6 +54,7 @@ from kiro_crew.dashboard.chat_folders import (
     _refuse_unattributable_caller,
 )
 from kiro_crew.dashboard.handlers._shared import read_bounded_json
+from kiro_crew.dashboard.mate_folders import mate_home_subtree_ids
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.dashboard.token_auth import MEMBER_CHAT_PRINCIPAL_KEY
 from kiro_crew.executors import subprocess_executor
@@ -61,7 +64,8 @@ logger = logging.getLogger(__name__)
 
 #: Folder fields that mean the person configured the folder on purpose. A row
 #: carrying any of them is kept even when it is empty: deleting it would throw
-#: the setting away along with the row.
+#: the setting away along with the row. ``pinned`` is one: a folder the person
+#: pinned is a folder they asked to keep seeing.
 _KEEP_FIELDS = (
     "project_dir",
     "default_agent",
@@ -70,6 +74,7 @@ _KEEP_FIELDS = (
     "tags",
     "color",
     "icon",
+    "pinned",
 )
 
 
@@ -164,7 +169,8 @@ def removable_folder_ids(
 
     *occupied* is the set of folder ids a live session is filed in.
     *kept_names* are folder names a channel files into (see
-    :func:`channel_folder_names`); a folder with one of them keeps itself. A folder is
+    :func:`channel_folder_names`); a folder with one of them keeps itself, and
+    so does a mate's home folder and every folder inside one. A folder is
     removable when it is not occupied, does not keep itself, and every child is
     removable too, so a whole empty branch goes at once and a branch with one
     live session somewhere inside keeps every ancestor of that session.
@@ -188,6 +194,8 @@ def removable_folder_ids(
             occupied_ids.add(str(folder.get("id")))
             occupied_ids.add(str(folder.get("parent_id") or ""))
     occupied_ids.discard("")
+    # A mate's home and its subtree keep themselves, empty or not.
+    mate_owned = mate_home_subtree_ids(folders)
     by_id = {str(f.get("id") or ""): f for f in folders if f.get("id")}
     children: dict[str, list[str]] = {}
     for fid, folder in by_id.items():
@@ -205,7 +213,7 @@ def removable_folder_ids(
             return False
         visiting.add(fid)
         folder = by_id[fid]
-        ok = fid not in occupied_ids and not _keeps_itself(folder, kept)
+        ok = fid not in occupied_ids and fid not in mate_owned and not _keeps_itself(folder, kept)
         for child in children.get(fid, []):
             # Evaluate every child even after one fails, so each child gets its
             # own verdict: a kept sibling must not hide an empty one.
@@ -426,7 +434,7 @@ async def api_chat_folders_cleanup(request: web.Request) -> web.Response:
         # these reads and the delete. A channel settings save commits its
         # ``session_folder`` before it takes that lock to adopt the folder, and
         # a job save that names a folder checks and persists it while holding
-        # the lock (``_hold_folder_for_job``), so each either finished first --
+        # the lock (``_persist_holding_folder``), so each either finished first --
         # and is seen here -- or runs after and finds the folder gone.
         referents["jobs"], referents["names"] = await _referents()
 

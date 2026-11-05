@@ -184,6 +184,25 @@ class WorkflowContext(Protocol):
     async def send_message(self, channel: str, text: str) -> None:
         """Deliver a message to a dashboard/session channel."""
 
+    # --- dashboard sessions, acting as the session that launched the run ---
+    async def open_session(
+        self, name: str = "", *, folder_id: str = "", agent: str = "", model: str = ""
+    ) -> str:
+        """Open a persistent dashboard session; return its slot key.
+
+        Counts against the run's agent cap. Refused for a run with no launching
+        session (system- or cron-started).
+        """
+
+    async def send_to_session(self, slot: str, message: str) -> dict:
+        """Deliver *message* to *slot* as its next turn; return the receipt."""
+
+    async def set_session_mode(self, slot: str, mode: str) -> dict:
+        """Set *slot*'s approval mode (``normal``/``trust_reads``/``trust``).
+
+        The mode may match or lower the launching session's, never raise it.
+        """
+
 
 # --- Run event stream (JSON only — NEVER pickle: deserializing an event stream
 # with pickle would execute arbitrary code from whatever wrote the stream) ---

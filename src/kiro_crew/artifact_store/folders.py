@@ -51,6 +51,19 @@ FOLDER_PATH_SEP = "/"
 MAX_FOLDER_DEPTH = 20
 
 
+def _stored_order(folder: Mapping[str, Any]) -> int:
+    """A folder's stored ``order`` as a sort key; one ``int()`` cannot read is 0.
+
+    The file is loaded verbatim apart from the id check, so ``null``, a word,
+    a list or ``Infinity`` from a hand edit reach here. Every value ``int()``
+    reads (``"3"``, ``2.5``, ``true``) keeps the position it sorts to today.
+    """
+    try:
+        return int(folder.get("order", 0))
+    except (TypeError, ValueError, OverflowError):
+        return 0
+
+
 class ArtifactFolderStore:
     """Filesystem-backed store for the nested artifact-library folder tree.
 
@@ -140,8 +153,15 @@ class ArtifactFolderStore:
                 raw = json.loads(self._path.read_text(encoding="utf-8"))
                 if isinstance(raw, list):
                     # Drop entries lacking an id (legacy/corrupt) so downstream
-                    # walks never KeyError on a missing "id".
-                    self._folders = [f for f in raw if isinstance(f, dict) and f.get("id")]
+                    # walks never KeyError on a missing "id", and entries whose
+                    # id is a list or object, which no dict can key on.
+                    self._folders = [
+                        f
+                        for f in raw
+                        if isinstance(f, dict)
+                        and f.get("id")
+                        and not isinstance(f.get("id"), (list, dict))
+                    ]
         except Exception:  # noqa: BLE001 — a corrupt file must not crash boot
             logger.warning("Failed to load artifact folders", exc_info=True)
 
@@ -199,7 +219,7 @@ class ArtifactFolderStore:
         return out
 
     @staticmethod
-    def _clean_name(name: Any) -> str:
+    def clean_name(name: Any) -> str:
         cleaned = str(name or "").strip()[:100]
         if not cleaned:
             raise ArtifactValidationError("folder name required")
@@ -217,8 +237,18 @@ class ArtifactFolderStore:
         # and folders at the same depth sort by (order, name) whatever their parent.
         return sorted(
             self._folders,
-            key=lambda f: (self._depth(f["id"]), int(f.get("order", 0)), str(f.get("name", ""))),
+            key=lambda f: (self._depth(f["id"]), _stored_order(f), str(f.get("name", ""))),
         )
+
+    def _next_order(self) -> int:
+        """The ``order`` of a new folder: the rule chat tags and columns use.
+
+        Called with ``self._lock`` held. Imported at call time so loading the
+        artifact store does not load the dashboard state module.
+        """
+        from kiro_crew.dashboard.chat_tags_store import _next_order
+
+        return _next_order(self._folders)
 
     def get(self, folder_id: str) -> dict[str, Any] | None:
         with self._lock:
@@ -244,8 +274,8 @@ class ArtifactFolderStore:
 
     def create(self, name: str, parent_id: str = "", color: str = "") -> dict[str, Any]:
         """Create a folder under ``parent_id`` (``""`` = root)."""
-        name = self._clean_name(name)
-        color = self._clean_color(color)
+        name = self.clean_name(name)
+        color = self.clean_color(color)
         with self._lock:
             parent_id = str(parent_id or "")
             by_id = self._by_id()
@@ -258,7 +288,7 @@ class ArtifactFolderStore:
             folder = {
                 "id": uuid.uuid4().hex[:12],
                 "name": name,
-                "order": len(self._folders),
+                "order": self._next_order(),
                 "parent_id": parent_id,
             }
             if color:
@@ -289,7 +319,7 @@ class ArtifactFolderStore:
         dict-returning ``rename`` alongside it would be a second spelling of one
         write, and the two would drift.
         """
-        name = self._clean_name(name)
+        name = self.clean_name(name)
         with self._lock:
             folder = self._by_id().get(folder_id)
             if folder is None:
@@ -344,7 +374,7 @@ class ArtifactFolderStore:
             return dict(folder)
 
     @staticmethod
-    def _clean_color(color: str) -> str:
+    def clean_color(color: str) -> str:
         """Validate a folder color: ``""`` (none) or a ``#rrggbb`` hex value."""
         color = str(color or "").strip()
         if color and not re.fullmatch(r"#[0-9a-fA-F]{6}", color):
@@ -353,7 +383,7 @@ class ArtifactFolderStore:
 
     def set_color(self, folder_id: str, color: str) -> dict[str, Any]:
         """Set (or clear, with ``""``) the folder's display color."""
-        color = self._clean_color(color)
+        color = self.clean_color(color)
         with self._lock:
             folder = self._by_id().get(folder_id)
             if folder is None:
@@ -409,11 +439,11 @@ class ArtifactFolderStore:
             created_any = False
             try:
                 for seg in segments:
-                    # Normalize through the SAME truncation _clean_name applies
+                    # Normalize through the SAME truncation clean_name applies
                     # on create, so a >100-char segment matches the folder it
                     # created on a prior call (lookup key == stored name) —
                     # otherwise repeated resolves would mint duplicates.
-                    seg_norm = self._clean_name(seg).lower()
+                    seg_norm = self.clean_name(seg).lower()
                     match = next(
                         (
                             f
@@ -432,8 +462,8 @@ class ArtifactFolderStore:
                             )
                         match = {
                             "id": uuid.uuid4().hex[:12],
-                            "name": self._clean_name(seg),
-                            "order": len(self._folders),
+                            "name": self.clean_name(seg),
+                            "order": self._next_order(),
                             "parent_id": parent,
                         }
                         self._folders.append(match)

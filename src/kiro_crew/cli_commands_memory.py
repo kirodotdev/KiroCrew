@@ -43,7 +43,7 @@ from kiro_crew.memory_stores import (
     resolve_declared_store,
 )
 from kiro_crew.security import scan_memory
-from kiro_crew.terminal_safe import _TERMINAL_CTRL_RE
+from kiro_crew.terminal_safe import _TERMINAL_CTRL_RE, safe_terminal_line
 from kiro_crew.vector_memory import VectorMemoryStore, _lesson_display_text, declared_store
 
 
@@ -314,6 +314,10 @@ def _memory_backup_cmd(action: str, args: argparse.Namespace) -> None:
             f"removed {result['pruned']} old; {result['failed']} failed; "
             f"{result['skipped']} skipped (nothing to copy)."
         )
+        # A store that failed to copy has no fresh backup, so a script must not read
+        # this run as success. A skip is not a failure: there was nothing to copy.
+        if result["failed"]:
+            sys.exit(1)
 
     elif action == "backups":
         from kiro_crew import memory_backup
@@ -330,6 +334,10 @@ def _memory_backup_cmd(action: str, args: argparse.Namespace) -> None:
             path = owned_store_path(name)
             if path is None:
                 print(f"{name}: not a declared memory store")
+                if only:
+                    # The one store asked for cannot be listed: a failure, like
+                    # `memory forget` on a key that is not there.
+                    sys.exit(1)
                 continue
             backups = memory_backup.list_backups(path)
             print(f"{name}:")
@@ -375,7 +383,7 @@ def _memory_backup_cmd(action: str, args: argparse.Namespace) -> None:
 def _admitted_store_path(
     store_name: str, cfg: "KiroCrewConfig", *, may_create: bool
 ) -> Path | None:
-    """*store_name*'s own vector file, or ``None`` after printing the refusal.
+    """*store_name*'s own vector file, or ``None`` after printing the refusal to stderr.
 
     One guard for every ``kirocrew memory`` verb that opens a NAMED store, because
     the cause it guards is not per-verb: ``VectorMemoryStore.init`` creates whatever
@@ -410,7 +418,7 @@ def _admitted_store_path(
     except UnknownMemoryStore as exc:
         # One line, not a traceback, and the seam's own wording rather than a second
         # phrasing of the same refusal.
-        print(f"Error: {exc}")
+        print(f"Error: {exc}", file=sys.stderr)
         return None
     db_path = owned_store_path(store_name)
     if db_path is None:
@@ -418,7 +426,10 @@ def _admitted_store_path(
         # `memory backups` uses: `owned_store_path` re-checks that the composed path
         # is that store's OWN file, so a symlink redirecting one store's directory at
         # another's is refused instead of handing two crews one silo.
-        print(f"Error: memory store {store_name!r} did not resolve to its own file")
+        print(
+            f"Error: memory store {store_name!r} did not resolve to its own file",
+            file=sys.stderr,
+        )
         return None
     if named_store_or_empty(store_name) and not may_create and not db_path.exists():
         # ONLY `import` may bring a named store's database into existence; every other
@@ -442,7 +453,8 @@ def _admitted_store_path(
             f"Error: memory store {store_name!r} has no {db_path.name}; refusing to "
             "create one on a read. If the store was never written this is expected; "
             "if it held rows, restore it with `kirocrew memory restore --store "
-            f"{store_name}` before reading."
+            f"{store_name}` before reading.",
+            file=sys.stderr,
         )
         return None
     return db_path
@@ -476,8 +488,8 @@ def _memory_carve(args: argparse.Namespace) -> None:
         # A shape defect raises rather than degrading, because repairing `../work`
         # or `Work` onto `work` is the one case that would silently point two crews
         # at one directory. Reported as one line, not a traceback.
-        print(f"Error: {exc}")
-        return
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
     cfg = KiroCrewConfig.load()
     # The same admission every other named-store verb takes, and for the same reason:
     # `carve` is a READ, so a declared store whose database was deleted must be
@@ -486,7 +498,7 @@ def _memory_carve(args: argparse.Namespace) -> None:
     # own-file re-check that `owned_store_path` performs inside it.
     db_path = _admitted_store_path(name, cfg, may_create=False)
     if db_path is None:
-        return
+        sys.exit(1)
     # Opened the way the store's declaration says: a member store refuses a bare
     # V1 `init()`, and V2 member stores are the stores facets exist for.
     store = declared_store(
@@ -539,9 +551,11 @@ def _memory_carve(args: argparse.Namespace) -> None:
         # Named, never answered with an empty list: "no rows carry that crew" and
         # "this store cannot record a crew at all" are different facts, and only
         # one of them means the carve is empty.
-        print(f"Cannot carve {name!r}: {exc}")
+        print(f"Cannot carve {name!r}: {exc}", file=sys.stderr)
+        sys.exit(1)
     except memory_schema.UnknownFacet as exc:
-        print(f"Error: {exc}")
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
     finally:
         store.close()
 
@@ -554,7 +568,7 @@ def _settle_created_database(
     created: bool,
     rows_landed: bool | None,
     preexisting_sidecars: set[Path],
-) -> None:
+) -> bool:
     """Decide what happens to a database THIS import brought into existence.
 
     Called from the `finally`, so it runs on an interrupt too: the empty file an
@@ -565,9 +579,13 @@ def _settle_created_database(
     claim as "nothing landed", so nothing is deleted on that path -- rows may have
     been committed before the abort -- and the operator is told what is there
     instead, which is what keeps the state from being read as an empty store.
+
+    Returns True when it printed a "nothing could be imported" error, so the
+    caller can exit 1 once no exception is already on its way out. It cannot exit
+    here: a ``SystemExit`` raised in a ``finally`` would replace the real error.
     """
     if not created or rows_landed:
-        return
+        return False
     if rows_landed is None:
         print(
             f"Error: the import into memory store {store_name!r} did not finish, and it "
@@ -575,7 +593,7 @@ def _settle_created_database(
             "in place; if the import wrote nothing, remove that file so a later read "
             "reports the missing database instead of answering with no rows."
         )
-        return
+        return False
     # AFTER `store.close()`, which is load-bearing: on Windows an open SQLite handle
     # refuses the unlink, so removing the file while it is open would raise here and
     # pass on POSIX.
@@ -607,6 +625,7 @@ def _settle_created_database(
             "before this import and the empty one this created was removed, because a "
             "later read must still report the loss rather than answer with no rows."
         )
+    return True
 
 
 def _memory_create_store(args: argparse.Namespace) -> None:
@@ -634,13 +653,27 @@ def _interactive_terminal() -> bool:
 
 
 def _refuse_forget_outside_owner_terminal() -> None:
-    """Refuse ``memory forget`` from an agent session's shell or with no terminal.
+    """Refuse ``memory forget`` on native Windows, from an agent session's shell,
+    or with no terminal.
 
-    These are the CLI's own refusals, checked before any store opens. They keep an
-    agent from running the verb; they are not what authorizes the delete. That is
-    the gateway's owner gate on the dashboard delete route, which the verb calls
-    (``memory_forget_client``), so an empty answer here grants nothing by itself.
+    These are the CLI's own refusals, checked before any store opens. The first is
+    the platform: the verb reaches the gateway only over the dashboard's Unix
+    socket, and a Python with no ``socket.AF_UNIX`` (native Windows) cannot open
+    one. That is the same condition ``loopback_http.unix_socket_urlopen`` fails on,
+    so the refusal comes before the value is shown or a confirmation is asked for.
+    The other two keep an agent from running the verb; they are not what
+    authorizes the delete. That is the gateway's owner gate on the dashboard delete
+    route, which the verb calls (``memory_forget_client``), so an empty answer here
+    grants nothing by itself.
     """
+    import socket
+
+    if not hasattr(socket, "AF_UNIX"):
+        raise ValueError(
+            "`kirocrew memory forget` is not available on native Windows (it needs "
+            "the dashboard's Unix socket); nothing was forgotten. Delete the key "
+            "from the dashboard Memory page."
+        )
     from kiro_crew.mcp_caller import resolve_own_identity
 
     identity = resolve_own_identity()
@@ -794,12 +827,13 @@ def _memory_verb(args: argparse.Namespace) -> None:
     # the open is the direction that cannot invert. Taken only for an `import` that
     # can create a NAMED store's database, because that is the only path that
     # removes a file -- every read verb reaching this open serializes on nothing.
+    import_wrote_nothing = False
     with contextlib.ExitStack() as create_guard:
         if action == "import" and named_store_or_empty(store_name):
             create_guard.enter_context(memory_store_namespace_lock())
         db_path = _admitted_store_path(store_name, cfg, may_create=action == "import")
         if db_path is None:
-            return
+            sys.exit(1)
         if action == "import" and memory_store_version(store_name) == 2:
             # REFUSED BEFORE THE OPEN, because `import_memory` cannot carry what a V2 row
             # holds. It rebuilds every row through `set_semantic` and `write_episodic` and
@@ -829,9 +863,10 @@ def _memory_verb(args: argparse.Namespace) -> None:
                 f"Error: memory store {store_name!r} is a private V2 store, and this import "
                 "cannot carry the scope, surface, crew, session and derivation facets its "
                 "rows hold, so nothing was written. Import into a V1 store, or use the "
-                "owner-authorized copy in the dashboard, which preserves provenance."
+                "owner-authorized copy in the dashboard, which preserves provenance.",
+                file=sys.stderr,
             )
-            return
+            sys.exit(1)
         import_payload: dict | None = None
         if action == "import":
             # PARSED BEFORE THE OPEN, for the same reason the guard above exists. `import`
@@ -1068,9 +1103,10 @@ def _memory_verb(args: argparse.Namespace) -> None:
                         "exported here. That tree is read through a fence this verb does not "
                         "carry, and its refusal is indistinguishable from an empty file, so "
                         "no payload is written rather than one claiming the tree is empty. "
-                        "Re-run without --include-markdown to export the store's rows."
+                        "Re-run without --include-markdown to export the store's rows.",
+                        file=sys.stderr,
                     )
-                    return
+                    sys.exit(1)
                 episodic = store.get_episodic_list(limit=_EXPORT_EPISODIC_LIMIT)
                 events = store.get_events(limit=_EXPORT_EVENTS_LIMIT)
                 # A full page may hide more rows. Reading past the limit counts
@@ -1124,7 +1160,18 @@ def _memory_verb(args: argparse.Namespace) -> None:
                 output = json.dumps(data, indent=2, default=str)
                 out_file = getattr(args, "output", None)
                 if out_file:
-                    Path(out_file).write_text(output, encoding="utf-8")
+                    try:
+                        # A missing parent folder is created, as `perf` and
+                        # `manifest` do for their own output path.
+                        Path(out_file).parent.mkdir(parents=True, exist_ok=True)
+                        Path(out_file).write_text(output, encoding="utf-8")
+                    except OSError as exc:
+                        # A directory at the path, a file where a folder should be
+                        # or a read-only target: one line, not a traceback.
+                        shown = safe_terminal_line(str(out_file))
+                        reason = safe_terminal_line(str(exc.strerror or exc))
+                        print(f"Error: could not write {shown}: {reason}", file=sys.stderr)
+                        sys.exit(1)
                     print(f"Exported to {out_file}")
                 else:
                     print(output)
@@ -1141,6 +1188,10 @@ def _memory_verb(args: argparse.Namespace) -> None:
                 if restore_id:
                     ok = store.restore_episodic(restore_id)
                     print("Restored." if ok else "Not found, or already active.")
+                    if not ok:
+                        # Nothing was restored, so exit 1 like `memory forget` on
+                        # an absent key.
+                        sys.exit(1)
                 else:
                     rows = store.get_retired_episodic(limit=int(getattr(args, "limit", 20)))
                     if not rows:
@@ -1220,7 +1271,7 @@ def _memory_verb(args: argparse.Namespace) -> None:
                 logging.getLogger("kiro_crew.cli_commands").debug(
                     "could not close memory store %r", store_name, exc_info=True
                 )
-            _settle_created_database(
+            import_wrote_nothing = _settle_created_database(
                 db_path,
                 store_name,
                 str(import_file) if action == "import" and import_file else "",
@@ -1228,3 +1279,8 @@ def _memory_verb(args: argparse.Namespace) -> None:
                 rows_landed=import_rows_landed,
                 preexisting_sidecars=preexisting_sidecars,
             )
+    # Reached only when nothing raised out of the block above, so an import that
+    # failed with its own error keeps that error. Outside the hold, so the lock is
+    # released before the exit.
+    if import_wrote_nothing:
+        sys.exit(1)

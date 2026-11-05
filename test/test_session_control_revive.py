@@ -1,20 +1,13 @@
 """Session control: reviving an archived session -- the mirror of close.
 
-Organized like ``test_session_control.py``: every refusal is asserted against
-the REAL slot objects and the REAL history metadata, because ``revive_session``
-reads ``workspace`` / ``app`` / ``created_by`` off the persisted metadata line
-and a permissive double would let a dead guard look alive. The happy path goes
-end to end through the real close (``close_target``) and the real resume core
-(``resume_slot_from_history``), so the round trip a person expects -- close a
-tab, revive it, find the transcript -- is what is exercised.
+Refusals use the real slots and real history metadata, because ``revive_session`` reads
+``workspace`` / ``app`` / ``created_by`` off the persisted line and a permissive double
+would let a dead guard look alive. The happy path runs the real ``close_target`` and
+``resume_slot_from_history``.
 
-``test_session_control_revive_containment_hook.py`` holds the tests that drive
-``resume_slot_from_history`` through its ``containment`` hook and ``final_check``, the
-History click's own refusals, and the revive cases filed beside them: the global cap at
-the hook, the ineligible caller's single answer, live targets authorized before they are
-named, and channel links recorded during the deferred clear or the transcript read. Both
-files import the autouse fixtures and the ``_slot``, ``_archive``, ``_revive`` and
-``_folder`` helpers from ``session_control_revive_helpers.py``.
+The ``containment`` hook and ``final_check`` tests live in
+``test_session_control_revive_containment_hook.py``; shared helpers in
+``session_control_revive_helpers.py``.
 """
 
 from __future__ import annotations
@@ -62,17 +55,28 @@ def test_revive_brings_a_closed_peer_back_with_its_transcript(tmp_path):
     assert not state.conversation_log.get_metadata(f"dashboard:{key}").get("closed")
 
 
+def test_revive_refreshes_the_older_sessions_listing(tmp_path):
+    """The revived session leaves the listing, so every tab must re-read it: the
+    turn that called the revive ends with ``turn_end``, which does not. The one
+    ``history`` frame comes from publishing the revived slot, a listing refresh."""
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    peer = _slot(state, "chat-2")
+    key = _archive(state, caller, peer)
+    state.push_listing_refresh = MagicMock()  # type: ignore[method-assign]
+
+    assert _revive(state, caller, key)["ok"] is True
+
+    state.push_listing_refresh.assert_called_once_with()
+
+
 def test_a_revive_in_the_close_clock_reading_keeps_the_marker(tmp_path, monkeypatch):
     """A revive that starts in the same clock reading as the close is refused,
     and the session stays archived.
 
-    The resume's compare-and-clear keeps any ``closed`` stamped at or after the
-    moment the resume started. Inside one clock reading it cannot tell the close
-    it read from a new close that landed just after, so keeping the marker is
-    the safe answer. The clock is frozen here so the tie happens on every OS; on
-    Windows CPython 3.12 ``time.time()`` moves every ~15.6 ms, so an unfrozen
-    close and revive tie there by themselves, which is why ``_archive`` backdates
-    the close for every other test in this file."""
+    Within one clock reading the compare-and-clear cannot tell the close it read from
+    a newer one, so it keeps the marker. Windows ``time.time()`` ticks every ~15.6 ms,
+    which is why ``_archive`` backdates the close for the other tests."""
     frozen = [time.time()]
     monkeypatch.setattr(time, "time", lambda: frozen[0])
     state = _make_state(tmp_path)
@@ -137,6 +141,51 @@ def test_revive_does_not_transfer_ownership_to_the_reviver(tmp_path, monkeypatch
     assert state._slots[key]._created_by == "chat-9"
 
 
+@pytest.mark.parametrize("creator_is_reviver", [True, False], ids=["creator", "other-reviver"])
+def test_a_revived_worker_takes_its_creators_posture_only_from_its_creator(
+    tmp_path, monkeypatch, creator_is_reviver
+):
+    """A conductor that brings back its own worker hands it its posture, as create
+    does at birth; a session that merely revives someone else's worker hands none."""
+    state = _make_state(tmp_path)
+    conductor = _slot(state, "chat-1")
+    conductor._trust = True
+    reviver = conductor if creator_is_reviver else _slot(state, "chat-3")
+    reviver._trust = True
+    peer = _slot(state, "chat-2")
+    peer._created_by = conductor.key
+    key = _archive(state, conductor, peer)
+    _lineage(monkeypatch, {key: conductor.key})
+
+    _revive(state, reviver, key)
+
+    revived = state._slots[key]
+    assert revived._trust is creator_is_reviver
+    assert revived._posture_inherited is creator_is_reviver
+
+
+def test_a_revived_crewmate_worker_is_left_to_its_profile(tmp_path, monkeypatch):
+    """A crewmate's own worker takes its Profile Permissions at its first turn, never
+    the conductor's Trust: a grant already on the slot would survive that seed."""
+    from kiro_crew.mate_worker import MATE_WORKER_AGENT
+
+    state = _make_state(tmp_path)
+    conductor = _slot(state, "chat-1")
+    conductor._trust = True
+    peer = _slot(state, "chat-2")
+    peer.agent = MATE_WORKER_AGENT
+    peer._created_by = conductor.key
+    key = _archive(state, conductor, peer)
+    _lineage(monkeypatch, {key: conductor.key})
+
+    _revive(state, conductor, key)
+
+    revived = state._slots[key]
+    assert revived.agent == MATE_WORKER_AGENT
+    assert revived._trust is False
+    assert revived._posture_inherited is False
+
+
 @pytest.mark.parametrize("known", [True, False], ids=["lineage-names-another", "lineage-unknown"])
 def test_an_uncorroborated_created_by_claim_is_not_stamped_on_the_revived_slot(
     tmp_path, monkeypatch, known
@@ -195,6 +244,36 @@ def test_revive_refuses_an_unknown_folder_before_touching_history(tmp_path):
     assert exc.value.code == "folder_not_found"
     assert key not in state._slots
     assert state.conversation_log.get_metadata(f"dashboard:{key}").get("closed")
+
+
+def test_revive_may_not_refile_a_session_out_of_a_mate_home(tmp_path, monkeypatch):
+    from kiro_crew.dashboard import mate_folders
+
+    async def _person(key: str) -> str:
+        return ""
+
+    monkeypatch.setattr(mate_folders, "session_folder_principal", _person)
+    state = _make_state(tmp_path)
+    state._folders.append(
+        {
+            "id": "home",
+            "name": "Radar",
+            "parent_id": None,
+            "owner_app": "member:member-radar-0123",
+            mate_folders.MATE_HOME_KEY: True,
+        }
+    )
+    _folder(state, "f1", "Gamma")
+    caller = _slot(state, "chat-1")
+    peer = _slot(state, "chat-2")
+    peer.folder_id = "home"
+    key = _archive(state, caller, peer)
+
+    with pytest.raises(sc.SessionControlError) as exc:
+        _revive(state, caller, key, folder_id="f1")
+
+    assert exc.value.code == "mate_home_locked"
+    assert key not in state._slots
 
 
 def test_revive_without_a_folder_keeps_the_previous_placement(tmp_path):
@@ -449,12 +528,8 @@ def test_unfenced_caller_does_not_consult_the_lineage(tmp_path, monkeypatch):
 def _drift_in_window(monkeypatch, mutate):
     """Run *mutate(built_slot)* inside the resume's pre-publish window.
 
-    The resume core hands the built, still-unpublished slot to the caller's
-    ``containment`` hook; wrapping that hook is how a test models a change that
-    lands after the transcript read and before the publish -- a metadata line
-    rewritten, a link or mirror recorded, a caller losing eligibility, a cap
-    crossed. Also asserts what the core promises for that window: the built slot
-    is not resolvable and never in the live table while the hook awaits."""
+    Wraps the ``containment`` hook, which sees the built, unpublished slot after the
+    transcript read. Also asserts the slot is not resolvable or live while it awaits."""
     from kiro_crew.dashboard import chat_handlers
 
     original = chat_handlers.resume_slot_from_history
@@ -476,11 +551,13 @@ def _drift_in_window(monkeypatch, mutate):
     return seen
 
 
-def _refused_in_window(state, caller, key, monkeypatch, mutate, code):
+def _refused_in_window(state, caller, key, monkeypatch, mutate, code, status=None):
     seen = _drift_in_window(monkeypatch, mutate)
     with pytest.raises(sc.SessionControlError) as exc:
         _revive(state, caller, key)
     assert exc.value.code == code
+    if status is not None:
+        assert exc.value.status == status
     assert key not in state._slots, "a refused revive left a slot published"
     assert state.get_slot(key) is None
     assert state.conversation_log.get_metadata(f"dashboard:{key}").get("closed")
@@ -531,7 +608,43 @@ def test_a_slot_cap_crossed_in_the_window_is_refused_before_publish(tmp_path, mo
     def _fill(_built):
         _slot(state, "chat-8")  # a concurrent allocation landed in the window
 
-    _refused_in_window(state, caller, key, monkeypatch, _fill, "slot_cap_reached")
+    _refused_in_window(state, caller, key, monkeypatch, _fill, "slot_cap_reached", 409)
+
+
+@pytest.mark.parametrize("code", ["slot_cap_reached", "creator_slot_cap_reached"])
+def test_a_cap_crossed_before_the_final_check_is_refused_with_409(tmp_path, monkeypatch, code):
+    """The hook passes; an allocation that lands after it is caught by
+    ``final_check``, the synchronous last word before the publish."""
+    from kiro_crew.dashboard import chat_handlers
+
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    own = _slot(state, "chat-2")
+    own._created_by = caller.key
+    key = _archive(state, caller, own)
+    monkeypatch.setattr(sc, "MAX_LIVE_SLOTS", 2)
+    monkeypatch.setattr(sc, "MAX_SLOTS_PER_CREATOR", 1)
+    original = chat_handlers.resume_slot_from_history
+
+    async def _wrapped_resume(state_, **kw):
+        final = kw["final_check"]
+
+        def _fill_then_check(built):
+            filler = _slot(state, "chat-8")
+            if code == "creator_slot_cap_reached":
+                monkeypatch.setattr(sc, "MAX_LIVE_SLOTS", 10)
+                filler._created_by = caller.key
+            return final(built)
+
+        kw["final_check"] = _fill_then_check
+        return await original(state_, **kw)
+
+    monkeypatch.setattr(chat_handlers, "resume_slot_from_history", _wrapped_resume)
+    with pytest.raises(sc.SessionControlError) as exc:
+        _revive(state, caller, key)
+    assert exc.value.code == code
+    assert exc.value.status == 409
+    assert key not in state._slots
 
 
 def test_revived_sessions_the_caller_did_not_create_still_charge_its_cap(tmp_path, monkeypatch):
@@ -552,6 +665,7 @@ def test_revived_sessions_the_caller_did_not_create_still_charge_its_cap(tmp_pat
     with pytest.raises(sc.SessionControlError) as exc:
         _revive(state, caller, keys[1])
     assert exc.value.code == "creator_slot_cap_reached"
+    assert exc.value.status == 409
     assert keys[1] not in state._slots
 
 
@@ -588,7 +702,7 @@ def test_a_creator_cap_crossed_in_the_window_is_refused_before_publish(tmp_path,
     def _fill(_built):
         _slot(state, "chat-8")._created_by = caller.key
 
-    _refused_in_window(state, caller, key, monkeypatch, _fill, "creator_slot_cap_reached")
+    _refused_in_window(state, caller, key, monkeypatch, _fill, "creator_slot_cap_reached", 409)
 
 
 # ── Caller-side refusals are the shared ones ─────────────────────────────────
@@ -626,7 +740,7 @@ def test_revive_refuses_at_the_slot_cap(tmp_path, monkeypatch):
         _revive(state, caller, key)
 
     assert exc.value.code == "slot_cap_reached"
-    assert exc.value.status == 429
+    assert exc.value.status == 409
 
 
 # ── The shared helpers are what authorize_target uses ────────────────────────
@@ -1277,12 +1391,8 @@ def test_the_session_store_probes_run_off_the_event_loop(tmp_path, monkeypatch):
     a disk write; the revive path must reach them only through
     ``asyncio.to_thread``, on both sides of the resume.
 
-    The sidebar broadcast the publish schedules (``push_slots_update`` ->
-    ``serialize_slots`` -> ``_slot_links``) reads the same getters on the loop
-    for EVERY slot; that is main's own projection, shared with the History click,
-    and whether its coalesced frame fires before ``asyncio.run`` returns is a
-    platform timing detail (it did on the Windows shard). It is silenced here so
-    the assertion is about the revive path alone."""
+    The sidebar broadcast (``push_slots_update`` -> ``_slot_links``) also reads them on
+    the loop, at a platform-dependent time, so it is silenced to test the revive path."""
     import threading
 
     state = _make_state(tmp_path)

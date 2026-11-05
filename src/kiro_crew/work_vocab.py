@@ -34,10 +34,16 @@ WORK_ACTIONS: tuple[str, ...] = (
     "accept",
     "report",
     "steer",
+    "retire",
+    "destroy",
 )
 WORK_ITEM_STATES: tuple[str, ...] = ("open", "accepted", "rejected", "abandoned")
 WORK_VERDICTS: tuple[str, ...] = ("pass", "fail", "pending", "refused", "error")
-WORK_WORKER_STATUSES: tuple[str, ...] = ("progress", "done", "blocked", "question")
+#: Every status a worker report may CARRY, so every reader of a stored report (the
+#: crew-log entry types, the fold, the metrics series, the boards) knows each one.
+#: Which of them a report may be WRITTEN with is :func:`worker_statuses`: ``reply``
+#: is admitted only while :data:`WORK_REMOTE_DISPATCH_SETTING` is on.
+WORK_WORKER_STATUSES: tuple[str, ...] = ("progress", "done", "blocked", "question", "reply")
 #: Worker statuses whose ARRIVAL needs the conductor, and the whole set that wakes
 #: it: ``done`` is a claim it must verify, ``blocked`` an external dependency it must
 #: clear, ``question`` a decision only it can make. ``progress`` is deliberately
@@ -49,7 +55,19 @@ WORK_WORKER_STATUSES: tuple[str, ...] = ("progress", "done", "blocked", "questio
 #: must not grow imports, and ``conductor_wake`` is reachable from the gateway's boot
 #: path. Two spellings of this set would let a trigger push for news the gate then
 #: refuses, which is precisely the wake nobody can see is wasted.
-WORK_WAKE_STATUSES: tuple[str, ...] = ("done", "blocked", "question")
+#:
+#: ``reply`` is a worker's answer to a follow-up the conductor sent it
+#: (rfc-conductor-remote-dispatch §3b): it claims nothing finished and needs no
+#: evidence, but the conductor is waiting to relay it. Both readers decide through
+#: :func:`wake_statuses`, which drops it while the preview is off.
+WORK_WAKE_STATUSES: tuple[str, ...] = ("done", "blocked", "question", "reply")
+#: The statuses only the remote-dispatch Feature Preview admits. With
+#: :data:`WORK_REMOTE_DISPATCH_SETTING` off, a report carrying one is refused as an
+#: unknown status and no wake reads it, exactly as before the status existed.
+WORK_REMOTE_DISPATCH_STATUSES: tuple[str, ...] = ("reply",)
+#: The config key of the remote-dispatch Feature Preview (default off), read per call
+#: by ``work_preview.remote_dispatch``.
+WORK_REMOTE_DISPATCH_SETTING: str = "work_ledger.remote_dispatch"
 #: When a ``blocked`` or ``question`` report waits on a person, as data rather than
 #: prose: ``approval`` (a tool approval timed out or waits) or ``needs_human`` (only a
 #: person can unblock it). A work-ledger watch whose open items all carry one,
@@ -59,7 +77,11 @@ WORK_BLOCKED_REASONS: tuple[str, ...] = ("approval", "needs_human")
 WORK_REASON_STATUSES: tuple[str, ...] = ("blocked", "question")
 #: ``steer`` is a person's own text typed into a worker (actor ``person``). A person's
 #: steer outranks the conductor's decision: the conductor reads new steer events
-#: before it decides and never overrules them.
+#: before it decides and never overrules them. ``retire`` is the hub moving a remote
+#: binding into the item's history (rfc-conductor-remote-dispatch §5b); only the
+#: gateway writes it, and only with :data:`WORK_REMOTE_DISPATCH_SETTING` on.
+#: ``destroy`` marks a retired binding ``destroyed`` once its peer slot is closed,
+#: under the same switch.
 WORK_EVENT_KINDS: tuple[str, ...] = (
     "create",
     "bind",
@@ -68,6 +90,8 @@ WORK_EVENT_KINDS: tuple[str, ...] = (
     "verdict",
     "close",
     "steer",
+    "retire",
+    "destroy",
 )
 #: Item records the crew log's ``work`` fold may HOLD for one board at once -- a
 #: memory bound on the fold, not a bound on the board's life. The fold forgets an
@@ -103,12 +127,79 @@ WORK_MAX_DEPTH_SETTING: str = "work_ledger.max_depth"
 #: this one table so they cannot drift apart. A worker's fields are fixed.
 WORK_CONDUCTOR_FIELDS: dict[str, tuple[str, ...]] = {
     "create": ("title", "acceptance", "round"),
-    "bind": ("worker_session_key",),
+    "bind": ("worker_session_key", "worker_instance_id"),
     "decide": ("decision", "round"),
     "verdict": ("verdict", "fails"),
     "close": ("state", "decision"),
     "accept": ("acceptance",),
+    "retire": ("worker_session_key", "worker_instance_id", "retired_bindings"),
+    "destroy": ("retired_bindings",),
 }
+
+
+#: Most retired bindings an item keeps; past it the oldest destroyed one goes first.
+MAX_RETIRED_BINDINGS = 8
+
+#: The states a retired binding may hold.
+RETIRED_BINDING_STATES: frozenset[str] = frozenset({"retired", "destroyed"})
+
+#: The remote pair's caps, one definition for the bind that checks them and the
+#: retired history that keeps them (here, since both the store and the fold read
+#: them and neither may import the other): a peer slot key, the cap ``bind`` puts
+#: on a worker key, and a crew id, the cap the instance registry puts on an id.
+WORK_MAX_PEER_SLOT_CHARS: int = 512
+WORK_MAX_INSTANCE_ID_CHARS: int = 128
+#: An artifact value's cap, so a retired worker's pushed branch is kept whole.
+WORK_MAX_ARTIFACT_VALUE_CHARS: int = 512
+#: A retire reason and a stamp, as stored on a retired binding.
+WORK_MAX_RETIRE_REASON_CHARS: int = 64
+WORK_MAX_STAMP_CHARS: int = 64
+
+#: Each retired binding's text fields and their caps.
+_RETIRED_BINDING_TEXT: dict[str, int] = {
+    "worker_session_key": WORK_MAX_PEER_SLOT_CHARS,
+    "worker_instance_id": WORK_MAX_INSTANCE_ID_CHARS,
+    "branch": WORK_MAX_ARTIFACT_VALUE_CHARS,
+    "reason": WORK_MAX_RETIRE_REASON_CHARS,
+    "retired_at": WORK_MAX_STAMP_CHARS,
+    "destroyed_at": WORK_MAX_STAMP_CHARS,
+}
+
+
+def coerce_retired_bindings(raw: Any) -> list[dict[str, Any]]:
+    """Stored or folded *raw* as a clean retired-binding list. NEVER raises.
+
+    An entry without both halves of the pair, or with an unknown state, is
+    dropped; a text field that is not a string reads as ``None``.
+    """
+    if not isinstance(raw, list):
+        return []
+    out: list[dict[str, Any]] = []
+    for entry in raw[-MAX_RETIRED_BINDINGS:]:
+        state = entry.get("state") if isinstance(entry, dict) else None
+        if not isinstance(state, str) or state not in RETIRED_BINDING_STATES:
+            continue
+        clean: dict[str, Any] = {"state": entry["state"]}
+        for name, cap in _RETIRED_BINDING_TEXT.items():
+            value = entry.get(name)
+            clean[name] = value[:cap] if isinstance(value, str) and value else None
+        if clean["worker_session_key"] and clean["worker_instance_id"]:
+            out.append(clean)
+    return out
+
+
+def worker_statuses(remote_dispatch: bool) -> tuple[str, ...]:
+    """The statuses a ``work_report`` may be written with, in declaration order."""
+    if remote_dispatch:
+        return WORK_WORKER_STATUSES
+    return tuple(s for s in WORK_WORKER_STATUSES if s not in WORK_REMOTE_DISPATCH_STATUSES)
+
+
+def wake_statuses(remote_dispatch: bool) -> tuple[str, ...]:
+    """The worker statuses whose arrival wakes the conductor, in declaration order."""
+    if remote_dispatch:
+        return WORK_WAKE_STATUSES
+    return tuple(s for s in WORK_WAKE_STATUSES if s not in WORK_REMOTE_DISPATCH_STATUSES)
 
 
 # --------------------------------------------------------------------------

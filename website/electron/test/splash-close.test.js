@@ -383,9 +383,9 @@ describe("loading.html reveals the exit on reconnect, and on a cold boot only af
   // showLoadingThenConnect serves both the cold boot and every reconnect
   // hand-off; the marker must follow its `reconnect` option, not be constant.
   it("showLoadingThenConnect carries the marker only when reconnecting", () => {
-    const body = fnBody("showLoadingThenConnect");
+    assert.match(fnBody("showLoadingThenConnect"), /paintLoadingScreen\(window, \{ reconnect \}\)/);
     assert.match(
-      body,
+      fnBody("paintLoadingScreen"),
       /loadFile\(path\.join\(dirname, "loading\.html"\), \{\s*query: splashQuery\(window, \{ reconnect, accent: currentThemeAccent\(\) \}\),\s*\}\)/,
     );
   });

@@ -1,7 +1,8 @@
+import { useContext } from 'react'
 import { usePathKind, type PathKind } from '../../hooks/usePathKind'
 import { WINDOWS_ABS_PATH_RE } from '../../utils/urlTransform'
 import { revealOrOpen } from '../FilePathMenu'
-import type { PathActions } from './contexts'
+import { ChatProjectDirCtx, type PathActions } from './contexts'
 
 /**
  * Local filesystem references in rendered text: which strings are worth a stat
@@ -221,6 +222,37 @@ function classifyPathShape(s: string): boolean {
 }
 
 /**
+ * Does a link destination name a FILE on disk rather than an in-app dashboard
+ * route? Path candidacy (`isPathCandidate`) does not settle this: a multi-segment
+ * route (`/settings/security/rules`) is a candidate too, yet the dashboard serves
+ * it as a page. A file reference carries a file extension on its last segment, or
+ * is relative or `~`-rooted (a route is always `/`-rooted with no extension):
+ *
+ *   - `/tmp/x.md`, `/abs/notes.md` — rooted WITH an extension: a file;
+ *   - `src/a.ts`, `notes/guide.md`, `~/notes.md` — relative or home-rooted: a file;
+ *   - `/schedule`, `/settings/security/rules` — rooted, NO extension: a route;
+ *   - `/api/outbox/report.txt` — a gateway endpoint, not a disk path: a route.
+ *
+ * A rooted, extension-less destination reads as a route. A missing directory of
+ * that shape is indistinguishable from a route, so it reads as one.
+ *
+ * A `/api/…` destination is a gateway ENDPOINT, not a filesystem path — a link
+ * to a download route such as `/api/outbox/report.txt` carries a `.txt` tail but
+ * names no disk file, so it must keep navigating rather than be demoted when the
+ * disk probe of that literal path (unavoidably) finds nothing. Same `/api/`
+ * gateway-route test `ImgWithFallback` applies to an image `src`.
+ *
+ * `raw` carries no `:line` suffix (the probe subject `splitLineRef(...).path`),
+ * so the extension is read off the filename.
+ */
+export function isFileLinkDest(raw: string): boolean {
+  if (!raw) return false
+  if (raw.startsWith('/api/')) return false
+  if (raw.startsWith('~') || !raw.startsWith('/')) return true
+  return EXT_RE.test(basenameOf(raw))
+}
+
+/**
  * A trailing source location: `:447`, or `:447:12` for line-and-column.
  *
  * Capped at 7 digits so a long digit run (a hash fragment, an id) is not read as
@@ -285,26 +317,77 @@ type PathResolution = {
   probePending: boolean
 }
 
+/** A Windows root: a drive (`C:\x`, `C:/x`) or UNC (`\\host\share`). */
+const WIN_ROOT_RE = /^(?:[A-Za-z]:[\\/]|\\\\)/
+
+/**
+ * Join a relative path to the chat's project folder, lexically. Empty and `.`
+ * segments are dropped; `..` segments are kept for the backend to resolve.
+ *
+ * Returns `raw` unchanged when there is nothing to join: no project, a project
+ * that is not itself absolute, or a path the backend's resolver already passes
+ * through untouched: rooted (`/x`, `\x`, `\\host\x`, `C:\x`) or naming a home
+ * (`~`, `~/x`, and `~name/x`, which the backend expands). Returns `null`
+ * when `..` segments climb above the project, so the path gets no chip, the
+ * same answer the backend's own resolution gives (`outside_project`).
+ *
+ * A POSIX project splits on `/` only, because `\` is a legal filename
+ * character there; a Windows project splits on both separators and joins
+ * with `\`.
+ */
+export function joinProjectRelative(raw: string, projectDir: string | null | undefined): string | null {
+  if (!raw || !projectDir || raw.startsWith('~') || raw.startsWith('/') || raw.startsWith('\\') || WINDOWS_ABS_PATH_RE.test(raw)) return raw
+  const windows = WIN_ROOT_RE.test(projectDir)
+  if (!windows && !projectDir.startsWith('/')) return raw
+  const sep = windows ? '\\' : '/'
+  const segments: string[] = []
+  // `..` is counted, not applied: the segment before it may be a symlink, and
+  // only the backend's realpath knows where `link/..` lands. Dropping both
+  // here would name a different file.
+  let depth = 0
+  for (const part of raw.split(windows ? /[\\/]/ : '/')) {
+    if (part === '' || part === '.') continue
+    if (part === '..') {
+      if (depth === 0) return null
+      depth -= 1
+    } else {
+      depth += 1
+    }
+    segments.push(part)
+  }
+  const root = projectDir.length > 1 ? projectDir.replace(/[\\/]+$/, '') : projectDir
+  if (!segments.length) return root || projectDir
+  return (root === '/' ? '' : root) + sep + segments.join(sep)
+}
+
 /** Resolve both legal readings of a location suffix before exposing an action.
  *
  * A literal filename such as `report.md:12` takes precedence over the inferred
  * `report.md` at line 12, so both Markdown forms use the same probe ordering.
  */
 export function usePathResolution(raw: string, probeEnabled: boolean): PathResolution {
-  const { path: splitPath, line, endLine } = splitLineRef(raw)
-  const shaped = isPathCandidate(splitPath)
-  const candidate = probeEnabled && shaped
-  const literalCandidate = candidate && line != null
+  const projectDir = useContext(ChatProjectDirCtx)
+  const { path: rawSplitPath, line, endLine } = splitLineRef(raw)
+  const shaped = isPathCandidate(rawSplitPath)
+  // A relative path names a file in THIS chat's project, so it is probed and
+  // opened as that absolute path rather than sent for the backend to resolve
+  // against the gateway's own directory.
+  const splitPath = joinProjectRelative(rawSplitPath, projectDir)
+  const literalPath = joinProjectRelative(raw, projectDir)
+  const candidate = probeEnabled && shaped && splitPath != null
+  const literalCandidate = candidate && line != null && literalPath != null
   const splitKind = usePathKind(candidate ? splitPath : null)
-  const literalKind = usePathKind(literalCandidate ? raw : null)
+  const literalKind = usePathKind(literalCandidate ? literalPath : null)
   const literalWins = literalKind === 'file' || literalKind === 'dir'
 
   return {
     candidate,
     shaped,
     kind: literalWins ? literalKind : splitKind,
-    path: literalWins ? raw : splitPath,
-    splitPath,
+    path: literalWins && literalPath != null ? literalPath : splitPath ?? rawSplitPath,
+    // The text as written, for the chip's label and glyph; `path` is the joined
+    // target the chip probes and opens.
+    splitPath: rawSplitPath,
     line: literalWins ? undefined : line,
     endLine: literalWins ? undefined : endLine,
     probePending: (candidate && splitKind === undefined)

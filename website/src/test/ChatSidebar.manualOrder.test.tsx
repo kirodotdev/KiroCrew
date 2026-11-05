@@ -17,6 +17,7 @@ import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createTestStore } from './helpers'
+import { turnOnCrewModePreview } from './crewModePreview'
 import { ThemeProvider } from '../hooks/useTheme'
 
 const dnd = vi.hoisted(() => ({
@@ -735,6 +736,32 @@ describe('the Manual sort', () => {
     expect(end.contains(handle)).toBe(false)
   })
 
+  it('sets the running dot apart from the drag handle, and only on a row that has one', () => {
+    localStorage.setItem('mc-sidebar-lane', 'flat')
+    renderSidebar([
+      slot('a', '2026-03-01T00:00:00Z', { manual_rank: 0, manual_rev: 100, running: true }),
+      slot('p', '2026-01-05T00:00:00Z', { pinned: true, manual_rank: null, running: true }),
+    ], 'manual')
+    const rowOf = (k: string) => screen.getByText(`${k} title`).closest('[data-session-row]') as HTMLElement
+    const dotClasses = (k: string) =>
+      (rowOf(k).querySelector('[data-testid="session-live-dot"]') as HTMLElement).className.split(/\s+/)
+    // The handle's box ends at the content column's 14px edge; the dot's 4px
+    // left margin is the gap between the two.
+    expect(rowOf('a').querySelector('[data-testid="session-row-drag-handle"]')).toBeTruthy()
+    expect(dotClasses('a')).toContain('ml-1')
+    // A pinned row has no handle, so its dot keeps the content column's edge.
+    expect(rowOf('p').querySelector('[data-testid="session-row-drag-handle"]')).toBeNull()
+    expect(dotClasses('p')).not.toContain('ml-1')
+  })
+
+  it('keeps the running dot on the content edge when the sort is not Manual', () => {
+    renderSidebar([slot('a', '2026-03-01T00:00:00Z', { running: true })], 'date-desc')
+    const row = screen.getByText('a title').closest('[data-session-row]') as HTMLElement
+    expect(row.querySelector('[data-testid="session-row-drag-handle"]')).toBeNull()
+    const dot = row.querySelector('[data-testid="session-live-dot"]') as HTMLElement
+    expect(dot.className.split(/\s+/)).not.toContain('ml-1')
+  })
+
   it('an unpinned session takes back its manual place', () => {
     const { rerender } = renderSidebar([
       slot('a', '2026-03-01T00:00:00Z', { manual_rank: 0, manual_rev: 100 }),
@@ -777,5 +804,32 @@ describe('the Manual sort', () => {
     })
     rerenderFromStore()
     expect(order(['a', 'b'])).toEqual(['b', 'a'])
+  })
+})
+
+describe('with "Group by kind" on', () => {
+  // a and c are normal chats, b a Crew Mode chat: the list draws b | a, c.
+  const MIXED_KINDS = [
+    slot('a', '2026-03-01T00:00:00Z'),
+    slot('b', '2026-02-01T00:00:00Z', { crew_mode_root: true } as Partial<ChatSlot>),
+    slot('c', '2026-01-01T00:00:00Z'),
+  ]
+  // b is a Crew Mode chat only with the Ultra Mode preview on.
+  beforeEach(() => { localStorage.setItem('mc-session-group-by-kind', '1'); turnOnCrewModePreview() })
+
+  it('takes no manual move on an unpinned row: no Alt+Arrow, no drop target, nothing written', async () => {
+    renderSidebar(MIXED_KINDS, 'manual')
+    expect(order(['a', 'b', 'c'])).toEqual(['b', 'a', 'c'])
+    const row = screen.getByText('a title').closest('[data-session-row]') as HTMLElement
+    // The row does not offer the chord, and pressing it is left to the page.
+    expect(row.getAttribute('aria-keyshortcuts')).toBeNull()
+    row.focus()
+    expect(fireEvent.keyDown(row, { key: 'ArrowDown', altKey: true })).toBe(true)
+    // Same-kind and cross-kind drops alike: the grouped order is not a manual one.
+    drop('a', onRow('c'))
+    drop('b', onRow('a'))
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)) })
+    expect(manualWrites()).toEqual([])
+    expect(sortWrites()).toEqual([])
   })
 })

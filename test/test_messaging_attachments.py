@@ -59,21 +59,39 @@ async def _boom(url: str, dest: str) -> None:
     raise RuntimeError("network error")
 
 
+def _named(prefix, rows):
+    return [pytest.param(mime, kind, id=f"{prefix}-{mime}") for mime, kind in rows]
+
+
 class TestClassify:
     @pytest.mark.parametrize(
         "mime,expected",
-        [
-            ("image/png", IMAGE),
-            ("image/jpeg", IMAGE),
-            ("text/plain", TEXT),
-            ("application/json", TEXT),
-            ("audio/webm", AUDIO),
-            ("video/mp4", VIDEO),
-            ("application/octet-stream", OTHER),
-            ("", OTHER),
-        ],
+        _named(
+            "mimetype_mapping",
+            [
+                ("image/png", IMAGE),
+                ("image/jpeg", IMAGE),
+                ("text/plain", TEXT),
+                ("application/json", TEXT),
+                ("audio/webm", AUDIO),
+                ("video/mp4", VIDEO),
+                ("application/octet-stream", OTHER),
+                ("", OTHER),
+            ],
+        )
+        + _named(
+            "parameters_after_the_type_are_ignored",
+            [
+                # Discord's content_type for a JSON or XML file carries a charset.
+                ("application/json; charset=utf-8", TEXT),
+                ("application/xml; charset=utf-8", TEXT),
+                ("text/plain;charset=UTF-8", TEXT),
+                ("IMAGE/PNG ; foo=bar", IMAGE),
+                ("application/octet-stream; charset=utf-8", OTHER),
+            ],
+        ),
     )
-    def test_mimetype_mapping(self, mime, expected):
+    def test_mimetype_maps_to_its_kind(self, mime, expected):
         assert classify(mime) == expected
 
     def test_documents_detected_by_filename(self):
@@ -82,6 +100,33 @@ class TestClassify:
     def test_svg_is_not_an_image(self):
         """SVG is scriptable XML; the ACP encoder cannot inline it."""
         assert classify("image/svg+xml") == OTHER
+
+    def test_a_parameter_cannot_make_svg_an_image(self):
+        assert classify("image/svg+xml; charset=utf-8") == OTHER
+
+
+class TestParameterizedDocumentReachesTheParser:
+    @pytest.mark.asyncio
+    async def test_the_parser_gets_the_same_base_type_the_classifier_read(self, monkeypatch):
+        """``application/pdf; charset=binary`` on a name with no extension is parsed as a PDF."""
+        import kiro_crew.messaging.attachments as mod
+
+        seen: list[str] = []
+
+        def _extract(path: str, *, mimetype: str = "", filename: str = "") -> str:
+            seen.append(mimetype)
+            return "page one"
+
+        monkeypatch.setattr(mod, "extract_text", _extract)
+        att = Attachment(
+            name="report", mimetype="application/pdf; charset=binary", url="https://x/1"
+        )
+        result = await ingest_attachments([att], download=_writer(b"%PDF-1.4\n"), source="test")
+        try:
+            assert seen == ["application/pdf"]
+            assert result.rejections == []
+        finally:
+            cleanup(result.temp_paths)
 
 
 class TestSafeSuffix:
@@ -100,6 +145,28 @@ class TestSafeSuffix:
         out = safe_suffix(hint)
         assert out == expected
         assert "/" not in out and ".." not in out.strip(".")
+
+    def test_a_long_hint_is_bounded(self):
+        assert safe_suffix("x" * 300) == "." + "x" * 16
+
+
+class TestAttachmentSuffix:
+    @pytest.mark.parametrize(
+        ("name", "mimetype", "expected"),
+        [
+            ("report.pdf", "", ".pdf"),
+            ("report.pdf", "image/png", ".pdf"),
+            ("README", "text/plain", ".txt"),
+            ("README", "", ".bin"),
+            (".env", "", ".bin"),
+            ("clip", "video/mp4; codecs=avc1", ".mp4"),
+            ("voice", "audio/ogg; codecs=opus", ".ogg"),
+            ("x" * 300, "text/plain", ".txt"),
+            ("a." + "y" * 40, "", ".bin"),
+        ],
+    )
+    def test_name_extension_then_mimetype_then_bin(self, name, mimetype, expected):
+        assert attachments.attachment_suffix(name, mimetype) == expected
 
 
 class TestSniffImageMime:
@@ -142,6 +209,28 @@ class TestIngestAttachments:
         assert result.rejections == []
         assert os.path.exists(result.image_paths[0])
         cleanup(result.temp_paths)
+
+    async def test_a_dotless_name_downloads_under_its_mimetype_extension(self):
+        """A channel that sends no hint (Discord, Telegram) for a dotless name left
+        the whole name as the temp suffix; a long one made the temp path too long
+        to create, so the file was refused as "download failed"."""
+        dests: list[str] = []
+
+        async def _download(url: str, dest: str) -> None:
+            dests.append(dest)
+            with open(dest, "wb") as fh:
+                fh.write(b"hello")
+
+        for name in ("README", "n" * 300):
+            result = await ingest_attachments(
+                [Attachment(name=name, mimetype="text/plain", size=5, url="u")],
+                download=_download,
+                source="test",
+            )
+            assert result.rejections == []
+            assert len(result.text_blocks) == 1
+            cleanup(result.temp_paths)
+        assert [os.path.splitext(d)[1] for d in dests] == [".txt", ".txt"]
 
     async def test_size_enforced_on_downloaded_bytes_not_metadata(self):
         """The hole this closes: Slack trusted the channel's `size`, which
@@ -650,7 +739,51 @@ class TestAppendAttachmentContext:
     def test_image_paths_appended(self):
         result = IngestResult(image_paths=["/tmp/a.png", "/tmp/b.jpg"])
         out = append_attachment_context("hello", result)
-        assert out == "hello\n/tmp/a.png\n/tmp/b.jpg"
+        assert out == "\n\n".join(
+            [
+                "hello\n/tmp/a.png\n/tmp/b.jpg",
+                attachments.image_location_note("/tmp/a.png"),
+                attachments.image_location_note("/tmp/b.jpg"),
+            ]
+        )
+
+    def test_each_image_gets_a_note_naming_its_folder(self, tmp_path):
+        # The ACP encoder hides an inlined image's path behind ``[image: <name>]``,
+        # so the note is the only place the agent learns where the file is.
+        image = tmp_path / "shot.png"
+        out = append_attachment_context("look", IngestResult(image_paths=[str(image)]))
+        assert (
+            f"[Image shot.png is saved in the folder {tmp_path}{os.sep} until this turn ends; "
+            "join the two to open the original file]"
+        ) in out
+
+    def test_the_note_survives_the_prompt_encoder(self, tmp_path):
+        # The note names the folder and the file apart, so the encoder that turns
+        # the bare path line into an image block leaves the note readable.
+        import io
+
+        from kiro_crew.acp.prompt_blocks import build_prompt_blocks
+
+        pil = pytest.importorskip("PIL.Image")
+        buf = io.BytesIO()
+        pil.new("RGB", (2, 2), (127, 127, 127)).save(buf, format="PNG")
+        image = tmp_path / "shot.png"
+        image.write_bytes(buf.getvalue())
+        out = append_attachment_context("look", IngestResult(image_paths=[str(image)]))
+        blocks = build_prompt_blocks(out)
+        assert [b["type"] for b in blocks].count("image") == 1
+        texts = "".join(b.get("text", "") for b in blocks)
+        assert f"saved in the folder {tmp_path}{os.sep} " in texts
+        assert str(image) not in texts
+
+    def test_files_get_no_image_note(self):
+        out = append_attachment_context("msg", IngestResult(file_paths=["/tmp/a.zip"]))
+        assert "is saved in the folder" not in out
+
+    def test_slack_uses_the_same_note(self):
+        from kiro_crew.slack import files as slack_files
+
+        assert slack_files.image_location_note is attachments.image_location_note
 
     def test_file_paths_appended(self):
         result = IngestResult(file_paths=["/tmp/archive.zip", "/tmp/clip.mp4"])
@@ -681,7 +814,7 @@ class TestAppendAttachmentContext:
     def test_empty_text_with_images(self):
         result = IngestResult(image_paths=["/tmp/x.png"])
         out = append_attachment_context("", result)
-        assert out == "/tmp/x.png"
+        assert out == f"/tmp/x.png\n\n{attachments.image_location_note('/tmp/x.png')}"
 
     def test_empty_result_returns_text_unchanged(self):
         result = IngestResult()

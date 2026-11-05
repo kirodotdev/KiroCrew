@@ -6,7 +6,8 @@ and blocks until shutdown; and the post-bind session-start sizing log.
 
 Orchestrator fields read: ``_background_tasks``, ``_bot_token``, ``_cfg``,
 ``_cron_injecting``, ``_json_ready``, ``_no_crons``, ``_no_dashboard``, ``_no_open``,
-``_owner_id``, ``_port_override``, ``_slack_enabled``, ``_test_mode``,
+``_owner_id``, ``_port_override``, ``_runner_admission_adopted``, ``_slack_enabled``,
+``_test_mode``,
 ``_tracking_channels``, ``autonudge_svc``, ``cron_svc``, ``subagent_mgr``.
 Orchestrator fields written: ``_configured_host``, ``_dashboard_port``,
 ``_dashboard_runner``, ``_feature_video_task``, ``_local_only``, ``_marker_write_task``,
@@ -68,6 +69,7 @@ if TYPE_CHECKING:
         hooks_config_from_config_dict,
         is_local_only,
         kiro_agents_dir,
+        ledger_of,
         live,
         log_probe_failure,
         logger,
@@ -194,6 +196,7 @@ async def _init_services(self: GatewayOrchestrator) -> None:
             log_message="agent_runtime.run_first_run_setup failed",
         )
     except Exception:
+        # A rebuild PlatformCompositionError lands here too: platform boot enforces composition.
         # Boot deliberately continues: a gateway with no agent spec still
         # serves the dashboard, and one command repairs it. But this is NOT a
         # warning-level event — without a spec on disk kiro-cli answers every
@@ -236,6 +239,11 @@ async def _init_services(self: GatewayOrchestrator) -> None:
         logger.debug("Agent spec verification failed", exc_info=True)
 
     self.slack = RealSlackClient(self._bot_token) if self._slack_enabled else None
+    # Slack agent sessions (status, title, native Stop): the driver is attached
+    # at boot and reads slack.agent_sessions (and the install's capability) live.
+    from kiro_crew.slack.agent_sessions.status import configure as _configure_agent_sessions
+
+    _configure_agent_sessions(self)
     factory = build_provider_factory(self._cfg)
 
     # Only in-memory wiring belongs on the boot path. The closed barrier
@@ -362,6 +370,11 @@ async def _init_services(self: GatewayOrchestrator) -> None:
     self.sessions.set_injection_probe(
         lambda key: self._cron_injecting.get(key, 0) > 0,
     )
+    # A turn's release settles the inline marks it received: confirmed if it
+    # landed, revoked otherwise, and the completions parked on it with them.
+    _ledger = ledger_of(self.sessions)
+    if _ledger is not None:
+        _ledger.on_released = self._settle_inline
 
     # Channel history buffer. data_home(), not config_dir(): this method is
     # async and config_dir() re-runs start-of-process maintenance (mkdir,
@@ -668,6 +681,8 @@ async def _init_dashboard(self: GatewayOrchestrator) -> None:
         self.dashboard_state.slack_client = self.slack
     if self.dashboard_state:
         self.dashboard_state.no_crons = self._no_crons  # dashboard mode
+        # ``kirocrew restart --when-idle`` asks this before it restarts.
+        self.dashboard_state._restart_idle_gate = self._restart_gate_when_idle
     if self.dashboard_state and not self._test_mode:
         # Told once, after the KAS floor answers: a Kiro CLI pick now runs on KAS.
         from kiro_crew import kiro_on_kas_notice
@@ -812,6 +827,25 @@ async def run(self: GatewayOrchestrator) -> None:
     # path, and the force-exit handler, doing exactly their pre-existing work.
     await asyncio.to_thread(cleanup_orphaned_sessions, narrow_with_leaders=False)
 
+    # KAS MCP launch snapshots no session of this run references: the previous run's
+    # agent processes, and the launchers they started, ended just above, and no
+    # session of this run exists yet. The cutoff is taken HERE, so a snapshot this
+    # run writes is never older than it; the scan itself runs on a tracked task, the
+    # way the telemetry backfill below does, so its cost never delays readiness.
+    _snapshot_sweep_boot_time = time.time()
+
+    async def _sweep_kas_launch_snapshots() -> None:
+        try:
+            from kiro_crew.agent_sdk.agent_specs import sweep_kas_launch_snapshots
+
+            await asyncio.to_thread(sweep_kas_launch_snapshots, _snapshot_sweep_boot_time)
+        except Exception:  # housekeeping must never break boot; skipped, not run
+            logger.warning("KAS launch snapshot sweep skipped", exc_info=True)
+
+    _snapshot_sweep_task = asyncio.create_task(_sweep_kas_launch_snapshots())
+    self._background_tasks.add(_snapshot_sweep_task)
+    _snapshot_sweep_task.add_done_callback(self._background_tasks.discard)
+
     # Same "previous run left residue" concern as the orphan sweep above, for
     # telemetry rather than processes: any open-session crumb on disk belongs
     # to a session that never reached a teardown path, so it is emitted as
@@ -854,12 +888,25 @@ async def run(self: GatewayOrchestrator) -> None:
     except RuntimeError:
         logger.warning("sandbox warm_backend skipped (thread exhaustion); cache stays cold")
 
-    # Enterprise build only: no kiro login, no Crew. Checked before any service
-    # starts and long before the HTTP server binds; a failure exits non-zero.
-    # After the sandbox warm-up because the probe runs kiro-cli in the sandbox.
+    # Enterprise build only: no kiro sign-in, no Crew. Checked before any service
+    # starts and long before the HTTP server binds; a failure exits non-zero. The
+    # check reads the one enterprise sign-in (Crew's vault sign-in) and
+    # always hands back None, so start_dashboard builds its own setup service.
     from kiro_crew.enterprise_boot import require_kiro_login
 
     self._boot_kiro_service = await require_kiro_login(assume_ready=self._test_mode)
+
+    # Enterprise build only (RFC D6): KAS is the harness, and a KAS that cannot start
+    # refuses the start instead of falling back to the Kiro CLI harness. Before any
+    # service starts, like the sign-in check above. Only the gateway records the
+    # verdict that refuses later KAS sessions; another process that spawns KAS gets
+    # that spawn's own error. An oss build skips this block entirely.
+    from kiro_crew import edition
+
+    if edition.is_enterprise():
+        from kiro_crew.enterprise_boot import require_kas_harness
+
+        await asyncio.to_thread(require_kas_harness, self._cfg, test_mode=self._test_mode)
 
     # ── Initialise all services ──
     from kiro_crew.slack.events import SeenCache, init_socket_mode
@@ -1103,6 +1150,10 @@ async def run(self: GatewayOrchestrator) -> None:
         # it while the probe is missing -- which would let the repair close a
         # child that is still running.
         self._register_child_liveness()
+    # Past the store-ready pass: with no adoption sweep armed, none will
+    # decide the runs a restart recovered, so fair admission stops holding them.
+    if self.task_runner is not None and not self._runner_admission_adopted:
+        self.task_runner.end_recovery_wait()
 
     # Persisted Crew work and legacy channel agents can dispatch providers
     # immediately when resumed, so start them only after the shared memory
@@ -1385,7 +1436,9 @@ async def run(self: GatewayOrchestrator) -> None:
         except Exception:
             logger.warning("Background session start failed", exc_info=True)
 
-    asyncio.create_task(_start_bg_session())
+    _bg_session_task = asyncio.create_task(_start_bg_session())
+    self._background_tasks.add(_bg_session_task)
+    _bg_session_task.add_done_callback(self._background_tasks.discard)
 
     # Stale-asset watchdog: detects when an update prunes the running
     # install's static assets and triggers graceful shutdown so the

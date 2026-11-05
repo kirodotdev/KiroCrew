@@ -35,6 +35,9 @@ _AUTO_PAUSE_MAX = 10000
 # own schedule. A success resets the counter and with it the backoff.
 _NEVER_PAUSE_BACKOFF_BASE_SECS = 300
 _NEVER_PAUSE_BACKOFF_MAX_SECS = 3600
+# Default consecutive failures before a failure alert leaves the dashboard bell
+# for the job's channel or the owner's DM: 1 alerts on the first failure.
+_ALERT_AFTER_DEFAULT = 1
 
 
 def _lifts_default_pause(limit: object) -> bool:
@@ -67,6 +70,29 @@ def validate_auto_pause_after_failures(value: Any) -> int:
     return limit
 
 
+def validate_alert_after_failures(value: Any) -> int:
+    """Return *value* as a per-job alert threshold, or raise ``ValueError``.
+
+    ``1.._AUTO_PAUSE_MAX`` sends the failure message only once that many runs
+    have failed in a row. ``0`` is refused: "never alert" is what ``silent``
+    means. ``bool`` is refused like :func:`validate_auto_pause_after_failures`.
+    """
+    if isinstance(value, bool):
+        raise ValueError(f"alert_after_failures must be an integer, got {value!r}")
+    try:
+        limit = int(value)
+    except (TypeError, ValueError, OverflowError) as e:
+        raise ValueError(f"alert_after_failures must be an integer, got {value!r}") from e
+    if isinstance(value, float) and value != limit:
+        raise ValueError(f"alert_after_failures must be an integer, got {value!r}")
+    if not 1 <= limit <= _AUTO_PAUSE_MAX:
+        raise ValueError(
+            f"alert_after_failures must be within 1..{_AUTO_PAUSE_MAX} "
+            f"(1 = alert on the first failure), got {limit}"
+        )
+    return limit
+
+
 @dataclass
 class CronSchedule:
     """Schedule definition — ``every``, ``at``, or ``cron``."""
@@ -89,6 +115,10 @@ class CronJob:
     thread_ts: str | None = None
     enabled: bool = True
     user_paused: bool = False  # True when explicitly paused by user; never mutated by execution
+    # Monotonic per-job order for explicit pause/resume requests, including a
+    # repeated request whose booleans already have that value. A pending run
+    # record uses it to keep a newer user choice while merging runtime fields.
+    user_pause_generation: int = 0
     auto_paused: bool = (
         False  # True when paused by execution after repeated failures; cleared on re-enable/success
     )
@@ -130,41 +160,19 @@ class CronJob:
     # history attribution.
     last_result_ts: float = 0.0
     # The run stamp as ALREADY RENDERED text, written once by
-    # :meth:`set_run_result` and PERSISTED. This is what the dashboard header
-    # displays, and it is a snapshot on purpose.
-    #
-    # The header is also the row's dedup key: ``ConversationLog.append_if_absent``
-    # judges "already persisted" by ``(role, content)``, so any injection site
-    # that RE-RENDERED the stamp would have to reproduce it byte for byte
-    # forever. Rendering reads the job's ``timezone``, which a user can edit
-    # after the run, so a re-render would silently mint a second, differently
-    # spelled copy of a row already on disk -- a duplicated run in the tab and
-    # in the replay a follow-up turn reads. Rendering once, here, is what makes
-    # every later injection (the three executor delivery paths and a later
-    # ``/to-chat`` re-surfacing) byte-identical no matter what the job's
-    # configuration has become since.
-    #
-    # DISPLAY ONLY. Row identity is ``cron_inject.run_marker``, which carries
-    # ``last_result_ts`` at full precision, so this stamp's resolution does not
-    # decide whether two runs collapse -- it is rendered for a person to read.
-    #
-    # ``""`` (a legacy job, or a store written by an older build) means
-    # "unknown" and renders the pre-stamp header unchanged, so rows already on
-    # disk keep deduping against their historical spelling.
+    # :meth:`set_run_result` and persisted. The header is the row's dedup key
+    # (``ConversationLog.append_if_absent`` matches ``(role, content)``), and
+    # rendering reads the editable ``timezone``, so re-rendering later could
+    # mint a second copy of a row already on disk. Rendering once keeps every
+    # injection byte-identical. Display only: row identity is
+    # ``cron_inject.run_marker``. ``""`` (legacy) renders the pre-stamp header.
     last_result_stamp: str = ""
     # Runtime-only (never serialized): True once THIS run produced a result
-    # via set_run_result(). For AGENT jobs ``last_result`` is a cross-run
-    # context-carry field that result-less runs deliberately leave in place
-    # for the next run's prompt dedup, so the history recorder needs this
-    # marker — not the value — to decide attribution. Command and script
-    # jobs instead clear it on every result-less exit: the prompt built for
-    # them is discarded (the command branch never reads it, the script
-    # branch reassigns the variable), so a carried-over value could only
-    # ever misreport a finished run's result. Identity/equality checks on
-    # the string cannot do that job: CPython interns equal literals and caches
-    # single-character latin-1 strings, so a run re-producing the same text
-    # is indistinguishable from a run that produced nothing. Reset at the
-    # start of every run by _run_job_isolated.
+    # via set_run_result(). For AGENT jobs ``last_result`` carries over across
+    # result-less runs (prompt dedup), so the history recorder needs this
+    # marker, not the value, to attribute it; comparing strings cannot tell a
+    # repeated result from none. Command and script jobs clear ``last_result``
+    # on every result-less exit. Reset at each run start by _run_job_isolated.
     result_produced: bool = False
     # Runtime-only, reset by _execute_with_timeout at the start of every run:
     # True once THIS run's failure has been counted via record_failure(). The
@@ -179,6 +187,14 @@ class CronJob:
     # leave the store's pause state and failure count as they find them. None
     # for a record no run stamped: the run's pause state is applied as is.
     auto_paused_at_start: bool | None = None
+    # Runtime-only, set only on a scheduled cancel or reap's frozen settlement
+    # record (``cron_service/settlement.py``). ``settlement_failure_counted`` is
+    # True when the record counted this run's failure, so the job it lands on
+    # decides the auto-pause with its own stored limit.
+    # ``settlement_pause_audited`` is True once a save landed that pause and its
+    # ``cron_auto_pause`` row was written, so a later save writes no second row.
+    settlement_failure_counted: bool = False
+    settlement_pause_audited: bool = False
     context_enabled: bool = False
     agent_id: str = ""
     # Member identity is distinct from the provider template in agent_id.
@@ -188,43 +204,32 @@ class CronJob:
     execution_context: dict[str, Any] | None = None
     approval_mode: str = ""  # "" (default/hook-based) | "auto" (auto-approve all tools)
     acked_items: list[str] = field(default_factory=list)
+    # One id per ``acked_items`` entry, aligned by position ("" for an entry
+    # added without one), so an unack can take back exactly the entry its ack
+    # added even when an equal summary was acknowledged again later.
+    acked_item_ids: list[str] = field(default_factory=list)
+    # Digest of the ``acked_items`` the ids above were written against. A
+    # writer that changed the items without the ids (an older build) leaves a
+    # digest that does not match them, so the ids then name no entry.
+    acked_item_ids_digest: str = ""
     created_by: str = ""  # Slack user ID of the creator (for DM fallback)
-    # Provenance of a job seeded from a Schedule-page template. Curated
-    # template prompts are COPIED into the job at save time (the user owns and
-    # edits their prompt), so a later fix to a template is unreachable for jobs
-    # already saved. Two create-only fields, written together by the dashboard
-    # create path ONLY (MCP / CLI / apps SDK / onboarding import never involve a
-    # template and leave both ""):
+    # Provenance of a job seeded from a Schedule-page template, written once
+    # by the dashboard create path only (other surfaces leave both ""):
     #
     #   source_preset          -- the template preset id (e.g. "error-digest").
-    #   source_template_prompt -- the template's prompt text AS IT WAS at save
-    #                             time (a snapshot, written once, never updated).
+    #   source_template_prompt -- the template's prompt text at save time.
     #
-    # The snapshot is what makes "the template changed" an ATTRIBUTABLE claim.
-    # Comparing the job's live message against the template's CURRENT prompt is
-    # symmetric: it cannot tell a template that moved from a user who edited
-    # their own copy. The snapshot fixes one operand at save time, so the
-    # Schedule page can ask the two questions separately -- did the TEMPLATE
-    # move (snapshot != live preset prompt), which is the only thing that shows
-    # a "template updated" hint, versus did the USER edit their copy
-    # (message != snapshot), which shows nothing. It is a text snapshot, not a
-    # maintained revision integer, so it cannot drift out of date.
-    #
-    # "" for both means "unknown" -- a blank/non-dashboard create, or a job
-    # saved before these fields existed (_job_from_record defaults both to "").
-    # Such a job simply never shows the hint.
+    # The snapshot lets the Schedule page tell a TEMPLATE that moved
+    # (snapshot != live preset prompt, shows a "template updated" hint) from a
+    # USER who edited their copy (message != snapshot, shows nothing).
+    # "" for both means unknown; such a job never shows the hint.
     source_preset: str = ""
     source_template_prompt: str = ""
-    # Install-time provenance: the namespaced key an external installer owns
-    # this job under (``kirocrew cron add --managed-by <key>``), e.g.
-    # ``"<system>:owner/asset-name"``. Unique across the store by construction
-    # -- the only writer, :meth:`CronService.add_managed_job`, refuses a second
-    # job with the same key. It is how an installer finds its own job again
-    # without knowing the random ``id``: uninstall removes it
-    # (``kirocrew cron remove --managed-by <key>``) and a re-install is remove
-    # then add. Create-only: no update path accepts it, so a user edit on the
-    # Schedule page never detaches a job from its installer. ``""`` means "not
-    # installer-managed".
+    # The key an external installer owns this job under
+    # (``kirocrew cron add --managed-by <key>``), so it can find the job without
+    # its random ``id``. Unique: :meth:`CronService.add_managed_job`, the only
+    # writer, refuses a duplicate. Create-only, so a Schedule-page edit never
+    # detaches a job from its installer. ``""`` = not installer-managed.
     managed_by: str = ""
     # The digest of the ``app.json`` cron fields the app bridge last applied to
     # this job (``kiro_crew.apps.bridges.app_cron_manifest_digest``). Stamped
@@ -249,6 +254,9 @@ class CronJob:
     # :meth:`auto_pause_limit`, never directly, so every threshold comparison
     # shares one meaning of 0.
     auto_pause_after_failures: int = _AUTO_PAUSE_THRESHOLD
+    # Consecutive failed runs before the failure message leaves the dashboard
+    # bell for the channel or DM. Read it through :meth:`alert_after_limit`.
+    alert_after_failures: int = _ALERT_AFTER_DEFAULT
     skip_dates: list[str] = field(default_factory=list)  # ISO dates to skip ["YYYY-MM-DD"]
     timezone: str = ""  # IANA timezone for skip evaluation
     persistent_session: bool = True  # False → fresh ephemeral session per run
@@ -263,32 +271,23 @@ class CronJob:
     # benign (they self-heal on the job's next folder move).
     folder_id: str = ""
     model: str = ""  # per-job model override (canonical key or provider id); "" = inherit
-    # The CHAT (sidebar) folder the job's ``cron-{id}`` tab is filed into; "" =
-    # not filed, which is what every job predating the field keeps doing. Its
-    # run stamps and markers already make that one tab the job's timeline.
-    #
-    # Distinct from ``folder_id`` above, and the two are never interchangeable:
-    # ``folder_id`` groups the job's ROW on the Schedule page
-    # (``cron_folders.json``), while this names a folder in the chat sidebar's
-    # own tree (``folders.json``) and decides where the job's TAB lands. A job
-    # may carry either, both or neither, and one is never derived from the other.
-    #
-    # PERSISTENT jobs only: a stateless job (``persistent_session=False``) has
-    # no job-wide tab to file, so the store refuses the pair at save time rather
-    # than accepting a setting with no observable effect.
-    #
-    # Filing SUPPLEMENTS delivery, never replaces it: a run with a chat folder
-    # still reaches its Slack DM, its dashboard notification and its origin
-    # session exactly as it did before.
-    #
-    # CONTRACT for consumers, matching ``folder_id``'s: an id that does not
-    # match a folder in ``folders.json`` MUST be treated as "not filed". A chat
-    # folder can be deleted while a job still names it, and a dangling id must
-    # cost the tab its place in the sidebar and nothing else -- the run still
-    # delivers, and the skip is recorded once (see
-    # ``cron_inject.chat_folder_for_minted_tab``). A RENAME is a no-op: ids
-    # are stable, so the job follows the folder under its new name.
+    # The CHAT sidebar folder (``folders.json``) the job's ``cron-{id}`` tab is
+    # filed into; "" = not filed. Independent of ``folder_id``, which groups the
+    # job's ROW on the Schedule page. PERSISTENT jobs only: the store refuses it
+    # with ``persistent_session=False`` (no job-wide tab). Filing adds to
+    # delivery, never replaces it. CONTRACT: an id with no matching folder MUST
+    # be treated as "not filed"; the run still delivers and the skip is recorded
+    # once (``cron_inject.chat_folder_for_minted_tab``).
     chat_folder_id: str = ""
+    # Optional project directory an agent job's session runs in.
+    # ``""`` (and a record written before the field existed) keeps
+    # today's cwd: the bound agent's workspace, else the per-session scratch
+    # directory. When set, it is the session's cwd for every fire, so the
+    # repo's own ``.kiro/steering/`` and ``AGENTS.md`` load as they would for
+    # an interactive session scoped there. Stored resolved (``realpath``);
+    # validated on write and again at every fire by
+    # ``fields.resolve_project_path``. Agent (message) jobs only.
+    project_path: str = ""
     # Transient-retry telemetry for the LAST completed run. Both fields are
     # written in ONE place, `CronService._execute`, right after it stamps
     # `last_run_ts`: it reads the in-flight `_transient_attempts` counter the
@@ -302,21 +301,12 @@ class CronJob:
     #: the schedule drifts) and never reaches the stamp, so the two disagree and
     #: the Schedule page shows no count for it rather than the previous run's.
     last_retry_run_ts: float = 0.0
-    #: The run GENERATION the store holds: a per-job counter, one above the
-    #: previous run's, allocated to a run at its first step -- or to the
-    #: ``cancel()`` / reap that takes its claim before that -- by
-    #: ``RunClaims.next_generation`` and written to the record by the
-    #: two terminal merges only (``_merge_job_result`` for a completed run,
-    #: ``_merge_terminal_state_locked`` for a cancelled or reaped one). Both
-    #: merges run in a worker thread behind the release of the run's claim,
-    #: under a store lock other writers contend for, so a replacement run
-    #: accepted in that window can complete and merge FIRST; the older run's
-    #: record is then discarded rather than applied over it (status, error,
-    #: result and the failure counter would all revert until some later run
-    #: merged again). An integer, not a timestamp: Windows' ``time.time()``
-    #: ticks every ~15.6 ms, so two runs of one job can claim with EQUAL
-    #: timestamps, which no "newer wins" rule can order. 0 is a legacy record
-    #: or a job that never ran.
+    #: Per-job run counter from ``RunClaims.next_generation``, written only by
+    #: the terminal merges (``_merge_job_result``, ``_merge_terminal_state_locked``).
+    #: Those merge after the claim is released, so a replacement run can merge
+    #: first; the older record is then discarded instead of reverting its state.
+    #: An integer, not a timestamp: Windows' ``time.time()`` ticks every ~15.6 ms,
+    #: so two claims can tie. 0 = a job that never ran.
     run_generation: int = 0
 
     # A sequence of MORE THAN ONE agent takes precedence over agent_id: the
@@ -331,16 +321,13 @@ class CronJob:
     timeout: int = (
         0  # script/command timeout in seconds (0 = use default: 30s script, 300s command)
     )
-    # Operator-approved vault secrets for SCRIPT jobs: env-var name ->
-    # vault secret NAME (kiro_crew.secrets.SecretVault; plaintext never touches
-    # this store). Minted ONLY by the owner approving an agent request on the
-    # Schedule page — no surface writes an active grant directly, so an agent
-    # cannot grant itself vault access. secret_env_pin (keyed, epoch-bound
-    # HMAC over the script spec + message + body bytes, see
-    # cron_script.compute_secret_env_pin) binds the grant to the code the
-    # operator approved: the crons/ scripts stay agent-writeable by design, so
-    # a body rewritten after approval fails closed at fire time instead of
-    # running with the secrets.
+    # Operator-approved vault secrets for SCRIPT jobs: env-var name -> vault
+    # secret NAME (kiro_crew.secrets.SecretVault; no plaintext here). Set ONLY
+    # when the owner approves a request on the Schedule page, so an agent cannot
+    # grant itself vault access. secret_env_pin (cron_script.compute_secret_env_pin,
+    # a keyed HMAC over script spec + message + body) binds the grant to the
+    # approved code: crons/ scripts stay agent-writeable, so a body rewritten
+    # after approval fails closed at fire time.
     secret_env: dict[str, str] = field(default_factory=dict)
     secret_env_pin: str = ""
     # Agent-REQUESTED grant awaiting operator approval. The MCP
@@ -439,6 +426,21 @@ class CronJob:
             return _AUTO_PAUSE_THRESHOLD
         return limit or None
 
+    def alert_after_limit(self) -> int:
+        """Consecutive failures before a failure alert leaves the dashboard bell.
+
+        A value no writer can produce falls back to the default, so a damaged
+        record alerts on the first failure rather than never.
+        """
+        limit = self.alert_after_failures
+        if (
+            isinstance(limit, bool)
+            or not isinstance(limit, int)
+            or not 1 <= limit <= _AUTO_PAUSE_MAX
+        ):
+            return _ALERT_AFTER_DEFAULT
+        return limit
+
     def failure_backoff_until(self) -> float | None:
         """Epoch before which a failing job must not fire, or ``None``.
 
@@ -515,57 +517,53 @@ class CronJob:
     def record_failure(self) -> None:
         """Count one consecutive failure and auto-pause once the threshold is hit.
 
-        Auto-pause is execution-owned: it sets both `enabled` (so the in-memory
-        scheduler stops firing immediately) and `auto_paused` (the durable reason,
-        distinct from a user pause), so the pause survives a reload. Single-sourced
-        here so the many script/command failure branches can't drift on how a pause
-        is recorded — mirroring how the effective-enabled derivation reads it back.
+        Sets both `enabled` (the scheduler stops at once) and `auto_paused` (the
+        durable reason, distinct from a user pause), in one place so the many
+        failure branches record a pause the same way.
 
         A run that started auto-paused and finds the pause lifted under it (a
-        resume made in this process, on the job object the run executes on)
-        counts nothing: the resume gave the job fresh attempts, and a run from
-        before it does not spend one. A pause the run lifted itself
-        (:meth:`record_success`) clears the stamp, so it is not mistaken for
-        that resume. ``failure_recorded`` is still set, so the
-        timeout arm and the reaper treat this run's failure as handled.
+        resume in this process) counts nothing: the resume gave the job fresh
+        attempts. ``failure_recorded`` is still set, so the timeout arm and the
+        reaper treat the failure as handled.
         """
-        self.failure_recorded = True
-        if self.auto_paused_at_start and not self.auto_paused:
-            return
-        self.consecutive_failures += 1
-        limit = self.auto_pause_limit()
-        if limit is not None and self.consecutive_failures >= limit and not self.auto_paused:
+        if self.count_failure() and self.failure_limit_reached():
             self.enabled = False
             self.auto_paused = True
             self._audit_pause_change("auto_paused")
 
+    def count_failure(self) -> bool:
+        """The counting half of :meth:`record_failure`: True when the failure counted.
+
+        A scheduled cancel or reap counts on its frozen record and leaves the pause
+        to the job the store hands back, whose limit may have been saved during the
+        run (``cron_service/settlement.py``).
+        """
+        self.failure_recorded = True
+        if self.auto_paused_at_start and not self.auto_paused:
+            return False
+        self.consecutive_failures += 1
+        return True
+
+    def failure_limit_reached(self) -> bool:
+        """Whether a job not yet auto-paused has reached its consecutive-failure limit."""
+        limit = self.auto_pause_limit()
+        return limit is not None and self.consecutive_failures >= limit and not self.auto_paused
+
     def record_success(self) -> None:
         """Reset the failure counter and lift any execution auto-pause.
 
-        Clearing an auto-pause also re-enables the job, because ``enabled`` is
-        not independent state: :func:`_job_enabled` reconstructs it on load as
-        ``not user_paused and not auto_paused``. Leaving ``enabled`` False after
-        clearing ``auto_paused`` therefore produces a job that is paused in
-        memory and enabled on disk — it stays stopped until the next restart
-        silently resumes it, which is the surprise a manual "Run Now" on an
-        auto-paused job would otherwise spring.
+        Clearing an auto-pause also re-enables the job: :func:`_job_enabled`
+        rebuilds ``enabled`` on load as ``not user_paused and not auto_paused``,
+        so leaving it False would pause the job in memory only, until a restart
+        silently resumed it. A user pause stays: ``user_paused`` is never changed
+        by execution; lifting it is ``enable_job``'s job.
 
-        A job the user paused stays paused: ``user_paused`` is never mutated by
-        execution, so it is the discriminator here, and re-enabling THAT is the
-        user's action (``enable_job``).
+        This is the ONE place that resets the failure-alert dedup fields: every
+        success path routes here, so a relapse after recovery alerts fresh instead
+        of being suppressed for up to ``_FAILURE_REMINDER_SECS``.
 
-        Also clears the failure-alert dedup fields, and is the ONE owner of that
-        reset. A success means the job recovered, so the next failure must alert
-        fresh rather than be suppressed as a duplicate of the pre-recovery one --
-        and every success path (gate verdict, script, command, the scheduler
-        backstop) routes through here, so putting the reset at any single call
-        site would silence a relapse on the others for up to
-        ``_FAILURE_REMINDER_SECS``.
-
-        Also drops ``auto_paused_at_start``: a pause this run lifts itself is
-        not a pause changed from outside the run, so a later failure of the
-        same run counts (:meth:`record_failure`) and the run's merge and the
-        reaper apply its pause state and count as they stand.
+        Drops ``auto_paused_at_start``: a pause this run lifts itself is not an
+        outside resume, so a later failure of the same run still counts.
         """
         self.auto_paused_at_start = None
         self.consecutive_failures = 0

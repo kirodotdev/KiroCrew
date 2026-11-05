@@ -9,9 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import hashlib
 import json
-import os
 import time as _time
 from collections.abc import Callable, Iterator
 from datetime import datetime
@@ -26,7 +24,6 @@ from kiro_crew.history_cache import (
 )
 from kiro_crew.history_projection_contract import (
     _HISTORY_LOGGER,
-    _TRANSCRIPT_INDEX_FINGERPRINT_BYTES,
     _TRANSCRIPT_PAGE_INDEX_MAX_CHECKPOINTS,
     _TRANSCRIPT_PAGE_INDEX_STRIDE,
     _TRANSCRIPT_PAGE_READ_ATTEMPTS,
@@ -65,17 +62,6 @@ class TranscriptReadProjection:
         from kiro_crew import history_page_index
 
         history_page_index.forget(path)
-
-    def carry_index_over_head_rewrite(
-        self, key: str, before: os.stat_result, old_head: str, new_head: str
-    ) -> None:
-        """Move *key*'s row-index base onto the file a first-line rewrite just wrote.
-
-        See :func:`kiro_crew.history_page_index.carry_over_head_rewrite`.
-        """
-        from kiro_crew import history_page_index
-
-        history_page_index.carry_over_head_rewrite(self._log, key, before, old_head, new_head)
 
     def recent(
         self,
@@ -217,7 +203,15 @@ class TranscriptReadProjection:
         return self._log._read_messages(key)
 
     def read_file_change_messages(self, key: str) -> list[dict]:
-        """Return lightweight rows carrying only ``meta.file_changes``."""
+        """Return lightweight rows carrying only ``ts`` and the changed paths.
+
+        Each row is ``{"ts", "role", "meta": {"file_changes": [{"path": str}, ...]}}``,
+        plus ``meta.file_changes_omitted_files`` when the row records files its
+        turn's budget left out;
+        change entries without a string ``path`` and rows left with none are
+        dropped, and every other field of a change (``before``/``after``) is
+        not kept.
+        """
         path = self._log._path(key)
         generation = self._log._cache_gen(key)
         try:
@@ -251,12 +245,34 @@ class TranscriptReadProjection:
                 file_changes = meta.get("file_changes")
                 if not isinstance(file_changes, list):
                     continue
-                messages.append(
-                    {
-                        "ts": data.get("ts"),
-                        "meta": {"file_changes": file_changes},
-                    }
-                )
+                # Keep only the string ``path`` of each change: the one reader
+                # (the Artifacts session-docs scan) uses nothing else, and the
+                # ``before``/``after`` bodies made the cache ~112 MB on a real
+                # store. Entries without a string path were skipped by that
+                # reader anyway, so dropping them here changes no output.
+                # ``omitted_reason`` is kept too, a short marker: the Files tab
+                # skips a write whose outcome was never proven.
+                paths = [
+                    {"path": fc["path"]}
+                    | (
+                        {"omitted_reason": fc["omitted_reason"]}
+                        if isinstance(fc.get("omitted_reason"), str)
+                        else {}
+                    )
+                    for fc in file_changes
+                    if isinstance(fc, dict) and isinstance(fc.get("path"), str)
+                ]
+                # How many changed files the turn's budget left out of
+                # ``file_changes``: a reader listing them must know the row is short.
+                omitted = meta.get("file_changes_omitted_files")
+                if not (isinstance(omitted, int) and not isinstance(omitted, bool) and omitted > 0):
+                    omitted = 0
+                if not paths and not omitted:
+                    continue
+                kept_meta: dict = {"file_changes": paths}
+                if omitted:
+                    kept_meta["file_changes_omitted_files"] = omitted
+                messages.append({"ts": data.get("ts"), "role": data.get("role"), "meta": kept_meta})
 
         try:
             after = path.stat()
@@ -415,7 +431,7 @@ class TranscriptReadProjection:
         for p in segs:
             try:
                 lines = p.read_text(encoding="utf-8").splitlines()
-            except OSError:
+            except (OSError, UnicodeDecodeError):
                 _HISTORY_LOGGER.warning("rotated segment unreadable: %s", p.name, exc_info=True)
                 complete = False
                 continue
@@ -713,29 +729,20 @@ class TranscriptReadProjection:
         return (stat.st_mtime_ns, stat.st_ctime_ns, stat.st_size, stat.st_ino, stat.st_dev)
 
     @staticmethod
-    def _handle_extends_base(handle: IO[bytes], base: _TranscriptIndexBase) -> bool:
-        """True when the open file is *base*'s file with more bytes appended after it.
+    def _handle_extends_base(
+        handle: IO[bytes], base: _TranscriptIndexBase
+    ) -> _TranscriptIndexBase | None:
+        """*base* moved onto the open file when that file still holds its rows, else ``None``.
 
         Judged on the handle the caller then scans, never on the path, so a file
         replaced between the check and the scan cannot be resumed from another
-        file's offsets. Same device and inode, at least as long as the saved
-        boundary (equal is a file nothing was appended to since, which resumes with
-        no bytes to scan), and the bytes just before the boundary unchanged. Atomic rewrites (compaction,
-        rotation, metadata updates) replace the inode, so they never pass; the
-        digest covers an in-place rewrite that reuses an inode.
+        file's offsets. See :func:`kiro_crew.history_page_index.relocate`: the
+        content decides, so a copied, restored or rewritten file with the same rows
+        resumes, and one whose rows changed is rescanned.
         """
-        info = os.fstat(handle.fileno())
-        if (info.st_dev, info.st_ino) != (base.dev, base.ino) or info.st_size < base.scanned_end:
-            return False
-        if base.scanned_end == 0:
-            return False
-        lo = max(0, base.scanned_end - _TRANSCRIPT_INDEX_FINGERPRINT_BYTES)
-        handle.seek(lo)
-        window = handle.read(base.scanned_end - lo)
-        return (
-            len(window) == base.scanned_end - lo
-            and hashlib.blake2b(window, digest_size=16).digest() == base.digest
-        )
+        from kiro_crew import history_page_index
+
+        return history_page_index.relocate(handle, base)
 
     def _row_index(self, key: str) -> _TranscriptRowIndexEntry:
         """Return a sparse valid-message-row index for one file revision."""
@@ -760,23 +767,23 @@ class TranscriptReadProjection:
         scanned_end = 0
         ends_on_newline = False
         with open(path, "rb") as handle:
-            file_identity = os.fstat(handle.fileno())
-            base = self._log._page_index_base.get(key)
-            if base is None or not self._handle_extends_base(handle, base):
-                # Nothing in memory for this file -- a new process, or a rewrite
-                # this instance did not carry -- so try the persisted base before
+            remembered = self._log._page_index_base.get(key)
+            base = None if remembered is None else self._handle_extends_base(handle, remembered)
+            if base is None:
+                # Nothing in memory that fits this file -- a new process, or a
+                # rewrite that changed rows -- so try the persisted base before
                 # framing from byte 0. It passes the same check or is ignored.
-                base = history_page_index.load(path)
-                if base is not None and self._handle_extends_base(handle, base):
-                    self._log._page_index_base[key] = base
-                else:
-                    base = None
+                persisted = history_page_index.load(path)
+                if persisted is not None:
+                    base = self._handle_extends_base(handle, persisted)
             if base is not None:
-                # An append-only file: its saved prefix is still the same bytes,
-                # so only the rows added since need scanning.
+                # The saved prefix still holds the same rows (moved by the first
+                # line's change in length), so only the rows after it need scanning.
                 row_count = base.row_count
                 checkpoints = list(base.checkpoints)
                 resume_at = base.scanned_end
+                scanned_end = base.scanned_end
+                ends_on_newline = True  # a base is only ever saved at a newline
                 if len(checkpoints) > 1:
                     stride = checkpoints[1][0] - checkpoints[0][0]
             handle.seek(resume_at)
@@ -799,18 +806,17 @@ class TranscriptReadProjection:
                 # Keep where this scan stopped so the next one can resume from it.
                 # The digest is read from the handle that was scanned, so it
                 # describes the same file the offsets came from.
-                lo = max(0, scanned_end - _TRANSCRIPT_INDEX_FINGERPRINT_BYTES)
-                handle.seek(lo)
-                window = handle.read(scanned_end - lo)
-                if len(window) == scanned_end - lo:
-                    saved = _TranscriptIndexBase(
-                        file_identity.st_dev,
-                        file_identity.st_ino,
-                        scanned_end,
-                        hashlib.blake2b(window, digest_size=16).digest(),
-                        row_count,
-                        tuple(checkpoints),
-                    )
+                head_len = (
+                    base.head_len if base is not None else history_page_index.head_length(handle)
+                )
+                frozen = tuple(checkpoints)
+                digest = (
+                    None
+                    if head_len is None
+                    else history_page_index.body_digest(handle, head_len, scanned_end, frozen)
+                )
+                if head_len is not None and digest is not None:
+                    saved = _TranscriptIndexBase(head_len, scanned_end, digest, row_count, frozen)
                     self._log._page_index_base[key] = saved
                     history_page_index.persist(path, saved, force=False)
 
@@ -1203,11 +1209,18 @@ class TranscriptReadProjection:
         recent = self._log._recent_cache.get(recent_key)
         if recent is not None and recent[0] == identity and recent[1] == self._log._cache_gen(key):
             return [dict(message) for message in recent[2]]
-        tail = self._log._read_tail_messages(path, max_messages, roles)
+        # Brief rows are dropped before the window is cut, as on the full-read
+        # path, so each one in the tail asks the reader for one more row.
+        wanted = max_messages
+        while True:
+            tail = self._log._read_tail_messages(path, wanted, roles)
+            kept = [message for message in tail if not is_warm_task_brief_message(message)]
+            if len(kept) >= max_messages or len(tail) < wanted:
+                break
+            wanted += max_messages - len(kept)
         formatted = [
             {"role": message["role"], "content": message["content"]}
-            for message in tail
-            if not is_warm_task_brief_message(message)
+            for message in kept[-max_messages:]
         ]
         self._log._publish_if_current(
             self._log._recent_cache,

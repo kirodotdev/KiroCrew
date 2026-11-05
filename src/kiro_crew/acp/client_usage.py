@@ -13,6 +13,9 @@ Instance fields written: ``_between_turn_credits``, ``_claude_compaction_pending
 
 Instance fields read: ``_model``, ``_resolved_model_id``, ``last_prompt_stats``,
 ``memory_mode``.
+
+The stale compaction-status state is read and resolved through
+:mod:`kiro_crew.acp.stale_compaction`, which owns those fields.
 """
 
 from __future__ import annotations
@@ -31,6 +34,7 @@ from kiro_crew.acp._dispatch import (
     redact_text,
 )
 from kiro_crew.acp.client_timeouts import _POST_COMPACTION_METADATA_GRACE_SECS, _READ_TIMEOUT
+from kiro_crew.acp.stale_compaction import consume_stale_compaction_status
 from kiro_crew.acp.transport_errors import (
     AcpError,
     compaction_failure_detail,
@@ -170,9 +174,14 @@ def _track_metadata(self: AcpClient, msg: JsonRpcMessage, *, between_turns: bool
         self.last_prompt_stats.note_metadata_frame(pct_f, metering)
 
 
-def _handle_compaction_status(self: AcpClient, msg: JsonRpcMessage) -> None:
+def _handle_compaction_status(self: AcpClient, msg: JsonRpcMessage) -> bool:
     """Log a ``_kiro.dev/compaction/status`` notification and, on
     completion, drop the now-stale context-usage counts.
+
+    Returns True, having changed nothing, when the status is the late one of
+    an idle compaction Crew stopped waiting for
+    (``stale_compaction.is_stale_compaction_status``); the caller then drops
+    the frame instead of reading it as its own turn's compaction.
 
     This is the single chokepoint every compaction-status arrival routes
     through (all prompt dispatch loops and ``wait_for_compaction``), so the
@@ -183,6 +192,8 @@ def _handle_compaction_status(self: AcpClient, msg: JsonRpcMessage) -> None:
     """
     params = msg.params or {}
     status = params.get("status", "")
+    if consume_stale_compaction_status(self, msg):
+        return True
     logger.info("Compaction status: %s", status)
     # On failure, kiro-cli's notification carries no dedicated error/reason
     # field today (only `status.type` + an optional `summary`, which is
@@ -202,6 +213,7 @@ def _handle_compaction_status(self: AcpClient, msg: JsonRpcMessage) -> None:
     elif s_type == "completed":
         self._compaction_failed_at = None
         self.last_prompt_stats.reset_after_compaction()
+    return False
 
 
 def _claude_compaction_event(self: AcpClient, chunk: str) -> AcpEvent | None:
@@ -330,42 +342,21 @@ def _codex_compaction_event(self: AcpClient, msg: JsonRpcMessage) -> AcpEvent | 
 def _settle_codex_compaction(self: AcpClient, reason: str) -> AcpEvent | None:
     """Close out a codex compaction whose terminal never arrived, or None.
 
-    Called at the turn's terminal. ``None`` -- the ordinary case -- means no
-    codex compaction was in flight, or one was and it already reported.
+    Called at the turn's terminal; ``None`` means nothing was pending.
 
-    The verdict is ``failed``, and that is the opposite of what the claude
-    twin synthesizes. The two harnesses differ in what a MISSING terminal
-    means. claude-agent-acp sends its ``Compacting completed.`` text only for
-    a MANUAL ``/compact``; an automatic mid-turn compaction takes a different
-    path and emits no text at all, so for claude a turn that ends naturally
-    after a ``started`` is evidence the compaction finished. codex-acp sends
-    its terminal for BOTH -- the capture shows the marked
-    ``tool_call_update`` on a manual ``/compact`` and on a native
-    ``model_auto_compact_token_limit`` compaction alike -- so here a missing
-    terminal is evidence the compaction did NOT finish. Reporting
-    ``completed`` would reset the context meter against a window nobody
-    summarized.
+    The verdict is ``failed``, the opposite of the claude twin. claude-agent-acp
+    sends ``Compacting completed.`` only for a manual ``/compact``, so a missing
+    terminal there implies success. codex-acp sends its marked
+    ``tool_call_update`` for both manual and ``model_auto_compact_token_limit``
+    compactions, so here a missing terminal means it did NOT finish, whatever
+    the *reason* (a cancelled turn did not compact either).
 
-    One arm for every *reason*, unlike its claude twin, and for the same
-    reason the verdict differs: this is not an inference from how the turn
-    ended, it is the absence of a frame codex always sends on success. A turn
-    cancelled mid-compaction did not compact either.
-
-    Three things it deliberately does NOT do:
-
-    * reset the context counts -- nothing was summarized, so the pre-compaction
-      numbers are still the true ones;
-    * arm the post-failure budget (``_compaction_failed_at``) -- that budget
-      exists to bound a wait for a turn that may never end, and this runs AT
-      the end of the turn, so arming it would charge the NEXT turn's idle
-      clock for this one's failure;
-    * claim the failure is retryable. ``last_compaction_transient`` is set
-      False because an inferred failure carries no reason to classify, and
-      False is the value that does not promise a user a retry will help.
-
-    The title is text this module authors, not text a backend echoed, so it
-    needs no redaction -- and it is there so the surfaces that render a
-    failure reason stop collapsing this case to "unknown error".
+    It deliberately does NOT reset the context counts (nothing was summarized),
+    does NOT arm ``_compaction_failed_at`` (that would charge the NEXT turn's
+    idle clock), and sets ``last_compaction_transient`` False (an inferred
+    failure has no reason to classify, so no retry is promised). The title is
+    authored here, so it needs no redaction; it keeps the failure from showing
+    as "unknown error".
     """
     if not self._codex_compaction_pending:
         return None
@@ -442,7 +433,8 @@ async def wait_for_compaction(self: AcpClient, timeout: float = COMPACT_WAIT_TIM
         if msg is None:
             continue
         if msg.is_method(METHOD_COMPACTION_STATUS):
-            self._handle_compaction_status(msg)
+            if self._handle_compaction_status(msg):
+                continue
             params = msg.params or {}
             status = params.get("status", {})
             s_type = status.get("type", "") if isinstance(status, dict) else str(status)

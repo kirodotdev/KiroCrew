@@ -747,17 +747,26 @@ class TestSpawnsOnBehalfOfAParent:
             p.cwd = ""
             return p
 
-        factory = MagicMock(side_effect=lambda *a, **kw: _provider())
+        built: list[MagicMock] = []
+
+        def _build(*_a: object, **_kw: object) -> MagicMock:
+            built.append(_provider())
+            return built[-1]
+
+        factory = MagicMock(side_effect=_build)
         with patch("kiro_crew.session.default_project_dir", return_value=""):
             mgr = SessionManager(cfg, provider_factory=factory)
-        mgr._drain_and_claim = AsyncMock(return_value=_provider())
+        pooled = _provider()
+        mgr._drain_and_claim = AsyncMock(return_value=pooled)
         mgr._schedule_replenish = MagicMock()
         tree = tmp_path / "scratch" / "runtime-abcdef01"
         try:
-            await mgr.get_or_create("subagent:s1", agent="kirocrew", shared_scratch=tree)
+            got = await mgr.get_or_create("subagent:s1", agent="kirocrew", shared_scratch=tree)
         finally:
             await mgr.close_all()
 
+        # The session runs on a freshly built provider, never the pooled one.
+        assert got[0] is built[0] and got[0] is not pooled
         mgr._drain_and_claim.assert_not_awaited()
         factory.assert_called_once()
         assert factory.call_args.kwargs["shared_scratch"] == tree
@@ -1000,6 +1009,9 @@ class TestBgRuntimeSuccessorInheritsTheTree:
 
         assert ctor.call_count == 1
         assert ctor.call_args.kwargs["shared_scratch"] == tree
+        # The stale runtime drains while its successor takes the slot.
+        assert mgr._bg_runtime is fresh
+        assert mgr._draining_bg_runtimes == [stale]
         mgr._draining_bg_runtimes = []
         await mgr.close_all()
 
@@ -1035,6 +1047,7 @@ class TestBgRuntimeSuccessorInheritsTheTree:
 
         assert ctor.call_count == 1
         assert ctor.call_args.kwargs["shared_scratch"] == tree
+        assert mgr._bg_runtime is fresh
         await mgr.close_all()
 
     @pytest.mark.asyncio

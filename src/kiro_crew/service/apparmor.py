@@ -191,7 +191,7 @@ def parser_version(parser: str) -> tuple[int, int] | None:
     """``(major, minor)`` of ``apparmor_parser``, or None if it cannot be read."""
     try:
         proc = subprocess.run(
-            [parser, "--version"], capture_output=True, text=True, timeout=10
+            [parser, "--version"], capture_output=True, text=True, encoding="utf-8", timeout=10
         )
     except (OSError, subprocess.SubprocessError):
         return None
@@ -342,7 +342,7 @@ def validate(parser: str, text: str) -> tuple[bool, str]:
         proc = subprocess.run(
             [parser, "-Q", "--skip-cache", tmp],
             capture_output=True,
-            text=True,
+            text=True, encoding="utf-8",
             timeout=30,
         )
         detail = (proc.stderr or proc.stdout or "").strip()

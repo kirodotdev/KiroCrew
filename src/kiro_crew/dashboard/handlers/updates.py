@@ -58,6 +58,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.dashboard.handlers.updates_channel import api_changelog  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_channel import api_releases  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_channel import api_update_auto  # noqa: F401
+    from kiro_crew.dashboard.handlers.updates_channel import api_update_auto_pin  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_channel import api_update_channel  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_channel import api_update_revalidate  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_channel import logger  # noqa: F401
@@ -159,16 +160,20 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.dashboard.chat_utils import run_config_write  # noqa: F401
     from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request  # noqa: F401
     from kiro_crew.dashboard.handlers._update_feed import fetch_feed_bytes  # noqa: F401
+    from kiro_crew.dashboard.kiro_relay.caller import is_relay_teammate  # noqa: F401
     from kiro_crew.dashboard.state import DashboardState  # noqa: F401
     from kiro_crew.dashboard.state import chat_message_frame  # noqa: F401
     from kiro_crew.dashboard.status_counts import cached_status_snapshot  # noqa: F401
     from kiro_crew.dashboard.urls import is_loopback  # noqa: F401
+    from kiro_crew.dashboard.ws_event_scope import app_origin_frame  # noqa: F401
+    from kiro_crew.dashboard.ws_event_scope import audit_teammate_withheld  # noqa: F401
     from kiro_crew.executors import subprocess_executor  # noqa: F401
     from kiro_crew.gateway_restart import resolve_restart_launcher  # noqa: F401
     from kiro_crew.git_divergence import UNREADABLE_TIMEOUT  # noqa: F401
     from kiro_crew.git_divergence import DivergenceUnreadable  # noqa: F401
     from kiro_crew.git_divergence import count_divergence  # noqa: F401
     from kiro_crew.platform import feed_trust  # noqa: F401
+    from kiro_crew.platform import release_apply  # noqa: F401
     from kiro_crew.platform.update_capability import AUTO_EFFECT_UNKNOWN  # noqa: F401
     from kiro_crew.platform.update_capability import CHECK_DEFERRED  # noqa: F401
     from kiro_crew.platform.update_capability import CHECK_FAILED  # noqa: F401
@@ -190,7 +195,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.platform.update_capability import auto_update_effect  # noqa: F401
     from kiro_crew.platform.update_capability import bundled_by_desktop_app  # noqa: F401
     from kiro_crew.platform.update_capability import derive_capability  # noqa: F401
-    from kiro_crew.platform.update_governance import fetch_and_pin_upstream  # noqa: F401
+    from kiro_crew.platform.update_fetch import fetch_and_pin_upstream  # noqa: F401
     from kiro_crew.platform.update_governance import git_command_env  # noqa: F401
     from kiro_crew.platform.update_governance import min_version  # noqa: F401
     from kiro_crew.platform.update_governance import repo_exec_config_reason  # noqa: F401

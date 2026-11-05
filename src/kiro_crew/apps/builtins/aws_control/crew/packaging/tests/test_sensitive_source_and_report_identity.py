@@ -296,10 +296,10 @@ def test_a_failed_report_publication_does_not_leave_the_previous_report_behind(
             raise OSError(5, "Input/output error")
         return real_link(src, dst, *args, **kwargs)
 
-    monkeypatch.setattr(mod.os, "link", _link)
-    with pytest.raises(OSError):
-        _build(mod, home, out, {"skills": {"faq"}})
-    monkeypatch.undo()
+    with monkeypatch.context() as mp:
+        mp.setattr(mod.os, "link", _link)
+        with pytest.raises(OSError):
+            _build(mod, home, out, {"skills": {"faq"}})
 
     assert not report.exists(), (
         "the previous build's report survived a failed publication, so it now describes a "
@@ -667,24 +667,26 @@ def _run_inode_mismatch_promotion(mod, tmp_path, monkeypatch, *, expect_refusal:
                 return _Stat(st, st.st_ino ^ 0xABCD)
         return st
 
-    monkeypatch.setattr(mod, "_refuse_report_dir_without_hard_link_support", _armed_probe)
-    monkeypatch.setattr(os, "fstat", _fstat)
     if expect_refusal:
-        with pytest.raises(mod.ExportRefused) as caught:
-            _build(mod, home, out, {"skills": {"faq"}})
-        assert "inode changed" in str(caught.value)
-        monkeypatch.undo()
+        with monkeypatch.context() as mp:
+            mp.setattr(mod, "_refuse_report_dir_without_hard_link_support", _armed_probe)
+            mp.setattr(os, "fstat", _fstat)
+            with pytest.raises(mod.ExportRefused) as caught:
+                _build(mod, home, out, {"skills": {"faq"}})
+            assert "inode changed" in str(caught.value)
         assert (out / "skills" / "faq" / "SKILL.md").read_text(encoding="utf-8") == "# FAQ\n"
     else:
-        # Under the mutant the inode comparison is gone, so the tampering raises no inode
-        # refusal -- the build either completes or fails for an unrelated reason, never the
-        # inode message.
-        raised = None
-        try:
-            _build(mod, home, out, {"skills": {"faq"}})
-        except mod.ExportRefused as exc:  # pragma: no cover - defensive
-            raised = str(exc)
-        monkeypatch.undo()
+        with monkeypatch.context() as mp:
+            mp.setattr(mod, "_refuse_report_dir_without_hard_link_support", _armed_probe)
+            mp.setattr(os, "fstat", _fstat)
+            # Under the mutant the inode comparison is gone, so the tampering raises no inode
+            # refusal -- the build either completes or fails for an unrelated reason, never the
+            # inode message.
+            raised = None
+            try:
+                _build(mod, home, out, {"skills": {"faq"}})
+            except mod.ExportRefused as exc:  # pragma: no cover - defensive
+                raised = str(exc)
         assert raised is None or "inode changed" not in raised
 
 
@@ -716,11 +718,11 @@ def test_a_report_dir_without_hard_link_support_is_refused_before_promotion(
             raise OSError(getattr(_errno, "EOPNOTSUPP", _errno.EPERM), "operation not supported")
         return real_link(src, dst, *a, **k)
 
-    monkeypatch.setattr(os, "link", _no_hard_links)
-    with pytest.raises(mod.ExportRefused) as caught:
-        _build(mod, home, out, {"skills": {"faq"}})
-    assert "does not support hard links" in str(caught.value)
-    monkeypatch.undo()
+    with monkeypatch.context() as mp:
+        mp.setattr(os, "link", _no_hard_links)
+        with pytest.raises(mod.ExportRefused) as caught:
+            _build(mod, home, out, {"skills": {"faq"}})
+        assert "does not support hard links" in str(caught.value)
     # The promotion never ran: the first bundle and its report are exactly as they were.
     assert (out / "skills" / "faq" / "SKILL.md").read_text(encoding="utf-8") == "# FAQ\n"
     assert report.read_bytes() == first, "the prior report is untouched by a pre-promotion refusal"
@@ -760,10 +762,10 @@ def test_MUTATION_no_capability_probe_crashes_raw_when_the_link_is_unsupported(
             raise OSError(getattr(_errno, "EOPNOTSUPP", _errno.EPERM), "operation not supported")
         return real_link(src, dst, *a, **k)
 
-    monkeypatch.setattr(os, "link", _no_hard_links)
-    with pytest.raises(OSError) as caught:
-        _build(mod, home, out, {"skills": {"faq"}})
-    monkeypatch.undo()
+    with monkeypatch.context() as mp:
+        mp.setattr(os, "link", _no_hard_links)
+        with pytest.raises(OSError) as caught:
+            _build(mod, home, out, {"skills": {"faq"}})
     # The mutant leaks a RAW OSError, not the builder's clean ExportRefused with guidance.
     assert not isinstance(caught.value, mod.ExportRefused)
     assert "does not support hard links" not in str(caught.value)

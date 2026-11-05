@@ -1,13 +1,9 @@
 """Fixtures and helpers shared by the ``settings.local.json`` seed-provenance tests.
 
-``test_acp_seed_provenance.py`` and its ``_sibling_sharing``, ``_sharer_teardown`` and
-``_durable_grant`` siblings import these by name, and ``test_cc_permission_mode_seed.py``
-reaches ``_OWNER``, ``_fp``, ``_pin_holder_identities`` and ``isolated_records`` through
-``test_acp_seed_provenance.py``. ``_pinned_kiro_cli_version`` and ``isolated_records`` are
-autouse, and every seed-provenance module imports both, so each one pins the floor
-kiro-cli release and starts every test with empty process-wide provenance state. The rest
-builds a claude-backend ``AcpClient`` over a temp work dir, fingerprints and plants sidecar
-holders, pins holder liveness, and stands in for the owning process dying.
+Imported by name by ``test_acp_seed_provenance.py`` and its siblings
+(``test_cc_permission_mode_seed.py`` goes through it). Every importer takes the autouse
+``_pinned_kiro_cli_version`` and ``isolated_records``, so each test starts on the floor
+kiro-cli release with empty provenance state.
 """
 
 from __future__ import annotations
@@ -37,36 +33,30 @@ _OWNER = "owner-under-test"
 
 
 @pytest.fixture(autouse=True)
-# nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- no test in the test_acp_seed_provenance*.py modules calls monkeypatch.undo()
-def _pinned_kiro_cli_version(monkeypatch):
+def _pinned_kiro_cli_version(_floor_monkeypatch):
     """Pin the kiro-cli release the spec ``permissions`` gate believes is installed.
 
-    A client start here materialises the agent spec (``ensure_agent_materialized``
-    -> ``rebuild_agent_config`` -> ``_write_derived_permissions``), which reads
-    ``installed_kiro_cli_version`` function-locally from ``kiro_crew.kiro_cli``:
-    one real ``kiro-cli --version`` spawn per binary identity, process-cached, so
-    whichever test in the worker starts first pays it against the HOST's install
-    with the checkout as the child's cwd. Pinned to the floor release, as
-    ``test_agent.py`` and the generated-writer suites pin it.
+    A client start reaches ``_write_derived_permissions``, which otherwise spawns the
+    host's real ``kiro-cli --version``. Pinned to the floor release, as in
+    ``test_agent.py``.
     """
-    monkeypatch.setattr(
+    _floor_monkeypatch.setattr(
         "kiro_crew.kiro_cli.installed_kiro_cli_version",
         lambda: SPEC_PERMISSIONS_MIN_VERSION,
     )
 
 
 @pytest.fixture(autouse=True)
-# nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- no test in the test_acp_seed_provenance*.py modules calls monkeypatch.undo()
-def isolated_records(monkeypatch):
+def isolated_records(_floor_monkeypatch):
     """Per-test provenance state.
 
     ``_RECORDS`` and ``_LIVE`` are process-wide runtime state (like
     ``model_registry._ADVERTISED_MODELS``); the sidecar itself already lands in a
     per-test ``KIROCREW_HOME``.
     """
-    monkeypatch.setattr(sp, "_RECORDS", {})
-    monkeypatch.setattr(sp, "_LIVE", {})
-    monkeypatch.setattr(sp, "_SHARERS", {})
+    _floor_monkeypatch.setattr(sp, "_RECORDS", {})
+    _floor_monkeypatch.setattr(sp, "_LIVE", {})
+    _floor_monkeypatch.setattr(sp, "_SHARERS", {})
 
 
 def _client(tmp_path: Path, **kw) -> AcpClient:
@@ -152,13 +142,8 @@ def _seed(tmp_path: Path) -> dict:
 def _teardown(client: AcpClient) -> None:
     """Tear a client down the way every real caller does.
 
-    The seed's removal is a DISK operation -- a durable revoke, then an unlink -- so
-    it lives in the async ``_discard_claude_settings_seed`` and reaches the
-    filesystem through ``asyncio.to_thread``. ``_reset_state`` stays synchronous and
-    keeps only the in-memory claim release, so calling it alone leaves the file
-    behind on purpose. Every production caller awaits the discard first and then
-    resets, and this helper is that pair, so a test that drifts from the real
-    ordering fails here rather than passing on a shape nothing uses.
+    Await ``_discard_claude_settings_seed`` (the disk revoke and unlink), then
+    ``_reset_state`` (in-memory only, so alone it leaves the file on purpose).
     """
     asyncio.run(client._discard_claude_settings_seed())
     client._reset_state()
@@ -177,12 +162,8 @@ def _unwritable_sidecar(*_args, **_kwargs):
 def _break_the_lock_when(monkeypatch, broken) -> None:
     """Make the cross-process registry lock unopenable whenever *broken()* is true.
 
-    What a data home turning read-only, or a root-owned ``.settings_seeds.lock``,
-    does to ``seed_provenance._cross_process_lock``: its ``os.open`` raises. The
-    predicate is evaluated on every acquisition, so a test can leave the lock
-    healthy for the barriers that run before a file exists and break it for the
-    calls that follow the write (or the move-aside) -- the window in which a
-    reader raising out of the lock would leave a seed with no record behind it.
+    As a read-only data home or root-owned ``.settings_seeds.lock`` would: ``os.open``
+    raises. Checked per acquisition, so a test can break it only after the write.
     """
     real_lock = sp._cross_process_lock
 

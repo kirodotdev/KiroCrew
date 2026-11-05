@@ -133,7 +133,7 @@ export default memo(function ArtifactPanel({ slug, kind, content, onClose, activ
   // Escape / ✕ on a typed comment draft, and the panel's own full-screen and
   // close actions (each unmounts the toolbar the draft lives in), ask first —
   // in the draft's own words, since "unsaved changes" would read as file edits.
-  const { confirm, confirmDialog } = useConfirm()
+  const { confirm, confirmDialog, confirmOpen } = useConfirm()
   const confirmDiscardDraft = useCallback(() => confirm({
     title: i18nT('components.markdownPanel.discard_unsaved_comment'),
     confirmLabel: i18nT('components.markdownPanel.discard_comment_button'),
@@ -262,6 +262,10 @@ export default memo(function ArtifactPanel({ slug, kind, content, onClose, activ
       // already names the fullscreen icon. While a remote Crew is showing, the
       // whole local dashboard is off screen too.
       if (!visible || crewHidden) return
+      // While the discard prompt is open, Escape belongs to it: this document
+      // listener runs before Modal's window one, so re-running the guard here
+      // would ask again under the prompt. Mirrors MarkdownPanel.
+      if (confirmOpen) return
       // Don't hijack Esc while the user is in an editable field (e.g. the
       // add-instruction textarea) — let the field handle it instead of
       // closing/exiting the panel out from under them.
@@ -275,7 +279,7 @@ export default memo(function ArtifactPanel({ slug, kind, content, onClose, activ
     }
     document.addEventListener('keydown', h)
     return () => document.removeEventListener('keydown', h)
-  }, [visible, fullscreen, exitFullscreen, requestClose, active, crewHidden])
+  }, [visible, fullscreen, exitFullscreen, requestClose, active, crewHidden, confirmOpen])
   useEffect(() => {
     if (!fullscreen) return
     document.body.style.overflow = 'hidden'
@@ -335,6 +339,9 @@ export default memo(function ArtifactPanel({ slug, kind, content, onClose, activ
           activeId={layer.activeCommentId}
           unreadRootIds={layer.unreadRootIds}
           heightStyle={BODY_HEIGHT_STYLE}
+          // Inside a side panel a trackpad swipe over the frame may close the
+          // panel; the frame relays only when that page's swipe arms it.
+          relayWheel={!!embedded}
         />
       ) : (
         <ArtifactBodyNative

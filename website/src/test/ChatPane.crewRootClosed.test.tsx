@@ -22,7 +22,7 @@ const engine = {
   download: null, sampleRef: { current: {} }, switchDevice: vi.fn(), deviceSwitchIsLive: false,
 }
 vi.mock('../hooks/useVoiceInput', () => ({ useVoiceInput: () => engine, voiceInputSupported: true }))
-vi.mock('../hooks/usePushToTalk', () => ({ usePushToTalk: () => undefined }))
+vi.mock('../hooks/usePushToTalk', () => ({ usePushToTalk: () => ({ config: { enabled: false, mode: 'hybrid', binding: { code: 'AltRight' }, holdMs: 500 }, phase: 'idle', holding: false }) }))
 vi.mock('react-virtuoso', () => ({
   Virtuoso: ({ data, itemContent }: { data?: unknown[]; itemContent: (index: number, item: unknown) => ReactNode }) => (
     <div data-testid="virtuoso">{data?.map((d: unknown, i: number) => <div key={i}>{itemContent(i, d)}</div>)}</div>
@@ -70,6 +70,7 @@ Object.defineProperty(window, 'matchMedia', {
 })
 
 import ChatPane from '../components/ChatPane'
+import { crewModePreviewOn } from './crewModePreview'
 
 const SLOT = 'chat-1-worker'
 
@@ -114,3 +115,6 @@ describe('Crew Mode L1: a worker in a Split View pane under a closed conductor',
     expect(box.getAttribute('placeholder') ?? '').toBe('')
   })
 })
+
+// Last, after the file's own hooks that clear localStorage: Crew Mode is a feature preview.
+crewModePreviewOn()

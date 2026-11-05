@@ -12,6 +12,7 @@ import { PAGE_WORKER_AGENT, crewModeAgent } from '../../lib/crewMode'
 import type { Slot } from './types'
 import type { AppDispatch } from '../../store'
 import type { ChatFolder } from '../../types'
+import type { SessionKindDescriptor } from '../../hooks/sessionKindRegistry'
 import type { FolderMutations } from './folders'
 import type { BoardColumnMutations } from './board'
 import { errMessage } from '../../utils/thunkError'
@@ -429,8 +430,36 @@ export function useSessionCreate({ setNewChatError, dispatch, mode, onOpenSlotIn
     },
     onError: onNewChatError,
   })
+  // Create an app-drawn session (`contributes.sessionKinds`): a sidebar row whose
+  // main pane is the declaring app's entry instead of a transcript and composer.
+  // Always activates, like a plain create, so the new pane is what the user sees.
+  const createSessionKindMutation = useMutation({
+    mutationFn: (d: SessionKindDescriptor) => {
+      setNewChatError('')
+      return dispatch(createSlot({
+        sessionKind: { app: d.appName, kind: d.kindId },
+        // The kind's agent is picked as a TEMPLATE, so a crew member sharing that
+        // alias cannot win resolution. An agent the app ships also names the app
+        // as its owner, so a turn refuses a same-name spec from anywhere else; a
+        // core agent (the conductor) gets no owner, which would refuse every turn.
+        ...(d.defaultAgent ? { agent: d.defaultAgent, agent_kind: 'template' as const } : {}),
+        ...(d.defaultAgent && d.appOwnsDefaultAgent ? { appAgentOwner: d.appName } : {}),
+        // The binding is persisted on the session's birth line, which a temporary
+        // or incognito session does not keep, so the person's default never applies.
+        memory_mode: 'persistent',
+        // The app's own literal: the core has no catalog key for a kind it does not know.
+        title: d.title,
+        defaultFolder: true,
+      })).unwrap()
+    },
+    onSuccess: (slot) => {
+      if (slot?.key && store.getState().chat.activeSlot === slot.key) onSelectSlot?.(slot.key)
+    },
+    onError: onNewChatError,
+  })
   return {
     remoteCrewChatPreview,
     createChatMutation, createRemoteChatMutation, createEphemeralChatMutation, createDocMutation,
+    createSessionKindMutation,
   }
 }

@@ -38,6 +38,7 @@ from kiro_crew.dashboard.handlers.artifacts_parts.route_plumbing import (
     logger,
 )
 from kiro_crew.executors import subprocess_executor
+from kiro_crew.notifications.bus import _finite_json
 
 
 def _set_pinned_and_reload(slug: str, pinned: bool) -> Any:
@@ -49,8 +50,16 @@ def _set_pinned_and_reload(slug: str, pinned: bool) -> Any:
 
 # ── Folders ─────────────────────────────────────────────────────
 def _serialize_folder(folder: dict[str, Any], *, path: str | None = None) -> dict[str, Any]:
-    """Serialize a folder record; redact the (user/LLM-set) name, icon, and path."""
-    out = dict(folder)
+    """Serialize a folder record; redact the (user/LLM-set) name, icon, and path.
+
+    ``artifact_folders.json`` is loaded verbatim, so a hand edit can store a
+    non-finite number, which written out as-is is not JSON. It reads as
+    ``None``, and a non-finite ``order`` as 0, the position the store sorts it
+    at. The stored record is left as it is.
+    """
+    out = _finite_json(dict(folder))
+    if "order" in out and out["order"] is None and folder.get("order") is not None:
+        out["order"] = 0
     if isinstance(out.get("name"), str) and out["name"]:
         out["name"] = _redact_text(out["name"])
     # icon is LLM-derived (generate_emoji_for_name) or user-supplied (set_icon
@@ -119,6 +128,7 @@ def _spawn_artifact_folder_icon_task(
     state = request.app.get("state")
     if state is None:
         return
+    _prune_icon_state_from_other_loops(asyncio.get_running_loop())
     current = _ARTIFACT_FOLDER_ICON_INFLIGHT.get(folder_id)
     # The entry counts as occupied until its own cleanup removes it, even once
     # its task is done: that cleanup is what starts the queued request, so a
@@ -165,6 +175,24 @@ def _start_artifact_folder_icon_task(
             _start_artifact_folder_icon_task(state, folder_id, queued[0], queued[1])
 
     task.add_done_callback(_cleanup)
+
+
+def _prune_icon_state_from_other_loops(loop: asyncio.AbstractEventLoop) -> None:
+    """Drop icon bookkeeping bound to a loop other than the running one.
+
+    These module globals outlive their loop (an embedded gateway restart, or a
+    test loop per test). A task whose loop was torn down never runs its done
+    callback, so its in-flight entry would stay forever and every later spawn
+    for that folder would only queue behind it. Its queued request goes with it:
+    only that cleanup could have started it.
+    """
+    for task in list(_ARTIFACT_FOLDER_ICON_TASKS):
+        if task.get_loop() is not loop:
+            _ARTIFACT_FOLDER_ICON_TASKS.discard(task)
+    for fid, (task, _epoch) in list(_ARTIFACT_FOLDER_ICON_INFLIGHT.items()):
+        if task.get_loop() is not loop:
+            del _ARTIFACT_FOLDER_ICON_INFLIGHT[fid]
+            _ARTIFACT_FOLDER_ICON_NEXT.pop(fid, None)
 
 
 def _cancel_artifact_folder_icon_tasks(folder_ids: Any) -> None:
@@ -297,16 +325,25 @@ async def api_artifact_folder_update(request: web.Request) -> web.Response:
         f = fstore.get(fid)
         if f is None:
             raise ArtifactNotFoundError(f"folder not found: {fid}")
+        # A refused field must leave the folder untouched, so every check runs
+        # before the first write. name, color and order are checked here from the
+        # body alone; reparent is the one check that reads the tree, so it is the
+        # first write -- once it lands, no later write can be refused as invalid.
         if "name" in body:
-            f, armed_icon_epoch["value"] = fstore.rename(fid, str(body["name"]))
+            fstore.clean_name(str(body["name"]))
+        if "color" in body:
+            fstore.clean_color(str(body.get("color") or ""))
+        order = body_int(body["order"]) if "order" in body else None
         if "parent_id" in body:
             f = fstore.reparent(fid, str(body.get("parent_id") or ""))
+        if "name" in body:
+            f, armed_icon_epoch["value"] = fstore.rename(fid, str(body["name"]))
         if "icon" in body:
             f = fstore.set_icon(fid, str(body.get("icon") or ""))
         if "color" in body:
             f = fstore.set_color(fid, str(body.get("color") or ""))
-        if "order" in body:
-            fstore.reorder([{"id": fid, "order": body_int(body["order"])}])
+        if order is not None:
+            fstore.reorder([{"id": fid, "order": order}])
             ref = fstore.get(fid)
             if ref is not None:
                 f = ref

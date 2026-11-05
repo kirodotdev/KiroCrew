@@ -15,6 +15,14 @@ const {
 } = require("./freshness-gate");
 
 const FORCE_EXIT_AFTER_MS = 5 * 1000; // failsafe: guarantee exit after quitAndInstall
+// darwin: how long after `before-quit-for-update` Squirrel's own quit may take
+// before the app exits anyway. Squirrel has already staged the update by then,
+// so its handoff to ShipIt takes well under a second; this only bounds a stall.
+const DARWIN_HANDOFF_DEADLINE_MS = 60 * 1000;
+// The longest a quit is held while Squirrel.Mac stages the update. A healthy
+// ~900MB stage takes about 40s; this bound only keeps a wedged installer from
+// leaving an app the user can never quit.
+const STAGING_QUIT_HOLD_MAX_MS = 10 * 60 * 1000;
 
 /** Native notices are optional: a platform without them must not fail the path. */
 function showNotice(Notification, title, body) {
@@ -56,6 +64,11 @@ function createFeedLane({
   linux,
   macDistArch,
   nativeAutoUpdater,
+  getAllWindows = () => [],
+  // On Windows, session-end fires on BaseWindow (not App). When provided, the
+  // lane registers sessionEndPendingNotice there instead of on app. Optional so
+  // tests can stub it and so non-Windows paths are unaffected.
+  getMainWindow = () => null,
   feedBase,
   uiDriven,
   log,
@@ -84,6 +97,10 @@ function createFeedLane({
   // who has just declined auto-updates, while a stage they explicitly
   // downloaded stays armed because the preference is not what put it there.
   let stagedWasAutomatic = false;
+  // The window the session-end notice is registered on. Kept so the disarm
+  // removes the listener from that same window even if getMainWindow() later
+  // returns a recreated one.
+  let sessionEndWindow = null;
   // Set when startDownload() is entered from the discovery handler, and read by
   // the update-downloaded handler -- the event carries no provenance of its own.
   let downloadWasAutomatic = false;
@@ -109,6 +126,10 @@ function createFeedLane({
   //: a plain quit with the stage uninstalled. So the quit is held and replayed by
   //: `honorDeferredQuit` once the path either installs (which quits anyway) or aborts.
   let quitDeferredForInstall = false;
+  // Set while Squirrel.Mac stages the update inside quitAndInstall() (see
+  // holdQuitsWhileStaging). `stagingQuitHeld` records that a quit arrived then.
+  let stagingHold = null;
+  let stagingQuitHeld = false;
   // The channel the LAST configureFeed() pointed the updater at. Captured at
   // check time because the update-available handler's direction gate must
   // compare the candidate against the channel its FEED was configured for, not
@@ -231,6 +252,7 @@ function createFeedLane({
       stagedVersion = null;
       stagedNotes = "";
       app.removeListener("before-quit", deferredInstallOnQuit);
+      disarmSessionEndNotice();
       emit("not-available", {});
       return;
     }
@@ -509,6 +531,18 @@ function createFeedLane({
   // renderer beforeunload or lingering child blocking the quit, letting ShipIt
   // abort with "App Still Running Error" Code=-9) is handled by exiting only
   // AFTER that event.
+  //
+  // On darwin `before-quit-for-update` is still not the handoff itself (#29449).
+  // Electron's native quitAndInstall emits it FIRST, then closes every window,
+  // and only once the window list is empty asks Squirrel to relaunch into
+  // ShipIt; Squirrel then terminates the app, which reaches us as `before-quit`.
+  // A window that swallows its close (hide-to-tray did, before main.js began
+  // treating this event as a quit) stops that sequence before ShipIt gets the
+  // request, and a 5s app.exit then kills the app mid-handoff: ShipIt is
+  // SIGTERMed with the bundle half-swapped and the user relaunches into the old
+  // version. So on darwin the exit failsafe arms on the `before-quit` that
+  // follows the handoff, and the 5s timer that used to exit instead destroys any
+  // window still open, which lets Electron finish the handoff the normal way.
   function forceExitFailsafe(reason) {
     const arm = () => {
       const t = setTimeout(() => {
@@ -522,7 +556,15 @@ function createFeedLane({
     // BaseUpdater re-emits it for the platforms it installs itself.
     const native = nativeAutoUpdater;
     if (native && typeof native.once === "function") {
+      holdQuitsWhileStaging(reason);
       native.once("before-quit-for-update", () => {
+        // Release first: the installer's own quit follows this event and must
+        // not be held.
+        releaseStagingHold();
+        if (osPlatform === "darwin") {
+          awaitDarwinHandoff(reason, arm);
+          return;
+        }
         log.info(`[update] installer took over (${reason}) — arming the exit failsafe`);
         arm();
       });
@@ -531,6 +573,97 @@ function createFeedLane({
     // No native updater surface to listen on (tests, unexpected platform):
     // fall back to the timer rather than losing the guarantee entirely.
     arm();
+  }
+
+  /**
+   * Darwin half of the failsafe: wait for Squirrel's own quit, which proves
+   * ShipIt has the install request, before arming the exit timer. If a window
+   * is still open after FORCE_EXIT_AFTER_MS, destroy it: `destroy()` skips the
+   * `close` event a window can veto, and the empty window list is what lets
+   * Electron call Squirrel.
+   */
+  function awaitDarwinHandoff(reason, arm) {
+    let handedOff = false;
+    const onHandoffQuit = () => {
+      handedOff = true;
+      clearTimeout(windowBackstop);
+      clearTimeout(handoffDeadline);
+      log.info(`[update] Squirrel handed the swap to ShipIt (${reason}) — arming the exit failsafe`);
+      arm();
+    };
+    // Last resort when Squirrel's quit never comes. Without it a handoff that
+    // stalls leaves a running app with no windows. An install failure reported
+    // in the meantime clears `installing` and owns the recovery, so it is left
+    // alone.
+    const handoffDeadline = setTimeout(() => {
+      if (handedOff || !installing) return;
+      log.error(`[update] Squirrel did not quit the app within ${DARWIN_HANDOFF_DEADLINE_MS}ms of the installer taking over (${reason}) — exiting`);
+      try { app.exit(0); } catch { process.exit(0); }
+    }, DARWIN_HANDOFF_DEADLINE_MS);
+    if (typeof handoffDeadline.unref === "function") handoffDeadline.unref();
+    const windowBackstop = setTimeout(() => {
+      if (handedOff) return;
+      let open = [];
+      try { open = (getAllWindows() || []).filter((w) => w && !w.isDestroyed()); } catch { open = []; }
+      if (open.length === 0) return;
+      log.error(`[update] ${open.length} window(s) still open ${FORCE_EXIT_AFTER_MS}ms after the installer took over (${reason}) — closing them so Squirrel can hand off to ShipIt`);
+      for (const w of open) {
+        try { w.destroy(); } catch { /* already gone */ }
+      }
+    }, FORCE_EXIT_AFTER_MS);
+    if (typeof windowBackstop.unref === "function") windowBackstop.unref();
+    log.info(`[update] installer took over (${reason}) — waiting for the windows to close and Squirrel to hand off`);
+    app.once("before-quit", onHandoffQuit);
+  }
+
+  /**
+   * Hold every quit while Squirrel.Mac stages the update.
+   *
+   * On darwin quitAndInstall() returns at once and Squirrel then pulls the zip
+   * over the loopback proxy, unpacks and verifies it, about 40s for a real
+   * build. Until `before-quit-for-update` fires, ShipIt is not armed, so any quit
+   * in that window -- a second Cmd+Q, Quit from the Dock or tray, the window's
+   * close button, a logout -- kills the stage and the app reopens on the OLD
+   * version with no error. Both install paths stop holding before they call
+   * quitAndInstall() (the manual path removes deferredInstallOnQuit, the quit
+   * path's once-listener is spent), so this hold is the only guard there.
+   *
+   * Released when the installer takes over, when the install fails
+   * (reportUpdaterFailure replays a held quit), or after STAGING_QUIT_HOLD_MAX_MS.
+   * Darwin only: the Windows and Linux installers quit the app themselves at
+   * once, and holding that quit would block the install.
+   */
+  function holdQuitsWhileStaging(reason) {
+    if (osPlatform !== "darwin" || stagingHold) return;
+    const onQuit = (event) => {
+      event.preventDefault();
+      // Re-armed per quit, the pattern deferredInstallOnQuit uses.
+      app.once("before-quit", onQuit);
+      if (stagingQuitHeld) return;
+      stagingQuitHeld = true;
+      log.info(`[update] quit requested while the installer stages the update (${reason}) — holding it`);
+      showNotice(Notification, "Finishing the update", "Kiro Crew is preparing the update and will restart by itself in a moment.");
+    };
+    const timer = setTimeout(() => {
+      log.error(`[update] installer did not take over within ${STAGING_QUIT_HOLD_MAX_MS}ms (${reason}) — no longer holding quits`);
+      const held = releaseStagingHold();
+      if (held) app.quit();
+    }, STAGING_QUIT_HOLD_MAX_MS);
+    if (typeof timer.unref === "function") timer.unref();
+    stagingHold = { onQuit, timer };
+    stagingQuitHeld = false;
+    app.once("before-quit", onQuit);
+  }
+
+  /** Stop holding quits. Returns whether a quit was held, so a caller can replay it. */
+  function releaseStagingHold() {
+    if (!stagingHold) return false;
+    app.removeListener("before-quit", stagingHold.onQuit);
+    clearTimeout(stagingHold.timer);
+    stagingHold = null;
+    const held = stagingQuitHeld;
+    stagingQuitHeld = false;
+    return held;
   }
 
   // isForceRunAfter=true so the user lands back in the app after the swap.
@@ -719,6 +852,7 @@ function createFeedLane({
         return;
       }
       app.removeListener("before-quit", deferredInstallOnQuit);
+      disarmSessionEndNotice();
       // Re-check governance after the gateway stopped: policy may have arrived
       // during the shutdown await (the IPC-triggered check exits because
       // `installing` is set, so the latch is active with no further guard).
@@ -1010,6 +1144,64 @@ function createFeedLane({
   }
 
 
+  // Windows session-end notification. Windows shutdown/restart/logout never emits
+  // before-quit, so deferredInstallOnQuit is unreachable on those paths.
+  //
+  // WHY a persistent toast notification rather than calling quitAndInstall:
+  // the NSIS installer (electron-builder's Windows update path) extracts the
+  // app directly into $INSTDIR with no backup or atomic rollback (nsisunz::Unzip
+  // writes files one-by-one into the installation directory). Windows gives each
+  // process a default shutdown window of a few seconds; a ~350 MB bundle copy
+  // takes far longer. If Windows kills the installer mid-copy, $INSTDIR ends up
+  // with a mix of old and new files — the existing app may not launch. A
+  // Windows toast notification, by contrast, is safe: it is handled by a system
+  // service, persists in Action Center across the session boundary, and the user
+  // sees it at next login as a reminder to quit from the tray to install.
+  function armSessionEndNotice() {
+    if (osPlatform !== "win32") return;
+    disarmSessionEndNotice();
+    const win = getMainWindow();
+    if (!win || (typeof win.isDestroyed === "function" && win.isDestroyed())) return;
+    win.once("session-end", sessionEndPendingNotice);
+    sessionEndWindow = win;
+  }
+
+  function disarmSessionEndNotice() {
+    const win = sessionEndWindow;
+    sessionEndWindow = null;
+    if (!win) return;
+    try {
+      if (!(typeof win.isDestroyed === "function" && win.isDestroyed())) {
+        win.removeListener("session-end", sessionEndPendingNotice);
+      }
+    } catch { /* a torn-down window holds no listener */ }
+  }
+
+  function sessionEndPendingNotice() {
+    // Registered with once(): the window has already dropped it.
+    sessionEndWindow = null;
+    if (!updateReady) return;
+    // Mirror deferredInstallOnQuit's opt-out check: an automatically staged
+    // update should not advertise "quit to install" when the user has since
+    // turned off auto-download — deferredInstallOnQuit won't install it either,
+    // so the toast would send the user on a futile trip to the tray.
+    if (stagedWasAutomatic) {
+      let stillAuto = false;
+      try {
+        stillAuto = !!getAutoDownloadPreference();
+      } catch {
+        // Fail toward NOT notifying — same direction as deferredInstallOnQuit.
+        return;
+      }
+      if (!stillAuto) return;
+    }
+    // session-end fires on shutdown, restart AND logout; use copy that
+    // covers all three. Prepend the product name so the version is
+    // readable in Action Center with no app context.
+    showNotice(Notification, "Kiro Crew update ready", `An update${stagedVersion ? ` (version ${stagedVersion})` : ""} is downloaded but was not installed, because Windows was closing. Quit Kiro Crew from the tray to install it.`);
+    log.info("[update] session-end — notified user of pending update (install on next quit)");
+  }
+
   async function promptInstall(versionName, notes) {
     const handoffDetail = osPlatform === "win32"
       ? "Installing can take several minutes. Kiro Crew will close, show Windows installation progress, and reopen automatically."
@@ -1029,6 +1221,7 @@ function createFeedLane({
       await applyUpdateAndRestart();
     } else {
       app.once("before-quit", deferredInstallOnQuit);
+      armSessionEndNotice();
       showNotice(Notification, "Update deferred", "Kiro Crew will finish updating the next time you quit.");
     }
   }
@@ -1072,6 +1265,10 @@ function createFeedLane({
       // The dispatch is over: allow a retry (updateReady is still true -- the
       // zip is still staged).
       installing = false;
+      // Stop holding quits before either branch below quits or recovers. A quit
+      // held while Squirrel staged is the same request as one held before the
+      // dispatch, so the manual branch replays it the same way.
+      if (releaseStagingHold()) quitDeferredForInstall = true;
       if (deferredInstalling) {
         // Dispatched from the quit handler, so recovery is the WRONG answer here
         // even though this is the same Squirrel rejection: that quit was
@@ -1258,6 +1455,7 @@ function createFeedLane({
     stagedNotes = "";
     quitHandled = false;
     app.removeListener("before-quit", deferredInstallOnQuit);
+    disarmSessionEndNotice();
     log.info("[update] up to date");
     emit("not-available");
   });
@@ -1333,6 +1531,7 @@ function createFeedLane({
         stagedNotes = "";
         quitHandled = false;
         app.removeListener("before-quit", deferredInstallOnQuit);
+        disarmSessionEndNotice();
       }
       foundVersion = null;
       emit("not-available");
@@ -1360,6 +1559,7 @@ function createFeedLane({
       stagedVersion = null;
       stagedNotes = "";
       app.removeListener("before-quit", deferredInstallOnQuit);
+      disarmSessionEndNotice();
     }
     let autoDownload = false;
     try {
@@ -1444,6 +1644,7 @@ function createFeedLane({
       // In-app UI owns the prompt. Still install on a natural quit if the user
       // dismisses the modal with "Later" (mirrors the native dialog's deferral).
       app.once("before-quit", deferredInstallOnQuit);
+      armSessionEndNotice();
     } else {
       promptInstall(stagedVersion, stagedNotes);
     }

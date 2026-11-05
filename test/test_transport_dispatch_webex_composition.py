@@ -55,10 +55,19 @@ from webex_dispatch_helpers import (
 )
 
 import kiro_crew.webex.transport_dispatch as td
-from kiro_crew import _facade_mirror
 from kiro_crew.messaging.queue_drain import reset_drains
 
 pytestmark = pytest.mark.xdist_group(name="tree_scan_webex_transport_dispatch")
+
+SHARED_FACADE_CHECKS = (
+    "every_base_name_still_resolves",
+    "a_moved_name_is_its_owners_object",
+    "the_mirror_serves_exactly_the_moved_names_the_facade_does_not_bind",
+    "the_owner_list_is_the_layer_order_and_names_every_owner_on_disk",
+    "no_owner_takes_a_sync_io_module_through_a_from_import",
+    "no_owner_holds_what_the_facade_guards_read_by_path",
+)
+
 
 FACADE = "kiro_crew.webex.transport_dispatch"
 FACADE_PATH = Path(td.__file__).resolve()
@@ -357,17 +366,6 @@ def _signature(member: Any) -> str:
 # ── the module surface ───────────────────────────────────────────────────────────
 
 
-def test_every_base_name_still_resolves() -> None:
-    assert sorted(name for name in BASE_NAMES if not hasattr(td, name)) == []
-
-
-def test_a_moved_name_is_its_owners_object() -> None:
-    for stem, names in MOVED_NAMES.items():
-        owner = _owner(stem)
-        for name in names:
-            assert getattr(td, name) is vars(owner)[name], f"{stem}.{name}"
-
-
 def test_a_moved_class_keeps_its_owner_module_and_is_no_error_or_enum() -> None:
     """Nothing reads this class's module: no repr, log line, pickle or error text names
     it. An exception or an enum would show its module to a user, and none moved."""
@@ -390,18 +388,6 @@ def test_the_facade_binds_its_owner_handles_and_the_mirror() -> None:
     assert {f"_{stem}" for stem, members in MOVED_MEMBERS.items() if members} <= ADDED_NAMES
 
 
-def test_the_mirror_serves_exactly_the_moved_names_the_facade_does_not_bind() -> None:
-    index = vars(td)[_facade_mirror.INDEX_ATTRIBUTE]
-    assert type(td) is _facade_mirror.MirroredModule
-    assert set(index.served) == SERVED
-    assert set(td._SERVED) == SERVED
-    assert td._EXPORTS == dict(index.served)
-    assert index.excluded == ()
-    for name in SERVED:
-        stem = next(stem for stem, names in MOVED_NAMES.items() if name in names)
-        assert index.served[name] == f"{FACADE}_{stem}", name
-
-
 def test_a_star_import_binds_the_base_public_names(tmp_path: Path) -> None:
     public = {name for name in BASE_NAMES if not name.startswith("_")}
     assert public <= set(td.__all__)
@@ -413,15 +399,6 @@ def test_a_star_import_binds_the_base_public_names(tmp_path: Path) -> None:
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     assert public <= {name for name in vars(module) if not name.startswith("__")}
-
-
-def test_the_owner_list_is_the_layer_order_and_names_every_owner_on_disk() -> None:
-    assert td._OWNERS == tuple(f"{FACADE}_{stem}" for stem in OWNERS)
-    on_disk = sorted(p.stem for p in PACKAGE_DIR.glob("transport_dispatch_*.py"))
-    assert on_disk == sorted(f"transport_dispatch_{stem}" for stem in OWNERS)
-    # A package spelled like the facade would also match the queue-drain guard's
-    # ``rglob("transport_dispatch.py")``.
-    assert not list(PACKAGE_DIR.glob("transport_dispatch_*/"))
 
 
 def test_the_facade_loads_every_owner_when_it_loads() -> None:
@@ -701,16 +678,6 @@ def _from_imported_sync_io_modules(source: str) -> set[str]:
     }
 
 
-def test_no_owner_takes_a_sync_io_module_through_a_from_import() -> None:
-    assert _SYNC_IO_MODULES <= set(_sync_io_gate().MODULE_FUNCS)
-    blind = {
-        stem: sorted(found)
-        for stem, source in _owner_sources().items()
-        if (found := _from_imported_sync_io_modules(source))
-    }
-    assert blind == {}
-
-
 def _with_blocking_call(source: str, call: str) -> tuple[str, int]:
     """*source* with *call* as the first statement of its first top-level coroutine,
     and the call's line."""
@@ -807,13 +774,6 @@ def _facade_pinned_shapes(source: str) -> list[str]:
     }
     assert held.keys() == _FACADE_PINNED.keys()
     return [label for label, hit in held.items() if hit]
-
-
-def test_no_owner_holds_what_the_facade_guards_read_by_path() -> None:
-    held = {stem: _facade_pinned_shapes(source) for stem, source in _owner_sources().items()}
-    assert not {stem: labels for stem, labels in held.items() if labels}
-    in_facade = set(_facade_pinned_shapes(FACADE_PATH.read_text(encoding="utf-8")))
-    assert in_facade == _FACADE_PINNED.keys() - _FORBIDDEN_IN_THE_FACADE_TOO
 
 
 #: One planted construct per ``_FACADE_PINNED`` label, for the scan's self-test.

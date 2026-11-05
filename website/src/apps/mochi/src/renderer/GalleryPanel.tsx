@@ -12,7 +12,10 @@
  * - Import Pack button (from .mochipack.zip)
  * - Listens to gallery:active-changed and gallery:packs-changed broadcasts
  */
-import React, { useCallback, useEffect, useState } from 'react'
+import React, { useCallback, useEffect, useId, useRef, useState } from 'react'
+import { useDialogFocusTrap } from '../../../../hooks/useDialogFocusTrap'
+import { useInlineStyledConfirm } from '../../../../components/InlineStyledConfirm'
+import { useImeGuard } from '../../../../hooks/useImeGuard'
 import type { PackMeta , SpriteConfig } from '../shared/appearanceTypes'
 import { REQUIRED_STATES, OPTIONAL_STATES, ALL_MOODS } from '../shared/appearanceTypes'
 import { toDataUri } from './animationResolver'
@@ -432,6 +435,15 @@ function PackCard({ pack, isActive, isSelected, onClick, thumbnailContent, sprit
 
 // ── Detail Panel ───────────────────────────────────────────────────────────
 
+/** Input types that are buttons or pickers rather than places to type. */
+const NON_TEXT_INPUTS = new Set(['button', 'checkbox', 'color', 'file', 'image', 'radio', 'range', 'reset', 'submit'])
+
+/** True where Escape belongs to the field (it clears or cancels typing), not the sheet. */
+function isTextEntry(el: HTMLElement): boolean {
+  if (el.isContentEditable || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT') return true
+  return el.tagName === 'INPUT' && !NON_TEXT_INPUTS.has((el as HTMLInputElement).type)
+}
+
 function DetailPanel({ detail, isActive, onClose, onApply, onExport, onEdit, onDelete, colorMap }: {
   detail: PackDetail
   isActive: boolean
@@ -448,6 +460,20 @@ function DetailPanel({ detail, isActive, onClose, onApply, onExport, onEdit, onD
   // sprite one is the pre-existing form an imported sheet still uses.
   const mirror = detail.flipX ?? sc?.flipX
   const [showColorCustomizer, setShowColorCustomizer] = useState(false)
+  const titleId = useId()
+  // A modal sheet: focus moves in on open and Tab stays inside. The trap does
+  // not claim Escape: its capture-phase listener would run before a text
+  // field's own Escape (the colour customizer's "Save preset" name closes its
+  // inline form on Escape) and close the whole sheet instead. Escape on any
+  // other control, colour swatches included, still closes the sheet.
+  const dialogRef = useRef<HTMLDivElement>(null)
+  useDialogFocusTrap(dialogRef, onClose, { handleEscape: false })
+  const ime = useImeGuard()
+  const onDialogKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (e.key !== 'Escape' || ime.isComposing(e)) return
+    if (isTextEntry(e.target as HTMLElement)) return
+    onClose()
+  }
   const isDefaultMochi = meta.id === 'default-mochi'
   const thumbColorMap = isDefaultMochi ? colorMap : null
 
@@ -478,11 +504,12 @@ function DetailPanel({ detail, isActive, onClose, onApply, onExport, onEdit, onD
 
   return (
     <div role="presentation" style={S.detailOverlay} onClick={onClose}>
-      <div role="presentation" style={S.detailPanel} onClick={(e) => e.stopPropagation()}>
+      {/* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- stopPropagation prevents backdrop dismiss when clicking inside modal; Escape closes it */}
+      <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby={titleId} style={S.detailPanel} onClick={(e) => e.stopPropagation()} onKeyDown={onDialogKeyDown}>
         {/* Header */}
         <div style={S.detailHeader}>
           <div style={{ flex: 1 }}>
-            <div style={S.detailTitle}>{meta.name}</div>
+            <div id={titleId} style={S.detailTitle}>{meta.name}</div>
             <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>
               {meta.author} · {meta.format.toUpperCase()}
             </div>
@@ -524,13 +551,12 @@ function DetailPanel({ detail, isActive, onClose, onApply, onExport, onEdit, onD
         )}
 
         {/* Color customizer panel with slide animation */}
+        {/* Hidden with display:none while collapsed, not squeezed to zero height:
+            a zero-height panel's controls stay focusable and the dialog's focus
+            trap counts them as Tab stops. It stays mounted so an unsaved preset
+            name survives Hide and Customize. */}
         {isDefaultMochi && animations.idle && (
-          <div style={{
-            maxHeight: showColorCustomizer ? 2000 : 0,
-            opacity: showColorCustomizer ? 1 : 0,
-            overflow: 'hidden',
-            transition: 'max-height 350ms ease, opacity 250ms ease',
-          }}>
+          <div style={{ display: showColorCustomizer ? undefined : 'none' }}>
             <ColorCustomizerPanel idleSvgContent={animations.idle.content} />
           </div>
         )}
@@ -599,6 +625,7 @@ function DetailPanel({ detail, isActive, onClose, onApply, onExport, onEdit, onD
 // ── Main Gallery Panel ─────────────────────────────────────────────────────
 
 export const GalleryPanel: React.FC = () => {
+  const { confirm: askConfirm, confirmDialog } = useInlineStyledConfirm()
   const [packs, setPacks] = useState<PackMeta[]>([])
   const [activePackId, setActivePackId] = useState<string>('')
   const [selectedPackId, setSelectedPackId] = useState<string | null>(null)
@@ -785,9 +812,13 @@ export const GalleryPanel: React.FC = () => {
 
   const handleDelete = useCallback(async () => {
     if (!detail) return
-    if (!confirm(i18nT('apps.mochi.gallery.delete_confirm', { name: detail.meta.name }))) return
+    const packId = detail.meta.id
+    if (!await askConfirm({
+      title: i18nT('apps.mochi.gallery.delete_confirm', { name: detail.meta.name }),
+      confirmLabel: i18nT('apps.mochi.gallery.delete'),
+    })) return
     try {
-      const result = await api.galleryDelete(detail.meta.id)
+      const result = await api.galleryDelete(packId)
       if (result && !result.ok) {
         setError(result.error || i18nT('apps.mochi.errors.delete'))
         return
@@ -798,7 +829,7 @@ export const GalleryPanel: React.FC = () => {
     } catch (err: unknown) {
       setError((err as Error)?.message || i18nT('apps.mochi.errors.delete'))
     }
-  }, [detail, fetchPacks])
+  }, [askConfirm, detail, fetchPacks])
 
   const handleImportBundle = useCallback(async () => {
     try {
@@ -959,6 +990,7 @@ export const GalleryPanel: React.FC = () => {
 
         />
       )}
+      {confirmDialog}
     </div>
   )
 }

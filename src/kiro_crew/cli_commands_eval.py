@@ -90,7 +90,11 @@ def _load_eval_scenarios(args: argparse.Namespace) -> list[Scenario] | None:
 
 
 async def _run_eval(args: argparse.Namespace) -> None:
-    """Run multi-session evaluation scenarios."""
+    """Run multi-session evaluation scenarios.
+
+    Exits 1 when a scenario name is unknown (nothing runs) or when any scenario
+    fails (after the report is written); returns normally when every one passes.
+    """
 
     scenarios = await asyncio.to_thread(_load_eval_scenarios, args)
     if scenarios is None:
@@ -101,6 +105,12 @@ async def _run_eval(args: argparse.Namespace) -> None:
     names = ", ".join(s.name for s in scenarios)
     print(f"Running: {names} ({total_turns} turns)\n")
 
+    # A stored Kiro CLI pick runs on KAS where kiro-cli offers v3; this process
+    # never ran the gateway's KAS floor, so establish that evidence before the
+    # load reads the pick. Probes only for a Kiro CLI pick; off the event loop.
+    from kiro_crew.agent_sdk.backends import ensure_kiro_cli_kas_verdict
+
+    await asyncio.to_thread(ensure_kiro_cli_kas_verdict)
     config = KiroCrewConfig.load()
     provider_factory = build_provider_factory(config)
 
@@ -168,3 +178,8 @@ async def _run_eval(args: argparse.Namespace) -> None:
     )
 
     print(f"\nResults saved to:\n  {report_path}\n  {json_path}")
+
+    if overall < len(results):
+        # A failed scenario must fail the command, so `kirocrew eval && next` stops
+        # and a script can gate on it. The report is already on disk.
+        sys.exit(1)

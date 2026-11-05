@@ -54,6 +54,12 @@ vi.mock('../pages/developer/KasBundleCard', () => ({
   KasBundleCard: () => <div data-testid="kas-bundle-card" />,
 }))
 
+// Same for the Strands provider card: its behaviour is pinned in
+// StrandsSetupCard.test.tsx, and the real card would need the secrets API.
+vi.mock('../pages/developer/StrandsSetupCard', () => ({
+  StrandsSetupCard: () => <div data-testid="strands-setup-card" />,
+}))
+
 import { AgentBackendTab } from '../pages/developer/AgentBackendTab'
 import {
   schemaWith,
@@ -210,7 +216,7 @@ describe('AgentBackendTab detail card', () => {
     await waitFor(() =>
       expect(screen.getByText('Kiro CLI supports 1 of 1 features')).toBeInTheDocument(),
     )
-    const saved = screen.getByText('Mates load their saved agent')
+    const saved = screen.getByText('Bots load their saved agent')
     const folded = saved.closest('details')
     expect(folded).not.toBeNull()
     expect(folded?.open).toBe(false)
@@ -493,13 +499,13 @@ describe('AgentBackendTab detail card', () => {
     })
     schemaMock.mockReturnValue(schemaWith(['kiro']))
     wrap()
-    await waitFor(() => expect(row('deepseek')).toBeInTheDocument())
-    highlight('deepseek')
+    await waitFor(() => expect(row('DeepSeek Harness')).toBeInTheDocument())
+    highlight('DeepSeek Harness')
     expect(panel().getByText('This build does not offer this agent.')).toBeInTheDocument()
     // The reason, from the routing enum rather than from prose written per agent.
     expect(screen.getByText(/cannot confirm this agent asks/)).toBeInTheDocument()
     // Listed, never offered: a button whose PATCH the wire refuses is not a button.
-    expect(screen.queryByRole('button', { name: 'Use deepseek' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Use DeepSeek Harness' })).toBeNull()
   })
 
   it('still hides an agent the deployment denied, card or no card', async () => {
@@ -612,6 +618,20 @@ describe('AgentBackendTab MCP ability card', () => {
     expect(panel().getByText(/The hooks your agent config file defines/)).toBeInTheDocument()
   })
 
+  it('names only the preToolUse hooks where the rest of the hooks still run', async () => {
+    // The server narrows the hooks line where Crew fires every other event itself, so
+    // the card must not tell that reader none of their hooks run.
+    acpBackendsMock.mockResolvedValue({
+      backends: [probeRow('kiro', { ...card(), ...mcp({ ineffective: ['hooks_pre_tool_use'] }) })],
+    })
+    wrap()
+    await waitFor(() =>
+      expect(panel().getByText(/The preToolUse hooks your agent config file defines/)).toBeInTheDocument(),
+    )
+    expect(panel().queryByText(/^The hooks your agent config file defines/)).toBeNull()
+    expect(panel().queryByText('hooks_pre_tool_use')).toBeNull()
+  })
+
   it('renders no heading for an agent that honours the whole file', async () => {
     // Stated only where it holds: a reader never reads a row of "delivered" marks that
     // mean "as expected".
@@ -687,9 +707,9 @@ describe('AgentBackendTab MCP ability card', () => {
     })
     schemaMock.mockReturnValue(schemaWith(['kiro', 'opencode']))
     wrap()
-    await waitFor(() => expect(row('opencode')).toBeInTheDocument())
+    await waitFor(() => expect(row('OpenCode')).toBeInTheDocument())
     expect(screen.queryByText(/stops every tool on the same server/)).toBeNull()
-    highlight('opencode')
+    highlight('OpenCode')
     await waitFor(() =>
       expect(panel().getByText(/stops every tool on the same server/)).toBeInTheDocument(),
     )
@@ -777,8 +797,8 @@ describe('AgentBackendTab standing caveats', () => {
     })
     schemaMock.mockReturnValue(schemaWith(['kiro', 'codex']))
     wrap()
-    await waitFor(() => expect(row('codex')).toBeInTheDocument())
-    highlight('codex')
+    await waitFor(() => expect(row('OpenAI Codex')).toBeInTheDocument())
+    highlight('OpenAI Codex')
     await waitFor(() => expect(screen.getByText('Run: codex login')).toBeInTheDocument())
   })
 
@@ -809,9 +829,9 @@ describe('AgentBackendTab standing caveats', () => {
     })
     schemaMock.mockReturnValue(schemaWith(['kiro', 'codex']))
     wrap()
-    await waitFor(() => expect(row('codex')).toBeInTheDocument())
-    highlight('codex')
-    await waitFor(() => expect(useButton('codex')).toBeEnabled())
+    await waitFor(() => expect(row('OpenAI Codex')).toBeInTheDocument())
+    highlight('OpenAI Codex')
+    await waitFor(() => expect(useButton('OpenAI Codex')).toBeEnabled())
     expect(screen.queryByText(/Run:/)).toBeNull()
   })
 
@@ -827,7 +847,7 @@ describe('AgentBackendTab standing caveats', () => {
     })
     schemaMock.mockReturnValue(schemaWith(['kiro', 'codex']))
     wrap()
-    await waitFor(() => expect(row('codex')).toBeInTheDocument())
+    await waitFor(() => expect(row('OpenAI Codex')).toBeInTheDocument())
     // Kiro CLI is the open detail and carries no remedy.
     expect(screen.queryByText('Run: codex login')).toBeNull()
   })
@@ -1012,5 +1032,18 @@ describe('AgentBackendTab new backend', () => {
     await waitFor(() =>
       expect(patchConfigMock).toHaveBeenCalledWith('agent.acp_backend', unheardOf),
     )
+  })
+})
+
+describe('AgentBackendTab Strands setup', () => {
+  it('renders the provider card inside the Strands detail only', async () => {
+    schemaMock.mockReturnValue(schemaWith(['kiro', 'kas', 'strands', 'claude']))
+    wrap()
+    await waitFor(() => expect(row('Strands')).toBeInTheDocument())
+    expect(screen.queryByTestId('strands-setup-card')).toBeNull()
+    highlight('Strands')
+    expect(detail().contains(screen.getByTestId('strands-setup-card'))).toBe(true)
+    highlight('Claude Code')
+    expect(screen.queryByTestId('strands-setup-card')).toBeNull()
   })
 })

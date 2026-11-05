@@ -131,7 +131,7 @@ otherwise the report is written unthreaded.
 | Field | Type | Required | Meaning | Enum |
 |---|---|---|---|---|
 | `item` | string | required | The work item's id, matching the dispatch. | |
-| `status` | string | required | Where the item stands. | `done`, `blocked`, `failed`, `progress`, `question` |
+| `status` | string | required | Where the item stands. | `done`, `blocked`, `failed`, `progress`, `question`, `reply` |
 | `credits` | number | optional | What the work cost. | |
 | `summary` | string | optional | What was done. | |
 

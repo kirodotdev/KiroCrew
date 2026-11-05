@@ -305,11 +305,13 @@ async def _slot_harness_managed_backend(state: DashboardState, slot: Any) -> str
     """Backend id when *slot*'s session compacts on its own, else ``None``.
 
     A backend in ``ACP_BACKENDS_HARNESS_MANAGED_COMPACTION`` (KAS) runs its own
-    summarization, and the turn-end gate declines Crew's ``/compact`` for it at
-    any threshold, so the popover says the slider does not apply there. The
-    live session's provider answers when one exists; otherwise the answer is
-    for the backend the slot's next session starts on, chosen by the same
-    member-aware selector a new session uses.
+    summarization, and at the global threshold the turn-end gate declines
+    Crew's ``/compact`` for it, so while the session follows the global the
+    popover says it compacts on its own and that a threshold compacts sooner.
+    An override or an agent default is honoured, and the popover hides the
+    note then. The live session's provider answers when one exists; otherwise
+    the answer is for the backend the slot's next session starts on, chosen by
+    the same member-aware selector a new session uses.
     """
     from kiro_crew.agent_sdk.backends import ACP_BACKENDS_HARNESS_MANAGED_COMPACTION
     from kiro_crew.members import select_provider_backend
@@ -322,11 +324,17 @@ async def _slot_harness_managed_backend(state: DashboardState, slot: Any) -> str
         backend = getattr(provider, "harness_managed_compaction_backend", None)
         return backend if isinstance(backend, str) and backend else None
     try:
-        agent_cfg = (await asyncio.to_thread(KiroCrewConfig.load)).agent
+        from kiro_crew.crewmate_harness import crewmate_backend_pin
+
+        cfg = await asyncio.to_thread(KiroCrewConfig.load)
+        agent_cfg = cfg.agent
+        # A crewmate pinned to a harness that cannot start raises here and falls
+        # to the debug path: its next session is refused, so no hint applies.
         backend = select_provider_backend(
             key,
             getattr(agent_cfg, "member_acp_backend", ""),
             getattr(agent_cfg, "acp_backend", ""),
+            crew_backend=crewmate_backend_pin(cfg, key),
         )
     except Exception:
         logger.debug("autocompact: could not resolve slot %s's backend", key, exc_info=True)

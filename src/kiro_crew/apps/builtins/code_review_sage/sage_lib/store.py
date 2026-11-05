@@ -34,6 +34,7 @@ import stat
 import tempfile
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 
 # Canonical KiroCrew data-root accessor. Imported at module top but kept guarded
 # so the store stays importable standalone (outside the KiroCrew runtime) — the
@@ -70,6 +71,24 @@ try:
     from kiro_crew.owner_only_files import ensure_directory as _runtime_ensure_directory
 except ImportError:  # pragma: no cover - standalone fallback
     _runtime_ensure_directory = None  # type: ignore[assignment]
+
+# The parse every hand-edited JSON reader shares: one leading UTF-8 byte-order mark
+# (Notepad "UTF-8 with BOM", PowerShell 5.1 ``Set-Content -Encoding UTF8``) is not
+# content. Same guard shape: standalone drops the same one mark itself.
+try:
+    from kiro_crew.user_json import loads_user_json as _loads_user_json
+except ImportError:  # pragma: no cover - standalone fallback
+
+    def _loads_user_json(text: str) -> Any:
+        return json.loads(text.removeprefix("\ufeff"))
+
+
+# The by-name publish's Windows sharing-violation retry, same guard shape:
+# standalone renames once, as it did before.
+try:
+    from kiro_crew.atomic_write import replace_with_retry as _replace
+except ImportError:  # pragma: no cover - standalone fallback
+    _replace = os.replace  # type: ignore[assignment]
 
 
 def _open_creating(name: str, flags: int, mode: int, dir_fd: int | None = None) -> int:
@@ -507,7 +526,7 @@ def atomic_write_locked(path: str | os.PathLike, data: bytes) -> None:
                 _write_all(fd, data)
             finally:
                 os.close(fd)
-            os.replace(tmp, target)
+            _replace(tmp, target)
         finally:
             if os.path.exists(tmp):
                 os.unlink(tmp)
@@ -1075,7 +1094,13 @@ def load_config(root: Path | None = None) -> dict:
     cfg_path = data_dir(root) / "config.json"
     if not cfg_path.exists():
         ensure_layout(root)
-    return json.loads((data_dir(root) / "config.json").read_text(encoding="utf-8"))
+    path = data_dir(root) / "config.json"
+    try:
+        text = path.read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:
+        # A UTF-16 save (PowerShell 5.1 ``>``) names no file in the codec's own message.
+        raise ValueError(f"{path} is not UTF-8 text: {exc}") from exc
+    return _loads_user_json(text)
 
 
 def read_config_quiet(root: Path | None = None) -> dict:

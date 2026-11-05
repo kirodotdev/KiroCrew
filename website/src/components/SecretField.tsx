@@ -1,6 +1,7 @@
 import { useState, useCallback, type ReactNode, type Ref } from 'react'
 import { Eye, EyeOff, X, ExternalLink, RotateCcw, Trash2, Lock } from 'lucide-react'
 import { Input } from './ui'
+import InfoTip from './InfoTip'
 
 import { i18nT } from '../i18n/t'
 
@@ -25,6 +26,9 @@ export interface SecretFieldPermanentRemoval {
 export interface SecretFieldProps {
   label: string
   description?: string
+  /** An info tip beside the label, for prose that explains what the field IS;
+   *  the same split as the Settings row primitives' `hint`. */
+  hint?: string
   placeholder?: string
   /** True when a secret is currently persisted on the server. */
   isSet: boolean
@@ -59,7 +63,7 @@ export interface SecretFieldProps {
 }
 
 export function SecretField({
-  label, description, placeholder, isSet, preview, value, onChange,
+  label, description, hint, placeholder, isSet, preview, value, onChange,
   editing: controlledEditing, onEditingChange,
   cleared, onClearedChange, permanentRemoval,
   setupLink, readOnly = false, replaceLabel,
@@ -97,6 +101,7 @@ export function SecretField({
     <div data-setting-label={label} className="flex flex-col gap-1.5 py-1.5">
       <div className="flex items-center gap-1.5">
         <span className="text-[13px] font-semibold text-text">{label}</span>
+        {hint && <InfoTip text={hint} placement="top" />}
         {setupLink && (
           <a href={setupLink.href} target="_blank" rel="noopener noreferrer"
             className="text-muted hover:text-accent transition-colors" aria-label={setupLink.label ?? 'Where to find this'}>

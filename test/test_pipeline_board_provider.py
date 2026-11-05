@@ -1,22 +1,11 @@
 """What the provider decides, which the type checker cannot.
 
-``mypy`` proves every required key is written and that nothing but ``str | Unsaid``
-lands in a ``str | Unsaid`` field. It cannot prove the VALUE is honest, and three of
-these values are exactly where the live board lied:
+``mypy`` proves the types, not that the VALUE is honest. Pinned by behaviour: a word
+never reaches the CHECKS cell, a bare owner name never reaches the action line, and age
+comes from the newest work entry (the read clock would always say about zero).
 
-* the CHECKS cell showed ``ready`` / ``pending`` / ``next`` -- words where a fraction
-  belongs, because nothing refused a word (:func:`test_a_word_never_reaches_the_checks_cell`);
-* the per-column action line showed ``Raymond`` / ``chat-2176`` -- owner names where an
-  instruction belongs (:func:`test_a_bare_name_never_reaches_the_action_line`);
-* an age taken from the read clock is always about zero, which deletes staleness
-  (:func:`test_age_is_measured_from_the_newest_work_entry`).
-
-So the gates are pinned by behaviour, and each pin restores the exact value that was
-wrong rather than a nearby one.
-
-:func:`test_a_board_with_no_items_is_not_a_board_of_zeros` is the other half: absent and
-zero are different facts, and a crew that has logged nothing must not render a complete
-board of zeros.
+:func:`test_a_board_with_no_items_is_not_a_board_of_zeros`: absent and zero are
+different facts.
 """
 
 from __future__ import annotations
@@ -100,9 +89,7 @@ def _build(view: WorkBoardView, judgment: PipelineBoardJudgment | None = None) -
     )
 
 
-# --------------------------------------------------------------------------
 # the two gates
-# --------------------------------------------------------------------------
 
 
 def test_a_word_never_reaches_the_checks_cell() -> None:
@@ -220,9 +207,7 @@ def test_an_action_for_one_item_does_not_appear_on_another() -> None:
     assert actions == {"it_0": "approve PR 14111", "it_1": UNSAID}
 
 
-# --------------------------------------------------------------------------
 # numbers come from the fold
-# --------------------------------------------------------------------------
 
 
 def test_the_publisher_cannot_reach_a_number() -> None:
@@ -248,11 +233,8 @@ def test_columns_are_named_from_the_closed_state_vocabulary() -> None:
 def test_the_total_counts_items_and_dropped_entries_are_their_own_number() -> None:
     """``total`` is items. Dropped ENTRIES are reported beside it, never added into it.
 
-    ``omitted`` counts entries the fold refused -- a straggler from a purged board, an
-    entry naming no item -- and one dropped entry is not one missing item. Added
-    together the total belongs to neither quantity, and every count derived from it
-    (the segment remainder, the "unaccounted" band) inherits the error. The drops are a
-    fact about the LOG, so they travel as their own count.
+    ``omitted`` counts entries the fold refused, and one dropped entry is not one missing
+    item, so adding them would corrupt every count derived from the total.
     """
     panel = _build(_view([_item("it_0"), _item("it_1")], omitted=3))
     assert panel["progress"]["total"] == 2
@@ -351,9 +333,7 @@ def test_an_item_with_no_pull_request_falls_back_to_its_id() -> None:
     assert ids == ["it_abcd1234"]
 
 
-# --------------------------------------------------------------------------
 # age, and absent-versus-zero
-# --------------------------------------------------------------------------
 
 
 def test_age_is_measured_from_the_newest_work_entry() -> None:
@@ -369,11 +349,8 @@ def test_age_is_measured_from_the_newest_work_entry() -> None:
 def test_the_age_comes_from_the_boards_own_newest_entry() -> None:
     """The fold's entry stamp decides the age, not the newest ITEM stamp.
 
-    An item carries only ``created_at``, ``last_report_at`` and ``closed_at``, and a
-    conductor's own round touches none of them -- a decision, a verdict, an acceptance,
-    a bind. Derived from item stamps, a board that just moved keeps ageing and
-    eventually reads as stale while it is current. Here the entry stamp is half an hour
-    newer than every item stamp, and the age follows it.
+    A conductor's own round (decision, verdict, acceptance, bind) touches no item stamp,
+    so the entry stamp here is half an hour newer than every item stamp.
     """
     view = _view([_item("it_0")])
     view["conductor"]["last_entry_at"] = "2026-09-27T12:30:00+00:00"
@@ -421,9 +398,7 @@ def test_a_damaged_timestamp_reads_as_unsaid_not_as_now() -> None:
     assert _build(view)["meta"]["age_seconds"] == UNSAID
 
 
-# --------------------------------------------------------------------------
 # the single exit to the island
-# --------------------------------------------------------------------------
 
 
 def test_every_sentinel_becomes_null_in_the_payload() -> None:
@@ -431,7 +406,9 @@ def test_every_sentinel_becomes_null_in_the_payload() -> None:
     payload = panel_payload(_build(_view([_item("it_0")])))
     assert payload["lede"] is None
     assert payload["columns"][0]["cards"][0]["of"] is None
-    assert UNSAID not in repr(payload), "a sentinel survived into the island payload"
+    rendered = repr(payload)
+    assert repr(UNSAID) not in rendered, "a sentinel survived into the island payload"
+    assert UNSAID.value not in rendered, "a sentinel survived into the island payload"
 
 
 def test_the_payload_carries_the_contract_version() -> None:

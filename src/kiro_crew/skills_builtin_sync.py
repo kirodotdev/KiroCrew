@@ -22,6 +22,7 @@ from kiro_crew import pinned_fs
 from kiro_crew.atomic_write import replace_with_retry
 from kiro_crew.frontmatter import SKILL_LOADER, parse_frontmatter
 from kiro_crew.hooks import FileTooLargeError, safe_read_file, safe_read_file_bytes_nolink
+from kiro_crew.owner_only_files import ensure_directory
 from kiro_crew.platform_compat import ensure_owner_rwx_dirs, is_link_or_junction, rmtree_force
 from kiro_crew.skill_runtime import authoring as _authoring
 from kiro_crew.skills_builtin_provenance import (
@@ -587,6 +588,7 @@ def _ensure_builtin_skills(base: Path) -> None:
             # written by the copy itself, so the published file is created
             # once, with the packaged mode, and never read back and rewritten.
             carried = _carried_skill_md(src_dir) if carry_opt_out else None
+            ensure_directory(base)  # copytree would create the skills root at the umask default
             try:
                 if carried is None:
                     shutil.copytree(src_dir, dest_dir)

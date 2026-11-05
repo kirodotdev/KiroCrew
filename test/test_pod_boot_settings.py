@@ -343,6 +343,7 @@ class TestBootTimeSettings:
     def test_up_on_a_running_pod_notes_the_restart(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
     ) -> None:
+        monkeypatch.setattr(rt, "IS_WINDOWS", False)
         c = self._prep_up(tmp_path, monkeypatch, active=True)
         pod_cli._up(
             c,
@@ -351,9 +352,26 @@ class TestBootTimeSettings:
             ),
         )
         err = capsys.readouterr().err
-        assert "already running" in err and "pod down demo" in err
+        assert "already running" in err and "pod restart demo" in err
         # Recorded either way, so the next boot picks it up.
         assert rt.read_env_file(c, "demo").get("APPROVAL") == "reads"
+
+    def test_up_on_a_running_windows_pod_names_down_then_up(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+    ) -> None:
+        """`pod restart` refuses on Windows, so the note must name the remedy that works."""
+        monkeypatch.setattr(rt, "IS_WINDOWS", True)
+        monkeypatch.setattr(rt.win_backend, "unsupervised_reason", lambda cfg, n: None)
+        c = self._prep_up(tmp_path, monkeypatch, active=True)
+        pod_cli._up(
+            c,
+            argparse.Namespace(
+                name="demo", json=False, seed="", ttl="2h", provision=False, approval="reads"
+            ),
+        )
+        err = capsys.readouterr().err
+        assert "kirocrew pod down demo && kirocrew pod up demo --approval reads" in err
+        assert "pod restart" not in err
 
     def test_up_tolerates_a_namespace_without_the_flag(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

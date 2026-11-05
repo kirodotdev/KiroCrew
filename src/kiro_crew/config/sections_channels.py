@@ -268,6 +268,13 @@ def _coerce_whatsapp_groups(raw: object) -> list[dict]:
     unprompted-speech mode), and cooldown is clamped to >= 0. Fails closed on
     shape: a non-list yields ``[]``, malformed entries are dropped, duplicate
     JIDs keep the first entry.
+
+    ``allowed_wa_ids`` is carried only when the entry has the key, because its
+    absence is what means "use the global ``whatsapp.allowed_wa_ids``". When
+    present it is coerced like the global list (digit-only, deduped), and a value
+    that is not a list becomes ``[]``: a malformed per-group list admits nobody
+    but the operator in that group rather than falling back to the wider global
+    list.
     """
     if not isinstance(raw, list):
         return []
@@ -287,15 +294,16 @@ def _coerce_whatsapp_groups(raw: object) -> list[dict]:
             cooldown = int(entry.get("cooldown_s", _WHATSAPP_GROUP_COOLDOWN_DEFAULT))
         except (TypeError, ValueError):
             cooldown = _WHATSAPP_GROUP_COOLDOWN_DEFAULT
-        out.append(
-            {
-                "jid": jid,
-                "name": str(entry.get("name", "")).strip(),
-                "mode": mode,
-                "rules": str(entry.get("rules", "")).strip(),
-                "cooldown_s": max(0, cooldown),
-            }
-        )
+        coerced: dict = {
+            "jid": jid,
+            "name": str(entry.get("name", "")).strip(),
+            "mode": mode,
+            "rules": str(entry.get("rules", "")).strip(),
+            "cooldown_s": max(0, cooldown),
+        }
+        if "allowed_wa_ids" in entry:
+            coerced["allowed_wa_ids"] = _coerce_str_ids(entry["allowed_wa_ids"])
+        out.append(coerced)
     return out
 
 
@@ -487,8 +495,9 @@ class WhatsAppConfig:
             "Allowed WhatsApp IDs",
             "Phone numbers (digits only, country code, no '+') permitted to "
             "address the agent besides the linked account: in direct chats when "
-            "dm_policy='allowlist', and in every configured group regardless of "
-            "dm_policy (a group member not listed here is dropped silently, even "
+            "dm_policy='allowlist', and in every configured group that has no "
+            "allowed_wa_ids of its own, regardless of dm_policy (a group member "
+            "not on the group's allowlist is dropped silently, even "
             "when they @-mention the agent or the group is in 'rules' mode). Empty "
             "adds nobody beyond the linked account.",
             tags=["whatsapp"],
@@ -504,9 +513,14 @@ class WhatsAppConfig:
             "unprompted when the entry's rules say the agent can genuinely "
             "help) | 'off', 'rules': free-text guidance for when to speak, "
             "'cooldown_s': minimum seconds between unprompted replies "
-            "(default 120)}. Groups not listed are ignored entirely. Listing a "
-            "group lets the agent speak there; it does not admit its members: "
-            "only you and the numbers in allowed_wa_ids can make the agent reply.",
+            "(default 120), 'allowed_wa_ids': optional list of phone numbers "
+            "(digits only) admitted in THIS group in place of the global "
+            "allowed_wa_ids; omit it to use the global list, and an empty list "
+            "admits nobody but you}. Groups not listed are ignored entirely. "
+            "Listing a group lets the agent speak there; it does not admit its "
+            "members: only you and the numbers on the group's allowlist (its own "
+            "allowed_wa_ids, else the global one) can make the agent reply or "
+            "have their attachments opened.",
             tags=["whatsapp"],
         ),
     )

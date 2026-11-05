@@ -183,4 +183,89 @@ describe('composer auto-size measurement memo', () => {
       vi.unstubAllGlobals()
     }
   })
+
+  it('measures and observes the textarea a remounted box brings', () => {
+    // The box unmounts for the approval ghost and for a collapse; coming back
+    // mounts a NEW textarea. Start collapsed, then expand, so the textarea under
+    // test is one the box remounted rather than the one ChatInput mounted with.
+    const instances = new Set<{ cb: ResizeObserverCallback; targets: Set<Element> }>()
+    const RO = class {
+      cb: ResizeObserverCallback
+      targets = new Set<Element>()
+      constructor(cb: ResizeObserverCallback) { this.cb = cb; instances.add(this) }
+      observe(el: Element) { this.targets.add(el) }
+      unobserve(el: Element) { this.targets.delete(el) }
+      disconnect() { instances.delete(this) }
+    } as unknown as typeof ResizeObserver
+    vi.stubGlobal('ResizeObserver', RO)
+    const frames: FrameRequestCallback[] = []
+    const raf = vi.spyOn(window, 'requestAnimationFrame').mockImplementation((cb) => { frames.push(cb); return frames.length })
+    localStorage.setItem('mc-composer-collapsed', '1')
+    try {
+      renderWithProviders(<ChatInput value="" onChange={vi.fn()} onSend={vi.fn()} collapsible />)
+      expect(screen.queryByRole('textbox')).toBeNull()
+      fireEvent.click(screen.getByTestId('composer-collapsed-bar'))
+      const ta = screen.getByRole('textbox') as HTMLTextAreaElement
+
+      // Measured on arrival: the box comes back at the height of what it holds.
+      expect(ta.style.height).not.toBe('')
+
+      // Observed: a later width change still re-measures it.
+      const mine = [...instances].filter((i) => i.targets.has(ta))
+      expect(mine.length).toBeGreaterThan(0)
+      Object.defineProperty(ta, 'clientWidth', { configurable: true, get: () => 300 })
+      frames.splice(0)
+      const state = countMeasures(ta)
+      for (const i of mine) i.cb([], {} as ResizeObserver)
+      for (const frame of frames.splice(0)) frame(0)
+      expect(state.measures).toBe(1)
+    } finally {
+      raf.mockRestore()
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('re-measures when the last measurement ran at a width the observer never saw', () => {
+    const instances = new Set<{ cb: ResizeObserverCallback; targets: Set<Element> }>()
+    const RO = class {
+      cb: ResizeObserverCallback
+      targets = new Set<Element>()
+      constructor(cb: ResizeObserverCallback) { this.cb = cb; instances.add(this) }
+      observe(el: Element) { this.targets.add(el) }
+      unobserve(el: Element) { this.targets.delete(el) }
+      disconnect() { instances.delete(this) }
+    } as unknown as typeof ResizeObserver
+    vi.stubGlobal('ResizeObserver', RO)
+    const frames: FrameRequestCallback[] = []
+    const raf = vi.spyOn(window, 'requestAnimationFrame').mockImplementation((cb) => { frames.push(cb); return frames.length })
+    try {
+      renderWithProviders(<Harness />)
+      const ta = screen.getByRole('textbox') as HTMLTextAreaElement
+      const mine = [...instances].filter((i) => i.targets.has(ta))
+      let width = 600
+      Object.defineProperty(ta, 'clientWidth', { configurable: true, get: () => width })
+      const fire = () => {
+        for (const i of mine) i.cb([], {} as ResizeObserver)
+        for (const frame of frames.splice(0)) frame(0)
+      }
+      // The observer sees the box at its resting width, and the box is measured there.
+      fire()
+      const state = countMeasures(ta)
+
+      // A measurement runs while the layout is briefly narrow. The input
+      // handler stands in for any measurement the observer does not drive.
+      width = 40
+      fireEvent.input(ta, { target: { value: 'x' } })
+      expect(state.measures).toBe(1)
+
+      // The layout is restored before the observer delivers, so its only
+      // notification reports the width it saw before the narrow measurement.
+      width = 600
+      fire()
+      expect(state.measures).toBe(2)
+    } finally {
+      raf.mockRestore()
+      vi.unstubAllGlobals()
+    }
+  })
 })

@@ -90,7 +90,7 @@ const DETAIL = {
 /** Open one crew's editor and land on the Built from pane. */
 async function openTemplatePane(page, crew) {
   await page.goto('/capabilities?tab=crews', { waitUntil: 'domcontentloaded' })
-  await page.locator('#main-content').getByText('Your AI teammates', { exact: false })
+  await page.locator('#main-content').getByText('Always-on AI agents', { exact: false })
     .waitFor({ state: 'visible', timeout: 15000 })
   const card = page.getByRole('button', { name: new RegExp(`Edit (crew|agent|mate) ${crew}`, 'i') })
   await card.waitFor({ state: 'visible', timeout: 15000 })

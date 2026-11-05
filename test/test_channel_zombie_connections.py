@@ -47,12 +47,14 @@ class _FailingWs:
     def __init__(self) -> None:
         self.closed = False
         self.close_calls = 0
+        self.close_code: int | None = None
 
     async def send_json(self, payload) -> None:  # noqa: ANN001
         raise ConnectionResetError("boom")
 
-    async def close(self) -> None:
+    async def close(self, *, code: int = 1000) -> None:
         self.close_calls += 1
+        self.close_code = code
         self.closed = True
 
 
@@ -64,6 +66,7 @@ async def test_heartbeat_loop_death_closes_ws_and_warns(caplog):
         # interval=0 removes the pre-send jitter sleep from the timing budget.
         await client._heartbeat_loop(ws, 0.0)
     assert ws.close_calls == 1, "a dead heartbeat task must recycle the connection"
+    assert ws.close_code == 4000, "a recycle must keep the session resumable"
     assert any("heartbeat loop failed" in r.message for r in caplog.records)
     assert all(r.levelno >= logging.WARNING for r in caplog.records)
 

@@ -179,6 +179,11 @@ does not automatically retry. Native answers steer their own waiting turn when
 either live run state or that slot's reloaded dashboard snapshot is running;
 sibling sessions never determine this decision. Approvals are separate from informational blockers.
 
+Failed workflows count as blocked through 24 hours after `ended_at`. Past that
+window they rest in the command-center model as `stopped`, the same state as a
+cancelled run; their error and last log remain attached. Missing or
+invalid end times stay blocked. The workflow history retains the failed outcome.
+
 The automatic card (`SessionStatusFrame`) uses the sandbox-document service with
 an empty sandbox (`TASK_DASHBOARD_SANDBOX`): no scripts, same-origin, forms,
 popups or control bridge. A dedicated document builder (`dashboardDocument.ts`)
@@ -222,6 +227,46 @@ comments. A signed-in dashboard subject who is not the owner gets the shared
 internal-secret transport (the agent `artifact_*` tools, the CLI and app
 drivers) and app tokens within their manifest grant are not dashboard subjects
 and keep their own rules. Pinned by `test/test_artifacts_owner_gate.py`.
+
+### Downloading a Bot's Dashboard
+
+The Bot's live Dashboard tab carries a **Download as HTML** button
+(`CrewDashboardDownload.tsx`). A staged preview and a root session's
+side-panel Dashboard do not. The button asks first, every time, in a confirm
+dialog that says the file shows the page as it is now and that anyone it is
+sent to can read everything on it. The file is a snapshot and does not update.
+
+The file is built in the browser from the document the tab shows
+(`dashboardDownloadFile.ts`): `buildSrcdoc` over the page the gateway
+composed, with the reader's live theme tokens and the frame's own CSP
+(`connect-src 'none'`, no CDN script origins). The gateway has no theme to
+read, so it is not asked to build one. The page's fonts and images are already
+`data:` URLs; the one thing the tab loads by URL is the same-origin Tailwind
+runtime, which is fetched once and inlined in place of its `<script src>`, with
+every casing of `</script` escaped. A page the tab shows without script is
+saved with `pageScripts: false`, so its script does not run in the file either.
+Both kinds are saved inside a small wrapper document: the page is the `srcdoc`
+of one frame with the tab's own grant, `allow-scripts` for a page that may run
+script and the empty sandbox for a page shown without script. The sandbox
+stops the frame opening a window, navigating the wrapper or starting a
+download, a nested frame inherits it, and the wrapper's CSP `default-src
+'none'` (the `frame-src` fallback) stops the frame navigating itself to any
+URL. Saved as a top-level document instead, a page could send what it shows to
+any host by navigating: through its script, or on a static page through a
+nested frame's `target=_top` link, which the tab's empty sandbox stops.
+The wrapper holds no script, and its CSP is the page's own: a `srcdoc` document
+enforces its parent's policy as well as its own, so a narrower wrapper policy
+would stop the page's script. The page runs with the same limits as in the
+tab, so links do not open from the saved file: in the tab they leave through the dashboard's
+link bridge, and a saved file has no dashboard. The frame's sandbox is what
+stops them: a static page's empty sandbox runs no script at all (so its link
+guard does not run either), and a scripted page's frame may neither open a
+window nor navigate. The
+gesture relays are left out too. The 10 MB cap applies to the whole saved file.
+A file over 10 MB, or a runtime that cannot be read, is refused
+with a notice and nothing is saved. The bytes go through `saveBlob`, so the
+in-app-browser hand-off below applies. Uploading the same file to Kiro Space is
+#28622.
 
 ### Artifact files
 
@@ -504,7 +549,7 @@ with a message before any request, and a given N always reads that version.
 | `GET` | `/api/artifacts/{slug}/versions` | `{slug, versions: [int]}` |
 | `GET` | `/api/artifacts/{slug}/versions/{n}` | Specific version content |
 | `GET` | `/api/artifact-folders` | Folder tree with `item_count` + breadcrumb `path` |
-| `POST` | `/api/artifact-folders` | Create folder `{name, parent?\|parent_id?, color?}`; spawns background emoji-icon task (at most one in flight per folder: a rename during it queues only the latest name, deleting the folder drops that queued request, and the in-flight task is never cancelled) |
+| `POST` | `/api/artifact-folders` | Create folder `{name, parent?\|parent_id?, color?}`; spawns background emoji-icon task (at most one in flight per folder: a rename during it queues only the latest name, deleting the folder drops that queued request, and the in-flight task is never cancelled; an entry bound to an event loop other than the running one is pruned before each spawn, since its cleanup can never run) |
 | `PATCH` | `/api/artifact-folders/{id}` | Rename / reparent / reorder / icon / color |
 | `DELETE` | `/api/artifact-folders/{id}` | `?delete_contents=` picks keep (re-parent, default) vs cascade (delete subtree incl. artifacts) |
 | `PATCH` | `/api/artifacts/{slug}/folder` | Move an artifact into a folder (`{folder}` id/path or `{folder_id}` id-only) |
@@ -549,7 +594,12 @@ depth-guarded, `MAX_FOLDER_DEPTH` 20)/reorder/delete, breadcrumb, item counts,
 and id-or-path resolution with mkdir -p semantics (`resolve_path`, all-or-nothing
 rollback). Folder delete is an explicit choice: keep (re-parent direct children
 to the parent) vs cascade (permanently delete the whole subtree, incl.
-descendant artifacts) — never silent.
+descendant artifacts) — never silent. The file is tolerant-loaded: an entry
+with no id, or a list/object id, is dropped, and an `order` that `int()` cannot
+read (`null`, a word, a list, `Infinity`) sorts as 0, so one hand-edited row
+never takes down the folder list. The folder routes' `_serialize_folder` sends
+a non-finite number as `null` (a non-finite `order` as 0) so the response stays
+valid JSON; the stored file is not rewritten.
 
 **Auth note (fork adaptation):** `"/api/artifact-folders"` is registered in
 `token_auth`'s `mixed_internal_paths` in `dashboard/server_internal_paths.py` — the 5 folder MCP tools
@@ -1647,7 +1697,9 @@ to this kind would store content no reader can parse.
 - **Tolerant load** — `ArtifactStore._read_meta_file()` hands the parsed file to
   `decode_meta` in `kiro_crew.artifact_store.records`, which ignores unknown keys
   and supplies defaults for missing keys, so future schema additions don't break
-  existing files.
+  existing files. A hand-edited `tags` is read as strings: a bare string is one
+  tag, a number its text, and a `null`, bool, object or list entry is dropped,
+  so a list search or a page reading `tags` never meets a non-string.
 - **Frontend rendering** — artifact bodies are rendered in the same sandboxed
   iframe that powers `<mcwidget>`, and that frame loads a **real document** from
   `GET /sandbox-doc/{doc_id}/{tok}` rather than a browser-built `blob:` URL. A
@@ -2068,15 +2120,17 @@ adding a parallel watcher (see `kiro_crew.knowledge.artifact_ingest`):
   SEL audit event), mirroring the folder-watcher file-read guard.
 - **Dedup tie-in.** A file-backed artifact whose `source_path` is also inside a
   synced folder source is the same document under two sources (the aggregate
-  `artifact` source and the folder's `local_file` source). The aggregate
-  `artifact` source is **excluded from dedup entirely** (`enumerate_docs` and
-  `_build_doc_for` skip `_AGGREGATE_SOURCE_TYPES`, and `_delete_doc` refuses a
-  cascade on them): treating the whole aggregate as one dedup unit keyed on a
-  single item's hash both misidentified it and — when it lost a pair — cascade-
-  deleted the user's entire artifact library. The artifact↔folder overlap
-  therefore persists (both copies remain retrievable) until per-artifact-slug
-  dedup is built; that is a recorded, intentional trade against silent data
-  loss on the hard-delete path.
+  `artifact` source and the folder's `local_file` source). Dedup treats each
+  artifact as its own document: `enumerate_docs` builds one unit per
+  `artifact_item_state` row (its slug and the items it owns), never one unit for
+  the whole source, so two artifacts with identical text stay separate units. A
+  losing artifact goes through `_collapse_doc`: the winner's items gain the
+  artifact source as a location, the loser's own items are deleted, and its
+  `artifact_item_state` row is marked `deduped` with `merged_into_source_id`
+  naming the winner. The source row stays while it still holds a document or a
+  location (`_source_is_now_empty`), so a collapse removes one artifact's
+  redundant copy, never the library. A folder copy outranks an artifact copy
+  (`pick_winner` prefers `PERSISTENT_SOURCE_TYPES`).
 
 ## Companion Chat
 
@@ -2493,6 +2547,39 @@ JSON never carries base64.
 - The read is offloaded with `asyncio.to_thread`: the sidecar may be up to
   `MAX_CONTENT_BYTES` and a synchronous read would stall every other gateway
   task, the liveness heartbeat included.
+
+### Download hand-off for in-app browsers
+
+The page's Download builds the file in the browser and clicks a `blob:` URL. An
+Android in-app browser (a WebView) drops that click: the host app gets the URL and
+cannot fetch a `blob:`. So on a user agent marked `; wv)` the page POSTs the same
+bytes to `POST /api/artifact-downloads` (`dashboard/handlers/artifact_download.py`)
+and downloads them from the returned `GET /api/artifact-downloads/{doc_id}`. Every
+other browser keeps the blob path. Inside a WebView a blob cannot work, so a failed
+hand-off shows the page's Download failed notice and saves nothing.
+
+- A stash of the browser's own export, not a reader of the stored artifact, so an
+  HTML download keeps the CSP the page's export embeds in the document.
+- **Authenticated** like every other dashboard route; neither is on the bypass list.
+- The GET answers `Content-Disposition: attachment` with both `filename=` and
+  `filename*=`, `Content-Security-Policy: sandbox`, `nosniff` and
+  `Cache-Control: private, no-store`, so model-authored HTML or SVG never runs as
+  same-origin script.
+- Not single use: a WebView aborts its own fetch of a download and the host app
+  fetches the URL again. Entries expire after 5 minutes and the stash is capped
+  in count and bytes, oldest evicted first. One file may be as large as the
+  largest stored artifact plus 2 MiB for the export around it.
+- The POST takes only `text/plain`, `text/html`, `application/json`,
+  `image/svg+xml` and `image/png`; a path in the filename, an unknown type or a
+  missing field is a 400, an oversized file a 413. A png arrives base64-encoded
+  and must start with the png signature, so no other bytes ride that type.
+  `saveBlob` sends every type as base64 with `encoding: "base64"`, so bytes that
+  are not UTF-8 (a legacy svg) are kept exactly and served with no forced charset.
+- Other browser-built downloads use the same hand-off through `saveBlob`
+  (`website/src/utils/download.ts`): a Mermaid export, a share image, a lightbox
+  picture (re-encoded as png when it is another raster type) and a file's last
+  copy. The file panel's Download already has an attachment URL, so inside a
+  WebView it downloads that URL directly at any size.
 
 ### Auto-registration from chat (`kiro_crew.image_artifacts`)
 

@@ -25,6 +25,8 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import dashboardReducer from '../store/dashboardSlice'
 import chatReducer from '../store/chatSlice'
 import notificationsReducer from '../store/notificationsSlice'
+import { acpBackendName } from '../api/acpBackend'
+import { i18nT } from '../i18n/t'
 
 globalThis.ResizeObserver = class {
   observe() {}
@@ -151,6 +153,10 @@ function renderPage() {
   )
 }
 
+/** The Model pane's list and effort answer arrive through a chain: resolved-model names the pin's
+ *  backend, then that backend's model list loads (or refetches, after a Retry). */
+const PIN_CHAIN = { timeout: 5000 }
+
 /** Render the roster with one crew shaped by `crew`, then open its editor. */
 async function openModelPane(crew: Record<string, unknown>): Promise<HTMLElement> {
   mockApi.kirocrewAgents.mockResolvedValue({
@@ -159,7 +165,7 @@ async function openModelPane(crew: Record<string, unknown>): Promise<HTMLElement
   })
   renderPage()
   await waitFor(() => expect(screen.getAllByTestId('crew-card')).toHaveLength(1))
-  fireEvent.click(screen.getByRole('button', { name: 'Edit mate reviewer' }))
+  fireEvent.click(screen.getByRole('button', { name: 'Edit Bot reviewer' }))
   // The model and its effort live on General, the section the editor opens on.
   return await screen.findByTestId('crew-editor-next-dialog', {}, { timeout: EDITOR_OPEN_TIMEOUT_MS })
 }
@@ -204,7 +210,7 @@ describe('crew editor — reasoning effort pin', () => {
     // which are different facts with different blast radius.
     const sheet = await openModelPane({})
     const line = await waitFor(() => within(sheet).getByText(/Thinking at Max/))
-    expect(line.parentElement).toHaveTextContent('chosen for this mate')
+    expect(line.parentElement).toHaveTextContent('chosen for this Bot')
   })
 
   it('sends the level on save', async () => {
@@ -253,6 +259,59 @@ describe('crew editor — reasoning effort pin', () => {
     ).toBeInTheDocument()
   })
 
+  it('says nothing extra about a model chosen for this mate', async () => {
+    const sheet = await openModelPane({})
+    await waitFor(() => within(sheet).getByText(/Thinking at Max/))
+    expect(within(sheet).queryByTestId('next-model-uses-line')).not.toBeInTheDocument()
+  })
+
+  it('names the model in use when none is chosen for this mate', async () => {
+    mockApi.agentResolvedModel.mockResolvedValue({
+      model: 'claude-opus-5',
+      pinned: false,
+      kiro_agent: 'reviewer-agent',
+      reasoning_effort: '',
+      effort_pinned: false,
+    })
+    const sheet = await openModelPane({ model: '', reasoning_effort: '' })
+    expect(await within(sheet).findByTestId('next-model-uses-line')).toHaveTextContent(
+      'Uses claude-opus-5.',
+    )
+  })
+
+  it('does not call a model the template pins "your default"', async () => {
+    // No model on the mate, but its template (reviewer-agent) pins one: the
+    // resolver's tier 2 answers, with `pinned` still false because the MATE
+    // pins nothing. Changing the default in Settings would not move this mate,
+    // so the line must not say the model is the user's default.
+    mockApi.agentResolvedModel.mockResolvedValue({
+      model: 'claude-sonnet-5',
+      pinned: false,
+      kiro_agent: 'reviewer-agent',
+      reasoning_effort: '',
+      effort_pinned: false,
+    })
+    const sheet = await openModelPane({ model: '', reasoning_effort: '' })
+    const line = await within(sheet).findByTestId('next-model-uses-line')
+    expect(line).toHaveTextContent('Uses claude-sonnet-5.')
+    expect(line).not.toHaveTextContent(/default/i)
+  })
+
+  it('says the model is picked automatically when no default is set either', async () => {
+    mockApi.agentResolvedModel.mockResolvedValue({
+      model: '',
+      pinned: false,
+      kiro_agent: 'reviewer-agent',
+      reasoning_effort: '',
+      effort_pinned: false,
+    })
+    const sheet = await openModelPane({ model: '', reasoning_effort: '' })
+    const line = await within(sheet).findByTestId('next-model-uses-line')
+    expect(line).toHaveTextContent('Picked automatically.')
+    expect(line).not.toHaveTextContent(/default/i)
+    expect(line).not.toHaveTextContent('Inherited')
+  })
+
   it('explains that a model must be chosen before an effort can be', async () => {
     // The common shape of a fresh crew: it pins no model, and nothing else pins
     // one either, so the backend chooses and no level can be applied. Silently
@@ -271,7 +330,7 @@ describe('crew editor — reasoning effort pin', () => {
       within(sheet).queryByRole('combobox', { name: 'Edit reasoning effort' }),
     ).not.toBeInTheDocument()
     expect(
-      within(sheet).getByText(/No reasoning effort until a model is chosen/),
+      within(sheet).getByText('Pick a model to set a reasoning effort.'),
     ).toBeInTheDocument()
   })
 
@@ -364,5 +423,206 @@ describe('crew editor — reasoning effort pin', () => {
         within(sheet).getByText(/claude-haiku-4\.5 does not take a reasoning effort/),
       ).toBeInTheDocument(),
     )
+  })
+})
+
+describe('crew editor — an Inherited model on another harness\'s member route (#25821)', () => {
+  // `model` is resolved on the configured backend; the crew's own sessions run the
+  // member route, so the effort control is judged by `harness_model`.
+  it.each(['claude', 'goose', 'pi'])('offers effort when the model the %s route resolves takes it', async (harness) => {
+    mockApi.agentResolvedModel.mockResolvedValue({
+      model: 'claude-haiku-4.5', harness_model: 'claude-opus-5', harness, acp_backend: '',
+      pinned: false, kiro_agent: 'reviewer-agent', reasoning_effort: '', effort_pinned: false,
+    })
+    const sheet = await openModelPane({ model: '', reasoning_effort: '' })
+
+    expect(await within(sheet).findByRole('combobox', { name: 'Edit reasoning effort' }, PIN_CHAIN)).toBeInTheDocument()
+    // The line names the same model the effort control was judged by.
+    expect(within(sheet).getByTestId('next-model-uses-line')).toHaveTextContent('Uses claude-opus-5.')
+  })
+
+  it.each(['claude', 'goose', 'pi'])('hides effort when the %s route leaves the model to the harness', async (harness) => {
+    mockApi.agentResolvedModel.mockResolvedValue({
+      model: 'claude-opus-5', harness_model: '', harness, acp_backend: '',
+      pinned: false, kiro_agent: 'reviewer-agent', reasoning_effort: '', effort_pinned: false,
+    })
+    const sheet = await openModelPane({ model: '', reasoning_effort: '' })
+
+    expect(await within(sheet).findByText('Pick a model to set a reasoning effort.', {}, PIN_CHAIN)).toBeInTheDocument()
+    expect(within(sheet).queryByRole('combobox', { name: 'Edit reasoning effort' })).toBeNull()
+    expect(within(sheet).getByTestId('next-model-uses-line')).toHaveTextContent('Picked automatically.')
+  })
+})
+
+describe('crew editor — model list', () => {
+  it('offers the models of the harness that judges the crew pin, not the configured one', async () => {
+    // A crewmate DM thread on Claude Code under a kiro-cli default: kiro ids are not its choices.
+    mockApi.agentResolvedModel.mockResolvedValue({
+      model: 'claude-opus-5', pinned: true, kiro_agent: 'reviewer-agent',
+      reasoning_effort: 'max', effort_pinned: true, models_backend: 'claude',
+    })
+    mockApi.models.mockImplementation((backend?: string) => Promise.resolve(backend === 'claude'
+      ? [{ model_name: 'global.anthropic.claude-opus-5-5[1m]' }]
+      : [{ model_name: 'claude-opus-5' }, { model_name: 'claude-haiku-4.5' }]))
+    const sheet = await openModelPane({})
+    const models = selectScope(sheet, 'Edit default model')
+
+    expect(await models.findByRole('option', { name: 'global.anthropic.claude-opus-5-5[1m]' }, PIN_CHAIN)).toBeInTheDocument()
+    expect(models.queryByRole('option', { name: 'claude-haiku-4.5' })).toBeNull()
+  })
+
+  it('says only Inherited is left when the list of the harness that judges the pin fails, and retries it', async () => {
+    // That list keeps no last-good copy, so a failed fetch leaves only Inherited.
+    mockApi.agentResolvedModel.mockResolvedValue({
+      model: 'claude-opus-5', pinned: true, kiro_agent: 'reviewer-agent',
+      reasoning_effort: 'max', effort_pinned: true, models_backend: 'claude',
+    })
+    mockApi.models.mockImplementation((backend?: string) => (backend === 'claude'
+      ? Promise.reject(new Error('Service Unavailable'))
+      : Promise.resolve([{ model_name: 'claude-opus-5' }])))
+    const sheet = await openModelPane({})
+
+    expect(await within(sheet).findByTestId('next-model-degraded', {}, PIN_CHAIN))
+      .toHaveTextContent(i18nT('pages.kiroCrewAgentsPage.harness_models_failed', { harness: 'Claude Code' }))
+    // The notice reads the degraded flag, which flips before the failed fetch settles.
+    const retry = within(sheet).getByRole('button', { name: 'Retry' })
+    await waitFor(() => expect(retry).toBeEnabled(), PIN_CHAIN)
+    const asked = mockApi.models.mock.calls.filter(([backend]) => backend === 'claude').length
+    mockApi.models.mockResolvedValue([{ model_name: 'global.anthropic.claude-opus-5-5[1m]' }])
+    fireEvent.click(retry)
+
+    await waitFor(() => expect(within(sheet).queryByTestId('next-model-degraded')).toBeNull(), PIN_CHAIN)
+    expect(mockApi.models.mock.calls.filter(([backend]) => backend === 'claude').length).toBeGreaterThan(asked)
+  })
+
+  it('folds a stored pin onto the row the harness serves it as, rather than listing it twice', async () => {
+    // Two rows for one model read as two models, and nothing said which one runs.
+    mockApi.agentResolvedModel.mockResolvedValue({
+      model: 'claude-opus-5.5', pinned: true, kiro_agent: 'reviewer-agent', reasoning_effort: 'max',
+      effort_pinned: true, models_backend: 'claude', pin_served_as: 'global.anthropic.claude-opus-5-5[1m]',
+    })
+    mockApi.models.mockResolvedValue([{ model_name: 'global.anthropic.claude-opus-5-5[1m]' }, { model_name: 'claude-opus-5-5' }])
+    const sheet = await openModelPane({ model: 'claude-opus-5.5' })
+    const models = selectScope(sheet, 'Edit default model')
+
+    const served = await models.findByRole('option', { name: 'global.anthropic.claude-opus-5-5[1m]' }, PIN_CHAIN)
+    await waitFor(() => expect(served).toHaveAttribute('aria-selected', 'true'), PIN_CHAIN)
+    expect(models.queryByRole('option', { name: /claude-opus-5\.5 \(/ })).toBeNull()
+  })
+
+  it.each([
+    ['global.anthropic.claude-opus-5-5[1m]', 'claude-opus-5.5 (runs as global.anthropic.claude-opus-5-5[1m])'],
+    ['', 'claude-opus-5.5 (not offered by Claude Code)'],
+  ])('says what the harness does with a stored pin no row of its list carries (served as %j)', async (served, label) => {
+    // A kiro-cli spelling left over from the configured list sat below the harness's own rows unexplained.
+    mockApi.agentResolvedModel.mockResolvedValue({
+      model: 'claude-opus-5.5', pinned: true, kiro_agent: 'reviewer-agent',
+      reasoning_effort: 'max', effort_pinned: true, models_backend: 'claude', pin_served_as: served,
+    })
+    mockApi.models.mockResolvedValue([{ model_name: 'global.anthropic.claude-sonnet-5-5[1m]' }])
+    const sheet = await openModelPane({ model: 'claude-opus-5.5' })
+    const models = selectScope(sheet, 'Edit default model')
+
+    expect(await models.findByRole('option', { name: label }, PIN_CHAIN)).toBeInTheDocument()
+  })
+})
+
+describe('crew editor — effort levels', () => {
+  it.each([
+    ['opencode', 'codex', ''],
+    ['opencode', 'codex', 'high'],
+    ['codex', undefined, ''],
+    ['codex', undefined, 'high'],
+  ])('keeps Codex build-level refusal after a draft model change (configured %s, override %s, pin %j)', async (configured, backend, pin) => {
+    mockApi.kirocrewConfig.mockResolvedValue({ agent: { acp_backend: configured }, memory_stores: { default: {} } })
+    mockApi.agentResolvedModel.mockResolvedValue({
+      model: 'deepseek-chat', pinned: true, kiro_agent: 'reviewer-agent', models_backend: backend,
+      reasoning_effort: pin, effort_pinned: !!pin, effort_supported: false, effort_levels: [],
+    })
+    const draft = 'openai.gpt-6.1-sol'
+    mockApi.models.mockResolvedValue([{ model_name: 'deepseek-chat' }, { model_name: draft }])
+    const sheet = await openModelPane({ model: 'deepseek-chat', reasoning_effort: pin })
+    const warning = i18nT('pages.kiroCrewAgentsPage.effort_ignored_by_this_backend', { harness: acpBackendName({ id: 'codex' }) })
+    if (pin) expect(await within(sheet).findByText(warning, {}, PIN_CHAIN)).toBeInTheDocument()
+
+    fireEvent.click(await selectScope(sheet, 'Edit default model').findByRole('option', { name: draft }, PIN_CHAIN))
+
+    await waitFor(() => expect(selectScope(sheet, 'Edit default model').getByRole('option', { name: draft }))
+      .toHaveAttribute('aria-selected', 'true'), PIN_CHAIN)
+    if (pin) {
+      // A stranded pin remains clearable, but must never appear to take effect.
+      expect(within(sheet).getByText(warning)).toBeInTheDocument()
+      expect(within(sheet).getByRole('combobox', { name: 'Edit reasoning effort' })).toBeInTheDocument()
+    } else {
+      expect(within(sheet).queryByRole('combobox', { name: 'Edit reasoning effort' })).toBeNull()
+      expect(within(sheet).getByText(i18nT('pages.kiroCrewAgentsPage.effort_unavailable_on_this_model', { model: draft })))
+        .toBeInTheDocument()
+    }
+    expect(within(sheet).queryByText(/Thinking at/)).toBeNull()
+  })
+
+  it('offers no effort pin where the crew\'s harness takes none', async () => {
+    // A codex build that advertises no effort option drops every level a crew pins.
+    mockApi.agentResolvedModel.mockResolvedValue({
+      model: 'claude-opus-5', pinned: true, kiro_agent: 'reviewer-agent',
+      reasoning_effort: '', effort_pinned: false, effort_supported: false, effort_levels: [],
+    })
+    const sheet = await openModelPane({ reasoning_effort: '' })
+
+    await waitFor(() => expect(within(sheet).queryByRole('combobox', { name: 'Edit reasoning effort' })).toBeNull(), PIN_CHAIN)
+  })
+
+  it('offers an effort pin where the crew\'s harness takes one on a model the name check does not know', async () => {
+    // A pi crew runs the operator's own model ids, and the name check recognises none of them.
+    mockApi.agentResolvedModel.mockResolvedValue({
+      model: 'ollama/qwen3', pinned: true, kiro_agent: 'reviewer-agent',
+      reasoning_effort: '', effort_pinned: false, effort_supported: true, effort_levels: ['low', 'high'],
+    })
+    const sheet = await openModelPane({ model: 'ollama/qwen3', reasoning_effort: '' })
+
+    expect(await within(sheet).findByRole('combobox', { name: 'Edit reasoning effort' }, PIN_CHAIN)).toBeInTheDocument()
+  })
+
+  it('blames the named backend, not the model, for a stored pin it cannot take', async () => {
+    mockApi.agentResolvedModel.mockResolvedValue({
+      model: 'claude-opus-5', pinned: true, kiro_agent: 'reviewer-agent', models_backend: 'codex',
+      reasoning_effort: 'max', effort_pinned: true, effort_supported: false, effort_levels: [],
+    })
+    const sheet = await openModelPane({})
+
+    expect(await within(sheet).findByText(
+      i18nT('pages.kiroCrewAgentsPage.effort_ignored_by_this_backend', { harness: acpBackendName({ id: 'codex' }) }), {}, PIN_CHAIN,
+    )).toBeInTheDocument()
+    expect(within(sheet).queryByText(/claude-opus-5 does not take a reasoning effort/)).toBeNull()
+  })
+
+  it('offers the levels the crew\'s harness reported', async () => {
+    mockApi.agentResolvedModel.mockResolvedValue({
+      model: 'claude-opus-5', pinned: true, kiro_agent: 'reviewer-agent',
+      reasoning_effort: 'max', effort_pinned: true, effort_supported: true, effort_levels: ['low', 'high'],
+    })
+    const sheet = await openModelPane({ reasoning_effort: 'high' })
+    const effort = selectScope(sheet, 'Edit reasoning effort')
+
+    await waitFor(() => expect(effort.queryByRole('option', { name: 'Medium' })).toBeNull(), PIN_CHAIN)
+    expect(effort.getByRole('option', { name: 'Low' })).toBeInTheDocument()
+    expect(effort.getByRole('option', { name: 'High' })).toBeInTheDocument()
+  })
+
+  it('uses a live Codex build\'s levels for a newly picked effort-capable model', async () => {
+    mockApi.agentResolvedModel.mockResolvedValue({
+      model: 'deepseek-chat', pinned: true, kiro_agent: 'reviewer-agent', models_backend: 'codex',
+      reasoning_effort: 'high', effort_pinned: true, effort_supported: null, effort_levels: ['low', 'high'],
+    })
+    mockApi.models.mockResolvedValue([{ model_name: 'deepseek-chat' }, { model_name: 'openai.gpt-6.1-sol' }])
+    const sheet = await openModelPane({ model: 'deepseek-chat', reasoning_effort: 'high' })
+    expect(within(sheet).getByText(/deepseek-chat does not take a reasoning effort/)).toBeInTheDocument()
+
+    fireEvent.click(await selectScope(sheet, 'Edit default model').findByRole('option', { name: 'openai.gpt-6.1-sol' }, PIN_CHAIN))
+
+    await waitFor(() => expect(within(sheet).queryByText(/deepseek-chat does not take a reasoning effort/)).toBeNull())
+    const effort = selectScope(sheet, 'Edit reasoning effort')
+    expect(effort.getByRole('option', { name: 'Low' })).toBeInTheDocument()
+    expect(effort.queryByRole('option', { name: 'Medium' })).toBeNull()
   })
 })

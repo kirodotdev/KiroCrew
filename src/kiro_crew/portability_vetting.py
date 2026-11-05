@@ -119,7 +119,17 @@ def validate_import_zip(zip_path: Path) -> tuple[bool, str, dict]:
                 manifest_bytes = _read_manifest_bytes(zf, top)
             except ValueError as exc:
                 return False, f"Rejected: {exc}", {}
-            manifest_data = json.loads(manifest_bytes)
+            # Bytes json cannot decode as text, or nest too deep to parse, are as
+            # invalid as bad JSON, and only an object can carry a version: each
+            # refuses like any other bad archive.
+            try:
+                manifest_data = json.loads(manifest_bytes)
+            except UnicodeDecodeError as exc:
+                return False, f"Invalid manifest: {exc}", {}
+            except RecursionError:
+                return False, "Invalid manifest: nested too deeply", {}
+            if not isinstance(manifest_data, dict):
+                return False, "Invalid manifest: not a JSON object", {}
             version = manifest_data.get("version")
             memory_bundle = version == MEMORY_EXPORT_MANIFEST_VERSION and manifest_is_memory_only(
                 manifest_data
@@ -398,8 +408,12 @@ def _disable_imported_script_hooks(hooks_path: Path) -> list[str]:
             return []
         if text is None:
             return []
+        # Parse exactly as the hook store does (one leading UTF-8 mark dropped):
+        # a file the store loads must never be one this sanitizer reads as inert.
+        from kiro_crew.user_json import loads_user_json
+
         try:
-            data = json.loads(text)
+            data = loads_user_json(text)
         except (ValueError, RecursionError):
             return []
         if not isinstance(data, dict) or not isinstance(data.get("hooks"), list):

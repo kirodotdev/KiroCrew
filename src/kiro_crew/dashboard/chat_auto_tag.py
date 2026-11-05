@@ -155,6 +155,23 @@ async def _auto_tag_inner(state: Any, slot: Any) -> None:
     await _maybe_topic_tags(state, slot, message, history_key)
 
 
+async def apply_label_tag(state: Any, slot: Any, name: str) -> bool:
+    """Add the fixed sidebar label *name* to *slot*, creating the tag if needed.
+
+    The same resolve-or-create, persist and broadcast path the project tag takes,
+    for a label the GATEWAY chooses (never a model), so no grant check applies.
+    It leaves the auto-tag once-flag alone: the first message still runs the
+    project and topic passes. Never raises; ``False`` when nothing was written.
+    """
+    try:
+        return await _apply_tag_names(
+            state, slot, [name], cap=None, model_chosen=False, claim_auto_tag=False
+        )
+    except Exception:
+        logger.debug("apply_label_tag: failed", exc_info=True)
+        return False
+
+
 def _normalize_tag_name(name: str) -> str:
     """Redact, then apply the SAME normalization ``create_tag_definition`` uses.
 
@@ -294,6 +311,7 @@ async def _apply_tag_names(
     cap: int | None,
     model_chosen: bool,
     expected_history_key: str | None = None,
+    claim_auto_tag: bool = True,
 ) -> bool:
     """Resolve-or-create each name and add it to *slot*, under the tags lock.
 
@@ -306,8 +324,10 @@ async def _apply_tag_names(
     lock, the lock an owner's grant change holds, so a change that lands first
     is the one enforced. ``expected_history_key`` is the transcript the names
     were chosen for; when the slot is bound to another one by now, nothing is
-    written. Returns ``False`` when the write was rolled back, so a later pass
-    must not run on this slot.
+    written. ``claim_auto_tag`` False leaves the slot's once-flag alone, for a
+    label applied at birth (:func:`apply_label_tag`) that must not stand in for
+    the project and topic passes the first message still runs. Returns ``False``
+    when the write was rolled back, so a later pass must not run on this slot.
     """
     async with tags_write_lock(state):
         history_key = slot_history_key(slot)
@@ -402,7 +422,8 @@ async def _apply_tag_names(
         # auto-tag, silently re-adding a tag the user removed.
         slot.tags = current_tags + to_add
         written_tags_revision = _bump_slot_tags_revision(slot)
-        slot._auto_tagged = True
+        if claim_auto_tag:
+            slot._auto_tagged = True
         # Auto-tagging is asynchronous.  Pin the history target at the point
         # the metadata is applied so a concurrent session rebind cannot make
         # this background task write its tag onto a different transcript.
@@ -422,7 +443,8 @@ async def _apply_tag_names(
             if slot.tags_revision == written_tags_revision:
                 slot.tags = [value for value in slot.tags if value not in to_add]
                 _bump_slot_tags_revision(slot)
-            slot._auto_tagged = False
+            if claim_auto_tag:
+                slot._auto_tagged = False
             push = getattr(state, "push_slots_update", None)
             if push is not None:
                 try:

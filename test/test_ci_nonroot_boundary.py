@@ -14,6 +14,12 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 _ACTION_REF = "./.github/actions/run-as-runner"
 _CI_SHELL = "/usr/local/bin/ci-shell {0}"
 _LARGE = "${{ needs.changes.outputs.linux_runner_large || 'ubuntu-latest' }}"
+# A hosted lane that stays off the CodeBuild fleet but takes the organization's
+# larger-runner group where it can reach one.
+_GROUP_LINUX_ELSE_HOSTED = (
+    "${{ github.repository == 'kirodotdev/KiroCrew' "
+    "&& 'kirocrew-linux-4-core' || 'ubuntu-latest' }}"
+)
 
 
 @pytest.fixture(scope="module")
@@ -104,7 +110,12 @@ def test_all_linux_shards_and_memory_heavy_jobs_use_large(jobs):
         "matrix": {"python-version": ["3.12"], "group": list(range(1, 9))},
     }
     assert backend["env"]["SHARD_COUNT"] == 8
-    assert backend["timeout-minutes"] == 60
+    # 60 on CodeBuild (admitted eight-shard runs finish in ~20 min); 70 on any
+    # non-fleet runner, where a run shards four-wide and a single shard needs
+    # the longer budget to clear 120 seconds per test plus setup.
+    assert backend["timeout-minutes"] == (
+        "${{ startsWith(needs.changes.outputs.linux_runner_large, " "'codebuild-') && 60 || 70 }}"
+    )
     lint = next(
         s
         for s in jobs["backend-lint"]["steps"]
@@ -207,13 +218,32 @@ def test_unproved_namespace_gui_and_task_scheduler_jobs_stay_hosted(workflow, na
     assert "linux_runner" not in runs_on and "windows_runner" not in runs_on
 
 
+def test_namespace_sandbox_lane_takes_the_larger_runner_group(jobs):
+    """The sandbox lane pins WHICH hosted VM it asks for, not just that it is hosted.
+
+    The group serves one Linux image and follows `latest`, so this lane names no
+    version. The two verification steps are what make that safe: a kernel that
+    stops granting the namespaces fails the job by name, rather than letting
+    every `userns_available()`-guarded test skip and the gate go green.
+    """
+    job = jobs["backend-test-sandbox"]
+    assert job["runs-on"] == _GROUP_LINUX_ELSE_HOSTED
+    runs = [step.get("run", "") for step in job["steps"]]
+    assert "unshare --mount --map-root-user true" in runs
+    assert any("userns_available()" in run for run in runs)
+
+
 def test_private_namespace_lane_is_the_only_e2e_step_left_hosted(jobs):
     """`e2e` runs on the fleet; the hosted lane owns namespace-only setup.
 
     `e2e-private-namespace` owns the AppArmor sysctl and private-workflow test.
     """
     hosted = jobs["e2e-private-namespace"]
-    assert hosted["runs-on"] == "ubuntu-latest"
+    # An ordinary hosted VM either way: the organization's larger-runner group
+    # in this repository, the standard image in a fork, which cannot reach an
+    # organization group. The fork branch is pinned too, since dropping it
+    # would leave fork runs queued for a label no runner there carries.
+    assert hosted["runs-on"] == _GROUP_LINUX_ELSE_HOSTED
     assert "changes" not in hosted["needs"]
     runs = [step.get("run", "") for step in hosted["steps"]]
     assert "sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0" in runs
@@ -267,8 +297,6 @@ def test_e2e_runs_on_the_fleet_behind_the_boundary(jobs):
         if "$GITHUB_OUTPUT" in step.get("run", "") or "$GITHUB_ENV" in step.get("run", "")
     ]
     assert file_commands and max(file_commands) < provision
-    cache = next(step for step in steps if str(step.get("uses", "")).startswith("actions/cache@"))
-    assert cache["with"]["path"] == "${{ runner.temp }}/ms-playwright"
     consumers = [
         (i, step)
         for i, step in enumerate(steps)

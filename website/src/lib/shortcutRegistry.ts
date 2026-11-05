@@ -170,6 +170,15 @@ export const SHORTCUT_REGISTRY: readonly ShortcutEntry[] = [
   // its window-close role to Ctrl+Shift+W so this reaches the renderer.
   { id: 'close-chat', group: 'actions', dispatch: 'registry', browserReserved: true,
     defaults: both({ key: 'w', mod: true }), aliases: alias({ key: 'w', alt: true, shift: true }) },
+  // ⌘⇧T / Ctrl+Shift+T — reopen the session closed most recently (#18969), the
+  // browser/editor reopen-closed-tab chord, so the inverse of ⌘W sits one key
+  // over from it. Browser-reserved (a browser reopens ITS closed tab), so the
+  // Option/Alt+Shift+T alias is the working chord there, the same shape as the
+  // new-chat and close-chat aliases. The desktop menu's Refresh Token moved off
+  // this chord to Cmd+Alt+T (macOS) / Ctrl+Alt+Shift+T so the keystroke reaches
+  // the renderer.
+  { id: 'reopen-chat', group: 'actions', dispatch: 'registry', browserReserved: true,
+    defaults: both({ key: 't', mod: true, shift: true }), aliases: alias({ key: 't', alt: true, shift: true }) },
   // ⌘/ / Ctrl+/ — the shortcuts reference (Slack, Notion, Linear, GitHub). Was
   // ⌥K; alias. Both fire even while shortcuts are globally disabled, so the user
   // can always reach the toggle that re-enables them.
@@ -217,6 +226,11 @@ export const SHORTCUT_REGISTRY: readonly ShortcutEntry[] = [
   // keydown.preventDefault() cannot cancel a composed character — this chord
   // fires from inside the composer, so it must not be able to leave one behind.
   { id: 'toggle-focus-mode', group: 'actions', dispatch: 'registry', defaults: both({ key: 'm', alt: true, shift: true }) },
+  // ⌘O / Ctrl+O ("out") — pop the current session out to its own window, or
+  // focus that window when it is already out (#28521): the keyboard twin of the
+  // chat header's pop-out button. Not browser-reserved: a browser tab hands the
+  // keydown to the page, and claiming it cancels the browser's Open File.
+  { id: 'pop-out-session', group: 'actions', dispatch: 'registry', defaults: both({ key: 'o', mod: true }) },
   // Dispatched by ChatInput, not the global handler; listed for the reference.
   { id: 'optimize-prompt', group: 'actions', dispatch: 'code', defaults: both({ key: 'Enter', mod: true, shift: true }) },
   // ⌘↑ on macOS / Ctrl+↑ elsewhere — edit the last user message.

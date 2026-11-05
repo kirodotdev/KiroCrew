@@ -182,6 +182,21 @@ class TestGauntlet:
         )
         assert harness.dispatched == []
 
+    async def test_replayed_history_in_neonize_milliseconds_is_dropped(self, harness):
+        # neonize sends MessageInfo.Timestamp as UnixMilli; connected_at is seconds.
+        harness.client.connected_at = 1_000_000_000.0
+        await harness.transport.receive(
+            event(chat=OWN_JID, sender=OWN_JID, from_me=True, timestamp=999_000_000_000.0)
+        )
+        assert harness.dispatched == []
+
+    async def test_recent_message_in_neonize_milliseconds_passes(self, harness):
+        harness.client.connected_at = 1_000_000_000.0
+        await harness.transport.receive(
+            event(chat=OWN_JID, sender=OWN_JID, from_me=True, timestamp=999_999_970_000.0)
+        )
+        assert len(harness.dispatched) == 1
+
     async def test_recent_message_within_grace_passes(self, harness):
         harness.client.connected_at = 1_000_000.0
         await harness.transport.receive(
@@ -264,6 +279,34 @@ class TestGroups:
             event(chat=GROUP, sender=FRIEND, is_group=True, quoted_stanza=ids[0])
         )
         assert len(h.dispatched) == 1
+
+    @staticmethod
+    def _captioned(field: str, *, mentions=(), stanza: str = "", participant: str = "") -> Msg:
+        """A media message whose caption carries the mention or quote."""
+        ctx = SimpleNamespace(mentionedJID=list(mentions), participant=participant, stanzaID=stanza)
+        media = {f: None for f in ("imageMessage", "videoMessage", "documentMessage")}
+        media[field] = Msg(caption="look", mimetype="x/y", fileLength=1, contextInfo=ctx)
+        return Msg(conversation="", extendedTextMessage=None, **media)
+
+    async def test_a_mention_on_a_video_caption_dispatches(self):
+        h = Harness(groups=self.cfg(), allowed_wa_ids=self.LISTED)
+        ev = event(chat=GROUP, sender=FRIEND, is_group=True)
+        ev.Message = self._captioned("videoMessage", mentions=[OWN_JID])
+        await h.transport.receive(ev)
+        assert len(h.dispatched) == 1
+        assert h.dispatched[0].is_mention
+
+    @pytest.mark.parametrize("field", ["imageMessage", "videoMessage", "documentMessage"])
+    async def test_a_caption_mention_or_quote_is_addressed(self, field):
+        h = Harness(groups=self.cfg(), allowed_wa_ids=self.LISTED)
+        ids = await h.transport._send_tracked(GROUP, "agent said this")
+        t = h.transport
+        assert t._is_addressed(self._captioned(field, mentions=[OWN_JID]), GROUP, False)
+        assert t._is_addressed(self._captioned(field, mentions=[OWN_LID]), GROUP, False)
+        assert t._is_addressed(self._captioned(field, stanza=ids[0]), GROUP, False)
+        assert t._is_addressed(self._captioned(field, participant=OWN_JID), GROUP, False)
+        assert not t._is_addressed(self._captioned(field), GROUP, False)
+        assert not t._is_addressed(self._captioned(field, mentions=[FRIEND]), GROUP, False)
 
     async def test_rules_mode_unprompted_dispatches_with_verdict(self):
         h = Harness(
@@ -381,6 +424,130 @@ class TestGroupSenderAllowlist:
         )
         assert h.dispatched == []
         assert seen == []
+
+
+GROUP_B = "120363000000000002@g.us"
+
+
+@pytest.mark.asyncio
+class TestPerGroupAllowlist:
+    """A group's own ``allowed_wa_ids`` replaces the global list for that group.
+
+    The global list admits a number to every configured group at once; a
+    per-group list lets the operator admit a colleague to one group without
+    admitting them to another. A group without its own list keeps the global one.
+    """
+
+    def _group(self, jid: str, **extra) -> dict:
+        return {"jid": jid, "name": "G", "mode": "mention", "cooldown_s": 0, **extra}
+
+    def _mention(self, chat: str, sender: str = FRIEND):
+        return event(chat=chat, sender=sender, is_group=True, mentions=[OWN_JID])
+
+    def _msg(self, user_id: str, chat: str):
+        return InboundMessage(
+            channel_type="whatsapp", user_id=user_id, conversation_id=chat, text="x"
+        )
+
+    async def test_a_number_on_group_a_is_admitted_in_a_and_dropped_in_b(self):
+        h = Harness(
+            groups=[
+                self._group(GROUP, allowed_wa_ids=["447700900111"]),
+                self._group(GROUP_B, allowed_wa_ids=["447700900222"]),
+            ]
+        )
+        await h.transport.receive(self._mention(GROUP))
+        assert len(h.dispatched) == 1
+        await h.transport.receive(self._mention(GROUP_B))
+        assert len(h.dispatched) == 1
+
+    async def test_a_group_without_its_own_list_falls_back_to_the_global_list(self):
+        h = Harness(
+            groups=[self._group(GROUP, allowed_wa_ids=["447700900222"]), self._group(GROUP_B)],
+            allowed_wa_ids=["447700900111"],
+        )
+        await h.transport.receive(self._mention(GROUP_B))
+        assert len(h.dispatched) == 1
+
+    async def test_a_groups_own_list_replaces_the_global_one(self):
+        """Replace, not add: a globally listed number stays out of a group whose
+        own list does not name it."""
+        h = Harness(
+            groups=[self._group(GROUP, allowed_wa_ids=["447700900222"])],
+            allowed_wa_ids=["447700900111"],
+        )
+        await h.transport.receive(self._mention(GROUP))
+        assert h.dispatched == []
+
+    async def test_an_empty_own_list_admits_only_the_operator(self):
+        h = Harness(
+            groups=[self._group(GROUP, allowed_wa_ids=[])],
+            allowed_wa_ids=["447700900111"],
+        )
+        await h.transport.receive(self._mention(GROUP))
+        assert h.dispatched == []
+        await h.transport.receive(
+            event(chat=GROUP, sender=OWN_JID, from_me=True, is_group=True, text="status?")
+        )
+        assert len(h.dispatched) == 1
+
+    async def test_a_malformed_own_list_fails_closed(self):
+        """A per-group value that is not a list admits nobody there; it never
+        widens to the global list."""
+        h = Harness(
+            groups=[self._group(GROUP, allowed_wa_ids="447700900111")],
+            allowed_wa_ids=["447700900111"],
+        )
+        await h.transport.receive(self._mention(GROUP))
+        assert h.dispatched == []
+
+    async def test_non_digit_entries_are_ignored(self):
+        h = Harness(groups=[self._group(GROUP, allowed_wa_ids=["+447700900111", "abc"])])
+        await h.transport.receive(self._mention(GROUP))
+        assert h.dispatched == []
+
+    async def test_media_fetch_follows_the_per_group_answer(self):
+        h = Harness(
+            groups=[
+                self._group(GROUP, allowed_wa_ids=["447700900111"]),
+                self._group(GROUP_B, allowed_wa_ids=[]),
+            ],
+            allowed_wa_ids=["447700900111"],
+        )
+        assert h.transport._may_fetch_media(self._msg("447700900111", GROUP), is_group=True)
+        assert not h.transport._may_fetch_media(self._msg("447700900111", GROUP_B), is_group=True)
+
+    async def test_the_group_jid_is_matched_the_way_the_gate_matches_it(self):
+        """The entry is keyed through ``normalize_jid``, so an uppercase server in
+        config selects the same group's list the gate selects."""
+        h = Harness(groups=[self._group(GROUP.upper(), allowed_wa_ids=["447700900111"])])
+        assert h.transport._may_fetch_media(self._msg("447700900111", GROUP), is_group=True)
+
+    async def test_coercion_keeps_the_key_only_when_the_entry_has_it(self):
+        from kiro_crew.config.sections import _coerce_whatsapp_groups
+
+        absent, listed, malformed = _coerce_whatsapp_groups(
+            [
+                {"jid": GROUP},
+                {"jid": GROUP_B, "allowed_wa_ids": [" 447700900111 ", "x", 447700900222]},
+                {"jid": "c@g.us", "allowed_wa_ids": None},
+            ]
+        )
+        assert "allowed_wa_ids" not in absent
+        assert listed["allowed_wa_ids"] == ["447700900111", "447700900222"]
+        assert malformed["allowed_wa_ids"] == []
+
+    async def test_reconfigure_adopts_a_new_per_group_list(self):
+        h = Harness(groups=[self._group(GROUP)], allowed_wa_ids=["447700900111"])
+        h.transport.reconfigure(
+            SimpleNamespace(
+                dm_policy="self",
+                allowed_wa_ids=["447700900111"],
+                groups=[self._group(GROUP, allowed_wa_ids=["447700900222"])],
+            )
+        )
+        await h.transport.receive(self._mention(GROUP))
+        assert h.dispatched == []
 
 
 @pytest.mark.asyncio

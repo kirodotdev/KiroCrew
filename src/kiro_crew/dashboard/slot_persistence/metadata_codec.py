@@ -34,7 +34,8 @@ The line is a file the agent's own tools can write. Each row's read keeps exactl
 the checks its hand-written reader applied, no more and no fewer: some values are
 re-validated (the title state, the compaction threshold, the dismissed links, the
 model and effort, the mode, the custom color hex, the tags, the agent kind, the
-artifact, the executor, the held notes, the queue), and the rest are still copied
+artifact, the session kind, the executor, the held notes, the queue), and the rest are
+still copied
 as written. The checks a value of its own needs before a slot takes it live in
 ``metadata_values``.
 New slot-owned metadata fields belong here: a row, its key in ``LINE_ORDER`` and
@@ -58,6 +59,7 @@ from kiro_crew.dashboard.chat_utils import (
     slot_transcript_key,
 )
 from kiro_crew.dashboard.doc_files import is_doc_id
+from kiro_crew.dashboard.session_kinds import session_kind_binding
 from kiro_crew.dashboard.slot_buffers import (
     committed_filtered_note_ids,
     drop_committed_restored_notes,
@@ -192,6 +194,7 @@ class SaveFolds:
     last_consolidated: object = 0
     closed: bool = False
     closed_at: object = None
+    closed_id: str = ""
     dismissed_source_links: list[str] | None = None
     deferred_notes: list[dict] = field(default_factory=list)
     queued_prompts: list[dict] = field(default_factory=list)
@@ -502,8 +505,9 @@ def _read_app_agent_owner(r: _Read) -> None:
 
 
 def _read_project(r: _Read) -> None:
-    if r.meta.get("project"):
-        r.slot.project = r.meta["project"]
+    from kiro_crew.dashboard.transcript_binding import seed_project_from_disk
+
+    seed_project_from_disk(r.state, r.slot, r.meta.get("project") or "")
 
 
 def _read_executor(r: _Read) -> None:
@@ -542,6 +546,26 @@ def _read_created_by(r: _Read) -> None:
     # from this file must not become gateway-authored crew-log lineage.
     if r.meta.get("created_by"):
         r.slot._created_by = str(r.meta["created_by"])
+        # A mode a person set on this session lived in memory and did not survive,
+        # so the session follows its creator's next mode change again. A raise
+        # still needs the crew log's creation record (``approval_inheritance``).
+        r.slot._posture_inherited = True
+
+
+def _read_attribution(r: _Read) -> None:
+    # Shared Crew creator attribution. A line with no key reads as legacy and
+    # stays legacy, so a later stamp can never invent a creator for it.
+    # Function-local: the chat_persistence facade's import closure stays unchanged.
+    from kiro_crew.shared_crew import attribution as shared_crew_attribution
+
+    shared_crew_attribution.restore_from_metadata(r.slot, r.meta)
+
+
+def _attribution_value(slot: Any, folds: SaveFolds) -> object:
+    from kiro_crew.shared_crew import attribution as shared_crew_attribution
+
+    value = shared_crew_attribution.metadata_value(slot)
+    return OMIT if value is None else value
 
 
 def _read_folder_id(r: _Read) -> None:
@@ -588,6 +612,15 @@ def _read_doc(r: _Read) -> None:
         r.slot._doc = doc
 
 
+def _read_session_kind(r: _Read) -> None:
+    # Re-validated field by field (``session_kind_binding``): the line is
+    # attacker-writable and the binding reaches every client's slot payload, where
+    # it decides which app's module draws the session.
+    binding = session_kind_binding(r.meta.get("session_kind"))
+    if binding is not None:
+        r.slot._session_kind = binding
+
+
 def _read_pinned(r: _Read) -> None:
     if r.meta.get("pinned"):
         r.slot.pinned = True
@@ -629,16 +662,18 @@ def _read_tags(r: _Read) -> None:
     raw = r.meta.get("tags")
     if not isinstance(raw, list):
         return
+    # Imported here: an owner of the chat_persistence facade imports at module
+    # scope only what the facade itself imports.
+    from kiro_crew.dashboard.tag_vocabulary_read import known_tag_ids, prune_tag_ids
+
     slot = r.slot
-    slot.tags = [str(t) for t in raw if isinstance(t, str) and t]
     # Prune ids missing from the vocabulary: tag deletion commits the vocab
     # write first (crash-atomic), so a crash mid-delete can leave dangling ids on
-    # the line. FAIL-OPEN only when the vocabulary is UNKNOWN (tags.json parse or
-    # I/O failure): pruning then would wipe EVERY assignment and the next save
-    # persists the loss. A legitimately-empty vocabulary IS authoritative.
-    if getattr(r.state, "_tags_authoritative", True):
-        known = {t.get("id") for t in r.state._tags}
-        slot.tags = [t for t in slot.tags if t in known]
+    # the line. The one vocabulary reader decides the rule for every prune site:
+    # FAIL-OPEN only when the vocabulary is UNKNOWN (tags.json parse or I/O
+    # failure), since pruning then would wipe EVERY assignment and the next save
+    # persists the loss; a legitimately-empty vocabulary IS authoritative.
+    slot.tags = prune_tag_ids(raw, known_tag_ids(r.state))
     # "tags changed => revision changed" wherever tags are replaced. A resume
     # rotates through the tag module's helper, which also mints a revision for a
     # duck-typed slot without the method; the startup reads call the method only.
@@ -990,6 +1025,16 @@ FIELDS: tuple[Field, ...] = (
             "it after the build when lineage corroborates"
         ),
     ),
+    # Shared Crew session creator. Write-once: the slot holds the first value
+    # stamped or read (``shared_crew.attribution``), and no writer owns the key,
+    # so a save that does not write it carries the stored value unchanged.
+    Field(
+        "attribution",
+        _ALL,
+        line=_attribution_value,
+        merge=_attribution_value,
+        read=_read_attribution,
+    ),
     Field(
         "folder_id",
         _ALL,
@@ -1060,6 +1105,17 @@ FIELDS: tuple[Field, ...] = (
         line=_truthy(lambda s: s._doc),
         merge=_truthy(lambda s: s._doc),
         read=_read_doc,
+    ),
+    # The app-drawn session binding. Restored on every read, RESUME included: a
+    # session reopened from History is still the app's same record. Both writers
+    # re-check the value, so a bad in-memory dict is never written back.
+    Field(
+        "session_kind",
+        _ALL,
+        attr="_session_kind",
+        line=_truthy(lambda s: session_kind_binding(s._session_kind)),
+        merge=_truthy(lambda s: session_kind_binding(s._session_kind)),
+        read=_read_session_kind,
     ),
     Field(
         "pinned",
@@ -1259,6 +1315,17 @@ FIELDS: tuple[Field, ...] = (
         line=lambda s, f: f.closed_at if f.closed else OMIT,
         merge=lambda s, f: f.closed_at if f.closed else OMIT,
     ),
+    # The identity of the close that wrote this line's ``closed``: a nonce the
+    # save mints beside ``closed_at`` (``metadata_line.close_identity``), which
+    # the owed-dismissal marker also writes for its own stamp. A clear keyed on
+    # it removes exactly the stamp its writer put there: two closes stamped on
+    # the same clock tick carry the same ``closed_at`` and different ids.
+    Field(
+        "closed_id",
+        frozenset(),
+        line=lambda s, f: f.closed_id if f.closed and f.closed_id else OMIT,
+        merge=lambda s, f: f.closed_id if f.closed and f.closed_id else OMIT,
+    ),
     Field(
         "rotation_generation",
         frozenset(),
@@ -1276,6 +1343,7 @@ LINE_ORDER: tuple[str, ...] = (
     "last_consolidated",
     "closed",
     "closed_at",
+    "closed_id",
     "memory_mode",
     "title",
     "title_origin",
@@ -1304,8 +1372,10 @@ LINE_ORDER: tuple[str, ...] = (
     "app",
     "origin",
     "created_by",
+    "attribution",
     "artifact",
     "doc",
+    "session_kind",
     "pinned",
     "mutes_opened",
     "muted",
@@ -1336,6 +1406,7 @@ MERGE_ORDER: tuple[str, ...] = (
     "mode",
     "artifact",
     "doc",
+    "session_kind",
     "reasoning_effort",
     "color_index",
     "color_hex",
@@ -1359,6 +1430,7 @@ MERGE_ORDER: tuple[str, ...] = (
     "app",
     "origin",
     "created_by",
+    "attribution",
     "linked_session_key",
     "channel_origin",
     "forked_from",
@@ -1373,6 +1445,7 @@ MERGE_ORDER: tuple[str, ...] = (
     "channel_folder_filed",
     "closed",
     "closed_at",
+    "closed_id",
     "dismissed_source_links",
     "deferred_notes",
 )
@@ -1493,6 +1566,10 @@ def apply(
     for row in FIELDS:
         if row.read is not None and purpose.purpose in row.purposes:
             row.read(read)
+    # The link row has run, so the history key is final: join a live alias on it.
+    from kiro_crew.dashboard.transcript_binding import bind_transcript
+
+    bind_transcript(state, slot)
     # The line's creator, for display on every purpose. Not ``_created_by``, whose
     # purposes stay as the ``created_by`` row declares: the line is agent-editable,
     # so this copy only places a Crew Mode worker under its root in the person's

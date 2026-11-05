@@ -70,7 +70,7 @@ from types import MappingProxyType
 from typing import Any, ClassVar, Literal, Protocol
 
 from kiro_crew import name_grant
-from kiro_crew.constants import DENY_CAUSE_POLICY
+from kiro_crew.constants import DENY_CAUSE_BATCH_READ_WRITE, DENY_CAUSE_POLICY
 from kiro_crew.executors import run_in_tool_gate_pool
 from kiro_crew.hooks import TOOL_AUTO_APPROVE, TOOL_DENY, identity_grant_covers_child
 from kiro_crew.llm_helpers import _steer_host_deny
@@ -299,7 +299,10 @@ class Narrator:
     refused program name is audited, and :meth:`allowed` after the wire answered
     an approval (*sent* is False when the transport floor turned it into a
     rejection) and before it is audited. A narrator may move run state (a
-    counter the run's replay gates read, a watchdog stamp), not only log.
+    counter the run's replay gates read, a watchdog stamp), not only log,
+    except in :meth:`declined`: that one is the human-facing decline line, so a
+    repeated platform-scope refusal skips it after the first call of a session
+    while the audit row is still written for every call.
     """
 
     def refusing(self, ask: Ask, refusal: Refusal) -> None:
@@ -481,7 +484,12 @@ async def _admitted(ask: Ask, policy: Policy, hit: Hit, low: bool) -> bool:
     refused = await name_grant.refusal_for_event(ask.event)
     if refused is None:
         return True
-    policy.narrator.declined(ask, refused)
+    # The narration is the human-facing log line, so a platform-scope refusal
+    # (one constant text per session) is narrated once per session, as every
+    # other surface does. The audit row below is a security decision and is
+    # written for every call.
+    if name_grant.should_log_decline(ask.session_key, refused):
+        policy.narrator.declined(ask, refused)
     policy.audit.declined(ask, refused, hit.reason)
     return False
 
@@ -525,6 +533,15 @@ async def _allow(
     except ApprovalWithdrawn:
         return await bail(ask, policy, "stopped")
     policy.narrator.allowed(ask, sent)
+    if not sent:
+        # The transport's batch write guard (``acp.batch_guard``) answers a refusal
+        # with ``False`` as the floor does, and has already written its own audit
+        # row; it is settled as a host refusal with its cause, which the run's
+        # recovery path reads, and no floor_refused approval row is written.
+        take = getattr(ask.wire, "batch_refusal", None)
+        reason = take(ask) if take is not None else None
+        if reason:
+            return Settled("refused", rung, "host", DENY_CAUSE_BATCH_READ_WRITE, reason)
     settled = Settled(outcome if sent else "floor_refused", rung, by)
     policy.audit.approved(ask, settled)
     return settled
@@ -553,6 +570,16 @@ class AcpWire:
             withdrawal["withdraw_if"] = stopping
         sent = await self.client.approve_tool(ask.request_id, **withdrawal)
         return sent is not False
+
+    def batch_refusal(self, ask: Ask) -> str | None:
+        """The batch write guard's reason for the approval it just refused, if any.
+
+        Asked of the client itself (``take_batch_refusal``), so a provider that
+        wraps the transport hands the question to the transport holding the
+        reason; a client without the method has nothing to say."""
+        from kiro_crew import agent_sdk
+
+        return agent_sdk.take_batch_guard_refusal(self.client, ask.request_id)
 
     async def refuse(self, ask: Ask, notice: Notice | None) -> None:
         if notice is not None:

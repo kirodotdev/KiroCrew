@@ -27,11 +27,13 @@ import os
 import re
 import shutil
 import tempfile
+from functools import cache
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew import aws_consent, speech_providers
 from kiro_crew.constants import md_link_destination, strip_control_comments
 from kiro_crew.deploy.engine import resolve_aws_bin
+from kiro_crew.emoji_list import STANDARD_EMOJIS
 from kiro_crew.platform.context import redact_log_via_context
 from kiro_crew.platform_compat import IS_MACOS, IS_WINDOWS, trusted_system_bin
 from kiro_crew.sandbox import (
@@ -58,9 +60,16 @@ from kiro_crew.voice_reply_registered import (  # noqa: F401 - re-exported
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
+    from markdown_it import MarkdownIt
+    from markdown_it.rules_inline import StateInline
+    from markdown_it.token import Token
+
     from kiro_crew.slack.client import SlackClientOps
 
 logger = logging.getLogger(__name__)
+
+#: Emoji shortcode names dropped from read-aloud text, e.g. ``wave`` for ``:wave:``.
+_EMOJI_SHORTCODES = frozenset(STANDARD_EMOJIS)
 
 
 def resolve_polly_cli() -> str | None:
@@ -376,26 +385,26 @@ def strip_markdown(text: str) -> str:
     t = re.sub(r"</?[a-zA-Z][^>]*>", "", t)
     # Markdown links: [label](url) → label
     t = _MARKDOWN_LINK_RE.sub(r"\1", t)
-    # Bold / italic / strikethrough markers
-    t = re.sub(r"[*_~]+", "", t)
-    # Emoji shortcodes
-    t = re.sub(r":[a-z0-9_+-]+:", "", t)
+    # OPTIONS buttons line, before the bare-URL pass, whose \S+ would take
+    # the closing "]" of a URL inside the line.
+    t = re.sub(r"\[OPTIONS:.*?\]", "", t)
+    # Emphasis and strikethrough markers and known emoji shortcodes, by
+    # markdown token: see _drop_markers.
+    t = _drop_markers(t)
+    # Bare URLs, after the parse, so a marker that closes right after a URL
+    # (~~see https://example.com~~) is paired and dropped first.
+    t = re.sub(r"https?://\S+", " (link) ", t)
     # Unicode emoji
     t = re.sub(
         r"[\U0001f300-\U0001faff\U00002702-\U000027b0\U0000fe00-\U0000fe0f\U0000200d]+",
         "",
         t,
     )
-    # Bare URLs
-    t = re.sub(r"https?://\S+", " (link) ", t)
-    # OPTIONS buttons line
-    t = re.sub(r"\[OPTIONS:.*?\]", "", t)
     # Diff blocks: lines starting with +/- only inside fenced blocks are
     # already removed above; catch stray unified-diff hunks.
     t = re.sub(r"^@@[^@]+@@.*$", "", t, flags=re.MULTILINE)
-    # Collapse whitespace
+    # Collapse blank-line runs
     t = re.sub(r"\n{3,}", "\n\n", t)
-    t = re.sub(r"  +", " ", t)
     # Re-run redaction on the STRIPPED text. Every strip above can make two
     # halves of a secret contiguous (a control comment, `**` emphasis, or an
     # HTML tag interposed inside a key id), so a credential scan that ran on
@@ -403,7 +412,135 @@ def strip_markdown(text: str) -> str:
     # Idempotent on clean text; placeholders survive re-scanning.
     t, _ = redact_exfiltration_urls(t)
     t, _ = redact_credentials(t)
+    # Identifier underscores become word breaks only after the re-scan, so
+    # a token whose pattern includes "_" is matched whole.
+    t = _space_identifier_underscores(t)
+    # Collapse space runs
+    t = re.sub(r"  +", " ", t)
     return t.strip()
+
+
+@cache
+def _speech_markdown() -> MarkdownIt:
+    """The inline parser that finds emphasis, strikethrough and code spans.
+
+    Every other markdown rule is off, so links, paths and plain text come back
+    as text exactly as written. Strikethrough takes one or two tildes, the way
+    GitHub and Slack render it: the built-in rule reads ``~~`` and
+    ``_single_tilde`` reads ``~``, on every ``markdown-it-py`` that
+    ``setup.cfg`` allows. Built on first use: importing ``markdown_it`` costs
+    about 35 ms, and only a voice reply needs it.
+    """
+    from markdown_it import MarkdownIt
+
+    md = MarkdownIt("zero").enable(["emphasis", "strikethrough", "backticks"])
+    md.inline.ruler.after("strikethrough", "single_tilde", _single_tilde)
+    return md
+
+
+def _single_tilde(state: StateInline, silent: bool) -> bool:
+    """Read a lone ``~`` as a strikethrough marker.
+
+    It joins the delimiter list the built-in strikethrough rule uses, so a
+    pair of them becomes ``s_open`` and ``s_close`` tokens and a lone one
+    with no partner stays text.
+    """
+    from markdown_it.rules_inline.state_inline import Delimiter
+
+    if silent or state.src[state.pos] != "~":
+        return False
+    scanned = state.scanDelims(state.pos, True)
+    if scanned.length != 1:
+        return False
+    token = state.push("text", "", 0)
+    token.content = "~"
+    state.delimiters.append(
+        Delimiter(
+            marker=ord("~"),
+            length=0,
+            token=len(state.tokens) - 1,
+            end=-1,
+            open=scanned.can_open,
+            close=scanned.can_close,
+        )
+    )
+    state.pos += 1
+    return True
+
+
+@cache
+def _code_span_markdown() -> MarkdownIt:
+    """The inline parser that finds code spans and nothing else."""
+    from markdown_it import MarkdownIt
+
+    return MarkdownIt("zero").enable("backticks")
+
+
+def _inline_tokens(md: MarkdownIt, text: str) -> list[Token]:
+    """The inline tokens of ``text``, which is parsed as one paragraph."""
+    return md.parseInline(text)[0].children or []
+
+
+def _drop_markers(text: str) -> str:
+    """Drop emphasis and strikethrough markers and known emoji shortcodes.
+
+    The parser turns each matched marker pair into open and close tokens,
+    which carry no text and are skipped. A ``*`` inside a text token is a
+    marker with no partner: only the emphasis rule reads ``*``, so it is
+    dropped too, which keeps a key id split by a lone ``**`` whole for the
+    credential re-scan. An unpaired ``_`` or ``~`` is text and stays.
+    """
+    out: list[str] = []
+    for tok in _inline_tokens(_speech_markdown(), text):
+        if tok.type == "text":
+            out.append(_drop_shortcodes(tok.content.replace("*", "")))
+        elif tok.type == "code_inline":
+            out.append(tok.markup + tok.content + tok.markup)
+    return "".join(out)
+
+
+def _drop_shortcodes(text: str) -> str:
+    """Drop each ``:name:`` whose name is a known emoji shortcode.
+
+    Only names in ``STANDARD_EMOJIS`` count, so the digits between the
+    colons of a clock time or a ratio (10:30:45, 16:9:1) are kept. A name
+    made of digits, such as ``100``, counts only when no digit touches its
+    colons, so 16:100:1 is a ratio and stays.
+    """
+    parts = text.split(":")
+    out = [parts[0]]
+    i = 1
+    while i < len(parts):
+        if i + 1 < len(parts) and _is_shortcode(out[-1], parts[i], parts[i + 1]):
+            out[-1] += parts[i + 1]
+            i += 2
+        else:
+            out.append(parts[i])
+            i += 1
+    return ":".join(out)
+
+
+def _is_shortcode(before: str, name: str, after: str) -> bool:
+    """Whether ``:name:``, between ``before`` and ``after``, is a known emoji shortcode."""
+    if name not in _EMOJI_SHORTCODES:
+        return False
+    if not name.isdigit():
+        return True
+    return not (before[-1:].isdigit() or after[:1].isdigit())
+
+
+def _space_identifier_underscores(text: str) -> str:
+    """Speak each ``_`` left in text as a word break: max_retry_count.
+
+    Code spans keep their underscores.
+    """
+    out: list[str] = []
+    for tok in _inline_tokens(_code_span_markdown(), text):
+        if tok.type == "code_inline":
+            out.append(tok.markup + tok.content + tok.markup)
+        else:
+            out.append(" ".join(tok.content.split("_")))
+    return "".join(out)
 
 
 def text_to_ssml(
@@ -941,6 +1078,54 @@ async def synthesize_speech(
     return None
 
 
+# The one Polly failure whose fix is "change the voice, engine or region": the
+# chosen engine (or language voice) is not offered in the request's region, so
+# AWS rejects every sentence identically. The reported AWS CLI stderr for it is
+#   An error occurred (ValidationException) when calling the SynthesizeSpeech
+#   operation: The selected engine is not supported in this region
+# so ``not supported in this region`` matches it; the two exception names cover
+# the forms AWS returns when the voice's language, rather than the engine, is
+# the unsupported one. It is the only AWS error that raises
+# ``voice_polly_rejected`` and stops the stream, because it is the only one that
+# repeats for every sentence and the only one that fix resolves. These markers
+# match against the CLI stderr; an error narrower to one sentence
+# (``InvalidSsmlException``, ``InvalidParameterValue``) or about the account
+# rather than the request (``AccessDenied``, ``ExpiredToken``) is absent on
+# purpose, so it falls through to the ``None``/skip-per-sentence path and the
+# dashboard shows its generic notice — the honest answer when the remedy is not
+# "change the voice, engine or region". A general AWS-error taxonomy belongs to
+# a separate change.
+_POLLY_ENGINE_REGION_ERRORS = (
+    "EngineNotSupportedException",
+    "LanguageNotSupportedException",
+    "not supported in this region",
+)
+
+
+def _classify_polly_failure(stderr: str) -> "VoiceSynthesisError | None":
+    """Return the coded error for a Polly stderr, or ``None`` to skip-per-sentence.
+
+    Only the engine/region-unsupported rejection becomes a raise, because it is
+    the only AWS failure whose fix is the one action the notice names — pick a
+    different voice, engine, or region — and the only one that repeats for every
+    sentence. Every other nonzero exit (a sentence-scoped SSML/parameter error,
+    a credential or access error, a transport blip) returns ``None``, so the
+    caller skips that sentence and the dashboard shows its generic notice.
+    Naming a remedy that does not fit is worse than the generic notice, so an
+    unrecognised failure says nothing specific. The AWS message can echo the
+    SSML, so it stays in the log; the raised text is fixed.
+    """
+    for marker in _POLLY_ENGINE_REGION_ERRORS:
+        if marker in stderr:
+            return VoiceSynthesisError(
+                "voice_polly_rejected",
+                "Amazon Polly does not offer the selected voice or engine in the "
+                "selected AWS region. In the Text-to-speech settings, pick a "
+                "different Voice, Engine, or Region.",
+            )
+    return None
+
+
 async def _synthesize_polly(
     ssml: str,
     voice_id: str = DEFAULT_VOICE,
@@ -957,7 +1142,12 @@ async def _synthesize_polly(
 
     ``raise_refusal`` is for a caller with a person waiting: when no consent is
     recorded for this profile and region it raises
-    ``VoiceSynthesisError("voice_consent_required")`` instead of returning ``None``.
+    ``VoiceSynthesisError("voice_consent_required")`` instead of returning ``None``,
+    and the engine/region-unsupported rejection raises
+    ``VoiceSynthesisError("voice_polly_rejected")`` rather than being retried once
+    per sentence. Every other nonzero exit returns ``None`` (skip-per-sentence),
+    so an unrecognised or sentence-scoped failure falls back to text rather than
+    naming a remedy that may not fit.
     """
     # Polly is a PAID AWS service and this is the request that spends money, so
     # it does not happen without a recorded operator consent for this exact
@@ -1078,7 +1268,23 @@ async def _synthesize_polly(
                     raise  # cancellation/interrupt must propagate to the caller
                 return None
             if proc.returncode != 0:
-                logger.error("Polly failed: %s", stderr.decode())
+                decoded = stderr.decode(errors="replace")
+                logger.error("Polly failed: %s", decoded)
+                if raise_refusal:
+                    # A classified AWS error is a property of this profile,
+                    # region, engine and voice, so it repeats identically for
+                    # every sentence. The unattended path returns None and lets
+                    # the caller fall back to text, but the dashboard stream has
+                    # a person waiting: returning None there retries the same
+                    # doomed call once per sentence and ends in the generic "no
+                    # audio" notice. Stop at the first one with the code whose
+                    # remedy actually fixes it — an unsupported engine/region is
+                    # not the same fix as an expired credential. An unclassified
+                    # failure stays None, so the generic notice shows, which is
+                    # the honest answer when the cause is unknown.
+                    classified = _classify_polly_failure(decoded)
+                    if classified is not None:
+                        raise classified
                 return None
             if os.path.getsize(path) < 100:
                 logger.error("Polly output too small")
@@ -1108,6 +1314,12 @@ async def _synthesize_polly(
             # sentinel loses the one fact that resolves this. The ``finally`` below
             # still discards the owned temp file, which matters MORE once the
             # exception travels instead of a return value.
+            raise
+        except VoiceSynthesisError:
+            # The coded AWS-rejection error raised above on the ``raise_refusal``
+            # path is a deliberate signal to the waiting caller, not a synthesis
+            # fault to collapse into None — let it travel. The ``finally`` still
+            # discards the owned temp file.
             raise
         except Exception:
             logger.exception("Polly synthesis error")
@@ -1295,9 +1507,10 @@ async def streaming_voice_reply(
             continue
         # Dashboard streaming is Polly-only today (sentence-by-sentence MP3
         # chunks). Calls the Polly-specific internal to avoid double-wrapping
-        # text→SSML through the public dispatcher. Raises only when no consent
-        # is recorded for this profile and region; any other refusal skips
-        # this sentence and the next one is checked again.
+        # text→SSML through the public dispatcher. Raises when no consent is
+        # recorded for this profile and region, or on the engine/region-
+        # unsupported rejection that repeats for every sentence; any other
+        # refusal skips this sentence and the next one is checked again.
         mp3_path = await _synthesize_polly(
             ssml,
             voice_id=voice_id,

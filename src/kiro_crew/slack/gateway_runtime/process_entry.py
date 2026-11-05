@@ -334,16 +334,55 @@ def _main_stored_as_kiro() -> bool:
 
 
 def _start_coder_retention(cfg: KiroCrewConfig) -> None:
-    """Activate the optional Coder subsystem only after readiness/configuration."""
+    """Maintain configured environments and persisted VMs after readiness.
+
+    A gateway with neither configuration nor a VM registry never imports the
+    subsystem. Profile removal leaves archived-row sweeps and shutdown active.
+    """
     global _CODER_RETENTION_TASK
     from kiro_crew.session_environment import session_environments_enabled
 
-    if not session_environments_enabled() or not cfg.session_environments.coder_url:
+    if not session_environments_enabled():
+        # Developer flag off: no provider's retention runs.
         return
     if _CODER_RETENTION_TASK is not None and not _CODER_RETENTION_TASK.done():
         return
 
+    def configured(section: Any) -> bool:
+        return bool(
+            section.coder_url
+            or getattr(section, "sprites_profiles", None)
+            or getattr(section, "boxd_profiles", None)
+        )
+
+    def has_vm_registry() -> bool:
+        from kiro_crew.config.paths import data_home
+        from kiro_crew.config.session_environments import VM_REGISTRY_FILES
+
+        try:
+            home = data_home()
+            # Every VM provider's registry, without importing a provider.
+            for name in VM_REGISTRY_FILES.values():
+                try:
+                    (home / name).stat()
+                except FileNotFoundError:
+                    continue
+                return True
+        except OSError:
+            # Let the sweeper report an unreadable registry, not abandon it.
+            return True
+        return False
+
     async def run() -> None:
+        global _CODER_RETENTION_TASK
+        from kiro_crew.config import live
+
+        if not configured(cfg.session_environments):
+            persisted = await asyncio.to_thread(has_vm_registry)
+            # A configuration save can arrive while the registry probe runs.
+            if not (persisted or configured((live.snapshot() or cfg).session_environments)):
+                _CODER_RETENTION_TASK = None
+                return
         from kiro_crew.coder.retention import run_sweeper
 
         await run_sweeper()
@@ -570,6 +609,17 @@ async def run_gateway(
                     await asyncio.to_thread(work_root.sweep_work_root)
                 except Exception:
                     logging.getLogger(__name__).debug("work-root sweep failed", exc_info=True)
+                # The large-transfer staging root rides the SAME hourly wake, same
+                # posture: a snapshot/restore/import removes its own per-call subtree on
+                # success and failure, so this reclaims only a tree orphaned by a hard
+                # crash. Idle-keyed with a short grace (see kiro_crew.staging); its own
+                # try/except so one root's failure never skips another's sweep.
+                try:
+                    from kiro_crew import staging
+
+                    await asyncio.to_thread(staging.sweep_staging)
+                except Exception:
+                    logging.getLogger(__name__).debug("staging sweep failed", exc_info=True)
                 # The per-run work directories of subagent and stateless cron
                 # sessions ride the same wake. The ordinary end of a run reclaims
                 # its own (AcpProvider.shutdown); the boot sweep took what a dead

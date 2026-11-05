@@ -53,7 +53,10 @@ def test_native_view_bounds_metadata_and_preserves_original_scope(native_tree):
     assert source.read_text(encoding="utf-8") == original
     assert all(not r.startswith("skill://") for r in view["resources"])
     assert len(view["resources"]) == 4
-    assert view["tools"] == spec["tools"] and view["allowedTools"] == spec["allowedTools"]
+    # The authored grants are kept as written; a custom agent also gets Crew's
+    # default servers (acp/default_crew_servers.py), here the one it did not name.
+    assert view["tools"] == [*spec["tools"], "@kirocrew-cron"]
+    assert view["allowedTools"] == spec["allowedTools"]
     assert view["prompt"] == "file://" + (agents / "instructions.md").as_posix()
     assert iter_agent_spec_files(agents) == [source]
     settings = json.loads((project / ".kiro/settings/cli.json").read_text(encoding="utf-8"))
@@ -242,7 +245,7 @@ def test_native_agent_switch_cannot_escape_crew_scope(command):
         prepared.request("_kiro.dev/commands/execute", {"command": command})
 
 
-def test_custom_agent_gets_only_the_scoped_search_capability(native_tree):
+def test_custom_agent_gets_crew_default_servers_without_approvals(native_tree):
     _home, agents, project = native_tree
     (agents / "custom.json").write_text(
         json.dumps(
@@ -257,10 +260,28 @@ def test_custom_agent_gets_only_the_scoped_search_capability(native_tree):
     )
     prepared = projection.prepare_native_skill_projection(project)
     view = json.loads((agents / f"{prepared.agent('custom')}.json").read_text(encoding="utf-8"))
-    assert view["tools"] == ["read", "@kirocrew-core/skill_search"]
+    assert view["tools"] == ["read", "@kirocrew-core", "@kirocrew-cron"]
     assert view["allowedTools"] == []
-    assert "kirocrew-core" in view["mcpServers"]
-    assert "autoApprove" not in view["mcpServers"]["kirocrew-core"]
+    for server in ("kirocrew-core", "kirocrew-cron"):
+        assert server in view["mcpServers"]
+        assert "autoApprove" not in view["mcpServers"][server]
+
+
+def test_a_per_tool_core_grant_keeps_its_narrowing(native_tree):
+    _home, agents, project = native_tree
+    (agents / "custom.json").write_text(
+        json.dumps(
+            {
+                "name": "custom",
+                "tools": ["read", "@kirocrew-core/skill_search"],
+                "resources": ["skill://skills/a/SKILL.md"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    prepared = projection.prepare_native_skill_projection(project)
+    view = prepared.specs["custom"]
+    assert view["tools"] == ["read", "@kirocrew-core/skill_search", "@kirocrew-cron"]
 
 
 @pytest.mark.parametrize(
@@ -454,9 +475,14 @@ def test_unknown_name_with_no_matching_spec_still_passes_through_on_spawn():
         prepared.agent("unrelated")
 
 
-def test_unmapped_custom_agent_does_not_gain_tools_or_servers(native_tree):
+def test_unmapped_custom_agent_that_opts_out_does_not_gain_tools_or_servers(native_tree):
     _home, agents, project = native_tree
-    spec = {"name": "custom", "tools": ["read"], "excludedTools": ["@kirocrew-core/skill_search"]}
+    spec = {
+        "name": "custom",
+        "tools": ["read"],
+        "excludedTools": ["@kirocrew-core/skill_search"],
+        "managedToolPolicy": {"excludeServers": ["kirocrew-core", "kirocrew-cron"]},
+    }
     (agents / "custom.json").write_text(json.dumps(spec), encoding="utf-8")
     prepared = projection.prepare_native_skill_projection(project)
     view = prepared.specs["custom"]
@@ -694,7 +720,7 @@ def test_the_ceiling_fallback_still_prunes_so_the_backlog_can_drain(
     monkeypatch.setattr(projection, "SKILL_VIEW_PROJECTION_CEILING", 3)
     # Reclaimable legacy aliases this home owns, aged past the reclaim floor.
     backlog = [_legacy_alias(agents, digest=f"{n:024x}") for n in range(5)]
-    assert projection._count_projected_aliases(agents) >= 3  # over the ceiling
+    assert projection._count_projected_aliases(agents, 3) >= 3  # over the ceiling
     # Fallback path (no view minted), but the prune still runs under the lock.
     assert projection.prepare_native_skill_projection(project) is None
     reclaimed = [p for p in backlog if not p.exists()]

@@ -71,6 +71,10 @@ class Task:
     # give-ups, restarts and a replan, because a step whose work may have run
     # must never be replayed verbatim, and keeping the hint costs one inspection.
     resume_hint: str = ""
+    # Set when a revised plan replaced this step (the step that failed, and the
+    # original steps that never started). A resume never sets it back to pending,
+    # so it does not run beside the revised plan.
+    superseded: bool = False
     requires_approval: bool = False
     force_approval: bool = False  # blocks even in YOLO mode
     depends_on: list[int] = field(default_factory=list)

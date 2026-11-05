@@ -134,7 +134,7 @@ async def _run_app_build(
     """
     build_cmds: list[list[str]] = []
 
-    if (build_dir / "package.json").is_file():
+    if await asyncio.to_thread((build_dir / "package.json").is_file):
         # Resolve to a full path, mirroring the pip branch below: on Windows npm
         # is ``npm.CMD``, which shutil.which finds but CreateProcess cannot spawn
         # by the bare name "npm".
@@ -199,9 +199,9 @@ async def _run_app_build(
         # Nothing here that would build (or a requirements.txt entry nothing
         # reads): no build step, reported below like any source-as-is checkout.
     elif (
-        (build_dir / "pyproject.toml").is_file()
-        or (build_dir / "setup.py").is_file()
-        or (build_dir / "requirements.txt").is_file()
+        await asyncio.to_thread((build_dir / "pyproject.toml").is_file)
+        or await asyncio.to_thread((build_dir / "setup.py").is_file)
+        or await asyncio.to_thread((build_dir / "requirements.txt").is_file)
     ):
         # `sys.executable -m pip`, NOT `shutil.which("pip")`.
         #
@@ -290,8 +290,9 @@ async def _run_app_build(
             )
         else:
             pip_cmd = platform_compat.isolated_python_argv("-m", "pip")
-            if (build_dir / "requirements.txt").is_file() and not (
-                (build_dir / "pyproject.toml").is_file() or (build_dir / "setup.py").is_file()
+            if await asyncio.to_thread((build_dir / "requirements.txt").is_file) and not (
+                await asyncio.to_thread((build_dir / "pyproject.toml").is_file)
+                or await asyncio.to_thread((build_dir / "setup.py").is_file)
             ):
                 build_cmds.append([*pip_cmd, "install", "-r", "requirements.txt"])
             else:
@@ -617,7 +618,10 @@ if _typing.TYPE_CHECKING:
         time,
     )
     from kiro_crew.apps.registry_pipeline.catalog import (  # noqa: F401
+        _VERSION_RELEASE_RE,
+        _VERSION_STRING_RE,
         FIRST_PARTY_AUTHORS,
+        NATIVE_WINDOWS_SHELL_REFUSAL,
         SOURCE_REGISTRY_PREFIX,
         _append_external_registry_apps,
         _apply_trust_fields,
@@ -632,6 +636,9 @@ if _typing.TYPE_CHECKING:
         _identity,
         _is_catalog_row,
         _is_external_row,
+        _is_prerelease,
+        _manifest_shell_platform_refusal,
+        _parse_version,
         _pinned_registry_entry,
         _platform,
         _registry_app_candidates,
@@ -671,6 +678,7 @@ if _typing.TYPE_CHECKING:
         _clone_origin_matches,
         _clone_origin_url,
         _communicate_with_timeout,
+        _ensure_directory,
         _git_clone_or_pull,
         _git_fetch_branch,
         _git_fetch_commit,
@@ -691,6 +699,8 @@ if _typing.TYPE_CHECKING:
         _GIT_NO_FSMONITOR_PAIR,
         _GIT_NO_HOOKS_PAIR,
         _PUBLIC_GIT_HOSTS,
+        _SSH_METHOD_CHARS,
+        _SSH_REFUSAL_PREFIX,
         IPv6Address,
         _clone_sandbox_mode,
         _entry_git_url,
@@ -702,6 +712,7 @@ if _typing.TYPE_CHECKING:
         _git_target_is_unsupported,
         _git_transport_env,
         _git_url_host,
+        _is_ssh_auth_refusal,
         _is_ssh_git_url,
         _loggable_git_transport_output,
         _looks_like_git_url,
@@ -711,6 +722,7 @@ if _typing.TYPE_CHECKING:
         _redact_url_userinfo,
         _redacted_git_failure_class,
         _same_git_target,
+        _ssh_method_list_closes,
         _strip_git_target_userinfo,
         _valid_git_port,
         re,
@@ -730,6 +742,7 @@ if _typing.TYPE_CHECKING:
         NATIVE_WINDOWS_HOOK_REFUSAL,
         RESERVED_APP_NAME_CODE,
         StreamingLogLines,
+        _adoption_pending,
         _install_script_platform_refusal,
         _official_entry,
         _remote_controlled_url,
@@ -788,6 +801,7 @@ if _typing.TYPE_CHECKING:
         _merge_manifest,
         _resolve_manifest,
         official_catalog,
+        sanitize_links,
     )
     from kiro_crew.apps.registry_pipeline.recovery import (  # noqa: F401
         _STALE_CHECKOUT_PATTERN,

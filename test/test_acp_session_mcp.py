@@ -1,14 +1,9 @@
 """Session-array MCP wiring: agent spec -> session/new mcpServers array.
 
-A backend in ``ACP_BACKENDS_SESSION_MCP_ARRAY`` (claude-agent-acp today) receives
-its MCP servers ONLY through the ``session/new`` / ``session/load`` parameter, so
-these tests pin the shape the adapter's schema requires (``env``/``headers`` always arrays, an explicit transport ``type``) and
-the mounting rules the kiro agent spec expresses (``tools`` references, the
-registry pointer, Crew's own control plane).
-
-The client seam (what ``AcpClient`` puts on ``session/new``) is in
-``test_acp_session_mcp_client_seam.py``, and the fixtures and spec writers both
-modules use in ``acp_session_mcp_helpers.py``.
+A backend in ``ACP_BACKENDS_SESSION_MCP_ARRAY`` gets its MCP servers only through
+``session/new`` / ``session/load``, so these pin the adapter's schema (``env``/``headers``
+always arrays, explicit ``type``) and the spec's mounting rules.
+The client seam is in ``test_acp_session_mcp_client_seam.py``.
 """
 
 from __future__ import annotations
@@ -100,11 +95,8 @@ class TestElementShape:
     def test_non_sequence_args_does_not_raise(self, agents_dir, bad_args):
         """``"args": 8080`` must not take the whole session/new down.
 
-        The spec is hand-editable JSON, so a scalar there is an easy mistake.
-        Iterating it raises ``TypeError`` (or, for a string, explodes into one
-        argument per character), and nothing in this module may raise: the
-        exception travels out through ``session_mcp_servers`` and fails the whole
-        ``session/new``, costing the session every OTHER server too.
+        An exception here escapes ``session_mcp_servers`` and fails ``session/new``,
+        costing the session every other server too.
         """
         _write_spec(
             agents_dir,
@@ -208,14 +200,9 @@ class TestMounting:
     def test_registry_mode_withholds_every_spec_declared_server(self, agents_dir, monkeypatch):
         """A marker cannot AUTHORIZE a server here, so a governed install gets none.
 
-        kiro-cli resolves a marked entry against the admin's catalog by map key,
-        drops what the catalog omits and applies the catalog's command override.
-        Nothing here can do any of that -- only kiro-cli fetches the registry URL,
-        and it persists neither the URL nor the catalog. A ``"type": "registry"``
-        line is one a user can add to their own spec, so treating it as proof of
-        authorization would let a local edit mount a server the administrator
-        withheld. The unmarked entries are dropped for the reason they always
-        were: kiro-cli drops them too.
+        Only kiro-cli can resolve a marked entry against the admin's catalog. A user
+        can add ``"type": "registry"`` to their own spec, so trusting it would let a
+        local edit mount a server the administrator withheld.
         """
         _write_spec(
             agents_dir,
@@ -233,11 +220,8 @@ class TestMounting:
     def test_registry_mode_still_keeps_crews_own_control_plane(self, agents_dir, monkeypatch):
         """The withholding is scoped to the user-editable spec, not to the host.
 
-        ``kirocrew-core``/``kirocrew-cron`` are re-derived from the managed source
-        rather than read from the spec, and they are the session's only way to
-        report back to its channel. Withholding them would reproduce the very
-        defect this module exists to fix, on exactly the installs that are most
-        governed.
+        ``kirocrew-core``/``kirocrew-cron`` come from the managed source, not the spec,
+        and are the session's only way to report back to its channel.
         """
         _write_spec(
             agents_dir,
@@ -252,11 +236,8 @@ class TestMounting:
     def test_an_unreadable_registry_mode_is_read_as_governed(self, agents_dir, monkeypatch):
         """A ceiling that cannot be read is treated as in force, not as absent.
 
-        Registry mode is a CEILING. Reading a config-plane failure as "off" would
-        launch the session's unmarked local servers past a ceiling the operator may
-        well have set -- the one outcome the ceiling exists to prevent. The cost is
-        the session's spec-declared MCP surface, which is recoverable; mounting a
-        server the administrator withheld is not.
+        Reading a config failure as "off" would mount servers past a ceiling the
+        operator may have set. Losing the spec's servers is recoverable; that is not.
         """
 
         def boom() -> bool:
@@ -273,15 +254,11 @@ class TestMounting:
     def test_a_project_only_agents_allowlist_is_honoured(self, tmp_path, agents_dir):
         """A spec kiro-cli WOULD resolve must not read here as "no spec".
 
-        ``<project>/.kiro/agents`` is resolved by kiro-cli BEFORE the user level
-        (``config.paths.project_agents_dir``). Resolving only the user level made a
-        project-only agent find nothing, so the ``tools`` allowlist never ran and the
-        control plane mounted unrestricted -- a restriction the user declared, lost.
-        Withholding what the spec does not name is the whole point of the allowlist.
+        kiro-cli resolves ``<project>/.kiro/agents`` before the user level; missing it
+        skips the ``tools`` allowlist and mounts the control plane unrestricted.
 
-        The checkout's own ``mcpServers`` never reach a mirrored session (see
-        ``_project_mcp_trusted``), so ``proj`` is withheld too -- but the allowlist
-        still governs what is left, which is the restriction this pins.
+        ``proj`` is withheld anyway (see ``_project_mcp_trusted``); the allowlist
+        still governs what is left.
         """
         _write_project_spec(
             tmp_path,
@@ -353,12 +330,9 @@ class TestMounting:
     def test_disabled_tools_is_the_structured_form_and_exempts_no_server(self, agents_dir):
         """``(server, tool)`` pairs, the control plane included.
 
-        The deny-rule spelling is lossy (``mcp__a__b__c`` splits on the LAST
-        ``__``), so a consumer comparing against a two-field identity must take the
-        pairs. And this set answers "what did the user switch off", which is as true
-        of ``kirocrew-core`` as of any server -- HOW a backend honours it is the
-        caller's question (the restricted set exempts the control plane from
-        withholding; this does not exempt it from anything).
+        The deny-rule spelling is lossy (``mcp__a__b__c`` splits on the last ``__``).
+        This set says what the user switched off; how a backend honours it is the
+        caller's question.
         """
         _write_spec(
             agents_dir,
@@ -742,11 +716,8 @@ class TestPooledStubsOnTheClaudeMirror:
     def test_a_narrowed_servers_stub_stays_mounted_unlike_codex(self, agents_dir):
         """Claude honours `disabledTools` through `permissions.deny`, not withholding.
 
-        The deny rules in ``settings.local.json`` are keyed
-        ``mcp__<server>__<tool>`` and the stub registers under the same server
-        name, so the narrowing still applies to it. Withholding the stub, as
-        codex must (it has no deny channel), would drop a server this backend
-        can narrow correctly.
+        The stub registers under the same server name as the deny rules
+        (``mcp__<server>__<tool>``), so the narrowing still applies to it.
         """
         _write_spec(
             agents_dir,
@@ -774,11 +745,8 @@ def _mirror_classes():
 class TestDisabledServersPooledStub:
     """A server switched off WHOLE never mounts through its pooled broker stub.
 
-    The stub carries the same name as the spec entry it rewrites, so the stub half
-    of the array is where a ``disabled: true`` server could come back. Every
-    mirror holds a stub to the spec's ``tools`` allowlist, and that allowlist never
-    grants a disabled server, whichever source switched it off and whatever
-    ``tools`` says. An enabled pooled server beside it stays mounted.
+    The stub shares the spec entry's name, so it is where a ``disabled: true`` server
+    could come back. An enabled pooled server beside it stays mounted.
     """
 
     _STUBS = (
@@ -852,20 +820,9 @@ class TestDisabledServersPooledStub:
 class TestLocalSettingsSeed:
     """Crew's seed of ``<work_dir>/.claude/settings.local.json``.
 
-    The governing rule is ownership, and ownership is NOT the path -- a path under
-    a checked-out repository is not Crew's to claim. It is having CREATED the file
-    AND the bytes on disk still being the ones Crew wrote. Both hold: Crew may
-    overwrite (which is what lets a model-substitution re-seed change the resolved
-    model) and reset removes it. Either fails: Crew leaves the path entirely alone,
-    and reset removes nothing. Absent: Crew creates it with ``O_EXCL``.
-
-    Nothing here reads, merges into, rewrites or deletes a file Crew did not
-    author, which is what keeps a seam that writes into a checked-out project from
-    needing a snapshot or a restore write on teardown.
-
-    The CROSS-SESSION half of the same rule -- recognizing a seed a killed session
-    left behind, by the digest recorded in
-    :mod:`kiro_crew.acp.seed_provenance` -- lives in
+    Crew owns the file only if it created it and the bytes on disk are still its own.
+    Then it may overwrite and reset removes it; otherwise the path is left alone.
+    Absent: Crew creates it with ``O_EXCL``. The cross-session half is in
     ``test_acp_seed_provenance.py``.
     """
 
@@ -876,12 +833,8 @@ class TestLocalSettingsSeed:
     def _teardown(client):
         """Tear a client down the way every real caller does.
 
-        Removing the seed is a DISK operation -- a durable revoke of the provenance
-        grant, then the unlink -- so it lives in the async
-        ``_discard_claude_settings_seed`` and reaches the filesystem through
-        ``asyncio.to_thread``. ``_reset_state`` stays synchronous and keeps only the
-        in-memory claim release, so calling it alone deliberately leaves the file
-        behind.
+        The disk removal lives in the async ``_discard_claude_settings_seed``;
+        ``_reset_state`` alone only releases the in-memory claim and leaves the file.
         """
         asyncio.run(client._discard_claude_settings_seed())
         client._reset_state()
@@ -960,15 +913,10 @@ class TestLocalSettingsSeed:
         assert data["availableModels"] == model_registry.seed_available_models("claude_code")
 
     def test_seed_omits_both_model_keys_on_a_cold_cache(self, tmp_path, monkeypatch):
-        """A cold cache seeds NO model keys — the fix, not a degradation.
+        """A cold cache seeds no model keys.
 
-        The adapter merges ``availableModels`` union+dedup across settings sources,
-        so seeding a list Crew guessed (the old static-registry fallback) REPLACED
-        the adapter's own provider-derived list with a staler one: a model the
-        registry had not caught up on contributed no ``[1m]`` id, so the pick
-        resolved to 200K. And a ``model`` key naming nothing in the list shipped
-        beside it is the same failure by another route. Writing neither leaves the
-        adapter on its own list, which already carries the versioned ids.
+        A guessed ``availableModels`` list replaces the adapter's own list, so a model
+        missing from it loses its ``[1m]`` id and resolves to 200K.
         """
         from kiro_crew import model_registry
 
@@ -1091,12 +1039,8 @@ class TestLocalSettingsSeed:
     def test_an_inherited_bypass_mode_is_left_to_its_owner(self, tmp_path):
         """The disclosed cost of not touching a file Crew did not author.
 
-        ``bypassPermissions`` takes every tool call out of the host gate, and Crew
-        does not strip it -- stripping meant reading and rewriting a path a
-        checked-out repository controls, which is what produced the snapshot and
-        restore machinery. The call still reaches Crew's gate unless the user's
-        own file pre-approves it, the same boundary the inherited-``~/.claude``
-        gap already documents.
+        Crew does not strip ``bypassPermissions``: that would mean rewriting a file the
+        checked-out repository controls.
         """
         path = tmp_path / ".claude" / "settings.local.json"
         path.parent.mkdir(parents=True)
@@ -1196,11 +1140,8 @@ class TestLocalSettingsSeed:
     def test_a_reseed_overwrites_the_file_this_session_created(self, tmp_path, monkeypatch):
         """The model-substitution retry has to be able to change what it wrote.
 
-        ``_new_session_following_substitution`` adopts the gateway-served model and
-        re-seeds so the fresh ``SettingsManager`` the adapter builds for the retry
-        resolves it. Declining here -- because the path now holds a file -- would
-        send byte-identical ``session/new`` params, take the same substitution
-        advisory, and fail the session with "even after adopting substitute model".
+        Declining would resend identical ``session/new`` params and fail with
+        "even after adopting substitute model".
         """
         # Another settings source defines availableModels, so the warm cache is written.
         monkeypatch.setattr(
@@ -1305,12 +1246,8 @@ class TestLocalSettingsSeed:
     def test_the_bytes_on_disk_are_exactly_the_bytes_recorded(self, tmp_path):
         """Ownership is byte equality, so the write must not translate anything.
 
-        The seed was first written in TEXT mode, and Python's text layer rewrites
-        "\n" to "\r\n" on Windows -- so the file on disk was longer than the payload
-        the session recorded, byte equality never held, and every Windows session
-        read as "not ours": the re-seed declined, reset never removed its own file,
-        and the MCP array was withheld. Nothing on POSIX could see it, which is why
-        the invariant is asserted here rather than left to the platform.
+        Text mode turns "\n" into "\r\n" on Windows, so every Windows seed would read
+        as "not ours". POSIX cannot see that, so the invariant is asserted here.
         """
         client = self._client(tmp_path, permission_mode="default")
         client._write_claude_local_settings()
@@ -1329,11 +1266,8 @@ class TestLocalSettingsSeed:
     def test_a_fifo_swapped_in_after_the_create_neither_hangs_nor_is_claimed(self, tmp_path):
         """``_reset_state`` is synchronous and runs ON the event loop.
 
-        By teardown the path is whatever the world left there. A plain read of a
-        FIFO blocks on the open until someone writes, which would hold the whole
-        gateway's loop, not just this session. The check opens with O_NONBLOCK and
-        refuses anything that is not a regular file, so the swap answers "not
-        ours" -- and a file Crew does not own is left in place.
+        A plain open of a FIFO blocks the whole gateway loop, so the check opens with
+        O_NONBLOCK and treats any non-regular file as "not ours".
         """
         client = self._client(tmp_path)
         client._write_claude_local_settings()
@@ -1400,12 +1334,8 @@ class TestLocalSettingsSeed:
     def test_reset_reads_the_ownership_flag_defensively(self, tmp_path):
         """``_reset_state`` runs on clients built without ``__init__``.
 
-        Several suites construct an ``AcpClient`` via ``__new__`` and set only the
-        fields the unit under test needs (``test_acp_usage_cost``'s bare client is
-        the one that caught this). Reading the ownership flag unconditionally
-        raised ``AttributeError`` there, on a path shared with every real session,
-        so the read is a ``getattr`` with the safe default -- absent means "Crew
-        authored nothing", which removes nothing.
+        Suites build an ``AcpClient`` via ``__new__``, so the flag is read with
+        ``getattr``; absent means Crew authored nothing, which removes nothing.
         """
         client = self._client(tmp_path)
         del client._claude_settings_authored

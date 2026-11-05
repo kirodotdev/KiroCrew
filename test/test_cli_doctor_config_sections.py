@@ -35,9 +35,8 @@ class TestEffectiveModelSection:
     """
 
     @pytest.fixture(autouse=True)
-    # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- the Model section's autouse KIRO_HOME pin, moved verbatim; no test in test_cli_doctor_config_sections.py calls monkeypatch.undo()
-    def _isolate_kiro_home(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("KIRO_HOME", str(tmp_path / "kiro-home"))
+    def _isolate_kiro_home(self, tmp_path, _floor_monkeypatch):
+        _floor_monkeypatch.setenv("KIRO_HOME", str(tmp_path / "kiro-home"))
         self._tmp = tmp_path
 
     def _agents_dir(self) -> Path:
@@ -852,7 +851,7 @@ class TestNameGrantPlatformScopeRow:
         from kiro_crew import name_grant
 
         profile = tmp_path / "Microsoft.PowerShell_profile.ps1"
-        profile.write_text("function ls { evil }\n")
+        profile.write_text("function ls { evil }\n", encoding="utf-8")
         monkeypatch.setattr(name_grant.platform_compat, "IS_WINDOWS", True)
         monkeypatch.setattr(
             name_grant.platform_compat, "windows_powershell_profile_paths", lambda: (str(profile),)

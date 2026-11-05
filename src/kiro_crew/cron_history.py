@@ -35,6 +35,7 @@ from kiro_crew import platform_compat
 from kiro_crew.atomic_write import append_line, replace_with_retry
 from kiro_crew.config import live
 from kiro_crew.config.paths import config_dir
+from kiro_crew.json_line import parse_json_object_line
 from kiro_crew.owner_only_files import owner_only_opener
 
 logger = logging.getLogger(__name__)
@@ -53,6 +54,24 @@ _MAX_INDEX_RECORDS = 2000
 #: Errnos that mean "this store is refused", not "this attempt failed". Only
 #: these disable history for the process's lifetime — see ``_degrade``.
 _DENIAL_ERRNOS = frozenset({errno.EPERM, errno.EACCES, errno.EROFS})
+
+
+def _sandbox_confined() -> bool:
+    """True when this process shows evidence of agent-shell confinement.
+
+    ``cli.main`` pops ``KIROCREW_SANDBOX_ACTIVE`` before any subcommand runs, so
+    the launch mark it noted first is asked as well as the live probe. Used
+    only to pick a log level, never to grant anything.
+    """
+    from kiro_crew import sandbox_launch_mark
+    from kiro_crew.sandbox_unavailable import agent_confinement_evidence
+
+    if sandbox_launch_mark.launched_in_sandbox():
+        return True
+    try:
+        return agent_confinement_evidence() is not None
+    except Exception:  # a failed probe keeps the WARNING
+        return False
 
 
 #: A URL run, stopped only at whitespace and at the characters that cannot
@@ -332,14 +351,36 @@ def _trim_file(path: Path, max_records: int) -> None:
     """
     if max_records <= 0 or not path.exists():
         return
-    lines = path.read_text(encoding="utf-8").strip().splitlines()
+    lines = _raw_lines(path)
     if len(lines) <= max_records:
         return
     tmp = path.with_suffix(".tmp")
-    wfd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(wfd, "w", encoding="utf-8") as f:
-        f.write("\n".join(lines[-max_records:]) + "\n")
+    wfd = os.open(str(tmp), _REWRITE_FLAGS, 0o600)
+    with os.fdopen(wfd, "wb") as f:
+        f.write(_NEWLINE.join(lines[-max_records:]) + _NEWLINE)
     replace_with_retry(tmp, path)
+
+
+#: The line ending a rewrite uses: what a text-mode write of ``"\n"`` produced,
+#: and what ``append_line`` writes, so a rewritten file keeps one ending.
+_NEWLINE = os.linesep.encode("ascii")
+
+#: ``O_BINARY`` as ``append_line`` opens: without it a Windows fd is text mode,
+#: and the CRT would turn ``_NEWLINE``'s ``\n`` into a second ``\r\n``.
+_REWRITE_FLAGS = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_BINARY", 0)
+
+
+def _raw_lines(path: Path) -> list[bytes]:
+    """*path*'s JSONL lines as bytes, never decoded as a whole.
+
+    A byte that is not UTF-8 (a torn or foreign write) must cost its own line,
+    not the file: decoding the whole file raises ``UnicodeDecodeError``, which is
+    not an ``OSError``, so it escapes every reader and the append that trims.
+    Rewrites carry the kept lines byte for byte. ``json.dumps`` escapes every
+    character ``str.splitlines`` would split on beyond ``\\n``, so splitting the
+    bytes yields the same records.
+    """
+    return path.read_bytes().strip().splitlines()
 
 
 @dataclass
@@ -366,15 +407,6 @@ class CronRunRecord:
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> CronRunRecord:
         return cls(**{k: v for k, v in d.items() if k in cls.__dataclass_fields__})
-
-
-def _parse_history_row(line: str) -> dict[str, Any] | None:
-    """Ignore partial JSONL lines and valid JSON values that are not records."""
-    try:
-        row = json.loads(line)
-    except json.JSONDecodeError:
-        return None
-    return row if isinstance(row, dict) else None
 
 
 class CronHistoryStore:
@@ -468,12 +500,50 @@ class CronHistoryStore:
                     exc,
                 )
                 return True
+            if self._dir_masked():
+                logger.debug(
+                    "cron history not available in this sandbox: %s is masked "
+                    "(%s); the gateway records runs",
+                    self._dir,
+                    exc,
+                )
+                return False
             logger.warning(
                 "cron history disabled: %s is unusable (%s). Scheduling is "
                 "unaffected; run records will not be persisted.",
                 self._dir,
                 exc,
             )
+            return False
+
+    def _dir_masked(self) -> bool:
+        """True when the directory exists but this process may not look at it.
+
+        That is the signature of an agent sandbox masking the leaf: this process
+        shows evidence of agent confinement, the parent lists the name, and stat
+        on the leaf answers a denial. The gateway runs unsandboxed and records
+        runs, so a disabled store here is expected, not a fault. The mkdir errno
+        is not used: it is EEXIST or EPERM depending on which mkdir route ran
+        and on the Python version.
+
+        Every other shape keeps the WARNING: an unconfined process such as the
+        gateway (whatever the denial), a regular file at the path (stat works),
+        a refused parent (the listing fails), a missing directory (the name is
+        not listed). A check that cannot run answers False, which is the old,
+        loud behaviour. The answer only picks a log level; it grants nothing.
+        """
+        if not _sandbox_confined():
+            return False
+        try:
+            os.stat(self._dir)
+        except OSError as stat_exc:
+            if stat_exc.errno not in _DENIAL_ERRNOS:
+                return False
+        else:
+            return False
+        try:
+            return self._dir.name in os.listdir(self._dir.parent)
+        except OSError:
             return False
 
     def _probe_usable(self) -> bool:
@@ -498,7 +568,7 @@ class CronHistoryStore:
         """
         try:
             os.stat(self._dir)
-            fd = os.open(str(self._lock_path()), os.O_WRONLY | os.O_CREAT, 0o600)
+            fd = platform_compat.open_create_or_existing(str(self._lock_path()), os.O_WRONLY, 0o600)
         except OSError:
             return False
         os.close(fd)
@@ -547,9 +617,20 @@ class CronHistoryStore:
         return self._dir / ".history.lock"
 
     def _lock(self) -> int:
-        """Acquire advisory lock, return fd."""
-        fd = os.open(str(self._lock_path()), os.O_WRONLY | os.O_CREAT, 0o600)
-        platform_compat.acquire_lock(fd, exclusive=True)
+        """Acquire advisory lock, return fd.
+
+        The caller owns the returned fd and closes it via ``_unlock``. When the
+        acquire itself raises (an ``OSError`` on lock timeout), no fd has been
+        handed back for the caller to close, so close it here before re-raising
+        — otherwise the open handle lingers and on Windows blocks deleting the
+        lock file or the history folder.
+        """
+        fd = platform_compat.open_create_or_existing(str(self._lock_path()), os.O_WRONLY, 0o600)
+        try:
+            platform_compat.acquire_lock(fd, exclusive=True)
+        except OSError:
+            os.close(fd)
+            raise
         return fd
 
     def _unlock(self, fd: int) -> None:
@@ -633,10 +714,10 @@ class CronHistoryStore:
         if not job_path.exists():
             return [], 0
         try:
-            lines = job_path.read_text(encoding="utf-8").strip().splitlines()
+            lines = _raw_lines(job_path)
         except FileNotFoundError:
             return [], 0
-        records = [row for line in lines if (row := _parse_history_row(line)) is not None]
+        records = [row for line in lines if (row := parse_json_object_line(line)) is not None]
         total = len(records)
         records.reverse()
         results = records[offset : offset + limit]
@@ -664,10 +745,10 @@ class CronHistoryStore:
         if not self._index_path.exists():
             return [], 0
         try:
-            lines = self._index_path.read_text(encoding="utf-8").strip().splitlines()
+            lines = _raw_lines(self._index_path)
         except FileNotFoundError:
             return [], 0
-        records = [row for line in lines if (row := _parse_history_row(line)) is not None]
+        records = [row for line in lines if (row := parse_json_object_line(line)) is not None]
         if job_id:
             records = [row for row in records if row.get("job_id") == job_id]
         total = len(records)
@@ -689,11 +770,11 @@ class CronHistoryStore:
         if not job_path.exists():
             return None
         try:
-            lines = job_path.read_text(encoding="utf-8").strip().splitlines()
+            lines = _raw_lines(job_path)
         except FileNotFoundError:
             return None
         for line in lines:
-            row = _parse_history_row(line)
+            row = parse_json_object_line(line)
             if row is not None and row.get("run_id") == run_id:
                 return row
         return None
@@ -769,17 +850,17 @@ class CronHistoryStore:
             if removed:
                 job_path.unlink()
             if self._index_path.exists():
-                lines = self._index_path.read_text(encoding="utf-8").strip().splitlines()
+                lines = _raw_lines(self._index_path)
                 filtered = []
                 for line in lines:
-                    row = _parse_history_row(line)
+                    row = parse_json_object_line(line)
                     if row is not None and row.get("job_id") != job_id:
                         filtered.append(line)
                 if len(filtered) != len(lines):
                     tmp = self._index_path.with_suffix(".tmp")
-                    content = "\n".join(filtered) + "\n" if filtered else ""
-                    wfd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-                    with os.fdopen(wfd, "w", encoding="utf-8") as f:
+                    content = _NEWLINE.join(filtered) + _NEWLINE if filtered else b""
+                    wfd = os.open(str(tmp), _REWRITE_FLAGS, 0o600)
+                    with os.fdopen(wfd, "wb") as f:
                         f.write(content)
                     replace_with_retry(tmp, self._index_path)
             return removed

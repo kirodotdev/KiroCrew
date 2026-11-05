@@ -182,7 +182,11 @@ def _contained(candidate: Path, root: Path) -> Path | None:
         root_resolved = root.resolve()
     except OSError:
         return None
-    if resolved != root_resolved and root_resolved not in resolved.parents:
+    # Windows' ``\\?\`` prefix folded off both sides first, so one resolve
+    # keeping it is not read as an escape. Lexical only.
+    plain = platform_compat.strip_extended_length_prefix(resolved)
+    plain_root = platform_compat.strip_extended_length_prefix(root_resolved)
+    if plain != plain_root and plain_root not in plain.parents:
         return None
     if is_sensitive_path(str(resolved)):
         return None

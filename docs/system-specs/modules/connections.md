@@ -35,7 +35,7 @@ from that boundary. The credential-boundary detail lives in
 
 One thing that looks like an exception is not one. A provider whose MCP server
 refuses dynamic client registration (`auth.mode: "preregistered"` in the
-registry — GitHub and Asana today) needs an OAuth **app** an operator registered
+registry — GitHub, Asana and the six Google Workspace entries today) needs an OAuth **app** an operator registered
 in the vendor console, and a confidential app comes with a `client_secret`. That
 secret is the operator's *application* credential, not any user's grant: the
 grant still lives with kiro-cli and nothing here reads it. Kiro Crew keeps the
@@ -1011,6 +1011,13 @@ mounts or gates on it.
 | Neon | developer-tools | 2 | yes / yes | installs `?readonly=true` | gated | manual launch-gate check |
 | Prisma | developer-tools | 2 | yes / yes | none (only `workspace:admin`) | gated | manual launch-gate check |
 | Todoist | project-management | 2 | yes / yes | none — the server lists only `data:read_write`; the entry adds `data:delete` and leaves out `project:delete` | gated | manual launch-gate check, including two sessions held past the one-hour token expiry (refresh tokens rotate on every use) |
+| Gmail | calendar-email | 2 | **no** / yes — pre-registered client (`auth.mode`) | request `gmail.readonly` only | shown as "needs configuration" until an operator enters a client; Connect after | Google Workspace Developer Preview enrollment of the Cloud project; manual launch-gate check with an operator-registered client ([runbook](../../guides/oauth-app-registration/gmail.md)) |
+| Google Drive | file-storage | 2 | **no** / yes — pre-registered client (`auth.mode`) | request `drive.readonly` only | shown as "needs configuration" until an operator enters a client; Connect after | Google Workspace Developer Preview enrollment of the Cloud project; manual launch-gate check with an operator-registered client ([runbook](../../guides/oauth-app-registration/google-drive.md)) |
+| Google Calendar | calendar-email | 2 | **no** / yes — pre-registered client (`auth.mode`) | request the three documented read-only scopes | shown as "needs configuration" until an operator enters a client; Connect after | Google Workspace Developer Preview enrollment of the Cloud project; manual launch-gate check with an operator-registered client ([runbook](../../guides/oauth-app-registration/google-calendar.md)) |
+| Google Sheets | collaboration-docs | 2 | **no** / yes — pre-registered client (`auth.mode`) | request `spreadsheets.readonly` + `drive.readonly` | shown as "needs configuration" until an operator enters a client; Connect after | Google Workspace Developer Preview enrollment of the Cloud project; manual launch-gate check with an operator-registered client ([runbook](../../guides/oauth-app-registration/google-sheets.md)) |
+| Google Docs | collaboration-docs | 2 | **no** / yes — pre-registered client (`auth.mode`) | request `documents.readonly` + `drive.readonly` | shown as "needs configuration" until an operator enters a client; Connect after | Google Workspace Developer Preview enrollment of the Cloud project; manual launch-gate check with an operator-registered client ([runbook](../../guides/oauth-app-registration/google-docs.md)) |
+| Google Slides | collaboration-docs | 2 | **no** / yes — pre-registered client (`auth.mode`) | request `presentations.readonly` + `drive.readonly` | shown as "needs configuration" until an operator enters a client; Connect after | Google Workspace Developer Preview enrollment of the Cloud project; manual launch-gate check with an operator-registered client ([runbook](../../guides/oauth-app-registration/google-slides.md)) |
+| TickTick | project-management | 2 | yes / yes | none — `tasks:read` and `tasks:write` are the whole `scopes_supported` list and there is no read-only endpoint; the entry's `gotcha_copy` names the delete tools | gated | manual launch-gate check, including a `tools/list` against the 58-tool roster the card copy describes |
 
 Tier is provider *categorization* (see the tiers note above), never mint
 latency: tier 3 means the vendor gates clients by allowlist or waitlist, so
@@ -1091,11 +1098,17 @@ until the triangle is hovered.
 
 The triangle's copy comes from two places. A provider-side prerequisite is the
 registry's `prerequisite_copy` (English fallback) rendered through the
-slug-keyed `prerequisite_<slug>` catalog entries, kept in lockstep by a test;
+slug-keyed `prerequisite_<slug>` catalog entries (a slug's hyphens spelled as
+underscores, `google-drive` → `prerequisite_google_drive`), kept in lockstep by a test;
 a state-level caveat, like the setup explanation, is an ordinary catalog key
 (`needs_configuration_help`). Both ride under the one `before_you_connect`
 heading with the `prerequisites_for_provider` accessible name — a new state
-reuses them rather than adding a second tooltip component or heading.
+reuses them rather than adding a second tooltip component or heading. The one
+exception is the connected card's shared-grant tip beside **Disconnect**: it
+uses the `before_you_disconnect` heading and the `shared_signin_for_provider`
+name, because the card is already connected (#26890). Its copy is unchanged:
+who shares the grant, and that Disconnect keeps the shared token (revoke at the
+provider to force a new sign-in).
 
 ## Pre-registered OAuth clients
 
@@ -1122,7 +1135,17 @@ registered that exact URI in a vendor console Kiro Crew cannot reach, so changin
 it silently breaks each of their apps until they re-register. Retire a port by
 adding a provider, never by renumbering one;
 `test_connections_registry_auth.py` pins the shipped values so a change fails
-loudly.
+loudly. Shipped ports: GitHub 48101, Asana 48102, Google Drive 48103, Gmail
+48104, Google Calendar 48105, Google Sheets 48109, Google Docs 48110, Google
+Slides 48111; 48106–48108 are reserved by the Slack, HubSpot and Box runbooks.
+
+**Google Workspace.** The six Google entries (Gmail, Drive, Calendar, Sheets,
+Docs, Slides) are ordinary pre-registered entries, one card and one stored
+client each. Google lets one OAuth client carry many redirect URIs, so one
+user-owned Google client can serve all six: the user registers every card's
+redirect URI on it and pastes the same Client ID and secret into each card
+(the runbook index lists the URIs). Nothing in `oauth_clients.py` links the
+six; a shared Google client card is a separate, not-yet-decided change.
 
 **Where the client lives.** `connections/oauth_clients.py` resolves it with a
 fixed precedence — environment
@@ -1145,6 +1168,50 @@ client on a hand-authored stranger); `warm_runtime.spec_plan._registry_server_en
 for the premint path and answers `None` for an unconfigured provider so nothing
 warms against a vendor that will only say "unknown client". The mint spec copies
 the emitted entry verbatim, so the cold path inherits it.
+
+**Google consent links ask for offline access.** Google issues a refresh token
+only when the consent link carries `access_type=offline` (and re-issues one on a
+repeat consent only with `prompt=consent`). Neither engine sends either: KAS
+(`@kiro/agent`) and kiro-cli v2 build the authorize URL from fixed fields and
+have no config key for extra parameters, so a Google grant would expire after
+about an hour. Crew reads every consent URL before any surface shows it, so
+`acp/oauth_offline.py:with_google_offline_access` sets both parameters as the
+URL is read off the wire (the kiro-cli init drain and mid-turn frame, and the
+session handle's `_accept_oauth_request`, which is also where a KAS
+`_kiro/openExternalUrl` link lands). The Connections card mint, the warm table
+and the chat banner all read those URLs, so each gets the same link. Only a URL
+whose scheme is `https`, netloc exactly `accounts.google.com` and path exactly
+`/o/oauth2/v2/auth` changes; any existing `access_type` / `prompt` is replaced,
+and every other query segment (PKCE, `state`, `redirect_uri`, `scope`) keeps its
+bytes and order, so the engine's code-for-token swap is unchanged. Every other
+server's link is untouched. `security/exfil_oauth.py` already allows both names.
+`prompt=consent` is deliberate: Google then shows its consent screen on every
+re-authorization, even when a refresh token already exists. That is the accepted
+cost, because without it a repeat consent returns no new refresh token; do not
+drop the parameter to save the extra screen.
+
+**Which backend can use it.** The client reaches a chat's sign-in only through
+the remote MCP entry's `oauth` block, and only kiro-cli reads that block
+(`ACP_BACKENDS_REMOTE_MCP_OAUTH`, asked as
+`SessionCapabilities.honors_remote_mcp_oauth`). KAS takes its agents over a
+schema with no slot for it (#27711). The Connections mint itself runs on
+kiro-cli, so Connect stays on every backend and the grant it writes is real for
+kiro-cli chats; whether a KAS chat can use that grant is #24693 / #24677's
+question. So while the resolved `agent.acp_backend`
+lacks the capability (crewmate threads are not read: that field resolves to KAS on every install),
+`/api/connections/status` marks every pre-registered row `backendLacksOauth`,
+connected or not. The card states it without adding a tip or heading key
+(connection-card-caveat-tip): inside the tip beside Connect; on a connected row
+with a shared grant, inside the shared-grant tip beside Disconnect; on a
+connected row without one, as an "In chats" line in the status list beside
+"Connected since", since there it is a fact about the current state. The copy
+uses no backend name, no issue number and no remedy, in user terms: the tip
+says Connect still finishes and the sign-in is saved for chats that support it,
+while some chats cannot use this kind of sign-in yet; the row line says it is saved
+for chats that support it and some chats cannot use it yet. A Kiro CLI pick can itself load as KAS (the
+v3 relay), so naming a switch would point at a route that does not help.
+An unreadable config makes no
+claim.
 
 **What the user sees.** `get_visible_providers` shows a pre-registered entry
 regardless of `launch_gate_passed` (vendor approval still hides), because until

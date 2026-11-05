@@ -8,7 +8,7 @@
  * filter keeps its row while it is on, so it can always be turned off.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { render, fireEvent, screen, waitFor } from '@testing-library/react'
+import { render, fireEvent, screen, waitFor, act } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
@@ -64,8 +64,11 @@ Object.defineProperty(window, 'matchMedia', {
 
 import ChatSidebar from '../pages/ChatSidebar'
 import type { RootState } from '../store'
+import { crewModePreviewOn } from './crewModePreview'
+import { PREVIEW_CREW_MODE, setPreviewFlag } from '../utils/previewFlags'
 
 const CREW_ONLY = 'mc-session-crew-only'
+const RUNNING_ONLY = 'mc-session-running-only'
 
 /** Rows as a gateway without Crew Mode sends them: no `crew_mode_root`, no `crew_root`. */
 const PLAIN_SLOTS = [
@@ -117,7 +120,7 @@ async function openFilterMenu() {
   await screen.findByRole('menu')
 }
 
-const crewRow = () => screen.getAllByRole('menuitem').find(el => el.textContent?.startsWith('Crew Mode'))
+const crewRow = () => screen.getAllByRole('menuitem').find(el => el.textContent?.startsWith('Ultra Mode'))
 
 beforeEach(() => localStorage.clear())
 afterEach(() => vi.clearAllMocks())
@@ -127,7 +130,7 @@ const WITH_CREW_MEMBER = [
   { key: 'k-worker', title: 'the crew member', running: true, messages: 3, crew_root: 'k-root' },
 ]
 
-describe('a Crew Mode root\'s crew members', () => {
+describe('a Ultra Mode root\'s crew members', () => {
   it('stay out of the list and out of the Broadcast dialog', async () => {
     renderSidebar(WITH_CREW_MEMBER)
     await waitFor(() => expect(screen.queryByText('the crew chat')).not.toBeNull())
@@ -145,7 +148,7 @@ describe('a Crew Mode root\'s crew members', () => {
   })
 })
 
-describe('the Crew Mode filter offer', () => {
+describe('the Ultra Mode filter offer', () => {
   it('is absent, hint included, while no chat runs on the conductor', async () => {
     renderSidebar(PLAIN_SLOTS)
     await waitFor(() => expect(screen.queryByText('plain a')).not.toBeNull())
@@ -157,7 +160,7 @@ describe('the Crew Mode filter offer', () => {
     expect(screen.queryByTestId('filter-chip-crew')).toBeNull()
   })
 
-  it('appears with its hint once a Crew Mode chat is in the list', async () => {
+  it('appears with its hint once a Ultra Mode chat is in the list', async () => {
     renderSidebar(WITH_ROOT)
     await waitFor(() => expect(screen.queryByText('the crew chat')).not.toBeNull())
     await openFilterMenu()
@@ -186,7 +189,7 @@ describe('the Crew Mode filter offer', () => {
     expect(crewChip.className).toContain('crew-grad')
   })
 
-  it('keeps the row while the filter is stored on, so it can be turned off with no Crew Mode chat left', async () => {
+  it('keeps the row while the filter is stored on, so it can be turned off with no Ultra Mode chat left', async () => {
     localStorage.setItem(CREW_ONLY, '1')
     renderSidebar(PLAIN_SLOTS)
     // The filter chip is drawn for the active filter, as for any other.
@@ -199,3 +202,62 @@ describe('the Crew Mode filter offer', () => {
     await waitFor(() => expect(screen.queryByText('plain a')).not.toBeNull())
   })
 })
+
+describe('with the Ultra Mode preview off', () => {
+  // The file turns the preview on for every test; these turn it off again.
+  beforeEach(() => localStorage.removeItem(PREVIEW_CREW_MODE))
+
+  it('lists a crew member as an ordinary row and draws no crew card', async () => {
+    renderSidebar(WITH_CREW_MEMBER)
+    await waitFor(() => expect(screen.queryByText('the crew member')).not.toBeNull())
+    expect(screen.queryByText('the crew chat')).not.toBeNull()
+    expect(screen.queryByTestId('crew-eyebrow')).toBeNull()
+    expect(screen.queryByTestId('crew-ghost-badge')).toBeNull()
+  })
+
+  it.each(['1', '2'])('turns a stored Ultra Mode filter (%s) off: nothing narrowed, no chip, stored 0', async (stored) => {
+    localStorage.setItem(CREW_ONLY, stored)
+    renderSidebar(WITH_ROOT)
+    await waitFor(() => expect(screen.queryByText('plain a')).not.toBeNull())
+    expect(screen.queryByText('plain b')).not.toBeNull()
+    expect(screen.queryByText('the crew chat')).not.toBeNull()
+    expect(screen.queryByTestId('filter-chip-crew')).toBeNull()
+    expect(localStorage.getItem(CREW_ONLY)).toBe('0')
+    await openFilterMenu()
+    expect(crewRow()).toBeUndefined()
+    expect(screen.queryByTestId('filter-crew-hint')).toBeNull()
+
+    // Turning the preview on does not bring it back: it was turned off.
+    act(() => { setPreviewFlag(PREVIEW_CREW_MODE, true) })
+    await waitFor(() => expect(screen.queryByText('plain b')).not.toBeNull())
+    expect(screen.queryByTestId('filter-chip-crew')).toBeNull()
+    expect(localStorage.getItem(CREW_ONLY)).toBe('0')
+  })
+
+  it('leaves another filter\'s stored pause as is', async () => {
+    localStorage.setItem(CREW_ONLY, '1')
+    localStorage.setItem(RUNNING_ONLY, '2')
+    renderSidebar(WITH_ROOT)
+    // In progress alone is stored paused: it reads paused, the idle row stays.
+    const runningChip = await screen.findByTestId('filter-chip-running')
+    expect(runningChip.className.split(/\s+/)).toContain('border-dashed')
+    expect(screen.queryByText('plain b')).not.toBeNull()
+    expect(localStorage.getItem(RUNNING_ONLY)).toBe('2')
+    expect(localStorage.getItem(CREW_ONLY)).toBe('0')
+  })
+
+  it('does not count a stored paused Ultra Mode filter in a mix: another filter stored on narrows', async () => {
+    localStorage.setItem(CREW_ONLY, '2')
+    localStorage.setItem(RUNNING_ONLY, '1')
+    renderSidebar(WITH_ROOT)
+    const runningChip = await screen.findByTestId('filter-chip-running')
+    expect(runningChip.className.split(/\s+/)).not.toContain('border-dashed')
+    await waitFor(() => expect(screen.queryByText('plain b')).toBeNull())
+    expect(screen.queryByText('plain a')).not.toBeNull()
+    expect(localStorage.getItem(RUNNING_ONLY)).toBe('1')
+    expect(localStorage.getItem(CREW_ONLY)).toBe('0')
+  })
+})
+
+// Last, after the file's own hooks that clear localStorage: Crew Mode is a feature preview.
+crewModePreviewOn()

@@ -63,6 +63,58 @@ describe('createTrackpadSwipeReader', () => {
     expect(consumed).toBe(samples.length)
   })
 
+  it('a held tail ends at a turn back: the reversed swipe is a new drag at once, with no gap', () => {
+    const samples = [...run(20, 0, 6, 0), ...tail(20, 4, 5 * 16)]
+    const at = 5 * 16 + 4 * 16
+    samples.push(...run(-15, 0, 3, at + 16))
+    const { starts, verdicts } = feedAll(samples)
+    expect(verdicts.findIndex((v) => v.end)).toBe(8)
+    expect(starts).toEqual(['left', 'right'])
+  })
+
+  it('a held tail ends when the deltas grow again: two steps each 1.3x or more', () => {
+    // The tail decays 20 -> 6.6; then 8, 11, 15: new fingers, same way.
+    const samples = [...run(20, 0, 6, 0), ...tail(20, 5, 5 * 16)]
+    const at = 5 * 16 + 5 * 16
+    ;[8, 11, 15, 15].forEach((dx, i) => samples.push({ dx, dy: 0, mode: 0, ctrl: false, owned: false, at: at + (i + 1) * 16 }))
+    const { starts, verdicts } = feedAll(samples)
+    expect(starts).toEqual(['left', 'left'])
+    // The new drag starts at the second rise.
+    expect(verdicts.findIndex((v, i) => i > 8 && v.start)).toBe(samples.length - 2)
+  })
+
+  it('a pure decaying tail, however long, never starts a drag again; nor does one spike in it', () => {
+    const samples = [...run(20, 0, 6, 0), ...tail(20, 30, 5 * 16)]
+    expect(feedAll(samples).starts).toEqual(['left'])
+    const spiked = [...run(20, 0, 6, 0), ...tail(20, 6, 5 * 16)]
+    spiked.push({ dx: 12, dy: 0, mode: 0, ctrl: false, owned: false, at: 5 * 16 + 7 * 16 })
+    spiked.push({ dx: 4, dy: 0, mode: 0, ctrl: false, owned: false, at: 5 * 16 + 8 * 16 })
+    spiked.push({ dx: 3, dy: 0, mode: 0, ctrl: false, owned: false, at: 5 * 16 + 9 * 16 })
+    expect(feedAll(spiked).starts).toEqual(['left'])
+  })
+
+  it('a drag the page committed (rule C) holds the rest of its run, and a turn back starts a new one', () => {
+    const reader = createTrackpadSwipeReader(yes)
+    const starts: string[] = []
+    let moves = 0
+    const feed = (dx: number, at: number) => {
+      const v = reader.feed({ dx, dy: 0, mode: 0, ctrl: false, owned: false, at })
+      if (v.start) starts.push(v.start)
+      if (v.move !== undefined) moves += 1
+      return v
+    }
+    feed(20, 0)
+    feed(20, 16)
+    reader.commit()
+    // The same fingers, then their momentum: held, nothing moves.
+    feed(20, 32)
+    feed(16, 48)
+    expect(moves).toBe(2)
+    expect(starts).toEqual(['left'])
+    // Fingers back the other way, 16ms later: a new drag at once.
+    expect(feed(-10, 64).start).toBe('right')
+  })
+
   it('a single smaller delta mid-swipe is the fingers, not the tail', () => {
     const deltas = [10, 20, 24, 22, 25, 25]
     const samples = deltas.map((dx, i) => ({ dx, dy: 0, mode: 0, ctrl: false, owned: false, at: i * 16 }))
@@ -101,6 +153,44 @@ describe('createTrackpadSwipeReader', () => {
     expect(ends).toBe(0)
     // Nothing is dropped: the drag ends at the fingers' full travel.
     expect(moves[moves.length - 1]).toBeCloseTo(deltas.reduce((x, y) => x + y, 0), 6)
+  })
+
+  it('a creeping tail after a fast run ends the drag at its third tiny step, and moves nothing', () => {
+    // The shape measured in a recording of a small swipe: a fast stroke, then
+    // momentum that creeps 2px, 1px, 0, 2px... for a third of a second.
+    const deltas = [6, 20, 28, 30, 2, 1, 0, 2, 1, 1, 1]
+    const samples = deltas.map((dx, i) => ({ dx, dy: 0, mode: 0, ctrl: false, owned: false, at: i * 16 }))
+    const { verdicts, moves, consumed } = feedAll(samples)
+    // The third non-zero tiny step (the zero between does not break the streak).
+    expect(verdicts.findIndex((v) => v.end)).toBe(7)
+    expect(moves).toEqual([6, 26, 54, 84])
+    expect(consumed).toBe(samples.length)
+  })
+
+  it('a slow, uneven drag (a burst, then 1-2px steps) is never read as its tail: it follows every pixel', () => {
+    const deltas = [2, 6, 9, 2, 1, 1, 2, 1, 7, 1, 1, 1, 2, 5, 1, 1, 1, 1]
+    const samples = deltas.map((dx, i) => ({ dx, dy: 0, mode: 0, ctrl: false, owned: false, at: i * 16 }))
+    const { reader, ends } = feedAll(samples)
+    expect(ends).toBe(0)
+    reader.finish()
+    const applied = reader.takeFlush()
+    expect(applied ?? reader.summary().sumX).toBe(deltas.reduce((x, y) => x + y, 0))
+  })
+
+  it('a drag that is slow all along is never cut: it follows every pixel', () => {
+    const deltas = [2, 3, 4, 3, 2, 3, 4, 3, 2, 1, 3, 4]
+    const samples = deltas.map((dx, i) => ({ dx, dy: 0, mode: 0, ctrl: false, owned: false, at: i * 16 }))
+    const { moves, ends } = feedAll(samples)
+    expect(ends).toBe(0)
+    expect(moves[moves.length - 1]).toBe(deltas.reduce((x, y) => x + y, 0))
+  })
+
+  it('tiny steps followed by a bigger one were the fingers: they are applied with it', () => {
+    const deltas = [20, 24, 3, 2, 12]
+    const samples = deltas.map((dx, i) => ({ dx, dy: 0, mode: 0, ctrl: false, owned: false, at: i * 16 }))
+    const { moves, ends } = feedAll(samples)
+    expect(ends).toBe(0)
+    expect(moves).toEqual([20, 44, 61])
   })
 
   it('a gap release applies held-back deltas that never proved to be a tail', () => {
@@ -303,14 +393,35 @@ describe('createTrackpadSwipeReader with the finger phases', () => {
     expect(reader.lift()).toBe(false)
   })
 
-  it('a lift keeps what was held back as a possible tail: it was the fingers', () => {
+  it('fingers down: small or decaying steps are the fingers, never an inferred tail', () => {
     const reader = createTrackpadSwipeReader(yes, () => true)
+    // A 16px step, then three 3px steps (the creeping-tail shape), then a
+    // geometric decay (the momentum shape), all with the fingers on the pad.
+    const deltas = [16, 3, 3, 3, 3, 12, 9.6, 7.68, 6.14]
+    const vs = deltas.map((dx, i) => reader.feed({ dx, dy: 0, mode: 0, ctrl: false, owned: false, at: i * 16 }))
+    expect(vs.some((v) => v.end)).toBe(false)
+    expect(vs[vs.length - 1].move).toBeCloseTo(deltas.reduce((x, y) => x + y, 0), 6)
+    // The real lift ends it.
+    expect(reader.lift()).toBe(true)
+  })
+
+  it('a lift keeps what was held back as a possible tail: it was the fingers', () => {
+    // Without the phases: two shrinking steps are held back as a possible tail,
+    // and the shell's lift (heard late) applies them.
+    let down = false
+    const reader = createTrackpadSwipeReader(yes, () => down)
     for (const s of run(20, 0, 3, 0)) reader.feed(s)
-    // Two shrinking steps: held back, they might be a tail.
     reader.feed({ dx: 16, dy: 0, mode: 0, ctrl: false, owned: false, at: 48 })
     reader.feed({ dx: 12.8, dy: 0, mode: 0, ctrl: false, owned: false, at: 64 })
     expect(reader.lift()).toBe(true)
     expect(reader.takeFlush()).toBeCloseTo(88.8)
+    // With the fingers known down, the same steps are applied as they come.
+    down = true
+    const r2 = createTrackpadSwipeReader(yes, () => down)
+    for (const s of run(20, 0, 3, 0)) r2.feed(s)
+    r2.feed({ dx: 16, dy: 0, mode: 0, ctrl: false, owned: false, at: 48 })
+    expect(r2.feed({ dx: 12.8, dy: 0, mode: 0, ctrl: false, owned: false, at: 64 }).move).toBeCloseTo(88.8)
+    expect(r2.lift()).toBe(true)
   })
 
   it('fingers down still ends the drag past the hold cap', () => {

@@ -5,6 +5,9 @@ from __future__ import annotations
 import fnmatch
 import json
 
+import pytest
+from named_cases_helpers import named_cases
+
 from kiro_crew.cloud import aws, iam
 
 # The interactive Session Manager documents AWS ships today. These are the concrete
@@ -137,14 +140,33 @@ class TestPolicyDocument:
         assert st["Sid"] == "Ec2ManagedResourceMutateTagged"
         assert st["Condition"]["StringEquals"][f"aws:ResourceTag/{iam.MANAGED_TAG_KEY}"] == "true"
 
-    def test_put_role_policy_is_tag_scoped(self):
+    @pytest.mark.parametrize(
+        (),
+        [
+            *named_cases("test_put_role_policy_is_tag_scoped"),
+            *named_cases("test_tag_role_gated_on_existing_managed_tag"),
+        ],
+    )
+    def test_the_role_policy_statement_is_tag_scoped(self):
         # PutRolePolicy must be gated on aws:ResourceTag/kirocrew:managed=true (in
         # addition to the role-ARN prefix) so a leaked launcher credential can't
         # inline a policy onto a PRE-EXISTING, out-of-band, unbounded
         # kirocrew-ec2-* role. The role is tagged atomically at CreateRole, so the
-        # legitimate CFN deploy still satisfies it. PutRolePolicy + TagRole are
-        # MERGED into one statement (same Effect + role ARN + managed-tag
-        # Condition), so the action list holds exactly those two.
+        # legitimate CFN deploy still satisfies it.
+        #
+        # iam:TagRole carries the same gate, and is NOT unconditioned or in
+        # IamRoleForInstance: an unconditioned TagRole would let a leaked launcher
+        # credential tag a pre-existing UNBOUNDED kirocrew-ec2-* role
+        # kirocrew:managed=true and so satisfy the PutRolePolicy gate. With the
+        # aws:ResourceTag gate the launcher can only tag a role that is ALREADY
+        # managed; at CreateRole AWS evaluates it against the tags being applied,
+        # so the boundary-gated create still works, while a standalone re-tag of
+        # an unmanaged role is denied. (Both validated live with a least-privilege
+        # assumed-role principal.)
+        #
+        # PutRolePolicy + TagRole share one statement (same Effect + role ARN +
+        # managed-tag Condition, so permission-neutral), so the action list holds
+        # exactly those two.
         st = next(
             s
             for s in iam.policy_document()["Statement"]
@@ -153,8 +175,10 @@ class TestPolicyDocument:
         assert set(st["Action"]) == {"iam:PutRolePolicy", "iam:TagRole"}
         assert iam.ROLE_NAME_PREFIX in st["Resource"]
         assert st["Condition"]["StringEquals"][f"aws:ResourceTag/{iam.MANAGED_TAG_KEY}"] == "true"
-        # No dead iam:PermissionsBoundary condition (that key isn't in
-        # PutRolePolicy's request context — it would deny the call).
+        # No iam:PermissionsBoundary condition: that key is not in PutRolePolicy's
+        # request context, and AWS does NOT propagate it into the
+        # CreateRole-embedded TagRole check (validated live), so a boundary
+        # condition would DENY the legitimate least-privilege deploy.
         assert "iam:PermissionsBoundary" not in str(st["Condition"])
 
     def test_put_role_policy_not_tag_scoped_regression(self):
@@ -168,32 +192,6 @@ class TestPolicyDocument:
         assert (
             se.get(f"aws:ResourceTag/{iam.MANAGED_TAG_KEY}") == "true"
         ), f"{sid} lost its aws:ResourceTag/kirocrew:managed gate"
-
-    def test_tag_role_gated_on_existing_managed_tag(self):
-        # iam:TagRole must be gated on aws:ResourceTag/kirocrew:managed=true —
-        # NOT unconditioned, and NOT in IamRoleForInstance. If it were
-        # unconditioned, a leaked launcher credential could tag a pre-existing
-        # UNBOUNDED kirocrew-ec2-* role kirocrew:managed=true and thereby satisfy
-        # the PutRolePolicy tag gate, defeating it. The aws:ResourceTag
-        # gate means the launcher can only tag a role that is ALREADY managed —
-        # which, at CreateRole, AWS evaluates against the tags being applied (so
-        # the boundary-gated create still works), but a standalone re-tag of an
-        # unmanaged role is denied. (Both validated live with a least-privilege
-        # assumed-role principal.) TagRole now shares the merged
-        # IamPutRolePolicyAndTagRoleOnManaged statement with PutRolePolicy — same
-        # Effect + role ARN + Condition, so the merge is permission-neutral.
-        st = next(
-            s
-            for s in iam.policy_document()["Statement"]
-            if s["Sid"] == "IamPutRolePolicyAndTagRoleOnManaged"
-        )
-        assert set(st["Action"]) == {"iam:PutRolePolicy", "iam:TagRole"}
-        assert iam.ROLE_NAME_PREFIX in st["Resource"]
-        assert st["Condition"]["StringEquals"][f"aws:ResourceTag/{iam.MANAGED_TAG_KEY}"] == "true"
-        # It must NOT use iam:PermissionsBoundary — validated live that AWS does
-        # NOT propagate that key into the CreateRole-embedded TagRole check, so a
-        # boundary condition would DENY the legitimate least-priv deploy.
-        assert "iam:PermissionsBoundary" not in str(st["Condition"])
 
     def test_tag_role_not_unconditioned_anywhere(self):
         # Guard: iam:TagRole must NOT appear in any statement WITHOUT the

@@ -1,4 +1,4 @@
-import { lazy, memo, Suspense, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { lazy, memo, Suspense, useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { shallowEqual } from 'react-redux'
 import { useAppSelector, useAppDispatch, type RootState } from '../../store'
 import { clearFocusToolCallId, mcpAppKey } from '../../store/chatSlice'
@@ -24,6 +24,8 @@ import { countDiffStats } from '../../utils/diffLineCounts'
 import { isWaitToolTitle } from '../../utils/waitToolTitle'
 import { isSafePath } from '../../utils/safePath'
 import { usePathKind } from '../../hooks/usePathKind'
+import { ChatProjectDirCtx } from '../../components/markdown/contexts'
+import { joinProjectRelative } from '../../components/markdown/pathReferences'
 import McpAppFrame from '../../components/McpAppFrame'
 import DiffBlock, { extractFilePath as extractDiffHeaderPath } from '../../components/DiffBlock'
 import { presentToolDiff } from './toolDiff'
@@ -44,6 +46,8 @@ import { useToolCallsStartExpanded } from '../../hooks/useToolCallsStartExpanded
 import { InstantTip, useInstantTip } from '../../components/InstantTip'
 import { PILL_TIP_OPEN_CLASS, ToolCommandTip } from './ToolCommandTip'
 import { useReportRowActive } from './rowActivity'
+import { toolRailColor } from '../../utils/toolRailColor'
+import { useSecondClock } from '../../hooks/useSecondClock'
 
 // Lazy so the rarely-shown answers card stays out of the App chunk.
 const AskAnswersResult = lazy(() => import('./AskAnswersCard').then(m => ({ default: m.AskAnswersResult })))
@@ -167,6 +171,30 @@ function StatusRow({ show, snap = false, children }: { show: boolean; snap?: boo
       )}
     </AnimatePresence>
   )
+}
+
+/** The live shell line's "Ns" figure. Its own component so the 1 Hz clock
+ *  repaints this text, not the whole tool row. */
+function ShellElapsedLabel({ anchor }: { anchor: number }) {
+  const secs = useSecondClock(now => Math.max(0, Math.floor((now - anchor) / 1000)))
+  return <>{fmtDurationParts([[Math.floor(secs / 60), 'minute'], [secs % 60, 'second']], { dropZero: true })}</>
+}
+
+/** Remaining time on a sleeping `wait`, ticking in its own leaf.
+ *
+ *  Ceil so the label reads "1s" for the final fractional second instead of
+ *  flashing "0s" while the tool is still asleep, and clamp at zero: the sleep
+ *  can outlast its own deadline by up to one poll interval, and a negative
+ *  countdown is worse than a parked "0s". Minutes are dropped below 60s but
+ *  the seconds place is NEVER dropped above it, so the label steps 2m 1s →
+ *  2m 0s → 59s instead of collapsing to a bare "2m" for one tick. Same
+ *  reasoning as fmtTurnElapsed's "2m 0s" comment. */
+function WaitRemainingLabel({ deadlineTs }: { deadlineTs: number }) {
+  const secs = useSecondClock(now => Math.max(0, Math.ceil((deadlineTs * 1000 - now) / 1000)))
+  const label = secs < 60
+    ? fmtUnit(secs, 'second', { maximumFractionDigits: 0 })
+    : fmtDurationParts([[Math.floor(secs / 60), 'minute'], [secs % 60, 'second']])
+  return <>{i18nT('pages.chat.toolCallLine.wait_remaining', { time: label })}</>
 }
 
 type ToolCallLineProps = { message: ChatMessage; running: boolean; slot?: string; onFileOpen?: (path: string) => void; disclosure?: boolean; disclosureKey?: string; onDisclosureChange?: (key: string, expanded: boolean) => void; appInPanel?: boolean; onOpenApp?: (toolCallId: string) => void;
@@ -413,7 +441,13 @@ function selectToolRowView(s: RootState, slot: string | undefined, message: Chat
   // to it (`Read src/a.ts`, not the absolute path). Reads THIS row's slot —
   // a split-view pane must not borrow the active session's tree.
   const projectDir = waitSlotKey ? (slotRowByKey(s.dashboard.slots, waitSlotKey)?.project || undefined) : undefined
-  return { ...entry, isDone, mcpApp, isNewestRow, runMembers, approvedByUser, hasPendingPerm, runOutputs, waitSlotKey, waitState, focused, projectDir }
+  // A pending security-rule override card (DenyOverrideDropdown): the gate already
+  // refused this call, so the pill must not still read as "Running". The card's
+  // redacted command is what it names; empty for every other row.
+  const denyOverrideCommand = hasPendingPerm && perm?.meta?.deny_override_rule
+    ? String(perm.meta?.deny_override_command || '') || label
+    : ''
+  return { ...entry, isDone, mcpApp, isNewestRow, runMembers, approvedByUser, hasPendingPerm, denyOverrideCommand, runOutputs, waitSlotKey, waitState, focused, projectDir }
 }
 
 type ToolRowView = ReturnType<typeof selectToolRowView>
@@ -503,7 +537,7 @@ function ToolCallLineBody({ message, running: _running, slot, onFileOpen, disclo
   const noticeServer = (message.meta?.mcp_server as string | undefined) || ''
 
   // Every store fact this row draws, in ONE subscription (selectToolRowView).
-  const { effectiveId, isDone, isRejected, isAutoDenied, autoDenyReason, autoDenyNotice, purpose, input, output, inputCut, outputCut, auto, ts, executionStartedAt, hasEntry, isShell, toolKind, toolName, trustedToolName, mcpServer, mcpApp, isNewestRow, runMembers, approvedByUser, hasPendingPerm, runOutputs, waitSlotKey, waitState, focused, projectDir } =
+  const { effectiveId, isDone, isRejected, isAutoDenied, autoDenyReason, autoDenyNotice, purpose, input, output, inputCut, outputCut, auto, ts, executionStartedAt, hasEntry, isShell, toolKind, toolName, trustedToolName, mcpServer, mcpApp, isNewestRow, runMembers, approvedByUser, hasPendingPerm, denyOverrideCommand, runOutputs, waitSlotKey, waitState, focused, projectDir } =
     useAppSelector(s => selectToolRowView(s, slot, message, toolCallId, label), sameToolRowView)
 
   const isRun = runMembers.length > 1
@@ -560,16 +594,27 @@ function ToolCallLineBody({ message, running: _running, slot, onFileOpen, disclo
   // identity that resolves per RUNTIME rather than per ACP session; the cure is
   // tracked in https://github.com/kirodotdev/KiroCrew/issues/2347.
   const showWaitCountdown = !!waitState && waitState.deadline_ts > 0
-  const [activityNow, setActivityNow] = useState(() => Date.now())
-  // Seed from execution_started_at (persisted in Redux, survives remount) when
-  // available — it records when execution actually began after approval. Falls
-  // back to ts (tool issuance time) then Date.now() for brand-new calls.
-  const activityStartRef = useRef(executionStartedAt || ts || Date.now())
-  const wasPendingRef = useRef(hasPendingPerm)
-  // Tracks whether approval resolved during this mount — once set, the ts
-  // re-anchor effect is suppressed so the post-approval Date.now() anchor
-  // is not overwritten by the pre-approval ts.
-  const approvalResolvedRef = useRef(false)
+  // When this mount first saw the row, the anchor of last resort.
+  const [mountedAt] = useState(() => Date.now())
+  // When an approval resolved during this mount. Once set it outranks the
+  // pre-approval `ts`, which would inflate the clock by the whole approval wait.
+  // Stamped during render on the pending -> resolved transition, not in an
+  // effect: an effect runs after the first resolved frame commits, and that
+  // frame would measure from `ts` and flash the activity line for an approval
+  // that waited past the threshold. The durable anchor arrives separately:
+  // the approval_resolved frame sets execution_started_at on the tool entry
+  // in Redux (see sseActivityEvent), which survives remount.
+  const [approvalResolvedAt, setApprovalResolvedAt] = useState<number | null>(null)
+  const [prevPending, setPrevPending] = useState(hasPendingPerm)
+  if (prevPending !== hasPendingPerm) {
+    setPrevPending(hasPendingPerm)
+    if (prevPending && !hasPendingPerm) setApprovalResolvedAt(Date.now())
+  }
+  // The elapsed clock's start. execution_started_at is persisted in Redux,
+  // survives remount, and records when execution actually began after
+  // approval, so it wins. Then the in-mount approval instant, then the tool
+  // log ts (tool issuance time), then the mount for brand-new calls.
+  const activityStart = executionStartedAt || approvalResolvedAt || ts || mountedAt
   const [endingWait, setEndingWait] = useState(false)
   // The refused End-wait press. Previously the button only rolled back to its
   // idle label, so a transport failure looked like a press that did nothing.
@@ -601,76 +646,21 @@ function ToolCallLineBody({ message, running: _running, slot, onFileOpen, disclo
     })
   }, [waitSlotKey, waitState, endingWait])
 
-  useEffect(() => {
-    if (hasPendingPerm) {
-      wasPendingRef.current = true
-      return
-    }
-    if (wasPendingRef.current) {
-      const now = Date.now()
-      activityStartRef.current = now
-      wasPendingRef.current = false
-      approvalResolvedRef.current = true
-      setActivityNow(now)
-      // The durable anchor is stamped server-side: the approval_resolved
-      // frame sets execution_started_at on the tool entry in Redux (see
-      // sseActivityEvent), which the re-anchor effect below reads on remount.
-    }
-  }, [hasPendingPerm])
-
-  // When the tool log timestamp arrives (or on remount with a persisted ts),
-  // re-anchor the elapsed clock so it reflects real wall time since the tool
-  // started — not time since the component mounted. Skip if approval just
-  // resolved in this mount — the post-approval Date.now() is the correct anchor
-  // for approved commands (the pre-approval ts would inflate the timer by the
-  // entire approval wait). Also skip if executionStartedAt is set — it persists
-  // in Redux and is the authoritative anchor that survives remount.
-  useEffect(() => {
-    if (executionStartedAt) {
-      activityStartRef.current = executionStartedAt
-    } else if (ts && !hasPendingPerm && !approvalResolvedRef.current) {
-      activityStartRef.current = ts
-    }
-  }, [ts, hasPendingPerm, executionStartedAt])
-
-  useEffect(() => {
-    if (!liveShellActivity && !showWaitCountdown) return
-    const timer = window.setInterval(() => setActivityNow(Date.now()), 1000)
-    return () => window.clearInterval(timer)
-  }, [liveShellActivity, showWaitCountdown])
-
-  const elapsedSeconds = Math.max(0, Math.floor((activityNow - activityStartRef.current) / 1000))
-  const elapsedLabel = fmtDurationParts(
-    [[Math.floor(elapsedSeconds / 60), 'minute'], [elapsedSeconds % 60, 'second']],
-    { dropZero: true },
-  )
   // Live only, and only once the command has run long enough to be worth a
   // line. The clock is anchored to the tool's own start (execution_started_at,
   // then the log ts), so a row that mounts mid-command — the virtualizer
   // re-mounting a scrolled-back row, a reload — shows the line at once when
   // the command is already past the threshold rather than waiting another
   // ten ticks.
-  const showShellActivity = liveShellActivity && elapsedSeconds >= SHELL_ACTIVITY_MIN_SECS
+  // The row subscribes to a BOOLEAN of the shared clock, so it re-renders once,
+  // when the threshold passes; the figure itself ticks in ShellElapsedLabel.
+  const showShellActivity = useSecondClock(
+    now => now - activityStart >= SHELL_ACTIVITY_MIN_SECS * 1000,
+    liveShellActivity,
+  ) && liveShellActivity
   const activityLabel = isAskTool
     ? i18nT('pages.chat.toolCallLine.ask_wait_status')
     : i18nT('pages.chat.activityViewer.running')
-
-  // Remaining time on the sleeping wait. Ceil so the label reads "1s" for the
-  // final fractional second instead of flashing "0s" while the tool is still
-  // asleep, and clamp at zero: the sleep can outlast its own deadline by up to
-  // one poll interval, and a negative countdown is worse than a parked "0s".
-  const remainingSeconds = waitState
-    ? Math.max(0, Math.ceil((waitState.deadline_ts * 1000 - activityNow) / 1000))
-    : 0
-  // Minutes are dropped below 60s but the seconds place is NEVER dropped above
-  // it, so the label steps 2m 1s → 2m 0s → 59s instead of collapsing to a bare
-  // "2m" for one tick. Same reasoning as fmtTurnElapsed's "2m 0s" comment.
-  const remainingLabel = remainingSeconds < 60
-    ? fmtUnit(remainingSeconds, 'second', { maximumFractionDigits: 0 })
-    : fmtDurationParts([
-      [Math.floor(remainingSeconds / 60), 'minute'],
-      [remainingSeconds % 60, 'second'],
-    ])
 
   // Inline expansion state.
   //
@@ -853,7 +843,16 @@ function ToolCallLineBody({ message, running: _running, slot, onFileOpen, disclo
       : diffView?.mode === 'summary'
         ? { ...diffView, opensCard: false }
         : null
-  const probeEnabled = !!filePath && isSafePath(filePath) && !!onFileOpen
+  // What the Open pill probes and opens: a relative tool path joined to the
+  // transcript's project, the same rule the chips and diff headers follow, so
+  // it is never resolved against the gateway's own directory. The context,
+  // not the slot row's `projectDir`: the host provides it only for a chat
+  // confirmed to run on this machine (`useChatProjectDir`), and a remote
+  // chat's project names a folder on another machine. `filePath` stays as
+  // written for the label.
+  const transcriptProjectDir = useContext(ChatProjectDirCtx)
+  const openPath = filePath ? joinProjectRelative(filePath, transcriptProjectDir) : null
+  const probeEnabled = !!openPath && isSafePath(openPath) && !!onFileOpen
   // The existence probe shares the transcript-wide cache and batch the markdown
   // chips and diff headers use, so a file a chip already resolved costs no
   // request and N pills for one path ask once.
@@ -864,7 +863,7 @@ function ToolCallLineBody({ message, running: _running, slot, onFileOpen, disclo
   // being there, and a failed-probe notice on every tool row would be noise
   // about a link nobody clicked. Opening the file itself reports its own
   // failure when pressed.
-  const fileExists = usePathKind(probeEnabled ? filePath : null) === 'file'
+  const fileExists = usePathKind(probeEnabled ? openPath : null) === 'file'
   const showFileOpen = probeEnabled && fileExists
 
   const Icon = isDone
@@ -879,13 +878,15 @@ function ToolCallLineBody({ message, running: _running, slot, onFileOpen, disclo
   // Match the panel's left rail to the pill's status — keeps the visual chain
   // (icon → bar → content) coherent across auto-denied (amber), user-rejected
   // (red), done (green), pending-approval (yellow), and running (accent) states.
-  // Inline style with color-mix() rather than Tailwind opacity classes — the
-  // project's Tailwind config doesn't compile `border-{color}/N` opacity
-  // variants for theme colors.
-  const barColor = isDone
-    ? (isRejected ? 'var(--danger)' : isAutoDenied ? 'var(--warn)' : 'var(--ok)')
-    : hasPendingPerm ? 'var(--warn)' : 'var(--accent)'
-  const barStyle = `color-mix(in srgb, ${barColor} 70%, transparent)`
+  // The mapping is shared with the SDK's ToolCallPill (utils/toolRailColor.ts). This
+  // row only counts rejected / auto-denied once the whole run is done, like the
+  // icon above, so it passes those flags gated on `isDone`.
+  const barStyle = toolRailColor({
+    isRejected: isDone && !!isRejected,
+    isAutoDenied: isDone && !!isAutoDenied,
+    isDone: !!isDone,
+    hasPendingPerm: !!hasPendingPerm,
+  })
   // A blocked call's Output leads with the LOCALIZED sentence and follows with
   // the rule that fired. Leading with the rule would hand every non-English
   // reader untranslated English (and a bare regex is not an explanation in any
@@ -992,13 +993,16 @@ function ToolCallLineBody({ message, running: _running, slot, onFileOpen, disclo
   // command itself, so that case keeps the raw first line. Raw mode never
   // digests: that mode asked for the exact command.
   const pillLabelText = useMemo(() => {
+    // Refused by a security rule and waiting on the person's choice: say so.
+    void langGen // the blocked label is localized
+    if (denyOverrideCommand) return i18nT('components.denyOverride.pill_blocked', { command: denyOverrideCommand })
     // `derived.kind` is the shell signal here: a historical row has no
     // `is_shell` on its log entry, but the derivation read the same title.
     if (!simplified || derived.derived || derived.kind !== 'execute') return displayLabel
     if (displayLabel !== derived.title) return displayLabel // the purpose is showing
     const digest = deriveShellSummary(derived.rawTitle, { bareCommand: true })
     return digest && (digest.includes(', ') || digest.includes(' → ')) ? digest : displayLabel
-  }, [displayLabel, simplified, derived])
+  }, [displayLabel, simplified, derived, denyOverrideCommand, langGen])
   // Hover reveals the verbatim command / incoming title whenever the pill shows
   // a substitute for it — a derived title, a digest, or the purpose.
   const pillLabelTitle = pillLabelText === derived.rawTitle ? undefined : (derived.rawTitle || undefined)
@@ -1269,13 +1273,13 @@ function ToolCallLineBody({ message, running: _running, slot, onFileOpen, disclo
           both sides of its guess. The wrapper's row gap is therefore 0 and this
           margin is the whole separation: 8px on an unwrapped row, where it was
           the wrapper's 4px before. */}
-      {showFileOpen && filePath && (
+      {showFileOpen && openPath && (
         <button
           className="pi-morph shrink-0 inline-flex items-center gap-1 ms-2 px-1.5 py-0.5 rounded font-mono text-[12px] leading-5 bg-bg-hover text-muted hover:text-accent hover:bg-accent/10 cursor-pointer transition-colors focus-ring-accent"
           style={{ marginTop: '1px' }}
-          onClick={(e) => { e.stopPropagation(); onFileOpen!(filePath) }}
-          title={i18nT('pages.chat.toolCallLine.open_in_side_panel', { path: filePath })}
-          aria-label={i18nT('pages.chat.toolCallLine.open_in_side_panel', { path: filePath })}
+          onClick={(e) => { e.stopPropagation(); onFileOpen!(openPath) }}
+          title={i18nT('pages.chat.toolCallLine.open_in_side_panel', { path: openPath })}
+          aria-label={i18nT('pages.chat.toolCallLine.open_in_side_panel', { path: openPath })}
         >
           <span className="max-w-[240px] truncate">{basename}</span>
           <SidePanelGlyph size={12} className="shrink-0" />
@@ -1382,7 +1386,7 @@ function ToolCallLineBody({ message, running: _running, slot, onFileOpen, disclo
         <div className="ml-5 mt-1 text-[12px] leading-5 text-muted" data-testid="shell-activity">
           <span className="sr-only" aria-live="polite">{activityLabel}</span>
           <span aria-hidden="true" className="tabular-nums font-mono">
-            {activityLabel} · {elapsedLabel}
+            {activityLabel} · <ShellElapsedLabel anchor={activityStart} />
           </span>
         </div>
       </StatusRow>
@@ -1398,7 +1402,7 @@ function ToolCallLineBody({ message, running: _running, slot, onFileOpen, disclo
               stops the label jittering as it ticks, but a mono FACE next to the
               pill's body-font label reads as a different kind of text. */}
           <span aria-hidden="true" className="tabular-nums">
-            {i18nT('pages.chat.toolCallLine.wait_status')} · {i18nT('pages.chat.toolCallLine.wait_remaining', { time: remainingLabel })}
+            {i18nT('pages.chat.toolCallLine.wait_status')} · {waitState && <WaitRemainingLabel deadlineTs={waitState.deadline_ts} />}
           </span>
           {/* stopPropagation is defensive, not load-bearing for the pill: this
               row is a SIBLING of the pill button, not inside its click target.

@@ -37,22 +37,33 @@ export const BARE_LOGIN_COMMAND = 'kiro-cli login'
 export default function KiroPrerequisiteRelockNotice({
   owner,
   exactCommandElsewhere,
+  command,
 }: {
   owner: boolean
   exactCommandElsewhere: boolean
+  /** The enterprise gate's own sign-in command; set, the card sends the owner to a new window. */
+  command?: string
 }) {
   return createPortal(
     (
       <div
         role="alert"
         data-testid="enterprise-relock-notice"
-        className="pointer-events-none fixed left-safe right-safe top-safe-offset-4 z-[10002] mx-auto w-[calc(100%-2rem)] max-w-xl select-none rounded-xl border border-accent/60 bg-card p-4 shadow-2xl"
+        className="pointer-events-none fixed left-safe right-safe top-safe-offset-4 z-[10002] mx-auto w-[calc(100%-2rem-var(--safe-area-x)-var(--safe-area-x))] max-w-xl select-none rounded-xl border border-accent/60 bg-card p-4 shadow-2xl"
       >
         <p className="flex items-center gap-2 text-[12px] font-bold uppercase tracking-[0.16em] text-accent">
           <ShieldCheck className="lucide-inline" />
           {i18nT('components.kiroPrerequisiteGate.sign_in_required')}
         </p>
-        {owner && exactCommandElsewhere ? (
+        {owner && command ? (
+          // The enterprise command names this install's launcher and the start URL:
+          // too long to retype from a card nobody can select. Same route as the
+          // exact-command case below: a new window opens on the sign-in screen,
+          // which shows it with a copy button.
+          <p data-testid="enterprise-relock-new-window" className="mt-1 text-sm font-semibold leading-relaxed text-text-strong">
+            {i18nT('components.kiroPrerequisiteGate.relock_enterprise_new_window')}
+          </p>
+        ) : owner && exactCommandElsewhere ? (
           <p className="mt-1 text-sm font-semibold leading-relaxed text-text-strong">
             {i18nT('components.kiroPrerequisiteGate.relock_exact_command_hint')}
           </p>

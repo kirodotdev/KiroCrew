@@ -27,6 +27,8 @@ from kiro_crew.agent_discovery import (  # noqa: F401
 from kiro_crew.agent_spec_format import (  # noqa: F401
     NATIVE_SKILL_ALIAS_PREFIX,
     SKILL_VIEW_PROJECTION_CEILING,
+    count_authored_agent_files,
+    skill_view_ceiling,
     volatile_env_keys,
 )
 from kiro_crew.atomic_write import atomic_write, on_event_loop  # noqa: F401
@@ -55,13 +57,14 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _CHURNING_KEYS_PER_GROUP_MAX,
         _CHURNING_LABEL_MAX_CHARS,
         _COLLECTED_ENDS,
-        _COLLECTING_THREAD,
         _DRAIN_BATCH_PAUSE_SECS,
         _DRAIN_IDLE_BATCHES,
         _DRAIN_MAX_BATCHES,
         _END_PRUNE_GUARD,
         _END_PRUNE_REQUESTED,
         _END_PRUNE_RUNNING,
+        _EXIT_REAPER_WAIT_SECS,
+        _EXITING,
         _LEGACY_RECLAIM_MIN_AGE_SECS,
         _PROJECTION_PRUNE_WORK_LIMIT,
         _PRUNE_MAX_RECLAIMS_PER_RUN,
@@ -78,7 +81,6 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _ensure_projection_reaper,
         _migrate_legacy_side_files,
         _move_sidecar,
-        _note_collection,
         _note_env_values,
         _projection_prune_candidates,
         _prune_excluding_older_publishers,
@@ -86,7 +88,9 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _prune_start_offset,
         _read_alias_spec_bounded,
         _reap_collected_projections,
+        _reaper_alive,
         _reclaim_prune_candidate,
+        _release_queued_leases_at_exit,
         _run_requested_end_prunes,
         _sweep_orphan_alias_locks,
         _sweep_orphan_sidecars,
@@ -104,6 +108,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _MANAGED_SETTING,
         _PREVIOUS_INHERITANCE,
         _SETTINGS_READ_RETRY_PAUSES,
+        _UNREADABLE_SETTINGS_ERRORS,
         _inheritance_preference,
         _restore_inheritance,
         _settings,
@@ -121,7 +126,10 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.acp.skill_projection_parts.preparation import (  # noqa: F401
         _CEILING_FALLBACK_WARNED,
         _CEILING_FALLBACK_WARNED_LOCK,
+        _contested_names,
         _count_projected_aliases,
+        _has_spec_pin,
+        _pinned_source,
         _projection_enabled,
         _warn_ceiling_fallback_once,
         prepare_native_skill_projection,
@@ -259,6 +267,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
 
 if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     import asyncio  # noqa: F401
+    import atexit  # noqa: F401
     import errno  # noqa: F401
     import functools  # noqa: F401
     import gc  # noqa: F401

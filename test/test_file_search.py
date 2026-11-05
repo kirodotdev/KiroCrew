@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from aiohttp import web
@@ -18,7 +18,7 @@ def _make_app() -> web.Application:
     app.router.add_get("/api/file-search", api_file_search)
     # api_file_search reads app["state"].file_indexes for the index fast path
     state = MagicMock()
-    state.file_indexes.get.return_value = None  # no index → always use walk fallback
+    state.file_indexes.ensure = AsyncMock(return_value=None)  # no index → walk fallback
     # A MagicMock attribute reads as a non-empty configured owner id, which no
     # caller can equal, so the owner gate would answer every row alike.
     state.owner_id = ""

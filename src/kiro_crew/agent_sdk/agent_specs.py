@@ -130,3 +130,54 @@ def authored_spec_toolless_verdict(agent: str, work_dir: Any = None) -> bool | N
         for candidate in agent_spec_candidates(directory, agent)
     )
     return False if present else None
+
+
+def sweep_kas_launch_snapshots(boot_time: float) -> bool:
+    """Remove the KAS MCP launch snapshots last written a week before *boot_time*.
+
+    ``acp.kas_env_launch.sweep_stale``: the gateway's boot path starts it once,
+    on a background task, with the time it took after the previous run's agent
+    processes were ended. Blocking file I/O.
+
+    Skipped, and ``False`` returned, while ``kiro_session_pids.txt`` still names
+    another owner process: every KAS runtime records itself there under the pid
+    of the process that started it (a gateway or a ``kirocrew chat`` CLI on the
+    same data home), and ``cleanup_orphaned_sessions`` has already removed every
+    entry it could confirm dead, so an owner left there may still run a session
+    whose launcher reads a snapshot this sweep would delete. This process's own
+    entries do not count. An unreadable ledger raises, so the caller skips too.
+    """
+    import os
+
+    from kiro_crew.acp import kas_env_launch
+    from kiro_crew.session_pid import retained_gateway_pids
+
+    others = retained_gateway_pids() - {os.getpid()}
+    if others:
+        import logging
+
+        logging.getLogger(__name__).info(
+            "KAS launch snapshot sweep skipped: %d other owner process(es) still hold "
+            "agent runtimes on this data home",
+            len(others),
+        )
+        return False
+    kas_env_launch.sweep_stale(boot_time)
+    return True
+
+
+def session_spec_grants(agent: str) -> set[str] | None:
+    """The ``allowedTools`` entries and governed ``autoApprove`` refs of *agent*'s
+    user-level spec, or ``None`` when none reads. Blocking.
+
+    A project checkout's spec is never read: a cloned repository could plant one
+    that grants what the session's own spec withholds."""
+    from kiro_crew.acp import session_mcp
+    from kiro_crew.acp.kas_auto_approve import auto_approve_refs
+
+    spec = session_mcp.agent_spec_snapshot(agent, work_dir=None)
+    if not isinstance(spec, dict):
+        return None
+    allowed = spec.get("allowedTools")
+    listed = allowed if isinstance(allowed, list) else []
+    return {e for e in listed if isinstance(e, str)} | set(auto_approve_refs(spec))

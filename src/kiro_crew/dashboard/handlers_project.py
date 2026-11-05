@@ -2,6 +2,7 @@
 
 from aiohttp import web
 
+from kiro_crew.dashboard.handlers.taskrunner import parse_run_name
 from kiro_crew.security import (
     redact_and_truncate,
     redact_credentials,
@@ -80,12 +81,20 @@ async def api_project_update(request):
         data = await request.json()
     except (LookupError, RecursionError, ValueError):
         return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
+    if not isinstance(data, dict):
+        return web.json_response(
+            {"error": "body must be a JSON object", "code": "body_not_object"}, status=400
+        )
     run = tr._runs.get(pid) if tr else None
     if not run or _is_hidden(run):
         raise web.HTTPNotFound(text=f"Project {pid} not found")
     if "name" in data:
-        run.name = data["name"]
-        await tr._apersist_runs()
+        name, name_err = parse_run_name(data["name"])
+        if name is None:
+            return web.json_response({"error": name_err, "code": "invalid_name"}, status=400)
+        if name:  # a blank name is no change, like a body with no name
+            run.name = name
+            await tr._apersist_runs()
     return web.json_response(_run_to_project(run))
 
 
@@ -97,20 +106,4 @@ async def api_project_delete(request):
             raise web.HTTPNotFound(text=f"Project {pid} not found")
     except WorkflowInitializing as exc:
         return web.json_response({"error": str(exc), "code": exc.code}, status=503)
-    return web.json_response({"ok": True})
-
-
-async def api_activities_list(request):
-    return web.json_response([])
-
-
-async def api_comment_add(request):
-    return web.json_response({"ok": True}, status=201)
-
-
-async def api_comments_list(request):
-    return web.json_response([])
-
-
-async def api_comment_delete(request):
     return web.json_response({"ok": True})

@@ -132,21 +132,55 @@ def kirocrew_bin() -> str:
        manager has no meaningful working directory, so a relative override
        would produce an invalid ``ExecStart`` / ``ProgramArguments`` and the
        service would fail to start.
-    2. ``shutil.which("kirocrew")`` — the installed console script.
-    3. ``sys.argv[0]`` — for development installs where ``kirocrew`` isn't on
+    2. The ``kirocrew`` console script beside the running interpreter — the
+       install doing the installing. ``~/.local/bin/kirocrew`` is a shared,
+       mutable name that any other install (a source clone's ``install.sh`` or
+       ``kirocrew setup``) may repoint later; a service that persisted it would
+       silently start running that other install on its next restart. Skipped
+       when it lies in a linked git worktree or an AppImage runtime mount,
+       which are reaped out from under a persisted path.
+    3. ``shutil.which("kirocrew")`` — the installed console script, for an
+       install whose console script does not sit beside its interpreter.
+    4. ``sys.argv[0]`` — for development installs where ``kirocrew`` isn't on
        the global PATH.
     """
     override = os.environ.get("KIROCREW_SERVICE_BIN", "").strip()
     if override:
         return os.path.abspath(override)
-    # Neither automatic source may name a versioned tree in a persisted
-    # ExecStart: a later update's prune can remove it after this process exits.
+    # No automatic source may name a versioned tree in a persisted ExecStart:
+    # a later update's prune can remove it after this process exits.
     from kiro_crew.platform.tree_liveness import through_stable_link
 
+    running = _running_install_bin()
+    if running is not None:
+        return through_stable_link(running)
     found = shutil.which("kirocrew")
     if found:
         return through_stable_link(found)
     return through_stable_link(os.path.realpath(sys.argv[0]))
+
+
+def _running_install_bin() -> str | None:
+    """The console script beside ``sys.executable``, or ``None``.
+
+    The interpreter's ``bin/`` directory is used as-is, not resolved: a venv's
+    ``bin/python3`` is a symlink to the base interpreter, and resolving it
+    would leave the venv entirely.
+    """
+    from kiro_crew.config.paths import _in_ephemeral_tree, _in_linked_git_worktree
+
+    sibling = Path(sys.executable).parent / (
+        "kirocrew.exe" if os.name == "nt" else "kirocrew"
+    )
+    try:
+        if not (sibling.is_file() and os.access(sibling, os.X_OK)):
+            return None
+        resolved = sibling.resolve()
+    except OSError:
+        return None
+    if _in_linked_git_worktree(resolved) or _in_ephemeral_tree(resolved):
+        return None
+    return str(sibling)
 
 
 def service_environment(home: str) -> "dict[str, str]":
@@ -393,9 +427,20 @@ def service_path(home: str) -> str:
     user-local bin dirs (``~/.local/bin``) and POSIX defaults are
     prepended in case the installer's ``$PATH`` is missing them.
     Duplicates are removed while preserving order.
+
+    On Linux the mise shims dir (:func:`_mise_shims_dir`) is also required,
+    right after ``~/.local/bin`` and ahead of the system dirs. The unit keeps
+    this PATH until the next ``service install``, so a Node that mise
+    installs or re-pins later is found only through the shims; without them a
+    ``#!/usr/bin/env node`` adapter runs the system Node. A shims dir the
+    installer's ``$PATH`` lists behind ``/usr/bin`` moves up to that slot,
+    which is the order ``mise activate`` gives an interactive shell. A missing
+    dir on PATH is harmless. launchd's PATH is left as it was.
     """
-    required = [
-        f"{home}/.local/bin",
+    required = [f"{home}/.local/bin"]
+    if sys.platform.startswith("linux") and (shims := _mise_shims_dir(home)):
+        required.append(shims)
+    required += [
         "/usr/local/bin",
         "/usr/bin",
         "/bin",
@@ -404,6 +449,24 @@ def service_path(home: str) -> str:
     # dict.fromkeys dedupes on first occurrence and preserves insertion order,
     # so the required prefixes keep their precedence over the installer's $PATH.
     return ":".join(dict.fromkeys(required + env_path))
+
+
+def _mise_shims_dir(home: str) -> str | None:
+    """mise's shims dir for *home*, or ``None`` when it is not one absolute dir.
+
+    The data dir comes from :func:`kiro_crew.env.mise_data_dir` (``MISE_DATA_DIR``,
+    then ``XDG_DATA_HOME``, then ``~/.local/share/mise``), read from the
+    installer's environment like the rest of this PATH. A relative value, or one
+    carrying a PATH separator, is refused: the service has no meaningful cwd, and
+    a ``:`` would split into extra PATH entries.
+    """
+    # Deferred: kiro_crew.env pulls in heavier optional imports than this module.
+    from kiro_crew.env import mise_data_dir
+
+    shims = os.path.join(mise_data_dir(home), "shims")
+    if ":" in shims or "\0" in shims or not os.path.isabs(shims):
+        return None
+    return shims
 
 
 class Platform(enum.Enum):

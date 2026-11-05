@@ -226,14 +226,24 @@ async def _run_oneshot_model(request: web.Request, key: str, prompt: str) -> str
     if state is None:
         raise RuntimeError("session manager unavailable")
 
-    # The owner's click is waiting on this answer; an app token or internal
-    # caller is not a person (kiro_crew.start_priority).
-    provider, _is_new, _resumed = await state.sessions.get_or_create(
-        key, agent="kirocrew-lite", start_priority=owner_start_priority(request)
-    )
-    try:
+    from kiro_crew.shared_crew.admission_gate import actor_budget
+    from kiro_crew.shared_crew.turn_gate import run_admitted_or_raise
+
+    async def _call() -> str:
+        # The owner's click is waiting on this answer; an app token or internal
+        # caller is not a person (kiro_crew.start_priority).
+        provider, _is_new, _resumed = await state.sessions.get_or_create(
+            key, agent="kirocrew-lite", start_priority=owner_start_priority(request)
+        )
         return await stream_and_collect(
             provider, prompt, approval_policy=ToolApprovalPolicy.REJECT_ALL
+        )
+
+    try:
+        # Shared Crew fair admission, charged to the person who clicked; a
+        # refusal raises ``TurnRefused`` (a RuntimeError naming the limit).
+        return await run_admitted_or_raise(
+            _call(), session_key=key, text=prompt, budget_key=actor_budget(request)
         )
     finally:
         try:

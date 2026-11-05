@@ -51,7 +51,8 @@ member: the class binds it by name (``kiro_crew.session``), so it reads and writ
 manager's own state on the instance, and a patch of the member on the class or
 on an instance reaches every caller.
 
-Instance fields written: ``_cleanup``, ``_injection_probe``, ``_subagent_probe``.
+Instance fields written: ``_cleanup``, ``_idle_compaction_probe``, ``_injection_probe``,
+``_subagent_probe``.
 
 Instance fields read: none.
 """
@@ -64,7 +65,7 @@ import time
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any, cast
 
-from kiro_crew import platform_compat, shutdown_event
+from kiro_crew import platform_compat, released_sessions, shutdown_event
 from kiro_crew.config.paths import config_dir
 from kiro_crew.executors import maintenance_executor, subprocess_executor
 from kiro_crew.member_memory_auth import prune_legacy_member_pid_bindings
@@ -89,6 +90,7 @@ from kiro_crew.session_pid import (
     _kill_confirmed_and_writeback,
     _periodic_pid_sweep,
     _prune_stale_session_pid_files,
+    _prune_stale_session_token_files,
     _rss_mb_from_tree,
     cleanup_orphaned_session_roots,
     find_orphan_mcp_candidates,
@@ -131,6 +133,7 @@ def _cleanup_deps(self: SessionManager) -> CleanupDeps:
         cleanup_orphaned_session_roots=lambda: cleanup_orphaned_session_roots(),
         cleanup_stale_sandbox_profiles=lambda: cleanup_stale_sandbox_profiles(data_home=data_home),
         prune_session_pid_mappings=lambda: _prune_stale_session_pid_files(),
+        prune_session_token_mappings=lambda: _prune_stale_session_token_files(),
         prune_member_pid_bindings=lambda: prune_legacy_member_pid_bindings(),
         sweep_session_staging_temps=lambda: sweep_session_staging_temps(),
         # Same resolved home as the sandbox sweep, for the same reason: the
@@ -188,6 +191,7 @@ def _cleanup_boundary(self: SessionManager) -> SessionCleanup:
                     CleanupHook("rss_threshold", self._rss_threshold_check),
                     CleanupHook("stuck_turn", self._stuck_turn_check),
                     CleanupHook("bg_drain_reap", self._bg_drain_reap_hook),
+                    CleanupHook("released_sessions", self._released_sessions_hook),
                 ]
             )
         service = SessionCleanup(
@@ -263,6 +267,34 @@ def _has_pending_injection(self: SessionManager, key: str) -> bool:
     return bool(probe(key))
 
 
+def set_idle_compaction_probe(
+    self: SessionManager, fn: "Callable[[str], str | None] | None"
+) -> None:
+    """Install the "what keeps *key*'s chat from being idle?" predicate.
+
+    ``session.idle_compaction`` consults it in the step it commits an idle
+    compaction: the dashboard owns the signals the manager cannot see -- the
+    slot's running or reserved turn and its queue, an open question card, a
+    pending approval, an armed auto-nudge or monitor loop. The probe answers a
+    short reason, or ``None`` when nothing is live. Synchronous by contract, so
+    it can be read with no await before the commit. ``None`` uninstalls it.
+    """
+    self._idle_compaction_probe = fn
+
+
+def _idle_compaction_blocker(self: SessionManager, key: str) -> str | None:
+    """Answer the installed idle probe; with none installed, refuse.
+
+    Fails closed, unlike the two probes above: an idle compaction is optional
+    work, so a manager with no dashboard to ask has no evidence the chat is idle.
+    A raising probe propagates; the coordinator reads that as busy too.
+    """
+    probe = getattr(self, "_idle_compaction_probe", None)
+    if probe is None:
+        return "no_activity_probe"
+    return probe(key)
+
+
 # ── Idle cleanup ──
 
 # ── Watchdog hooks ──
@@ -281,6 +313,15 @@ async def _expire_idle_hook(self: SessionManager) -> None:
 async def _bg_drain_reap_hook(self: SessionManager) -> None:
     """Reap drained background runtimes during a cleanup tick."""
     await self._cleanup_boundary()._bg_drain_reap_hook()
+
+
+async def _released_sessions_hook(self: SessionManager) -> None:
+    """Delete the released sessions' records that are due.
+
+    The body is ``released_sessions.sweep_on_tick``, in the module that owns the
+    entries, not in ``SessionCleanup``.
+    """
+    await released_sessions.sweep_on_tick(self)
 
 
 async def _orphan_mcp_hook(self: SessionManager) -> None:

@@ -288,7 +288,7 @@ describe('shell exit closes a side-panel terminal tab', () => {
   })
 
   afterEach(() => {
-    __resetPanelTabs()
+    act(() => { __resetPanelTabs() })
     closeBottomTerminal()
     vi.useRealTimers()
     vi.restoreAllMocks()
@@ -296,10 +296,13 @@ describe('shell exit closes a side-panel terminal tab', () => {
 
   /** Dial the session a panel tab minted, handing back the registry's socket. */
   function dial(sessionId: string): MockWebSocket {
-    ensureTerminalConnection(sessionId, fakeTerm(), fakeFit())
-    const ws = WS_INSTANCES[WS_INSTANCES.length - 1]
-    ws.simulateOpen()
-    return ws
+    let ws: MockWebSocket | undefined
+    act(() => {
+      ensureTerminalConnection(sessionId, fakeTerm(), fakeFit())
+      ws = WS_INSTANCES[WS_INSTANCES.length - 1]
+      ws.simulateOpen()
+    })
+    return ws!
   }
 
   it('drops the tab and leaves the rest of the strip standing', () => {

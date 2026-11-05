@@ -22,6 +22,7 @@ import time
 from unittest.mock import patch
 
 import pytest
+from named_cases_helpers import named_cases
 
 from kiro_crew import _spawn_exec_shim as shim
 from kiro_crew import sandbox
@@ -50,8 +51,20 @@ def _clear_shim_cache():
 
 
 class TestCttyArgvContract:
-    @posix_only
-    def test_no_limits_profile_alone_still_skips_the_interpreter_hop(self):
+    @pytest.mark.parametrize(
+        (),
+        [
+            *named_cases(
+                "test_no_limits_profile_alone_still_skips_the_interpreter_hop", marks=[posix_only]
+            ),
+            # Nothing to do post-exec: no reason to pay an exec + startup.
+            *named_cases(
+                "test_policy_free_profile_skips_the_interpreter_hop",
+                marks=[pytest.mark.skipif(os.name != "posix", reason="POSIX resource limits only")],
+            ),
+        ],
+    )
+    def test_a_policy_free_profile_skips_the_interpreter_hop(self):
         # Unchanged behaviour, and the reason the terminal got nothing from the
         # shim before: an interactive shell carries no rlimits and no OOM bias, so
         # without a ctty request there is nothing to run post-exec.

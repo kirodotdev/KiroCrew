@@ -1,9 +1,6 @@
 """SessionManager allocation: ``get_or_create`` and the checks an allocation passes.
 
-Among them: cancellation during a start, the model an allocation resolves and reports (including
-``_resolve_agent_model``'s guarded read of an agent spec), dead-provider cleanup and the
-``is_provider_alive`` verdict, warm-pool claims, concurrent allocations, the session state an
-allocation records, and the per-key ending fence that holds or refuses an allocation while that key
+Includes the per-key ending fence that holds or refuses an allocation while that key
 is being torn down.
 """
 
@@ -33,13 +30,8 @@ class TestCancelRaceCondition:
     async def test_cancel_during_start_kills_provider(self, cfg):
         """CancelledError during provider.start() dispatches the process kill.
 
-        The kill goes through _dispatch_hard_kill (non-blocking submission to
-        the subprocess executor) rather than an inline _sync_kill_provider:
-        the inline form blocks the event loop (os.waitpid / taskkill), and
-        resume prefetch makes this cancellation handler routine — a focus
-        flip mid-session/load cancels the loading task. Submission is
-        synchronous, so the kill is guaranteed dispatched before the
-        re-raise.
+        Through _dispatch_hard_kill, not an inline _sync_kill_provider, which blocks
+        the loop; submission is synchronous, so the kill is dispatched before the re-raise.
         """
         mock_provider = AsyncMock()
         mock_provider.start = AsyncMock(side_effect=asyncio.CancelledError)
@@ -395,18 +387,10 @@ class TestGetAgent:
 class TestTheEndingFenceAdmitsNothingUnderTheKey:
     """``ending_key``: the per-key sibling of the closing check, at every door of the registry.
 
-    A holder that is ending a run -- the cron reaper, ``cancel()`` -- raises the
-    fence around its kill passes. While it is up, a claim or a cold start under
-    the key is HELD at the front door of ``get_or_create``: it waits for the fence
-    to lift and then proceeds (the sub-agent completion injector's cold start
-    under the parent key, racing the reap, is delivered after it -- never
-    dropped). A cold start that was already inside ``provider.start()`` when the
-    fence went up -- nothing published yet, so no pass could see it -- is refused
-    at registration when its start returns, fence up or lifted, the provider it
-    started is hard-killed by the closing manager's own path, and the same call
-    then waits for the lift and allocates again. ``SessionEndingError`` reaches a
-    caller only when the fence outlives the wait bound, or from
-    ``open_task_session``, which is refused rather than held.
+    While the fence is up, a claim or cold start under the key is held at the front
+    door of ``get_or_create`` until it lifts. A start already inside ``provider.start()``
+    is refused at registration, its provider hard-killed, and the call allocates again.
+    ``SessionEndingError`` surfaces only past the wait bound, or from ``open_task_session``.
     """
 
     @staticmethod
@@ -772,11 +756,8 @@ class TestTheEndingFenceAdmitsNothingUnderTheKey:
     async def test_a_claim_waiting_on_the_busy_session_s_turn_is_not_a_spawn_in_flight(self, cfg):
         """A reservation is not a process: a claim parked on the live session's turn permit started nothing.
 
-        The sub-agent completion's claim of its busy parent -- ``get_or_create``
-        blocked on the turn semaphore -- holds a reservation for the whole wait.
-        The ending caller's read must not name it: it is held or woken, never
-        refused at a registration it never reaches, and no provider of its own
-        is started. Its reservation reads as an allocation, not as a spawn.
+        A claim blocked on the turn semaphore holds a reservation for the whole wait,
+        but it starts no provider, so it reads as an allocation, not a spawn.
         """
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
         provider, _, _ = await mgr.get_or_create("k1")  # the turn: permit held
@@ -805,15 +786,8 @@ class TestTheEndingFenceAdmitsNothingUnderTheKey:
     ):
         """The turn's ordinary release can reach the waiter before the ending caller's reset pops the session.
 
-        A claim blocked on the busy parent's turn permit passed the fence check
-        at the claim door before its wait began; the wait can outlast a fence
-        rising. If the busy turn then ends normally -- its permit released
-        before the ending caller's reset has popped the session -- the waiter
-        acquires the permit with the session still in the map. Without the
-        recheck it is handed the session and runs a turn under a key being
-        ended, which the reset then tears down under it. The fence is met
-        again after the acquire, under the lock: the waiter releases the permit
-        and is held at the front door until the lift, then lands.
+        The waiter passed the fence check before its wait, so the fence is checked
+        again after the acquire, under the lock: it releases the permit and is held.
         """
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
         provider, _, _ = await mgr.get_or_create("k1")  # the turn: permit held
@@ -965,14 +939,8 @@ class TestResolveAgentModelResolution:
     def test_resolve_agent_model_refuses_an_oversized_spec(self, tmp_path, monkeypatch):
         """The scan reads through the hardened, size-capped reader.
 
-        ``~/.kiro/agents`` is user-writable and shared with kiro-cli, so an
-        oversized "agent config" there must be refused rather than slurped into
-        memory — and this resolution is CACHED and reused on every later
-        lookup, so it is not a rare corner.
-
-        Exercised with a LOWERED cap rather than a real 50 MB fixture; the
-        property is that the cap is consulted, not its value. Paired with the
-        A-side below so the refusal cannot pass by breaking every read.
+        ``~/.kiro/agents`` is user-writable. The cap is lowered instead of a 50 MB
+        fixture; the A-side below shows the refusal does not come from breaking every read.
         """
         import json
 
@@ -1165,6 +1133,72 @@ class TestGetOrCreatePoolClaim:
         assert mgr.has_session("dashboard:slot2")
         await mgr.close_all()
 
+    @pytest.mark.asyncio
+    async def test_resume_skips_a_stored_cwd_in_an_earlier_process_scratch(self, cfg, tmp_path):
+        """A resume never starts in an earlier process's scratch tree, which the sandbox hides.
+
+        The stored cwd outside the scratch root is still used; one inside it is used only
+        when it lies in the tree this spawn shares.
+        """
+        root = tmp_path / "scratch"
+        old_tree = root / "runtime-old" / "checkout"
+        project = tmp_path / "project"
+        for directory in (old_tree, project):
+            directory.mkdir(parents=True)
+        seen: dict[str, object] = {}
+        base = _mock_provider_factory()
+
+        def factory(session_key=None, agent=None, channel_id=None, **kwargs):
+            seen[session_key] = kwargs.get("cwd")
+            return base(session_key, agent, channel_id, **kwargs)
+
+        mgr = SessionManager(cfg, provider_factory=factory)
+        stored = {"k-old": str(old_tree), "k-project": str(project), "k-shared": str(old_tree)}
+        with (
+            patch("kiro_crew.agent_scratch.scratch_root", return_value=root),
+            patch("kiro_crew.sandbox_tiers.configured_sandbox_mode", return_value="auto"),
+            patch("kiro_crew.sandbox_tiers._clamp_sandbox_mode", side_effect=lambda mode: mode),
+            patch.object(mgr._session_map, "get", return_value="sid-resume-test"),
+            patch.object(mgr._session_map, "get_cwd", side_effect=stored.__getitem__),
+            patch.object(mgr._session_map, "get_provider", return_value="acp"),
+        ):
+            for key in ("k-old", "k-project"):
+                await mgr.get_or_create(key)
+                mgr.release(key)
+            await mgr.get_or_create("k-shared", shared_scratch=old_tree.parent)
+            mgr.release("k-shared")
+        assert not seen["k-old"]
+        assert seen["k-project"] == str(project)
+        assert seen["k-shared"] == str(old_tree)
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_resume_keeps_a_stored_scratch_cwd_when_the_sandbox_is_off(self, cfg, tmp_path):
+        """With the sandbox off nothing is hidden, so a stored scratch cwd is still used."""
+        root = tmp_path / "scratch"
+        old_tree = root / "runtime-old" / "checkout"
+        old_tree.mkdir(parents=True)
+        seen: dict[str, object] = {}
+        base = _mock_provider_factory()
+
+        def factory(session_key=None, agent=None, channel_id=None, **kwargs):
+            seen[session_key] = kwargs.get("cwd")
+            return base(session_key, agent, channel_id, **kwargs)
+
+        mgr = SessionManager(cfg, provider_factory=factory)
+        with (
+            patch("kiro_crew.agent_scratch.scratch_root", return_value=root),
+            patch("kiro_crew.sandbox_tiers.configured_sandbox_mode", return_value="off"),
+            patch("kiro_crew.sandbox_tiers._clamp_sandbox_mode", side_effect=lambda mode: mode),
+            patch.object(mgr._session_map, "get", return_value="sid-resume-test"),
+            patch.object(mgr._session_map, "get_cwd", return_value=str(old_tree)),
+            patch.object(mgr._session_map, "get_provider", return_value="acp"),
+        ):
+            await mgr.get_or_create("k-off")
+            mgr.release("k-off")
+        assert seen["k-off"] == str(old_tree)
+        await mgr.close_all()
+
 
 class TestGetOrCreateDeadProvider:
     """Test get_or_create when existing session has a dead provider."""
@@ -1182,6 +1216,41 @@ class TestGetOrCreateDeadProvider:
         mgr.release("k1")
         assert new_provider is not provider
         await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_a_dead_provider_evicted_mid_turn_cannot_unlock_the_successors_turn(self, cfg):
+        """Turn T still holds the permit of a session whose provider died. The
+        next claim evicts it and starts a successor, whose turn B is running when
+        T finally releases by key: that late release must not free B's permit."""
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        t_done = asyncio.Event()
+        t_holds = asyncio.Event()
+
+        async def _turn() -> None:
+            await mgr.get_or_create("k1")
+            t_holds.set()
+            await asyncio.wait_for(t_done.wait(), timeout=30)
+            mgr.release("k1")
+
+        t_task = asyncio.ensure_future(_turn())
+        try:
+            await await_until(t_holds, what="T holds the first session")
+            dead = mgr._sessions["k1"].provider
+            dead.is_alive = lambda: False
+            dead.is_process_alive = lambda: False
+
+            successor_provider, is_new, _ = await mgr.get_or_create("k1")  # B's turn
+            assert is_new and successor_provider is not dead
+            successor = mgr._sessions["k1"]
+            t_done.set()
+            await await_until(t_task, what="T's late release")
+            assert successor.semaphore.locked(), "T's release unlocked B's turn on the successor"
+            mgr.release("k1")
+            assert not successor.semaphore.locked()
+        finally:
+            t_done.set()
+            await await_until(asyncio.gather(t_task, return_exceptions=True), what="T")
+            await mgr.close_all()
 
 
 class TestConcurrentAccess:
@@ -1237,4 +1306,131 @@ class TestSessionState:
         # last_used should be recent (within last second)
         # flake-ok: pre-existing real-clock check that release stamped last_used within 1 s; a worker stall over 1 s reds it; moved verbatim; tracked for a de-flake pass
         assert time.monotonic() - sess.last_used < 1.0
+        await mgr.close_all()
+
+
+class TestRealClaimJoinsAnInFlightEagerStart:
+    """A real claim that arrives while the key's eager (speculative) start is
+    still starting waits for that start and claims its session, instead of
+    cold-starting a second process for the same key. When the eager start
+    fails, the claim cold-starts as before."""
+
+    @staticmethod
+    def _gated_factory(gate: asyncio.Event, providers: list, fail_first: bool = False):
+        base = _mock_provider_factory()
+
+        def factory(session_key=None, agent=None, channel_id=None, **kwargs):
+            m = base(session_key, agent, channel_id, **kwargs)
+            failing = fail_first and not providers
+
+            async def _start():
+                await gate.wait()
+                if failing:
+                    raise RuntimeError("eager start failed")
+
+            m.start = _start
+            providers.append(m)
+            return m
+
+        return factory
+
+    @staticmethod
+    def _real_claim_parked(mgr: SessionManager, key: str, providers: list) -> bool:
+        # On the old path the real claim spawns its own provider (a second
+        # factory call). On the joined path it waits on the eager start's
+        # announcement. Either way it has stopped moving.
+        if len(providers) >= 2:
+            return True
+        entry = getattr(mgr._allocation_state, "speculative_starts", {}).get(key)
+        return bool(entry is not None and getattr(entry[0], "_waiters", None))
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("priority", ["fg", "bg"])
+    async def test_a_send_during_an_eager_start_spawns_one_process(self, cfg, priority):
+        from kiro_crew.start_priority import StartPriority
+
+        start_priority = StartPriority(priority)
+        gate = asyncio.Event()
+        providers: list = []
+        mgr = SessionManager(cfg, provider_factory=self._gated_factory(gate, providers))
+        key = "dashboard:join-eager"
+
+        eager = asyncio.create_task(
+            mgr.get_or_create(key, speculative=True, start_priority=start_priority)
+        )
+        await async_wait_until(lambda: len(providers) == 1, describe=lambda: len(providers))
+        real = asyncio.create_task(mgr.get_or_create(key, start_priority=start_priority))
+        await async_wait_until(
+            lambda: self._real_claim_parked(mgr, key, providers),
+            describe=lambda: len(providers),
+        )
+
+        gate.set()
+        eager_provider, eager_new, _ = await await_until(eager, what="eager start")
+        assert eager_new is True
+        mgr.release(key)
+        real_provider, real_new, _ = await await_until(real, what="real claim")
+
+        assert len(providers) == 1, "the send spawned a second process"
+        assert real_provider is eager_provider
+        # The eager start left the first-turn flag armed for the real message.
+        assert real_new is True
+        assert mgr.count == 1
+        assert mgr._allocation_state.speculative_starts == {}
+        mgr.release(key)
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_a_foreground_send_does_not_wait_on_a_background_eager_start(self, cfg):
+        """A BACKGROUND eager start waits in every start queue at BACKGROUND: a
+        person's FOREGROUND claim must not inherit that position, so it
+        cold-starts at its own priority as before."""
+        from kiro_crew.start_priority import StartPriority
+
+        providers: list = []
+        gate = asyncio.Event()
+        gate.set()
+        mgr = SessionManager(cfg, provider_factory=self._gated_factory(gate, providers))
+        key = "dashboard:join-eager-background"
+        queued = asyncio.Event()  # never set: the eager start is still waiting
+        mgr._allocation_state.speculative_starts[key] = (queued, StartPriority.BACKGROUND)
+
+        real = asyncio.create_task(mgr.get_or_create(key, start_priority=StartPriority.FOREGROUND))
+        provider, is_new, _ = await await_until(real, what="real claim", timeout=10.0)
+
+        assert not queued.is_set()
+        assert providers == [provider]
+        assert is_new is True
+        mgr.release(key)
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_a_send_cold_starts_when_the_eager_start_fails(self, cfg):
+        gate = asyncio.Event()
+        providers: list = []
+        mgr = SessionManager(
+            cfg, provider_factory=self._gated_factory(gate, providers, fail_first=True)
+        )
+        key = "dashboard:join-eager-fails"
+
+        with patch.object(SessionManager, "_dispatch_hard_kill"):
+            eager = asyncio.create_task(mgr.get_or_create(key, speculative=True))
+            await async_wait_until(lambda: len(providers) == 1, describe=lambda: len(providers))
+            real = asyncio.create_task(mgr.get_or_create(key))
+            await async_wait_until(
+                lambda: self._real_claim_parked(mgr, key, providers),
+                describe=lambda: len(providers),
+            )
+
+            gate.set()
+            with pytest.raises(RuntimeError, match="eager start failed"):
+                await await_until(eager, what="eager start")
+            real_provider, real_new, _ = await await_until(real, what="real claim")
+
+        assert len(providers) == 2
+        assert real_provider is providers[1]
+        assert real_new is True
+        assert mgr.count == 1
+        assert mgr._allocation_state.speculative_starts == {}
+        mgr.release(key)
         await mgr.close_all()

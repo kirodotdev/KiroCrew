@@ -263,7 +263,7 @@ async function main() {
     await page.waitForTimeout(800)
     assert(await page.getByText('Main chat is closed. Open it again to message Tree haiku.').isVisible(), 'closed line names the crew member')
     assert((await page.getByTestId('crew-worker-reopen-root').textContent()).trim() === 'Open main chat', 'gate button: Open main chat')
-    assert((await page.getByTestId('crew-back-to-conductor').textContent()).includes('Open main chat'), 'breadcrumb button: Open main chat')
+    assert((await page.getByTestId('crew-back-to-conductor').count()) === 0, 'breadcrumb has no button: the Crew tab bar is the way back')
     assert(await page.getByTestId('crew-breadcrumb-root').textContent().then(t => t.includes('Crew Haiku Sea Trees Rain')), 'breadcrumb keeps the saved conductor title')
     const box = page.getByTestId('crew-steer-composer').getByRole('textbox').first()
     assert((await box.getAttribute('aria-disabled')) === 'true', 'box is off under a closed conductor')

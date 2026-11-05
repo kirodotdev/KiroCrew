@@ -13,7 +13,14 @@ plain round-robin; a lane whose weight is 3 gets three picks per round,
 spread out rather than in a burst. Inside a lane the order stays FIFO by
 ``created_at``, which is what keeps one session's own ordering intact.
 
-Everything here is pure: no store, no clock, no manager.
+Shared Crew replaces "one lane per root session" with "one lane per person"
+when its admission gate is on: :func:`set_lane_resolver` installs a lookup from
+a root session key to ``principal:<id>`` (the person whose work is running in
+that session), so the same round-robin is fair across people instead of
+across sessions, and one person's many sessions share one lane. A key the
+resolver does not know keeps its session lane.
+
+Everything else here is pure: no store, no clock, no manager.
 """
 
 from __future__ import annotations
@@ -40,6 +47,22 @@ MAX_WEIGHT = 64
 T = TypeVar("T")
 
 
+#: Prefix of a lane keyed by a Shared Crew principal rather than a session.
+PRINCIPAL_LANE_PREFIX = "principal:"
+
+_LANE_RESOLVER: Callable[[str], str | None] | None = None
+
+
+def set_lane_resolver(resolver: Callable[[str], str | None] | None) -> None:
+    """Install (or with None remove) the root-session-to-principal lane lookup.
+
+    The resolver must be an in-memory read: it runs on the gateway loop inside
+    every pick. It returns a principal id or None.
+    """
+    global _LANE_RESOLVER
+    _LANE_RESOLVER = resolver
+
+
 def lane_key_for(session_key: str | None) -> str:
     """The lane a ROOT row with *session_key* belongs to.
 
@@ -50,6 +73,14 @@ def lane_key_for(session_key: str | None) -> str:
     guessed into somebody else's.
     """
     key = str(session_key or "")
+    resolver = _LANE_RESOLVER
+    if resolver is not None and key and not key.startswith(SUBAGENT_PREFIX):
+        try:
+            principal = resolver(key)
+        except Exception:
+            principal = None
+        if principal:
+            return PRINCIPAL_LANE_PREFIX + principal
     if not key or key in _SYSTEM_KEYS or key.startswith(_SYSTEM_PREFIXES):
         return SYSTEM_LANE
     return key

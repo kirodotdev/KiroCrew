@@ -44,6 +44,7 @@ COMMAND_GROUPS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
             ("gateway-pid", "Print the PID holding this home's gateway lock (JSON)"),
             ("logs", "Show gateway logs"),
             ("token", "Print a dashboard access URL with auth token"),
+            ("open", "Open the desktop app on a session (kirocrew:// deep link)"),
             ("logout", "Revoke all active dashboard sessions"),
             ("ledger-sweep", "List finished session/work ledgers; --purge deletes them"),
             ("update", "Update Kiro Crew to the latest version"),

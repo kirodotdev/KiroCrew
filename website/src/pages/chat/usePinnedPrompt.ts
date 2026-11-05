@@ -1,4 +1,4 @@
-import { type RefObject, useCallback, useEffect, useRef, useState } from 'react'
+import { type Dispatch, type RefObject, type SetStateAction, useCallback, useEffect, useRef, useState } from 'react'
 
 import type { DisplayItem } from './types'
 import type { PasteBlock } from '../../utils/pasteTokens'
@@ -18,6 +18,7 @@ import {
 } from '../../utils/pinnedPrompt'
 import { attachUserScrollIntent } from '../../utils/searchScroll'
 import { glideDurationMs, runConvergingGlide } from '../../utils/convergingGlide'
+import { afterSlideSettles, releaseReadingPosition, slideSettling } from '../../utils/panelSlide'
 
 /**
  * Whether `node` is one of the transcript's own row wrappers. Rows are never
@@ -91,7 +92,19 @@ export function usePinnedPrompt({ scrollerRef, requiresMountedHandoff = false }:
   const pinFoldRef = useRef<HTMLDivElement | null>(null)
   const pinCardRef = useRef<HTMLDivElement | null>(null)
   const pinEnabledRef = useRef(true)
-  const [pinned, setPinned] = useState<PinnedPromptState | null>(null)
+  const [pinned, setPinnedState] = useState<PinnedPromptState | null>(null)
+  // Every writer goes through this setter, so the ref holds the newest value
+  // React will commit. The recompute runs on every scroll and list change and
+  // usually lands on the state it already has; comparing here schedules nothing
+  // then, where an updater returning `prev` still makes React re-run the page
+  // body to discover it whenever the page has other work pending.
+  const pinnedRef = useRef<PinnedPromptState | null>(null)
+  const setPinned = useCallback<Dispatch<SetStateAction<PinnedPromptState | null>>>((action) => {
+    const next = typeof action === 'function' ? action(pinnedRef.current) : action
+    if (Object.is(next, pinnedRef.current)) return
+    pinnedRef.current = next
+    setPinnedState(next)
+  }, [])
   const [pinExpanded, setPinExpanded] = useState(false)
   // Collapsed card height — the hand-off line is derived from it, so it must be
   // known even while nothing is pinned (no card mounted to measure). Seeded with
@@ -121,6 +134,14 @@ export function usePinnedPrompt({ scrollerRef, requiresMountedHandoff = false }:
   const updatePinnedPrompt = useCallback(() => {
     const el = scrollerRef.current
     if (!el) return
+    // A side panel sliding, or the transcript settling its place after it
+    // (utils/panelSlide): the rows rewrap and the reading position is put
+    // back within the frame, so a read now can see one in-between layout.
+    // The prompt in a reflowing column measured taller for that frame, failed
+    // the tall-prompt gate below and dropped the card, which came back a frame
+    // later: the flash at the top of the chat. The reader has not moved, so
+    // the card holds and is worked out once, when the place has settled.
+    if (slideSettling(el)) { afterSlideSettles(el, () => updatePinnedPromptRef.current()); return }
     // Measure with getBoundingClientRect (viewport-relative) so the origin
     // matches the scroller regardless of which ancestor is the items'
     // offsetParent — consistent with useScrollManager, which also deliberately
@@ -412,7 +433,9 @@ export function usePinnedPrompt({ scrollerRef, requiresMountedHandoff = false }:
       maxH,
       stripUncovered,
     }))
-  }, [requiresMountedHandoff, scrollerRef])
+  }, [requiresMountedHandoff, scrollerRef, setPinned])
+  const updatePinnedPromptRef = useRef(updatePinnedPrompt)
+  updatePinnedPromptRef.current = updatePinnedPrompt
   // The card grows at rest with no scroll to run the recompute — the hover peek
   // and the expansion — and the strip test above reads the card's live bottom,
   // so it has to re-run when that bottom moves. Observe the card's size for as
@@ -537,6 +560,8 @@ export function usePinnedPrompt({ scrollerRef, requiresMountedHandoff = false }:
     if (first == null) return
     const reduced = typeof window.matchMedia === 'function'
       && window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    // This jump owns the position from here (utils/panelSlide).
+    releaseReadingPosition(sc0)
     const detach = attachUserScrollIntent(sc0, () => { jumpCancelRef.current?.() })
     const cancelGlide = runConvergingGlide({
       goal,

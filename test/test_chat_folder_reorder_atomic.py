@@ -1,16 +1,8 @@
 """The atomic multi-folder reorder endpoint.
 
-``POST /api/chat/folders/reorder`` applies a whole ``[{id, order}, ...]`` list in
-ONE ``mutate_folders`` pass under the folder-store lock, all-or-none -- the API
-shape a caller needs to renumber several siblings without issuing one PATCH per
-row, which has no transaction between the writes and leaves a mix of old and new
-order numbers on a partial failure.
-
-The load-bearing test is :class:`TestAMidSequenceWriteFailureLeavesTheOrderUntouched`:
-it drives the REAL ``FolderRepository.mutate`` with a persist that fails partway
-through writing, and asserts the stored order is exactly what it was -- never
-half-applied. Everything above it (shape validation, per-row ownership) guards the
-endpoint's edges; that class guards the property the issue was filed for.
+``POST /api/chat/folders/reorder`` applies a whole ``[{id, order}, ...]`` list in ONE
+``mutate_folders`` pass, all-or-none. :class:`TestAMidSequenceWriteFailureLeavesTheOrderUntouched`
+pins the core property against the REAL ``FolderRepository.mutate``.
 """
 
 from __future__ import annotations
@@ -102,13 +94,10 @@ def _by_id(state: DashboardState, fid: str) -> dict[str, Any] | None:
 
 
 class TestAMidSequenceWriteFailureLeavesTheOrderUntouched:
-    """The whole reason the endpoint exists: a partial write cannot half-apply.
+    """A partial write cannot half-apply.
 
-    The persist writes the new order and then reads it back to prove the WHOLE
-    value landed (``FolderRepository.write_confirmed``). A writer that raises
-    after mutating some rows is exactly a mid-sequence failure, and the
-    transaction restores the pre-write list before releasing the lock -- so the
-    caller sees the order it started with, not a mix.
+    A writer that raises after mutating some rows is a mid-sequence failure; the
+    transaction restores the pre-write list before releasing the lock.
     """
 
     @pytest.mark.asyncio
@@ -231,12 +220,8 @@ class TestOwnershipIsReDecidedPerRowUnderTheLock:
     async def test_a_row_whose_subtree_holds_a_foreign_folder_is_refused_whole(self) -> None:
         """Row ownership is not the whole rule: repositioning takes the subtree.
 
-        The app owns the row it names, so the per-row owner check passes. But the
-        person's folder is nested inside it, and moving the parent's ``order``
-        relocates the child -- the same violation the reparent PATCH refuses one
-        level down. The reorder that composes the writes is the one place under
-        the lock that sees the subtree, so the guard lives here, and the whole
-        batch is refused with the store untouched.
+        The app owns the row, but a person's folder nested inside it would move too, the
+        same violation the reparent PATCH refuses.
         """
         # RADAR is issue-radar's; PERSON is nested inside RADAR and is the
         # person's. Repositioning RADAR would relocate PERSON.
@@ -384,11 +369,8 @@ class TestTheRequestShapeIsValidatedBeforeTheStore:
     async def test_a_boolean_or_float_order_is_refused_not_coerced(self) -> None:
         """A JSON boolean or float is not an integer, so the endpoint 400s it.
 
-        ``int(True)`` is 1 and ``int(1.5)`` truncates to 1, so a bare ``int(...)``
-        would silently accept both and move the row to a position the caller never
-        named. The integer-only contract rejects them instead. ``True`` is the
-        important case: a Python ``bool`` is an ``int`` subclass, so only an exact
-        ``type(...) is int`` check excludes it.
+        ``int(True)`` and ``int(1.5)`` are both 1, and ``bool`` subclasses ``int``, so only an
+        exact ``type(...) is int`` check rejects them.
         """
         state = _state(_ChatSlot("chat-1-100"))
         async with TestClient(TestServer(_make_app(state))) as client:
@@ -404,18 +386,10 @@ class TestTheRequestShapeIsValidatedBeforeTheStore:
 
 
 class TestAContainerClaimIsComparedUnderTheWriteLock:
-    """``expected_parent`` is a compare-and-set on the one field the renumber's
-    correctness depends on.
+    """``expected_parent`` is a compare-and-set on each row's stored parent.
 
-    ``order`` is a per-container index, so a batch is only correct for rows
-    still living in the container the caller computed it against. The optional
-    request-level claim states that container, and each written row's stored
-    parent is compared against it inside the same transaction that writes --
-    so a reparent landing first refuses the whole batch as a 409 instead of
-    persisting an index computed for the old container onto a row that now
-    lives in a new one. Absence of the key is the one way to say "no
-    assumption", told apart from an empty string by the key's presence, never
-    its value.
+    ``order`` is a per-container index, so a reparent landing first refuses the batch as
+    a 409. Only an absent key means "no assumption"; an empty string is a claim.
     """
 
     @pytest.mark.asyncio

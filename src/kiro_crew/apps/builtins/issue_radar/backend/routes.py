@@ -452,7 +452,10 @@ async def _handle_connect(request: web.Request) -> web.Response:
     client cannot nominate a provider here -- that is what keeps a connected-repo
     record, and therefore every later request authorized against it, honest.
     """
-    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+    from kiro_crew.dashboard.handlers._shared import (
+        require_owner_dashboard_request,
+        string_field_error,
+    )
 
     # Connecting probes the repo with the OWNER's provider CLI, and the read routes
     # then serve whatever it can see, private repos included: owner only.
@@ -467,7 +470,11 @@ async def _handle_connect(request: web.Request) -> web.Response:
     if not isinstance(body, dict):
         return web.json_response({"error": "request body must be a JSON object"}, status=400)
 
-    url = (body.get("url") or "").strip()
+    # A truthy non-string (`{"url": 1}`) would crash `.strip()` into a 500.
+    url = body.get("url") or ""
+    if (not_string := string_field_error("url", url)) is not None:
+        return not_string
+    url = url.strip()
     if not url:
         return web.json_response({"error": "missing 'url'"}, status=400)
 
@@ -565,6 +572,18 @@ def _remember_probe(key: _ProbeKey, task: "asyncio.Future[dict]") -> None:
         _probe_memo[key] = (time.time(), task.result())
 
 
+def _prune_probes_from_other_loops(loop: asyncio.AbstractEventLoop) -> None:
+    """Drop in-flight probes bound to a loop other than the running one.
+
+    The map outlives its loop (a test loop per test). A probe whose loop was torn
+    down never runs :func:`_remember_probe`, so its entry would stay and every
+    later poll for that key would await it from the wrong loop.
+    """
+    for key, task in list(_probe_inflight.items()):
+        if task.get_loop() is not loop:
+            del _probe_inflight[key]
+
+
 async def _coalesced_probe(repo_key: provider.RepoKey, kind: str) -> dict:
     """The provider's ``probe_open_list`` with a short shared-result window.
 
@@ -601,6 +620,7 @@ async def _coalesced_probe(repo_key: provider.RepoKey, kind: str) -> dict:
         hit = _probe_memo.get(key)
         if hit is not None:
             return hit[1]
+        _prune_probes_from_other_loops(asyncio.get_running_loop())
         task = _probe_inflight.get(key)
         if task is None:
             task = asyncio.ensure_future(

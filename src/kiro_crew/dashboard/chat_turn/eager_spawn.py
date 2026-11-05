@@ -173,6 +173,12 @@ def _is_pre_spawn_refusal(exc: BaseException) -> bool:
     """
     if isinstance(exc, CapabilityError):
         return True
+    from kiro_crew.crewmate_harness import CrewmateHarnessUnavailable
+
+    if isinstance(exc, CrewmateHarnessUnavailable):
+        # Refused before the factory spawned anything, and a retry repeats it
+        # until someone changes the crewmate's harness.
+        return True
     return isinstance(exc, CapabilityStartupError) and str(exc) in _PRE_SPAWN_CAPABILITY_CODES
 
 
@@ -461,6 +467,12 @@ def schedule_eager_spawn(
         cfg = live.snapshot()
         if cfg is None or not cfg.session.eager_spawn:
             return None
+        # Shared Crew: with fair admission on, a runtime starts only inside an
+        # admitted turn, so creating sessions cannot start unbounded processes.
+        from kiro_crew.shared_crew.turn_gate import admission_active
+
+        if admission_active():
+            return None
     except Exception:
         return None
     if _eager_spawn_held_off(slot):
@@ -716,7 +728,7 @@ async def _eager_spawn(
                 # Do not pre-register the resolver's Global fallback first;
                 # doing so would leave an unrelated provider behind the error.
                 logger.info(
-                    "Eager spawn: Crew Member %r is unresolved; leaving to first turn",
+                    "Eager spawn: Bot %r is unresolved; leaving to first turn",
                     slot.agent,
                 )
                 return
@@ -772,10 +784,15 @@ async def _eager_spawn(
             # same fresh-session path it always does. The backend is the
             # factory's own selection for this key, and the prefetch allocates
             # with no channel identity.
+            from kiro_crew.crewmate_harness import crewmate_backend_pin
+
             if allow_resume and resume_takes_tool_search_replay(
                 tool_search=cfg.agent.tool_search,
                 backend=select_provider_backend(
-                    session_key, cfg.agent.member_acp_backend, cfg.agent.acp_backend
+                    session_key,
+                    cfg.agent.member_acp_backend,
+                    cfg.agent.acp_backend,
+                    crew_backend=crewmate_backend_pin(cfg, session_key),
                 ),
                 channel_id=None,
                 session_key=session_key,

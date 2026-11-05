@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import reducer, {
   sseStatus,
   setYoloDuration,
@@ -23,6 +23,7 @@ import reducer, {
 import type { StatusData, ChatSlot } from '../types'
 import { sharedItem } from './unreadStorageTestUtils'
 import { SHARED_UNREAD_FLUSH_MS, flushSharedUnread, relayedUnreadKeys } from '../store/dashboard/unread'
+import { crewModePreviewOn } from './crewModePreview'
 
 vi.mock('../api/client', () => ({
   api: { chatSlots: vi.fn(), chatMode: vi.fn() },
@@ -226,6 +227,13 @@ describe('dashboardSlice', () => {
   })
 
   describe('unread drain hold (partial slot list)', () => {
+    // The embedded relay posts only to a hub referrer; jsdom has none.
+    beforeEach(() => {
+      Object.defineProperty(document, 'referrer', { value: 'http://127.0.0.1:8899/', configurable: true })
+    })
+    afterEach(() => {
+      Object.defineProperty(document, 'referrer', { value: '', configurable: true })
+    })
     // A gateway mid-restart labels its slots frames `slotsPartial` while
     // sessions are still being restored. A session not yet restored is absent
     // from such a list without having been deleted, so the drain that clears a
@@ -1048,3 +1056,6 @@ describe('dashboardSlice per-slot unread teardown', () => {
     expect(next.unreadSlots).toEqual(['chat-1'])
   })
 })
+
+// Last, after the file's own hooks that clear localStorage: Crew Mode is a feature preview.
+crewModePreviewOn()

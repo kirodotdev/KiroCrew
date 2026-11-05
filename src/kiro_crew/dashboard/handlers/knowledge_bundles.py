@@ -17,6 +17,7 @@ from aiohttp import web
 from kiro_crew._sqlite_compat import sqlite3
 from kiro_crew.dashboard.handlers._shared import read_bounded_json
 from kiro_crew.dashboard.handlers.knowledge_access import _require_knowledge_owner, _sel_log, _store
+from kiro_crew.dashboard.session_export import content_disposition
 from kiro_crew.knowledge.ingestion import _redact
 from kiro_crew.knowledge.store import BUNDLE_STATE_KEY_COL, KnowledgeBundleError
 
@@ -167,9 +168,7 @@ async def export_all(request: web.Request) -> web.Response:
     bundle = await asyncio.to_thread(store.export_all, namespace=namespace)
     safe_ns = re.sub(r"[^\w.-]", "_", namespace) if namespace else None
     filename = f"{safe_ns}.knowledge" if safe_ns else "knowledge.knowledge"
-    return web.json_response(
-        bundle, headers={"Content-Disposition": f"attachment; filename={filename}"}
-    )
+    return web.json_response(bundle, headers={"Content-Disposition": content_disposition(filename)})
 
 
 async def import_bundle(request: web.Request) -> web.Response:

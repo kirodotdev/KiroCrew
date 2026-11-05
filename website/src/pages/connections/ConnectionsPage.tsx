@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
+import { lazy, Suspense, useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useLocation } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import { uiLocation } from '../../uiLocations/uiLocation'
 import { GuideRevealScope } from '../../guide/GuideRevealScope'
@@ -12,7 +13,9 @@ import { Badge, ContentSkeleton, SearchInput } from '../../components/ui'
 import ErrorNotice from '../../components/ErrorNotice'
 import RestartButton from '../../components/RestartButton'
 import { findReport } from '../../utils/errorReport'
+import { safeGetSessionItem, safeSetSessionItem } from '../../utils/safeStorage'
 import McpTab from '../overview/McpTab'
+import { McpStagedEditsProvider } from './mcpStagedEditsContext'
 import {
   CONNECTION_PROVIDERS,
   serverForConnection,
@@ -24,6 +27,10 @@ import {
   confirmedGrantPresent, connectionStateFor, disconnectFeedback, effectiveOAuth, latestOAuthByServer, mintOutcome,
   mintRowIsOurs, undismissedOAuth, uninstallOnCancel, withMintedUrl, type ConnectionAction, type Feedback, type PendingConnect,
 } from './connectionsPageCardState'
+
+/** Lazy: MCP Management (gateway status, servers and footprint queries) loads
+ *  only when the MCP Servers sub-tab renders it. */
+const McpManagement = lazy(() => import('../settings/McpManagement').then(m => ({ default: m.McpManagement })))
 
 // A provider card renders from `ConnectionsPageCard.tsx`, and what it shows is
 // decided in `connectionsPageCardState.ts`; neither imports this module. Callers
@@ -37,6 +44,9 @@ export type { ConnectionCardState, Feedback, MintOutcome, OAuthState, PendingCon
 /** Mint poll cadence. A cold mint takes seconds, so this is tuned to surface the
  *  URL promptly without spinning on a request that mostly answers `minting`. */
 const MINT_POLL_MS = 2_000
+
+/** The Services search text, kept in `sessionStorage` for the browser tab. */
+const SERVICES_SEARCH_KEY = 'kirocrew:connections-services-search'
 
 /** Authorization-status poll cadence. A grant changes rarely and the read is a
  *  local stat, so this is slow relative to the mint poll — it only has to notice
@@ -68,7 +78,13 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
   const { t } = useTranslation()
   const queryClient = useQueryClient()
   const [activeTab, setActiveTab] = useConnectionsSubTab()
-  const [search, setSearch] = useState('')
+  const { hash, key: navKey } = useLocation()
+  // Kept for the browser tab: opening a chat unmounts this page, and the
+  // search must still be there on the way back (#25962).
+  const [search, setSearch] = useState(() => safeGetSessionItem(SERVICES_SEARCH_KEY) ?? '')
+  useEffect(() => {
+    safeSetSessionItem(SERVICES_SEARCH_KEY, search)
+  }, [search])
   /** Pending connect attempts. `kind` decides Cancel semantics (only a
    *  cancelled *new* connect uninstalls the entry it just created); `sinceTs`
    *  fences off stale `mcp_oauth` banners left over from an earlier grant of
@@ -293,6 +309,25 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
     })
   }, [activeTab, highlightedSlug])
 
+  // Land the MCP-Management link (MCP_MANAGEMENT_PATH's `#mcp-management`
+  // fragment, followed from the share-refused notice, the /developer?tab=mcp-pool
+  // redirect and the "Open MCP Gateway" tip) ON the section rather than at the
+  // top of the servers list. react-router does not scroll to a fragment on a
+  // client-side navigation, and the section mounts only on the MCP Servers
+  // sub-tab, so it is done here once both hold. rAF waits a frame for the panel
+  // to render after the sub-tab switch. `navKey` is in the deps so clicking the
+  // same `#mcp-management` link again (a repeat navigation to an unchanged URL,
+  // where neither `activeTab` nor `hash` changes) still re-runs the scroll.
+  // It also waits for the shared `['mcp-servers']` query McpTab renders the list
+  // from: while it loads, McpTab shows a short skeleton, and a scroll then would
+  // clamp at the top and be left behind when the taller table replaces it.
+  useEffect(() => {
+    if (activeTab !== 'mcp-servers' || hash !== '#mcp-management' || isLoading) return
+    requestAnimationFrame(() => {
+      document.getElementById('mcp-management')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    })
+  }, [activeTab, hash, navKey, isLoading])
+
   const run = async (
     provider: ConnectionProvider,
     action: ConnectionAction,
@@ -352,7 +387,14 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
         await api.mcpApply([reenable])
       }
     } else {
-      await api.mcpCustomAdd({ [provider.slug]: { url: provider.mcp_url } }, true)
+      // Request the registry's scopes, as the warm path does: an entry written
+      // without them authorizes with the provider's default grant (wider than
+      // the read-only set for Google) and no longer matches the warm plan.
+      const scopes = provider.recommended_scopes ?? []
+      await api.mcpCustomAdd(
+        { [provider.slug]: scopes.length ? { url: provider.mcp_url, scopes: [...scopes] } : { url: provider.mcp_url } },
+        true,
+      )
     }
     // Ask for the approval URL rather than waiting for one, and await it: a
     // rejected POST must reach `run`'s error path instead of leaving the card in
@@ -763,6 +805,7 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
                     grantPresent={confirmedGrantPresent(status)}
                     grantSharedWith={status?.grantSharedWith}
                     grantSharedUnconfirmed={status?.grantSharedUnconfirmed}
+                    backendLacksOauth={status?.backendLacksOauth === true}
                     busy={cardBusy}
                     testingProvider={testingProvider}
                     feedbackSlots={feedbackSlots}
@@ -781,7 +824,32 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
         </div>
       ) : (
         <div id="connections-mcp-panel" role="tabpanel" aria-labelledby="connections-mcp-tab">
-          <McpTab onManagedProviderClick={openProvider} />
+          <McpStagedEditsProvider>
+            <McpTab onManagedProviderClick={openProvider} />
+            {/* MCP Management (stubbing MCP servers and sharing their backends)
+                lives with the MCP Servers list it acts on — the
+                list is "what servers exist", this is "stub / share them" — and NOT
+                under the Services sub-tab, whose cards are a different thing. The
+                `mcp-management` anchor is what MCP_MANAGEMENT_PATH's fragment
+                scrolls to, so the share-refused notice's link lands on the section
+                rather than the top of the list. The provider lets McpManagement
+                withhold its "Ask the agent" hand-off while the list above holds
+                unapplied edits a /chat navigation would drop. The section and
+                its anchor render at once; only the panel body waits for its
+                chunk, so a Services visit never downloads it. */}
+            <section
+              id="mcp-management"
+              aria-labelledby="mcp-management-heading"
+              className="mt-8 min-w-0 border-t border-border pt-6"
+            >
+              <h2 id="mcp-management-heading" className="mb-4 text-[15px] font-semibold text-text-strong">
+                {t('pages.connectionsPage.mcp_management_heading')}
+              </h2>
+              <Suspense fallback={<ContentSkeleton rows={6} />}>
+                <McpManagement />
+              </Suspense>
+            </section>
+          </McpStagedEditsProvider>
         </div>
       )}
       </GuideRevealScope>

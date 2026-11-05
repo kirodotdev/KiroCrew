@@ -8,9 +8,12 @@ branch, and the event loop staying responsive during slow startup work.
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import gc
 import logging
 import threading
 import time
+import weakref
 from contextlib import ExitStack
 from pathlib import Path
 from types import SimpleNamespace
@@ -29,6 +32,7 @@ from slack_gateway_helpers import (
 
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.slack.gateway import GatewayOrchestrator
+from kiro_crew.testing.wait import await_until, finished
 
 _GATEWAY_LOGGER = "kiro_crew.slack.gateway"
 
@@ -173,10 +177,11 @@ class TestRunMethod:
                                     new_callable=AsyncMock,
                                 ):
                                     with patch("os._exit"):
-                                        with patch("resource.getrlimit", return_value=(256, 10240)):
-                                            with patch("resource.setrlimit"):
-                                                # flake-ok: pre-existing unbounded run that the pre-set shutdown event ends, moved verbatim; tracked for a de-flake pass
-                                                await orch.run()
+                                        with patch(
+                                            "kiro_crew.platform_compat.raise_nofile_soft_limit"
+                                        ):
+                                            # flake-ok: pre-existing unbounded run that the pre-set shutdown event ends, moved verbatim; tracked for a de-flake pass
+                                            await orch.run()
         finally:
             kiro_crew.shutdown_event.clear()
 
@@ -186,7 +191,7 @@ class TestRunMethod:
 
     @pytest.mark.asyncio
     async def test_run_no_dashboard_uses_api_server(self, tmp_path, monkeypatch):
-        """--no-dashboard waits for and then clears its run marker."""
+        """--no-dashboard publishes, then writes and clears its run marker."""
         import kiro_crew
         from kiro_crew.instances import run_marker
 
@@ -194,11 +199,15 @@ class TestRunMethod:
         orch._dashboard_port = 5476
 
         monkeypatch.setattr(run_marker, "config_dir", lambda: tmp_path)
+        monkeypatch.setattr(run_marker, "_PUBLISHED_LISTENERS", {})
+        monkeypatch.setattr(run_marker, "_DEFAULT_RUN_DIR", tmp_path / "default-run")
         run_marker.write_marker(orch._dashboard_port)
         original_write_marker = run_marker.write_marker
         events = []
+        seen = []
 
         def slow_write_marker(port):
+            seen.append(run_marker.published_listeners(port))
             events.append("write-start")
             # flake-ok: pre-existing sleep inside the slow marker-write stub, moved verbatim; tracked for a de-flake pass
             # nosemgrep: kirocrew.test-sleep-as-barrier -- stub that simulates a slow write, moved verbatim; tracked for a de-flake pass
@@ -231,7 +240,13 @@ class TestRunMethod:
         orch._init_subagents = MagicMock()
         orch._init_task_runner = MagicMock()
         orch._init_dashboard = AsyncMock()
-        orch._init_api_server = AsyncMock()
+        task_at_init = []
+
+        async def _publish():
+            task_at_init.append(orch._marker_write_task)
+            run_marker.note_published_listener(5476, "127.0.0.1")
+
+        orch._init_api_server = AsyncMock(side_effect=_publish)
         orch._init_autonudge = AsyncMock()
         orch._check_for_updates = AsyncMock()
         orch._shutdown = AsyncMock()
@@ -249,10 +264,11 @@ class TestRunMethod:
                                     new_callable=AsyncMock,
                                 ):
                                     with patch("os._exit"):
-                                        with patch("resource.getrlimit", return_value=(256, 10240)):
-                                            with patch("resource.setrlimit"):
-                                                # flake-ok: pre-existing unbounded run that the pre-set shutdown event ends, moved verbatim; tracked for a de-flake pass
-                                                await orch.run()
+                                        with patch(
+                                            "kiro_crew.platform_compat.raise_nofile_soft_limit"
+                                        ):
+                                            # flake-ok: pre-existing unbounded run that the pre-set shutdown event ends, moved verbatim; tracked for a de-flake pass
+                                            await orch.run()
         finally:
             kiro_crew.shutdown_event.clear()
 
@@ -261,6 +277,8 @@ class TestRunMethod:
         assert events == ["write-start", "write-end", "clear"]
         assert not marker.exists()
         assert not pid_marker.exists()
+        assert task_at_init == [None]
+        assert seen == [frozenset({"127.0.0.1"})]
 
     @pytest.mark.asyncio
     async def test_run_stalled_marker_write_does_not_block_shutdown(self, tmp_path, monkeypatch):
@@ -353,10 +371,11 @@ class TestRunMethod:
                                     new_callable=AsyncMock,
                                 ):
                                     with patch("os._exit"):
-                                        with patch("resource.getrlimit", return_value=(256, 10240)):
-                                            with patch("resource.setrlimit"):
-                                                # flake-ok: pre-existing unbounded run that the pre-set shutdown event ends, moved verbatim; tracked for a de-flake pass
-                                                await orch.run()
+                                        with patch(
+                                            "kiro_crew.platform_compat.raise_nofile_soft_limit"
+                                        ):
+                                            # flake-ok: pre-existing unbounded run that the pre-set shutdown event ends, moved verbatim; tracked for a de-flake pass
+                                            await orch.run()
         finally:
             kiro_crew.shutdown_event.clear()
             # Release AND drain the stalled writer inside this finally: if an
@@ -444,10 +463,11 @@ class TestRunMethod:
                                     new_callable=AsyncMock,
                                 ):
                                     with patch("os._exit"):
-                                        with patch("resource.getrlimit", return_value=(256, 10240)):
-                                            with patch("resource.setrlimit"):
-                                                # flake-ok: pre-existing unbounded run that the pre-set shutdown event ends, moved verbatim; tracked for a de-flake pass
-                                                await orch.run()
+                                        with patch(
+                                            "kiro_crew.platform_compat.raise_nofile_soft_limit"
+                                        ):
+                                            # flake-ok: pre-existing unbounded run that the pre-set shutdown event ends, moved verbatim; tracked for a de-flake pass
+                                            await orch.run()
         finally:
             kiro_crew.shutdown_event.clear()
 
@@ -505,8 +525,7 @@ class TestRunFreezesBootHeap:
                 patch("kiro_crew.session.cleanup_orphaned_sessions"),
                 patch("kiro_crew.dashboard.handlers._bg_mcp_probe", new_callable=AsyncMock),
                 patch("os._exit"),
-                patch("resource.getrlimit", return_value=(256, 10240)),
-                patch("resource.setrlimit"),
+                patch("kiro_crew.platform_compat.raise_nofile_soft_limit"),
             ):
                 # flake-ok: run() returns because the shutdown event is set before it starts
                 await orch.run()
@@ -957,11 +976,10 @@ class TestRunSignalAndBgSession:
                                         ):
                                             with patch("os._exit"):
                                                 with patch(
-                                                    "resource.getrlimit", return_value=(256, 10240)
+                                                    "kiro_crew.platform_compat.raise_nofile_soft_limit"
                                                 ):
-                                                    with patch("resource.setrlimit"):
-                                                        # flake-ok: pre-existing unbounded run that the pre-set shutdown event ends, moved verbatim; tracked for a de-flake pass
-                                                        await orch.run()
+                                                    # flake-ok: pre-existing unbounded run that the pre-set shutdown event ends, moved verbatim; tracked for a de-flake pass
+                                                    await orch.run()
         finally:
             pass
 
@@ -1037,17 +1055,15 @@ class TestBgSessionDashboardBranch:
                                                 ):
                                                     with patch("os._exit"):
                                                         with patch(
-                                                            "resource.getrlimit",
-                                                            return_value=(256, 10240),
+                                                            "kiro_crew.platform_compat.raise_nofile_soft_limit"
                                                         ):
-                                                            with patch("resource.setrlimit"):
-                                                                # flake-ok: pre-existing unbounded run that the pre-set shutdown event ends, moved verbatim; tracked for a de-flake pass
-                                                                await orch.run()
-                                                                # Let bg_session task drain
-                                                                # flake-ok: pre-existing pair of event-loop yields before the URL check, moved verbatim; tracked for a de-flake pass
-                                                                await asyncio.sleep(0)
-                                                                # flake-ok: pre-existing event-loop yield, the second of the pair, moved verbatim; tracked for a de-flake pass
-                                                                await asyncio.sleep(0)
+                                                            # flake-ok: pre-existing unbounded run that the pre-set shutdown event ends, moved verbatim; tracked for a de-flake pass
+                                                            await orch.run()
+                                                            # Let bg_session task drain
+                                                            # flake-ok: pre-existing pair of event-loop yields before the URL check, moved verbatim; tracked for a de-flake pass
+                                                            await asyncio.sleep(0)
+                                                            # flake-ok: pre-existing event-loop yield, the second of the pair, moved verbatim; tracked for a de-flake pass
+                                                            await asyncio.sleep(0)
 
         orch.sessions.start_pool.assert_awaited_once_with(blocking=False)
 
@@ -1131,16 +1147,14 @@ class TestBgSessionDashboardBranch:
                                                     ):
                                                         with patch("os._exit"):
                                                             with patch(
-                                                                "resource.getrlimit",
-                                                                return_value=(256, 10240),
+                                                                "kiro_crew.platform_compat.raise_nofile_soft_limit"
                                                             ):
-                                                                with patch("resource.setrlimit"):
-                                                                    # flake-ok: pre-existing unbounded run that the pre-set shutdown event ends, moved verbatim; tracked for a de-flake pass
-                                                                    await orch.run()
-                                                                    # flake-ok: pre-existing pair of event-loop yields before the URL check, moved verbatim; tracked for a de-flake pass
-                                                                    await asyncio.sleep(0)
-                                                                    # flake-ok: pre-existing event-loop yield, the second of the pair, moved verbatim; tracked for a de-flake pass
-                                                                    await asyncio.sleep(0)
+                                                                # flake-ok: pre-existing unbounded run that the pre-set shutdown event ends, moved verbatim; tracked for a de-flake pass
+                                                                await orch.run()
+                                                                # flake-ok: pre-existing pair of event-loop yields before the URL check, moved verbatim; tracked for a de-flake pass
+                                                                await asyncio.sleep(0)
+                                                                # flake-ok: pre-existing event-loop yield, the second of the pair, moved verbatim; tracked for a de-flake pass
+                                                                await asyncio.sleep(0)
 
         assert "url" in trace, f"dashboard URL was never printed; trace={trace}"
         assert "probe" in trace, f"MCP probe was never awaited; trace={trace}"
@@ -1205,20 +1219,99 @@ class TestBgSessionDashboardBranch:
                                             ):
                                                 with patch("os._exit"):
                                                     with patch(
-                                                        "resource.getrlimit",
-                                                        return_value=(256, 10240),
+                                                        "kiro_crew.platform_compat.raise_nofile_soft_limit"
                                                     ):
-                                                        with patch("resource.setrlimit"):
-                                                            # Must not raise.
-                                                            # flake-ok: pre-existing unbounded run that the pre-set shutdown event ends, moved verbatim; tracked for a de-flake pass
-                                                            await orch.run()
-                                                            # flake-ok: pre-existing pair of event-loop yields before the boot check, moved verbatim; tracked for a de-flake pass
-                                                            await asyncio.sleep(0)
-                                                            # flake-ok: pre-existing event-loop yield, the second of the pair, moved verbatim; tracked for a de-flake pass
-                                                            await asyncio.sleep(0)
+                                                        # Must not raise.
+                                                        # flake-ok: pre-existing unbounded run that the pre-set shutdown event ends, moved verbatim; tracked for a de-flake pass
+                                                        await orch.run()
+                                                        # flake-ok: pre-existing pair of event-loop yields before the boot check, moved verbatim; tracked for a de-flake pass
+                                                        await asyncio.sleep(0)
+                                                        # flake-ok: pre-existing event-loop yield, the second of the pair, moved verbatim; tracked for a de-flake pass
+                                                        await asyncio.sleep(0)
 
         # Boot carried on past the failed announcement.
         orch.sessions.start_pool.assert_awaited_once_with(blocking=False)
+
+    @pytest.mark.asyncio
+    async def test_the_session_warm_task_survives_a_gc_pass(self):
+        """The probe-gated session warm is held until it finishes.
+
+        The loop holds a task only weakly. A warm parked on a future that
+        nothing else references is a garbage cycle unless boot keeps the task.
+        """
+        orch = _make_orchestrator(no_dashboard=False, no_open=True)
+        for name in (
+            "_init_services",
+            "_start_embeddings",
+            "_auto_migrate_memory",
+            "_init_cron",
+            "_init_heartbeat",
+            "_init_autonudge",
+            "_check_for_updates",
+            "_shutdown",
+        ):
+            setattr(orch, name, AsyncMock())
+        for name in ("_init_mcp_discovery", "_init_subagents", "_init_task_runner"):
+            setattr(orch, name, MagicMock())
+
+        parked = asyncio.Event()
+        refs: list = []
+
+        async def _start_pool_that_parks(**_kwargs):
+            current = asyncio.current_task()
+            assert current is not None
+            refs.append(weakref.ref(current))
+            del current
+            parked.set()
+            await asyncio.get_running_loop().create_future()
+
+        orch.sessions = MagicMock()
+        orch.sessions.start_pool = _start_pool_that_parks
+
+        async def _init_dash():
+            orch._local_only = True
+            orch._configured_host = None
+            orch._dashboard_port = 6779
+
+        orch._init_dashboard = _init_dash
+
+        fresh_event = asyncio.Event()
+        fresh_event.set()
+        loop = asyncio.get_running_loop()
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(loop, "add_signal_handler"))
+            stack.enter_context(patch("kiro_crew.shutdown_event", fresh_event))
+            stack.enter_context(patch("kiro_crew.slack.gateway.shutdown_event", fresh_event))
+            stack.enter_context(
+                patch("kiro_crew.slack.gateway.resolve_dashboard_host", return_value="127.0.0.1")
+            )
+            stack.enter_context(
+                patch("kiro_crew.slack.gateway.format_dashboard_urls", return_value=["url"])
+            )
+            stack.enter_context(patch("kiro_crew.slack.events.init_socket_mode"))
+            stack.enter_context(patch("kiro_crew.slack.interactions.init"))
+            stack.enter_context(patch("kiro_crew.slack.events.SeenCache"))
+            stack.enter_context(patch("kiro_crew.session.cleanup_orphaned_sessions"))
+            stack.enter_context(
+                patch("kiro_crew.dashboard.handlers._bg_mcp_probe", new_callable=AsyncMock)
+            )
+            stack.enter_context(patch("os._exit"))
+            raise_nofile_soft_limit = stack.enter_context(
+                patch("kiro_crew.slack.gateway.platform_compat.raise_nofile_soft_limit")
+            )
+            await finished(orch.run(), "the gateway boot")
+            await await_until(parked, what="the session warm to park")
+
+        raise_nofile_soft_limit.assert_called_once_with(10240)
+        (ref,) = refs
+        gc.collect()
+        task = ref()
+        assert task is not None, "the session warm task was garbage-collected"
+        assert task in orch._background_tasks
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await await_until(task, what="the cancelled warm task")
+        assert task not in orch._background_tasks
 
 
 class TestInitServicesLoopResponsiveness:

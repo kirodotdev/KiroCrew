@@ -29,6 +29,13 @@ SHARED_CREW_BOUNDS: dict[str, tuple[int, int]] = {
 }
 
 
+#: Appended to every field's help: the whole section reads as its defaults until
+#: the owner turns Shared Crew on in Feature Previews (``shared_crew.preview``).
+SHARED_CREW_NEEDS_PREVIEW_HELP = (
+    " Needs Shared Crew turned on in Feature Previews; without it this reads as its default."
+)
+
+
 @dataclass
 class SharedCrewConfig:
     """Fair admission and per-principal containment for a Crew several people use."""
@@ -37,78 +44,60 @@ class SharedCrewConfig:
         default=False,
         metadata=_meta(
             "Fair Admission",
-            "Not active in this build yet. "
             "Charge every turn, subagent, task, workflow and cron run to the person "
             "who started it, and admit work through per-person and Crew-wide limits "
             "with a fair queue. Off by default: a single-operator Crew keeps its "
-            "current behaviour and reports queueing as unavailable.",
+            "current behaviour and reports queueing as unavailable."
+            + SHARED_CREW_NEEDS_PREVIEW_HELP,
         ),
     )
     principal_concurrency: int = field(
         default=4,
         metadata=_meta(
             "Active Work Per Person",
-            "Not active in this build yet. "
             "Root executions (turns, tasks, workflows, cron runs) one person may run "
-            "at once, across all tabs, devices and sessions.",
+            "at once, across all tabs, devices and sessions." + SHARED_CREW_NEEDS_PREVIEW_HELP,
         ),
     )
     crew_concurrency: int = field(
         default=0,
         metadata=_meta(
             "Active Work Crew-Wide",
-            "Not active in this build yet. "
             "Root executions the whole Crew runs at once. 0 uses the session start "
-            "gate's automatic width for this host.",
+            "gate's automatic width for this host." + SHARED_CREW_NEEDS_PREVIEW_HELP,
         ),
     )
     containment_enabled: bool = field(
         default=True,
         metadata=_meta(
             "Per-Person Slices",
-            "Not active in this build yet. "
             "While fair admission is on, start each person's agent runtimes in that "
             "person's own systemd slice so their CPU, memory and process counts are "
-            "bounded together. Linux with cgroup v2 delegation only.",
+            "bounded together. Linux with cgroup v2 delegation only."
+            + SHARED_CREW_NEEDS_PREVIEW_HELP,
         ),
     )
     hard_limits: bool = field(
         default=False,
         metadata=_meta(
             "Require Enforced Limits",
-            "Not active in this build yet. "
             "Refuse to admit work when cgroup v2, a trusted systemd-run, a reachable "
             "user bus, or memory and pids delegation is missing, instead of running "
             "without per-person limits. Needs fair admission on: with fair admission "
-            "off, no agent runtime starts. Off by default.",
+            "off, no agent runtime starts. Off by default." + SHARED_CREW_NEEDS_PREVIEW_HELP,
         ),
     )
     tailnet_direct: bool = field(
         default=False,
         metadata=_meta(
             "Direct Tailnet Link",
-            "Not active in this build yet. Off by default. On: while Tailscale runs, also listen on this "
+            "Off by default. On: while Tailscale runs, also listen on this "
             "machine's own Tailscale addresses (100.x and fd7a:) on the dashboard "
-            "port, and let in the people Tailscale names (all of them, or only "
-            "those Crew admits when local_authorization is on), without a "
-            "dashboard token. Never binds any other address. Off keeps the "
+            "port, and let in every person Tailscale names, without a "
+            "dashboard token. Tailscale (the tailnet ACL and device sharing) "
+            "decides who can reach it. Never binds any other address. Off keeps the "
             "loopback-only listener. A value that is not true or false reads as "
-            "off.",
-            restart=True,
-        ),
-    )
-    local_authorization: bool = field(
-        default=False,
-        metadata=_meta(
-            "Approve People In Crew",
-            "Not active in this build yet. "
-            "Off: Tailscale decides who gets in. Every person Tailscale lets reach "
-            "this machine is admitted on the direct tailnet link and through "
-            "tailscale serve, and is still named by Tailscale. On: only you, "
-            "people who accepted a Crew invite and people you approved on People "
-            "get in, and People shows Approve, Remove and the waiting list. "
-            "Tagged nodes are refused unless carried over in both modes. A value "
-            "that is not true or false reads as on.",
+            "off." + SHARED_CREW_NEEDS_PREVIEW_HELP,
             restart=True,
         ),
     )
@@ -116,11 +105,14 @@ class SharedCrewConfig:
         default=10,
         metadata=_meta(
             "Typing Lock Idle Window",
-            "Not active in this build yet. "
             "Seconds a collaborator may pause typing before the other collaborators' "
             "composers unlock. While someone types in a shared session, everyone "
             "else's composer is read-only until that person sends, clears the "
-            "draft, or stays idle this long. 3 to 60.",
+            "draft, or stays idle this long. 3 to 60." + SHARED_CREW_NEEDS_PREVIEW_HELP,
+            # The lease registry reads the window once, on first use
+            # (``shared_crew.typing_lease.typing_lease_for``), so a saved change
+            # applies after the next start.
+            restart=True,
         ),
     )
 
@@ -140,9 +132,9 @@ PRINCIPAL_MEMORY_MAX_MB = 24576
 PRINCIPAL_TASKS_MAX = 8192
 CREW_CPU_QUOTA_PERCENT = 2400
 
-#: The boolean knobs read with ``_safe_bool``. ``tailnet_direct`` and
-#: ``local_authorization`` are booleans read fail-narrow on their own; every other
-#: field is an integer bounded by SHARED_CREW_BOUNDS.
+#: The boolean knobs read with ``_safe_bool``. ``tailnet_direct`` is a boolean
+#: read fail-narrow on its own; every other field is an integer bounded by
+#: SHARED_CREW_BOUNDS.
 SHARED_CREW_FLAGS = ("admission_enabled", "containment_enabled", "hard_limits")
 #: Flags that widen what can reach this machine. A value that is not a boolean
 #: reads as False, so a typo can only narrow exposure.
@@ -153,8 +145,7 @@ def shared_crew_config_from(raw: object) -> SharedCrewConfig:
     """Build a bounded :class:`SharedCrewConfig` from a raw ``dashboard.shared_crew`` value.
 
     A non-object reads as every default. A wrong-typed key reads as its default,
-    except the two exposure switches, which read toward less exposure:
-    ``tailnet_direct`` as off and ``local_authorization`` as on. An out-of-range
+    except the exposure switch ``tailnet_direct``, which reads as off. An out-of-range
     integer is clamped into :data:`SHARED_CREW_BOUNDS`, so a hand edit can narrow
     or widen a limit but never disable one.
     """
@@ -176,8 +167,6 @@ def shared_crew_config_from(raw: object) -> SharedCrewConfig:
                 type(raw).__name__,
             )
         values[name] = raw is True
-    # Turning it off widens who gets in, so only a literal false does that.
-    values["local_authorization"] = data.get("local_authorization", False) is not False
     for name in SHARED_CREW_BOUNDS:
         lo, hi = SHARED_CREW_BOUNDS[name]
         values[name] = section.read(name, _safe_int, lo, hi)
@@ -245,12 +234,49 @@ def effective_limits(cfg: SharedCrewConfig, *, auto_crew_concurrency: int) -> Ef
     )
 
 
+def load_shared_crew_config() -> SharedCrewConfig:
+    """Read the effective ``dashboard.shared_crew`` section. Synchronous file I/O.
+
+    Without ``KIROCREW_SHARED_CREW_PREVIEW=1`` every value is its default, so
+    no switch in config.json turns Shared Crew on (``shared_crew.preview``).
+    Gated here, the one runtime reader, not at parse time, so the stored
+    config.json values survive a save while the gate is off.
+    """
+    from kiro_crew.shared_crew.preview import preview_enabled
+
+    if not preview_enabled():
+        return SharedCrewConfig()
+    import json
+
+    from kiro_crew.config.loader import config_local_path, config_path, read_config_text
+    from kiro_crew.config.resolution import _deep_merge
+
+    raw: dict[str, Any] = {}
+    for path in (config_path(), config_local_path()):
+        try:
+            document = json.loads(read_config_text(path))
+        except FileNotFoundError:
+            continue
+        if not isinstance(document, dict):
+            raise ValueError("config must be an object")
+        raw = _deep_merge(raw, document)
+    dashboard = raw.get("dashboard", {})
+    if not isinstance(dashboard, dict):
+        raise ValueError("dashboard must be an object")
+    section = dashboard.get("shared_crew", {})
+    if not isinstance(section, dict):
+        raise ValueError("dashboard.shared_crew must be an object")
+    return shared_crew_config_from(section)
+
+
 __all__ = [
     "EffectiveLimits",
     "SHARED_CREW_BOUNDS",
     "SHARED_CREW_EXPOSURE_FLAGS",
     "SHARED_CREW_FLAGS",
+    "SHARED_CREW_NEEDS_PREVIEW_HELP",
     "SharedCrewConfig",
     "effective_limits",
+    "load_shared_crew_config",
     "shared_crew_config_from",
 ]

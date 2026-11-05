@@ -100,6 +100,50 @@ _SUBPROCESS_NO_WINDOW: int = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 # what keeps them patchable from the non-Windows test fleet.
 
 
+class _FileBasicInfo(ctypes.Structure):
+    """Win32 ``FILE_BASIC_INFO`` for handle-bound attribute updates."""
+
+    _fields_ = [
+        ("CreationTime", ctypes.c_longlong),
+        ("LastAccessTime", ctypes.c_longlong),
+        ("LastWriteTime", ctypes.c_longlong),
+        ("ChangeTime", ctypes.c_longlong),
+        ("FileAttributes", wintypes.DWORD),
+    ]
+
+
+class _FileId128(ctypes.Structure):
+    """Win32 ``FILE_ID_128`` — a filesystem object's stable 128-bit id."""
+
+    _fields_ = [("Identifier", ctypes.c_ubyte * 16)]
+
+
+class _FileIdInfo(ctypes.Structure):
+    """Win32 ``FILE_ID_INFO`` returned by ``GetFileInformationByHandleEx``."""
+
+    _fields_ = [
+        ("VolumeSerialNumber", ctypes.c_ulonglong),
+        ("FileId", _FileId128),
+    ]
+
+
+class _ByHandleFileInformation(ctypes.Structure):
+    """Win32 ``BY_HANDLE_FILE_INFORMATION`` native file-index fallback."""
+
+    _fields_ = [
+        ("dwFileAttributes", wintypes.DWORD),
+        ("ftCreationTime", wintypes.FILETIME),
+        ("ftLastAccessTime", wintypes.FILETIME),
+        ("ftLastWriteTime", wintypes.FILETIME),
+        ("dwVolumeSerialNumber", wintypes.DWORD),
+        ("nFileSizeHigh", wintypes.DWORD),
+        ("nFileSizeLow", wintypes.DWORD),
+        ("nNumberOfLinks", wintypes.DWORD),
+        ("nFileIndexHigh", wintypes.DWORD),
+        ("nFileIndexLow", wintypes.DWORD),
+    ]
+
+
 class _ProcessEntry32(ctypes.Structure):
     """Toolhelp ``PROCESSENTRY32`` — process-enumeration snapshot entry."""
 

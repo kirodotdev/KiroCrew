@@ -41,13 +41,9 @@ from kiro_crew.testing.wait import default_timeout
 class TestServedDefaultAfterSetMode:
     """The served-default check must also judge the model ``set_mode`` applies.
 
-    Both session-start paths run ``ensure_served_default`` right after storing the
-    session/new or session/load response, which is before the mode is activated.
-    kiro-cli's ``set_mode`` puts the session on the model the activated agent's
-    spec pins, undoing that earlier switch, and reports that model only in the
-    ``_kiro.dev/agent/switched`` frame it sends before answering ``{}``. With
-    ``agent.model`` set to a model the account cannot run (it is copied into
-    ``kirocrew.json``), the first prompt failed with "no access to model".
+    kiro-cli's ``set_mode`` moves the session to the spec's pinned model and reports it
+    only in ``_kiro.dev/agent/switched``. An unserved ``agent.model`` would fail the
+    first prompt with "no access to model".
     """
 
     UNSERVED = "probe-unserved-model"
@@ -328,14 +324,10 @@ async def test_create_session_admits_spawn_agent_when_advertised():
 
 @pytest.mark.asyncio
 async def test_create_session_fails_closed_when_current_mode_names_another_agent():
-    """A `currentModeId`-only response naming a DIFFERENT agent is positive evidence
-    of the substitution, so it fails closed even with no advertised list. Admitting
-    a current-mode mismatch would let exactly this response through the
-    compatibility escape: `_mode_available` returns True whenever no list was
-    advertised, so the substituted agent would run with none of Kiro Crew's tools.
-    A live probe of kiro-cli pins the meaning of the field -- a spec that loads is
-    reported as the current mode, and a spec the backend refuses reports the
-    backend's own default instead."""
+    """A `currentModeId` naming a different agent fails closed, even with no list.
+
+    `_mode_available` is True with no list, so this is the only signal. Live kiro-cli
+    reports a refused spec as the backend's own default."""
     rt, _, _ = _make_runtime()
     rt._agent = "kirocrew"
     rt._finish_session_init = MagicMock(return_value=[])  # type: ignore[method-assign]
@@ -526,13 +518,8 @@ def test_resolve_start_alias_keeps_the_launch_agent_and_stays_strict_otherwise()
 def test_refuse_if_view_superseded_keeps_an_unchanged_launch_agent():
     """A concurrent no-view start must not be treated as superseded.
 
-    When a concurrent no-view start adopts a newer EMPTY projection, a post-send
-    supersession check that recomputes the current alias with the STRICT resolver
-    finds no entry for the no-view launch agent, so ``newest != sent_alias`` and the
-    start would raise, terminating a session that was never superseded. The
-    launch-agent-aware resolver keeps the unchanged launch agent here: the launched
-    agent's authored name is still its name in the newer view, so nothing is
-    superseded and no raise occurs."""
+    After a newer empty projection, the strict resolver finds no entry for the launch
+    agent and would raise. The launch-agent-aware resolver keeps its authored name."""
     from kiro_crew.acp.skill_projection import NativeSkillProjection
 
     rt, _, _ = _make_runtime()
@@ -579,11 +566,8 @@ async def test_create_session_spawn_agent_guard_skipped_on_kas_backend():
 async def test_verify_spawn_agent_active_accepts_a_projected_agent_via_the_framed_response():
     """Guard (A2) accepts a projected agent because framing normalises its alias.
 
-    The spawn argv forwards the view ALIAS for a projected agent, but every inbound
-    frame passes through ``projection.frame`` before this guard reads it, and frame
-    maps ``currentModeId`` from the alias back to the declared name. So the response
-    this guard sees names the DECLARED name, and the plain ``current == spawn_agent``
-    comparison accepts it -- no alias-matching set in the guard is needed.
+    ``projection.frame`` maps ``currentModeId`` back to the declared name before the
+    guard reads it, so plain ``current == spawn_agent`` suffices.
     """
     from kiro_crew.acp.skill_projection import NativeSkillProjection
 
@@ -603,12 +587,8 @@ async def test_verify_spawn_agent_active_accepts_a_projected_agent_via_the_frame
 async def test_verify_spawn_agent_active_accepts_a_no_view_launch_agent_under_its_own_name():
     """Guard (A2) accepts a launch agent with NO prepared view spawned under its name.
 
-    This PR lets a launch identity with no projected view spawn and activate under
-    its own name (``spawn_agent`` returns it unchanged). The availability check
-    must mirror that exemption independently of the direct-client switch exemption
-    (``spawn_agent_name``, empty on the shared runtime): an unprojected launch
-    agent the backend advertises under its own name is a valid session, not a
-    substitution.
+    ``spawn_agent`` returns it unchanged, so the check must allow it without relying on
+    ``spawn_agent_name``, which is empty on the shared runtime.
     """
     from kiro_crew.acp.skill_projection import NativeSkillProjection
 
@@ -780,7 +760,7 @@ def test_activation_refusal_is_a_harness_seam_kas_reads_the_stamp_kiro_answers_n
     kas = KasHarness()
     with caplog.at_level("WARNING", logger="kiro_crew.acp.harness.kas"):
         refusal = kas.activation_refusal("plan", stamped("bundled"))
-    assert refusal and refusal.startswith("Rename this mate's template: “plan” is reserved")
+    assert refusal and refusal.startswith("Rename this Bot's template: “plan” is reserved")
     assert " -- " not in refusal
     assert "Agent Template tab" in refusal and "KAS" not in refusal
     # The raw stamp is logged: the refusal blames the name, so the log is the
@@ -980,6 +960,9 @@ async def test_session_start_budget_follows_config(monkeypatch):
 
     rt, _, _ = _make_runtime()
     rt._expect_mcp_reports = False
+    # The fake config carries no bindings, which the over-ceiling check reads as a
+    # damaged load and refuses; this test is about the budget alone.
+    rt._refuse_over_ceiling_start = AsyncMock()  # type: ignore[method-assign]
     # Lazy: construction must not have resolved (or read) config.
     assert rt._session_start_timeout is None
     seen: dict[str, object] = {}
@@ -1053,3 +1036,80 @@ async def test_send_and_await_timeout_error_names_the_budget():
     assert "timed out" in msg
     assert "0.01s" in msg
     assert "probe/method" in msg
+
+
+@pytest.mark.asyncio
+async def test_activating_a_disk_spec_over_the_ceiling_ends_the_session_before_set_mode():
+    """A shared runtime spawned as one agent and switched to another reads that
+    agent's spec from disk at ``set_mode``. A crew-bound spec Crew does not own whose
+    grants the ceiling denies is refused there, for the agent being activated."""
+    from kiro_crew import agent as agent_mod
+    from kiro_crew.acp.session_handle import AcpRuntimeError
+
+    rt, _, _ = _make_runtime()
+    rt._agent = "kirocrew"
+    rt._send_and_await = AsyncMock()  # type: ignore[method-assign]
+    rt.terminate_session = AsyncMock()  # type: ignore[method-assign]
+    asked: list[tuple[str, str]] = []
+
+    def _over(
+        agent: str, backend: str, *, launch_name: str | None = None, work_dir: object = None
+    ) -> None:
+        asked.append((agent, backend))
+        raise agent_mod.SharedTemplateOverCeiling("over the ceiling")
+
+    with (
+        patch.object(agent_mod, "require_fresh_derived_spec", return_value=None),
+        patch.object(agent_mod, "require_shared_template_within_ceiling", side_effect=_over),
+    ):
+        with pytest.raises(AcpRuntimeError, match="over the ceiling"):
+            await rt._activate_mode_bracketed(
+                "s1", "pkg-reviewer", budget=30.0, payload_snapshot=None, wire_registered=False
+            )
+    assert asked == [("pkg-reviewer", rt._acp_backend)]
+    rt.terminate_session.assert_awaited_once_with("s1")
+    rt._send_and_await.assert_not_called()
+
+
+@pytest.mark.parametrize("start", ["create", "load"])
+@pytest.mark.asyncio
+async def test_a_warm_session_that_inherits_the_spawn_agent_is_checked_before_the_request(start):
+    """A session that names no agent runs the spawn agent, and its spec may have
+    gained a grant since the spawn checked it. The over-ceiling refusal runs for
+    that effective agent before ``session/new`` or ``session/load`` goes out."""
+    from kiro_crew import agent as agent_mod
+    from kiro_crew.acp.session_handle import AcpRuntimeError
+
+    rt, _, _ = _make_runtime()
+    rt._agent = "pkg-reviewer"
+    rt._can_load_session = True
+    rt._send_and_await = AsyncMock()  # type: ignore[method-assign]
+    asked: list[tuple[str, str]] = []
+
+    def _over(
+        agent: str, backend: str, *, launch_name: str | None = None, work_dir: object = None
+    ) -> None:
+        asked.append((agent, backend))
+        raise agent_mod.SharedTemplateOverCeiling("over the ceiling")
+
+    with patch.object(agent_mod, "require_shared_template_within_ceiling", side_effect=_over):
+        with pytest.raises(AcpRuntimeError, match="over the ceiling"):
+            if start == "create":
+                await rt.create_session(cwd="/w")
+            else:
+                await rt.load_session("/home/u/.kiro/sessions/cli/sid-9.json", "sid-9", cwd="/w")
+    assert asked == [("pkg-reviewer", rt._acp_backend)]
+    rt._send_and_await.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_a_kas_runtime_is_not_refused_at_session_start():
+    """KAS filters the spec's grants in its own projection, so its start passes."""
+    from kiro_crew.acp_backends import ACP_BACKEND_KAS
+    from kiro_crew.config.loader import KiroCrewConfig
+
+    rt, _, _ = _make_runtime()
+    rt._acp_backend = ACP_BACKEND_KAS
+    # A config read that fails would refuse the start, so reaching it fails the test.
+    with patch.object(KiroCrewConfig, "load", side_effect=OSError("unreadable")):
+        await rt._refuse_over_ceiling_start("pkg-reviewer")

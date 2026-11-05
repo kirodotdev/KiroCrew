@@ -158,6 +158,16 @@ async def _read_upload_file(request: web.Request) -> tuple[Path | None, web.Resp
     # A single path rather than a scratch directory: the callers below already
     # own the returned file and unlink it in their `finally`, so a directory
     # would be a second thing to clean and nobody is cleaning it.
+    #
+    # The uploaded spool stays in the system temp dir, not the data-home staging leaf.
+    # ``part_stream`` creates and discards this file with a synchronous ``os.open`` /
+    # ``close`` + ``unlink`` ON the serving event loop, a cancellation-safety invariant
+    # it shares with two other upload handlers (ownership must be synchronous). Pointing
+    # ``dir=`` at ``<data home>/staging`` would aim that on-loop create at a filesystem
+    # that may be NFS, where a stalled metadata op would freeze the gateway loop; an
+    # off-loop create needs a different ownership model in that shared module. The large
+    # EXTRACTION (``portability.apply_import_zip``) and the snapshot/restore work stage
+    # under the data home; this upload spool does not.
     dest = Path(tempfile.gettempdir()) / f"kc_import_{uuid.uuid4().hex}.zip"
     try:
         await part_stream.stream_part_to_file(part, dest, max_bytes=_MAX_IMPORT_BYTES)

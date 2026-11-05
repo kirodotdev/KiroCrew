@@ -267,23 +267,33 @@ live one did. The other error notices a turn can end with are not stored, so aft
 a reload such a turn shows its question without the notice, which is also what
 the model holds.
 
-**After the socket connects.** Side frames reach owner sockets only, so a turn
-that ends while this tab cannot hear it (after the restore read was answered but
-before the socket connected, or while the socket is down) sends its final frame
-to no socket of this tab. So each time the socket opens, a restored panel still
-waiting on a turn reads `GET .../side` again, once any restore read still in
+**After the socket connects.** Side frames reach owner sockets only, so whatever
+happens to a side conversation while this tab cannot hear it (after the restore
+read was answered but before the socket connected, or while the socket is down)
+reaches no socket of this tab: a turn's final frame, another tab's question and
+answer, a question queued, run or cancelled elsewhere. So each time the socket
+opens, every restored panel, idle or waiting on a turn, reads `GET .../side`
+again, once any restore read still in
 flight has landed (`resyncWaitingSideConversations` in `store/chatSlice.ts`,
 `sideResync` in `store/chat/side.ts`). The read is judged against the panel as it
 was when the read was sent. When the socket opens again while a read is out, only
 the newer read is applied: the older one can answer last and would undo what the
 newer one learned. A read that shares one of its runs is merged the way a
-restore merges it: the stored rows and the busy state. The send receipt records
+restore merges it: the stored rows, the queue and the busy state. The send receipt records
 the started run on its optimistic question. A stored row settles that question
 only when its run matches the receipt; without a receipt, the optimistic copy
 stays pending even when the read already holds its stored and answered row. A
 receipt that lands after its question's frame drops the copy still shown as
 unsent, and ends the wait when that copy was all that kept a finished turn busy.
-The queue keeps to its own frames. A read with no open conversation, or one that
+The queue takes the read's entries. A card the read lacks goes when the panel
+already showed it as the read was sent (it ran or was cancelled meanwhile), and
+its id is retired like a drain's; its text is kept until a cancel for it arrives,
+so this tab's own cancel answered after the read still hands the question back
+to the composer once, even when the side was closed before that answer came,
+and even when a new question opened the next conversation meanwhile; that
+cancel is not applied to the newer conversation.
+A card added after the read was sent stays.
+A read with no open conversation, or one that
 shares none of those runs and so describes another conversation (this one was
 closed while the tab could not hear it), stops the wait and leaves the panel's
 rows as they are, except that a question accepted into one of those runs is no
@@ -390,6 +400,15 @@ slot's side draft when the close came first. A card whose edit is still in
 flight goes back with the edit's wording, and the edit's own result does not
 hand it back a second time.
 
+When another tab sent the close (`origin_client` names a tab other than this
+one), and this tab showed rows or queue cards or handed a question back to its
+composer, it then marks the slot (`sideClosedElsewhere`). Its panel says that
+refreshing the context in another tab cleared this side chat. That line replaces
+an error the panel showed for the closed conversation. It remains until a new
+conversation begins there (a user frame, this tab's send, or a send status for
+the slot) or this tab closes it. A close this tab sent, or one that names no
+tab, shows nothing new.
+
 ## Backend Modules
 
 ### `dashboard/ws.py` — `broadcast_side_queue`
@@ -440,7 +459,12 @@ Four prompt constants, two lifted from the upstream protocol:
 - `SIDE_BOUNDARY_PROMPT_NO_TOOLS` — the variant for a harness outside
   `ACP_BACKENDS_SIDE_READONLY`, saying tools are unavailable.
 - `SIDE_BOUNDARY_PROMPT_NO_SHELL` — the same read-only boundary for a session
-  with no shell tool (claude), naming no shell command.
+  with no shell tool (claude), naming no shell command. A shell-capable side
+  turn gets it too while `name_grant.environment_refusal()` refuses every
+  program name (a PowerShell profile, an inherited `BASH_ENV`, an ambiguous
+  `PATH`): each shell read is then declined and side chat has no card to fall
+  back to. The handler runs that check off the loop, and only for a turn that
+  sends the envelope.
 - `SIDE_BOUNDARY_PROMPT_LISTING` — the read-only boundary for a session that
   can list folders and view images but has no shell and no tool that reads a
   file's text (goose).
@@ -572,8 +596,10 @@ hardened reader refuses a hardlink); its declared `name` equals its stem and is
 the derived name of the base its owner-marked `description` names; no provider
 in the session registry was spawned under it; and the base does not resolve
 where publication looks. A user-scope base resolves while any
-`<agent>.json`/`.md` entry exists or `agent.agent_spec_path` finds a spec
-declaring it (two declaring it still resolves). A project variant is reaped
+`<agent>.json`/`.md` entry exists, `agent.agent_spec_path` finds a spec
+declaring it (two declaring it still resolves), or
+`member_essential_context.linked_global_template_spec` finds a linked entry
+declaring it, the same lookup publication reads the base through. A project variant is reaped
 only when its recorded checkout is gone, or that checkout's `.kiro/agents`
 holds no entry named or declaring the agent; an unreadable or protected
 checkout, a variant recording no checkout or a relative path, one whose
@@ -592,13 +618,13 @@ with `base_spec_missing` before a session exists.
 **The allowance is a harness capability, granted by positive membership.**
 Whether a side turn may execute read-only tools at all is
 `ACP_BACKENDS_SIDE_READONLY` (`agent_sdk/backends_routing.py`, harness-parity H6):
-kiro-cli, KAS, claude, goose and deepseek. A harness has its own pre-approval surface
+kiro-cli, KAS, claude, goose, deepseek and strands. A harness has its own pre-approval surface
 (claude-agent-acp `permissions.allow` / `bypassPermissions`, KAS `permissions`
 rules from its own store, goose's `permission.yaml`) that the host gate cannot see: a call it pre-approves
 would run with no READ_ONLY decision and no SEL row. A member therefore starts
 the side session in a shape where that surface cannot reach a write — kiro-cli
 through the derived spec above, KAS through the same spec taken over the wire,
-claude and goose through the session shapes below, and deepseek through Crew's verified gate plugin. KAS receives `<agent>--readonly` as a
+claude and goose through the session shapes below, deepseek through Crew's verified gate plugin, and strands through Crew's gate module. KAS receives `<agent>--readonly` as a
 projected custom agent (`acp/kas_agents` puts it in `customAgents`), and the
 derivation empties its `permissions` block with the other grants, so every KAS
 tool call raises `session/request_permission` (measured on kiro-cli 2.29.0,
@@ -636,7 +662,21 @@ loader built-in, or Crew's gate. Global `read`, `grep`, and `glob` must be held
 by running `dsh-tool-fs` or `dsh-tool-fs-search` tools, with no scoped layer
 shadowing them. A later per-agent scope stays covered by the stock-only rule.
 Any other composition, unknown owner, or shadow makes each DeepSeek side turn
-`REJECT_ALL` (`deepseek_read_only_issue`, refused in `llm_helpers`). Another
+`REJECT_ALL` (`deepseek_read_only_issue`, refused in `llm_helpers`). strands
+has no pre-approval store in project mode: Crew's gate module makes every Strands
+`Agent` ask once per tool call, and its envelope names the tool's owner, read off
+the tool object Strands resolved. Captured live on Strands CLI 0.2.3 through a real
+`side_read_only` session under `READ_ONLY` (`acp_frames/strands/side-read-only-live.jsonl`):
+the built-in `read` ran, `shell` running `ls` and `write` were refused.
+A side session (`side_read_only`) launches with no MCP server. Only the
+harness's own `read` built-in (`owner: "builtin"`) with a whole envelope and an
+absolute `path` equal to the one the deny tiers judge is named `fs_read`
+(`acp/_dispatch.is_strands_side_read`). Every other call, a read-only shell
+command included, carries `side_read_only_refusal` and is refused in
+`llm_helpers` before the gate, so the gate's shell classifier never sees it. The
+prompt is `SIDE_BOUNDARY_PROMPT_FILE_READS`: file reads only, no shell, search
+or web. Thread replies take the same posture (`THREAD_BOUNDARY_PROMPT_FILE_READS`).
+Another
 harness may have its own pre-approval surface the host gate cannot see. Off the set,
 or with the harness unknown because the config never loaded, `_run_side_turn`
 keeps the pre-allowance posture — the base agent under `REJECT_ALL`, no
@@ -985,8 +1025,9 @@ passes them straight through, so a path chip or an artifact link in a side reply
 opens a tab of the panel the side chat sits in, as the same chip and link do in
 the main transcript. Capability by omission, like every other host seam here: a
 host that passes neither gets `MarkdownRenderer`'s own fallbacks (a path chip
-reveals the file in the OS file manager, or copies the path on a remote
-dashboard; a path link stays a plain link; an artifact link navigates away).
+reveals the file in the OS file manager, or, where the gateway host cannot open
+one, copies the path and says so; a path link stays a plain link; an artifact
+link navigates away).
 `website/src/test/SideChat.fileOpen.test.tsx` pins both the wired and the
 unwired behaviour.
 
@@ -1012,6 +1053,9 @@ action types stay `chat/<name>` and every consumer keeps importing them from
   duplicate cannot overwrite the raw text), `edit` rewrites, `cancel`/`drain`
   remove. Never resurrects a closed side.
 - `sideClose` action drops per-slot side state.
+- `sideClosedElsewhere` action marks a slot another tab closed while this tab
+  showed it (`slotSideClosedElsewhere`); `sideClose` and a new conversation
+  clear it.
 - Cleaned up with the slot's other per-slot state (`evictSlotState` in
   `store/chat/slotResidue.ts`) on `deleteSlot.fulfilled` and when the slot
   leaves the authoritative slot list.
@@ -1020,8 +1064,8 @@ action types stay `chat/<name>` and every consumer keeps importing them from
 
 `case 'chat.side_result':` dispatches `sseSideResult`,
 `case 'chat.side_queue':` dispatches `sseSideQueue` and `case 'chat.side_closed':`
-dispatches `sideClose` (see Wire Protocol), alongside the existing subagent/tool
-dispatch cases.
+dispatches `sideClose`, then `sideClosedElsewhere` for another tab's close (see
+Wire Protocol), alongside the existing subagent/tool dispatch cases.
 
 ## Security & Isolation
 

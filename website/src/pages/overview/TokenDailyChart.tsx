@@ -3,6 +3,7 @@ import { formatCost } from '../../utils/formatCost'
 import SimpleSelect from '../../components/SimpleSelect'
 
 import { i18nT } from '../../i18n/t'
+import { fmtCompact } from '../../i18n/format'
 export type TokenBucket = {
   input: number
   output: number
@@ -32,12 +33,6 @@ const ALL = '__all__'
 
 function emptyBucket(): TokenBucket {
   return { input: 0, output: 0, cacheCreate: 0, cacheRead: 0, costUsd: 0 }
-}
-
-function fmtNum(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
-  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`
-  return String(n)
 }
 
 /**
@@ -203,9 +198,9 @@ export function TokenDailyChart({
                 *  and this tooltip is the only place those numbers appear. */}
               <div className="absolute top-0 left-1/2 -translate-x-1/2 mt-1 hidden [.group:hover_&]:block bg-bg-elevated border border-border rounded px-2 py-1 text-[11px] whitespace-nowrap z-50 shadow-lg pointer-events-none">
                 <div className="font-medium">{d.date}</div>
-                <div>{i18nT('pages.overview.tokenDailyChart.in')} {fmtNum(d.input)} {i18nT('pages.overview.tokenDailyChart.out')} {fmtNum(d.output)}</div>
-                {d.cacheRead > 0 && <div>{i18nT('pages.overview.tokenDailyChart.cache_read')} {fmtNum(d.cacheRead)}</div>}
-                {d.cacheCreate > 0 && <div>{i18nT('pages.overview.tokenDailyChart.cache_create')} {fmtNum(d.cacheCreate)}</div>}
+                <div>{i18nT('pages.overview.tokenDailyChart.in')} {fmtCompact(d.input)} {i18nT('pages.overview.tokenDailyChart.out')} {fmtCompact(d.output)}</div>
+                {d.cacheRead > 0 && <div>{i18nT('pages.overview.tokenDailyChart.cache_read')} {fmtCompact(d.cacheRead)}</div>}
+                {d.cacheCreate > 0 && <div>{i18nT('pages.overview.tokenDailyChart.cache_create')} {fmtCompact(d.cacheCreate)}</div>}
                 {d.costUsd > 0 && <div>{i18nT('pages.overview.tokenDailyChart.cost')} {formatCost(d.costUsd)}</div>}
                 {(providerSel !== ALL || effectiveModel !== ALL) && (
                   <div className="mt-1 pt-1 border-t border-border text-muted">

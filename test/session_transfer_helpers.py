@@ -1,10 +1,8 @@
 """Shared fakes and fixtures for the ``test_session_transfer`` family of test files.
 
-Holds, among other support, the request, slot, log, state and peer doubles (the
-``DashboardState`` stub included), a valid-bundle factory, the import driver and the autouse
-fixture that points the arrival and egress temp dirs at per-test directories.
-``test_session_transfer.py`` and the four sibling files its docstring names import them from
-here.
+Holds the request, slot, log, state and peer doubles, a valid-bundle factory, the import
+driver and the autouse fixture that points the arrival and egress temp dirs at per-test
+directories.
 """
 
 from __future__ import annotations
@@ -12,6 +10,7 @@ from __future__ import annotations
 import contextlib
 import json
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 from aiohttp import web
@@ -22,11 +21,8 @@ from kiro_crew.dashboard.session_transfer import BUNDLE_VERSION
 class _OwnerReq(SimpleNamespace):
     """Request double carrying dashboard claims as a real MAPPING.
 
-    ``handlers_instances._guard`` runs the owner predicate, which calls
-    ``request.get("user")``, tests ``"app" in request`` and then compares
-    ``request["app"]`` -- a plain ``SimpleNamespace`` with a ``get`` attribute
-    raises on the ``in`` test. Defaults to the configured owner with no app token;
-    pass ``claims=`` for any other caller.
+    The owner predicate tests ``"app" in request``, which a ``SimpleNamespace`` fails.
+    Defaults to the configured owner with no app token; pass ``claims=`` otherwise.
     """
 
     def __init__(self, *, claims=None, **kw):
@@ -85,8 +81,7 @@ class _PostedBody:
 
 
 @pytest.fixture(autouse=True)
-# nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- pre-existing autouse fixture moved verbatim; no module of this family calls monkeypatch.undo()
-def _isolate_import_tmp(tmp_path_factory, monkeypatch):
+def _isolate_import_tmp(tmp_path_factory, _floor_monkeypatch):
     """Point the arrival temp dir at a per-test, auto-cleaned directory.
 
     Arriving bodies stream to disk before they are parsed; without this they would
@@ -95,9 +90,9 @@ def _isolate_import_tmp(tmp_path_factory, monkeypatch):
     from kiro_crew.dashboard import session_transfer as st
 
     d = tmp_path_factory.mktemp("kc-import")
-    monkeypatch.setattr(st, "_import_tmp_dir", lambda: d)
+    _floor_monkeypatch.setattr(st, "_import_tmp_dir", lambda: d)
     out = tmp_path_factory.mktemp("kc-export")
-    monkeypatch.setattr(st, "_egress_tmp_dir", lambda: out)
+    _floor_monkeypatch.setattr(st, "_egress_tmp_dir", lambda: out)
 
 
 class _PersistentLine:
@@ -246,11 +241,9 @@ def _size_refusing_peer(refusal_code: str):
 def _make_request(state, body, *, raw: str | None = None, gz: bytes | None = None):
     """A minimal aiohttp-request stand-in for the import handler.
 
-    Serves BYTES via ``read()``, not a pre-parsed dict, because the handler
-    decides the body format from the first two bytes — a stub that handed back a
-    dict would skip the very branch under test. ``gz`` sends compressed bytes
-    verbatim (what a browser uploads); ``raw`` sends an exact string (malformed
-    JSON); otherwise *body* is serialised the way a real caller would.
+    Serves bytes, because the handler sniffs the body format from the first two bytes.
+    ``gz`` sends compressed bytes verbatim; ``raw`` sends an exact string; otherwise
+    *body* is serialised.
     """
 
     if gz is not None:
@@ -266,11 +259,8 @@ def _make_request(state, body, *, raw: str | None = None, gz: bytes | None = Non
     class _FakeContent:
         """A minimal ``StreamReader`` stand-in exposing ``iter_chunked``.
 
-        The handler streams ``request.content`` to disk rather than calling
-        ``request.read()`` (that is the whole point of the no-size-ceiling change),
-        so the stub has to serve the bytes the way the real StreamReader does. It
-        hands them out in small chunks so the chunk-sniff and the streaming loop
-        are actually exercised.
+        The handler streams ``request.content`` to disk instead of ``request.read()``.
+        Small chunks exercise the chunk-sniff and the streaming loop.
         """
 
         def __init__(self, data: bytes) -> None:
@@ -330,21 +320,14 @@ def _stub_state(st, monkeypatch, save=None):
         _tags=[],
         _tags_authoritative=True,
         _folders=[],
-        # ``DashboardState`` always HAS this attribute, and ``None`` is a real
-        # production value for it (``state_parts/dashboard_state.py``: ``conversation_log:
-        # ConversationLog | None = None``). Present here because the import
-        # handler's delete witness reads it on every import; without it the stub
-        # raises ``AttributeError`` where production reads a legitimate ``None``.
-        #
-        # ``None`` makes the witness answer False by its own documented rule — a
-        # store with no path resolver cannot witness a delete — so these tests
-        # keep exercising the real ``session_was_deleted``, and the DELETE path is
-        # driven deliberately in
-        # ``test_a_delete_during_the_folder_check_is_not_reported_as_landed``
-        # rather than being simulated everywhere.
+        # The import handler's delete witness reads this on every import, and ``None``
+        # is a real production value. With ``None`` the real ``session_was_deleted``
+        # answers False; the delete path is driven in
+        # ``test_a_delete_during_the_folder_check_is_not_reported_as_landed``.
         conversation_log=None,
         get_or_create_slot=_get_or_create,
         push_slots_update=lambda: None,
+        push_listing_refresh=MagicMock(),
         # The materialiser wraps creation + begin_slot_construction in this to
         # defer the creation broadcast; the stub's push is already a no-op, so a
         # nullcontext models it faithfully enough for the paths these tests

@@ -37,12 +37,8 @@ class TestCronAddSessionKey:
     def test_an_unidentified_caller_cannot_create_an_ownerless_job(self, monkeypatch):
         """Without a resolvable identity, ``cron_add`` refuses instead of storing "".
 
-        Storing an ownerless row instead would, on a pooled backend -- where no
-        identity is resolvable at all -- be EVERY row, which is what makes
-        the ownership gate unenforceable. Refusing stops this server from adding
-        to the ownerless set; the CLI and the importer still write to it, and such
-        rows are visible-but-not-mutable through MCP. See
-        ``test/test_mcp_cron_caller_identity.py`` for the full rule.
+        On a pooled backend no identity resolves, so ownerless rows would be EVERY row.
+        Full rule: ``test/test_mcp_cron_caller_identity.py``.
         """
         monkeypatch.delenv("KIROCREW_SESSION_KEY", raising=False)
         monkeypatch.delenv("KIROCREW_CHANNEL_ID", raising=False)
@@ -82,11 +78,8 @@ class TestCronRemoveAllScoped:
     def test_the_cli_flag_does_not_widen_the_sweep(self, monkeypatch):
         """``KIROCREW_CLI=1`` must not make this remove EVERY session's jobs.
 
-        The companion to the unidentified-caller assertions in
-        ``test/test_mcp_cron_caller_identity.py``: here the caller IS named, so
-        the sweep runs -- and it must still stop at the caller's own rows. A flag
-        that anything shaping this process's environment can spell was never a
-        scope, and nothing in ``src/`` ever set it.
+        The caller IS named, so the sweep runs and must stop at its own rows; any
+        environment can spell the flag, so it is no scope.
         """
         monkeypatch.delenv("KIROCREW_CHANNEL_ID", raising=False)
         n1, n2 = _unique_name(), _unique_name()
@@ -168,7 +161,7 @@ class TestSessionKeyPersistence:
                 }
             ],
         }
-        (tmp_path / "crons.json").write_text(json.dumps(data))
+        (tmp_path / "crons.json").write_text(json.dumps(data), encoding="utf-8")
         svc = CronService(base_dir=tmp_path)
         svc._load()
         assert svc.list_jobs()[0].session_key == ""

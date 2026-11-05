@@ -133,6 +133,7 @@ def test_publish_rechecks_binding_before_staging(editor, monkeypatch):
                 {"command": ""},
                 {"url": []},
                 {"url": ""},
+                {"type": "http", "url": ""},
                 {"args": "--read"},
                 {"args": [1]},
                 {"env": []},

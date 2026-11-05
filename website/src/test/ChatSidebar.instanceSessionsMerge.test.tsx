@@ -7,7 +7,7 @@
  * ChatSidebar.offline.test.tsx, the owner of the mock setup).
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent, waitFor, within } from '@testing-library/react'
+import { act, render, screen, fireEvent, waitFor, within } from '@testing-library/react'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -663,7 +663,7 @@ describe('ChatSidebar – remote crew sessions in the live list', () => {
     expect(vi.mocked(api.createChatSlot)).not.toHaveBeenCalled()
     expect(selectInstanceMock).not.toHaveBeenCalled()
     expect(JSON.parse(sessionStorage.getItem('kirocrew.crewWindow') || 'null')).toEqual({ instanceId: 'inst-a', key: 'chat-9' })
-    closeCrewWindow()
+    act(() => { closeCrewWindow() })
   })
 
   it('hands a crew row to a host with no chat pane of its own', async () => {
@@ -849,7 +849,7 @@ describe('ChatSidebar – remote crew sessions in the live list', () => {
       // raw-key lookup has two candidates. The remote one sits in its crew group.
       expect(screen.getByTestId('crew-group-inst-a')).toHaveTextContent('REMOTE same-key newer row')
 
-      store.dispatch(requestSlotReveal('s-new'))
+      act(() => { store.dispatch(requestSlotReveal('s-new')) })
 
       await waitFor(() => expect(scrolledInto).toHaveLength(1))
       expect(scrolledInto[0]).toContain('LIVE newer slot')

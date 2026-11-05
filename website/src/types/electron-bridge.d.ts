@@ -79,6 +79,8 @@ declare global {
     getGlobalHotkey: () => Promise<ElectronGlobalHotkeyInfo>
     /** Evict the HTTP cache of one loopback pane origin; resolves to whether a purge ran. */
     clearPaneHttpCache?: (origin: string) => Promise<boolean>
+    /** Copy the image drawn at a main-frame point (CSS pixels). Optional: absent on an older shell. */
+    copyImageAt?: (x: number, y: number) => Promise<boolean>
   }
 
   interface LocalGatewayAPI {
@@ -91,6 +93,14 @@ declare global {
   interface CloseActionAPI {
     get: () => Promise<CloseAction>
     set: (action: CloseAction) => Promise<CloseAction>
+  }
+
+  /** First-run setup's "connect to a crew on another machine" exit. `start`
+   *  opens the desktop app's remote-crew form; on "switching" the window is
+   *  about to leave this page for the crew's dashboard. */
+  interface RemoteCrewSetupAPI {
+    available: () => Promise<boolean>
+    start: () => Promise<'switching' | 'cancelled' | 'unavailable'>
   }
 
   interface CrashReportsAPI {
@@ -204,10 +214,6 @@ declare global {
     setInactive: (panelId: string, inactive: boolean) => Promise<NativeBrowserState | null>
     close: (panelId: string) => Promise<NativeBrowserState | null>
     getState: (panelId: string) => Promise<NativeBrowserState | null>
-    setAgentAct: (panelId: string, enabled: boolean) => Promise<{ ok: boolean } | null>
-    setControlOwner: (panelId: string, owner: string) => Promise<unknown>
-    getControl: (panelId: string) => Promise<unknown>
-    control: (panelId: string, operation: string, args: unknown) => Promise<unknown>
     /** Element annotation on the native page. Optional: absent on a desktop
      *  shell older than the feature, which is what hides the button. */
     annotate?: (
@@ -221,8 +227,6 @@ declare global {
       | { ok: true; url?: string; title?: string }
       | null
     >
-    trackSession: (panelId: string, tracked: boolean) => Promise<unknown>
-    onAgentOpened: (cb: (event: NativeBrowserEvent) => void) => () => void
     onDidNavigate: (cb: (event: NativeBrowserEvent) => void) => () => void
     onTitleUpdated: (cb: (event: NativeBrowserEvent) => void) => () => void
   }
@@ -302,6 +306,7 @@ declare global {
     electronAPI?: ElectronAPI
     localGatewayAPI?: LocalGatewayAPI
     closeActionAPI?: CloseActionAPI
+    remoteCrewSetupAPI?: RemoteCrewSetupAPI
     crashReportsAPI?: CrashReportsAPI
     wslAPI?: WslAPI
     folderPickAPI?: FolderPickAPI

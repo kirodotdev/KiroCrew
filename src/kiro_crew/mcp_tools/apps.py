@@ -30,6 +30,7 @@ from typing import Any, TypeGuard
 from urllib.parse import quote
 
 from kiro_crew import mcp_core
+from kiro_crew.apps import builtin_agent_tools
 from kiro_crew.apps.manager import app_enabled_state
 from kiro_crew.platform import redact_via_context as redact
 from kiro_crew.validation import (
@@ -160,75 +161,12 @@ def schemas() -> list[dict[str, Any]]:
                         "type": "string",
                         "description": (
                             "JSON object for POST bodies, serialized as a string — "
-                            "e.g. '{\"id\": \"INV-42\", \"status\": \"resolved\"}' for "
+                            'e.g. \'{"id": "INV-42", "status": "resolved"}\' for '
                             "/incident/transition"
                         ),
                     },
                 },
                 "required": ["method", "path"],
-            },
-        },
-        {
-            "name": "design_tweak_update_thread",
-            "description": (
-                "Report progress on one Design Tweak comment thread, so its dot "
-                "in the live preview updates as you apply the batched edits. "
-                "This is the ONLY way an agent session can update a thread: the "
-                "raw `POST /thread` the skill once documented needs a dashboard "
-                "credential the session does not hold (the credential-exfil "
-                "safety floor blocks minting one), so it 403s and the dots never "
-                "change. The MCP server process holds the credential and you "
-                "never see one. Pass `request_id` (the request's id) and usually "
-                "`comment_id` (the `cid` of the specific comment you are working) "
-                "so the note lands on that comment's bubble; omit `comment_id` "
-                "only for a note that spans the whole batch. Post a short `text` "
-                "note when you start a comment and at each meaningful step; when "
-                "that comment is finished, send `status='done'` so its dot turns "
-                "green. `status` accepts only `done` — the tool reports forward "
-                "progress and exposes no destructive thread action (it cannot "
-                "clear or dismiss a request). `text` or `status` is required. "
-                "Never write the request file yourself; progress is reported "
-                "ONLY through this tool."
-            ),
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "request_id": {
-                        "type": "string",
-                        "description": (
-                            "The request's id (the `id` the request file is "
-                            "keyed by). Matches `^[A-Za-z0-9._-]+$`."
-                        ),
-                    },
-                    "comment_id": {
-                        "type": "string",
-                        "description": (
-                            "The `cid` of the specific comment to report against, "
-                            "so the note lands on that comment's bubble. Omit for "
-                            "a request-level note that spans the whole batch "
-                            "(e.g. 'rebuilding, one moment'). Matches "
-                            "`^[A-Za-z0-9._-]+$`."
-                        ),
-                    },
-                    "text": {
-                        "type": "string",
-                        "description": (
-                            "A single short progress line, e.g. 'Editing "
-                            "styles.css — uppercasing .section-title'. Required "
-                            "unless `status` is given."
-                        ),
-                    },
-                    "status": {
-                        "type": "string",
-                        "enum": ["done"],
-                        "description": (
-                            "Set `done` to mark the comment finished so its dot "
-                            "turns green. Only `done` is accepted. Required "
-                            "unless `text` is given."
-                        ),
-                    },
-                },
-                "required": ["request_id"],
             },
         },
         {
@@ -260,7 +198,10 @@ def schemas() -> list[dict[str, Any]]:
                 "window the pod refuses the token as expired. Calling pod_up again "
                 "on a running pod leaves it running and returns a fresh token. "
                 "Release the pod with `pod_down` when done -- a pod holds a port "
-                "and memory until it is stopped."
+                "and memory until it is stopped. `memory` and `cpu` set the pod's "
+                "ceilings (default 4G and 200%); on a pod that is already running "
+                "they are recorded and take effect with `pod_restart` (on Windows, "
+                "with `pod_down` then `pod_up`)."
             ),
             "inputSchema": {
                 "type": "object",
@@ -271,6 +212,60 @@ def schemas() -> list[dict[str, Any]]:
                             "The worktree to bring up, named the way `pod_ls` and "
                             "the Dev Fleet page name it -- its directory basename, "
                             "e.g. 'kc-wt-10732'. NOT a path and NOT a branch"
+                        ),
+                    },
+                    "memory": {
+                        "type": "string",
+                        "description": (
+                            "Optional memory ceiling for the pod, e.g. '16G' (default "
+                            "4G, capped at 80% of host RAM). Kept across restarts"
+                        ),
+                    },
+                    "cpu": {
+                        "type": "string",
+                        "description": (
+                            "Optional CPU ceiling, e.g. '800%' for eight cores "
+                            "(default 200%, capped at the host CPU count). Kept "
+                            "across restarts"
+                        ),
+                    },
+                },
+                "required": ["worktree"],
+            },
+        },
+        {
+            "name": "pod_restart",
+            "description": (
+                "Restart a running pod in place and KEEP its data directory: its "
+                "sessions, config, installed apps and downloaded models survive. "
+                "Use it to apply a new `memory` / `cpu` ceiling, to pick up a "
+                "rebuilt worktree, or to revive a pod that crashed. Unlike "
+                "`pod_down` followed by `pod_up`, nothing is deleted. Works only "
+                "for a pod that has been started before and not torn down with "
+                "`pod_down`. Not available on Windows, where it is refused before "
+                "anything is stopped. Blocking until the pod answers its health check; "
+                "returns the same {base_url, token} handle as `pod_up`."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "worktree": {
+                        "type": "string",
+                        "description": "The worktree whose pod should be restarted",
+                    },
+                    "memory": {
+                        "type": "string",
+                        "description": (
+                            "Optional memory ceiling for the pod, e.g. '16G' (default "
+                            "4G, capped at 80% of host RAM). Kept across restarts"
+                        ),
+                    },
+                    "cpu": {
+                        "type": "string",
+                        "description": (
+                            "Optional CPU ceiling, e.g. '800%' for eight cores "
+                            "(default 200%, capped at the host CPU count). Kept "
+                            "across restarts"
                         ),
                     },
                 },
@@ -529,6 +524,9 @@ def schemas() -> list[dict[str, Any]]:
                 "required": [],
             },
         },
+        # The tools a built-in app declares as data (``apps.builtin_agent_tools``),
+        # each run by ``builtin_agent_tool`` below.
+        *(tool.descriptor() for tool in builtin_agent_tools.agent_tools()),
     ]
 
 
@@ -536,17 +534,19 @@ def schemas() -> list[dict[str, Any]]:
 #: under ``apps/`` whose ``installed.json`` the app's gateway routes gate on). Spelled
 #: as literals rather than imported from the apps: each app's ``APP_NAME`` lives in
 #: a backend module that drags that app's whole import graph into this server
-#: process. ``test_mcp_apps_tool_gate`` pins every entry to the real constant.
+#: process. ``test_mcp_apps_tool_gate`` pins every entry to the real constant. A
+#: declared tool carries its own app (``apps.builtin_agent_tools``).
 TOOL_APPS: dict[str, str] = {
     "issue_radar_record_investigation": "issue-radar",
     "issue_radar_crew_read": "issue-radar",
     "issue_radar_crew_record": "issue-radar",
     "ops_mission_control_api": "ops-mission-control",
-    "design_tweak_update_thread": "design-tweak",
     "pod_up": "dev-fleet",
+    "pod_restart": "dev-fleet",
     "pod_down": "dev-fleet",
     "pod_status": "dev-fleet",
     "pod_ls": "dev-fleet",
+    **{tool.name: tool.app for tool in builtin_agent_tools.agent_tools()},
 }
 
 
@@ -557,7 +557,7 @@ def advertised() -> list[dict[str, Any]]:
     ``installed.json`` via ``kiro_crew.apps.manager`` -- with two readers. Every
     route these tools reach refuses the call with HTTP 403 while the binary
     ``is_app_enabled`` does not prove the app enabled (Dev Fleet's routes and the
-    app reverse proxy Design Tweak sits behind name the refusal
+    app reverse proxy a declared tool posts through name the refusal
     ``app_not_enabled``, Ops Mission Control ``app_disabled``, Issue Radar carries
     no code). This reads the tri-state ``app_enabled_state`` and hides only on a
     readable ``False`` -- not installed, or installed and switched off. So a
@@ -692,7 +692,9 @@ def ops_mission_control_api(name: str, args: dict[str, Any]) -> str:
     _omc_url = "/api/apps/ops-mission-control" + _omc_path
     if _omc_query:
         _omc_url += "?" + _omc_query
-    _omc_resp = mcp_core._get(_omc_url) if _omc_method == "GET" else mcp_core._post(_omc_url, _omc_body)
+    _omc_resp = (
+        mcp_core._get(_omc_url) if _omc_method == "GET" else mcp_core._post(_omc_url, _omc_body)
+    )
     # Serialize compactly and redact on the way OUT: signals, incident
     # titles and ledger entries carry text from external monitoring
     # systems and prior LLM turns, so a credential or exfil URL quoted
@@ -704,65 +706,44 @@ def ops_mission_control_api(name: str, args: dict[str, Any]) -> str:
     _omc_cap = 60_000
     if len(_omc_text) > _omc_cap:
         _omc_text = (
-            _omc_text[:_omc_cap]
-            + f"\n… truncated ({len(_omc_text)} chars total). Narrow the "
+            _omc_text[:_omc_cap] + f"\n… truncated ({len(_omc_text)} chars total). Narrow the "
             "call (e.g. query filters) to see the rest."
         )
     return _omc_text
 
 
-# The one Design Tweak route the agent reaches, under the gateway's dashboard
-# app reverse proxy (``/apps/{name}/api/{path}`` → the app's own backend
-# process; NOT ``/api/apps/...``, which carries only the gateway's own app
-# management routes). The gateway admits exactly this path to internal-secret
-# callers (``_MIXED_INTERNAL_API_PATHS`` in dashboard/server_internal_paths.py); every other
-# app route stays dashboard-only.
-_DESIGN_TWEAK_THREAD_URL = "/apps/design-tweak/api/thread"
+def builtin_agent_tool(name: str, args: dict[str, Any]) -> str:
+    """Run a tool a built-in app declares: POST to the app's own route via the app proxy.
 
+    The declaration (``apps.builtin_agent_tools``) is data. It names the route under
+    ``/apps/<app>/api``, which query parameters and body keys the validated arguments
+    fill, and the fixed body keys; this handler is the only code that runs. A required
+    argument is always sent as its parameter; an optional one only when non-empty,
+    and so is a body argument. The values are URL-quoted with ``safe=''`` so none can
+    carry a '/', '?' or '#' that would rewrite the route. The handler needs no caller
+    identity, so it does NOT touch the session resolver.
 
-def design_tweak_update_thread(name: str, args: dict[str, Any]) -> str:
-    """Append progress to one Design Tweak comment thread via the app proxy.
-
-    The schema (``DESIGN_TWEAK_UPDATE_THREAD_SCHEMA``) bounds the field types,
-    lengths, and the ``status`` value set; the backend's ``_h_thread`` is the
-    single authority for the id grammar and the ``text or status`` rule (this
-    handler does not restate either). The handler needs no caller identity, so
-    it does NOT touch the session resolver.
+    Arguments reach the app unchanged: the app's backend is the one authority for
+    their grammar and redacts what it persists. The answer IS redacted here, because
+    it echoes app state that no inbound scrub touched.
     """
-    _dt_request_id = args["request_id"]
-    _dt_comment_id = args.get("comment_id") or ""
-    _dt_text = args.get("text") or ""
-    _dt_status = args.get("status") or ""
-
-    # The agent-authored note is passed through unchanged: the backend's
-    # ``_redact_incoming_thread_text`` runs on EVERY ``/thread`` write (the only
-    # route this tool posts to), so a credential or exfil URL in it is scrubbed
-    # before it persists. Redacting here too would be a second copy of that one
-    # enforcement point. The response IS redacted below, since that path echoes
-    # app state the backend's inbound scrub never touched.
-    _dt_body: dict[str, Any] = {"role": "agent"}
-    if _dt_text:
-        _dt_body["text"] = _dt_text
-    if _dt_status:
-        _dt_body["status"] = _dt_status
-
-    # ids are value-position only, but URL-quote them anyway so a '.' or '-'
-    # edge case cannot alter the query.
-    _dt_url = f"{_DESIGN_TWEAK_THREAD_URL}?id={quote(_dt_request_id, safe='')}"
-    if _dt_comment_id:
-        _dt_url += f"&cid={quote(_dt_comment_id, safe='')}"
-
-    _dt_resp = mcp_core._post(_dt_url, _dt_body)
-    # Redact on the way OUT: the response echoes the thread, whose entries carry
-    # text from prior turns and the app's own state.
-    _dt_text_out = redact(json.dumps(_dt_resp, ensure_ascii=False, default=str))
-    _dt_cap = 20_000
-    if len(_dt_text_out) > _dt_cap:
-        _dt_text_out = (
-            _dt_text_out[:_dt_cap]
-            + f"\n… truncated ({len(_dt_text_out)} chars total)."
-        )
-    return _dt_text_out
+    tool = builtin_agent_tools.agent_tool(name)
+    required = {f.name for f in tool.fields if f.required}
+    query = "&".join(
+        f"{param}={quote(args.get(arg) or '', safe='')}"
+        for param, arg in tool.query
+        if args.get(arg) or arg in required
+    )
+    url = f"{tool.url}?{query}" if query else tool.url
+    body: dict[str, Any] = dict(tool.body_constants)
+    for arg in tool.body_fields:
+        if args.get(arg):
+            body[arg] = args[arg]
+    resp = mcp_core._post(url, body)
+    text = redact(json.dumps(resp, ensure_ascii=False, default=str))
+    if len(text) > tool.response_cap:
+        text = text[: tool.response_cap] + f"\n… truncated ({len(text)} chars total)."
+    return text
 
 
 _POD_API_BASE = "/api/apps/dev-fleet/pod"
@@ -827,12 +808,37 @@ def _pod_token_limits(resp: dict[str, Any]) -> str:
     return "use it straight away: the link window is short"
 
 
+def _pod_limit_body(args: dict[str, Any]) -> dict[str, str]:
+    """The optional ``memory`` / ``cpu`` fields a pod start forwards."""
+    return {k: args[k] for k in ("memory", "cpu") if args.get(k)}
+
+
 def pod_up(name: str, args: dict[str, Any]) -> str:
-    _pu_worktree = args["worktree"]
     _pu_resp = mcp_core._post(
-        f"{_POD_API_BASE}/up", {"worktree": _pu_worktree}, timeout=_POD_UP_TIMEOUT_S
+        f"{_POD_API_BASE}/up",
+        {"worktree": args["worktree"], **_pod_limit_body(args)},
+        timeout=_POD_UP_TIMEOUT_S,
     )
-    _pu_err = _pod_failure(_pu_resp, f"pod up {_pu_worktree!r}")
+    return _pod_start_reply(args, _pu_resp, "up")
+
+
+def pod_restart(name: str, args: dict[str, Any]) -> str:
+    _pr_resp = mcp_core._post(
+        f"{_POD_API_BASE}/restart",
+        {"worktree": args["worktree"], **_pod_limit_body(args)},
+        timeout=_POD_UP_TIMEOUT_S,
+    )
+    return _pod_start_reply(args, _pr_resp, "restart")
+
+
+def _pod_start_reply(args: dict[str, Any], _pu_resp: dict[str, Any], verb: str) -> str:
+    """The prose handle for a pod that ``up`` or ``restart`` brought up.
+
+    Each caller posts to its own literal route, which the call-site auth scan
+    resolves against the strict internal-path table.
+    """
+    _pu_worktree = args["worktree"]
+    _pu_err = _pod_failure(_pu_resp, f"pod {verb} {_pu_worktree!r}")
     if _pu_err:
         return _pu_err
     # The token is the DELIVERABLE, so it is the one string here that must survive
@@ -842,10 +848,13 @@ def pod_up(name: str, args: dict[str, Any]) -> str:
     _pu_port = _pu_resp.get("port")
     _pu_base = _pu_resp.get("base_url") or (f"http://127.0.0.1:{_pu_port}" if _pu_port else "")
     _pu_token = _pu_resp.get("token") or ""
+    _pu_state = "restarted with its data kept" if verb == "restart" else "up"
     _pu_lines = [
-        f"Pod `{_pu_worktree}` is up on port {_pu_port}.",
+        f"Pod `{_pu_worktree}` is {_pu_state} on port {_pu_port}.",
         f"base_url: {_pu_base}",
     ]
+    if _pu_resp.get("memory") or _pu_resp.get("cpu"):
+        _pu_lines.append(f"limits: memory={_pu_resp.get('memory')} cpu={_pu_resp.get('cpu')}")
     if _pu_token:
         _pu_lines.append(f"token: {_pu_token}  ({_pod_token_limits(_pu_resp)})")
         _pu_lines.append(f"open: {_pu_base}/?token={_pu_token}")
@@ -885,10 +894,15 @@ def pod_status(name: str, args: dict[str, Any]) -> str:
     _ps_err = _pod_failure(_ps_resp, f"pod status {_ps_worktree!r}")
     if _ps_err:
         return _ps_err
+    _ps_limits = (
+        f" memory={_ps_resp.get('memory')} cpu={_ps_resp.get('cpu')}"
+        if _ps_resp.get("memory") or _ps_resp.get("cpu")
+        else ""
+    )
     return redact(
         f"Pod `{_ps_resp.get('name') or _ps_worktree}`: "
         f"{_ps_resp.get('status') or 'unknown'} "
-        f"port={_ps_resp.get('port')} health={_ps_resp.get('health')}"
+        f"port={_ps_resp.get('port')} health={_ps_resp.get('health')}{_ps_limits}"
     )
 
 
@@ -907,6 +921,11 @@ def pod_ls(name: str, args: dict[str, Any]) -> str:
         _pl_lines.append(
             f"  {_pl_row.get('name')}  port={_pl_row.get('port')} "
             f"health={_pl_row.get('health')}"
+            + (
+                f" memory={_pl_row.get('memory')} cpu={_pl_row.get('cpu')}"
+                if _pl_row.get("memory") or _pl_row.get("cpu")
+                else ""
+            )
         )
     return redact("\n".join(_pl_lines))
 
@@ -993,16 +1012,12 @@ def issue_radar_crew_record(name: str, args: dict[str, Any]) -> str:
     # mentioning labels at all, so the store kept the previous set and the
     # crew's record claimed labels it had just taken off the issue.
     if "labels_applied" in args:
-        _cw_body["labels_applied"] = [
-            redact(s) for s in (args.get("labels_applied") or []) if s
-        ]
+        _cw_body["labels_applied"] = [redact(s) for s in (args.get("labels_applied") or []) if s]
     # Names, forwarded as names: the route turns each into an explicit null in the
     # work-item patch, which is how a field is emptied. Every field above is gated
     # on truthiness, so this list is the ONLY way a clear reaches the ledger.
     if "clear" in args:
-        _cw_body["clear"] = [
-            s for s in (args.get("clear") or []) if isinstance(s, str) and s
-        ]
+        _cw_body["clear"] = [s for s in (args.get("clear") or []) if isinstance(s, str) and s]
     # The flat ci_* args are re-assembled into the store's `ci_state` dict
     # (crew_store merges it key-by-key). `ci_state` the ARG is the forge's
     # verdict word and becomes the dict's `state`; an int reading of 0 is
@@ -1084,11 +1099,12 @@ def issue_radar_crew_record(name: str, args: dict[str, Any]) -> str:
 HANDLERS: dict[str, Callable[[str, dict[str, Any]], str]] = {
     "issue_radar_record_investigation": issue_radar_record_investigation,
     "ops_mission_control_api": ops_mission_control_api,
-    "design_tweak_update_thread": design_tweak_update_thread,
     "pod_up": pod_up,
+    "pod_restart": pod_restart,
     "pod_down": pod_down,
     "pod_status": pod_status,
     "pod_ls": pod_ls,
     "issue_radar_crew_read": issue_radar_crew_read,
     "issue_radar_crew_record": issue_radar_crew_record,
+    **{tool.name: builtin_agent_tool for tool in builtin_agent_tools.agent_tools()},
 }

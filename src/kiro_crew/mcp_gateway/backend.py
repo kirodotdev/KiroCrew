@@ -857,11 +857,11 @@ __all__ = sorted(
 if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and IDEs
     from kiro_crew.mcp_gateway.backend_handshake import (  # noqa: F401
         _GATEWAY_INIT_ID,
+        _INITIALIZE_TIMEOUT_COLD_START_FLOOR_SECS,
         _LOST_SESSION_ERROR_CODE,
         _LOST_SESSION_ERROR_MESSAGE,
         _REHANDSHAKE_RETRY_METHODS,
         _REHANDSHAKE_STUB_SENTINEL,
-        _WINDOWS_INITIALIZE_TIMEOUT_FLOOR_SECS,
         _inject_inflight_capability,
         _is_lost_session_error,
         _parse_initialize_response,

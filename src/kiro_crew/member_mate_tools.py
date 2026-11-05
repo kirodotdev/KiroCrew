@@ -124,7 +124,7 @@ def binding_has_mate_tools(binding: Any) -> bool:
     try:
         spec = _read_template(name, getattr(binding, "workspace", "") or "")
     except Exception:
-        logger.debug("spec for %r unreadable; keeping the mate wording", name, exc_info=True)
+        logger.debug("spec for %r unreadable; keeping the Bot wording", name, exc_info=True)
         return True
     return True if spec is None else spec_has_mate_tools(spec)
 
@@ -136,7 +136,7 @@ def member_has_mate_tools(member: str) -> bool:
     try:
         binding = KiroCrewConfig.load().agents.get(member)
     except Exception:
-        logger.debug("config unreadable; keeping the mate wording", exc_info=True)
+        logger.debug("config unreadable; keeping the Bot wording", exc_info=True)
         return True
     return True if binding is None else binding_has_mate_tools(binding)
 
@@ -213,6 +213,93 @@ def binding_has_file_write(binding: Any) -> bool:
     return True if spec is None else spec_has_file_write(spec)
 
 
+#: The work-ledger server a conductor tracks dispatched work through.
+WORK_SERVER = "kirocrew-work"
+_WORK_REF = f"@{WORK_SERVER}"
+#: The one ledger verb the tracking and patrol text cannot do without: it opens and
+#: binds the items the patrol watches.
+_LEDGER_RECORD_REF = f"{_WORK_REF}/work_ledger_record"
+
+
+def spec_has_ledger_tools(spec: Any) -> bool:
+    """Whether *spec* mounts ``kirocrew-work`` and grants ``work_ledger_record``.
+
+    Mounted means the server entry is present and not muted, ``tools`` names the
+    server, ``work_ledger_record`` itself or ``*``, and ``excludedTools`` withholds neither
+    the server nor ``work_ledger_record``. Granted means ``allowedTools`` still
+    carries the server or that verb once the governance ceiling has filtered it
+    (``auto_approve._apply_allowed_tools_ceiling``): a ceiling that withholds the
+    verb leaves it mounted but gated, and a patrol whose every bind waits on an
+    approval is not one to teach.
+    """
+    from kiro_crew.mcp_cleanup import mcp_entry_is_muted
+
+    if not isinstance(spec, dict):
+        return False
+    servers = spec.get("mcpServers")
+    entry = servers.get(WORK_SERVER) if isinstance(servers, dict) else None
+    if not isinstance(entry, dict) or mcp_entry_is_muted(entry):
+        return False
+    tools = spec.get("tools")
+    entries = ["*"] if tools == "*" else tools
+    # The record verb itself must be selected: a spec naming only another ledger
+    # tool (``work_ledger_read``) cannot open or bind the items the text teaches.
+    if not isinstance(entries, list) or not any(
+        t in ("*", _WORK_REF, _LEDGER_RECORD_REF) for t in entries if isinstance(t, str)
+    ):
+        return False
+    excluded = spec.get("excludedTools")
+    if isinstance(excluded, list) and any(
+        t in ("*", _WORK_REF, _LEDGER_RECORD_REF) for t in excluded if isinstance(t, str)
+    ):
+        return False
+    allowed = spec.get("allowedTools")
+    return isinstance(allowed, list) and any(
+        t in (_WORK_REF, _LEDGER_RECORD_REF) for t in allowed if isinstance(t, str)
+    )
+
+
+def _chat_spec(binding: Any) -> dict | None:
+    """The spec the crewmate *binding*'s own chat runs, or ``None`` when unreadable.
+
+    A crewmate on its own file chats on the mate conductor, read from
+    ``~/.kiro/mates/agents/`` where its installer writes it; any other binding
+    chats on the template it names (:func:`kiro_crew.mate_worker.member_chat_agent`).
+    """
+    from kiro_crew import agent as agent_mod
+    from kiro_crew.agent_files import MATE_CONDUCTOR_AGENT_FILENAME
+    from kiro_crew.config import paths as paths_mod
+    from kiro_crew.mate_worker import MATE_CONDUCTOR_AGENT, member_chat_agent
+
+    bound = getattr(binding, "kiro_agent", "")
+    if not isinstance(bound, str):
+        return None
+    name = member_chat_agent(bound or Path(AGENT_FILENAME).stem)
+    if name != MATE_CONDUCTOR_AGENT:
+        return _read_template(name, getattr(binding, "workspace", "") or "")
+    root = paths_mod.mate_agents_dir()
+    path = root / MATE_CONDUCTOR_AGENT_FILENAME
+    if not path.is_file() or not agent_mod._spec_path_is_safe(path, root):
+        return None
+    return agent_mod._read_spec_capped(path)
+
+
+def binding_has_ledger_tools(binding: Any) -> bool:
+    """Whether the crewmate *binding*'s own chat can track work in a ledger.
+
+    :func:`spec_has_ledger_tools` over the spec that chat runs. Unlike the mate
+    tools check, an unreadable spec answers False: the ledger and patrol text is
+    new, so the wording every crewmate had before this check is the one without it.
+    """
+    if binding is None:
+        return False
+    try:
+        return spec_has_ledger_tools(_chat_spec(binding))
+    except Exception:
+        logger.debug("chat spec unreadable; keeping the no-ledger wording", exc_info=True)
+        return False
+
+
 def grant_mate_tools_to_new_member(
     member: str,
     *,
@@ -227,7 +314,7 @@ def grant_mate_tools_to_new_member(
     try:
         return _grant(member)
     except Exception:
-        logger.warning("mate tools were not added to new crewmate %r", member, exc_info=True)
+        logger.warning("Bot tools were not added to new Bot %r", member, exc_info=True)
         return FAILED
 
 

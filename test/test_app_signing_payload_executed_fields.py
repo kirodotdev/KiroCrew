@@ -1,31 +1,17 @@
 """The signed bytes must cover the manifest fields the install chain EXECUTES.
 
-``AppManifest.signing_payload`` is the canonical blob an admission signature
-covers. Three of its keys name things that RUN:
+Left out of ``AppManifest.signing_payload``, each of these could be rewritten with the
+signature still verifying:
 
-* ``setup.on*`` is shell text ``lifecycle_scripts.run_lifecycle_script`` hands to
-  ``/bin/bash -c``,
-* each ``mcpServers`` entry's ``command``/``args``/``env`` is written by
-  ``bridges._register_mcp_servers`` into the agent config kiro-cli SPAWNS,
-* ``backend.hooks.*`` names a ``module:callable`` that
-  ``module_loader.load_app_module`` imports into the gateway process, and
-  ``backend.entryPoint`` + ``backend.type`` pick the file and interpreter
-  ``backend._start_app_backend_body`` spawns.
+* ``setup.on*``, shell text ``lifecycle_scripts.run_lifecycle_script`` runs,
+* ``mcpServers`` ``command``/``args``/``env``, which kiro-cli SPAWNS,
+* ``backend.hooks.*`` (imported by ``module_loader.load_app_module``) and
+  ``backend.entryPoint`` + ``backend.type`` (spawned by
+  ``backend._start_app_backend_body``).
 
-Left out of the payload, each is a part of a signed app an attacker could
-rewrite with the publisher's signature still verifying.
-
-Every key is added under a NON-EMPTY guard, the same shape ``notifications``,
-``crons`` and ``contributes`` already use. That is the whole compatibility
-story, and ``test_a_manifest_without_them_produces_the_pre_change_payload``
-plus ``test_no_shipped_builtin_carries_a_signature`` are what pin it: a
-manifest that declares none of the three hashes exactly as it did, and nothing
-shipped in-tree carries a signature for the change to invalidate.
-
-The tests assert on production symbols only -- ``signing_payload``,
-``admission.app_admission_denied``, ``admission.verified_signer``,
-``manager.install_app``, ``manager.enable_app`` -- and nothing here
-re-implements the HMAC the gate computes.
+Each key is added under a NON-EMPTY guard, so a manifest declaring none of them hashes
+as before (``test_a_manifest_without_them_produces_the_pre_change_payload``). The tests
+use production symbols only and never re-implement the gate's HMAC.
 """
 
 from __future__ import annotations
@@ -121,9 +107,7 @@ def enforcing_fleet(tmp_path, monkeypatch):
     return cfg
 
 
-# ---------------------------------------------------------------------------
 # Control 1 -- a signature issued under the pre-change payload still verifies
-# ---------------------------------------------------------------------------
 
 
 def test_a_manifest_without_them_produces_the_pre_change_payload():
@@ -157,9 +141,7 @@ def test_precondition_a_declaring_manifest_is_admitted_when_untampered(enforcing
     assert verified_signer(manifest) == SIGNER
 
 
-# ---------------------------------------------------------------------------
 # Control 4 -- tampering a NEWLY covered field is denied
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -186,9 +168,7 @@ def test_tampering_a_newly_covered_field_is_denied(enforcing_fleet, label, tampe
     assert verified_signer(manifest) == ""
 
 
-# ---------------------------------------------------------------------------
 # Control 5 -- tampering an ALREADY covered field is still denied
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -206,9 +186,7 @@ def test_tampering_an_already_covered_field_is_still_denied(enforcing_fleet, lab
     ), f"a rewritten {label} must still invalidate the signature"
 
 
-# ---------------------------------------------------------------------------
 # Control 2 -- no shipped builtin is newly refused
-# ---------------------------------------------------------------------------
 
 
 def _shipped_builtin_manifests() -> list[Path]:
@@ -224,12 +202,9 @@ def test_the_builtin_census_is_not_empty():
 def test_no_shipped_builtin_carries_a_signature(manifest_path, enforcing_fleet):
     """Moving the signed bytes cannot change a verdict for an UNSIGNED manifest.
 
-    Every builtin ships unsigned, so ``_signature_valid`` refuses it on the
-    empty signature before it ever computes a payload -- which is why 17
-    builtins whose payload bytes DO move are still admitted exactly as before.
-    They reach installation through ``register_builtin_apps``, which never
-    consults the admission gate, and ``enable_app`` exempts ``origin ==
-    "builtin"``; the test below pins that second door.
+    ``_signature_valid`` refuses an empty signature before computing a payload. Builtins
+    install through ``register_builtin_apps``, which skips the admission gate, and
+    ``enable_app`` exempts ``origin == "builtin"``; the test below pins that second door.
     """
     manifest = AppManifest.from_json_file(manifest_path)
     assert manifest.signature == ""
@@ -271,9 +246,7 @@ def test_a_builtin_is_not_refused_by_admission_under_require_signature(tmp_path,
     assert "blocked by admission policy" not in (result.error or ""), result.error
 
 
-# ---------------------------------------------------------------------------
 # Control 3 -- an unsigned app on a non-enforcing install is unaffected
-# ---------------------------------------------------------------------------
 
 
 def test_an_unsigned_declaring_app_installs_on_a_non_enforcing_fleet(tmp_path, monkeypatch):

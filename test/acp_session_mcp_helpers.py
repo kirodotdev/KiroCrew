@@ -25,8 +25,7 @@ _CRON = {"command": "/opt/kirocrew", "args": ["mcp-cron"]}
 
 
 @pytest.fixture(autouse=True)
-# nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- the session-array MCP modules' autouse kiro-cli release pin, moved verbatim; tracked for a de-flake pass
-def _pinned_kiro_cli_version(monkeypatch):
+def _pinned_kiro_cli_version(_floor_monkeypatch):
     """Pin the kiro-cli release the spec ``permissions`` gate believes is installed.
 
     A client start here materialises the agent spec (``ensure_agent_materialized``
@@ -37,15 +36,14 @@ def _pinned_kiro_cli_version(monkeypatch):
     with the checkout as the child's cwd. Pinned to the floor release, as
     ``test_agent.py`` and the generated-writer suites pin it.
     """
-    monkeypatch.setattr(
+    _floor_monkeypatch.setattr(
         "kiro_crew.kiro_cli.installed_kiro_cli_version",
         lambda: SPEC_PERMISSIONS_MIN_VERSION,
     )
 
 
 @pytest.fixture(autouse=True)
-# nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- the session-array MCP modules' autouse claude adapter version pin, moved verbatim; tracked for a de-flake pass
-def _installed_claude_adapter_version(monkeypatch):
+def _installed_claude_adapter_version(_floor_monkeypatch):
     """The installed claude-agent-acp version the spawn arm would have read.
 
     The settings writer applies the ``settingSources`` floor before the
@@ -53,12 +51,11 @@ def _installed_claude_adapter_version(monkeypatch):
     directly never run the spawn arm, so the floor release is set as the class
     default. A test about the floor sets its own.
     """
-    monkeypatch.setattr(AcpClient, "_claude_adapter_disk_version", "0.84.0", raising=False)
+    _floor_monkeypatch.setattr(AcpClient, "_claude_adapter_disk_version", "0.84.0", raising=False)
 
 
 @pytest.fixture(autouse=True)
-# nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- the session-array MCP modules' autouse per-test seed provenance, moved verbatim; tracked for a de-flake pass
-def isolated_seed_provenance(monkeypatch):
+def isolated_seed_provenance(_floor_monkeypatch):
     """Per-test provenance state, mirroring test_acp_seed_provenance.py.
 
     ``_RECORDS``, ``_LIVE`` and ``_SHARERS`` are process-wide runtime state;
@@ -68,9 +65,9 @@ def isolated_seed_provenance(monkeypatch):
     """
     from kiro_crew.acp import seed_provenance
 
-    monkeypatch.setattr(seed_provenance, "_RECORDS", {})
-    monkeypatch.setattr(seed_provenance, "_LIVE", {})
-    monkeypatch.setattr(seed_provenance, "_SHARERS", {})
+    _floor_monkeypatch.setattr(seed_provenance, "_RECORDS", {})
+    _floor_monkeypatch.setattr(seed_provenance, "_LIVE", {})
+    _floor_monkeypatch.setattr(seed_provenance, "_SHARERS", {})
 
 
 @pytest.fixture(name="agents_dir")

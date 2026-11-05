@@ -73,6 +73,56 @@ esac
 # expensive work (PBS interpreter + pip closure) still happens once.
 LINUX_TARGET_DISTS=( "AppImage:appimage" "deb:deb" "rpm:rpm" )
 
+# Per-target electron-builder overrides for the Linux packaging loop. Two
+# AppImage-only overrides live here, applied to NO other format:
+#   - the spaced display name: the AppImage's bundled .desktop entry is the
+#     template website/electron/linux-desktop-integration.js copies into the
+#     user's launcher, the one place that name is shown;
+#   - the multi-size hicolor icon directory (nightly): the common nightly block
+#     keeps canonical `icon-nightly.png` so deb/rpm are byte-identical to
+#     canonical main, and only the AppImage, whose in-app integration installs
+#     hicolor icons, overrides to the `build/icons-nightly` tree.
+# deb/rpm receive nothing here, so their launcher keeps electron-builder's
+# productName-derived Name and their icon stays the canonical per-channel png.
+# Prints one argument per line; a target with no override prints nothing.
+# Self-contained on purpose (parameters only, no globals) so
+# website/electron/test/packaging.test.js can execute it in isolation.
+linux_target_eb_args() {
+  local target="$1" product_name="$2"
+  case "$target" in
+    AppImage)
+      if [ "$product_name" = "KiroCrew Nightly" ]; then
+        printf '%s\n' "-c.linux.desktop.entry.Name=Kiro Crew Nightly"
+        printf '%s\n' "-c.linux.icon=build/icons-nightly"
+      else
+        printf '%s\n' "-c.linux.desktop.entry.Name=Kiro Crew"
+      fi
+      ;;
+  esac
+}
+
+# Usage: drop_overridden_eb_args <override>... -- <base arg>...
+# Prints each base argument, one per line, except a `-c.<key>=` argument whose
+# key one of the overrides also sets. electron-builder turns a repeated `-c`
+# key into a list, which its config validation rejects for scalar keys such as
+# linux.icon, so an override must replace the common value, not sit beside it.
+# Self-contained (parameters only) so packaging.test.js can execute it.
+drop_overridden_eb_args() {
+  local -a overrides=()
+  while [ "$#" -gt 0 ] && [ "$1" != "--" ]; do overrides+=( "$1" ); shift; done
+  if [ "$#" -gt 0 ]; then shift; fi
+  local arg override keep
+  for arg in "$@"; do
+    keep=1
+    for override in ${overrides[@]+"${overrides[@]}"}; do
+      case "$override" in
+        -c.*=*) if [ "${arg%%=*}" = "${override%%=*}" ]; then keep=0; fi ;;
+      esac
+    done
+    if [ "$keep" = 1 ]; then printf '%s\n' "$arg"; fi
+  done
+}
+
 # Universal is the macOS default; Linux has no universal concept (AppImage is
 # per-arch). UNIVERSAL=0 opts a macOS build out.
 if [ "$OS" = "darwin" ]; then
@@ -988,13 +1038,13 @@ if [ -n "${KIROCREW_MANAGED_INSTALL_MARKER:-}" ]; then
     let parsed;
     try { parsed = JSON.parse(buf.toString("utf8")); } catch (e) { console.error(`marker is not JSON: ${e.message}`); process.exit(1); }
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) { console.error("marker must be a JSON object"); process.exit(1); }
-    const allowed = ["managedBy", "updateCommand", "checkCommand"];
+    const allowed = ["managedBy", "updateCommand", "checkCommand", "relaunchPath"];
     // The reader TRIMS each field and slices it to a cap (auto-update.js:
     // MANAGED_BY_MAX_CHARS / UPDATE_COMMAND_MAX_CHARS / CHECK_COMMAND_MAX_CHARS).
     // Validate the value the reader will actually see: a whitespace-only
     // command would trim to nothing and turn the marker bare, and an over-cap
     // one would be truncated into a DIFFERENT command. Both are refused here.
-    const caps = { managedBy: 128, updateCommand: 512, checkCommand: 512 };
+    const caps = { managedBy: 128, updateCommand: 512, checkCommand: 512, relaunchPath: 1024 };
     for (const k of Object.keys(parsed)) {
       if (!allowed.includes(k)) { console.error(`marker has unknown field "${k}" (allowed: ${allowed.join(", ")})`); process.exit(1); }
       if (typeof parsed[k] !== "string") { console.error(`marker field "${k}" must be a string`); process.exit(1); }
@@ -1003,6 +1053,15 @@ if [ -n "${KIROCREW_MANAGED_INSTALL_MARKER:-}" ]; then
     }
     if (!parsed.updateCommand) { console.error("marker has no updateCommand: it would disable updates without offering any"); process.exit(1); }
     if (!parsed.checkCommand) { console.error("marker has updateCommand but no checkCommand: every managed-lane check will fail; no update will ever be offered"); process.exit(1); }
+    // resolveRelaunchPath (auto-update.js) drops anything that is not absolute
+    // or ~/-relative, and the lane would then quietly relaunch the old path.
+    // The app may run on either platform family, so an absolute path in the
+    // form of either is accepted: C:/..., C:\..., \\server\share, /...
+    if ("relaunchPath" in parsed) {
+      const p = parsed.relaunchPath;
+      const path = require("path");
+      if (!(p.startsWith("~/") || path.posix.isAbsolute(p) || path.win32.isAbsolute(p))) { console.error("marker field \"relaunchPath\" must be an absolute path or start with ~/"); process.exit(1); }
+    }
   ' "$MARKER_SRC" || { echo "❌ KIROCREW_MANAGED_INSTALL_MARKER rejected: $MARKER_SRC" >&2; exit 1; }
   # Staged for THIS build only: electron-builder packs it below, and the copy
   # must not outlive the run -- a later build of a different edition from the
@@ -1762,12 +1821,23 @@ log "Packaging desktop app (electron-builder, version: $KC_VERSION)…"
     # AppImage and the deb do not both claim the label of whichever was built
     # last. Targets are named explicitly rather than letting package.json's
     # target array drive a single invocation, because a single invocation shares
-    # one stamped backend tree between both artifacts.
+    # one stamped backend tree between both artifacts. Each target also gets its
+    # own overrides from linux_target_eb_args (defined with LINUX_TARGET_DISTS);
+    # deb and rpm get none.
     for pair in "${LINUX_TARGET_DISTS[@]}"; do
       target="${pair%%:*}"; dist="${pair##*:}"
+      TARGET_EB_ARGS=()
+      while IFS= read -r arg; do
+        [ -n "$arg" ] && TARGET_EB_ARGS+=( "$arg" )
+      done < <(linux_target_eb_args "$target" "$PRODUCT_NAME")
+      LINUX_EB_ARGS=()
+      while IFS= read -r arg; do
+        LINUX_EB_ARGS+=( "$arg" )
+      done < <(drop_overridden_eb_args ${TARGET_EB_ARGS[@]+"${TARGET_EB_ARGS[@]}"} -- "${EB_ARGS[@]}")
       log "Packaging Linux ${target} (dist=${dist})…"
       restamp_backends "$dist"
-      run_electron_builder_with_retry "${EB_ARGS[@]}" --linux "$target"
+      run_electron_builder_with_retry "${LINUX_EB_ARGS[@]}" \
+        ${TARGET_EB_ARGS[@]+"${TARGET_EB_ARGS[@]}"} --linux "$target"
     done
   fi
 )

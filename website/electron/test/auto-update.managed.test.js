@@ -211,6 +211,27 @@ test("managed check(): no checkCommand -> check error (cannot discover, not 'lat
   assert.ok(!states.some((s) => s.state === "not-available"));
 });
 
+// A spawn script for an apply that installs: the check offers 0.5.0.5 until
+// `applyCommand` runs, then reports up to date (non-zero), as a real check does
+// once the version is installed.
+function installsOnApply(applyCommand) {
+  let applied = false;
+  return (cmd) => {
+    if (cmd === applyCommand) {
+      applied = true;
+      return { code: 0, out: "" };
+    }
+    return applied ? { code: 1 } : { code: 0, out: "0.5.0.5" };
+  };
+}
+
+// The quit-apply runs detached from the before-quit handler; wait for its exit.
+async function untilExited(exits) {
+  for (let i = 0; i < 50 && exits.length === 0; i += 1) {
+    await new Promise((r) => setImmediate(r));
+  }
+}
+
 test("managed install() runs updateCommand then relaunch+exit", async (t) => {
   const relaunches = [];
   const exits = [];
@@ -219,8 +240,7 @@ test("managed install() runs updateCommand then relaunch+exit", async (t) => {
   });
   deps.app.relaunch = () => relaunches.push(true);
   deps.app.exit = (c) => exits.push(c);
-  const { commands, restore } = stubSpawn((cmd) =>
-    cmd === "check" ? { code: 0, out: "0.5.0.5" } : { code: 0, out: "" });
+  const { commands, restore } = stubSpawn(installsOnApply("pkgtool update kirocrew"));
   t.after(restore);
   const u = initAutoUpdate(deps);
   await u.check();
@@ -258,8 +278,7 @@ test("managed auto-on-restart: pref true + found arms before-quit that runs upda
   deps.getAutoDownloadPreference = () => true;
   deps.app.relaunch = () => relaunches.push(true);
   deps.app.exit = (c) => exits.push(c);
-  const { commands, restore } = stubSpawn((cmd) =>
-    cmd === "check" ? { code: 0, out: "0.5.0.5" } : { code: 0, out: "" });
+  const { commands, restore } = stubSpawn(installsOnApply("pkgtool update kirocrew"));
   t.after(restore);
   const u = initAutoUpdate(deps);
   await u.check();
@@ -267,7 +286,7 @@ test("managed auto-on-restart: pref true + found arms before-quit that runs upda
   assert.ok(quit, "pref true + found must arm a before-quit handler");
   const event = { preventDefault: () => {} };
   quit.fn(event);
-  await new Promise((r) => setImmediate(() => setImmediate(r)));
+  await untilExited(exits);
   assert.ok(commands.includes("pkgtool update kirocrew"), "before-quit must run the updateCommand");
   assert.strictEqual(relaunches.length, 1);
   assert.deepStrictEqual(exits, [0]);
@@ -333,6 +352,75 @@ test("managed auto-on-restart: a FAILED apply on quit exits without relaunching"
   assert.strictEqual(relaunches.length, 0, "a failed apply must NOT relaunch into an uninstalled version");
   assert.deepStrictEqual(exits, [0], "the quit is still honored (exit 0)");
   assert.strictEqual(failed.length, 1, "onInstallFailed fires on a failed quit-apply");
+});
+
+test("managed install(): an apply the check still offers again does not relaunch", async (t) => {
+  const failed = [];
+  const exits = [];
+  const { deps, states } = makeDeps({
+    externallyManaged: { managedBy: "m", updateCommand: "apply", checkCommand: "check" },
+  });
+  deps.onInstallFailed = () => failed.push(true);
+  deps.app.relaunch = () => { throw new Error("must not relaunch into the same version"); };
+  deps.app.exit = (c) => exits.push(c);
+  const { commands, restore } = stubSpawn((cmd) =>
+    cmd === "check" ? { code: 0, out: "0.5.0.5" } : { code: 0, out: "" });
+  t.after(restore);
+  const u = initAutoUpdate(deps);
+  await u.check();
+  await u.install();
+  assert.deepStrictEqual(commands, ["check", "apply", "check"], "the check runs again after the apply");
+  assert.deepStrictEqual(exits, [], "the app keeps running");
+  assert.strictEqual(failed.length, 1, "onInstallFailed fires so the gateway comes back");
+  const err = states.find((s) => s.state === "error");
+  assert.ok(err && err.phase === "install", "an unchanged install is an install-phase error");
+  assert.match(err.message, /did not change/);
+});
+
+test("managed install(): a re-check offering another version still relaunches", async (t) => {
+  const relaunches = [];
+  const { deps } = makeDeps({
+    externallyManaged: { managedBy: "m", updateCommand: "apply", checkCommand: "check" },
+  });
+  deps.app.relaunch = () => relaunches.push(true);
+  deps.app.exit = () => {};
+  let version = "0.5.0.5";
+  const { restore } = stubSpawn((cmd) => {
+    if (cmd === "check") return { code: 0, out: version };
+    version = "0.5.0.6";
+    return { code: 0, out: "" };
+  });
+  t.after(restore);
+  const u = initAutoUpdate(deps);
+  await u.check();
+  await u.install();
+  assert.strictEqual(relaunches.length, 1, "a newer version on offer is not the same-version loop");
+});
+
+test("managed auto-on-restart: an apply on quit the check still offers quits without relaunching", async (t) => {
+  const relaunches = [];
+  const exits = [];
+  const failed = [];
+  const { deps, appOnce } = makeDeps({
+    externallyManaged: { managedBy: "m", updateCommand: "apply", checkCommand: "check" },
+  });
+  deps.getAutoDownloadPreference = () => true;
+  deps.onInstallFailed = () => failed.push(true);
+  deps.app.relaunch = () => relaunches.push(true);
+  deps.app.exit = (c) => exits.push(c);
+  const { commands, restore } = stubSpawn((cmd) =>
+    cmd === "check" ? { code: 0, out: "0.5.0.5" } : { code: 0, out: "" });
+  t.after(restore);
+  const u = initAutoUpdate(deps);
+  await u.check();
+  const quit = appOnce.find((r) => r.ev === "before-quit");
+  assert.ok(quit, "pref true + found arms the quit-apply");
+  quit.fn({ preventDefault: () => {} });
+  await untilExited(exits);
+  assert.deepStrictEqual(commands, ["check", "apply", "check"]);
+  assert.strictEqual(relaunches.length, 0, "an unchanged install must NOT relaunch");
+  assert.deepStrictEqual(exits, [0], "the quit is still honored (exit 0)");
+  assert.strictEqual(failed.length, 1);
 });
 
 test("managed check(): the version comes from stdout only, ignoring stderr warnings", async (t) => {
@@ -591,6 +679,7 @@ test("readExternallyManaged: JSON marker carries metadata", (t) => {
     managedBy: "internal-registry",
     updateCommand: "pkgtool update kirocrew",
     checkCommand: "",
+    relaunchPath: "",
   });
 });
 
@@ -605,6 +694,7 @@ test("readExternallyManaged: bare/unparsable marker still means managed", (t) =>
     managedBy: "",
     updateCommand: "",
     checkCommand: "",
+    relaunchPath: "",
   });
 });
 
@@ -620,6 +710,7 @@ test("readExternallyManaged: degenerate markers (oversized, symlink, directory) 
     managedBy: "",
     updateCommand: "",
     checkCommand: "",
+    relaunchPath: "",
   });
   // Symlink (even dangling): lstat'ed, never followed — a link into a FIFO or
   // device must not be able to stall this startup-path read.
@@ -631,6 +722,7 @@ test("readExternallyManaged: degenerate markers (oversized, symlink, directory) 
       managedBy: "",
       updateCommand: "",
       checkCommand: "",
+      relaunchPath: "",
     });
   } catch (err) {
     // Ordinary Windows accounts may lack SeCreateSymbolicLinkPrivilege. Keep
@@ -649,6 +741,7 @@ test("readExternallyManaged: degenerate markers (oversized, symlink, directory) 
     managedBy: "",
     updateCommand: "",
     checkCommand: "",
+    relaunchPath: "",
   });
 });
 
@@ -685,7 +778,7 @@ test("readExternallyManaged: env override points at a marker file", (t) => {
     resourcesPath: "/nonexistent",
     probeMarkerRewritable: () => false,
   });
-  assert.deepStrictEqual(got, { managedBy: "harness", updateCommand: "", checkCommand: "" });
+  assert.deepStrictEqual(got, { managedBy: "harness", updateCommand: "", checkCommand: "", relaunchPath: "" });
 });
 
 // ---------------------------------------------------------------------------
@@ -736,6 +829,7 @@ test("readExternallyManaged: a marker in a USER-WRITABLE dir yields NO metadata"
       managedBy: "attacker",
       updateCommand: "/bin/sh -c 'touch /tmp/pwned'",
       checkCommand: "/bin/sh -c 'touch /tmp/pwned'",
+      relaunchPath: "",
     }),
   );
   // Still MANAGED (the updater stays off) but the commands are refused: this is
@@ -744,6 +838,7 @@ test("readExternallyManaged: a marker in a USER-WRITABLE dir yields NO metadata"
     managedBy: "",
     updateCommand: "",
     checkCommand: "",
+    relaunchPath: "",
   });
 });
 
@@ -768,6 +863,7 @@ test("readExternallyManaged: chmod 0400 on an OWNED marker does not buy trust", 
     managedBy: "attacker",
     updateCommand: "/bin/sh -c 'touch /tmp/pwned'",
     checkCommand: "/bin/sh -c 'touch /tmp/pwned'",
+    relaunchPath: "",
   }));
   fs.chmodSync(marker, 0o400); // "not writable" -- but still ours
   fs.chmodSync(dir, 0o500);    // ditto
@@ -775,6 +871,7 @@ test("readExternallyManaged: chmod 0400 on an OWNED marker does not buy trust", 
     managedBy: "",
     updateCommand: "",
     checkCommand: "",
+    relaunchPath: "",
   });
 });
 
@@ -809,6 +906,7 @@ test("baked marker: trusted as code -- the ownership probe is never consulted", 
     managedBy: "Builder Toolbox",
     updateCommand: "/opt/toolbox/bin/toolbox update kirocrew",
     checkCommand: "/opt/toolbox/bin/kirocrew-update-check",
+    relaunchPath: "",
   }));
   let probed = 0;
   assert.deepStrictEqual(readExternallyManaged({
@@ -820,6 +918,7 @@ test("baked marker: trusted as code -- the ownership probe is never consulted", 
     managedBy: "Builder Toolbox",
     updateCommand: "/opt/toolbox/bin/toolbox update kirocrew",
     checkCommand: "/opt/toolbox/bin/kirocrew-update-check",
+    relaunchPath: "",
   });
   assert.strictEqual(probed, 0, "a baked marker is not subject to the loose-marker provenance probe");
 });
@@ -842,7 +941,7 @@ test("baked marker: read on a PACKAGED build only -- a dev checkout's source dir
   assert.deepStrictEqual(readExternallyManaged({
     env: {}, resourcesPath: resources, bakedMarkerPath: baked, isPackaged: false,
     probeMarkerRewritable: () => false,
-  }), { managedBy: "loose", updateCommand: "", checkCommand: "" }, "unpackaged: the loose path is what is read");
+  }), { managedBy: "loose", updateCommand: "", checkCommand: "", relaunchPath: "" }, "unpackaged: the loose path is what is read");
 });
 
 test("baked marker: honored with the REAL probe on a user-owned tree (the Windows/Toolbox shape)", (t) => {
@@ -857,7 +956,7 @@ test("baked marker: honored with the REAL probe on a user-owned tree (the Window
   assert.strictEqual(canRewriteMarker(baked), true, "precondition: the probe WOULD refuse this file");
   assert.deepStrictEqual(readExternallyManaged({
     env: {}, resourcesPath: resources, bakedMarkerPath: baked, isPackaged: true,
-  }), { managedBy: "pkgtool", updateCommand: "/usr/bin/pkgtool update", checkCommand: "" });
+  }), { managedBy: "pkgtool", updateCommand: "/usr/bin/pkgtool update", checkCommand: "", relaunchPath: "" });
 });
 
 test("baked marker: outranks a loose marker when both exist", (t) => {
@@ -875,7 +974,7 @@ test("baked marker: outranks a loose marker when both exist", (t) => {
   assert.deepStrictEqual(readExternallyManaged({
     env: {}, resourcesPath: resources, bakedMarkerPath: baked, isPackaged: true,
     probeMarkerRewritable: () => false, // even a loose marker that WOULD pass
-  }), { managedBy: "edition", updateCommand: "/usr/bin/edition-update", checkCommand: "" });
+  }), { managedBy: "edition", updateCommand: "/usr/bin/edition-update", checkCommand: "", relaunchPath: "" });
 });
 
 test("baked marker: absent -> the loose marker keeps its gated behavior", (t) => {
@@ -893,10 +992,10 @@ test("baked marker: absent -> the loose marker keeps its gated behavior", (t) =>
   }));
   assert.deepStrictEqual(readExternallyManaged({
     env: {}, resourcesPath: resources, bakedMarkerPath: baked, isPackaged: true, probeMarkerRewritable: () => true,
-  }), { managedBy: "", updateCommand: "", checkCommand: "" }, "rewritable loose marker: bare");
+  }), { managedBy: "", updateCommand: "", checkCommand: "", relaunchPath: "" }, "rewritable loose marker: bare");
   assert.deepStrictEqual(readExternallyManaged({
     env: {}, resourcesPath: resources, bakedMarkerPath: baked, isPackaged: true, probeMarkerRewritable: () => false,
-  }), { managedBy: "loose", updateCommand: "/usr/bin/loose-update", checkCommand: "" }, "trusted loose marker: metadata");
+  }), { managedBy: "loose", updateCommand: "/usr/bin/loose-update", checkCommand: "", relaunchPath: "" }, "trusted loose marker: metadata");
 });
 
 test("baked marker: degenerate bodies still mean managed, with nothing to run", (t) => {
@@ -904,7 +1003,7 @@ test("baked marker: degenerate bodies still mean managed, with nothing to run", 
   // over-cap or not a regular file leaves the updater OFF and yields no command.
   // A build that mis-writes its marker must not fall back to self-updating.
   const fs = require("node:fs");
-  const bare = { managedBy: "", updateCommand: "", checkCommand: "" };
+  const bare = { managedBy: "", updateCommand: "", checkCommand: "", relaunchPath: "" };
   for (const body of ["", "not json", "[1,2]", "x".repeat(8193)]) {
     const { baked, resources } = bakedFixture(t, body);
     assert.deepStrictEqual(readExternallyManaged({
@@ -934,7 +1033,7 @@ test("baked marker: the dev/test env seam still wins, and stays a LOOSE read", (
     resourcesPath: resources,
     bakedMarkerPath: baked,
     probeMarkerRewritable: (p) => { probedPath = p; return false; },
-  }), { managedBy: "env", updateCommand: "/usr/bin/x", checkCommand: "" });
+  }), { managedBy: "env", updateCommand: "/usr/bin/x", checkCommand: "", relaunchPath: "" });
   assert.strictEqual(probedPath, envMarker);
 });
 
@@ -1044,7 +1143,7 @@ test("readExternallyManaged: a PACKAGED app ignores KIROCREW_EXTERNALLY_MANAGED"
       isPackaged: false,
       probeMarkerRewritable: () => false,
     }),
-    { managedBy: "env", updateCommand: "/bin/false", checkCommand: "" },
+    { managedBy: "env", updateCommand: "/bin/false", checkCommand: "", relaunchPath: "" },
   );
 });
 
@@ -1062,6 +1161,7 @@ test("managed updater: a rewritable marker never arms the background check", asy
       managedBy: "attacker",
       updateCommand: "/bin/sh -c 'touch /tmp/pwned'",
       checkCommand: "/bin/sh -c 'touch /tmp/pwned'",
+      relaunchPath: "",
     }),
   );
   // externallyManaged left UNSET so the module reads the real marker from disk.
@@ -1175,4 +1275,240 @@ test("managed command env is CONSTRUCTED: nothing the shell reads as code is inh
   assert.match(src, /shell: managedShell\(\)/, "spawn must take its shell from managedShell()");
   assert.match(src, /System32\\\\cmd\.exe`/, "managedShell() must pin the system cmd.exe on win32");
   assert.strictEqual(optsList[0].cwd, "/");
+});
+
+// ---------------------------------------------------------------------------
+// relaunchPath (#22774). A macOS app opened from the Dock was started as its
+// version's own payload path, and a bare app.relaunch() re-runs that path, so a
+// successful managed apply came back on the version it had just replaced and
+// Restart to update stayed. A marker that names a relaunchPath relaunches that
+// executable instead.
+// ---------------------------------------------------------------------------
+
+function relaunchFixture(t) {
+  const fs = require("node:fs");
+  const os = require("node:os");
+  const path = require("node:path");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "kc-relaunch-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const exe = path.join(dir, "app-binary");
+  fs.writeFileSync(exe, "");
+  return { dir, exe, missing: path.join(dir, "gone", "app-binary") };
+}
+
+// Reads one trusted marker whose relaunchPath is `value`, with `home` as the
+// account's home.
+function readRelaunchPath(t, value, homeDir) {
+  const fs = require("node:fs");
+  const os = require("node:os");
+  const path = require("node:path");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "kc-ext-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(dir, "EXTERNALLY-MANAGED"), JSON.stringify({
+    managedBy: "m", updateCommand: "/usr/bin/u", checkCommand: "/usr/bin/c", relaunchPath: value,
+  }));
+  return readExternallyManaged({
+    env: {}, resourcesPath: dir, probeMarkerRewritable: () => false, homeDir,
+  }).relaunchPath;
+}
+
+test("readExternallyManaged: relaunchPath keeps absolute and ~/ paths, drops the rest", (t) => {
+  const path = require("node:path");
+  const home = path.resolve("/home/someone");
+  const homeDir = () => home;
+  const abs = path.resolve("/opt/kc/KiroCrew.app/Contents/MacOS/KiroCrew");
+  assert.strictEqual(readRelaunchPath(t, abs, homeDir), abs);
+  assert.strictEqual(readRelaunchPath(t, `  ${abs}  `, homeDir), abs, "trimmed like every other field");
+  assert.strictEqual(
+    readRelaunchPath(t, "~/Library/KC/KiroCrew.app/Contents/MacOS/KiroCrew", homeDir),
+    path.join(home, "Library/KC/KiroCrew.app/Contents/MacOS/KiroCrew"),
+    "~/ is the account's home",
+  );
+  assert.strictEqual(readRelaunchPath(t, "relative/KiroCrew", homeDir), "");
+  assert.strictEqual(readRelaunchPath(t, "~other/KiroCrew", homeDir), "", "only ~/ expands");
+  assert.strictEqual(readRelaunchPath(t, `${abs}\0x`, homeDir), "");
+  assert.strictEqual(readRelaunchPath(t, path.resolve("/" + "x".repeat(1100)), homeDir), "",
+    "over the cap is dropped, never cut into another path");
+  assert.strictEqual(readRelaunchPath(t, 7, homeDir), "", "a non-string is ignored");
+  assert.strictEqual(readRelaunchPath(t, "~/KiroCrew", () => ""), "", "no home, no path");
+  assert.strictEqual(readRelaunchPath(t, "~/KiroCrew", () => { throw new Error("no passwd"); }), "");
+});
+
+test("readExternallyManaged: a trusted marker carries relaunchPath; a rewritable one does not", (t) => {
+  const fs = require("node:fs");
+  const os = require("node:os");
+  const path = require("node:path");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "kc-ext-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const exe = path.resolve("/opt/kc/KiroCrew.app/Contents/MacOS/KiroCrew");
+  fs.writeFileSync(path.join(dir, "EXTERNALLY-MANAGED"), JSON.stringify({
+    managedBy: "m", updateCommand: "/usr/bin/u", checkCommand: "/usr/bin/c", relaunchPath: exe,
+  }));
+  assert.strictEqual(readExternallyManaged({
+    env: {}, resourcesPath: dir, probeMarkerRewritable: () => false,
+  }).relaunchPath, exe);
+  assert.strictEqual(readExternallyManaged({
+    env: {}, resourcesPath: dir, probeMarkerRewritable: () => true,
+  }).relaunchPath, "", "a marker this user could rewrite names nothing to exec");
+});
+
+test("managed install(): a relaunchPath on disk is what relaunches, with the same arguments", async (t) => {
+  const { exe } = relaunchFixture(t);
+  const relaunches = [];
+  const exits = [];
+  const { deps } = makeDeps({
+    externallyManaged: { managedBy: "m", updateCommand: "pkgtool update kirocrew", checkCommand: "check", relaunchPath: exe },
+  });
+  deps.app.relaunch = (opts) => relaunches.push(opts);
+  deps.app.exit = (c) => exits.push(c);
+  const { restore } = stubSpawn(installsOnApply("pkgtool update kirocrew"));
+  t.after(restore);
+  const u = initAutoUpdate(deps);
+  await u.check();
+  await u.install();
+  assert.deepStrictEqual(relaunches, [{ execPath: exe, args: process.argv.slice(1) }],
+    "the marker's path, not the path this app was started as");
+  assert.deepStrictEqual(exits, [0]);
+});
+
+test("managed install(): a relaunchPath that is not on disk falls back to the bare relaunch", async (t) => {
+  const { missing } = relaunchFixture(t);
+  const relaunches = [];
+  const { deps } = makeDeps({
+    externallyManaged: { managedBy: "m", updateCommand: "pkgtool update kirocrew", checkCommand: "check", relaunchPath: missing },
+  });
+  deps.app.relaunch = (...a) => relaunches.push(a);
+  deps.app.exit = () => {};
+  const { restore } = stubSpawn(installsOnApply("pkgtool update kirocrew"));
+  t.after(restore);
+  const u = initAutoUpdate(deps);
+  await u.check();
+  await u.install();
+  assert.deepStrictEqual(relaunches, [[]], "a missing target would bring nothing back");
+});
+
+test("managed auto-on-restart: the quit-time apply relaunches through relaunchPath too", async (t) => {
+  const { exe } = relaunchFixture(t);
+  const relaunches = [];
+  const exits = [];
+  const { deps, appOnce } = makeDeps({
+    externallyManaged: { managedBy: "m", updateCommand: "pkgtool update kirocrew", checkCommand: "check", relaunchPath: exe },
+  });
+  deps.getAutoDownloadPreference = () => true;
+  deps.app.relaunch = (opts) => relaunches.push(opts);
+  deps.app.exit = (c) => exits.push(c);
+  const { restore } = stubSpawn(installsOnApply("pkgtool update kirocrew"));
+  t.after(restore);
+  const u = initAutoUpdate(deps);
+  await u.check();
+  const quit = appOnce.find((r) => r.ev === "before-quit");
+  assert.ok(quit, "pref true + found must arm a before-quit handler");
+  quit.fn({ preventDefault: () => {} });
+  await untilExited(exits);
+  assert.deepStrictEqual(relaunches, [{ execPath: exe, args: process.argv.slice(1) }]);
+  assert.deepStrictEqual(exits, [0]);
+});
+
+// ---------------------------------------------------------------------------
+// Windows session-end notice. Windows shutdown, restart and sign-out emit
+// session-end on the window and never before-quit, so a found update gets a
+// notice there instead of an apply.
+// ---------------------------------------------------------------------------
+
+const { EventEmitter: SessionEndEmitter } = require("node:events");
+
+function sessionEndRig({ osPlatform = "win32", pref = () => true, checkCode = 0 } = {}) {
+  const win = new SessionEndEmitter();
+  win.isDestroyed = () => false;
+  const notices = [];
+  const made = makeDeps({
+    osPlatform,
+    externallyManaged: {
+      managedBy: "internal-registry",
+      updateCommand: "pkgtool update kirocrew",
+      checkCommand: "pkgtool check kirocrew",
+    },
+  });
+  made.deps.getMainWindow = () => win;
+  made.deps.Notification = function (opts) { return { show: () => notices.push(opts) }; };
+  made.deps.getAutoDownloadPreference = pref;
+  const result = { code: checkCode };
+  const spawned = stubSpawn((command) => (
+    command === "pkgtool check kirocrew"
+      ? { code: result.code, out: result.code === 0 ? "9.9.9\n" : "" }
+      : { code: 1, out: "" }
+  ));
+  return { ...made, win, notices, result, ...spawned };
+}
+
+test("managed session-end on win32 shows one pending-update notice and runs no updateCommand", async (t) => {
+  const { deps, win, notices, commands, restore, appOnce } = sessionEndRig();
+  t.after(restore);
+  const u = initAutoUpdate(deps);
+  await u.check();
+  assert.strictEqual(win.listenerCount("session-end"), 1, "a found update must arm a session-end listener on the main window");
+  assert.ok(appOnce.some((r) => r.ev === "before-quit"), "before-quit stays armed beside it");
+  win.emit("session-end");
+  assert.deepStrictEqual(notices, [{
+    title: "Kiro Crew update ready",
+    body: "An update (version 9.9.9) was found but not installed, because Windows was closing. Quit Kiro Crew from the tray to install it.",
+  }]);
+  assert.deepStrictEqual(commands, ["pkgtool check kirocrew"], "session-end must never run the updateCommand");
+  assert.strictEqual(win.listenerCount("session-end"), 0, "the listener fires once");
+});
+
+test("managed session-end: a later check that finds nothing removes the window listener", async (t) => {
+  const { deps, win, notices, result, restore } = sessionEndRig();
+  t.after(restore);
+  const u = initAutoUpdate(deps);
+  await u.check();
+  assert.strictEqual(win.listenerCount("session-end"), 1, "precondition: armed after a found update");
+  result.code = 1;
+  await u.check();
+  assert.strictEqual(win.listenerCount("session-end"), 0, "an up-to-date check must remove the listener");
+  win.emit("session-end");
+  assert.strictEqual(notices.length, 0);
+});
+
+for (const osPlatform of ["darwin", "linux"]) {
+  test(`managed session-end: no listener is armed on ${osPlatform}`, async (t) => {
+    const { deps, win, appOnce, restore } = sessionEndRig({ osPlatform });
+    t.after(restore);
+    const u = initAutoUpdate(deps);
+    await u.check();
+    assert.ok(appOnce.some((r) => r.ev === "before-quit"), "before-quit is armed as before");
+    assert.strictEqual(win.listenerCount("session-end"), 0, `${osPlatform} must not arm session-end`);
+  });
+}
+
+test("managed session-end: auto-download off at check time arms nothing", async (t) => {
+  const { deps, win, restore } = sessionEndRig({ pref: () => false });
+  t.after(restore);
+  const u = initAutoUpdate(deps);
+  await u.check();
+  assert.strictEqual(win.listenerCount("session-end"), 0);
+});
+
+test("managed session-end: auto-download turned off before session end shows no notice", async (t) => {
+  let pref = true;
+  const { deps, win, notices, restore } = sessionEndRig({ pref: () => pref });
+  t.after(restore);
+  const u = initAutoUpdate(deps);
+  await u.check();
+  assert.strictEqual(win.listenerCount("session-end"), 1, "precondition: armed while auto-download was on");
+  pref = false;
+  win.emit("session-end");
+  assert.strictEqual(notices.length, 0, "a quit would not apply it, so the notice must not say it will");
+});
+
+test("managed session-end: a manual install starting removes the window listener", async (t) => {
+  const { deps, win, notices, restore } = sessionEndRig();
+  t.after(restore);
+  const u = initAutoUpdate(deps);
+  await u.check();
+  assert.strictEqual(win.listenerCount("session-end"), 1, "precondition: armed after a found update");
+  await u.install(); // the stubbed updateCommand exits 1: the install fails
+  assert.strictEqual(win.listenerCount("session-end"), 0, "an install owns the update and drops the notice");
+  win.emit("session-end");
+  assert.strictEqual(notices.length, 0);
 });

@@ -514,6 +514,154 @@ def test_a_growth_after_teardown_still_finds_its_thread(appended, monkeypatch):
     assert [i["text"] for i in data["items"]] == ["Open a PR for the docs fix?"]
 
 
+def test_a_burst_of_growth_scans_the_slots_once_per_session_per_window(monkeypatch):
+    """A busy session grows per drained batch; only its first growth in a window walks the slots."""
+    slot = _Slot([])
+    state = _State(slot)
+    monkeypatch.setattr(crewmate_feed, "_state", lambda: state)
+    monkeypatch.setattr(crewmate_feed, "_session_of", lambda _slot: "s-atlas")
+    scans: list[int] = []
+    real = crewmate_feed._crewmate_slots
+
+    def counted(st: Any) -> list[Any]:
+        scans.append(1)
+        return real(st)
+
+    monkeypatch.setattr(crewmate_feed, "_crewmate_slots", counted)
+
+    async def go() -> None:
+        for _ in range(5):
+            crewmate_feed._grew("s-busy")
+        assert len(scans) == 1
+        crewmate_feed._grew("s-atlas")  # another session in the same window
+        assert len(scans) == 2
+        crewmate_feed._timer.cancel()
+        crewmate_feed._timer = None
+        crewmate_feed._pending.clear()  # the settle took the window
+        crewmate_feed._grew("s-busy")  # next window
+        assert len(scans) == 3
+        crewmate_feed._timer.cancel()
+        crewmate_feed._timer = None
+
+    asyncio.run(go())
+    assert crewmate_feed._sessions[SLOT] == "s-atlas"
+
+
+def test_a_crewmate_on_a_new_session_mid_window_is_learned_before_teardown(appended, monkeypatch):
+    """The deduplicated scan must not miss a thread whose session changed in the window."""
+    _cards(monkeypatch, [])
+    live = {"sid": "s-old"}
+    monkeypatch.setattr(crewmate_feed, "_session_of", lambda _slot: live["sid"])
+    slot = _Slot([{"role": "assistant", "content": ASK, "ts": "2026-10-18T18:40:00+00:00"}])
+    state = _State(slot)
+    monkeypatch.setattr(crewmate_feed, "_state", lambda: state)
+
+    async def go() -> None:
+        crewmate_feed._grew("s-old")
+        live["sid"] = "s-new"  # the thread was reset onto a new session
+        crewmate_feed._grew("s-old")  # deduplicated: no scan
+        crewmate_feed._grew("s-new")  # a new id in this window: scans
+        live["sid"] = ""  # turn teardown
+        crewmate_feed._timer.cancel()
+        crewmate_feed._timer = None
+        crewmate_feed._settle()
+        await _drain()
+
+    asyncio.run(go())
+    assert crewmate_feed._sessions[SLOT] == "s-new"
+    ((kind, sid, _data),) = [e for e in appended if e[0] == "waiting"]
+    assert sid == "s-new"
+
+
+class _BareSlot:
+    def __init__(self, i: int) -> None:
+        self.key = f"chat-{i}"
+        self.mode = "member" if i % 10 == 0 else "user"
+        self.agent = "Atlas"
+
+
+class _ManySlots:
+    def __init__(self, n: int) -> None:
+        self._slots = {s.key: s for s in (_BareSlot(i) for i in range(n))}
+
+
+def _count_scans(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    scans: list[int] = []
+    real = crewmate_feed._crewmate_slots
+
+    def counted(st: Any) -> list[Any]:
+        scans.append(1)
+        return real(st)
+
+    monkeypatch.setattr(crewmate_feed, "_crewmate_slots", counted)
+    return scans
+
+
+def test_growth_scans_once_per_distinct_session_at_scale(monkeypatch):
+    """300 sessions growing 20 times each in one window scan the slots 300 times, not 6,000."""
+    state = _ManySlots(3240)
+    monkeypatch.setattr(crewmate_feed, "_state", lambda: state)
+    reads: list[str] = []
+
+    def session_of(slot: Any) -> str:
+        reads.append(slot.key)
+        return ""
+
+    monkeypatch.setattr(crewmate_feed, "_session_of", session_of)
+    scans = _count_scans(monkeypatch)
+
+    async def go() -> None:
+        for _ in range(20):
+            for i in range(300):
+                crewmate_feed._grew(f"s-{i}")
+        crewmate_feed._timer.cancel()
+        crewmate_feed._timer = None
+
+    asyncio.run(go())
+    assert len(scans) == 300
+    assert len(reads) == 300 * 324
+    assert len(crewmate_feed._pending) == 300
+
+
+def test_dm_slot_mode_is_read_once_per_scan(monkeypatch):
+    """The members facade resolves each attribute read in Python, so a scan reads it once."""
+    import kiro_crew._facade_mirror as facade_mirror
+
+    reads: list[str] = []
+    real = facade_mirror.MirroredModule.__getattr__
+
+    def counting(self: Any, name: str) -> Any:
+        if name == "DM_SLOT_MODE":
+            reads.append(name)
+        return real(self, name)
+
+    monkeypatch.setattr(facade_mirror.MirroredModule, "__getattr__", counting)
+    state = _ManySlots(3240)
+    for _ in range(3):
+        assert len(crewmate_feed._crewmate_slots(state)) == 324
+    assert len(reads) == 3
+
+
+def test_retired_questions_do_not_walk_every_slot(monkeypatch):
+    """A retired question looks its slot up by key; 50 retirements walk the slots at most once."""
+    state = _ManySlots(3240)
+    monkeypatch.setattr(crewmate_feed, "_state", lambda: state)
+    monkeypatch.setattr(crewmate_feed, "_session_of", lambda slot: f"s-{slot.key}")
+    scans = _count_scans(monkeypatch)
+
+    async def go() -> None:
+        for i in range(50):
+            crewmate_feed._retired(f"chat-{i * 10}")  # a crewmate slot
+            crewmate_feed._retired(f"chat-{i * 10 + 1}")  # not a crewmate slot
+        crewmate_feed._retired("chat-missing")
+        crewmate_feed._timer.cancel()
+        crewmate_feed._timer = None
+
+    asyncio.run(go())
+    assert len(scans) <= 1
+    assert crewmate_feed._pending == {f"s-chat-{i * 10}" for i in range(50)}
+
+
 def test_a_goal_of_wide_characters_still_fits_one_log_line():
     from kiro_crew.crew_log import emit_text
     from kiro_crew.crew_log.emit_state import _SRC_GATEWAY

@@ -98,7 +98,8 @@ describe('crew-companion/SettingsSection', () => {
     const pills = Array.from(container.querySelectorAll('.cc-pill')) as HTMLButtonElement[]
     expect(pills.map((p) => p.textContent)).toEqual(BREAK_PRESETS.map(String))
     // The stored value is the pressed one.
-    expect(pills[0].getAttribute('aria-pressed')).toBe('true')
+    expect(pills[0].getAttribute('aria-checked')).toBe('true')
+    expect(pills[0].getAttribute('role')).toBe('radio')
     fireEvent.click(pills[2])
     expect(setCustomMins).toHaveBeenCalledWith(null)
     expect(onCfg).toHaveBeenCalledWith({ breakReminderMins: BREAK_PRESETS[2] })

@@ -33,8 +33,7 @@ requires_posix_pod_lifecycle = pytest.mark.skipif(
 
 
 @pytest.fixture(autouse=True)
-# nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- pre-existing autouse node-toolchain pin moved verbatim; no test in the modules that import it calls monkeypatch.undo()
-def _fake_node_toolchain(monkeypatch: pytest.MonkeyPatch) -> None:
+def _fake_node_toolchain(_floor_monkeypatch: pytest.MonkeyPatch) -> None:
     """Pin node-toolchain resolution so provisioning tests are host-independent.
 
     ``provision`` now resolves ``npm`` to an absolute path and hands the child a
@@ -42,15 +41,14 @@ def _fake_node_toolchain(monkeypatch: pytest.MonkeyPatch) -> None:
     Without this fixture the provisioning tests would pass or fail according to whether
     the host running them happens to have a version manager installed.
     """
-    monkeypatch.setattr(prov, "find_node_tool", lambda name: f"{NODE_BIN}/{name}")
-    monkeypatch.setattr(
+    _floor_monkeypatch.setattr(prov, "find_node_tool", lambda name: f"{NODE_BIN}/{name}")
+    _floor_monkeypatch.setattr(
         prov, "node_augmented_path", lambda base="": f"{NODE_BIN}{os.pathsep}{base}"
     )
 
 
 @pytest.fixture(autouse=True)
-# nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- pre-existing autouse host-home pin moved verbatim; no test in the modules that import it calls monkeypatch.undo()
-def _isolate_pod_host_state(tmp_path_factory, monkeypatch: pytest.MonkeyPatch) -> None:
+def _isolate_pod_host_state(tmp_path_factory, _floor_monkeypatch: pytest.MonkeyPatch) -> None:
     """Keep pod HOST state out of the developer's real home.
 
     Two pod paths resolve through ``Path.home()`` rather than ``KIROCREW_HOME``, so
@@ -81,15 +79,14 @@ def _isolate_pod_host_state(tmp_path_factory, monkeypatch: pytest.MonkeyPatch) -
     already hermetic. Tests that set the variables themselves are unaffected.
     """
     home = tmp_path_factory.mktemp("pod-host-home")
-    monkeypatch.setenv("HOME", str(home))
-    monkeypatch.setenv("USERPROFILE", str(home))
-    monkeypatch.delenv("KIROCREW_POD_ROOT", raising=False)
-    monkeypatch.delenv("KIROCREW_POD_ENV_DIR", raising=False)
+    _floor_monkeypatch.setenv("HOME", str(home))
+    _floor_monkeypatch.setenv("USERPROFILE", str(home))
+    _floor_monkeypatch.delenv("KIROCREW_POD_ROOT", raising=False)
+    _floor_monkeypatch.delenv("KIROCREW_POD_ENV_DIR", raising=False)
 
 
 @pytest.fixture(autouse=True)
-# nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- pre-existing autouse systemd-backend pin moved verbatim; no test in the modules that import it calls monkeypatch.undo()
-def _systemd_backend(monkeypatch: pytest.MonkeyPatch) -> None:
+def _systemd_backend(_floor_monkeypatch: pytest.MonkeyPatch) -> None:
     """Exercise the SYSTEMD backend by default, on every host.
 
     ``runtime`` dispatches unit operations on ``IS_MACOS`` and ``IS_WINDOWS``,
@@ -101,8 +98,8 @@ def _systemd_backend(monkeypatch: pytest.MonkeyPatch) -> None:
     default explicit and keeps the systemd contract asserted everywhere. Tests
     for the macOS or Windows path set their flag True themselves.
     """
-    monkeypatch.setattr(rt, "IS_MACOS", False)
-    monkeypatch.setattr(rt, "IS_WINDOWS", False)
+    _floor_monkeypatch.setattr(rt, "IS_MACOS", False)
+    _floor_monkeypatch.setattr(rt, "IS_WINDOWS", False)
 
 
 @pytest.fixture(name="cfg")

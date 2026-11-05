@@ -7,7 +7,7 @@ import { fmtNumber } from '../../../i18n/format'
 import { slotChannelNamespace } from '../../../utils/channelOrigin'
 import { deriveToolCallTitle, parseToolArgs } from '../../../utils/toolCallTitle'
 import { isPrivateMemoryMode } from '../../../utils/sessionRefs'
-import { crewApprovalDecidableHere } from '../../../lib/crewMode'
+import { crewApprovalDecidableHere, crewRootOf } from '../../../lib/crewMode'
 
 export type RunState = 'running' | 'idle' | 'done' | 'blocked' | 'waiting' | 'needs_input' | 'stopped'
 export const APPROVAL_MODE_KEYS: Record<ApprovalModeKey, string> = {
@@ -101,7 +101,7 @@ export interface CommandCenterSources {
   root: string | null
   slots: ChatSlot[]
   subagents: Record<string, Record<string, SubagentActivity>>
-  workflows: { run_id: string; name?: string; session_key?: string; status?: string; error?: string | null; last_log?: string }[]
+  workflows: { run_id: string; name?: string; session_key?: string; status?: string; error?: string | null; last_log?: string; ended_at?: string | null }[]
   questions: PendingQuestion[]
   approvals: PendingApproval[]
   work?: { items: WorkItem[]; omitted?: number }
@@ -111,11 +111,20 @@ export interface CommandCenterSources {
   crewWaiting?: Record<string, number>
 }
 
+/** Whether a session that `key` opened is mid-turn right now: a Crew Mode
+ *  worker (`crew_root`) or any session it created (`created_by`). A loop whose
+ *  dispatched workers are running is still moving, so its own idle reply's
+ *  `[OPTIONS:]` line is not a pause that waits on the person. */
+export function openedSessionRunning(slots: readonly ChatSlot[], key: string): boolean {
+  return slots.some(s => s.key !== key && !!s.running && (s.created_by === key || crewRootOf(s) === key))
+}
+
 /** `{root: n}` for each Crew Mode root with n workers whose tool approval waits. */
 export function crewWaitingApprovals(slots: readonly ChatSlot[]): Record<string, number> {
   const out: Record<string, number> = {}
   for (const s of slots) {
-    if (s.crew_root && s.pending_approval) out[s.crew_root] = (out[s.crew_root] ?? 0) + 1
+    const root = crewRootOf(s)
+    if (root && s.pending_approval) out[root] = (out[root] ?? 0) + 1
   }
   return out
 }
@@ -194,7 +203,18 @@ export function scopedSlots(slots: ChatSlot[], root: string | null): ChatSlot[] 
   return slots.filter(s => keys.has(s.key))
 }
 
-export function buildCommandCenter(source: CommandCenterSources) {
+/** How long a failed workflow counts as blocked. Runs are kept on disk, so
+ *  without a window a failure from weeks ago would hold the tile forever; past
+ *  it the run rests as stopped, and the run history still lists it. */
+export const FAILED_WORKFLOW_BLOCKED_MS = 24 * 60 * 60 * 1000
+
+function failedWorkflowState(endedAt: string | null | undefined, now: number): RunState {
+  const ended = endedAt ? Date.parse(endedAt) : NaN
+  // An unknown end time (an older gateway) keeps today's behaviour: blocked.
+  return Number.isFinite(ended) && now - ended > FAILED_WORKFLOW_BLOCKED_MS ? 'stopped' : 'blocked'
+}
+
+export function buildCommandCenter(source: CommandCenterSources, now = Date.now()) {
   const slots = scopedSlots(source.slots, source.root)
   const keys = new Set(slots.map(s => s.key))
   const attention: AttentionItem[] = []
@@ -263,8 +283,8 @@ export function buildCommandCenter(source: CommandCenterSources) {
   for (let i = 0; i < attention.length; i++) {
     const item = attention[i]
     const row = rowByKey.get(item.slot)
-    if (item.kind === 'approval' && row?.crew_root && !crewApprovalDecidableHere(row, surface)) {
-      attention[i] = { ...item, crewCard: row.crew_root, native: undefined }
+    if (item.kind === 'approval' && crewRootOf(row) && !crewApprovalDecidableHere(row, surface)) {
+      attention[i] = { ...item, crewCard: crewRootOf(row), native: undefined }
     }
   }
   const crewWaiting = source.crewWaiting || {}
@@ -295,7 +315,7 @@ export function buildCommandCenter(source: CommandCenterSources) {
     // A paused workflow is resumable, so its label is "waiting" rather than
     // stopped; planning is active work even before execution starts.
     nodes.push({ id: `workflow:${w.run_id}`, kind: 'workflow', ref: w.run_id, slot, title: w.name && w.name !== w.run_id ? w.name : '', ordinal: nodes.length + 1,
-      state: w.status === 'finished' ? 'done' : w.status === 'failed' ? 'blocked' : w.status === 'cancelled' ? 'stopped'
+      state: w.status === 'finished' ? 'done' : w.status === 'failed' ? failedWorkflowState(w.ended_at, now) : w.status === 'cancelled' ? 'stopped'
         : w.status === 'paused' || w.status === 'pausing' ? 'waiting'
           : w.status === 'running' || w.status === 'planning' || w.status === 'planned' ? 'running' : 'idle',
       detail: w.last_log, error: w.error || undefined })

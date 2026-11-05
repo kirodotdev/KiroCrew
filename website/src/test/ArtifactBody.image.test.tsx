@@ -86,3 +86,55 @@ describe('ArtifactBodyImage', () => {
     expect(document.querySelector('.monaco-editor')).toBeNull()
   })
 })
+
+// #28760: fit-to-view is the only size the body shows, so the image opens in
+// the app-wide viewer (zoom and pan), the one a chat image opens. The viewer
+// listens for a window `lightbox` event; this pins that the body sends it.
+describe('ArtifactBodyImage full-size view', () => {
+  function captureLightbox() {
+    const seen: Array<{ images: Array<{ src: string; alt: string; filename?: string }>; index: number }> = []
+    const onLightbox = (e: Event) => { seen.push((e as CustomEvent).detail) }
+    window.addEventListener('lightbox', onLightbox)
+    return { seen, stop: () => window.removeEventListener('lightbox', onLightbox) }
+  }
+
+  it('opens the image in the viewer from a button named by the image', () => {
+    const art = makeImageArtifact({
+      image: { mime: 'image/png', ext: 'png', alt: 'Architecture diagram', original_filename: 'diagram.png' },
+    })
+    render(<ArtifactBodyImage artifact={art} slug={SLUG} />)
+    // The image's alt stays its accessible name; "View full size" is the hint.
+    const button = screen.getByRole('button', { name: 'Architecture diagram' })
+    expect(button).toHaveAccessibleDescription('View full size')
+    const lb = captureLightbox()
+    try {
+      fireEvent.click(button)
+    } finally {
+      lb.stop()
+    }
+    // The viewer reads the <img> itself, so the src is the resolved URL.
+    expect(lb.seen).toEqual([{ images: [{ src: new URL(ASSET_URL, document.baseURI).href, alt: 'Architecture diagram', filename: 'diagram.png' }], index: 0 }])
+  })
+
+  it('puts the image itself inside that button, so the image is what is clicked', () => {
+    render(<ArtifactBodyImage artifact={makeImageArtifact()} slug={SLUG} />)
+    const button = screen.getByRole('button', { name: 'Sunset Photo' })
+    expect(button.querySelector('img')?.getAttribute('src')).toBe(ASSET_URL)
+  })
+
+  it('names the button for the artifact when the image has no alt of its own', () => {
+    render(<ArtifactBodyImage artifact={makeImageArtifact({ image: { mime: 'image/png', ext: 'png', alt: '   ' } })} slug={SLUG} />)
+    expect(screen.getByRole('button', { name: 'Sunset Photo' })).toHaveAccessibleDescription('View full size')
+  })
+
+  it('names the button "View full size" when neither the image nor the artifact has a name', () => {
+    render(<ArtifactBodyImage artifact={makeImageArtifact({ name: '', image: { mime: 'image/png', ext: 'png' } })} slug={SLUG} />)
+    expect(screen.getByRole('button', { name: 'View full size' })).toBeInTheDocument()
+  })
+
+  it('offers no viewer once the image failed to load', () => {
+    render(<ArtifactBodyImage artifact={makeImageArtifact()} slug={SLUG} />)
+    fireEvent.error(document.querySelector('img') as HTMLImageElement)
+    expect(screen.queryByTitle('View full size')).toBeNull()
+  })
+})

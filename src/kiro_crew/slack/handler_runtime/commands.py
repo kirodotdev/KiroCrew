@@ -32,6 +32,7 @@ if TYPE_CHECKING:
         _get_default_agent,
         _hydrate_thread_overrides,
         _hydrated_sessions,
+        _is_bang_command,
         _is_slack_restricted,
         _list_all_agent_names,
         _mark_titled,
@@ -624,8 +625,25 @@ async def _bang_link_to_dashboard(
         )
         return ""
     from kiro_crew.slack.interactions import _import_thread_to_slot
+    from kiro_crew.slack.interactions_options import (
+        IMPORT_AGENT_MISMATCH_NOTICE,
+        ChannelAgentMismatchError,
+    )
 
-    slot = await _import_thread_to_slot(slack, _dashboard_state, channel, reply_ts)
+    try:
+        slot = await _import_thread_to_slot(slack, _dashboard_state, channel, reply_ts)
+    except ChannelAgentMismatchError:
+        sel().log_tool_invocation(
+            session_key="",
+            agent="kirocrew",
+            source="slack",
+            tool_name="link_to_dashboard",
+            tool_kind="command",
+            outcome="denied",
+            metadata={"user_id": user_id, "channel": channel, "reason": "channel_agent_mismatch"},
+        )
+        await slack.post_message(channel, IMPORT_AGENT_MISMATCH_NOTICE, reply_ts)
+        return ""
     if not slot:
         sel().log_tool_invocation(
             session_key="",
@@ -885,7 +903,7 @@ async def _bang_project(
             reply_ts,
         )
         return ""
-    resolved = os.path.realpath(os.path.expanduser(raw_path))
+    resolved = await asyncio.to_thread(os.path.realpath, os.path.expanduser(raw_path))
     # Checked first, so no record below ever carries an over-limit path: the maps keep
     # a value only within their per-value limit (a Windows long path can pass it).
     too_long = thread_override_slots.setter_refusal("project", resolved)
@@ -913,7 +931,7 @@ async def _bang_project(
             channel, "Cannot use sensitive path as project directory.", reply_ts
         )
         return ""
-    if not os.path.isdir(resolved):
+    if not await asyncio.to_thread(os.path.isdir, resolved):
         sel().log_tool_invocation(
             session_key=session_key,
             source="slack",
@@ -1459,7 +1477,7 @@ async def _route_bang_command(
         return True
 
     # ── Owner commands: all "!" prefixed messages are reserved for owner ──
-    if cmd_text.startswith("!"):
+    if _is_bang_command(cmd_text):
         # !dashboard and !stop are available to any allowed user
         _cmd_word = cmd_text.split()[0]
         if _cmd_word in ("!dashboard", "!stop", "!title"):

@@ -47,11 +47,23 @@ class _Slot:
         self._subagents_inline_collected: set[str] = set()
         self._subagent_deliveries_inflight = 0
         self._synthesis_completion_turns = 0
+        #: Every completion ever queued, in order; ``_queue`` is what is still waiting.
         self.queued: list[tuple[str, str, Any]] = []
+        self._queue: list[dict[str, Any]] = []
         self.owed: list[tuple[str, list[Any]]] = []
+        # The admission state ``idle_slot_admits_drain`` reads, all open.
+        self._lock = asyncio.Lock()
+        self._turn_admission_reserved = False
+        self.is_closing = False
+        self._last_turn_auth_required = False
+        self._stopping = False
+        self._stop_state = "idle"
 
-    def queue_append(self, text: str, *, kind: str, meta: Any) -> None:
+    def queue_append(self, text: str, *, kind: str = "", meta: Any = None) -> str:
         self.queued.append((text, kind, meta))
+        queue_id = f"q{len(self.queued)}"
+        self._queue.append({"id": queue_id, "content": text, "kind": kind})
+        return queue_id
 
     def note_pending_subagent_delivery(self, content: str, deliveries: list[Any]) -> None:
         self.owed.append((content, list(deliveries)))
@@ -89,12 +101,16 @@ class _Done:
         #: Answers for the parent's bound tab, used up first, one per lookup.
         self.bound_slots: list[Any] = []
         self.tabs: dict[str, str] = {"dashboard:main": "main"}
+        #: The tabs the queue drain was asked to start a turn on, in order.
+        self.drains: list[Any] = []
+        #: Makes the drain refuse, as it does during shutdown or memory preparation.
+        self.drain_refuses = False
 
         self.client = MagicMock(name="client")
         self.clients: list[Any] = [self.client]
         sessions = MagicMock(name="sessions")
         sessions.get_or_create = AsyncMock(side_effect=self._get_or_create)
-        sessions.reset = AsyncMock(side_effect=lambda key: self.calls.append(("reset", key)))
+        sessions.reset = AsyncMock(side_effect=self._reset)
         sessions.cancel_current = AsyncMock(
             side_effect=lambda key, **_kw: self.calls.append(("cancel", key))
         )
@@ -107,7 +123,10 @@ class _Done:
 
         state = MagicMock(name="dashboard_state")
         state._background_tasks = _Tasks()
-        state.get_slot = MagicMock(return_value=None)
+        #: The dashboard's slot registry by key: each ``tab()``, and each tab
+        #: the parent's binding resolved to.
+        self.registry: dict[str, Any] = {}
+        state.get_slot = MagicMock(side_effect=lambda name: self.registry.get(name))
         self.state = state
 
         mgr = MagicMock(name="subagent_mgr")
@@ -138,9 +157,7 @@ class _Done:
         monkeypatch.setattr(gw_mod, "dashboard_slot_key", lambda key: self.tabs.get(key, ""))
         monkeypatch.setattr(messaging_handlers, "_slot_for_parent", self._slot_for_parent)
         monkeypatch.setattr(gw_mod, "load_window_off_loop", AsyncMock(side_effect=self._load))
-        monkeypatch.setattr(gw_mod, "_run_chat", self._run_chat)
-        monkeypatch.setattr(gw_mod, "bounded_chat_turn", self._bounded)
-        monkeypatch.setattr(gw_mod, "_arm_queued_delivery_settlement", MagicMock())
+        monkeypatch.setattr(gw_mod, "_start_next_queued_turn", self._drain_queue)
         monkeypatch.setattr(gw_mod, "_subagent_batch_pending", AsyncMock(return_value=True))
         monkeypatch.setattr(gw_mod, "_subagent_queued_count", AsyncMock(return_value=0))
         monkeypatch.setattr(gw_mod, "session_store_for_turn", AsyncMock(return_value="STORE"))
@@ -176,7 +193,16 @@ class _Done:
         return client, True, False
 
     def _slot_for_parent(self, _state: Any, _key: str) -> Any:
-        return self.bound_slots.pop(0) if self.bound_slots else self.bound_slot
+        slot = self.bound_slots.pop(0) if self.bound_slots else self.bound_slot
+        if slot is not None:
+            # The bound tab is the one the registry now holds under its key.
+            self.registry[slot.key] = slot
+        return slot
+
+    async def _reset(self, key: str, **_kw: Any) -> bool:
+        """An idle session's reset: recorded, and it happened."""
+        self.calls.append(("reset", key))
+        return True
 
     async def _load(self, slot: Any) -> None:
         self.calls.append(("load", slot.key))
@@ -187,8 +213,25 @@ class _Done:
         if self.chat_error is not None:
             raise self.chat_error
 
-    async def _bounded(self, coro: Any, **_kw: Any) -> Any:
-        return await coro
+    async def _drain_queue(self, state: Any, slot: Any) -> bool:
+        """``_start_next_queued_turn``: start the queue's head as the tab's turn."""
+        self.drains.append(slot)
+        if self.drain_refuses or not slot._queue:
+            return False
+        head = slot._queue.pop(0)
+        task = asyncio.create_task(
+            self._run_chat(state, slot, head["content"], _turn_actor="subagent")
+        )
+        slot.task = task
+        state._background_tasks.add(task)
+        task.add_done_callback(state._background_tasks.discard)
+
+        def _clear(t: Any) -> None:
+            if slot.task is t:
+                slot.task = None
+
+        task.add_done_callback(_clear)
+        return True
 
     async def _build_message(self, fn: Any, *args: Any, **kwargs: Any) -> tuple[str, None]:
         self.calls.append(("build", args, kwargs))
@@ -217,7 +260,7 @@ class _Done:
     def tab(self, key: str = "main") -> _Slot:
         """A tab the folded slot name resolves to."""
         slot = _Slot(key)
-        self.state.get_slot = MagicMock(side_effect=lambda name: slot if name == slot.key else None)
+        self.registry[key] = slot
         return slot
 
     async def done(self, info: SubagentInfo) -> None:
@@ -369,6 +412,29 @@ async def test_a_restored_tab_loads_its_window_before_the_completion_lands(
     assert restored.task is None
 
 
+@pytest.mark.asyncio
+async def test_a_restored_tab_whose_window_cannot_be_read_takes_the_parents_own_route(
+    done: _Done, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    restored = _Slot("main")
+    restored.window_pending = True
+    done.bound_slot = restored
+    monkeypatch.setattr(
+        gw_mod, "load_window_off_loop", AsyncMock(side_effect=PermissionError(13, "in use"))
+    )
+    own_route = AsyncMock(name="_inject_subagent_into_channel_parent")
+    monkeypatch.setattr(done.orch, "_inject_subagent_into_channel_parent", own_route)
+
+    await done.done(make_info())
+    await done.drain()
+
+    own_route.assert_awaited_once()
+    assert own_route.await_args.kwargs["parent_key"] == "dashboard:main"
+    assert done.chats == [] and restored.queued == [] and restored.task is None
+    statuses = done.frames("subagent_status")
+    assert [(f["event"], f["slot"]) for f in statuses] == [("done", "evt:dashboard:main")]
+
+
 # ── records that route nothing ───────────────────────────────────────────────
 
 
@@ -507,6 +573,29 @@ async def test_a_failed_injection_notice_lands_on_the_loaded_tab_and_queues_its_
 
 
 @pytest.mark.asyncio
+async def test_a_failed_injection_notice_whose_tab_cannot_be_read_still_reaches_the_ui(
+    done: _Done, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    restored = MagicMock(name="restored tab", window_pending=True, _pending_subagent_failures=[])
+    done.state.get_slot = MagicMock(return_value=restored)
+    monkeypatch.setattr(
+        gw_mod, "load_window_off_loop", AsyncMock(side_effect=PermissionError(13, "in use"))
+    )
+
+    await done.manager_kwargs["on_event"](
+        "subagent_injection_failed",
+        make_info(),
+        {"error": "boom", "failure_msg": "report"},
+    )
+
+    restored.append.assert_not_called()
+    assert restored._pending_subagent_failures == []
+    assert done.frames("subagent_injection_failed") == [
+        {"id": "a1", "slot": "evt:dashboard:main", "error": "boom", "failure_msg": "report"}
+    ]
+
+
+@pytest.mark.asyncio
 async def test_a_stalled_child_kicks_the_parents_parked_queue(
     done: _Done, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -540,6 +629,20 @@ async def test_an_orphan_notice_loads_a_restored_tab_first(done: _Done) -> None:
 
     assert ("load", "main") in done.calls
     assert loaded._pending_subagent_failures == ["lost [R]"]
+
+
+@pytest.mark.asyncio
+async def test_an_orphan_notice_whose_tab_cannot_be_read_falls_through_to_the_owner_dm(
+    done: _Done, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    restored = MagicMock(name="restored tab", window_pending=True, _pending_subagent_failures=[])
+    done.state.get_slot = MagicMock(return_value=restored)
+    monkeypatch.setattr(gw_mod, "load_window_off_loop", AsyncMock(side_effect=OSError("disk gone")))
+
+    assert await done.manager_kwargs["on_orphan_notify"]("dashboard:main", "lost") is False
+
+    restored.append.assert_not_called()
+    assert restored._pending_subagent_failures == []
 
 
 @pytest.mark.asyncio

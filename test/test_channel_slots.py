@@ -779,6 +779,29 @@ class TestReconcilePass:
         assert log.cleared == ["slack:1.1"]
         assert "closed" not in log._meta["slack:1.1"]
 
+    def test_a_surfacing_pass_refreshes_the_older_sessions_listing(
+        self, dashboard_state: Any
+    ) -> None:
+        """A surfaced session becomes an open tab and leaves Older Sessions, which
+        tabs re-read only on a ``history`` frame; a pass that surfaces nothing sends none."""
+        log = _FakeLog(
+            [_session("slack:1.1", modified=NOW)],
+            {"slack:1.1": {"closed": True, "closed_at": NOW - 600}},
+        )
+        dashboard_state.conversation_log = log
+        dashboard_state.push_slots_update = lambda: None  # type: ignore[method-assign]
+        refreshes: list[str] = []
+        dashboard_state.push_listing_refresh = (  # type: ignore[method-assign]
+            lambda: refreshes.append("history")
+        )
+
+        assert asyncio.run(channel_slots.reconcile_channel_slots(dashboard_state, 30)) == 1
+        assert refreshes == ["history"]
+
+        refreshes.clear()
+        assert asyncio.run(channel_slots.reconcile_channel_slots(dashboard_state, 30)) == 0
+        assert refreshes == []
+
     def test_legacy_close_reopens_via_file_mtime_fallback(self, dashboard_state: Any) -> None:
         """A pre-stamp `closed` flag (no closed_at) reactivates off the
         transcript's mtime — the shape of sessions closed before the stamp."""

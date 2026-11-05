@@ -17,6 +17,23 @@ from typing import Callable
 PROJECT_MARKERS = ("skills", "src/kiro_crew")
 
 
+def _is_dir(p: Path) -> bool:
+    """``p.is_dir()``, but a path that cannot be probed counts as absent.
+
+    ``Path.is_dir()`` returns False for a missing path yet raises on EPERM or
+    EACCES. A sandbox-masked ancestor (a symlinked home that resolves into a
+    masked mount) answers EPERM, and detection must keep walking, not crash.
+    """
+    try:
+        return p.is_dir()
+    except OSError:
+        return False
+
+
+def _is_checkout(d: Path) -> bool:
+    return all(_is_dir(d / m) for m in PROJECT_MARKERS)
+
+
 def detect_project_dir(saved_file: Callable[[], Path]) -> str | None:
     """Find the project root containing the project markers.
 
@@ -29,12 +46,16 @@ def detect_project_dir(saved_file: Callable[[], Path]) -> str | None:
     """
     cur = Path.cwd().resolve()
     for d in (cur, *cur.parents):
-        if all((d / m).is_dir() for m in PROJECT_MARKERS):
+        if _is_checkout(d):
             return str(d)
     pdf = saved_file()
-    if pdf.is_file():
+    try:
+        if not pdf.is_file():
+            return None
         saved = pdf.read_text(encoding="utf-8").strip()
-        p = Path(saved)
-        if p.is_dir() and all((p / m).is_dir() for m in PROJECT_MARKERS):
-            return saved
+    except OSError:
+        return None
+    p = Path(saved)
+    if _is_dir(p) and _is_checkout(p):
+        return saved
     return None

@@ -761,7 +761,8 @@ const EXTERNAL_LINK_TARGET_SHIM_BODY = `(function(){
 /** Links leave the frame through the host, never through a popup of its own.
  *
  * Injected by `linkBridge` for the frames that hold agent-written pages (saved
- * artifacts, library thumbnails, a teammate's shared artifact, chat widgets).
+ * artifacts, library thumbnails, a teammate's shared artifact, chat widgets, a
+ * crewmate's Dashboard page).
  * Those frames are `sandbox="allow-scripts"` with no popup grant, so a page
  * cannot open a window itself; this hands the request to the host instead, as
  * `{type: 'kirocrew-dashboard:open', url}` -- the message the crew pages already
@@ -773,7 +774,9 @@ const EXTERNAL_LINK_TARGET_SHIM_BODY = `(function(){
  *   - A click on a link that would open a window (`target="_blank"` or any other
  *     target but `_self`) or that would navigate this frame to another site (a
  *     bare absolute `http(s)` link) is cancelled here and, when its href is an
- *     absolute `http(s)` URL, posted to the host. Fragment and relative links
+ *     absolute `http(s)` URL, posted to the host. A window-opening link to a
+ *     root-relative dashboard path (`/chat?sid=...`) is posted as that path,
+ *     which the host resolves against its own origin. Fragment and relative links
  *     with no target keep their in-frame behaviour; other schemes on a
  *     window-opening link are cancelled and not posted.
  *   - `window.open` is replaced by the same post and returns null, so a page
@@ -820,10 +823,25 @@ const LINK_BRIDGE_SHIM_BODY = `(function(){
     try { u = new URL(s); } catch (_) { return null; }
     return (u.protocol === 'http:' || u.protocol === 'https:') ? u.href : null;
   }
+  // A root-relative dashboard path (/chat?sid=...), sent as written: the host
+  // resolves it against its own origin. Parsed against a placeholder origin and
+  // returned only while it stays there, so //host and /\\host (another origin) and any
+  // scheme are refused. Used only for a link that opens a window, never a bare one.
+  function path(raw){
+    var s = String(raw).trim(), u, o = 'https://kirocrew-path.invalid';
+    if (s.charAt(0) !== '/') return null;
+    try { u = new URL(s, o); } catch (_) { return null; }
+    // A dot segment can normalise to //host (/.//host), which the host would read
+    // as another origin, so a pathname starting // is refused too.
+    if (u.origin !== o || u.pathname.slice(0, 2) === '//') return null;
+    return u.pathname + u.search + u.hash;
+  }
+  function post(url){
+    try { P.postMessage({ type: T, url: url }, '*'); } catch (_) {}
+  }
   function ask(raw){
     var url = web(raw);
-    if (!url) return;
-    try { P.postMessage({ type: T, url: url }, '*'); } catch (_) {}
+    if (url) post(url);
   }
   // An SVG link may carry its address as xlink:href instead of href.
   var XLINK = 'http://www.w3.org/1999/xlink';
@@ -850,6 +868,7 @@ const LINK_BRIDGE_SHIM_BODY = `(function(){
     var url = web(hrefOf(a));
     if (!middle && target === '_self') return null;
     if (!middle && !target && !url) return null;
+    if (!url) url = path(hrefOf(a));
     if (middle && !url) return null;
     return { a: a, url: url, bare: !middle && !target };
   }
@@ -867,13 +886,13 @@ const LINK_BRIDGE_SHIM_BODY = `(function(){
   // nothing is posted.
   function decide(e, p, now){
     if (!now) {
-      setTimeout(function(){ if (!e.defaultPrevented && p.url) ask(p.url); }, 0);
+      setTimeout(function(){ if (!e.defaultPrevented && p.url) post(p.url); }, 0);
       return;
     }
     window.addEventListener(e.type, function(ev){
       if (ev !== e || e.defaultPrevented) return;
       e.preventDefault();
-      if (p.url) ask(p.url);
+      if (p.url) post(p.url);
     }, { once: true });
   }
   window.addEventListener('click', function(e){
@@ -1514,6 +1533,24 @@ interface BuildSrcdocOptions {
    * FRAME_WHEEL_RELAY_BODY), for a host whose desktop trackpad swipe must be
    * able to run over the frame. Off by default. */
   relayWheel?: boolean
+  /** The Tailwind runtime's own text, written inline instead of the same-origin
+   *  `<script src>`, for a document opened away from the dashboard (a saved file).
+   *  Unset by default, so no rendered surface changes. */
+  inlineRuntime?: string
+}
+
+/** *js* with every casing of `</script` written `<\/script`, so it cannot end the
+ *  inline element it is serialized into. A plain scan, not a pattern. */
+export function escapeScriptClose(js: string): string {
+  const close = '</script'
+  const lower = js.toLowerCase()
+  let out = ''
+  let from = 0
+  for (let at = lower.indexOf(close); at !== -1; at = lower.indexOf(close, at + close.length)) {
+    out += js.slice(from, at) + '<\\/' + js.slice(at + 2, at + close.length)
+    from = at + close.length
+  }
+  return out + js.slice(from)
 }
 
 /** Build the srcdoc HTML for a sandboxed widget iframe. The LLM `html`
@@ -1534,6 +1571,7 @@ export function buildSrcdoc({
   pageScripts = true,
   relayTouches = false,
   relayWheel = false,
+  inlineRuntime,
 }: BuildSrcdocOptions): string {
   // A widget hardcoded for a light canvas renders on a light canvas even when
   // the dashboard is dark -- see resolveWidgetTheme. Resolved once here so the
@@ -1619,10 +1657,19 @@ export function buildSrcdoc({
   // environments that lack a running dev server. Using a non-fetching placeholder
   // avoids the network dial entirely — the iframe's browser loads the script from
   // the serialized HTML string, never from a live DOM node in our process.
-  const tailwindPlaceholder = doc.createElement('meta')
-  tailwindPlaceholder.setAttribute('name', 'x-script-placeholder')
-  tailwindPlaceholder.setAttribute('data-src', scriptOrigin + TAILWIND_RUNTIME_PATH)
-  head.appendChild(tailwindPlaceholder)
+  if (inlineRuntime !== undefined) {
+    // A document that will be opened away from the dashboard (a saved file) cannot
+    // load the runtime by URL, so the caller hands in its text and it is written
+    // here, in the same place and under the same nonce as the script it replaces.
+    const runtime = hostScript()
+    runtime.textContent = escapeScriptClose(inlineRuntime)
+    head.appendChild(runtime)
+  } else {
+    const tailwindPlaceholder = doc.createElement('meta')
+    tailwindPlaceholder.setAttribute('name', 'x-script-placeholder')
+    tailwindPlaceholder.setAttribute('data-src', scriptOrigin + TAILWIND_RUNTIME_PATH)
+    head.appendChild(tailwindPlaceholder)
+  }
 
   // Loading overlay: shown while Tailwind JIT compiles, hidden once ready or
   // after a timeout. Only injected when showLoadingOverlay is set.

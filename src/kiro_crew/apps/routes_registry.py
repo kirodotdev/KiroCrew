@@ -173,7 +173,10 @@ async def handle_registry_install(request: web.Request) -> web.Response:
     Clones the repo, runs the install script, and registers the app.
     This can take a while so the response includes a log of what happened.
     """
-    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+    from kiro_crew.dashboard.handlers._shared import (
+        body_not_object_error,
+        require_owner_dashboard_request,
+    )
 
     denied = await require_owner_dashboard_request(request, "app_registry_install")
     if denied is not None:
@@ -182,6 +185,9 @@ async def handle_registry_install(request: web.Request) -> web.Response:
         body = await request.json()
     except json.JSONDecodeError:
         return web.json_response({"error": "invalid JSON"}, status=400)
+    not_object = body_not_object_error(body)
+    if not_object is not None:
+        return not_object
 
     name = body.get("name", "")
     if not name:
@@ -233,7 +239,9 @@ async def handle_registry_install(request: web.Request) -> web.Response:
             # start_enabled_app_backends), leaving the app's UI with "no reachable
             # backend" until then. No-op for apps that declare no backend. Run in a
             # thread because start_app_backend blocks on a health-check poll.
-            await _start_backend_after_install(result["name"])
+            backend_refused = await _start_backend_after_install(result["name"])
+            if backend_refused:
+                result["backend_refused"] = backend_refused
     result["registration"] = reg.to_dict()
     sel().log_api_access(
         caller="dashboard", operation="app_registry_install", outcome="completed", resources=name
@@ -255,7 +263,10 @@ async def handle_registry_install_stream(request: web.Request) -> web.StreamResp
     The original ``/api/apps/registry/install`` endpoint is unchanged —
     CLI and other callers are not affected.
     """
-    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+    from kiro_crew.dashboard.handlers._shared import (
+        body_not_object_error,
+        require_owner_dashboard_request,
+    )
 
     denied = await require_owner_dashboard_request(request, "app_registry_install")
     if denied is not None:
@@ -264,6 +275,9 @@ async def handle_registry_install_stream(request: web.Request) -> web.StreamResp
         body = await request.json()
     except json.JSONDecodeError:
         return web.json_response({"error": "invalid JSON"}, status=400)
+    not_object = body_not_object_error(body)
+    if not_object is not None:
+        return not_object
 
     name = body.get("name", "")
     if not name:
@@ -357,8 +371,10 @@ async def handle_registry_install_stream(request: web.Request) -> web.StreamResp
                     # Spawn the backend immediately (see handle_registry_install) so
                     # the app is reachable without a gateway reboot. No-op for
                     # backend-less apps.
-                    await _start_backend_after_install(r["name"])
+                    backend_refused = await _start_backend_after_install(r["name"])
                     r["registration"] = reg.to_dict()
+                    if backend_refused:
+                        r["backend_refused"] = backend_refused
             return r
 
     install_task = asyncio.create_task(_locked_install())
@@ -511,7 +527,10 @@ async def handle_registries(request: web.Request) -> web.Response:
         )
         return web.json_response({"registries": registries, "pinned": pinned})
 
-    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+    from kiro_crew.dashboard.handlers._shared import (
+        body_not_object_error,
+        require_owner_dashboard_request,
+    )
 
     denied = await require_owner_dashboard_request(request, "registries.update")
     if denied is not None:
@@ -531,6 +550,15 @@ async def handle_registries(request: web.Request) -> web.Response:
         body = await request.json()
     except Exception:
         return _deny("invalid JSON", "invalid JSON body")
+    not_object = body_not_object_error(body)
+    if not_object is not None:
+        sel().log_api_access(
+            caller="dashboard",
+            operation="registries.update",
+            outcome="denied",
+            resources="body not a JSON object",
+        )
+        return not_object
 
     entries = body.get("registries")
     if not isinstance(entries, list):

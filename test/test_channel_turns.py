@@ -1253,6 +1253,23 @@ class TestCompactionRecovery:
         assert recorder.surfaced == 0 and sessions.count("set_channel") == 1
         assert outcome.is_new is False
 
+    def test_a_replay_ends_the_abandoned_attempt_before_its_reset(self) -> None:
+        """The abandoned turn never landed, so its attempt ends before the reset
+        and what it received inline is revoked before the replay runs."""
+
+        class _Settling(FakeSessions):
+            def settle_turn(self, key: str) -> None:
+                self.ledger.append(("settle_turn", key))
+
+        first = ScriptedProvider(_abandoned(), transient=True, name="first")
+        sessions = _Settling(first, ScriptedProvider(answer("the reply"), name="second"))
+
+        _answer(_turns(sessions))
+
+        names = sessions.names()
+        assert names.count("settle_turn") == 1
+        assert names.index("settle_turn") < names.index("reset")
+
     def test_identity_is_published_before_every_attempts_build(self) -> None:
         sessions = FakeSessions(
             ScriptedProvider(_abandoned(), transient=True), ScriptedProvider(answer())
@@ -1460,6 +1477,23 @@ class _Hook:
 class TestAMonitorWake:
     def _wake(self, hook: _Hook, *, current: bool = True) -> MonitorWake:
         return MonitorWake(hook, lambda: current)  # type: ignore[arg-type]
+
+    def test_only_a_wake_builds_an_unattended_tool_gate(self, monkeypatch) -> None:
+        from kiro_crew.messaging import dispatch
+
+        built: list[bool] = []
+        real = dispatch.build_tool_gate
+
+        def _recording(*args: Any, unattended: bool = False, **kwargs: Any) -> Any:
+            built.append(unattended)
+            return real(*args, unattended=unattended, **kwargs)
+
+        monkeypatch.setattr(dispatch, "build_tool_gate", _recording)
+        sessions = FakeSessions(ScriptedProvider(answer(), answer()))
+        turns = _turns(sessions, drift=DISCORD_DRIFT)
+        _answer(turns, asker=_asker(route=None), monitor=self._wake(_Hook()))
+        _answer(turns, asker=_asker(route=None))
+        assert built == [True, False]
 
     def test_a_wake_claims_without_waiting_and_composes_no_ceiling(self, one_turn_ceiling):
         sessions = FakeSessions(ScriptedProvider(answer(), answer()))

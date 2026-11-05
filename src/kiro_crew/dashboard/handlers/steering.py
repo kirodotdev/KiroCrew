@@ -48,6 +48,7 @@ from kiro_crew.atomic_write import (
     pinned_parent_replace_supported,
 )
 from kiro_crew.context import steering_target_admissible
+from kiro_crew.dashboard.handlers.prompts_paths import _is_path_too_long_error
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.executors import discovery_executor
 from kiro_crew.frontmatter import STEERING_LOADER, set_frontmatter_fields, split_frontmatter
@@ -59,6 +60,7 @@ from ._shared import (
     _read_session_key,
     active_project_dir,
     active_project_state,
+    body_not_object_error,
 )
 
 logger = logging.getLogger(__name__)
@@ -140,9 +142,17 @@ _NAME_ALLOWED = re.compile(r"[^A-Za-z0-9._/ -]")
 #: (260) -- surfaced there as a bare ``FileNotFoundError`` from ``CreateFileW``,
 #: an uncoded 500 indistinguishable from a real write failure. Bounding the whole
 #: name before the write (nesting ``a/b/c`` blows the limit on short segments
-#: too) turns that into a coded 400 on every host, with no dependence on which
-#: errno or winerror a given platform happens to raise.
+#: too) turns a long NAME into a coded 400 on every host. A name inside the bound
+#: can still make a joined path the host refuses -- a deep project folder on a
+#: Windows host without long paths -- and :func:`_create_path_too_long` maps that
+#: refusal onto the same coded 400 after the write is tried.
 MAX_STEERING_NAME_BYTES = 200
+
+#: Module-level so a test can take the Windows by-name branch on any host.
+_IS_WINDOWS = os.name == "nt"
+#: ``ERROR_PATH_NOT_FOUND``: what ``CreateDirectoryW`` answers for a directory
+#: path past ``MAX_PATH`` on a host without long-path support.
+_WINERROR_PATH_NOT_FOUND = 3
 
 
 def _sel():
@@ -290,7 +300,9 @@ def _head_meta(path: Path, within_root: Path, cap: int = 2048) -> dict[str, str]
         _audit_unread("api_steering_list", "steering", "error", {"path": str(path)})
         return _empty_meta()
     truncated = len(raw) > cap
-    head = raw[:cap].decode("utf-8", errors="replace")
+    # utf-8-sig drops one leading byte-order mark, which would otherwise hide the
+    # column-0 frontmatter fence and list a manual document as always.
+    head = raw[:cap].decode("utf-8-sig", errors="replace")
     fields, body = split_frontmatter(head, STEERING_LOADER)
     if not fields and body == head:
         # ``split_frontmatter`` already returns the text AFTER a fence that
@@ -547,6 +559,12 @@ def _contained(candidate: Path, base_resolved: Path) -> bool:
         probe_resolved = probe.resolve(strict=True)
     except OSError:
         return False
+    # Windows' ``\\?\`` prefix folded off both sides first, so one resolve
+    # keeping it is not read as an escape. Lexical only.
+    from kiro_crew.platform_compat import strip_extended_length_prefix
+
+    probe_resolved = strip_extended_length_prefix(probe_resolved)
+    base_resolved = strip_extended_length_prefix(base_resolved)
     return probe_resolved == base_resolved or base_resolved in probe_resolved.parents
 
 
@@ -642,9 +660,23 @@ def _blocked(request: web.Request, operation: str) -> web.Response | None:
             resources="restricted_session_block",
         )
         return web.json_response(
-            {"error": "restricted session cannot modify steering files"}, status=403
+            {
+                "error": "restricted session cannot modify steering files",
+                "code": "restricted_session",
+            },
+            status=403,
         )
     return None
+
+
+def _not_found() -> web.Response:
+    """The one 404 every steering verb answers.
+
+    A key that never resolved and a read the descriptor gate withheld share
+    this body on purpose, so the reply is no oracle for which files the gate
+    protects. One helper keeps the two from drifting apart.
+    """
+    return web.json_response({"error": "not found", "code": "steering_not_found"}, status=404)
 
 
 # ── Blocking filesystem transactions (run on the discovery pool) ──
@@ -722,7 +754,35 @@ def _resolve_and_read_blocking(key: str, project_dir: Path | None) -> tuple[str,
         return "", display, f"toolarge:>{STEERING_FILE_MAX_BYTES}"
     if data is None:
         return "", display, "readfailed"
-    return data.decode("utf-8", errors="replace"), display, None
+    # utf-8-sig: the editor gets the text without a leading byte-order mark, so a
+    # mode edit finds the column-0 fence and a save writes the file without it.
+    return data.decode("utf-8-sig", errors="replace"), display, None
+
+
+def _create_path_too_long(exc: OSError) -> bool:
+    """True when a create's *exc* is the host refusing the joined path for its length.
+
+    The shared :func:`_is_path_too_long_error` covers ``ENAMETOOLONG`` and the
+    Windows codes that name the length. On Windows the by-name create also sees a
+    too-long path as a plain ``FileNotFoundError``: ``os.open`` is the CRT
+    ``_wopen``, which sets no ``winerror``, and ``mkdir`` answers
+    ``ERROR_PATH_NOT_FOUND``. ``Path.mkdir(parents=True)`` has already made every
+    parent it could, and ``os.open`` runs after that mkdir, so when the failing
+    path's parent is a directory a missing parent is not the cause and the length
+    is. Any other code keeps the generic ``writefailed`` answer.
+    """
+    if _is_path_too_long_error(exc):
+        return True
+    if not _IS_WINDOWS or not isinstance(exc, FileNotFoundError):
+        return False
+    if getattr(exc, "winerror", None) not in (None, _WINERROR_PATH_NOT_FOUND):
+        return False
+    if not exc.filename:
+        return False
+    try:
+        return Path(os.fsdecode(exc.filename)).parent.is_dir()
+    except (OSError, TypeError, ValueError):
+        return False
 
 
 def _create_file_blocking(target: Path, content: str) -> tuple[str | None, str]:
@@ -744,6 +804,8 @@ def _create_file_blocking(target: Path, content: str) -> tuple[str | None, str]:
         except FileExistsError:
             return "exists", display
         except OSError as exc:
+            if _create_path_too_long(exc):
+                return "pathtoolong", display
             logger.warning("steering create failed: %s", type(exc).__name__)
             return "writefailed", display
         return None, display
@@ -772,6 +834,8 @@ def _create_file_blocking(target: Path, content: str) -> tuple[str | None, str]:
         # rather than distinguishing a linked-root token here.
         return "writefailed", display
     except OSError as exc:
+        if _create_path_too_long(exc):
+            return "pathtoolong", display
         logger.warning("steering create failed: %s", type(exc).__name__)
         return "writefailed", display
     try:
@@ -786,6 +850,8 @@ def _create_file_blocking(target: Path, content: str) -> tuple[str | None, str]:
     except FileExistsError:
         return "exists", display
     except OSError as exc:
+        if _create_path_too_long(exc):
+            return "pathtoolong", display
         logger.warning("steering create failed: %s", type(exc).__name__)
         return "writefailed", display
     finally:
@@ -1074,18 +1140,26 @@ async def api_steering_create(request: web.Request) -> web.Response:
     try:
         body = await request.json()
     except Exception:
-        return web.json_response({"error": "invalid JSON"}, status=400)
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
+    if (not_object := body_not_object_error(body)) is not None:
+        return not_object
     content = body.get("content", "")
     if not isinstance(content, str) or not content.strip():
-        return web.json_response({"error": "content is required"}, status=400)
+        return web.json_response(
+            {"error": "content is required", "code": "content_required"}, status=400
+        )
     if len(content.encode("utf-8")) > STEERING_FILE_MAX_BYTES:
         return web.json_response(
-            {"error": f"content too large (cap {STEERING_FILE_MAX_BYTES} bytes)"}, status=413
+            {
+                "error": f"content too large (cap {STEERING_FILE_MAX_BYTES} bytes)",
+                "code": "content_too_large",
+            },
+            status=413,
         )
     project_dir, project_state = active_project_state(state, _read_session_key(request))
     source = str(body.get("source") or ("workspace" if project_dir else "user"))
     if source not in STEERING_SOURCES:
-        return web.json_response({"error": "invalid source"}, status=400)
+        return web.json_response({"error": "invalid source", "code": "invalid_source"}, status=400)
     if source == "workspace" and project_dir is None:
         # Refuse rather than write to a guess. ``reason`` lets the dialog say
         # which fix applies — bind a project, or close the chat that disagrees —
@@ -1108,12 +1182,12 @@ async def api_steering_create(request: web.Request) -> web.Response:
         )
     rel = _safe_rel_name(str(body.get("name", "")))
     if not rel:
-        return web.json_response({"error": "name is required"}, status=400)
+        return web.json_response({"error": "name is required", "code": "name_required"}, status=400)
     if len(rel.encode("utf-8")) > MAX_STEERING_NAME_BYTES:
-        # Bound the name before the write: the host would otherwise refuse the
-        # joined path for its length and the blanket OSError handling below would
-        # answer an uncoded 500. A coded 400 lets the dashboard tell the user to
-        # shorten the name.
+        # Bound the name before the write: the host would otherwise refuse a
+        # long name, and a coded 400 lets the dashboard tell the user to shorten
+        # it. A shorter name the host still refuses for the joined path's length
+        # is mapped onto the same 400 after the create below.
         _sel().log_api_access(
             caller=request.get("user", "dashboard"),
             operation="steering.create",
@@ -1135,12 +1209,34 @@ async def api_steering_create(request: web.Request) -> web.Response:
     key = f"{source}/{rel}"
     target = await _offload(_resolve_blocking, key, project_dir, True)
     if target is None:
-        return web.json_response({"error": "invalid steering path"}, status=400)
+        return web.json_response(
+            {"error": "invalid steering path", "code": "invalid_steering_path"}, status=400
+        )
     err, display = await _offload(_create_file_blocking, target, content)
     if err == "exists":
-        return web.json_response({"error": f"'{rel}' already exists"}, status=409)
+        return web.json_response(
+            {"error": f"'{rel}' already exists", "code": "steering_exists"}, status=409
+        )
+    if err == "pathtoolong":
+        # The name passed its own bound, but joined onto this project's folder the
+        # host refused the path for its length. Same coded 400 and audit as the
+        # bound above, so the dashboard can tell the user to shorten the name.
+        _sel().log_api_access(
+            caller=request.get("user", "dashboard"),
+            operation="steering.create",
+            outcome="denied",
+            source="dashboard",
+            resources=key,
+        )
+        return web.json_response(
+            {
+                "error": "steering name is too long for its destination path",
+                "code": "name_too_long",
+            },
+            status=400,
+        )
     if err is not None:
-        return web.json_response({"error": "write failed"}, status=500)
+        return web.json_response({"error": "write failed", "code": "write_failed"}, status=500)
     _sel().log_api_access(
         caller=request.get("user", "dashboard"),
         operation="steering.create",
@@ -1245,7 +1341,10 @@ async def api_steering_detail(request: web.Request) -> web.Response:
             _audit("too_large")
             size = err.split(":", 1)[1]
             return web.json_response(
-                {"error": f"file too large ({size} bytes; cap {STEERING_FILE_MAX_BYTES})"},
+                {
+                    "error": f"file too large ({size} bytes; cap {STEERING_FILE_MAX_BYTES})",
+                    "code": "file_too_large",
+                },
                 status=413,
             )
         if err is not None:
@@ -1259,7 +1358,7 @@ async def api_steering_detail(request: web.Request) -> web.Response:
                 _audit_unread("api_steering_read", "steering", "error", {"key": key})
             else:
                 _audit("not_found")
-            return web.json_response({"error": "not found"}, status=404)
+            return _not_found()
         _audit("ok")
         # Content is returned verbatim, NOT credential-redacted, and that is
         # deliberate: this response populates the editor and is written straight
@@ -1296,12 +1395,14 @@ async def api_steering_detail(request: web.Request) -> web.Response:
                 return stale
         target = await _offload(_resolve_blocking, key, project_dir, False)
         if target is None:
-            return web.json_response({"error": "not found"}, status=404)
+            return _not_found()
         err = await _offload(_delete_file_blocking, target)
         if err == "notfound":
-            return web.json_response({"error": "not found"}, status=404)
+            return _not_found()
         if err is not None:
-            return web.json_response({"error": "delete failed"}, status=500)
+            return web.json_response(
+                {"error": "delete failed", "code": "delete_failed"}, status=500
+            )
         _sel().log_api_access(
             caller=request.get("user", "dashboard"),
             operation="steering.delete",
@@ -1331,26 +1432,34 @@ async def api_steering_detail(request: web.Request) -> web.Response:
     try:
         body = await request.json()
     except Exception:
-        return web.json_response({"error": "invalid JSON"}, status=400)
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
+    if (not_object := body_not_object_error(body)) is not None:
+        return not_object
     content = body.get("content", "")
     if not isinstance(content, str) or not content.strip():
-        return web.json_response({"error": "content is required"}, status=400)
+        return web.json_response(
+            {"error": "content is required", "code": "content_required"}, status=400
+        )
     try:
         content = _apply_declaration(content, body)
     except _DeclarationError as exc:
         return web.json_response({"error": str(exc), "code": exc.code}, status=400)
     if len(content.encode("utf-8")) > STEERING_FILE_MAX_BYTES:
         return web.json_response(
-            {"error": f"content too large (cap {STEERING_FILE_MAX_BYTES} bytes)"}, status=413
+            {
+                "error": f"content too large (cap {STEERING_FILE_MAX_BYTES} bytes)",
+                "code": "content_too_large",
+            },
+            status=413,
         )
     target = await _offload(_resolve_blocking, key, project_dir, False)
     if target is None:
-        return web.json_response({"error": "not found"}, status=404)
+        return _not_found()
     err = await _offload(_update_file_blocking, target, content)
     if err == "notfound":
-        return web.json_response({"error": "not found"}, status=404)
+        return _not_found()
     if err is not None:
-        return web.json_response({"error": "write failed"}, status=500)
+        return web.json_response({"error": "write failed", "code": "write_failed"}, status=500)
     _sel().log_api_access(
         caller=request.get("user", "dashboard"),
         operation="steering.update",

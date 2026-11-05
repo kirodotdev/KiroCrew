@@ -24,6 +24,7 @@ if TYPE_CHECKING:
     import time
 
     from kiro_crew.subagent import (
+        _QUEUED_SPAWN_ATTEMPT_LIMIT,
         _RUN_ID_HEX_CHARS,
         _STARTUP_CAP_GATE_ROUNDS,
         AgentCheck,
@@ -47,6 +48,7 @@ if TYPE_CHECKING:
         asyncio,
         cached_session_start_concurrency,
         logger,
+        parent_project_dirs,
         parent_spawn_policy,
         parent_template_allowlists,
         redact_credentials,
@@ -286,7 +288,7 @@ def spawn(
     _agent_prevalidated: bool = False,
     _from_queue: bool = False,
     _preassigned_id: str = "",
-    _crew_log_asked: "tuple[str, int] | None" = None,
+    _crew_log_asked: "tuple[str, int, int] | None" = None,
     _memory_mode: str | None = None,
     _store_accepted: bool = False,
     _stop_before_claim: bool = False,
@@ -298,13 +300,16 @@ def spawn(
     target_member: str | None = None,
     delegation: dict[str, str] | None = None,
     backend: str | None = None,
+    failover_from: str | None = None,
     label: str = "",
     _execution_context: dict | None = None,
     _parent_spawn_policy: "ParentSpawnPolicy | None" = None,
+    _parent_project_dirs: "list[str] | None" = None,
     _agent_check: "AgentCheck | None" = None,
     _recovering_row: bool = False,
     _stop_before_memory_read: bool = False,
     _memory_reading: "tuple[float, str] | None" = None,
+    _depth: int | None = None,
 ) -> SubagentInfo | None:
     result = self._admission.spawn_impl(
         task,
@@ -341,13 +346,16 @@ def spawn(
         target_member=target_member,
         delegation=delegation,
         backend=backend,
+        failover_from=failover_from,
         label=label,
         _execution_context=_execution_context,
         _parent_spawn_policy=_parent_spawn_policy,
+        _parent_project_dirs=_parent_project_dirs,
         _agent_check=_agent_check,
         _recovering_row=_recovering_row,
         _stop_before_memory_read=_stop_before_memory_read,
         _memory_reading=_memory_reading,
+        _depth=_depth,
     )
     assert not isinstance(result, PreparedSpawn)
     # Every synchronous gate return (started, queued, or refused) receives
@@ -474,6 +482,13 @@ async def spawn_async(self: SubagentManager, task: str, **kwargs: Any) -> Subage
         or getattr(self._sessions, "admission_closed", False) is True
     ):
         return self.spawn(task, **kwargs)
+    if kwargs.get("_parent_project_dirs") is None:
+        # The parent's project scope, read before the first await (dict reads
+        # only), so the policy reads below and the queued row all use the scope
+        # the parent had when it asked, even if its session ends meanwhile.
+        kwargs["_parent_project_dirs"] = list(
+            parent_project_dirs(str(kwargs.get("parent_session_key") or ""))
+        )
     if kwargs.get("_execution_context") is None:
         from kiro_crew.execution_context import read_session_execution
         from kiro_crew.subagent_persistence import read_run_execution
@@ -516,7 +531,12 @@ async def spawn_async(self: SubagentManager, task: str, **kwargs: Any) -> Subage
                 kwargs["_parent_spawn_policy"] = (
                     template,
                     (
-                        await asyncio.to_thread(parent_template_allowlists, parent, template)
+                        await asyncio.to_thread(
+                            parent_template_allowlists,
+                            parent,
+                            template,
+                            kwargs.get("_parent_project_dirs"),
+                        )
                         if template
                         else ()
                     ),
@@ -561,7 +581,9 @@ async def spawn_async(self: SubagentManager, task: str, **kwargs: Any) -> Subage
         # parent's declaration is read OFF the loop here, like the record
         # above, so the gate below consumes it without a directory scan.
         kwargs["_parent_spawn_policy"] = await asyncio.to_thread(
-            parent_spawn_policy, str(kwargs.get("parent_session_key") or "")
+            parent_spawn_policy,
+            str(kwargs.get("parent_session_key") or ""),
+            kwargs.get("_parent_project_dirs"),
         )
     if kwargs.get("_agent_check") is None:
         # The agent-directory scan, off the loop: the gate consumes this
@@ -769,9 +791,42 @@ def _forget_pressure_clock(self: SubagentManager, agent_id: str) -> None:
     self._admission._forget_pressure_clock_impl(agent_id)
 
 
+def carry_spawn_attempt(self: SubagentManager, agent_id: str, token: Any) -> None:
+    """Hand the parent turn attempt that spawned a queued member to its real record.
+
+    ``POST /api/spawn`` gets back a stand-in record for a member the admission
+    gate queued (a stagger, capacity or memory wait); the pump builds the real
+    one, with the same id, when the member starts. A member already started gets
+    the attempt on its live record at once; otherwise it is kept in memory, by
+    id, until the start takes it (``_take_spawn_attempt``) or the row ends
+    unstarted (``_forget_pending_start``). Bounded to
+    ``_QUEUED_SPAWN_ATTEMPT_LIMIT``, oldest dropped first: a dropped member holds
+    nothing, so its completion is delivered.
+    """
+    live = self._agents.get(agent_id)
+    if live is not None:
+        if getattr(live, "_spawned_under", None) is None:
+            live._spawned_under = token
+        return
+    carried = self.__dict__.setdefault("_queued_spawn_attempts", {})
+    carried.pop(agent_id, None)
+    carried[agent_id] = token
+    while len(carried) > _QUEUED_SPAWN_ATTEMPT_LIMIT:
+        del carried[next(iter(carried))]
+
+
+def _take_spawn_attempt(self: SubagentManager, agent_id: str) -> Any:
+    """The spawning attempt carried for ``agent_id``, removed; None when none is."""
+    carried = self.__dict__.get("_queued_spawn_attempts")
+    return carried.pop(agent_id, None) if carried else None
+
+
 def _forget_pending_start(self: SubagentManager, agent_id: str) -> None:
     """Drop what this process kept for a start that began or never will."""
     self._forget_pressure_clock(agent_id)
+    carried = self.__dict__.get("_queued_spawn_attempts")
+    if carried:
+        carried.pop(agent_id, None)
     self._floor_waits.pop(agent_id, None)
     self._held_approval_modes.pop(agent_id, None)
     self._floor_deferred_ids.discard(agent_id)

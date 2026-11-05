@@ -47,15 +47,19 @@ import { i18nT } from '../../i18n/t'
 import { uiLocation } from '../../uiLocations/uiLocation'
 import { AddMenuItem, NEW_MENU_DESC_KEY, NEW_MENU_LABEL_KEY, newMenuSections, type SidePanelWithholdable } from './SidePanelAddMenu'
 import { DraggableTabItem, TabChip } from './SidePanelTabChip'
+import type { MarkdownPanelHandle } from '../../components/MarkdownPanel'
 import { AppPanelTabBody, AppPanelTabsErrorNotice, McpAppTabBody, TabBody } from './SidePanelTabBodies'
 import { useSidePanelSize } from './useSidePanelSize'
+import { crewModeRoot, crewRootOf } from '../../lib/crewMode'
+import { useCrewMode } from '../../hooks/usePreviewFlag'
+import { pathBasename, stripTrailingSeparators } from '../../utils/pathBasename'
 
 // The panel's parts live in sibling owners that never import this module:
 // `SidePanelAddMenu.tsx` (the + menu's catalog and gates), `SidePanelTabChip.tsx`
 // (one strip chip), `SidePanelTabBodies.tsx` (the kept-mounted tab bodies) and
 // `useSidePanelSize.ts` (the panel's size). Callers keep importing every name
 // exported below from this module.
-export { NEW_MENU_DESC_KEY, NEW_MENU_LABEL_KEY, newMenuSections }
+export { NEW_MENU_DESC_KEY, NEW_MENU_LABEL_KEY, newMenuSections, TabChip }
 export type { SidePanelWithholdable }
 export { CHAT_PANE_MIN_W, SIDE_PANEL_MIN_W, SIDE_PANEL_RESERVED_W, sidePanelEffectiveWidth, sidePanelFillWidth } from './useSidePanelSize'
 
@@ -301,23 +305,35 @@ export default function SidePanel({
     retry: false,
   })
   const summaryEnabled = summaryMeta?.enabled !== false
-  const { pinnedViews, summaryPinned } = usePinnedViews({
-    tabsCtl, slot, panelHidden: !!panelHidden, pinSummary,
-    summaryOn: summaryMeta ? summaryMeta.enabled === true : undefined, summaryWithheld: !!hiddenViews?.has('summary'),
-  })
+
   // The + menu / empty-state launcher hide Terminal when the feature is
   // disabled server-side, and never list the pinned views (Changes / Files /
   // Artifacts, and Summary while Pin Summary holds it) — those are always
   // present in the strip.
+  // The Crew Mode preview, subscribed so a flip redraws the strip and the + menu.
+  // Off, a stored Crew (`workers`) tab is withheld (`visibleTabs`), its state kept.
+  const crewModePreview = useCrewMode()
   // A Crew Mode root or one of its workers: its panel offers Workers, and the
   // tab is put on its strip whenever the session is shown (a fresh browser, a
-  // reload, a reopened browser tab), without taking focus. Closing it holds
-  // until the next visit; the + menu brings it back at any time.
+  // reload, a reopened browser tab). It is the tab the panel opens on until the
+  // user picks another; a picked tab keeps focus. Closing it holds until the
+  // next visit; the + menu brings it back at any time.
   const crewMode = useAppSelector(st => {
     const row = slot ? st.dashboard.slots.find(r => r.key === slot) : undefined
-    return !!(row?.crew_mode_root || row?.crew_root)
+    return crewModeRoot(row) || !!crewRootOf(row)
+  })
+  // while a new chat's Ultra Mode switch lands (no root stamp yet),
+  // a Crew tab already on its strip is pinned first too.
+  const freshChat = useAppSelector(st => {
+    const row = slot ? st.dashboard.slots.find(r => r.key === slot) : undefined
+    return !!row && !row.messages && !row.crew_root
   })
   useEffect(() => { if (crewMode && slot) offerPanelView(slot, 'workers') }, [crewMode, slot])
+  const { pinnedViews, summaryPinned } = usePinnedViews({
+    tabsCtl, slot, panelHidden: !!panelHidden, pinSummary,
+    summaryOn: summaryMeta ? summaryMeta.enabled === true : undefined, summaryWithheld: !!hiddenViews?.has('summary'),
+    crewFirst: (crewMode || (freshChat && tabs.some(t => t.id === 'workers'))) && crewModePreview && !hiddenViews?.has('workers'),
+  })
   const menuSections = newMenuSections({ terminalEnabled, summaryEnabled: summaryEnabled && !summaryPinned, hiddenViews, crewMode })
   // The empty-state launcher shows the same entries flat: its two-column grid
   // has nowhere to put a separator, but it must not disagree with the menu
@@ -376,15 +392,15 @@ export default function SidePanel({
     return leaving?.onBeforeLeave ?? null
   }, [])
   const visibleTabs = useMemo(() => {
-    const shown = hiddenViews || terminalsPending
-      ? tabs.filter(t => !isWithheld(t.kind) && !(terminalsPending && t.kind === 'terminal'))
+    const shown = hiddenViews || terminalsPending || !crewModePreview
+      ? tabs.filter(t => !isWithheld(t.kind) && !(terminalsPending && t.kind === 'terminal') && (crewModePreview || t.kind !== 'workers'))
       : tabs
     if (!viewTitles) return shown
     return shown.map(t => {
       const title = Object.prototype.hasOwnProperty.call(viewTitles, t.kind) ? viewTitles[t.kind as ViewKind] : undefined
       return title && title !== t.title ? { ...t, title } : t
     })
-  }, [tabs, hiddenViews, isWithheld, terminalsPending, viewTitles])
+  }, [tabs, hiddenViews, isWithheld, terminalsPending, viewTitles, crewModePreview])
   const activeId = useMemo(() => {
     if (storedActiveId === null) return null
     if (leadingTabs?.some(t => t.id === storedActiveId)) return storedActiveId
@@ -498,6 +514,15 @@ export default function SidePanel({
     }
     closeTab(id)
   }, [tabs, closeTab, deleteTerminalSession])
+  // Each mounted file or working-tree diff tab's own close guard, by tab id. The
+  // chip's × and middle-click close through it, so they ask the same questions
+  // as the panel's own close (unsaved edits, a buffer whose file is gone or
+  // unreadable, an open comment draft).
+  const panelHandles = useRef(new Map<string, MarkdownPanelHandle>())
+  const registerPanelHandle = useCallback((tabId: string, handle: MarkdownPanelHandle | null) => {
+    if (handle) panelHandles.current.set(tabId, handle)
+    else panelHandles.current.delete(tabId)
+  }, [])
   const { confirm, confirmDialog, confirmOpen } = useConfirm()
   const currentSlotRef = useRef(slot)
   currentSlotRef.current = slot
@@ -556,6 +581,25 @@ export default function SidePanel({
     if (ask && !await confirm(ask)) return
     if (currentSlotRef.current !== slot) return
     liveTargets.forEach(tab => handleCloseTab(tab.id))
+  }
+  // The chip's × and middle-click. A file tab whose editor is mounted asks its
+  // own guard; one holding a buffer with no editor mounted (its body withheld
+  // while the chat's machine is resolved, or on a remote chat) takes the batch
+  // preflight above, which names unsaved edits and checks the disk. A tab with
+  // no buffer -- a terminal, a folder, a restored file tab whose first read has
+  // not landed -- has nothing to ask about and closes directly.
+  const closeTabFromChip = (tab: PanelTab) => {
+    const guard = panelHandles.current.get(tab.id)
+    if (guard) {
+      // A background tab is brought forward only when the guard has something
+      // to ask, so the reader sees the buffer the question is about; a close
+      // that needs no answer leaves the strip's focus where it was.
+      guard.requestClose({ beforePrompt: () => { void requestActive(tab.id, activeLeadingIdRef.current) } })
+    } else if ((tab.kind === 'file' || tab.kind === 'wtdiff') && tab.content !== undefined) {
+      void handleCloseTabs([tab])
+    } else {
+      handleCloseTab(tab.id)
+    }
   }
   // Move a terminal tab OUT of this chat into the app-wide bottom panel. Unlike
   // handleCloseTab this must NOT dispose the session — the PTY + xterm live in
@@ -665,7 +709,7 @@ export default function SidePanel({
             </div>
           )}
           {pinnedTabs.map(t => (
-            <TabChip key={t.id} chipId={t.id} tab={t} active={t.id === activeId} closable={false} pinned onSelect={() => { void requestActive(t.id, activeId) }} onClose={() => {}} />
+            <TabChip key={t.id} chipId={t.id} tab={t} active={t.id === activeId} closable={false} pinned={t.id !== 'workers'} onSelect={() => { void requestActive(t.id, activeId) }} onClose={() => {}} />
           ))}
         </div>
         {/* from-bg-elevated matches the side-panel-strip surface. */}
@@ -706,7 +750,7 @@ export default function SidePanel({
           values={dynamicTabs}
           onReorder={(next) => setOrder([...pinnedTabs, ...next])}
           role="tablist"
-          className="flex items-end gap-2 min-w-0 overflow-x-auto scrollbar-none list-none m-0 p-0 px-2 -mb-px"
+          className="flex items-end gap-2 min-w-0 overflow-x-auto scrollbar-none scroll-px-6 list-none m-0 p-0 px-2 -mb-px"
         >
           {dynamicTabs.map((t, i) => (
             <DraggableTabItem
@@ -720,7 +764,7 @@ export default function SidePanel({
               instantLayout={resizing || slotSwitched || dimAnimating}
               onSelect={() => { void requestActive(t.id, activeId) }}
               onClose={() => handleCloseTabs([t])}
-              onCloseDirect={() => handleCloseTab(t.id)}
+              onCloseDirect={() => closeTabFromChip(t)}
               closeOthersDisabled={dynamicTabs.length === 1}
               closeRightDisabled={i === dynamicTabs.length - 1}
               onCloseOthers={() => handleCloseTabs(dynamicTabs.filter(tab => tab.id !== t.id))}
@@ -1018,9 +1062,11 @@ export default function SidePanel({
           }
           // A remote chat's files live in its workspace. These tabs read and write
           // the GATEWAY's copy, so a remote chat gets a pointer to its Files tab
-          // instead; the tab and any draft it holds stay, unrendered.
+          // instead; the tab and any draft it holds stay, unrendered. The Git tab
+          // is not one of them: ActivityViewer gives a remote chat the guest's
+          // Git view (RemoteGitPanel), never the gateway checkout.
           if (remoteEnvironment && (
-            t.kind === 'git' || t.kind === 'file' || t.kind === 'diff' || t.kind === 'wtdiff' || t.kind === 'folder'
+            t.kind === 'file' || t.kind === 'diff' || t.kind === 'wtdiff' || t.kind === 'folder'
           )) {
             if (!isActive) return null
             return (
@@ -1051,7 +1097,7 @@ export default function SidePanel({
             return (
               <div key={`${t.id}:${slot}`} className="absolute inset-0">
                 <ErrorBoundary scope="crew-workers" fallback={<ErrorNotice className="m-3" message={i18nT('commandCenter.workers_error')} askAgent />}>
-                  <CrewWorkersTab slot={slot ?? null} active={!panelHidden} />
+                  <CrewWorkersTab slot={slot ?? null} active={!panelHidden} onAct={onComposerInsert} />
                 </ErrorBoundary>
               </div>
             )
@@ -1084,6 +1130,10 @@ export default function SidePanel({
                 <FilesHomePanel
                   active={isActive && !panelHidden}
                   projectDir={projectDir ?? ''}
+                  // The confirmed key only: an unconfirmed one may name another
+                  // session (see `persistSlot`), whose edits are not this chat's.
+                  slot={(persistSlot !== undefined ? persistSlot : slot) || null}
+                  title={viewTitles?.files}
                   // A diff open from the Changed segment opens the working-tree
                   // diff as its OWN tab (coexisting with any plain file tab for
                   // the same path, #9695) when the host supplies the opener;
@@ -1093,6 +1143,9 @@ export default function SidePanel({
                     if (diff && onOpenWorkingTreeDiff) { onOpenWorkingTreeDiff(abs); return }
                     onFileOpen?.(abs, { diffMode: diff, line: opts?.line })
                   }}
+                  // An Edited row's Show changes: the chat's recorded edit, in
+                  // the same diff tab the transcript's change card opens.
+                  onOpenDiff={tabsCtl.openDiff}
                   onAddToContext={onAddToContext}
                   // Withheld, not disabled, when the terminal feature is off or
                   // the host withdraws the terminal view — the same withdrawal
@@ -1134,6 +1187,7 @@ export default function SidePanel({
                   onArtifactOpen={onArtifactOpen}
                   pins={pins} pinsLoading={pinsLoading} onJumpToPin={onJumpToPin} onUnpin={onUnpin}
                   slotTitle={slotTitle} chatMode={chatMode}
+                  remoteEnvironmentName={remoteEnvironment?.name}
                   navLinks={navLinks} navResolving={navResolving}
                 />
               </div>
@@ -1150,11 +1204,12 @@ export default function SidePanel({
                 tab={t} active={isActive && !panelHidden}
                 slot={slot}
                 onClose={() => handleCloseTab(t.id)}
+                onPanelHandle={registerPanelHandle}
                 onContentChange={(c) => patchTab(t.id, { content: c })}
                 onDiskContent={(c, binary, partial) => patchTab(t.id, { content: c, savedContent: c, ...(binary === undefined ? {} : { binary }), ...(partial === undefined ? {} : { partial }) })}
                 onDiffModeChange={(diffMode) => patchTab(t.id, { diffMode })}
                 onRevealConsumed={() => patchTab(t.id, { revealLine: undefined })}
-                onPathChange={(p) => patchTab(t.id, { path: p, title: p.replace(/\/+$/, '').split('/').pop() || p })}
+                onPathChange={(p) => patchTab(t.id, { path: p, title: pathBasename(stripTrailingSeparators(p)) || p })}
                 onFileSave={onFileSave}
                 onFileOpen={onFileOpen}
                 // A folder opened from a file tab keeps that tab's origin chat.

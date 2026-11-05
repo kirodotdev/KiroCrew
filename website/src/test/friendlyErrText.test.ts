@@ -43,16 +43,22 @@ describe('friendlyErrText', () => {
     }
   })
 
-  it('shows the close-old-sessions guidance for both live-slot cap codes', () => {
+  it.each([409, 429])('shows the close-old-sessions guidance for both live-slot cap codes on a %i', (status) => {
     // Duplicate/Fork hit the live-slot ceiling; the generic "wait and reload" is
-    // a dead end there (a reload re-opens the same tabs), so these 429s branch to
-    // actionable guidance. Both the global and per-caller cap codes qualify.
+    // a dead end there (a reload re-opens the same tabs), so these refusals branch
+    // to actionable guidance. Both the global and per-caller cap codes qualify.
+    // The gateway answers 409; an older gateway or remote crew still answers 429.
     for (const code of ['slot_cap_reached', 'creator_slot_cap_reached']) {
-      const out = friendlyErrText(429, JSON.stringify({ error: 'slot cap reached (500)', code }))
+      const out = friendlyErrText(status, JSON.stringify({ error: 'slot cap reached (500)', code }))
       expect(out).toContain('Too many sessions are open')
       expect(out).toContain('Close')
       expect(out).not.toContain('tunnel edge')
     }
+  })
+
+  it('leaves an unrelated 409 its own reason', () => {
+    const out = friendlyErrText(409, JSON.stringify({ error: 'resume in progress', code: 'resume_in_progress' }))
+    expect(out).toBe('resume in progress')
   })
 
   it('matches the slot-cap code exactly, not a substring of the body', () => {
@@ -80,10 +86,14 @@ describe('friendlyErrText', () => {
 })
 
 describe('isSlotCapError', () => {
-  it('is true only for a 429 whose parsed code is a live-slot cap', () => {
+  it('is true only for a 409 or 429 whose parsed code is a live-slot cap', () => {
+    expect(isSlotCapError(409, '{"code":"slot_cap_reached"}')).toBe(true)
+    expect(isSlotCapError(409, ' {"code":"creator_slot_cap_reached"} ')).toBe(true)
     expect(isSlotCapError(429, '{"code":"slot_cap_reached"}')).toBe(true)
     expect(isSlotCapError(429, ' {"code":"creator_slot_cap_reached"} ')).toBe(true)
     expect(isSlotCapError(503, '{"code":"slot_cap_reached"}')).toBe(false)
+    expect(isSlotCapError(400, '{"code":"slot_cap_reached"}')).toBe(false)
+    expect(isSlotCapError(409, '{"code":"resume_in_progress","error":"slot_cap_reached"}')).toBe(false)
     expect(isSlotCapError(429, '{"code":"throttled","error":"slot_cap_reached"}')).toBe(false)
     expect(isSlotCapError(429, 'slot_cap_reached')).toBe(false)
     expect(isSlotCapError(429, '{not json')).toBe(false)

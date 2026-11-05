@@ -332,7 +332,12 @@ custom-rules:
       into one bubble; never render two triangles or a triangle plus a band.
       Reuse `PrerequisiteTip` with the existing `prerequisites_for_provider`
       label and `before_you_connect` heading -- do not fork a second tooltip
-      component or a second heading key for a new state.
+      component or a second heading key for a new state. One exception: the
+      connected card's shared-grant tip beside **Disconnect** uses the
+      `before_you_disconnect` heading and the `shared_signin_for_provider`
+      label, because "Before you connect" is wrong on a card that is already
+      connected (#26890). It is still the same `PrerequisiteTip`, and its copy
+      still names the sharers and says the shared token is kept on Disconnect.
 
       Bad:
       ```tsx
