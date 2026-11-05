@@ -133,6 +133,19 @@ submit it. Do not silently proceed as if submission will work and only reveal
 the gap at the submit step. The duplicate search can still be skipped on failure;
 losing it does not block filing.
 
+**If the search succeeded, also check whether this account can attach labels.**
+Run this once:
+
+```bash
+gh repo view "$REPO" --json viewerPermission -q .viewerPermission
+```
+
+GitHub keeps labels on a new issue only from an account with push access, and
+silently drops them for anyone else: `gh issue create` still succeeds, with no
+labels and no error. So labels are allowed only when this prints `ADMIN`,
+`MAINTAIN` or `WRITE`. Any other answer (`TRIAGE`, `READ`, `NONE`, empty), or a
+failed probe, means no labels. Steps 5 and 6 use this result.
+
 ### 4. Draft the Issue
 
 Compose a clean title and markdown body from the conversation. Structure:
@@ -188,13 +201,20 @@ Rules:
   request has no way to know those apply, and the workflows that own them will
   set them.
 
-Collect the chosen names for the submit step below.
+If the permission check in step 3 did not allow labels, or never ran, pass no
+`--label` flag at all and never tell the user labels will be attached. Tell them
+triage will label the issue. You may list the labels you would suggest in the
+body under Additional Context; put them in the draft before you show it, or show
+the changed draft again before submitting.
+
+Otherwise, collect the chosen names for the submit step below.
 
 If `gh` is unavailable or unauthenticated, `gh label list` fails and you cannot
-read the taxonomy. Still apply a type label in that case — bug for defects,
+read the taxonomy. Still pick a type label in that case — bug for defects,
 enhancement for feature requests, the two that have always existed — and skip
 the grouping dimensions, which are the part that grows. Do not guess a grouping
-value you could not read.
+value you could not read. Nothing can attach it on this path, so name it in the
+draft and leave the labeling to triage.
 
 ### 6. Submit — Offer the Options
 
@@ -243,7 +263,8 @@ https://github.com/kirodotdev/KiroCrew/issues/new?title=URL_ENCODED_TITLE&body=U
 
 Do **not** add a `labels=` parameter: GitHub answers 404 to a `labels` query
 from anyone without permission to label issues in this repo, which is most
-users (chosen labels apply only through Option 3, and triage labels the rest).
+users (chosen labels apply only through Option 3, and only for an account with
+WRITE permission or above; triage labels the rest).
 **Percent-encode the title and body in full**, not just their spaces: an
 unencoded `&` starts a new query param and an unencoded `#` pushes the remainder
 into the URL fragment, either of which silently drops the drafted body from the
@@ -283,7 +304,8 @@ gh issue create --repo "$REPO" \
 Pass one `--label` flag per name chosen in step 5, each **single**-quoted. Label
 names can contain spaces, and single quotes also keep a `$` or backtick in a name
 literal — double quotes would let the shell expand it. Omit the extra flags when
-no grouping label applies.
+no grouping label applies, and pass no `--label` flag at all when the permission
+check in step 3 did not allow labels.
 
 This requires `gh auth` on the user's machine. If it fails with auth errors,
 fall back to Option 1 (copy/paste).
