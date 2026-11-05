@@ -32,7 +32,7 @@ from kiro_crew.dashboard import system_windows_probes
 from kiro_crew.dashboard.state import (
     DashboardState,
 )
-from kiro_crew.dashboard.status_counts import cached_status_snapshot
+from kiro_crew.dashboard.status_counts import cached_status_snapshot, yolo_grant_fields
 from kiro_crew.embeddings import get_shared_embedder, model_file_present
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.loop_lock import LoopBoundLock
@@ -244,7 +244,6 @@ async def api_status(request: web.Request) -> web.Response:
             owner_hash = await loop.run_in_executor(None, _get_owner_hash, state)
         except Exception:
             owner_hash = "unknown"
-    so_status = safety_override().status()
     # Off-loop: the duration values hit the filesystem (see _yolo_duration_fields).
     yolo_duration, until_shutdown_ok, disabled_approval_modes = await asyncio.to_thread(
         _yolo_duration_fields
@@ -268,14 +267,7 @@ async def api_status(request: web.Request) -> web.Response:
             # operator opening the System page.
             "gateway_rss_mb": gateway_rss_mb,
             "watchdog_rss_max_mb": watchdog_rss_max_mb,
-            "yolo": so_status.active,
-            "yolo_active": so_status.active,
-            "yolo_expires_at": so_status.expires_at_iso or "",
-            "yolo_remaining_secs": so_status.remaining_secs,
-            # True when the live grant has no timed expiry at all (declared in
-            # config, or ad-hoc under yolo_duration: until_shutdown).
-            # ``yolo_remaining_secs`` is -1 and ``yolo_expires_at`` empty then.
-            "yolo_until_shutdown": so_status.permanent,
+            **yolo_grant_fields(),
             # The configured ad-hoc duration, and whether policy allows the
             # no-timed-expiry option — the Settings card lock-badges it when not.
             "yolo_duration": yolo_duration,

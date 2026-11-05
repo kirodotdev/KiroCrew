@@ -29,7 +29,7 @@ from kiro_crew.dashboard.state import (
     _safe_folder_tree,
     _slots_serialization_note,
 )
-from kiro_crew.dashboard.status_counts import cached_status_snapshot
+from kiro_crew.dashboard.status_counts import cached_status_snapshot, yolo_grant_fields
 from kiro_crew.dashboard.subagent_replay_scope import (
     UNIT_INDEX,
     SubagentReplayQueue,
@@ -123,7 +123,7 @@ async def _send_slot_projection_subscribed(ws: web.WebSocketResponse) -> None:
     await ws.send_str(json.dumps({"type": SLOT_SUBSCRIBED_FRAME, "data": {"revisions": revisions}}))
 
 
-async def _status_frame(state: DashboardState) -> dict[str, Any]:
+async def _status_frame(state: DashboardState, *, dashboard_user: bool) -> dict[str, Any]:
     """Build the Tier-0 ``dashboard`` frame payload.
 
     Routes the lesson/cron counts through the shared
@@ -134,12 +134,20 @@ async def _status_frame(state: DashboardState) -> dict[str, Any]:
     loading skeleton — instead of ``status_snapshot``'s inline on-loop fallback
     ever running here. The ``version``/``platform`` fields the periodic frame
     carries are appended on top.
+
+    The client replaces its stored status with each frame, so the dashboard
+    user's frame also carries the live auto-approve grant ``/api/status``
+    reports. An app socket's frame goes without it: Tier 0 reaches every app
+    token, whatever it declared.
     """
-    return {
+    frame = {
         **await cached_status_snapshot(state),
         "version": _local_version,
         "platform": sys.platform,
     }
+    if dashboard_user:
+        frame.update(yolo_grant_fields())
+    return frame
 
 
 #: The one replay request a crew-log-off install makes per subscribe. Its folder
@@ -1035,7 +1043,9 @@ async def _serve_ws(
                 # cache immediately unless it is the one that refreshes it.
                 # Counts are None (published as null → loading skeleton) until
                 # the first successful refresh — never an authoritative false 0.
-                data = await _status_frame(state)
+                data = await _status_frame(
+                    state, dashboard_user=ws.get("_is_dashboard_user", False)
+                )
                 if ws.get("_is_dashboard_user", False):
                     shared_presence.sweep_and_broadcast(state)
                 if not ws.get("_is_dashboard_user", False):

@@ -3794,7 +3794,9 @@ the grace window (so a grant that lapsed or was switched off mid-audit stays
 off).
 
 Fleet governance endpoints:
-- `/api/status` now reports `yolo_active` (bool) and `yolo_expires_at` (ISO 8601) fields
+- `/api/status` now reports `yolo_active` (bool) and `yolo_expires_at` (ISO 8601) fields; the
+  dashboard user's WebSocket `dashboard` status frame carries the same grant fields
+  (`status_counts.yolo_grant_fields`, expiry in whole seconds); an app socket's frame does not
 - `/api/admin/compliance/yolo-status` provides full override status (source, remaining time, activation count, renewal history)
 
 Expiry notifications are delivered via Dashboard WebSocket and Slack DM to inform the user before and at override expiration. The Slack expiry DM flows through a shared redacting `_dm_owner` exit point (`dashboard/server_runtime/owner_notices.py`): text passes `redact_exfiltration_urls()` then `redact_credentials()` before `post_message`, so any future caller forwarding LLM/user-derived content cannot leak credentials or exfil URLs.
