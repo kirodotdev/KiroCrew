@@ -55,6 +55,7 @@ from kiro_crew.env import nvm_dirs as _nvm_dirs
 from kiro_crew.jsonl_util import rotate_jsonl_at as _rotate_jsonl_at
 from kiro_crew.owner_only_files import ensure_directory as _ensure_directory
 from kiro_crew.owner_only_files import owner_only_opener_for as _owner_only_opener_for
+from kiro_crew.owner_only_files import restrict_file_to_owner_soft as _restrict_file_to_owner_soft
 from kiro_crew.sandbox import (
     MD_NOTEBOOK_APP_NAME,
     RLIMIT_PROFILE_BUILD,
@@ -138,6 +139,26 @@ _warned_unconfined_cache = False
 # overshoot the cap until the next (re)start rolls it, so this bounds growth
 # across restarts rather than continuously.
 _BACKEND_LOG_MAX_BYTES = 1_048_576  # 1 MiB
+
+
+def _open_backend_log(log_path: Path) -> _typing.TextIO:
+    """Open backend.log for append, owner-only.
+
+    POSIX: created ``0600`` inside the data home (an existing file is the startup
+    sweep's). Windows: the mode carries no access control and an existing log
+    keeps whatever DACL it already has, so the file -- which holds the child's
+    whole stdout/stderr -- is given an owner-only DACL on every open.
+    """
+    log_fh = open(
+        log_path,
+        "a",
+        encoding="utf-8",
+        errors="replace",
+        opener=_owner_only_opener_for(log_path),  # 0600 inside the data home
+    )
+    if not platform_compat.IS_POSIX:
+        _restrict_file_to_owner_soft(log_path)
+    return log_fh
 
 
 # ---------------------------------------------------------------------------
@@ -1319,13 +1340,7 @@ def _start_app_backend_body(app_name: str, manifest: Any) -> AppProcess | None:
         # aside with the shared ``rotate_jsonl_at`` primitive when it is full,
         # so append does not grow it without bound.
         _rotate_jsonl_at(log_path, _BACKEND_LOG_MAX_BYTES)
-        log_fh = open(
-            log_path,
-            "a",
-            encoding="utf-8",
-            errors="replace",
-            opener=_owner_only_opener_for(log_path),  # 0600 inside the data home
-        )
+        log_fh = _open_backend_log(log_path)
         # Where THIS session's output begins. backend.log is opened in append
         # mode, so it may already hold prior sessions' lines; the immediate-exit
         # diagnostic below must read only from here, or a stale "errno 98" from a
