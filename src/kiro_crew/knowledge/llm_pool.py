@@ -435,16 +435,20 @@ def _select_effort_level(requested: str, supported: list[str]) -> Optional[str]:
     return eligible[-1] if eligible else None
 
 
-def _repair_agent_spec() -> bool:
+def _repair_agent_spec(tolerate_registered_injection: bool = False) -> bool:
     """Rewrite the installed :data:`AGENT_NAME` spec from its template if it drifted.
 
-    True when the file was rewritten. ``kiro_crew.agent`` is imported here, not at
-    the top, because nothing else in this module needs it. Blocking: callers run it
-    with ``asyncio.to_thread``.
+    True when the file was rewritten. *tolerate_registered_injection* leaves a file
+    whose only change is an injection an edition-registered filter removes exactly
+    alone (``repair_knowledge_agent_spec``). ``kiro_crew.agent`` is imported here,
+    not at the top, because nothing else in this module needs it. Blocking: callers
+    run it with ``asyncio.to_thread``.
     """
     from kiro_crew import agent as agent_mod
 
-    return agent_mod.repair_knowledge_agent_spec()
+    return agent_mod.repair_knowledge_agent_spec(
+        tolerate_registered_injection=tolerate_registered_injection
+    )
 
 
 class Worker(ABC):
@@ -591,12 +595,35 @@ class AcpWorker(Worker):
         # before the spawn and again after start, and both reads must declare an
         # empty list. A worker that cannot confirm the ban does not start: Kiro is
         # the last fallback.
-        if routing_for(acp_backend) is Routing.AGENT_SPEC and not (
+        confirmed = routing_for(acp_backend) is not Routing.AGENT_SPEC or (
             await asyncio.to_thread(
                 self._client.effective_spec_declares_zero_tools,
                 authored_before_spawn=authored_before_spawn,
             )
+        )
+        if (
+            not confirmed
+            and not authored_before_spawn
+            and getattr(self._client, "_native_skill_projection", None) is None
+            and await asyncio.to_thread(self._viewless_spec_repaired)
         ):
+            # No view was prepared (the projection is off, or its alias lock was
+            # busy), so kiro-cli loaded the authored file, where the pre-spawn repair
+            # left a registered injection for a view to drop. That file now declares
+            # zero tools: start once more on it.
+            try:
+                await self._client.shutdown()
+            except Exception:
+                logger.debug("AcpWorker: viewless client shutdown failed", exc_info=True)
+            self._client = None
+            self._client, authored_before_spawn = await self._spawn_client(
+                acp_backend, sandbox_mode
+            )
+            confirmed = await asyncio.to_thread(
+                self._client.effective_spec_declares_zero_tools,
+                authored_before_spawn=authored_before_spawn,
+            )
+        if not confirmed:
             logger.warning(
                 'AcpWorker: agent=%s backend=%s spec does not declare "tools": []; '
                 "refusing to start the worker",
@@ -629,6 +656,17 @@ class AcpWorker(Worker):
             getattr(self._client, "_pid", "unknown"),
         )
 
+    def _viewless_spec_repaired(self) -> bool:
+        """Repair the authored spec without tolerance; True when it now declares zero tools.
+
+        Judged by reading the file again, not by whether this call rewrote it:
+        another worker starting at the same moment may have repaired it first.
+        Blocking.
+        """
+        _repair_agent_spec()
+        assert self._client is not None
+        return bool(self._client.authored_spec_declares_zero_tools())
+
     async def _spawn_client(self, acp_backend: str, sandbox_mode: str) -> tuple[AcpClient, bool]:
         """Build the client for *acp_backend*, bring it up, and return it with the pre-spawn read.
 
@@ -653,7 +691,10 @@ class AcpWorker(Worker):
         startup model application scopes it to this backend (a model another
         harness serves falls back to the backend default rather than being sent).
         """
-        await asyncio.to_thread(_repair_agent_spec)
+        # Only kiro-cli launches from the native skill projection's view, which is
+        # built from the template when the file carries only a registered injection;
+        # every other harness parses the file itself, so it still gets it rewritten.
+        await asyncio.to_thread(_repair_agent_spec, routing_for(acp_backend) is Routing.AGENT_SPEC)
         if routing_for(acp_backend) is Routing.AGENT_SPEC:
             client = AcpClient(
                 agent=AGENT_NAME,
