@@ -181,6 +181,44 @@ describe('McpManagement pre-resolve', () => {
     expect(screen.queryByRole('status')).toBeNull()
   })
 
+  it('counts an unresolved install as a failure, not as already up to date', async () => {
+    // The backend maps an install that ran and failed (registry unreachable)
+    // to 'unresolved'. Reading only 'error' as a failure turned a pass where
+    // every install failed into "Already up to date."
+    stubPage()
+    vi.spyOn(api, 'mcpResolveRefresh').mockResolvedValue({
+      ok: true,
+      resolved: { '@modelcontextprotocol/server-everything': 'unresolved' },
+      ready: [],
+    } as never)
+
+    mount()
+    await pressUpdate()
+
+    await waitFor(() => {
+      const text = screen.getByRole('alert').textContent ?? ''
+      expect(text).toContain(M('resolve_all_failed', { failed: '1' }))
+    })
+    expect(screen.queryByRole('status')).toBeNull()
+  })
+
+  it('counts unresolved installs in a mixed pass', async () => {
+    stubPage()
+    vi.spyOn(api, 'mcpResolveRefresh').mockResolvedValue({
+      ok: true,
+      resolved: { 'foo@latest': 'ready', 'bar@1.0.0': 'unresolved', 'baz@2.0.0': 'error' },
+      ready: ['foo@latest'],
+    } as never)
+
+    mount()
+    await pressUpdate()
+
+    await waitFor(() => {
+      const text = screen.getByRole('alert').textContent ?? ''
+      expect(text).toContain(M('resolve_partly_ready', { ready: '1', failed: '2' }))
+    })
+  })
+
   it('reports both halves of a mixed pass', async () => {
     stubPage()
     vi.spyOn(api, 'mcpResolveRefresh').mockResolvedValue({
