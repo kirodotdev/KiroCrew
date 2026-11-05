@@ -97,6 +97,12 @@ if TYPE_CHECKING:
 #: The session handle's logger: this code logged under that name before the split.
 logger = logging.getLogger("kiro_crew.acp.session_handle")
 
+#: Longest a single wait on an empty queue lasts before the verdict-driven
+#: watchdogs below get a look. Named so a test can tick the arm quickly under
+#: a turn budget it never reaches, instead of racing the arm against the turn's
+#: own deadline.
+QUEUE_POLL_SECS = 5.0
+
 
 async def _dispatch_events(
     self: AcpSessionHandle, req_id: int, timeout: float, *, extract_command_result: bool = False
@@ -271,7 +277,9 @@ async def _dispatch_events(
             )
 
             try:
-                msg = await asyncio.wait_for(self._queue.get(), timeout=min(remaining, 5.0))
+                msg = await asyncio.wait_for(
+                    self._queue.get(), timeout=min(remaining, QUEUE_POLL_SECS)
+                )
             except asyncio.TimeoutError:
                 # ── Verdict-driven watchdogs ──
                 # Wellness (the liveness oracle) is the detector; timeouts

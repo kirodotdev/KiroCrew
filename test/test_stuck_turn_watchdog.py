@@ -25,6 +25,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from kiro_crew.acp import session_handle_dispatch
 from kiro_crew.acp.session_handle import AcpSessionHandle, WatchdogSettings
 from kiro_crew.acp.types import (
     METHOD_REQUEST_PERMISSION,
@@ -230,16 +231,22 @@ async def test_a_long_consumer_park_does_not_trip_the_tool_stall_arm():
 
 
 @pytest.mark.asyncio
-async def test_backend_silence_without_a_park_still_trips_the_arm():
+async def test_backend_silence_without_a_park_still_trips_the_arm(monkeypatch):
     """The correction must not disarm the watchdog: with no park, an idle tool
     clock past the suspect window still ends the turn. Guards against "fixing"
     the misattribution by simply never acting."""
+    # The arm runs only when a queue wait times out. Tick it every 20 ms under a
+    # turn budget the arm must beat by a wide margin: with a short budget and the
+    # default poll, the arm's single look landed on the turn's own deadline, so
+    # a host stall of ~0.35 s before the tool frame was handled ended the turn
+    # with the tool idle under the suspect window and nothing to catch.
+    monkeypatch.setattr(session_handle_dispatch, "QUEUE_POLL_SECS", 0.02)
     handle = _make_handle()
     handle._queue.put_nowait(_tool_call_frame())
 
     # Drive the generator directly: no consumer park is recorded, so the idle
     # interval is pure backend silence.
-    events = [ev async for ev in handle._dispatch_events(1, timeout=0.4)]
+    events = [ev async for ev in handle._dispatch_events(1, timeout=30.0)]
 
     assert any(ev.stop_reason == STOP_REASON_TOOL_STALL for ev in events), (
         "a genuine tool stall must still be caught"
