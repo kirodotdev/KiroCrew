@@ -1001,6 +1001,15 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # only caller-supplied element is the path being revealed — which is
         # passed as a later argv element, never as the command.
         "platform_compat_trust.py::open_with_default_app",
+        # The desktop-session lookup those launchers ask on a Linux gateway whose
+        # own environment names no display: one fixed, read-only argv
+        # (`systemctl --user show-environment`) with the binary from the trusted
+        # system directories, no shell or cwd, stdin DEVNULL, the environment
+        # `service.common.systemctl_user_env` gives every `systemctl --user` spawn
+        # with the pinned PATH on top, and a timeout. Nothing from a request
+        # reaches it, and only five allowlisted, validated variables are read
+        # from its output.
+        "platform_compat_trust.py::_user_manager_environment",
         # Read-only process-table snapshot through the trusted absolute ``ps``
         # binary. It uses fixed argv, no shell or cwd, and accepts no agent input.
         # It cannot route through sandbox because sandbox imports this module.
