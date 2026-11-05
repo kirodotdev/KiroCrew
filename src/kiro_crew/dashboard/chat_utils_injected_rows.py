@@ -54,6 +54,51 @@ def _remove_queued_by_id(messages: list[dict], queue_id: str) -> bool:
     return False
 
 
+def _queued_row_id(m: dict) -> str | None:
+    """The queue id of a 'queued' placeholder, or ``None`` when it has none.
+
+    Two spellings, matching the two twin shapes: the cron twin stores
+    ``queue_id`` in a JSON ``cls``, while the app twin wears a plain CSS
+    ``cls`` and carries ``queueId`` in ``meta`` (the hydration spelling).
+    The reorder matches through here, so it re-seats an app twin's row as
+    well as a cron twin's. Only a string is an id: a malformed restored value
+    (a list, say) reads as no id rather than raising mid-operation, and a row
+    whose ``meta`` names an id is never re-matched by its ``cls``.
+    """
+    if m.get("role") != "queued":
+        return None
+    meta = m.get("meta")
+    if isinstance(meta, dict) and meta.get("queueId"):
+        qid = meta["queueId"]
+        return qid if isinstance(qid, str) else None
+    try:
+        qid = json.loads(m.get("cls", "{}")).get("queue_id")
+    except (json.JSONDecodeError, TypeError, AttributeError):
+        return None
+    return qid if isinstance(qid, str) else None
+
+
+def _reorder_queued_rows(messages: list[dict], order: list[str]) -> None:
+    """Re-seat the 'queued' placeholders so they follow *order* (queue ids).
+
+    The rows named in *order* come first in that order, then any other queued
+    rows in their existing order; every non-queued row keeps its place ahead of
+    them. Matched through ``_queued_row_id``. Shared by the queue card's reorder
+    route and ``session_queue``'s move, so the two cannot disagree about where a
+    moved entry's row lands.
+    """
+    queued_msgs = [m for m in messages if m.get("role") == "queued"]
+    other_msgs = [m for m in messages if m.get("role") != "queued"]
+    queued_by_id: dict[str, dict] = {}
+    for m in queued_msgs:
+        qid = _queued_row_id(m)
+        if qid is not None:
+            queued_by_id[qid] = m
+    reordered_msgs = [queued_by_id[qid] for qid in order if qid in queued_by_id]
+    remaining_msgs = [m for m in queued_msgs if m not in reordered_msgs]
+    messages[:] = other_msgs + reordered_msgs + remaining_msgs
+
+
 def _edit_queued_by_id(messages: list[dict], queue_id: str, content: str) -> bool:
     """Update the content of a 'queued' placeholder by queue_id stored in cls JSON."""
     for m in messages:
