@@ -48,12 +48,9 @@ _no_tree_behind_the_leader = subagent_force_stop_audit_helpers._no_tree_behind_t
 class TestTheReapNamesTheRunsOwnSession:
     """A continuation lives under its conversation's key, not ``subagent:<run id>``.
 
-    ``spawn_continue`` mints a new run id on the ORIGINAL run's conversation key
-    (``info.conversation_key``), and the run's own teardown resets that key. A
-    reap that derives the key from the run id resets and releases a key no
-    session is under: the retain misses, the fallback has nothing to signal,
-    and the audit reads ``reaped`` for a process -- and a session lease -- the
-    stop never touches.
+    ``spawn_continue`` mints a new run id on the original ``info.conversation_key``. A key
+    derived from the run id names no session, so the stop would touch nothing yet read
+    ``reaped``.
     """
 
     @pytest.mark.asyncio
@@ -115,18 +112,10 @@ def _completing_run(
 class TestTheRunsOwnReportWaitsForItsTeardown:
     """A run that completes publishes its record only once its own teardown has decided the kill.
 
-    The terminal report is spawned AHEAD of the session teardown, so a
-    cancellation landing in the teardown cannot strand the outcome -- and it
-    published at once: the parent received a clean completion, ``mark_delivered``
-    wrote the tombstone that excludes the run from orphan reconciliation, and a
-    process the teardown's kill then failed to end was named nowhere the next
-    start would look. The report now waits for the teardown (bounded; the event
-    is set by the run's ``finally`` however the teardown ends). A run that
-    COMPLETED keeps its clean record and its result -- the kill's failure is on
-    the audit row -- and is flagged ``_leaked_process``, so no clean
-    ``delivered`` tombstone is written: the acknowledged delivery's tombstone
-    carries ``leaked_process``, which the next start ends without a second
-    notice.
+    The report is spawned ahead of the teardown (so a cancel cannot strand it) but waits,
+    bounded, for it; a clean ``delivered`` tombstone would hide a leaked process from the next
+    start. A completed run keeps its result and is flagged ``_leaked_process``, so its
+    tombstone carries ``leaked_process``.
     """
 
     @pytest.mark.asyncio
@@ -392,13 +381,10 @@ class TestTheRunsOwnReportWaitsForItsTeardown:
     async def test_a_teardown_undecided_when_the_reports_wait_runs_out_is_published_as_such(
         self,
     ) -> None:
-        """The report's wait bounds the reset half of the teardown only; a kill still undecided at expiry is named, never published clean.
+        """A kill still undecided when the report's wait expires is named, never published clean.
 
-        The reset hangs to its bound and the fallback kill then outlasts the
-        report's grace (its executor hop sits behind a wedged close). Published
-        clean at expiry, the completion said the run ended well, the ``delivered``
-        tombstone hid the folder from orphan reconciliation, and the kill's later
-        decision could not land on it.
+        The wait bounds only the reset half; the fallback kill's executor hop can sit behind a
+        wedged close past it.
         """
         seen: list[Any] = []
         manager = _completing_run(seen)
@@ -460,17 +446,9 @@ class TestTheRunsOwnReportWaitsForItsTeardown:
 class TestTheRecordCarriesTheKillBeforeItIsPublished:
     """A failed kill reaches the ONE terminal report and the tombstone, not memory.
 
-    The common shape of a reap on a live run: the reap's reset closes the ACP
-    pipes, the run's in-flight stream raises ``AcpProcessDied``, and the run's
-    own arm writes the record (``done``, the tombstone) while the reap is still
-    awaiting that reset or the fallback kill that follows it. A run ``finally``
-    that claimed and published the terminal report then would send the
-    ``subagent_done`` event and the parent's completion before the kill has
-    decided, and a failure the fallback reports afterwards would reach only the
-    in-memory error text -- the tombstone on disk and the report the parent
-    reads would both say the run was simply reaped. Once a reap has started,
-    it owns the report: it claims after its kill has decided, with the failure
-    appended and the tombstone re-written.
+    The reap's reset makes the run's stream raise ``AcpProcessDied``, and the run writes its
+    record while the reap still awaits the kill. Once a reap has started it owns the report:
+    it claims after the kill decides, appending the failure and re-writing the tombstone.
     """
 
     @pytest.mark.asyncio
@@ -559,17 +537,10 @@ class TestTheRecordCarriesTheKillBeforeItIsPublished:
 class TestADeliveredRecordIsNotRewrittenByTheReap:
     """A run that completed and reported under its own reap keeps the record it delivered.
 
-    The ``done``-already-set arm of the reap's record exists for the run whose
-    stream died UNDER the reap's reset: that arm writes the record and leaves
-    the report to the reap, so the reap appends the kill failure and re-writes
-    the tombstone before publishing. But ``done`` is also set by a run that
-    finishes on its own at the deadline boundary -- a result, or an exception
-    that was not the teardown's -- and ``_run`` then claims and publishes ITS
-    OWN report. Appending the failure and re-writing the tombstone after that
-    left the record on disk saying ``failed`` while the completion the parent
-    received said the run succeeded, and nothing re-reconciled the two. The
-    finalize token tells the two arms apart: once it is taken, the record
-    stands as delivered and the failure is kept on the reap's audit row.
+    ``done`` is also set by a run that finishes on its own at the deadline and publishes its
+    own report. The finalize token tells this apart from a stream that died under the reset:
+    once taken, the record stands and the kill failure stays on the reap's audit row, so disk
+    and the delivered completion agree.
     """
 
     @pytest.mark.asyncio
@@ -711,21 +682,10 @@ def _pending_reports_for(manager: SubagentManager, agent_id: str) -> list[Any]:
 class TestAStopCancelledMidTeardownStillReports:
     """A reap cancelled before its kill decided still publishes the ONE terminal report.
 
-    A gateway shutdown runs ``cancel_all()``, which cancels the reaper task while
-    ``_force_reap`` awaits the reset, or the fallback kill after it. By then the
-    reset has usually already killed the run's runtime, so the run's own
-    reap-echo arm has written the record and the tombstone and left the report
-    to the reap. Two things keep that outcome, and both are pinned here: the
-    report task exists -- strongly held and drained by ``cancel_all`` -- before
-    the reap's first await, so every cancellation point inside the reset and
-    kill window has a report to complete, and it publishes only once the record
-    is final; and the reap's ``CancelledError`` arm records the kill it did not
-    get to decide as a failure the record names (never ``reaped``), releases the
-    report, and only then re-raises. Without the first, no cancellation point
-    inside the window has a report to reach; without the second, the record
-    stays unfinished and the report unreleased. The tombstone the run's arm
-    wrote keeps excluding the folder from orphan recovery, because the
-    completion did reach the parent.
+    ``cancel_all()`` at shutdown cancels the reaper mid-reset or mid-kill. The report task
+    exists (held, drained by ``cancel_all``) before the reap's first await, and the
+    ``CancelledError`` arm records the undecided kill as a failure, releases the report, then
+    re-raises.
     """
 
     @pytest.mark.asyncio
@@ -976,13 +936,8 @@ class TestAStopCancelledMidTeardownStillReports:
     ) -> None:
         """The reap a dashboard Stop runs lives in the REQUEST task, not the reaper task.
 
-        ``cancel_all()`` cancels ``_reaper_task``; a Stop's reap it never touched
-        sat in its hanging reset through the drain, its report waiting on a gate
-        nobody released, until the gateway's own shutdown budget hard-exited the
-        process -- and the tombstone the run's arm wrote excluded the folder
-        from orphan recovery. Every in-flight reap is tracked and cancelled by
-        ``cancel_all`` so its cancellation arm finishes the record and releases
-        the report inside the drain.
+        Cancelling ``_reaper_task`` alone would leave a Stop's reap hung until the shutdown
+        budget hard-exits, so ``cancel_all`` tracks and cancels every in-flight reap.
         """
         manager, info, _key = _overdue_run("shut4", pid=9595)
         info._session_sharing = False
@@ -1061,13 +1016,8 @@ class TestAStopCancelledMidTeardownStillReports:
 class TestConcurrentStopsCoalesceIntoOneReap:
     """Two stop paths over one run are one reap: one kill, one suffix, one report.
 
-    A dashboard Stop racing a deadline reap (or a parent-end cancel racing
-    either) launched two reaps over the same run. Both retained handles, both
-    reset, both killed; when the kill failed, both appended the ``; kill
-    failed: …`` suffix to the persisted record while only the first published
-    a report -- so the record on disk and the completion the parent received
-    disagreed. The first caller runs the reap; a caller arriving while it is in
-    flight joins it and returns once the record is final.
+    A Stop racing a deadline reap joins the reap in flight and returns once the record is
+    final, so the ``; kill failed: …`` suffix is appended once.
     """
 
     @pytest.mark.asyncio
@@ -1130,14 +1080,8 @@ class TestConcurrentStopsCoalesceIntoOneReap:
     ) -> None:
         """The join waits for the record, not for the parent injection behind it.
 
-        The first reap's last statement awaits its report's delivery -- an
-        unbounded shield over an injection capped at ``_ON_DONE_TIMEOUT``
-        (20 minutes). A second stop path that joined the reap -- another Stop
-        request, or the reaper's own sweep calling ``_force_reap`` inline --
-        stood behind that delivery, hanging the Stop and freezing every other
-        run's deadline in the sweep, where before the coalescing the loser
-        returned as soon as the finalize claim refused it. The join settles
-        when the record is written, audited and the report released.
+        The delivery can take up to ``_ON_DONE_TIMEOUT`` (20 minutes); a joiner behind it
+        would hang the Stop and freeze every deadline in the reaper's sweep.
         """
         manager, info, _key = _overdue_run("race3", pid=7373)
         info._session_sharing = False
@@ -1230,16 +1174,9 @@ class TestConcurrentStopsCoalesceIntoOneReap:
 class TestTheReapFencesTheKey:
     """The reap holds the key's ending fence from before its first read through the record and the audit.
 
-    Twin of the cron reaper's fence (``test_cron_reaper_ending_fence.py``): a claim or a cold
-    start under the key while the reap runs is HELD at the door of
-    ``get_or_create`` and lands only once the run is recorded; a start already
-    inside ``provider.start()`` when the fence went up -- nothing published for
-    the snapshot to see -- is refused at registration, its provider hard-killed,
-    its call allocating again after the lift, and the record NAMES it as a kill
-    failure, never ``reaped`` over it. Without the fence that start registered
-    after the passes and ran on under a ``reaped`` record, holding its turn
-    permit, with nothing left to reclaim it: the run's own teardown is skipped
-    once ``reaped`` is set and the idle sweep skips a held session.
+    Twin of ``test_cron_reaper_ending_fence.py``: a new start is held at ``get_or_create``
+    until the run is recorded. A start already inside ``provider.start()`` is refused at
+    registration, hard-killed, and named as a kill failure: nothing else would reclaim it.
     """
 
     @pytest.mark.asyncio

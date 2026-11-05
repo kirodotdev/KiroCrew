@@ -132,7 +132,12 @@ def test_sandbox_allow_unsandboxed_exec_default_resolves_per_platform(monkeypatc
         assert _load_from_dict({}).agent.sandbox_allow_unsandboxed_exec is False, plat
         with_section = _load_from_dict({"agent": {"approval_mode": "auto"}})
         assert with_section.agent.sandbox_allow_unsandboxed_exec is False, plat
-    # A declaration outranks the platform in both directions.
+    # A declaration outranks the platform in both directions. On Windows a stored
+    # false is adopted once as the stale pre-0.6.0 default, so mark that one-shot
+    # done: a false written after it is the owner's lockdown.
+    from kiro_crew.config.superseded_defaults import record_adoptions
+
+    record_adoptions({"agent.sandbox_allow_unsandboxed_exec": False})
     for plat in ("win32", "linux", "darwin"):
         monkeypatch.setattr("sys.platform", plat)
         declared_false = _load_from_dict({"agent": {"sandbox_allow_unsandboxed_exec": False}})

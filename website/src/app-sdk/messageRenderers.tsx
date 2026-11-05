@@ -528,6 +528,10 @@ export interface AssistantBubbleOptions {
   /** The bubble's own Regenerate action (its hover row), for the host that
    *  can regenerate this reply. Absent: no Regenerate. */
   onRegenerate?: () => void
+  /** The LOCAL slot these rows belong to. Set, the reply draws its lock tags
+   *  from `meta.redactions` and their card offers the owner's reveal of the
+   *  removed value. A host drawing another gateway's rows leaves it unset. */
+  redactionSlot?: string
 }
 
 /**
@@ -598,6 +602,8 @@ export function renderAssistantBubble(
       fileChanges={(m.meta as Record<string, unknown> | undefined)?.file_changes as FileChangeEntry[] | undefined}
       fileChangesOmittedFiles={(m.meta as Record<string, unknown> | undefined)?.file_changes_omitted_files}
       onRegenerate={opts.onRegenerate}
+      redactions={opts.redactionSlot ? (m.meta as Record<string, unknown> | undefined)?.redactions : undefined}
+      redactionSlot={opts.redactionSlot}
       suppressSteerAck={opts.suppressSteerAck || turnHadPolicyBlock(ctx.messages, ctx.index)}
       bubbleClassName={bubbleClassName}
       onReplyInThread={isStreaming ? undefined : replyInThreadFor(m, ctx)}

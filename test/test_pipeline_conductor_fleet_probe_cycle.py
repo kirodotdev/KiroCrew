@@ -47,9 +47,7 @@ def ok_line(out: str) -> str:
     return next(line for line in out.splitlines() if line.startswith("OK "))
 
 
-# --------------------------------------------------------------------------
 # A session key is a filename stem, never a path
-# --------------------------------------------------------------------------
 
 
 def test_sessions_dir_is_derived_from_the_data_home(mod, sessions):
@@ -76,9 +74,7 @@ def test_transcript_path_refuses_a_link_out_of_the_store(mod, sessions, tmp_path
     assert mod._transcript_path(sessions, "escapee") is None
 
 
-# --------------------------------------------------------------------------
 # One probe cycle
-# --------------------------------------------------------------------------
 
 
 def probe(mod, cfg, tmp_path, name="probe-config.json"):
@@ -230,9 +226,7 @@ def test_probe_prints_host_lines_beside_the_summary(mod, sessions, tmp_path, mon
     assert ok_line(out).startswith("OK 0 watched, 0 fired")
 
 
-# --------------------------------------------------------------------------
 # Recording a disposition
-# --------------------------------------------------------------------------
 
 
 def test_mark_refuses_a_key_that_is_not_a_stem(mod, sessions, tmp_path, capsys):
@@ -301,9 +295,7 @@ def test_mark_keys_a_sticky_tag_on_the_report_the_probe_surfaced(mod, sessions, 
     assert entry["settled"] == {"tag": "BLOCKED", "digest": digest}
 
 
-# --------------------------------------------------------------------------
 # Typed misconfiguration is a message, never a crash
-# --------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -351,9 +343,7 @@ def test_config_error_accepts_a_well_formed_config(mod, sessions, tmp_path):
     )
 
 
-# --------------------------------------------------------------------------
 # The entry point
-# --------------------------------------------------------------------------
 
 
 def config_file(tmp_path, payload) -> Path:
@@ -407,31 +397,15 @@ def test_main_requires_a_config(mod):
     assert excinfo.value.code == 2
 
 
-# --------------------------------------------------------------------------
 # Every mark this suite supplies is read at the moment it is compared
-# --------------------------------------------------------------------------
 
 
 def test_no_parametrize_argument_reads_the_clock() -> None:
     """A mark in this suite is always weighed against an elapsed-time window.
 
-    Each ``ts`` here reaches a function that subtracts it from ``time.time()``
-    and compares the difference to an idle window -- ``_stalled_since_disposition``,
-    ``_suppressed``, and the state ``main`` reloads. A mark therefore means
-    nothing on its own; it means something only relative to the instant the
-    assertion runs.
-
-    A ``@pytest.mark.parametrize`` argument is evaluated once, while the module
-    is imported for collection. A clock read there freezes the mark at collection
-    time and then asserts it against a window measured at run time, so the gap
-    between those two moments decides the verdict: green on a fast shard, red on
-    a shard that queues longer than the window, and nothing in the diff under
-    test to explain either. A clock read belongs in the test body, which runs at
-    the same moment as the comparison.
-
-    Read as a syntax tree rather than as text. The property is the absence of a
-    call inside a decorator argument, which running the module cannot
-    demonstrate, and a text scan would match the names in this docstring.
+    A parametrize argument is evaluated at collection, so a clock read there would be
+    weighed against a window measured at run time and fail on a slow shard. Read as a
+    syntax tree, since a text scan would match the names in this docstring.
     """
     import ast
 

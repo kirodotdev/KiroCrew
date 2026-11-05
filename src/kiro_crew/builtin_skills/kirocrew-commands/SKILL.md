@@ -177,7 +177,7 @@ leftover prefix without touching it.
 |---------|-------------|
 | `kirocrew spawn run "task"` | Spawn a background subagent (wait for result) |
 | `kirocrew spawn run --async "task"` | Fire-and-forget subagent |
-| `kirocrew spawn run --crew NAME "task"` | Run as a crew member (its memory and template); an unknown name is refused |
+| `kirocrew spawn run --crew NAME "task"` | Run as a Bot (its memory and template); an unknown name is refused |
 | `kirocrew spawn run --agent NAME "task"` | Run under a named agent template; an unknown name is refused |
 | `kirocrew spawn run --model ID "task"` | Run on a model id; it outranks the member's and the template's pin |
 | `kirocrew spawn list` | List active subagents |
@@ -198,6 +198,7 @@ leftover prefix without touching it.
 | `kirocrew cron add NAME "" --every 600 --command "df -h /" --no-persistent-session --minimal-context` | Zero-token job: run a vetted shell command |
 | `kirocrew cron add ... --timeout 30 --timeout-secs 60` | Subprocess timeout (script/command) and whole-wake budget |
 | `kirocrew cron add ... --[no-]persistent-session --[no-]minimal-context --hide-in-chat --model ID` | Session shape and model; defaults are persistent session on, minimal context off, so pass `--no-persistent-session --minimal-context` for a script/command job |
+| `kirocrew cron add ... --project-path /abs/repo` | Run the agent session in that repo, so its `.kiro/steering/` and `AGENTS.md` load (agent jobs only; `cron update JOB_ID --project-path ''` clears it) |
 | `kirocrew cron update JOB_ID --message "new msg"` | Update job message |
 | `kirocrew cron update JOB_ID --agent myagent` | Update job agent |
 | `kirocrew cron update JOB_ID --approval-mode auto` | Set auto-approval |
@@ -300,6 +301,7 @@ keystone paths are still refused). The CLI is the stricter of the two.
 | `kirocrew app install /path/to/app-dir` | Install app from local directory (needs app.json) |
 | `kirocrew app enable NAME` | Enable an installed app (an app that asks to control your chats is allowed in the dashboard only) |
 | `kirocrew app disable NAME` | Disable an installed app |
+| `kirocrew app update NAME [--source DIR]` | Update an installed app in place from its source directory (the one it was installed or last updated from, unless `--source` names another, which then becomes the recorded one), keeping its data and enabled state. Needs a running gateway; with none reachable it changes nothing |
 | `kirocrew app uninstall NAME` | Uninstall an app and preserve its data directory |
 | `kirocrew app uninstall NAME --purge-data` | Uninstall and explicitly delete the app data directory |
 | `kirocrew app info NAME` | Show app details |

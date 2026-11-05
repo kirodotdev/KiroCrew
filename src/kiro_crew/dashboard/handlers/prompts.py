@@ -124,6 +124,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _CODE_CONTENT_SHA256_REQUIRED,
         _CODE_LIVE_SKILL_EXISTS,
         _CODE_PENDING_APPROVAL_REFUSED,
+        _CODE_PENDING_DISMISS_REFUSED,
         _CODE_PENDING_SKILL_CHANGED,
         _CODE_PENDING_SKILL_NOT_FOUND,
         _CODE_PENDING_SKILL_UNREADABLE,
@@ -184,5 +185,6 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.skills import PROJECT_SKILL_BODY_CAP  # noqa: F401
     from kiro_crew.skills import SKILL_READ_CAPACITY  # noqa: F401
     from kiro_crew.skills import PendingApprovalRefused  # noqa: F401
+    from kiro_crew.skills import PendingDismissRefused  # noqa: F401
     from kiro_crew.skills import SkillReadRefusal  # noqa: F401
     from kiro_crew.validation import MAX_SKILL_KEY_CHARS  # noqa: F401

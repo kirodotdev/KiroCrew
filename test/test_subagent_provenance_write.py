@@ -1,13 +1,8 @@
 """Model provenance is persisted ONCE, at the crash-safe pre-spawn point.
 
-``SubagentInfo.requested_model`` / ``resolved_model`` are written to disk
-before the ``subagent_spawn`` event fires, so a gateway restart in the window
-between the event and any later state write cannot lose them — orphan recovery
-rebuilds the record from disk. The later ``session_id`` state write in ``_run``
-must not re-write the same two fields; that second write would be pure redundant
-I/O on the spawn hot path. These
-tests pin both halves: exactly one provenance write, ordered before the spawn
-event, and a session_id write that does not carry the provenance fields.
+``requested_model`` / ``resolved_model`` reach disk before the ``subagent_spawn`` event, so
+a restart cannot lose them. The later ``session_id`` write must not carry them again: that
+would be redundant I/O on the spawn hot path.
 """
 
 from __future__ import annotations
@@ -464,15 +459,11 @@ async def _event_loop_checkpoint() -> None:
 
 @pytest.mark.asyncio
 async def test_per_turn_diagnostics_write_is_drained_on_cancellation() -> None:
-    """Cancelling ``await asyncio.to_thread(...)`` detaches the worker thread,
-    and ``update_state`` is an unlocked read-merge-replace — so a stale
-    detached worker could overwrite newer state written by a cancel-respawn
-    recovery run (recovery waits for the old asyncio TASK, not the worker).
-    The fix drains the worker before letting cancellation complete: the
-    cancelled task must NOT finish while the diagnostics write is in flight,
-    which orders any recovery write strictly after the worker's write and
-    closes the race; this is the same worker-drain posture as autonudge's
-    persistence path."""
+    """A cancelled run does not finish while its diagnostics write is in flight.
+
+    Cancelling ``asyncio.to_thread`` detaches the worker, and ``update_state`` is an unlocked
+    read-merge-replace, so a detached worker could overwrite a recovery run's newer state.
+    """
     import asyncio
 
     from kiro_crew.acp.types import EVENT_PERMISSION_REQUEST, AcpEvent
@@ -522,8 +513,7 @@ async def test_per_turn_diagnostics_write_is_drained_on_cancellation() -> None:
 
             task.cancel()
             # The drain must hold the cancelled task open while the worker is
-            # still writing — a task that completes here is the detached-worker
-            # race (pre-fix behaviour).
+            # still writing — a task that completes here is the detached-worker race.
             await _event_loop_checkpoint()
             assert not task.done(), (
                 "cancelled _run_inner completed while the diagnostics write was "
@@ -561,14 +551,10 @@ async def test_per_turn_diagnostics_write_is_drained_on_cancellation() -> None:
 
 @pytest.mark.asyncio
 async def test_no_recovery_scheduled_while_diagnostics_worker_is_live() -> None:
-    """Integration seam: drive ``_run`` (the wait_for
-    wrapper that classifies cancellation and schedules recovery), cancel it
-    twice while the diagnostics worker is gated, and prove recovery is never
-    scheduled while the worker is still live. On 3.11+ the second cancel
-    routes to the child task so the gate runs only post-drain; on 3.10 the
-    second cancel can deliver the gate mid-drain, where the
-    ``_state_drain_active`` latch suppresses it — both paths must satisfy the
-    same invariant asserted here."""
+    """Two cancels of ``_run`` never schedule recovery while the diagnostics worker is live.
+
+    On 3.10 the second cancel can deliver the recovery gate mid-drain, where the
+    ``_state_drain_active`` latch must suppress it."""
     import asyncio
 
     from kiro_crew.acp.types import EVENT_PERMISSION_REQUEST, AcpEvent
@@ -932,16 +918,10 @@ async def test_unpinned_spawn_records_requested_model_auto() -> None:
 
 @pytest.mark.asyncio
 async def test_provenance_write_is_drained_on_cancellation() -> None:
-    """Cancelling a run while the PRE-SPAWN provenance write is
-    in flight must hold cancellation open until that worker finishes.
+    """A cancel during the pre-spawn provenance write waits for that worker to finish.
 
-    A bare ``await asyncio.to_thread(...)`` here would let the cancel
-    detach the worker, the run finalize immediately, and the zombie's
-    WHOLE-FILE rewrite roll back whatever landed after its read --
-    including the ``pid`` / ``session_id`` a cancel-respawn recovery run writes
-    on the loop, without which the reaper cannot reach the child. Same
-    contract as the per-turn diagnostics write, now shared by every
-    off-loop state writer through ``_write_state_off_loop``.
+    A detached worker's whole-file rewrite would roll back the recovery run's ``pid`` /
+    ``session_id``, without which the reaper cannot reach the child.
     """
     import asyncio
 
@@ -1083,18 +1063,11 @@ async def test_cc_refinement_write_is_drained_on_cancellation() -> None:
 
 @pytest.mark.asyncio
 async def test_an_abandoned_state_writer_holds_the_conversation() -> None:
-    """The drain is BOUNDED, so on a wedged FS a
-    worker outlives its run -- and its stale whole-file rewrite would roll back
-    the ``keep`` a promote / release writes on the loop in the meantime.
+    """A writer that outlives its bounded drain holds the conversation until it settles.
 
-    Unbounding the drain is not the answer: ``cancel_all()`` gathers run tasks
-    with no timeout, so it would hold gateway shutdown open forever (the posture
-    ``_REPORT_DRAIN_TIMEOUT`` already sets). Neither is keeping the run
-    non-terminal, which would stall its completion event for as long as the FS
-    stays wedged. Instead the manager records the abandoned writer and
-    ``_conversation_busy`` reports the conversation as held until it settles,
-    which defers both retention writes past the zombie. This pins the hold, that
-    it survives ``_agents`` eviction, and its release.
+    Its stale rewrite would otherwise roll back a promote / release ``keep``. The drain stays
+    bounded because ``cancel_all()`` gathers run tasks with no timeout. The hold survives
+    ``_agents`` eviction.
     """
     import asyncio
 
@@ -1191,18 +1164,9 @@ async def test_an_abandoned_state_writer_holds_the_conversation() -> None:
 def test_no_bare_to_thread_update_state_outside_the_drained_helper() -> None:
     """Build gate: the drain invariant must not be convention-only.
 
-    "Every off-loop ``state.json`` writer is drained on cancellation" holds only
-    while writers call ``_write_state_off_loop`` instead of a bare
-    ``asyncio.to_thread(update_state, ...)``. That is precisely the divergence
-    this change had to repair: three structurally identical sites, one given a
-    drain and two left bare, 300 lines apart in one file and identical
-    at the call. A convention cannot catch that; a gate can, matching the
-    repo's other static gates -- see
-    ``test_no_blocking_call_on_loop.py``).
-
-    Deterministic and false-positive-free: an off-loop ``update_state`` has no
-    legitimate undrained form, so exactly one call site is allowed -- the
-    helper's own.
+    Off-loop ``state.json`` writers must call ``_write_state_off_loop``, never a bare
+    ``asyncio.to_thread(update_state, ...)``. An off-loop ``update_state`` has no legitimate
+    undrained form, so the helper's own call is the only one allowed.
     """
     import ast
     from pathlib import Path
@@ -1280,16 +1244,10 @@ def test_no_bare_to_thread_update_state_outside_the_drained_helper() -> None:
 
 @pytest.mark.asyncio
 async def test_the_conversation_hold_covers_the_whole_drain_not_only_expiry() -> None:
-    """The hold must start at the CANCELLATION, not
-    at the drain deadline.
+    """The hold starts at the cancellation, not at the drain deadline.
 
-    On Python 3.10 a second outer cancel can interrupt ``wait_for``'s
-    ``_cancel_and_wait`` and deliver ``_run``'s finalization while the drain is
-    still in flight -- so a run can go ``done`` with a live writer and WITHOUT
-    ever reaching the expiry branch. A hold armed only on expiry leaves that whole
-    window open, and a continuation reaching a released gate writes ``keep`` for
-    the live writer to erase. Here the drain keeps its real bound (never expires),
-    so the hold under test can only come from the cancellation itself.
+    On 3.10 a second cancel can finalize ``_run`` mid-drain, before any expiry. The drain
+    keeps its real bound here, so the hold can only come from the cancellation.
     """
     import asyncio
 
@@ -1372,11 +1330,8 @@ async def test_the_conversation_hold_covers_the_whole_drain_not_only_expiry() ->
 async def _await_off_loop_gate(entered: Any, what: str) -> None:
     """Wait for an off-loop write to reach its gate, BOUNDED.
 
-    The gate only fires when the write goes through ``asyncio.to_thread``, so an
-    unbounded ``await entered.wait()`` turns a regression (the write moved back
-    onto the loop) into a 120s pytest-timeout with no diagnosis -- three of those
-    is six minutes of a shared runner for one mistake. The helper's lost-run bound
-    fails by name instead, naming the write that never left the loop.
+    The gate fires only through ``asyncio.to_thread``; a write moved onto the loop would
+    otherwise be a silent 120s pytest-timeout rather than a named failure.
     """
     await await_until(
         entered,
@@ -1392,12 +1347,8 @@ async def _await_off_loop_gate(entered: Any, what: str) -> None:
 async def test_pid_and_session_records_are_written_off_loop() -> None:
     """The PID record and the session record must not fsync on the loop.
 
-    Calling ``update_state`` directly from ``_run_inner``, an ``async
-    def`` body, runs the read-merge-rewrite plus its fsync on the gateway's
-    only loop -- the ``no-blocking-call-on-event-loop`` class, three
-    lines from a provenance write already moved off it. Real
-    ``asyncio.to_thread`` is used here (not a passthrough double) so the thread
-    identity in the assertion is the production one.
+    Real ``asyncio.to_thread`` is used (not a passthrough double) so the thread identity in
+    the assertion is the production one.
     """
     import threading
 
@@ -1456,11 +1407,8 @@ async def test_pid_and_session_records_are_written_off_loop() -> None:
 async def test_pid_record_write_is_drained_on_cancellation() -> None:
     """The off-loop PID record inherits the same drain contract.
 
-    Moving a writer off the loop is what creates the detached-worker hazard in
-    the first place: cancelling a ``to_thread`` await abandons the worker, and
-    ``update_state`` rewrites the WHOLE file from the snapshot it already read.
-    Going through ``_write_state_off_loop`` rather than a bare ``to_thread`` is
-    what holds cancellation open until the worker lands.
+    Cancelling a ``to_thread`` await abandons the worker, which then rewrites the whole file
+    from its stale snapshot.
     """
     import asyncio
 
@@ -1584,13 +1532,10 @@ async def test_session_record_write_is_drained_on_cancellation() -> None:
 
 @pytest.mark.asyncio
 async def test_shared_session_pid_write_is_drained_on_cancellation() -> None:
-    """The session-sharing PID record is the third moved site.
+    """The session-sharing PID record write is drained on cancellation.
 
-    ``_create_shared_session`` runs on the loop from the spawn path, and its
-    ``update_state`` was the one of the three with no ``except Exception``
-    around it -- so the swap had to preserve a propagating failure while adding
-    the drain. Unlike the other two this site is reached only when
-    ``agent.session_sharing`` puts the child on the parent's runtime.
+    Reached only when ``agent.session_sharing`` puts the child on the parent's runtime; its
+    write has no ``except Exception`` around it, so a failure propagates.
     """
     import asyncio
 
@@ -1657,23 +1602,9 @@ async def test_shared_session_pid_write_is_drained_on_cancellation() -> None:
 def test_no_on_loop_update_state_inside_a_coroutine() -> None:
     """Build gate: a coroutine body must not call ``update_state`` directly.
 
-    Sibling of ``test_no_bare_to_thread_update_state_outside_the_drained_helper``
-    for the other half of the same divergence. That gate pins HOW an off-loop
-    write is performed; this one pins WHERE a write may happen at all. An
-    ``async def`` body runs on the gateway's only event loop, so a direct call
-    there is an fsync on the loop by construction -- the exact residue this
-    gate records, and easy to miss because the offending line reads identically
-    to a legitimate one two
-    functions away.
-
-    Scope-aware, so it is deterministic rather than a substring heuristic: only
-    the INNERMOST enclosing frame counts, which is what makes a synchronous
-    helper nested inside a coroutine (the shape a worker thread runs) not an
-    offender. The retention writers are synchronous ``def``s, so they are
-    outside this gate's reach by that same rule: release's disk half
-    (``_release_disk_sync``) runs on a worker thread from every event-loop
-    caller, and ``_promote_conversation_impl`` stays on the loop by design (its
-    busy check, promotion and admission must commit with no await between).
+    Only the innermost enclosing frame counts, so a sync helper nested in a coroutine (run on
+    a worker thread) is not an offender. ``_promote_conversation_impl`` is a sync ``def`` that
+    stays on the loop by design: its busy check, promotion and admission commit with no await.
     """
     import ast
     from pathlib import Path

@@ -1112,6 +1112,12 @@ from kiro_crew.dashboard.handlers.portability import (  # noqa: E402, F401
     api_portability_import,
     api_portability_preview,
 )
+
+# Owner reveal of a removed credential -- the ONE reader of the in-memory
+# ``security.reveal_store``; refuses every agent, app and non-owner caller.
+from kiro_crew.dashboard.handlers.redacted_reveal import (  # noqa: E402, F401
+    api_owner_value_reveal,
+)
 from kiro_crew.dashboard.handlers.security import (  # noqa: E402, F401
     api_denied_command_builtin_toggle,
     api_denied_command_user_add,

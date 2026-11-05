@@ -239,13 +239,10 @@ class WaveDigestCoordinator(ManagerComponent):
         )
         if self._manager._on_done:
             try:
-                # Synthetic record created ``done=True`` with a batch_id and
-                # routed to a DEFERRED announce: arm the hold synchronously
-                # here, before the ensure_future yield, so a sibling completion
-                # cannot read this member as done-but-unarmed and close the
-                # wave early. The ``_safe_announce`` arm is an
-                # idempotent backstop; the done-callback is the strand-guard
-                # for a task cancelled before its first run.
+                # Arm before the ensure_future yield, so a sibling cannot see
+                # this member done-but-unarmed and close the wave early. The
+                # done-callback releases the hold if the task is cancelled
+                # before its first run.
                 self._manager.arm_report_in_flight(info)
                 _lost_task = asyncio.ensure_future(self._manager._safe_announce(info))
                 self._hold_announce_task(f"lost-{info.id}", _lost_task)
@@ -366,22 +363,13 @@ class WaveDigestCoordinator(ManagerComponent):
         for hold in self._expired_digest_holds(now):
             if not self._manager.batch_members_pending(hold[0]):
                 if self._manager.batch_reports_in_flight(hold[0]):
-                    # The wave is closing on its own -- the final member's
-                    # report is in flight and the real wave-close flush lands
-                    # when it is consumed. Forcing a partial digest here would
-                    # race it and could emit a duplicate chunk for the same
-                    # members. (The consumer clears every hold in the same
-                    # synchronous block that fires the chunk, so this skip
-                    # cannot observe a just-flushed wave's stale state.)
+                    # The final member's report is in flight and its
+                    # wave-close flush will land; forcing one here could emit
+                    # a duplicate chunk.
                     continue
-                # No pending members AND no report in flight, yet a hold has
-                # aged past the deadline: the wave-close flush is never coming.
-                # A terminal report ended without reaching the consumer (the
-                # injection-timeout / announce-failure arms release the hold
-                # but land no accounting), so no further completion event will
-                # re-enter the consumer for this wave -- the held sibling
-                # results would strand until gateway restart. Fall through and
-                # force the flush: this sweep is the only remaining exit.
+                # Nothing pending or in flight: a report ended without
+                # reaching the consumer, so no wave-close flush is coming.
+                # Force it, or the held results strand until restart.
             self._force_digest_flush_for(hold)
 
     async def _sweep_digest_holds_async_impl(self, now: float) -> None:
@@ -613,19 +601,11 @@ class WaveDigestCoordinator(ManagerComponent):
         if not deliveries:
             return
         try:
-            # Off the loop: the tombstone write reads the existing file to
-            # preserve a recorded terminal outcome, and both callers of this
-            # settlement are coroutines. The swap above precedes the single
-            # await, so the re-entry guard still holds across the suspension.
-            #
-            # Handed over as ONE batch rather than awaited per delivery: the swap
-            # detaches them from ``info`` irrevocably, a per-delivery await makes
-            # every one after the first a cancellation point, and
-            # ``CancelledError`` is not an ``Exception`` -- so a shutdown landing
-            # mid-batch would discard the rest with nothing holding them, and each
-            # unwritten tombstone is a folder restart reconciliation admits, i.e. a
-            # duplicate completion. The batch carries each delivery's own elapsed
-            # and credits, so the tombstone still records the run's terminal usage.
+            # Off the loop: the write reads the existing file to keep a recorded
+            # terminal outcome. ONE batch, not an await per delivery: the swap
+            # above detached them irrevocably, and a CancelledError (not an
+            # ``Exception``) between per-delivery awaits would drop the rest,
+            # each replaying on restart as a duplicate completion.
             await asyncio.to_thread(
                 settle_delivered_batch, tuple(deliveries), writer=mark_delivered
             )

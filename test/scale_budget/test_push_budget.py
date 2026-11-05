@@ -61,11 +61,6 @@ def test_refresh_frames_carry_their_kind(state) -> None:
     assert _refresh_kinds(ws) == [{"crons"}], f"refresh frames read as {_refresh_kinds(ws)}"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="scale-F3: main sends one refresh frame per turn_end push",
-)
 def test_turn_end_burst_coalesces_and_history_goes_at_once(state, fake_clock) -> None:
     """3,000 ``turn_end`` pushes 20 ms apart cost at most span/window + 1 frames.
 

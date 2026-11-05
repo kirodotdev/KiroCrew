@@ -36,6 +36,8 @@ const chatPageSrc = [
     .map(f => readFileSync(resolve(here, '../pages', f), 'utf8')),
 ].join('\n')
 const sidebarSrc = readFileSync(resolve(here, '../pages/chat-sidebar/SessionRow.tsx'), 'utf8')
+// The interrupted line's label, which the row reads through `useInterruptedRowLabel`.
+const interruptedLabelSrc = readFileSync(resolve(here, '../pages/chat-sidebar/interruptedRowLabel.ts'), 'utf8')
 /** The sidebar's own files joined: the shell and the owners under pages/chat-sidebar/
  *  it composes (the row and its status builders live in chat-sidebar/SessionRow.tsx). */
 function sidebarSource(): string {
@@ -98,8 +100,10 @@ describe('ChatSidebar – the interrupted row shares the composer’s predicate'
   // per-call-site re-implementation this PR exists to remove, and it is what the
   // review caught: the row was gated inline while the predicate sat one file away.
   it('builds the interrupted label from slotIsRemoteBound, not an inline field read', () => {
-    expect(sidebarSrc).toMatch(/import \{[^}]*\bslotIsRemoteBound\b[^}]*\} from '(?:\.\.\/)+store\/dashboardSlice'/)
-    expect(sidebarSrc).toMatch(/const label = slotIsRemoteBound\(s\)/)
+    expect(sidebarSrc).toMatch(/const interruptedLabel = useInterruptedRowLabel\(s\)/)
+    expect(interruptedLabelSrc).toMatch(/import \{[^}]*\bslotIsRemoteBound\b[^}]*\} from '(?:\.\.\/)+store\/dashboardSlice'/)
+    expect(interruptedLabelSrc).toMatch(/const label = slotIsRemoteBound\(s\)/)
+    expect(interruptedLabelSrc).not.toMatch(/s\.executor === 'remote'/)
   })
 
   it('leaves no inline crew-bound spelling in the interrupted row builder', () => {

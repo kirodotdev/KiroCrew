@@ -759,7 +759,13 @@ action-item review. With at least one enabled note or diagram agent,
 scrolling agent grid (stacked on narrower screens). When the roster becomes empty,
 the agent plane exits and the transcript expands to the primary content surface;
 enabling an agent restores the split layout through a Framer Motion layout
-transition that honors reduced-motion preferences. The panel follows new speech
+transition that honors reduced-motion preferences. Each note or diagram panel's
+header carries an Expand control: the chosen panel then fills the workspace (the
+diagram frame and notes pane drop their 340 px and 520 px caps), while the
+transcript and the other panels are hidden but stay mounted, so a draft or the
+follow position survives. The same control or Escape restores the compact
+layout, which is the default, and focus returns to the control. It is view state
+only; transcription and the agents keep running. The transcript panel follows new speech
 until the reader scrolls up, then offers a localized “jump to latest” control
 rather than pulling the reading position away. Lists above 200 durable segments
 are virtualized so polling does not keep thousands of transcript rows mounted.

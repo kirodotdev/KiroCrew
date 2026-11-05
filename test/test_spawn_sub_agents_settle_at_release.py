@@ -706,7 +706,7 @@ async def test_a_cut_cron_turns_tab_completion_holds_the_cron_reset_until_its_tu
     assert seen["counted_at_release"] == 1, "the cron turn's cleanup could reset under it"
     assert len(seen["chats"]) == 1
     assert done.orch._cron_injecting == {}
-    assert seen["resets"] == [("cron:j1", {"skip_if_busy": True})]
+    assert seen["resets"] == [("cron:j1", {"skip_if_busy": True, "skip_if_injecting": True})]
 
 
 @pytest.mark.asyncio
@@ -1063,7 +1063,9 @@ async def test_a_cron_turn_resumed_after_a_post_token_error_confirms_nothing_its
     orch = _cron_orchestrator(sessions, [a])
     seen: dict[str, Any] = {"prompts": [], "injected": []}
 
-    async def inject(info: Any, _client: Any, _msg: Any, _parent: str, _label: str) -> str:
+    async def inject(
+        info: Any, _client: Any, _msg: Any, _parent: str, _label: str, **_kw: Any
+    ) -> str:
         seen["injected"].append(info.id)
         info._report_delivered = True  # _inject_with_retry acknowledges on landing
         return "answered from the completion"

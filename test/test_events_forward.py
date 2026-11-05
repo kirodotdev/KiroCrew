@@ -1855,3 +1855,119 @@ def test_a_marker_split_across_two_fields_is_neutralized(name, body):
 
     inner = out[out.index("inside it.]") : out.rindex("--- UNTRUSTED FORWARDED CONTENT END")]
     assert not _FENCE_MARKER_RE.search(inner)
+
+
+class TestInterceptorSkipsIgnoredMessages:
+    """The message interceptor fires only for messages the bot would read.
+
+    In an ``off`` channel, and for an unmentioned message in a ``mention`` or
+    ``review`` channel that thread-follow does not admit, the bot drops the
+    message with nothing recorded. An edition's interceptor must not answer
+    those (a challenge reply on every unaddressed owner message in a shared
+    channel). Messages the bot reads, and observe-mode messages it records,
+    still meet the interceptor first.
+    """
+
+    def _run(self, *, activation, text, is_mention, history=None):
+        import dataclasses
+
+        from kiro_crew.platform import build_default_context
+        from kiro_crew.platform.context import set_context
+        from kiro_crew.platform.interfaces import InterceptDecision
+        from kiro_crew.slack.events import SeenCache
+
+        order: list[str] = []
+
+        class _RedirectGate:
+            def validate_enterprise(self, *a, **k):
+                return True
+
+            def check_message_origin(self, *a, **k):
+                return True
+
+            def heartbeat_safe_tools(self):
+                return frozenset()
+
+            def intercept_message(self, orch, **kw):
+                order.append("intercept")
+                return InterceptDecision.REDIRECTED
+
+        event = {
+            "user": "U123",
+            "channel": "C456",
+            "text": text,
+            "ts": "5555.0001",
+            "team": "T789",
+        }
+        orch = AsyncMock()
+        ch_cfg = MagicMock()
+        ch_cfg.activation = activation
+        ch_cfg.thread_follow = True
+        cfg = MagicMock()
+        cfg.channel_config.return_value = ch_cfg
+        orch._cfg = cfg
+        orch.channel_history = history
+        if history is not None:
+            history.push.side_effect = lambda *a, **k: order.append("push")
+        orch.sessions = None
+        orch.conv_log = None
+        orch.slack = None
+
+        audits: list[dict] = []
+        set_context(dataclasses.replace(build_default_context(None), slack_gate=_RedirectGate()))
+        try:
+            with (
+                # The facade patch reaches events_inbound's binding too.
+                patch("kiro_crew.slack.events.sel") as ev_sel,
+                patch("kiro_crew.slack.events.is_allowed_user", return_value=True),
+                patch("kiro_crew.slack.events.is_owner", return_value=True),
+                patch("kiro_crew.slack.events.handle_message", new_callable=AsyncMock) as handle,
+            ):
+                ev_sel.return_value.log_api_access = lambda **kw: audits.append(kw)
+                asyncio.run(_route_message(orch, event, SeenCache(), is_mention=is_mention))
+        finally:
+            set_context(None)
+        return order, audits, handle
+
+    @pytest.mark.parametrize("activation", [ACTIVATION_MENTION, ACTIVATION_REVIEW])
+    def test_unmentioned_message_is_dropped_without_interceptor(self, activation):
+        order, audits, handle = self._run(activation=activation, text="lunch?", is_mention=False)
+        assert "intercept" not in order
+        handle.assert_not_called()
+        assert not any(a.get("operation") == "slack.message.intercept" for a in audits)
+        assert any(
+            a.get("outcome") == "denied"
+            and a.get("error") == f"activation={activation}, no mention or active thread"
+            for a in audits
+        )
+
+    @pytest.mark.parametrize("activation", [ACTIVATION_MENTION, ACTIVATION_REVIEW])
+    def test_mention_still_meets_interceptor(self, activation):
+        order, audits, handle = self._run(activation=activation, text="<@UBOT> hi", is_mention=True)
+        assert order == ["intercept"]
+        handle.assert_not_called()
+        assert any(a.get("operation") == "slack.message.intercept" for a in audits)
+
+    def test_off_channel_message_is_dropped_without_interceptor(self):
+        order, audits, handle = self._run(activation="off", text="lunch?", is_mention=False)
+        assert "intercept" not in order
+        handle.assert_not_called()
+        assert any(a.get("error") == "activation=off" for a in audits)
+
+    def test_off_channel_command_still_meets_interceptor(self):
+        order, _audits, handle = self._run(
+            activation="off", text="!channel mention", is_mention=False
+        )
+        assert order == ["intercept"]
+        handle.assert_not_called()
+
+    def test_observe_meets_interceptor_before_history_push(self):
+        history = MagicMock()
+        history._user_names = {}
+        order, _audits, handle = self._run(
+            activation=ACTIVATION_OBSERVE, text="lunch?", is_mention=False, history=history
+        )
+        # The gate redirected, so the unaddressed observe message is never recorded.
+        assert order == ["intercept"]
+        history.push.assert_not_called()
+        handle.assert_not_called()

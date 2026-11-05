@@ -25,7 +25,7 @@ export type PendingQuestions = PendingQuestion[] & {
 
 export function createApprovalsEndpoints({ post, j, jfetch: fetch }: ClientTransport) {
   const requests = {
-    approvals: (): Promise<{ id: string; source?: string; tool?: string; tool_input?: string; tool_purpose?: string; tool_call_id?: string; slot?: string; ts?: number }[]> => fetch('/api/approvals').then(j),
+    approvals: (): Promise<{ id: string; instance?: string; source?: string; tool?: string; tool_input?: string; tool_purpose?: string; tool_call_id?: string; slot?: string; ts?: number }[]> => fetch('/api/approvals').then(j),
     /** `responseId` names one click, so the server replays a retry of it and
      *  answers a different collaborator's later click with the winner (409). */
     resolveApproval: (id: string, action: 'approve' | 'reject' | 'reject_once', target?: { origin: 'coordinator'; slot: string; instance: string }, responseId?: string) => post('/api/approvals/' + encodeURIComponent(id) + '/' + action + (target ? '?' + new URLSearchParams(target) : ''), responseId ? { response_id: responseId } : {}).then(j),

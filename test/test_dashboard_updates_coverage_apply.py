@@ -33,6 +33,7 @@ from dashboard_updates_coverage_helpers import (  # noqa: F401 -- the autouse fi
 )
 
 from kiro_crew.dashboard.handlers import updates
+from kiro_crew.frontend import FrontendBuildResult
 from kiro_crew.testing.wait import async_wait_until, await_until
 
 
@@ -479,6 +480,7 @@ class TestApplyRefusals:
 
         async def _build(_proj, _state):
             seen.append(update_ownership.current_owner())
+            return FrontendBuildResult("built")
 
         async def _pip(_proj, _state):
             seen.append(update_ownership.current_owner())
@@ -521,6 +523,55 @@ class TestApplyRefusals:
         await self._drive_worker(monkeypatch, tmp_path, [_FakeProc()])
 
         assert update_ownership.restart_refusal() is not None
+
+    @pytest.mark.asyncio
+    async def test_a_failed_frontend_build_reinstalls_but_does_not_restart(
+        self, monkeypatch, tmp_path
+    ):
+        """The moved tree still gets its dependencies; only the restart is refused."""
+        from kiro_crew import update_ownership
+
+        log_path = tmp_path / "logs" / "frontend-build.log"
+        build = FrontendBuildResult("failed", log_path, "error TS2304: Cannot find name")
+        monkeypatch.setattr(updates, "_build_frontend", AsyncMock(return_value=build))
+        pip = AsyncMock(return_value=True)
+        restart = AsyncMock(return_value=True)
+        monkeypatch.setattr(updates, "_venv_pip_install", pip)
+        monkeypatch.setattr(updates, "_restart_gateway", restart)
+
+        state = await self._drive_worker(monkeypatch, tmp_path, [_FakeProc()])
+
+        pip.assert_awaited_once()
+        restart.assert_not_awaited()
+        assert "frontend build" in (update_ownership.restart_refusal() or "")
+        # An import probe says nothing about the bundle, so it must not clear this.
+        update_ownership.clear_restart_refusal(recorded_by=update_ownership.refusal_generation())
+        assert "frontend build" in (update_ownership.restart_refusal() or "")
+        errors = [detail for step, detail in self._progress(state) if step == "error"]
+        assert len(errors) == 1
+        assert str(log_path) in errors[0]
+        assert "error TS2304" in errors[0]
+
+    @pytest.mark.asyncio
+    async def test_a_skipped_frontend_build_still_reinstalls_and_restarts(
+        self, monkeypatch, tmp_path
+    ):
+        """No website/ or no npm keeps the shipped bundle, as before: not a failure."""
+        from kiro_crew import update_ownership
+
+        monkeypatch.setattr(
+            updates, "_build_frontend", AsyncMock(return_value=FrontendBuildResult("skipped"))
+        )
+        pip = AsyncMock(return_value=True)
+        restart = AsyncMock(return_value=True)
+        monkeypatch.setattr(updates, "_venv_pip_install", pip)
+        monkeypatch.setattr(updates, "_restart_gateway", restart)
+
+        await self._drive_worker(monkeypatch, tmp_path, [_FakeProc()])
+
+        pip.assert_awaited_once()
+        restart.assert_awaited_once()
+        assert update_ownership.restart_refusal() is None
 
     @pytest.mark.asyncio
     async def test_a_later_update_whose_merge_fails_keeps_the_refusal(self, monkeypatch, tmp_path):

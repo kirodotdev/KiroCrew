@@ -147,29 +147,12 @@ def test_a_grants_module_without_the_mapping_raises(monkeypatch, fresh_cache) ->
         seam.builtin_host_grants()
 
 
-def test_every_deferred_bound_port_backend_is_rechecked_and_spawned_in_order(monkeypatch) -> None:
-    """The deferral is per app, not one flag: each held-back backend is re-checked on its
-    own, a disabled one is skipped, and the rest spawn together in boot order."""
+def test_the_boot_wave_spawns_the_bound_port_apps_with_the_rest(monkeypatch) -> None:
+    """One wave: a bound-port app is not held back from the others."""
     import kiro_crew.apps.backend as bmod
-    from kiro_crew.apps import manager
+    from kiro_crew.apps import builtin_host_grants
 
-    spawned: list[list[str]] = []
-    monkeypatch.setattr(bmod, "_DEFERRED_BOUND_PORT_APPS", ("app-a", "app-off", "app-b"))
-    monkeypatch.setattr(bmod, "_app_enabled_state", lambda name: name != "app-off")
-    monkeypatch.setattr(manager, "_app_activation_denied", lambda name: None)
-    monkeypatch.setattr(
-        bmod, "_start_backends_concurrently", lambda names: spawned.append(names) or names
-    )
-    assert bmod.start_deferred_app_backends() == ["app-a", "app-b"]
-    assert spawned == [["app-a", "app-b"]]
-    assert bmod._DEFERRED_BOUND_PORT_APPS == ()
-
-
-def test_the_boot_wave_holds_back_exactly_the_bound_port_apps(monkeypatch) -> None:
-    import kiro_crew.apps.backend as bmod
-
-    monkeypatch.setattr(bmod, "_DEFERRED_BOUND_PORT_APPS", ())
-    monkeypatch.setattr(bmod._host_grants, "bound_port_apps", lambda: frozenset({"app-b"}))
+    monkeypatch.setattr(builtin_host_grants, "bound_port_apps", lambda: frozenset({"app-b"}))
     monkeypatch.setattr(bmod, "_reap_stale_app_backends", lambda: 0)
     monkeypatch.setattr(bmod, "_app_enabled_state", lambda name: True)
     monkeypatch.setattr(bmod, "get_app_manifest", lambda name: None)
@@ -188,5 +171,4 @@ def test_the_boot_wave_holds_back_exactly_the_bound_port_apps(monkeypatch) -> No
         bmod, "_start_backends_concurrently", lambda names: started.append(names) or names
     )
     bmod.start_enabled_app_backends()
-    assert started == [["app-a", "app-c"]]
-    assert bmod._DEFERRED_BOUND_PORT_APPS == ("app-b",)
+    assert started == [["app-a", "app-b", "app-c"]]

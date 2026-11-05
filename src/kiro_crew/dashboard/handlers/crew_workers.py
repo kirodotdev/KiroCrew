@@ -120,9 +120,7 @@ def _dispatcher_of(row: Mapping[str, Any]) -> str:
 
 
 def _not_root() -> web.Response:
-    return _bad(
-        "not_crew_mode_root", "this session is not a Crew Mode root or a crewmate", status=404
-    )
+    return _bad("not_crew_mode_root", "this session is not a Crew Mode root or a Bot", status=404)
 
 
 def _status(row: Mapping[str, Any]) -> str:
@@ -312,6 +310,23 @@ def _ledger_items(root: str) -> dict[str, LedgerFacts]:
     worker bound by another worker's ledger shows no item. A root that owns no
     ledger has none to show.
     """
+    from kiro_crew.dashboard.handlers import work_ledger_board
+
+    out: dict[str, LedgerFacts] = {}
+    for worker, item in _ledger_work_items(root).items():
+        line = work_ledger_board._redact_deep({"line": item.summary or item.title}).get("line")
+        out[worker] = LedgerFacts(
+            item.item_id, _one_line(line if isinstance(line, str) else ""), _progress_of(item)
+        )
+    return out
+
+
+def _ledger_work_items(root: str) -> dict[str, Any]:
+    """Worker slot key -> its work item on *root*'s own ledger, unredacted. BLOCKING.
+
+    The item :func:`_ledger_items` summarizes: a worker with an old closed item and
+    a new open one is the open one's. Read through the board's seam, as there.
+    """
     from kiro_crew import session_ledger
     from kiro_crew.dashboard.handlers import work_ledger_board
 
@@ -322,21 +337,21 @@ def _ledger_items(root: str) -> dict[str, LedgerFacts]:
         return {}
     from kiro_crew.work_ledger import TERMINAL_ITEM_STATES
 
-    out: dict[str, LedgerFacts] = {}
+    out: dict[str, Any] = {}
     open_for: set[str] = set()
     for item in items:
+        # An item bound on a PEER crew names that crew's slot key, which can equal
+        # a local one: it is never a local session's item.
+        if getattr(item, "worker_instance_id", None):
+            continue
         worker = session_ledger.ledger_key(item.worker_session_key or "")
         if worker and item.item_id:
-            # A worker with an old closed item and a new open one is the open one's.
             is_open = getattr(item, "state", "") not in TERMINAL_ITEM_STATES
             if worker in open_for and not is_open:
                 continue
             if is_open:
                 open_for.add(worker)
-            line = work_ledger_board._redact_deep({"line": item.summary or item.title}).get("line")
-            out[worker] = LedgerFacts(
-                item.item_id, _one_line(line if isinstance(line, str) else ""), _progress_of(item)
-            )
+            out[worker] = item
     return out
 
 

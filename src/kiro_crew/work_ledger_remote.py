@@ -213,7 +213,9 @@ def read_remote_state(board: str, item_id: str) -> RemoteState | None:
 
 def write_remote_state(board: str, item_id: str, state: RemoteState) -> None:
     path = remote_state_path(board, item_id)
-    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    from kiro_crew.owner_only_files import mkdirs_owner_only
+
+    mkdirs_owner_only(path.parent)
     _write_record(path, state.to_dict())
 
 

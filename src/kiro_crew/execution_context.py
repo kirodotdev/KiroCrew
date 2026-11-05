@@ -811,7 +811,13 @@ def source_vouch_agrees(source_key: str, execution: ExecutionContext, config: An
             return False
         if canonical.store.store_id != vouched.store.store_id:
             return False
-    return vouched.member_id == execution.member_id and vouched.store == execution.store
+    # The memory mode is compared too, the way `_revouch_from_durable_record` does.
+    # A restricted child never vouches anyway, so this only keeps the two rules alike.
+    return (
+        vouched.member_id == execution.member_id
+        and vouched.store == execution.store
+        and vouched.memory_mode == execution.memory_mode
+    )
 
 
 def read_live_session_execution(session_key: str) -> ExecutionContext | None:

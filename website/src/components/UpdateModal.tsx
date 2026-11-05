@@ -156,7 +156,7 @@ export default function UpdateModal({ held = false }: { held?: boolean } = {}) {
       <div
         ref={takeoverRef}
         tabIndex={-1}
-        className="fixed inset-0 z-[100] bg-bg/95 backdrop-blur-md flex flex-col items-center justify-center gap-3 animate-rise outline-hidden"
+        className="fixed inset-0 z-[100] bg-bg/95 backdrop-blur-md flex flex-col items-center justify-center gap-3 animate-rise outline-hidden p-safe"
         role="alert"
         aria-busy={!installFailed}
         aria-label={i18nT(installFailed
@@ -225,7 +225,7 @@ export default function UpdateModal({ held = false }: { held?: boolean } = {}) {
     // context would tie the DOM-earlier takeover and win on document order,
     // painting a dismissible dialog over the surface meant to hide everything.
     <div
-      className="fixed inset-0 z-[65] bg-bg/80 backdrop-blur-xs flex items-center justify-center animate-rise"
+      className="fixed inset-0 z-[65] bg-bg/80 backdrop-blur-xs flex items-center justify-center animate-rise p-safe"
       role="button"
       tabIndex={-1}
       aria-label={i18nT('components.updateModal.dismiss_update_dialog')}

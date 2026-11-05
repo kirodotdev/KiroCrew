@@ -612,6 +612,13 @@ Probes run from `POST /api/mcp/probe`:
   the reference as text and reporting the server's correct rejection as a
   failing row. Probe-error redaction keys on the resolved values the probe
   actually sent.
+- A stdio server's `command`, `args` and `env` values have their home and
+  login-name references (`${HOME}`, `${USER}`, `${LOGNAME}`, `${USERPROFILE}`,
+  `${USERNAME}`, also as `${env:NAME}`) resolved by `env.expand_spec_args`,
+  both in the emitted agent spec (`agent_materialization/mcp_sources.py`) and
+  in the probe's spawn. Any other name stays literal, so no other variable's
+  value is written into a spec or put on argv; the source `mcp.json` keeps its
+  `${HOME}` text.
 - A remote server that answers the handshake with `401` — or with `403` carrying a
   `WWW-Authenticate` challenge — and whose sent headers carry no static
   `Authorization` credential gets status `needs_auth` and an empty `error`, not
@@ -4652,7 +4659,11 @@ The direct `kirocrew-cron` server sends member jobs through
 identity. The gateway captures the canonical execution record and applies the
 same argument validation, cron ownership, governance and deterministic-job
 checks as its regular dispatcher. A request-local `CallerContext` is restored
-even on failure. Transport failure never triggers a local file-write fallback
+even on failure. That context carries the caller's own `X-Session-Token` when
+it verifies to the same session, so a tool that calls back into the gateway
+(`cron_add` creating a missing folder through `POST /api/cron-folders`) names
+its session behind the same attestation; a token for any other session is
+dropped. Transport failure never triggers a local file-write fallback
 or blind mutation retry; callers inspect `cron_list` after an uncertain response.
 The ONE exception is not a transport failure: a dial that was **refused**
 (`_post` returns `refused=True` — no gateway is listening, so nothing was

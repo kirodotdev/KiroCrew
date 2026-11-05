@@ -171,9 +171,10 @@ class TestEveryProviderConforms:
         assert (provider_mod.KIND_BOX in spec.supports) is (
             provider_mod.CAPABILITY_IMAGE in spec.supports
         )
-        # Only the hosted service is declared to read images.
+        # Only the System One service, over HTTP or SageMaker, is declared to read
+        # images; a local preset and the session LLM are text-only.
         assert (provider_mod.CAPABILITY_IMAGE in spec.supports) is (
-            spec.id == provider_mod.PROVIDER_HOSTED
+            spec.id in (provider_mod.PROVIDER_HOSTED, provider_mod.PROVIDER_SAGEMAKER)
         )
         # Only a loopback provider is governed by the local row, and only the
         # session-LLM lane is authorized without the keystone.

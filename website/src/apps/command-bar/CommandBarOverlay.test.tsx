@@ -1196,6 +1196,21 @@ describe('CommandBarOverlay rows', () => {
     expect(dispatch).toHaveBeenCalledWith({ type: 'switchSlot', key: 'chat-5-1785440411', announceOnMissing: true, gesture: true })
   })
 
+  it('names an open slot the backend titles "New Session…" as "Untitled session", found by its key (#29748)', () => {
+    // The backend sends an open untitled slot's title as its NEW_SESSION_TITLE
+    // placeholder, not an empty string. It reads the same label as everywhere else.
+    storeState.dashboard.slots = [
+      { key: 'chat-7-1785440411', title: 'New Session…', messages: 3, last_activity_ts: 3_000 },
+      { key: 'chat-8-1785440411', title: 'New Session…', pending_approval: true, messages: 2 },
+    ]
+    mount()
+    const rows = screen.getAllByRole('option')
+    expect(rows.filter(r => r.textContent?.includes('Untitled session'))).toHaveLength(2)
+    expect(rows.some(r => r.textContent?.includes('New Session…'))).toBe(false)
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'chat-7-1785440411' } })
+    expect(screen.getAllByRole('option').some(r => r.textContent?.includes('Untitled session'))).toBe(true)
+  })
+
   it('always gives the typed text a way to reach an agent', async () => {
     // Every other surface in this product ends in saying something to one, so this is
     // the general case rather than a corner-of-the-screen fallback for failed search.

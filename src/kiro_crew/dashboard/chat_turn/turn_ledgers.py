@@ -16,6 +16,7 @@ from kiro_crew.wakatime.heartbeats import CADENCE_MIN_INTERVAL_SECS
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_runner import (
         COMMANDS_OFF_META_KEY,
+        START_BACKGROUND_META_KEY,
         SUBAGENT_COMPLETION_KIND,
         KiroCrewConfig,
         ReplayFamily,
@@ -141,6 +142,10 @@ def _queue_recovery(
         # arrived as turn content stays turn content when its retry drains, or
         # the retry would run the words the original turn was told not to.
         _recovery_meta[COMMANDS_OFF_META_KEY] = True
+    if turn._turn_start_background:
+        # The same holds for a BACKGROUND start a bulk Resume asked for: nobody
+        # waits on its retry either, so the retry starts BACKGROUND too.
+        _recovery_meta[START_BACKGROUND_META_KEY] = True
     if payload == RecoveryPayload.ORIGINAL and isinstance(_current_replay_message, dict):
         # ORIGINAL replays must preserve the triggering row's attachment
         # lists. The provider prompt already carries the full markers, but

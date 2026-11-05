@@ -26,6 +26,7 @@ from subagent_scale_helpers import (  # noqa: F401 -- the autouse fixture regist
 
 from kiro_crew.subagent import SubagentInfo, SubagentManager
 from kiro_crew.subagent_scale import SubagentEventCoalescer
+from kiro_crew.testing.wait import await_until
 
 # ``SubagentManager.spawn`` refuses -- registering no task -- while the host
 # looks short of memory, which is the runner's state, not this test's input.
@@ -46,6 +47,17 @@ def _coalescer(active: int, tick: float = 0.02):
         tick_secs=tick,
     )
     return c, all_frames, sub_frames
+
+
+async def _wait_for_tick_flush(c: SubagentEventCoalescer) -> None:
+    """Wait until the coalescer's scheduled tick has run its flush.
+
+    Awaits the tick task itself, so a slow runner waits as long as the flush
+    takes instead of reading the frame lists after a fixed delay.
+    """
+    task = c._tick_task
+    assert task is not None, "no flush tick was scheduled"
+    await await_until(task, what="coalescer flush tick")
 
 
 class TestCoalescer:
@@ -75,9 +87,7 @@ class TestCoalescer:
         c, all_frames, _ = _coalescer(active=50)
         c.handle("subagent_retrying", {"id": "a1", "slot": "s", "attempt": 1})
         c.handle("subagent_tool", {"id": "a1", "slot": "s", "tool": "Read", "tool_count": 2})
-        # flake-ok: pre-existing 60 ms wait past the 20 ms flush tick -- moved verbatim; tracked for a de-flake pass
-        # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing 60 ms wait past the 20 ms flush tick moved verbatim
-        await asyncio.sleep(0.06)
+        await _wait_for_tick_flush(c)
         ((etype, data),) = all_frames
         entry = data["updates"][0]
         assert entry["tool"] == "Read"
@@ -100,9 +110,7 @@ class TestCoalescer:
             is True
         )
         assert all_frames == []  # nothing until the tick
-        # flake-ok: pre-existing 60 ms wait past the 20 ms flush tick -- moved verbatim; tracked for a de-flake pass
-        # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing 60 ms wait past the 20 ms flush tick moved verbatim
-        await asyncio.sleep(0.06)
+        await _wait_for_tick_flush(c)
         assert len(all_frames) == 1
         etype, data = all_frames[0]
         assert etype == "subagent_batch_update"
@@ -115,9 +123,7 @@ class TestCoalescer:
         c, all_frames, sub_frames = _coalescer(active=50)
         assert c.handle("subagent_chunk", {"id": "a1", "slot": "s", "text": "hello "}) is True
         assert c.handle("subagent_chunk", {"id": "a1", "slot": "s", "text": "world"}) is True
-        # flake-ok: pre-existing 60 ms wait past the 20 ms flush tick -- moved verbatim; tracked for a de-flake pass
-        # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing 60 ms wait past the 20 ms flush tick moved verbatim
-        await asyncio.sleep(0.06)
+        await _wait_for_tick_flush(c)
         assert all_frames == []
         assert len(sub_frames) == 1
         etype, data = sub_frames[0]
@@ -203,17 +209,10 @@ class TestBatchIdentity:
         assert mgr.batch_members_pending("") is False
 
     def test_wave_has_live_nested_spawns_detects_member_descendants(self):
-        """A wave member that spawned nested work is DONE (its own turn ended),
-        so batch_members_pending is False and the wave-close digest fires — but
-        a child the member spawned is still running. The nested child mints its
-        OWN batch_id and its parent_session_key is the member's session key
-        (``subagent:<member.id>``), so it counts against neither this wave's
-        total nor batch_members_pending. This is the state where the digest
-        must not claim completion, and this method reports True for it.
+        """A done member's nested child (own batch_id, parent ``subagent:<member.id>``) counts.
 
-        The scope is narrow on purpose: an unrelated sibling wave under the SAME
-        grandparent is NOT a child of this wave's members, so this method
-        reports False for it — a sibling wave cannot hold this digest hostage.
+        The nested child is invisible to batch_members_pending, so this is where the digest
+        must not claim completion. A sibling wave under the same grandparent does not count.
         """
         mgr = SubagentManager(sessions=_mock_sessions(), ctx_builder=_mock_ctx())
         # Wave "wv": both direct members finished.
@@ -611,14 +610,10 @@ class TestBatchIdentity:
 
     @pytest.mark.asyncio
     async def test_rejected_batch_member_announces_terminal_state(self):
-        """A rejected BATCH member must flow through the done callback with
-        its batch identity intact (GPT 5.6 HIGH): counting it as submitted
-        is not enough — when the rejection is the wave's FINAL submission,
-        no later completion event re-evaluates the wave, so without an
-        announce the gateway never runs its batch accounting and every
-        sibling result already held for the digest strands forever. A
-        NON-batch rejection must NOT announce (the caller already gets the
-        error synchronously; injecting a turn would double-report)."""
+        """A rejected batch member is announced with its batch identity; a non-batch one is not.
+
+        If the rejection is the wave's final submission, nothing else re-evaluates the wave
+        and held siblings strand. A non-batch caller already gets the error synchronously."""
         announced: list = []
 
         async def _on_done(info):
@@ -640,14 +635,10 @@ class TestBatchIdentity:
 
     @pytest.mark.asyncio
     async def test_no_approval_rejection_announces_batch_member(self):
-        """The hooks-path 'no approval mechanism' rejection (hooks present,
-        auto_approve_subagent_spawn disabled, no approval callback) is a
-        REGISTERED rejection: the member sits done=True in _agents, so
-        batch_members_pending() counts it as complete — but without an
-        announce the gateway's wave accounting never runs, and a wave whose
-        FINAL member lands here closes with no completion event, stranding
-        every held sibling digest (GPT 5.6 HIGH). It must route through
-        _announce_rejection like the other rejection paths."""
+        """The hooks-path 'no approval mechanism' rejection routes through _announce_rejection.
+
+        The member sits done=True in _agents, so a wave whose final member lands here would
+        otherwise close with no completion event and strand held siblings."""
         announced: list = []
 
         async def _on_done(info):
@@ -688,7 +679,7 @@ class TestBatchIdentity:
         m1 = SubagentInfo(id="m1", task="t", batch_id="wvL", batch_total=3)
         m1.done = True
         mgr._agents = {"m1": m1}
-        assert mgr.batch_members_pending("wvL") is True  # wedged pre-fix
+        assert mgr.batch_members_pending("wvL") is True  # wedged until the loss is recorded
         with patch("kiro_crew.subagent.sel"):
             mgr.record_lost_submission(
                 "wvL", 3, "connection refused", parent_session_key="dashboard:main"

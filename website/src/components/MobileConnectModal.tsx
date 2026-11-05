@@ -161,7 +161,7 @@ export default function MobileConnectModal({
         className="fixed inset-0 z-50 bg-bg/80 backdrop-blur-xs animate-rise"
         role="presentation"
       />
-      <div className="fixed inset-0 z-[65] flex items-center justify-center pointer-events-none animate-rise">
+      <div className="fixed inset-0 z-[65] flex items-center justify-center p-safe pointer-events-none animate-rise">
         <div
           ref={dialogRef}
           tabIndex={-1}

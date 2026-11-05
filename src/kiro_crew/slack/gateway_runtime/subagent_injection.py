@@ -982,6 +982,12 @@ async def _inject_subagent_into_channel_parent(
     _collected = _verdict == INLINE_CONFIRMED
     _inject_failure_reasons: list[str] = []
     _sleep_before_retry = False
+    # Set once an attempt that timed out had already written its prompt. The
+    # timeout's reset keeps the parent's conversation, so the backend holds the
+    # completion; the next attempt asks it to continue rather than sending the
+    # completion a second time.
+    _completion_sent = False
+    _sent_session_id = ""
     for _attempt in range(1, _MAX_INJECT_ATTEMPTS + 1):
         if _collected:
             break
@@ -990,6 +996,9 @@ async def _inject_subagent_into_channel_parent(
             _sleep_before_retry = False
         _acquired = False
         _footer_client = None
+        # This attempt's provider and its count before the prompt. Shared with
+        # ``_inject_with_retry``, whose session-not-found reload replaces both.
+        _delivery: dict[str, Any] = {}
         try:
             logger.debug(
                 "Subagent %s: %s injection attempt %d/%d into %s",
@@ -1006,17 +1015,31 @@ async def _inject_subagent_into_channel_parent(
             if _inline_verdict(self.subagent_mgr, self.sessions, carried)[0] == INLINE_CONFIRMED:
                 _collected = True
                 break
+            # A provider that does not count its writes leaves this None, and its
+            # timed-out attempt is retried with the completion, as it always was.
+            _count = getattr(client, "prompts_written", None)
+            _delivery["client"] = client
+            _delivery["written_before"] = _count if isinstance(_count, int) else None
+            # Only the backend session the timed-out prompt went to holds it. A
+            # resume keeps that session's id and a fresh session gets a new one,
+            # whichever claim (this one, or a queued message woken by the release)
+            # made it, so the id is compared rather than this claim's flags.
+            _sid = getattr(client, "session_id", "")
+            _continuing = _completion_sent and isinstance(_sid, str) and _sid == _sent_session_id
             _provider = self._cfg.agent.provider if hasattr(self, "_cfg") else "acp"
-            if self.ctx_builder:
+
+            async def _build(text: str) -> str:
+                if not self.ctx_builder:
+                    return text
                 # The completion is injected into the PARENT's
                 # conversation, so it reads the parent session's silo,
                 # resolved from that session's recorded binding. The
                 # child's own store is not the answer here: this turn
                 # continues the parent, and the reply it produces is
                 # consolidated into the parent's store.
-                msg, _ = await run_in_embed_pool(
+                built, _ = await run_in_embed_pool(
                     self.ctx_builder.build_message,
-                    announce,
+                    text,
                     is_new,
                     parent_key,
                     memory_store=_memory_store,
@@ -1028,10 +1051,24 @@ async def _inject_subagent_into_channel_parent(
                     # the dashboard runner.
                     skill_trigger_text="",
                 )
-            else:
-                msg = announce
+                return built
+
+            msg = await _build(announce)
+            if _continuing:
+                # The full report rides along: a session-not-found reload inside
+                # the attempt can land on a conversation that never received it.
+                _delivery["full_msg"] = msg
+                _delivery["sent_to_session"] = _sent_session_id
+                msg = await _build(
+                    f"[Sub-agent {info.id}] Your previous turn received this sub-agent's "
+                    f"completion report and was interrupted after {int(INJECTION_TIMEOUT)}s. "
+                    "The report is earlier in this conversation and is not repeated here. "
+                    "Continue from it and give your reply."
+                )
             response = await asyncio.wait_for(
-                self._inject_with_retry(info, client, msg, parent_key, _inject_label),
+                self._inject_with_retry(
+                    info, client, msg, parent_key, _inject_label, delivery=_delivery
+                ),
                 timeout=INJECTION_TIMEOUT,
             )
             _injected = True  # LLM processed result; channel posting is best-effort
@@ -1159,6 +1196,16 @@ async def _inject_subagent_into_channel_parent(
                 _MAX_INJECT_ATTEMPTS,
                 INJECTION_TIMEOUT,
             )
+            # Read before the reset below replaces the session's provider, and
+            # off the provider the attempt ended on, which a reload may have changed.
+            _tracked = _delivery.get("client")
+            _written_before = _delivery.get("written_before")
+            if _acquired and isinstance(_written_before, int):
+                _written_after = getattr(_tracked, "prompts_written", None)
+                if isinstance(_written_after, int) and _written_after > _written_before:
+                    _sid = getattr(_tracked, "session_id", "")
+                    _sent_session_id = _sid if isinstance(_sid, str) else ""
+                    _completion_sent = bool(_sent_session_id)
             if _acquired:
                 try:
                     await self.sessions.reset(parent_key)
@@ -1441,7 +1488,16 @@ async def _reset_cron_parent_when_idle(
             # Any other turn, on a tab that shows the job or a person's own,
             # keeps the session it is using, left to the idle sweep, and the
             # finished run's key is retired now.
-            reset = await self.sessions.reset(parent_key, skip_if_busy=True)
+            # skip_if_injecting: a hand-off that began after the read above
+            # is seen under the reset's own lock; its own reset runs later.
+            reset = await self.sessions.reset(parent_key, skip_if_busy=True, skip_if_injecting=True)
+            if not reset and self._cron_injecting.get(parent_key, 0) > 0:
+                logger.info(
+                    "Cron session %s: last subagent done while another delivery began; "
+                    "left to that delivery's reset",
+                    parent_key,
+                )
+                return
             if not reset and self.sessions.is_busy(parent_key):
                 holder = self.sessions.turn_holder(parent_key)
                 if holder is not None and holder in self._cron_runs_holding:

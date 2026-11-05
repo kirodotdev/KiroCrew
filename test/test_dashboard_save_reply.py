@@ -118,10 +118,10 @@ def test_the_reply_says_the_page_ran_over_a_synthetic_copy():
     )
     plain = mcp_panel._render_saved({}, _verdict("passed", data=""))
 
-    assert "ran once over a synthetic copy of your crewmate's current data" in passed
+    assert "ran once over a synthetic copy of your Bot's current data" in passed
     assert "the same shape with invented values" in passed
     assert "ran once over a synthetic copy" in failed
-    assert "your crewmate's data and raised" not in failed
+    assert "your Bot's data and raised" not in failed
     # A verdict that does not say what it ran over does not claim a copy.
     assert "synthetic" not in plain
 

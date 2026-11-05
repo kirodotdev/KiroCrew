@@ -43,6 +43,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
+import composition_contract_checks
 import numpy as np
 import pytest
 import test_memory_lineage_drift as drift
@@ -508,9 +509,10 @@ def _load_probe(tmp_path: Path, name: str, source: str):
     return module, path
 
 
-class TestSurface:
-    def test_the_runtime_package_holds_exactly_the_composed_modules(self) -> None:
-        assert set(_runtime_sources()) == RUNTIME_MODULES
+class TestSurface(
+    composition_contract_checks.TheRuntimePackageHoldsExactlyTheComposedModules,
+    composition_contract_checks.ThePackageShipsWithTheWheel,
+):
 
     def test_every_store_member_keeps_its_name_and_kind(self) -> None:
         current: dict[str, list[str]] = {}
@@ -558,19 +560,11 @@ class TestSurface:
         public += _IMPORTED_PUBLIC_NAMES
         assert [name for name in public if not hasattr(probe, name)] == []
 
-    def test_the_package_ships_with_the_wheel(self) -> None:
-        """``packages = find:`` (not ``find_namespace:``) only ships a directory that
-        carries an ``__init__.py``; an editable install would import it anyway."""
-        import configparser
 
-        config = configparser.ConfigParser()
-        config.read(FACADE_PATH.parents[2] / "setup.cfg", encoding="utf-8")
-        assert config.get("options", "packages").strip() == "find:"
-        assert config.get("options.packages.find", "where").strip() == "src"
-        assert (RUNTIME_DIR / "__init__.py").is_file()
-
-
-class TestPlacement:
+class TestPlacement(
+    composition_contract_checks.NoRuntimeModuleReadsASeamAsABareGlobal,
+    composition_contract_checks.NoRuntimeModuleDefinesAnAsyncFunction,
+):
     """The rules that keep a facade patch effective once the code has moved."""
 
     @staticmethod
@@ -736,14 +730,6 @@ class TestPlacement:
                     hits.append(f"{node.lineno}: {node.value.id}.{node.attr}")
         return sorted(hits, key=lambda hit: (int(hit.split(":")[0]), hit))
 
-    def test_no_runtime_module_reads_a_seam_as_a_bare_global(self) -> None:
-        offenders = {
-            stem: hits
-            for stem, source in _runtime_sources().items()
-            if (hits := self._bare_seam_loads(source))
-        }
-        assert offenders == {}
-
     def test_the_seam_scan_catches_a_planted_bare_read(self) -> None:
         planted = (
             "WIDTH = _ROW_STEM_CACHE_SIZE\n"
@@ -789,12 +775,6 @@ class TestPlacement:
             module = _runtime_module(stem)
             if "logger" in vars(module):
                 assert module.logger is logging.getLogger(STORE_LOGGER)
-
-    def test_no_runtime_module_defines_an_async_function(self) -> None:
-        for stem, source in _runtime_sources().items():
-            assert not [
-                n for n in ast.walk(ast.parse(source)) if isinstance(n, ast.AsyncFunctionDef)
-            ], stem
 
     def test_the_seam_scan_catches_a_seam_read_through_a_sibling_module(self) -> None:
         planted = (

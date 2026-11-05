@@ -87,9 +87,10 @@ async def _sse_until_fence(response):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("bare", [False, True], ids=["ws-send-id", "bare-sse"])
 @pytest.mark.parametrize("can_read_user_slots", [False, True])
 async def test_user_echo_reaches_only_authorized_ws_clients(
-    echo_state, monkeypatch, can_read_user_slots
+    echo_state, monkeypatch, can_read_user_slots, bare
 ):
     from kiro_crew.dashboard.ws import api_ws
 
@@ -130,14 +131,25 @@ async def test_user_echo_reaches_only_authorized_ws_clients(
         # response alone only proves prepare() ran, which precedes register_sse().
         initial = await finished(stream.content.readuntil(b"\n\n"), "readuntil", timeout=5)
         assert initial.startswith(b"event: dashboard")
-        response = await client.post(
-            "/api/chat?ws=1",
-            params={"token": token_auth.generate_token("local-app")},
-            json={"slot": _SLOT, "message": _PROMPT, "meta": {"sendId": "s-scope"}},
-        )
-        assert response.status == 200
-        receipt = await response.json()
+        if bare:
+            # The bare endpoint answers with the turn's own SSE stream, read to its end.
+            response = await client.post(
+                "/api/chat",
+                params={"token": token_auth.generate_token("local-app")},
+                json={"slot": _SLOT, "message": _PROMPT},
+            )
+            assert response.status == 200
+            assert _PROMPT not in await finished(response.text(), "response.text", timeout=5)
+        else:
+            response = await client.post(
+                "/api/chat?ws=1",
+                params={"token": token_auth.generate_token("local-app")},
+                json={"slot": _SLOT, "message": _PROMPT, "meta": {"sendId": "s-scope"}},
+            )
+            assert response.status == 200
+            receipt = await response.json()
         await echo_state.get_slot(_SLOT).task
+        [stored] = [r for r in echo_state.get_slot(_SLOT).messages if r["role"] == "user"]
         # An allowed event on both transports is a FIFO fence. Negative checks
         # inspect everything before it, rather than hoping an echo arrives in N ms.
         echo_state._broadcast({"_type": "refresh", "kinds": _FENCE})
@@ -160,13 +172,17 @@ async def test_user_echo_reaches_only_authorized_ws_clients(
     owner_rows = user_rows(owner_frames)
     assert len(owner_rows) == 1
     assert owner_rows[0]["content"] == _PROMPT
-    assert owner_rows[0]["meta"]["mid"] == receipt["mid"]
-    assert owner_rows[0]["meta"]["sendId"] == "s-scope"
+    assert owner_rows[0]["meta"]["mid"] == stored["meta"]["mid"]
+    if not bare:
+        assert receipt["mid"] == stored["meta"]["mid"]
+        assert owner_rows[0]["meta"]["sendId"] == "s-scope"
+    # The bare endpoint's caller reads the reply on its own stream, so the turn's
+    # rows stay off the WS while that reader drains them (`slot._has_reader`).
     assert [
         frame["data"]["role"]
         for frame in owner_frames
         if frame.get("type") == "chat_message" and frame["data"].get("slot") == _SLOT
-    ] == ["user", "assistant"]
+    ] == (["user"] if bare else ["user", "assistant"])
     assert user_rows(app_frames) == (owner_rows if can_read_user_slots else [])
     stream_rows = [
         json.loads(frame.split("data: ", 1)[1])
@@ -178,7 +194,15 @@ async def test_user_echo_reaches_only_authorized_ws_clients(
 
 
 @pytest.mark.asyncio
-async def test_in_band_send_keeps_its_existing_stream_contract(echo_state, monkeypatch):
+@pytest.mark.parametrize(
+    "meta",
+    [
+        pytest.param({"sendId": "s-in-band"}, id="send-id"),
+        # What an app page posts with the person's cookie: no correlation id.
+        pytest.param(None, id="no-send-id"),
+    ],
+)
+async def test_in_band_send_keeps_its_stream_and_echoes_the_user_row(echo_state, monkeypatch, meta):
     published = []
     original_broadcast = echo_state.broadcast_ws
 
@@ -193,7 +217,7 @@ async def test_in_band_send_keeps_its_existing_stream_contract(echo_state, monke
         response = await client.post(
             "/api/chat",
             params={"token": token_auth.generate_token("local-app")},
-            json={"slot": _SLOT, "message": "in-band message", "meta": {"sendId": "s-in-band"}},
+            json={"slot": _SLOT, "message": "in-band message", **({"meta": meta} if meta else {})},
         )
         assert response.status == 200
         body = await finished(response.text(), "response.text", timeout=5)
@@ -208,6 +232,42 @@ async def test_in_band_send_keeps_its_existing_stream_contract(echo_state, monke
         users = [row for row in echo_state.get_slot(_SLOT).messages if row["role"] == "user"]
         assert len(users) == 1
         assert users[0]["content"] == "in-band message"
+    # No dashboard composer sends on this endpoint, so no open tab drew the row:
+    # it reaches them once, through the slot-authorized WS broadcaster, with the
+    # row id a later slot read returns.
+    echoes = [
+        data for kind, data in published if kind == "chat_message" and data.get("role") == "user"
+    ]
+    assert len(echoes) == 1
+    assert echoes[0]["slot"] == _SLOT
+    assert echoes[0]["content"] == "in-band message"
+    assert echoes[0]["meta"]["mid"] == users[0]["meta"]["mid"]
+
+
+@pytest.mark.asyncio
+async def test_uncorrelated_ws_send_gets_no_user_echo(echo_state, monkeypatch):
+    # A composer may have drawn this row, and with no `sendId` it could not
+    # match an echo to its bubble: it would show the message twice.
+    published = []
+    original_broadcast = echo_state.broadcast_ws
+
+    def record(kind, data):
+        published.append((kind, data))
+        original_broadcast(kind, data)
+
+    monkeypatch.setattr(echo_state, "broadcast_ws", record)
+    app = _make_app(echo_state)
+    app.middlewares.insert(0, token_auth.token_auth_middleware())
+    async with TestClient(TestServer(app)) as client:
+        response = await client.post(
+            "/api/chat?ws=1",
+            params={"token": token_auth.generate_token("local-app")},
+            json={"slot": _SLOT, "message": "uncorrelated message"},
+        )
+        assert response.status == 200
+        await echo_state.get_slot(_SLOT).task
+    users = [row for row in echo_state.get_slot(_SLOT).messages if row["role"] == "user"]
+    assert [row["content"] for row in users] == ["uncorrelated message"]
     assert not any(
         kind == "chat_message" and data.get("role") == "user" for kind, data in published
     )

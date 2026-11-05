@@ -633,8 +633,8 @@ installed one.
   deregisters the app's resources, then re-clones, rebuilds, and re-runs
   `onInstall`. If that install fails, the old version is restored: an enabled app
   is re-registered and restarted, while a disabled app stays stopped and
-  unregistered. `kirocrew app update <name>` runs the same request from a
-  terminal through a running gateway.
+  unregistered. `kirocrew app update <name> [--source <dir>]` runs the same
+  request from a terminal through a running gateway.
 
 ## 14. Review checklist
 
@@ -668,7 +668,7 @@ useful to Kiro Crew users.
 | Install locally | `POST /api/apps/install`, or `kirocrew app install <dir>` |
 | Enable | Trust the app first, then `POST /api/apps/{name}/enable`, or `kirocrew app enable <name>` |
 | Live reload | `kirocrew app dev <name>` |
-| Update local copy | `POST /api/apps/{name}/update` |
+| Update local copy | `POST /api/apps/{name}/update`, or `kirocrew app update <name> [--source <dir>]` |
 | List a registry app | Official catalog: open an [App Store listing request](https://github.com/kirodotdev/KiroCrew/issues/new?template=app-store-listing.yml) issue (maintainer-curated). Bundled seed or a federated registry: add an entry to `app-registry.json`, open a pull request |
 | User install | Apps page, Discover, Install |
 | Ship an update | Bump `version`, push |

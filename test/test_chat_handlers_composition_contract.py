@@ -1,16 +1,8 @@
 """The chat HTTP handlers keep their surface and contracts while their owners move.
 
-``kiro_crew.dashboard.chat_handlers`` is the dashboard chat API's import path and its
-patch surface. Part of what it defined now lives in the modules of
-``kiro_crew.dashboard.chat_api``, one responsibility each, and ``_facade_compose.compose``
-runs every function they define on the facade's globals. These tests pin:
-
-* the surface: every name the facade bound before the split still resolves on it, the
-  route table still dispatches to the facade's objects, and the six runner seams it
-  imports are still the runner's objects;
-* contracts of the moved endpoint families that no other test pins: the bare 404 a
-  delete answers, the resume refusal without a conversation log, the off-loop restore
-  prefetch, the close path's conductor wake, and the resume record shapes.
+``kiro_crew.dashboard.chat_handlers`` is the import path and patch surface; the code lives
+in ``kiro_crew.dashboard.chat_api`` modules that ``_facade_compose.compose`` runs on the
+facade's globals. These pin that surface and the endpoint contracts no other test pins.
 """
 
 from __future__ import annotations
@@ -455,11 +447,8 @@ async def test_the_handover_exit_reports_the_close_on_a_committed_drain_only(
 ) -> None:
     """A close that yields its archive to a recreated slot drains the tail OPEN.
 
-    A committed drain returns success and no archival save runs; a drain whose rows
-    were lost raises, because that frame was their last chance at durability and
-    nothing retries it. The exit reaches no further step either way -- it pushed a
-    conductor wake while a close was a wake trigger, and the whole close path now
-    carries none.
+    A committed drain returns with no archival save; a drain that lost rows raises,
+    because nothing retries that frame. The close path pushes no conductor wake.
     """
     events: list[str] = []
 
@@ -503,13 +492,10 @@ def _handler_files() -> list[Path]:
 
 
 def test_no_handler_module_reaches_the_conductor_wake() -> None:
-    """A worker's session closing is not a statement by the worker, so a close wakes
-    nobody and no handler module needs the wake at all.
+    """A session closing wakes nobody, so no handler module imports the conductor wake.
 
-    Read at module scope AND inside every function body, because the close path's
-    helper held its import in its own body to keep an import cycle open-ended:
-    ``conductor_wake`` imports the dashboard back. A module-scope test alone would
-    pass while a function-local import kept the push alive.
+    Function bodies are read too: ``conductor_wake`` imports the dashboard back, so an
+    import would sit inside a function to dodge the cycle.
     """
     for path in _handler_files():
         source = path.read_text(encoding="utf-8")
@@ -1586,20 +1572,9 @@ def test_no_owner_captures_a_name_tests_rebind_on_the_facade() -> None:
 
 # ── the path-keyed guards keep their reach ────────────────────────────────────
 
-#: Constructs repository guards read by path or through module source, each mapped
-#: to the files that hold it -- the facade (``chat_handlers``) or an owner -- which
-#: are the files those guards read: the agent-SDK boundary's three baselined
-#: imports, the stop chokepoints and the synthesis boundary the frontend mirrors in
-#: the facade; the app-actor turn kwargs and the hold-branch persist in
-#: ``chat_api/chat_send.py``; the queue-clear the session-control doc counts in
-#: ``chat_api/turn_stop.py``; the hand-over drain's fence opt-out in
-#: ``chat_api/handover_drain.py``; the approval-mode writers
-#: ``test_approval_modes_enforcement``'s ``WRITERS`` keys to
-#: ``chat_api/slot_approval.py``; and the permission-resolution sites with their
-#: dirty flags and the approval-resolved broadcasts, whose guards read
-#: ``chat_api/turn_stop.py`` and ``chat_api/slot_approval.py``. A holder that grew
-#: one, or lost one, would move it out of such a guard's sight, so each set is
-#: exact.
+#: Constructs that repository guards read by path, mapped to the files that hold them
+#: (the facade ``chat_handlers`` or a ``chat_api`` owner). Each set is exact: a construct
+#: that moved files would leave its guard's sight.
 _GUARDED_CONSTRUCT_HOMES: dict[str, frozenset[str]] = {
     r"(?m)^from kiro_crew\.acp\.client import AcpModelUnavailable$": frozenset({"chat_handlers"}),
     r"(?m)^from kiro_crew\.providers\.acp import AcpProvider$": frozenset({"chat_handlers"}),

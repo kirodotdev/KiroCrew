@@ -455,6 +455,11 @@ def _cron_add(svc: CronService, args: argparse.Namespace) -> None:
         # into the common path.
         if member_id:
             fields["member_id"] = member_id
+        # Same rule as ``member_id``: only a job that names a project directory
+        # carries the kwarg, so every other create keeps its exact call shape.
+        project_path = (getattr(args, "project_path", "") or "").strip()
+        if project_path:
+            fields["project_path"] = project_path
         if managed_by is not None:
             job = svc.add_managed_job(managed_by, **fields)
         else:
@@ -576,6 +581,8 @@ def _cron_dispatch(args: argparse.Namespace) -> None:
                 detail += f"  created by: {provenance}"
             if j.managed_by:
                 detail += f"  managed by: {j.managed_by}"
+            if j.project_path:
+                detail += f"  project: {j.project_path}"
             print(f"      {detail}")
 
     elif action == "adopt":
@@ -713,6 +720,8 @@ def _cron_dispatch(args: argparse.Namespace) -> None:
             kwargs["agent_id"] = agent_val
         if getattr(args, "approval_mode", None) is not None:
             kwargs["approval_mode"] = "" if args.approval_mode == "default" else args.approval_mode
+        if getattr(args, "project_path", None) is not None:
+            kwargs["project_path"] = args.project_path.strip()
         # ``--every 0`` and a blank ``--cron`` name no schedule, and the store
         # treats an empty schedule value as "unchanged". Say so instead of
         # reporting an update that did not happen; the other fields still apply.
@@ -734,11 +743,13 @@ def _cron_dispatch(args: argparse.Namespace) -> None:
                 svc.raise_if_store_unreadable()
                 if svc.get_job(args.job_id) is None:
                     _cron_update_not_found(args.job_id)
-            print("Provide at least one field to update")
-            return
+            # Nothing is written, so exit 1 on stderr like the other update
+            # refusals: `cron update x && next` must not read it as success.
+            print("Provide at least one field to update", file=sys.stderr)
+            sys.exit(1)
         if "every_secs" in kwargs and "cron_expr" in kwargs:
-            print("Provide --every or --cron, not both")
-            return
+            print("Provide --every or --cron, not both", file=sys.stderr)
+            sys.exit(1)
         try:
             updated = svc.update_job(args.job_id, **kwargs)
         except ValueError as e:

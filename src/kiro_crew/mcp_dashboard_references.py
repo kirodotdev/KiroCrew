@@ -74,29 +74,20 @@ def _resolve_chat_folder_ref(
 ) -> tuple[str, list[str], str | None]:
     """Resolve a sidebar-folder reference to a folder id. THE resolution chokepoint.
 
-    Every tool addresses a folder through here, so create, move and move-session
-    can never disagree about what a reference means. Returns
-    ``(folder_id, created_names, error)``; ``""`` = top level (empty ref or
-    ``"root"``). ``created_names`` is returned even alongside an error so a
-    partial mkdir -p is reported rather than silently left behind.
+    Every folder tool resolves through here so they agree on what a reference
+    means. Returns ``(folder_id, created_names, error)``; ``""`` = top level (empty
+    or ``"root"``). ``created_names`` comes back even with an error, so a partial
+    mkdir -p is reported.
 
-    Three things a chat-folder reference can mean, in order:
+    * **An id.** An id-shaped ref that does not exist fails even with
+      ``create_missing``: ids are minted server-side.
+    * **A full path.** A folder name may contain ``/``, so ``A/B`` can be one folder
+      or ``B`` inside ``A``. Both readings are computed; if they disagree, or either
+      is duplicated, the reference is refused.
+    * **A path to walk**, creating missing segments when ``create_missing``.
 
-    * **An id.** Unambiguous. An id-shaped ref that does not exist is a lookup
-      failure even when ``create_missing`` — ids are minted server-side, so
-      creating a folder literally named after the hex id is never what a caller
-      meant.
-    * **A full human path.** A folder NAME may itself contain ``/`` (the
-      sidebar permits it), so ``A/B`` can be one folder named ``A/B`` as well as
-      ``B`` inside ``A``, and the tree renders both identically. Both readings
-      are computed; when they disagree, or when either is itself duplicated, the
-      reference is refused rather than resolved to whichever came first.
-    * **A path to walk**, segment by segment, creating what is missing when
-      ``create_missing``.
-
-    Pure apart from the creation leg: the caller already holds the folder list,
-    and re-fetching per reference would let the tree shift between the two
-    lookups of a single move.
+    Uses the caller's folder list, so the tree cannot shift between the two
+    lookups of one move.
     """
     ref = str(ref or "").strip()
     if not ref or ref.lower() == "root":
@@ -215,21 +206,15 @@ def _walk_chat_folder_segments(
 
     Returns ``(folder_id, created_names, error)``; ``folder_id`` is ``""`` when a
     segment is missing and ``create_missing`` is false. Duplicate siblings are
-    refused in BOTH modes — resolving to the first match would act on an
-    arbitrary folder, and creating under it would bury the new folder in
-    whichever duplicate happened to come first.
+    refused in both modes, since picking the first would act on an arbitrary folder.
 
-    ``client`` makes the creates (and the re-read after a lost race), so the
-    create mode needs one. ``folders`` is appended in place for each created row
-    so a later path render sees it. Created names come back even alongside an error, so a partial
-    mkdir -p is reported rather than silently left behind.
+    The create mode needs ``client`` (it also re-reads after a lost race).
+    ``folders`` is appended in place for each created row. Created names come back
+    even with an error, so a partial mkdir -p is reported.
 
-    Two checks run before the FIRST folder is created, so a walk that would
-    stop part-way stops with nothing made. Every segment's length is tested up
-    front. ``before_create`` is called once, with the id of the deepest folder
-    that already exists, just before the first create; an error it returns
-    ends the walk there. It is how ``session_create`` asks whether the create
-    itself would be refused before any folder exists for it.
+    Before the first create, every segment's length is checked and ``before_create``
+    is called once with the deepest existing folder id; an error from it ends the
+    walk with nothing made. ``session_create`` uses it to check its own refusal.
     """
     created: list[str] = []
     checked_before_create = before_create is None

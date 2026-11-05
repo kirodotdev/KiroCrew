@@ -12,7 +12,11 @@ from pathlib import Path
 
 import pytest
 
-from kiro_crew.context_assembly.sections import browser_section, computer_use_block
+from kiro_crew.context_assembly.sections import (
+    browser_section,
+    computer_use_block,
+    subagent_section,
+)
 from kiro_crew.mcp_instructions import COMPUTER, CRON
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -40,7 +44,7 @@ def _read(name: str = "prompt.md") -> str:
 def _resolved(name: str = "prompt.md", *, mounted: bool = True, browsing: bool = True) -> str:
     """The prompt with its Computer Use slot and Browser section resolved as a session gets them."""
     text = _read(name).replace(_COMPUTER_USE_TOKEN, computer_use_block(mounted))
-    return browser_section(text, browsing)
+    return subagent_section(browser_section(text, browsing), conductor=False)
 
 
 def _section(text: str, heading: str) -> str:
@@ -69,7 +73,9 @@ def test_each_selected_prompt_stays_under_its_byte_ceiling(name: str) -> None:
 def test_template_slots_remain_complete_and_unique(name: str) -> None:
     text = _read(name)
     assert re.findall(r"\{\{([A-Z_]+)\}\}", text) == [
+        "SUBAGENTS_BEGIN",
         "MAX_SUBAGENTS",
+        "SUBAGENTS_END",
         "BROWSER_BEGIN",
         "BROWSER_END",
         "COMPUTER_USE_BLOCK",

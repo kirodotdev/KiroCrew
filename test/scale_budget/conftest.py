@@ -346,7 +346,7 @@ def fake_clock(monkeypatch: pytest.MonkeyPatch) -> FakeClock:
     """One fake clock in every coalescing clock section 6 names that exists here.
 
     * ``slots_push._slots_broadcast_clock`` (main);
-    * ``refresh_coalesce._clock`` (once F3 lands);
+    * ``refresh_coalesce._clock``;
     * ``history_listing_memo``'s ``time.monotonic``: its whole-listing memo
       answers a repeat listing for ``TTL_SECS``, so on the real clock whether a
       second listing hits it depends on how fast the first one ran;

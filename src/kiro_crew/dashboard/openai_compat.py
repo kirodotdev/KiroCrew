@@ -27,7 +27,7 @@ from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.context import _neutralize_structural_markers
 from kiro_crew.dashboard.chat_handlers import write_sse_or_abort
 from kiro_crew.dashboard.chat_runner import TURN_FAILED_META, _run_chat
-from kiro_crew.dashboard.chat_utils import TRANSIENT_RETRY_KIND
+from kiro_crew.dashboard.chat_utils import TRANSIENT_RETRY_KIND, _sync_dashboard_slots
 from kiro_crew.dashboard.kiro_readiness import reject_if_kiro_unverified
 from kiro_crew.dashboard.relay_archive import (
     RELAY_ARCHIVE_CODE,
@@ -895,6 +895,8 @@ async def _stream_response(
     finally:
         if ephemeral:
             state._slots.pop(slot.key, None)
+            # Publishes the smaller set, so tabs re-read Older Sessions for the transcript.
+            _sync_dashboard_slots(state)
             if slot.task and not slot.task.done():
                 slot.task.cancel()
     return resp
@@ -985,5 +987,7 @@ async def _blocking_response(
     finally:
         if ephemeral:
             state._slots.pop(slot.key, None)
+            # Publishes the smaller set, so tabs re-read Older Sessions for the transcript.
+            _sync_dashboard_slots(state)
             if slot.task and not slot.task.done():
                 slot.task.cancel()

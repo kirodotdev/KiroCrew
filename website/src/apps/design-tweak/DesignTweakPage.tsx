@@ -542,6 +542,7 @@ export default function DesignTweak() {
                           autoFocus
                           onChange={(e: React.ChangeEvent<HTMLInputElement>) => setNewPath(e.target.value)}
                           {...ime.bindEnter({ onEnter: () => addProject() })}
+                          aria-label={i18nT('apps.designTweak.projects.path_label')}
                           placeholder={i18nT('apps.designTweak.projects.path_placeholder')}
                           className="flex-1 h-8 px-2 rounded-md bg-bg-elevated border border-border text-[12px] text-text"
                         />
@@ -949,6 +950,7 @@ export default function DesignTweak() {
                           autoFocus
                           onChange={(e: React.ChangeEvent<HTMLInputElement>) => setDevDraft(e.target.value)}
                           {...ime.bindEnter({ onEnter: () => setDevServer(devDraft.trim()), onEscape: () => { setDevOpen(false); setDevDraft('') } })}
+                          aria-label={i18nT('apps.designTweak.devServer.url_label')}
                           placeholder={i18nT('apps.designTweak.devServer.url_placeholder')}
                           className="h-8 px-2 rounded-md bg-bg-elevated border border-border text-[12px] text-text"
                           style={{ width: '190px' }}

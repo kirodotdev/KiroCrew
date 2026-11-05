@@ -896,7 +896,6 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         render_session_memory,
     )
     from kiro_crew.mcp_tools.spawn_parts.wave import (  # noqa: F401
-        _MARK_COLLECTED_TIMEOUTS,
         _OWNER_UNRESOLVED_PREFIX,
         RESUME_HOLD_SECS,
         _audit_owner,
@@ -913,7 +912,6 @@ if TYPE_CHECKING:  # names the owners import from elsewhere in kiro_crew, still 
     )
     from kiro_crew.context_management import COMPLETION_KEEP_DEFAULT_CHARS  # noqa: F401
     from kiro_crew.execution_context import read_session_execution  # noqa: F401
-    from kiro_crew.platform import redact_log_via_context as redact_log  # noqa: F401
     from kiro_crew.platform import redact_via_context as redact  # noqa: F401
     from kiro_crew.security import redact_credentials, redact_exfiltration_urls  # noqa: F401
     from kiro_crew.spawn_label import SPAWN_LABEL_MAX_CHARS  # noqa: F401
@@ -925,6 +923,7 @@ if TYPE_CHECKING:  # names the owners import from elsewhere in kiro_crew, still 
         visible_agent_names,
     )
     from kiro_crew.subagent_persistence import agent_dir_for_display  # noqa: F401
+    from kiro_crew.subagent_read_collected import post_mark_collected  # noqa: F401
     from kiro_crew.subagent_wait_reasons import queued_wait_text  # noqa: F401
     from kiro_crew.validation import (  # noqa: F401
         MAX_MEDIUM_STRING,

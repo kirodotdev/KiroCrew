@@ -230,6 +230,21 @@ describe('trailing ⋯ menu', () => {
     expect(p.enterSplit).toHaveBeenCalledWith('slot-a')
   })
 
+  it('enters split view with the new pane below', async () => {
+    const p = props()
+    render(<MobileTopBar {...p} />)
+    await openMore()
+    fireEvent.click(await screen.findByRole('menuitem', { name: i18nT('components.chatPane.split_down') }))
+    expect(p.enterSplit).toHaveBeenCalledWith('slot-a', 'down')
+  })
+
+  it('offers no Split down row while split view is already open', async () => {
+    render(<MobileTopBar {...props({ splitMode: true })} />)
+    await openMore()
+    await screen.findAllByRole('menuitem')
+    expect(screen.queryByRole('menuitem', { name: i18nT('components.chatPane.split_down') })).toBeNull()
+  })
+
   it('focuses the popped-out window, hides an open activity panel row, and returns to the split', async () => {
     const p = props({ activePoppedOut: true, activityOpen: true, splitAnchorForActive: 'slot-z' })
     render(<MobileTopBar {...p} />)
@@ -239,6 +254,8 @@ describe('trailing ⋯ menu', () => {
     fireEvent.click(await screen.findByRole('menuitem', { name: i18nT('pages.chatPage.focus_popped_out_window') }))
     expect(p.focusActivePopout).toHaveBeenCalledWith('slot-a')
     await openMore()
+    // Returning to an existing split restores its saved layout, so no direction is offered.
+    expect(screen.queryByRole('menuitem', { name: i18nT('components.chatPane.split_down') })).toBeNull()
     fireEvent.click(await screen.findByRole('menuitem', { name: i18nT('pages.chatPage.return_to_split_view') }))
     expect(p.enterSplit).toHaveBeenCalledWith('slot-z')
   })
@@ -259,6 +276,7 @@ describe('trailing ⋯ menu', () => {
     const { unmount } = render(<MobileTopBar {...props({ splitFeatureEnabled: false })} />)
     await openMore()
     expect(screen.queryByRole('menuitem', { name: i18nT('pages.chatPage.enter_split_view') })).toBeNull()
+    expect(screen.queryByRole('menuitem', { name: i18nT('components.chatPane.split_down') })).toBeNull()
     unmount()
     const p = props({ splitAnchorForActive: 'slot-a', activeIsSplitAnchor: true })
     render(<MobileTopBar {...p} />)

@@ -620,6 +620,10 @@ def test_every_registered_key_ends_at_the_live_default():
     for dotted, entry in newest.items():
         section, field = dotted.split(".")
         live = getattr(getattr(KiroCrewConfig(), section), field)
+        if dotted == "agent.sandbox_allow_unsandboxed_exec":
+            # An undeclared key resolves through the platform, not the dataclass;
+            # test_the_windows_exec_row_ends_at_the_windows_default pins that end.
+            continue
         assert live == entry.new_default, (
             f"{dotted}: registry says the current default is "
             f"{entry.new_default!r} but the loader applies {live!r} -- append a "
@@ -628,6 +632,16 @@ def test_every_registered_key_ends_at_the_live_default():
         assert any(
             f.name == field for f in dc_fields(getattr(KiroCrewConfig(), section))
         ), f"{dotted}: no such field on the {section} config"
+
+
+def test_the_windows_exec_row_ends_at_the_windows_default(monkeypatch):
+    """The exec row's end is what an UNDECLARED key resolves to where it applies."""
+    from kiro_crew.config.loader_document import unsandboxed_exec_platform_default
+
+    entry = _row("agent.sandbox_allow_unsandboxed_exec")
+    monkeypatch.setattr("sys.platform", "win32")
+    assert entry.applies is not None and entry.applies({})
+    assert unsandboxed_exec_platform_default() is entry.new_default
 
 
 def test_an_install_still_storing_the_old_ceiling_is_reported():
@@ -1025,6 +1039,9 @@ def test_only_unpinned_broken_budgets_adopt_themselves():
         # session; false was the default until the flip, so nobody had a reason
         # to write it, and a false set back after the adoption is kept.
         "agent.kas_persist_mcp_sign_in",
+        # Windows only: a pre-0.6.0 save wrote false on every host, and under KAS
+        # it refuses every Windows spawn; no build asked a Windows owner for it.
+        "agent.sandbox_allow_unsandboxed_exec",
     }
     # The other side as an exact set too, so an appended row has to be placed on
     # one side by name. Each of these keeps its old value because that value is a
@@ -1687,6 +1704,10 @@ def test_cli_explicit_old_default_survives_load(tmp_path, explicit_cli_write, mo
     if mode.endswith("section") or mode == "file":
         assert KiroCrewConfig.load().agent.subagent_timeout_secs == 1800
         expected["agent.subagent_timeout_secs"] = 1800
+    if L.unsandboxed_exec_platform_default():
+        # On Windows the fixture's first load, with the key absent, closes the
+        # exec row's one-shot by acking false (windows_exec_adoption).
+        expected["agent.sandbox_allow_unsandboxed_exec"] = False
     assert SD.acked_superseded() == expected
     assert SD.adopted_superseded() == {}
     path = tmp_path / ("config.local.json" if mode.startswith("local") else "config.json")

@@ -47,6 +47,7 @@ import { useRowDeliveryWatchdog } from './websocket/rowDeliveryWatchdog'
 import { useApprovalRegistry } from './websocket/approvals'
 import { useComposerCards } from './websocket/composerCards'
 import { useAutomationSeed } from './websocket/automationSeed'
+import { useMonitorContract } from './useMonitorContract'
 import { useWorkflowRunReconcile } from './websocket/workflowRuns'
 import { useSlotListSync } from './websocket/slotList'
 import { useBundleReload, handleUpdateProgress } from './websocket/bundleReload'
@@ -65,7 +66,7 @@ import { DASHBOARD_FIELDS_FRAME, handleDashboardFields } from './websocket/dashb
 import { useChatStream } from './websocket/chatStream'
 import { useTurnCompletion } from './websocket/turnCompletion'
 import { attachFocusRelay, focusedSlotForCurrentSurface } from './websocket/attention'
-import { emitAppReload, emitChannelEvent, emitComputerUseFrame, emitCronHistory } from './websocket/browserEvents'
+import { emitAppReload, emitChannelEvent, emitComputerUseFrame, emitCronHistory, emitResumeAllDone } from './websocket/browserEvents'
 import { runFirstConnect, runReconnectCatchUp } from './websocket/reconnectCatchUp'
 import { browserLiveStore } from './useBrowserLive'
 import { applySharedCrewFrame, onSharedCrewSocketOpen, setSharedCrewSender } from './sharedCrew/sharedCrewSocket'
@@ -148,6 +149,14 @@ export function useWebSocket() {
   const silentReconnectsRef = useRef(0)
   const voice = useVoicePlayback(dispatch)
   const automations = useAutomationSeed(dispatch, queryClient)
+  // Prefer the gateway's runtime monitor kind list over the bundled snapshot so
+  // a contributed kind is not shown as blocked. When it adds kinds,
+  // re-run the automation seed so the Redux projection (which a contributed-kind
+  // record entered as non-actionable before the contract arrived) is
+  // re-normalized. Fallback-safe: an older gateway 404s and the bundled list
+  // stays in force. Mounted here, beside the seed it drives, rather than at the
+  // app root.
+  useMonitorContract(automations.seedAutomations)
   const approvals = useApprovalRegistry(dispatch, queryClient)
   const cards = useComposerCards(dispatch)
   const syncWorkflowRuns = useWorkflowRunReconcile(dispatch, queryClient)
@@ -370,6 +379,11 @@ export function useWebSocket() {
           }
           case 'artifact_update':
             handleArtifactUpdate(queryClient, data)
+            break
+          case 'resume_all_done':
+            // Owner-only frame: one bulk Resume run's outcome. The sidebar row
+            // that started the run shows it; the slots push already moved the rows.
+            emitResumeAllDone(data)
             break
           case 'notification': {
             const n = data as Notification

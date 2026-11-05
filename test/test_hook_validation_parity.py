@@ -35,7 +35,6 @@ from kiro_crew.hooks import (
     ScriptHookStore,
     _context_matches,
     _has_global_inline_flags,
-    validate_hook_fields,
 )
 from kiro_crew.validation import HOOK_CREATE_SCHEMA, HOOK_UPDATE_SCHEMA
 from kiro_crew.webhooks import WebhookStoreUnreadable
@@ -145,42 +144,6 @@ class TestCreateUpdateParity:
         hook = store.create(_valid())
         with pytest.raises(ValueError, match="invalid regex"):
             store.update(hook.id, {"matcher": "[invalid", "matcher_mode": "regex"})
-
-
-# ── validate_hook_fields: the single shared contract ──
-
-
-class TestValidateHookFields:
-    def test_valid_command_hook_passes(self):
-        validate_hook_fields(
-            event=HOOK_EVENT_USER_PROMPT_SUBMIT,
-            timeout=30,
-            command="true",
-            skills=[],
-            matcher="",
-            matcher_mode="glob",
-        )
-
-    def test_valid_skills_hook_passes(self):
-        validate_hook_fields(
-            event=HOOK_EVENT_AGENT_SPAWN,
-            timeout=30,
-            command="",
-            skills=["deploy"],
-            matcher="",
-            matcher_mode="glob",
-        )
-
-    def test_boundary_timeouts_pass(self):
-        for t in (HOOK_TIMEOUT_MIN, HOOK_TIMEOUT_MAX):
-            validate_hook_fields(
-                event=HOOK_EVENT_STOP,
-                timeout=t,
-                command="true",
-                skills=[],
-                matcher="",
-                matcher_mode="glob",
-            )
 
 
 # ── deserialization: fail-soft, never abort the store ──

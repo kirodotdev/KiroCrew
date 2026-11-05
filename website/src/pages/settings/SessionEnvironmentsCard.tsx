@@ -977,7 +977,7 @@ export function SessionEnvironmentsCard() {
         <SettingsInput
           configKey="session_environments.coder_url"
           label={t('sessionEnvironments.url')}
-          description={t('sessionEnvironments.urlHint')}
+          hint={t('sessionEnvironments.urlHint')}
           value={config.coder_url}
           onChange={value => change({ ...config, coder_url: value })}
           invalidMessageId={urlRefused ? URL_ERROR_ID : undefined}
@@ -988,7 +988,7 @@ export function SessionEnvironmentsCard() {
           {urlPlain !== saveDetail && <RawDetails text={saveDetail} className="" />}
         </div>}
         <SettingsField configKey="session_environments.profiles" label={t('sessionEnvironments.profiles')}
-          description={t('sessionEnvironments.profilesCoderHint')}>
+          hint={t('sessionEnvironments.profilesCoderHint')}>
           <div className="min-w-0 space-y-3">
             {config.profiles.map((profile, index) => (
               <ProfileDisclosure key={profile[PROFILE_ROW_ID]} rowId={profile[PROFILE_ROW_ID]} title={profile.name || profile.id} subtitle={profile.template}
@@ -998,7 +998,7 @@ export function SessionEnvironmentsCard() {
                 ) : (
                   <div key={field.key} className="min-w-0 space-y-1">
                     {templateNames.length > 0 ? (
-                      <SettingsCombobox label={field.label} description={t('sessionEnvironments.templatePickHint')}
+                      <SettingsCombobox label={field.label} hint={t('sessionEnvironments.templatePickHint')}
                         value={profile.template}
                         options={templateNames.map(name => ({ value: name, label: name }))}
                         onChange={value => updateProfile(index, 'template', value)}
@@ -1043,7 +1043,7 @@ export function SessionEnvironmentsCard() {
           {/* Mounted only on its own tab, so an older gateway shows one notice. */}
           {config.sprites_profiles === undefined ? (provider === 'sprites' && <ErrorNotice message={t('sessionEnvironments.unavailable')} askAgent={!dirty} />) : (
             <SettingsField configKey="session_environments.sprites_profiles" label={t('sessionEnvironments.profiles')}
-              description={t('sessionEnvironments.profilesSpritesHint')}>
+              hint={t('sessionEnvironments.profilesSpritesHint')}>
               <div className="min-w-0 space-y-3">
                 {spritesProfiles.map((profile, index) => (
                   <ProfileDisclosure key={profile[PROFILE_ROW_ID]} rowId={profile[PROFILE_ROW_ID]} title={profile.name || profile.id}
@@ -1058,7 +1058,7 @@ export function SessionEnvironmentsCard() {
                     <details className="rounded-lg border border-border px-3 py-2">
                       <summary className="cursor-pointer text-[13px] text-muted">{t('sessionEnvironments.tokenSecretAdvanced')}</summary>
                       <div className="pt-2">
-                        <SettingsInput label={t('sessionEnvironments.tokenSecret')} description={t('sessionEnvironments.tokenSecretHint')} value={profile.token_secret}
+                        <SettingsInput label={t('sessionEnvironments.tokenSecret')} hint={t('sessionEnvironments.tokenSecretHint')} value={profile.token_secret}
                           onChange={value => {
                             rebindToken(profile[PROFILE_ROW_ID], value)
                             updateSprites(index, { token_secret: value })
@@ -1085,14 +1085,14 @@ export function SessionEnvironmentsCard() {
         <div hidden={provider !== 'boxd'} data-provider-panel="boxd" className="space-y-3">
           {config.boxd_profiles === undefined ? (provider === 'boxd' && <ErrorNotice message={t('sessionEnvironments.unavailable')} askAgent={!dirty} />) : (
             <SettingsField configKey="session_environments.boxd_profiles" label={t('sessionEnvironments.profiles')}
-              description={t('sessionEnvironments.profilesBoxdHint')}>
+              hint={t('sessionEnvironments.profilesBoxdHint')}>
               <div className="min-w-0 space-y-3">
                 {boxdProfiles.map((profile, index) => (
                   <ProfileDisclosure key={profile[PROFILE_ROW_ID]} rowId={profile[PROFILE_ROW_ID]} title={profile.name || profile.id} subtitle={profile.snapshot ? t('sessionEnvironments.profileSubtitleSnapshot', { name: profile.snapshot }) : undefined}
                     open={!!openRows[profile[PROFILE_ROW_ID]]} onToggle={() => toggleRow(profile[PROFILE_ROW_ID])}>
                     {boxdFields.map(field => <SettingsInput key={field.key} label={field.label} description={field.description} value={profile[field.key]} onChange={value => updateBoxd(index, { [field.key]: value })} />)}
                     {/* A snapshot keeps its own size, so the size applies only without one. */}
-                    <SettingsSelect label={t('sessionEnvironments.boxdSize')} description={t('sessionEnvironments.boxdSizeHint')}
+                    <SettingsSelect label={t('sessionEnvironments.boxdSize')} description={t('sessionEnvironments.boxdSizeHint_summary')} hint={t('sessionEnvironments.boxdSizeHint')}
                       value={String(profile.snapshot ? 0 : profile.vcpu)} disabled={!!profile.snapshot}
                       options={BOXD_VCPU_CHOICES.map(String)}
                       optionLabels={BOXD_VCPU_CHOICES.map(vcpu => vcpu === 0
@@ -1176,7 +1176,7 @@ export function SessionEnvironmentsCard() {
                   onChange={on => change({ ...config, default_profile: on ? all[0]?.id ?? '' : '' })} />
                 {defaultOn && (
                   <SettingsSelect label={t('sessionEnvironments.defaultProfile')}
-                    description={t('sessionEnvironments.defaultProfileHint')}
+                    hint={t('sessionEnvironments.defaultProfileHint')}
                     value={config.default_profile ?? ''}
                     options={all.map(p => p.id)}
                     optionLabels={all.map(p => p.name || p.id)}

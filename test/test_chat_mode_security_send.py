@@ -39,7 +39,12 @@ from chat_mode_security_helpers import (  # noqa: F401 -- fixtures are requested
 from kiro_crew.acp.types import EVENT_COMPLETE, EVENT_TEXT_CHUNK
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.dashboard import chat_persistence, chat_runner, session_control
-from kiro_crew.dashboard.chat_delivery import TURN_ACTOR_META_KEY, queue_for_next_turn
+from kiro_crew.dashboard.chat_delivery import (
+    BACKGROUND_START_TASKS,
+    START_BACKGROUND_META_KEY,
+    TURN_ACTOR_META_KEY,
+    queue_for_next_turn,
+)
 from kiro_crew.dashboard.chat_title import (
     _counts_as_user_turn,
     _maybe_auto_title,
@@ -270,6 +275,8 @@ _TURN_ONLY_BODY_KEYS = frozenset(
         # (which only turns steering off). Neither changes a slot setting.
         "base_revision",
         "send_now",
+        # A display label for this send's row; the slot keeps nothing.
+        "banner",
     }
 )
 _SETTINGS_BODY_KEYS: dict[str, object] = {
@@ -1115,6 +1122,35 @@ async def test_restored_recovery_identity_cannot_continue_a_live_stream(state) -
     )
 
     assert slot.drain()[0]["cls"] == TURN_END_WIRE_CLS
+
+
+@pytest.mark.parametrize("stamped", [False, True])
+@pytest.mark.asyncio
+async def test_a_background_start_stamp_reaches_the_turn_and_not_the_row(state, stamped) -> None:
+    """The bulk Resume's stamp lowers the turn's start priority and nothing else:
+    the person's origin rides through, and the row's meta never carries it."""
+    slot = _user_slot(state)
+    slot.queue_insert(
+        0,
+        "pick up where you left off",
+        kind=SYNTHETIC_RECOVERY_KIND,
+        meta={START_BACKGROUND_META_KEY: True} if stamped else {},
+        directive_user_origin=True,
+    )
+    run_chat = MagicMock()
+    with (
+        patch.object(chat_runner, "spawn_guarded_turn", side_effect=_spawn_closing_the_turn),
+        patch.object(chat_runner, "_run_chat", new=run_chat),
+    ):
+        assert await chat_runner._start_next_queued_turn(state, slot) is True
+
+    (call,) = run_chat.call_args_list
+    assert call.kwargs["_directive_user_origin"] is True
+    assert call.kwargs.get("_turn_start_background", False) is stamped
+    # The turn task is marked as a background start exactly then, which is how a
+    # bulk Resume tells its own retry from a person's message on the same slot.
+    assert (slot.task in BACKGROUND_START_TASKS) is stamped
+    assert START_BACKGROUND_META_KEY not in (slot.messages[-1].get("meta") or {})
 
 
 @pytest.mark.parametrize("owned", [False, True])

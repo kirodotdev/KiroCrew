@@ -469,6 +469,17 @@ class AcpProvider(LLMProvider):
         return str(getattr(self._client, "agent_version", "") or "")
 
     @property
+    def prompts_written(self) -> int | None:
+        """Prompts this session's turns have written to the backend, or ``None``.
+
+        Forwarded from ``AcpSessionProvider``; a raw ``AcpClient`` keeps no such
+        count, and ``None`` tells a caller that it cannot know whether a turn's
+        prompt went out.
+        """
+        value = getattr(self._client, "prompts_written", None)
+        return value if isinstance(value, int) else None
+
+    @property
     def steer_upgrade_notice(self) -> str:
         """The notice when this session's adapter cannot steer, else ``""``.
 
@@ -971,6 +982,10 @@ class AcpProvider(LLMProvider):
         return await self._client.approve_tool(
             request_id, always=always, deadline=deadline, **withdrawal
         )
+
+    def take_batch_refusal(self, request_id: str | int) -> str | None:
+        """The client's batch-guard refusal reason for *request_id*, taken once."""
+        return self._client.take_batch_refusal(request_id)
 
     async def reject_tool(self, request_id: str | int) -> None:
         await self._client.reject_tool(request_id)

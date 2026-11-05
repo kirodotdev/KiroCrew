@@ -13,7 +13,8 @@
  * - Listens to gallery:active-changed and gallery:packs-changed broadcasts
  */
 import { ChevronDown, MoreHorizontal, Plus, X } from 'lucide-react'
-import React, { useCallback, useEffect, useState } from 'react'
+import React, { useCallback, useEffect, useId, useRef, useState } from 'react'
+import { useDialogFocusTrap } from '../../hooks/useDialogFocusTrap'
 import type { PackMeta } from '../../lib/appearancePacks/types'
 import { REQUIRED_STATES, STATUS_STATES, RANDOM_STATES, LEGACY_STATES, ALL_MOODS } from '../../lib/appearancePacks/types'
 import { toDataUri } from './animationResolver'
@@ -633,6 +634,16 @@ function ImportPetDialog({ input, onInput, resolving, resolved, importing, error
   onBrowse: () => void
 }) {
   const ime = useImeGuard()
+  const titleId = useId()
+  // Tab stays inside; Escape is handled just below. The trap records the opener
+  // to give focus back to, then seats focus on the first control (Close); the
+  // next effect moves it on to the input the user types into. That input has no
+  // autoFocus: autoFocus runs before the trap's effect, which would record the
+  // input itself as the opener and drop focus on <body> when the dialog closes.
+  const dialogRef = useRef<HTMLDivElement>(null)
+  const inputRef = useRef<HTMLInputElement>(null)
+  useDialogFocusTrap(dialogRef, onClose, { handleEscape: false })
+  useEffect(() => { inputRef.current?.focus({ preventScroll: true }) }, [])
   // Esc closes, like any dialog
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
@@ -643,9 +654,9 @@ function ImportPetDialog({ input, onInput, resolving, resolved, importing, error
   return (
     <div role="presentation" style={S.detailOverlay} onClick={onClose}>
       {/* eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-noninteractive-element-interactions -- stopPropagation prevents backdrop dismiss when clicking inside modal */}
-      <div role="dialog" aria-modal="true" style={S.modal} onClick={(e) => e.stopPropagation()}>
+      <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby={titleId} style={S.modal} onClick={(e) => e.stopPropagation()}>
         <div style={S.modalHeader}>
-          <span style={{ fontSize: 13, fontWeight: 600, flex: 1 }}>{i18nT('apps.crewCompanion.gallery.importPet')}</span>
+          <span id={titleId} style={{ fontSize: 13, fontWeight: 600, flex: 1 }}>{i18nT('apps.crewCompanion.gallery.importPet')}</span>
           <button onClick={onClose} aria-label={i18nT('apps.crewCompanion.gallery.close')}
             style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', fontSize: 15, padding: 0 }}>
             <X className="lucide-inline" aria-hidden="true" />
@@ -686,12 +697,12 @@ function ImportPetDialog({ input, onInput, resolving, resolved, importing, error
           </div>
 
           <input
+            ref={inputRef}
             value={input}
             onChange={(e) => onInput(e.target.value)}
             {...ime.bindEnter({ onEnter: () => { if (resolved) onConfirm() } })}
             placeholder={i18nT('apps.crewCompanion.gallery.petdexPlaceholder')}
             aria-label={i18nT('apps.crewCompanion.gallery.petdexPlaceholder')}
-            autoFocus
             disabled={importing}
             style={{
               width: '100%', boxSizing: 'border-box', background: 'var(--cc-input-bg)',
@@ -758,6 +769,11 @@ function DetailPanel({ detail, isActive, onClose, onApply, onExport, onEdit, onD
   const { meta, animations } = detail
   const sc = detail.sprite
   const [showColorCustomizer, setShowColorCustomizer] = useState(false)
+  const titleId = useId()
+  // Focus in on open, Tab stays inside. Escape keeps closing the whole gallery
+  // window (its own listener), so the trap does not claim it.
+  const dialogRef = useRef<HTMLDivElement>(null)
+  useDialogFocusTrap(dialogRef, onClose, { handleEscape: false })
   const isDefaultKiro = meta.id === DEFAULT_PACK
   const thumbColorMap = isDefaultKiro ? colorMap : null
 
@@ -805,11 +821,11 @@ function DetailPanel({ detail, isActive, onClose, onApply, onExport, onEdit, onD
   return (
     <div role="presentation" style={S.detailOverlay} onClick={onClose}>
       {/* eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-noninteractive-element-interactions -- stopPropagation prevents backdrop dismiss when clicking inside modal */}
-      <div role="dialog" aria-modal="true" style={S.detailPanel} onClick={(e) => e.stopPropagation()}>
+      <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby={titleId} style={S.detailPanel} onClick={(e) => e.stopPropagation()}>
         {/* Header */}
         <div style={S.detailHeader}>
           <div style={{ flex: 1 }}>
-            <div style={S.detailTitle}>{meta.name}</div>
+            <div id={titleId} style={S.detailTitle}>{meta.name}</div>
             <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>
               {meta.author} · {entryFormat(meta).toUpperCase()}
             </div>

@@ -3,6 +3,14 @@
   "sockets": {
     "viewer": [
       {
+        "type": "refresh",
+        "data": {
+          "kinds": [
+            "history"
+          ]
+        }
+      },
+      {
         "type": "slots",
         "data": [
           {
@@ -360,7 +368,7 @@
         "type": "refresh",
         "data": {
           "kinds": [
-            "history"
+            "turn_end"
           ]
         }
       }

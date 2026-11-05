@@ -40,6 +40,7 @@ from pathlib import Path
 from types import ModuleType
 from unittest import mock
 
+import composition_contract_checks
 import pytest
 from aws_control_backup_composition_contract_helpers import (
     _PARTS_PACKAGE,
@@ -395,10 +396,7 @@ def _unwinds_like_a_flat_module(
 # ---------------------------------------------------------------------------
 
 
-class TestTheSurfaceSurvivesTheSplit:
-    def test_the_frozen_inventory_is_not_empty(self) -> None:
-        # An emptied list would make the case below pass while checking nothing.
-        assert len(FROZEN_NAMES) > 200
+class TestTheSurfaceSurvivesTheSplit(composition_contract_checks.TheFrozenInventoryIsNotEmpty):
 
     @pytest.mark.parametrize("name", FROZEN_NAMES)
     def test_every_name_the_module_bound_still_resolves_to_its_owners_object(

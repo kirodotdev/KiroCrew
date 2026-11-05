@@ -105,6 +105,7 @@ import os
 import re
 import threading
 import time
+import unicodedata
 import zlib
 from pathlib import Path
 from typing import TYPE_CHECKING, Iterable, Iterator, NamedTuple, Sequence
@@ -120,6 +121,16 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 #: index entry and MATCH returns nothing, so such needles are left to the exact
 #: scoring pass (which still applies them in full) rather than used as filters.
 _MIN_TRIGRAM_CHARS = 3
+
+
+def _is_unicode61_token_char(ch: str) -> bool:
+    """Whether the ``unicode61`` tokenizer keeps *ch* as part of a token.
+
+    It keeps letters and numbers and treats punctuation and symbols as
+    separators, so a ``session_cjk`` MATCH on any other character finds nothing.
+    """
+    return unicodedata.category(ch)[0] in "LN"
+
 
 #: Separator joining one session's message texts into the single folded blob
 #: that both the FTS column and the scoring pass read.
@@ -718,7 +729,12 @@ class SessionSearchIndex:
                 # must be in the document. Space-separated characters are an
                 # implicit AND over the per-character tokens; adjacency is left to
                 # the scorer's substring check, so this stays a superset.
-                out.append((pos, "session_cjk", " ".join(text)))
+                if all(map(_is_unicode61_token_char, text)):
+                    out.append((pos, "session_cjk", " ".join(text)))
+                # Otherwise the needle holds a kana punctuation or symbol mark
+                # (the middle dot U+30FB, U+309B, U+30A0). unicode61 treats it as
+                # a separator, so MATCH would return no rows and drop real hits;
+                # it is left to the exact scoring pass instead.
                 continue
             if any(len(s) < _MIN_TRIGRAM_CHARS for s in spellings):
                 continue

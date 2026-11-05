@@ -14,7 +14,7 @@ from collections.abc import Callable
 from typing import Any
 
 from kiro_crew._facade_bindings import own_methods
-from kiro_crew.acp import kas_wire
+from kiro_crew.acp import batch_guard, kas_wire
 from kiro_crew.acp import session_handle_compaction as _sh_compaction
 from kiro_crew.acp import session_handle_dispatch as _sh_dispatch
 from kiro_crew.acp import session_handle_elicitation as _sh_elicitation
@@ -111,6 +111,7 @@ class AcpSessionHandle:
     _input_wait_status = _sh_watchdog._input_wait_status
     # The session's MCP servers: ``kiro_crew.acp.session_handle_mcp``.
     _remote_flat_launches = _sh_mcp._remote_flat_launches
+    _mcp_attribution_launches = _sh_mcp._mcp_attribution_launches
     record_mcp_launches = _sh_mcp.record_mcp_launches
     queued_frame_count = _sh_mcp.queued_frame_count
     _owns_mcp_frame = _sh_mcp._owns_mcp_frame
@@ -203,6 +204,11 @@ class AcpSessionHandle:
     _codex_compaction_event = _sh_compaction._codex_compaction_event
     # Permission requests and in-band refusals: ``kiro_crew.acp.session_handle_permissions``.
     approve_tool = _sh_permissions.approve_tool
+
+    def take_batch_refusal(self, request_id: str | int) -> str | None:
+        """The batch write guard's reason for refusing *request_id*, taken once."""
+        return batch_guard.take_refusal(self, request_id)
+
     _restore_withdrawn = _sh_permissions._restore_withdrawn
     reject_tool = _sh_permissions.reject_tool
     _deny_spec_disabled_tool = _sh_permissions._deny_spec_disabled_tool
@@ -293,6 +299,11 @@ class AcpSessionHandle:
         # answered ``startedNewTurn``, whose untargeted cancel could then land on
         # the prompt about to go out, so no steer is sent until it is set.
         self._prompt_written: bool = False
+        # Prompts this handle has written to the adapter, over its whole life.
+        # Never reset, so a caller that snapshots it before a turn can tell,
+        # after that turn timed out or was cancelled, whether the prompt reached
+        # the backend.
+        self.prompts_written: int = 0
         self.native_context_documents: dict[str, str] = {}
         self.native_context_documents_fit: Callable[[], bool] | None = None
         # Whether THIS session's array carries the member session-control entry.
@@ -341,13 +352,15 @@ class AcpSessionHandle:
         self._watchdog = watchdog if watchdog is not None else _load_watchdog_settings(crew_agent)
         # How this session launched its stdio MCP servers, recorded by the
         # runtime once the session's array is final (``record_mcp_launches``).
-        # The oracle's remote_flat scan reads it to find the in-flight tool's
-        # own server process; empty means no server can be found, which keeps
-        # the full window.
+        # The oracle reads it to find the in-flight tool's own server process:
+        # the movement sample covers that server alone, and the remote_flat
+        # scan looks at its sockets. Empty means no server can be found, which
+        # keeps the whole-tree sample and the full window.
         self._mcp_launches: dict[str, tuple[tuple[str, ...], ...]] = {}
         self._oracle = LivenessOracle(
             sample_min_secs=self._watchdog.wellness_sample_secs,
             server_launches=self._remote_flat_launches,
+            attribution_launches=self._mcp_attribution_launches,
         )
         # Keep the executor future, not an await-scoped flag: wait_for can time
         # out while the underlying thread continues its /proc walk. A pending
@@ -370,6 +383,9 @@ class AcpSessionHandle:
         # kept, so the oracle keeps reporting the tool actually in flight rather
         # than failing permissive on stall detection.
         self._tool_tracker = InFlightToolTracker(max_calls=MAX_ACTIVE_TOOL_CALLS)
+        # The current parallel tool batch, for the opt-in batch write guard
+        # that ``approve_tool`` consults (``acp.batch_guard``).
+        self._batch_window = batch_guard.BatchWindow()
         # toolCallIds that streamed output (a non-final tool_call_update with
         # content) this turn. A command that already produced output may have
         # already acted, so a non-interactive retry of it is never ``safe_retry``.

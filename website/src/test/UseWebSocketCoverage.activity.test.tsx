@@ -640,4 +640,15 @@ describe('useWebSocket frame router', () => {
       vi.useRealTimers()
     }
   })
+
+  it("a peer's steer echo keeps its gateway-set sender (meta.relay), and drops a malformed one", () => {
+    const { ws } = mount()
+    act(() => {
+      ws.simulateMessage({ type: 'steer_push', data: { slot: ACTIVE, content: 'peer steer', ts: '30', steerState: 'consumed', meta: { relay: { senderKey: 'chat-1', via: 'session_send' } } } })
+      ws.simulateMessage({ type: 'steer_push', data: { slot: ACTIVE, content: 'bad relay', ts: '31', meta: { relay: { via: 'session_send' } } } })
+    })
+    const steers = chat().messages.filter(m => m.meta?.steer === true)
+    expect(steers[0]?.meta?.relay).toEqual({ senderKey: 'chat-1', via: 'session_send' })
+    expect(steers[1]?.meta?.relay).toBeUndefined()
+  })
 })

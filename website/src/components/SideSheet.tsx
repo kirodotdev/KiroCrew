@@ -68,8 +68,11 @@ function Sheet({ onClose, label, header, headerActions, footer, width, paused, c
         exit={reduceMotion ? { opacity: 0 } : { x: '100%' }}
         transition={{ duration: 0.24, ease: 'easeOut' }}
         style={{ maxWidth: width }}
+        // p-safe on the sheet, not on the full-viewport row around it: the
+        // sheet's background still reaches the screen edge and under the
+        // insets, while its header, body and footer are kept clear of them.
         className="relative flex h-full w-full min-h-0 min-w-0 flex-col overflow-hidden border-l
-                   border-border bg-bg shadow-lg outline-hidden"
+                   border-border bg-bg shadow-lg outline-hidden p-safe"
         // The page's own keyboard shortcuts must not fire while typing in here.
         onKeyDown={(e) => e.stopPropagation()}
       >

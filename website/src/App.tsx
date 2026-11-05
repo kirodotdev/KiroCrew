@@ -243,7 +243,7 @@ export function UpdateOverlay({ onCancel }: { onCancel: () => void }) {
   }, [dispatch, onCancel])
 
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-bg/80 backdrop-blur-xs animate-rise">
+    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-bg/80 backdrop-blur-xs animate-rise p-safe">
       <div className="bg-card border border-border rounded-xl p-8 max-w-md w-full mx-4 shadow-xl text-center">
         {/* A terminal step is not in progress, so it does not pulse. */}
         <div className={`text-4xl mb-4 ${isFailed ? 'text-danger' : 'animate-pulse'}`} data-testid="update-overlay-step-icon">{info?.icon || <RefreshCw className="lucide-inline" />}</div>
@@ -541,6 +541,11 @@ export default function App() {
     {/* Same rule for a file-menu action's result: the dashboard shows it in the
         notification sheet's banner region, which these frames do not render. */}
     {(isPopout || isEmbed) && <FileMenuResultToastFrame />}
+    {/* The keyboard cycle, the session pickers and the auto-compact write all
+        dispatch this notice in a popout and an embed window too, and for several
+        of them it is the only surface: the picker closes on failure, and the
+        auto-compact flush fires from an unmount. */}
+    {(isPopout || isEmbed) && agentSwitchNotice && <AgentSwitchNoticeBanner notice={agentSwitchNotice} />}
     {appPopoutRoute ? (
       /* An app pop-out window. Its router is mounted at `/popout/app`
          (main.tsx, via appPopoutRouterBasename), so the paths here are the

@@ -484,7 +484,9 @@ def pooled_session_servers(
         shaped = _acp_server_entry(str(name), entry, channel_id)
         if shaped is not None:
             out.append(shaped)
-    return out
+    from kiro_crew import agent as agent_mod
+
+    return agent_mod.govern_shared_template_injected_servers(agent, out)
 
 
 def injection_server_names(

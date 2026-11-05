@@ -3,8 +3,10 @@ import { ReactReduxContext } from 'react-redux'
 import { parseSessionSeed, seedSender, type SeedRow, type SeedSender } from '../../lib/crewSeed'
 import { MessageByline } from './shared-crew/MessageByline'
 import { QueuedSendLabel } from './shared-crew/QueuedSendLabel'
+import { readRelay, withoutRelayEnvelope } from './sessionRelay'
+import SenderAvatar from './SenderAvatar'
 import { motion } from 'framer-motion'
-import { Pencil, Send, Copy, Check, Link2, MessageSquare, Target, Pin, PinOff, X, Clock, Quote, MoreHorizontal, Undo2, ArrowUpFromLine, type LucideIcon } from 'lucide-react'
+import { Pencil, Send, Copy, Check, Link2, MessageSquare, Target, Pin, PinOff, X, Clock, Quote, MoreHorizontal, Undo2, ArrowUpFromLine, ChevronRight, type LucideIcon } from 'lucide-react'
 import { copyToClipboard } from '../../utils/clipboard'
 import { copySessionLink } from '../../utils/shareUrl'
 import { ICON_ACTION_ROW_CLS } from '../../utils/touchActions'
@@ -28,6 +30,7 @@ import MessageActionMenuItems, { NO_ACTIONS, useMessageActionsFor } from '../../
 import { prependQuote, quoteBlock, readMessageQuote, stripQuoteBlock, type MessageQuote } from '../../chat-core/composer/messageQuote'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from '../../components/ui/dropdown-menu'
 import { readSteerRecord } from './decisionRecord'
+import { useRowDisclosure } from './rowDisclosure'
 import { revealComposer } from './composerFocus'
 import type { SteerRetractAction, SteerRetractRefusalNotice } from '../../hooks/useSteerRetract'
 // Steer bubbles play a one-shot entrance (slide-in + ring pulse) when they land.
@@ -96,6 +99,11 @@ interface UserMessageProps {
   doubleClickToEdit?: boolean
   slotKey?: string
   slotTitle?: string
+  /** Session titles by key, and the opener for one. Both given, a message
+   *  another session delivered (`meta.relay`) names its sender's title as a
+   *  link beside the "From …" label; either absent, the label alone. */
+  sessions?: ReadonlyMap<string, string>
+  onSessionOpen?: (key: string) => void
   mode?: string
   pinned?: boolean
   onTogglePin?: () => void
@@ -162,7 +170,7 @@ interface UserMessageProps {
   steerActionRequestFailed?: boolean
 }
 
-const UserMessage = memo(function UserMessage({ content, meta, timestamp, timestampTitle, renderContent, canEdit, messageIndex, messageTs, onEditResend, doubleClickToEdit = false, slotKey, slotTitle, mode, pinned, onTogglePin, onReplyInThread, slotRunning, showQueuedSend, hideSteerBadge, tone = 'default', editRequest, onEditConsumed, onQuoteMessage, onJumpToQuote, onSteerAction, steerActionPending, steerActionRefusal, steerActionRequestFailed }: UserMessageProps) {
+const UserMessage = memo(function UserMessage({ content, meta, timestamp, timestampTitle, renderContent, canEdit, messageIndex, messageTs, onEditResend, doubleClickToEdit = false, slotKey, slotTitle, sessions, onSessionOpen, mode, pinned, onTogglePin, onReplyInThread, slotRunning, showQueuedSend, hideSteerBadge, tone = 'default', editRequest, onEditConsumed, onQuoteMessage, onJumpToQuote, onSteerAction, steerActionPending, steerActionRefusal, steerActionRequestFailed }: UserMessageProps) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const [editing, setEditing] = useState(false)
   const ime = useImeGuard()
@@ -188,6 +196,14 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
   // instead, read off the DOM when the menu opens (fork Opus review).
   const [standIn, setStandIn] = useState(false)
   const readStandIn = (open: boolean) => setStandIn(open && !!userRef.current?.closest('[data-pinned-standin]'))
+  // A scripted send's short label (`meta.banner`): the bubble shows it, and the
+  // full message the agent received opens behind a disclosure. Copy and Quote
+  // still act on the full text.
+  const rowBanner = typeof meta?.banner === 'string' && meta.banner.trim() ? meta.banner : ''
+  const [bannerExpanded, setBannerExpanded] = useRowDisclosure(
+    rowBanner && messageTs ? `user-banner:${messageTs}` : undefined,
+    false,
+  )
   const copyOutcomeIcon = (state: CopyOutcome, idle: ReactNode) =>
     state === 'ok' ? <Check size={14} className="text-ok" />
       : state === 'failed' ? <X size={14} className="text-danger" />
@@ -315,9 +331,16 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
   const carriedQuote = readMessageQuote(meta)
   // A message another session delivered: its `[sent by session <key> ...]` line
   // is for the agent, so the bubble shows the text under who sent it, by role.
+  // The gateway-set `meta.relay` (only the delivery path writes it) names the
+  // sender structurally, so it wins over the key the line spells, and says where
+  // each provenance line sits (one per send on a merged drain), so the bubble
+  // drops them by position. A row with no such positions shows as it always did.
   const seed = parseSessionSeed(content, meta as Record<string, unknown> | undefined)
-  const seedFrom = useSeedSender(seed?.sender, slotKey)
-  const unseeded = seed ? seed.body : content
+  const relay = readRelay(meta)
+  const senderKey = relay?.senderKey ?? seed?.sender
+  const seedFrom = useSeedSender(senderKey, slotKey)
+  const senderTitle = relay && sessions && onSessionOpen ? sessions.get(relay.senderKey) : undefined
+  const unseeded = (!(meta as { human?: unknown } | undefined)?.human ? withoutRelayEnvelope(content, relay) : null) ?? (seed ? seed.body : content)
   const startEdit = useCallback(() => {
     // Expand any collapsed paste tokens into their original content so the
     // user can actually edit the pasted text. Once edited, the message is
@@ -363,9 +386,15 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
   const { term, caseSensitive } = useSearchHighlight()
   const currentOcc = useCurrentOcc()
 
+  // Search matches the full message, so a banner row opens its body for the
+  // active match; the label and toggle are skipped when counting occurrences.
   useEffect(() => {
-    if (!userRef.current) return
+    if (rowBanner && currentOcc >= 0 && !bannerExpanded) setBannerExpanded(true)
+  }, [rowBanner, currentOcc, bannerExpanded, setBannerExpanded])
+
+  useEffect(() => {
     const el = userRef.current
+    if (!el) return
     applySearchHighlights(el, term, caseSensitive, currentOcc)
     // Converge-center the exact occurrence (see scrollCurrentMatchIntoView).
     // Cancel on re-run/unmount so rapid navigation doesn't accumulate loops.
@@ -374,7 +403,7 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
     // withdraw this bubble's on unmount so a virtualized row that scrolls away
     // is not kept alive through them.
     return () => { cancelScroll?.(); clearSearchHighlights(el) }
-  }, [term, caseSensitive, currentOcc, content])
+  }, [term, caseSensitive, currentOcc, content, rowBanner, bannerExpanded])
 
   /** Native select+copy from a sent bubble gives the literal chip label
    *  ("Paste #1 · 5 lines") — worthless on the other end. Intercept the
@@ -644,9 +673,54 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
           an ahead-skewed one would let a reused slot pass the mint check and open
           the wrong conversation, silently. The fallback still covers a bubble that
           has no server ts yet. */}
-      {seed && <p className="mb-1 text-[11px] font-semibold uppercase tracking-wide opacity-70" data-testid="session-seed-from">{seedFrom}</p>}
+      {(seed || relay) && (
+        <p className="mb-1 text-[11px] font-semibold uppercase tracking-wide" data-testid="session-seed-from">
+          <span className="opacity-70">{seedFrom}</span>
+          {senderTitle && onSessionOpen && relay ? (
+            <>
+              <span className="opacity-70" aria-hidden="true"> · </span>
+              {/* In the colour the person gave the sender session, never a
+                  second per-session colour. */}
+              <SenderAvatar senderKey={relay.senderKey} title={senderTitle} />
+              <button
+                type="button"
+                // A link at rest, not only on hover: underlined, and in the accent
+                // colour except on the accent-filled bubble, where it keeps the
+                // bubble's own text colour so it stays readable.
+                className={`inline max-w-full break-all text-left normal-case tracking-normal bg-transparent border-none p-0 font-semibold cursor-pointer underline underline-offset-2 hover:decoration-2 focus-visible:decoration-2 ${tone === 'accent' && !isSteer ? '' : 'text-accent'}`}
+                onClick={() => onSessionOpen(relay.senderKey)}
+                title={i18nT('pages.chat.sessionMessageCard.open_session', { name: senderTitle })}
+                aria-label={i18nT('pages.chat.sessionMessageCard.open_session', { name: senderTitle })}
+                data-testid="session-seed-sender-link"
+              >
+                {senderTitle}
+              </button>
+            </>
+          ) : null}
+        </p>
+      )}
       {carriedQuote && <QuoteCard quote={carriedQuote} variant="sent" onJump={carriedQuote.ts ? onJumpToQuote : undefined} />}
-      {renderContent(renderedBody, meta, messageTs || ((meta as { clientTs?: string })?.clientTs))}
+      {rowBanner ? (
+        <>
+          <p className="whitespace-pre-wrap" data-testid="user-message-banner" data-message-search-skip>{rowBanner}</p>
+          <button
+            type="button"
+            onClick={() => setBannerExpanded(v => !v)}
+            aria-expanded={bannerExpanded}
+            className="mt-1 inline-flex items-center gap-0.5 text-[12px] leading-5 opacity-70 hover:opacity-100 hover:underline underline-offset-2"
+            data-testid="user-message-banner-toggle"
+            data-message-search-skip
+          >
+            {bannerExpanded ? i18nT('pages.chat.userMessage.hide_full_message') : i18nT('pages.chat.userMessage.show_full_message')}
+            <ChevronRight size={11} className={`lucide-inline shrink-0 transition-transform ${bannerExpanded ? 'rotate-90' : ''}`} aria-hidden="true" />
+          </button>
+          {bannerExpanded && (
+            <div className="mt-1" data-testid="user-message-banner-full">
+              {renderContent(renderedBody, meta, messageTs || ((meta as { clientTs?: string })?.clientTs))}
+            </div>
+          )}
+        </>
+      ) : renderContent(renderedBody, meta, messageTs || ((meta as { clientTs?: string })?.clientTs))}
     </div>
   )
   // The right-click menu wraps the bubble only when Quote is offered (the

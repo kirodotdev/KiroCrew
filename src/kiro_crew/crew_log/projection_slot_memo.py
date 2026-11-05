@@ -1367,42 +1367,28 @@ def _persist_slot_fold(
 ) -> _SlotMemo:
     """*memo*, with its savepoint on disk brought forward when a write is owed.
 
-    How far a fold must have moved to earn a write is the savepoint module's decision
-    (``checkpoint.write_is_earned``), not this one's: it is a property of the files, and
-    stating it here as well would give two places an answer that has to agree.
+    Whether a write is earned is ``checkpoint.write_is_earned``'s decision, kept in one
+    place.
 
-    A WARM CONTINUATION WRITES TOO, and that is the one place this departs from the
-    session half, where a pass standing on a cached bundle writes nothing. The reason the
-    session half refuses is that a cached bundle records no evidence, so nothing a later
-    pass can read says anything about the bytes below its seq. A slot cell is different:
-    it CARRIES its evidence -- the newest unit's cut count in ``_SlotMemo.marks``, or its
-    digest in ``_SlotMemo.prefix`` on a unit that states no count -- and
-    :func:`_folded_prefix_holds` re-checks it before carrying the cell forward, so custody
-    of the already-folded prefix survives from the pass that folded it to this one.
-    Without this, a gateway that stays up leaves the savepoint wherever the process first
-    folded, and the restart it exists for replays the whole gap.
+    A WARM CONTINUATION WRITES TOO, unlike the session half, whose cached bundle records no
+    evidence. A slot cell CARRIES its evidence (the newest unit's cut count in
+    ``_SlotMemo.marks``, or its digest in ``_SlotMemo.prefix`` when the unit states no
+    count) and :func:`_folded_prefix_holds` re-checks it before carrying the cell forward.
+    Without this a long-lived gateway leaves the savepoint where it first folded, and a
+    restart replays the whole gap.
 
-    *sampled* is the newest unit's mark as read BEFORE the pass, and three of its fields
-    do the work. Its ``origin`` is the identity the pass folded under, which the write
-    refuses to differ from. Its ``last_seq`` is the boundary the evidence was taken at, so
-    a pass that ended somewhere ELSE -- the file grew under it -- matches nothing and
-    writes nothing: the evidence would then cover fewer bytes than the state was folded
-    from, which is the one savepoint no later read recovers from. That costs the savepoint
-    and never the read, which is already served. And its ``cuts`` is which of the two
-    witnesses this unit gets.
+    *sampled* is the newest unit's mark read BEFORE the pass. Its ``origin`` is the
+    identity the write must match. Its ``last_seq`` is where the evidence was taken: a
+    pass that ended elsewhere (the file grew under it) writes nothing, because evidence
+    covering fewer bytes than the state is unrecoverable; only the savepoint is lost, the
+    read is already served. Its ``cuts`` picks which witness this unit gets.
 
-    THE EVIDENCE IS CONFIRMED HERE, at the write, and that is what makes one rule cover
-    every pass that reaches this function. A digest taken before a pass and never asked
-    again would certify bytes a concurrent truncation changed afterwards, and because
-    every later resume recomputes the same changed bytes it would match, and the state
-    would be served for the life of the unit while disagreeing with a cold fold. The cold
-    and warm passes also vouch for their own digest (:func:`_vouched`), which they need
-    for their cell; asking again here costs one decode-free walk on a pass that has just
-    parsed and folded the same file, and it buys the property that NOTHING writes a
-    savepoint without re-reading the evidence its state came from. The counter is
-    re-confirmed for the same reason and at a fraction of the price -- and it is the
-    stronger of the two here, because a cut during the pass RAISES it rather than being
-    hashed into agreement with itself.
+    THE EVIDENCE IS RE-CONFIRMED HERE, at the write, so NOTHING writes a savepoint without
+    re-reading the evidence its state came from. A digest taken only before the pass would
+    certify bytes a concurrent truncation changed, every later resume would recompute and
+    match them, and the state would disagree with a cold fold for the life of the unit.
+    The cost is one decode-free walk. The counter is re-confirmed too, and is the stronger
+    witness: a cut during the pass RAISES it instead of hashing into agreement.
     """
     if not memo.units or sampled is None or sampled.origin is None:
         return memo

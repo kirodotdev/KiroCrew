@@ -203,6 +203,7 @@ export const QUOTED_OPERAND_CONFIRM_KEYS = [
   'components.appstore.trustAppModal.scope', // bare {{app}} #6016
   'components.appstore.trustAppModal.title', // bare {{app}} on the code-execution grant #5725
   'pages.appDetailPage.session_approval_confirm_title', // bare {{name}} on the chat-control grant #11192
+  'pages.appsPage.uninstall_app_title', // app-name operand of the Library uninstall confirmation, quoted per locale
   'components.artifactFolderDeleteDialog.delete_folder', // already quoted; pin #5725
   'pages.artifactDeployPage.destroy_confirm',
   'pages.artifactDeployPage.recall_confirm',
@@ -280,6 +281,9 @@ export const CONFIRM_OPERAND_KEY_EXEMPTIONS: Record<string, string> = {
     + 'link_open_confirm_title, so it cannot carry a space or a quote',
   'components.redaction.link_open_confirm_body':
     'the {{chars}} operand is a non-negative integer character count, never user text',
+  'pages.chatSidebar.resume_all_confirm_body':
+    'the {{limit}} operand is RESUME_ALL_MAX_RUNNING, a positive integer constant in code, '
+    + 'never user text',
   'components.awsConsentGate.confirmed_on':
     'not a confirmation prompt: a past-tense receipt fragment whose only operand is a '
     + 'machine-formatted date from fmtDate, never user-supplied text',

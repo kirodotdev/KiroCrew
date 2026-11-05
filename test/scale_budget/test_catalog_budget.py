@@ -135,11 +135,6 @@ def test_memo_off_scans_every_fetch(catalog, monkeypatch) -> None:
     assert catalog.refreshes() == 3, f"F4: memo off, 3 fetches ran {catalog.refreshes()} refreshes"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="scale-F4: main rescans every agents directory on every catalog fetch",
-)
 def test_unchanged_catalog_scans_at_most_twice(catalog) -> None:
     """20 sequential plus 8 concurrent owner fetches over unchanged specs: at most 2 refreshes."""
     catalog.fetch(20)
@@ -150,11 +145,6 @@ def test_unchanged_catalog_scans_at_most_twice(catalog) -> None:
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="scale-F4: main rescans every agents directory on every catalog fetch",
-)
 def test_one_spec_edit_adds_exactly_one_scan(catalog) -> None:
     """After the catalog settles, rewriting one spec costs exactly one more refresh."""
     catalog.fetch(5)
@@ -165,11 +155,6 @@ def test_one_spec_edit_adds_exactly_one_scan(catalog) -> None:
     assert extra == 1, f"F4: one spec edit cost {extra} refreshes over 5 fetches (budget 1)"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="scale-F4: item 2.24 per-entry validity (may move to item 2.26 PR B)",
-)
 def test_one_broken_spec_keeps_the_gate(catalog) -> None:
     """A single ``{not json`` spec among 150 still lets 4 fetches run 1 refresh."""
     _write_spec(catalog.user_dir, "broken", body="{not json")

@@ -43,6 +43,7 @@ first paint, the list cache policy and the investigation record in
 ``test_issue_radar_routes_ai_coverage_lists_and_investigation.py``; and the shared
 request builders and patch helpers in ``issue_radar_routes_ai_coverage_helpers.py``.
 """
+
 import contextlib
 import json
 import unittest
@@ -50,6 +51,7 @@ from types import SimpleNamespace
 from unittest import mock
 from unittest.mock import AsyncMock
 
+import issue_radar_route_checks
 from aiohttp import web
 from issue_radar_routes_ai_coverage_helpers import (
     LABELS,
@@ -208,9 +210,7 @@ class TestComputeIssueAi(unittest.IsolatedAsyncioTestCase):
         self.assertGreater(len(names), routes._AI_MAX_SUGGESTIONS)
         payload = json.dumps({"summary": "s", "suggested_labels": [{"name": n} for n in names]})
         with _oneshot(payload):
-            got = await routes._compute_issue_ai(
-                _get("issue-ai"), "o", "r", 7, self.DETAIL, labels
-            )
+            got = await routes._compute_issue_ai(_get("issue-ai"), "o", "r", 7, self.DETAIL, labels)
         self.assertEqual(len(got["suggested_labels"]), routes._AI_MAX_SUGGESTIONS)
 
     async def test_unparsable_output_degrades_to_an_empty_result(self):
@@ -219,7 +219,9 @@ class TestComputeIssueAi(unittest.IsolatedAsyncioTestCase):
 
     async def test_a_reason_is_length_clamped(self):
         got = await self._compute(
-            json.dumps({"summary": "s", "suggested_labels": [{"name": "docs", "reason": "x" * 500}]})
+            json.dumps(
+                {"summary": "s", "suggested_labels": [{"name": "docs", "reason": "x" * 500}]}
+            )
         )
         self.assertEqual(len(got["suggested_labels"][0]["reason"]), 200)
 
@@ -236,31 +238,40 @@ class TestLoadForAi(unittest.IsolatedAsyncioTestCase):
     write the detail cache — ``/issue`` owns that, together with the timeline."""
 
     async def test_a_cached_detail_is_served_without_a_provider_call(self):
-        with mock.patch.object(
-            store, "read_issue_detail_cache", return_value={"detail": {"number": 7}}
-        ), mock.patch.object(gh, "get_issue_detail") as fetch:
+        with (
+            mock.patch.object(
+                store, "read_issue_detail_cache", return_value={"detail": {"number": 7}}
+            ),
+            mock.patch.object(gh, "get_issue_detail") as fetch,
+        ):
             got = await routes._load_detail_for_ai(_key(), 7)
         self.assertEqual(got, {"number": 7})
         fetch.assert_not_called()
 
     async def test_a_cache_miss_reads_the_provider(self):
-        with mock.patch.object(store, "read_issue_detail_cache", return_value=None), \
-                mock.patch.object(gh, "get_issue_detail", return_value={"number": 7}) as fetch:
+        with (
+            mock.patch.object(store, "read_issue_detail_cache", return_value=None),
+            mock.patch.object(gh, "get_issue_detail", return_value={"number": 7}) as fetch,
+        ):
             got = await routes._load_detail_for_ai(_key(), 7)
         self.assertEqual(got, {"number": 7})
         fetch.assert_called_once()
 
     async def test_a_cache_entry_with_no_detail_reads_as_a_miss(self):
         # A timeline-only entry is not enough to summarize from.
-        with mock.patch.object(store, "read_issue_detail_cache", return_value={"detail": None}), \
-                mock.patch.object(gh, "get_issue_detail", return_value={"number": 7}) as fetch:
+        with (
+            mock.patch.object(store, "read_issue_detail_cache", return_value={"detail": None}),
+            mock.patch.object(gh, "get_issue_detail", return_value={"number": 7}) as fetch,
+        ):
             got = await routes._load_detail_for_ai(_key(), 7)
         self.assertEqual(got, {"number": 7})
         fetch.assert_called_once()
 
     async def test_labels_are_fetched_and_cached_under_one_lock_on_a_miss(self):
-        with mock.patch.object(store, "read_labels_cache", return_value=None), \
-                mock.patch.object(store, "refresh_labels_cache", return_value=LABELS) as refresh:
+        with (
+            mock.patch.object(store, "read_labels_cache", return_value=None),
+            mock.patch.object(store, "refresh_labels_cache", return_value=LABELS) as refresh,
+        ):
             got = await routes._load_labels_for_ai(_key())
         self.assertEqual(got, LABELS)
         refresh.assert_called_once()
@@ -291,11 +302,15 @@ class TestIssueAiRoute(unittest.IsolatedAsyncioTestCase):
 
     async def test_a_cached_result_is_served_without_a_model_call(self):
         cached = {
-            "summary": "cached", "suggested_labels": [{"name": "bug"}],
+            "summary": "cached",
+            "suggested_labels": [{"name": "bug"}],
             "generated_at": "2026-01-01T00:00:00Z",
         }
-        with _connected(), mock.patch.object(store, "read_issue_ai_cache", return_value=cached), \
-                _oneshot() as model:
+        with (
+            _connected(),
+            mock.patch.object(store, "read_issue_ai_cache", return_value=cached),
+            _oneshot() as model,
+        ):
             response = await routes._handle_issue_ai(
                 _get("issue-ai", {"owner": "o", "repo": "r", "number": "7"})
             )
@@ -305,16 +320,20 @@ class TestIssueAiRoute(unittest.IsolatedAsyncioTestCase):
         model.assert_not_called()
 
     async def test_refresh_bypasses_the_cache(self):
-        with _connected(), mock.patch.object(store, "read_issue_ai_cache") as read, \
-                mock.patch.object(
-                    routes, "_load_detail_for_ai", new=AsyncMock(return_value={"number": 7})
-                ), \
-                mock.patch.object(routes, "_load_labels_for_ai", new=AsyncMock(return_value=LABELS)), \
-                mock.patch.object(
-                    routes, "_compute_issue_ai",
-                    new=AsyncMock(return_value={"summary": "fresh", "suggested_labels": []}),
-                ), \
-                mock.patch.object(store, "write_issue_ai_cache"):
+        with (
+            _connected(),
+            mock.patch.object(store, "read_issue_ai_cache") as read,
+            mock.patch.object(
+                routes, "_load_detail_for_ai", new=AsyncMock(return_value={"number": 7})
+            ),
+            mock.patch.object(routes, "_load_labels_for_ai", new=AsyncMock(return_value=LABELS)),
+            mock.patch.object(
+                routes,
+                "_compute_issue_ai",
+                new=AsyncMock(return_value={"summary": "fresh", "suggested_labels": []}),
+            ),
+            mock.patch.object(store, "write_issue_ai_cache"),
+        ):
             response = await routes._handle_issue_ai(
                 _get("issue-ai", {"owner": "o", "repo": "r", "number": "7", "refresh": "1"})
             )
@@ -322,11 +341,15 @@ class TestIssueAiRoute(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(_body(response)["from_cache"])
 
     async def test_a_provider_failure_while_loading_inputs_is_502(self):
-        with _connected(), mock.patch.object(store, "read_issue_ai_cache", return_value=None), \
-                mock.patch.object(
-                    routes, "_load_detail_for_ai",
-                    new=AsyncMock(side_effect=gh.GhCliError("gh exploded")),
-                ):
+        with (
+            _connected(),
+            mock.patch.object(store, "read_issue_ai_cache", return_value=None),
+            mock.patch.object(
+                routes,
+                "_load_detail_for_ai",
+                new=AsyncMock(side_effect=gh.GhCliError("gh exploded")),
+            ),
+        ):
             response = await routes._handle_issue_ai(
                 _get("issue-ai", {"owner": "o", "repo": "r", "number": "7"})
             )
@@ -334,14 +357,17 @@ class TestIssueAiRoute(unittest.IsolatedAsyncioTestCase):
         self.assertIn("gh exploded", _body(response)["error"])
 
     async def test_a_failed_model_call_is_502_and_says_to_check_the_logs(self):
-        with _connected(), mock.patch.object(store, "read_issue_ai_cache", return_value=None), \
-                mock.patch.object(
-                    routes, "_load_detail_for_ai", new=AsyncMock(return_value={"number": 7})
-                ), \
-                mock.patch.object(routes, "_load_labels_for_ai", new=AsyncMock(return_value=LABELS)), \
-                mock.patch.object(
-                    routes, "_compute_issue_ai", new=AsyncMock(side_effect=RuntimeError("boom"))
-                ):
+        with (
+            _connected(),
+            mock.patch.object(store, "read_issue_ai_cache", return_value=None),
+            mock.patch.object(
+                routes, "_load_detail_for_ai", new=AsyncMock(return_value={"number": 7})
+            ),
+            mock.patch.object(routes, "_load_labels_for_ai", new=AsyncMock(return_value=LABELS)),
+            mock.patch.object(
+                routes, "_compute_issue_ai", new=AsyncMock(side_effect=RuntimeError("boom"))
+            ),
+        ):
             response = await routes._handle_issue_ai(
                 _get("issue-ai", {"owner": "o", "repo": "r", "number": "7"})
             )
@@ -350,13 +376,16 @@ class TestIssueAiRoute(unittest.IsolatedAsyncioTestCase):
 
     async def test_a_result_with_signal_is_cached(self):
         ai = {"summary": "s", "suggested_labels": []}
-        with _connected(), mock.patch.object(store, "read_issue_ai_cache", return_value=None), \
-                mock.patch.object(
-                    routes, "_load_detail_for_ai", new=AsyncMock(return_value={"number": 7})
-                ), \
-                mock.patch.object(routes, "_load_labels_for_ai", new=AsyncMock(return_value=LABELS)), \
-                mock.patch.object(routes, "_compute_issue_ai", new=AsyncMock(return_value=ai)), \
-                mock.patch.object(store, "write_issue_ai_cache") as write:
+        with (
+            _connected(),
+            mock.patch.object(store, "read_issue_ai_cache", return_value=None),
+            mock.patch.object(
+                routes, "_load_detail_for_ai", new=AsyncMock(return_value={"number": 7})
+            ),
+            mock.patch.object(routes, "_load_labels_for_ai", new=AsyncMock(return_value=LABELS)),
+            mock.patch.object(routes, "_compute_issue_ai", new=AsyncMock(return_value=ai)),
+            mock.patch.object(store, "write_issue_ai_cache") as write,
+        ):
             response = await routes._handle_issue_ai(
                 _get("issue-ai", {"owner": "o", "repo": "r", "number": "7"})
             )
@@ -369,13 +398,16 @@ class TestIssueAiRoute(unittest.IsolatedAsyncioTestCase):
         # Caching an empty card would strand the user on it until they manually
         # regenerate; skipping the write lets the next open retry.
         ai = {"summary": "", "suggested_labels": []}
-        with _connected(), mock.patch.object(store, "read_issue_ai_cache", return_value=None), \
-                mock.patch.object(
-                    routes, "_load_detail_for_ai", new=AsyncMock(return_value={"number": 7})
-                ), \
-                mock.patch.object(routes, "_load_labels_for_ai", new=AsyncMock(return_value=LABELS)), \
-                mock.patch.object(routes, "_compute_issue_ai", new=AsyncMock(return_value=ai)), \
-                mock.patch.object(store, "write_issue_ai_cache") as write:
+        with (
+            _connected(),
+            mock.patch.object(store, "read_issue_ai_cache", return_value=None),
+            mock.patch.object(
+                routes, "_load_detail_for_ai", new=AsyncMock(return_value={"number": 7})
+            ),
+            mock.patch.object(routes, "_load_labels_for_ai", new=AsyncMock(return_value=LABELS)),
+            mock.patch.object(routes, "_compute_issue_ai", new=AsyncMock(return_value=ai)),
+            mock.patch.object(store, "write_issue_ai_cache") as write,
+        ):
             response = await routes._handle_issue_ai(
                 _get("issue-ai", {"owner": "o", "repo": "r", "number": "7"})
             )
@@ -393,9 +425,7 @@ class TestPrLifecycle(unittest.TestCase):
         )
 
     def test_closed_without_a_merge_says_so(self):
-        self.assertEqual(
-            routes._pr_lifecycle({"state": "CLOSED"}), "closed without being merged"
-        )
+        self.assertEqual(routes._pr_lifecycle({"state": "CLOSED"}), "closed without being merged")
 
     def test_a_draft_is_distinguished_from_a_ready_pull_request(self):
         self.assertEqual(routes._pr_lifecycle({"state": "open", "draft": True}), "open (draft)")
@@ -408,9 +438,17 @@ class TestBuildPrAiPrompt(unittest.TestCase):
     when GitHub gave it no prose, which is the common case for an approval."""
 
     DETAIL = {
-        "number": 12, "title": "Add a widget", "body": "why", "author": "alice",
-        "state": "open", "head": "feat", "base": "main", "additions": 10,
-        "deletions": 2, "changed_files": 3, "commits": 1,
+        "number": 12,
+        "title": "Add a widget",
+        "body": "why",
+        "author": "alice",
+        "state": "open",
+        "head": "feat",
+        "base": "main",
+        "additions": 10,
+        "deletions": 2,
+        "changed_files": 3,
+        "commits": 1,
     }
 
     def _prompt(self, timeline=None, checks=None, detail=None) -> str:
@@ -464,8 +502,13 @@ class TestBuildPrAiPrompt(unittest.TestCase):
 
     def test_a_bodyless_review_verdict_is_still_rendered(self):
         timeline = [
-            {"kind": "reviewed", "actor": "bob", "created_at": "2026-01-02",
-             "review_state": "CHANGES_REQUESTED", "body": ""},
+            {
+                "kind": "reviewed",
+                "actor": "bob",
+                "created_at": "2026-01-02",
+                "review_state": "CHANGES_REQUESTED",
+                "body": "",
+            },
         ]
         prompt = self._prompt(timeline=timeline)
         self.assertIn("[review: changes requested] bob", prompt)
@@ -473,20 +516,33 @@ class TestBuildPrAiPrompt(unittest.TestCase):
 
     def test_an_inline_comment_names_its_file_and_line(self):
         timeline = [
-            {"kind": "review_comment", "actor": "bob", "created_at": "2026-01-02",
-             "path": "src/app.py", "line": 42, "body": "this leaks"},
+            {
+                "kind": "review_comment",
+                "actor": "bob",
+                "created_at": "2026-01-02",
+                "path": "src/app.py",
+                "line": 42,
+                "body": "this leaks",
+            },
         ]
         self.assertIn("[inline comment on src/app.py:42] bob", self._prompt(timeline=timeline))
 
     def test_an_inline_comment_without_a_line_omits_the_suffix(self):
         timeline = [
-            {"kind": "review_comment", "actor": "bob", "created_at": "2026-01-02",
-             "path": "src/app.py", "body": "nit"},
+            {
+                "kind": "review_comment",
+                "actor": "bob",
+                "created_at": "2026-01-02",
+                "path": "src/app.py",
+                "body": "nit",
+            },
         ]
         self.assertIn("[inline comment on src/app.py]", self._prompt(timeline=timeline))
 
     def test_a_plain_comment_is_rendered_with_its_author(self):
-        timeline = [{"kind": "comment", "actor": "carol", "created_at": "2026-01-03", "body": "lgtm"}]
+        timeline = [
+            {"kind": "comment", "actor": "carol", "created_at": "2026-01-03", "body": "lgtm"}
+        ]
         self.assertIn("[comment] carol", self._prompt(timeline=timeline))
 
     def test_an_unknown_author_is_named_rather_than_left_blank(self):
@@ -503,24 +559,38 @@ class TestPrAiCommentRows(unittest.TestCase):
     verdict per reviewer carries current state."""
 
     def test_non_conversation_events_and_empty_bodies_are_dropped(self):
-        rows = routes._pr_ai_comment_rows([
-            {"kind": "committed", "body": "x"},
-            {"kind": "comment", "body": "   "},
-            {"kind": "comment", "body": "real", "created_at": "1"},
-            "not-a-dict",
-        ])
+        rows = routes._pr_ai_comment_rows(
+            [
+                {"kind": "committed", "body": "x"},
+                {"kind": "comment", "body": "   "},
+                {"kind": "comment", "body": "real", "created_at": "1"},
+                "not-a-dict",
+            ]
+        )
         self.assertEqual([r["body"] for r in rows], ["real"])
 
     def test_a_superseded_verdict_from_the_same_reviewer_is_dropped(self):
-        rows = routes._pr_ai_comment_rows([
-            {"kind": "reviewed", "actor": "bob", "created_at": "1", "review_state": "CHANGES_REQUESTED"},
-            {"kind": "reviewed", "actor": "bob", "created_at": "2", "review_state": "APPROVED"},
-        ])
+        rows = routes._pr_ai_comment_rows(
+            [
+                {
+                    "kind": "reviewed",
+                    "actor": "bob",
+                    "created_at": "1",
+                    "review_state": "CHANGES_REQUESTED",
+                },
+                {"kind": "reviewed", "actor": "bob", "created_at": "2", "review_state": "APPROVED"},
+            ]
+        )
         self.assertEqual([r["review_state"] for r in rows], ["APPROVED"])
 
     def test_the_verdict_cap_keeps_the_newest(self):
         timeline = [
-            {"kind": "reviewed", "actor": f"r{i}", "created_at": f"{i:03d}", "review_state": "APPROVED"}
+            {
+                "kind": "reviewed",
+                "actor": f"r{i}",
+                "created_at": f"{i:03d}",
+                "review_state": "APPROVED",
+            }
             for i in range(routes._PR_AI_MAX_VERDICTS + 5)
         ]
         rows = routes._pr_ai_comment_rows(timeline)
@@ -535,8 +605,12 @@ class TestPrAiCommentRows(unittest.TestCase):
             for i in range(routes._PR_AI_MAX_COMMENTS + 3)
         ]
         timeline.append(
-            {"kind": "reviewed", "actor": "bob", "created_at": "000",
-             "review_state": "CHANGES_REQUESTED"}
+            {
+                "kind": "reviewed",
+                "actor": "bob",
+                "created_at": "000",
+                "review_state": "CHANGES_REQUESTED",
+            }
         )
         rows = routes._pr_ai_comment_rows(timeline)
         self.assertEqual(len(rows), routes._PR_AI_MAX_COMMENTS + 1)
@@ -551,9 +625,7 @@ class TestPrAiFingerprint(unittest.TestCase):
 
     def test_it_is_stable_for_identical_inputs(self):
         args = (self.DETAIL, [{"kind": "comment", "body": "x", "created_at": "1"}], [])
-        self.assertEqual(
-            routes._pr_ai_fingerprint(*args), routes._pr_ai_fingerprint(*args)
-        )
+        self.assertEqual(routes._pr_ai_fingerprint(*args), routes._pr_ai_fingerprint(*args))
 
     def test_an_edited_comment_changes_it(self):
         before = routes._pr_ai_fingerprint(
@@ -615,10 +687,12 @@ class TestPullAiRoute(unittest.IsolatedAsyncioTestCase):
     async def test_a_warm_detail_cache_plus_a_matching_fingerprint_serves_the_cache(self):
         cached_detail = {"detail": self.DETAIL, "timeline": [], "checks": []}
         cached_ai = {"summary": "cached", "generated_at": "2026-01-01T00:00:00Z"}
-        with _connected(), \
-                mock.patch.object(store, "read_pr_detail_cache", return_value=cached_detail), \
-                mock.patch.object(store, "read_pr_ai_cache", return_value=cached_ai), \
-                _oneshot() as model:
+        with (
+            _connected(),
+            mock.patch.object(store, "read_pr_detail_cache", return_value=cached_detail),
+            mock.patch.object(store, "read_pr_ai_cache", return_value=cached_ai),
+            _oneshot() as model,
+        ):
             response = await routes._handle_pull_ai(self._req())
         payload = _body(response)
         self.assertTrue(payload["from_cache"])
@@ -628,29 +702,33 @@ class TestPullAiRoute(unittest.IsolatedAsyncioTestCase):
     async def test_the_detail_cache_is_read_under_the_same_ttl_the_pull_route_uses(self):
         # A fingerprint computed from indefinitely stale inputs would confidently
         # return an outdated summary, so the TTL has to ride along on this read.
-        with _connected(), \
-                mock.patch.object(store, "read_pr_detail_cache", return_value=None) as read, \
-                mock.patch.object(gh, "get_pr_detail", return_value=self.DETAIL), \
-                mock.patch.object(gh, "list_pr_timeline", return_value=[]), \
-                mock.patch.object(gh, "list_pr_checks", return_value=[]), \
-                mock.patch.object(store, "write_pr_detail_cache"), \
-                mock.patch.object(store, "read_pr_ai_cache", return_value=None), \
-                mock.patch.object(store, "write_pr_ai_cache"), \
-                _oneshot('{"summary": "s"}'):
+        with (
+            _connected(),
+            mock.patch.object(store, "read_pr_detail_cache", return_value=None) as read,
+            mock.patch.object(gh, "get_pr_detail", return_value=self.DETAIL),
+            mock.patch.object(gh, "list_pr_timeline", return_value=[]),
+            mock.patch.object(gh, "list_pr_checks", return_value=[]),
+            mock.patch.object(store, "write_pr_detail_cache"),
+            mock.patch.object(store, "read_pr_ai_cache", return_value=None),
+            mock.patch.object(store, "write_pr_ai_cache"),
+            _oneshot('{"summary": "s"}'),
+        ):
             await routes._handle_pull_ai(self._req())
         _, kwargs = read.call_args
         self.assertEqual(kwargs["max_age_sec"], store.PR_DETAIL_CACHE_TTL_SEC)
 
     async def test_a_cold_read_stores_the_inputs_the_summary_was_built_from(self):
-        with _connected(), \
-                mock.patch.object(store, "read_pr_detail_cache", return_value=None), \
-                mock.patch.object(gh, "get_pr_detail", return_value=self.DETAIL), \
-                mock.patch.object(gh, "list_pr_timeline", return_value=[]), \
-                mock.patch.object(gh, "list_pr_checks", return_value=[{"name": "CI"}]) as checks, \
-                mock.patch.object(store, "write_pr_detail_cache") as write_detail, \
-                mock.patch.object(store, "read_pr_ai_cache", return_value=None), \
-                mock.patch.object(store, "write_pr_ai_cache") as write_ai, \
-                _oneshot('{"summary": "fresh"}'):
+        with (
+            _connected(),
+            mock.patch.object(store, "read_pr_detail_cache", return_value=None),
+            mock.patch.object(gh, "get_pr_detail", return_value=self.DETAIL),
+            mock.patch.object(gh, "list_pr_timeline", return_value=[]),
+            mock.patch.object(gh, "list_pr_checks", return_value=[{"name": "CI"}]) as checks,
+            mock.patch.object(store, "write_pr_detail_cache") as write_detail,
+            mock.patch.object(store, "read_pr_ai_cache", return_value=None),
+            mock.patch.object(store, "write_pr_ai_cache") as write_ai,
+            _oneshot('{"summary": "fresh"}'),
+        ):
             response = await routes._handle_pull_ai(self._req())
         checks.assert_called_once()
         write_detail.assert_called_once()
@@ -658,65 +736,77 @@ class TestPullAiRoute(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(_body(response)["summary"], "fresh")
 
     async def test_a_pull_request_with_no_head_sha_skips_the_check_call(self):
-        with _connected(), \
-                mock.patch.object(store, "read_pr_detail_cache", return_value=None), \
-                mock.patch.object(gh, "get_pr_detail", return_value={"number": 12}), \
-                mock.patch.object(gh, "list_pr_timeline", return_value=[]), \
-                mock.patch.object(gh, "list_pr_checks") as checks, \
-                mock.patch.object(store, "write_pr_detail_cache"), \
-                mock.patch.object(store, "read_pr_ai_cache", return_value=None), \
-                mock.patch.object(store, "write_pr_ai_cache"), \
-                _oneshot('{"summary": "s"}'):
+        with (
+            _connected(),
+            mock.patch.object(store, "read_pr_detail_cache", return_value=None),
+            mock.patch.object(gh, "get_pr_detail", return_value={"number": 12}),
+            mock.patch.object(gh, "list_pr_timeline", return_value=[]),
+            mock.patch.object(gh, "list_pr_checks") as checks,
+            mock.patch.object(store, "write_pr_detail_cache"),
+            mock.patch.object(store, "read_pr_ai_cache", return_value=None),
+            mock.patch.object(store, "write_pr_ai_cache"),
+            _oneshot('{"summary": "s"}'),
+        ):
             response = await routes._handle_pull_ai(self._req())
         checks.assert_not_called()
         self.assertEqual(response.status, 200)
 
     async def test_a_provider_failure_on_the_cold_path_is_502(self):
-        with _connected(), \
-                mock.patch.object(store, "read_pr_detail_cache", return_value=None), \
-                mock.patch.object(gh, "get_pr_detail", side_effect=gh.GhCliError("gh down")), \
-                mock.patch.object(gh, "list_pr_timeline", return_value=[]):
+        with (
+            _connected(),
+            mock.patch.object(store, "read_pr_detail_cache", return_value=None),
+            mock.patch.object(gh, "get_pr_detail", side_effect=gh.GhCliError("gh down")),
+            mock.patch.object(gh, "list_pr_timeline", return_value=[]),
+        ):
             response = await routes._handle_pull_ai(self._req())
         self.assertEqual(response.status, 502)
         self.assertIn("gh down", _body(response)["error"])
 
     async def test_a_failed_model_call_is_502(self):
-        with _connected(), \
-                mock.patch.object(
-                    store, "read_pr_detail_cache",
-                    return_value={"detail": self.DETAIL, "timeline": [], "checks": []},
-                ), \
-                mock.patch.object(store, "read_pr_ai_cache", return_value=None), \
-                mock.patch.object(
-                    routes, "_compute_pr_ai", new=AsyncMock(side_effect=RuntimeError("boom"))
-                ):
+        with (
+            _connected(),
+            mock.patch.object(
+                store,
+                "read_pr_detail_cache",
+                return_value={"detail": self.DETAIL, "timeline": [], "checks": []},
+            ),
+            mock.patch.object(store, "read_pr_ai_cache", return_value=None),
+            mock.patch.object(
+                routes, "_compute_pr_ai", new=AsyncMock(side_effect=RuntimeError("boom"))
+            ),
+        ):
             response = await routes._handle_pull_ai(self._req())
         self.assertEqual(response.status, 502)
         self.assertIn("gateway logs", _body(response)["error"])
 
     async def test_an_empty_summary_is_not_cached(self):
-        with _connected(), \
-                mock.patch.object(
-                    store, "read_pr_detail_cache",
-                    return_value={"detail": self.DETAIL, "timeline": [], "checks": []},
-                ), \
-                mock.patch.object(store, "read_pr_ai_cache", return_value=None), \
-                mock.patch.object(store, "write_pr_ai_cache") as write, \
-                _oneshot("not json"):
+        with (
+            _connected(),
+            mock.patch.object(
+                store,
+                "read_pr_detail_cache",
+                return_value={"detail": self.DETAIL, "timeline": [], "checks": []},
+            ),
+            mock.patch.object(store, "read_pr_ai_cache", return_value=None),
+            mock.patch.object(store, "write_pr_ai_cache") as write,
+            _oneshot("not json"),
+        ):
             response = await routes._handle_pull_ai(self._req())
         write.assert_not_called()
         self.assertEqual(_body(response)["summary"], "")
 
     async def test_refresh_skips_both_caches(self):
-        with _connected(), \
-                mock.patch.object(store, "read_pr_detail_cache") as read_detail, \
-                mock.patch.object(store, "read_pr_ai_cache") as read_ai, \
-                mock.patch.object(gh, "get_pr_detail", return_value=self.DETAIL), \
-                mock.patch.object(gh, "list_pr_timeline", return_value=[]), \
-                mock.patch.object(gh, "list_pr_checks", return_value=[]), \
-                mock.patch.object(store, "write_pr_detail_cache"), \
-                mock.patch.object(store, "write_pr_ai_cache"), \
-                _oneshot('{"summary": "s"}'):
+        with (
+            _connected(),
+            mock.patch.object(store, "read_pr_detail_cache") as read_detail,
+            mock.patch.object(store, "read_pr_ai_cache") as read_ai,
+            mock.patch.object(gh, "get_pr_detail", return_value=self.DETAIL),
+            mock.patch.object(gh, "list_pr_timeline", return_value=[]),
+            mock.patch.object(gh, "list_pr_checks", return_value=[]),
+            mock.patch.object(store, "write_pr_detail_cache"),
+            mock.patch.object(store, "write_pr_ai_cache"),
+            _oneshot('{"summary": "s"}'),
+        ):
             response = await routes._handle_pull_ai(self._req({"refresh": "1"}))
         read_detail.assert_not_called()
         read_ai.assert_not_called()
@@ -733,38 +823,51 @@ class TestApplyLabelChange(unittest.TestCase):
 
     def test_additions_report_the_authoritative_set(self):
         final = [{"name": "bug"}, {"name": "docs"}]
-        with _no_lock(), mock.patch.object(gh, "add_issue_labels", return_value=final), \
-                mock.patch.object(store, "apply_label_change_to_caches") as patch_caches:
+        with (
+            _no_lock(),
+            mock.patch.object(gh, "add_issue_labels", return_value=final),
+            mock.patch.object(store, "apply_label_change_to_caches") as patch_caches,
+        ):
             got = routes._apply_label_change(_key(), 7, ["docs"], [])
         self.assertEqual(got, final)
         patch_caches.assert_called_once()
 
     def test_a_removal_that_reports_a_set_is_used(self):
-        with _no_lock(), mock.patch.object(gh, "remove_issue_label", return_value=[{"name": "x"}]), \
-                mock.patch.object(store, "apply_label_change_to_caches"):
+        with (
+            _no_lock(),
+            mock.patch.object(gh, "remove_issue_label", return_value=[{"name": "x"}]),
+            mock.patch.object(store, "apply_label_change_to_caches"),
+        ):
             got = routes._apply_label_change(_key(), 7, [], ["gone"])
         self.assertEqual(got, [{"name": "x"}])
 
     def test_an_all_no_op_removal_re_reads_the_set_inside_the_lock(self):
-        with _no_lock(), mock.patch.object(gh, "remove_issue_label", return_value=None), \
-                mock.patch.object(
-                    gh, "get_issue_detail", return_value={"labels": [{"name": "kept"}]}
-                ), \
-                mock.patch.object(store, "apply_label_change_to_caches"):
+        with (
+            _no_lock(),
+            mock.patch.object(gh, "remove_issue_label", return_value=None),
+            mock.patch.object(gh, "get_issue_detail", return_value={"labels": [{"name": "kept"}]}),
+            mock.patch.object(store, "apply_label_change_to_caches"),
+        ):
             got = routes._apply_label_change(_key(), 7, [], ["gone"])
         self.assertEqual(got, [{"name": "kept"}])
 
     def test_a_failed_re_read_returns_none_so_the_caller_can_retry(self):
-        with _no_lock(), mock.patch.object(gh, "remove_issue_label", return_value=None), \
-                mock.patch.object(gh, "get_issue_detail", side_effect=gh.GhCliError("down")):
+        with (
+            _no_lock(),
+            mock.patch.object(gh, "remove_issue_label", return_value=None),
+            mock.patch.object(gh, "get_issue_detail", side_effect=gh.GhCliError("down")),
+        ):
             self.assertIsNone(routes._apply_label_change(_key(), 7, [], ["gone"]))
 
     def test_a_cache_patch_failure_does_not_fail_the_applied_change(self):
         final = [{"name": "bug"}]
-        with _no_lock(), mock.patch.object(gh, "add_issue_labels", return_value=final), \
-                mock.patch.object(
-                    store, "apply_label_change_to_caches", side_effect=OSError("disk full")
-                ):
+        with (
+            _no_lock(),
+            mock.patch.object(gh, "add_issue_labels", return_value=final),
+            mock.patch.object(
+                store, "apply_label_change_to_caches", side_effect=OSError("disk full")
+            ),
+        ):
             self.assertEqual(routes._apply_label_change(_key(), 7, ["bug"], []), final)
 
 
@@ -773,9 +876,11 @@ class TestRereadLabelsAndPatch(unittest.TestCase):
     patch happen inside the SAME lock, so the value written is the value read."""
 
     def test_it_returns_the_labels_and_patches_the_caches(self):
-        with _no_lock(), mock.patch.object(
-            gh, "get_issue_detail", return_value={"labels": [{"name": "bug"}]}
-        ), mock.patch.object(store, "apply_label_change_to_caches") as patch_caches:
+        with (
+            _no_lock(),
+            mock.patch.object(gh, "get_issue_detail", return_value={"labels": [{"name": "bug"}]}),
+            mock.patch.object(store, "apply_label_change_to_caches") as patch_caches,
+        ):
             got = routes._reread_labels_and_patch(_key(), 7)
         self.assertEqual(got, [{"name": "bug"}])
         patch_caches.assert_called_once()
@@ -785,10 +890,12 @@ class TestRereadLabelsAndPatch(unittest.TestCase):
             self.assertEqual(routes._reread_labels_and_patch(_key(), 7), [])
 
     def test_a_failed_cache_patch_still_returns_the_fresh_labels(self):
-        with _no_lock(), mock.patch.object(
-            gh, "get_issue_detail", return_value={"labels": [{"name": "bug"}]}
-        ), mock.patch.object(
-            store, "apply_label_change_to_caches", side_effect=OSError("disk full")
+        with (
+            _no_lock(),
+            mock.patch.object(gh, "get_issue_detail", return_value={"labels": [{"name": "bug"}]}),
+            mock.patch.object(
+                store, "apply_label_change_to_caches", side_effect=OSError("disk full")
+            ),
         ):
             self.assertEqual(routes._reread_labels_and_patch(_key(), 7), [{"name": "bug"}])
 
@@ -801,7 +908,9 @@ class TestLabelsApplyRoute(unittest.IsolatedAsyncioTestCase):
 
     async def test_a_malformed_payload_is_400(self):
         for body in (None, [], "nope"):
-            response = await routes._handle_labels_apply(_json_request("POST", "labels/apply", body))
+            response = await routes._handle_labels_apply(
+                _json_request("POST", "labels/apply", body)
+            )
             self.assertEqual(response.status, 400)
 
     async def test_a_missing_repo_is_400(self):
@@ -849,9 +958,13 @@ class TestLabelsApplyRoute(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(audit.call_args[0][2], "denied")
 
     async def test_a_label_the_repo_does_not_define_cannot_be_added(self):
-        with _connected(), _writable(), _audits(), \
-                mock.patch.object(routes, "_load_labels_for_ai", new=AsyncMock(return_value=LABELS)), \
-                mock.patch.object(routes, "_apply_label_change") as apply_change:
+        with (
+            _connected(),
+            _writable(),
+            _audits(),
+            mock.patch.object(routes, "_load_labels_for_ai", new=AsyncMock(return_value=LABELS)),
+            mock.patch.object(routes, "_apply_label_change") as apply_change,
+        ):
             response = await routes._handle_labels_apply(
                 _json_request("POST", "labels/apply", {**self.GOOD, "add": ["invented"]})
             )
@@ -860,59 +973,81 @@ class TestLabelsApplyRoute(unittest.IsolatedAsyncioTestCase):
         apply_change.assert_not_called()
 
     async def test_a_provider_failure_reading_the_label_set_is_502(self):
-        with _connected(), _writable(), _audits(), \
-                mock.patch.object(
-                    routes, "_load_labels_for_ai",
-                    new=AsyncMock(side_effect=gh.GhCliError("gh down")),
-                ):
+        with (
+            _connected(),
+            _writable(),
+            _audits(),
+            mock.patch.object(
+                routes,
+                "_load_labels_for_ai",
+                new=AsyncMock(side_effect=gh.GhCliError("gh down")),
+            ),
+        ):
             response = await routes._handle_labels_apply(
                 _json_request("POST", "labels/apply", self.GOOD)
             )
         self.assertEqual(response.status, 502)
 
     async def test_a_permission_failure_at_write_time_is_403(self):
-        with _connected(), _writable(), _audits(), \
-                mock.patch.object(routes, "_load_labels_for_ai", new=AsyncMock(return_value=LABELS)), \
-                mock.patch.object(
-                    routes, "_apply_label_change", side_effect=gh.GhPermissionError("no push")
-                ):
+        with (
+            _connected(),
+            _writable(),
+            _audits(),
+            mock.patch.object(routes, "_load_labels_for_ai", new=AsyncMock(return_value=LABELS)),
+            mock.patch.object(
+                routes, "_apply_label_change", side_effect=gh.GhPermissionError("no push")
+            ),
+        ):
             response = await routes._handle_labels_apply(
                 _json_request("POST", "labels/apply", self.GOOD)
             )
         self.assertEqual(response.status, 403)
 
     async def test_a_provider_failure_at_write_time_is_502(self):
-        with _connected(), _writable(), _audits(), \
-                mock.patch.object(routes, "_load_labels_for_ai", new=AsyncMock(return_value=LABELS)), \
-                mock.patch.object(
-                    routes, "_apply_label_change", side_effect=gh.GhCliError("boom")
-                ):
+        with (
+            _connected(),
+            _writable(),
+            _audits(),
+            mock.patch.object(routes, "_load_labels_for_ai", new=AsyncMock(return_value=LABELS)),
+            mock.patch.object(routes, "_apply_label_change", side_effect=gh.GhCliError("boom")),
+        ):
             response = await routes._handle_labels_apply(
                 _json_request("POST", "labels/apply", self.GOOD)
             )
         self.assertEqual(response.status, 502)
 
     async def test_an_unresolved_no_op_removal_retries_through_the_locked_helper(self):
-        with _connected(), _writable(), _audits(), \
-                mock.patch.object(routes, "_load_labels_for_ai", new=AsyncMock(return_value=LABELS)), \
-                mock.patch.object(routes, "_apply_label_change", return_value=None), \
-                mock.patch.object(
-                    routes, "_reread_labels_and_patch", return_value=[{"name": "bug"}]
-                ) as reread, \
-                mock.patch.object(store, "drop_tagging_suggestions"):
+        with (
+            _connected(),
+            _writable(),
+            _audits(),
+            mock.patch.object(routes, "_load_labels_for_ai", new=AsyncMock(return_value=LABELS)),
+            mock.patch.object(routes, "_apply_label_change", return_value=None),
+            mock.patch.object(
+                routes, "_reread_labels_and_patch", return_value=[{"name": "bug"}]
+            ) as reread,
+            mock.patch.object(store, "drop_tagging_suggestions"),
+        ):
             response = await routes._handle_labels_apply(
-                _json_request("POST", "labels/apply", {"owner": "o", "repo": "r",
-                                                       "number": 7, "remove": ["gone"]})
+                _json_request(
+                    "POST",
+                    "labels/apply",
+                    {"owner": "o", "repo": "r", "number": 7, "remove": ["gone"]},
+                )
             )
         reread.assert_called_once()
         self.assertEqual(_body(response)["labels"], [{"name": "bug"}])
 
     async def test_a_successful_apply_prunes_the_tagging_queue(self):
         final = [{"name": "docs"}]
-        with _connected(), _writable(), _audits() as audit, \
-                mock.patch.object(routes, "_load_labels_for_ai", new=AsyncMock(return_value=LABELS)), \
-                mock.patch.object(routes, "_apply_label_change", return_value=final), \
-                mock.patch.object(store, "drop_tagging_suggestions") as prune:
+        with (
+            _connected(),
+            _writable(),
+            _audits() as audit,
+            mock.patch.object(routes, "_load_labels_for_ai", new=AsyncMock(return_value=LABELS)),
+            mock.patch.object(routes, "_apply_label_change", return_value=final),
+            mock.patch.object(store, "drop_tagging_suggestions") as prune,
+        ):
             response = await routes._handle_labels_apply(
                 _json_request("POST", "labels/apply", self.GOOD)
             )
@@ -922,12 +1057,14 @@ class TestLabelsApplyRoute(unittest.IsolatedAsyncioTestCase):
 
     async def test_a_failed_prune_does_not_fail_the_applied_change(self):
         final = [{"name": "docs"}]
-        with _connected(), _writable(), _audits(), \
-                mock.patch.object(routes, "_load_labels_for_ai", new=AsyncMock(return_value=LABELS)), \
-                mock.patch.object(routes, "_apply_label_change", return_value=final), \
-                mock.patch.object(
-                    store, "drop_tagging_suggestions", side_effect=OSError("disk full")
-                ):
+        with (
+            _connected(),
+            _writable(),
+            _audits(),
+            mock.patch.object(routes, "_load_labels_for_ai", new=AsyncMock(return_value=LABELS)),
+            mock.patch.object(routes, "_apply_label_change", return_value=final),
+            mock.patch.object(store, "drop_tagging_suggestions", side_effect=OSError("disk full")),
+        ):
             response = await routes._handle_labels_apply(
                 _json_request("POST", "labels/apply", self.GOOD)
             )
@@ -938,13 +1075,11 @@ class TestLabelsApplyRoute(unittest.IsolatedAsyncioTestCase):
 # ── repo-level taxonomy proposals ────────────────────────────────────────────
 
 
-class TestShortRationale(unittest.TestCase):
+class TestShortRationale(
+    issue_radar_route_checks.AParentheticalCitationIsRemovedAsOneUnit, unittest.TestCase
+):
     """The prompt asks for one clause with no issue refs; the model reliably slips
     them in anyway, so the rule is enforced here rather than merely requested."""
-
-    def test_a_parenthetical_citation_is_removed_as_one_unit(self):
-        # Matching the refs individually left the opening fragment behind.
-        self.assertEqual(routes._short_rationale("crashes (see #12, #34)"), "crashes")
 
     def test_a_bare_reference_is_removed_too(self):
         self.assertEqual(routes._short_rationale("blocked by #7 today"), "blocked by today")
@@ -956,9 +1091,7 @@ class TestShortRationale(unittest.TestCase):
         )
 
     def test_it_is_length_clamped(self):
-        self.assertLessEqual(
-            len(routes._short_rationale("w " * 400)), routes._RATIONALE_MAX_CHARS
-        )
+        self.assertLessEqual(len(routes._short_rationale("w " * 400)), routes._RATIONALE_MAX_CHARS)
 
     def test_a_non_string_does_not_raise(self):
         self.assertEqual(routes._short_rationale(None), "")
@@ -999,16 +1132,33 @@ class TestComputeLabelRecommendations(unittest.IsolatedAsyncioTestCase):
             )
 
     async def test_a_valid_proposal_survives_whole(self):
-        got = await self._compute({"recommendations": [{
-            "name": "needs-repro", "category": "triage", "color": "AB12CD",
-            "description": "Cannot reproduce yet", "rationale": "many reports lack steps",
-            "examples": [7],
-        }]})
-        self.assertEqual(got["recommendations"], [{
-            "name": "needs-repro", "category": "triage", "color": "ab12cd",
-            "description": "Cannot reproduce yet", "rationale": "many reports lack steps",
-            "examples": [7],
-        }])
+        got = await self._compute(
+            {
+                "recommendations": [
+                    {
+                        "name": "needs-repro",
+                        "category": "triage",
+                        "color": "AB12CD",
+                        "description": "Cannot reproduce yet",
+                        "rationale": "many reports lack steps",
+                        "examples": [7],
+                    }
+                ]
+            }
+        )
+        self.assertEqual(
+            got["recommendations"],
+            [
+                {
+                    "name": "needs-repro",
+                    "category": "triage",
+                    "color": "ab12cd",
+                    "description": "Cannot reproduce yet",
+                    "rationale": "many reports lack steps",
+                    "examples": [7],
+                }
+            ],
+        )
 
     async def test_a_label_that_already_exists_is_dropped(self):
         # Case-insensitively: a proposal that restates the set is not a proposal.
@@ -1042,7 +1192,9 @@ class TestComputeLabelRecommendations(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(got["recommendations"][0]["examples"], [])
 
     async def test_a_non_numeric_example_is_skipped_rather_than_raising(self):
-        got = await self._compute({"recommendations": [{"name": "x", "examples": ["abc", None, 7]}]})
+        got = await self._compute(
+            {"recommendations": [{"name": "x", "examples": ["abc", None, 7]}]}
+        )
         self.assertEqual(got["recommendations"][0]["examples"], [7])
 
     async def test_only_one_example_is_kept(self):
@@ -1092,7 +1244,9 @@ class TestBuildRecoPrompt(unittest.TestCase):
 
     def test_a_long_body_is_truncated_and_newlines_collapse(self):
         prompt = routes._build_reco_prompt(
-            "o", "r", LABELS,
+            "o",
+            "r",
+            LABELS,
             [{"number": 7, "title": "t", "body": "a\r\nb" + "c" * 600}],
         )
         self.assertIn("…", prompt)

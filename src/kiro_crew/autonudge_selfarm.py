@@ -49,6 +49,7 @@ from typing import Any, Iterator
 from kiro_crew import platform_compat
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.paths import data_home
+from kiro_crew.owner_only_files import owner_only_opener
 
 logger = logging.getLogger(__name__)
 
@@ -73,7 +74,7 @@ def _record_lock() -> Iterator[None]:
     path = self_arm_record_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     lock_path = path.parent / _LOCK_NAME
-    with open(lock_path, "a+", encoding="utf-8") as fh:
+    with open(lock_path, "a+", encoding="utf-8", opener=owner_only_opener) as fh:
         with platform_compat.file_lock(fh.fileno(), exclusive=True):
             yield
 

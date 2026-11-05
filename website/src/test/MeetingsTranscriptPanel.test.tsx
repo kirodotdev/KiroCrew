@@ -138,4 +138,37 @@ describe('MeetingWorkspace transcript layout', () => {
     await waitFor(() => expect(screen.queryByTestId('meeting-agent-panels')).toBeNull())
     expect(screen.getByTestId('meeting-transcript-slot').className).toContain('flex-1')
   })
+
+  it('fades the transcript out while a panel is expanded, and keeps it mounted (#21179)', async () => {
+    const { rerender } = render(
+      <MeetingWorkspace
+        hasAgentPanels
+        expanded
+        agentPanels={<div>Agent notes</div>}
+        transcript={<div>Transcript content</div>}
+      />,
+    )
+
+    expect(screen.getByTestId('meeting-workspace').dataset.transcriptLayout).toBe('hidden')
+    const slot = screen.getByTestId('meeting-transcript-slot')
+    // Offstage, never display:none: the transcript stays laid out so its scroll
+    // position and follow-new-speech scrolling keep working while hidden.
+    await waitFor(() => expect(slot.style.visibility).toBe('hidden'))
+    expect(slot.style.position).toBe('absolute')
+    expect(slot.style.display).not.toBe('none')
+    // Hidden, not unmounted: the follow-scroll position must survive the restore.
+    expect(screen.getByText('Transcript content')).toBeTruthy()
+
+    rerender(
+      <MeetingWorkspace
+        hasAgentPanels
+        expanded={false}
+        agentPanels={<div>Agent notes</div>}
+        transcript={<div>Transcript content</div>}
+      />,
+    )
+    expect(screen.getByTestId('meeting-workspace').dataset.transcriptLayout).toBe('split')
+    expect(screen.getByTestId('meeting-transcript-slot').className).toContain('lg:w-[360px]')
+    await waitFor(() => expect(screen.getByTestId('meeting-transcript-slot').style.visibility).toBe('visible'))
+  })
 })

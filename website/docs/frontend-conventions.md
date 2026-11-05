@@ -191,7 +191,11 @@ a cost, where data goes, a status such as "disabled by instance config". `hint`
 renders an `InfoTip` beside the label; it is for what the control IS, which a
 reader wants once and never again. A row that always shows two lines of prose
 spends attention whether or not it is being read, so the default for an
-explanatory sentence is `hint`, one catalog string per tip. An error is neither: it renders through
+explanatory sentence is `hint`, one catalog string per tip. A long choice-making
+paragraph becomes one short `description` sentence with the full paragraph as the
+`hint`. `SecretField` and `TagListEditor` take the same `hint`, and a
+`SettingsSection` takes one for its introduction, drawn beside the heading instead
+of as a paragraph above the first card. An error is neither: it renders through
 `ErrorNotice` (`AUTOSDE.yaml`, `errors-use-error-notice`), never behind a tip.
 
 `InfoTip` is accessible by construction — keyboard focusable, named by a short
@@ -862,8 +866,9 @@ files own it:
   the same rule through `hooks/useTouchReplay.ts`: spread its `pointerProps` on
   the anchor and return early while `fromTouch()` is true, as `useNavTip`,
   `useHoverIntent`, `RefLink` and `MarkdownToc` do), and
-  emits the iOS safe-area utilities (`p-safe`, `top-safe-offset-*`, …) as
-  `@utility` blocks. Adding a utility for a new token means adding one
+  emits the iOS safe-area utilities (`p-safe`, `p-safe-or-*`, `top-safe-offset-*`, …) as
+  `@utility` blocks; `--safe-area-x` in `src/styles/design-tokens.css` is the wider
+  side inset, for a width taken from the viewport. Adding a utility for a new token means adding one
   `--color-<token>: var(--<token>)` line here; `scripts/check-phantom-classes.mjs`
   compiles against this file to catch a utility whose token was never declared.
 - `src/index.css` — the entry, read top to bottom in cascade order. First the

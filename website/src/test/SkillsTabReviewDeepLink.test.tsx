@@ -178,7 +178,9 @@ describe('?review=<slug> deep link', () => {
     await bodyOfBetaSkillShown()
 
     fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }))
-    await waitFor(() => expect(mockApi.dismissPendingSkill).toHaveBeenCalledWith('beta-skill'))
+    await waitFor(() =>
+      expect(mockApi.dismissPendingSkill).toHaveBeenCalledWith('beta-skill', 'c'.repeat(64)),
+    )
     // Waiting for the row to GO is what makes this pin the guard: the mock being
     // called only proves the request fired, which precedes the refetch, so the
     // assertion below would otherwise be checking a moment when the list is not

@@ -760,7 +760,7 @@ def test_activation_refusal_is_a_harness_seam_kas_reads_the_stamp_kiro_answers_n
     kas = KasHarness()
     with caplog.at_level("WARNING", logger="kiro_crew.acp.harness.kas"):
         refusal = kas.activation_refusal("plan", stamped("bundled"))
-    assert refusal and refusal.startswith("Rename this mate's template: “plan” is reserved")
+    assert refusal and refusal.startswith("Rename this Bot's template: “plan” is reserved")
     assert " -- " not in refusal
     assert "Agent Template tab" in refusal and "KAS" not in refusal
     # The raw stamp is logged: the refusal blames the name, so the log is the
@@ -1052,7 +1052,7 @@ async def test_activating_a_disk_spec_over_the_ceiling_ends_the_session_before_s
     rt.terminate_session = AsyncMock()  # type: ignore[method-assign]
     asked: list[tuple[str, str]] = []
 
-    def _over(agent: str, backend: str) -> None:
+    def _over(agent: str, backend: str, *, launch_name: str | None = None) -> None:
         asked.append((agent, backend))
         raise agent_mod.SharedTemplateOverCeiling("over the ceiling")
 
@@ -1084,7 +1084,7 @@ async def test_a_warm_session_that_inherits_the_spawn_agent_is_checked_before_th
     rt._send_and_await = AsyncMock()  # type: ignore[method-assign]
     asked: list[tuple[str, str]] = []
 
-    def _over(agent: str, backend: str) -> None:
+    def _over(agent: str, backend: str, *, launch_name: str | None = None) -> None:
         asked.append((agent, backend))
         raise agent_mod.SharedTemplateOverCeiling("over the ceiling")
 

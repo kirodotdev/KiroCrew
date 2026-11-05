@@ -16,6 +16,14 @@
      src/i18n/scriptFonts.test.ts reads the stylesheet's first :root body for the
      script-fallback tokens, so a separate leading block would shadow it. */
   --safe-area-top: 0px;
+  /* The wider of the two side insets. A surface centred with left-1/2 and a
+     width taken from the viewport (calc(100% - 4rem)) keeps the same gutter on
+     both sides, so the gutter has to clear whichever side is larger: in iOS
+     landscape the notch sits on one side only, and a foldable can move system
+     controls to the side. Subtract it twice from such a width, as a sum
+     (`max(4rem, var(--safe-area-x) + var(--safe-area-x))`); 0 wherever the
+     platform reports no side inset, so nothing moves there. */
+  --safe-area-x: max(env(safe-area-inset-left, 0px), env(safe-area-inset-right, 0px));
   /* Single source of truth for the script fallbacks. Every declaration of
      --font-body / --mono — here, in theme-palettes.css, and the ones built in
      hooks/useTheme.tsx and hooks/useZoom.ts — references these by name instead of

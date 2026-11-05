@@ -297,6 +297,21 @@ def _turn_clock(
     return clock
 
 
+def _session_selected_auto(slot: Any) -> str:
+    """``"auto"`` when this slot's live session was allocated with Auto selected.
+
+    The footer's fallback for a turn whose provider chain reported no model.
+    ``slot._session_requested_model`` is the allocation's own selection (its
+    stamp, else the turn's request), so an exact ``auto`` there means Auto was
+    chosen for the session that served the turn. A harness that keeps neither a
+    request nor a resolved id on its handle (KAS) otherwise leaves an Auto turn
+    blank. A blank or concrete selection says nothing about Auto and stays
+    ``""``: only the chain names a concrete id.
+    """
+    selected = getattr(slot, "_session_requested_model", None)
+    return "auto" if isinstance(selected, str) and selected.strip().lower() == "auto" else ""
+
+
 def _turn_outcome(stop_reason: str | None, *, exhausted: bool = False) -> str:
     """Map an EVENT_COMPLETE stop_reason to a low-cardinality turn outcome.
 
@@ -647,7 +662,7 @@ async def _on_complete(turn: _ChatTurn, event) -> Literal[_Flow.BREAK] | None:
     # two are different facts and a blank footer conflates them
     # with a missing measurement. Still never guesses: an
     # unattributable turn stays "" and the footer omits the field.
-    _turn_model = read_turn_model(client)
+    _turn_model = read_turn_model(client) or _session_selected_auto(slot)
     turn._turn_model = _turn_model
     _turn_stats_captured = True
     turn._turn_stats_captured = _turn_stats_captured

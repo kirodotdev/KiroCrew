@@ -9,9 +9,14 @@ import json
 from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.dashboard.chat_delivery import (
+    BACKGROUND_START_TASKS,
+    START_BACKGROUND_META_KEY,
+)
 from kiro_crew.dashboard.chat_delivery import TURN_ACTOR_META_KEY as _TURN_ACTOR_META_KEY
 from kiro_crew.dashboard.chat_delivery import (
     attachment_meta,
+    banner_meta,
     queue_entry_is_user_origin,
     queued_text_for_display,
     quote_meta,
@@ -965,12 +970,28 @@ async def _start_next_queued_turn(
         _pop_meta = {
             **attachment_meta(item.get("meta")),
             **quote_meta(item.get("meta"), user_origin=queue_entry_is_user_origin(item)),
+            **banner_meta(item.get("meta")),
         }
         from kiro_crew.dashboard.chat_delivery import normalize_send_id
 
         _pop_send_id = normalize_send_id((item.get("meta") or {}).get("sendId"))
         if _pop_send_id:
             _pop_meta["sendId"] = _pop_send_id
+        # A peer's queued ``session_send`` names its sender (``meta.relay``, set
+        # only by the gateway's delivery path; an edit drops it). The rebuilt row
+        # is that one entry's text, so its own sender rides its own pop, and the
+        # live row draws the same incoming card a reload does. Rebuilt, never
+        # copied: an entry restored from disk is data (``relay_spans.relay_for``).
+        _pop_relay = (item.get("meta") or {}).get("relay")
+        if _pop_relay is not None:
+            from kiro_crew.dashboard import relay_spans
+            from kiro_crew.dashboard.session_control import _SEND_PROVENANCE
+
+            _pop_relay_record = relay_spans.relay_for(
+                str(_pop.get("content") or ""), [_pop_relay], _SEND_PROVENANCE
+            )
+            if _pop_relay_record is not None:
+                _pop_meta["relay"] = _pop_relay_record
         if _pop_meta:
             _pop["meta"] = _pop_meta
         state.broadcast_ws("queue_pop", _pop)
@@ -1077,28 +1098,52 @@ async def _start_next_queued_turn(
             _drained_meta.update(
                 (k, v) for k, v in _item_meta.items() if k != QUEUED_CONTAINMENT_META_KEY
             )
+
     # A drop-notice address names the one sender whose text the notice quotes.
     # A merged row's text is every entry's, so the row keeps an address only
     # when every consumed entry carries that same address; otherwise the union's
     # last writer would be quoted another sender's words. A code channel's
     # Slack sender (``slack_sender``) names the person whose words the row
     # holds, so it follows the same rule.
+    # ``relay`` (the cross-session sender for the incoming card) is a per-sender
+    # address like the ones beside it: a merged row of different senders' queued
+    # sends must not wear one sender's card, so it is dropped unless every entry
+    # agrees. It is compared by its SENDER alone: one session's ``session_send``
+    # and its ``session_broadcast`` differ only in the verb and are still that
+    # sender's.
+    def _address_of(item: dict, key: str) -> object:
+        meta = item.get("meta")
+        value = meta.get(key) if isinstance(meta, dict) else None
+        if key == "relay":
+            return value.get("senderKey") if isinstance(value, dict) else None
+        return value
+
     for _address_key in (
         CHANNEL_RECIPIENT_META_KEY,
         SEND_ORIGIN_META_KEY,
         "author",
         "slack_sender",
+        "relay",
     ):
-        _addresses = [
-            (
-                (item.get("meta") or {}).get(_address_key)
-                if isinstance(item.get("meta"), dict)
-                else None
-            )
-            for item in consumed
-        ]
+        _addresses = [_address_of(item, _address_key) for item in consumed]
         if any(_address != _addresses[0] for _address in _addresses):
             _drained_meta.pop(_address_key, None)
+    if "relay" in _drained_meta:
+        # Every consumed entry is the same sender's send (above), so the row is
+        # their texts: rebuild its relay with one envelope span per send, so the
+        # bubble drops each provenance line by position (``relay_spans``).
+        from kiro_crew.dashboard import relay_spans
+        from kiro_crew.dashboard.session_control import _SEND_PROVENANCE
+
+        _row_relay = relay_spans.relay_for(
+            next_msg,
+            [(item.get("meta") or {}).get("relay") for item in consumed],
+            _SEND_PROVENANCE,
+        )
+        if _row_relay is None:
+            _drained_meta.pop("relay", None)
+        else:
+            _drained_meta["relay"] = _row_relay
     # Model input only: the row keeps the user's text as typed.
     _possibly_delivered_steer = bool(_drained_meta.pop(STEER_POSSIBLY_DELIVERED_META, False))
     # Queue plumbing for the sub-agent hold only; says nothing about the row.
@@ -1117,6 +1162,8 @@ async def _start_next_queued_turn(
     _commands_off = bool(_drained_meta.pop(COMMANDS_OFF_META_KEY, False)) or any(
         (item.get("meta") or {}).get(COMMANDS_OFF_META_KEY) is True for item in consumed
     )
+    # Start plumbing too, read per entry below; it says nothing about the row.
+    _drained_meta.pop(START_BACKGROUND_META_KEY, None)
     if "quote" in _drained_meta:
         # The row's quote record follows the row's text: as typed only when
         # every consumed entry is the human's own (`deliver_as_typed`), else
@@ -1284,6 +1331,12 @@ async def _start_next_queued_turn(
     # whoever could write the session file.
     if any(item.get(RESTORED_QUEUE_KEY) for item in consumed):
         _run_kwargs["_turn_provenance_restored"] = True
+    # A BACKGROUND start only when EVERY consumed entry asked for one: a person's
+    # typed message drained in the same batch keeps its FOREGROUND start.
+    if consumed and all(
+        (item.get("meta") or {}).get(START_BACKGROUND_META_KEY) is True for item in consumed
+    ):
+        _run_kwargs["_turn_start_background"] = True
     if _settleable or _delivery_callbacks:
         _run_kwargs["_on_consumed"] = _note_consumed
     if _irreversible_delivery_callbacks:
@@ -1352,6 +1405,8 @@ async def _start_next_queued_turn(
             _run_chat(state, slot, next_msg, **_run_kwargs),
         )
     slot.task = task
+    if _run_kwargs.get("_turn_start_background"):
+        BACKGROUND_START_TASKS.add(task)
     # A recovery replay of a Regenerate's message takes over its target now
     # that ``slot.task`` gave it the slot's generation.
     adopt_regenerate_target(slot, consumed, task)

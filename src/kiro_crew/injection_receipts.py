@@ -33,7 +33,7 @@ from pathlib import Path
 from typing import Any, Final
 
 from kiro_crew.config.paths import data_home
-from kiro_crew.owner_only_files import owner_only_opener_for
+from kiro_crew.owner_only_files import mkdirs_owner_only, owner_only_opener_for
 
 logger = logging.getLogger(__name__)
 
@@ -196,7 +196,7 @@ def write_line(line: dict[str, Any]) -> None:
         stamp = datetime.fromisoformat(str(line["ts"]).replace("Z", "+00:00"))
         path = _receipt_dir() / f"{stamp.astimezone().strftime('%Y-%m-%d')}.jsonl"
         if not path.parent.exists():
-            path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            mkdirs_owner_only(path.parent)
         text = json.dumps(line, ensure_ascii=False, separators=(",", ":"))
         with open(path, "a", encoding="utf-8", opener=owner_only_opener_for(path)) as fh:
             fh.write(text + "\n")

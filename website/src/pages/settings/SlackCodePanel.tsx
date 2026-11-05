@@ -98,7 +98,7 @@ export function SlackCodeSection({ data, draft, onChange, readOnly, manifestText
             <div>
               <SettingsToggle
                 label={i18nT('pages.settings.slackPanel.slackCode.agent_sessions')}
-                description={i18nT('pages.settings.slackPanel.slackCode.agent_sessions_desc')}
+                hint={i18nT('pages.settings.slackPanel.slackCode.agent_sessions_desc')}
                 checked={draft.switches.agent_sessions}
                 onChange={setAgentSessions}
                 disabled={readOnly}

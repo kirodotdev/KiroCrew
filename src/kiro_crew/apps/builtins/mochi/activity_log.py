@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import Any, Iterator, TypedDict
 
 from kiro_crew.atomic_write import replace_with_retry
+from kiro_crew.owner_only_files import OWNER_ONLY_FILE_MODE
 from kiro_crew.platform_compat import chmod_safe, file_lock
 
 logger = logging.getLogger(__name__)
@@ -141,7 +142,7 @@ def activity_mutation(data_dir: str | Path) -> Iterator[None]:
     base = Path(data_dir)
     base.mkdir(parents=True, exist_ok=True)
     lock_path = base / (LOG_FILE + ".lock")
-    lock_path.touch(exist_ok=True)
+    lock_path.touch(mode=OWNER_ONLY_FILE_MODE, exist_ok=True)
     with open(lock_path, "r+") as _lf:
         with file_lock(_lf.fileno(), exclusive=True):
             yield

@@ -9,6 +9,7 @@ reaches the network: every client a test builds refuses to send.
 from __future__ import annotations
 
 import asyncio
+import base64
 import functools
 import io
 import json
@@ -24,7 +25,7 @@ from botocore.exceptions import NoCredentialsError, ReadTimeoutError  # noqa: E4
 from botocore.response import StreamingBody  # noqa: E402
 from botocore.stub import Stubber  # noqa: E402
 
-from kiro_crew.config.sections import DecisionProviderConfig  # noqa: E402
+from kiro_crew.config.sections import DecisionProviderConfig, DecisionsConfig  # noqa: E402
 from kiro_crew.decisions import capability, gate, impl_sagemaker  # noqa: E402
 from kiro_crew.decisions.impl_jev import JevOracle  # noqa: E402
 from kiro_crew.decisions.impl_sagemaker import (  # noqa: E402
@@ -37,6 +38,7 @@ from kiro_crew.decisions.impl_sagemaker import (  # noqa: E402
     SageMakerModelError,
     SageMakerOracle,
     SageMakerProtocolError,
+    SageMakerRequestTooLarge,
     SageMakerTarget,
     SageMakerThrottled,
     SageMakerTimeout,
@@ -49,7 +51,15 @@ from kiro_crew.decisions.impl_sagemaker import (  # noqa: E402
     parse_box,
     parse_endpoint,
 )
-from kiro_crew.decisions.types import Choice, Noul  # noqa: E402
+from kiro_crew.decisions.impl_systemone import ProviderProtocolError  # noqa: E402
+from kiro_crew.decisions.types import (  # noqa: E402
+    IMAGE_MAX_BYTES,
+    Answer,
+    Box,
+    Choice,
+    ImageAsset,
+    Noul,
+)
 
 ENDPOINT = "sagemaker://argus-9b?region=us-west-2"
 PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 64
@@ -310,6 +320,236 @@ def test_images_and_box_travel_with_the_opt_in_and_box_answers_parse(stubbed):
 def test_parse_box_refuses_a_bad_box(raw):
     with pytest.raises(SageMakerProtocolError):
         parse_box(raw)
+
+
+BOX_QUESTIONS = [Noul(id="present", prompt="Is it there?"), Box(id="where", prompt="Where?")]
+BOX_WIRE = {"type": "box", "box": {"left": 0.1, "top": 0.2, "right": 0.3, "bottom": 0.4}}
+
+
+def _box_reply(where: dict) -> dict:
+    return {"answers": {"present": {"type": "noul", "noul": 0.9}, "where": where}}
+
+
+def test_oracle_sends_images_and_box_with_the_opt_in_and_reads_the_box(stubbed):
+    stubber, _ = stubbed
+    sent = {
+        "state": {"screen": "shot"},
+        "model": "argus-9b",
+        "questions": {
+            "present": {"type": "noul", "instructions": "Is it there?"},
+            "where": {"type": "box", "instructions": "Where?"},
+        },
+        "assets": {
+            "shot": {
+                "type": "image",
+                "format": "png",
+                "data_base64": base64.b64encode(PNG).decode("ascii"),
+            }
+        },
+    }
+    stubber.add_response(
+        "invoke_endpoint",
+        {"Body": _body(_box_reply({**BOX_WIRE, "confidence": 0.8}))},
+        {
+            "EndpointName": "argus-9b",
+            "Body": json.dumps(sent, separators=(",", ":")).encode(),
+            "ContentType": "application/json",
+            "Accept": "application/json",
+            "CustomAttributes": IMAGES_ATTRIBUTE,
+        },
+    )
+    oracle = SageMakerOracle(_provider())
+    answers = asyncio.run(
+        oracle.ask({"screen": "shot"}, BOX_QUESTIONS, assets={"shot": ImageAsset(PNG)})
+    )
+    # The same Answer the hosted client returns for a Box question.
+    assert answers["where"] == Answer(
+        id="where",
+        value={"left": 0.1, "top": 0.2, "right": 0.3, "bottom": 0.4},
+        p=0.8,
+        confidence=0.8,
+    )
+    assert answers["present"].value == 0.9
+
+
+def test_a_box_question_without_an_image_still_sets_the_opt_in(stubbed):
+    stubber, _ = stubbed
+    stubber.add_response(
+        "invoke_endpoint",
+        {"Body": _body(_box_reply({**BOX_WIRE, "confidence": 0.7}))},
+        {
+            "EndpointName": "argus-9b",
+            "Body": botocore.stub.ANY,
+            "ContentType": "application/json",
+            "Accept": "application/json",
+            "CustomAttributes": IMAGES_ATTRIBUTE,
+        },
+    )
+    answers = asyncio.run(SageMakerOracle(_provider()).ask({"s": 1}, BOX_QUESTIONS))
+    assert answers["where"].p == 0.7
+
+
+def test_a_text_request_carries_no_opt_in(stubbed):
+    stubber, _ = stubbed
+    stubber.add_response(
+        "invoke_endpoint",
+        {"Body": _body(ANSWER)},
+        {
+            "EndpointName": "argus-9b",
+            "Body": botocore.stub.ANY,
+            "ContentType": "application/json",
+            "Accept": "application/json",
+        },
+    )
+    assert _ask()["q"].value == 0.25
+
+
+@pytest.mark.parametrize(
+    "where",
+    [
+        BOX_WIRE,  # no confidence
+        {**BOX_WIRE, "confidence": 1.5},
+        {
+            "type": "box",
+            "box": {"left": 0.3, "top": 0.2, "right": 0.1, "bottom": 0.4},
+            "confidence": 0.9,
+        },
+        {
+            "type": "box",
+            "box": {"left": 0.1, "top": 0.2, "right": 1.3, "bottom": 0.4},
+            "confidence": 0.9,
+        },
+        {"type": "noul", "noul": 0.5},
+        {"type": "box", "confidence": 0.9},
+    ],
+)
+def test_a_bad_box_answer_is_a_protocol_error(stubbed, where):
+    stubber, _ = stubbed
+    stubber.add_response("invoke_endpoint", {"Body": _body(_box_reply(where))})
+    with pytest.raises(ProviderProtocolError):
+        asyncio.run(
+            SageMakerOracle(_provider()).ask({"s": 1}, BOX_QUESTIONS, assets={"a": ImageAsset(PNG)})
+        )
+
+
+def test_an_image_over_the_per_image_cap_is_refused_before_any_call(monkeypatch):
+    def boom(*_a):
+        raise AssertionError("no client should be built")
+
+    monkeypatch.setattr(impl_sagemaker, "_make_client", boom)
+    big = ImageAsset(b"\x89PNG" + b"\x00" * IMAGE_MAX_BYTES)
+    with pytest.raises(ProviderProtocolError, match="too large"):
+        asyncio.run(SageMakerOracle(_provider()).ask({"s": 1}, BOX_QUESTIONS, assets={"a": big}))
+
+
+def test_a_request_over_the_sagemaker_limit_is_refused_clearly_and_not_sent(monkeypatch):
+    def boom(*_a):
+        raise AssertionError("no client should be built")
+
+    monkeypatch.setattr(impl_sagemaker, "_make_client", boom)
+    # Two images, each under the per-image cap, together over the 25 MB body limit.
+    half = ImageAsset(b"\x89PNG" + b"\x00" * (10 * 1024 * 1024))
+    with pytest.raises(SageMakerRequestTooLarge, match="over the 25000000-byte") as err:
+        asyncio.run(
+            SageMakerOracle(_provider()).ask({"s": 1}, BOX_QUESTIONS, assets={"a": half, "b": half})
+        )
+    # A config-class error, and the message names sizes only, never the body.
+    assert isinstance(err.value, SageMakerConfigError)
+    assert "AAAA" not in str(err.value)
+
+
+def test_no_image_bytes_or_state_in_logs_or_errors(stubbed, caplog):
+    stubber, _ = stubbed
+    stubber.add_client_error("invoke_endpoint", "ModelError", "echo " + STATE_MARK)
+    mark = b"\x89PNG" + b"IMAGEMARK" * 8
+    with caplog.at_level(logging.DEBUG):
+        with pytest.raises(SageMakerModelError) as err:
+            asyncio.run(
+                SageMakerOracle(_provider()).ask(
+                    {"message": STATE_MARK}, BOX_QUESTIONS, assets={"a": ImageAsset(mark)}
+                )
+            )
+    encoded = base64.b64encode(mark).decode("ascii")
+    for text in (str(err.value), caplog.text):
+        assert STATE_MARK not in text and encoded not in text and "IMAGEMARK" not in text
+
+
+def test_the_sagemaker_provider_declares_images_and_box():
+    from kiro_crew.decisions import provider as provider_mod
+
+    spec = provider_mod.select(gate.LANE_JEV, endpoint=ENDPOINT)
+    assert spec.id == provider_mod.PROVIDER_SAGEMAKER
+    assert {provider_mod.CAPABILITY_IMAGE, provider_mod.KIND_BOX} <= spec.supports
+    config = SimpleNamespace(decisions=SimpleNamespace(provider=_provider()))
+    needs = gate._request_needs(BOX_QUESTIONS, {"a": ImageAsset(PNG)})
+    assert needs == {provider_mod.CAPABILITY_IMAGE, provider_mod.KIND_BOX}
+    assert gate.provider_supports(needs, config)
+    assert gate.provider_supports(frozenset({provider_mod.CAPABILITY_IMAGE}), config)
+    assert gate.provider_supports(frozenset({provider_mod.KIND_BOX}), config)
+
+
+# --- through the gate: the image scope decides whether a screenshot goes ------
+
+
+@pytest.fixture
+def sagemaker_gate(tmp_path, monkeypatch):
+    """The real gate over a consented ``sagemaker://`` keystone; sends are recorded."""
+    keystone = tmp_path / "decisions_consent.json"
+    monkeypatch.setattr("kiro_crew.config.loader.decisions_consent_path", lambda: keystone)
+
+    def write(**fields):
+        keystone.write_text(json.dumps({"enabled": True, "endpoint": ENDPOINT, **fields}))
+
+    config = SimpleNamespace(
+        decisions=DecisionsConfig(provider=_provider()),
+    )
+    monkeypatch.setattr(gate, "_snapshot", lambda: config)
+    monkeypatch.setattr(capability, "is_decisions_denied", lambda *a, **k: False)
+    monkeypatch.setattr(capability, "targets_denied", lambda *a, **k: False)
+    sent: list[dict] = []
+
+    def fake_invoke(target, body, timeout_ms, **_kw):
+        sent.append(body)
+        return _box_reply({**BOX_WIRE, "confidence": 0.9}), "req-1"
+
+    monkeypatch.setattr(impl_sagemaker, "invoke_sync", fake_invoke)
+    return SimpleNamespace(write=write, sent=sent)
+
+
+def _gate_decide(**kwargs):
+    return asyncio.run(
+        gate.decide("browser.step", {"screen": "a"}, BOX_QUESTIONS, session_key="chat-sm", **kwargs)
+    )
+
+
+def test_through_the_gate_a_granted_screenshot_reaches_sagemaker(sagemaker_gate):
+    sagemaker_gate.write(browser_images=True)
+    answers = _gate_decide(images={"a": ImageAsset(PNG)}, scopes=("browser_images",))
+    assert answers is not None and answers["where"].value["right"] == 0.3
+    assert len(sagemaker_gate.sent) == 1
+    assert set(sagemaker_gate.sent[0]["assets"]) == {"a"}
+    assert impl_sagemaker.needs_images_opt_in(sagemaker_gate.sent[0])
+
+
+def test_through_the_gate_an_unrecorded_screenshot_choice_sends_no_image_to_sagemaker(
+    sagemaker_gate,
+):
+    # A consent given while this provider was text-only carries no screenshot
+    # choice. For a sagemaker:// endpoint that reads as NO: the owner turns it on.
+    sagemaker_gate.write()
+    assert _gate_decide(images={"a": ImageAsset(PNG)}, scopes=("browser_images",)) is None
+    assert sagemaker_gate.sent == []
+
+
+@pytest.mark.parametrize(
+    ("granted", "scopes"),
+    [(False, ("browser_images",)), (True, ())],
+    ids=["scope-refused", "scope-not-named"],
+)
+def test_through_the_gate_no_image_scope_sends_nothing(sagemaker_gate, granted, scopes):
+    sagemaker_gate.write(browser_images=granted)
+    assert _gate_decide(images={"a": ImageAsset(PNG)}, scopes=scopes) is None
+    assert sagemaker_gate.sent == []
 
 
 def test_image_asset_refuses_formats_the_contract_does_not_take():

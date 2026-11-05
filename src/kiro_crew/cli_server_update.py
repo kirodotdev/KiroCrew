@@ -584,8 +584,12 @@ def _update(force: bool = False) -> None:
     print("  🔄 Checking Node.js…")
     _ensure_node(proj)
 
-    # Build the dashboard frontend assets (npm), then reinstall the package.
-    build_frontend_sync(Path(proj))
+    # Build the dashboard frontend assets (npm), then reinstall the package. A
+    # failed build does not skip the install (the tree has already moved, and
+    # its dependencies must land); it fails the update after it, before the
+    # restart hint, because restarting would serve the new backend the previous
+    # bundle.
+    build = build_frontend_sync(Path(proj))
 
     # Install the pulled release into this CLI's own venv: its code, then the
     # KAS engine it pins (release_apply). `kirocrew update` is itself run FROM
@@ -602,6 +606,10 @@ def _update(force: bool = False) -> None:
         release_apply.GitRelease(Path(proj), Path(sys.executable), _emit, trusted_env=False)
     )
     if rc != 0:
+        sys.exit(1)
+    if build.outcome == "failed":
+        print(f"  ❌ {build.failure_message()}")
+        print("      Do not restart the gateway until the dashboard builds; see the log above.")
         sys.exit(1)
 
     print("\n✅ Kiro Crew updated!")

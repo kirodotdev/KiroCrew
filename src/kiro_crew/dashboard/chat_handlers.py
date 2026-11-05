@@ -358,6 +358,7 @@ from kiro_crew.dashboard.chat_api.turn_stop import (  # noqa: F401
 )
 from kiro_crew.dashboard.chat_auto_tag import maybe_auto_tag  # noqa: F401
 from kiro_crew.dashboard.chat_delivery import (  # noqa: F401
+    CHAT_BANNER_META_KEY,
     STEER_REQUEUED,
     STEER_STEERED,
     TURN_ACTOR_META_KEY,
@@ -688,8 +689,21 @@ _SESSION_RELOAD_NOTICE = (
 #: ``slack_request`` names the Slack message a code channel's first turn delivered
 #: (``slack.code_channels.routing.REQUEST_META_KEY``); a caller-supplied one would
 #: mark a request delivered that never reached the session.
+#: ``CHAT_BANNER_META_KEY`` is set only from the body's validated ``banner``
+#: field, so ``meta.banner`` cannot skip its length cap and redaction.
+#: ``relay`` is the cross-session sender the delivery path stamps on a
+#: ``session_send`` row; the transcript draws it as a card naming that session, so a
+#: caller-supplied one would show a message as another session's.
 RESERVED_ROW_META_KEYS = frozenset(
-    {"decisions_strip", HUMAN_TURN_META_KEY, TURN_ACTOR_META_KEY, "slack_sender", "slack_request"}
+    {
+        "decisions_strip",
+        HUMAN_TURN_META_KEY,
+        TURN_ACTOR_META_KEY,
+        "slack_sender",
+        "slack_request",
+        CHAT_BANNER_META_KEY,
+        "relay",
+    }
 )
 
 #: The ``steer`` value that means "let Jev choose between the two paths" rather

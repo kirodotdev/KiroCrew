@@ -469,7 +469,7 @@ async def handle_app_config(request: web.Request) -> web.Response:
         try:
             text = await asyncio.to_thread(config_path.read_text, encoding="utf-8")
             return web.json_response(json.loads(text))
-        except (json.JSONDecodeError, OSError) as exc:
+        except (json.JSONDecodeError, UnicodeDecodeError, OSError) as exc:
             return web.json_response({"error": f"failed to read config: {exc}"}, status=500)
 
     # PUT — write config.

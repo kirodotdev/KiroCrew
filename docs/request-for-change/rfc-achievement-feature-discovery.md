@@ -543,6 +543,8 @@ Product telemetry uses only the existing anonymous metrics counters (`metrics.ev
 | `manual` | "Mark as done" or "Mark all as done" | No |
 | `arrived` | A Try today "Try it" landed on its page (section 9): a visit, not proven use | No |
 
+`reached` also carries `recommended_by` (`tip` / `explore` / `video` / `several` / `none`): which in-product recommendation (a feature tip shown or acknowledged, an Explore starter click, a feature video seen) last pointed at the feature within 14 days before its first use. It is read from a local record in the state file and cleared on the first reach; `backfill`, `manual` and usage tiers always read `none`. The full rules are in `docs/system-specs/modules/metrics.md`, "Recommendation attribution".
+
 Success criteria (read 4 weeks after Ship 1):
 
 - Share of new installs that complete ≥3 new-feature rows within 7 days, counting `starter` and `organic` only, against a baseline for the same period before launch (D7 / former Q6: computed before Ship 1).

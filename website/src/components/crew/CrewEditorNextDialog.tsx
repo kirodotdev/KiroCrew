@@ -194,7 +194,7 @@ function CapabilityBand({
 }: {
   testId: string
   heading: string
-  note: string
+  note?: string
   rows: CapabilityRow[]
   onRemove?: (row: CapabilityRow) => void
   removeBusy?: string | null
@@ -213,7 +213,7 @@ function CapabilityBand({
     <section className="flex flex-col gap-2 rounded-md border border-border bg-bg-elevated p-3" data-testid={`next-band-${testId}`}>
       <div className="flex items-baseline gap-2">
         <span className="text-[11px] font-semibold uppercase tracking-[0.06em] text-muted-strong">{heading}</span>
-        <span className="text-[11px] text-muted">{note}</span>
+        {note && <span className="text-[11px] text-muted">{note}</span>}
       </div>
       {kinds.length === 0 ? (
         <span className="text-[12px] text-muted" data-testid={`next-band-${testId}-empty`}>{emptyText ?? i18nT('crewEditorNext.band_none')}</span>
@@ -804,11 +804,22 @@ export default function CrewEditorNextDialog({
                         <CapabilityBand
                           testId="added"
                           heading={i18nT('crewEditorNext.band_added', { name: displayName.trim() || editing })}
-                          note={i18nT('crewEditorNext.band_added_note')}
+                          // Only a mate that owns its file gets Add abilities (below);
+                          // any other binding's abilities are fixed here, so the band
+                          // must not point at a button that is not shown.
+                          note={ownsFile ? i18nT('crewEditorNext.band_added_note') : undefined}
                           rows={builtFromRows.filter(r => r.present && r.state === 'local')}
                           onRemove={ownsFile ? removeCapability : undefined}
                           removeBusy={removeBusy}
-                          emptyText={i18nT('crewEditorNext.band_added_empty')}
+                          emptyText={
+                            ownsFile
+                              ? i18nT('crewEditorNext.band_added_empty')
+                              // "built-in" only for a direct binding to a built-in template;
+                              // a forked copy (inherited / legacy_snapshot) gets the neutral line.
+                              : caps.mode === 'shared' && caps.template.source === 'builtin'
+                                ? i18nT('crewEditorNext.band_added_empty_builtin', { name: displayName.trim() || editing })
+                                : i18nT('crewEditorNext.band_added_empty_fixed', { name: displayName.trim() || editing })
+                          }
                         />
 
                         {/* No hand-off on the two notices below: the editor modal

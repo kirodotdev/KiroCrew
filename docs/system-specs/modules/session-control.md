@@ -1302,8 +1302,11 @@ A private member store is reachable on two authorities and no others:
   record, so it vouches only on this gateway's own word about the source:
   `source_vouch_agrees` answers yes when the source's in-memory vouch, or after a
   restart its durable vouch copy while config still gives that member that store,
-  names the same member and store the child copied. A source record rewritten to a
-  peer's store disagrees with that word, so its fork publishes unvouched. Claiming it is OPT-IN: the default is not to
+  names the same member, store and memory mode the child copied. A source record
+  rewritten to a peer's store disagrees with that word, so its fork publishes
+  unvouched. The same rule covers an agent's `session_fork`, which reaches the same
+  binder through `fork_slot` after its caller passes `authorize_target` on the
+  source. Claiming it is OPT-IN: the default is not to
   vouch, so a binder that says nothing about provenance publishes the record and
   claims no authority, and a caller that should have claimed it fails loudly at a
   refused dispatch rather than quietly widening access. An owner's pick of a member

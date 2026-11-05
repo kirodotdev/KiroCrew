@@ -340,7 +340,7 @@ class TestEngineStep:
     ):
         """A channel move or rollback to an older build must not fail on the flag."""
         monkeypatch.setattr(release_apply, "_spawn_build_child", lambda *a, **k: (2, b"", usage))
-        _real_install_engine(_PY, _BuildContext())
+        assert _real_install_engine(_PY, _BuildContext()) is None
 
     def test_another_usage_error_still_fails(self, monkeypatch):
         monkeypatch.setattr(

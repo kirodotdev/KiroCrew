@@ -621,4 +621,11 @@ def _handle_workspace(args: argparse.Namespace) -> None:
         print(f"Deleted workspace: {args.name}")
 
     else:
-        print("Usage: kirocrew workspace {list|create|update|delete}")
+        # No sub-action or an unknown one: a usage error. Print to stderr and
+        # exit 2, the argparse convention, so a script does not read 0 after a
+        # typo.
+        print(
+            "Usage: kirocrew workspace {list|create|update|delete}",
+            file=sys.stderr,
+        )
+        sys.exit(2)

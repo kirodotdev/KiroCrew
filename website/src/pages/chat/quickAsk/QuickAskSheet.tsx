@@ -119,7 +119,7 @@ export default function QuickAskSheet({ ask, sessionKey, mode, onCollapse }: {
       data-kind={ask.kind}
       className={mode === 'overlay'
         ? 'max-h-full w-[min(400px,100%)] overflow-y-auto rounded-2xl border border-border-strong bg-bg-elevated p-5 shadow-2xl focus:outline-none'
-        : 'max-h-[90dvh] w-full overflow-y-auto rounded-t-2xl border-t border-border-strong bg-bg-elevated px-5 pb-[max(20px,env(safe-area-inset-bottom))] pt-2 shadow-2xl focus:outline-none'}
+        : 'max-h-[90dvh] w-full overflow-y-auto rounded-t-2xl border-t border-border-strong bg-bg-elevated px-[max(20px,var(--safe-area-x))] pb-[max(20px,env(safe-area-inset-bottom))] pt-2 shadow-2xl focus:outline-none'}
     >
       {mode === 'bottom' && <div aria-hidden="true" className="mx-auto mb-3 h-1 w-10 rounded-full bg-border-strong" />}
       <div className="flex items-start gap-3">

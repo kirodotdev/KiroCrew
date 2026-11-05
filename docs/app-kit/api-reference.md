@@ -154,6 +154,58 @@ shown as text, only as the header's hover tooltip.
 | `onFileOpen` | `(path: string, opts?: { line?: number; endLine?: number }) => void` | none | Opens a file the transcript names; without it the tool-row file chip is hidden and path links stay plain (see below). |
 | `onArtifactOpen` | `(slug: string) => void` | none | Opens a saved artifact from a link in a reply; without it artifact links follow their href. |
 | `hide` | `readonly ChatEmbedHideKey[]` | none | Parts of the embed not to mount (see [Hiding parts](#hiding-parts)). |
+| `renderers` | `readonly MessageRenderer[]` | none | Transcript row renderers, handed to the embed's `ChatMessageList` and merged over the built-ins (see [Restyling rows](#restyling-rows)). |
+
+### Restyling rows
+
+`renderers` changes how transcript rows look while the embed keeps its
+composer, Stop, queue, approvals and follow-up chips. It takes the same entries
+as [`ChatMessageList`](#chat-transcript-rendering), merged by
+`mergeRenderers`: kind-matched built-ins (stop events, sub-agent results)
+first, then your entries, then the role-keyed built-ins. Renderers only draw
+rows; to remove a part of the embed use `hide`.
+
+Two things decide what an entry takes over:
+
+- Reusing a built-in `id` removes that built-in entirely, with every role it
+  drew. The built-in `assistant` entry draws both `assistant` and the live
+  `streaming` tail, so an `id: 'assistant'` entry claiming only `assistant`
+  leaves the reply invisible until the turn ends.
+- A role claim without `match` outranks that role's role-keyed refinements. An
+  entry claiming `assistant` with no `match` also takes the compaction and
+  session-reload notices, which the built-ins fold into a card.
+
+To restyle the reply, claim exactly the rows the built-in `assistant` entry
+draws and wrap its own render, so the bubble content, the streaming caret and
+the notice cards all stay as they are:
+
+```tsx
+import {
+  ChatEmbed,
+  defaultMessageRenderers,
+  resolveRenderer,
+  type MessageRenderer,
+} from '@kirocrew/app-sdk'
+
+const BUILTIN_ASSISTANT = defaultMessageRenderers.find(r => r.id === 'assistant')!
+
+// A module constant (or a useMemo): the list merges the registry once per
+// array identity, so a new array on every render redraws every row.
+const RENDERERS: MessageRenderer[] = [{
+  id: 'bubbled-assistant',
+  roles: BUILTIN_ASSISTANT.roles,
+  match: m => resolveRenderer(m, defaultMessageRenderers) === BUILTIN_ASSISTANT,
+  render: (m, ctx) => BUILTIN_ASSISTANT.render(m, {
+    ...ctx,
+    wrapper: (children, isUser) => ctx.wrapper(
+      <div className="flex gap-2"><AgentAvatar /><div className="bubble">{children}</div></div>,
+      isUser,
+    ),
+  }),
+}]
+
+<ChatEmbed slotKey="coder-abc123" renderers={RENDERERS} />
+```
 
 ### Hiding parts
 
@@ -836,6 +888,22 @@ WebSocket event types include `chat_chunk`, `chat_thinking`, `chat_status`,
 `subagent_done`. `src/kiro_crew/dashboard/ws_event_scope.py` owns the full set of
 emitted types and how each is scoped to an app; read it rather than this list
 when you need every type.
+
+An `approval_resolved` frame says a pending approval is no longer waiting. Its
+`data` carries:
+
+- `id`: the approval id. The id is the requester's and can recur, so it alone
+  does not name one request.
+- `approved`: `true` when the request was approved. `false` covers a
+  rejection and an expiry alike, so read `decision` before reporting a
+  rejection.
+- `slot`: the owning session, on an expiry of an approval that has one and on
+  a slot-level decision. A decided coordinator approval's frame carries no
+  `slot`, so match those by `id` and `instance`.
+- `instance`: present on a coordinator approval. It names the one request that
+  ended, so a card raised for a later request under the same id stays live.
+- `decision`: absent for an ordinary decision. `"expired"` means the wait timed
+  out and the request was denied.
 
 The app `slots` event (`mc:app:slots`) fires after the dashboard applies each
 `slots` or `slot_patch` frame. Its `detail` is `null`: the event says the slot

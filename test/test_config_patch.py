@@ -21,6 +21,13 @@ async def _owner_identity(request, handler):
     return await handler(request)
 
 
+def _windows_exec_close_ack(loader) -> dict:
+    """The ack a Windows load with the exec key absent records once (windows_exec_adoption)."""
+    if loader.unsandboxed_exec_platform_default():
+        return {"agent.sandbox_allow_unsandboxed_exec": False}
+    return {}
+
+
 def _make_app() -> web.Application:
     from kiro_crew.dashboard.handlers import api_kirocrew_config_patch
 
@@ -1954,7 +1961,10 @@ class TestChatTurnTimeout:
         async with TestClient(TestServer(_make_app())) as c:
             resp = await _patch(c, "agent.chat_turn_timeout_secs", 7200)
             assert resp.status == 200, await resp.text()
-        assert SD.acked_superseded() == {"agent.chat_turn_timeout_secs": 7200}
+        assert SD.acked_superseded() == {
+            "agent.chat_turn_timeout_secs": 7200,
+            **_windows_exec_close_ack(L),
+        }
         assert L.KiroCrewConfig.load().agent.chat_turn_timeout_secs == 7200
         stored = json.loads(tmp_config.read_text(encoding="utf-8"))
         assert stored["agent"]["chat_turn_timeout_secs"] == 7200
@@ -1967,7 +1977,7 @@ class TestChatTurnTimeout:
         monkeypatch.setattr(L, "config_dir", lambda: tmp_config.parent)
         async with TestClient(TestServer(_make_app())) as c:
             assert (await _patch(c, "agent.chat_turn_timeout_secs", 10800)).status == 200
-        assert SD.acked_superseded() == {}
+        assert SD.acked_superseded() == _windows_exec_close_ack(L)
 
     @pytest.mark.asyncio
     async def test_a_refused_ack_aborts_the_write(self, tmp_config, monkeypatch) -> None:

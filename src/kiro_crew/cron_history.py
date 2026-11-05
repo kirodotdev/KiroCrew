@@ -390,7 +390,9 @@ def _parse_history_row(line: str) -> dict[str, Any] | None:
     """Ignore partial JSONL lines and valid JSON values that are not records."""
     try:
         row = json.loads(line)
-    except json.JSONDecodeError:
+    except (ValueError, RecursionError):
+        # RecursionError: a line nested past the interpreter's limit raises it
+        # from json.loads, and it is not a ValueError.
         return None
     return row if isinstance(row, dict) else None
 

@@ -1,13 +1,8 @@
 """Tests for the ``spawn_run`` ``cwd`` parameter.
 
-Covers:
-- ``validate_cwd`` helper: absolute, exists, realpath, allowlist matching,
-  symlink traversal, disabled feature.
-- ``SubagentManager.spawn`` cwd rejection path: invalid cwd returns a done
-  ``SubagentInfo`` with an ``error`` and emits a ``rejected_invalid_cwd`` SEL
-  event without consuming a concurrency slot.
-- ``SubagentManager.spawn`` cwd success path: valid cwd is resolved and
-  stored on ``SubagentInfo`` so downstream factories can pick it up.
+``validate_cwd`` (absolute, exists, realpath, allowlist, symlinks, disabled feature), and
+``SubagentManager.spawn``: an invalid cwd returns a done ``SubagentInfo`` with ``error`` and a
+``rejected_invalid_cwd`` SEL event without taking a slot; a valid one is stored resolved.
 """
 
 from __future__ import annotations
@@ -28,9 +23,7 @@ from kiro_crew.subagent import SubagentManager, validate_cwd
 # looks short of memory, which is the runner's state, not this test's input.
 pytestmark = pytest.mark.usefixtures("healthy_host_memory")
 
-# ---------------------------------------------------------------------------
 # validate_cwd helper
-# ---------------------------------------------------------------------------
 
 
 class TestValidateCwd:
@@ -197,9 +190,7 @@ class TestCwdRootBoundary:
         assert sandbox_plan.path_within(path, root) is expected
 
 
-# ---------------------------------------------------------------------------
 # SubagentManager.spawn integration — cwd is threaded onto SubagentInfo
-# ---------------------------------------------------------------------------
 
 
 def _mock_sessions() -> MagicMock:
@@ -383,17 +374,12 @@ class TestSpawnCwd:
         self,
         tmp_path: Path,
     ) -> None:
-        """A prevalidated app spawn QUEUES at capacity like any accepted row --
-        but never carries its prevalidation into the queue.
+        """A prevalidated app spawn queues at capacity but drops its prevalidation.
 
-        ``_agent_prevalidated`` skips the drain-time agent-directory scan, so a
-        queued entry that kept the flag could run a same-named FOREIGN agent
-        under the app's auto-approval if the app were disabled and its agent
-        file removed while it waited. The queue entry therefore drops the flag:
-        the drain re-validates the agent and re-proves app ownership
-        (``_validate_app_agent_ownership``) before starting, and a row that
-        fails that re-check is refused AND failed in the store. Capacity itself
-        is a scheduling fact, not a verdict on the row (write-before-ack).
+        ``_agent_prevalidated`` skips the drain-time agent scan, so a kept flag could run a
+        same-named foreign agent under the app's auto-approval if the app's agent were
+        removed meanwhile. The drain re-validates and re-proves ownership
+        (``_validate_app_agent_ownership``); a failing row is refused and failed in the store.
         """
         manager = SubagentManager(
             sessions=_mock_sessions(),

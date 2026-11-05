@@ -217,7 +217,7 @@ describe('Decisions (Jev) preview card', () => {
     await waitFor(() => {
       expect(screen.getByText(/sent over the internet to Jev/i)).toBeInTheDocument()
     })
-    expect(screen.getByText(/the built-in rule decides instead/i)).toBeInTheDocument()
+    expect(screen.getByTitle(/the built-in rule decides instead/i)).toBeInTheDocument()
   })
 
   it('holds the switch and says why while no decision model is chosen', async () => {

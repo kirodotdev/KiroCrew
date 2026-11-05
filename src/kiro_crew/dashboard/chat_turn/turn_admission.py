@@ -303,7 +303,7 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
         )
         slot.append(
             "error",
-            "This thread's crew name cannot be dispatched. Rename or recreate the Crew Member.",
+            "This thread's crew name cannot be dispatched. Rename or recreate the Bot.",
             "msg msg-err",
             meta=gn.gateway_notice_meta(gn.GATEWAY_NOTICE_CREW_NAME_UNDISPATCHABLE),
         )
@@ -550,7 +550,7 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
         )
         slot.append(
             "error",
-            "This thread's crew name cannot be dispatched. Rename or recreate the Crew Member.",
+            "This thread's crew name cannot be dispatched. Rename or recreate the Bot.",
             "msg msg-err",
             meta=gn.gateway_notice_meta(gn.GATEWAY_NOTICE_CREW_NAME_UNDISPATCHABLE),
         )

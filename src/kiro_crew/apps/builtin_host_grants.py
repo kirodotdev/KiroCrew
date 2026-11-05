@@ -53,8 +53,8 @@ class HostGrants:
     #: pip) that a 1024-descriptor hard cap starves.
     build_rlimit: bool = False
     #: Hand this app's backend the port the gateway ACTUALLY bound
-    #: (``KIROCREW_BOUND_PORT``). The value does not exist before the bind, so the
-    #: boot wave holds this app's spawn back until ``start_deferred_app_backends``.
+    #: (``KIROCREW_BOUND_PORT``). ``start_dashboard`` reserves the port and exports
+    #: the value before the one boot wave, so the spawn finds it set.
     bound_port: bool = False
     #: Operator-set variables forwarded to EVERY app backend's environment, which
     #: ``minimal_env()`` would otherwise strip. Exact names.
@@ -142,7 +142,7 @@ def build_rlimit_apps() -> frozenset[str]:
 
 
 def bound_port_apps() -> frozenset[str]:
-    """Apps whose backend receives ``KIROCREW_BOUND_PORT`` and spawns after the bind."""
+    """Apps whose backend receives ``KIROCREW_BOUND_PORT`` at spawn."""
     return frozenset(g.app for g in builtin_host_grants() if g.bound_port)
 
 

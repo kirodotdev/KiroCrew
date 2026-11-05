@@ -218,8 +218,207 @@ class TestConfigOverlayLoad:
             cfg.save()
             saved = json.loads((config_dir / "config.json").read_text(encoding="utf-8"))
 
-        assert "yolo" not in saved.get("agent", {})
+        # The overlay's True never lands in config.json; the base keeps its own
+        # False under the spelling it stored.
+        assert "dangerously_skip_permissions" not in saved.get("agent", {})
+        assert saved["agent"]["yolo"] is False
         assert "model" not in saved.get("agent", {})
+
+    def test_save_keeps_a_base_value_the_overlay_also_sets(self, tmp_path: Path) -> None:
+        config_dir = tmp_path / ".kirocrew"
+        config_dir.mkdir()
+        base_config = {"timezone": "Asia/Tokyo", "dashboard": {"theme_mode": "light"}}
+        (config_dir / "config.json").write_text(json.dumps(base_config))
+        local_config = {"timezone": "Asia/Tokyo", "dashboard": {"theme_mode": "dark"}}
+        (config_dir / "config.local.json").write_text(json.dumps(local_config))
+
+        with patch("kiro_crew.config.loader.config_dir", return_value=config_dir):
+            cfg = KiroCrewConfig.load()
+            assert cfg.dashboard.theme_mode == "dark"
+            cfg.save()
+            saved = json.loads((config_dir / "config.json").read_text(encoding="utf-8"))
+
+        # The base file keeps what it stored, equal to the overlay or not.
+        assert saved["timezone"] == "Asia/Tokyo"
+        assert saved["dashboard"]["theme_mode"] == "light"
+
+    @pytest.mark.parametrize("spelling", ["yolo", "dangerouslySkipPermissions"])
+    def test_save_keeps_an_older_overlay_spelling_out_of_config_json(
+        self, tmp_path: Path, spelling: str
+    ) -> None:
+        config_dir = tmp_path / ".kirocrew"
+        config_dir.mkdir()
+        (config_dir / "config.json").write_text(json.dumps({"agent": {"provider": "acp"}}))
+        (config_dir / "config.local.json").write_text(json.dumps({"agent": {spelling: True}}))
+
+        with patch("kiro_crew.config.loader.config_dir", return_value=config_dir):
+            cfg = KiroCrewConfig.load()
+            assert cfg.agent.dangerously_skip_permissions is True
+            cfg.save()
+            saved = json.loads((config_dir / "config.json").read_text(encoding="utf-8"))
+            (config_dir / "config.local.json").unlink()
+            reloaded = KiroCrewConfig.load()
+
+        # The overlay owns the value under its older name; config.json never gets it.
+        assert "dangerously_skip_permissions" not in saved.get("agent", {})
+        assert reloaded.agent.dangerously_skip_permissions is False
+
+    def test_save_matches_an_overlay_spelling_the_reader_skips_as_the_reader_does(
+        self, tmp_path: Path
+    ) -> None:
+        config_dir = tmp_path / ".kirocrew"
+        config_dir.mkdir()
+        base = {"agent": {"provider": "acp", "dangerously_skip_permissions": False}}
+        (config_dir / "config.json").write_text(json.dumps(base))
+        overlay = {"agent": {"dangerouslySkipPermissions": 0, "yolo": True}}
+        (config_dir / "config.local.json").write_text(json.dumps(overlay))
+
+        with patch("kiro_crew.config.loader.config_dir", return_value=config_dir):
+            cfg = KiroCrewConfig.load()
+            assert cfg.agent.dangerously_skip_permissions is False
+            cfg.save()
+            saved = json.loads((config_dir / "config.json").read_text(encoding="utf-8"))
+            reloaded = KiroCrewConfig.load()
+
+        # The non-bool spelling is skipped, so the base file keeps its own value.
+        assert saved["agent"]["dangerously_skip_permissions"] is False
+        assert reloaded.agent.dangerously_skip_permissions is False
+
+    def test_save_keeps_an_older_knowledge_spelling_out_of_config_json(
+        self, tmp_path: Path
+    ) -> None:
+        config_dir = tmp_path / ".kirocrew"
+        config_dir.mkdir()
+        (config_dir / "config.json").write_text(json.dumps({"agent": {"provider": "acp"}}))
+        overlay = {"knowledge": {"auto_ingest_doc_links": True}}
+        (config_dir / "config.local.json").write_text(json.dumps(overlay))
+
+        with patch("kiro_crew.config.loader.config_dir", return_value=config_dir):
+            cfg = KiroCrewConfig.load()
+            assert cfg.knowledge.auto_add_documents is True
+            cfg.save()
+            saved = json.loads((config_dir / "config.json").read_text(encoding="utf-8"))
+
+        assert "auto_add_documents" not in saved.get("knowledge", {})
+
+    @pytest.mark.parametrize(
+        ("section", "current", "older"),
+        [
+            ("agent", "dangerously_skip_permissions", "yolo"),
+            ("agent", "dangerously_skip_permissions", "dangerouslySkipPermissions"),
+            ("knowledge", "auto_add_documents", "auto_ingest_doc_links"),
+        ],
+    )
+    def test_save_keeps_a_base_value_the_overlay_sets_under_an_older_name(
+        self, tmp_path: Path, section: str, current: str, older: str
+    ) -> None:
+        config_dir = tmp_path / ".kirocrew"
+        config_dir.mkdir()
+        base = {"agent": {"provider": "acp"}}
+        base.setdefault(section, {})[current] = True
+        (config_dir / "config.json").write_text(json.dumps(base))
+        (config_dir / "config.local.json").write_text(json.dumps({section: {older: True}}))
+
+        with patch("kiro_crew.config.loader.config_dir", return_value=config_dir):
+            KiroCrewConfig.load().save()
+            saved = json.loads((config_dir / "config.json").read_text(encoding="utf-8"))
+
+        # config.json keeps its own value under the current name.
+        assert saved[section][current] is True
+
+    @pytest.mark.parametrize(
+        ("section", "current", "older"),
+        [
+            ("agent", "dangerously_skip_permissions", "yolo"),
+            ("agent", "dangerously_skip_permissions", "dangerouslySkipPermissions"),
+            ("knowledge", "auto_add_documents", "auto_ingest_doc_links"),
+        ],
+    )
+    def test_save_keeps_a_base_value_both_files_set_under_an_older_name(
+        self, tmp_path: Path, section: str, current: str, older: str
+    ) -> None:
+        config_dir = tmp_path / ".kirocrew"
+        config_dir.mkdir()
+        base = {"agent": {"provider": "acp"}}
+        base.setdefault(section, {})[older] = True
+        (config_dir / "config.json").write_text(json.dumps(base))
+        (config_dir / "config.local.json").write_text(json.dumps({section: {older: True}}))
+
+        with patch("kiro_crew.config.loader.config_dir", return_value=config_dir):
+            KiroCrewConfig.load().save()
+            saved = json.loads((config_dir / "config.json").read_text(encoding="utf-8"))
+            (config_dir / "config.local.json").unlink()
+            reloaded = KiroCrewConfig.load()
+
+        # The base value survives under the spelling config.json used.
+        assert saved[section][older] is True
+        assert current not in saved[section]
+        assert getattr(getattr(reloaded, section), current) is True
+
+    @pytest.mark.parametrize(
+        ("section", "current", "older"),
+        [
+            ("agent", "dangerously_skip_permissions", "yolo"),
+            ("agent", "dangerously_skip_permissions", "dangerouslySkipPermissions"),
+            ("knowledge", "auto_add_documents", "auto_ingest_doc_links"),
+        ],
+    )
+    def test_save_keeps_the_overlay_ahead_when_both_files_differ_under_an_older_name(
+        self, tmp_path: Path, section: str, current: str, older: str
+    ) -> None:
+        config_dir = tmp_path / ".kirocrew"
+        config_dir.mkdir()
+        base = {"agent": {"provider": "acp"}}
+        base.setdefault(section, {})[older] = True
+        (config_dir / "config.json").write_text(json.dumps(base))
+        (config_dir / "config.local.json").write_text(json.dumps({section: {older: False}}))
+
+        with patch("kiro_crew.config.loader.config_dir", return_value=config_dir):
+            before = getattr(getattr(KiroCrewConfig.load(), section), current)
+            KiroCrewConfig.load().save()
+            with_overlay = getattr(getattr(KiroCrewConfig.load(), section), current)
+            (config_dir / "config.local.json").unlink()
+            without_overlay = getattr(getattr(KiroCrewConfig.load(), section), current)
+
+        # What loads does not change on save; the base value is still underneath.
+        assert before is False
+        assert with_overlay is False
+        assert without_overlay is True
+
+    def test_save_keeps_a_base_older_spelling_the_reader_reads_past_a_non_bool(
+        self, tmp_path: Path
+    ) -> None:
+        config_dir = tmp_path / ".kirocrew"
+        config_dir.mkdir()
+        base = {"agent": {"provider": "acp", "dangerously_skip_permissions": None, "yolo": True}}
+        (config_dir / "config.json").write_text(json.dumps(base))
+        overlay = {"agent": {"dangerouslySkipPermissions": True}}
+        (config_dir / "config.local.json").write_text(json.dumps(overlay))
+
+        with patch("kiro_crew.config.loader.config_dir", return_value=config_dir):
+            KiroCrewConfig.load().save()
+            (config_dir / "config.local.json").unlink()
+            reloaded = KiroCrewConfig.load()
+
+        # The reader skips the non-bool current name and reads the base's yolo.
+        assert reloaded.agent.dangerously_skip_permissions is True
+
+    def test_save_matches_an_older_knowledge_value_in_the_form_the_reader_reads(
+        self, tmp_path: Path
+    ) -> None:
+        config_dir = tmp_path / ".kirocrew"
+        config_dir.mkdir()
+        (config_dir / "config.json").write_text(json.dumps({"agent": {"provider": "acp"}}))
+        overlay = {"knowledge": {"auto_ingest_doc_links": "true"}}
+        (config_dir / "config.local.json").write_text(json.dumps(overlay))
+
+        with patch("kiro_crew.config.loader.config_dir", return_value=config_dir):
+            cfg = KiroCrewConfig.load()
+            assert cfg.knowledge.auto_add_documents is True
+            cfg.save()
+            saved = json.loads((config_dir / "config.json").read_text(encoding="utf-8"))
+
+        assert "auto_add_documents" not in saved.get("knowledge", {})
 
     def test_load_warns_when_config_json_is_non_dict(self, tmp_path: Path) -> None:
         config_dir = tmp_path / ".kirocrew"
@@ -285,6 +484,20 @@ class TestSubtractOverlay:
         overlay = {"b": 2, "c": 3}
         result = _subtract_overlay(merged, overlay)
         assert result == {"a": 1}
+
+    def test_a_leaf_the_base_stores_keeps_its_stored_value(self) -> None:
+        merged = {"agent": {"yolo": True, "model": "auto"}, "theme": "dark"}
+        overlay = {"agent": {"yolo": True}, "theme": "dark"}
+        base = {"agent": {"yolo": False}, "theme": "dark"}
+        assert _subtract_overlay(merged, overlay, base) == {
+            "agent": {"yolo": False, "model": "auto"},
+            "theme": "dark",
+        }
+
+    def test_a_leaf_the_base_does_not_store_is_still_removed(self) -> None:
+        merged = {"agent": {"yolo": True}, "other": 1}
+        overlay = {"agent": {"yolo": True}}
+        assert _subtract_overlay(merged, overlay, {"other": 1}) == {"other": 1}
 
 
 class TestConfigLocalPath:
@@ -352,6 +565,38 @@ class TestCliConfigSetLocal:
         assert local_file.exists()
         data = json.loads(local_file.read_text(encoding="utf-8"))
         assert data["agent"]["streaming"] is False
+
+    def test_plain_set_keeps_base_values_the_overlay_also_sets(self, tmp_path: Path) -> None:
+        import argparse
+
+        from kiro_crew.cli_config import _config_cmd
+
+        config_dir = tmp_path / ".kirocrew"
+        config_dir.mkdir()
+        base = {"timezone": "Asia/Tokyo", "dashboard": {"auto_open_browser": False}}
+        (config_dir / "config.json").write_text(json.dumps(base))
+        overlay = {"timezone": "Asia/Tokyo", "dashboard": {"auto_open_browser": False}}
+        (config_dir / "config.local.json").write_text(json.dumps(overlay))
+
+        args = argparse.Namespace(
+            config_action="set", key="dashboard.theme_mode", value="light", file=None, local=False
+        )
+        with (
+            patch("kiro_crew.cli_config.config_path", return_value=config_dir / "config.json"),
+            patch(
+                "kiro_crew.cli_config.config_local_path",
+                return_value=config_dir / "config.local.json",
+            ),
+            patch("kiro_crew.config.loader.config_dir", return_value=config_dir),
+            patch("kiro_crew.cli_config.sel"),
+        ):
+            _config_cmd(args)
+            saved = json.loads((config_dir / "config.json").read_text(encoding="utf-8"))
+
+        assert saved["dashboard"]["theme_mode"] == "light"
+        # Keys the set did not touch stay as stored, even where they equal the overlay.
+        assert saved["timezone"] == "Asia/Tokyo"
+        assert saved["dashboard"]["auto_open_browser"] is False
 
     @pytest.mark.parametrize(
         "key",
@@ -554,7 +799,7 @@ class TestCliConfigSetLocal:
             "memory": {"inject_lessons": False}
         }
 
-    def test_nonlocal_set_subtracts_overlay(self, tmp_path: Path) -> None:
+    def test_nonlocal_set_keeps_a_base_value_equal_to_the_overlay(self, tmp_path: Path) -> None:
         import argparse
 
         from kiro_crew.cli_config import _config_cmd
@@ -589,7 +834,8 @@ class TestCliConfigSetLocal:
 
         saved = json.loads((config_dir / "config.json").read_text(encoding="utf-8"))
         assert saved["agent"]["dangerously_skip_permissions"] is True
-        assert "streaming" not in saved.get("agent", {})
+        # The base file's own streaming value stays, though the overlay sets it too.
+        assert saved["agent"]["streaming"] is True
 
     def test_local_set_handles_corrupt_existing_file(self, tmp_path: Path) -> None:
         import argparse

@@ -773,7 +773,7 @@ async def _drive_cron_turn(*, ending: str, children: int = 1) -> dict[str, Any]:
     orch = _cron_orchestrator(sessions, infos)
     seen: dict[str, Any] = {"injected": [], "infos": infos, "sessions": sessions, "orch": orch}
 
-    async def inject(i: Any, _client: Any, _msg: Any, parent: str, _label: str) -> str:
+    async def inject(i: Any, _client: Any, _msg: Any, parent: str, _label: str, **_kw: Any) -> str:
         seen["injected"].append(i.id)
         seen["inject_session"] = sessions._sessions.get(parent)
         i._report_delivered = True  # _inject_with_retry acknowledges on landing
@@ -1011,7 +1011,7 @@ def _channel_gateway(sessions: Any, *infos: SubagentInfo) -> Any:
 
     gateway = _gateway(sessions)
 
-    async def _injected(i: Any, *_a: Any) -> str:
+    async def _injected(i: Any, *_a: Any, **_kw: Any) -> str:
         i._report_delivered = True  # _inject_with_retry acknowledges on landing
         return "answered from the completion"
 
@@ -1163,7 +1163,7 @@ async def test_each_sequence_step_settles_only_what_it_received() -> None:
     orch = _cron_orchestrator(sessions, [c1, c2])
     injected: list[tuple[str, str]] = []
 
-    async def inject(i: Any, _client: Any, _msg: Any, parent: str, _label: str) -> str:
+    async def inject(i: Any, _client: Any, _msg: Any, parent: str, _label: str, **_kw: Any) -> str:
         injected.append((i.id, parent))
         i._report_delivered = True
         return "answered"

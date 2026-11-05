@@ -117,7 +117,7 @@ async def test_channel_injection_wakes_drain_for_message_queued_mid_turn(
 
     register_drain(channel, drain)
 
-    async def inject_while_user_writes(info, client, msg, parent_key, label):
+    async def inject_while_user_writes(info, client, msg, parent_key, label, **_kw):
         # The person writes while the hidden turn holds the lease; the dispatcher's
         # busy path queues it, tagged with its channel as every producer does.
         assert sessions.is_busy(parent_key)

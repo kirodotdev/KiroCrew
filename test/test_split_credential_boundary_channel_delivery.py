@@ -11,6 +11,7 @@ from __future__ import annotations
 import ast
 
 import pytest
+import split_credential_boundary_checks
 from split_credential_boundary_helpers import HEAD, KEY, SRC, TAIL, _name_of, _on_screen, _rejoins
 
 from kiro_crew.messaging.display_safety import joins_to_a_credential, redact_for_display
@@ -521,7 +522,9 @@ class TestTheFramesAChannelActuallySends:
         )
 
 
-class TestTelegramRotatesWithoutHandingOverAKey:
+class TestTelegramRotatesWithoutHandingOverAKey(
+    split_credential_boundary_checks.TheBudgetAloneHandsTheReaderTheKey
+):
     """The rotation cut, through the function the channel rotates with.
 
     A rotation seals every chunk but the last as its own message and redacts each
@@ -537,13 +540,6 @@ class TestTelegramRotatesWithoutHandingOverAKey:
     def _body(self) -> str:
         """Filler, then the key's halves either side of a line break."""
         return ("w " * 180) + HEAD + "\n" + TAIL + " and some trailing words after it"
-
-    def test_the_budget_alone_hands_the_reader_the_key(self) -> None:
-        """The control: without the redactor this is exactly what ships."""
-        chunks = split_markdown_safe(self._body(), self.BUDGET)
-        assert len(chunks) > 1
-        assert _rejoins(chunks)
-        assert KEY in _on_screen(chunks)
 
     def test_the_rotation_cut_moves_instead(self) -> None:
         chunks = _split_markdown(self._body(), self.BUDGET)

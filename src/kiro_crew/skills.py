@@ -245,6 +245,7 @@ from kiro_crew.skills_review import (  # noqa: F401
     _VALIDATION_REPORT_MAX_STRING_CHARS,
     _VALIDATION_REPORT_TRUNCATION_KEY,
     PendingApprovalRefused,
+    PendingDismissRefused,
 )
 from kiro_crew.skills_script_validator import MAX_SCRIPT_BYTES, validate_scripts  # noqa: F401
 from kiro_crew.skills_selection import (  # noqa: F401
@@ -579,7 +580,7 @@ class SkillsLoader:
     _read_exact_key = _body_reads._read_exact_key
 
     def _iter(self, project_dir: str | Path | None = None) -> list[tuple[str, Path, str | None]]:
-        """Return all ``(name, skill_file, within)`` triples without walking the tree."""
+        """Return the first ``(name, skill_file, within)`` triple per key, without walking."""
         return _catalog._iter(self, project_dir)
 
     def _catalog_scope_key(self, project_dir: str | Path | None) -> str:
@@ -1132,12 +1133,12 @@ class SkillsLoader:
         """Return the version number to snapshot the CURRENT live body under."""
         return _versions._resolve_snapshot_version(self, versions_dir, fm_version)
 
-    def dismiss_pending_skill(self, slug: str) -> bool:
+    def dismiss_pending_skill(self, slug: str, content_sha256: str | None = None) -> bool:
         """Delete a pending candidate. Returns True if it existed.
 
         Contract and rationale: ``skill_runtime.auto_skills.dismiss_pending_skill``.
         """
-        return _auto_skills.dismiss_pending_skill(self, slug)
+        return _auto_skills.dismiss_pending_skill(self, slug, content_sha256)
 
     def dismiss_all_pending(self) -> int:
         """Delete all pending candidates. Returns count dismissed.

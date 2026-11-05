@@ -37,6 +37,7 @@ import itertools
 import types
 from pathlib import Path
 
+import composition_contract_checks
 import pytest
 import source_corpus
 
@@ -408,14 +409,10 @@ def _corpus_patched_names() -> dict[str, set[str]]:
     return by_name
 
 
-class TestPackage:
-    def test_the_package_holds_exactly_the_composed_parts(self) -> None:
-        assert {path.stem for path in PARTS_DIR.glob("*.py")} == {*PARTS, "__init__"}
-
-    def test_the_package_init_holds_only_its_docstring(self) -> None:
-        body = _tree(PARTS_DIR / "__init__.py").body
-        assert len(body) == 1 and isinstance(body[0], ast.Expr)
-        assert isinstance(body[0].value, ast.Constant) and isinstance(body[0].value.value, str)
+class TestPackage(
+    composition_contract_checks.ThePackageHoldsExactlyTheComposedParts,
+    composition_contract_checks.ThePackageInitHoldsOnlyItsDocstring,
+):
 
     def test_the_facade_composes_every_part_once_through_the_shared_helper(self) -> None:
         tree = _tree(FACADE_PATH)

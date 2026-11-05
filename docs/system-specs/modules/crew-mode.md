@@ -94,8 +94,8 @@ the form open with its entered name and selected template intact.
 
 `GET /api/agents/catalog` lists configured members and discovered shared templates
 without enrolling, pruning or allocating a member. Its one write is the owner's:
-the owner's own fetch runs `refresh_materialized_agents(heal_default=True)`,
-which may reset a `default_agent` whose template is gone. Any other caller's
+the owner's own fetch runs `reset_dangling_default_agent()` over a complete
+snapshot, which may reset a `default_agent` whose template is gone. Any other caller's
 fetch never writes config. Each row carries an explicit
 `selection_kind` (`member` or `template`); a member and template with the same name
 remain separate choices. This projection grants no execution or memory authority.
@@ -2386,8 +2386,10 @@ Chat remains a dynamic tab, and **Ask about this** keeps its synchronous
 contract: it focuses Side Chat and returns true while the Profile draft remains
 mounted.
 
-**Sessions** lists only live dashboard sessions whose `created_by` is the
-mate's DM slot. The tab keeps its name (a recorded decision), but its empty
+**Sessions** lists every session the mate dispatched, at any depth: the live
+slots whose `mate_root` is the mate's DM slot (birth `created_by` alone does not count), merged
+with the mate's `GET .../crew-workers` answer, which adds closed sessions, the
+ledger line and the server's group (`MateSessionsList`, `liveMateWorkers`). The tab keeps its name (a recorded decision), but its empty
 box speaks the reader's words, not the mechanism's: a first-time user has no
 model for why a mate would "drive sessions", so the box says session, chat or
 driving nowhere. The
@@ -2398,9 +2400,24 @@ line saying the list fills here and is empty now — under an illustration
 built only from the brand mascot assets (`ghost-poses` pose-7 as the
 mate, an accent `ArrowRight`, pose-4 and pose-6 at 30% opacity as the
 workers not here yet). The poses are fixed-palette `<img>` assets, so the fade
-is an opacity, never a recolour, and reads on both palettes (#23003). Rows use the shared status precedence (approval, question,
-running, idle), link to that session through the page's guarded session exit,
-preserve stable ordering while the set is unchanged, and fold after five rows.
+is an opacity, never a recolour, and reads on both palettes (#23003). Rows are grouped as the Crew panel groups them (approval, working,
+"Waiting on <mate>" for `with_conductor`, waiting, done), with Done folded. A click
+expands the row IN PLACE (the row says **Details**, and its chevron points down)
+and shows its recap: no navigation, no side panel, no drawer. The list counts only
+rows stamped `mate_root`: a session adopted or released away keeps its birth
+`created_by` but is no longer the mate's. A list 404 naming `not_crew_mode_root`
+(the mate thread still restoring) keeps polling; any other 404 is a gateway that
+does not serve the route, and stops. Open approvals and questions say to open that
+session from the sidebar to answer them. The recap (`GET .../crew-workers/{worker}/recap`,
+`handlers/crew_worker_recap.py`) is read from records only, never the
+model-written intent summary: the work item's title (else the slot title),
+status, reason and state, last report summary, PR link (`pr` on the acceptance's repo,
+else a reported artifact that `urlsplit` parses as a GitHub pull-request page), the conductor's decision, and
+`last_report_at` (else the session's newest `turn/completed`), plus the pending
+requests of its `approvals` fold and the count of open `ask_question` calls in
+its `tools` fold. With none of the report lines it says "No report yet"; open
+approvals and questions still show. The full transcript is not reached from
+this click.
 Child subagent runs remain presence for the roster but are not dashboard
 sessions. Every page-level request to open Profile — including a second use of
 the quiet-chat Sessions link after the reader changed card tabs or pushed a
@@ -4081,7 +4098,12 @@ runs the agent it recorded. A `template` record (a worker included) stays exact
   **`hooks`, `permissions` and `toolsSettings` are carried exactly**
   (`mate_spec_policy.layer_policy`): each hook is added beside the base's, each
   permission rule beside the base's rules, and a `toolsSettings` entry is copied
-  whole for a tool the base sets nothing for. **`toolsSettings` is an allowlist**
+  whole for a tool the base sets nothing for. An `mcp` `allow` the worker's
+  `allowedTools` list would drop lands as that list's matching `@server` /
+  `@server/tool` refs (`mate_spec_policy._carry_mcp_allow`), also for a server the
+  base declares, whose own `allowedTools` refs the file does not carry; the
+  ceiling then filters the merged list like any other grant. Only when those refs
+  cannot grant the rule exactly is it refused. **`toolsSettings` is an allowlist**
   (`mate_spec_policy.CARRIED_TOOLS_SETTINGS`): only `deniedCommands` and
   `allowedCommands` on the shell (`execute_bash` / `shell`), `deniedPaths` on
   the read and write tools, and `web_fetch.blocked`, each only when KAS's
@@ -4090,8 +4112,8 @@ runs the agent it recorded. A `template` record (a worker included) stays exact
   `denyByDefault`, `trusted`, `subagent.availableAgents` even when empty), is
   refused by name. One that cannot land as written (anything outside the
   allowlist, an entry for a tool the base sets differently or under another
-  spelling of it, a `permissions` block KAS would refuse whole, an `allow` rule
-  KAS's projection drops beside the worker's `allowedTools` list
+  spelling of it, a `permissions` block KAS would refuse whole, a built-in
+  `allow` rule KAS's projection drops beside the worker's `allowedTools` list
   (`kas_tool_view.permission_allow_derivable`), a hook past the
   `spec_hooks._MAX_SPEC_HOOKS` Crew fires) raises `SpecPolicyUncarried`, a
   `WorkerKitUnreadable`, so the
@@ -4149,7 +4171,7 @@ runs the agent it recorded. A `template` record (a worker included) stays exact
   (`slot_guards._record_explicit_agent_selection`), so a session switched off the
   worker template leaves the crewmate's backend too. The pin is that record, so the worker
   follows its crewmate's backend for its whole life. It runs on a backend in
-  `ACP_BACKENDS_MATE_WORKER_KIT` (KAS, claude; harness-parity.md),
+  `ACP_BACKENDS_MATE_WORKER_KIT` (KAS, claude, codex; harness-parity.md),
   its spec carried the way a member chat's
   saved spec is -- KAS through its per-session projection, the mirrored hosts
   through the session MCP projection, which reads the worker's own spec by the

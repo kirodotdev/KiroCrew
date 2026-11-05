@@ -40,6 +40,7 @@ from kiro_crew.atomic_write import atomic_write
 from kiro_crew.cloud import sizes
 from kiro_crew.cloud.login_target import KiroLoginTarget, LoginTargetError
 from kiro_crew.config.loader import config_dir
+from kiro_crew.owner_only_files import mkdirs_owner_only
 from kiro_crew.platform.interfaces import BUILTIN_PROVISIONER_ID
 
 logger = logging.getLogger(__name__)
@@ -394,7 +395,7 @@ class LaunchJobStore:
             # would land as 0644 and any other local account could read the code
             # and redeem the sign-in, so the file is written 0600 and the
             # directory is owner-only.
-            self._root.mkdir(parents=True, exist_ok=True, mode=0o700)
+            mkdirs_owner_only(self._root)
             if platform_compat.IS_POSIX:
                 # mode= only applies when mkdir creates the directory, so tighten
                 # an existing one too (a store written by an earlier build is

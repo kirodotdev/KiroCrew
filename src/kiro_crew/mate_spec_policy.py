@@ -9,7 +9,9 @@ them over the worker base (:func:`layer_policy`, called by
 
 Carrying is exact or refused. A hook is added beside the base's, a permission
 rule beside the base's rules, and a ``toolsSettings`` entry is copied whole for a
-tool the base sets nothing for. A field that cannot land exactly (an entry for a
+tool the base sets nothing for. An ``mcp`` allow the worker's ``allowedTools``
+would otherwise drop also lands as that list's matching ``@server[/tool]`` refs,
+whether or not the base declares the server. A field that cannot land exactly (an entry for a
 tool the base already sets differently, a ``permissions`` block KAS would refuse
 whole) raises :class:`SpecPolicyUncarried` naming it. The governance ceiling still
 applies to the merged spec, so a grant the template declares is never wider than
@@ -68,7 +70,7 @@ class SpecPolicyUncarried(WorkerKitUnreadable):
     def __init__(self, fields: list[str], why: str = "") -> None:
         self.fields = list(dict.fromkeys(fields))
         detail = why or "they cannot be applied exactly"
-        super().__init__(f"the crewmate's {', '.join(self.fields)} cannot be carried: {detail}")
+        super().__init__(f"the Bot's {', '.join(self.fields)} cannot be carried: {detail}")
 
 
 def uncarried(fields: list[str], why: str = "") -> SpecPolicyUncarried:
@@ -202,7 +204,8 @@ def _layer_permissions(
     if worker and isinstance(allowed_tools, list):
         # With an ``allowedTools`` list present, KAS's projection drops an allow
         # that list could express itself. One the list already grants is no
-        # loss; one it does not would be written while the worker still asks.
+        # loss; an ``mcp`` one it does not is carried as the list's own refs;
+        # any other would be written while the worker still asks.
         held_rules = have.get("rules")
         held = {_canon(r) for r in held_rules} if isinstance(held_rules, list) else set()
         lost.extend(
@@ -212,8 +215,46 @@ def _layer_permissions(
             and _canon(rule) not in held
             and permission_allow_derivable(rule)
             and not allow_granted_by_spec(rule, target)
+            and not _carry_mcp_allow(rule, target)
         )
     target["permissions"] = merged
+
+
+def _carry_mcp_allow(rule: dict[str, Any], target: dict[str, Any]) -> bool:
+    """Add the ``allowedTools`` refs that grant ``mcp`` allow *rule*, exactly.
+
+    ``server/*`` becomes ``@server`` and any other pattern ``@<pattern>``, the
+    refs KAS's projection derives back into the same rule. They are added only
+    when :func:`allow_granted_by_spec` then proves the rule granted, so nothing
+    wider than the rule is written; the governance ceiling still runs over the
+    merged spec afterwards. A ref for an excluded tool or a muted server is
+    proved but not written: the merge already took those grants away, and the
+    tool they name never reaches the worker. Returns whether the rule is granted.
+    """
+    if rule.get("capability") != "mcp":
+        return False
+    refs = []
+    for pattern in rule.get("match") or []:
+        if not isinstance(pattern, str):
+            return False
+        server, _, tool = pattern.partition("/")
+        refs.append(f"@{server}" if tool == "*" else f"@{pattern}")
+    have = list(target.get("allowedTools") or [])
+    new = [r for r in dict.fromkeys(refs) if r not in have]
+    if not allow_granted_by_spec(rule, {**target, "allowedTools": [*have, *new]}):
+        return False
+    excluded = set(target.get("excludedTools") or [])
+    servers = _dicts(target.get("mcpServers"))
+    target["allowedTools"] = [
+        *have,
+        *(
+            r
+            for r in new
+            if r not in excluded
+            and _dicts(servers.get(r[1:].partition("/")[0])).get("disabled") is not True
+        ),
+    ]
+    return True
 
 
 def _layer_tools_settings(target: dict[str, Any], settings: Any, lost: list[str]) -> None:
@@ -291,6 +332,6 @@ def backend_refusal(policy: dict[str, Any], backend: str) -> str | None:
     from kiro_crew.acp_backends import backend_to_stored
 
     return (
-        f"the crewmate's {', '.join(sorted(policy))} cannot be applied on "
-        f"{backend_to_stored(backend)}; run the crewmate on kas"
+        f"the Bot's {', '.join(sorted(policy))} cannot be applied on "
+        f"{backend_to_stored(backend)}; run the Bot on kas"
     )

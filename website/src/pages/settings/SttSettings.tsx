@@ -758,7 +758,7 @@ function PushToTalkConfig() {
       {cfg.enabled && cfg.mode === 'hybrid' && (
         <SettingsStepper
           label={i18nT('pages.settings.sttSettings.ptt_hold_threshold')}
-          description={i18nT('pages.settings.sttSettings.ptt_hold_threshold_desc')}
+          hint={i18nT('pages.settings.sttSettings.ptt_hold_threshold_desc')}
           value={i18nT('pages.settings.sttSettings.ptt_hold_seconds', { secs: toSeconds(cfg.holdMs) })}
           onIncrement={() => patch({ holdMs: clampHoldMs(cfg.holdMs + HOLD_MS_STEP) })}
           onDecrement={() => patch({ holdMs: clampHoldMs(cfg.holdMs - HOLD_MS_STEP) })}
@@ -1526,11 +1526,12 @@ export default function SttSettings({ cardIndex }: {
 
         {/* Kept on the surface, not in Advanced, because it is the one setting here
             that changes where the words GO: the transcript (never the audio) leaves
-            this machine. The description stays inline for the same reason -- consent
-            a user has to hover to read is not consent. */}
+            this machine. The short description says exactly that, on the row, for the
+            same reason -- consent a user has to hover to read is not consent. The tip
+            only adds what the tidy-up does to the text. */}
         <SettingsToggle
           label={i18nT('pages.settings.sttSettings.polish')}
-          description={i18nT('pages.settings.sttSettings.polish_desc')}
+          description={i18nT('pages.settings.sttSettings.polish_desc_summary')} hint={i18nT('pages.settings.sttSettings.polish_desc')}
           checked={!!stt.polish}
           onChange={v => set({ polish: v })}
           disabled={saving}

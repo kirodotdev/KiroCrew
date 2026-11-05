@@ -43,6 +43,7 @@ from kiro_crew.metrics.events import (
     emit_counter,
     emit_histogram,
 )
+from kiro_crew.owner_only_files import mkdirs_owner_only
 from kiro_crew.recovery.ladder import L4_GATEWAYD, LADDER, default_ladder
 from kiro_crew.sandbox import _SENSITIVE_ENV_PREFIXES as _SANDBOX_SENSITIVE_ENV_PREFIXES
 
@@ -759,7 +760,7 @@ class GatewayManager:
         # This file persists across restarts so operators can diagnose
         # startup failures and stub rejections without attaching a debugger.
         log_path = self._gatewayd_log_path()
-        log_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        mkdirs_owner_only(log_path.parent)
         try:
             log_path.parent.chmod(0o700)
         except OSError:

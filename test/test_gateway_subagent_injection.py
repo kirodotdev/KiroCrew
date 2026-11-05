@@ -645,6 +645,28 @@ async def test_a_failed_reset_keeps_the_cron_key_registered(done: _Done) -> None
 
 
 @pytest.mark.asyncio
+async def test_a_delivery_that_begins_before_the_deferred_reset_keeps_the_cron_key(
+    done: _Done,
+) -> None:
+    # Another completion's hand-off raises the count after this delivery read
+    # it as zero. The reset sees it under its own lock and declines, and the
+    # key is left to that delivery's own reset.
+    key = "cron:j1:r1"
+
+    async def _reset(reset_key: str, **kwargs: Any) -> bool:
+        done.calls.append(("reset", reset_key))
+        done.orch._cron_injecting[reset_key] = 1
+        return not kwargs.get("skip_if_injecting")
+
+    done.sessions.reset = AsyncMock(side_effect=_reset)
+
+    await done.done(make_info(parent=key))
+
+    done.sessions.reset.assert_awaited_once_with(key, skip_if_busy=True, skip_if_injecting=True)
+    done.orch.cron_svc.retire_finished_session_key.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_a_swallowed_cron_failure_marks_the_report_undelivered(done: _Done) -> None:
     done.stream_results = [RuntimeError("cron turn broke")]
     info = make_info(parent="cron:j1")

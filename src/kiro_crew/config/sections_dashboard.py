@@ -215,8 +215,8 @@ class DashboardConfig:
     crewmate_threads: bool = field(
         default=False,
         metadata=_meta(
-            "Reply threads on mate chat messages",
-            "Let any message in a mate's chat carry its own reply thread, "
+            "Reply threads on Bot chat messages",
+            "Let any message in a Bot's chat carry its own reply thread, "
             "opened in the side panel while the main chat stays visible. Off by "
             "default: the thread routes answer not-found, no thread frame is sent, "
             "and the dashboard draws no Reply in thread control. Takes effect on "
@@ -226,11 +226,11 @@ class DashboardConfig:
     crewmates_in_agent_picker: bool = field(
         default=False,
         metadata=_meta(
-            "Mates in the chat agent picker",
-            "List mates in the chat composer's agent picker, beside the agent "
-            "templates, so a chat can be switched onto a mate (and its own "
+            "Bots in the chat agent picker",
+            "List Bots in the chat composer's agent picker, beside the agent "
+            "templates, so a chat can be switched onto a Bot (and its own "
             "workspace and memory) without opening it from the Crew page. Off by "
-            "default: the picker lists templates plus any mate no listed "
+            "default: the picker lists templates plus any Bot no listed "
             "template already covers; the default agent stays even when covered, "
             "unless a template shares its name. Takes effect when the dashboard is "
             "reloaded; no gateway restart.",
@@ -987,11 +987,11 @@ class DashboardConfig:
     crewmates_onboarded: bool = field(
         default=False,
         metadata=_meta(
-            "Mates Onboarded",
-            "Whether the user has finished or dismissed the first-run Meet Mates "
-            "flow (the four-step introduction that creates the first mate). "
+            "Bots Onboarded",
+            "Whether the user has finished or dismissed the first-run Meet Bots "
+            "flow (the four-step introduction that creates the first Bot). "
             "Server-backed like the other first-run flags so a second machine does "
-            "not replay it. Also set when the flow is re-run from the Mates page.",
+            "not replay it. Also set when the flow is re-run from the Bots page.",
         ),
     )
     user_role: str = field(

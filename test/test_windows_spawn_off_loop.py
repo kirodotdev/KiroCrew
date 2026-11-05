@@ -188,6 +188,26 @@ def test_cancel_during_the_build_reaps_the_child_it_builds() -> None:
 
 
 @posix_only
+def test_a_build_that_fails_after_a_cancel_still_raises_the_cancel() -> None:
+    """A caller catching ``OSError`` must not carry on after it was cancelled."""
+
+    async def body(factory: _HeldFactory) -> None:
+        spawn = asyncio.ensure_future(asyncio.create_subprocess_exec(str(_SRC / "no-such-program")))
+        await await_until(factory.entered, what="the factory entered")
+        spawn.cancel()
+        await _ticks_while_pending(spawn)
+        assert not spawn.done()
+        factory.release.set()
+        with pytest.raises((asyncio.CancelledError, FileNotFoundError)) as raised:
+            await finished(spawn, "the cancelled spawn")
+        assert raised.type is asyncio.CancelledError, raised.value
+        assert isinstance(raised.value.__cause__, FileNotFoundError)
+        assert factory.built == []
+
+    _run_posix(body)
+
+
+@posix_only
 def test_a_failed_build_raises_its_own_error() -> None:
     async def body(factory: _HeldFactory) -> None:
         factory.release.set()

@@ -199,15 +199,22 @@ class TestHandleDashboard:
         assert "Usage:" in respond.call_args[0][0]
 
     @pytest.mark.asyncio
-    async def test_default_ttl_sends_link(self):
+    async def test_default_ttl_sends_link(self, _isolated_home, _real_sel, monkeypatch):
+        from kiro_crew.slack import allowlist
+
+        monkeypatch.setattr(allowlist, "sel", lambda: _real_sel)
         orch = _make_orch()
         respond = AsyncMock()
+        real_send = allowlist.send_dashboard_link
         with patch(
             "kiro_crew.slack.events.send_dashboard_link",
             new_callable=AsyncMock,
-            return_value="https://example.invalid/d?t=1",
+            side_effect=real_send,
         ) as send:
             await ev._handle_dashboard(orch, "U_OWNER", "", respond)
+        assert _audit_rows(_real_sel, "slack.dashboard_token") == [
+            ("U_OWNER", "ok", "ttl=3600", "")
+        ]
         assert send.await_args[0][2] == 3600
         assert "Dashboard link sent" in respond.call_args[0][0]
         assert respond.call_args.kwargs["blocks"]
@@ -225,16 +232,18 @@ class TestHandleDashboard:
         assert send.await_args[0][2] == ev.MAX_SESSION_TTL_SECS
 
     @pytest.mark.asyncio
-    async def test_link_failure_reports_error(self):
+    async def test_link_failure_reports_error(self, _isolated_home, _real_sel, monkeypatch):
+        from kiro_crew.slack import allowlist
+
+        monkeypatch.setattr(allowlist, "sel", lambda: _real_sel)
         orch = _make_orch()
+        orch.slack.open_dm = AsyncMock(side_effect=RuntimeError("dm closed"))
         respond = AsyncMock()
-        with patch(
-            "kiro_crew.slack.events.send_dashboard_link",
-            new_callable=AsyncMock,
-            return_value="",
-        ):
-            await ev._handle_dashboard(orch, "U_OWNER", "", respond)
+        await ev._handle_dashboard(orch, "U_OWNER", "", respond)
         assert "Failed to send dashboard link" in respond.call_args[0][0]
+        assert _audit_rows(_real_sel, "slack.dashboard_token") == [
+            ("U_OWNER", "error", "ttl=3600", "")
+        ]
 
 
 # ---------------------------------------------------------------------------

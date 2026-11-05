@@ -39,7 +39,7 @@ def install(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     (home / ".local" / "bin").mkdir(parents=True)
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
-    _script(bin_dir / "kiro-cli", "echo 'kiro-cli 9.9.9'")
+    _script(bin_dir / "kiro-cli", "echo 'kiro-cli 2.33.0'")
     augmented = tmp_path / "augmented"
     augmented.mkdir()
     monkeypatch.setenv("HOME", str(home))
@@ -138,6 +138,39 @@ def test_launcher_with_no_delegate_anywhere_is_broken(
     out, issues = _run(str(install / "kiro-cli"), capsys)
     assert "no kiro-cli-chat" in out
     assert issues
+
+
+def test_standalone_kiro_cli_without_a_chat_binary_passes(
+    install: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # From 3.0.0 the installer ships kiro-cli alone: it is the chat binary.
+    _script(install / "kiro-cli", "echo 'kiro-cli 3.0.0'")
+    out, issues = _run(str(install / "kiro-cli"), capsys)
+    assert issues == []
+    assert "✅ kiro-cli 3.0.0" in out
+    assert "broken" not in out
+
+
+def test_standalone_kiro_cli_ignores_a_leftover_dangling_chat_link(
+    install: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # A 2.x upgrade can leave ~/.local/bin/kiro-cli-chat behind; 3.0.0 never execs it.
+    _script(install / "kiro-cli", "echo 'kiro-cli 3.0.0'")
+    os.symlink(tmp_path / "gone", _local_bin() / "kiro-cli-chat")
+    out, issues = _run(str(install / "kiro-cli"), capsys)
+    assert issues == []
+    assert "✅ kiro-cli 3.0.0" in out
+    assert "broken" not in out
+
+
+def test_kiro_cli_that_cannot_report_a_version_is_still_broken(
+    install: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _script(install / "kiro-cli", "echo 'error: failed to start' >&2; exit 1")
+    out, issues = _run(str(install / "kiro-cli"), capsys)
+    assert "❌ Kiro CLI is broken" in out
+    assert services.CHAT_DELEGATE_BROKEN_FIX in out
+    assert len(issues) == 1
 
 
 def test_delegate_found_on_path(

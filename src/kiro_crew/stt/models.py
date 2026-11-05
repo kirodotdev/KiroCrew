@@ -69,6 +69,7 @@ from typing import Callable
 
 from kiro_crew.atomic_write import replace_with_retry
 from kiro_crew.config.paths import config_dir
+from kiro_crew.owner_only_files import OWNER_ONLY_FILE_MODE
 
 logger = logging.getLogger(__name__)
 
@@ -549,7 +550,7 @@ def write_usage_marker() -> None:
     """Create or touch the usage marker. Blocking I/O; best-effort, never raises."""
     path = usage_marker_path()
     try:
-        path.touch(exist_ok=True)
+        path.touch(mode=OWNER_ONLY_FILE_MODE, exist_ok=True)
         os.utime(path)
     except OSError:
         logger.debug("Could not stamp the speech usage marker", exc_info=True)

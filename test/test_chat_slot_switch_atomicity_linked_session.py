@@ -52,12 +52,8 @@ def _make_app_as(state: DashboardState, app_name: str) -> web.Application:
 class TestLinkedSlotSessionKey:
     """A channel-/cron-born slot runs its turns under ``linked_session_key``.
 
-    The switch handlers must probe and reset THAT session (the reload
-    handler's rule), not the ``dashboard:<slot>`` spelling that names a
-    session which never existed — otherwise the busy probe sees nothing and
-    the reset "succeeds" against nothing while the live process keeps the old
-    model. And slot ownership does not imply ownership of the linked session,
-    so an app caller may not switch a channel thread's model.
+    The switch handlers must probe and reset THAT session, not ``dashboard:<slot>``, which
+    never existed. Slot ownership is not session ownership, so an app may not switch it.
     """
 
     @pytest.mark.asyncio

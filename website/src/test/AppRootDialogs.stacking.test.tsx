@@ -39,11 +39,11 @@ const DIALOGS: Record<string, { file: string; overlay: RegExp }> = {
     file: 'components/UpdateModal.tsx',
     // The dialog overlay (role="button" dismiss scrim), not the sibling
     // full-app install surface which is already a z-[100] takeover.
-    overlay: /className="fixed inset-0 z-(?:\[(\d+)\]|(\d+)) bg-bg\/80 backdrop-blur-xs flex items-center justify-center animate-rise"\n\s*role="button"/,
+    overlay: /className="fixed inset-0 z-(?:\[(\d+)\]|(\d+)) bg-bg\/80 backdrop-blur-xs flex items-center justify-center animate-rise p-safe"\n\s*role="button"/,
   },
   UpdateFoundModal: {
     file: 'components/UpdateFoundModal.tsx',
-    overlay: /className="fixed inset-0 z-(?:\[(\d+)\]|(\d+)) bg-bg\/80 backdrop-blur-xs flex items-center justify-center animate-rise"\n\s*role="presentation"/,
+    overlay: /className="fixed inset-0 z-(?:\[(\d+)\]|(\d+)) bg-bg\/80 backdrop-blur-xs flex items-center justify-center animate-rise p-safe"\n\s*role="presentation"/,
   },
 }
 

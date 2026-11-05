@@ -977,53 +977,36 @@ def save(
 # A slot's fold -- one cell folded across the units a slot ran under
 # --------------------------------------------------------------------------- #
 #
-# A SLOT fold concatenates several units into one stream, where a session fold reads one
-# file. Everything above still applies -- the same kernel store, the same identity
-# equality, the same witness handed to :func:`prefix_admit` -- and only two things are
-# added, both forced by the concatenation.
+# A SLOT fold concatenates several units into one stream. Everything above still applies
+# (same kernel store, identity equality and :func:`prefix_admit` witness); the
+# concatenation adds two things.
 #
-# THE IDENTITY BLOCK CARRIES THE WHOLE UNIT VECTOR. A slot fold's state was folded over
-# every unit the slot ran under, so the facts that must match verbatim are the slot key,
-# the unit list in fold order, and every EARLIER unit's whole mark -- its origin, its
-# height and its byte fingerprint, as the fold surface recorded them. That is the same
-# comparison ``projection._continuable`` makes before carrying a warm cell forward, so a
-# savepoint is admitted on exactly the shapes a warm cell is: an added or removed unit, an
-# earlier unit that grew, an earlier unit rewritten in place, and a unit recreated under
-# the same id each refuse the file. The NEWEST unit is held to its origin and its witness
-# instead, because it is the one unit a continuation exists to let grow.
+# THE IDENTITY BLOCK CARRIES THE WHOLE UNIT VECTOR: the slot key, the unit list in fold
+# order, and every EARLIER unit's whole mark (origin, height, byte fingerprint). It is the
+# comparison ``projection._continuable`` makes for a warm cell, so an added, removed,
+# grown, rewritten or recreated earlier unit refuses the file. The NEWEST unit is held to
+# its origin and witness only, since it is the one allowed to grow.
 #
-# TWO POSITIONS, NOT ONE. The kernel orders a slot stream by an ORDINAL -- a unit's base
-# plus an entry's seq -- while the checkpoint the fold surface's callers carry reports the
-# newest unit's OWN seq. So ``watermark`` is the ordinal the cell resumes at and the
-# witness's ``seq`` is the unit seq the tail stream resumes from, and the two are tied by
-# the newest unit's ordinal base. That base is reproducible on resume precisely BECAUSE
-# every earlier unit's mark is in the identity block: a vector that compares equal yields
-# the same base, so the equality is what makes the ordinal meaningful across processes.
-# The tie is checked on both sides -- nothing is written or resumed whose two numbers
-# disagree -- because an ordinal off by a unit's height would resume a cell past entries
-# the tail then folds again.
+# TWO POSITIONS, NOT ONE. The kernel orders a slot stream by ORDINAL (unit base + entry
+# seq), while callers' checkpoints report the newest unit's OWN seq. ``watermark`` is the
+# ordinal and the witness's ``seq`` the unit seq, tied by the newest unit's ordinal base,
+# which is reproducible because the earlier marks are in the identity block. The tie is
+# checked on write and resume: an ordinal off by a unit's height would resume past
+# entries the tail then folds again.
 
 
-#: Key the slot payload's ``state`` rides under, holding the fold state as a JSON STRING
-#: rather than as the object itself.
+#: Key the slot payload's ``state`` rides under, holding the fold state as a JSON STRING.
 #:
 #: THE ORDER OF A STATE'S KEYS IS PART OF THE STATE. The kernel store serializes with
-#: ``sort_keys=True``, which is right for an envelope a person greps and wrong for these
-#: folds: ``ledger``'s artifact map and ``radar``'s ``last_update`` are ordered by
-#: INSERTION and age out ``next(iter(...))``, so a state that came back alphabetical
-#: evicts whichever key sorts first instead of the oldest one. On a slot whose artifact
-#: keys are not already in alphabetical order that drops the NEWEST pointer on the first
-#: read after a restart, and the record a reader is served then disagrees with a cold
-#: fold for the life of the unit.
+#: ``sort_keys=True``, but ``ledger``'s artifact map and ``radar``'s ``last_update`` age
+#: out by INSERTION order (``next(iter(...))``); a state reloaded alphabetical would evict
+#: the wrong key, e.g. the NEWEST artifact pointer, and disagree with a cold fold for the
+#: life of the unit. A string keeps the fold's order without changing the kernel's sort
+#: for its other clients.
 #:
-#: Encoding the state here keeps the order the fold wrote it in, and keeps it without
-#: changing what the kernel does for its other clients -- whose folds would each need
-#: their own audit before that sort could be called safe to drop. The cost is the escape
-#: characters a JSON string inside JSON carries.
-#:
-#: A payload written before this wrapper decodes to a state with none of the fold's own
-#: keys, which :func:`~kiro_crew.crew_log.projection.Checkpoint.from_dict` refuses, so it
-#: is retired to a cold fold rather than misread.
+#: A payload without this wrapper decodes to a state with none of the fold's keys, which
+#: :func:`~kiro_crew.crew_log.projection.Checkpoint.from_dict` refuses, so it cold-folds
+#: rather than being misread.
 _SLOT_STATE_JSON: Final[str] = "state_json"
 
 

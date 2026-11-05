@@ -21,6 +21,7 @@ from typing import BinaryIO
 
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.constants import CODER_WORKSPACE_PREFIX_MAX_CHARS
+from kiro_crew.owner_only_files import owner_only_opener_for
 from kiro_crew.platform_compat import file_lock
 
 _SCHEMA_VERSION = 1
@@ -159,7 +160,7 @@ class WorkspaceBindingRegistry:
 
     def _open_lock(self) -> BinaryIO:
         self.lock_path.parent.mkdir(parents=True, exist_ok=True)
-        fd = open(self.lock_path, "a+b")
+        fd = open(self.lock_path, "a+b", opener=owner_only_opener_for(self.lock_path))
         if os.fstat(fd.fileno()).st_size == 0:
             fd.write(b"0")
             fd.flush()

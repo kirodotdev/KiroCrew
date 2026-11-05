@@ -42,6 +42,7 @@ from kiro_crew.config.loader import (
     unsandboxed_exec_platform_default,
     update_config_locked,
 )
+from kiro_crew.config.superseded_defaults import ack_explicit_write
 from kiro_crew.constants import MIN_NODE_VERSION, format_node_version
 from kiro_crew.dashboard.urls import _resolve_hostname_bounded
 from kiro_crew.hidden_leaf_staging import EnvStagingRefused, publish_env
@@ -1430,6 +1431,10 @@ def _setup_sandbox_consent() -> None:
                 return None
             section = {}
             data["agent"] = section
+        # A false written here is the operator's answer, so ack it before the
+        # write: unacked, the next load on Windows would adopt it as the stale
+        # pre-0.6.0 false (``superseded_defaults``).
+        ack_explicit_write("agent.sandbox_allow_unsandboxed_exec", granting)
         section["sandbox_allow_unsandboxed_exec"] = granting
         return data
 

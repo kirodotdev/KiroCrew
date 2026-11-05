@@ -106,6 +106,7 @@ class AcpRuntime:
     _resolve_spawn_plan = _rt_launch._resolve_spawn_plan
     _initialize_handshake = _rt_launch._initialize_handshake
     _spawn_admitted = _rt_launch._spawn_admitted
+    _refuse_over_ceiling_launch = _rt_launch._refuse_over_ceiling_launch
     _failed_start_cleanup = _rt_launch._failed_start_cleanup
     _record_tree_before_failed_start_kill = _rt_launch._record_tree_before_failed_start_kill
     _kill_failed_start_escapees = _rt_launch._kill_failed_start_escapees
@@ -120,6 +121,7 @@ class AcpRuntime:
     _session_work_dir = _rt_setup._session_work_dir
     _refuse_if_loader_unreachable = _rt_setup._refuse_if_loader_unreachable
     _refuse_over_ceiling_start = _rt_setup._refuse_over_ceiling_start
+    _start_launch_name = _rt_setup._start_launch_name
     _kas_custom_agents = _rt_setup._kas_custom_agents
     _mount_member_panel = _rt_setup._mount_member_panel
     _session_start_budget = _rt_setup._session_start_budget
@@ -162,6 +164,7 @@ class AcpRuntime:
     _finish_session_init = _rt_registry._finish_session_init
     # Putting a session on its agent: ``kiro_crew.acp.runtime_mode_activation``.
     _skill_projection_lock = _rt_mode._skill_projection_lock
+    _refuse_over_ceiling_mode = _rt_mode._refuse_over_ceiling_mode
     _issue_skill_projection_generation = _rt_mode._issue_skill_projection_generation
     _adopted_skill_projection_generation = _rt_mode._adopted_skill_projection_generation
     _note_unadopted_skill_projection = _rt_mode._note_unadopted_skill_projection

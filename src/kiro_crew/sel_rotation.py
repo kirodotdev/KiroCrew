@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import IO, TYPE_CHECKING
 
 from kiro_crew import platform_compat
+from kiro_crew.owner_only_files import mkdirs_owner_only, owner_only_opener
 from kiro_crew.sel_reader import _parse_timestamp
 
 if TYPE_CHECKING:
@@ -202,7 +203,7 @@ def _open_rotation_lock(self: SecurityEventLog) -> IO[bytes] | None:
         # a byte-range lock covers byte 0 of a zero-length file, and writing
         # one here would fail with EACCES against a sibling that acquired
         # first, which declines a rotation for a lock that is working.
-        lock_fh = open(lock_path, "a+b")
+        lock_fh = open(lock_path, "a+b", opener=owner_only_opener)
     except OSError:
         logger.warning("SEL rotation lock %s could not be opened", lock_path, exc_info=True)
         return None
@@ -248,7 +249,7 @@ def _ensure_segment_dir(self: SecurityEventLog) -> bool:
             )
             return False
     try:
-        self._segment_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        mkdirs_owner_only(self._segment_dir)
     except OSError:
         logger.warning("SEL segment dir %s could not be created", self._segment_dir, exc_info=True)
         return False

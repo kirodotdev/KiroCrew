@@ -758,12 +758,19 @@ async def _auto_apply_update(self: GatewayOrchestrator, *, mandatory: bool = Fal
         # serves the latest bundle. Graceful no-op if no website/ or npm.
         if self.dashboard_state:
             self.dashboard_state.push_update_progress("building", "Building frontend…")
-        await build_frontend_async(
+        build = await build_frontend_async(
             proj,
             push_progress=(
                 self.dashboard_state.push_update_progress if self.dashboard_state else None
             ),
         )
+        # A failed build does NOT stop the install below: the tree has already
+        # moved, and nothing retries this update, so its dependencies must still
+        # land or any later restart dies at import. Only the restart is refused
+        # (after the install), since static/dist still holds the previous bundle.
+        build_failed = build.outcome == "failed"
+        if build_failed:
+            logger.error("Auto-update: %s", build.failure_message())
 
         if self.dashboard_state:
             self.dashboard_state.push_update_progress("building", "Rebuilding package…")
@@ -922,6 +929,17 @@ async def _auto_apply_update(self: GatewayOrchestrator, *, mandatory: bool = Fal
         # attempt recorded does not describe the install.
         tree_moved = False
         update_ownership.clear_restart_refusal()
+        if build_failed:
+            # The install is importable, but static/dist still holds the previous
+            # bundle and a restart would pair it with the new backend. Stay up,
+            # and keep the stale-asset watchdog's import probe from clearing it.
+            update_ownership.refuse_restart(
+                "the frontend build after the git auto-update did not complete",
+                import_probe_clears=False,
+            )
+            if self.dashboard_state:
+                self.dashboard_state.push_update_progress("error", build.failure_message())
+            return
         logger.info("Auto-update: rebuild complete, preparing safe restart")
         # Re-read version from rebuilt package for the operator-facing log;
         # restart ownership itself is centralized below.

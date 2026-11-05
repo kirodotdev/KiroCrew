@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { screen, fireEvent, waitFor, within } from '@testing-library/react'
+import { act, screen, fireEvent, waitFor, within } from '@testing-library/react'
 import { renderWithProviders as renderUnderHost } from '../../test/helpers'
 import { AppIdentityProvider } from '../../app-sdk/identity'
 
@@ -1328,6 +1328,26 @@ describe('add accounts', () => {
     await waitFor(() => {
       expect(awsControlApi.accounts).toHaveBeenCalledTimes(2)
     })
+  })
+
+  it('a box ticked while a register is in flight stays ticked when it lands', async () => {
+    let land!: (v: { added: number; skipped: number }) => void
+    vi.mocked(awsControlApi.registerProfiles).mockImplementation(
+      () => new Promise((resolve) => { land = resolve }),
+    )
+    await openAccountsPane()
+    fireEvent.click(await screen.findByTestId('add-accounts-toggle'))
+    const box = async (name: string) =>
+      (await screen.findAllByTestId('add-accounts-checkbox')).find((b) => b.getAttribute('data-name') === name)!
+    fireEvent.click(await box('staging'))
+    fireEvent.click(screen.getByTestId('add-accounts-register'))
+    await waitFor(() => expect(awsControlApi.registerProfiles).toHaveBeenCalledWith(['staging']))
+
+    fireEvent.click(await box('sandbox'))
+    expect(await box('sandbox')).toBeChecked()
+    await act(async () => { land({ added: 1, skipped: 0 }) })
+    await waitFor(() => expect(awsControlApi.accounts).toHaveBeenCalledTimes(2))
+    expect(await box('sandbox')).toBeChecked()
   })
 
   it('says so on an unsupported platform instead of showing a picker', async () => {

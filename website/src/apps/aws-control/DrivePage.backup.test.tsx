@@ -1019,3 +1019,46 @@ describe('DrivePage sections: the stored-archive list reaches every row, announc
     expect(toggle).toHaveFocus()
   })
 })
+
+describe('DrivePage sections: a stored-archive listing cut off at the page cap says so', () => {
+  function stubRemote(remote: Partial<RemoteBackup> & Record<string, unknown>) {
+    vi.mocked(awsControlApi.backup).mockResolvedValue({
+      nightly: false, runs: {}, install: { id: INSTALL_ID, label: 'This Mac' },
+      remote: { ...emptyRemote, installs: [{ id: INSTALL_ID, label: 'This Mac', origin: 'self' }], ...remote },
+    } as BackupStatus)
+  }
+
+  async function open() {
+    await renderDrive('backup')
+    fireEvent.click(await screen.findByTestId('backup-remote-toggle'))
+    return within(await screen.findByTestId('backup-archive'))
+  }
+
+  it('names each kind whose listing was cut off, newest-may-be-missing', async () => {
+    stubRemote({ archives_truncated: ['sessions', 'snapshot'] })
+    const archive = await open()
+    const notes = archive.getAllByTestId('backup-archives-truncated')
+    // In the page order of the kinds, not the order the backend listed them.
+    expect(notes.map((n) => n.textContent)).toEqual([
+      i18nT('apps.awsControl.console.backup_archives_truncated', { kind: i18nT('apps.awsControl.console.backup_kind_snapshot') }),
+      i18nT('apps.awsControl.console.backup_archives_truncated', { kind: i18nT('apps.awsControl.console.backup_kind_sessions') }),
+    ])
+  })
+
+  it('says nothing when every listing was read whole', async () => {
+    stubRemote({ archives_truncated: [] })
+    const archive = await open()
+    expect(archive.queryByTestId('backup-archives-truncated')).toBeNull()
+  })
+
+  it.each([
+    ['absent (an older backend)', undefined],
+    ['a string', 'snapshot'],
+    ['an object', { snapshot: true }],
+    ['an unknown kind', ['unknown-kind']],
+  ])('reads a field that is %s as a complete listing', async (_label, value) => {
+    stubRemote({ archives_truncated: value } as Record<string, unknown>)
+    const archive = await open()
+    expect(archive.queryByTestId('backup-archives-truncated')).toBeNull()
+  })
+})

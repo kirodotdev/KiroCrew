@@ -247,7 +247,7 @@ describe('Credential preview', () => {
     const panel = preview('credential-preview')!
     expect(panel.textContent).toContain('Credential removed before saving')
     expect(panel.textContent).toContain('Matched: a value after an aws_secret_access_key label.')
-    expect(getByTestId('credential-preview-floor').textContent).toBe('The value was never saved, so nothing here can show it.')
+    expect(getByTestId('credential-preview-floor').textContent).toBe('Never saved. The owner can show it from the card while this gateway runs.')
     expect(queryByTestId('redaction-preview-actions')).toBeNull()
   })
 

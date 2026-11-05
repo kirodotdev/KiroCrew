@@ -162,6 +162,10 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # the SEL audit log. That is a local audit record, not an output bound for
         # a human or a third party.
         "permission_floor.py",
+        # The same audit hygiene for the batch write guard's own refusal row
+        # (``batch_guard.audit_refusal``), through permission_floor's helpers: a
+        # local SEL record and a gateway log line, not an egress.
+        "acp/batch_guard.py",
         # Transfer-side log hygiene: both redact a URL down to scheme+host before it
         # reaches a gateway log line ("Downloading %s from %s", a fetch failure, a
         # manifest that overran its byte bound). The url is operator- or
@@ -199,6 +203,11 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # (``_redacted_detail``) into its failure, which reaches the operator
         # through the same registered sink and the git routes' own progress feed.
         "platform/release_apply.py",
+        # Same shape for a source install: redacts the tail of the npm build log
+        # (an install can echo a registry URL carrying credentials) before it
+        # becomes the failure message that the update paths show on their
+        # progress card or print. Scrubbing at capture, not an output boundary.
+        "frontend.py",
         # Same shape: redacts the unparseable LLM decomposition response before
         # writing the diagnostic ERROR line to the gateway log. Defensive log
         # hygiene so a response echoing a credential or exfiltration URL cannot
@@ -1074,6 +1083,9 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "cloud/connect.py",
         "cloud/login.py",
         "embeddings_download.py",
+        # The shared mark-collected sender: redacts only the gateway error text its
+        # warning log line carries; it returns nothing to the model or a user.
+        "subagent_read_collected.py",
         # Uses the redactor as a PREDICATE, not a transform: `resolve_deck_dir`
         # compares `redact(deck_id) != deck_id` to decide whether to refuse the deck
         # outright. A deck id cannot be scrubbed on the way out — it is the directory

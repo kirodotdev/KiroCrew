@@ -1,16 +1,8 @@
 """Auto-generated and manual emoji icons on chat folders.
 
-The generator (``generate_emoji_for_name``) is shared with the artifact
-library and already covered elsewhere; these tests pin the CHAT-FOLDER wiring:
-
-* create never generates an icon — an explicit ``icon`` value is stored,
-  anything else means the default glyph,
-* PATCH accepts ``icon`` (set / clear) and ``regenerate_icon`` (the explicit
-  Auto-generate action, the only path that spawns generation), rejecting the
-  two together,
-* the write-back goes through ``mutate_folders`` and re-finds the folder by
-  id, so a folder deleted mid-generation is never resurrected,
-* app ownership gates icon writes exactly like every other folder field.
+``generate_emoji_for_name`` is tested elsewhere; these pin the chat-folder wiring. Only
+PATCH ``regenerate_icon`` spawns generation, and the write-back re-finds the folder by id
+so a folder deleted mid-generation is never resurrected.
 """
 
 from __future__ import annotations
@@ -88,11 +80,9 @@ def _by_id(state: DashboardState, fid: str) -> dict[str, Any] | None:
 async def _drain_icon_tasks() -> None:
     """Wait for every in-flight icon write-back before asserting on state.
 
-    Filtered to the CURRENT event loop: the task set is module-global, so a
-    task leaked by an earlier test (which ran on a different, now-closed
-    loop) would make a bare ``gather`` raise and crash an unrelated test.
-    ``return_exceptions=True`` keeps one failed write-back from masking the
-    assertion this drain is guarding.
+    Filtered to the CURRENT loop: the task set is module-global, and a task from a closed
+    loop would make ``gather`` raise. ``return_exceptions=True`` keeps one failure from
+    masking the assertion.
     """
     loop = asyncio.get_running_loop()
     tasks = [t for t in chat_folders._CHAT_FOLDER_ICON_TASKS if t.get_loop() is loop]
@@ -666,11 +656,8 @@ class TestIconTaskCoalescing:
     async def test_cancel_mid_write_lets_the_started_transaction_finish(self) -> None:
         """A superseding regenerate must not tear an in-flight store write.
 
-        Cancelling the pending task while its ``mutate_folders`` transaction
-        is running must let that transaction finish before the task unwinds:
-        an aborted-midway write would release the store lock while the
-        executor thread keeps writing its stale whole-list snapshot, silently
-        reverting interim committed folder mutations on the next reload.
+        An aborted ``mutate_folders`` would release the lock while the executor thread
+        still writes its stale snapshot, reverting later folder changes.
         """
         state = _state(_ChatSlot("chat-1-100"))
         write_entered = asyncio.Event()

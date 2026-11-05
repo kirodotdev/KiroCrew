@@ -255,7 +255,7 @@ export default function Modal({ open, onClose, maxWidth = 640, guardAccidentalDi
             transition={{ duration: 0.15 }}
             onClick={softDismiss}
           />
-          <div className={`fixed inset-0 ${top ? 'z-[10001]' : 'z-[101]'} flex items-center justify-center p-8 pointer-events-none`}>
+          <div className={`fixed inset-0 ${top ? 'z-[10001]' : 'z-[101]'} flex items-center justify-center p-safe-or-8 pointer-events-none`}>
             <ModalDialog onClose={onClose} maxWidth={maxWidth} dismissDisabled={dismissDisabled} {...rest} />
           </div>
         </>

@@ -81,27 +81,14 @@ class _Skipped:
 SKIP = _Skipped()
 
 # ── Private stdout descriptor for JSON-RPC responses ───────────────────────
-# The vendored llama-cpp runtime wraps its multi-second GGUF model load in
-# ``suppress_stdout_stderr``, which does a PROCESS-WIDE ``dup2(devnull, 1)``
-# for the duration of the load (``_vendor/llama_cpp/_utils.py``). The first
-# ``local_knowledge_search`` kicks that load on a background thread and returns
-# a keyword-only result in milliseconds, so the JSON-RPC response for that very
-# call races the load window. Written through fd 1, the bytes land in
-# /dev/null: no exception, no short write, the SEL audit still records
-# ``success`` -- and the client waits forever until the ACP tool-stall watchdog
-# (``acp/client_timeouts.py::_TOOL_STALL_TIMEOUT``, 600s) kills the turn.
-#
-# ``snapshot_stdout_fd()`` takes an ``os.dup(1)`` at server startup, BEFORE any
-# tool can run. A dup'd descriptor keeps pointing at the original pipe no
-# matter what a later ``dup2`` does to fd 1, so responses always reach the
-# client. Guarded by a lock because it is a raw unbuffered fd: ``os.write`` is
-# not atomic across interleaved callers, and a torn frame desyncs the stream
-# for every subsequent message.
-#
-# NOTE: the suppressor also rebinds the ``sys.stdout`` OBJECT to a devnull
-# file, so "has sys.stdout been swapped?" is NOT a usable liveness check -- it
-# is false exactly inside the window we must survive. The snapshot is the only
-# reliable route.
+# The vendored llama-cpp model load (``_vendor/llama_cpp/_utils.py``) runs a
+# process-wide ``dup2(devnull, 1)`` on a background thread, so a response written
+# to fd 1 meanwhile is silently lost and the client hangs until the 600s ACP
+# tool-stall watchdog. ``snapshot_stdout_fd()`` dups fd 1 at startup, before any
+# tool runs; the dup keeps pointing at the real pipe. The lock is needed because
+# ``os.write`` on a raw fd is not atomic, and a torn frame desyncs the stream.
+# Checking whether ``sys.stdout`` was swapped does not work: the suppressor swaps
+# it too.
 _stdout_fd: Optional[int] = None
 
 
@@ -272,22 +259,15 @@ def _write_frame(msg: dict[str, Any], *, label: str) -> bool:
 def _read_message(stdin) -> dict[str, Any] | _Skipped | None:
     """Read one JSON-RPC frame, auto-detecting Content-Length vs bare JSON framing.
 
-    Returns the message, ``None`` at end of stream, or :data:`SKIP` for one
-    frame that was dropped: a line or body that is not valid UTF-8, not JSON,
-    not a JSON object, or nested past the decoder's ceiling (see
-    :func:`kiro_crew.json_line.parse_json_object_line`), which is answered as
-    a parse error when it is a request whose top-level id is recoverable
-    (:func:`_answer_unparseable`), a header-shaped line on a bare-JSON stream,
-    and a body over :data:`MAX_CONTENT_LENGTH_BYTES`, which is drained and
-    answered as too large when its id is recoverable. A Content-Length header
-    whose length cannot be read, or one past any drainable size, ends the
-    stream (``None``, logged at ERROR): the body behind an unreadable one
-    cannot be delimited, so every later frame would be read joined to it, and
-    draining to an absurd one would swallow every later request.
+    Returns the message, ``None`` at end of stream, or :data:`SKIP` for a dropped
+    frame: bad UTF-8, bad JSON, not an object, or nested too deep (answered as a
+    parse error when the id is recoverable, :func:`_answer_unparseable`); a
+    header-shaped line on a bare-JSON stream; or a body over
+    :data:`MAX_CONTENT_LENGTH_BYTES` (drained, answered as too large). An
+    unreadable or undrainable Content-Length ends the stream (``None``, logged at
+    ERROR), because no later frame could be delimited.
 
-    Uses stdin.buffer (binary mode) for all reads, and keeps the frame as
-    bytes until it is parsed, so Content-Length byte counts are honoured
-    correctly for multi-byte UTF-8 content.
+    Reads bytes from stdin.buffer so Content-Length counts bytes, not characters.
     """
     global _framing
     raw = stdin.buffer

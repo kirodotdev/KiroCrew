@@ -22,9 +22,11 @@ Instance fields written: ``_abandoned_prompt_id``, ``_awaiting_permission``, ``_
 ``_tool_call_kind``, ``_tool_call_mcp_server``, ``_tool_call_raw_params``,
 ``_tool_call_tool_name``, ``_tool_dispatched``, ``_tool_output_seen``,
 ``_tool_tracker``, ``_turn_done``, ``_turn_steering_denied``, ``_working_logged_ts``,
-``last_compaction_transient``, ``last_infra_error``, ``last_prompt_stats``.
+``last_compaction_transient``, ``last_infra_error``, ``last_prompt_stats``,
+``prompts_written``.
 
-Instance fields read: ``_abandoned_steering``, ``_awaited_responses``, ``_engine_fallback``,
+Instance fields read: ``_abandoned_steering``, ``_awaited_responses``, ``_batch_window``,
+``_engine_fallback``,
 ``_mode_model_unjudged``, ``_queue``, ``_runtime``, ``_session_id``,
 ``_steering_cancel_tasks``.
 """
@@ -373,6 +375,10 @@ async def _run_turn(
     self._tool_dispatched = False
     self._report_evicted_attributions()
     self._tool_tracker.clear()
+    # A new turn starts a new batch window (``acp.batch_guard``).
+    batch_window = getattr(self, "_batch_window", None)
+    if batch_window is not None:
+        batch_window.reset()
     self._tool_output_seen.clear()
     self._status_rejected.clear()
     self._input_wait_emitted = False
@@ -734,6 +740,8 @@ async def _run_turn(
             _mark(self._session_id, True)
         req_id = await self._runtime.send_request(_method, _params)
         self._prompt_written = True
+        # getattr: a handle built with ``__new__`` has no count of its own yet.
+        self.prompts_written = getattr(self, "prompts_written", 0) + 1
     except BaseException:
         self._mcp_sign_in_ask = ""
         self._mcp_sign_in_asked.clear()

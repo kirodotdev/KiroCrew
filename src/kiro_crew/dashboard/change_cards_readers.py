@@ -606,7 +606,7 @@ def _page_offer_context(member: str, before: dict[str, Any]) -> dict[str, Any]:
         rec = member_goals.read_goals(slug, member)
     except member_goals.GoalsUnreadable:
         raise catalog.CardCatalogError(
-            "goals_unreadable", "this crewmate's goal record cannot be read"
+            "goals_unreadable", "this Bot's goal record cannot be read"
         ) from None
     if not goal_reminder.knows_its_page(rec):
         raise catalog.CardCatalogError(
@@ -616,7 +616,7 @@ def _page_offer_context(member: str, before: dict[str, Any]) -> dict[str, Any]:
     if target is None or not target.get("replaces"):
         raise catalog.CardCatalogError(
             "not_on_a_template",
-            "this offer is for a crewmate on a template page; with nothing on your tab, "
+            "this offer is for a Bot on a template page; with nothing on your tab, "
             "write your page directly, and with a page of your own, you already have one",
         )
     goals = rec.get("goals") or []
@@ -650,7 +650,7 @@ def _goal_state(member: str, kind: str) -> dict[str, Any]:
         rec = member_goals.read_goals(slug, member)
     except member_goals.GoalsUnreadable:
         raise catalog.CardCatalogError(
-            "goals_unreadable", "this mate's goal record cannot be read"
+            "goals_unreadable", "this Bot's goal record cannot be read"
         ) from None
     out: dict[str, Any] = {
         "exists": True,

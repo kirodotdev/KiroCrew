@@ -315,7 +315,9 @@ def test_the_mate_worker_takes_the_member_rule() -> None:
     for provider in (providers_acp.AcpProvider, AcpSessionProvider):
         source = inspect.getsource(provider.mate_worker_kit_supported.fget)
         assert "in ACP_BACKENDS_MATE_WORKER_KIT" in source
-    assert ACP_BACKENDS_MATE_WORKER_KIT == frozenset({ACP_BACKEND_KAS, ACP_BACKEND_CLAUDE})
+    assert ACP_BACKENDS_MATE_WORKER_KIT == frozenset(
+        {ACP_BACKEND_KAS, ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX}
+    )
     assert ACP_BACKENDS_MATE_WORKER_KIT <= ACP_BACKENDS_MEMBER_CAPABILITIES
     assert ACP_BACKEND_KIRO not in ACP_BACKENDS_MATE_WORKER_KIT
     # The worker's prompt rides the context block exactly where the host's mirror
@@ -1384,6 +1386,13 @@ _DECLARED_IDENTITY_TESTS: dict[tuple[str, str], str] = {
     "Another host reaching it would have its resolved id rewritten from a list it did "
     "not author. KAS has its own narrower arm: it moves only an ``auto`` default its "
     "own ``model`` select does not list, onto an id that select does list.",
+    (
+        "src/kiro_crew/acp/session_handle_model_selection.py",
+        "store_session_config",
+    ): "KAS sends no ``models`` object, so its ``model`` select's ``currentValue`` is "
+    "the only place it names the model a session runs. It stays out of "
+    "``ACP_BACKENDS_ADVERTISED_MODEL_SELECTION`` because that select is its catalog, "
+    "not its advertised list, so only the current value is adopted, and only here.",
     (
         "src/kiro_crew/acp/session_handle_compaction.py",
         "_kas_compact_request",

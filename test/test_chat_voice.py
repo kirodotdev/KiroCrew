@@ -53,20 +53,9 @@ class TestVoiceConfig:
     ):
         """A JSON body that is not an object must be a 400, never a crash.
 
-        ``"system_voice" in body`` is a MEMBERSHIP test over a list's elements, so
-        ``["system_voice"]`` passes that guard and then raises TypeError on the
-        subscript — an unhandled 500. A bare string or number fails the same way,
-        and the synthesize endpoint's ``body.get`` raises AttributeError. Covers a
-        key this PR adds and a pre-existing one, because the shape check has to be
-        per-request, not per-key.
-
-        The guard is `read_bounded_json`, the shared helper that already owns this
-        for the endpoints routed through it, so the code asserted is its
-        ``body_not_object`` rather than a fifth private spelling.
-
-        ``None`` reaches the 400 through the parse branch instead, which reports
-        ``invalid_json``; asserted separately rather than folded in, so this test
-        cannot be read as claiming a guarantee that branch does not make.
+        ``"system_voice" in body`` also passes for ``["system_voice"]``, and the subscript
+        then raises TypeError. The guard is ``read_bounded_json`` (``body_not_object``);
+        ``None`` fails in the parse branch as ``invalid_json`` and is asserted apart.
         """
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
@@ -92,24 +81,10 @@ class TestVoiceConfig:
     ):
         """A wrong-typed string field must 400, never persist ``str(value)``.
 
-        ``str({})`` is ``"{}"`` — a syntactically fine voice name or binary path
-        that no engine can ever satisfy, so synthesis returns silence while the
-        stored config looks populated. That is the failure this rejects: silent,
-        persistent, and indistinguishable from a broken engine.
-
-        Rejecting rather than coercing to ``""`` matters because ``""`` is itself
-        meaningful for these fields (an empty ``system_voice`` selects the OS
-        default voice), so coercion would rewrite "set this voice" into "use the
-        default" without telling the caller.
-
-        Every name/path field the handler writes is covered, not just the one this
-        feature adds. Covering a subset is what made this the same finding four
-        rounds running: each round fixed the reported field and left its siblings,
-        so the reviewer simply named the next one. ``rate``/``pitch`` are absent on
-        purpose -- their validators own a documented degrade-to-default contract, so
-        they coerce rather than reject. ``True`` is included
-        because ``bool`` is the case a naive ``isinstance(v, (str, int))`` guard
-        lets through.
+        ``str({})`` is ``"{}"``, a voice name no engine can satisfy, so synthesis goes
+        silent. Coercing to ``""`` is wrong too: an empty ``system_voice`` means the OS
+        default. ``rate``/``pitch`` are absent because they degrade to a default by contract;
+        ``True`` is in because a naive ``isinstance(v, (str, int))`` guard lets it through.
         """
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
@@ -132,14 +107,8 @@ class TestVoiceConfig:
     ):
         """A wrong-typed flag must 400 rather than pass through ``bool()``.
 
-        ``bool()`` never raises, so it looks like a safe total function, but it is
-        not truth-preserving over what clients send: ``bool("false")`` is ``True``.
-        A caller passing the string ``"false"`` to disable voice would have ENABLED
-        it, which is the worst shape of this bug -- the stored setting is the exact
-        opposite of the request and nothing reports it.
-
-        ``0``/``1`` are included because they are the other plausible spelling a
-        client reaches for, and they are equally not booleans.
+        ``bool("false")`` is ``True``, so ``"false"`` would ENABLE voice. ``0``/``1`` are
+        not booleans either.
         """
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
@@ -152,15 +121,9 @@ class TestVoiceConfig:
     async def test_a_rejected_patch_applies_none_of_its_fields(self, tmp_path, monkeypatch):
         """A 400 must leave `_vc` untouched, including fields validated earlier.
 
-        `PUT {"provider": "polly", "system_voice": {}}` names a VALID provider and
-        an invalid voice. Applying fields while walking them makes this a torn
-        write: the caller is told 400 while the live provider has already changed,
-        so the next synthesis silently uses an engine the request never
-        established. The handler validates the whole patch first and applies it in
-        one pass, so a rejected request is a no-op.
-
-        `provider` is the field worth pinning because it is ordered FIRST and
-        routes synthesis -- the widest blast radius of anything here.
+        `PUT {"provider": "polly", "system_voice": {}}` has a valid provider, checked
+        FIRST, and a bad voice. Applying fields while walking them would switch the
+        provider and still answer 400.
         """
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
@@ -863,11 +826,8 @@ class TestVoiceSynthesize:
     ):
         """Consent stands, but AWS rejects every sentence: name the cause once.
 
-        The real stream runs with a granted consent, and the mocked AWS CLI
-        exits nonzero (a region that does not support the engine). The stream
-        must fail at the first sentence with ``voice_polly_rejected`` -- fixed
-        text, the CLI's stderr kept out of it -- rather than skip each sentence
-        into the generic "no audio" notice.
+        The stream must fail at the first sentence with ``voice_polly_rejected`` (fixed
+        text, no CLI stderr), not fall through to the generic "no audio" notice.
         """
         from kiro_crew import aws_consent
         from kiro_crew.config.loader import config_dir
@@ -963,14 +923,9 @@ class TestVoiceVoices:
     def _polly_consented(self, tmp_path_factory, monkeypatch):
         """Consent for Polly under the default profile+region, throwaway home.
 
-        The voice catalogue is an ``aws polly describe-voices`` call, so it is
-        gated like every other billable Polly request. Cases that assert the
-        REFUSAL live in ``test_aws_consent.py``; these cases are about the
-        catalogue's own success and error handling, so they consent first.
-
-        Exactly ONE grant exists per service (a grant records the profile+region
-        it was given for), so a case using a different pair records its own --
-        see ``test_voices_returns_list``.
+        ``aws polly describe-voices`` is consent-gated; refusals are in ``test_aws_consent.py``.
+        One grant exists per service, so a case with another profile+region records its own
+        (see ``test_voices_returns_list``).
         """
         home = tmp_path_factory.mktemp("voices-consent-home")
         monkeypatch.setenv("KIROCREW_HOME", str(home))
@@ -1676,12 +1631,8 @@ class TestSynthesizeProviderRouting:
     ):
         """The install remedy is only correct when the engine is actually absent.
 
-        Synthesis also returns None with an engine present — a persisted
-        ``system_voice`` the engine rejects, a timeout, a sandbox refusal — and
-        telling that user to install espeak-ng sends them to fix something that
-        is not broken. So the branch is chosen by PROBING, and this pins both
-        sides: an absent engine must still get the install remedy, and a present
-        one must not.
+        Synthesis also returns None with an engine present (rejected voice, timeout,
+        sandbox refusal), so the branch is chosen by probing the engine.
         """
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         monkeypatch.setattr("kiro_crew.dashboard.chat_voice._vc", self._mock_vc("system"))
@@ -1738,17 +1689,9 @@ class TestSynthesizeProviderRouting:
 def test_every_body_field_the_config_put_reads_goes_through_a_validator():
     """No value from the request body may reach `_vc` via a bare ``str()``.
 
-    This is a RATCHET over the whole handler, not a per-field fix: a field left
-    on ``str()`` while its siblings are validated is the same defect again.
-    ``str({})`` is ``"{}"``: a syntactically valid voice name or path
-    that no engine can satisfy, so synthesis goes silent while the stored config
-    looks populated.
-
-    The invariant that makes the whole class unreachable is structural rather than
-    per-field: every ``body[...]`` read in ``api_voice_config`` must be an
-    argument to a validator that owns a documented contract, or be guarded by an
-    ``isinstance`` + membership test. A new field added on a bare ``str()`` or
-    ``bool()`` fails here instead of shipping.
+    ``str({})`` is ``"{}"``, a valid-looking voice name no engine can satisfy. Every
+    ``body[...]`` read in ``api_voice_config`` must go to a validator or sit behind an
+    ``isinstance`` + membership test, so a new field on bare ``str()`` fails here.
     """
     import ast
     import inspect
@@ -1929,12 +1872,8 @@ class TestSandboxRefusalReachesTheUser:
     async def test_a_transient_refusal_never_gains_the_opt_in_advice(self, tmp_path, monkeypatch):
         """The endpoint must add no remedy of its own.
 
-        ``exc.kind`` decides the advice: for ``transient`` the sandbox layer says
-        retry and explicitly says callers must NOT advise disabling isolation, and
-        ``foreign_sandbox`` points at a kiro-cli setting. An endpoint that pasted
-        in the ``allow_unsandboxed_exec`` key would tell an operator to
-        permanently drop the sandbox to work around momentary resource pressure --
-        so this asserts the key is ABSENT when the sandbox did not supply it.
+        For ``transient`` the sandbox says retry and never to disable isolation, so the
+        ``allow_unsandboxed_exec`` key must be absent unless the sandbox supplied it.
         """
         from kiro_crew.sandbox import SandboxUnavailableError
 

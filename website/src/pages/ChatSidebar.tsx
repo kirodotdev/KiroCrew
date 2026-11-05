@@ -97,6 +97,7 @@ import BroadcastPanel from './chat-sidebar/BroadcastPanel'
 import { makeKindOf, type KindSections } from './chat-sidebar/kindSections'
 import type { Slot } from './chat-sidebar/types'
 import type { MemorySourceRow } from '../lib/agentMemorySource'
+import { useResumeAll } from './chat-sidebar/resumeAll'
 
 /** Stable empty group list for the board, which groups nothing. */
 const NO_CREW_GROUPS: CrewGroup[] = []
@@ -330,6 +331,7 @@ function ChatSidebar({
   const sessionCleanup = useSessionCleanup({ cleanupOpen, setCleanupOpen, activeSlot, dispatch, queryClient })
 
   const bulkModel = useBulkModelSwitch({ localSlots })
+  const resumeAll = useResumeAll({ localSlots, connected })
 
   const {
     pinned, pinnedOrder, pinnedRank, reorderPinned, pinnedOrderError, setPinnedOrderError,
@@ -423,7 +425,7 @@ function ChatSidebar({
   } = useColumnMatches({ subagentStartedCounts, subagentApprovalCounts, workflowActiveSet, automationRunningSet, crewBusySet, crewOpenSet, crewStalledSet, crewPersonSet, crewApprovalSet })
 
   const {
-    slotFolders, foldersWithActiveSubtree, setRevealForcedVisible, isFolderHidden, filterHiddenSubtree,
+    slotFolders, foldersWithActiveSubtree, setRevealForcedVisible, isFolderHidden, filterHiddenSubtree, effectiveHiddenFolders, pinnedFolderSubtree, pinnedFolderAncestors,
   } = useFolderVisibility({ folders, localSlots, filterHiddenFolders })
 
   useStaleMoveWatcher({ foldersLoaded, localSlots, slotFolders, setStaleRecentlyMoved })
@@ -481,7 +483,7 @@ function ChatSidebar({
       models: { passes: modelFilterPasses, active: activeModelKeys.size > 0 },
       search: { text: slotFilter, folderMatches: folderNameMatchIds },
       status: { active: activeFilters, hidden: hiddenFilters, paused: filtersPaused, recentWindowMs },
-      folders: { hiddenSubtree: filterHiddenSubtree, active: folderFilterActive },
+      folders: { hiddenSubtree: filterHiddenSubtree, pinnedSubtree: pinnedFolderSubtree, active: folderFilterActive },
     },
     clears: { tags: clearTagFilter, models: clearModelFilter, search: clearSearch, status: clearAllFilters, folder: clearFolderHide, hides: clearHiddenFilters },
     crewGroups: shownCrewGroups,
@@ -595,7 +597,7 @@ function ChatSidebar({
   const {
     isFolderFilteredOut, revealedContainers, toggleReveal, hiddenByContainer, allHiddenFolders,
     hiddenFolderCount,
-  } = useFolderFilterReveal({ folderFilterActive, filterHiddenFolders, folders, isFolderHidden, folderCompare, boardLaneActive })
+  } = useFolderFilterReveal({ folderFilterActive, effectiveHiddenFolders, folders, isFolderHidden, folderCompare, boardLaneActive })
   const {
     citedCreatorExists, conductorRows, conductorMatching, lineage, conductorExpanded, toggleConductorExpanded,
     expandConductorAncestors,
@@ -636,7 +638,7 @@ function ChatSidebar({
 
   const {
     folderFilterRows,
-  } = useFolderFilterRows({ folderTree: sidebarRows.folderTree, folders, folderCompare, filterHiddenFolders, filterHiddenSubtree })
+  } = useFolderFilterRows({ folderTree: sidebarRows.folderTree, folders, folderCompare, filterHiddenFolders, filterHiddenSubtree, pinnedFolderSubtree, pinnedFolderAncestors })
 
   const {
     createFolderMutation, deleteFolderMutation, updateFolderMutation, toggleCollapse,
@@ -922,7 +924,7 @@ function ChatSidebar({
     folderCompare, folderConductorPin, folderCreateError, folderDragWithheld, folderEditInputRef, folderCancelEscapeRef,
     folderFilterRows, folderNameMatchIds, folderReorderable, folderReorderHint, folderReorderHintRef,
     folderRowsDrawn, folders, foldersError, foldersFailed, folderSortMode, folderSortMut, folderSortRead,
-    foldersShelved, groupByKind, kindSections, toggleGroupByKind, folderSubtrees, foldersWithActiveSubtree, handleSidebarDragCancel, handleSidebarDragEnd,
+    foldersShelved, groupByKind, kindSections, toggleGroupByKind, folderSubtrees, foldersWithActiveSubtree, pinnedFolderSubtree, pinnedFolderAncestors, handleSidebarDragCancel, handleSidebarDragEnd,
     handleSidebarDragOver, handleSidebarDragStart, hasRemoteExecutedRow, heldDisplacedRef, heldLane,
     hiddenByContainer, hiddenFilters, hiddenFolderCount, hideEmptyFolderBody, history, historyDragging,
     historyFilter, historyHasMore, historyHeight, historyOpen, historyResize, historySearchFailed, historySearchResults,
@@ -934,7 +936,7 @@ function ChatSidebar({
     openHistoryPane, orderedColumns, paintedSidebarWidth, pinned, pinnedBandCaption, pinnedOrderError, popoverPos, queryClient, rawColumns,
     recentAmountDraft, recentUnitDraft, recentWindowMs, refetchColumns, refetchFolders, refetchTags,
     remoteCrewChatPreview, remoteCrewError, remoteCrewErrorId, remoteSessionsError, renameCommit,
-    renameError, reorderColumnsMutation, reportDndActive, restorePreBoardWidth, revealedContainers,
+    renameError, reorderColumnsMutation, reportDndActive, restorePreBoardWidth, resumeAll, revealedContainers,
     revealFlash, rootFolderIds, rootFolders, rowActions, rowAnimEnabled, rowMotionHeld: !rowAnimSettled, rowViews, searchRanked, seedError,
     seedStateLanesMutation, selectInstance, selectRecentPreset, sessionCleanup, setAllFiltersPaused,
     setAutoTitleError, setBoardError, setCleanupOpen, setCollapsedHistoryGroups, setColumnEditId,

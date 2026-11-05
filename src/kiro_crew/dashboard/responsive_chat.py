@@ -18,6 +18,7 @@ from aiohttp import web
 
 from kiro_crew import members
 from kiro_crew.dashboard.chat_delivery import (
+    CHAT_BANNER_META_KEY,
     attachment_meta,
     normalize_send_id,
     queue_for_next_turn,
@@ -49,7 +50,7 @@ RESPONSIVE_KEY = "_responsive_human"
 QUEUED_ROW_META_KEY = "queuedEntryId"
 
 RESPONSE_GUIDANCE = (
-    "For this turn, the person is waiting in your crewmate conversation. "
+    "For this turn, the person is waiting in your Bot conversation. "
     "Start with a brief text reply to the person before calling tools: give the useful "
     "answer when it is already known, or acknowledge their message when it needs work. "
     "Tool checks and other substantial work follow that first reply. "
@@ -521,6 +522,8 @@ async def accept(
         attachments=attachment_meta(meta),
         quote=quote_meta(meta).get("quote"),
         author=author_meta(actor_of(request)),
+        # Validated by the send handler; the user row reads it off the entry.
+        banner=str((meta or {}).get(CHAT_BANNER_META_KEY) or ""),
     )
     _sc_entry.stamp_queued_work(slot, qid, queued_admission)
     entry = next(item for item in slot._queue if item["id"] == qid)
@@ -713,6 +716,7 @@ async def _steer_first(
         attachments=meta,
         delivery_id=delivery_id,
         responsive=True,
+        banner=str((meta or {}).get(CHAT_BANNER_META_KEY) or ""),
     )
     if outcome not in (STEER_STEERED, STEER_REQUEUED):
         return None

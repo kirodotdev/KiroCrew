@@ -370,15 +370,26 @@ async def probe_server(
         # Case-insensitive PATH key: a Windows-authored spec says "Path", and
         # the emitted config normalizes under that same spelling — reading only
         # "PATH" here would probe with a different path than the session gets.
-        _path_key = spec_path_key(server.env)
-        _declared_path = server.env.get(_path_key, "") if _path_key else ""
+        #
+        # Home/login names in env values (PATH and temp keys included) and the
+        # command are expanded the way the emitted agent spec expands them (see
+        # expand_spec_args), so a ``${HOME}/...`` value is not probed literally,
+        # failed and quarantined. Every reader below takes this one expanded
+        # map; ``server.env`` keeps the declaration as written.
+        _env_keys = list(server.env)
+        _declared_env = dict(
+            zip(_env_keys, expand_spec_args([server.env[k] for k in _env_keys], server=server.name))
+        )
+        _command = expand_spec_args([server.command], server=server.name)[0]
+        _path_key = spec_path_key(_declared_env)
+        _declared_path = _declared_env.get(_path_key, "") if _path_key else ""
         env["PATH"] = mcp_search_path(_declared_path if isinstance(_declared_path, str) else "")
         # The declared env is untrusted config text applied to the environment
         # the SANDBOX LAUNCHER starts under, so loader/interpreter injection
         # keys must not pass through — they would execute before confinement
         # exists. See env.sanitize_spec_env; _note_denied_env explains a
         # resulting failure to the dashboard reader.
-        env.update(sanitize_spec_env((k, v) for k, v in server.env.items() if k != _path_key))
+        env.update(sanitize_spec_env((k, v) for k, v in _declared_env.items() if k != _path_key))
 
         # Resolve command to absolute path using the merged env PATH
         effective_path = env.get("PATH") or ""
@@ -388,7 +399,7 @@ async def probe_server(
         # consulted, inverting the not-installed/installed-elsewhere distinction
         # the search-path report exists to draw -- so the report gets "" while
         # the lookup below still uses the real PATH.
-        reported_path = "" if os.path.dirname(server.command) else effective_path
+        reported_path = "" if os.path.dirname(_command) else effective_path
         # Same rule the agent-config resolver and gatewayd's rewriter apply, so
         # the probe spawns the spelling the session will use: an absolute
         # command that exists and is executable is the operator's own spelling
@@ -398,13 +409,13 @@ async def probe_server(
         # ``argv[0]``-dispatching shim would fail (or pass) the probe for a
         # reason the session does not share.
         if (
-            os.path.isabs(server.command)
-            and await asyncio.to_thread(os.path.isfile, server.command)
-            and os.access(server.command, os.X_OK)
+            os.path.isabs(_command)
+            and await asyncio.to_thread(os.path.isfile, _command)
+            and os.access(_command, os.X_OK)
         ):
-            resolved = saved_command_casing(server.command)
+            resolved = saved_command_casing(_command)
         else:
-            resolved = resolved_command_casing(shutil.which(server.command, path=effective_path))
+            resolved = resolved_command_casing(shutil.which(_command, path=effective_path))
         if not resolved:
             server.status = "error"
             server.error = _unresolved_error(server.command, reported_path)
@@ -486,7 +497,7 @@ async def probe_server(
         if _declared_temp_upper:
             accepted, _sealed_temp, failure = await asyncio.to_thread(
                 classify_declared_temp_env,
-                server.env or {},
+                _declared_env,
                 classifier=classify_declared_temp_path,
             )
             _declared_temp_upper = set(accepted)

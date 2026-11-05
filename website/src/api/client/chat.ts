@@ -5,7 +5,7 @@
  * links, the send wire, and the composer autocomplete read.
  */
 
-import type { ChatSlot, ChatSlotDetailResponse, CrewTimeline, CrewWorker, SideSnapshot } from '../../types'
+import type { ChatSlot, ChatSlotDetailResponse, CrewTimeline, CrewWorker, CrewWorkerRecap, SideSnapshot } from '../../types'
 import type { SessionSummary } from '../../types/sessionSummary'
 import type { DynamicDashboardCard } from '../../types/dynamicDashboard'
 import { getStoredConsent } from '../../utils/themeConsent'
@@ -85,8 +85,12 @@ export function createChatEndpoints({ post, put, del, patch, j, jAccepted, jfetc
      *  through another worker (`GET /api/chat/slots/{root}/crew-workers`). */
     /** A closed root (its tab gone) still answers, from saved data:
      *  `root_closed: true` and its saved `root_title`. */
-    crewWorkers: (root: string): Promise<{ root: string; workers: CrewWorker[]; root_closed?: boolean; root_title?: string }> =>
+    crewWorkers: (root: string): Promise<{ root: string; workers: CrewWorker[]; root_closed?: boolean; root_title?: string; root_kind?: 'mate' }> =>
       fetch('/api/chat/slots/' + encodeURIComponent(root) + '/crew-workers').then(j),
+    /** One session's recap under its root, from the ledger and its crew log only
+     *  (`GET .../crew-workers/{worker}/recap`). No model call. */
+    crewWorkerRecap: (root: string, worker: string): Promise<CrewWorkerRecap> =>
+      fetch('/api/chat/slots/' + encodeURIComponent(root) + '/crew-workers/' + encodeURIComponent(worker) + '/recap').then(j),
     /** One Crew Mode root's timeline: a lane per session, bars from recorded
      *  transcript rows only (`GET /api/chat/slots/{root}/crew-timeline`). */
     crewTimeline: (root: string): Promise<CrewTimeline> =>
@@ -239,6 +243,11 @@ export function createChatEndpoints({ post, put, del, patch, j, jAccepted, jfetc
     regenerateSlot: (slot: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/regenerate').then(j),
     /** Pick an interrupted turn back up. NOT `/resume` — that path opens a history session into a tab. */
     continueSlot: (slot: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/continue').then(j),
+    /** The bulk form of `continueSlot`: Resume every idle session whose last turn ended without a reply (only those among `slots` when given). Owner-only. Starts a background run and answers at once (409 `resume_all_running` with that run's id and total while one is in flight); the outcome arrives as a `resume_all_done` frame. */
+    /** `crewMode`: this tab's Crew Mode preview is on, so its count left out the workers of listed roots and the run leaves them out too. */
+    chatSlotsResumeAll: (crewMode = false, slots?: string[]) => post('/api/chat/slots/resume-all', {
+      ...(crewMode ? { crew_mode: true } : {}), ...(slots ? { slots } : {}),
+    }).then(j) as Promise<{ ok: boolean; total: number; run_id: string }>,
     /** Drop the slot's native conversation; the next turn starts a fresh one seeded from a text replay of the transcript (`replay: true`). The transcript stays. */
     resetConversation: (slot: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/reset-conversation', { replay: true }).then(j) as Promise<{ slot: string; reset: boolean; replay: boolean }>,
     /** Downscale the oversized images in the slot's transcript in place, then re-issue the interrupted turn (recovery from the provider's many-image 2000px cap). No turns are lost, unlike `resetConversation`. */

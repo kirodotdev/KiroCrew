@@ -7,8 +7,8 @@ This module owns three things:
   manifest and never model output, because a starter task is text the dashboard
   may send to a model on the user's behalf;
 * the local STATE FILE (``milestones.json`` in :func:`config_dir`): ids, counts,
-  timestamps and source labels only -- never chat content, file names, links or
-  channel names;
+  timestamps, source labels and recommendation sources (tip / explore / video)
+  only -- never chat content, file names, links or messaging channel names;
 * the COUNTING HELPERS the hook sites call (:func:`record`,
   :func:`record_user_turn`, :func:`record_when`).
 
@@ -75,6 +75,54 @@ M_MARK_ALL_DONE = "kirocrew.milestone.mark_all_done"
 M_PANEL_OPENED = "kirocrew.milestone.panel_opened"
 M_NOTICE_SHOWN = "kirocrew.milestone.notice_shown"
 M_FEATURES_COMPLETED = "kirocrew.milestone.features_completed"
+
+# ── Recommendation attribution ──
+#
+# ``kirocrew.milestone.reached`` carries ``recommended_by``: which in-product
+# recommendation last pointed at a feature before the user first used it. The
+# record is local (the ``recommended`` field of the state file): a closed
+# milestone id, a closed channel name and a timestamp, nothing else. Only the
+# resulting label leaves the machine, on the reached point, and the record for
+# that milestone is cleared when it is first reached.
+
+#: The channels that can recommend a feature.
+RECOMMENDATION_CHANNELS: tuple[str, ...] = ("tip", "explore", "video")
+
+#: ``recommended_by`` values: one channel, ``several`` when more than one channel
+#: recommended the feature inside the window, ``none`` when none did.
+RECOMMENDED_BY_VALUES: tuple[str, ...] = (*RECOMMENDATION_CHANNELS, "several", "none")
+
+#: How long a recommendation still counts toward a first use. Two weeks covers a
+#: user who saw a tip, came back the next week and tried the feature, while an
+#: older recommendation is too far back to credit.
+RECOMMENDATION_WINDOW_S = 14 * 24 * 3600
+
+#: Which feature milestones a tip's doc or a video's feature key recommends.
+#: Explicit, and pinned by a test against the catalog: a key absent from this
+#: table cannot be attributed, so a reach after it reads ``recommended_by=none``.
+#: ``crew-members.md`` documents both the Mate and Crew Mode, so a tip about it
+#: counts toward both rows.
+RECOMMENDATION_TARGETS: dict[str, tuple[str, ...]] = {
+    "artifacts.md": ("widgets",),
+    "cron-and-scheduling.md": ("scheduled-task",),
+    "crew-members.md": ("mate", "crew-mode"),
+    "subagents.md": ("parallel-chats",),
+    "slack-integration.md": ("slack",),
+    "monitor-loops.md": ("pr-watch",),
+    # Feature-video keys (``VideoEntry.feature``).
+    "monitor-loops": ("pr-watch",),
+}
+
+#: The closed value list of each attribute a milestone metric carries. A value
+#: outside its list is sent as ``other``; ``milestone`` is checked against the
+#: catalog's own keys in :func:`_milestone_keys`.
+_ATTR_VALUES: dict[str, tuple[str, ...]] = {
+    "group": ("features", "sessions", "turns", "streak", "concurrent"),
+    "surface": ("empty_state", "panel"),
+    "send": ("prefill", "send", "route"),
+    "via": ("starter", "organic", "backfill", "manual", "arrived", "mixed"),
+    "recommended_by": RECOMMENDED_BY_VALUES,
+}
 
 
 # ── Catalog ──
@@ -304,6 +352,7 @@ def _empty() -> dict[str, Any]:
         "noticed": [],
         "backfilled": False,
         "starter_clicked": {},
+        "recommended": {},
     }
 
 
@@ -364,6 +413,19 @@ def load(*, strict: bool = False) -> dict[str, Any]:
     clicked = raw.get("starter_clicked")
     if isinstance(clicked, dict):
         st["starter_clicked"] = {k: _num(v) for k, v in clicked.items() if isinstance(k, str)}
+    recommended = raw.get("recommended")
+    if isinstance(recommended, dict):
+        for key, row in recommended.items():
+            if not (
+                isinstance(key, str)
+                and len(key) <= 64
+                and _ID_RE.fullmatch(key)
+                and isinstance(row, dict)
+            ):
+                continue
+            channels = {c: _num(row.get(c)) for c in RECOMMENDATION_CHANNELS if _num(row.get(c))}
+            if channels:
+                st["recommended"][key] = channels
     return st
 
 
@@ -429,6 +491,58 @@ def _via(st: dict[str, Any], row: Milestone, source: str, now: float) -> str:
     return "starter" if clicked and now - clicked <= _STARTER_WINDOW_S else "organic"
 
 
+def _live_recommendations(st: dict[str, Any], milestone_id: str, now: float) -> list[str]:
+    """The channels that recommended *milestone_id* inside the window, in channel order."""
+    row = st["recommended"].get(milestone_id, {})
+    return [
+        c
+        for c in RECOMMENDATION_CHANNELS
+        if row.get(c) and 0 <= now - row[c] <= RECOMMENDATION_WINDOW_S
+    ]
+
+
+def _take_recommended_by(st: dict[str, Any], row: Milestone, source: str, now: float) -> str:
+    """The ``recommended_by`` label for *row*'s first reach, clearing its record.
+
+    Only a reach the user made by using the feature (``event``) or by following
+    its starter to the page (``arrived``) is attributed. A backfill credits use
+    from before the record existed and a manual mark is the user's own claim, so
+    both read ``none``. Usage rows are never recommended, so they read ``none``
+    too. The record is cleared whatever the label: a reached feature row is never
+    reached again, so nothing could read it later.
+    """
+    if row.group != "features":
+        return "none"
+    live = _live_recommendations(st, row.id, now)
+    st["recommended"].pop(row.id, None)
+    if source not in ("event", "arrived") or not live:
+        return "none"
+    return live[0] if len(live) == 1 else "several"
+
+
+def _prune_recommended(st: dict[str, Any], now: float) -> None:
+    """Drop channel stamps older than the window, and rows left empty."""
+    for key in list(st["recommended"]):
+        row = st["recommended"][key]
+        for c in list(row):
+            if not 0 <= now - row[c] <= RECOMMENDATION_WINDOW_S:
+                del row[c]
+        if not row:
+            del st["recommended"][key]
+
+
+def _reached_attrs(
+    st: dict[str, Any], row: Milestone, key: str, via: str, source: str, now: float
+) -> dict[str, Any]:
+    """The ``milestone.reached`` attributes for *key*; clears *row*'s recommendation."""
+    return {
+        "group": row.group,
+        "milestone": key,
+        "via": via,
+        "recommended_by": _take_recommended_by(st, row, source, now),
+    }
+
+
 def _mark_reached(
     st: dict[str, Any], row: Milestone, source: str, now: float, events: list
 ) -> None:
@@ -442,9 +556,8 @@ def _mark_reached(
         # Backfilled and manual milestones are never announced.
         if source != "event" and key not in st["noticed"]:
             st["noticed"].append(key)
-        events.append(
-            (M_REACHED, {"group": row.group, "milestone": key, "via": _via(st, row, source, now)})
-        )
+        via = _via(st, row, source, now)
+        events.append((M_REACHED, _reached_attrs(st, row, key, via, source, now)))
 
 
 def _features_completed_event(st: dict[str, Any], events: list) -> None:
@@ -519,6 +632,40 @@ def current_streak(st: dict[str, Any], today: date) -> int:
     if last_day in (today.isoformat(), (today - timedelta(days=1)).isoformat()):
         return int(st["streak"]["current"])
     return 0
+
+
+# ── Emitting ──
+
+
+def _milestone_keys() -> frozenset[str]:
+    """Every ``milestone`` attribute value: catalog keys, tier keys and ``all``."""
+    keys = {"all"}
+    for row in catalog():
+        keys.update(_tier_key(row, t) for t in row.tiers)
+    return frozenset(keys)
+
+
+def closed_attrs(attrs: dict[str, Any]) -> dict[str, str | int | bool | float]:
+    """*attrs* with every value outside its closed list replaced by ``other``.
+
+    The ops build attributes from the catalog and from values the route already
+    validated, so this changes nothing today. It is the emit-site guarantee that
+    a future caller passing an unchecked value still exports a closed one.
+    """
+    out: dict[str, str | int | bool | float] = {}
+    milestones_ok = _milestone_keys()
+    for key, value in attrs.items():
+        allowed = milestones_ok if key == "milestone" else _ATTR_VALUES.get(key, ())
+        out[key] = value if isinstance(value, str) and value in allowed else "other"
+    return out
+
+
+def _emit(name: str, attrs: dict[str, Any]) -> None:
+    """Emit one milestone counter with closed attributes. Never raises."""
+    try:
+        emit_counter(name, closed_attrs(attrs))
+    except Exception:
+        logger.debug("milestone metric %s failed", name, exc_info=True)
 
 
 # ── Applying ops ──
@@ -602,7 +749,7 @@ def _flush() -> None:
                         logger.warning("milestone op failed; skipped", exc_info=True)
                 _save(st)
         for name, attrs in events:
-            emit_counter(name, attrs)
+            _emit(name, attrs)
     except Exception:
         logger.warning("milestones state write failed", exc_info=True)
 
@@ -643,7 +790,7 @@ def apply_now(op: Op) -> None:
             op(st, time.time(), events)
             _save(st)
     for name, attrs in events:
-        emit_counter(name, attrs)
+        _emit(name, attrs)
 
 
 # ── Hook-site helpers (never raise) ──
@@ -652,6 +799,24 @@ def apply_now(op: Op) -> None:
 def record(milestone_id: str) -> None:
     """Count one event for *milestone_id*. Call only after the action succeeded."""
     _submit(_op_count(milestone_id))
+
+
+def record_recommended(channel: str, feature_key: object) -> None:
+    """Remember that *channel* recommended *feature_key*, for ``recommended_by``.
+
+    Called after a tip was shown or acknowledged, or a feature video was seen. A
+    key the table does not map queues nothing.
+    """
+    try:
+        if channel not in RECOMMENDATION_CHANNELS:
+            return
+        if not isinstance(feature_key, str) or feature_key not in RECOMMENDATION_TARGETS:
+            return
+        if not _recommendation_consent():
+            return
+        _submit(op_recommended(channel, feature_key))
+    except Exception:
+        logger.warning("milestone recommendation record failed", exc_info=True)
 
 
 def record_active_day() -> None:
@@ -787,7 +952,7 @@ def op_mark_done(milestone_id: str) -> Op:
         st["reached"][row.id] = {"at": now, "source": "manual"}
         if row.id not in st["noticed"]:
             st["noticed"].append(row.id)
-        events.append((M_REACHED, {"group": row.group, "milestone": row.id, "via": "manual"}))
+        events.append((M_REACHED, _reached_attrs(st, row, row.id, "manual", "manual", now)))
         if not was_complete and _features_complete(st):
             _features_completed_event(st, events)
 
@@ -822,12 +987,62 @@ def op_skip_all() -> Op:
     return apply
 
 
+def _recommendation_consent() -> bool:
+    """Whether telemetry collection is on. Fails CLOSED.
+
+    The ``recommended`` record exists only to label ``milestone.reached``, which
+    is a telemetry series, so it is written only while collection is on: a stamp
+    taken with collection off would later label an exported point with activity
+    from before consent. Read through the recorder's own ``enabled``, the same
+    effective check (env pin, then config) every other consent-gated write uses.
+    """
+    try:
+        from kiro_crew.metrics.provider import get_recorder
+
+        return bool(get_recorder().enabled)
+    except Exception:
+        logger.debug("milestones: telemetry consent unreadable; no stamp", exc_info=True)
+        return False
+
+
+def _note_recommended(st: dict[str, Any], row: Milestone, channel: str, now: float) -> None:
+    """Stamp *channel* as the latest recommendation of *row*, unless it is done.
+
+    Writes nothing while telemetry collection is off (:func:`_recommendation_consent`).
+    """
+    if row.group != "features" or channel not in RECOMMENDATION_CHANNELS:
+        return
+    _prune_recommended(st, now)
+    if not _recommendation_consent():
+        return
+    if _feature_done(st, row):
+        return
+    st["recommended"].setdefault(row.id, {})[channel] = now
+
+
+def op_recommended(channel: str, feature_key: str) -> Op:
+    """*channel* recommended the feature named *feature_key* (a tip doc or video key).
+
+    A key with no :data:`RECOMMENDATION_TARGETS` entry writes nothing. No metric
+    is emitted: the tip and video counters are recorded by their own routes.
+    """
+
+    def apply(st: dict[str, Any], now: float, events: list) -> None:
+        for milestone_id in RECOMMENDATION_TARGETS.get(feature_key, ()):
+            row = _row(milestone_id)
+            if row is not None:
+                _note_recommended(st, row, channel, now)
+
+    return apply
+
+
 def op_starter_clicked(milestone_id: str, surface: str) -> Op:
     def apply(st: dict[str, Any], now: float, events: list) -> None:
         row = _row(milestone_id)
         if row is None or row.starter is None:
             return
         st["starter_clicked"][row.id] = now
+        _note_recommended(st, row, "explore", now)
         send = "route" if row.starter.kind == "route" else row.starter.send
         events.append((M_STARTER_CLICKED, {"surface": surface, "milestone": row.id, "send": send}))
 
@@ -857,7 +1072,7 @@ def op_starter_arrived(milestone_id: str, today: date) -> Op:
             st["reached"][row.id] = {"at": now, "source": "arrived"}
             if row.id not in st["noticed"]:
                 st["noticed"].append(row.id)
-            events.append((M_REACHED, {"group": row.group, "milestone": row.id, "via": "arrived"}))
+            events.append((M_REACHED, _reached_attrs(st, row, row.id, "arrived", "arrived", now)))
             if not was_complete and _features_complete(st):
                 _features_completed_event(st, events)
         _op_active_day(today)(st, now, events)
@@ -877,7 +1092,7 @@ def op_notice_shown(key: str) -> Op:
 
 
 def emit_panel_opened() -> None:
-    emit_counter(M_PANEL_OPENED, {})
+    _emit(M_PANEL_OPENED, {})
 
 
 # ── Read model (GET /api/milestones) ──

@@ -453,6 +453,12 @@ def _register_mcp_routes(app: web.Application) -> None:
     app.router.add_get(
         "/api/chat/slots/{slot}/crew-timeline", _deferred("crew_workers", "api_crew_timeline")
     )
+    # One crew member's recap from the ledger and its crew log only (no model call),
+    # for the crewmate Sessions tab's in-place expand. Same gate and tree check.
+    app.router.add_get(
+        "/api/chat/slots/{slot}/crew-workers/{worker}/recap",
+        _deferred("crew_worker_recap", "api_crew_worker_recap"),
+    )
     app.router.add_get("/api/crons", handlers.api_crons)
     app.router.add_post("/api/crons", handlers.api_crons_create)
     app.router.add_delete("/api/crons", handlers.api_cron_batch_delete)
@@ -632,6 +638,7 @@ def _register_mcp_routes(app: web.Application) -> None:
         api_autonudge_start,
         api_autonudge_update,
         api_monitor_clear,
+        api_monitor_contract,
         api_monitor_create,
         api_monitor_restart,
         api_monitor_slot_get,
@@ -655,6 +662,11 @@ def _register_mcp_routes(app: web.Application) -> None:
     app.router.add_post("/api/monitors/{monitor_id}/stop", api_monitor_stop)
     app.router.add_post("/api/monitors/{monitor_id}/clear", api_monitor_clear)
     app.router.add_post("/api/monitors/{monitor_id}/restart", api_monitor_restart)
+    # The runtime monitor data contract: a cookie-authed READ served
+    # beside the autonudge/monitor reads above. Deliberately NOT on
+    # _STRICT_INTERNAL_API_PATHS -- a browser is its only caller, so it stays on
+    # the same cookie auth as GET /api/autonudge.
+    app.router.add_get("/api/monitor-contract", api_monitor_contract)
 
     # Agent questions. The MCP ask_question tool opens a BLOCKING card through
     # /api/agent-ask/* (strict internal paths, the caller's attested session
