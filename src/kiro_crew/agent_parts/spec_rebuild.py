@@ -1328,8 +1328,9 @@ def require_fork_governance(agent: str | None, project_dir: str | Path | None = 
     if agent in failed or effective in failed or "*" in failed:
         raise ForkGovernanceUnresolved(
             f"agent {agent!r} is a private template copy whose governance "
-            "refresh failed; refusing to start a session on stale permissions "
-            "(see the gateway log for the refresh error)"
+            "refresh failed; refusing to start a session on stale permissions. "
+            "If this Bot's Capabilities page shows a change to review, review and "
+            "save it there, then quit and reopen Kiro Crew so the refresh runs again"
         )
 
 

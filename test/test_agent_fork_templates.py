@@ -695,7 +695,11 @@ class TestRefreshForkedTemplates:
                 )
             agent_state.set_fork_info("bar", forked_from="kirocrew", private_to="bar")
             monkeypatch.setattr(agent_mod, "_fork_refresh_failed", frozenset({"bar"}))
-            with pytest.raises(agent_mod.ForkGovernanceUnresolved, match="refresh failed"):
+            # The refusal names the in-app path, not a log a user cannot open.
+            with pytest.raises(
+                agent_mod.ForkGovernanceUnresolved,
+                match="refresh failed.*Capabilities page.*quit and reopen Kiro Crew",
+            ):
                 agent_mod.require_fork_governance("foo")
 
     def test_spawn_gate_fails_closed_on_an_unreadable_stem_claimant(
