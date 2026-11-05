@@ -7,7 +7,8 @@ name. These
 checks pin what callers, ``patch.object`` and the patch corpus rely on:
 
 * every module-level name the one-module file bound still resolves through the facade,
-  and a moved name is its owner's own object;
+  a moved name is its owner's own object, and the facade binds a name the one-module
+  file lacked only where ``_BOUND_BEYOND_BASE`` lists it;
 * the class keeps every member with its BASE kind, coroutine flag and signature, and a
   bound member is its owner's function, named and annotated as a method of the class;
 * the mirror holds one object per name, so every name the test trees patch through the
@@ -84,6 +85,16 @@ _BASE_MODULE_NAMES = frozenset("""
     _CONSOLIDATION_LEASE_RENEW_SECS _LEASE_INCARNATION _LEASE_MONOTONIC _LEASE_PID
     _LEASE_START _LEASE_TOKEN _LeaseLostMidRun _lease_holder_is_live _no_pass_ran os
     platform_compat uuid
+    """.split())
+#: Names the facade binds for its importers that the one-module file lacked. An owner
+#: binds each, and the facade binds it too rather than serve a name BASE never had; the
+#: comment over its ``_BOUND_FOR_IMPORTERS`` says these are all that tuple holds besides
+#: BASE imports.
+_BOUND_BEYOND_BASE = frozenset("""
+    _SEMANTIC_LESSON_CHARS_PER_CONSOLIDATION _SEMANTIC_OMISSION_NOTICE_UNSCORED
+    _SEMANTIC_RECENCY_CHARS_PER_CONSOLIDATION _SEMANTIC_RELEVANCE_EMBED_SECS_PER_CONSOLIDATION
+    _SEMANTIC_RELEVANCE_SCAN_SECS_PER_CONSOLIDATION _SEMANTIC_ROTATION_CHARS_PER_CONSOLIDATION
+    _SemanticSelection _select_semantic_rows is_warm_task_brief_message
     """.split())
 #: The members whose bodies moved to an owner.
 _MOVED = frozenset("""
@@ -406,6 +417,18 @@ def _defined_at_top(source: str) -> set[str]:
     return names
 
 
+def _bound_beyond_base(source: str) -> list[str]:
+    """Names the ``_BOUND_FOR_IMPORTERS`` tuple in *source* holds that BASE did not bind."""
+    (bound,) = [
+        node.value.elts
+        for node in ast.parse(source).body
+        if isinstance(node, ast.Assign)
+        and isinstance(node.value, ast.Tuple)
+        and [ast.unparse(target) for target in node.targets] == ["_BOUND_FOR_IMPORTERS"]
+    ]
+    return sorted({ast.unparse(item) for item in bound} - _BASE_MODULE_NAMES)
+
+
 def _class_body_dependencies(source: str) -> list[str]:
     """What a function's source needs from the class body it was defined in."""
     found = []
@@ -508,6 +531,21 @@ def test_the_facade_serves_no_name_the_one_module_file_lacked() -> None:
         getattr(facade, "_consolidate")
 
 
+def test_the_facade_binds_a_name_the_one_module_file_lacked_only_where_it_is_listed() -> None:
+    """The check above reads only what the mirror serves, and a name the facade binds is
+    not served: one BASE lacked joins ``_BOUND_FOR_IMPORTERS`` only as
+    ``_BOUND_BEYOND_BASE`` lists it, so the comment over the tuple stays true."""
+    assert _bound_beyond_base(_FACADE_PATH.read_text("utf-8")) == sorted(_BOUND_BEYOND_BASE)
+
+
+def test_the_bound_beyond_base_check_can_fail() -> None:
+    source = _FACADE_PATH.read_text("utf-8")
+    opening = "_BOUND_FOR_IMPORTERS = (\n"
+    grown = source.replace(opening, opening + "    _a_third_name,\n", 1)
+    assert grown != source
+    assert _bound_beyond_base(grown) == sorted({*_BOUND_BEYOND_BASE, "_a_third_name"})
+
+
 def test_a_moved_name_is_the_object_its_owner_holds() -> None:
     checked = 0
     for dotted, path in _owner_paths().items():
@@ -564,7 +602,7 @@ def test_a_moved_exception_keeps_the_facade_module_and_other_moved_classes_name_
         line = traceback.format_exception_only(exc, exc("x"))[-1]
         assert line.startswith(f"{_FACADE}.{name}: x"), line
     owned = {
-        "_BoundedTable": "memory",
+        "_BoundedTable": "selection",
         "_EmbedBudget": "memory",
         "_InheritGlobal": "memory",
         "_LessonDeleteDecision": "memory",

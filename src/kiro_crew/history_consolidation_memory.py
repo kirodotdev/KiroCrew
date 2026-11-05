@@ -1,8 +1,8 @@
 """The memory a consolidation pass reads into its prompt and writes back.
 
-A pass shows the model a bounded ``## Current Semantic Memory`` table
-(:func:`_bounded_semantic_table`) and withholds deletes of keys the table did not show
-(:func:`_withhold_unseen_deletes`). A ``lesson.*`` key the model put in the ``semantic``
+A pass shows the model a bounded ``## Current Semantic Memory`` table, whose rows
+``history_consolidation_selection`` picks, and withholds deletes of keys the table did not
+show (:func:`_withhold_unseen_deletes`). A ``lesson.*`` key the model put in the ``semantic``
 array is moved to the ``lessons`` array first (:func:`_reroute_lesson_semantic_keys`), so
 it gets the lessons path's dedup and checks instead of a plain semantic write. It then
 writes what the model extracted:
@@ -30,7 +30,9 @@ Instance fields read: ``_lesson_store``, ``_vector_store``.
 Instance fields written: none.
 
 Part of the ``kiro_crew.history_consolidation`` family: that module is the import path and
-the patch surface; this owner imports only ``history_consolidation_span``.
+the patch surface; this owner imports only ``history_consolidation_span`` and
+``history_consolidation_selection``, and binds the selection's
+:func:`_bounded_semantic_table` and :func:`_recency` for importers of this module's path.
 """
 
 from __future__ import annotations
@@ -40,9 +42,13 @@ import json
 import logging
 import math
 import time as _time
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import TYPE_CHECKING, Any, NamedTuple
 
+from kiro_crew.history_consolidation_selection import (  # noqa: F401 - this path's importers
+    _bounded_semantic_table,
+    _recency,
+)
 from kiro_crew.history_consolidation_span import _RunCommitState
 from kiro_crew.lesson_validation import (
     LESSON_APPLIES_ON_TOPIC,
@@ -76,28 +82,6 @@ if TYPE_CHECKING:
 _EMBED_BUDGET_SECS_PER_PASS = 60.0
 
 
-#: The one line under a bounded ``## Current Semantic Memory`` table. The prompt
-#: tells the model to update or delete the keys it can see, so a table that lost
-#: rows silently would read as "those facts do not exist" and invite a deletion
-#: of nothing or a near-duplicate of a dropped key. Same vocabulary as the chat
-#: path's startup omission notice, so a reader learns one shape.
-_SEMANTIC_OMISSION_NOTICE = (
-    "[Context budget: omitted {count} of {total} semantic rows above the "
-    "{limit}-character consolidation budget; the least recently updated rows were "
-    "left out. The table above is PARTIAL: a key you do not see may still exist, "
-    "so update or delete only keys listed above and treat a missing key as "
-    "unknown, not absent.]"
-)
-
-
-class _BoundedTable(NamedTuple):
-    """A rendered semantic table, how many rows it left out, and the keys it shows."""
-
-    text: str
-    omitted: int
-    visible_keys: frozenset[str]
-
-
 #: Rows per ``get_all_semantic`` call when a consolidation pass snapshots the table.
 _SEMANTIC_SNAPSHOT_PAGE = 500
 
@@ -129,75 +113,6 @@ def _semantic_snapshot_in_pages(
         if len(batch) < page or not fresh:
             return rows
         cursor = str(fresh[-1].get("key", ""))
-
-
-def _recency(updated_at: object) -> tuple[int, float]:
-    """Rank an ``updated_at`` for the newest-first cut.
-
-    Stamps are parsed, not compared as text: the store writes ISO 8601 with an
-    offset, while imported or older rows can carry a naive stamp, a space
-    separator or an epoch, and as text those shapes rank by their separator
-    before their instant. A stamp that parses ranks by instant; one that does
-    not ranks after every one that does.
-    """
-    if isinstance(updated_at, (int, float)) and math.isfinite(updated_at):
-        return 1, float(updated_at)
-    if not isinstance(updated_at, str):
-        return 0, 0.0
-    text = updated_at.strip()
-    try:
-        parsed = datetime.fromisoformat(text)
-    except ValueError:
-        try:
-            return 1, float(text)
-        except ValueError:
-            return 0, 0.0
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return 1, parsed.timestamp()
-
-
-def _bounded_semantic_table(rows: list[dict], entries: list[dict], cap: int) -> _BoundedTable:
-    """Render ``entries`` as the prompt's semantic table within ``cap`` characters.
-
-    ``rows`` are the store rows (in the store's key order) that ``entries`` were
-    rendered from, one to one. A table that fits renders whole and byte-identical
-    to the uncapped form. Over the cap, the most recently updated rows are kept
-    -- the order the chat path's ``semantic_cap`` reads without a query -- and
-    rendered in the same key order, so the block keeps its shape and only loses
-    its oldest rows. Returns the block, the number of rows left out, and the keys
-    the block shows, which is what the writers may update or delete.
-
-    The fit is found by bisection on the row count with the real renderer rather
-    than by an estimate per row, so the bound is exact for whatever ``indent``
-    and escaping produce, at the cost of O(log n) serialisations. A row is kept
-    whole or not at all: when even the newest row alone is over the cap the
-    table is ``[]`` and every row counts as omitted, because a value cut short
-    would read as the fact itself.
-    """
-    whole = json.dumps(entries, indent=1) if entries else "[]"
-    if len(whole) <= cap:
-        return _BoundedTable(whole, 0, frozenset(str(r.get("key", "")) for r in rows))
-    # Newest first; key as the tiebreak so rows written in the same second keep
-    # one order across runs (a stable sort on top of the key order given).
-    by_recency = sorted(range(len(rows)), key=lambda i: str(rows[i].get("key", "")))
-    by_recency.sort(key=lambda i: _recency(rows[i].get("updated_at")), reverse=True)
-
-    def _render(count: int) -> str:
-        kept = sorted(by_recency[:count])
-        return json.dumps([entries[i] for i in kept], indent=1) if kept else "[]"
-
-    fits, overflows = 0, len(rows)
-    rendered = "[]"
-    while overflows - fits > 1:
-        middle = (fits + overflows) // 2
-        candidate = _render(middle)
-        if len(candidate) <= cap:
-            fits, rendered = middle, candidate
-        else:
-            overflows = middle
-    visible = frozenset(str(rows[i].get("key", "")) for i in by_recency[:fits])
-    return _BoundedTable(rendered, len(rows) - fits, visible)
 
 
 def _withhold_unseen_deletes(

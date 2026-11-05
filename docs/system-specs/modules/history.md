@@ -131,7 +131,7 @@ use:
 - `history_consolidation.py` defines `HistoryConsolidator` (construction,
   `reconfigure`, retry accounting, off-loop counting and every scheduling entry
   point through `consolidate_now`) and is a mirrored facade
-  (`kiro_crew._facade_mirror`) over five sibling owners; `history.py`
+  (`kiro_crew._facade_mirror`) over six sibling owners; `history.py`
   re-exports the class unchanged. The class binds each moved method under its
   own name, so `HistoryConsolidator._consolidate` and its peers keep their
   names, signatures and `__qualname__`; a moved method's `__module__` and
@@ -142,8 +142,10 @@ use:
   chunking, head slicing, `AttemptedSpan`, the run sentinels and the
   `memory.*` switches), `history_consolidation_lease.py` (the cross-process
   consolidation lease and the fence every durable write of a pass takes on
-  it), `history_consolidation_memory.py` (the bounded semantic
-  table, lesson and structured-memory writers, the embed budget),
+  it), `history_consolidation_selection.py` (which rows of an over-cap
+  semantic table a pass shows, and what each pool added),
+  `history_consolidation_memory.py` (the semantic snapshot and the
+  unseen-delete fence, lesson and structured-memory writers, the embed budget),
   `history_consolidation_skills.py` (auto-skill eligibility, detection,
   dedupe, staging and publication) and `history_consolidation_pass.py`
   (`_consolidate` and its `_call_llm` turn). New code for a stage goes to that
