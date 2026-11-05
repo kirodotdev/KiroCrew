@@ -20,11 +20,15 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from kiro_crew.acp import client as acp_client
 from kiro_crew.acp import client_transport
 from kiro_crew.acp.client import _CLIENT_OWNERS, AcpClient, AcpError
 from kiro_crew.acp.client_transport import _ends_agent_started_turn, _starts_agent_turn
+from kiro_crew.acp.liveness import VERDICT_UNKNOWN
+from kiro_crew.acp.transport_errors import AcpTimeoutError
 from kiro_crew.acp.types import (
     EVENT_COMPLETE,
+    EVENT_PERMISSION_REQUEST,
     EVENT_STEER_CONSUMED,
     EVENT_TEXT_CHUNK,
     EVENT_THINKING_CHUNK,
@@ -36,7 +40,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_KIRO,
     ACP_BACKENDS_AGENT_STARTED_TURNS,
 )
-from kiro_crew.testing.wait import async_wait_until, await_until
+from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS, async_wait_until, await_until
 
 _ACP_DIR = Path(__file__).resolve().parents[1] / "src" / "kiro_crew" / "acp"
 # AcpClient binds members its owner modules define, so a stdout reader can live in any of them.
@@ -834,6 +838,101 @@ async def test_a_request_wait_that_puts_the_first_frame_back_keeps_the_hand_off(
     assert turns == [client]
 
 
+# ── Reading the turn while another reader holds its frames ──
+
+
+async def _collect(stream) -> list:
+    async with contextlib.aclosing(stream) as events:
+        return [e async for e in events]
+
+
+@pytest.mark.parametrize("site", _READERS_IN_THE_HAND_OFF_WINDOW)
+@pytest.mark.asyncio
+async def test_stream_unsolicited_waits_for_a_reader_that_holds_the_turns_frames(
+    site: str,
+) -> None:
+    """A config-option push in the hand-off window must not leave the turn unread.
+
+    The turn reads only once that reader has put the frames back, and then reads
+    every one of them in order, the first included.
+    """
+    client, reader, _proc = _client(on_turn=lambda _c: None)
+    await _handed_off(client, reader, _chunk("one"))
+    if site == "_wait_for_response":
+        holder = asyncio.ensure_future(client._wait_for_response(9, timeout=FALLBACK_TIMEOUT_SECS))
+        ends: tuple[dict, ...] = ({"jsonrpc": "2.0", "id": 9, "result": {}},)
+    elif site == "wait_for_compaction":
+        holder = asyncio.ensure_future(client.wait_for_compaction(timeout=FALLBACK_TIMEOUT_SECS))
+        ends = (_COMPACTED, _METADATA)
+    else:
+        holder = asyncio.ensure_future(
+            client._drain_post_compaction_metadata(grace=FALLBACK_TIMEOUT_SECS)
+        )
+        ends = (_METADATA,)
+    _feed(reader, _chunk("two"))
+    await async_wait_until(lambda: len(client._agent_turn_held or ()) == 2)
+    assert client.has_pending_agent_turn() is True
+
+    turn = asyncio.ensure_future(_collect(client.stream_unsolicited(timeout=FALLBACK_TIMEOUT_SECS)))
+    hold_end = client._agent_turn_hold_end
+    assert hold_end is not None
+    await async_wait_until(lambda: bool(hold_end._waiters) or turn.done())
+    assert not turn.done()
+    _feed(reader, *ends)
+    await await_until(holder, what="the reader in the window")
+    _feed(reader, _chunk("three"), _AUTONOMOUS_END)
+    events = await await_until(turn, what="the agent-started turn")
+
+    assert [e.text for e in events if e.kind == EVENT_TEXT_CHUNK] == ["one", "two", "three"]
+    assert events[-1].kind == EVENT_COMPLETE
+    assert client.has_pending_agent_turn() is False
+    await _stop_restarted_reader(client)
+
+
+@pytest.mark.asyncio
+async def test_a_turn_counts_as_pending_while_a_reader_holds_its_first_frame() -> None:
+    client, reader, _proc = _client(on_turn=lambda _c: None)
+    await _handed_off(client, reader, _chunk("one"))
+    wait = asyncio.ensure_future(client._wait_for_response(9, timeout=FALLBACK_TIMEOUT_SECS))
+    await async_wait_until(lambda: client._agent_turn_held == [client._agent_turn_start])
+
+    assert client._agent_turn_pending() is False
+    assert client.has_pending_agent_turn() is True
+    _feed(reader, {"jsonrpc": "2.0", "id": 9, "result": {}})
+    await await_until(wait, what="the request wait")
+    assert client.has_pending_agent_turn() is True
+
+    loop = client._prompt_loop(5, FALLBACK_TIMEOUT_SECS)
+    await loop.__anext__()
+    await loop.aclose()
+    assert client.has_pending_agent_turn() is False
+    await client._stop_idle_reader()
+
+
+@pytest.mark.parametrize("ended_by", ["_reset_state", "_kill_process"])
+@pytest.mark.asyncio
+async def test_a_kill_or_reset_wakes_a_stream_waiting_for_the_held_frames(ended_by: str) -> None:
+    client, reader, proc = _client(on_turn=lambda _c: None)
+    await _handed_off(client, reader, _chunk("one"))
+    wait = asyncio.ensure_future(client._wait_for_response(9, timeout=FALLBACK_TIMEOUT_SECS))
+    await async_wait_until(lambda: client._agent_turn_held == [client._agent_turn_start])
+    turn = asyncio.ensure_future(_collect(client.stream_unsolicited(timeout=FALLBACK_TIMEOUT_SECS)))
+    hold_end = client._agent_turn_hold_end
+    assert hold_end is not None
+    await async_wait_until(lambda: bool(hold_end._waiters) or turn.done())
+
+    if ended_by == "_reset_state":
+        client._reset_state()
+    else:
+        await client._kill_process()
+
+    assert await await_until(turn, what="the woken agent-started turn") == []
+    assert client.has_pending_agent_turn() is False
+    proc.stdin.write.assert_not_called()
+    _feed(reader, {"jsonrpc": "2.0", "id": 9, "result": {}})
+    await await_until(wait, what="the request wait")
+
+
 # ── stream_unsolicited ──
 
 
@@ -903,6 +1002,89 @@ async def test_stream_unsolicited_ends_on_the_timeout_gate() -> None:
     assert events[-1].kind == EVENT_COMPLETE
     assert events[-1].synthetic_completion is True
     await _stop_restarted_reader(client)
+
+
+_PLAN = _update(
+    {
+        "sessionUpdate": "plan",
+        "entries": [{"content": "check the build", "priority": "medium", "status": "pending"}],
+    }
+)
+_ASK = {
+    "jsonrpc": "2.0",
+    "id": 3,
+    "method": "session/request_permission",
+    "params": {
+        "sessionId": "s1",
+        "toolCall": {"toolCallId": "t1", "title": "fs_write"},
+        "options": [{"optionId": "allow", "kind": "allow_once", "name": "Allow"}],
+    },
+}
+
+
+@pytest.fixture
+def _stale_gate_expired(_floor_monkeypatch) -> None:
+    """Any silence is past the stale-turn cutoff, and a silent read returns quickly."""
+    _floor_monkeypatch.setattr(acp_client, "_STALE_TURN_TIMEOUT", 0)
+    _floor_monkeypatch.setattr(
+        acp_client,
+        "_READ_TIMEOUT",
+        0.05,  # flake-ok: silent-read poll interval, no test waits on it
+    )
+
+
+async def _read_approving(client: AcpClient) -> list:
+    events = []
+    async with contextlib.aclosing(client.stream_unsolicited()) as stream:
+        async for event in stream:
+            events.append(event)
+            if event.kind == EVENT_PERMISSION_REQUEST:
+                await client.approve_tool(event.request_id, "allow")
+    return events
+
+
+@pytest.mark.parametrize("first", [_THOUGHT, _PLAN, _ASK], ids=["thought", "plan", "permission"])
+@pytest.mark.asyncio
+async def test_an_agent_turn_that_goes_silent_before_any_text_ends_on_the_stale_turn_gate(
+    first: dict, _stale_gate_expired: None
+) -> None:
+    """The cycle goes quiet after a frame that is not text and sends no closing frame.
+
+    The adapter skips the closing usage_update of a cycle no assistant message set
+    usage for. With no response to wait for either, only the stale-turn gate can end
+    this read before the prompt timeout.
+    """
+    client, reader, _proc = _client(on_turn=lambda _c: None)
+    client._consult_liveness_model_wait = AsyncMock(return_value=(VERDICT_UNKNOWN, "no movement"))
+    await _handed_off(client, reader, first)
+
+    # The read keeps the configured prompt timeout, which is hours, so only the
+    # stale-turn gate can end it within this wait.
+    events = await await_until(
+        asyncio.ensure_future(_read_approving(client)),
+        what="the silent agent-started turn to end",
+    )
+
+    assert events[-1].kind == EVENT_COMPLETE
+    assert events[-1].synthetic_completion is True
+    await _stop_restarted_reader(client)
+
+
+@pytest.mark.asyncio
+async def test_a_user_turn_that_goes_silent_after_thinking_is_not_ended_by_the_stale_turn_gate(
+    _stale_gate_expired: None,
+) -> None:
+    client, reader, _proc = _client()
+    client._consult_liveness_model_wait = AsyncMock(return_value=(VERDICT_UNKNOWN, "no movement"))
+    client._buffer.append(JsonRpcMessage.from_dict(_THOUGHT))
+
+    with pytest.raises(AcpTimeoutError):
+        async for _event in client._dispatch_events(
+            5, 0.5  # flake-ok: the user turn must run to this deadline; that is what is tested
+        ):
+            pass
+
+    client._consult_liveness_model_wait.assert_not_awaited()
 
 
 @pytest.mark.asyncio

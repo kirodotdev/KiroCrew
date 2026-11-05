@@ -366,7 +366,7 @@ def watch_agent_turns(self: AcpProvider, callback: Callable[[], None] | None) ->
 def agent_turn_pending(self: AcpProvider) -> bool:
     """Whether a turn the agent started is waiting to be read by :func:`stream_unsolicited`."""
     client = self._client
-    return isinstance(client, AcpClient) and client._agent_turn_pending()
+    return isinstance(client, AcpClient) and client.has_pending_agent_turn()
 
 
 async def stream_unsolicited(

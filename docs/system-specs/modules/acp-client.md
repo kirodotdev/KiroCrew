@@ -2780,7 +2780,11 @@ stdout while no request waits. Design record:
   `_mcp_notifications`. A frame that would not fit in `_buffer` beside the held
   ones gets that handling too, so putting them back pushes none out. A kill or
   reset drops what is held. `_agent_turn_pending()` reads False while the
-  frames are held, so `stream_unsolicited()` does not read beside that reader.
+  frames are held, but `has_pending_agent_turn()`, which the provider's
+  `agent_turn_pending()` reads, counts the held start frame, so a dashboard turn
+  started in that window still opens. `stream_unsolicited()` waits until that
+  reader has put the frames back, or a kill or reset has dropped them
+  (`_agent_turn_hold_end`), so it never reads beside that reader.
 - **Reading the turn.** `stream_unsolicited()` reads the pending turn through
   `_dispatch_events` under request id `-1` and sends nothing. After the turn's
   first activity frame, the bound `_prompt_loop` ends it on the `usage_update`
@@ -2797,7 +2801,13 @@ stdout while no request waits. Design record:
   request until its answer is read, a steer that still waits is handed its
   answer before this rule runs, and an answer that arrives after its steer
   stopped waiting passes as a stray response, as in a user turn. Process
-  death, the stale-turn gate and the prompt timeout end it too. A prompt that
+  death, the stale-turn gate and the prompt timeout end it too. The stale-turn
+  gate arms from the turn's first activity frame, not only after text as on a
+  user turn: the adapter sends no closing `usage_update` for a cycle no
+  assistant message set usage for, so a cycle that goes quiet after a thought,
+  a plan or an answered permission request would otherwise hold the read until
+  the prompt timeout. While a tool call is open the tool-stall watchdog governs,
+  as on a user turn. A prompt that
   starts first reads the frames as its own, which ends the hand-off, and
   `stream_unsolicited()` then yields nothing, as it does while any prompt is in
   flight.
@@ -2978,7 +2988,7 @@ log since kiro-cli's cancellation is a permission decision outside Kiro Crew's c
 
 ### Stale-turn gate (`AcpClient`)
 
-After text has streamed (`_stale_eligible`), a turn whose stdout+stderr fall silent for `_STALE_TURN_TIMEOUT` (90s) is a candidate for "treat as complete". A bare wall-clock reap would false-positive on a genuinely-working-but-quiet backend (a long model generation, or a spawned build emitting nothing to the pipe), ending the turn and losing all subsequent output — the *capture*-side analogue of the same blunt-timeout defect the runtime path guards against for tool-stall. `AcpClient` **oracle-gates** the reap, converging onto the same `LivenessOracle` (`acp/liveness.py`) contract the shared-runtime path uses: on every silent read while `_stale_eligible`, `_consult_liveness_model_wait()` calls `oracle.check_model_wait(self._pid)` (offloaded to `subprocess_executor()` under a 10s `wait_for`; degrades to `VERDICT_UNKNOWN` on any error — fail toward reaping). Consulting on **every** silent read, not only at the 90s mark, is required: the oracle needs a prior sample to compute a CPU/IO movement delta, so with readable counters a fresh oracle's first *submitted* consult returns `UNKNOWN`/`"sampling"` and a single consult at the cutoff would always reap. A missing runtime PID or unreadable counters also return `UNKNOWN`, each with its own evidence string.
+After text has streamed (`_stale_eligible`; on an agent-started turn, after its first activity frame, see "Idle reader and agent-started turns"), a turn whose stdout+stderr fall silent for `_STALE_TURN_TIMEOUT` (90s) is a candidate for "treat as complete". A bare wall-clock reap would false-positive on a genuinely-working-but-quiet backend (a long model generation, or a spawned build emitting nothing to the pipe), ending the turn and losing all subsequent output — the *capture*-side analogue of the same blunt-timeout defect the runtime path guards against for tool-stall. `AcpClient` **oracle-gates** the reap, converging onto the same `LivenessOracle` (`acp/liveness.py`) contract the shared-runtime path uses: on every silent read while `_stale_eligible`, `_consult_liveness_model_wait()` calls `oracle.check_model_wait(self._pid)` (offloaded to `subprocess_executor()` under a 10s `wait_for`; degrades to `VERDICT_UNKNOWN` on any error — fail toward reaping). Consulting on **every** silent read, not only at the 90s mark, is required: the oracle needs a prior sample to compute a CPU/IO movement delta, so with readable counters a fresh oracle's first *submitted* consult returns `UNKNOWN`/`"sampling"` and a single consult at the cutoff would always reap. A missing runtime PID or unreadable counters also return `UNKNOWN`, each with its own evidence string.
 
 The submitted future is tracked on the client, and polls while it is unfinished return `UNKNOWN` without submitting another job — so a wedged walk does not submit a fresh worker on every silent read. It stays tracked until it finishes **or the next liveness-state boundary retires it**, whichever comes first; a still-pending walk is deliberately detached at a boundary rather than waited on. The residual executor-occupancy bound is therefore at most one abandoned worker per boundary — turn start or process reset — rather than one per silent read: a pathological loop of turns against a permanently wedged `/proc` read can still occupy `subprocess_executor()` workers, which teardown (`_get_child_pids`) also uses. Eliminating that entirely needs a killable per-walk process or a dedicated liveness bulkhead, neither of which this gate attempts.
 
