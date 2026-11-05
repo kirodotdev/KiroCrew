@@ -168,7 +168,23 @@ ran and names v3 then records `confirm_kiro_cli_offers_kas`, sets the field to K
 config-watcher cycle (`_reconcile_live_config_with_kiro_verdict`) before the floor
 task ends, so `SessionManager` rebuilds its provider factory from a fresh load; one that ran without v3 logs a notice that the pick stays on
 kiro-cli's v2 engine and names `kiro-cli update`; an unknown probe or the bundle
-route leaves the pick on kiro-cli. After `_init_dashboard`,
+route leaves the pick on kiro-cli. The probe runs the binary a session spawn runs
+(`agent_sdk.drivers.acp.kiro_cli_spawn_binary`, the same `_resolve_kiro_bin` with
+its `PATH` search and executable-trust check), so a kiro-cli reachable only through
+`PATH` is judged like any other. The pinned install keeps the plain
+`kiro_cli.kas_relay_help` probe; any other binary, which an agent could have
+planted in a `PATH` directory, is probed inside the operator's sandbox tier
+(`sandboxed_spawn_argv` + `popen_limited`, same argv and timeout) under Crew's own
+layer (`is_kiro_cli=False`), never a delegation to an internal sandbox a planted
+binary would not have; on Windows, which has no Crew layer, it delegates exactly
+as the session spawn does. A sandboxed probe that exits nonzero is unknown, not a
+gap: the launcher can fail before kiro-cli runs. It runs in its own process group,
+and a timeout kills the whole group, since the launcher forks kiro-cli into it. An unknown probe on a Kiro CLI pick logs a WARNING
+(`KAS_CLI_FLOOR_KIRO_UNKNOWN_NOTICE`) naming why: no trusted kiro-cli, or an
+`acp --help` that did not run. For a Kiro CLI pick, `kirocrew doctor`'s `engine:`
+row reads that same `kas_engine_verdict`, never its own probe, and says which
+engine the pick runs on by the floor's own rule: KAS only when v3
+is supported and KAS is selectable, kiro-cli's v2 engine otherwise. After `_init_dashboard`,
 `kiro_on_kas_notice.schedule` waits for the floor task, then posts one bell note
 (`system.agent`, linking `/settings/agent`) when the stored pick is Kiro CLI and it
 loads as KAS (`kiro_cli_pick_backend`); an `O_EXCL` marker in the data home makes it once per
