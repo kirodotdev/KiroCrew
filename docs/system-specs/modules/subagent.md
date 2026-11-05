@@ -1776,9 +1776,10 @@ it to `tool_permission.settle` with the subagent's ladder
 (`RunEventCoordinator._permission_policy` in `subagent_manager/run.py`). The
 ladder decides it in strict priority order and answers it on the wire:
 
-0. **Spec hooks** — on a turn whose agent spec's PreToolUse hooks gate the call
-   (`hooks.permission_pre_tool_block`), a delivered deny, or hooks that cannot
-   be read, → reject with the gate's own reason
+0. **Spec hooks** — the Hooks page's PreToolUse hooks, with the agent spec's own
+   on a turn whose backend never runs them (`hooks.permission_pre_tool_block`): a
+   delivered deny, a hook with no verdict, or hooks that cannot be read → reject
+   with the gate's own reason
 1. **Hook deny** — `hooks.on_tool_call()` returns `TOOL_DENY` → reject
 2. **Hook auto-approve** — `hooks.on_tool_call()` returns `TOOL_AUTO_APPROVE`
    (the `auto_approve_tools` globs / read-only allowlist — a grant made by
@@ -3664,17 +3665,20 @@ Delivery debt captures the member id, elapsed time, and credits when a completio
 
 The subagent loop fires `PreToolUse` and `PostToolUse` (on `EVENT_TOOL_RESULT`),
 mirroring the dashboard's tool phases (`dashboard/chat_turn/tool_rows.py`, `tool_results.py`).
-Where `PreToolUse` runs depends on the backend (`agent_sdk/spec_hooks.py:turn_spec_hooks`):
+On every backend the Hooks page's `PreToolUse` hooks run fail-closed on a call's
+permission request (`hook_runtime/hook_dispatch.py:permission_pre_tool_block`,
+the ladder's spec-hooks floor) and can refuse it. What else runs depends on the
+backend (`agent_sdk/spec_hooks.py:turn_spec_hooks`):
 
-- On a backend that receives the agent spec's `hooks` itself, `PreToolUse` is an
-  informational fire on `EVENT_TOOL_CALL` (`fire_tool_hooks`) and cannot refuse
-  the call.
+- On a backend that receives the agent spec's `hooks` itself, `PreToolUse` also
+  fires informationally on `EVENT_TOOL_CALL` (`fire_tool_hooks`), which cannot
+  refuse the call. It stays because a call the harness runs without asking gets
+  no permission request, so a Hooks-page hook cannot refuse that call; a call that
+  asks runs each Hooks-page hook twice, as on the chat turn loop.
 - On an `ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS` backend (KAS, goose, opencode) the
-  turn is gated: the Hooks page's hooks and the run's spec hooks run together,
-  fail-closed, on the call's permission request
-  (`hook_runtime/hook_dispatch.py:permission_pre_tool_block`, the ladder's
-  spec-hooks floor), and can refuse it. The informational `EVENT_TOOL_CALL` fire
-  is skipped on such a turn, so each hook runs once.
+  turn is gated: the run's spec hooks join the Hooks page's on the permission
+  request. The informational `EVENT_TOOL_CALL` fire is skipped on such a turn, so
+  each hook runs once.
 
 The tool name is cached on `EVENT_TOOL_CALL` by `tool_call_id` and looked up
 when the result arrives. The `Running: ` prefix is stripped so both hooks
@@ -3699,7 +3703,7 @@ preserving backward compatibility for existing hook scripts.
 Caller sites:
 - `subagent_manager/run_turn.py` (`_run_inner_impl`): passes all three at the
   informational `fire_tool_hooks` (PreToolUse, ungated turns only) and the
-  `hook_store.fire` (PostToolUse) call sites; a gated turn passes them to
+  `hook_store.fire` (PostToolUse) call sites; every turn passes them to
   `permission_pre_tool_block` through the ladder's `SpecHooks` floor
 - `task_executor.py`: passes `parent_session_key` and `agent_role` (no
   `subagent_id`), with the same gated/ungated split

@@ -193,15 +193,15 @@ async def permission_pre_tool_block(
 ) -> str | None:
     """Run the PreToolUse hooks on a subagent or task-runner permission request.
 
-    For a turn whose backend never receives the agent spec's ``hooks`` (see
-    :func:`kiro_crew.agent_sdk.spec_hooks.turn_spec_hooks`): on that backend the
-    projection turns every call a PreToolUse hook covers into a permission
-    request, so this is where the hooks gate. The Hooks page's hooks and the
-    spec's run together, as on the chat turn loop. Such a turn skips the
-    informational tool-call fire: KAS sends a call's tool-call frame BEFORE its
-    permission request, and every call a PreToolUse hook covers reaches this gate,
-    so firing there too would run each hook twice. Returns why the call is
-    blocked, or ``None``.
+    The Hooks page's hooks run on every backend, as on the chat turn loop.
+    *spec_hooks* are the agent spec's own, for a turn whose backend never receives
+    them (see :func:`kiro_crew.agent_sdk.spec_hooks.turn_spec_hooks`), and empty
+    where the harness runs them itself. On a backend that never receives them the
+    projection turns every call a PreToolUse hook covers into a permission request,
+    so the turn skips the informational tool-call fire: KAS sends a call's tool-call
+    frame BEFORE its permission request, and every call a PreToolUse hook covers
+    reaches this gate, so firing there too would run each hook twice. Returns why
+    the call is blocked, or ``None``.
 
     A hook matcher is compared with every name the call is known by: its title
     (what the chat turn loop matches), its canonical *tool_identity*

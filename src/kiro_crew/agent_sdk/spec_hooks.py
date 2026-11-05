@@ -1197,9 +1197,10 @@ class TurnSpecHooks(NamedTuple):
     #: The spec could not be read: every permission request is refused, as the chat
     #: turn loop does, because a deny hook that was never loaded gave no verdict.
     unreadable: bool
-    #: Crew gates this turn's permission requests on PreToolUse hooks (stored and
-    #: spec) itself, because its backend's projection sent the calls they cover
-    #: there. False for a backend that runs the spec's hooks itself.
+    #: Crew runs the spec's PreToolUse hooks itself on this turn's permission
+    #: requests, because its backend's projection sent the calls they cover there.
+    #: False for a backend that runs the spec's hooks itself. The Hooks page's
+    #: hooks gate a permission request either way.
     gated: bool
 
 
