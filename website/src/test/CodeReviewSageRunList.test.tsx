@@ -447,7 +447,7 @@ describe('why a review failed', () => {
   // source so a reader can check it: the driver's per-change wording
   // (sage_lib/review_driver.py), the preflight's two answers
   // (sage_lib/review_pool.py::runtime_preflight) and the run-level sentences
-  // routes.py::_first_change_error maps each reason to.
+  // routes_parts/review_runs.py::_first_change_error maps each reason to.
   it('tells a record that stopped short apart from one that was never written', () => {
     // The driver's per-change wording, and the run-level sentence for the same
     // reason. Both must reach the incomplete-record explanation, and NEITHER may
@@ -565,7 +565,7 @@ describe('why a review failed', () => {
     // Evidence that the drift this change fixes is not hypothetical: it has
     // ALREADY happened, and is on main right now.
     //
-    // `routes.py::_first_change_error` maps `no_review_recorded` to "the reviewer
+    // `routes_parts/review_runs.py::_first_change_error` maps `no_review_recorded` to "the reviewer
     // finished but wrote no findings record". No prose branch matches it -- the
     // no-record branch keys on "no result record", which is the DRIVER's
     // per-change wording, a different sentence for the same cause. Compare the

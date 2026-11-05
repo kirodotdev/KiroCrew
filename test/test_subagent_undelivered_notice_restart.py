@@ -113,7 +113,7 @@ def _giving_up_manager(queued: list[str]):  # type: ignore[no-untyped-def]
     manager = _manager(on_event=_on_event)
 
     async def _gives_up(done_info):  # type: ignore[no-untyped-def]
-        # gateway.py ``_subagent_done``: every attempt failed, so it announces the
+        # slack/gateway_runtime/subagent_wiring.py ``_subagent_done``: every attempt failed, so it announces the
         # failure and returns normally.
         manager.notify_injection_failed(done_info, reason="all 3 injection attempts failed")
 

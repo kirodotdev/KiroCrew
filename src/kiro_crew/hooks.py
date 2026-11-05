@@ -332,7 +332,7 @@ HOOK_EVENTS = (
 #
 # "No event fires them" is not "the command cannot run": the dashboard's Test
 # endpoint runs a STORED hook's command on demand and never consults this tuple
-# (``handlers/hooks.py`` ``api_hook_test`` -> ``run_script_hook``), so Test works on
+# (``handlers/hooks_scripts.py`` ``api_hook_test`` -> ``run_script_hook``), so Test works on
 # one of these exactly as it does on a fired event.
 #
 # They are not equidistant from running, and a reader planning the delivery side

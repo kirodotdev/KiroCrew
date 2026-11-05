@@ -38,7 +38,7 @@ type OneShotAction = 'approve' | 'reject' | 'reject_once'
  * The ONE mapping from a UI decision token onto the one-shot approval endpoint.
  *
  * `POST /api/approvals/{id}/{action}` honors exactly `approve`, `reject` and
- * `reject_once` (`dashboard/handlers/sessions.py`), and records NO standing
+ * `reject_once` (`dashboard/handlers/sessions_parts/live_turn.py`), and records NO standing
  * grant — the next identical call prompts again. A trust verb (`trust`,
  * `trust_reads`, `trust_command`, `trust_base`) therefore has no representation
  * here at all, and belongs on a grant-recording endpoint instead

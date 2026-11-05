@@ -70,7 +70,7 @@ export const TURN_OPENER_ROLES = new Set(['user', 'nudge', 'subagent'])
 /**
  * The synthesis injection that closes a sub-agent fan-out.
  *
- * `_run_pending_synthesis` (chat_runner.py) appends this row before dispatching
+ * `_run_pending_synthesis` (chat_turn/queue_cycle.py) appends this row before dispatching
  * the one turn that folds every sub-agent's result into a single answer, and
  * stamps `meta.injectKind = 'synthesis'` on it. Its presence is therefore proof
  * that everything the agent emitted since the user's prompt was INTERIM: the
@@ -87,7 +87,7 @@ export const isSynthesisInjection = (msg: ChatMessage): boolean =>
  * The row a turn that ENDED carries its per-turn stats on: its last
  * assistant-role row for a completed turn (`_attach_turn_stats`), the newest
  * reply the runner recorded for any other end (`_persist_partial_reply`,
- * chat_runner.py).
+ * chat_turn/turn_reply_seams.py).
  *
  * This is how the region walk finds where a synthesis turn ENDED. A synthesis
  * row opens a turn whose answer is real, user-facing content no later synthesis

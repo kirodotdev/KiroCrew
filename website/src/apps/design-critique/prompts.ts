@@ -6,7 +6,7 @@ import { mdImageDest } from '../../utils/fileTokens'
  *
  * A bundled `design-critic` agent cannot be used from a builtin: a builtin
  * manifest may declare `agents`, but discovery never serializes that field and
- * `bridges.py` resolves an app root under the user data dir, where a builtin has
+ * `bridges_sources.py` resolves an app root under the user data dir, where a builtin has
  * only `app.json`. The agent is therefore never registered, and naming it on
  * `/api/chat` fails every request. (`dev_fleet` has the same latent gap with its
  * two declared skills, neither of which is registered today.) So the persona,

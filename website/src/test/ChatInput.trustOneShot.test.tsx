@@ -3,7 +3,7 @@
  * approval endpoint.
  *
  * `POST /api/approvals/{id}/{action}` honors exactly `approve`, `reject` and
- * `reject_once` (dashboard/handlers/sessions.py) — there is no trust verb, and
+ * `reject_once` (dashboard/handlers/sessions_parts/live_turn.py) — there is no trust verb, and
  * the next identical call prompts again. Mapping `trust`/`trust_reads` to
  * `approve` ran the tool once while `finish()` dispatched `decision: 'trust'`, so
  * the composer reported a standing grant the backend never recorded. Same defect
