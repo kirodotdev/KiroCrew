@@ -464,6 +464,8 @@
     "pages.devFleetPage.pod_2": "A Kiro Crew dev \"pod\" — an isolated development environment. Product terminology; see the do-not-translate glossary before translating.",
     "pages.devFleetPage.pr": "Label introducing a pull-request link. \"PR\" = pull request; keep the abbreviation the target language's developers use, and keep the colon.",
     "pages.devFleetPage.pr_2": "\"PR\" = pull request. Keep the abbreviation the target language's developers actually use; do not expand it if that would break the layout.",
+    "pages.devFleetPage.force_remove_confirm_desc_one": "Body of the danger confirm when pruning Dev Fleet worktrees, shown when some selected worktrees still hold unmerged or uncommitted work; {{count}} is how many of them. Singular form.",
+    "pages.devFleetPage.force_remove_confirm_desc_other": "Body of the danger confirm when pruning Dev Fleet worktrees, shown when some selected worktrees still hold unmerged or uncommitted work; {{count}} is how many of them. Plural form.",
     "pages.hooksPage.ms": "The unit \"ms\" = milliseconds, rendered after a duration. Use the abbreviation your locale's technical writing uses.",
     "pages.hooksPage.ok": "Status value in a table or log line, meaning the operation succeeded. A state, not the confirmation button.",
     "pages.hooksPage.s": "The unit \"s\" = seconds, rendered directly after a number (`30s`). Not a plural marker.",

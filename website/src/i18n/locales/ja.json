@@ -14261,7 +14261,7 @@
       "filter_worktrees": "ワークツリーをフィルター…",
       "filter_worktrees_2": "ワークツリーをフィルター",
       "finished": "完了",
-      "force_remove_confirm_desc": "{{count}} 件のワークツリーに未マージまたは未コミットの作業があります。削除するとローカルの変更がすべて永久に失われます。元に戻せません。",
+      "force_remove_confirm_desc_other": "{{count}} 件のワークツリーに未マージまたは未コミットの作業があります。削除するとローカルの変更がすべて永久に失われます。元に戻せません。",
       "force_remove_confirm_title": "ワークツリーを強制削除しますか？",
       "force_remove_warning": "選択したワークツリーには未マージの作業があります — 削除は永久的で、元に戻せません。",
       "force_remove": "{{name}} を強制削除",

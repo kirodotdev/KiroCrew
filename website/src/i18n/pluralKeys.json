@@ -508,5 +508,6 @@
   "apps.designCritique.designCritiquePage.flow_screens_count",
   "pages.settings.securityPanel.rule_count",
   "pages.mcpManagement.resolve_all_failed",
-  "pages.mcpManagement.resolve_ready"
+  "pages.mcpManagement.resolve_ready",
+  "pages.devFleetPage.force_remove_confirm_desc"
 ]

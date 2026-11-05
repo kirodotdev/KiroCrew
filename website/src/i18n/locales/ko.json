@@ -14261,7 +14261,7 @@
       "filter_worktrees": "워크트리 필터…",
       "filter_worktrees_2": "워크트리 필터",
       "finished": "완료됨",
-      "force_remove_confirm_desc": "{{count}}개의 워크트리에 병합되지 않았거나 커밋되지 않은 작업이 있습니다. 삭제하면 모든 로컬 변경 사항이 영구적으로 삭제됩니다. 되돌릴 수 없습니다.",
+      "force_remove_confirm_desc_other": "{{count}}개의 워크트리에 병합되지 않았거나 커밋되지 않은 작업이 있습니다. 삭제하면 모든 로컬 변경 사항이 영구적으로 삭제됩니다. 되돌릴 수 없습니다.",
       "force_remove_confirm_title": "워크트리를 강제로 삭제하시겠습니까?",
       "force_remove_warning": "선택한 워크트리에 병합되지 않은 작업이 있습니다 — 삭제는 영구적이며 되돌릴 수 없습니다.",
       "force_remove": "{{name}} 강제 제거",
