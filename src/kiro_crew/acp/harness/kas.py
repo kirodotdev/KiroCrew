@@ -57,13 +57,14 @@ from kiro_crew.acp.harness.base import (
 from kiro_crew.acp.kas_agents import KasAgentTranslationError
 from kiro_crew.acp.kas_app_identity import resolve_app_identity_launches
 from kiro_crew.acp.kas_host_auth import answer_get_access_token, vault_holds_identity_off_loop
+from kiro_crew.acp.kas_tool_limits import with_switched_off_tools
 from kiro_crew.acp.kas_transport import (
     METHOD_KAS_AUTH_GET_ACCESS_TOKEN,
     build_kas_argv,
     build_kas_bundle_argv,
 )
 from kiro_crew.acp.kas_withheld_notice import withheld_credentials_notice
-from kiro_crew.acp.session_mcp import project_agent_spec
+from kiro_crew.acp.session_mcp import project_agent_spec, session_mcp_disabled_tools
 from kiro_crew.acp.types import (
     ACP_BACKEND_KAS,
     ACP_BACKENDS_HOST_AUTH_CALLBACK,
@@ -955,6 +956,11 @@ class KasHarness(MembershipHarness):
                 session_key=session_key,
                 skill_scope_rules=_skill_scope_rules(agent, spec, prompt_dir, work_dir),
                 withheld_out=withheld,
+            )
+            # Every per-tool switch, the global settings file's included: the spec
+            # rebuild never copies one onto Crew's own servers. Read here, off the loop.
+            custom_agents = with_switched_off_tools(
+                custom_agents, session_mcp_disabled_tools(agent, spec=spec)
             )
             # Resolved HERE, in this thread, for the runtime's hoist: the managed
             # launch it stamps the session token onto comes from the ``kirocrew``
