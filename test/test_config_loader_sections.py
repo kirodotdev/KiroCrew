@@ -766,7 +766,9 @@ class TestGitLabHostAllowlist:
                 "dashboard": {
                     "gitlab_hosts": [
                         "https://gitlab.acme.internal",
-                        "gitlab.acme.internal/path",
+                        # A path is the instance's URL root, but only a clean one.
+                        "gitlab.acme.internal/../path",
+                        "gitlab.acme.internal/a?b",
                         "user@gitlab.acme.internal",
                         "*.acme.internal",
                         "gitlab.acme.internal:99999",

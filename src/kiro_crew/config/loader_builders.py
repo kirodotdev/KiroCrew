@@ -1167,14 +1167,16 @@ def _feature_previews(value: object, default: dict) -> dict:
 
 def _build_dashboard_config(_degraded: set[str], dashboard_data: dict) -> DashboardConfig:
     section = _sections.SectionReader(DashboardConfig, dashboard_data)
-    gitlab_hosts = _coerce_gitlab_hosts(section.get("gitlab_hosts"))
+    gitlab_hosts = _coerce_gitlab_hosts(section.get("gitlab_hosts"), allow_url_root=True)
+    # A GitLab entry may carry its URL root; another provider claims a host, not a path.
+    gitlab_authorities = _sections.gitlab_host_authorities(gitlab_hosts)
     jira_hosts = _coerce_jira_hosts(section.get("jira_hosts"))
     github_hosts = _sections._coerce_github_hosts(
-        section.get("github_hosts"), claimed=(*gitlab_hosts, *jira_hosts)
+        section.get("github_hosts"), claimed=(*gitlab_authorities, *jira_hosts)
     )
     bitbucket_server_hosts = _sections._coerce_bitbucket_server_hosts(
         section.get("bitbucket_server_hosts"),
-        claimed=(*gitlab_hosts, *jira_hosts, *github_hosts),
+        claimed=(*gitlab_authorities, *jira_hosts, *github_hosts),
     )
     return DashboardConfig(
         url=section.get("url"),
@@ -1325,7 +1327,7 @@ def _build_dashboard_config(_degraded: set[str], dashboard_data: dict) -> Dashbo
         bitbucket_server_hosts=bitbucket_server_hosts,
         gerrit_hosts=_sections._coerce_gerrit_hosts(
             section.get("gerrit_hosts"),
-            claimed=(*gitlab_hosts, *jira_hosts, *github_hosts, *bitbucket_server_hosts),
+            claimed=(*gitlab_authorities, *jira_hosts, *github_hosts, *bitbucket_server_hosts),
         ),
         # These two parse raw JSON entries into DTOs, so they are handed only a
         # stored value; an omitted key is the field default as built.

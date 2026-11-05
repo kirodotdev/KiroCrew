@@ -275,7 +275,8 @@ function publicRepoUrl(provider: ProviderId, fullName: string, host?: string): s
  * may not even have. Normalised by `gitlabHostSet`, the same rule chat source
  * tabs use, so the two never disagree about which host an entry means. */
 export function gitlabHostOptions(configured: readonly unknown[] | undefined): string[] {
-  const strings = (configured ?? []).filter((h): h is string => typeof h === 'string')
+  // Issue Radar has no URL-root support, so an entry carrying one (`host/gitlab`) is not offered.
+  const strings = (configured ?? []).filter((h): h is string => typeof h === 'string' && !h.includes('/'))
   const hosts = [...gitlabHostSet(strings)].filter(h => h !== 'gitlab.com' && h !== 'www.gitlab.com')
   return [...hosts, 'gitlab.com']
 }

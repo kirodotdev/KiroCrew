@@ -605,6 +605,12 @@ describe('parseSourceLinkUrl', () => {
     expect(parseSourceLinkUrl(mr, ['gitlab.acme.internal']))
       .toMatchObject({ provider: 'gitlab', number: 7, repo: 'api', kind: 'change' })
   })
+
+  it('accepts a self-managed GitLab whose allowlist entry carries a URL root', () => {
+    const mr = 'https://gitlab.acme.internal/gitlab/team/api/-/merge_requests/7'
+    expect(parseSourceLinkUrl(mr, ['gitlab.acme.internal/gitlab']))
+      .toMatchObject({ url: mr, provider: 'gitlab', number: 7, repo: 'api', kind: 'change' })
+  })
 })
 
 describe('per-slot focused source tab', () => {
