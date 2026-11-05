@@ -576,6 +576,8 @@ async def _run_inner_impl(
         )
         return verdict
 
+    _parent_revoked = _session.parent_trust_revoked(self._manager._sessions, info._approval_lineage)
+
     def _policy_for(spec: Any) -> tool_permission.Policy:
         # ``sel`` is read per row, as the facade's audit seam expects.
         return self._permission_policy(
@@ -586,6 +588,7 @@ async def _run_inner_impl(
             consult=_consult_gate,
             sel=lambda: sel(),
             log=logger,
+            parent_revoked=_parent_revoked,
         )
 
     _wire = tool_permission.AcpWire(client)
