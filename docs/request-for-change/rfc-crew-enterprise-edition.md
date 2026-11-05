@@ -30,7 +30,7 @@ An organisation that wants to run Crew today can install a governance ceiling ([
 
 1. **Nothing requires a login or a policy before Crew opens.** Crew starts and serves its dashboard whether or not a kiro login or a governance ceiling exists. The login check in `src/kiro_crew/kiro_prerequisite_status.py` reports status; it does not gate startup.
 2. **An unnamed control is allowed.** `_query_level` in `src/kiro_crew/platform/governance_parts/evaluator.py` returns `_PERMIT_NOT_GOVERNED` when the policy carries no control for a scope, so a policy that forgets a control leaves that feature fully on. That is the right default for a standalone install and the wrong one for a managed install.
-3. **Many local shims have no governance key.** Of the 66 controls an organisation expects to govern (the appendix), several have only an on/off switch and many have no key in `src/kiro_crew/platform/governance_parts/catalog.py` or `carriers.py` at all, so no rule can reach them.
+3. **Many local shims have no governance key.** Of the 67 controls an organisation expects to govern (the appendix), several have only an on/off switch and many have no key in `src/kiro_crew/platform/governance_parts/catalog.py` or `carriers.py` at all, so no rule can reach them.
 
 ## Goals
 
@@ -80,12 +80,12 @@ Any failed step denies (fail-closed). While the gate is closed, gateway middlewa
 
 ### 3. Most governable features off by default
 
-In the enterprise edition, most governable features are off by default, or keep only a minimal set. Such a feature turns on only when a governance rule turns it on. Eight controls are open instead (amended 2026-11-02, D3): MCP servers, file read, file write, shell commands, tools, sub-agents, scheduled jobs and Crew apps. Each keeps Crew's normal default until a governance rule turns it off. The owner's reason: the organisation's governance (KGL, and KAS for MCP servers) is where these are meant to be controlled, so Crew does not add its own default-off on top. The appendix lists all 66 controls with each one's default.
+In the enterprise edition, most governable features are off by default, or keep only a minimal set. Such a feature turns on only when a governance rule turns it on. Eight controls are open instead (amended 2026-11-02, D3): MCP servers, file read, file write, shell commands, tools, sub-agents, scheduled jobs and Crew apps. Each keeps Crew's normal default until a governance rule turns it off. The owner's reason: the organisation's governance (KGL, and KAS for MCP servers) is where these are meant to be controlled, so Crew does not add its own default-off on top. The appendix lists all 67 controls with each one's default.
 
 | Class | Count | Enterprise behaviour |
 |---|---|---|
 | Green | 33 | Off by default; governance turns it on. MCP servers, scheduled jobs, Crew apps and sub-agents keep Crew's default; governance turns them off |
-| Yellow | 20 | Off by default. Until the Crew work lands, minimal set only. Tools, shell commands and file read / write keep Crew's default; governance turns them off |
+| Yellow | 21 | Off by default. Until the Crew work lands, minimal set only. Tools, shell commands and file read / write keep Crew's default; governance turns them off |
 | Red | 13 | Governance cannot control it; hardcoded to the minimal set |
 | Local floor | 2 | Always on; see below |
 
@@ -257,7 +257,7 @@ How deny-unnamed keeps each control's minimal set was open in the first draft; D
 | Minimum version | `crew_update_min_version` | `updates.min_version` | yes | not set | — |
 | Update channel | `crew_update_channel` | `updates.channel` | no | stable | stable |
 
-### Yellow (20)
+### Yellow (21)
 
 | Control | Policy term | Crew key | In Crew | Enterprise default | Minimal set |
 |---|---|---|---|---|---|
@@ -266,7 +266,8 @@ How deny-unnamed keeps each control's minimal set was open in the first draft; D
 | File read / write | `fs_read` / `fs_write` | `filesystem.read` / `write` | yes | Crew default; under `normal` each write asks unless a grant covers it (section 3); local floor stays | Crew default |
 | Reachable hosts | `web_fetch` | `network.egress` | yes | off | — |
 | Extension install | `extension_install` | `capability_install` | no | off | — |
-| Extension sources | `crew_extension_registry_hosts` / `_local_sources` | `external_access.registry_hosts` | no | off | — |
+| Extension registry hosts | `crew_extension_registry_hosts` | `external_access.registry_hosts` | no | off | — |
+| Local skill sources | `crew_extension_local_sources` | `skills.local_sources` ([rfc-local-skill-sources-governance](rfc-local-skill-sources-governance.md)) | no | off | — |
 | Extension publishers | `crew_extension_publishers` | `capability_install.publishers` | no | off | — |
 | Extension uninstall | `extension_uninstall` | `capability_install` | no | off | — |
 | Plugin sync | `plugin_sync` | `capability_install` | no | off | — |
