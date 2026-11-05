@@ -96,7 +96,10 @@ jobs:
     # 18-19 minutes on the CodeBuild runner, and a green run of this job takes
     # about 24.5 minutes end to end. A 25-minute cap therefore cancels the census
     # step on an ordinary push, and a cancelled gate renders as drift on main.
-    # Keep at least 1.5x the measured green duration here.
+    # Keep at least 1.5x the measured green duration here. Black's cache (see
+    # the black steps) removes most of that on an ordinary push, but a cold
+    # cache -- the first push after a pyproject.toml change, or an evicted
+    # entry -- still pays the full census, so the cap is sized for that run.
     timeout-minutes: 40
     env:
       # Judge the integrated tree, not a diff. See the scope note in the header:
@@ -172,9 +175,57 @@ jobs:
       # stayed unfixed -- a partial verdict masquerading as a full one, exactly
       # the class this lane exists to close. Every gate reports, and the job
       # still fails if any of them did.
+      # Black's own cache, carried from the previous push to main. Without it
+      # the black step is most of this job: bounded_black spawns one worker per
+      # file, and ~10,900 spawns took 13-22 minutes per run. With it, Black
+      # re-checks only files whose bytes differ from a version it found
+      # formatted, plus every unformatted (baselined) file, which it never
+      # caches. The verdict is the cold run's: a file's verdict depends only on
+      # its own bytes and Black's mode, and the mode key and Black version are
+      # both part of the cache's identity (see scripts/black_cache_portable.py),
+      # unlike mypy's, which is why ci.yml keeps main's mypy run cold.
+      #
+      # The cached JSON holds repository-relative paths, not Black's pickle: Black
+      # keys entries on absolute paths and a CodeBuild checkout's root changes
+      # every build. For the same reason the cached file's path is RELATIVE
+      # (.cache/ is gitignored): actions/cache hashes the path string into the
+      # entry's version, so a ${{ runner.temp }} path, which expands to that
+      # changing root, saves entries no later build can restore. Saved from main
+      # pushes only, like ci.yml's mypy cache, so only main writes the entry main
+      # restores.
+      - name: Restore black's cache
+        if: ${{ !cancelled() }}
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .cache/black-gate-cache.json
+          key: black-gate-${{ runner.os }}-${{ hashFiles('pyproject.toml') }}-${{ github.sha }}
+          restore-keys: |
+            black-gate-${{ runner.os }}-${{ hashFiles('pyproject.toml') }}-
+
+      - name: Rehydrate black's cache for this checkout
+        if: ${{ !cancelled() }}
+        env:
+          BLACK_CACHE_DIR: ${{ runner.temp }}/black-cache
+        run: python3 scripts/black_cache_portable.py restore .cache/black-gate-cache.json
+
       - name: Check formatting (black, baselined)
         if: ${{ !cancelled() }}
+        env:
+          BLACK_CACHE_DIR: ${{ runner.temp }}/black-cache
         run: python3 scripts/check_black_formatting.py
+
+      - name: Export black's cache
+        if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        env:
+          BLACK_CACHE_DIR: ${{ runner.temp }}/black-cache
+        run: python3 scripts/black_cache_portable.py export .cache/black-gate-cache.json
+
+      - name: Save black's cache (main)
+        if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .cache/black-gate-cache.json
+          key: black-gate-${{ runner.os }}-${{ hashFiles('pyproject.toml') }}-${{ github.sha }}
 
       # Whole tree (RATCHET_SCOPE_WHOLE_TREE above): a file main itself pushed
       # over the 2,000-line cap, or a stale baseline row, is main drift that a
