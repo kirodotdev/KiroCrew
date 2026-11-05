@@ -5857,6 +5857,15 @@ using `scripts.ci_file_shards`. Ownership is SHA-256 of the root-relative POSIX
 path, not a duration or test-count balance. Other shards skip the file before
 import, while discovery patterns and platform ignores remain pytest's own.
 
+The Linux full-suite run adds `--file-shard-pins scripts/ci_file_shard_pins.txt`:
+the heaviest files (about 800) get a fixed shard, placed so the eight shards'
+summed test seconds come out even, and every other file keeps its hash owner. A
+pin only changes which shard owns a file, so a new or renamed file is still
+collected, on its hash shard. `scripts/ci_file_shard_pins.py` regenerates the pin
+file from the `linux-pytest-progress-<N>` artifacts of several green `main` runs;
+regenerate it when the Linux shards' `Run tests` times drift apart again. Windows,
+macOS, release and the reduced and leaf scopes keep pure hash ownership.
+
 macOS assigns whole files like the other platforms, in eight shards. The shard
 count is the knob to reach for there rather than the 40-minute cap, because that
 cap is a spend guard as much as a hang guard on a lane billed at ten times Linux:

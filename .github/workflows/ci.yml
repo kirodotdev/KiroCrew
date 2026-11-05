@@ -1246,6 +1246,10 @@ jobs:
         # are never promoted to explicit arguments just to partition the suite.
         # Hash assignment is stable, not duration-balanced. Every file's tests
         # and parameters stay together; xdist still uses loadgroup within a job.
+        # The full-suite run (not the reduced or leaf ones) also reads
+        # scripts/ci_file_shard_pins.txt, which moves the heaviest files to fixed
+        # shards so the shards' test time comes out even; the slowest shard sets
+        # this job's time. scripts/ci_file_shard_pins.py regenerates it.
         #
         # Coverage runs on every shard: since the floor moved to >= 3.12 the
         # matrix has a single Python, so there is no --no-cov lane left. Each
@@ -1364,6 +1368,7 @@ jobs:
           fi
           python -m pytest ${PROGRESS[@]+"${PROGRESS[@]}"} -p scripts.ci_file_shards -q -n "$WORKERS" --timeout=120 -m "not ipv6_required and not real_venv" \
             --file-shards "$SHARD_COUNT" --file-shard ${{ matrix.group }} \
+            --file-shard-pins scripts/ci_file_shard_pins.txt \
             --cov=kiro_crew --cov=sage_lib \
             --cov=src/kiro_crew/apps/builtins/aws_control/crew/packaging \
             --cov=src/kiro_crew/apps/builtins/code_review_sage/tests
