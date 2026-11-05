@@ -184,7 +184,9 @@ Execution model:
   `NONINTERACTIVE=1`, with `cwd` set to the app directory, under a cgroup
   ceiling, in their own process group so a timeout kills the whole tree. They
   must exit 0 on success. Output is truncated to the last lines and passed
-  through credential redaction before it reaches the client.
+  through credential redaction before it reaches the client. When `onInstall`
+  exits non-zero, that redacted tail is also written to the gateway log, so the
+  reason is still there after the install response is gone.
 - `onUninstall` additionally receives `KEEP_DATA` and `PURGE_DATA` (`1`/`0`). If
   the user chose to keep app data, skip deleting user data directories.
 - `onEnable` failure rolls the enable back: the backend is stopped, resources are

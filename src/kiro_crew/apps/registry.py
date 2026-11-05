@@ -738,6 +738,7 @@ if _typing.TYPE_CHECKING:
         _registry_sign_in_refused,
     )
     from kiro_crew.apps.registry_pipeline.install import (  # noqa: F401
+        _SCRIPT_LOG_TAIL_CHARS,
         _SCRIPT_TIMEOUT,
         NATIVE_WINDOWS_HOOK_REFUSAL,
         RESERVED_APP_NAME_CODE,
@@ -745,6 +746,7 @@ if _typing.TYPE_CHECKING:
         _adoption_pending,
         _install_script_platform_refusal,
         _official_entry,
+        _redact_log_via_context,
         _remote_controlled_url,
         _retained_startup_refusal,
         _trust_grant_would_stay_local,
