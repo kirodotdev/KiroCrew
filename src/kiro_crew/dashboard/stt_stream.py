@@ -212,6 +212,12 @@ _MODEL_PROGRESS_INTERVAL_SECS = 2.0
 # being remapped, so one vocabulary covers the settings panel and the socket.
 _CODE_MAX_DURATION = "stt_max_duration_exceeded"
 _CODE_SESSION_FAILED = "stt_session_failed"
+#: The codes an edition session's ``error`` event may carry through to the
+#: client. Any other code, or none, is relayed as ``_CODE_SESSION_FAILED``, so a
+#: provider can name a condition the dashboard already renders but cannot
+#: invent one it has no text for. ``_CODE_MAX_DURATION`` is how a provider that
+#: owns its session limit reports reaching it.
+RELAYED_SESSION_ERROR_CODES = frozenset({_CODE_MAX_DURATION})
 # When the gateway's streaming gate refuses the WebSocket before the upgrade,
 # the client only sees a 503 — no error frame, no code. Sending an error frame
 # through the upgraded socket lets `STT_ERROR_KEY` map it to the right message.
@@ -1255,6 +1261,7 @@ async def _run_registered_session(
         endpointer,
         start_failure_code=lambda: _CODE_SESSION_FAILED,
         label=f"STT provider {cfg.stt.provider!r}",
+        capped=not speech_providers.owns_session_limit(provider),
     )
 
 
@@ -1266,10 +1273,15 @@ async def _drive_helper_session(
     *,
     start_failure_code: Callable[[], str],
     label: str,
+    capped: bool = True,
 ) -> None:
     """Run one started-on-demand helper session to its end; see :func:`_run_apple_session`.
 
     *session* has the ``SttStreamSession`` shape. *label* names it in the log.
+    *capped* False is a provider whose backend owns the session limit
+    (``speech_providers.owns_session_limit``): core then arms no deadline and
+    advertises no ``max_duration_ms``, and the session ends when the backend
+    ends it.
     """
     try:
         problem = await session.start()
@@ -1314,9 +1326,13 @@ async def _drive_helper_session(
                 # read loop; the close in `_close_and_end_audit` is idempotent, so
                 # the single audit still comes from the one owner, the `finally`.
                 msg_text = str(event.get("message", "speech helper failed"))
-                _claim_fatal("error")
+                code = event.get("code")
+                relayed = code if code in RELAYED_SESSION_ERROR_CODES else _CODE_SESSION_FAILED
+                # A provider that owns its session limit ends the session at it:
+                # that is the cap reached, audited the way core's own cap is.
+                _claim_fatal("timeout" if relayed == _CODE_MAX_DURATION else "error")
                 if not ws.closed:
-                    await _send_error(ws, msg_text, _CODE_SESSION_FAILED)
+                    await _send_error(ws, msg_text, relayed)
                     try:
                         await ws.close()
                     except Exception:
@@ -1374,6 +1390,8 @@ async def _drive_helper_session(
 
     async def _enforce_deadline() -> None:
         nonlocal reader_cancelled_by_cap
+        if not capped:
+            return
         await asyncio.sleep(_MAX_STREAM_DURATION_SECS)
         # Only the first claimant acts: otherwise the cap and a concurrent helper
         # error each emit a frame in the window before the other's close lands, and
@@ -1432,7 +1450,14 @@ async def _drive_helper_session(
     deadline_task = asyncio.create_task(_enforce_deadline())
     outcome = "ok"
     try:
-        await ws.send_json({"type": "ready", "max_duration_ms": _max_duration_ms()})
+        # No figure when the backend owns the limit: core does not know it, and
+        # advertising core's cap would tell a rotating client to cut a session the
+        # backend would have kept.
+        await ws.send_json(
+            {"type": "ready", "max_duration_ms": _max_duration_ms()}
+            if capped
+            else {"type": "ready"}
+        )
         read_task = asyncio.create_task(_read_audio())
         try:
             await read_task
@@ -1455,10 +1480,13 @@ async def _drive_helper_session(
         # touch the socket, and leaving it live past cleanup would close a socket
         # the next request may already own.
         deadline_task.cancel()
-        if timed_out:
+        if timed_out and capped:
             logger.info(
                 "%s streaming STT session hit the %ds cap", label, _MAX_STREAM_DURATION_SECS
             )
+        elif timed_out:
+            # Core armed no cap: the provider ended the session at its own limit.
+            logger.info("%s streaming STT session reached the provider's session limit", label)
         # Closing stdin is the helper's cue to finalize, so the trailing finals
         # arrive AFTER this — hence finish() before waiting on the relay.
         try:

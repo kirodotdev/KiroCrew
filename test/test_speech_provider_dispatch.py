@@ -606,6 +606,141 @@ class TestStreaming:
         assert acme.sessions == []
 
 
+# ── streaming: a provider that owns its session limit ───────────────────────
+
+
+class _EndingSession(_Session):
+    """A session whose first fed frame is answered by the provider ending it."""
+
+    def __init__(self, error: dict) -> None:
+        super().__init__()
+        self._error = error
+
+    async def feed(self, pcm: bytes) -> bool:
+        self.fed.append(pcm)
+        await self._events.put({"type": "final", "text": "said so far"})
+        await self._events.put(self._error)
+        return True
+
+
+class _EndingStt(_AcmeStt):
+    def __init__(self, error: dict) -> None:
+        super().__init__(streaming=True)
+        self._error = error
+
+    def open_stream(self, stt_config: Any) -> _Session:
+        session = _EndingSession(self._error)
+        self.sessions.append(session)
+        return session
+
+
+def _record_deadline(monkeypatch) -> list[float]:
+    """Record the delay core's deadline task sleeps, and never let it fire.
+
+    Shims only the module's OWN ``asyncio`` binding (the ``_arm_cap`` pattern in
+    ``stt_stream_helpers``): the deadline is the one sleep of a minute or more, so
+    it is held on an event nothing sets (the session's teardown cancels it), and
+    every other sleep is the stdlib's.
+    """
+    from kiro_crew.dashboard import stt_stream
+
+    delays: list[float] = []
+    never = asyncio.Event()
+    original_sleep = asyncio.sleep
+
+    async def recording_sleep(delay, result=None):
+        if delay >= 60:
+            delays.append(delay)
+            await never.wait()
+        return await original_sleep(delay, result)
+
+    monkeypatch.setattr(
+        stt_stream, "asyncio", SimpleNamespace(**{**vars(asyncio), "sleep": recording_sleep})
+    )
+    return delays
+
+
+class TestProviderOwnedSessionLimit:
+    def _point_at_acme(self, monkeypatch) -> None:
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.stt_stream.KiroCrewConfig.load",
+            classmethod(lambda cls: _cfg(provider="acme")),
+        )
+        monkeypatch.setattr("kiro_crew.dashboard.stt_stream.check_origin", lambda r, require: True)
+
+    @pytest.mark.parametrize(
+        "value, owns",
+        [(True, True), (None, False), (False, False), ("yes", False), (1, False)],
+    )
+    def test_only_exactly_true_owns_the_limit(self, value, owns) -> None:
+        acme = _AcmeStt()
+        if value is not None:
+            acme.owns_session_limit = value  # type: ignore[attr-defined]
+        assert speech_providers.owns_session_limit(acme) is owns
+
+    @pytest.mark.asyncio
+    async def test_a_provider_that_owns_the_limit_gets_no_core_cap(self, monkeypatch) -> None:
+        acme = _AcmeStt(streaming=True)
+        acme.owns_session_limit = True  # type: ignore[attr-defined]
+        _install(stt=(acme,))
+        self._point_at_acme(monkeypatch)
+        delays = _record_deadline(monkeypatch)
+        async with TestClient(TestServer(_make_app())) as client:
+            ws = await client.ws_connect("/api/ws/stt")
+            ready = await _recv_json(ws)
+            # The session still runs normally with no cap armed.
+            await ws.send_bytes(b"\x00\x01" * 8)
+            assert await _recv_json(ws) == {"type": "final", "text": "heard 16 bytes"}
+            await ws.send_json({"type": "stop"})
+            await ws.close()
+        # Core neither advertises a figure it does not know nor arms its deadline:
+        # the backend's limit is the only one.
+        assert ready == {"type": "ready"}
+        assert delays == []
+
+    @pytest.mark.asyncio
+    async def test_without_a_declared_limit_core_keeps_its_own_cap(self, monkeypatch) -> None:
+        from kiro_crew.dashboard import stt_stream
+
+        _install(stt=(_AcmeStt(streaming=True),))
+        self._point_at_acme(monkeypatch)
+        delays = _record_deadline(monkeypatch)
+        async with TestClient(TestServer(_make_app())) as client:
+            ws = await client.ws_connect("/api/ws/stt")
+            ready = await _recv_json(ws)
+            await ws.send_json({"type": "stop"})
+            await ws.close()
+        assert ready["max_duration_ms"] == stt_stream._MAX_STREAM_DURATION_SECS * 1000
+        assert delays == [stt_stream._MAX_STREAM_DURATION_SECS]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "code, relayed",
+        [
+            ("stt_max_duration_exceeded", "stt_max_duration_exceeded"),
+            ("made_up_code", "stt_session_failed"),
+            (None, "stt_session_failed"),
+        ],
+    )
+    async def test_a_session_error_code_is_relayed_only_when_core_renders_it(
+        self, monkeypatch, code, relayed
+    ) -> None:
+        error = {"type": "error", "message": "ended by the provider"}
+        if code is not None:
+            error["code"] = code
+        _install(stt=(_EndingStt(error),))
+        self._point_at_acme(monkeypatch)
+        async with TestClient(TestServer(_make_app())) as client:
+            ws = await client.ws_connect("/api/ws/stt")
+            assert (await _recv_json(ws))["type"] == "ready"
+            await ws.send_bytes(b"\x00\x01" * 8)
+            # What was recognised arrives before the error that ends the session.
+            assert await _recv_json(ws) == {"type": "final", "text": "said so far"}
+            frame = await _recv_json(ws)
+            await ws.close()
+        assert (frame["type"], frame["code"]) == ("error", relayed)
+
+
 # ── a pre-boot snapshot never saves a registered name back as off ────────────
 
 
