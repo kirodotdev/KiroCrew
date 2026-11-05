@@ -2072,6 +2072,24 @@ Two preconditions gate the steer, and both matter:
   turn from one that just ended. Steering an already-ended prompt is silently
   swallowed, which would leave the user with an acknowledgement and no answer.
 
+Telegram also steers only into a turn that answers in the message's own chat.
+Under `dm_scope = "unified"` several people's DMs share one key, so the running
+turn can be someone else's. `_run_turn` records its chat in `_turn_chats` for as
+long as it holds the session, and a message from a different chat takes the queue
+path, where it runs as its sender's own turn in their own chat. A turn the
+dispatcher did not start (another channel's DM, an injected event) records no chat:
+on a `unified` key it may be anyone's, so the message queues; on any other key it
+is the conversation's own and the two gates above decide. Such a turn ends without
+draining Telegram's queue, so a message queued while no Telegram turn holds the key
+schedules `drain_when_free`, which runs the drain once the lease is free. The record also names
+the provider the turn acquired. A record whose provider is not the key's current
+one is left from a turn a reset replaced, and counts as no record. A privacy
+modifier is reserved before the steer, and that reservation awaits, so the steer
+goes ahead only if the same record still holds the key afterwards; otherwise the
+reservation is released and the message queues. The record is
+removed only by the turn that wrote it, so a turn that took the key after a reset
+keeps its own.
+
 On a successful steer the user's own message gets an emoji **reaction** as the
 delivery receipt (`setMessageReaction` on Telegram, `add_reaction` on Discord;
 both declare `reactions=True` in their `TransportCapabilities`). A reaction and
