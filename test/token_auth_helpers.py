@@ -20,8 +20,7 @@ from aiohttp import web
 
 
 @pytest.fixture(autouse=True)
-# nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- pre-existing autouse fixture, moved verbatim; three pre-existing tests of the family call monkeypatch.undo(), tracked for a de-flake pass
-def clear_nonces(tmp_path, monkeypatch):
+def clear_nonces(tmp_path, _floor_monkeypatch):
     """Isolate token state per test.
 
     Points config_dir at a tmp dir so the persisted revocation-generation file
@@ -32,19 +31,19 @@ def clear_nonces(tmp_path, monkeypatch):
     import kiro_crew.dashboard.revocation_gen as _rg
     import kiro_crew.dashboard.token_auth as _ta
 
-    monkeypatch.setattr("kiro_crew.config.loader.config_dir", lambda: tmp_path)
+    _floor_monkeypatch.setattr("kiro_crew.config.loader.config_dir", lambda: tmp_path)
     # Pin the memoized revocation generation to 0 (skips the lazy disk load)
     # so no persisted counter from a prior test or the real home leaks in.
-    monkeypatch.setattr(_rg, "_gen", 0)
+    _floor_monkeypatch.setattr(_rg, "_gen", 0)
     # Reset the per-session revoked-nonce store so each test gets a fresh store
     # bound to its own tmp_path config_dir (the singleton would otherwise pin
     # the first test's path and leak revocations across tests).
-    monkeypatch.setattr(_ta, "_revoked_store_singleton", None)
+    _floor_monkeypatch.setattr(_ta, "_revoked_store_singleton", None)
     _ta._state.clear_all()
     _ta._app_perms_cache.clear()
     yield
-    monkeypatch.setattr(_rg, "_gen", 0)
-    monkeypatch.setattr(_ta, "_revoked_store_singleton", None)
+    _floor_monkeypatch.setattr(_rg, "_gen", 0)
+    _floor_monkeypatch.setattr(_ta, "_revoked_store_singleton", None)
     _ta._state.clear_all()
     _ta._app_perms_cache.clear()
 

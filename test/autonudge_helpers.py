@@ -31,9 +31,8 @@ def _owner_dashboard_identity():
 
 
 @pytest.fixture(autouse=True)
-# nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- no test in the test_autonudge*.py modules calls monkeypatch.undo()
-def _enable(monkeypatch):
-    monkeypatch.setenv("KIROCREW_AUTONUDGE", "1")
+def _enable(_floor_monkeypatch):
+    _floor_monkeypatch.setenv("KIROCREW_AUTONUDGE", "1")
 
 
 @pytest.fixture(name="svc")

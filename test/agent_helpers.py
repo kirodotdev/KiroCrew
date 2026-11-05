@@ -24,15 +24,14 @@ from kiro_crew.kiro_cli import SPEC_PERMISSIONS_MIN_VERSION
 
 
 @pytest.fixture(autouse=True)
-# nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- the autouse pin of test_agent.py and the modules split out of it, moved verbatim; none of them calls monkeypatch.undo()
-def _pinned_kiro_cli_version(monkeypatch):
+def _pinned_kiro_cli_version(_floor_monkeypatch):
     """Pin the kiro-cli release the spec ``permissions`` gate believes is installed.
 
     ``_write_derived_permissions`` reads ``installed_kiro_cli_version`` from
     ``kiro_crew.kiro_cli``, which would spawn the host's ``kiro-cli --version`` (CI has
     none). Pinned to the floor release so no test reaches the binary.
     """
-    monkeypatch.setattr(
+    _floor_monkeypatch.setattr(
         "kiro_crew.kiro_cli.installed_kiro_cli_version",
         lambda: SPEC_PERMISSIONS_MIN_VERSION,
     )

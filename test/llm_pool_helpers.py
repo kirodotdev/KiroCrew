@@ -23,8 +23,7 @@ from kiro_crew.knowledge.llm_pool import LLMPool, Worker
 
 
 @pytest.fixture(autouse=True)
-# nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- pre-existing autouse fixture moved verbatim and no module of the family calls monkeypatch.undo()
-def _config_dir_tracks_patched_home(monkeypatch):
+def _config_dir_tracks_patched_home(_floor_monkeypatch):
     """Keep ``llm_pool.config_dir()`` pointed at ``<patched home>/.kirocrew``.
 
     The data home moved from ``~/.kirocrew`` to ``~/.kiro/crew`` (``config_dir()``),
@@ -38,7 +37,7 @@ def _config_dir_tracks_patched_home(monkeypatch):
     whatever ``Path.home()`` each test patches), preserving the existing
     ``.kirocrew/config.json`` layout the tests build.
     """
-    monkeypatch.setattr(
+    _floor_monkeypatch.setattr(
         "kiro_crew.knowledge.llm_pool.config_dir", lambda: Path.home() / ".kirocrew"
     )
 

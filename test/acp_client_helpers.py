@@ -30,8 +30,7 @@ _POSIX_EXEC_PATHS_ONLY = pytest.mark.skipif(
 
 
 @pytest.fixture(autouse=True)
-# nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- no test in a module that imports this fixture calls monkeypatch.undo()
-def _pin_the_installed_kiro_cli_version(monkeypatch):
+def _pin_the_installed_kiro_cli_version(_floor_monkeypatch):
     """The writer gate in ``_write_derived_permissions`` reads
     ``installed_kiro_cli_version`` function-locally, and on a host with a kiro-cli
     installed that is one REAL ``kiro-cli --version`` spawn per binary identity --
@@ -39,17 +38,16 @@ def _pin_the_installed_kiro_cli_version(monkeypatch):
     protocol and process doubles. The version the gate sees is a property of the
     host, not of the client under test; ``None`` is the "cannot be established"
     branch every host without the binary already takes."""
-    monkeypatch.setattr("kiro_crew.kiro_cli.installed_kiro_cli_version", lambda: None)
+    _floor_monkeypatch.setattr("kiro_crew.kiro_cli.installed_kiro_cli_version", lambda: None)
 
 
 @pytest.fixture(autouse=True)
-# nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- no test in a module that imports this fixture calls monkeypatch.undo()
-def _native_projection_for_fake_processes(monkeypatch):
+def _native_projection_for_fake_processes(_floor_monkeypatch):
     from kiro_crew.acp import skill_projection
 
     # These protocol/process doubles do not own installed native agent specs.
     # The projection contract is exercised in test_native_skill_projection.
-    monkeypatch.setattr(
+    _floor_monkeypatch.setattr(
         skill_projection,
         "prepare_native_skill_projection",
         lambda work_dir, **_kwargs: skill_projection.NativeSkillProjection(

@@ -32,8 +32,7 @@ def _fresh_cache() -> "object":
 
 
 @pytest.fixture(autouse=True)
-# nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- the suite's network block, moved verbatim; no test in this suite calls monkeypatch.undo()
-def _no_network(monkeypatch: pytest.MonkeyPatch) -> None:
+def _no_network(_floor_monkeypatch: pytest.MonkeyPatch) -> None:
     """A test that forgets to install a fake must fail, never reach the network."""
 
     def _blocked(*_a: object, **_k: object) -> None:
@@ -44,12 +43,12 @@ def _no_network(monkeypatch: pytest.MonkeyPatch) -> None:
     # urlopen stays blocked too, so a test that reaches for the old path fails
     # rather than escaping to the network. feature_videos.py itself imports no
     # urllib at all — it makes no outbound request.
-    monkeypatch.setattr(
+    _floor_monkeypatch.setattr(
         "kiro_crew.asset_downloader.build_opener",
         lambda *a, **k: SimpleNamespace(open=_blocked),
     )
     for module in ("kiro_crew.feature_videos_manifest", "kiro_crew.asset_downloader"):
-        monkeypatch.setattr(f"{module}.urllib.request.urlopen", _blocked)
+        _floor_monkeypatch.setattr(f"{module}.urllib.request.urlopen", _blocked)
 
 
 def _entry(video_id: str = "hosted-clip", **overrides: object) -> dict:

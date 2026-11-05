@@ -19,16 +19,14 @@ from kiro_crew.dashboard.handlers import source_providers as source
 
 
 @pytest.fixture(autouse=True, name="_mock_source_sel")
-# nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- the autouse SEL stub of test_source_providers.py and the modules split out of it, moved verbatim; none of them calls monkeypatch.undo()
-def _mock_source_sel_fixture(monkeypatch):
+def _mock_source_sel_fixture(_floor_monkeypatch):
     audit = MagicMock()
-    monkeypatch.setattr(source, "_sel", lambda: audit)
+    _floor_monkeypatch.setattr(source, "_sel", lambda: audit)
     return audit
 
 
 @pytest.fixture(autouse=True)
-# nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- the autouse visibility recorder of test_source_providers.py and the modules split out of it, moved verbatim; none of them calls monkeypatch.undo()
-def _no_visibility_refresh_side_task(monkeypatch):
+def _no_visibility_refresh_side_task(_floor_monkeypatch):
     """Keep the repo-visibility refresh out of tests that are not about it.
 
     A cache write-through schedules ``_refresh_repo_visibility`` as a detached
@@ -43,7 +41,7 @@ def _no_visibility_refresh_side_task(monkeypatch):
     task is never spawned, and nothing outlives the test.
     """
     scheduled: list[tuple] = []
-    monkeypatch.setattr(
+    _floor_monkeypatch.setattr(
         source,
         "schedule_visibility_refresh",
         lambda urls, *a, **k: scheduled.append((tuple(urls), a, k)),
