@@ -285,18 +285,31 @@ async def handle_app_frame_mint(request: web.Request) -> web.Response:
     frame_id = request.query.get("frame", "")
     if not _FRAME_ID_RE.fullmatch(frame_id):
         frame_id = _secrets.token_urlsafe(12)
+    renewal = bool(request.query.get("frame"))
+    if not _FRAME_ID_RE.fullmatch(frame_id):
+        frame_id = _secrets.token_urlsafe(12)
+        renewal = False
     _audit("app_frame_mint", "granted", name, point=key)
     token = _mint_frame_token(request, name, client, frame_id, point, point_id)
     capability = _signer("fetch").mint(name, client, frame_id, point, point_id)
-    return web.json_response(
-        {
-            "frame": f"{FRAME_PREFIX}{name}/{point}/{point_id}/{frame_id}/{token}",
-            "frameId": frame_id,
-            "capability": f"{frame_id}~{point}~{point_id}~{capability}",
-            "ttl": _CAPABILITY_TTL_SECS,
-        },
-        headers={"Cache-Control": "no-store"},
-    )
+    body: dict[str, object] = {
+        "frame": f"{FRAME_PREFIX}{name}/{point}/{point_id}/{frame_id}/{token}",
+        "frameId": frame_id,
+        "capability": f"{frame_id}~{point}~{point_id}~{capability}",
+        "ttl": _CAPABILITY_TTL_SECS,
+    }
+    if not renewal:
+        # The frame document itself, for the dashboard to set as the frame's
+        # ``srcdoc``. A sandboxed frame's own requests carry no cookie, so behind an
+        # authenticating reverse proxy in front of the dashboard a frame that loads
+        # `/app-frame/...` by URL gets the proxy's login answer instead. This
+        # response is the dashboard's own request, made on the person's session
+        # after the same checks the frame route makes (resolved, granted, admitted).
+        registered = _POINTS[point]
+        body["document"] = _frame_html(
+            found[2], found[0], _secrets.token_urlsafe(18), registered.script, srcdoc=True
+        )
+    return web.json_response(body, headers={"Cache-Control": "no-store"})
 
 
 # ---------------------------------------------------------------------------
@@ -309,16 +322,136 @@ async def handle_app_frame_mint(request: web.Request) -> web.Response:
 _RUNTIME = r"""
 const P = window.parent;
 const CFG = JSON.parse(document.getElementById('frame-config').textContent);
+// A srcdoc document (the dashboard set it from the mint): no URL of its own, and its
+// network goes through the dashboard (`relay`), which holds the page's cookies.
+const SRCDOC = CFG.srcdoc === true;
+const ENTRY_PATH = CFG.entry;
+const FETCH_PATH = CFG.fetchBase;
 // Behind a reverse proxy at a sub-path the gateway never sees the mount, but this
-// document's own URL carries it: prefix the module and fetch paths with it.
-const MOUNT = location.pathname.slice(0, Math.max(0, location.pathname.indexOf('/app-frame/')));
-CFG.entry = MOUNT + CFG.entry;
-CFG.fetchBase = MOUNT + CFG.fetchBase;
+// document's own URL carries it: prefix the module and fetch paths with it. A
+// srcdoc document is told the dashboard's mount in `init`.
+let MOUNT = SRCDOC ? '' : location.pathname.slice(0, Math.max(0, location.pathname.indexOf('/app-frame/')));
+const setMount = (m) => { MOUNT = m; CFG.entry = MOUNT + ENTRY_PATH; CFG.fetchBase = MOUNT + FETCH_PATH; };
+setMount(MOUNT);
+const BASE_HREF = SRCDOC ? 'https://frame.invalid/' : location.href;
 const TAG = 'kirocrew-app-frame';
 let cap = null;
 let handler = null;
 let renewWaiters = [];
+let RELAY = null;
+// True once this frame's own requests are known to be refused (its module import
+// was): from then on its fetches go through the dashboard too.
+let VIA_RELAY = SRCDOC;
 const send = (type, data) => { try { P.postMessage(Object.assign({ [TAG]: 1, type }, data || {}), '*'); } catch (_) {} };
+
+// The relay: one request the dashboard makes on this frame's behalf, exactly as the
+// frame would have made it (path, method, headers, body). The dashboard checks the
+// path is this app's own and answers with what a CORS read would have exposed.
+let relaySeq = 0;
+const relayWaits = new Map();
+async function relayBody(b, headers) {
+  if (b === undefined || b === null) return null;
+  if (typeof b === 'string') { if (!headers.has('content-type')) headers.set('content-type', 'text/plain;charset=UTF-8'); return b; }
+  // Every other body (FormData, Blob, URLSearchParams, a buffer or view) through the
+  // platform's own serialization, so a multipart body keeps its generated boundary.
+  const r = new Request('https://frame.invalid/', { method: 'POST', body: b });
+  const type = r.headers.get('content-type');
+  if (type && !headers.has('content-type')) headers.set('content-type', type);
+  return await r.arrayBuffer();
+}
+const aborted = () => new DOMException('The operation was aborted.', 'AbortError');
+async function relayFetch(path, init) {
+  init = init || {};
+  const signal = init.signal;
+  if (signal && signal.aborted) throw aborted();
+  const h = new Headers(init.headers || {});
+  const body = await relayBody(init.body, h);
+  // An abort while the body was read cancels before anything is sent.
+  if (signal && signal.aborted) throw aborted();
+  const headers = [];
+  h.forEach((v, k) => headers.push([k, v]));
+  return new Promise((resolve, reject) => {
+    relaySeq += 1;
+    const id = relaySeq;
+    const w = { resolve, reject, controller: null, signal };
+    relayWaits.set(id, w);
+    if (signal) {
+      signal.addEventListener('abort', () => {
+        if (!relayWaits.has(id)) return;
+        relayWaits.delete(id);
+        send('relay.abort', { nonce: RELAY, id });
+        if (w.controller) { try { w.controller.error(aborted()); } catch (_) {} } else reject(aborted());
+      }, { once: true });
+    }
+    const msg = { [TAG]: 1, type: 'relay', nonce: RELAY, id, path, method: String(init.method || 'GET').toUpperCase(), headers, body };
+    try { P.postMessage(msg, '*', body instanceof ArrayBuffer ? [body] : []); } catch (err) { relayWaits.delete(id); reject(err); }
+  });
+}
+// The answer streams: `relay.response` (status and headers) resolves the fetch at
+// once, then `relay.chunk`s feed its body until `relay.end` or `relay.error`, so a
+// long-lived response (an event stream) reaches the frame as it arrives.
+function relayAnswer(m) {
+  const w = relayWaits.get(m.id);
+  if (!w) return;
+  if (m.type === 'relay.chunk') {
+    if (w.controller && m.chunk instanceof ArrayBuffer) { try { w.controller.enqueue(new Uint8Array(m.chunk)); } catch (_) {} }
+    return;
+  }
+  if (m.type === 'relay.end' || m.type === 'relay.error') {
+    relayWaits.delete(m.id);
+    if (w.controller) {
+      try { if (m.type === 'relay.end') w.controller.close(); else w.controller.error(new TypeError('Failed to fetch')); } catch (_) {}
+    }
+    return;
+  }
+  // A refusal, a network error, or a response CORS would not have let this frame read.
+  if (m.ok !== true) { relayWaits.delete(m.id); w.reject(new TypeError('Failed to fetch')); return; }
+  const status = Number(m.status);
+  const nullBody = status === 204 || status === 205 || status === 304;
+  const init = { status, statusText: String(m.statusText || ''), headers: Array.isArray(m.headers) ? m.headers : [] };
+  try {
+    if (nullBody) { relayWaits.delete(m.id); send('relay.abort', { nonce: RELAY, id: m.id }); w.resolve(new Response(null, init)); return; }
+    const id = m.id;
+    const stream = new ReadableStream({
+      start(controller) { w.controller = controller; },
+      cancel() { if (relayWaits.delete(id)) send('relay.abort', { nonce: RELAY, id }); },
+    });
+    w.resolve(new Response(stream, init));
+  } catch (err) { relayWaits.delete(m.id); w.reject(err); }
+}
+
+// The registration contract: a module that cannot be imported by URL (behind an
+// authenticating reverse proxy the frame's own request for it is refused) runs as an
+// inline module in this document and hands over its entry with
+// `globalThis.kirocrew.register(activate)`: the same function it exports. Read only while
+// that inline module evaluates, so a module imported by URL that also registers is
+// activated once, through its `activate` export.
+let registered = null;
+let accepting = false;
+globalThis.kirocrew = Object.freeze({
+  register(entry) {
+    if (!accepting || registered !== null) return;
+    if (typeof entry === 'function') registered = entry;
+  },
+});
+async function loadInline() {
+  const res = await relayFetch(ENTRY_PATH, { method: 'GET' });
+  if (!res.ok) throw new Error('module not served (' + res.status + ')');
+  const code = await res.text();
+  const done = '__kirocrewModuleDone' + Math.random().toString(36).slice(2);
+  return new Promise((resolve, reject) => {
+    const cleanup = () => { accepting = false; window.removeEventListener('error', onError); try { delete globalThis[done]; } catch (_) {} };
+    const onError = (e) => { cleanup(); reject(e.error || new Error(String(e.message || 'module error'))); };
+    globalThis[done] = () => { cleanup(); resolve(registered); };
+    window.addEventListener('error', onError);
+    accepting = true;
+    const s = document.createElement('script');
+    s.type = 'module';
+    s.nonce = CFG.nonce;
+    s.textContent = code + '\n;globalThis[' + JSON.stringify(done) + ']();\n';
+    document.head.appendChild(s);
+  });
+}
 
 function relativeOnly(rel) {
   return !(/^[a-z][a-z0-9+.-]*:/i.test(rel) || rel.startsWith('/') || rel.includes('\\'));
@@ -333,11 +466,13 @@ function renew() {
 async function capFetch(path, init) {
   const rel = String(path || '');
   if (!relativeOnly(rel)) throw new Error('[app-frame] ' + CFG.app + ': path must be relative to the app routes');
-  const url = new URL(rel, new URL(CFG.fetchBase, location.href));
+  const url = new URL(rel, new URL(CFG.fetchBase, BASE_HREF));
   if (!url.pathname.startsWith(CFG.fetchBase)) throw new Error('[app-frame] ' + CFG.app + ': path leaves the app routes');
   const go = () => {
     const headers = new Headers((init && init.headers) || {});
     if (cap) headers.set('X-KiroCrew-Capability', cap);
+    // srcdoc: the same request, made by the dashboard (the path without its mount).
+    if (VIA_RELAY) return relayFetch(url.pathname.slice(MOUNT.length) + url.search, Object.assign({}, init || {}, { headers }));
     return fetch(url.pathname + url.search, Object.assign({}, init || {}, { headers, credentials: 'omit', mode: 'cors' }));
   };
   // A refused capability arrives as a network error: the refusal carries no CORS
@@ -356,9 +491,24 @@ function call(name, ...args) {
 }
 async function start() {
   try {
-    const mod = await import(CFG.entry);
-    if (typeof (mod && mod.activate) !== 'function') throw new Error('module exports no activate(ctx)');
-    const h = mod.activate(POINT.ctx);
+    let mod = null;
+    let loadErr = null;
+    try { mod = await import(CFG.entry); } catch (err) { loadErr = err; }
+    let entry;
+    if (mod) {
+      if (typeof mod.activate !== 'function') throw new Error('module exports no activate(ctx)');
+      entry = mod.activate;
+    } else if (RELAY) {
+      // The module request was refused (an authenticating reverse proxy answers the
+      // frame's own, cookieless request with its login page): fetch the source
+      // through the dashboard and run it here, for a module that registers.
+      VIA_RELAY = true;
+      entry = await loadInline();
+      if (!entry) throw loadErr || new Error('module did not register');
+    } else {
+      throw loadErr;
+    }
+    const h = typeof entry === 'function' ? entry(POINT.ctx) : entry;
     if (!POINT.accepts(h)) throw new Error(POINT.missing);
     handler = h;
     send('ready');
@@ -378,8 +528,13 @@ window.addEventListener('message', (e) => {
       started = true;
       cap = typeof m.capability === 'string' ? m.capability : null;
       CFG.theme = m.theme === 'dark' ? 'dark' : 'light';
+      RELAY = typeof m.relay === 'string' ? m.relay : null;
+      if (SRCDOC) {
+        setMount(typeof m.base === 'string' && /^(\/[A-Za-z0-9._~-]+)*$/.test(m.base) ? m.base : '');
+      }
       start();
       return;
+    case 'relay.response': case 'relay.chunk': case 'relay.end': case 'relay.error': relayAnswer(m); return;
     case 'capability':
       cap = typeof m.capability === 'string' ? m.capability : null;
       renewWaiters.splice(0).forEach((done) => done());
@@ -422,6 +577,8 @@ const onLink = (e) => {
 window.addEventListener('click', onLink);
 window.addEventListener('auxclick', onLink);
 window.open = (raw) => { const url = webUrl(raw); if (url) { try { P.postMessage({ type: 'kirocrew-dashboard:open', url }, '*'); } catch (_) {} } return null; };
+// The gateway's document is running: the dashboard keeps this frame on its URL.
+send('boot');
 """
 
 # The invocation contract, for a point whose work starts with one user act. The host
@@ -476,23 +633,59 @@ function invocationControls(invocationId) {
 """
 
 
-def _frame_html(name: str, entry: str, nonce: str, script: str) -> str:
-    config = {
+#: Stands for the dashboard's own origin in a ``srcdoc`` frame document's policy. The
+#: dashboard replaces it with ``location.origin`` before it sets ``srcdoc``
+#: (``website/src/appFrame/sandboxFrame.ts``): a srcdoc document is an opaque
+#: origin with no URL of its own, so ``'self'`` there would match nothing.
+SRCDOC_SELF = "__kirocrew_frame_self__"
+
+
+def _frame_html(name: str, entry: str, nonce: str, script: str, *, srcdoc: bool = False) -> str:
+    config: dict[str, object] = {
         "app": name,
         "entry": f"/apps/{name}/ui/{entry}",
         "fetchBase": f"{FETCH_PREFIX}{name}/",
         "theme": "light",
     }
+    head_policy = ""
+    if srcdoc:
+        # The document the dashboard sets as the frame's ``srcdoc``. It has no
+        # response headers, so its policy travels as a <meta>: the same directives
+        # as `frame_csp` (sandboxing comes from the iframe's own attribute).
+        config["srcdoc"] = True
+        head_policy = (
+            f'<meta http-equiv="Content-Security-Policy" content="{frame_meta_csp(nonce)}">'
+        )
+    # Any document may run its module inline (the relay fallback), with this nonce.
+    config["nonce"] = nonce
     # ``</`` cannot appear inside the JSON island: a `<` is always escaped.
     island = json.dumps(config).replace("<", "\\u003c")
     return (
         '<!doctype html><html><head><meta charset="utf-8">'
+        f"{head_policy}"
         '<meta name="referrer" content="no-referrer">'
         "<style>html,body{margin:0;padding:0;background:transparent;}</style>"
         f'<script type="application/json" id="frame-config">{island}</script>'
         f'<script type="module" nonce="{nonce}">{_RUNTIME}{_INVOCATION}{script}</script>'
         "</head><body></body></html>"
     )
+
+
+def frame_meta_csp(nonce: str) -> str:
+    """`frame_csp` as a srcdoc document's ``<meta>`` policy.
+
+    The same fetch directives, with ``'self'`` as :data:`SRCDOC_SELF` (the
+    dashboard's origin, which is the frame URL's origin today). ``sandbox`` and
+    ``frame-ancestors`` are left out: a ``<meta>`` policy cannot carry them, the
+    iframe's ``sandbox`` attribute is the boundary, and the dashboard builds the
+    document itself, so there is no framing to restrict.
+    """
+    kept = [
+        d.strip()
+        for d in frame_csp(nonce, "'none'").split(";")
+        if d.strip() and d.split()[0] not in ("sandbox", "frame-ancestors")
+    ]
+    return "; ".join(kept).replace("'self'", SRCDOC_SELF)
 
 
 def frame_csp(nonce: str, frame_ancestors: str) -> str:
@@ -626,6 +819,20 @@ async def add_app_frame_cors(request: web.Request, response: web.StreamResponse)
     if request.get(_CORS_KEY) is True:
         for key, value in _cors_headers().items():
             response.headers[key] = value
+    # An app's backend never sets the dashboard's cookies. The fetch route reaches
+    # it with the frame's capability, and the dashboard may relay that request with
+    # the page's own credentials (`appFrame/frameRelay.ts`), so a `Set-Cookie` here
+    # would land on the dashboard's origin (overwrite or expire its session), and a
+    # `Clear-Site-Data` would wipe its cookies and storage.
+    if request.path.startswith(FETCH_PREFIX):
+        for header in _APP_RESPONSE_HEADERS_DROPPED:
+            response.headers.popall(header, None)
+
+
+#: Response headers an app's backend may not send through the fetch route: each acts
+#: on the dashboard's origin when the dashboard relays the request with its own
+#: credentials.
+_APP_RESPONSE_HEADERS_DROPPED = ("Set-Cookie", "Clear-Site-Data")
 
 
 def _unauthorized(name: str, why: str, point: str = "") -> web.Response:

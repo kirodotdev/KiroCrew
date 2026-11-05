@@ -4277,6 +4277,75 @@ allow-scripts`, so it is an opaque origin even when opened top-level. No second
 listener is added: an opaque origin is cross-origin to the dashboard wherever it
 is served from, as the MCP-app frames already are.
 
+**The dashboard loads the frame and makes its requests.** A sandboxed frame sends no
+cookie on its own requests (opaque origin, `credentialless`), so an authenticating
+reverse proxy in front of the dashboard (one that signs every request in by cookie)
+answers them with its login page: the frame document never loads where the iframe
+navigation is cookieless, and elsewhere the module import and every `ctx.fetch` get
+an HTML 403. So:
+
+- **Document.** A first mint (no `?frame`) also returns `document`: the frame
+  document built with `srcdoc=True` (`_frame_html`), after the mint's own checks
+  (dashboard session, resolver, admission). The frame still loads by URL first
+  (`appFrame/sandboxFrame.loadMintedFrame`), so nothing changes where that works;
+  the gateway's document says `boot` as it parses. When the URL load finishes
+  without a `boot` within `BOOT_GRACE_MS` (1.5 s; a proxy's login page, as a
+  cookieless Chromium navigation gets), the dashboard sets the minted document as
+  the iframe's `srcdoc` (which takes precedence over `src`); the iframe keeps
+  `sandbox="allow-scripts"` and `credentialless`. srcdoc is therefore only the
+  fallback for a load that was already failing: a sandboxed srcdoc frame is recorded
+  to blank-render on WebKit (`dashboard/handlers/sandbox_doc.py`), which this path
+  has not been checked against, and no frame that loads today is moved onto it. A
+  srcdoc document has no response headers, so its policy is a `<meta>` first in
+  `<head>`: `frame_meta_csp`, the directives of `frame_csp` with `'self'` spelled
+  as `SRCDOC_SELF`, which the dashboard replaces with `location.origin` (today's
+  frame URL origin; `'self'` in an opaque srcdoc document matches nothing).
+  `sandbox` and `frame-ancestors` cannot be in a `<meta>`: the attribute is the
+  sandbox, and the dashboard builds the document itself. A srcdoc document also
+  inherits the dashboard page's own policy, so both apply and the result is no
+  wider than either; that page policy allows inline scripts (`'unsafe-inline'`),
+  which the nonce'd bootstrap and module need, and a change that drops it breaks
+  srcdoc frames. Without `document` (a renewal) nothing falls back.
+- **Relay.** Every frame is told a relay nonce in `init`. A srcdoc frame, or a URL
+  frame whose module import was refused, sends `relay` messages (path, method, headers, body)
+  carrying a per-frame nonce the dashboard minted and sent in `init`;
+  `appFrame/frameRelay.ts` answers only that frame's window with that nonce, and
+  sends exactly that request with the page's own cookies (`credentials:
+  same-origin`, `mode: same-origin`, `redirect: error`) and nothing added. A frame
+  reaches only its own app's `/app-frame-fetch/<app>/…` (the fetch route's methods)
+  and `/apps/<app>/ui/…` (GET), with only the request headers its preflight allowed
+  (`content-type`, the capability) or that are CORS-safelisted; a dot segment,
+  another app, a core route or any other header is refused unsent, and so is any
+  percent-encoded `/`, `\` or `.` in the path (a front proxy that decodes them
+  would resolve `..%2f` past this check), or a path that, decoded once, holds a dot
+  segment. The fetch route drops every `Set-Cookie` and `Clear-Site-Data` the app's backend returns
+  (`add_app_frame_cors`): the relayed request carries the page's credentials, so
+  such a header would otherwise land on the dashboard's origin. The answer
+  carries what a CORS read would have exposed: the CORS-safelisted response
+  headers, and on the fetch route only a response the gateway marked readable
+  (`Access-Control-Allow-Origin: null`, set once the capability verified); anything
+  else is a network error, as it is today. The answer streams: `relay.response`
+  (status, headers) resolves the frame's fetch at once, `relay.chunk`s feed its body
+  and `relay.end` / `relay.error` close it, so a long-lived response (an event
+  stream) reaches the frame as it arrives; cancelling the body or the fetch's
+  signal sends `relay.abort`, which aborts the dashboard's request. A request body
+  is serialized in the frame by the platform (`new Request(..., { body })`), so
+  `FormData` keeps its multipart boundary; an abort while it is read sends nothing.
+  Bodies up to 8 MiB (a string counted in UTF-8 bytes), 32 in flight per frame. A
+  relay checks every `RELAY_SWEEP_MS` (1 s) that its frame is still in the document,
+  and aborts that frame's requests once it is not, so a removed frame cannot keep a
+  stream open. Point hosts skip relay messages (`isRelayMessage`) before their own rate
+  and size bounds. The gateway's checks run on the relayed request unchanged.
+- **Module.** The bootstrap imports `entry` by URL first, so where that request is
+  served (localhost, a plain forward) nothing changes. When it is refused (Firefox
+  sends the cookie on the iframe navigation, so the URL document loads but its
+  cookieless module import does not), the frame fetches the source through the relay and runs it as a nonce'd inline module;
+  that module hands over its entry with `globalThis.kirocrew.register(activate)`
+  (a function only, the same `activate` it exports), read only while it evaluates, so a module imported by URL
+  that also registers activates once. A module that only exports `activate` keeps
+  the URL path and still fails behind an authenticating proxy. The ready deadline
+  covers both paths.
+
 The boundary:
 
 - **Where it listens.** Only links and spans inside a chat message's root
