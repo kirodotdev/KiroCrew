@@ -20,15 +20,12 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
-import logging
 from typing import Any, Optional
 from urllib.parse import quote, urlencode
 
 import aiohttp
 
 from kiro_crew.session_environment import SessionEnvironmentUnavailable
-
-logger = logging.getLogger(__name__)
 
 API_URL = "https://api.sprites.dev"
 _HTTP_TIMEOUT = 60.0
