@@ -7,7 +7,7 @@ import shutil
 import uuid
 from dataclasses import asdict
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from aiohttp import web
 
@@ -113,6 +113,11 @@ async def api_workspaces_create(request: web.Request) -> web.Response:
     staged_path: Path | None = None
     install_dst: Path | None = None
     copy_pending = False
+    # Warnings carried into the success response. A copy_from whose source folder is
+    # missing still creates the workspace (empty), exactly as before, but the caller
+    # asked for a copy and got nothing -- so say so rather than return a bare success
+    # that reads as "copied". Mirrors the CLI create's stderr warning on the same case.
+    warnings: list[str] = []
     if copy_from:
         if copy_from not in cfg.workspaces:
             return web.json_response(
@@ -169,6 +174,15 @@ async def api_workspaces_create(request: web.Request) -> web.Response:
             )
         if src_path.is_dir():
             copy_pending = True
+        else:
+            # Source workspace is registered but its folder is absent on disk: the
+            # create proceeds (an empty new workspace, as it always did), but nothing
+            # is copied. Name the missing folder so the caller is not told a copy
+            # happened when none did.
+            warnings.append(
+                f"source workspace '{copy_from}' has no folder at "
+                f"'{cfg.workspaces[copy_from].dir}'; nothing was copied"
+            )
     else:
         ws_dir = body.get("dir", f"workspace-{name}")
         if (not_string := string_field_error("dir", ws_dir)) is not None:
@@ -377,7 +391,13 @@ async def api_workspaces_create(request: web.Request) -> web.Response:
         source="dashboard",
         resources=name,
     )
-    return web.json_response({"ok": True, "name": name})
+    # ``warnings`` is additive and omitted when empty, so an ordinary create's
+    # response is byte-identical to before; only a copy_from whose source folder
+    # was missing carries the extra key.
+    response: dict[str, Any] = {"ok": True, "name": name}
+    if warnings:
+        response["warnings"] = warnings
+    return web.json_response(response)
 
 
 async def api_workspaces_update(request: web.Request) -> web.Response:
