@@ -3309,7 +3309,9 @@ delete here once it lands.
 
 Frontend joins the countdown to a pill by tool *title*, via `isWaitToolTitle()`,
 an **allowlist** of the shapes the transport produces: `wait`, `<server>___wait`,
-`wait (mcp)`, and the two decorations combined. The backend liveness contract
+`wait (mcp)`, the two decorations combined, and the default (kas) harness's
+`@kirocrew-core/wait`, matched as one exact string so another server's `@x/wait`
+stays out. The backend liveness contract
 does not read the title at all: it selects the wait by the provenance-verified
 adapter identity (`acp/liveness_tool_state.py::ToolCallState.is_trusted_wait`), because a
 title-selected wait would let any tool that describes itself as waiting defer its
