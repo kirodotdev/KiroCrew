@@ -704,10 +704,13 @@ export function createTranscriptRenderers(
             // DM with one named peer every send while it works is a steer, so
             // the ack kiro-cli emits would close nearly every reply with the
             // mechanics this surface hides (#17838). The marker is still
-            // stripped from the prose.
+            // stripped from the prose. No file-change chips either: the
+            // mate's writes (notes, scripts, its page) are not what the user
+            // reviews here (#30233).
             const bubble = renderAssistantBubble(m, ctx, crewmateBubbleClass(pos), {
               forceFooter: pos === 'single' || pos === 'end',
               suppressSteerAck: true,
+              hideFileChanges: true,
               // A crewmate's reply is prose about the crew's own work, so it
               // names sessions constantly. Same triple the single-chat page
               // hands its bubble, and `m.ts` with it so the SHORT form resolves
