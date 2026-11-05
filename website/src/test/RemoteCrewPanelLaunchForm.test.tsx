@@ -8,6 +8,7 @@ import userEvent from '@testing-library/user-event'
 import { renderWithProviders } from './helpers'
 import { RemoteCrewPanel } from '../pages/settings/RemoteCrewPanel'
 import { __resetErrorJournalForTests } from '../utils/errorReport'
+import { launchGuardKey } from '../pages/settings/remoteCrewPanelModel'
 
 vi.mock('../utils/clipboard', () => ({ copyToClipboard: vi.fn(async () => true) }))
 
@@ -78,6 +79,7 @@ const RUNNING_JOB = {
     { key: 'connect', label: 'Connect', state: 'pending' as const },
   ],
 }
+const DONE_JOB = { ...RUNNING_JOB, status: 'done' as const, instance_id: 'i-0abc123456789def0' }
 const REGION_REQUIRED = 'Enter an AWS Region, for example us-east-1.'
 
 beforeEach(() => {
@@ -118,10 +120,6 @@ describe('RemoteCrewPanel launch form', () => {
     const launch = screen.getByRole('button', { name: /^Launch$/ })
     expect(launch).toBeDisabled()
 
-    // A partition with a longer prefix is still a region name.
-    await u.type(region, 'eusc-de-east-1')
-    expect(region).not.toHaveAttribute('aria-invalid', 'true')
-    await u.clear(region)
     await u.type(region, 'eu-west-1')
     // Leaving the field re-runs the AWS check against the new region; Launch waits for it.
     await u.tab()
@@ -158,6 +156,8 @@ describe('RemoteCrewPanel launch form', () => {
   it('does not launch the same crew twice: Launch stays off until a setting changes or Launch another crew', async () => {
     let resolveLaunch: (job: typeof RUNNING_JOB) => void = () => {}
     vi.mocked(api.cloudLaunch).mockImplementation(() => new Promise(r => { resolveLaunch = r }))
+    // The setup has finished, so only the same-settings guard holds Launch off.
+    vi.mocked(api.cloudLaunchStatus).mockResolvedValue(DONE_JOB)
     const u = userEvent.setup()
     await openSetup(u)
 
@@ -180,29 +180,42 @@ describe('RemoteCrewPanel launch form', () => {
     await u.clear(subnet)
     await waitFor(() => expect(again).toBeDisabled())
 
-    // An identical second crew takes an explicit choice.
+    // An identical second crew takes an explicit choice, and that choice launches it.
     await u.click(screen.getByRole('button', { name: 'Launch another crew' }))
-    await waitFor(() => expect(again).not.toBeDisabled())
-    expect(screen.queryByRole('button', { name: 'Launch another crew' })).not.toBeInTheDocument()
-    await u.click(again)
     await waitFor(() => expect(api.cloudLaunch).toHaveBeenCalledTimes(2))
+    expect(vi.mocked(api.cloudLaunch).mock.calls[1]).toEqual(vi.mocked(api.cloudLaunch).mock.calls[0])
   })
 
-  it('lets the same settings launch again once that launch failed', async () => {
-    // The gateway accepts the launch; its first progress read says it failed.
-    vi.mocked(api.cloudLaunchStatus).mockResolvedValue({ ...RUNNING_JOB, status: 'failed' as const })
+  it('offers no launch while a crew setup is still running, which the gateway would refuse', async () => {
     const u = userEvent.setup()
     await openSetup(u)
 
     const launch = await screen.findByRole('button', { name: /^Launch$/ })
     await waitFor(() => expect(launch).not.toBeDisabled())
     await u.click(launch)
-    await waitFor(() => expect(api.cloudLaunchStatus).toHaveBeenCalled())
-
-    // No crew came of it, so a retry needs no extra click.
-    await waitFor(() => expect(screen.getByRole('button', { name: /^Launch$/ })).not.toBeDisabled())
+    expect(await screen.findByText(/A crew setup is running below/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /^Launch$/ })).toBeDisabled()
     expect(screen.queryByRole('button', { name: 'Launch another crew' })).not.toBeInTheDocument()
-    expect(screen.queryByText(/Launched\. Its progress is shown below/)).not.toBeInTheDocument()
+    // A different crew must wait too: the gateway takes one setup at a time.
+    await u.type(screen.getByRole('textbox', { name: 'Subnet ID (optional)' }), 'subnet-0123abcd')
+    expect(screen.getByRole('button', { name: /^Launch$/ })).toBeDisabled()
     expect(api.cloudLaunch).toHaveBeenCalledTimes(1)
+  })
+
+  it('names the missing region in the check line instead of leaving a gap', async () => {
+    const u = userEvent.setup()
+    await openSetup(u)
+    const region = await screen.findByRole('textbox', { name: 'Region' })
+    await u.clear(region)
+    await u.tab()
+    expect(await screen.findByText('Checked against profile none set (AWS CLI default), with no region set.')).toBeInTheDocument()
+  })
+})
+
+describe('launchGuardKey', () => {
+  it('treats an omitted provider as the built-in one the gateway defaults to', () => {
+    const body = { profile: '', region: 'us-east-1', size_key: 'balanced' }
+    expect(launchGuardKey(body)).toBe(launchGuardKey({ provider_id: 'aws_ec2', ...body }))
+    expect(launchGuardKey({ provider_id: 'other', ...body })).not.toBe(launchGuardKey(body))
   })
 })

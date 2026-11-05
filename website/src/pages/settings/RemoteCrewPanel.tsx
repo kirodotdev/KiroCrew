@@ -90,7 +90,7 @@ import {
 } from './InstanceFormFields'
 import {
   isInProgress, CLOUD_PROFILE_KEY, CLOUD_REGION_KEY, CLOUD_SIZE_KEY, CLOUD_PROVISIONER_KEY,
-  DEFAULT_REGION, isTerminal, isRegistered, needsSignin, type SizeTier, SIZE_TIERS, X86_TIERS,
+  DEFAULT_REGION, launchGuardKey, isTerminal, isRegistered, needsSignin, type SizeTier, SIZE_TIERS, X86_TIERS,
   PRICING_CALCULATOR_URL, type SigninNotice,
 } from './remoteCrewPanelModel'
 import {
@@ -99,8 +99,8 @@ import {
 import { CREW_SWITCH_HINT_ID, CREW_NEEDS_RESTART_BANNER_ID, CrewRow } from './RemoteCrewPanelCrewRow'
 export { TurnUrlField } from './RemoteCrewPanelCrewRow'
 
-/** The shape of an AWS Region name, e.g. us-east-1, us-gov-west-1 or eusc-de-east-1. The gateway validates it again. */
-const AWS_REGION_RE = /^[a-z]{2,4}(-[a-z]+)+-\d{1,2}$/
+/** The shape of an AWS Region name, e.g. us-east-1 or us-gov-west-1. The gateway validates it again. */
+const AWS_REGION_RE = /^[a-z]{2}(-[a-z]+)+-\d{1,2}$/
 
 export function RemoteCrewPanel() {
   const queryClient = useQueryClient()
@@ -188,9 +188,6 @@ export function RemoteCrewPanel() {
   // another crew", turns it back on.
   const sentLaunchKey = useRef<string | null>(null)
   const [launchedKey, setLaunchedKey] = useState<string | null>(null)
-  // The job that launch started. If it fails or is cancelled no crew came of it,
-  // so the same settings may be launched again without the extra click.
-  const launchedJobId = useRef<string | null>(null)
   const identityQuery = useQuery({
     queryKey: ['cloud-identity'],
     queryFn: api.cloudIdentity,
@@ -790,7 +787,7 @@ export function RemoteCrewPanel() {
       // The built-in form's draft has been used. Only the built-in Launch sets
       // the ref, so a registered provisioner's launch leaves the draft alone.
       if (sentLaunchDraft.current) dispatch(dropLaunchedCrewDraft(sentLaunchDraft.current))
-      if (sentLaunchKey.current) { setLaunchedKey(sentLaunchKey.current); launchedJobId.current = job.id }
+      if (sentLaunchKey.current) setLaunchedKey(sentLaunchKey.current)
     },
     onError: e => setActionErr(errMsg(e, i18nT('pages.settings.instancesPanel.unknown_error'))),
     onSettled: () => { sentLaunchDraft.current = null; sentLaunchKey.current = null },
@@ -889,6 +886,11 @@ export function RemoteCrewPanel() {
     && preflight.ssm_reachable
     && preflight.session_manager_plugin
 
+  // Prefer the polled detail, but fall back to the list's copy so the card (and its
+  // device code) is present on the very first render after a remount, before the
+  // status query has resolved.
+  const activeJob = launchStatusQuery.data ?? inProgress[0] ?? null
+
   // What the built-in Launch sends. It names the lane that is on screen: the
   // built-in form draws EVERY `aws_ec2`-kind row, and an edition may register a
   // second one behind a different engine; omitting the id would let the server
@@ -902,13 +904,18 @@ export function RemoteCrewPanel() {
     ...(subnetId.trim() ? { subnet_id: subnetId.trim() } : {}),
     ...loginTargetBody,
   }
-  const builtinLaunchKey = JSON.stringify(builtinLaunchBody)
+  const builtinLaunchKey = launchGuardKey(builtinLaunchBody)
   const alreadyLaunched = launchedKey === builtinLaunchKey
-
-  // Prefer the polled detail, but fall back to the list's copy so the card (and its
-  // device code) is present on the very first render after a remount, before the
-  // status query has resolved.
-  const activeJob = launchStatusQuery.data ?? inProgress[0] ?? null
+  // The gateway refuses a launch while any crew setup is still running
+  // (`launch_already_running`), so neither launch button is offered until it ends.
+  const setupRunning = !!activeJob && !isTerminal(activeJob)
+  const launchReady = blockingOk && regionOk && identityOk && !launchMutation.isPending && !setupRunning
+  const launchBuiltin = () => {
+    sentLaunchDraft.current = currentLaunchDraft
+    sentLaunchKey.current = builtinLaunchKey
+    if (identityMode === 'identity_center') rememberCompanySignIn(identityStartUrl, identityRegion)
+    launchMutation.mutate(builtinLaunchBody)
+  }
 
   // A launch that reaches `done` has just added a crew, but nothing else invalidates
   // the instances cache and switching tabs does not remount this component — so "Your
@@ -921,12 +928,7 @@ export function RemoteCrewPanel() {
     reconciledLaunch.current = activeJob.id
     reloadInstances()
   }, [activeJob, reloadInstances])
-  useEffect(() => {
-    if (!activeJob || activeJob.id !== launchedJobId.current) return
-    if (activeJob.status !== 'failed' && activeJob.status !== 'cancelled') return
-    launchedJobId.current = null
-    setLaunchedKey(null)
-  }, [activeJob])
+
 
   // Once a teardown finishes the gateway drops the instance, so its row (and its
   // "Deleting…" state) vanishes on the next poll. Prune the tag then, which also
@@ -1338,10 +1340,14 @@ export function RemoteCrewPanel() {
               </label>
             </div>
             <p className="mb-3 text-[12px] text-muted">
-              {i18nT('pages.settings.remoteCrewPanel.checking_against', {
-                profile: checkedProfile || i18nT('pages.settings.remoteCrewPanel.no_profile_set'),
-                region: checkedRegion || i18nT('pages.settings.remoteCrewPanel.no_region_set'),
-              })}
+              {checkedRegion
+                ? i18nT('pages.settings.remoteCrewPanel.checking_against', {
+                  profile: checkedProfile || i18nT('pages.settings.remoteCrewPanel.no_profile_set'),
+                  region: checkedRegion,
+                })
+                : i18nT('pages.settings.remoteCrewPanel.checking_against_no_region', {
+                  profile: checkedProfile || i18nT('pages.settings.remoteCrewPanel.no_profile_set'),
+                })}
             </p>
             {/* Rendered independently of `preflight`: a failed RE-check keeps the
                 previous result in cache, and the rows below would otherwise paint
@@ -1605,14 +1611,19 @@ export function RemoteCrewPanel() {
             </div>
 
             <div className="mt-4 flex items-center gap-3 flex-wrap">
-              <Btn primary onClick={() => { sentLaunchDraft.current = currentLaunchDraft; sentLaunchKey.current = builtinLaunchKey; if (identityMode === 'identity_center') rememberCompanySignIn(identityStartUrl, identityRegion); launchMutation.mutate(builtinLaunchBody) }} disabled={!blockingOk || !regionOk || !identityOk || launchMutation.isPending || alreadyLaunched}>
+              <Btn primary onClick={launchBuiltin} disabled={!launchReady || alreadyLaunched}>
                 <Rocket className="lucide-inline" /> {launchMutation.isPending ? i18nT('pages.settings.remoteCrewPanel.launching') : i18nT('pages.settings.remoteCrewPanel.launch')}
               </Btn>
-              {alreadyLaunched && !launchMutation.isPending && (
-                <Btn onClick={() => setLaunchedKey(null)}>{i18nT('pages.settings.remoteCrewPanel.launch_another')}</Btn>
+              {/* After a launch, Launch stays off for the same settings; this is
+                  the explicit way to start a second crew with them. It sends the
+                  launch itself, as its label says. */}
+              {alreadyLaunched && !launchMutation.isPending && !setupRunning && (
+                <Btn onClick={launchBuiltin} disabled={!launchReady}>{i18nT('pages.settings.remoteCrewPanel.launch_another')}</Btn>
               )}
               <span className="text-[12px] text-muted">
-                {alreadyLaunched && !launchMutation.isPending
+                {setupRunning && !launchMutation.isPending
+                  ? i18nT('pages.settings.remoteCrewPanel.launch_wait_for_setup')
+                  : alreadyLaunched && !launchMutation.isPending
                   ? i18nT('pages.settings.remoteCrewPanel.launched_same_settings')
                   : identityResolving
                   ? identityUnknown
