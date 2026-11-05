@@ -1154,19 +1154,21 @@ class AcpEvent:
     spec_granted_commands: tuple[str, ...] = ()
     #: spec_shell_allowlist: on the same requests, the only shell commands the
     #: agent's spec lets run when it sets ``toolsSettings.shell.denyByDefault``
-    #: (``AcpSessionHandle.kas_spec_shell_allowlist``); ``None`` when it does not.
+    #: (``AcpSessionHandle.kas_spec_shell_allowlist`` on KAS,
+    #: ``AcpClient._spec_shell_allowlist`` on claude); ``None`` when it does not.
     #: A restriction: the gate's ``spec-shell-allowlist`` tier refuses every other
     #: shell call.
     spec_shell_allowlist: tuple[str, ...] | None = None
     #: spec_write_allowlist: on the same requests, the only paths the agent's write
     #: tool may touch when its spec sets ``toolsSettings.fs_write.fallbackAction:
-    #: "deny"``, as absolute globs (``AcpSessionHandle.kas_spec_write_allowlist``);
-    #: ``None`` when it does not. A restriction: the gate's ``spec-write-allowlist``
+    #: "deny"``, as absolute globs (``AcpSessionHandle.kas_spec_write_allowlist`` on
+    #: KAS, ``AcpClient._spec_write_allowlist`` on claude); ``None`` when it does not. A restriction: the gate's ``spec-write-allowlist``
     #: tier refuses every other file write.
     spec_write_allowlist: tuple[str, ...] | None = None
     #: spec_write_cwd: on the same requests, the session's own directory
-    #: (``AcpSessionHandle._bound_cwd``), which a relative write target names a path
-    #: under, as KAS resolves it against its workspace root. ``""`` elsewhere: a
+    #: (``AcpSessionHandle._bound_cwd`` on KAS, ``AcpClient._spec_write_cwd`` on
+    #: claude), which a relative write target names a path under, as the harness
+    #: resolves it against its workspace root. ``""`` elsewhere: a
     #: relative target is then not covered.
     spec_write_cwd: str = ""
     #: native_child_call: a permission request a native KAS sub-agent made under

@@ -1213,7 +1213,9 @@ def spec_tools_settings_applied_nowhere(provider: object) -> bool:
     return _mirror_rules_unapplied(provider, Concern.TOOLS_SETTINGS)
 
 
-def spec_tools_settings_unapplied(agent_id: str, project_dir: str | None = None) -> list[str]:
+def spec_tools_settings_unapplied(
+    agent_id: str, project_dir: str | None = None, *, gate_allowlists: bool = False
+) -> list[str]:
     """The active agent spec's ``toolsSettings`` names a session that is not handed it runs without.
 
     For the session-start notice on a backend where
@@ -1222,11 +1224,13 @@ def spec_tools_settings_unapplied(agent_id: str, project_dir: str | None = None)
     (:func:`~kiro_crew.agent_sdk.tools_settings_reach.tools_settings_unapplied`).
     Read through the spec reader the hooks use, so it is the spec the session
     runs. Raises when the spec cannot be read. *project_dir* is
-    :func:`spec_project_dir` of the session.
+    :func:`spec_project_dir` of the session. *gate_allowlists* is passed through.
     """
     from kiro_crew.agent_sdk.tools_settings_reach import tools_settings_unapplied
 
-    return tools_settings_unapplied(_agent_spec(agent_id, project_dir).get("toolsSettings"))
+    return tools_settings_unapplied(
+        _agent_spec(agent_id, project_dir).get("toolsSettings"), gate_allowlists=gate_allowlists
+    )
 
 
 def spec_steering_resources(agent_id: str, project_dir: str | None = None) -> list[str]:

@@ -303,6 +303,12 @@ class AcpClient:
         # file Crew writes (claude's ``permissions.deny``) leaves it empty, and an
         # empty set makes the refusal a no-op. Cleared on reset with the array.
         self._spec_denied_tools: frozenset[tuple[str, str]] = frozenset()
+        # The spec's `toolsSettings` shell and write allowlists, stamped on this
+        # session's own permission requests on a backend Crew enforces them for
+        # (`spec_tools_allowlists`); None when the spec sets none.
+        self._spec_shell_allowlist: tuple[str, ...] | None = None
+        self._spec_write_allowlist: tuple[str, ...] | None = None
+        self._spec_write_cwd = ""
         # The mirror's other CLIENT OBLIGATION from the same parse
         # (``SessionProjection.zero_tools``): the spec declares ``"tools": []``, a
         # total ban the array and ``denied_tools`` above have no way to express --
