@@ -1407,11 +1407,12 @@ class BackendPool:
             private = sum(
                 1 for b in self._exclusive.values() if b.pool_key.server_name == server_name
             )
-        for backend in idle:
-            try:
-                await backend.shutdown(timeout=2.0)
-            except Exception:  # pragma: no cover — defensive
-                logger.exception("shutdown failed during server drain")
+        # Hand every idle backend to spawn_shutdown before the first await:
+        # they already left _backends, so if teardown cancels this handler
+        # mid-drain, shutdown_all still finds and joins their reaps.
+        reaps = [self.spawn_shutdown(backend) for backend in idle]
+        if reaps:
+            await asyncio.shield(asyncio.gather(*reaps))
         return ServerDrain(evicted=len(idle), draining=moved, private=private)
 
     async def reap_draining(self) -> list["Backend"]:

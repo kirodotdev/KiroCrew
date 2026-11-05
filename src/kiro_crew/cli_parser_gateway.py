@@ -253,7 +253,10 @@ def register_mcp_parser(sub: _Commands) -> None:
         "reload",
         help="Recycle one server's running backends; idle ones stop now, busy ones finish first",
     )
-    reload_parser.add_argument("server", help="MCP server name, as it appears in mcp.json")
+    reload_parser.add_argument(
+        "server",
+        help="MCP server name, as it appears in mcp.json (its slash-free alias also works)",
+    )
 
 
 def register_service_parser(sub: _Commands) -> None:

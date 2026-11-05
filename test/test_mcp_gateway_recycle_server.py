@@ -26,6 +26,8 @@ from kiro_crew.mcp_gateway import gatewayd
 from kiro_crew.mcp_gateway.backend import Backend
 from kiro_crew.mcp_gateway.daemon.control import _apply_recycle_server, _serve_control_frame
 from kiro_crew.mcp_gateway.pool import DRAIN_DEADLINE_SECS, BackendPool, PoolKey
+from kiro_crew.testing.ids import UNALLOCATABLE_PID
+from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS
 
 _POSIX_ONLY = pytest.mark.skipif(sys.platform == "win32", reason="AF_UNIX listener")
 
@@ -44,7 +46,7 @@ def _key(server: str, variant: str = "a") -> PoolKey:
 def _backend(key: PoolKey, *, refcount: int = 0, pinned: bool = False) -> Backend:
     proc = MagicMock()
     proc.returncode = None
-    proc.pid = 12345
+    proc.pid = UNALLOCATABLE_PID
     stdin = MagicMock()
     stdin.drain = AsyncMock()
     now = time.monotonic()
@@ -180,6 +182,35 @@ class TestDrainServer:
         assert calls == 1
         assert only.shutdown.await_count == 0
 
+    @pytest.mark.asyncio
+    async def test_teardown_mid_drain_still_reaps_every_idle_backend(self) -> None:
+        # The control handler that runs drain_server is what daemon teardown
+        # cancels. Idle backends already left _backends, so a cancel before
+        # each one's shutdown would orphan it unless shutdown_all can join it.
+        pool = BackendPool(max_backends=10)
+        first, second = _backend(_key("github", "a")), _backend(_key("github", "b"))
+        for b in (first, second):
+            await pool.add(b.pool_key, b)
+        started, release = asyncio.Event(), asyncio.Event()
+
+        async def blocking_shutdown(timeout: float = 0) -> None:
+            started.set()
+            await release.wait()
+
+        first.shutdown.side_effect = blocking_shutdown
+        second.shutdown.side_effect = blocking_shutdown
+        drain = asyncio.create_task(pool.drain_server("github"))
+        await asyncio.wait_for(started.wait(), FALLBACK_TIMEOUT_SECS)
+        drain.cancel()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await drain
+
+        await pool.shutdown_all()
+
+        assert first.shutdown.await_count == 1
+        assert second.shutdown.await_count == 1
+
 
 class TestRecycleServerFrame:
     @pytest.fixture
@@ -208,6 +239,23 @@ class TestRecycleServerFrame:
         }
         assert audits and audits[0][:2] == ("github", "allowed")
         assert "evicted=1" in audits[0][2]
+
+    @pytest.mark.asyncio
+    async def test_mcp_json_key_reaches_backends_pooled_under_its_alias(
+        self, audits: list[tuple[str, str, str]]
+    ) -> None:
+        # Pool keys of a slash-bearing mcp.json key use its slash-free alias.
+        pool = BackendPool(max_backends=10)
+        b = _backend(_key("playwright-mcp"))
+        await pool.add(b.pool_key, b)
+
+        reply = await _apply_recycle_server(
+            {"type": "recycle-server", "server": "npm:@playwright/mcp"}, pool
+        )
+
+        assert (reply["type"], reply["evicted"]) == ("recycled", 1)
+        assert await pool.get(b.pool_key) is None
+        assert b.shutdown.await_count == 1
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("server", [None, "", 7, "a\nforged", "x" * 257])
@@ -289,9 +337,8 @@ class TestRecycleServerClient:
             state["loop"].call_soon_threadsafe(state["stop"].set)
             t.join(timeout=5)
 
-        assert result == dc.RecycleResult(
-            "recycled", evicted=1, draining=1, private=0, deadline_secs=DRAIN_DEADLINE_SECS
-        )
+        # outcome, evicted, draining, private, deadline_secs
+        assert result == dc.RecycleResult("recycled", 1, 1, 0, DRAIN_DEADLINE_SECS)
         assert state["pool"].draining_count == 1
 
     def test_no_daemon_is_absent(self, short_sock_dir: Path) -> None:
@@ -312,11 +359,8 @@ class TestCli:
     @pytest.mark.parametrize(
         ("result", "code", "needle"),
         [
-            (
-                dc.RecycleResult("recycled", evicted=1, draining=2, deadline_secs=60.0),
-                0,
-                "within 60s",
-            ),
+            # outcome, evicted, draining, private, deadline_secs
+            (dc.RecycleResult("recycled", 1, 2, 0, 60.0), 0, "within 60s"),
             (dc.RecycleResult("recycled"), 0, "No running backends"),
             (dc.RecycleResult("absent"), 1, "not running"),
             (dc.RecycleResult("rejected", reason="nope"), 1, "refused the reload: nope"),
