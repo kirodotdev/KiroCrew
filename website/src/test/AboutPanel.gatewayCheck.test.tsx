@@ -534,6 +534,35 @@ describe('AboutPanel gateway update check', () => {
     )
   })
 
+  it('names no version when a behind-only checkout reports the running one', async () => {
+    // Behind its upstream at the same version string: "Update to v0.13.0"
+    // would name the build already running.
+    stubFetch({
+      check_status: 'succeeded',
+      update_available: true,
+      version_newer: false,
+      commits_behind: 3,
+      managed_by: 'git',
+      can_apply: true,
+      latest_version: '0.13.0',
+      latest_version_display: '0.13.0',
+    })
+    store.dispatch(sseStatus({ ...BLANK_STATUS, version: '0.13.0' } as never))
+    mountWeb()
+    await pressCheck()
+
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: i18nT('pages.settings.aboutPanel.update_now') })).toBeTruthy(),
+    )
+    expect(screen.queryByRole('button', { name: /Update to v0\.13\.0/ })).toBeNull()
+    expect(screen.queryByText(/\(v0\.13\.0\)/)).toBeNull()
+
+    // The confirm dialog it opens names no version either.
+    fireEvent.click(screen.getByRole('button', { name: i18nT('pages.settings.aboutPanel.update_now') }))
+    const confirm = await screen.findByRole('dialog', { name: i18nT('pages.settings.aboutPanel.update') })
+    expect(within(confirm).queryByText(/v0\.13\.0/)).toBeNull()
+  })
+
   // ---- the BACKGROUND-check path (no manual check run) ----------------------
   //
   // The 12-hourly gateway check lights the Settings nav dot. Following that badge
