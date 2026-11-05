@@ -60,10 +60,12 @@ one is entitled to know which it is looking at.
 
 from __future__ import annotations
 
+import decimal
 import json
 import logging
+import math
 import re
-from typing import Any, Callable, Final, Mapping
+from typing import Any, Callable, Final, Mapping, cast
 
 logger = logging.getLogger(__name__)
 
@@ -1238,19 +1240,72 @@ _SIMPLE_BINDING_CELL = re.compile(
 )
 
 
+def _js_number(value: float) -> str:
+    """*value* spelled as JS ``String(number)`` spells it (ECMAScript ``Number::toString``).
+
+    The bootstrap reads the island as JSON, so ``3.0`` arrives as the number 3 and shows
+    ``3``, and ``1e-05`` shows ``0.00001``. Python's ``repr`` already gives the shortest
+    round-trip digits JS uses; only the placement of the point and exponent differs.
+    """
+    if math.isnan(value):
+        return "NaN"
+    if math.isinf(value):
+        return "Infinity" if value > 0 else "-Infinity"
+    if value == 0:
+        return "0"
+    sign, digits, raw_exponent = decimal.Decimal(repr(value)).as_tuple()
+    # NaN and the infinities returned above, so the exponent is an int here.
+    exponent = cast(int, raw_exponent)
+    text = "".join(map(str, digits)).rstrip("0")
+    exponent += len(digits) - len(text)
+    k = len(text)
+    n = exponent + k
+    if k <= n <= 21:
+        out = text + "0" * (n - k)
+    elif 0 < n <= 21:
+        out = text[:n] + "." + text[n:]
+    elif -6 < n <= 0:
+        out = "0." + "0" * -n + text
+    else:
+        mantissa = text if k == 1 else text[0] + "." + text[1:]
+        out = f"{mantissa}e{'+' if n - 1 >= 0 else '-'}{abs(n - 1)}"
+    return "-" + out if sign else out
+
+
+def _js_json(value: Any) -> str:
+    """*value* as JS ``JSON.stringify`` spells it after the bootstrap's JSON read."""
+    if isinstance(value, float):
+        return _js_number(value) if math.isfinite(value) else "null"
+    if isinstance(value, Mapping):
+        # A key is spelled as the island spells it: json turns 1 or True into "1"/"true".
+        items = (
+            json.dumps(next(iter(json.loads(json.dumps({key: None})))), ensure_ascii=False)
+            + ":"
+            + _js_json(item)
+            for key, item in value.items()
+        )
+        return "{" + ",".join(items) + "}"
+    if isinstance(value, (list, tuple)):
+        return "[" + ",".join(_js_json(item) for item in value) + "]"
+    return json.dumps(value, ensure_ascii=False)
+
+
 def _as_text(value: Any) -> str:
     """A value as the page would show it, matching the bootstrap's own ``text()``.
 
     Spelled twice because the two run in different languages on the same contract; a
     test pins them to the same three rules so a page filled here and a page filled by
-    the script cannot disagree about one value.
+    the script cannot disagree about one value. A number is spelled the way JS spells
+    the number the bootstrap parsed, so ``3.0`` reads ``3`` on both pages.
     """
     if value is None:
         return "\u2014"
     if isinstance(value, bool):
         return "true" if value else "false"
+    if isinstance(value, float):
+        return _js_number(value)
     if isinstance(value, (Mapping, list, tuple)):
-        return json.dumps(value, separators=(",", ":"), ensure_ascii=False)
+        return _js_json(value)
     return str(value)
 
 
