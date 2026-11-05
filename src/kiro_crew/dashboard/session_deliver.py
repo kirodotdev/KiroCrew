@@ -284,7 +284,7 @@ def _queue_entry(
                 # Open dashboards render queue cards from WebSocket frames, not
                 # from this slot's message list.
                 state.broadcast_ws("queue_cancel", {"slot": slot.key, "queue_id": evicted["id"]})
-        queue_cron_notification(slot, text, origin.label)
+        _broadcast_queue_push(state, slot, queue_cron_notification(slot, text, origin.label))
         return DELIVERED_QUEUED
     if origin.kind == ORIGIN_APP:
         from kiro_crew.dashboard.chat_utils import MCP_APP_MESSAGE_KIND
@@ -306,8 +306,34 @@ def _queue_entry(
             "msg msg-queued",
             meta={"kind": MCP_APP_MESSAGE_KIND, "appLabel": origin.label, "queueId": qid},
         )
+        _broadcast_queue_push(state, slot, qid)
         return DELIVERED_QUEUED
     raise ValueError(f"unknown delivery origin: {origin.kind!r}")
+
+
+def _broadcast_queue_push(state: "DashboardState", slot: "_ChatSlot", queue_id: str) -> None:
+    """Draw the new entry's card on open dashboards, which render from WS frames.
+
+    The frame carries the entry's wire view (``queue_entry_view``), the same
+    content and meta a slot-detail fetch would list for it.
+    """
+    from datetime import datetime, timezone
+
+    from kiro_crew.dashboard.chat_delivery import queue_entry_view
+
+    entry = next((e for e in slot._queue if e.get("id") == queue_id), None)
+    if entry is None:
+        return
+    view = queue_entry_view(entry)
+    push: dict[str, Any] = {
+        "slot": slot.key,
+        "content": view["content"],
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "queue_id": queue_id,
+    }
+    if view.get("meta"):
+        push["meta"] = view["meta"]
+    state.broadcast_ws("queue_push", push)
 
 
 async def _deliver_peer(
