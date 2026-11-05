@@ -7156,10 +7156,12 @@ it is not the public turn's slim-resume path.
 | Cross-tab history | Not injected |
 
 Post-compaction reinjection separately refreshes bounded skill discovery,
-protected skill bodies, memory navigation, reply preferences and member identity.
+protected skill bodies, memory navigation, reply preferences and member identity,
+and on the Claude Code backend the steering resources, under the session-start gate
+(`context_assembly/inclusion.py` → `steering_resources_part`).
 A minimal-context turn refreshes only what its minimal session start carried, the
-agent contract and reply preferences; memory navigation, skills, folder steering
-and the member section stay withheld.
+agent contract and reply preferences; memory navigation, skills, steering
+resources, folder steering and the member section stay withheld.
 
 The owner copy dialog names its destination member. Recovery distinguishes
 **Restore experience** from whole-store **Restore backup**. A dirty store switch

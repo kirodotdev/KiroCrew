@@ -448,24 +448,16 @@ def build_session_context(
     lazy_skills = bool(getattr(_cfg.skills, "lazy_load", False))
     max_context_chars = caps.max_context
 
-    # Steering files from agent config resources.
-    # kiro-cli loads an agent's ``resources`` natively when spawned with
-    # ``--agent`` (see acp/client_start.py ``_spawn``) — the same mechanism that
-    # lets us skip this for custom agents above. The CC backend
-    # (claude-agent-acp) does NOT read agent ``resources``, so only it needs
-    # the explicit load. Injecting on the ACP/kiro backend would duplicate
-    # what kiro-cli already loaded.
-    if (
-        not essentials
-        and not is_custom
-        and is_cc
-        and ctx._group_included(context_groups, ctx.CONTEXT_GROUP_PROJECT)
-    ):
-        steering_ctx = ctx._load_steering_resources()
-        if steering_ctx:
-            append_required(
-                "[Steering resources]\n" + steering_ctx + "\n[End of steering resources]\n\n"
-            )
+    # Steering files from agent config resources: the Claude Code backend
+    # only, since kiro-cli loads an agent's ``resources`` natively. The gate
+    # is shared with post-compaction re-injection.
+    steering_ctx = _inclusion.steering_resources_part(
+        agent=agent, is_cc=is_cc, essentials=essentials, context_groups=context_groups
+    )
+    if steering_ctx:
+        append_required(
+            "[Steering resources]\n" + steering_ctx + "\n[End of steering resources]\n\n"
+        )
     # Folder-inherited steering is NOT appended here. Its frame is in
     # ``_STRUCTURAL_MARKER_RES`` (a forged copy in a channel message or a
     # steering body must not read as operator-selected folder rules), and

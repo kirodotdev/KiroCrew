@@ -704,7 +704,10 @@ while Crew's own directory stays the bounded one.
 The `file://` steering block does NOT follow that shape. It is still gated on the
 backend: injected only on the Claude Code backend, and only for the default agent,
 because kiro-cli and KAS read `resources` from the spec themselves and injecting
-would duplicate what the backend already loaded.
+would duplicate what the backend already loaded. Session start and the first turn
+after a compaction share one gate, `steering_resources_part` in
+`src/kiro_crew/context_assembly/inclusion.py`, so the block comes back after a
+compaction on exactly the sessions that got it at start.
 
 One more skill mapping exists and is edition-specific: a `builder-mcp` server
 entry whose `args` carry `--skill-name-filter a,b`. `_extract_skills` unions it
