@@ -967,7 +967,7 @@ class TestColdStartRefresh:
 
         source = inspect.getsource(get_or_create._get_or_create_impl)
         refresh = source.index("await refresh_session_verdict(key)")
-        assert refresh < source.index("provider = factory(")
+        assert refresh < source.index("provider = build_provider()")
 
 
 class TestUnrunnablePin:
