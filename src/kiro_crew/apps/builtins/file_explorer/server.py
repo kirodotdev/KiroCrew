@@ -881,7 +881,9 @@ def _search_rg(root: Path, query: str, include: str, exclude: str) -> list[dict]
         return _search_python(root, query, include, exclude)
     out: list[dict] = []
     for line in proc.stdout.splitlines():
-        if len(out) >= MAX_SEARCH_RESULTS:
+        # Keep one result past the cap so the caller can tell "exactly full"
+        # from "more were cut off".
+        if len(out) > MAX_SEARCH_RESULTS:
             break
         try:
             obj = json.loads(line)
@@ -957,7 +959,8 @@ def _search_python(root: Path, query: str, include: str, exclude: str) -> list[d
                 dirnames[:] = [d for d in dirnames if _is_safe_crew_subdir(d)]
             filenames[:] = []  # never surface crew-home root files
         for fn in filenames:
-            if len(out) >= MAX_SEARCH_RESULTS:
+            # One result past the cap, as in ``_search_rg``.
+            if len(out) > MAX_SEARCH_RESULTS:
                 return out
             fp = Path(dirpath) / fn
             if inc_pats and not _matches_globs(fp, inc_pats):
@@ -983,7 +986,7 @@ def _search_python(root: Path, query: str, include: str, exclude: str) -> list[d
                                 "preview": line.rstrip("\n")[:400],
                             }
                         )
-                        if len(out) >= MAX_SEARCH_RESULTS:
+                        if len(out) > MAX_SEARCH_RESULTS:
                             return out
                         break  # one match per file is enough for v1 list
             except (OSError, FileTooLargeError):
@@ -1206,12 +1209,15 @@ class FileExplorerHandler(BaseHTTPRequestHandler):
             return self._json(200, {"results": [], "engine": "rg" if _has_rg() else "python"})
         _sel_audit("file_search", f"{p} q={q}")
         results = _search(p, q, include=include, exclude=exclude)
+        # The collectors return at most one result past the cap; only that
+        # extra result proves matches were cut off.
+        truncated = len(results) > MAX_SEARCH_RESULTS
         return self._json(
             200,
             {
-                "results": results,
+                "results": results[:MAX_SEARCH_RESULTS],
                 "engine": "rg" if _has_rg() else "python",
-                "truncated": len(results) >= MAX_SEARCH_RESULTS,
+                "truncated": truncated,
             },
         )
 
