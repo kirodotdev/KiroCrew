@@ -40,7 +40,8 @@ from kiro_crew.appearance_packs.ids import DEFAULT_PACK, pack_id_key, safe_pack_
 from kiro_crew.appearance_packs.sounds import SOUND_STATES, SOUND_SUFFIXES, sound_body
 from kiro_crew.atomic_write import read_bytes_with_retry, replace_with_retry
 from kiro_crew.constants import WINDOWS_DEVICE_STEMS
-from kiro_crew.platform_compat import chmod_safe, is_link_or_junction, remove_with_retry
+from kiro_crew.owner_only_files import restrict_file_to_owner_soft
+from kiro_crew.platform_compat import is_link_or_junction, remove_with_retry
 from kiro_crew.user_json import loads_user_json
 
 logger = logging.getLogger(__name__)
@@ -977,11 +978,9 @@ class AppearanceStore:
         tmp = self._colour_path.with_suffix(f".json.tmp.{transaction}")
         try:
             tmp.write_text(json.dumps(self._colour_maps, indent=2), "utf-8")
-            # chmod_safe, not os.chmod: docs/system-specs/common/platform-compat.md
-            # mandates the platform_compat shim, which is a no-op where POSIX
-            # modes mean nothing (Windows) instead of raising or silently
-            # misleading.
-            chmod_safe(tmp, 0o600)
+            # 0600 on POSIX, an owner-only DACL on Windows (chmod_safe would
+            # be a no-op there); the rename keeps it.
+            restrict_file_to_owner_soft(tmp)
             replace_with_retry(tmp, self._colour_path)
         finally:
             try:

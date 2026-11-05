@@ -35,10 +35,12 @@ What this module deliberately does NOT do is change the process umask. A
 into the user's own repositories would come out ``0600`` too, and a scoped umask
 is not scoped at all in a threaded process: it is one value for every thread.
 
-POSIX only. On Windows the mode bits carry no access control; the data home's
-inheritable owner-only DACL (``restrict_dir_to_owner`` in ``ensure_data_home``)
-is what new files there inherit, and every helper here is a no-op that leaves
-the previous behaviour untouched.
+POSIX only, with one exception. On Windows the mode bits carry no access
+control; the data home's inheritable owner-only DACL (``restrict_dir_to_owner``
+in ``ensure_data_home``) is what new files there inherit, and every helper here
+is a no-op that leaves the previous behaviour untouched -- except
+:func:`restrict_file_to_owner_soft`, which applies an owner-only DACL to the one
+secret-bearing file it is given.
 """
 
 from __future__ import annotations
@@ -205,6 +207,25 @@ def ensure_directory(path: str | os.PathLike[str]) -> None:
         mkdirs_owner_only(path)
     else:
         Path(path).mkdir(parents=True, exist_ok=True)
+
+
+def restrict_file_to_owner_soft(path: str | os.PathLike[str]) -> bool:
+    """Owner-only a secret-bearing FILE on every platform; warn and go on if it fails.
+
+    The replacement for ``chmod_safe(path, 0o600)``, which is a no-op on Windows
+    and so leaves the file under whatever DACL it inherited. This goes through
+    :func:`platform_compat.restrict_to_owner`: ``chmod 0o600`` on POSIX, exactly
+    what ``chmod_safe`` did, and an owner-only, non-inherited DACL on Windows.
+    Both only ever narrow access. Fail-soft like ``chmod_safe``: an ``OSError``
+    is logged and False returned, so a write that used to succeed still does.
+    The path is not logged, for the reason ``restrict_to_owner`` gives.
+    """
+    try:
+        platform_compat.restrict_to_owner(path)
+    except OSError:
+        logger.warning("Cannot restrict a secret-bearing file to its owner", exc_info=True)
+        return False
+    return True
 
 
 def _tightenable(st: os.stat_result) -> bool:
