@@ -268,7 +268,9 @@ queue drain starts at once (the drain writes the row), and a running slot gets t
 steer (an automation wake) or the same queued card. A
 script cron's result (`_deliver_script_result`) and a cron's `send_message` to its
 origin session (`api_send_message`), both with `evict_oldest` so a full live queue
-drops its oldest cron notification (never another kind of entry), and an MCP App's
+drops its oldest cron notification (never another kind of entry, retracted with a
+`queue_cancel` frame; each queued cron or app card is drawn with a `queue_push`
+frame, since open dashboards render queue cards from frames), and an MCP App's
 `ui/message`
 (`api_mcp_apps_message`) call it too, and so does a peer `session_send`
 (`send_to_target`) with a `peer` origin: a `user` row on both paths, a steer only
