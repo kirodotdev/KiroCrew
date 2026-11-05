@@ -7,6 +7,7 @@ from collections.abc import Coroutine
 from typing import TYPE_CHECKING, Any, Callable
 
 from kiro_crew._facade_bindings import own_methods
+from kiro_crew.config.paths import CWD_CLEARED
 from kiro_crew.dashboard.recovery_replays import RecoveryReplays
 from kiro_crew.dashboard.side_state import SideState
 from kiro_crew.dashboard.slot_buffers import SlotBufferCoordinator
@@ -745,6 +746,11 @@ class _ChatSlot:
         write_project(self._binding, value)
 
     @property
+    def project_cleared(self) -> bool:
+        """Whether ``project`` is empty because a held directory was cleared (``write_project``)."""
+        return self._binding.assigned and not self._binding.project
+
+    @property
     def reasoning_effort(self) -> str:
         """The slot's reasoning effort: "" = provider default, else a level."""
         return self._reasoning_effort
@@ -766,6 +772,13 @@ class _ChatSlot:
     def is_closing(self) -> bool:
         """Whether slot teardown currently fences new monitor admission."""
         return self._closing > 0
+
+    @property
+    def claim_cwd(self) -> str | None:
+        """The cwd a claim must state for this slot, or ``None`` to state none."""
+        if getattr(self, "project_cleared", False):
+            return CWD_CLEARED
+        return self.project or None
 
     @property
     def _dirty(self) -> bool:

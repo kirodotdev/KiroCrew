@@ -131,6 +131,7 @@ _BASE_LINE_ORDER = (
     "crew_mode_agent",
     "app_agent_owner",
     "project",
+    "project_cleared",
     "executor",
     "instance_id",
     "remote_slot",
@@ -189,6 +190,7 @@ _BASE_MERGE_ORDER = (
     "crew_mode_agent",
     "app_agent_owner",
     "project",
+    "project_cleared",
     "app",
     "origin",
     "created_by",
@@ -410,7 +412,12 @@ def test_both_save_forms_write_every_slot_owned_key(tmp_path, monkeypatch):
     slot = _populated(state)
     line = codec.encode(slot, folds=_full_folds(slot))
     merge = codec.encode(slot, merge=True, folds=_full_folds(slot))
-    assert sorted(SLOT_OWNED_META_KEYS - set(line)) == []
+    # A populated slot holds a project, so it cannot also be cleared; a cleared one writes the key.
+    assert sorted(SLOT_OWNED_META_KEYS - set(line)) == ["project_cleared"]
+    cleared = state.get_or_create_slot("cleared-src")
+    cleared.project = "/srv/p"
+    cleared.project = ""
+    assert codec.encode(cleared, folds=_full_folds(cleared))["project_cleared"] is True
     assert (
         sorted(SLOT_OWNED_META_KEYS - {"_type", "created_at", "last_consolidated"} - set(merge))
         == []
@@ -809,3 +816,24 @@ def test_the_facade_still_binds_every_name_that_moved_into_the_codec_or_its_valu
         "_validate_autocompact_pct",
     ):
         assert getattr(cp, name) is getattr(metadata_values, name), name
+
+
+@pytest.mark.parametrize("purpose", [codec.RESTORE, codec.RESUME])
+def test_a_cleared_project_survives_a_save_and_restore(purpose, tmp_path, monkeypatch):
+    """After a restart the next session must bind the per-session default, not the old project."""
+    from kiro_crew.config.paths import CWD_CLEARED
+
+    state = _state(tmp_path, monkeypatch)
+    cleared = state.get_or_create_slot("cleared")
+    cleared.project = "/srv/old"
+    cleared.project = ""
+    never = state.get_or_create_slot("never")
+
+    restored = {}
+    for name, source in (("cleared", cleared), ("never", never)):
+        meta = codec.encode(source, folds=_slot_folds(source))
+        fresh = _make_state(tmp_path / f"after-{purpose}-{name}")
+        restored[name], _, _ = _read_back(fresh, meta, purpose, name=f"back-{name}")
+
+    assert (restored["cleared"].project, restored["cleared"].claim_cwd) == ("", CWD_CLEARED)
+    assert restored["never"].claim_cwd is None

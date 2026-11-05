@@ -557,6 +557,7 @@ class TestSlackLinkUnlinkRoundTrip:
 
         The endpoints call only slack-link methods SessionMap implements, so it stands in
         for the SessionManager.
+        Slot creation uses the allocator, so the slot is created before the swap.
         """
         from unittest.mock import patch
 
@@ -564,11 +565,11 @@ class TestSlackLinkUnlinkRoundTrip:
 
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("s1")
         # Swap the mocked sessions for a real SessionMap backed by tmp_path.
         with patch("kiro_crew.session_map.config_dir", return_value=tmp_path):
             state.sessions = SessionMap()
 
-        slot = state.get_or_create_slot("s1")
         slot.append("user", "hello")
         slot.drain()
         state.slack_client = MagicMock()

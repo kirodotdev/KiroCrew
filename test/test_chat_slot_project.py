@@ -9,6 +9,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
+from kiro_crew.config.paths import CWD_CLEARED
 from kiro_crew.dashboard.chat import api_chat_slot_project
 from kiro_crew.dashboard.state import DashboardState, _ChatSlot
 
@@ -68,6 +69,43 @@ class TestChatSlotProject:
             )
             assert resp.status == 200
             assert slot.project == ""
+            assert slot.project_cleared is True
+            assert slot.claim_cwd == CWD_CLEARED
+
+    @pytest.mark.asyncio
+    async def test_clearing_a_never_scoped_slot_states_no_requirement(self):
+        """A clear and a slot that never had a project must not collapse."""
+        slot = _ChatSlot("test")
+        state = _mock_state(slot)
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post(
+                "/api/chat/slots/test/project",
+                json={"project": ""},
+            )
+            assert resp.status == 200
+            assert slot.project_cleared is False
+            assert slot.claim_cwd is None
+
+    @pytest.mark.asyncio
+    async def test_re_scoping_after_a_clear_lowers_the_marker(self, tmp_path):
+        slot = _ChatSlot("test")
+        slot.project = str(tmp_path)
+        state = _mock_state(slot)
+        with patch("kiro_crew.dashboard.chat_handlers._save_recent_project"):
+            async with TestClient(TestServer(_make_app(state))) as client:
+                cleared = await client.post(
+                    "/api/chat/slots/test/project",
+                    json={"project": ""},
+                )
+                assert cleared.status == 200
+                assert slot.claim_cwd == CWD_CLEARED
+                again = await client.post(
+                    "/api/chat/slots/test/project",
+                    json={"project": str(tmp_path)},
+                )
+                assert again.status == 200
+                assert slot.project_cleared is False
+                assert slot.claim_cwd == str(tmp_path)
 
     @pytest.mark.asyncio
     async def test_nonexistent_dir_returns_400(self):
@@ -420,3 +458,45 @@ class TestFolderProjectDirOverlapPreflight:
         clean = tmp_path / "clean"
         clean.mkdir()
         assert _folder_project_overlap_denied(str(clean)) is None
+
+
+class TestTheClearedStateComesFromTheProjectSetter:
+    def test_a_plain_assignment_clears_and_re_scopes(self, tmp_path):
+        slot = _ChatSlot("test")
+        slot.project = str(tmp_path)
+        slot.project = ""
+        assert slot.claim_cwd == CWD_CLEARED
+        slot.project = str(tmp_path)
+        assert slot.project_cleared is False
+
+    def test_a_rolled_back_clear_restores_the_directory_and_the_state(self, tmp_path):
+        from kiro_crew.dashboard.chat_handlers import _CommitToken
+        from kiro_crew.dashboard.transcript_binding import rollback_project
+
+        slot = _ChatSlot("test")
+        slot.project = str(tmp_path)
+        slot.project = ""
+        token = _CommitToken("/project/b")
+        slot.project = token
+        rollback_project(slot, token, "")
+        assert (slot.project, slot.claim_cwd) == ("", CWD_CLEARED)
+
+
+class TestTheClearedMarkerIsSlotOwned:
+    """A rows-only handover must defer the marker, or it corrupts a replacement's scope."""
+
+    def test_the_marker_travels_with_the_project_it_describes(self):
+        from kiro_crew.history import (
+            ROWS_ONLY_DEFERRED_META_KEYS,
+            SLOT_OWNED_META_KEYS,
+        )
+
+        assert "project" in SLOT_OWNED_META_KEYS
+        assert "project_cleared" in SLOT_OWNED_META_KEYS, (
+            "the marker is outside the ownership claim, so a rows-only save neither defers "
+            "nor pops it and the old slot's value stays on the replacement's line"
+        )
+        assert "project_cleared" in ROWS_ONLY_DEFERRED_META_KEYS, (
+            "the marker is owned but not deferred, so a rows-only handover overwrites the "
+            "replacement's own marker"
+        )

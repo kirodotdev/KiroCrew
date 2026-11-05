@@ -85,6 +85,8 @@ class _Session:
     # the caller's existing stale-provider path evicts it and cold starts. Default
     # False so every existing construction site is unaffected.
     retire_on_identity_change: bool = False
+    # Marked by a retirement arm; unlike the identity flag it defers while sub-agents run.
+    retire_on_arm: bool = False
     # The ``backend_override`` the session was cold-started with (``None``: the
     # factory's default backend), and the caller's ``extra_env`` and
     # ``reasoning_effort_override``. Carried by ``allocation_identity`` so a reset
