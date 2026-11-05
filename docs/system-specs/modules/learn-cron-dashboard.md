@@ -3229,8 +3229,11 @@ requeue (head of the queue, row `requeued`) is that outcome. On the dashboard a
 row that settles as taken back while on screen collapses from its bubble into a
 note in place (straight to the note under reduced motion, and for a row read back
 from history); the Edit and Queue instead notes ("You moved this message back to
-your message box", "You moved this message to the queue") are buttons that move
-focus to the composer, and the Unsend note is plain text. The clear drops
+your message box", "You moved this message to the queue. It sends when the agent
+finishes.") are buttons that move focus to the composer, and the Unsend note is
+plain text. The queue surfaces say what the queue does: the note's second
+sentence, the in-flight line ("Moving it to the queue to send when the agent
+finishes…") and the Queue instead tooltip ("Send it when the agent finishes"). The clear drops
 EVERY steer kiro-cli holds, so the others pending when it was written are sent
 again in their order, and a steer sent while a clear is unanswered waits for that
 answer before it is written (`wait_for_clear`), so the clear cannot drop it. The

@@ -851,7 +851,7 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
                      races the agent, so the most used one is the one-click one. The
                      divider makes these actions a separate region from status/help. */
                   <span className="inline-flex items-center gap-0.5 border-l border-border pl-1 ml-0.5" data-testid="steer-take-back">
-                    <Btn type="button" onClick={() => onSteerAction?.(steerMid, 'queue')} className="px-1 py-0 border-none bg-transparent text-[12px] font-medium text-muted hover:text-text hover:bg-bg-hover rounded transition-colors" data-testid="steer-queue-instead">
+                    <Btn type="button" onClick={() => onSteerAction?.(steerMid, 'queue')} className="px-1 py-0 border-none bg-transparent text-[12px] font-medium text-muted hover:text-text hover:bg-bg-hover rounded transition-colors" title={i18nT('pages.chat.userMessage.steer_queue_instead_hint')} data-testid="steer-queue-instead">
                       {i18nT('pages.chat.userMessage.steer_queue_instead')}
                     </Btn>
                     <DropdownMenu>
