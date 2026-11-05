@@ -1839,6 +1839,11 @@ Fleet can also bounce the gateway:
   on Linux, bounded graceful `launchctl stop` on macOS), sets the
   `_MAKE_LIVE_COMMITTED` latch, and returns `start_id` for the restart handshake.
   The next gateway process reads the pointer and execs into the target checkout.
+  On Linux this restart, like Restart Gateway's, first runs
+  `systemctl --user reset-failed <unit>` (best-effort): the unit's
+  `StartLimitBurst` counts operator-requested starts too, so a few cutovers in a
+  row would otherwise leave it stopped with `start-limit-hit`. A crash loop after
+  the restart is still capped.
 - **Foreground last resort**: when the manager probe reports one of
   `no_systemd` / `no_user_unit` / `no_launchd` / `no_agent` — nothing to drive at
   all, e.g. a terminal-launched gateway on a host whose per-user systemd cannot
