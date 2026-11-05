@@ -177,7 +177,11 @@ The diff-scoped checks read the branch against a base ref, supplied as
 
 `actions/checkout` fetches depth 1, so the base is not present and a `git show`
 against it would fail. `.github/scripts/resolve-i18n-base.sh` fetches exactly that
-one ref, and the three call sites `|| exit 1` on it.
+one ref, and the three call sites `|| exit 1` on it. It fetches at depth 1 only when
+the checkout is already shallow, so a full clone (a local run, or a `fetch-depth: 0`
+job such as `frontend-ratchets`) and the worktrees sharing it keep their full history.
+The local form measures from the merge-base, as the local gate does:
+`I18N_BASE_REF="$(.github/scripts/resolve-i18n-base.sh "$(git merge-base HEAD origin/main)")"`.
 
 **A gate that cannot run must fail, not pass.** `check-source-strings.mjs` skips
 itself and exits 0 when the base ref is unreadable, and a failed fetch used to sail
