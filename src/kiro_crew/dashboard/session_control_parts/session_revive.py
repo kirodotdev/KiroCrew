@@ -547,12 +547,12 @@ async def revive_session(
             "too many sessions opened recently; retry shortly", "create_rate_limited", status=429
         )
     if state.live_slot_count() >= MAX_LIVE_SLOTS:
-        raise deny(f"slot cap reached ({MAX_LIVE_SLOTS})", "slot_cap_reached", status=429)
+        raise deny(f"slot cap reached ({MAX_LIVE_SLOTS})", "slot_cap_reached", status=409)
     if state.creator_slot_count(caller_key) >= MAX_SLOTS_PER_CREATOR:
         raise deny(
             f"per-caller slot cap reached ({MAX_SLOTS_PER_CREATOR})",
             "creator_slot_cap_reached",
-            status=429,
+            status=409,
         )
 
     def _plain(reason: str, code: str, status: int = 403) -> SessionControlError:
@@ -623,12 +623,12 @@ async def revive_session(
         # walks the table only, so the built slot is not in it and the compare
         # is inclusive.
         if state.live_slot_count() > MAX_LIVE_SLOTS:
-            return ResumeRefusal(f"slot cap reached ({MAX_LIVE_SLOTS})", "slot_cap_reached", 429)
+            return ResumeRefusal(f"slot cap reached ({MAX_LIVE_SLOTS})", "slot_cap_reached", 409)
         if state.creator_slot_count(caller_key) >= MAX_SLOTS_PER_CREATOR:
             return ResumeRefusal(
                 f"per-caller slot cap reached ({MAX_SLOTS_PER_CREATOR})",
                 "creator_slot_cap_reached",
-                429,
+                409,
             )
         return None
 
@@ -646,12 +646,12 @@ async def revive_session(
         if refusal is not None:
             return ResumeRefusal(refusal[0], refusal[1], 403)
         if state.live_slot_count() > MAX_LIVE_SLOTS:
-            return ResumeRefusal(f"slot cap reached ({MAX_LIVE_SLOTS})", "slot_cap_reached", 429)
+            return ResumeRefusal(f"slot cap reached ({MAX_LIVE_SLOTS})", "slot_cap_reached", 409)
         if state.creator_slot_count(caller_key) >= MAX_SLOTS_PER_CREATOR:
             return ResumeRefusal(
                 f"per-caller slot cap reached ({MAX_SLOTS_PER_CREATOR})",
                 "creator_slot_cap_reached",
-                429,
+                409,
             )
         from kiro_crew.dashboard.approval_inheritance import (
             inherit_posture,

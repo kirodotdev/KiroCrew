@@ -411,7 +411,7 @@ async def api_chat_slot_fork(request: web.Request) -> web.Response:
                 "error": f"slot cap reached ({MAX_LIVE_SLOTS})",
                 "code": "slot_cap_reached",
             },
-            status=429,
+            status=409,
         )
 
     # App ownership check (App Kit §5.2): the shared decision, so a slot owned by

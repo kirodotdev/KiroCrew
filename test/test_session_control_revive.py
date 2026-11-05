@@ -551,11 +551,13 @@ def _drift_in_window(monkeypatch, mutate):
     return seen
 
 
-def _refused_in_window(state, caller, key, monkeypatch, mutate, code):
+def _refused_in_window(state, caller, key, monkeypatch, mutate, code, status=None):
     seen = _drift_in_window(monkeypatch, mutate)
     with pytest.raises(sc.SessionControlError) as exc:
         _revive(state, caller, key)
     assert exc.value.code == code
+    if status is not None:
+        assert exc.value.status == status
     assert key not in state._slots, "a refused revive left a slot published"
     assert state.get_slot(key) is None
     assert state.conversation_log.get_metadata(f"dashboard:{key}").get("closed")
@@ -606,7 +608,43 @@ def test_a_slot_cap_crossed_in_the_window_is_refused_before_publish(tmp_path, mo
     def _fill(_built):
         _slot(state, "chat-8")  # a concurrent allocation landed in the window
 
-    _refused_in_window(state, caller, key, monkeypatch, _fill, "slot_cap_reached")
+    _refused_in_window(state, caller, key, monkeypatch, _fill, "slot_cap_reached", 409)
+
+
+@pytest.mark.parametrize("code", ["slot_cap_reached", "creator_slot_cap_reached"])
+def test_a_cap_crossed_before_the_final_check_is_refused_with_409(tmp_path, monkeypatch, code):
+    """The hook passes; an allocation that lands after it is caught by
+    ``final_check``, the synchronous last word before the publish."""
+    from kiro_crew.dashboard import chat_handlers
+
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    own = _slot(state, "chat-2")
+    own._created_by = caller.key
+    key = _archive(state, caller, own)
+    monkeypatch.setattr(sc, "MAX_LIVE_SLOTS", 2)
+    monkeypatch.setattr(sc, "MAX_SLOTS_PER_CREATOR", 1)
+    original = chat_handlers.resume_slot_from_history
+
+    async def _wrapped_resume(state_, **kw):
+        final = kw["final_check"]
+
+        def _fill_then_check(built):
+            filler = _slot(state, "chat-8")
+            if code == "creator_slot_cap_reached":
+                monkeypatch.setattr(sc, "MAX_LIVE_SLOTS", 10)
+                filler._created_by = caller.key
+            return final(built)
+
+        kw["final_check"] = _fill_then_check
+        return await original(state_, **kw)
+
+    monkeypatch.setattr(chat_handlers, "resume_slot_from_history", _wrapped_resume)
+    with pytest.raises(sc.SessionControlError) as exc:
+        _revive(state, caller, key)
+    assert exc.value.code == code
+    assert exc.value.status == 409
+    assert key not in state._slots
 
 
 def test_revived_sessions_the_caller_did_not_create_still_charge_its_cap(tmp_path, monkeypatch):
@@ -627,6 +665,7 @@ def test_revived_sessions_the_caller_did_not_create_still_charge_its_cap(tmp_pat
     with pytest.raises(sc.SessionControlError) as exc:
         _revive(state, caller, keys[1])
     assert exc.value.code == "creator_slot_cap_reached"
+    assert exc.value.status == 409
     assert keys[1] not in state._slots
 
 
@@ -663,7 +702,7 @@ def test_a_creator_cap_crossed_in_the_window_is_refused_before_publish(tmp_path,
     def _fill(_built):
         _slot(state, "chat-8")._created_by = caller.key
 
-    _refused_in_window(state, caller, key, monkeypatch, _fill, "creator_slot_cap_reached")
+    _refused_in_window(state, caller, key, monkeypatch, _fill, "creator_slot_cap_reached", 409)
 
 
 # ── Caller-side refusals are the shared ones ─────────────────────────────────
@@ -701,7 +740,7 @@ def test_revive_refuses_at_the_slot_cap(tmp_path, monkeypatch):
         _revive(state, caller, key)
 
     assert exc.value.code == "slot_cap_reached"
-    assert exc.value.status == 429
+    assert exc.value.status == 409
 
 
 # ── The shared helpers are what authorize_target uses ────────────────────────

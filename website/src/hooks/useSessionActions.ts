@@ -281,8 +281,9 @@ export function useSessionActions(mode?: string, opts?: {
     // are shared guidance that is already a cause plus a next step: a gateway
     // sign-in denial carries the shared sign-in text (the stale-owner wording
     // for a stale-owner denial, the no-longer-valid sign-in wording otherwise), the
-    // slot-cap 429 carries the shared slot-cap guidance, and an access-proxy
-    // challenge names the proxy and its own remedy. Each follows the subject
+    // slot-cap refusal (409, or 429 from an older gateway) carries the shared
+    // slot-cap guidance, and an access-proxy challenge names the proxy and its
+    // own remedy. Each follows the subject
     // unchanged, so the alert reads the same remedy every other surface shows
     // for that denial, and no retry sentence is added that cannot succeed
     // before the user acts. The slot_not_found 404 is matched on the

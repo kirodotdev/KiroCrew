@@ -56,7 +56,7 @@ MAX_LIVE_SLOTS = 500
 #: :data:`MAX_LIVE_SLOTS`. The global ceiling alone bounds the total but not the
 #: distribution, so a single automated creator working through a nudge loop can
 #: reach 500 on its own and every later create -- including the person opening a
-#: new chat tab -- gets the 429. That is the availability half of the cap: a
+#: new chat tab -- gets the 409. That is the availability half of the cap: a
 #: bounded resource that one caller may exhaust entirely is not bounded from
 #: anybody else's point of view.
 #:
