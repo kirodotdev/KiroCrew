@@ -310,9 +310,7 @@ def _config(data_root: Path, **fields: Any) -> Path:
 
 @pytest.mark.asyncio
 class TestRequireEnabled:
-    async def test_refuses_while_the_app_is_disabled(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    async def test_refuses_while_the_app_is_disabled(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Routes are mounted once at gateway startup, so an opt-in app would stay
         fully callable the moment the gateway booted without this gate."""
         monkeypatch.setattr(routes, "is_app_enabled", lambda _name: False)
@@ -359,9 +357,7 @@ class TestValidatedFingerprint:
 
 
 class TestRedaction:
-    def test_a_failing_redactor_withholds_the_text(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_a_failing_redactor_withholds_the_text(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Fail-CLOSED, unlike the watcher log: the diff is still on disk and
         re-readable, so serving nothing beats serving something unscanned."""
 
@@ -410,9 +406,7 @@ class TestRunConflictGuards:
         "status",
         [runner.STATUS_RUNNING, runner.STATUS_CALIBRATING, runner.STATUS_STOPPING],
     )
-    async def test_an_active_status_is_a_409(
-        self, supervisor: FakeSupervisor, status: str
-    ) -> None:
+    async def test_an_active_status_is_a_409(self, supervisor: FakeSupervisor, status: str) -> None:
         supervisor._status = status
         response = await routes._refuse_while_running("doing that would strand it.")
         assert response is not None and response.status == 409
@@ -454,9 +448,7 @@ class TestConfig:
         payload = _json_of(await routes._handle_get_config(_request()))
         assert payload["branch"] == "origin/main"
 
-    async def test_put_applies_the_allowlist_and_reports_the_rest(
-        self, data_root: Path
-    ) -> None:
+    async def test_put_applies_the_allowlist_and_reports_the_rest(self, data_root: Path) -> None:
         """``clone``/``target_url`` decide which repository the agent is turned loose
         on, so the generic PUT must never be able to set them."""
         _config(data_root, clone="/keep/me", target_url="https://github.com/o/r")
@@ -766,7 +758,9 @@ class TestSessions:
 
     async def test_deleting_reports_whether_a_record_existed(self) -> None:
         store.save_session("pr-o_r-1", {"slot_key": "s"})
-        first = _json_of(await routes._handle_delete_session(_request(match_info={"key": "pr-o_r-1"})))
+        first = _json_of(
+            await routes._handle_delete_session(_request(match_info={"key": "pr-o_r-1"}))
+        )
         second = _json_of(
             await routes._handle_delete_session(_request(match_info={"key": "pr-o_r-1"}))
         )
@@ -892,9 +886,9 @@ class TestFindingDetail:
         _write(store.pr_queue_dir() / f"{FP}.pr.md", "# summary\nbody\n")
         store.write_json_atomic(store.results_dir() / "run.meta.json", {"run_id": "r1"})
 
-        detail = _json_of(
-            await routes._handle_finding_detail(_request(match_info={"fp": FP}))
-        )["finding"]
+        detail = _json_of(await routes._handle_finding_detail(_request(match_info={"fp": FP})))[
+            "finding"
+        ]
         assert detail["status"] == "filed"
         assert detail["pr"] == "https://github.com/o/r/pull/3"
         assert len(detail["history"]) == 2
@@ -912,9 +906,9 @@ class TestFindingDetail:
     async def test_an_oversized_diff_is_truncated_and_says_so(self) -> None:
         _jsonl(store.ledger_path(), [{"fp": FP, "kind": "perf", "target": "a.py::f"}])
         _write(store.pr_queue_dir() / f"{FP}.diff", "x" * (routes._MAX_DIFF_CHARS + 10))
-        detail = _json_of(
-            await routes._handle_finding_detail(_request(match_info={"fp": FP}))
-        )["finding"]
+        detail = _json_of(await routes._handle_finding_detail(_request(match_info={"fp": FP})))[
+            "finding"
+        ]
         assert len(detail["diff"]) == routes._MAX_DIFF_CHARS
         assert detail["diffTruncated"] is True
 
@@ -924,17 +918,17 @@ class TestFindingDetail:
         store.write_json_atomic(
             store.results_dir() / "candidates" / "c1_search_py_root.json", {"status": "kept"}
         )
-        detail = _json_of(
-            await routes._handle_finding_detail(_request(match_info={"fp": FP}))
-        )["finding"]
+        detail = _json_of(await routes._handle_finding_detail(_request(match_info={"fp": FP})))[
+            "finding"
+        ]
         assert "candidate" not in detail
 
     async def test_a_non_object_candidate_file_is_skipped(self) -> None:
         _jsonl(store.ledger_path(), [{"fp": FP, "kind": "bug", "target": "s.py::f"}])
         _write(store.results_dir() / "candidates" / "c1_s_py_f.json", "[1]")
-        detail = _json_of(
-            await routes._handle_finding_detail(_request(match_info={"fp": FP}))
-        )["finding"]
+        detail = _json_of(await routes._handle_finding_detail(_request(match_info={"fp": FP})))[
+            "finding"
+        ]
         assert "candidate" not in detail
 
     async def test_a_torn_archive_line_is_skipped(self) -> None:
@@ -944,9 +938,9 @@ class TestFindingDetail:
             {"status": "kept", "proposal": {"cand_id": "c1_s_py_f", "candidate": "not-a-dict"}},
         )
         _write(store.results_dir() / "candidates.jsonl", "not json\n\n")
-        detail = _json_of(
-            await routes._handle_finding_detail(_request(match_info={"fp": FP}))
-        )["finding"]
+        detail = _json_of(await routes._handle_finding_detail(_request(match_info={"fp": FP})))[
+            "finding"
+        ]
         assert "archive" not in detail
         assert detail["candidate"]["signature"] == ""
 
@@ -957,9 +951,9 @@ class TestFindingDetail:
             store.ledger_path(),
             "not json\n\n" + json.dumps({"fp": FP, "kind": "bug", "target": "s.py::f"}) + "\n",
         )
-        detail = _json_of(
-            await routes._handle_finding_detail(_request(match_info={"fp": FP}))
-        )["finding"]
+        detail = _json_of(await routes._handle_finding_detail(_request(match_info={"fp": FP})))[
+            "finding"
+        ]
         assert detail["kind"] == "bug"
         assert len(detail["history"]) == 1
 
@@ -975,9 +969,9 @@ class TestFindingDetail:
         _write(store.pr_queue_dir() / f"{FP}.pr.md", "# t\n")
         _write(store.pr_queue_dir() / f"{FP}.diff", "--- a\n")
         _unreadable(monkeypatch, ".diff", ".pr.md")
-        detail = _json_of(
-            await routes._handle_finding_detail(_request(match_info={"fp": FP}))
-        )["finding"]
+        detail = _json_of(await routes._handle_finding_detail(_request(match_info={"fp": FP})))[
+            "finding"
+        ]
         assert "diff" not in detail
         assert "prBody" not in detail
         assert detail["candidateStatus"] == "kept"
@@ -1017,9 +1011,7 @@ def draft_stubs(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     monkeypatch.setattr(
         commit_mod, "materialize_queued_diff", lambda **_kw: dict(state["materialize"])
     )
-    monkeypatch.setattr(
-        commit_mod, "commit_staged_for_draft", lambda **_kw: dict(state["commit"])
-    )
+    monkeypatch.setattr(commit_mod, "commit_staged_for_draft", lambda **_kw: dict(state["commit"]))
     monkeypatch.setattr(clone_setup, "resolve_origin_url", lambda _cfg: "https://github.com/o/r")
     monkeypatch.setattr(
         routes,
@@ -1200,9 +1192,7 @@ class TestLedgerAdminRecord:
 
 @pytest.mark.asyncio
 class TestWatcherListing:
-    async def test_promotion_is_opt_in_and_off_by_default(
-        self, registry: FakeRegistry
-    ) -> None:
+    async def test_promotion_is_opt_in_and_off_by_default(self, registry: FakeRegistry) -> None:
         """Starting a watcher runs an agent with an auto-approved shell against
         untrusted pull-request text, so a READ must not do it as a side effect."""
         registry.should = True
@@ -1362,16 +1352,12 @@ class TestWatcherStopAndLog:
         assert _json_of(response) == {"stopped": True, "fp": FP}
         assert registry.stopped == [FP]
 
-    async def test_stopping_an_invalid_fingerprint_is_a_400(
-        self, registry: FakeRegistry
-    ) -> None:
+    async def test_stopping_an_invalid_fingerprint_is_a_400(self, registry: FakeRegistry) -> None:
         response = await routes._handle_watcher_stop(_request("POST", match_info={"fp": "a b"}))
         assert response.status == 400
         assert registry.stopped == []
 
-    @pytest.mark.parametrize(
-        ("raw", "expected"), [("", 0), ("garbage", 0), ("12", 12), ("-3", -3)]
-    )
+    @pytest.mark.parametrize(("raw", "expected"), [("", 0), ("garbage", 0), ("12", 12), ("-3", -3)])
     async def test_the_since_cursor_defaults_to_zero_when_unparseable(
         self, registry: FakeRegistry, raw: str, expected: int
     ) -> None:
@@ -1511,7 +1497,7 @@ class TestForgetAndPurge:
         monkeypatch.setattr(
             ledger_admin,
             "purge_dead",
-            lambda *, remove_artifacts=False: (seen.append(remove_artifacts), {"purged": []})[1],
+            lambda *, remove_artifacts=False: (seen.append(remove_artifacts), {"purged": []})[1],  # type: ignore[func-returns-value]
         )
         await routes._handle_purge_dead(_request("POST", "/findings/purge-dead"))
         assert seen == [False]
@@ -1566,7 +1552,7 @@ class TestCommit:
         supervisor.status_queue = [runner.STATUS_IDLE, runner.STATUS_RUNNING]
         called: list[str] = []
         monkeypatch.setattr(
-            commit_mod, "commit_finding", lambda fp: called.append(fp) or {"ok": True}
+            commit_mod, "commit_finding", lambda fp: called.append(fp) or {"ok": True}  # type: ignore[func-returns-value]
         )
         response = await routes._handle_commit(_request("POST", match_info={"fp": FP}))
         assert response.status == 409
@@ -1593,9 +1579,7 @@ class TestCommit:
         assert response.status == 200
         assert recorded == [(FP, "work", "deadbee")]
 
-    async def test_a_failed_commit_is_a_redacted_400(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    async def test_a_failed_commit_is_a_redacted_400(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(
             commit_mod, "commit_finding", lambda _fp: {"ok": False, "error": "fatal: SECRET"}
         )
@@ -1732,9 +1716,7 @@ class TestRunEngine:
         payload = _json_of(await routes._handle_run_status(_request()))
         assert payload == {"status": runner.STATUS_RUNNING}
 
-    async def test_stop_is_delegated_to_the_supervisor(
-        self, supervisor: FakeSupervisor
-    ) -> None:
+    async def test_stop_is_delegated_to_the_supervisor(self, supervisor: FakeSupervisor) -> None:
         payload = _json_of(await routes._handle_run_stop(_request("POST")))
         assert payload == {"status": runner.STATUS_STOPPING}
         assert "stop" in supervisor.calls
@@ -1752,16 +1734,14 @@ class TestRegisterRoutes:
         resources = [r for r in app.router.routes() if r.resource is not None]
         assert len(resources) >= 30
         for route in resources:
-            assert getattr(route.handler, "__wrapped__", None) is not None, (
-                f"{route.resource} is not wrapped by _require_enabled"
-            )
+            assert (
+                getattr(route.handler, "__wrapped__", None) is not None
+            ), f"{route.resource} is not wrapped by _require_enabled"
 
     def test_the_prefix_is_the_app_scoped_api_path(self) -> None:
         app = web.Application()
         routes.register_routes(app)
-        paths = {
-            r.resource.canonical for r in app.router.routes() if r.resource is not None
-        }
+        paths = {r.resource.canonical for r in app.router.routes() if r.resource is not None}
         assert f"/api/apps/{store.APP_NAME}/health" in paths
         for path in paths:
             assert path.startswith(f"/api/apps/{store.APP_NAME}/")

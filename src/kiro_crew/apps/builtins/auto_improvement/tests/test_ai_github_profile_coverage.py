@@ -70,7 +70,7 @@ class _FakeRun:
 
     @property
     def argvs(self) -> list[list[str]]:
-        return [list(call["argv"]) for call in self.calls]  # type: ignore[arg-type]
+        return [list(call["argv"]) for call in self.calls]  # type: ignore[arg-type,call-overload]
 
 
 @pytest.fixture(autouse=True)
@@ -1117,8 +1117,8 @@ def test_allowlist_empty_change_sets_pass():
     fence = gh.RepoEditAllowlist()
     assert fence.allows([]) == (True, [])
     assert fence.allows_changes([]) == (True, [])
-    assert fence.allows(None) == (True, [])
-    assert fence.allows_changes(None) == (True, [])
+    assert fence.allows(None) == (True, [])  # type: ignore[arg-type]
+    assert fence.allows_changes(None) == (True, [])  # type: ignore[arg-type]
 
 
 def test_allowlist_reports_every_offending_path_not_just_the_first():
@@ -1314,8 +1314,8 @@ def test_profile_discover_maps_agent_surfaces_to_candidates(tmp_path, monkeypatc
     first = res.candidates[0]
     assert first.kind == TRACK_BUG
     assert first.target == "src/pkg/mod.py::frob"
-    assert first.reproducing_test.added_by_candidate is True
-    assert first.reproducing_test.test_path == "tests/test_bug_src_pkg_mod_py_frob.py"
+    assert first.reproducing_test.added_by_candidate is True  # type: ignore[union-attr]
+    assert first.reproducing_test.test_path == "tests/test_bug_src_pkg_mod_py_frob.py"  # type: ignore[union-attr]
     assert res.candidates[1].target == "src/pkg/other.py"
     assert res.candidates[1].signature == "unbounded read"
 
@@ -1357,7 +1357,7 @@ def test_profile_bug_candidate_slug_survives_an_unnamed_surface(tmp_path, monkey
     clone = _repo(tmp_path, name="slugclone", tests="test")
     prof = _profile(tmp_path, monkeypatch, clone=clone, track=TRACK_BUG)
     cand = prof._candidate_from({"target": "!!!"})
-    assert cand.reproducing_test.test_path == "test/test_bug_surface.py"
+    assert cand.reproducing_test.test_path == "test/test_bug_surface.py"  # type: ignore[union-attr]
 
 
 @pytest.mark.parametrize(

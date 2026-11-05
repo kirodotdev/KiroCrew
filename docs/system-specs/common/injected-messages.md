@@ -456,10 +456,12 @@ is a host deny. Per site:
   call was approved, so this is a host fault and one retry is reasonable. Distinct from
   `hook_error`, which would send the model looking at a gate that never ran.
 
-`test_handlers_auto_improvement_deny_notice.py` enumerates every `reject_tool(`
-in the three modules and every funnel call with its verdict, pins the funnel's
-order and required keyword, and drives each deny with a provider double
-recording steer/reject order.
+`test_optimizer_refine_deny_notice.py` pins the two dashboard modules' one
+steered reject each; the app's own
+`apps/builtins/auto_improvement/tests/test_agent_runner_deny_notice.py`
+enumerates every `reject_tool(` in the runner and every funnel call with its
+verdict, pins the funnel's order and required keyword, and drives each deny with
+a provider double recording steer/reject order.
 
 **The task runner steers the same notice.** `task_executor` answers the
 permission requests of every autonomous-project and cron-launched step turn

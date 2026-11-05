@@ -20,6 +20,6 @@ def test_skipped_proposal_skip_status_defaults_to_no_defect():
         description="",
         skipped=True,
     )
-    assert p.skip_status == "no_defect", (
-        f"Expected skip_status to default to 'no_defect', got {p.skip_status!r}"
-    )
+    assert (
+        p.skip_status == "no_defect"
+    ), f"Expected skip_status to default to 'no_defect', got {p.skip_status!r}"

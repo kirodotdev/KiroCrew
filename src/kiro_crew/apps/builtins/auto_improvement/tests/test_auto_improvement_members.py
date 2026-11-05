@@ -12,17 +12,21 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from auto_improvement_member_helpers import MEMBER_BUDGET_SECS, MemberDeadline
 
-from conftest import make_dir_link, requires_symlinks
 from kiro_crew.acp.types import PROVIDER_LABEL_KAS
 from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS, ACP_BACKEND_KIRO
 from kiro_crew.agent_sdk.provider_identity import PROVIDER_ACP
 from kiro_crew.apps.builtins.auto_improvement.backend import crew, store
 from kiro_crew.apps.builtins.auto_improvement.spine import agent_runner, crew_runner
 from kiro_crew.apps.builtins.auto_improvement.spine.crew_runner import CrewRunner
+from kiro_crew.apps.builtins.auto_improvement.tests.auto_improvement_member_helpers import (
+    MEMBER_BUDGET_SECS,
+    MemberDeadline,
+)
+from kiro_crew.apps.builtins.auto_improvement.tests.symlink_capability import requires_symlinks
 from kiro_crew.config import KiroCrewConfig
 from kiro_crew.config.loader import update_config_locked
+from kiro_crew.config.paths import project_agents_dir
 from kiro_crew.execution_context import read_session_execution
 from kiro_crew.history import ConversationLog
 from kiro_crew.members import read_activity
@@ -32,6 +36,7 @@ from kiro_crew.platform.governance import parse_policy
 from kiro_crew.providers.acp import AcpProvider
 from kiro_crew.security.exfil import EXFILTRATION_REDACTION_TAG_PREFIX
 from kiro_crew.security.redaction import REDACTED_CREDENTIAL_TAG
+from kiro_crew.testing.links import make_dir_link
 from kiro_crew.testing.wait import async_wait_until
 
 
@@ -260,14 +265,14 @@ class Context:
         return f"{kwargs['execution_context'].member_id}\n{prompt}", None
 
 
-class KiroCliProvider(Provider, AcpProvider):
+class KiroCliProvider(Provider, AcpProvider):  # type: ignore[misc]
     """A real ``AcpProvider`` fronting a kiro-cli client, as ``get_or_create`` hands out."""
 
     backend = ACP_BACKEND_KIRO
 
     def __init__(self):
         Provider.__init__(self)
-        self._client = SimpleNamespace(backend=self.backend)
+        self._client = SimpleNamespace(backend=self.backend)  # type: ignore[assignment]
 
 
 class KasProvider(KiroCliProvider):
@@ -337,7 +342,7 @@ async def test_member_result_redaction_preserves_raw_return(tmp_path, output):
 
     set_context(replace(context, credentials=SimpleNamespace(redact=redact)))
     sessions = Sessions(lambda: Provider(text=payload, error=payload if output == "error" else ""))
-    activity = []
+    activity: list[dict] = []
     runtime = crew.GatewayRuntime(sessions, Context(), asyncio.get_running_loop())
     runner = CrewRunner(runtime, identities, on_activity=activity.append).for_role("implementation")
 
@@ -382,7 +387,7 @@ async def test_member_result_redactor_failure_withholds_output_and_releases(tmp_
 
     set_context(replace(context, credentials=SimpleNamespace(redact=redact)))
     sessions = Sessions(lambda: Provider(text=payload, error=payload if output == "error" else ""))
-    activity = []
+    activity: list[dict] = []
     runtime = crew.GatewayRuntime(sessions, Context(), asyncio.get_running_loop())
     runner = CrewRunner(runtime, identities, on_activity=activity.append).for_role("implementation")
 
@@ -699,7 +704,7 @@ async def test_kindless_native_edit_honors_filesystem_write_ceiling(tmp_path, wi
     base_context = await asyncio.to_thread(current_context)
     set_context(replace(base_context, governance=ceiling))
     identities = await asyncio.to_thread(crew.ensure_team)
-    activity = []
+    activity: list[dict] = []
 
     class PermissionProvider(Provider):
         def __init__(self):
@@ -922,7 +927,7 @@ async def _run_shadow_assignment(cwd=None, role="discovery"):
 )
 async def test_project_shadow_refuses_before_provider_allocation(tmp_path, role, shape):
     project = tmp_path / "repo"
-    agents = project / ".kiro" / "agents"
+    agents = project_agents_dir(project)
     agents.mkdir(parents=True)
     template = crew.ROLES[role].template
     data = {
@@ -982,7 +987,7 @@ async def test_project_shadow_scan_fails_closed(tmp_path, monkeypatch, failure):
     from kiro_crew import agent_discovery, hooks
 
     project = tmp_path / "repo"
-    agents = project / ".kiro" / "agents"
+    agents = project_agents_dir(project)
     agents.mkdir(parents=True)
     spec = agents / ("unverified.md" if failure == "malformed-markdown" else "unverified.json")
     spec.write_text('{"name": "unrelated"}', encoding="utf-8")
@@ -1037,7 +1042,7 @@ async def test_project_shadow_scan_fails_closed(tmp_path, monkeypatch, failure):
 async def test_project_shadow_controls_allow_assignment(tmp_path, scope):
     project = tmp_path / "repo"
     project.mkdir()
-    agents = project / ".kiro" / "agents"
+    agents = project_agents_dir(project)
     if scope != "absent":
         agents.mkdir(parents=True)
     if scope == "unrelated-json":
@@ -1077,7 +1082,7 @@ async def test_project_shadow_checks_provider_default_cwd(tmp_path, monkeypatch,
     )
     expected = loader._session_work_dir("auto-improvement-shadowfixture")
     if shadow:
-        agents = expected / ".kiro" / "agents"
+        agents = project_agents_dir(expected)
         agents.mkdir(parents=True)
         (agents / "project.json").write_text(
             json.dumps({"name": crew.ROLES["discovery"].template}), encoding="utf-8"

@@ -65,6 +65,11 @@ PLAIN_READS = frozenset(
 # goes through the derivation seam. Keep this sorted; a stale entry fails too.
 PLUMBING: frozenset[tuple[str, str]] = frozenset(
     {
+        # An app's test snapshotting a transcript it wrote, to assert it survives.
+        (
+            "kiro_crew/apps/builtins/auto_improvement/tests/test_auto_improvement_members.py",
+            "recent",
+        ),
         # An app reading its own slot's conversation for the user.
         ("kiro_crew/apps/builtins/spec_builder/backend/runtime.py", "read_messages"),
         # Channel file migration: moves rows between stems, derives nothing.

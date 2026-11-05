@@ -677,9 +677,12 @@ copy of the core file-read endpoint's binary-extension set in its own `tests/`.
 Every backend app gate runs the same scanner, `test/core_app_independence.py`:
 `core_app_imports` finds a core import of the app's package in any spelling, and
 `core_name_strings` finds a core string naming it, minus the reasoned rows the gate
-allows. The aws-control, Files and Design Critique gates call it with their own
-package and names, and the next app to leave adds a gate that does the same, never
-another scanner.
+allows. Each app's gate, `test/test_core_<app>_decoupling.py`, calls it with its own
+package and names (aws-control, Files, Design Critique and Auto-Improvement among
+them), and the next app to leave adds a gate that does the same, never another
+scanner. An app that core never calls, as with Auto-Improvement, needs no seam: its
+gate pins that direction and the reasoned rows left (see `auto-improvement.md`,
+"Repository boundary").
 
 ## 0. Three-axis classification: origin, resources, lifecycle
 

@@ -1,12 +1,11 @@
 /**
- * Both app `resolveFolderId` copies (Issue Radar, Auto Improvement) go through the
- * shared `ensureChatFolder` helper over the host `api`, and each keeps the contract
- * it had: the repo folder is reused wherever it exists in the tree, created by
+ * Issue Radar's `resolveFolderId` goes through the shared `ensureChatFolder` helper
+ * over the host `api`, and keeps the contract it had: the repo folder is reused wherever it exists in the tree, created by
  * name on a miss, a rejected folder read surfaces as the hook's error UNTOUCHED
  * (no slot is created), and a create that answers without an id is an error rather
  * than a slot filed under `undefined`.
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { act, renderHook, waitFor } from '@testing-library/react'
 
 const { dispatch, apiMock, sendTurn, saveInvestigation, getInvestigation } = vi.hoisted(() => ({
@@ -34,7 +33,6 @@ vi.mock('../chat-core/transport/sendTurn', () => ({ sendTurn }))
 vi.mock('../apps/issue-radar/api', () => ({ issueRadarApi: { saveInvestigation, getInvestigation } }))
 
 import { useAgentSession as useIssueRadarSession } from '../apps/issue-radar/lib/agentSession'
-import { useAgentSession as useAutoImproveSession } from '../apps/auto-improvement/lib/agentSession'
 
 const createdSlotArgs = () =>
   dispatch.mock.calls
@@ -73,38 +71,15 @@ const openIssueRadar = async () => {
   return { record, result }
 }
 
-const openAutoImprove = async () => {
-  const { result } = renderHook(() => useAutoImproveSession())
-  let record: Awaited<ReturnType<typeof result.current.openSession>> | undefined
-  await act(async () => {
-    record = await result.current.openSession({ kind: 'pr', id: 1, repo: 'acme/demo-repo', title: 'PR #1', prompt: 'seed' })
-  })
-  return { record, result }
-}
-
 beforeEach(() => {
   vi.resetAllMocks()
   happyPath()
   getInvestigation.mockResolvedValue({ investigation: null })
   saveInvestigation.mockResolvedValue({ investigation: { slot_key: 'slot-1' } })
-  // Auto Improvement keeps its records behind a raw fetch: no record, then a saved one.
-  vi.stubGlobal(
-    'fetch',
-    vi.fn(async (_url: string, init?: { method?: string }) =>
-      init?.method === 'PUT'
-        ? new Response(JSON.stringify({ session: { slot_key: 'slot-1' } }), { status: 200 })
-        : new Response('', { status: 404 }),
-    ),
-  )
-})
-
-afterEach(() => {
-  vi.unstubAllGlobals()
 })
 
 describe.each([
   ['Issue Radar', 'Issue Radar - demo-repo', openIssueRadar],
-  ['Auto Improvement', 'Auto-Improve - acme/demo-repo', openAutoImprove],
 ] as const)('%s resolveFolderId', (_label, folderName, open) => {
   it('reuses the existing top-level repo folder', async () => {
     apiMock.chatFolders.mockResolvedValue([{ id: 'f1', name: folderName, parent_id: '' }])

@@ -33,7 +33,6 @@ from typing import Any
 from unittest.mock import AsyncMock, Mock
 
 import pytest
-from auto_improvement_member_helpers import MEMBER_BUDGET_SECS
 
 from kiro_crew.acp.types import EVENT_COMPLETE, EVENT_PERMISSION_REQUEST, EVENT_TEXT_CHUNK
 from kiro_crew.apps.builtins.auto_improvement import profiles as profiles_mod
@@ -44,6 +43,9 @@ from kiro_crew.apps.builtins.auto_improvement.spine import agent_discovery as di
 from kiro_crew.apps.builtins.auto_improvement.spine import agent_runner as agent_runner_mod
 from kiro_crew.apps.builtins.auto_improvement.spine import driver as driver_mod
 from kiro_crew.apps.builtins.auto_improvement.spine.crew_runner import CrewRunner
+from kiro_crew.apps.builtins.auto_improvement.tests.auto_improvement_member_helpers import (
+    MEMBER_BUDGET_SECS,
+)
 from kiro_crew.testing.wait import await_until, wait_until
 
 WAIT_S = 10.0
@@ -230,7 +232,7 @@ def _await_status(sup: Any, wanted: set[str], timeout: float = WAIT_S) -> dict[s
         return snapshot if snapshot.get("status") in wanted else None
 
     return wait_until(
-        reached,
+        reached,  # type: ignore[arg-type]
         timeout=timeout,
         describe=lambda: f"supervisor never reached {wanted}; last={sup.status()}",
     )
@@ -673,7 +675,7 @@ class TestScoutShellCapability:
             driver._agent_runner = runner
             driver.clone = tmp_path
             driver.log = logging.getLogger(__name__)
-            driver._build_test_pre_push_clean = Mock(return_value=(False, "review unavailable"))
+            driver._build_test_pre_push_clean = Mock(return_value=(False, "review unavailable"))  # type: ignore[method-assign]
             verdict = await await_until(
                 asyncio.ensure_future(
                     asyncio.to_thread(
@@ -849,7 +851,7 @@ class TestBuildDriver:
         real_lock = commit_mod.clone_lock()
 
         def _build(cfg: dict[str, Any]) -> Any:
-            held.append(real_lock._is_owned())
+            held.append(real_lock._is_owned())  # type: ignore[attr-defined]
             return _profile(tmp_path / "clone")
 
         monkeypatch.setattr(R, "_credentials_are_unconfined", lambda: "unset")
@@ -859,7 +861,7 @@ class TestBuildDriver:
         driver = sup._build_driver(self._config(tmp_path))
         assert held == [True]
         assert isinstance(driver, FakeSpineDriver)
-        assert not real_lock._is_owned()
+        assert not real_lock._is_owned()  # type: ignore[attr-defined]
 
 
 # ── start / status / stop ────────────────────────────────────────────────────
@@ -925,7 +927,7 @@ class TestStart:
         "busy" to the second, which is what a concurrent POST landing during the slow
         driver build looks like from here.
         """
-        for entry, kwargs in (("start", {}), ("calibrate", {})):
+        for entry, kwargs in (("start", {}), ("calibrate", {})):  # type: ignore[var-annotated]
             probes: list[bool] = [False, True]
             monkeypatch.setattr(sup, "_in_flight", lambda: probes.pop(0))
             monkeypatch.setattr(sup, "_build_driver", lambda config: FakeDriver())

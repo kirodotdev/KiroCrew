@@ -64,8 +64,8 @@ def test_fan_out_no_duplicate_targets(tmp_path):
         patch.object(Proposer, "_capture_diff", _fake_capture_diff),
     ):
         proposals = proposer.fan_out(
-            profile=FakeProfile(),
-            candidates=candidates,
+            profile=FakeProfile(),  # type: ignore[arg-type]
+            candidates=candidates,  # type: ignore[arg-type]
             base_sha="abc123",
             cycle=1,
         )

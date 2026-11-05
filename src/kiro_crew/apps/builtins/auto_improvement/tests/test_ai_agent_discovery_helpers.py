@@ -185,7 +185,7 @@ class TestSourceRoot:
         assert ad.source_root(tmp_path) == "src/kiro_crew"
 
     def test_the_real_repository_is_unchanged(self) -> None:
-        assert ad.source_root(Path(__file__).resolve().parents[1]) == "src/kiro_crew"
+        assert ad.source_root(Path(__file__).resolve().parents[6]) == "src/kiro_crew"
 
     def test_a_src_layout_with_one_other_package_reads_it(self, tmp_path) -> None:
         _package(tmp_path / "src", "otherpkg")
@@ -367,8 +367,10 @@ class TestDiagLog:
         ]
 
     def test_no_log_dir_writes_nothing(self, tmp_path) -> None:
+        # The app's conftest puts its data home and KIROCREW_HOME under tmp_path.
+        before = sorted(tmp_path.rglob("*"))
         ad._diag_log(None, {"stage": "prompt"})
-        assert list(tmp_path.iterdir()) == []
+        assert sorted(tmp_path.rglob("*")) == before
 
     def test_a_write_failure_never_raises(self, tmp_path) -> None:
         blocker = tmp_path / "file"

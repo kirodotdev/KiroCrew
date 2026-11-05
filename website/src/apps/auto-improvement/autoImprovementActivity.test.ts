@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 
-import { activityLine } from '../apps/auto-improvement/SetupPanel'
+import { activityLine } from './SetupPanel'
 
 // The shapes the backend actually emits, captured from a live run. Handing any of
 // these to React as a raw child is what produced the minified React #31 crash

@@ -231,8 +231,6 @@ test/test_acp_offload.py
 test/test_acp_prompt_blocks.py
 test/test_agent_discovery.py
 test/test_agent_source_ownership_durability.py
-test/test_ai_agent_runner_coverage.py
-test/test_ai_backend_routes_coverage.py
 test/test_api_agents_order.py
 test/test_api_file_diff.py
 test/test_api_input_validation.py
@@ -296,7 +294,6 @@ test/test_bench_windows_symlink.py
 test/test_bootstrap.py
 test/test_brand_name_gate.py
 test/test_browser_recording_skill.py
-test/test_bug_proposal_skip_status_default.py
 test/test_bug_validation_send_message_schema.py
 test/test_build_desktop_launcher_symlink.py
 test/test_build_desktop_rm_resilient.py
