@@ -800,7 +800,9 @@ def _run_session_send(args: dict[str, Any], ctx: ToolContext) -> str:
     try:
         resp = ctx.client.post(
             "/api/session-control/send",
-            {"target": args["target"], "message": args["message"], "steer": steer},
+            # ``receipt``: this call's row draws the outgoing card from what the
+            # gateway delivered (``dashboard.session_send_receipts``).
+            {"target": args["target"], "message": args["message"], "steer": steer, "receipt": True},
             session_key=ctx.caller_key,
         )
     except DashboardError as refused:

@@ -99,12 +99,13 @@ function ThreadComment(
         <button
           type="button"
           onClick={() => setExpanded(v => !v)}
+          aria-expanded={expanded}
           aria-label={expanded
             ? i18nT('components.commentThreads.collapse_comment')
             : i18nT('components.commentThreads.expand_comment')}
           className="flex-shrink-0 p-0.5 rounded text-muted hover:text-text hover:bg-bg-hover border-none bg-transparent cursor-pointer"
         >
-          {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+          {expanded ? <ChevronDown size={12} aria-hidden="true" /> : <ChevronRight size={12} aria-hidden="true" />}
         </button>
         <span className="font-medium text-text">{c.author || 'someone'}</span>
         {c.kind === 'review' && c.state && (

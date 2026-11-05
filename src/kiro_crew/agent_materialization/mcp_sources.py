@@ -673,6 +673,17 @@ def withheld_servers_now_routed() -> bool:
     return any(routed_for_secret_reference(n, routed) for n in withheld)
 
 
+def _expand_env_values(env: dict, *, server: str | None = None) -> dict:
+    """A copy of *env* with home/login names expanded in its values.
+
+    The same rule ``expand_spec_args`` applies to ``args``; any other ``${VAR}``
+    stays literal for whichever reader expands it. *env* is not mutated: it is
+    often a source config's own dict.
+    """
+    keys = list(env)
+    return dict(zip(keys, expand_spec_args([env[k] for k in keys], server=server)))
+
+
 def resolve_mcp_servers(
     config: dict,
     sources: McpSources,
@@ -684,7 +695,16 @@ def resolve_mcp_servers(
     resolution and the rewriter search one path.
     """
     kirocrew_mcp = sources.kirocrew
-    _resolve_command = resolve_command
+
+    def _resolve_command(cmd: str, env: dict | None) -> tuple[str | None, str]:
+        # Home/login names in ``command`` and ``env`` (``env.PATH`` included) are
+        # expanded at the resolver boundary, the way the probe and the emitted
+        # spec expand them, so every resolution decision below (candidate and
+        # provenance precheck alike) searches what the server will be given.
+        if isinstance(cmd, str):
+            cmd = expand_spec_args([cmd])[0]
+        return resolve_command(cmd, _expand_env_values(env) if isinstance(env, dict) else env)
+
     valid_servers: dict[str, Any] = {}
     # Servers this pass declines to emit ONLY because a declared command did not
     # resolve here. The ref reconcile at the end exempts exactly these: the
@@ -943,7 +963,10 @@ def resolve_mcp_servers(
             # through.
             spec_env = merged.get("env")
             if isinstance(spec_env, dict):
-                merged["env"] = emit_env(spec_env)
+                # Home/login names only, as for ``args``, so every reader of
+                # this spec sees one value whether or not it expands ``env``
+                # itself; any other ``${VAR}`` is left for the reader.
+                merged["env"] = emit_env(_expand_env_values(spec_env, server=name))
             # Record only for a server with no other source, and only a field this
             # pass may honestly claim: one the record already proved ours on the way
             # in, or one whose emitted value DIFFERS from what the entry carried, so

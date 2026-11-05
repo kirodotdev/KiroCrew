@@ -751,7 +751,7 @@ KINDS: dict[str, KindDef] = {
         ),
         KindDef(
             KIND_CREWMATE_IMPORT,
-            "Import one Bot from a .crewmate file (owner only).",
+            "Import one Bot from a .kirobot file (owner only).",
             _obj(
                 {
                     "name": {"type": "string", "maxLength": _CREWMATE_NAME_MAX},

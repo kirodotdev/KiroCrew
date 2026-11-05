@@ -961,10 +961,13 @@ class SlotQueueRepository:
             else:
                 item["content"] = prune_attachment_meta(item.get("meta"), content, previous)
             prune_quote_meta(item.get("meta"), item["content"])
-            # Replacement words belong to the editor, not the automation that queued them.
+            # Replacement words belong to the editor, not the automation that
+            # queued them, nor the peer session whose ``session_send`` did (its
+            # ``relay`` would draw the editor's words as that session's message).
             meta = item.get("meta")
             if isinstance(meta, dict):
                 meta.pop(AUTOMATION_STEER_META, None)
+                meta.pop("relay", None)
                 # The label summarized the old text; an edited row shows its own.
                 if previous != item["content"]:
                     meta.pop("banner", None)

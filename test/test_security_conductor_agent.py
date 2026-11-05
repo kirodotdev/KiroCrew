@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import json
 
+import conductor_agent_checks
+
 from kiro_crew import agent, subagent
 from kiro_crew.agent_files import (
     OWNED_KIRO_AGENT_FILES,
@@ -68,7 +70,10 @@ def _stub_environment(
     monkeypatch.setattr(agent, "_may_auto_approve", may_auto_approve or (lambda ref: True))
 
 
-class TestSecurityConductorInstaller:
+class TestSecurityConductorInstaller(
+    conductor_agent_checks.PromptDoesNotCarryTheRetiredVerbosityToken,
+    conductor_agent_checks.PromptDrivesPatrolWithMonitorStartNotWait,
+):
     def _install(self, tmp_path, monkeypatch, *, may_auto_approve=None, cli_version="accepts"):
         _stub_environment(
             tmp_path, monkeypatch, may_auto_approve=may_auto_approve, cli_version=cli_version
@@ -95,18 +100,6 @@ class TestSecurityConductorInstaller:
         roster: advertising it invites a caller to hand it work it cannot do,
         since it has no file-writing tool."""
         assert "kirocrew-security-conductor" in subagent.UNADVERTISED_AGENTS
-
-    def test_prompt_does_not_carry_the_retired_verbosity_token(self, tmp_path, monkeypatch):
-        data = self._install(tmp_path, monkeypatch)
-        # Reply style now arrives as session-context chrome for every
-        # agent; a token left here would reach the model as a literal.
-        assert "{{VERBOSITY_BLOCK}}" not in data["prompt"]
-
-    def test_prompt_drives_patrol_with_monitor_start_not_wait(self, tmp_path, monkeypatch):
-        data = self._install(tmp_path, monkeypatch)
-        prompt = " ".join(data["prompt"].split())
-        assert "Patrol with `monitor_start`, never with `wait`" in prompt
-        assert "autonudge_stop" in prompt
 
     def test_prompt_names_the_three_child_roles(self, tmp_path, monkeypatch):
         """The fleet's shape is the design: an auditor per surface, an

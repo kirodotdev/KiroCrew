@@ -20,6 +20,7 @@ from aiohttp import web
 
 from kiro_crew import conductor_patrol, session_ledger
 from kiro_crew.dashboard import session_control as sc
+from kiro_crew.dashboard import session_send_receipts
 from kiro_crew.dashboard.handlers import remote_dispatch_routes as crew_routes
 from kiro_crew.dashboard.handlers import work_ledger as work_ledger_routes
 from kiro_crew.dashboard.handlers._shared import (
@@ -946,6 +947,23 @@ async def api_session_control_send(request: web.Request) -> web.Response:
         )
     except sc.SessionControlError as exc:
         return _refusal(exc)
+    if (
+        isinstance(result, dict)
+        and result.get("ok") is True
+        and body.get(session_send_receipts.RECEIPT_FIELD) is True
+    ):
+        # What this send delivered, for the caller's own ``session_send`` row:
+        # the outgoing card reads it as typed fields (``session_send_receipts``)
+        # instead of out of the tool's result text. Parked under the target as
+        # the call spelled it, unstripped, since the call's own arguments are
+        # what claim it.
+        session_send_receipts.park(
+            _read_session_key(request),
+            body.get("target"),
+            message,
+            session_send_receipts.outcome_of(result),
+            str(result.get("target") or ""),
+        )
     # The server half of the work-ledger charter: a conductor's answer to a
     # ``blocked`` / ``question`` item is also its ``decide``, so a conductor that
     # forgets the second call does not leave the item waiting on it forever (the

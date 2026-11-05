@@ -459,6 +459,13 @@ async def _on_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CONTIN
         )
         if _post_identity is not None:
             turn._pending_tool_ids[event.tool_call_id] = _post_identity
+        # A backend may name the tool only on its permission request; a
+        # ``session_send`` it names picks up its delivery receipt on its result.
+        from kiro_crew.dashboard import session_send_receipts
+
+        _selectors = getattr(turn, "_send_receipt_selectors", None)
+        if _selectors is not None:
+            session_send_receipts.note_call(_selectors, event, initial=False)
     if turn.assistant_text and not open_construct_at_end(turn.assistant_text):
         slot._owed_segment_cut = functools.partial(_pay_permission_cut, turn)
     try:

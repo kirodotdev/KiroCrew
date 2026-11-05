@@ -440,8 +440,7 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
         <SettingsCard>
           <SettingsSelect
             label={i18nT('pages.settings.chatPanel.default_model')}
-            description={i18nT('pages.settings.chatPanel.which_model_new_sessions_start_with_pick_a_model')}
-            hint={i18nT('pages.settings.chatPanel.default_defers_to_your_agent_config_and_then_to')}
+            hint={i18nT('pages.settings.chatPanel.which_model_new_sessions_start_with_pick_a_model_tip')}
             value={shownDefaultModel}
             options={modelOptions}
             optionLabels={modelOptions.map(m => (m === 'auto' ? i18nT('pages.settings.chatPanel.default_auto') : m))}
@@ -887,7 +886,7 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
         <SettingsCard>
           <SettingsSelect
             label={i18nT('pages.settings.chatPanel.send_shortcut')}
-            description={chatCfg.sendOnEnter === 'enter' ? i18nT('pages.settings.chatPanel.shift_enter_for_newline') : chatCfg.sendOnEnter === 'ctrl-enter' ? i18nT('pages.settings.chatPanel.enter_for_newline') : i18nT('pages.settings.chatPanel.mod_enter_for_newline', { mod: isMac ? '⌘' : 'Ctrl' })}
+            hint={chatCfg.sendOnEnter === 'enter' ? i18nT('pages.settings.chatPanel.shift_enter_for_newline') : chatCfg.sendOnEnter === 'ctrl-enter' ? i18nT('pages.settings.chatPanel.enter_for_newline') : i18nT('pages.settings.chatPanel.mod_enter_for_newline', { mod: isMac ? '⌘' : 'Ctrl' })}
             value={chatCfg.sendOnEnter}
             options={['enter', 'ctrl-enter', 'enter-ctrl-newline']}
             optionLabels={[i18nT('pages.settings.chatPanel.enter_sends'), i18nT('pages.settings.chatPanel.mod_enter_sends', { mod: isMac ? '⌘' : 'Ctrl' }), i18nT('pages.settings.chatPanel.enter_sends_mod_enter_newline', { mod: isMac ? '⌘' : 'Ctrl' })]}
@@ -910,12 +909,13 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
           <SettingsToggle label={i18nT('pages.settings.chatPanel.merge_queued_messages')} hint={i18nT('pages.settings.chatPanel.combine_follow_up_messages_into_a_single_labeled')} checked={dashCfg.merge_queued_messages} onChange={v => setDash({ merge_queued_messages: v })} disabled={dashDisabled} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.spellcheck_input')} hint={i18nT('pages.settings.chatPanel.spellcheck_input_desc')} checked={chatCfg.spellcheck} onChange={v => setChat('spellcheck', v)} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.inline_markdown_input')} hint={i18nT('pages.settings.chatPanel.inline_markdown_input_desc')} checked={chatCfg.inlineMarkdown} onChange={v => setChat('inlineMarkdown', v)} />
-          <SettingsToggle label={i18nT('pages.settings.chatPanel.show_pasted_text_in_full')} description={i18nT('pages.settings.chatPanel.show_pasted_text_in_full_desc', { chord: platformShortcut('Cmd+Shift+V') })} checked={chatCfg.showFullPastes} onChange={v => setChat('showFullPastes', v)} />
+          <SettingsToggle label={i18nT('pages.settings.chatPanel.show_pasted_text_in_full')} description={i18nT('pages.settings.chatPanel.show_pasted_text_in_full_desc_summary')} hint={i18nT('pages.settings.chatPanel.show_pasted_text_in_full_desc', { chord: platformShortcut('Cmd+Shift+V') })} checked={chatCfg.showFullPastes} onChange={v => setChat('showFullPastes', v)} />
           <SettingsButtonGroup label={i18nT('pages.settings.chatPanel.follow_up_bar_layout')} hint={i18nT('pages.settings.chatPanel.multiline_wraps_suggestions_onto_multiple_rows_s')} value={chatCfg.followUpLayout} options={[{ value: "multiline", label: i18nT('pages.settings.chatPanel.multiline') }, { value: "scroll", label: i18nT('pages.settings.chatPanel.single_line') }]} onChange={v => setChat('followUpLayout', v as ChatConfig['followUpLayout'])} />
           <SettingsInput
             label={i18nT('pages.settings.chatPanel.soft_stop_budget_seconds')}
             aria-label={i18nT('pages.settings.chatPanel.soft_stop_budget_seconds')}
-            description={i18nT('pages.settings.chatPanel.how_long_to_wait_for_the_agent_to_honor_a_stop_p')}
+            description={i18nT('pages.settings.chatPanel.how_long_to_wait_for_the_agent_to_honor_a_stop_p_summary')}
+            hint={i18nT('pages.settings.chatPanel.how_long_to_wait_for_the_agent_to_honor_a_stop_p')}
             type="number"
             value={localBudget}
             min={SOFT_STOP_MIN}
@@ -976,7 +976,7 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
               `configKey`. */}
           <SettingsToggle
             label={i18nT('settings.chat.plainDiff.label')}
-            description={i18nT('settings.chat.plainDiff.description')}
+            hint={i18nT('settings.chat.plainDiff.description')}
             checked={plainDiff}
             onChange={setPlainDiff}
           />
@@ -990,7 +990,7 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
             checked={diffSplit}
             onChange={setDiffSplit}
           />
-          <SettingsToggle label={i18nT('pages.settings.chatPanel.link_previews')} description={i18nT('pages.settings.chatPanel.show_a_favicon_and_page_title_instead_of_the_raw')} checked={dashCfg.link_previews} onChange={v => setDash({ link_previews: v })} disabled={dashDisabled} />
+          <SettingsToggle label={i18nT('pages.settings.chatPanel.link_previews')} description={i18nT('pages.settings.chatPanel.show_a_favicon_and_page_title_instead_of_the_raw_summary')} hint={i18nT('pages.settings.chatPanel.show_a_favicon_and_page_title_instead_of_the_raw')} checked={dashCfg.link_previews} onChange={v => setDash({ link_previews: v })} disabled={dashDisabled} />
           <LinkPatternsEditor label={i18nT('pages.settings.chatPanel.link_patterns')} hint={i18nT('pages.settings.chatPanel.link_patterns_desc', { placeholder: '{match}' })} configKey="dashboard.link_patterns" rules={dashCfg.link_patterns ?? []} onSave={next => dashMut.mutateAsync({ link_patterns: next })} disabled={dashDisabled} draft={linkPatternsDraft} />
           <SettingsSelect label={i18nT('pages.settings.chatPanel.widget_density')} hint={i18nT('pages.settings.chatPanel.how_aggressively_the_agent_uses_inline_widgets_f')} value={dashCfg.widget_density ?? 'more'} options={['more', 'less']} optionLabels={[i18nT('pages.settings.chatPanel.more_encourage_widgets'), i18nT('pages.settings.chatPanel.less_only_when_needed')]} onChange={v => setDash({ widget_density: v as 'more' | 'less' })} disabled={dashDisabled} />
           <SettingsSelect label={i18nT('pages.settings.chatPanel.response_verbosity')} hint={i18nT('pages.settings.chatPanel.response_verbosity_hint')} value={asVerbosity(dashCfg.verbosity)} options={VERBOSITY_OPTIONS} optionLabels={[i18nT('pages.settings.chatPanel.default_normal_length'), i18nT('pages.settings.chatPanel.concise_trim_filler'), i18nT('pages.settings.chatPanel.answer_only_details_on_request')]} onChange={v => setDash({ verbosity: v as VerbosityLevel })} disabled={dashDisabled} />
@@ -1002,7 +1002,7 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
         case 'sidepanel':
           return (
         <SettingsCard>
-          <SettingsToggle label={i18nT('pages.settings.chatPanel.mcp_apps_in_side_panel')} description={i18nT('pages.settings.chatPanel.render_interactive_mcp_apps_in_the_right_side_pa')} checked={dashCfg.mcp_app_panel} onChange={v => setDash({ mcp_app_panel: v })} disabled={dashDisabled} />
+          <SettingsToggle label={i18nT('pages.settings.chatPanel.mcp_apps_in_side_panel')} hint={i18nT('pages.settings.chatPanel.render_interactive_mcp_apps_in_the_right_side_pa')} checked={dashCfg.mcp_app_panel} onChange={v => setDash({ mcp_app_panel: v })} disabled={dashDisabled} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.auto_open_git_panel')} hint={i18nT('pages.settings.chatPanel.expand_the_side_panel_to_the_git_tab_each_time_yo')} checked={dashCfg.auto_open_git_panel} onChange={v => setDash({ auto_open_git_panel: v })} disabled={dashDisabled} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.side_panel_always_open')} hint={i18nT('pages.settings.chatPanel.side_panel_always_open_hint')} configKey="dashboard.side_panel_always_open" checked={dashCfg.side_panel_always_open ?? false} onChange={v => setDash({ side_panel_always_open: v })} disabled={dashDisabled} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.side_panel_pin_summary')} description={pinSummaryNeedsSummaries ? i18nT('pages.settings.chatPanel.side_panel_pin_summary_needs_session_summaries') : undefined} hint={i18nT('pages.settings.chatPanel.side_panel_pin_summary_hint')} configKey="dashboard.side_panel_pin_summary" checked={dashCfg.side_panel_pin_summary ?? false} onChange={v => setDash({ side_panel_pin_summary: v })} disabled={dashDisabled} />
@@ -1081,7 +1081,7 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
           return (
         <SettingsCard>
           <SettingsToggle label={i18nT('pages.settings.chatPanel.split_view_session_grid')} description={i18nT('pages.settings.chatPanel.opt_in_split_the_chat_into_resizable_session_pan', { mod: isMac ? '⌘' : 'Ctrl' })} checked={dashCfg.session_grid} onChange={v => setDash({ session_grid: v })} disabled={dashDisabled} />
-          <SettingsToggle label={i18nT('pages.settings.chatPanel.dim_inactive_panes')} description={i18nT('pages.settings.chatPanel.dim_inactive_panes_desc')} checked={chatCfg.dimInactivePanes} onChange={v => setChat('dimInactivePanes', v)} disabled={dashDisabled || !dashCfg.session_grid} />
+          <SettingsToggle label={i18nT('pages.settings.chatPanel.dim_inactive_panes')} hint={i18nT('pages.settings.chatPanel.dim_inactive_panes_desc')} checked={chatCfg.dimInactivePanes} onChange={v => setChat('dimInactivePanes', v)} disabled={dashDisabled || !dashCfg.session_grid} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.history_expanded')} hint={i18nT('pages.settings.chatPanel.expand_history_sidebar_by_default')} checked={chatCfg.historyExpanded} onChange={v => setChat('historyExpanded', v)} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.confirm_before_closing_session')} hint={i18nT('pages.settings.chatPanel.show_a_confirmation_dialog_when_closing_a_sessio')} checked={chatCfg.confirmCloseSession} onChange={v => setChat('confirmCloseSession', v)} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.sidebar_click_opens_tab')} hint={i18nT('pages.settings.chatPanel.sidebar_click_opens_tab_desc')} checked={chatCfg.sidebarClickOpensTab} onChange={v => setChat('sidebarClickOpensTab', v)} />
@@ -1089,7 +1089,8 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
           <SettingsToggle label={i18nT('pages.settings.chatPanel.full_titles_on_scroll')} hint={i18nT('pages.settings.chatPanel.full_titles_on_scroll_description')} checked={chatCfg.fullTitlesOnScroll} onChange={v => setChat('fullTitlesOnScroll', v)} />
           <SettingsSelect
             label={i18nT('settings.chat.defaultMemoryMode.label')}
-            description={i18nT('settings.chat.defaultMemoryMode.description')}
+            description={i18nT('settings.chat.defaultMemoryMode.description_summary')}
+            hint={i18nT('settings.chat.defaultMemoryMode.description')}
             value={asMemoryMode(shownDefaultMemoryMode)}
             options={MEMORY_MODE_OPTIONS}
             optionLabels={memoryModeLabels()}
@@ -1147,9 +1148,9 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
             reserveWidthFor={[titleRefreshDefault, TITLE_REFRESH_MAX]}
             configKey="dashboard.title_refresh_every_turns"
           />
-          <SettingsToggle label={i18nT('pages.settings.chatPanel.session_card_source_links')} description={i18nT('pages.settings.chatPanel.session_card_source_links_desc')} checked={dashCfg.session_card_source_links} onChange={v => setDash({ session_card_source_links: v })} disabled={dashDisabled} />
-          <SettingsSelect label={i18nT('pages.settings.chatPanel.session_title_lines')} description={i18nT('pages.settings.chatPanel.session_title_lines_desc')} value={String(chatCfg.sessionTitleLines)} options={[...CARD_LINE_OPTIONS]} onChange={v => { const n = Number(v); if (isCardLineCount(n)) setChat('sessionTitleLines', n) }} />
-          <SettingsSelect label={i18nT('pages.settings.chatPanel.session_preview_lines')} description={i18nT('pages.settings.chatPanel.session_preview_lines_desc')} value={String(chatCfg.sessionPreviewLines)} options={[...CARD_LINE_OPTIONS]} onChange={v => { const n = Number(v); if (isCardLineCount(n)) setChat('sessionPreviewLines', n) }} />
+          <SettingsToggle label={i18nT('pages.settings.chatPanel.session_card_source_links')} hint={i18nT('pages.settings.chatPanel.session_card_source_links_desc')} checked={dashCfg.session_card_source_links} onChange={v => setDash({ session_card_source_links: v })} disabled={dashDisabled} />
+          <SettingsSelect label={i18nT('pages.settings.chatPanel.session_title_lines')} hint={i18nT('pages.settings.chatPanel.session_title_lines_desc')} value={String(chatCfg.sessionTitleLines)} options={[...CARD_LINE_OPTIONS]} onChange={v => { const n = Number(v); if (isCardLineCount(n)) setChat('sessionTitleLines', n) }} />
+          <SettingsSelect label={i18nT('pages.settings.chatPanel.session_preview_lines')} hint={i18nT('pages.settings.chatPanel.session_preview_lines_desc')} value={String(chatCfg.sessionPreviewLines)} options={[...CARD_LINE_OPTIONS]} onChange={v => { const n = Number(v); if (isCardLineCount(n)) setChat('sessionPreviewLines', n) }} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.folder_suggestions')} description={i18nT('pages.settings.chatPanel.offer_to_file_a_new_session_into_a_matching_fold')} checked={dashCfg.folder_suggestions_enabled} onChange={v => setDash({ folder_suggestions_enabled: v })} disabled={dashDisabled} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.topic_tags')} description={i18nT('pages.settings.chatPanel.topic_tags_desc')} checked={dashCfg.topic_tags_enabled ?? false} onChange={v => setDash({ topic_tags_enabled: v })} disabled={dashDisabled} />
         </SettingsCard>

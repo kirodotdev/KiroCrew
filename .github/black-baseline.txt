@@ -212,7 +212,6 @@ src/kiro_crew/skill_usage.py
 src/kiro_crew/skills_dedupe.py
 src/kiro_crew/skills_script_validator.py
 src/kiro_crew/slack/enterprise.py
-src/kiro_crew/slack/events.py
 src/kiro_crew/subagent_scale.py
 src/kiro_crew/testing/channel_fixtures.py
 src/kiro_crew/webhooks.py
@@ -479,8 +478,6 @@ test/test_issue_radar_investigation_tool.py
 test/test_issue_radar_list_probe.py
 test/test_issue_radar_recent_repos.py
 test/test_issue_radar_ref_summary.py
-test/test_issue_radar_routes_ai_coverage.py
-test/test_issue_radar_routes_coverage.py
 test/test_issue_radar_tagging.py
 test/test_issue_summary_workflow.py
 test/test_kas_display_mapping.py

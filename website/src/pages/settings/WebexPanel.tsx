@@ -310,14 +310,14 @@ export function WebexPanel() {
         <SettingsCard index={2}>
           <SettingsToggle
             label={i18nT('pages.settings.webexPanel.enable_webex_channel')}
-            description={i18nT('pages.settings.webexPanel.start_the_channel_at_gateway_boot_when_a_token_i')}
+            hint={i18nT('pages.settings.webexPanel.start_the_channel_at_gateway_boot_when_a_token_i')}
             checked={draft.enabled}
             onChange={v => upd({ enabled: v })}
             disabled={ro}
           />
           <TagListEditor
             label={i18nT('pages.settings.webexPanel.allowed_emails')}
-            description={i18nT('pages.settings.webexPanel.webex_account_emails_permitted_to_dm_the_bot_emp')}
+            description={i18nT('pages.settings.channels.empty_allows_nobody')} hint={i18nT('pages.settings.webexPanel.webex_account_emails_permitted_to_dm_the_bot_emp')}
             values={draft.allowed_emails}
             placeholder={i18nT('pages.settings.webexPanel.you_example_com')}
             onChange={v => upd({ allowed_emails: v })}
@@ -331,7 +331,7 @@ export function WebexPanel() {
           <div className="border-t border-border mt-4 pt-4">
             <SettingsToggle
               label={i18nT('pages.settings.webexPanel.allow_group_spaces')}
-              description={i18nT('pages.settings.webexPanel.allow_group_spaces_desc')}
+              description={i18nT('pages.settings.webexPanel.allow_group_spaces_desc_summary')} hint={i18nT('pages.settings.webexPanel.allow_group_spaces_desc')}
               checked={draft.allow_group_rooms}
               onChange={v => upd({ allow_group_rooms: v })}
               disabled={ro}
@@ -340,7 +340,7 @@ export function WebexPanel() {
               <div className="mt-4">
                 <TagListEditor
                   label={i18nT('pages.settings.webexPanel.allowed_room_ids')}
-                  description={i18nT('pages.settings.webexPanel.allowed_room_ids_desc')}
+                  description={i18nT('pages.settings.webexPanel.allowed_room_ids_desc_summary')} hint={i18nT('pages.settings.webexPanel.allowed_room_ids_desc')}
                   values={draft.allowed_room_ids}
                   placeholder={i18nT('pages.settings.webexPanel.room_id_placeholder')}
                   onChange={v => upd({ allowed_room_ids: v })}
@@ -364,7 +364,7 @@ export function WebexPanel() {
           <div className="border-t border-border mt-4 pt-4">
             <SettingsToggle
               label={i18nT('pages.settings.botChannelPanel.file_sessions_in_folder')}
-              description={i18nT('pages.settings.botChannelPanel.file_sessions_in_folder_desc', { channel: CHANNEL_NAME })}
+              hint={i18nT('pages.settings.botChannelPanel.file_sessions_in_folder_desc', { channel: CHANNEL_NAME })}
               checked={draft.session_folder_on}
               onChange={v => upd({ session_folder_on: v })}
               disabled={ro}
@@ -373,7 +373,7 @@ export function WebexPanel() {
               <div className="mt-4">
                 <SettingsInput
                   label={i18nT('pages.settings.botChannelPanel.session_folder_name')}
-                  description={i18nT('pages.settings.botChannelPanel.session_folder_name_desc')}
+                  hint={i18nT('pages.settings.botChannelPanel.session_folder_name_desc')}
                   value={draft.session_folder}
                   onChange={v => upd({ session_folder: v })}
                   placeholder={CHANNEL_NAME}
@@ -398,7 +398,7 @@ export function WebexPanel() {
         <SettingsCard index={3}>
           <SettingsToggle
             label={i18nT('pages.settings.webexPanel.reply_in_thread')}
-            description={i18nT('pages.settings.webexPanel.reply_in_thread_desc')}
+            hint={i18nT('pages.settings.webexPanel.reply_in_thread_desc')}
             checked={draft.reply_in_thread}
             onChange={v => upd({ reply_in_thread: v })}
             disabled={ro}

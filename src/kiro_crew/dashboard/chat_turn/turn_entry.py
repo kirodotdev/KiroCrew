@@ -692,6 +692,10 @@ async def _turn_open(turn: _ChatTurn) -> _Flow | None:
     # call time.
     _seen_tool_identity: dict[str, tuple[str, str]] = {}
     turn._seen_tool_identity = _seen_tool_identity
+    # tool_call_id -> the receipt selector of a ``session_send`` call
+    # (``session_send_receipts.call_selector`` over its raw arguments), so its
+    # completed result can pick up what the gateway delivered.
+    turn._send_receipt_selectors = {}
     # A worker-tool call the harness never delivered (undelivered_call_watch):
     # built lazily on the first tool call, once the turn's provider is known.
     turn._undelivered_watch = None

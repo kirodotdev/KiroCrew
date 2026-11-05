@@ -1940,6 +1940,25 @@ carries one: the record holds `int(raw)`. Each clamp logs a warning naming the a
 and the seconds used. It fires once per script run, not per listing, so it needs
 no memory of what it already said.
 
+The update's stop → deregister → swap → re-register → restart chain has one
+terminal entry point besides the dashboard's Sync: `kirocrew app update <name>
+[--source DIR]`, which is `POST /api/apps/{name}/update` sent through the
+owner-only socket the way `enable`, `disable` and `uninstall` are. It is the one app
+verb with NO gateway-less path. Only the gateway's process can run that chain; a
+file-only `update_app` would leave a running gateway serving the old manifest over
+new files — the half-updated state the route exists to prevent — and on Windows the
+swap fails under the backend's open files anyway. So when the lifecycle client
+reports "no gateway", including on the AF_UNIX-less platforms where one may well be
+running, the CLI changes nothing, exits 1 and points at the app's page in the dashboard. The CLI
+makes a given `--source` absolute (the gateway resolves paths against its own
+working directory), refuses an empty one rather than reading it as the current
+directory, and sends no body without the flag, so the gateway uses the app's
+recorded source. The route records the directory it updated from, so a
+`--source` update also moves the recorded source and later bare updates use
+it. A version that newly declares `permissions.sessionApproval`
+comes back disabled with a message saying so; the CLI prints it and offers no
+`enable` step, since that consent is the dashboard's alone.
+
 Writers: `apps/routes_uninstall.py::handle_uninstall_app`, `_run_lifecycle_script`,
 `apps/routes_uninstall.py::_deregister_crons_with_retry`; `apps/manager_uninstall.py::uninstall_app`.
 

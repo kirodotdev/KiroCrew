@@ -21,10 +21,37 @@ from kiro_crew.dashboard.folder_ownership import _folder_owner_app
 from kiro_crew.folder_steering import crosses_memory_silo, memory_silo_fence
 from kiro_crew.hooks import is_unc_shape, unc_probe_allowed, validate_file_path
 from kiro_crew.sandbox import voice_runtime_workspace_conflict
-from kiro_crew.security import is_sensitive_path
+from kiro_crew.security import canonical_path_refusal, is_unverifiable_path_refusal
 from kiro_crew.sel import sel
 
 logger = logging.getLogger("kiro_crew.dashboard.chat_folders")
+
+
+def _sensitive_refusal(resolved: str, *, operation: str, field: str) -> str | None:
+    """The folder API's refusal for a path this module already canonicalised.
+
+    ``resolved`` is a ``realpath`` the caller computed, so the verdict comes from
+    ``canonical_path_refusal``: off the event loop it answers inline, with no
+    submission to the resolver pool, so a saturated pool cannot refuse a healthy
+    directory; on the loop it is the bounded gate, which can stall. A stall is
+    not a match: it is reported as unverifiable, with the gate's retry wording,
+    and audited as such, so the person is not told an ordinary repo is sensitive
+    and the audit trail does not record a match that never happened.
+    """
+    reason = canonical_path_refusal(resolved)
+    if reason is None:
+        return None
+    stalled = is_unverifiable_path_refusal(reason)
+    sel().log_api_access(
+        caller="dashboard",
+        operation=operation,
+        outcome="denied",
+        resources=resolved,
+        error="sensitive path unverifiable" if stalled else "sensitive path",
+    )
+    if stalled:
+        return f"{field} could not be verified against the sensitive-path list; retry shortly"
+    return f"{field} refers to a sensitive path"
 
 
 def _validate_project_dir(raw: str) -> tuple[str, str | None]:
@@ -34,15 +61,9 @@ def _validate_project_dir(raw: str) -> tuple[str, str | None]:
     if not os.path.isabs(raw) and not raw.startswith("~"):
         return "", "Project directory must be an absolute path"
     resolved = os.path.realpath(os.path.expanduser(raw))
-    if is_sensitive_path(resolved):
-        sel().log_api_access(
-            caller="dashboard",
-            operation="chat.folder_project_dir",
-            outcome="denied",
-            resources=resolved,
-            error="sensitive path",
-        )
-        return "", "project_dir refers to a sensitive path"
+    err = _sensitive_refusal(resolved, operation="chat.folder_project_dir", field="project_dir")
+    if err:
+        return "", err
     if not os.path.isdir(resolved):
         return "", "Project directory must be an existing directory"
     return resolved, None
@@ -279,17 +300,13 @@ def _validate_steering_dirs(value: object) -> tuple[list[str], str | None]:
                 f"steering directory expands to more than {MAX_FOLDER_STEERING_DIR_LEN} "
                 "characters once links and ~ are resolved"
             )
-        if is_sensitive_path(canonical):
-            # Defense in depth over the screen's own fence, on the canonical
-            # spelling, with the project_dir-style audit line.
-            sel().log_api_access(
-                caller="dashboard",
-                operation="chat.folder_steering_dirs",
-                outcome="denied",
-                resources=canonical,
-                error="sensitive path",
-            )
-            return [], "steering_dirs refers to a sensitive path"
+        # Defense in depth over the screen's own fence, on the canonical
+        # spelling, with the project_dir-style audit line.
+        err = _sensitive_refusal(
+            canonical, operation="chat.folder_steering_dirs", field="steering_dirs"
+        )
+        if err:
+            return [], err
         fence = memory_silo_fence()
         if not fence.complete:
             # The fence is built from the configuration's ``workspaces`` table,

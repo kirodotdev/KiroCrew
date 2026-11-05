@@ -52,6 +52,6 @@ describe('SecurityPanel defense-in-depth layers', () => {
   it('names the section by its rail heading and explains the layering', async () => {
     renderWithProviders(<LayersSection />)
     expect(await screen.findByText(HEADING())).toBeInTheDocument()
-    expect(screen.getByText(i18nT('pages.settings.securityPanel.kirocrew_implements_6_security_layers_each_layer'))).toBeInTheDocument()
+    expect(screen.getByTitle(i18nT('pages.settings.securityPanel.kirocrew_implements_6_security_layers_each_layer'))).toBeInTheDocument()
   })
 })
