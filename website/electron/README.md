@@ -289,6 +289,12 @@ each launch to get a fresh JWT — no manual paste required.
 3. Fallback: show manual token prompt
 ```
 
+A token from step 1 or 2 is sent once, on a `GET` for the same page with
+`?token=…` made through the window's own session, whose response sets the
+session cookie. The dashboard then loads with no token in its address, so the
+page address Chromium writes beside every console line in `chromium.log` carries
+no credential (`loadDashboardWithToken` in `token-retry.js`).
+
 ### Menus
 
 | Location | Item | Action |

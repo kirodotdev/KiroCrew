@@ -339,29 +339,13 @@ test("probePrimaryPortOwner probes only the injected primary port", async () => 
   assert.ok(!execCalls[0].args.some((arg) => String(arg).includes("65535")));
 });
 
-test("entryUrl preserves an initial path/query and encodes the token once", () => {
+test("entryUrl preserves an initial path/query", () => {
   const { supervisor } = harness();
-  const result = new URL(supervisor.entryUrl(
-    "http://localhost:5476",
-    "/chat?new=1",
-    "token with spaces & punctuation?",
-  ));
+  const result = new URL(supervisor.entryUrl("http://localhost:5476", "/chat?new=1"));
 
   assert.strictEqual(result.origin, "http://localhost:5476");
   assert.strictEqual(result.pathname, "/chat");
   assert.strictEqual(result.searchParams.get("new"), "1");
-  assert.strictEqual(
-    result.searchParams.get("token"),
-    "token with spaces & punctuation?",
-  );
-  assert.strictEqual(result.searchParams.getAll("token").length, 1);
-});
-
-test("entryUrl omits the token parameter when no token is available", () => {
-  const { supervisor } = harness();
-  const result = new URL(supervisor.entryUrl("http://localhost:5476", "/settings"));
-
-  assert.strictEqual(result.pathname, "/settings");
   assert.strictEqual(result.searchParams.has("token"), false);
 });
 

@@ -1,6 +1,6 @@
 const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
-const { createTokenRetryHandler, dashboardRetryPath } = require("../token-retry");
+const { createTokenRetryHandler, dashboardRetryPath, loadDashboardWithToken } = require("../token-retry");
 
 describe("createTokenRetryHandler", () => {
   it("calls refreshFn on 403", async () => {
@@ -90,5 +90,59 @@ describe("dashboardRetryPath", () => {
   it("keeps the fallback for an unparseable URL", () => {
     assert.equal(dashboardRetryPath("", BACKEND, "/chat?new=1"), "/chat?new=1");
     assert.equal(dashboardRetryPath(undefined, BACKEND, "/chat?new=1"), "/chat?new=1");
+  });
+});
+
+describe("loadDashboardWithToken", () => {
+  function fakeContents(fetchImpl) {
+    const calls = [];
+    return {
+      calls,
+      session: {
+        fetch: async (url, init) => {
+          calls.push(["fetch", url, init]);
+          return fetchImpl();
+        },
+      },
+      isDestroyed: () => false,
+      loadURL: (url) => calls.push(["load", url]),
+    };
+  }
+
+  it("signs in through the window's session, then loads the page without the token", async () => {
+    // Chromium logs the page's address beside every console line, so the token
+    // goes on a request on the page's own origin and never into the address.
+    const contents = fakeContents(async () => ({ ok: true, arrayBuffer: async () => new ArrayBuffer(0) }));
+    const token = "token with spaces & punctuation?";
+    await loadDashboardWithToken(contents, "http://localhost:5476/chat?new=1", token);
+
+    assert.equal(contents.calls.length, 2);
+    const [[firstKind, exchangeUrl, init], [secondKind, loaded]] = contents.calls;
+    assert.equal(firstKind, "fetch");
+    // Bounded: the boot path starts the liveness monitor only after the load.
+    assert.ok(init.signal instanceof AbortSignal);
+    // The very request a tokened load made, so any gateway that took one takes this.
+    const exchange = new URL(exchangeUrl);
+    assert.equal(exchange.origin, "http://localhost:5476");
+    assert.equal(exchange.pathname, "/chat");
+    assert.equal(exchange.searchParams.get("new"), "1");
+    assert.deepEqual(exchange.searchParams.getAll("token"), [token]);
+    assert.deepEqual([secondKind, loaded], ["load", "http://localhost:5476/chat?new=1"]);
+  });
+
+  it("loads nothing into a window closed during the exchange", async () => {
+    const contents = fakeContents(async () => ({ ok: true, arrayBuffer: async () => new ArrayBuffer(0) }));
+    contents.isDestroyed = () => contents.calls.length > 0;
+    await loadDashboardWithToken(contents, "http://localhost:5476", "secret-link");
+
+    assert.deepEqual(contents.calls.map(([kind]) => kind), ["fetch"]);
+  });
+
+  it("never puts the token in the address when the exchange fails", async () => {
+    const contents = fakeContents(async () => { throw new Error("net::ERR_CONNECTION_REFUSED"); });
+    await loadDashboardWithToken(contents, "http://localhost:5476", "secret-link");
+
+    const loads = contents.calls.filter(([kind]) => kind === "load").map(([, url]) => url);
+    assert.deepEqual(loads, ["http://localhost:5476"]);
   });
 });
