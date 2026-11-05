@@ -9,12 +9,16 @@ headings count as shipped history, and which diffs against them are violations.
 from __future__ import annotations
 
 import importlib.util
+import os
 import re
+import subprocess
 from pathlib import Path
 
 import pytest
+from git_maintenance_helpers import git_maintenance_off_entries
 
 from kiro_crew.changelog import base_version
+from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS
 
 _REPO = Path(__file__).resolve().parents[1]
 _GATE = _REPO / "scripts" / "check_changelog_history.py"
@@ -362,3 +366,287 @@ def test_compare_still_reads_a_draft_heading_in_HISTORY_without_flagging_it() ->
     assert gate.compare(base, head) == []
     assert gate.draft_headings(base) == ["0.3.0-insider.9"]
     assert gate.draft_headings(head) == []
+
+
+# ── the release-to-main port exemption ────────────────────────────────────
+
+_EARLY = "## [0.12.0] - 2026-11-01\n\nearly cut\n\n"
+_FINAL = "## [0.12.0] - 2026-11-05\n\nfinal text\n\n"
+_PATCH_EARLY = "## [0.12.1] - 2026-11-08\n\nearly patch\n\n"
+_PATCH_FINAL = "## [0.12.1] - 2026-11-09\n\nfinal patch\n\n"
+_OLDER = "## [0.11.0] - 2026-10-20\n\nolder\n\n"
+
+_GIT_IDENTITY = {
+    "GIT_AUTHOR_NAME": "Test",
+    "GIT_AUTHOR_EMAIL": "test@example.invalid",
+    "GIT_COMMITTER_NAME": "Test",
+    "GIT_COMMITTER_EMAIL": "test@example.invalid",
+}
+
+
+@pytest.fixture(autouse=True)
+def _host_git_config_is_not_read(_floor_monkeypatch: pytest.MonkeyPatch) -> None:
+    """Host settings such as `core.autocrlf` or `commit.gpgsign` must not reach the fixtures.
+
+    The gate under test runs git too, so the variables are set on the process and
+    both the fixture commands and the gate's own subprocesses inherit them.
+    """
+    _floor_monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+    _floor_monkeypatch.setenv("GIT_CONFIG_SYSTEM", os.devnull)
+    for key, value in git_maintenance_off_entries(os.environ).items():
+        _floor_monkeypatch.setenv(key, value)
+
+
+def _changelog(*sections: str) -> str:
+    return "# Changelog\n\n" + "".join(sections)
+
+
+def _git(cwd: Path, *args: str) -> str:
+    return subprocess.run(
+        ["git", *args],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=True,
+        timeout=FALLBACK_TIMEOUT_SECS,
+        env={**os.environ, **_GIT_IDENTITY},
+    ).stdout.strip()
+
+
+def _commit(repo: Path, changelog: str | bytes) -> None:
+    if isinstance(changelog, bytes):
+        (repo / "CHANGELOG.md").write_bytes(changelog)
+    else:
+        (repo / "CHANGELOG.md").write_text(changelog, encoding="utf-8", newline="\n")
+    _git(repo, "add", "CHANGELOG.md")
+    _git(repo, "commit", "-q", "-m", "changelog")
+
+
+def _origin(
+    tmp_path: Path,
+    *,
+    on_branch: str | bytes | None = None,
+    branch: str = "release/0.12.0",
+    on_tag: str | bytes | None = None,
+    tag: str = "v0.12.0",
+    main: str | None = None,
+) -> Path:
+    """An ``origin`` whose ``main`` holds the early cut and whose release ref holds the final text."""
+    origin = tmp_path / "origin"
+    origin.mkdir()
+    _git(origin, "init", "-q", "-b", "main")
+    (origin / "README.md").write_text("readme\n", encoding="utf-8")
+    _git(origin, "add", "README.md")
+    _commit(origin, main or _changelog(_EARLY, _PATCH_EARLY, _OLDER))
+    if on_branch is not None:
+        _git(origin, "switch", "-q", "-c", branch)
+        _commit(origin, on_branch)
+        _git(origin, "switch", "-q", "main")
+    if on_tag is not None:
+        _git(origin, "switch", "-q", "-c", "scratch")
+        _commit(origin, on_tag)
+        _git(origin, "tag", tag)
+        _git(origin, "switch", "-q", "main")
+        _git(origin, "branch", "-q", "-D", "scratch")
+    return origin
+
+
+def _clone(tmp_path: Path, origin: Path, *extra: str) -> tuple[Path, str]:
+    work = tmp_path / "work"
+    _git(tmp_path, "clone", "-q", *extra, origin.as_uri(), str(work))
+    return work, _git(work, "rev-parse", "HEAD")
+
+
+def _run_gate(
+    monkeypatch: pytest.MonkeyPatch,
+    work: Path,
+    base: str,
+    head: str,
+    *,
+    also_touch: str | None = None,
+) -> int:
+    (work / "CHANGELOG.md").write_text(head, encoding="utf-8", newline="\n")
+    if also_touch is not None:
+        (work / also_touch).write_text("edited\n", encoding="utf-8")
+    monkeypatch.chdir(work)
+    monkeypatch.setenv("CHANGELOG_BASE_REF", base)
+    return gate.main([])
+
+
+_FINAL_ON_RELEASE = _changelog(_FINAL, _PATCH_EARLY, _OLDER)
+
+
+def test_a_port_matching_the_release_branch_passes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    origin = _origin(tmp_path, on_branch=_FINAL_ON_RELEASE)
+    work, base = _clone(tmp_path, origin)
+    assert _run_gate(monkeypatch, work, base, _changelog(_FINAL, _PATCH_EARLY, _OLDER)) == 0
+
+
+def test_a_port_matching_only_the_release_tag_passes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    origin = _origin(tmp_path, on_tag=_FINAL_ON_RELEASE)
+    work, base = _clone(tmp_path, origin)
+    assert _run_gate(monkeypatch, work, base, _changelog(_FINAL, _PATCH_EARLY, _OLDER)) == 0
+
+
+def test_a_patch_release_is_read_from_its_lines_branch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    origin = _origin(tmp_path, on_branch=_changelog(_EARLY, _PATCH_FINAL, _OLDER))
+    work, base = _clone(tmp_path, origin)
+    assert _run_gate(monkeypatch, work, base, _changelog(_EARLY, _PATCH_FINAL, _OLDER)) == 0
+
+
+def test_a_port_passes_on_the_shallow_checkout_ci_uses(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    origin = _origin(tmp_path, on_branch=_FINAL_ON_RELEASE)
+    work, base = _clone(tmp_path, origin, "--depth=1")
+    assert _git(work, "rev-parse", "--is-shallow-repository") == "true"
+    assert _run_gate(monkeypatch, work, base, _changelog(_FINAL, _PATCH_EARLY, _OLDER)) == 0
+
+
+def test_the_port_fetch_leaves_a_full_clone_unshallowed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`--depth` on a full clone would cut the fetched commit's history."""
+    origin = _origin(tmp_path, on_branch=_FINAL_ON_RELEASE)
+    work, base = _clone(tmp_path, origin)
+    _git(work, "update-ref", "-d", "refs/remotes/origin/release/0.12.0")
+    assert _run_gate(monkeypatch, work, base, _changelog(_FINAL, _PATCH_EARLY, _OLDER)) == 0
+    assert _git(work, "rev-parse", "--is-shallow-repository") == "false"
+    assert _git(work, "for-each-ref", "refs/remotes/origin/release") == ""
+
+
+def test_once_the_tag_exists_only_the_tag_counts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The branch keeps moving after the release, and its pull requests skip this gate.
+
+    The tag holds the text that shipped, so a branch that was rewritten afterwards
+    cannot be ported over it.
+    """
+    moved = _changelog(_FINAL.replace("final text", "moved on"), _PATCH_EARLY, _OLDER)
+    origin = _origin(tmp_path, on_branch=moved, on_tag=_FINAL_ON_RELEASE)
+    work, base = _clone(tmp_path, origin)
+    assert _run_gate(monkeypatch, work, base, moved) == 1
+    assert _run_gate(monkeypatch, work, base, _FINAL_ON_RELEASE) == 0
+
+
+def test_a_new_section_still_needs_no_release_ref(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    origin = _origin(tmp_path)
+    work, base = _clone(tmp_path, origin)
+    new = "## [0.13.0] - 2026-12-01\n\nnew\n\n"
+    assert _run_gate(monkeypatch, work, base, _changelog(new, _EARLY, _PATCH_EARLY, _OLDER)) == 0
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "another_file_changed",
+        "content_differs_from_the_release",
+        "section_other_than_the_shipped_one",
+        "no_release_branch_or_tag",
+        "deleted_section",
+        "unreleased_heading_added",
+        "prerelease_heading_added",
+        "duplicate_heading",
+        "origin_unreachable",
+    ],
+)
+def test_every_other_change_is_refused_as_before(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], case: str
+) -> None:
+    on_branch: str | None = _FINAL_ON_RELEASE
+    port = [_FINAL, _PATCH_EARLY, _OLDER]
+    also_touch = None
+    if case == "another_file_changed":
+        also_touch = "README.md"
+    elif case == "content_differs_from_the_release":
+        port[0] = _FINAL.replace("final text", "final text, edited")
+    elif case == "section_other_than_the_shipped_one":
+        # The branch for 0.12.0 carries a rewritten 0.11.0 too, but 0.11.0 has no
+        # release ref of its own, so matching the 0.12.0 branch proves nothing for it.
+        on_branch = _changelog(_FINAL, _PATCH_EARLY, _OLDER.replace("older", "rewritten"))
+        port[2] = _OLDER.replace("older", "rewritten")
+    elif case == "no_release_branch_or_tag":
+        on_branch = None
+    elif case == "deleted_section":
+        port = [_FINAL, _PATCH_EARLY]
+    elif case == "unreleased_heading_added":
+        port.insert(0, "## [Unreleased]\n\npending\n\n")
+    elif case == "prerelease_heading_added":
+        port.insert(0, "## [0.13.0-rc.1]\n\ndraft\n\n")
+    elif case == "duplicate_heading":
+        port.insert(1, _FINAL)
+    origin = _origin(tmp_path, on_branch=on_branch)
+    work, base = _clone(tmp_path, origin)
+    if case == "origin_unreachable":
+        _git(work, "remote", "set-url", "origin", (tmp_path / "gone").as_uri())
+
+    assert _run_gate(monkeypatch, work, base, _changelog(*port), also_touch=also_touch) == 1
+    assert "changelog-history" in capsys.readouterr().err
+
+
+def test_a_tag_that_cannot_be_read_does_not_hand_authority_to_the_branch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The tag exists but holds no changelog: nothing is waived, whatever the branch says."""
+    origin = _origin(tmp_path, on_branch=_FINAL_ON_RELEASE)
+    _git(origin, "switch", "-q", "-c", "scratch")
+    _git(origin, "rm", "-q", "CHANGELOG.md")
+    _git(origin, "commit", "-q", "-m", "drop the changelog")
+    _git(origin, "tag", "v0.12.0")
+    _git(origin, "switch", "-q", "main")
+    work, base = _clone(tmp_path, origin)
+    assert _run_gate(monkeypatch, work, base, _FINAL_ON_RELEASE) == 1
+
+
+@pytest.mark.parametrize(
+    "release_text",
+    [
+        pytest.param(_FINAL_ON_RELEASE.replace("\n", "\r\n"), id="crlf"),
+        pytest.param(_FINAL_ON_RELEASE.encode("utf-8") + b"\xff\n", id="undecodable-byte"),
+    ],
+)
+def test_a_release_text_that_cannot_be_compared_byte_for_byte_waives_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, release_text: str | bytes
+) -> None:
+    origin = _origin(tmp_path, on_branch=release_text)
+    work, base = _clone(tmp_path, origin)
+    assert _run_gate(monkeypatch, work, base, _FINAL_ON_RELEASE) == 1
+
+
+def test_a_cr_anywhere_in_the_release_text_waives_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only the older section carries the CR; the changed section matches exactly."""
+    release = _changelog(_FINAL, _PATCH_EARLY, _OLDER.replace("older", "older\r"))
+    origin = _origin(tmp_path, on_branch=release)
+    work, base = _clone(tmp_path, origin)
+    assert _run_gate(monkeypatch, work, base, _changelog(_FINAL, _PATCH_EARLY, _OLDER)) == 1
+
+
+def test_a_release_branch_that_is_not_the_changed_versions_waives_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """release/0.11.0 carrying the text does not cover a rewrite of 0.12.0."""
+    origin = _origin(tmp_path, on_branch=_FINAL_ON_RELEASE, branch="release/0.11.0")
+    work, base = _clone(tmp_path, origin)
+    assert _run_gate(monkeypatch, work, base, _changelog(_FINAL, _PATCH_EARLY, _OLDER)) == 1
+
+
+@pytest.mark.parametrize("version", ["Unreleased", "0.12.0-rc.1", "0.12", "0.12.0junk", "0.12.0\n"])
+def test_only_a_plain_release_version_selects_a_ref(version: str) -> None:
+    assert gate.release_refs(version) == []
+
+
+def test_a_release_versions_refs_are_its_lines_branch_and_its_tag() -> None:
+    assert gate.release_refs("0.12.0") == ["refs/heads/release/0.12.0", "refs/tags/v0.12.0"]
+    assert gate.release_refs("0.11.2") == ["refs/heads/release/0.11.0", "refs/tags/v0.11.2"]
