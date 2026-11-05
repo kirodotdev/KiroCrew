@@ -6241,7 +6241,11 @@
     "crashNotice": {
       "diagnostics_were_saved_locally": "Nouveaux enregistrements de plantage enregistrés sur cet appareil : {{n}}. Joignez-les à votre signalement.",
       "dismiss": "Ignorer",
-      "native_log_off": "La journalisation native dans un fichier (chromium.log) est désactivée pour ce lancement : ce fichier n'est peut-être pas à jour. Raison : {{reason}}",
+      "native_log_off_disk_full": "Le fichier chromium.log date d’une session précédente. Ce lancement n’a pas pu en créer un nouveau, car le disque est plein.",
+      "native_log_off_in_use": "Le fichier chromium.log date d’une session précédente. Ce lancement n’a pas pu en créer un nouveau, car un autre programme a ouvert l’ancien fichier.",
+      "native_log_off_no_access": "Le fichier chromium.log date d’une session précédente. Ce lancement n’a pas pu en créer un nouveau, car l’application n’a pas le droit de déplacer l’ancien fichier.",
+      "native_log_off_other": "Le fichier chromium.log date d’une session précédente. Ce lancement n’a pas pu en créer un nouveau, car l’ancien fichier n’a pas pu être mis de côté.",
+      "native_log_off_unreadable": "Le fichier chromium.log date d’une session précédente. Ce lancement n’a pas pu en créer un nouveau, car l’ancien fichier n’a pas pu être lu.",
       "report_issue": "Signaler un problème",
       "report_note": "L'application s'est fermée de manière inattendue. Nouveaux rapports de plantage enregistrés sur cet appareil : {{n}}.",
       "reveal_failed": "Impossible d’ouvrir le dossier – recherchez crashes.log dans le répertoire des journaux de l’application.",

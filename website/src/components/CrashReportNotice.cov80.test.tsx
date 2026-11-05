@@ -125,20 +125,42 @@ describe('CrashReportNotice', () => {
   })
 
   // When Chromium's file log is off this launch, the chromium.log the user is
-  // asked to attach is not current; the banner and the report note say so.
-  it('says native file logging is off this launch, with the reason', async () => {
-    const reason = 'chromium.log could not be rotated (rotate failed (ENOSPC)), so the file sink is skipped this launch'
-    get.mockResolvedValue(summary({ nativeLogOff: reason }))
+  // asked to attach is from an earlier session. That comes from a caught fs
+  // failure in main, so it renders through ErrorNotice (role="alert", with the
+  // agent hand-off), in plain words for the cause code, and goes in the note.
+  it('says chromium.log is from an earlier session, as an ErrorNotice', async () => {
+    get.mockResolvedValue(summary({ nativeLogOff: 'disk_full' }))
     renderWithProviders(<CrashReportNotice />)
     await screen.findByRole('status')
     const line = screen.getByTestId('crash-notice-native-log-off')
-    expect(line).toHaveTextContent(/native file logging \(chromium\.log\) is off this launch/i)
-    expect(line).toHaveTextContent(reason)
+    expect(line).toHaveAttribute('role', 'alert')
+    expect(line).toHaveTextContent(/chromium\.log is from an earlier session/i)
+    expect(line).toHaveTextContent(/because the disk is full\./i)
+    expect(line).not.toHaveTextContent(/may not be current|ENOSPC|disk_full/i)
     fireEvent.click(screen.getByRole('button', { name: /report issue/i }))
     const dialog = await screen.findByRole('dialog')
     const note = within(dialog).getByRole('textbox', { name: /what happened/i }) as HTMLTextAreaElement
     expect(note.value).toMatch(/closed unexpectedly/i)
-    expect(note.value).toContain(reason)
+    expect(note.value).toMatch(/chromium\.log is from an earlier session\. .*because the disk is full\./i)
+  })
+
+  it.each([
+    ['no_access', /isn't allowed to move the old file/i],
+    ['in_use', /another program has the old file open/i],
+    ['unreadable', /old file couldn't be read/i],
+    ['other', /old file couldn't be moved aside/i],
+  ] as const)('phrases the %s cause in plain words', async (cause, text) => {
+    get.mockResolvedValue(summary({ nativeLogOff: cause }))
+    renderWithProviders(<CrashReportNotice />)
+    await screen.findByRole('status')
+    expect(screen.getByTestId('crash-notice-native-log-off')).toHaveTextContent(text)
+  })
+
+  it('ignores a native-log value that is not a known cause code', async () => {
+    get.mockResolvedValue(summary({ nativeLogOff: 'chromium.log could not be rotated (rotate failed (ENOSPC))' }))
+    renderWithProviders(<CrashReportNotice />)
+    await screen.findByRole('status')
+    expect(screen.queryByTestId('crash-notice-native-log-off')).not.toBeInTheDocument()
   })
 
   it('says nothing about native logging when the sink is armed', async () => {

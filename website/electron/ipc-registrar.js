@@ -35,8 +35,8 @@ function createIpcRegistrar({
   port,
   detectWsl = detectWsl2,
   crashScan = null,
-  // This launch's `initNativeLogging` result, read per call. Only its pathless
-  // `fileLogOffReason` reaches the renderer, through `crashNoticeSummary`.
+  // This launch's `initNativeLogging` result, read per call. Only its
+  // `fileLogOffCause` code reaches the renderer, through `crashNoticeSummary`.
   nativeLoggingStatus = null,
   glog,
   // Close/reopen the Crew Companion overlay around an update install so it does

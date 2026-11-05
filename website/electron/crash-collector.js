@@ -112,12 +112,13 @@ const {
   MAX_INSPECT_PER_RUN,
   MAX_PENDING_ATTEMPTS,
 } = require("./runtime/crash/scan");
+const { NATIVE_LOG_OFF_CAUSES } = require("./native-logging");
 
 /**
  * The renderer-facing view of a scan.
  *
  * Deliberately narrow: ONE number, plus `nativeLogOff` on a launch whose
- * Chromium file log is off (a fixed, pathless sentence, read by the banner). No
+ * Chromium file log is off (a cause code from a closed set, read by the banner). No
  * paths, filenames, module names, exception codes, timestamps, or logs directory — all of which describe the machine (down
  * to the account name in a home directory) and none of which the notice needs.
  * A connection window pointed at a remote gateway shares this preload, so the
@@ -136,20 +137,16 @@ function crashNoticeSummary(scan, nativeLogging = null) {
   const newCrashes = (scan && scan.newCrashes) || [];
   const summary = { newCount: newCrashes.length };
   // Present only when Chromium's file log is off this launch (see
-  // `initNativeLogging`'s `fileLogOffReason`): then the chromium.log the banner
-  // asks the user to attach is not this session's, and the notice says so. The
-  // reason is pathless by construction there; the type and length checks here
-  // keep anything else from riding this channel.
-  const reason = nativeLogging && nativeLogging.fileLogOffReason;
-  if (typeof reason === "string" && reason && reason.length <= MAX_NATIVE_LOG_OFF_REASON) {
-    summary.nativeLogOff = reason;
+  // `initNativeLogging`'s `fileLogOffCause`): then the chromium.log the banner
+  // asks the user to attach is from an earlier session, and the notice says so.
+  // Only a code from the closed set crosses; anything else is dropped, so no
+  // free text can ride this channel.
+  const cause = nativeLogging && nativeLogging.fileLogOffCause;
+  if (typeof cause === "string" && NATIVE_LOG_OFF_CAUSES.includes(cause)) {
+    summary.nativeLogOff = cause;
   }
   return summary;
 }
-
-// Generous for the fixed sentence `initNativeLogging` builds; anything longer is
-// not that sentence and is dropped rather than truncated.
-const MAX_NATIVE_LOG_OFF_REASON = 200;
 
 module.exports = {
   armCrashCollector,

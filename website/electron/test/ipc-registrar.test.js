@@ -893,16 +893,15 @@ test("crash-reports:get narrows the scan to a single count", async () => {
 });
 
 test("crash-reports:get says when native file logging is off, and nothing else of it", async () => {
-  const reason = "chromium.log could not be rotated (rotate failed (ENOSPC)), so the file sink is skipped this launch";
   const h = harness({
     crashScan: crashScanResult,
-    nativeLoggingStatus: { blocked: true, logPath: "/logs/chromium.log", fileLogOffReason: reason },
+    nativeLoggingStatus: { blocked: true, logPath: "/logs/chromium.log", fileLogOffCause: "disk_full" },
   });
   h.registrar.registerShell();
 
   const summary = await h.handlers.get("crash-reports:get")(wslEvent());
 
-  assert.deepEqual(summary, { newCount: 2, nativeLogOff: reason });
+  assert.deepEqual(summary, { newCount: 2, nativeLogOff: "disk_full" });
   assert.equal(JSON.stringify(summary).includes("/logs"), false, "the log path stays in main");
 });
 

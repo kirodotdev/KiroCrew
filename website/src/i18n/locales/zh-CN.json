@@ -5919,7 +5919,11 @@
     "crashNotice": {
       "diagnostics_were_saved_locally": "已在本机保存 {{n}} 条新的崩溃记录。反馈问题时请一并附上。",
       "dismiss": "忽略",
-      "native_log_off": "本次启动未开启原生文件日志（chromium.log），因此该文件可能不是最新的。原因：{{reason}}",
+      "native_log_off_disk_full": "chromium.log 来自之前的会话。由于磁盘已满，本次启动无法开始新的日志。",
+      "native_log_off_in_use": "chromium.log 来自之前的会话。由于旧文件被其他程序打开，本次启动无法开始新的日志。",
+      "native_log_off_no_access": "chromium.log 来自之前的会话。由于应用无权移动旧文件，本次启动无法开始新的日志。",
+      "native_log_off_other": "chromium.log 来自之前的会话。由于无法移走旧文件，本次启动无法开始新的日志。",
+      "native_log_off_unreadable": "chromium.log 来自之前的会话。由于无法读取旧文件，本次启动无法开始新的日志。",
       "report_issue": "反馈问题",
       "report_note": "应用意外退出。本机新保存的崩溃记录：{{n}} 条。",
       "reveal_failed": "无法打开文件夹——请在应用的日志目录中查找 crashes.log。",
