@@ -11052,7 +11052,7 @@
       "failed_to_run_job": "जॉब चलाने में विफल"
     },
     "useKeyboardShortcuts": {
-      "chats_panel": "चैट पैनल",
+      "chats_panel": "चैट पैनल (टेक्स्ट फ़ील्ड के बाहर)",
       "cycle_agent": "एजेंट बदलते जाएँ",
       "cycle_approval_mode": "मंज़ूरी मोड बदलते जाएँ",
       "cycle_model": "मॉडल बदलते जाएँ",
@@ -11073,7 +11073,7 @@
       "next_chat_outside_text_fields": "अगली चैट (टेक्स्ट फ़ील्ड के बाहर)",
       "next_notification": "अगली सूचना",
       "next_prompt": "इस चैट का अगला प्रॉम्प्ट (टेक्स्ट फ़ील्ड के बाहर)",
-      "notifications_panel": "सूचना पैनल",
+      "notifications_panel": "सूचना पैनल (टेक्स्ट फ़ील्ड के बाहर)",
       "open_agent_monitor": "एजेंट मॉनिटर खोलें (सब-एजेंट)",
       "open_settings": "सेटिंग्स खोलें",
       "open_shortcuts_help": "शॉर्टकट मदद खोलें",
@@ -11085,8 +11085,8 @@
       "previous_model": "पिछला मॉडल",
       "previous_prompt": "इस चैट का पिछला प्रॉम्प्ट (टेक्स्ट फ़ील्ड के बाहर)",
       "previous_reasoning_effort": "पिछला रीज़निंग प्रयास",
-      "projects_panel": "Task Runner पैनल",
-      "schedule_panel": "शेड्यूल पैनल",
+      "projects_panel": "Task Runner पैनल (टेक्स्ट फ़ील्ड के बाहर)",
+      "schedule_panel": "शेड्यूल पैनल (टेक्स्ट फ़ील्ड के बाहर)",
       "switch_to_local": "स्थानीय पर जाएँ",
       "switch_to_remote_crew": "रिमोट क्रू {{n}} पर जाएँ",
       "walk_back_mru_history": "MRU इतिहास में पीछे जाएँ",

@@ -10809,7 +10809,7 @@
       "failed_to_run_job": "运行任务失败"
     },
     "useKeyboardShortcuts": {
-      "chats_panel": "聊天面板",
+      "chats_panel": "聊天面板（不在文本框中时）",
       "cycle_agent": "循环切换代理",
       "cycle_approval_mode": "循环切换审批模式",
       "cycle_model": "循环切换模型",
@@ -10830,7 +10830,7 @@
       "next_chat_outside_text_fields": "下一个聊天（不在文本框中时）",
       "next_notification": "下一条通知",
       "next_prompt": "当前聊天的下一个提示词（不在文本框中时）",
-      "notifications_panel": "通知面板",
+      "notifications_panel": "通知面板（不在文本框中时）",
       "open_agent_monitor": "打开代理监视器（子代理）",
       "open_settings": "打开设置",
       "open_shortcuts_help": "打开快捷键帮助",
@@ -10842,8 +10842,8 @@
       "previous_model": "上一个模型",
       "previous_prompt": "当前聊天的上一个提示词（不在文本框中时）",
       "previous_reasoning_effort": "上一个推理强度",
-      "projects_panel": "Task Runner 面板",
-      "schedule_panel": "计划面板",
+      "projects_panel": "Task Runner 面板（不在文本框中时）",
+      "schedule_panel": "计划面板（不在文本框中时）",
       "switch_to_local": "切换到本地",
       "switch_to_remote_crew": "切换到远程 Crew {{n}}",
       "walk_back_mru_history": "回溯 MRU 历史",

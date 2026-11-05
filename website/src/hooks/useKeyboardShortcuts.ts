@@ -270,6 +270,9 @@ export const SHORTCUT_LABEL_KEY: Record<string, string> = {
   'chat-mru-back': 'hooks.useKeyboardShortcuts.walk_back_mru_history',
   'turn-prev': 'hooks.useKeyboardShortcuts.previous_prompt',
   'turn-next': 'hooks.useKeyboardShortcuts.next_prompt',
+  // The handler returns before the panel map while a text field has focus, so
+  // these four rows carry "(outside text fields)" in their own (unshared)
+  // catalog values, like turn-prev/turn-next.
   'nav-chat': 'hooks.useKeyboardShortcuts.chats_panel',
   'nav-notifications': 'hooks.useKeyboardShortcuts.notifications_panel',
   'nav-projects': 'hooks.useKeyboardShortcuts.projects_panel',

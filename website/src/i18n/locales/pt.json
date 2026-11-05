@@ -11295,7 +11295,7 @@
       "failed_to_run_job": "Falha ao executar o job"
     },
     "useKeyboardShortcuts": {
-      "chats_panel": "Painel de conversas",
+      "chats_panel": "Painel de conversas (fora dos campos de texto)",
       "cycle_agent": "Alternar entre agentes",
       "cycle_approval_mode": "Alternar entre modos de aprovação",
       "cycle_model": "Alternar entre modelos",
@@ -11316,7 +11316,7 @@
       "next_chat_outside_text_fields": "Próxima conversa (fora dos campos de texto)",
       "next_notification": "Próxima notificação",
       "next_prompt": "Próximo prompt desta conversa (fora dos campos de texto)",
-      "notifications_panel": "Painel de notificações",
+      "notifications_panel": "Painel de notificações (fora dos campos de texto)",
       "open_agent_monitor": "Abrir o monitor de agentes (subagentes)",
       "open_settings": "Abrir as configurações",
       "open_shortcuts_help": "Abrir a ajuda de atalhos",
@@ -11328,8 +11328,8 @@
       "previous_model": "Modelo anterior",
       "previous_prompt": "Prompt anterior desta conversa (fora dos campos de texto)",
       "previous_reasoning_effort": "Esforço de raciocínio anterior",
-      "projects_panel": "Painel do Task Runner",
-      "schedule_panel": "Painel de agendamentos",
+      "projects_panel": "Painel do Task Runner (fora dos campos de texto)",
+      "schedule_panel": "Painel de agendamentos (fora dos campos de texto)",
       "switch_to_local": "Alternar para Local",
       "switch_to_remote_crew": "Alternar para a crew remota {{n}}",
       "walk_back_mru_history": "Voltar no histórico MRU",
