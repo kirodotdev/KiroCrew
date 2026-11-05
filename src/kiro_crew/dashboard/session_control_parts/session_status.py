@@ -303,9 +303,10 @@ def _created_history_roster(
     """Persisted birth metadata for sessions created by *caller_key*.
 
     This is the transcript-meta half of :func:`created_session_status`. It is a
-    weaker source than the fenced crew log: ``created_by`` is already trusted by
-    the member ownership boundary, but it is not gateway-authored lineage. Rows
-    retain that distinction through their ``source`` value.
+    weaker source than the fenced crew log: ``created_by`` is a claim the line
+    makes, which the member ownership boundary keeps only when the crew log
+    confirms it, and it is not gateway-authored lineage. Rows retain that
+    distinction through their ``source`` value.
 
     The scan is read-only. ``list_sessions`` supplies the catalog and
     ``get_metadata_status`` supplies both the creator edge and a readability

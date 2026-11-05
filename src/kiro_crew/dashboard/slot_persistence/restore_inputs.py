@@ -3,10 +3,11 @@
 Most of this is disk work or a pure screen that touches no slot state, which is
 what lets the async restore drivers run it on a worker thread: the agent-to-model
 map, the restore config, the open-tab snapshot and its key screen, the committed
-agent choice, the delete-during-read witness, the app-owned channel-row screen and
-the recent-session key map. The MCP-app claim recovery pairs its spool read with
-the in-memory apply that follows a build. The drivers, the prefetch helpers and the
-slot builders stay in ``chat_persistence_parts``.
+agent choice, the delete-during-read witness, the app-owned channel-row screen, the
+crew-log fold a restored ``created_by`` is checked against and the recent-session key
+map. The MCP-app claim recovery pairs its spool read with the in-memory apply that
+follows a build. The drivers, the prefetch helpers and the slot builders stay in
+``chat_persistence_parts``.
 
 New restore-time reads and screens belong here.
 """
@@ -303,6 +304,28 @@ def _restored_agent_name(session_key: str, meta: dict) -> str:
         if _member_record_runs_another_template(session_key, agent):
             return agent
     return selected or (agent if isinstance(agent, str) else "")
+
+
+def _seed_session_tree(meta: dict) -> None:
+    """Fold the crew log before a restore checks *meta*'s ``created_by``. Blocking.
+
+    The restore reads that claim against the crew log's creation records with no
+    I/O, and a tree not folded yet confirms nothing, so a worker restored at boot
+    would come back with no creator. Idempotent and cheap after the first fold;
+    never raises, so a fold that fails leaves the claim unconfirmed.
+    """
+    if not meta.get("created_by"):
+        return
+    try:
+        from kiro_crew.crew_log import emit as crew_log_emit
+
+        if not crew_log_emit.enabled():
+            return
+        from kiro_crew.crew_log.session_tree_projection import projection
+
+        projection().ensure_seeded()
+    except Exception:
+        logger.debug("session tree could not be folded for a restore", exc_info=True)
 
 
 def _member_record_runs_another_template(session_key: str, agent: str) -> bool:
