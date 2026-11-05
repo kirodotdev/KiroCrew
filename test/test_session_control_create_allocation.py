@@ -392,7 +392,7 @@ def test_one_caller_cannot_consume_everybody_elses_slots(tmp_path, monkeypatch):
     """The per-creator ceiling bounds the DISTRIBUTION, not just the total.
 
     With only the global cap, a looping creator could hold all ``MAX_LIVE_SLOTS`` and
-    every later create, a person's new tab included, would get the 429.
+    every later create, a person's new tab included, would get the 409.
     """
     state = _make_state(tmp_path)
     hog = _slot(state, "chat-hog")
@@ -408,7 +408,7 @@ def test_one_caller_cannot_consume_everybody_elses_slots(tmp_path, monkeypatch):
     with pytest.raises(sc.SessionControlError) as err:
         asyncio.run(sc.create_session(state, caller_session_key=_key(hog)))
     assert err.value.code == "creator_slot_cap_reached"
-    assert err.value.status == 429, "a cap breach is a 429, not a 500"
+    assert err.value.status == 409, "a cap breach is a 409: waiting does not clear it"
 
     # The global ceiling is nowhere near full, which is the point: the refusal came
     # from this caller's own share, and everyone else still has room.
@@ -538,7 +538,7 @@ def test_create_refuses_at_the_same_slot_cap_as_fork_and_import(tmp_path, monkey
         asyncio.run(sc.create_session(state, caller_session_key=_key(caller)))
 
     assert exc.value.code == "slot_cap_reached"
-    assert exc.value.status == 429
+    assert exc.value.status == 409
 
 
 def test_a_failed_persist_retracts_the_slot(tmp_path, monkeypatch):

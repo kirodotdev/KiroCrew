@@ -514,7 +514,7 @@ name it.
 A handed-over session counts against its manager's per-caller session cap and
 still counts against its creator's, so a handoff, or closing the manager, never
 frees room under the creator's cap. A handoff is refused with
-`creator_slot_cap_reached` (HTTP 429) when `to` already holds the cap.
+`creator_slot_cap_reached` (HTTP 409) when `to` already holds the cap.
 After an archive, the manager can `session_revive` the session and still manages it.
 
 ### `session_stop` vs `session_close`
@@ -775,7 +775,7 @@ Refusals only a revive gives:
 |---|---|
 | `member_thread_target` | The match is a Bot's thread, which is not addressable |
 | `folder_not_found` | The `folder` you named does not exist; nothing was revived |
-| `creator_slot_cap_reached` | HTTP 429: you already hold the per-caller live-session cap |
+| `creator_slot_cap_reached` | HTTP 409: you already hold the per-caller live-session cap |
 | `resume_in_progress` | HTTP 409: the session is being resumed elsewhere. Try again |
 | `resume_conflict` | HTTP 409: the session is being deleted. Try again |
 | `resume_session_deleted` | HTTP 409: the session was deleted while it was being resumed |

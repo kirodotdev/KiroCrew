@@ -121,7 +121,7 @@ _MATE_AUTO_GRANTS = (
 #:   mounted behind an approval like any ungranted tool, and ordinary agents
 #:   keep them.
 #: * ``session_create`` — creates a NEW session in the caller's workspace, bounded
-#:   both globally (``MAX_LIVE_SLOTS``, 429 on breach) and per caller
+#:   both globally (``MAX_LIVE_SLOTS``, 409 on breach) and per caller
 #:   (``MAX_SLOTS_PER_CREATOR``), and visible in the sidebar. GRANTED.
 #:   One known side effect, recorded because it is the closest thing to an
 #:   exception here: ``create_session`` mints its slot with
