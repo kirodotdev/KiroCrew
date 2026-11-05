@@ -12,6 +12,7 @@ from ..trust_patterns import ENV_ASSIGNMENT_RE
 from . import shell_commands as _commands
 from . import shell_normalizer as _shell
 from .denied_rules import BUILTIN_DENIED_RULES
+from .shell_normalizer_escapes import _ANSI_C_QUOTE_RE
 
 _RM_FLOOR_RULE_IDS = {
     "root": "local-destructive-rm-rf-root",
@@ -90,7 +91,7 @@ def _segments(command: str, track: bool = True) -> "list[str]":
     out = []
     # ``&>`` is one redirect in bash but a background ``&`` then ``>`` in dash
     for text in dict.fromkeys((command, command.replace("&>", "& >"))):
-        for cmd in _commands.read_commands(text, track):
+        for cmd in _commands.read_commands(text, track, heredocs=True):
             seg: list[str] = []
             for step in cmd.steps:
                 if step.redirect:
@@ -169,16 +170,15 @@ def _after_shell_verb(tokens: "list[str]", programs: "list[str]", index: int) ->
 
 
 def _command_lines(text: str) -> "list[str]":
-    """*text* cut at each live newline, a comment cut off; it ends after a live ``<<``
-    heredoc line (not a ``<<<`` herestring), whose body is data."""
+    """*text* without its heredoc bodies (data unless fed to a shell, see
+    :func:`_heredoc_payloads`), cut at each live newline, a comment cut off."""
+    text = _without_bodies(text)
     lines: list[str] = []
-    pos, heredoc = 0, False
-    while pos <= len(text) and not heredoc:
+    pos = 0
+    while pos <= len(text):
         rest, cut, end = text[pos:], len(text), len(text)
         for step in _shell._iter_shell_chars(rest):
             at = step.offset
-            if step.active and rest.startswith("<<", at):
-                heredoc = heredoc or not (rest.startswith("<<<", at) or rest[at - 1 : at] == "<")
             if step.active and step.char == "#" and _shell._opens_comment(rest, at):
                 newline = rest.find("\n", at)
                 cut, end = pos + at, len(text) if newline < 0 else pos + newline
@@ -189,6 +189,118 @@ def _command_lines(text: str) -> "list[str]":
         lines.append(text[pos:cut])
         pos = end + 1
     return lines
+
+
+def _without_bodies(text: str) -> str:
+    """*text* with each heredoc body and the tag line that closed it cut out."""
+    commands = _commands.read_commands(text, heredocs=True) if "<<" in text else []
+    spans: list[list[int]] = []  # a body nested in another body's substitution merges
+    for start, end in sorted((d.start, d.tail) for c in commands for d in c.heredocs):
+        if spans and start <= spans[-1][1]:
+            spans[-1][1] = max(spans[-1][1], end)
+        else:
+            spans.append([start, end])
+    for start, end in reversed(spans):
+        text = text[:start] + text[end:]
+    return text
+
+
+def _heredoc_payloads(command: str) -> "list[str]":
+    """Each heredoc body a shell reads as its script (``bash <<EOF``, ``cat <<EOF | sh``),
+    and each command read from a substitution in an unquoted body, which bash runs."""
+    commands = _commands.read_commands(command, heredocs=True)
+    docs = [d for c in commands for d in c.heredocs if not d.quoted]
+    out: list[str] = []
+    for i, cmd in enumerate(commands):
+        if cmd.steps and any(d.start <= cmd.steps[0].start < d.end for d in docs):
+            out.append(command[cmd.steps[0].start : cmd.steps[-1].end])
+        if cmd.heredocs and (
+            _runs_shell(cmd)
+            or cmd.separator == "|"
+            and i + 1 < len(commands)
+            and _runs_shell(commands[i + 1])
+            and _forwards_stdin(cmd)
+            and not _stdin_redirect(commands[i + 1])[0]  # its own stdin replaces the pipe
+        ):
+            out.extend(_stdin_body(cmd))
+    return out
+
+
+def _forwards_stdin(cmd: "_commands.ShellCommand") -> bool:
+    """*cmd* copies its stdin to its stdout (``cat``, ``tee``): only then does a piped
+    shell read its heredoc; ``printf ... <<EOF | bash`` sends printf's output instead."""
+    from . import argv_rules  # argv_rules imports this module
+
+    words = _shell._shell_tokens(" ".join(word.raw for word in cmd.argv))
+    return (argv_rules._program_args(words) or ("",))[0] in ("cat", "tee")
+
+
+def _stdin_body(cmd: "_commands.ShellCommand") -> "list[str]":
+    """The heredoc body that is *cmd*'s stdin, if its last fd 0 redirection is one."""
+    op, index = _stdin_redirect(cmd)
+    reads = op.startswith("<<") and not op.startswith("<<<") and index < len(cmd.heredocs)
+    return [cmd.heredocs[index].body] if reads else []
+
+
+def _stdin_redirect(cmd: "_commands.ShellCommand") -> "tuple[str, int]":
+    """*cmd*'s last fd 0 redirection operator (``""`` for none) and how many heredocs come
+    before it: a later ``</dev/null`` or ``<<`` replaces an earlier one; ``3<<B`` is not fd 0."""
+    last, heredocs = ("", 0), 0
+    for word, _target in cmd.redirects:
+        op = word.raw.lstrip("0123456789")
+        if op[:1] == "<" and word.raw[: len(word.raw) - len(op)] in ("", "0"):
+            last = (op, heredocs)
+        heredocs += op.startswith("<<") and not op.startswith("<<<")
+    return last
+
+
+def _runs_shell(cmd: "_commands.ShellCommand") -> bool:
+    """*cmd* is a shell reading its script from stdin (``bash``, ``sudo -u x sh -s``): the
+    program behind any wrapper is a shell given no ``-c`` and no script file."""
+    from . import argv_rules  # argv_rules imports this module
+
+    words = _shell._shell_tokens(" ".join(word.raw for word in cmd.argv))
+    program, args = argv_rules._program_args(words) or ("", [])
+    if program == "busybox" and args:  # busybox's next word is the applet
+        program, args = _shell._program_basename(args[0]), args[1:]
+    if program not in _LITERAL_SHELLS:
+        return False
+    rest, from_stdin = iter(args), False
+    for arg in rest:
+        if arg in _SHELL_VALUE_OPTIONS or arg[:1] in "-+" and arg[1:2] != "-" and arg[-1:] in "oO":
+            if next(rest, None) == "noexec" and arg[:1] == "-":
+                return False  # ``-o noexec`` checks syntax and runs nothing
+        elif arg[:1] == "-" and arg[1:2] != "-" and "n" in arg:
+            return False  # ``-n`` checks syntax and runs nothing
+        elif arg in ("--help", "--version"):
+            return False  # prints and exits without reading stdin
+        elif _shell._is_shell_command_flag(arg):
+            return False  # ``-c`` wins, even after ``-s``: stdin is its data
+        elif arg[:1] not in "-+":
+            return from_stdin  # after ``-s`` an argument, else a script file
+        elif arg[:1] == "-" and arg[1:2] != "-" and "s" in arg:
+            from_stdin = True  # ``-s``: the script is stdin unless a later ``-c``
+    return True
+
+
+#: Characters one floor call may read across the command and all its nested payloads:
+#: 16 times ``paths.MAX_SCANNABLE_COMMAND_CHARS``, so a capped input ends well under 1 s.
+_WALK_BUDGET_CHARS = 16 * 20 * 1024
+#: Shell options that take the next word as their value (``-o posix``).
+_SHELL_VALUE_OPTIONS = frozenset({"-o", "+o", "-O", "+O", "--rcfile", "--init-file"})
+
+
+def _ansi_c_newlines(command: str) -> str:
+    """*command* with each ``\\n`` escape in a ``$'…'`` span as a real newline. The
+    tokenizer reads that escape as a blank, but a nested shell given it reads a new line."""
+
+    def keep(match: "re.Match[str]") -> str:
+        if match.group(1) is None:
+            return match.group(0)
+        body = re.sub(r"\\(.)", lambda m: "\n" if m.group(1) == "n" else m.group(0), match.group(1))
+        return "$'" + body + "'"
+
+    return _ANSI_C_QUOTE_RE.sub(keep, command)
 
 
 def _expands_nothing(command: str) -> bool:
@@ -241,12 +353,24 @@ def _rm_wipe_targets_nested(command: str) -> "set[str]":
     kinds: set[str] = set()
     pending, seen = [command], {command}
     verbatim = _expands_nothing(command)
+    walked = 0
     while pending:
         source = pending.pop()
+        walked += len(source)
+        if walked > _WALK_BUDGET_CHARS:  # deep nesting re-reads each suffix: fail closed
+            raise RuntimeError(f"rm floor walk passed its budget of {_WALK_BUDGET_CHARS} chars")
         kinds |= _rm_wipe_targets(source)
-        folded = _shell._fold_line_continuations(source)
+        # a quoted heredoc body keeps its backslash-newlines, so fold only outside bodies
+        folded = _shell._fold_line_continuations(
+            _without_bodies(source) if "<<" in source else source
+        )
         kinds |= _rm_wipe_targets(folded) if folded != source else set()  # bash folds them
-        for tokens in _command_tokens(source):
+        for payload in _heredoc_payloads(source) if "<<" in source else ():
+            if len(payload) < len(source) and payload not in seen:
+                seen.add(payload)
+                pending.append(payload)
+        views = (source, _ansi_c_newlines(source)) if "$'" in source else (source,)
+        for tokens in (t for view in dict.fromkeys(views) for t in _command_tokens(view)):
             payloads = _shell._nested_shell_payloads(tokens, allow_join=False)
             if not payloads:
                 continue

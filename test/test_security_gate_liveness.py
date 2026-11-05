@@ -682,7 +682,13 @@ def _url_payload_command(n: int) -> str:
 #: Raised by one, from 34,522, for the TickTick consent host in ``exfil_oauth``'s
 #: ``_OAUTH_AUTHORIZATION_ENDPOINTS``: one allowlist entry, no new machinery. Re-measured.
 #: Raised by one, from 34,523, for the Railway consent host in the same set, likewise.
-_PACKAGE_LINE_BUDGET = 34_524
+#: Raised by 175 more, from 34,524, for here-documents in the shared reader
+#: (``shell_commands.read_commands(heredocs=True)``: each body handed to its command,
+#: the substitutions of an unquoted body read once) and the rm floor's use of it (a body
+#: a shell reads, a command after a heredoc, a ``\n`` escape in ``$'...'``). Deny-only:
+#: the default read is unchanged and nothing the floor refused is allowed now; the
+#: walk is bounded by ``rm_floor._WALK_BUDGET_CHARS``.
+_PACKAGE_LINE_BUDGET = 34_699
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

@@ -62,6 +62,11 @@ _WRAPPERS: dict[str, tuple[frozenset[str], int]] = {
     "stdbuf": (frozenset({"-i", "-o", "-e", "--input", "--output", "--error"}), 0),
     "timeout": (frozenset({"-s", "-k", "--signal", "--kill-after"}), 1),
     "chroot": (frozenset({"--userspec", "--groups"}), 1),
+    "nsenter": (frozenset({"-t", "--target", "-S", "--setuid", "-G", "--setgid"}), 0),
+    "unshare": (frozenset({"--propagation", "--setgroups"}), 0),
+    "flock": (frozenset({"-w", "--timeout", "-E", "--conflict-exit-code"}), 1),
+    "taskset": (frozenset(), 1),
+    "chrt": (frozenset(), 1),
     "xargs": (
         frozenset(
             {
