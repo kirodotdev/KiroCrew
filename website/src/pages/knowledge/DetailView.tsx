@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { ChevronLeft, Copy, Download, Archive, X, RefreshCw, AlertCircle, Link2, ArrowUpRight, Tag } from 'lucide-react'
 import { Card, Btn, Badge, ContentSkeleton } from '../../components/ui'
@@ -13,6 +13,7 @@ import { fmtNumber } from '../../i18n/format'
 
 import { i18nT } from '../../i18n/t'
 import { useImeGuard } from '../../hooks/useImeGuard'
+import { useConfirm } from '../../components/ConfirmDialog'
 function highlightEntities(text: string, entities: Entity[], onEntityClick?: (name: string) => void) {
   if (!entities?.length) return text
   const names = [...entities].sort((a, b) => b.name.length - a.name.length).map(e => e.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
@@ -164,6 +165,14 @@ function isMarkdownContent(item: KnowledgeItem): boolean {
 
 export default function DetailView({ itemId, onBack, onEntityClick }: { itemId: string; onBack: () => void; onEntityClick?: (name: string) => void }) {
   const queryClient = useQueryClient()
+  const { confirm, confirmDialog, confirmOpen } = useConfirm()
+  // The delete can finish after this view moved to another item or unmounted;
+  // only the view still showing the deleted item navigates back.
+  const currentItemIdRef = useRef<string | null>(itemId)
+  useEffect(() => {
+    currentItemIdRef.current = itemId
+    return () => { currentItemIdRef.current = null }
+  }, [itemId])
   const { data: item, isLoading: loading, isError: loadFailed, error: loadError } = useQuery({
     queryKey: ['knowledge-item', itemId],
     queryFn: () => knowledgeApi<KnowledgeItem>(`/items/${itemId}`),
@@ -192,21 +201,32 @@ export default function DetailView({ itemId, onBack, onEntityClick }: { itemId: 
 
   const deleteMutation = useMutation({
     mutationFn: (id: string) => knowledgeApi(`/items/${id}`, { method: 'DELETE' }),
-    onMutate: async () => {
+    onMutate: async (id) => {
       await queryClient.cancelQueries({ queryKey: ['knowledge-items'] })
       const prev = queryClient.getQueriesData({ queryKey: ['knowledge-items'] })
-      queryClient.setQueriesData<{ items: KnowledgeItem[]; total: number }>({ queryKey: ['knowledge-items'] }, dropFromList)
+      queryClient.setQueriesData<{ items: KnowledgeItem[]; total: number }>({ queryKey: ['knowledge-items'] }, dropItemFrom(id))
       return { prev }
     },
     onError: (_err, _vars, ctx) => {
       ctx?.prev.forEach(([key, data]) => queryClient.setQueryData(key, data))
     },
-    onSuccess: () => {
+    onSuccess: (_data, id) => {
       queryClient.invalidateQueries({ queryKey: ['knowledge-items'] })
       queryClient.invalidateQueries({ queryKey: ['knowledge-stats'] })
-      onBack()
+      if (currentItemIdRef.current === id) onBack()
     },
   })
+
+  const handleDelete = async () => {
+    if (deleteMutation.isPending || !item || confirmOpen) return
+    const id = item.id
+    const ok = await confirm({
+      title: i18nT('pages.knowledge.detailView.delete'),
+      body: i18nT('pages.knowledge.detailView.permanently_delete_this_item'),
+      confirmLabel: i18nT('pages.knowledge.detailView.delete'),
+    })
+    if (ok) deleteMutation.mutate(id)
+  }
 
   const { copied, copy } = useCopy()
   const copyContent = () => {
@@ -214,12 +234,13 @@ export default function DetailView({ itemId, onBack, onEntityClick }: { itemId: 
     copy(item.content || item.summary || item.title)
   }
 
-  if (loading) return <ContentSkeleton />
+  if (loading) return <>{confirmDialog}<ContentSkeleton /></>
   // A failed read is not a missing item: "not found" in front of an outage
   // sends the user looking for an item that is still there.
   if (loadFailed && !item) {
     return (
       <div className="animate-rise">
+        {confirmDialog}
         <button onClick={onBack} className="flex items-center gap-1 text-muted hover:text-text text-[13px] mb-3 bg-transparent border-none cursor-pointer"><ChevronLeft size={14} /> {i18nT('pages.knowledge.detailView.back_to_list')}</button>
         <ErrorNotice
           askAgent
@@ -230,10 +251,11 @@ export default function DetailView({ itemId, onBack, onEntityClick }: { itemId: 
       </div>
     )
   }
-  if (!item) return <div className="text-muted text-sm">{i18nT('pages.knowledge.detailView.item_not_found')}</div>
+  if (!item) return <>{confirmDialog}<div className="text-muted text-sm">{i18nT('pages.knowledge.detailView.item_not_found')}</div></>
 
   return (
     <div className="animate-rise">
+      {confirmDialog}
       <button onClick={onBack} className="flex items-center gap-1 text-muted hover:text-text text-[13px] mb-3 bg-transparent border-none cursor-pointer"><ChevronLeft size={14} /> {i18nT('pages.knowledge.detailView.back_to_list')}</button>
       {/* A failed refresh over the cached item: what is below may be out of date. */}
       <ErrorNotice
@@ -336,7 +358,7 @@ export default function DetailView({ itemId, onBack, onEntityClick }: { itemId: 
         {item.status === 'archived'
           ? <Btn disabled={archiveMutation.isPending} onClick={() => archiveMutation.mutate({ id: item.id, status: 'active' })}><RefreshCw size={12} /> {i18nT('pages.knowledge.detailView.unarchive')}</Btn>
           : <Btn disabled={archiveMutation.isPending} onClick={() => archiveMutation.mutate({ id: item.id, status: 'archived' })}><Archive size={12} /> {i18nT('pages.knowledge.detailView.archive')}</Btn>}
-        <Btn disabled={deleteMutation.isPending} onClick={() => { if (confirm(i18nT('pages.knowledge.detailView.permanently_delete_this_item'))) deleteMutation.mutate(item.id) }}><X size={12} /> {i18nT('pages.knowledge.detailView.delete')}</Btn>
+        <Btn disabled={deleteMutation.isPending} onClick={() => { void handleDelete() }}><X size={12} /> {i18nT('pages.knowledge.detailView.delete')}</Btn>
       </div>
       {(archiveMutation.isError || deleteMutation.isError) && (
         <div className="mt-2 text-[12px] text-danger flex items-center gap-1">

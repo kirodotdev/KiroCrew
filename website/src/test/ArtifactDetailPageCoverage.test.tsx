@@ -26,7 +26,9 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { screen, waitFor, fireEvent, within, act } from '@testing-library/react'
-import { Routes, Route } from 'react-router-dom'
+import { i18nT } from '../i18n/t'
+import { confirmAction } from './confirmAction'
+import { Routes, Route, useNavigate } from 'react-router-dom'
 import ArtifactDetailPage from '../pages/ArtifactDetailPage'
 import { renderWithProviders } from './helpers'
 import { api } from '../api/client'
@@ -141,14 +143,19 @@ const mkComment = (overrides: Partial<ArtifactComment> = {}): ArtifactComment =>
   ...overrides,
 })
 
+function NextArtifact() {
+  const navigate = useNavigate()
+  return <button onClick={() => navigate('/artifacts/other')}>Other artifact</button>
+}
+
 /** Mount on the real route; a sibling route stands in for the library. */
 function renderRoute() {
   return renderWithProviders(
-    <Routes>
+    <><NextArtifact /><Routes>
       <Route path="/artifacts/:slug" element={<ArtifactDetailPage />} />
       <Route path="/artifacts" element={<div>library page</div>} />
       <Route path="/chat" element={<div>chat page</div>} />
-    </Routes>,
+    </Routes></>,
     { route: `/artifacts/${SLUG}` },
   )
 }
@@ -210,6 +217,123 @@ describe('ArtifactDetailPage — mutation paths', () => {
   })
 
   // ── save / snapshot ───────────────────────────────────────────────────────
+  for (const branch of ['loading', 'error', 'not-found'] as const) {
+    it(`keeps the revert confirmation open while the page shows its ${branch} state`, async () => {
+      vi.mocked(api).artifactVersion = vi.fn().mockResolvedValue(mkArtifact({ version: 1, content: '# old' }))
+      const { queryClient } = await mount(mkArtifact({ version: 2 }))
+      await pickVersion('v1')
+      fireEvent.click(await screen.findByRole('button', { description: 'Revert to v1' }))
+      const dialog = await screen.findByRole('dialog', { name: 'Revert' })
+      expect(within(dialog).getByText(i18nT('pages.artifactDetailPage.revert_confirm', { version: 1, newVersion: 3 }), { selector: 'p' })).toBeInTheDocument()
+      expect(within(dialog).getByRole('button', { name: 'Revert' })).not.toHaveClass('text-danger')
+      const key = ['artifact', SLUG, 'version', 1]
+      let finishRead: (() => void) | undefined
+      if (branch === 'not-found') {
+        act(() => { queryClient.setQueryData(key, null) })
+        await screen.findByText('Not found.')
+      } else {
+        let release!: (value: Artifact) => void
+        vi.mocked(api).artifactVersion = branch === 'error'
+          ? vi.fn().mockRejectedValue(new Error('snapshot unavailable'))
+          : vi.fn().mockImplementation(() => new Promise<Artifact>(resolve => { release = resolve }))
+        act(() => { void queryClient.resetQueries({ queryKey: key, exact: true }) })
+        await screen.findByText(branch === 'error' ? 'snapshot unavailable' : 'Loading…')
+        if (branch === 'loading') {
+          expect(screen.getByRole('dialog')).toBeInTheDocument()
+          finishRead = () => release(mkArtifact({ version: 1 }))
+        }
+      }
+      expect(screen.getByRole('dialog')).toBeInTheDocument()
+      fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Cancel' }))
+      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+      expect(vi.mocked(api).updateArtifact).not.toHaveBeenCalled()
+      if (finishRead) await act(async () => { finishRead() })
+    })
+  }
+
+  it('reverts the version named by the dialog after the selected version changes', async () => {
+    vi.mocked(api).artifactVersion = vi.fn().mockImplementation(async (_slug: string, version: number) =>
+      mkArtifact({ version, content: `# version ${version}` }))
+    await mount(mkArtifact({ version: 2 }))
+    await pickVersion('v1')
+    fireEvent.click(await screen.findByRole('button', { description: 'Revert to v1' }))
+    await screen.findByRole('dialog', { name: 'Revert' })
+    await pickVersion('v2')
+    await screen.findByText('# version 2')
+    const question = screen.getByRole('dialog', { name: 'Revert' })
+    expect(question.querySelector('p')?.textContent).toBe(i18nT('pages.artifactDetailPage.revert_confirm', { version: 1, newVersion: 3 }))
+    await confirmAction('Revert')
+    await waitFor(() => expect(vi.mocked(api).updateArtifact).toHaveBeenCalledWith(SLUG, {
+      content: '# version 1', event_type: 'reverted', from_version: 1,
+    }))
+    await waitFor(() => expect(screen.getByRole('combobox', { name: /Version/i })).toBeEnabled())
+  })
+
+  it.each(['succeeds', 'fails'] as const)('leaves the next artifact untouched when the previous artifact\'s revert %s after navigation', async (outcome) => {
+    let resolveWrite!: (value: object) => void
+    let rejectWrite!: (reason: Error) => void
+    const write = new Promise<object>((resolve, reject) => { resolveWrite = resolve; rejectWrite = reject })
+    const other = mkArtifact({ slug: 'other', name: 'Other document' })
+    vi.mocked(api).artifact = vi.fn().mockImplementation(async (slug: string) => slug === SLUG ? mkArtifact() : other)
+    vi.mocked(api).artifactVersions = vi.fn().mockResolvedValue({ versions: [1, 2] })
+    vi.mocked(api).artifactVersion = vi.fn().mockImplementation(async (slug: string, version: number) =>
+      mkArtifact({ slug, version, content: `# ${slug} version ${version}` }))
+    vi.mocked(api).updateArtifact = vi.fn().mockImplementation((slug: string) =>
+      slug === SLUG ? write : Promise.reject(new Error('Other write refused')))
+    const { queryClient } = renderRoute()
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
+    await screen.findByText('CR Queue')
+    await pickVersion('v1')
+    fireEvent.click(await screen.findByRole('button', { description: 'Revert to v1' }))
+    await screen.findByRole('dialog', { name: 'Revert' })
+    await confirmAction('Revert')
+    await waitFor(() => expect(vi.mocked(api).updateArtifact).toHaveBeenCalledWith(SLUG, {
+      content: `# ${SLUG} version 1`, event_type: 'reverted', from_version: 1,
+    }))
+    fireEvent.click(screen.getByRole('button', { name: 'Other artifact' }))
+    await screen.findByText('Other document')
+    await pickVersion('v1')
+    await screen.findByText('# other version 1')
+    fireEvent.click(screen.getByLabelText('Remove tag ops'))
+    await screen.findByText('Other write refused')
+    const expectOtherState = () => {
+      expect(screen.getByRole('combobox', { name: /Version/i })).toBeEnabled()
+      expect(screen.getByRole('combobox', { name: /Version/i })).toHaveTextContent('v1')
+      expect(screen.getByText('Other write refused')).toBeInTheDocument()
+      expect(screen.queryByText('Revert refused')).not.toBeInTheDocument()
+    }
+    expectOtherState()
+    await act(async () => {
+      if (outcome === 'succeeds') resolveWrite({})
+      else rejectWrite(new Error('Revert refused'))
+    })
+    if (outcome === 'succeeds') {
+      await waitFor(() => expect(invalidate).toHaveBeenCalledWith({ queryKey: ['artifact-events', SLUG] }))
+      expect(invalidate).toHaveBeenCalledWith({ queryKey: ['artifact', SLUG] })
+      expect(invalidate).toHaveBeenCalledWith({ queryKey: ['artifact-versions', SLUG] })
+    }
+    expectOtherState()
+  })
+
+  it('withdraws the revert question when the route moves to another artifact', async () => {
+    const other = mkArtifact({ slug: 'other', name: 'Other document' })
+    vi.mocked(api).artifact = vi.fn().mockImplementation(async (slug: string) => slug === SLUG ? mkArtifact() : other)
+    vi.mocked(api).artifactVersions = vi.fn().mockResolvedValue({ versions: [1, 2] })
+    vi.mocked(api).artifactVersion = vi.fn().mockImplementation(async (slug: string, version: number) =>
+      mkArtifact({ slug, version, content: `# ${slug} version ${version}` }))
+    vi.mocked(api).updateArtifact = vi.fn().mockResolvedValue({})
+    renderRoute()
+    await screen.findByText('CR Queue')
+    await pickVersion('v1')
+    fireEvent.click(await screen.findByRole('button', { description: 'Revert to v1' }))
+    await screen.findByRole('dialog', { name: 'Revert' })
+    fireEvent.click(screen.getByRole('button', { name: 'Other artifact' }))
+    await screen.findByText('Other document')
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Revert' })).not.toBeInTheDocument())
+    expect(vi.mocked(api).updateArtifact).not.toHaveBeenCalled()
+    expect(screen.getByRole('combobox', { name: /Version/i })).toBeEnabled()
+  })
+
   it('silent Save posts the buffer without a version bump and stays in the editor', async () => {
     await mount(mkArtifact())
     await typeIntoEditor('# edited body')
@@ -404,9 +528,12 @@ describe('ArtifactDetailPage — mutation paths', () => {
     await mount(mkArtifact({ version: 2 }))
     await pickVersion('v1')
     const revert = await screen.findByRole('button', { description: 'Revert to v1' })
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    const confirmSpy = vi.spyOn(window, 'confirm')
     fireEvent.click(revert)
-    expect(confirmSpy).toHaveBeenCalled()
+    const dialog = await screen.findByRole('dialog')
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    expect(confirmSpy).not.toHaveBeenCalled()
     expect(vi.mocked(api).updateArtifact).not.toHaveBeenCalled()
   })
 
@@ -418,8 +545,7 @@ describe('ArtifactDetailPage — mutation paths', () => {
     await mount(mkArtifact({ version: 2 }))
     await pickVersion('v1')
     fireEvent.click(await screen.findByRole('button', { description: 'Revert to v1' }))
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
-    fireEvent.click(screen.getByRole('button', { description: 'Revert to v1' }))
+    await confirmAction('Revert')
     await waitFor(() => expect(screen.getByText('version gone')).toBeInTheDocument())
   })
 

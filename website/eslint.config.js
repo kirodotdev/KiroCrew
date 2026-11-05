@@ -183,7 +183,7 @@ export default [
       // 'error', not 'warn': like the native-<select> gate above this is a gate
       // on a set that only shrinks, so it stays out of the --max-warnings budget
       // where a real regression would be indistinguishable from unrelated noise.
-      // The 32 modules that still call these globals are exempted by name in the
+      // The modules that still call these globals are exempted by name in the
       // allowlist block below (see issue #15662); every other renderer file is
       // refused a new call. Electron main-process dialogs live outside src/ and
       // are untouched. Tests drive these globals through the harness and are
@@ -220,7 +220,7 @@ export default [
     // Allowlist for no-restricted-globals / no-restricted-properties: the
     // renderer modules that still call a browser-native confirm/alert/prompt
     // today (issue #15662). The gate above is 'error' for every OTHER renderer
-    // file, so a NEW native dialog anywhere else is refused; these 32 are the
+    // file, so a NEW native dialog anywhere else is refused; these are the
     // standing inventory, migrated to useConfirm() / in-app surfaces in later
     // PRs. This list only SHRINKS: delete a path the moment its last native
     // dialog is gone, never add one. Keep it sorted.
@@ -239,13 +239,7 @@ export default [
       'src/components/WebAppArtifactCard.tsx',
       'src/components/themeEditor.tsx',
       'src/hooks/useSessionActions.ts',
-      'src/pages/ArtifactDetailPage.tsx',
-      'src/pages/ArtifactsPage.tsx',
-      'src/pages/ChannelPage.tsx',
       'src/pages/ProjectsPage.tsx',
-      'src/pages/knowledge/DetailView.tsx',
-      'src/pages/knowledge/SourcesList.tsx',
-      'src/pages/knowledge/index.tsx',
       'src/pages/members/MembersPage.tsx',
       'src/pages/members/NewCrewmateDialog.tsx',
       'src/pages/overview/AgentCfgTab.tsx',
