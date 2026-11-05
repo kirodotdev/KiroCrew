@@ -1555,13 +1555,12 @@ class TestAwaitingApprovalIsAttributedToTheMaintainer:
         assert outputs["state"] == "action_required"
         assert outputs["status_state"] == "failure"
         assert outputs["label"] == "readiness: action required"
-        # Five: Fast Gate joined CI, Build and Code Review as a monitored lane
-        # when the cheap blocking gates were split out of ci.yml, and Issue Gate
-        # joined when every PR had to declare a triaged issue. The stub routes
-        # every non-ci.yml workflow to green_runs.json, so each is covered by
-        # the same `action_required` fixture as the others.
+        # Six: CI, Fast Gate, Build, Code Review, PR Hygiene and Issue Gate are
+        # the monitored workflow lanes. The stub routes every non-ci.yml
+        # workflow to green_runs.json, so each is covered by the same
+        # `action_required` fixture as the others.
         assert outputs["description"] == (
-            "5 workflow(s) awaiting maintainer approval; none has run yet"
+            "6 workflow(s) awaiting maintainer approval; none has run yet"
         )
         assert len(outputs["description"]) <= 140
         summary = (runner.temp / "pr-readiness-summary.md").read_text()
@@ -1570,9 +1569,12 @@ class TestAwaitingApprovalIsAttributedToTheMaintainer:
         assert "**Waiting**" in summary
         log_line = self._lane_state(proc)
         assert "failed=[]" in log_line
-        # Fast Gate sits between CI and Build and Issue Gate follows Code Review
-        # in the spec order, matching the order pr-readiness.yml appends the lanes.
-        assert "awaiting_approval=[CI Fast Gate Build Code Review Issue Gate]" in log_line
+        # Fast Gate sits between CI and Build, and PR Hygiene then Issue Gate
+        # follow Code Review in the spec order, matching the order
+        # pr-readiness.yml appends the lanes.
+        assert (
+            "awaiting_approval=[CI Fast Gate Build Code Review PR Hygiene Issue Gate]" in log_line
+        )
 
     def test_real_failure_and_approval_wait_are_reported_separately(self, runner: Runner):
         (runner.fixtures / "ci_runs.json").write_text(
@@ -1586,10 +1588,10 @@ class TestAwaitingApprovalIsAttributedToTheMaintainer:
 
         assert proc.returncode == 0, proc.stderr
         assert outputs["status_state"] == "failure"
-        # Four awaiting: ci.yml is the one blocking item here, and Build, Code
-        # Review, Fast Gate and Issue Gate are the lanes left waiting.
+        # Five awaiting: ci.yml is the one blocking item here, and Build, Code
+        # Review, PR Hygiene, Fast Gate and Issue Gate are the lanes left waiting.
         assert outputs["description"] == (
-            "1 blocking readiness item(s); 4 awaiting maintainer approval"
+            "1 blocking readiness item(s); 5 awaiting maintainer approval"
         )
         summary = (runner.temp / "pr-readiness-summary.md").read_text()
         assert "**Blocking**" in summary

@@ -313,7 +313,7 @@ _EXPECTED_ROUTED_JOBS = {
     ("ci.yml", "cancel-superseded-run"),
     ("code-review.yml", "autosde-rules"),
     ("code-review.yml", "inclusive-language"),
-    ("code-review.yml", "pr-hygiene"),
+    ("pr-hygiene.yml", "pr-hygiene"),
     ("code-review.yml", "sast"),
     ("pr-merge-conflict-label.yml", "label"),
     ("build-wheel.yml", "build-wheel"),

@@ -332,7 +332,7 @@ def test_parity_detector_rejects_corrupted_routes(tmp_path, monkeypatch, shape):
     [
         ("code-review.yml", "autosde-rules"),
         ("code-review.yml", "inclusive-language"),
-        ("code-review.yml", "pr-hygiene"),
+        ("pr-hygiene.yml", "pr-hygiene"),
         ("code-review.yml", "sast"),
         ("pr-merge-conflict-label.yml", "label"),
         ("build-wheel.yml", "build-wheel"),

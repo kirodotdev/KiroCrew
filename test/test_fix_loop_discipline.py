@@ -30,7 +30,7 @@ from skill_script_helpers import load_skill_script
 
 ROOT = Path(__file__).resolve().parent.parent
 TEMPLATE = ROOT / ".github" / "PULL_REQUEST_TEMPLATE.md"
-CODE_REVIEW = ROOT / ".github" / "workflows" / "code-review.yml"
+PR_HYGIENE = ROOT / ".github" / "workflows" / "pr-hygiene.yml"
 CONVERGENCE = ROOT / ".github" / "review-prompts" / "gpt-round-convergence.md"
 DEFERRAL_CHECK = ROOT / ".github" / "workflows" / "disposition-deferral-check.yml"
 AUDIT = ROOT / ".github" / "workflows" / "deferred-findings-audit.yml"
@@ -220,7 +220,7 @@ class TestHarvestRecognitionMatchesTheGate:
 
     def test_patterns_are_transcribed_from_the_gate(self) -> None:
         """Drift is silent: both sides keep working, and only the count is wrong."""
-        gate_patterns = set(re.findall(r"grep -qiE '([^']+)'", CODE_REVIEW.read_text("utf-8")))
+        gate_patterns = set(re.findall(r"grep -qiE '([^']+)'", PR_HYGIENE.read_text("utf-8")))
         mod = self._module()
         for attr in ("HARVEST_HEADING_RE", "HARVEST_ANSWER_RE"):
             pattern = getattr(mod, attr).pattern
@@ -450,7 +450,7 @@ class TestPatternHarvest:
 
     def test_hygiene_gate_requires_the_section_on_fix_prs(self) -> None:
         """The template alone is a suggestion; the hygiene step is what makes it land."""
-        text = CODE_REVIEW.read_text(encoding="utf-8")
+        text = PR_HYGIENE.read_text(encoding="utf-8")
         assert "Require Pattern harvest section on fix PRs" in text
         assert "Pattern harvest" in text
         # The gate is scoped to fix/revert titles — a gate that fired on every
@@ -459,7 +459,7 @@ class TestPatternHarvest:
 
     def test_hygiene_gate_reads_the_body_through_env(self) -> None:
         """PR bodies are attacker-controlled; they must reach the shell via env only."""
-        text = CODE_REVIEW.read_text(encoding="utf-8")
+        text = PR_HYGIENE.read_text(encoding="utf-8")
         assert "PR_BODY: ${{ github.event.pull_request.body }}" in text
 
     def test_semgrep_owns_the_sentinel_rule_with_fixtures(self) -> None:

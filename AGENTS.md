@@ -265,7 +265,7 @@ seams: [app-kit-platform](docs/system-specs/modules/app-kit-platform.md).
 <body — what and why, not how; wrapped at 72>
 ```
 
-Types the PR-title gate in `code-review.yml` accepts: `feat`, `fix`, `docs`,
+Types the PR-title gate in `pr-hygiene.yml` accepts: `feat`, `fix`, `docs`,
 `style`, `refactor`, `perf`, `test`, `chore`, `ci`, `build`, `revert`. **One
 logical change per commit**, and at most two commits per PR.
 
