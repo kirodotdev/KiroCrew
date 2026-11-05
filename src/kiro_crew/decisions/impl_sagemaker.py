@@ -57,9 +57,10 @@ SCHEME = "sagemaker"
 
 #: SageMaker endpoint names: letters, digits and single or repeated hyphens, up to
 #: 63 characters, starting and ending with a letter or digit.
-_ENDPOINT_NAME_RE = re.compile(r"\A[A-Za-z0-9](?:-*[A-Za-z0-9]){0,62}\Z")
-#: An AWS region code such as ``us-west-2`` or ``us-gov-west-1``.
-_REGION_RE = re.compile(r"\A[a-z]{2}(?:-[a-z]+)+-\d{1,2}\Z")
+_ENDPOINT_NAME_RE = re.compile(r"\A[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\Z")
+#: An AWS region code such as ``us-west-2`` or ``us-gov-west-1``. The whole
+#: region is one DNS label in the runtime host, so it cannot exceed 63 characters.
+_REGION_RE = re.compile(r"\A(?=.{1,63}\Z)[a-z]{2}(?:-[a-z]+)+-\d{1,2}\Z")
 #: Region prefixes of the isolated partitions, whose hosts this module does not name.
 _UNSUPPORTED_REGION_PREFIXES = ("us-iso", "eu-isoe")
 
@@ -204,6 +205,64 @@ def parse_endpoint(endpoint: object) -> SageMakerTarget:
     if profile and not AWS_PROFILE_NAME_RE.match(profile):
         raise SageMakerConfigError("sagemaker:// profile name is not valid")
     return SageMakerTarget(endpoint_name=name, region=region, profile=profile)
+
+
+class SageMakerAddressFieldError(SageMakerConfigError):
+    """One of the parts :func:`build_endpoint` was given is not valid; ``field`` names it."""
+
+    def __init__(self, field: str) -> None:
+        super().__init__(f"sagemaker:// {field} is not valid")
+        self.field = field
+
+
+def build_endpoint(endpoint_name: object, region: object, profile: object = "") -> str:
+    """The ``sagemaker://`` address for these three parts, or raise :class:`SageMakerAddressFieldError`.
+
+    Each part is held to the pattern :func:`parse_endpoint` reads it with, and the
+    address is parsed back before it is returned, so it can name these three parts
+    and nothing else. None of the allowed characters needs escaping in the query.
+    """
+    if not isinstance(endpoint_name, str) or not _ENDPOINT_NAME_RE.match(endpoint_name):
+        raise SageMakerAddressFieldError("endpoint_name")
+    if (
+        not isinstance(region, str)
+        or not _REGION_RE.match(region)
+        or region.startswith(_UNSUPPORTED_REGION_PREFIXES)
+    ):
+        raise SageMakerAddressFieldError("region")
+    if not isinstance(profile, str) or (profile and not AWS_PROFILE_NAME_RE.match(profile)):
+        raise SageMakerAddressFieldError("profile")
+    address = f"{SCHEME}://{endpoint_name}?region={region}"
+    if profile:
+        address += f"&profile={profile}"
+    if parse_endpoint(address) != SageMakerTarget(endpoint_name, region, profile):
+        raise SageMakerAddressFieldError("endpoint_name")
+    return address
+
+
+def boto3_installed() -> bool:
+    """Whether ``boto3`` can be imported, without importing it."""
+    import importlib.util
+
+    return importlib.util.find_spec("boto3") is not None
+
+
+def profile_exists(profile: str) -> bool:
+    """Whether *profile* is a profile name in the local AWS config or credentials file.
+
+    Reads profile NAMES only, through botocore's own file lookup (so
+    ``AWS_CONFIG_FILE`` and ``AWS_SHARED_CREDENTIALS_FILE`` are honoured); no
+    credential value is returned or kept. An unreadable file answers no.
+    Raises :class:`SageMakerUnavailable` without botocore. Filesystem IO.
+    """
+    try:
+        import botocore.session
+    except ImportError:
+        raise SageMakerUnavailable("boto3 is not installed") from None
+    try:
+        return profile in botocore.session.Session().available_profiles
+    except Exception:
+        return False
 
 
 def runtime_url(target: SageMakerTarget) -> str:
@@ -393,8 +452,39 @@ def _client_error(exc: Any) -> SageMakerError:
     return SageMakerError(f"SageMaker request failed ({code or 'unknown error'})")
 
 
+def _credential_provider_errors() -> tuple[type[BaseException], ...]:
+    """botocore errors raised while LOADING credentials, before any request is sent.
+
+    botocore resolves SSO, assume-role, ``credential_process`` and instance
+    credentials lazily, when the first request is signed, so these surface from
+    ``invoke_endpoint`` rather than from building the client.
+    """
+    from botocore import exceptions as bce
+
+    return (
+        bce.NoCredentialsError,
+        bce.PartialCredentialsError,
+        bce.SSOError,  # UnauthorizedSSOTokenError, SSOTokenLoadError
+        bce.TokenRetrievalError,
+        bce.CredentialRetrievalError,
+        bce.RefreshWithMFAUnsupportedError,
+        bce.MetadataRetrievalError,
+        bce.UnknownCredentialError,
+        bce.ProfileNotFound,
+    )
+
+
 def _read_body(stream: Any) -> bytes:
-    data = stream.read(MAX_RESPONSE_BYTES + 1) if stream is not None else b""
+    from botocore.exceptions import BotoCoreError, ReadTimeoutError
+
+    try:
+        data = stream.read(MAX_RESPONSE_BYTES + 1) if stream is not None else b""
+    except ReadTimeoutError:
+        raise SageMakerTimeout("no answer within the decision budget") from None
+    except BotoCoreError as exc:
+        raise SageMakerError(
+            f"could not read the SageMaker answer ({type(exc).__name__})"
+        ) from None
     if not isinstance(data, (bytes, bytearray)):
         raise SageMakerProtocolError("response body is not bytes")
     if len(data) > MAX_RESPONSE_BYTES:
@@ -407,11 +497,10 @@ def _invoke_once(
 ) -> Any:
     """One ``InvokeEndpoint`` call. Raises a :class:`SageMakerError` subclass."""
     from botocore.exceptions import (
+        BotoCoreError,
         ClientError,
         ConnectTimeoutError,
         EndpointConnectionError,
-        NoCredentialsError,
-        PartialCredentialsError,
         ReadTimeoutError,
     )
 
@@ -426,14 +515,20 @@ def _invoke_once(
         kwargs["CustomAttributes"] = IMAGES_ATTRIBUTE
     try:
         return client.invoke_endpoint(**kwargs)
-    except (NoCredentialsError, PartialCredentialsError):
-        raise SageMakerCredentialsError("no AWS credentials found for the SageMaker call") from None
+    except _credential_provider_errors() as exc:
+        # The class name only: botocore's own text can name a profile, a role ARN
+        # or a token file path.
+        raise SageMakerCredentialsError(
+            f"AWS credentials could not be loaded for the SageMaker call ({type(exc).__name__})"
+        ) from None
     except (ReadTimeoutError, ConnectTimeoutError):
         raise SageMakerTimeout("no answer within the decision budget") from None
     except EndpointConnectionError:
         raise SageMakerUnavailable("could not reach SageMaker in that region") from None
     except ClientError as exc:
         raise _client_error(exc) from None
+    except BotoCoreError as exc:
+        raise SageMakerError(f"SageMaker request failed ({type(exc).__name__})") from None
 
 
 def invoke_sync(

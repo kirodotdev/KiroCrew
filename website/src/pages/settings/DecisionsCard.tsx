@@ -577,7 +577,7 @@ export function DecisionsCard() {
       )}
       {view.supported && (
         <Suspense fallback={<div className="h-24" aria-hidden />}>
-          <DecisionsProviderPicker frozen={frozen} cardReadFailed={readFailed} consentOn={view.enabled} />
+          <DecisionsProviderPicker frozen={frozen} cardReadFailed={readFailed} consentOn={view.enabled && !view.endpointMoved} />
         </Suspense>
       )}
       {/* The redirected-config state: consent stands for one address, config.json now
@@ -770,7 +770,7 @@ export function DecisionsCard() {
                 if (!Number.isSafeInteger(next) || next === historyBudget) return
                 budgetMut.mutate(next)
               }}
-              disabled={frozen || !view.enabled}
+              disabled={frozen || !view.enabled || view.endpointMoved}
             />
             {/* Held while consent is OFF, and it SAYS so. The keystone writer stores
                 this ceiling as 0 whenever the switch is off, so a write would answer
