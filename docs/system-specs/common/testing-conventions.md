@@ -126,6 +126,62 @@ promise-sleep, `waitForTimeout`); a deliberate one says why with
   overloaded host is not evidence; measure under CI-equivalent load.
   [Proving a determinism fix](#proving-a-determinism-fix).
 
+### Production deadlines are not test boundaries
+
+A test passes no value that is not literal ``0``/``None`` or a ``kiro_crew.testing``
+import as a duration-named argument.
+
+- **``0`` for the timeout path.** Literal ``0`` (or ``None``) is the "no deadline /
+  already expired" value.
+- **A ``kiro_crew.testing`` name for a generous safety net.** Use
+  ``from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS`` (60 s) for the
+  happy-path pin. Any name imported from ``kiro_crew.testing.*`` is allowed.
+- **A fixture-pinned seam for a production constant.** ``_floor_monkeypatch.setattr``
+  in an autouse fixture keeps the constant out of every test body.
+- **An injected clock** for a module that owns a ``time`` import.
+
+**WRONG** (non-zero literal or local constant — K19 flags both):
+
+```python
+_floor_monkeypatch.setattr(gate, "_LOG_BUDGET_SECS", 20.0)
+subprocess.run(cmd, timeout=60)       # use FALLBACK_TIMEOUT_SECS
+_T = 30
+subprocess.run(cmd, timeout=_T)       # local constant counts
+```
+
+**RIGHT** (``kiro_crew.testing`` import; literal ``0`` for the expired path):
+
+```python
+from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS
+
+@pytest.fixture(autouse=True)
+def _raise_deadlines(_floor_monkeypatch):
+    _floor_monkeypatch.setattr(gate, "_LOG_BUDGET_SECS", FALLBACK_TIMEOUT_SECS)
+
+def test_timeout_path(_floor_monkeypatch):
+    _floor_monkeypatch.setattr(skills_select, "MAX_WAIT_SECS", 0)
+    assert run_something() is None
+```
+
+K19 has two arms. The **setattr arm** flags any non-zero non-``kiro_crew.testing`` value
+as the third argument of ``monkeypatch.setattr`` / ``_floor_monkeypatch.setattr`` on an
+attribute whose name ends in a time-unit suffix (``_s``, ``_secs``, ``_seconds``,
+``_ms``, etc.) or starts with ``timeout``. This catches the five motivating flakes
+(`_LOG_BUDGET_SECS`, `_PRUNE_MAX_SECONDS_PER_RUN`, etc.).
+
+The **keyword arm** flags the same value rule when the keyword argument name contains one
+of these *wait-bound words* as a whole ``_``-separated component:
+
+- ``timeout`` — e.g. ``timeout=``, ``read_timeout=``, ``timeout_ms=``
+- ``deadline`` — e.g. ``deadline=``, ``soft_deadline_secs=``
+- ``ttl`` — e.g. ``ttl=``, ``ttl_secs=``
+- ``grace`` — e.g. ``grace=``, ``grace_period_s=``
+- ``budget`` *only when followed by a time-unit suffix* — e.g. ``budget_secs=``,
+  ``log_budget_ms=`` (not ``token_budget=`` or ``budget_key=``)
+
+K9 callees (``wait_for``/``wait``/``result``/``join``) are excluded — those are
+bounded-wait primitives. Lambdas and module-level function names are also excluded.
+The ratchet is diff-scoped: the existing tree is not forced to burn down.
 A line that must keep one of these shapes on purpose carries `# flake-ok: <reason>`
 (`// flake-ok: <reason>` in TypeScript) with a concrete reason, or `# nosemgrep: <rule
 id>` with the reason where a `semgrep/test-determinism.yaml` rule refuses it. Review
@@ -138,7 +194,7 @@ module through any binding is the semgrep rule's), a `sys.modules` eviction with
 no restore in the same function, raw environment writes, duration bounds, literal waits
 under two seconds (the too-tight lost-run bound of class 6; a negative such as
 `assert not done.wait(0.3)` is not one), literal listener ports, fixed crew-log flush
-ceilings, crew-log removals outside `eager.paused()`, Event waits a test parks on a thread-pool executor, direct writes of asyncio Tasks or TimerHandles to a ``kiro_crew`` module attribute from a test function (K16), ``pytest.mark.xfail(strict=False)`` overrides (K18), and five frontend shapes. In a file
+ceilings, crew-log removals outside `eager.paused()`, Event waits a test parks on a thread-pool executor, direct writes of asyncio Tasks or TimerHandles to a ``kiro_crew`` module attribute from a test function (K16), ``pytest.mark.xfail(strict=False)`` overrides (K18), a non-zero numeric literal used as a duration-named keyword argument or as a ``setattr`` value on a duration-named attribute — the production-deadline-as-test-boundary shape (K19), and five frontend shapes. In a file
 the pinned semgrep reads no line of, it counts the `time` patches the semgrep rule would
 refuse as well: a file over 1,000,000 bytes, or one holding both a lambda with a bare `*`
 (`lambda a, *, b: ...`) and a parenthesized `with (a as b, ...):`, which semgrep 1.78
