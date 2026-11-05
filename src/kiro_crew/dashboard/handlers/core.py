@@ -756,18 +756,21 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         api_stt_config,
     )
     from kiro_crew.dashboard.handlers.core_stt_speech import (
+        _CLIENT_GONE_POLL_SECS,
         _POLISH_MAX_CHARS,
         _POLISH_MAX_RATIO,
         _POLISH_MIN_RATIO,
         _POLISH_PROMPT,
         _POLISH_TIMEOUT_SECS,
         _POLISH_UNSPACED_SCRIPTS,
+        _ClientGone,
         _polish_is_content,
         _polish_is_ignorable,
         _polish_only_marks_differ,
         _polish_preserves_words,
         _polish_spaces_its_words,
         _polish_split,
+        _transcribe_while_connected,
         api_stt_polish,
         api_stt_transcribe,
     )

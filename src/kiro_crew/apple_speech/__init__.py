@@ -837,6 +837,15 @@ async def transcribe(
                 except (OSError, ProcessLookupError):
                     pass
                 return None, {"error": f"timed out after {timeout_secs}s"}
+            except asyncio.CancelledError:
+                # The caller gave up (an uploader that disconnected): stop the
+                # helper before its launcher and audio are removed below.
+                try:
+                    proc.kill()
+                    await proc.communicate()
+                except (OSError, ProcessLookupError):
+                    pass
+                raise
         except OSError as exc:
             return None, {"error": f"could not run speech helper: {exc}"}
         finally:
