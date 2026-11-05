@@ -113,6 +113,16 @@ class TestSecureFieldFloor:
         assert "alice@example.com" not in text
         assert SECURE_PLACEHOLDER in text
 
+    def test_a_titled_element_renders_its_value_beside_the_title(self):
+        """A spreadsheet cell "A1" holding 21 must show the 21, not just "A1"."""
+        cell = ElementRec(index=0, role="AXCell", title="A1", value="21")
+        same = ElementRec(index=1, role="AXStaticText", title="Total", value="Total")
+        snap = Snapshot(app=FAKE_FILES_APP, elements=(cell, same), captured_at=time.monotonic())
+        text = render.render_tree(snap, text_limit=DEFAULT_TEXT_LIMIT)
+        assert '"A1" = "21"' in text
+        # A value equal to the title is not repeated.
+        assert '"Total" = ' not in text
+
     def test_window_with_a_secure_field_gets_no_screenshot_at_all(self, fake):
         """Whole-window suppression, and the text says why.
 

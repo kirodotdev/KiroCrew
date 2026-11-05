@@ -1026,10 +1026,31 @@ class LaunchIdentity:
 
     ``key`` is that OS identity, empty when the platform has no second spelling.
     :meth:`as_app_ref` is how it reaches the policy.
+
+    ``aliases`` are further identities the platform knows before spawning, for a
+    platform where the running app can present more than one: a Linux desktop entry
+    has a desktop id, an executable and a startup window class, and an operator may
+    have written a rule against any of them. :meth:`app_refs` yields one ref per
+    spelling; the launch policy denies when any is denied and satisfies an
+    allow-list when any is allowed.
     """
 
     display: str
     key: str = ""
+    aliases: "tuple[str, ...]" = ()
+
+    def app_refs(self) -> "tuple[AppRef, ...]":
+        """:meth:`as_app_ref`, then one ref per alias that differs from ``key``."""
+        first = self.as_app_ref()
+        seen = {first.bundle_id.lower()}
+        refs = [first]
+        for alias in self.aliases:
+            if alias and alias.lower() not in seen:
+                seen.add(alias.lower())
+                refs.append(
+                    AppRef(name=self.display, pid=0, bundle_id=alias, window_title=self.display)
+                )
+        return tuple(refs)
 
     def as_app_ref(self) -> "AppRef":
         """The :class:`AppRef` ``policy.check_app`` should be asked about.
