@@ -914,6 +914,7 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
     install._doctor_import_path(issues)
     install._doctor_sqlite_fts5(issues)
     install._doctor_tz_data(issues)
+    install._doctor_tls_trust(issues)
 
     # ── Source Checkout (source/editable installs only) ──
     # Gated on the checkout markers themselves (setup.cfg + src/kiro_crew, via

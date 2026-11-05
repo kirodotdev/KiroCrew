@@ -782,3 +782,33 @@ def _doctor_tz_data(issues: list[str]) -> None:
     else:
         print("               Fix: update Kiro Crew, then restart the gateway.")
     issues.append("timezone data out of date")
+
+
+def _doctor_tls_trust(issues: list[str]) -> None:
+    """Report, on macOS, whether HTTPS clients trust the system trust store.
+
+    A CA installed in the Keychain (a corporate or MDM root) is trusted only
+    through the system trust store. When it could not be enabled, HTTPS falls back
+    to file-based CAs and a download behind such a root fails certificate
+    verification, so this is an issue. An operator's ``SSL_CERT_FILE`` is their
+    choice and only reported. No row off macOS.
+    """
+    from kiro_crew import _ssl_compat
+
+    state, detail = _ssl_compat.macos_trust_state()
+    if state == _ssl_compat.TRUST_NOT_MACOS:
+        return
+    if state == _ssl_compat.TRUST_SYSTEM:
+        print("  tls trust:   ✅ macOS system trust store")
+        return
+    if state == _ssl_compat.TRUST_OPERATOR_BUNDLE:
+        print(
+            f"  tls trust:   ✅ SSL_CERT_FILE={render._safe_display(detail)} (Keychain CAs not used)"
+        )
+        return
+    print("  tls trust:   ❌ macOS system trust store not in use")
+    print(f"               {render._safe_display(detail)}")
+    print("               CAs installed in the Keychain are not trusted, so an HTTPS")
+    print("               download behind a corporate root fails verification.")
+    print("               Fix: update or reinstall Kiro Crew, then restart the gateway.")
+    issues.append("tls trust")
