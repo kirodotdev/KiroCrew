@@ -2276,6 +2276,14 @@ the session cwd's `.kiro/settings/mcp.json`
 call site in `runtime_session_load.py`) — stays in the agent block, so the
 resumed session resolves that name by kiro-cli's own precedence, exactly as
 `session/new` did; a session-level injection would outrank both files.
+A second exception: a user-declared entry whose `env` keeps a `${NAME}`
+reference (a name the edition relays) stays in the agent block on load too.
+KAS expands such a reference in an agent-block entry but hands a session-level
+element's env to the child verbatim, so a hoisted copy started the server with
+the literal `${NAME}` text and it listed no tools on the resumed session. Probed
+on the 0.66.33 bundle with a stdio probe server: the block entry got the value
+on `session/new` and on `session/load` (including a server first declared at
+load), the hoisted element got the literal text.
 `session/new` (`create_session`) is unchanged. Non-managed entries hoisted on
 load travel as projected with no session token. On both paths: a name
 the caller's array already carries is skipped (a broker stub or member dispatch
