@@ -446,6 +446,9 @@ async def api_kirocrew_config(request: web.Request) -> web.Response:
             )
             _result["applied"] = applied
             _result["restart_required"] = restart_required
+            # This raw write bypasses save(), which is what drops retired keys;
+            # do it here so the load-time "dropped on the next save" holds.
+            _resolution.drop_retired_section_keys(data)
             return data
 
         try:
