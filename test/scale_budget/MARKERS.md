@@ -14,7 +14,6 @@ scale-F18 deletes markers whose PR merged before the harness.
 
 | Test | Deleted by | Reason |
 |---|---|---|
-| `test_listing_budget.py::test_second_user_only_listing_reads_no_transcripts` | scale-F1 | main re-reads every untitled transcript's head on each user_only listing |
 | `test_listing_budget.py::test_concurrent_identical_listings_scan_once` | scale-F2 | concurrent identical /api/sessions requests each run their own scan |
 | `test_listing_budget.py::test_steady_listing_costs_one_stat` | scale-F9 | main stats every transcript on each listing; the index stats the directory |
 | `test_listing_budget.py::test_listing_past_the_metadata_cache_reads_no_heads` | scale-F9 | past `_METADATA_CACHE_MAX` the head memo evicts and every listing re-reads |
