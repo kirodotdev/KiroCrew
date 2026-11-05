@@ -1238,10 +1238,12 @@ def test_a_store_must_be_a_relative_path_with_a_pattern_only_last(store: str) ->
 
 def test_the_store_list_matches_the_stores_constants() -> None:
     from kiro_crew import heartbeat, members, memory, session_workspace
+    from kiro_crew.apps.registry_pipeline.recovery import _app_sources_dir
     from kiro_crew.config.sections import WorkspaceConfig
     from kiro_crew.crew_log.store import _ROOT_LEAF as CREW_LOG
     from kiro_crew.dashboard.state import _NOTIFICATIONS_FILE
     from kiro_crew.memory_stores import MEMORY_DB_FILE
+    from kiro_crew.skills_discovery import SKILLS_DIR_NAME
 
     stores = set(oof.STARTUP_SWEEP_STORES)
     workspace = WorkspaceConfig().dir
@@ -1259,6 +1261,7 @@ def test_the_store_list_matches_the_stores_constants() -> None:
     } <= stores
     assert len(stores) == len(oof.STARTUP_SWEEP_STORES)
     assert oof._store_groups(oof.STARTUP_SWEEP_STORES)  # every entry is a valid store path
+    assert oof.STARTUP_SWEEP_ROOTS == (SKILLS_DIR_NAME, _app_sources_dir().name)
 
 
 def test_mkdirs_owner_only_passes_no_mode_off_posix(
@@ -1329,24 +1332,41 @@ def test_a_root_that_cannot_be_listed_is_not_reported_complete(
     assert report.errors == 1
 
 
-def test_the_startup_sweep_leaves_the_installed_skill_trees_alone(home: Path) -> None:
-    """``skills/`` is fingerprinted by mode, so it is not on ``STARTUP_SWEEP_STORES``."""
-    skill = home / "skills" / "some-builtin"
-    skill.mkdir(parents=True)
-    (home / "skills").chmod(0o755)
-    (skill / "SKILL.md").write_text("x", encoding="utf-8")
-    (skill / "SKILL.md").chmod(0o644)
-    other = home / "sessions" / "note.jsonl"
-    other.parent.mkdir()
-    other.write_text("x", encoding="utf-8")
-    other.chmod(0o644)
+def test_the_startup_sweep_narrows_the_skill_and_app_roots_but_not_what_they_hold(
+    home: Path,
+) -> None:
+    """``skills/`` is fingerprinted by mode, so only the two roots are narrowed, never entered."""
+    skill_md = _plant(home, "skills/some-builtin/SKILL.md")
+    checkout_file = _plant(home, "app-sources/some-app/Makefile")
+    inner = [skill_md.parent, checkout_file.parent]
+    for directory in (home / "skills", home / "app-sources", *inner):
+        directory.chmod(0o755)
+    other = _plant(home, "sessions/note.jsonl")
 
     report = oof.tighten_data_home(home)
 
     assert report.complete
-    assert _mode(home / "skills") == 0o755
-    assert _mode(skill / "SKILL.md") == 0o644
+    assert (_mode(home / "skills"), _mode(home / "app-sources")) == (0o700, 0o700)
+    assert [_mode(d) for d in inner] == [0o755, 0o755]
+    assert (_mode(skill_md), _mode(checkout_file)) == (0o644, 0o644)
     assert _mode(other) == 0o600
+
+
+def test_the_builtin_skill_sync_creates_the_skills_root_owner_only(
+    home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from kiro_crew import skills as skills_mod
+
+    packaged = tmp_path / "packaged"
+    _plant(packaged, "some-builtin/SKILL.md").write_text(
+        "---\nname: some-builtin\ndescription: x\n---\nx\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(skills_mod, "_BUILTIN_SKILLS_DIR", packaged)
+
+    skills_mod._ensure_builtin_skills(home / "skills")
+
+    assert (home / "skills" / "some-builtin" / "SKILL.md").is_file()
+    assert _mode(home / "skills") == 0o700
 
 
 def test_off_posix_the_mode_helpers_change_nothing(
