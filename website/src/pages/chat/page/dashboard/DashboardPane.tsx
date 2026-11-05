@@ -13,7 +13,8 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { MessageSquarePlus, MousePointer2, MousePointerClick, Redo2, Sparkles, Undo2 } from 'lucide-react'
 import { api, ApiError } from '../../../../api/client'
 import ApprovalCard from '../../../../components/ApprovalCard'
-import { ConductorControls, SessionMessagesPanel } from '../ConductorSession'
+import { SessionMessagesPanel } from '../ConductorSession'
+import MainThreadDock from '../MainThreadDock'
 import CrewApprovalCards from '../../../../components/crew/CrewApprovalCards'
 import ErrorNotice from '../../../../components/ErrorNotice'
 import { sendTurn } from '../../../../chat-core/transport/sendTurn'
@@ -29,7 +30,7 @@ import ConversationBar, { cycleDirection, stepId, type ConversationItem } from '
 import DocAnswer from '../DocAnswer'
 import { ANSWER_STYLE, type ThreadView } from '../docConductor'
 import { OVERLAY_CLASS_STYLE, OVERLAY_KEYFRAMES, overlaySlug, parseOverlay, type OverlayItem } from '../docOverlay'
-import { deriveThreads } from '../docThreads'
+import { MAIN_THREAD, deriveThreads } from '../docThreads'
 import { nudgeApart, placeAround } from '../overlayPlace'
 import { specToCss } from '../styleSpec'
 import {
@@ -474,8 +475,10 @@ export default function DashboardPane({ docId, slotKey, title, approvalMode }: {
       )}
 
       {sessionOpen && <SessionMessagesPanel slotKey={slotKey} onClose={() => setSessionOpen(false)} />}
-      <ConductorControls slotKey={slotKey} approvalMode={approvalMode} sessionOpen={sessionOpen} onToggleSession={() => setSessionOpen(o => !o)}
-        className="absolute bottom-5 left-5 rounded-xl border border-border bg-bg-elevated p-1 shadow-lg" style={{ zIndex: 25 }} testid="dashboard-approval-mode" />
+      <MainThreadDock slotKey={slotKey} approvalMode={approvalMode} sessionOpen={sessionOpen} onToggleSession={() => setSessionOpen(o => !o)}
+        thread={views[MAIN_THREAD]} running={running} crewSwitch={false} centerBottom="bottom-[84px]" placeholder="Message about the whole dashboard…"
+        controlsTestid="dashboard-approval-mode" style={{ zIndex: 25 }}
+        onSend={text => sendFor({ id: MAIN_THREAD, targets: [], label: 'Main thread' }, text, !!threads[MAIN_THREAD])} />
       {approvals.length > 0 && (
         <div className="absolute bottom-20 right-5 flex w-[380px] max-w-[90vw] flex-col gap-2" style={{ zIndex: 30 }} data-testid="dashboard-approvals">
           {approvals.map(m => {
@@ -488,7 +491,7 @@ export default function DashboardPane({ docId, slotKey, title, approvalMode }: {
         </div>
       )}
       {/* The workers' tool approvals are decided only on their conductor's page: this one. */}
-      <div className="absolute bottom-20 left-5 w-[400px] max-w-[90vw]" style={{ zIndex: 30 }} data-testid="dashboard-worker-approvals">
+      <div className="absolute bottom-[150px] left-5 w-[400px] max-w-[90vw]" style={{ zIndex: 30 }} data-testid="dashboard-worker-approvals">
         <CrewApprovalCards root={slotKey} />
       </div>
     </div>

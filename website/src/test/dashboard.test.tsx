@@ -102,6 +102,14 @@ describe('dashboard turn and frame', () => {
     expect(buildDashboardTurn({ id: 'q', request: 'x', html: '', targets: [], followUp: false, docId: DOC })).toContain('(empty: nothing has been built yet)')
   })
 
+  it('a main thread turn is about the whole dashboard and is answered in the main thread', () => {
+    const turn = buildDashboardTurn({ id: 'main', request: 'what is on here?', html: PAGE, targets: [], followUp: false, docId: DOC })
+    expect(turn.startsWith('[Doc ask main]\nwhat is on here?')).toBe(true)
+    expect(turn).toContain('This is the main thread: they mean the whole dashboard')
+    expect(turn).toContain('Your answer is shown in the main thread')
+    expect(turn).not.toContain('a small pin on the element they picked')
+  })
+
   it('wraps the page with a network-closed CSP, the theme and the helper', () => {
     const doc = buildPageDocument(PAGE, { '--bg': '#fff' })
     expect(doc.startsWith('<!doctype html><meta charset="utf-8"><meta http-equiv="Content-Security-Policy"')).toBe(true)

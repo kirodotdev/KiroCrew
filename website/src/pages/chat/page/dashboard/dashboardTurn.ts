@@ -5,6 +5,7 @@
  */
 import { overlaySlug } from '../docOverlay'
 import { describeTargets } from './dashboardModel'
+import { MAIN_THREAD } from '../docThreads'
 
 const PAGE_CAP = 80_000
 
@@ -21,14 +22,14 @@ export function buildDashboardTurn(o: {
 ${o.request}
 
 ---
-You are the conductor of the dashboard "${name}". A dashboard is one HTML page that you write and own completely: the person sees it full-screen and talks to you only by picking elements on it (or nothing, for the whole page) and asking; there is no chat. ${o.followUp ? 'This continues their thread about' : 'They picked'} ${o.targets.length ? o.targets.join(', ') : 'nothing in particular (the whole page)'} and wrote the request above.
+You are the conductor of the dashboard "${name}". A dashboard is one HTML page that you write and own completely: the person sees it full-screen and talks to you by picking elements on it (or nothing, for the whole page) and asking, or in the dashboard's main thread about the dashboard as a whole. ${o.id === MAIN_THREAD ? `This is the main thread${o.followUp ? ', continuing their conversation there' : ''}: they mean the whole dashboard and wrote the request above.` : `${o.followUp ? 'This continues their thread about' : 'They picked'} ${o.targets.length ? o.targets.join(', ') : 'nothing in particular (the whole page)'} and wrote the request above.`}
 
 Two layers, kept apart:
 - THE PAGE is the object: what the dashboard IS (its layout, its content, its data, its charts). It changes only when you write it.
 - THE OVERLAY is the state: what is going on WITH it (work you started, workers running on a part, results waiting, problems). It is drawn on top of the page and never changes the page. Never write job status, progress or "working on it" into the page.
 
 How to answer:
-- Your answer is shown in a small pin on the element they picked, never on the page: answer there, short and plain.
+- Your answer is shown in ${o.id === MAIN_THREAD ? 'the main thread' : 'a small pin on the element they picked'}, never on the page: answer there, short and plain.
 - To write the page, end your reply with the whole page:
 ${fence}page-html
 <!doctype html>

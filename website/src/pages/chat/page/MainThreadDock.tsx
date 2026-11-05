@@ -44,7 +44,7 @@ function Avatar({ who }: { who: 'you' | 'conductor' }) {
     : <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-bg-hover text-muted" aria-hidden><User size={13} /></span>
 }
 
-export default function MainThreadDock({ slotKey, approvalMode, sessionOpen, onToggleSession, thread, running, onSend, placeholder, controlsTestid, className, style, centerBottom = 'bottom-5' }: {
+export default function MainThreadDock({ slotKey, approvalMode, sessionOpen, onToggleSession, thread, running, onSend, placeholder, controlsTestid, className, style, centerBottom = 'bottom-5', crewSwitch = true }: {
   slotKey: string
   approvalMode?: string
   sessionOpen: boolean
@@ -57,6 +57,8 @@ export default function MainThreadDock({ slotKey, approvalMode, sessionOpen, onT
   placeholder: string
   /** The controls row keeps the test id it had as a corner of its own. */
   controlsTestid: string
+  /** Offer the page's Plain / Crew choice (docs and canvases; a dashboard is always a conductor). */
+  crewSwitch?: boolean
   /** Where a centered box's bottom sits: above a canvas's own tool dock, which holds the bottom center. */
   centerBottom?: string
   /** Stacking only: the box places itself. */
@@ -198,7 +200,7 @@ export default function MainThreadDock({ slotKey, approvalMode, sessionOpen, onT
 
       {/* The page's controls are the box's footer. */}
       <motion.div layout="position" className={`relative flex items-center${shown ? ' mx-1 mb-1 border-t border-border pt-1' : ''}`}>
-        <ConductorControls slotKey={slotKey} approvalMode={approvalMode} crewSwitch
+        <ConductorControls slotKey={slotKey} approvalMode={approvalMode} crewSwitch={crewSwitch}
           sessionOpen={shown} onToggleSession={toggleShown} toggleTestid="main-thread-toggle"
           toggleLabel={shown ? 'Hide the main thread' : 'Show the main thread'}
           className="" testid={controlsTestid} />
