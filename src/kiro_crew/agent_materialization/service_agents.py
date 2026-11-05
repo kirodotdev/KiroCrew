@@ -225,6 +225,7 @@ def _install_mate_worker_agent() -> None:
     principles = MATE_WORKER_PROMPT
     base_prompt = config.get("prompt") if isinstance(config.get("prompt"), str) else ""
     config["prompt"] = f"{base_prompt.rstrip()}\n\n{principles}" if base_prompt else principles
+    _register_edition_refs(config)
     # A worker bound to an item in its crewmate's ledger reports on it. The base's
     # server wins over a crewmate file's entry of the same name
     # (``mate_worker.merge_worker_spec``), so a crewmate's file cannot replace it.
@@ -573,6 +574,29 @@ def _mount_team_lead_dispatch(config: dict) -> None:
     allowed = [t for t in config.get("allowedTools") or [] if isinstance(t, str)]
     grants = (*agent_mod._CONDUCTOR_DASHBOARD_GRANTS, *agent_mod._LEDGER_CONDUCTOR_WORK_GRANTS)
     config["allowedTools"] = list(dict.fromkeys((*allowed, *grants)))
+
+
+def _register_edition_refs(config: dict) -> None:
+    """Reference every edition-contributed server *config* mounts in ``tools``.
+
+    ``build_agent_config`` puts each ``_extra_mcp_servers()`` entry in
+    ``mcpServers`` but leaves ``tools`` alone; the default spec gains the refs
+    later, in ``managed_mcp.register_managed_refs``. A spec written straight from
+    ``build_agent_config`` would otherwise mount those servers with none of their
+    tools exposed, because kiro-cli exposes only servers named as ``@<server>``
+    in ``tools``. Tools only, never ``allowedTools``: the refs make the tools
+    callable, and approving them stays with the ordinary gate.
+    """
+    servers = config.get("mcpServers")
+    if not isinstance(servers, dict):
+        return
+    listed = config.get("tools")
+    tools = list(listed) if isinstance(listed, list) else []
+    for name in agent_mod._extra_mcp_servers():
+        ref = f"@{name}"
+        if name in servers and ref not in tools:
+            tools.append(ref)
+    config["tools"] = tools
 
 
 def _mount_work_ledger(config: dict, grants: tuple[str, ...]) -> None:
