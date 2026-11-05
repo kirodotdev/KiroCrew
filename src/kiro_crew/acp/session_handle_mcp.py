@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import re
 import time
 from collections.abc import Mapping
@@ -388,7 +389,10 @@ async def wait_mcp_ready(
         self._mcp_report.record_frame(msg, owned=self._owns_mcp_frame(msg))
         readiness.record(msg)
         if readiness.failure:
-            raise AcpRuntimeError(f"KAS managed MCP initialization failed: {readiness.failure}")
+            raise AcpRuntimeError(
+                f"KAS managed MCP initialization failed: {readiness.failure}"
+                + _missing_cwd_hint(self, readiness.failure)
+            )
         if readiness.registry_filtered:
             # The host said its registry dropped these: no wait makes them start.
             if governed:
@@ -399,6 +403,27 @@ async def wait_mcp_ready(
                 raise AcpRuntimeError(_registry_filtered_message(readiness))
     for name in required:
         self._mcp_report.record_event(EVENT_MCP_SERVER_INITIALIZED, name)
+
+
+def _missing_cwd_hint(handle: AcpSessionHandle, failure: str) -> str:
+    """Name a missing session cwd behind a ``spawn ... ENOENT`` readiness failure.
+
+    A process spawn reports a cwd that does not exist as ENOENT on the COMMAND,
+    so the failure names a binary that is usually present. When the session's
+    bound cwd is gone, say so; otherwise add nothing.
+    """
+    if "ENOENT" not in failure:
+        return ""
+    cwd = getattr(handle, "_bound_cwd", "") or ""
+    try:
+        if not cwd or os.path.isdir(cwd):
+            return ""
+    except (OSError, ValueError):
+        return ""
+    return (
+        f" (the session cwd {cwd} does not exist; a spawn reports a missing cwd"
+        " as ENOENT on the command, so the named binary may be present)"
+    )
 
 
 def _record_dropped(report: McpSessionReport, readiness: KasMcpReadiness, governed: bool) -> bool:

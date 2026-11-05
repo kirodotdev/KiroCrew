@@ -25,6 +25,7 @@ from __future__ import annotations
 import asyncio
 import functools
 import logging
+import os
 import weakref
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple
@@ -243,7 +244,9 @@ class _MirroredSessionMcp(NamedTuple):
 async def _session_work_dir(self: AcpRuntime, cwd: str | Path | None = None) -> str | Path:
     """Resolve an ACP cwd without re-authorizing a mutable macOS pathname."""
     if self._bound_workspace_fd is None:
-        return cwd if cwd else self._work_dir
+        resolved = cwd if cwd else self._work_dir
+        await asyncio.to_thread(_ensure_unbound_session_workspace, resolved)
+        return resolved
     requested = cwd if cwd else self._work_dir
     # The shared rule lives in sandbox.resolve_bound_session_workspace; only the
     # error mapping is this front end's. What the peer receives is the BOUND
@@ -273,6 +276,49 @@ async def _session_work_dir(self: AcpRuntime, cwd: str | Path | None = None) -> 
         raise AcpWorkspaceBindingError(
             "Cannot verify the requested macOS session workspace"
         ) from exc
+
+
+def _ensure_unbound_session_workspace(path: str | Path | None) -> None:
+    """Re-create a missing Crew-derived one-run cwd before the peer spawns in it.
+
+    A one-run directory (``cron_<job>_<run>``, ``subagent_<id>``, ...) is made
+    by ``mark_run_dir`` once, in provider ``start()``, and removed by the
+    provider's shutdown reclaim. A runtime that is started or resumed again for
+    the same session after that reclaim (a failed resume that starts fresh, a
+    killed runtime that respawns) would otherwise hand the peer a deleted cwd.
+    Node's ``spawn`` reports a missing cwd as ``spawn <command> ENOENT``, so
+    EVERY managed MCP server then fails naming a binary that exists.
+
+    Only a directory this data home derives is re-created: its name has the
+    one-run shape and its parent is :func:`workspace_root`, and ``mark_run_dir``
+    writes the same provenance the start path writes, so the shutdown reclaim
+    and the sweep treat it exactly as before. Any other missing cwd is the
+    caller's own path and is never created here; it is logged so the failure
+    that follows is attributable. Every error is swallowed: this is a guard in
+    front of the existing start path, never a new way for it to fail.
+    """
+    if not path:
+        return
+    candidate = Path(path)
+    try:
+        if candidate.is_dir():
+            return
+        from kiro_crew.config.loader_locations import workspace_root
+        from kiro_crew.session_work_dir import _is_disposable_dir_name, mark_run_dir
+
+        root = Path(os.path.realpath(workspace_root(create=False)))
+        parent = Path(os.path.realpath(candidate.parent))
+        if parent == root and _is_disposable_dir_name(candidate.name):
+            mark_run_dir(candidate)
+            if candidate.is_dir():
+                logger.warning("re-created missing run work dir %s before session start", candidate)
+                return
+        logger.warning(
+            "session cwd %s does not exist; the peer's MCP spawns will fail with ENOENT",
+            candidate,
+        )
+    except Exception:
+        logger.debug("session cwd check failed for %s", candidate, exc_info=True)
 
 
 def _refuse_if_loader_unreachable(self: AcpRuntime, active_agent: str, kas_agents: Any) -> None:
