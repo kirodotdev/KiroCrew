@@ -2371,10 +2371,12 @@ agent-readable `config.json`. The file's root IS the opt-out object:
 
 `note` is optional operator prose, surfaced in the refusal when that rule fires so
 the caller reads remediation instead of a raw regex. It is metadata: it never
-participates in matching. Create-only, mirroring `pattern` — neither has an edit
-endpoint. Two constraints follow from the refusal being a parsed micro-format
-(see "Refusal string" below): the add endpoint collapses whitespace and rejects a
-note containing `DENY_REASON_PREFIX` (`note_forges_reason`), and
+participates in matching. `PATCH /api/security/denied-commands/user/{id}` edits
+`pattern` and `note` in place (same id, same `enabled`) through the add endpoint's
+own checks (`_reject_user_pattern`, `_clean_user_note`), so an edit cannot store
+what an add refuses. Two constraints follow from the refusal being a parsed
+micro-format (see "Refusal string" below): the add and the edit collapse whitespace
+and reject a note containing `DENY_REASON_PREFIX` (`note_forges_reason`), and
 `hooks.resolve_denied_notes` drops any note that still carries the prefix, which
 is the guard that holds for a keystone file edited by hand.
 
@@ -2437,7 +2439,10 @@ opt-out state, which does not live there.)
 
 **Settings → Security UI** — the panel edits this state: a disable-all toggle,
 per-rule toggles grouped by category, and an add-your-own field for custom
-patterns. Built-ins are disableable but not deletable; weakening a rule requires
+patterns. Each custom row has its toggle plus a menu with Edit (a dialog with the
+add row's two fields) and Delete, and the list can be sorted A-Z by pattern
+(off by default: insertion order, which never affects matching). Built-ins are
+disableable but not deletable; weakening a rule requires
 confirmation and is SEL-audited. Governance-pinned rules render locked. The
 git-publish category has eight rules, but only
 `git-publish-push-brace-expansion-refspec` is floor-enforced and locked; the other

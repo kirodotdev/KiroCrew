@@ -387,6 +387,10 @@ export function createSecurityEndpoints({ get, post, put, del, patch, j, jfetch:
       post('/api/security/denied-commands/user', { pattern, note }).then(j) as Promise<DeniedCommandsData>,
     toggleUserDeniedCommand: (id: string, enabled: boolean) =>
       patch('/api/security/denied-commands/user/' + encodeURIComponent(id), { enabled }).then(j) as Promise<DeniedCommandsData>,
+    // Same route as the toggle. Sets only the fields given; the server checks
+    // each exactly as an add does.
+    editUserDeniedCommand: (id: string, fields: { pattern?: string; note?: string }) =>
+      patch('/api/security/denied-commands/user/' + encodeURIComponent(id), fields).then(j) as Promise<DeniedCommandsData>,
     deleteUserDeniedCommand: (id: string) =>
       del('/api/security/denied-commands/user/' + encodeURIComponent(id)).then(j) as Promise<DeniedCommandsData>,
     // Redaction cards: the per-workspace allowed-host list (Settings → Security →

@@ -35,7 +35,7 @@ const API_KEY_ORDER = [
   'mobileLoginLink', 'mobileConnectMethods', 'tailnetStatus', 'tailnetMobile',
   'tailnetMobileConfigure', 'tailnetMobilePublish', 'tailnetMobileUnpublish', 'tailnetMobileQr',
   'deniedCommands', 'toggleBuiltinDeniedCommand', 'setDeniedCommandsDisableAll', 'addUserDeniedCommand',
-  'toggleUserDeniedCommand', 'deleteUserDeniedCommand', 'redactionAllowedHosts', 'redactionAllowHost',
+  'toggleUserDeniedCommand', 'editUserDeniedCommand', 'deleteUserDeniedCommand', 'redactionAllowedHosts', 'redactionAllowHost',
   'redactionRevokeHost', 'listTrustedApps', 'trustApp', 'untrustApp',
   'setTrustAllApps', 'listTrustedRegistries', 'grantTrustedRegistry', 'revokeTrustedRegistry',
   'governancePolicy', 'suggestions', 'branding',
