@@ -810,7 +810,7 @@ slot_settings | api_chat_slot_color | async function | (request: 'web.Request') 
 chat_send | _sweep_stale_permissions | function | (slot: "'_ChatSlot'") -> 'None'
 chat_send | _send_binds_agent | function | (agent: 'str', slot: 'Any') -> 'bool'
 chat_send | _send_writes_persona | function | (body: 'dict') -> 'bool'
-chat_send | _send_harness_command | async function | (message: 'str') -> 'str'
+chat_send | _send_harness_command | async function | (message: 'str', state: 'DashboardState', slot: '_ChatSlot') -> 'str'
 chat_send | steer_is_auto | function | (value: 'object') -> 'bool'
 chat_send | decided_message_handling | async function | (slot: 'Any', message: 'str') -> 'tuple[bool, dict | None]'
 chat_send | api_chat | async function | (request: 'web.Request') -> 'web.StreamResponse'

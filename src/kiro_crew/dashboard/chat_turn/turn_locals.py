@@ -239,6 +239,7 @@ class _ChatTurn:
     _terminal_directive_tcids: "set[str]"
     _terminal_synthetic: "bool"
     _thinkred: "StreamRedactor"
+    _slash_withholds_mirror: "bool"
     _this_turn_is_clear: "bool"
     _todo_recovery_carried: "bool"
     _todo_sync_rendered: "tuple[tuple[str, str, bool], ...]"

@@ -267,6 +267,7 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
     _steer_possibly_delivered = turn._steer_possibly_delivered
     _stop_reason = turn._stop_reason
     _synthetic_recovery_turn = turn._synthetic_recovery_turn
+    _slash_withholds_mirror = turn._slash_withholds_mirror
     _todo_recovery_carried = turn._todo_recovery_carried
     _todo_sync_rendered = turn._todo_sync_rendered
     _trusted_prompt_tail = turn._trusted_prompt_tail
@@ -518,7 +519,11 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
     # stream, the assistant reply and the stream teardown together. Disconnect
     # is the user saying "not into this conversation", which applies to the
     # answer as much as to the echo — so it is one gate, not four.
-    if state.slack_client and not is_slash and not slack_mirror_is_paused(state, session_key):
+    if (
+        state.slack_client
+        and not _slash_withholds_mirror
+        and not slack_mirror_is_paused(state, session_key)
+    ):
         _mirror_thread, _mirror_chan = state.sessions.get_slack_link(session_key)
         turn._mirror_chan = _mirror_chan
         turn._mirror_thread = _mirror_thread
@@ -583,7 +588,7 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
     # Channel-neutral leg: mirror the user message to a linked non-Slack
     # proactive channel (e.g. Telegram) so the remote conversation reads
     # coherently (question then reply), matching the Slack echo above.
-    if not is_slash and _prompt_typed_in_dashboard(turn):
+    if not _slash_withholds_mirror and _prompt_typed_in_dashboard(turn):
         await _deliver_cross_surface_user_message(state, session_key, _user_msg_for_mirror)
     # Past this point every echo this turn owes has been made (or the surfaces it
     # would go to were unlinked), so a recovery requeue of it owes none.

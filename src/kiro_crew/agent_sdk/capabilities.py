@@ -57,6 +57,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKENDS_ADVERTISED_MODEL_SELECTION,
     ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS,
     ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION,
+    ACP_BACKENDS_HARNESS_OWNED_SLASH_COMMANDS,
     ACP_BACKENDS_HONOR_ZERO_TOOL_BAN,
     ACP_BACKENDS_INLINE_COMPACTION,
     ACP_BACKENDS_KIRO_SLASH_COMMANDS,
@@ -163,6 +164,14 @@ class SessionCapabilities:
     #: Unknown and newly registered backends remain False until they opt in.
     supports_native_todos: bool
 
+    #: Whether this harness runs ANY leading-slash prompt as one of its own commands.
+    #:
+    #: True where the adapter resolves the name itself (Claude Code's ``/review``,
+    #: ``/init``, skills, ``.claude/commands``), so the dashboard forwards every
+    #: leading-slash word raw instead of only kiro-cli's command names. Unknown and
+    #: newly registered backends remain False until they opt in.
+    runs_own_slash_commands: bool
+
     #: Whether an agent spec's ``"tools": []`` is honoured as a total ban -- no
     #: MCP server AND no harness-native tool -- on this backend.
     #:
@@ -223,6 +232,7 @@ def capabilities_for(backend: str) -> SessionCapabilities:
         compacts_inline=backend in ACP_BACKENDS_INLINE_COMPACTION,
         crew_fires_spec_hooks=backend in ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS,
         supports_native_todos=backend in ACP_BACKENDS_NATIVE_TODOS,
+        runs_own_slash_commands=backend in ACP_BACKENDS_HARNESS_OWNED_SLASH_COMMANDS,
         honors_zero_tool_ban=backend in ACP_BACKENDS_HONOR_ZERO_TOOL_BAN,
         acp_client_spawnable=backend in ACP_BACKENDS_ACP_CLIENT_SPAWNABLE,
         honors_remote_mcp_oauth=backend in ACP_BACKENDS_REMOTE_MCP_OAUTH,
@@ -252,6 +262,7 @@ UNKNOWN_BACKEND_CAPABILITIES = SessionCapabilities(
     compacts_inline=False,
     crew_fires_spec_hooks=False,
     supports_native_todos=False,
+    runs_own_slash_commands=False,
     honors_zero_tool_ban=False,
     acp_client_spawnable=False,
     honors_remote_mcp_oauth=False,
