@@ -5124,8 +5124,14 @@ the issue time. The wire format and the verifier's steps are in
 The proxy strips any caller-sent `X-KiroCrew-Proxy` and `X-KiroCrew-Principal`
 for every app, opted in or not, so a backend sees only the gateway's values. It
 also drops every relay identity header (`x-kiro-relay-*`, matched by prefix in any
-case), so no backend receives one. An
-app that does not opt in receives no principal header. A
+case), so no backend receives one. It forwards no credential of the caller's
+either: the `cookie` and `authorization` headers are dropped, and so is every
+`token` query field (`_PROXY_STRIP_QUERY_PARAMS`, matched after the same
+percent-decoding aiohttp applies), because `token_auth` reads the dashboard and
+app token from `?token=`. `_forwarded_query` removes those fields before the
+request-target is built, keeping every other field's wire bytes and order, so the
+v1, v2 and principal signatures cover exactly the target the backend receives.
+An app that does not opt in receives no principal header. A
 signer refusal returns 502 `proxy_principal_sign_failed` rather than forwarding
 an opted-in request without its claim.
 
@@ -5169,7 +5175,8 @@ and the same `ts`. The `v2:` prefix keeps the two MAC inputs disjoint.
 Writers: `apps/routes_proxy.py`, `apps/proxy_auth.py`, `apps/manifest_sections.py`. Tests:
 `test/test_app_proxy_auth.py`, `test/test_app_proxy_auth_v2.py`,
 `test/test_app_proxy_auth_v2_node_reference.py`, `test/test_app_manifest.py`,
-`test/test_gateway_appkit_endpoints_signed_proxy.py`.
+`test/test_gateway_appkit_endpoints_signed_proxy.py`,
+`test/test_app_proxy_query_credential.py`.
 
 ## 24a. An app writes a crewmate's Dashboard value through the shared record door
 
@@ -5399,7 +5406,7 @@ records which module owns which part, so a change lands in its owner.
 |---|---|
 | `routes.py` | The facade: the only import path and patch surface, installing `kiro_crew._facade_mirror` over the owners below, and the route table (`register_app_routes`) |
 | `routes_lifecycle.py` | The steps the install, update, uninstall, enable and disable handlers share: `_check_min_version`, the dual-pass warning redactor `_redact_warning`, `_register_app_off_loop` / `_deregister_app_off_loop`, `_start_backend_after_install`, `_stop_backend_and_observe`, `_app_may_run_after_install`, `_restore_app_after_failed_update`, `_suspend_app_for_session_approval_reconsent`, `_refuse_while_startup_hook_runs` and `_unregister_notification_channels` |
-| `routes_proxy.py` | The reverse proxy from an app's dashboard UI to its own backend (`handle_app_api_proxy`): `_resolve_app_backend_url`, the per-app secret cache it signs with (`_get_app_secret`, `invalidate_app_secret_cache`), the principal claim (`_proxy_principal`), the headers it strips and the event-stream relay |
+| `routes_proxy.py` | The reverse proxy from an app's dashboard UI to its own backend (`handle_app_api_proxy`): `_resolve_app_backend_url`, the per-app secret cache it signs with (`_get_app_secret`, `invalidate_app_secret_cache`), the principal claim (`_proxy_principal`), the headers and the `token` query credential it strips (`_forwarded_query`) and the event-stream relay |
 | `routes_static.py` | An installed app's UI bundle (`handle_app_ui_file`, `_open_ui_file` and the stream bounds), the content types the UI and art routes answer with, and `handle_app_dev_mode` |
 | `routes_art.py` | The installed-art route (`handle_app_art_file`) over an app's manifest-declared art (`_declared_art_paths`, `_read_declared_art`), and the git blob proxy (`handle_blob_proxy`, `_fetch_git_blob`) with the repository and ref validators (`_is_safe_repo_identifier`, `_SAFE_REF_RE`), the fetch timeout and concurrency bound, and the blob-cache touch. Both art paths screen on one extension set |
 | `routes_listing.py` | `handle_list_apps`, `handle_get_app` and `handle_get_manifest` with the trust repository each app is stamped with, `handle_app_config`, and `handle_publish_providers` over `collect_publish_providers` |

@@ -1746,6 +1746,13 @@ app secret as the key, where `sha256(body)` is the hex SHA-256 digest of the raw
 tampered body invalidates the signature. Backends verify with a constant-time comparison and
 reject requests whose timestamp is not within ±60s of now.
 
+The gateway forwards none of the caller's credentials. It drops the `Cookie` and
+`Authorization` headers, and it removes every `token` field from the query string,
+because the gateway reads `?token=` as the dashboard or app token. Every other
+query field reaches the backend with its exact bytes, and the signature covers the
+query the backend receives. Do not name one of your own API's query parameters
+`token`: the gateway would read it as a credential and the backend would never see it.
+
 A Python app backend whose environment can import `kiro_crew` (the built-in app backends run as child processes and still import it) verifies this with the gateway's own helper:
 
 ```python
