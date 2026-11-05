@@ -227,6 +227,7 @@ from kiro_crew.dashboard.messaging_api.slack_settings import (  # noqa: F401
 )
 from kiro_crew.dashboard.messaging_api.slack_workspace import (  # noqa: F401
     _missing_scope_message,
+    api_slack_history,
     api_slack_manifest,
     api_slack_pins,
     api_slack_profile,

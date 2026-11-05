@@ -420,6 +420,40 @@ def schemas() -> list[dict[str, Any]]:
             },
         },
         {
+            "name": "read_slack_history",
+            "description": (
+                "Read recent messages in a tracked Slack channel, or one thread "
+                "with thread_ts, newest first. Use it to see whether the owner "
+                "replied (an approval, a follow-up). Returns [{user, ts, admitted, "
+                "text}]: text is returned only when admitted is true (the sender "
+                "is the owner); other senders' messages come back with no text. "
+                "Bot messages are left out. Pass oldest (a Slack ts) to read "
+                "only messages after it."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "channel": {
+                        "type": "string",
+                        "description": "Tracked channel ID (e.g. C0123ABC456).",
+                    },
+                    "thread_ts": {
+                        "type": "string",
+                        "description": "Read this thread's replies, not the channel timeline.",
+                    },
+                    "oldest": {
+                        "type": "string",
+                        "description": "Only messages after this Slack ts.",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Max messages to return (1-100, default 20).",
+                    },
+                },
+                "required": ["channel"],
+            },
+        },
+        {
             "name": "file_send",
             "description": (
                 "Send a file to the user. Copies the file to the outbox and "
@@ -887,6 +921,46 @@ def read_slack_profile(name: str, args: dict[str, Any]) -> str:
     return json.dumps(profile, indent=2)
 
 
+def read_slack_history(name: str, args: dict[str, Any]) -> str:
+    # Strict identity and channel-agent containment, as update_message holds
+    # them: kirocrew-core is auto-approved, so channel.py's permission guard never
+    # sees this call, and a channel agent could relay one channel's messages into
+    # its own thread.
+    caller, strict_err = mcp_core.require_strict_session_key(
+        "Error: cannot verify caller identity for a read_slack_history call "
+        "(no gateway-injected session key or HMAC-verified pid). "
+        "Refusing to read channel messages for a caller that cannot be identified."
+    )
+    if not caller:
+        return strict_err
+    chan_deny = mcp_core._deny_channel_agent_messaging(caller, "read_slack_history")
+    if chan_deny:
+        return chan_deny
+
+    def _audit(outcome: str) -> None:
+        mcp_core.sel().log_tool_invocation(
+            session_key=caller, source="mcp", tool_name="read_slack_history", outcome=outcome
+        )
+
+    # The caller's own ``channels`` scope: the gateway route checks the host's,
+    # so a session or app narrowed off Slack would otherwise still read it.
+    gov_chan = mcp_core._vet_channel_governance(caller, "slack", tool_name="read_slack_history")
+    if gov_chan:
+        _audit("denied")
+        return f"Error: {gov_chan}"
+    resp = mcp_core._post("/api/slack-history", args, session_key=caller)
+    if resp.get("error"):
+        _audit("error")
+        return f"Error: {resp['error']}"
+    _audit("success")
+    messages = resp.get("messages", [])
+    # Defence-in-depth, as read_slack_profile: redact again before the LLM.
+    for m in messages:
+        text, _ = redact_exfiltration_urls(str(m.get("text") or ""))
+        m["text"], _ = redact_credentials(text)
+    return json.dumps(messages, indent=2)
+
+
 def _describe_channel_skip(reason: str) -> str:
     """Render a channel-leg skip *reason* as an actionable warning clause.
 
@@ -1142,5 +1216,6 @@ HANDLERS: dict[str, Callable[[str, dict[str, Any]], str]] = {
     "delete_message": delete_message,
     "update_message": update_message,
     "read_slack_profile": read_slack_profile,
+    "read_slack_history": read_slack_history,
     "file_send": file_send,
 }

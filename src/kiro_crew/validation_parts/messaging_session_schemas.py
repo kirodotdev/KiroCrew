@@ -31,6 +31,7 @@ from kiro_crew.validation_parts.input_bounds import (
     MAX_BROADCAST_TARGETS,
     MAX_LONG_STRING,
     MAX_MEDIUM_STRING,
+    SLACK_THREAD_TS_RE,
     USER_ID_RE,
     USER_MAX_LEN,
 )
@@ -197,6 +198,16 @@ READ_SLACK_PROFILE_SCHEMA = ToolSchema(
     tool_name="read_slack_profile",
     fields=[
         FieldSpec("user", str, required=True, max_len=USER_MAX_LEN, pattern=USER_ID_RE),
+    ],
+)
+
+READ_SLACK_HISTORY_SCHEMA = ToolSchema(
+    tool_name="read_slack_history",
+    fields=[
+        FieldSpec("channel", str, required=True, max_len=CHANNEL_MAX_LEN, pattern=CHANNEL_ID_RE),
+        FieldSpec("thread_ts", str, max_len=30, pattern=SLACK_THREAD_TS_RE),
+        FieldSpec("oldest", str, max_len=30, pattern=SLACK_THREAD_TS_RE),
+        FieldSpec("limit", int, min_val=1, max_val=100),
     ],
 )
 

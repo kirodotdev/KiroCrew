@@ -33,6 +33,10 @@ logger = logging.getLogger(__name__)
 _CONVERSATIONS_LIST_MAX_PAGES = 20  # 20 pages × 1000 = 20k channels max
 _CONVERSATIONS_LIST_PAGE_SIZE = 1000
 
+# fetch_history pagination limits: 20 pages × 200 = 4k messages max
+_HISTORY_MAX_PAGES = 20
+_HISTORY_PAGE_SIZE = 200
+
 # A Slack file fetch is the one outbound request that carries the bot token in
 # an ``Authorization`` header, and its URL is not ours: it is whatever
 # ``url_private_download`` / ``url_private`` the inbound event envelope carried.
@@ -310,6 +314,12 @@ class SlackClientOps(ABC):
         """
         return []
 
+    async def fetch_history(
+        self, channel: str, limit: int, *, thread_ts: str | None = None, oldest: str | None = None
+    ) -> list[dict]:
+        """The newest *limit* messages no bot posted, newest first; errors raise."""
+        raise NotImplementedError
+
     async def conversations_list(self) -> list[dict]:
         """List channels the bot can see. Each dict has at least ``id`` and ``name``.
 
@@ -427,7 +437,7 @@ class RealSlackClient(SlackClientOps):
             use_channel_team_store(cache)
         cache[channel] = team_id
 
-    async def ensure_channel_team(self, channel: str) -> None:
+    async def ensure_channel_team(self, channel: str, *, retry: bool = False) -> None:
         """Resolve a channel's HOME workspace into the routing cache.
 
         Inbound handlers call this once per message. conversations_info
@@ -442,7 +452,9 @@ class RealSlackClient(SlackClientOps):
         the cache, which leaves outbound calls without team_id — the same
         routing Slack does for a cache miss — and lands in
         ``_channel_team_unresolvable`` so the failure costs one lookup per
-        process rather than one per message.
+        process rather than one per message. *retry* looks it up again anyway,
+        for a caller that gates access on the answer and must not deny for
+        the rest of the run on one transient failure.
         """
         if not channel:
             return
@@ -453,7 +465,7 @@ class RealSlackClient(SlackClientOps):
         if unresolvable is None:
             unresolvable = set()
             self._channel_team_unresolvable = unresolvable
-        if channel in unresolvable:
+        if channel in unresolvable and not retry:
             return
         try:
             resp = await self._web.conversations_info(channel=channel)
@@ -472,6 +484,7 @@ class RealSlackClient(SlackClientOps):
             home = ""
         if home:
             self.record_channel_team(channel, home)
+            unresolvable.discard(channel)
         else:
             unresolvable.add(channel)
 
@@ -1168,6 +1181,48 @@ class RealSlackClient(SlackClientOps):
         except (SlackClientError, aiohttp.ClientError, asyncio.TimeoutError):
             logger.debug("fetch_thread_replies failed for %s/%s", channel, thread_ts, exc_info=True)
         return []
+
+    async def fetch_history(
+        self, channel: str, limit: int, *, thread_ts: str | None = None, oldest: str | None = None
+    ) -> list[dict]:
+        """The newest *limit* messages no bot posted, newest first.
+
+        Reads one thread when *thread_ts* is set, else the channel timeline;
+        only messages after *oldest* count. Bot posts are dropped before *limit*
+        applies, so a run of them cannot hide a reply. Unlike
+        ``fetch_thread_replies`` every error raises: a caller waiting for a reply
+        must not read one as "none".
+        """
+        kwargs: dict[str, Any] = {"channel": channel, "limit": _HISTORY_PAGE_SIZE}
+        if thread_ts:
+            kwargs["ts"] = thread_ts
+        if oldest:
+            kwargs["oldest"] = oldest
+        self._inject_team(channel, kwargs)
+        read = self._web.conversations_replies if thread_ts else self._web.conversations_history
+
+        def wanted(m: dict) -> bool:
+            # conversations.replies returns the thread's parent whatever oldest says.
+            newer = not oldest or float(m.get("ts") or 0) > float(oldest)
+            return newer and not (m.get("bot_id") or m.get("subtype") == "bot_message")
+
+        found: dict[str, dict] = {}  # by ts: a repeated parent is kept once
+        for _ in range(_HISTORY_MAX_PAGES):
+            resp = await read(**kwargs)
+            page: list[dict] = resp.get("messages", [])
+            found.update((str(m.get("ts")), m) for m in page if wanted(m))
+            kwargs["cursor"] = (resp.get("response_metadata") or {}).get("next_cursor")
+            # The timeline is newest-first, so it stops once it has enough; a
+            # thread is oldest-first, so its newest replies are on the last page.
+            if not kwargs["cursor"] or (not thread_ts and len(found) >= limit):
+                break
+        else:
+            raise RuntimeError(
+                f"{thread_ts or channel} has more than {_HISTORY_MAX_PAGES} pages to read; "
+                "pass a later oldest"
+            )
+        newest = sorted(found.values(), key=lambda m: float(m.get("ts") or 0), reverse=True)
+        return newest[:limit]
 
     async def conversations_list(self) -> list[dict]:
         """Fetch all public + private channels the bot is a member of.

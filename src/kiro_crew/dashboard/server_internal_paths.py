@@ -125,6 +125,7 @@ _STRICT_INTERNAL_API_PATHS = frozenset(
         "/api/slack/pins",
         "/api/slack/reactions",
         "/api/slack-profile",  # MCP-only (slack_profile tool); no browser caller
+        "/api/slack-history",  # MCP-only (read_slack_history tool); no browser caller
         "/api/sessions/summarize",  # MCP-only (list_sessions summarize leg); internal-secret, no browser caller
         # MCP-only crew-scoped session reads (crew= scope on search_chat_history
         # / list_sessions / get_chat_session). Prefix matching covers
