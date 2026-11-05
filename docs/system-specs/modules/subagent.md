@@ -4682,7 +4682,7 @@ backend in `ACP_BACKENDS_SESSION_SHARING` (currently `kiro` or `codex`), subagen
 open an additional ACP session on a **shared `AcpRuntime`** instead of spawning a
 fresh process each. One process multiplexes the parent session plus all of its
 subagents. Startup drops from ~3–5 s to ~200 ms and per-subagent memory from
-~400 MB to near-zero.
+about 0.55 GB to near-zero.
 
 Decision + lifecycle:
 
