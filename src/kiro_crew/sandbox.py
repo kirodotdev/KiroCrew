@@ -657,6 +657,7 @@ if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
         _live_target_irregular_detail,
         _live_target_multilink_detail,
         _live_target_symlink_detail,
+        _materialize_env_mask_target,
         _materialize_live_target_mask_target,
         _materialize_maskable_dirs,
         _materialize_md_notebook_mask_targets,
