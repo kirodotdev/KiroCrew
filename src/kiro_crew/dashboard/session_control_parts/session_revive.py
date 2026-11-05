@@ -351,8 +351,8 @@ def _archived_target_refusal(
             return None
         if str(meta.get("created_by") or "") != caller_key:
             return "target session was created by another session", "not_creator"
-        # The metadata line is a file an agent's file tools can edit
-        # (``chat_persistence`` says so where it restores ``created_by``), so for a
+        # The metadata line is a file a sandboxed shell can write
+        # (``metadata_codec._read_created_by`` says so where it restores it), so for a
         # FENCED caller the claim above is only a claim: a caller that rewrote
         # ``created_by`` in an archived transcript would otherwise revive a session
         # it never made and then hold it. The ownership is therefore corroborated

@@ -23,6 +23,7 @@ from chat_test_helpers import _make_state
 
 from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig
 from kiro_crew.dashboard import chat_persistence as cp
+from kiro_crew.dashboard import session_control as sc
 from kiro_crew.dashboard.relay_archive import relay_archive_refusal
 from kiro_crew.dashboard.slot_buffers import (
     sanitize_restored_deferred_notes,
@@ -215,6 +216,8 @@ _BASE_MERGE_ORDER = (
 
 def _state(tmp_path, monkeypatch):
     monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+    # The crew log records the populated creator, so a restore keeps the claim.
+    monkeypatch.setattr(sc, "_creation_parent", lambda key: _POPULATED["_created_by"])
     state = _make_state(tmp_path)
     state._tags = [{"id": "t1"}, {"id": "t2"}]
     state._tags_authoritative = True

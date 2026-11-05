@@ -249,6 +249,47 @@ def test_a_childs_first_turn_after_a_restart_cites_the_creator_from_the_spawn():
     assert stp.projection().nodes()["W"].parent_slot == "L"
 
 
+@pytest.mark.parametrize("driver", ["recent", "open"])
+def test_a_boot_restore_keeps_only_the_creator_the_spawn_records(tmp_path, monkeypatch, driver):
+    """A restarted gateway restores tabs before anything else has folded the crew
+    log; the restore folds it first, so the creator a line names is kept when the
+    spawn records it and refused when nothing does."""
+    from chat_test_helpers import _make_state
+
+    from kiro_crew.config.paths import config_dir
+    from kiro_crew.dashboard.chat import restore_open_slots, restore_recent_sessions
+    from kiro_crew.dashboard.session_control import UNVERIFIED_CREATOR
+
+    _open_creator("s-l", "chat-l")
+    emit.on_session_spawned("s-l", creator_slot="chat-l", child_slot="chat-w")
+    assert_drained()
+    stp.reset_for_tests()
+    emit.reset_caches()
+    assert stp.projection().seeded is False
+
+    monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+    history = tmp_path / "history"
+    history.mkdir()
+    for slot in ("chat-w", "chat-x"):
+        (history / f"dashboard_{slot}.jsonl").write_text(
+            json.dumps({"_type": "metadata", "title": slot, "created_by": "chat-l"})
+            + "\n"
+            + json.dumps({"role": "user", "content": "task"})
+            + "\n",
+            encoding="utf-8",
+        )
+    (config_dir() / "open_slots.json").write_text(
+        json.dumps({"keys": ["chat-w", "chat-x"], "ts": 0.0}), encoding="utf-8"
+    )
+    state = _make_state(history)
+
+    restore = restore_recent_sessions if driver == "recent" else restore_open_slots
+    kwargs = {"window_minutes": 60} if driver == "recent" else {}
+    assert restore(state, **kwargs) == 2
+    assert state._slots["chat-w"]._created_by == "chat-l"
+    assert state._slots["chat-x"]._created_by == UNVERIFIED_CREATOR
+
+
 def test_the_spawn_survives_a_restart_through_the_checkpoint_too():
     _open_creator("s-l", "L")
     emit.on_session_spawned("s-l", creator_slot="L", child_slot="W")
