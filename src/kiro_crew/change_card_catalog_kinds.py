@@ -294,6 +294,10 @@ _CANNOT_WIDEN_SETTINGS: frozenset[str] = frozenset(
         "power.on_battery",
         "session.autocompact_pct",
         "session.compact_wait_secs",
+        # Idle compaction only decides whether an idle chat is summarised before
+        # its prompt cache expires; it spends credits but grants nothing.
+        "session.idle_compaction",
+        "session.idle_compaction_min_context_pct",
         "session.pool_size",
         "session.pool_ttl_secs",
         "session.timeout_secs",
