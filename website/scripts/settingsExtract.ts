@@ -142,6 +142,7 @@ export const PANEL_TAB_MAP: Record<string, PanelTarget> = {
   'SecurityPanelRedaction.tsx': 'security',
   'SecurityPanelLayers.tsx': 'security',
   'SecurityPanelGovernance.tsx': 'security',
+  'SecurityPanelBodyFields.tsx': 'security',
   // The review cards for settings files edited outside the dashboard, which
   // SecurityPanel.tsx mounts as its banner. No extractable primitive; mapped so
   // the hand-written `security.config-pending` entry stays anchored to its source.

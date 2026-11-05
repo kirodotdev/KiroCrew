@@ -156,8 +156,11 @@ def _extract_tool_input_strings(tool_input: str, *, split_oversize_diff: bool = 
 # its target path instead (``_edit_target_denial``), and every other non-shell
 # tool with trusted provenance has its document-body fields skipped
 # (``platform.tool_paths.command_shaped_strings``), so neither reaches this
-# ceiling on a body; the residual is the unclassified frame, which keeps the
-# full scan by design. Tracked in https://github.com/kirodotdev/KiroCrew/issues/8053.
+# ceiling on a body. A trusted MCP tool's message-body field named in
+# ``security.mcp_body_fields`` is split out too and judged by the document
+# detectors under the 256 KiB source-body ceiling. The residual is the
+# unclassified frame and any other MCP field, which keep the full scan by
+# design. Tracked in https://github.com/kirodotdev/KiroCrew/issues/8053.
 #
 # One number for both tiers: the shell gate refuses a command above
 # ``security.MAX_SCANNABLE_COMMAND_CHARS`` on its own (every caller, not only

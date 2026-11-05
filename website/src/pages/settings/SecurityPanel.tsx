@@ -9,6 +9,7 @@
  * - `SecurityPanelTailnet.tsx`: Tailnet
  * - `SecurityPanelTrust.tsx`: Third-party apps, Registry trust
  * - `SecurityPanelRedaction.tsx`: Redaction
+ * - `SecurityPanelBodyFields.tsx`: Message body fields
  * - `SecurityPanelLayers.tsx`: Defense-in-depth architecture
  * - `SecurityPanelGovernance.tsx`: Governance policy
  * Callers import from this file; an owner never imports it.
@@ -17,7 +18,7 @@ import React, { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import {
   ShieldCheck, EyeOff, Terminal, Layers, ExternalLink, Gavel, Gauge, Boxes, BookOpen,
-  Network, GitBranch,
+  Network, GitBranch, Mail,
 } from 'lucide-react'
 import { useAppSelector } from '../../store'
 import { SettingsSubNav } from '../../components/SettingsSubNav'
@@ -32,6 +33,7 @@ import { DeniedCommandsSection } from './SecurityPanelDeniedCommands'
 import { TAILNET_STATE_KEY, TailnetOriginCard } from './SecurityPanelTailnet'
 import { ThirdPartyAppsCard, TrustedRegistriesCard } from './SecurityPanelTrust'
 import { RedactionSection } from './SecurityPanelRedaction'
+import { BodyFieldsSection } from './SecurityPanelBodyFields'
 import { FEATURES, LayersSection } from './SecurityPanelLayers'
 import { GovernancePolicyViewer } from './SecurityPanelGovernance'
 import { ConfigPendingCards } from './SecurityPanelConfigPending'
@@ -70,7 +72,7 @@ function DocsSection() {
  * The rail states which is which before any row is read, and the two large
  * tables (137 rules, ~20 governed scopes) get a pane instead of a fold.
  */
-type SecuritySectionKey = 'posture' | 'approval' | 'rules' | 'tailnet' | 'apps' | 'registries' | 'redaction' | 'layers' | 'governance' | 'docs'
+type SecuritySectionKey = 'posture' | 'approval' | 'rules' | 'tailnet' | 'apps' | 'registries' | 'redaction' | 'bodyFields' | 'layers' | 'governance' | 'docs'
 type SecuritySectionGroup = 'status' | 'yours' | 'enforced' | 'reference'
 
 interface SecuritySectionDef {
@@ -106,6 +108,7 @@ export const SECTION_LABEL_KEY: Record<SecuritySectionKey, string> = {
   apps: 'pages.settings.securityPanel.third_party_apps_section',
   registries: 'pages.settings.securityPanel.trustedRegistries.section_title_rail',
   redaction: 'pages.settings.securityPanel.redaction_section',
+  bodyFields: 'pages.settings.securityPanel.bodyFields.section_title',
   layers: 'pages.settings.securityPanel.defense_in_depth_architecture',
   governance: 'pages.settings.securityPanel.governance_policy',
   docs: 'pages.settings.securityPanel.documentation',
@@ -129,6 +132,7 @@ const SECURITY_SECTIONS: readonly SecuritySectionDef[] = [
   { key: 'apps', icon: <Boxes size={15} />, group: 'yours' },
   { key: 'registries', icon: <GitBranch size={15} />, group: 'yours' },
   { key: 'redaction', icon: <EyeOff size={15} />, group: 'yours' },
+  { key: 'bodyFields', icon: <Mail size={15} />, group: 'yours' },
   { key: 'layers', icon: <Layers size={15} />, group: 'enforced' },
   { key: 'governance', icon: <Gavel size={15} />, group: 'enforced' },
   { key: 'docs', icon: <BookOpen size={15} />, group: 'reference' },
@@ -310,6 +314,7 @@ export function SecurityPanel({ basePath }: { basePath?: string } = {}) {
               </SettingsSection>
             )}
             {key === 'redaction' && <RedactionSection />}
+            {key === 'bodyFields' && <BodyFieldsSection />}
             {key === 'layers' && <LayersSection />}
             {key === 'governance' && <GovernancePolicyViewer />}
             {key === 'docs' && <DocsSection />}
