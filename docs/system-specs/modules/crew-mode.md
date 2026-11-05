@@ -4069,7 +4069,11 @@ runs the agent it recorded. A `template` record (a worker included) stays exact
   `work_brief`, `work_report`), so a worker bound to an item in its
   Bot's ledger can read its brief and report on it; it is a base server,
   so a Bot's file cannot replace its entry (a switch-off is still a
-  restriction, below). Both specs are written from
+  restriction, below). Each server an edition contributes
+  (`McpToolingProvider.extra_mcp_servers()`) that the worker mounts gets an
+  `@<server>` ref in `tools`, which `build_agent_config()` leaves out
+  (`service_agents._register_edition_refs`); `allowedTools` gains nothing, so
+  those tools prompt. Both specs are written from
   `build_agent_config()` on every gateway start
   (`service_agents._install_mate_conductor_agent` /
   `_install_mate_worker_agent`) into `~/.kiro/mates/agents/`, beside the
