@@ -144,6 +144,28 @@ def backfill_events(art: Artifact) -> bool:
     return True
 
 
+def _decode_tags(raw: Any) -> _List[str]:
+    """The ``tags`` of a parsed ``meta.json``, as the list of strings readers expect.
+
+    The store only ever writes a list of strings (``_validate_tags``), so anything
+    else came from an edit outside it. Tolerant, like the rest of this load: a bare
+    string is one tag, a number is its text, and an entry that names no label
+    (``null``, a bool, an object, a list) is dropped. A whole value that is not a list
+    or a string reads as no tags rather than refusing the record.
+    """
+    if isinstance(raw, str):
+        return [raw] if raw else []
+    if not isinstance(raw, list):
+        return []
+    tags: _List[str] = []
+    for tag in raw:
+        if isinstance(tag, str):
+            tags.append(tag)
+        elif isinstance(tag, (int, float)) and not isinstance(tag, bool):
+            tags.append(str(tag))
+    return tags
+
+
 def decode_meta(raw: Any, path: Path) -> Artifact:
     """Build an :class:`Artifact` from a parsed ``meta.json`` (the file at *path*).
 
@@ -201,7 +223,7 @@ def decode_meta(raw: Any, path: Path) -> Artifact:
         kind_auto=bool(raw.get("kind_auto", False)),
         source=str(raw.get("source", "chat")),
         description=str(raw.get("description", "")),
-        tags=list(raw.get("tags", []) or []),
+        tags=_decode_tags(raw.get("tags")),
         version=int(raw.get("version", 1)),
         created_at=str(raw.get("created_at", "")),
         updated_at=str(raw.get("updated_at", "")),
