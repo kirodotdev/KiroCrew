@@ -554,6 +554,25 @@ def decode(text: str, expected_tool: str) -> dict[str, Any] | None:
     return args if isinstance(args, dict) else {}
 
 
+def deferred_call_arguments(raw_args: Any) -> dict | None:
+    """The arguments inside a Tool Search deferred-call envelope, else ``None``.
+
+    A backend that defers a tool runs it through its ``tool_call`` meta-tool, so
+    the frame's input is ``{"tool_id": "<server>::<tool>", "arguments": {...}}``
+    while the server receives only ``{...}`` (measured on KAS, kiro-cli 2.27.1).
+    Only an envelope carrying nothing else besides ``_meta``, with an object
+    ``arguments``, counts. ``tool_id`` is no proof of which tool runs: a caller
+    that needs identity compares it with the call it resolved on its own.
+    """
+    if (
+        isinstance(raw_args, dict)
+        and set(raw_args) - {"_meta"} == {"tool_id", "arguments"}
+        and isinstance(raw_args["arguments"], dict)
+    ):
+        return raw_args["arguments"]
+    return None
+
+
 def event_input_digest(tool: str, raw_args: Any, server: str, name: str) -> str:
     """Select call arguments from an attributed ACP MCP envelope.
 
@@ -562,15 +581,11 @@ def event_input_digest(tool: str, raw_args: Any, server: str, name: str) -> str:
 
     - Codex wraps them beside the adapter-resolved server and tool; unwrap only
       when both match the independently attributed call.
-    - A Tool Search deferred call reaches the server through the backend's
-      ``tool_call`` meta-tool, so the frame's input is
-      ``{"tool_id": "<server>::<tool>", "arguments": {...}}`` while the server
-      receives only ``{...}``. Unwrap only when ``tool_id`` names the core server
-      and the very directive *tool* this call already resolved to, and the
-      envelope carries nothing else besides ``_meta``. Measured on KAS
-      (kiro-cli 2.27.1), whose frame carries no ``_meta.kiro`` identity, so
-      this branch is keyed on the envelope and *tool*, not on *server*/*name*,
-      and holds for any provider that emits the same envelope.
+    - A Tool Search deferred call (:func:`deferred_call_arguments`): unwrap only
+      when ``tool_id`` names the core server and the very directive *tool* this
+      call already resolved to. Its KAS frame carries no ``_meta.kiro``
+      identity, so this branch is keyed on the envelope and *tool*, not on
+      *server*/*name*, and holds for any provider that emits the same envelope.
 
     Never derive identity from this input: the resolved *tool* is the gate, and
     the envelope only selects which arguments to hash.
@@ -584,13 +599,10 @@ def event_input_digest(tool: str, raw_args: Any, server: str, name: str) -> str:
         and isinstance(raw_args.get("arguments"), dict)
     ):
         raw_args = raw_args["arguments"]
-    elif (
-        isinstance(raw_args, dict)
-        and set(raw_args) - {"_meta"} == {"tool_id", "arguments"}
-        and raw_args.get("tool_id") == f"{CORE_MCP_SERVER}::{tool}"
-        and isinstance(raw_args.get("arguments"), dict)
-    ):
-        raw_args = raw_args["arguments"]
+    else:
+        inner = deferred_call_arguments(raw_args)
+        if inner is not None and raw_args["tool_id"] == f"{CORE_MCP_SERVER}::{tool}":
+            raw_args = inner
     return call_input_digest(tool, raw_args)
 
 
