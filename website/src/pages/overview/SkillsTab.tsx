@@ -995,7 +995,7 @@ function PendingCandidateRow({ p, autoOpen, approveRefusal, mixedQueue, onApprov
               : p.description}
           </div>
         </div>
-        <Btn onClick={() => setOpen(o => !o)}>{open ? i18nT('pages.overview.skillsTab.hide') : i18nT('pages.overview.skillsTab.review')}</Btn>
+        <Btn aria-expanded={open} onClick={() => setOpen(o => !o)}>{open ? i18nT('pages.overview.skillsTab.hide') : i18nT('pages.overview.skillsTab.review')}</Btn>
         {/* An update whose target was archived/removed after staging has nothing
             to apply, and a stale update (live moved on since the merge) would
             replace the newer approved content — the backend refuses both, so keep
