@@ -7,13 +7,14 @@
  * editor is a full-bleed split pane by necessity — a paper and its PDF need the
  * whole viewport — and it carries its own toolbar instead.
  */
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { AlertTriangle, Download, FileCheck2, FilePlus2, GitBranch, Loader2, Pencil, ScrollText, Trash2 } from 'lucide-react'
 import { Btn, Card, CardTitle, ContentSkeleton, EmptyState, Input, PageHeader, SendBtn, StatCard } from '../../components/ui'
 import Clickable from '../../components/Clickable'
 import ErrorNotice from '../../components/ErrorNotice'
 import InfoTip from '../../components/InfoTip'
+import { useConfirm } from '../../components/ConfirmDialog'
 import { fmtBytes, fmtDateTime } from '../../i18n/format'
 import { papyrusApi, PapyrusApiError, type Project } from './api'
 import { projectErrorText, pruneSlots, renameErrorText, PROJECTS_QUERY_KEY, projectQueryKey } from './lib'
@@ -41,6 +42,8 @@ function formatModified(epochSeconds: number): string {
 }
 
 export default function ProjectList({ onOpenProject }: ProjectListProps) {
+  const { confirm, confirmDialog } = useConfirm()
+  const deleting = useRef(false)
   // One instance covers both inputs; the binding's focus/blur reset makes sharing safe.
   const ime = useImeGuard()
   const queryClient = useQueryClient()
@@ -271,6 +274,7 @@ export default function ProjectList({ onOpenProject }: ProjectListProps) {
 
   return (
     <>
+      {confirmDialog}
       <PageHeader
         title={i18nT('apps.papyrus.page.papyrus')}
         subtitle={i18nT('apps.papyrus.page.latex_papers_with_a_live_pdf_preview')}
@@ -525,19 +529,22 @@ export default function ProjectList({ onOpenProject }: ProjectListProps) {
                         aria-label={i18nT('apps.papyrus.page.delete_paper', { name: project.name })}
                         {...guideCaution}
                         title={i18nT('apps.papyrus.page.delete_paper', { name: project.name })}
-                        onClick={() => {
+                        onClick={async () => {
                           // Deleting a paper is `rmtree` on the server with no
                           // undo, including uncommitted work — so it confirms,
                           // exactly as deleting a single file already does.
-                          if (
-                            window.confirm(
-                              i18nT('apps.papyrus.page.delete_paper_confirm', {
-                                name: project.name,
-                              }),
-                            )
-                          ) {
-                            deleteMutation.mutate(project.name)
-                          }
+                          if (deleting.current || deleteMutation.isPending) return
+                          const name = project.name
+                          deleting.current = true
+                          try {
+                            if (await confirm({
+                              title: i18nT('components.commentsSidebar.delete'),
+                              body: i18nT('apps.papyrus.page.delete_paper_confirm', { name }),
+                              confirmLabel: i18nT('components.commentsSidebar.delete'),
+                            }) !== true) return
+                            await deleteMutation.mutateAsync(name)
+                          } catch { /* The list renders the mutation error. */ }
+                          finally { deleting.current = false }
                         }}
                         disabled={deleteMutation.isPending || renameOpen}
                         className="p-1 rounded text-muted hover:text-danger-text hover:bg-danger/10 cursor-pointer bg-transparent border-none transition-colors disabled:opacity-40"

@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Provider } from 'react-redux'
 
 import { store } from '../../store'
+import { confirmAction } from '../../test/confirmAction'
 
 const apiMocks = vi.hoisted(() => ({
   config: vi.fn(),
@@ -97,7 +98,6 @@ describe('MeetingsPage deletion', () => {
   })
 
   it('confirms before deleting and sends the meeting id to the API', async () => {
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
     const { queryClient } = renderPage()
     queryClient.setQueryData(['meetings', 'retro', 'init'], { ok: true })
     queryClient.setQueryData(['meetings', 'retro', 'meta'], { meta: ENDED_MEETING })
@@ -105,7 +105,10 @@ describe('MeetingsPage deletion', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: 'Delete Retrospective' }))
 
-    expect(confirm).toHaveBeenCalledWith(expect.stringContaining('Retrospective'))
+    const dialog = await screen.findByRole('dialog')
+    expect(dialog.querySelector('p')).toHaveTextContent('Delete “Retrospective” and all of its notes, diagrams, and action items? This cannot be undone.')
+    expect(document.getElementById(dialog.getAttribute('aria-labelledby')!)).toHaveTextContent(/^Delete meeting$/)
+    await confirmAction('Delete meeting')
     await waitFor(() => expect(apiMocks.deleteMeeting).toHaveBeenCalledWith('retro'))
     await waitFor(() => {
       expect(queryClient.getQueryData(['meetings', 'retro', 'init'])).toBeUndefined()
@@ -115,11 +118,11 @@ describe('MeetingsPage deletion', () => {
   })
 
   it('does not delete when confirmation is cancelled', async () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(false)
     renderPage()
 
     fireEvent.click(await screen.findByRole('button', { name: 'Delete Retrospective' }))
 
+    await confirmAction('Cancel')
     expect(apiMocks.deleteMeeting).not.toHaveBeenCalled()
   })
 
@@ -128,30 +131,48 @@ describe('MeetingsPage deletion', () => {
     apiMocks.deleteMeeting.mockImplementation(
       () => new Promise<void>(resolve => { finishDelete = resolve }),
     )
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
     renderPage()
 
     const deleteButton = await screen.findByRole('button', { name: 'Delete Retrospective' })
     fireEvent.click(deleteButton)
+    await confirmAction('Delete meeting')
 
     await waitFor(() => {
       expect(deleteButton.querySelector('svg.lucide-loader-circle')).toBeInTheDocument()
       expect(deleteButton.querySelector('svg.lucide-refresh-cw')).not.toBeInTheDocument()
     })
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    fireEvent.click(deleteButton)
+    expect(apiMocks.deleteMeeting).toHaveBeenCalledTimes(1)
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
     await act(async () => finishDelete?.())
   })
 
   it('shows the backend failure beside the meeting that could not be deleted', async () => {
     apiMocks.deleteMeeting.mockRejectedValue(new Error('End the meeting before deleting it'))
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
     renderPage()
 
     fireEvent.click(await screen.findByRole('button', { name: 'Delete Retrospective' }))
+
+    await confirmAction('Delete meeting')
 
     expect(await screen.findByRole('alert')).toHaveTextContent(
       'End the meeting before deleting it',
     )
     expect(screen.getByText('Retrospective')).toBeInTheDocument()
+  })
+
+  it('deletes the captured meeting when the list and filter change during confirmation', async () => {
+    const { queryClient } = renderPage()
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete Retrospective' }))
+    await screen.findByRole('dialog')
+    act(() => queryClient.setQueryData(['meetings', 'list'], {
+      meetings: [{ ...ENDED_MEETING, event_id: 'replacement', title: 'Replacement' }],
+    }))
+    fireEvent.change(screen.getByPlaceholderText('Filter meetings…'), { target: { value: 'Replacement' } })
+    await screen.findByRole('button', { name: 'Delete Replacement' })
+    await confirmAction('Delete meeting')
+    await waitFor(() => expect(apiMocks.deleteMeeting).toHaveBeenCalledWith('retro'))
   })
 
   it('keeps the delete affordance visible but disabled for a live meeting', async () => {

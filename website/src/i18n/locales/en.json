@@ -2096,6 +2096,7 @@
         "deleteConfirm": "Delete “{{title}}” and all of its notes, diagrams, and action items? This cannot be undone.",
         "deleteFailed": "Could not delete this meeting.",
         "deleteMeeting": "Delete {{title}}",
+        "deleteMeetingButton": "Delete meeting",
         "deleteUnavailable": "End this meeting before deleting it",
         "deleted": "Deleted “{{title}}”",
         "empty": "No meetings",

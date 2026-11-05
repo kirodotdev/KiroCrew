@@ -3415,6 +3415,7 @@
         "deleteConfirm": "“{{title}}” এবং এর সব নোট, চিত্র ও করণীয় স্থায়ীভাবে মুছবেন? এটি আর ফেরানো যাবে না।",
         "deleteFailed": "এই মিটিংটি মোছা যায়নি।",
         "deleteMeeting": "{{title}} মুছুন",
+        "deleteMeetingButton": "সভা মুছুন",
         "deleteUnavailable": "মোছার আগে এই মিটিংটি শেষ করুন",
         "deleted": "“{{title}}” মোছা হয়েছে",
         "empty": "কোনও মিটিং নেই",
