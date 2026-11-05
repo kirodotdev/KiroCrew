@@ -841,7 +841,15 @@ if platform_compat.IS_WINDOWS:
     _SAFE_PATH_RE = re.compile(r"^[a-zA-Z0-9/_.\-\\:]+$")
 else:
     _SAFE_PATH_RE = re.compile(r"^[a-zA-Z0-9/_.\-]+$")
-_SAFE_MATCHER_RE = re.compile(r"^[a-zA-Z0-9_.*\-]+$")
+# The matcher is a pattern used to filter tool names; it is never executed or
+# used as a filesystem path. Allowed characters:
+#   alphanumeric, underscore, hyphen, dot   -- plain tool names and globs
+#   * ?                                     -- glob wildcards (* multi-char, ? single)
+#   @ /                                     -- kiro-cli server references: @builtin,
+#                                              @builtin/<glob>, @<server>, @mcp
+# Shell metacharacters ($, ;, |, &, \, (, ), ` etc.) and whitespace are still
+# rejected so a hostile config.json cannot inject shell commands via a matcher.
+_SAFE_MATCHER_RE = re.compile(r"^[a-zA-Z0-9_.*?\-@/]+$")
 _MAX_MATCHER_LEN = 200
 
 
@@ -1229,10 +1237,16 @@ def _merge_kiro_hooks(hooks: dict, user_hooks: dict) -> dict:
         added = 0
         for entry in entries:
             if added >= _MAX_USER_HOOKS_PER_EVENT:
+                _dropped_cmd = (
+                    str(entry.get("command", ""))[:200]
+                    if isinstance(entry, dict)
+                    else str(entry)[:200]
+                )
                 logger.warning(
-                    "kiro_hooks[%s]: limit of %d reached, ignoring remaining",
+                    "kiro_hooks[%s]: per-event limit of %d reached, dropping: %r",
                     event,
                     _MAX_USER_HOOKS_PER_EVENT,
+                    _dropped_cmd,
                 )
                 # Audit parity with every other rejection branch in this
                 # function (missing command, failed validation, non-string
@@ -1243,35 +1257,25 @@ def _merge_kiro_hooks(hooks: dict, user_hooks: dict) -> dict:
                 # this, an auditor cannot distinguish "user configured 15
                 # preToolUse hooks and 5 were cap-dropped" from "user
                 # configured 10 and all loaded".
-                _sel_hook_rejected(
-                    event,
-                    (
-                        str(entry.get("command", ""))[:200]
-                        if isinstance(entry, dict)
-                        else str(entry)[:200]
-                    ),
-                    "per-event limit exceeded",
-                )
+                _sel_hook_rejected(event, _dropped_cmd, "per-event limit exceeded")
                 break
             if total_added >= _MAX_TOTAL_USER_HOOKS:
+                _dropped_cmd = (
+                    str(entry.get("command", ""))[:200]
+                    if isinstance(entry, dict)
+                    else str(entry)[:200]
+                )
                 logger.warning(
-                    "kiro_hooks: global limit of %d reached, ignoring remaining",
+                    "kiro_hooks: global limit of %d reached, dropping: %r",
                     _MAX_TOTAL_USER_HOOKS,
+                    _dropped_cmd,
                 )
                 # Same audit-parity rationale as the per-event cap above:
                 # hitting the global cap drops remaining hooks across all
                 # events, and auditors need a SEL signal to distinguish
                 # "25 configured, 5 cap-dropped" from "20 configured, all
                 # loaded".
-                _sel_hook_rejected(
-                    event,
-                    (
-                        str(entry.get("command", ""))[:200]
-                        if isinstance(entry, dict)
-                        else str(entry)[:200]
-                    ),
-                    "global limit exceeded",
-                )
+                _sel_hook_rejected(event, _dropped_cmd, "global limit exceeded")
                 break
             if (
                 not isinstance(entry, dict)

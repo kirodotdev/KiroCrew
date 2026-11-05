@@ -1388,6 +1388,74 @@ class TestKiroHooksMerge:
         assert len(result["preToolUse"]) == 1
         assert result["preToolUse"][0]["matcher"] == "valid"
 
+    def test_merge_accepts_server_reference_matchers(self, tmp_path: Path):
+        """Matchers using kiro-cli server reference syntax are accepted."""
+        from kiro_crew.agent import _merge_kiro_hooks
+
+        hook = self._make_hook(tmp_path)
+        user = {
+            "preToolUse": [
+                {"command": hook, "matcher": "@builtin"},
+                {"command": hook, "matcher": "@builtin/execute_bash"},
+                {"command": hook, "matcher": "@mcp"},
+                {"command": hook, "matcher": "@my-server"},
+                {"command": hook, "matcher": "glob?end"},
+            ]
+        }
+        result = _merge_kiro_hooks({}, user)
+        matchers = [e["matcher"] for e in result["preToolUse"]]
+        assert "@builtin" in matchers
+        assert "@builtin/execute_bash" in matchers
+        assert "@mcp" in matchers
+        assert "@my-server" in matchers
+        assert "glob?end" in matchers
+
+    def test_merge_still_rejects_shell_injection_in_matcher(self, tmp_path: Path):
+        """Shell injection characters in matchers are still rejected after matcher fix."""
+        from kiro_crew.agent import _merge_kiro_hooks
+
+        hook = self._make_hook(tmp_path)
+        user = {
+            "preToolUse": [
+                {"command": hook, "matcher": "@builtin; rm -rf /"},
+                {"command": hook, "matcher": "$(evil)"},
+                {"command": hook, "matcher": "tool | cat"},
+                {"command": hook, "matcher": "@valid/server*"},  # accepted
+            ]
+        }
+        result = _merge_kiro_hooks({}, user)
+        assert len(result["preToolUse"]) == 1
+        assert result["preToolUse"][0]["matcher"] == "@valid/server*"
+
+    def test_merge_global_hooks_limit_logs_dropped_command(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ):
+        """Dropping a hook at the global cap logs the dropped command."""
+        import logging
+
+        from kiro_crew.agent import _MAX_TOTAL_USER_HOOKS, _merge_kiro_hooks
+
+        user = {}
+        all_hooks = []
+        for event in ("preToolUse", "postToolUse", "userPromptSubmit"):
+            hooks_for_event = [
+                self._make_hook(tmp_path, f"{event}_{i}.sh")
+                for i in range(_MAX_TOTAL_USER_HOOKS)
+            ]
+            all_hooks.extend(hooks_for_event)
+            user[event] = [{"command": h} for h in hooks_for_event]
+        # The last event's hooks will be dropped at the global cap.
+        dropped_hook = all_hooks[_MAX_TOTAL_USER_HOOKS]
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.agent"):
+            _merge_kiro_hooks({}, user)
+        # The warning should name the specific hook that was dropped.
+        dropped_warnings = [
+            r for r in caplog.records
+            if "global limit" in r.message and "dropping" in r.message
+        ]
+        assert dropped_warnings, "expected a warning naming the dropped hook"
+        assert str(dropped_hook) in dropped_warnings[0].message
+
     def test_merge_global_hooks_limit(self, tmp_path: Path):
         """Total hooks across all events are capped at _MAX_TOTAL_USER_HOOKS."""
         from kiro_crew.agent import _MAX_TOTAL_USER_HOOKS, _merge_kiro_hooks
@@ -1753,6 +1821,48 @@ class TestKiroHooksAutoimport:
         result = _autoimport_kiro_hooks(hooks_dir)
 
         assert result["preToolUse"][0]["matcher"] == "shell"
+
+    def test_kiro_hooks_autoimport_accepts_server_reference_matcher(self, tmp_path: Path):
+        """A ``# matcher: @builtin/execute_bash`` header is accepted and preserved."""
+        from kiro_crew.agent import _autoimport_kiro_hooks
+
+        hooks_dir = tmp_path / "hooks"
+        self._make_script(
+            hooks_dir, "guard.sh", body="# matcher: @builtin/execute_bash\nexit 0\n"
+        )
+
+        result = _autoimport_kiro_hooks(hooks_dir)
+
+        assert result.get("preToolUse"), "hook should have been loaded"
+        assert result["preToolUse"][0]["matcher"] == "@builtin/execute_bash"
+
+    def test_kiro_hooks_autoimport_accepts_at_mcp_matcher(self, tmp_path: Path):
+        """A ``# matcher: @mcp`` header targets all MCP tools and is accepted."""
+        from kiro_crew.agent import _autoimport_kiro_hooks
+
+        hooks_dir = tmp_path / "hooks"
+        self._make_script(
+            hooks_dir, "mcp_guard.sh", body="# matcher: @mcp\nexit 0\n"
+        )
+
+        result = _autoimport_kiro_hooks(hooks_dir)
+
+        assert result.get("preToolUse"), "hook should have been loaded"
+        assert result["preToolUse"][0]["matcher"] == "@mcp"
+
+    def test_kiro_hooks_autoimport_accepts_question_mark_glob_matcher(self, tmp_path: Path):
+        """A matcher using ? (single-char wildcard) is accepted."""
+        from kiro_crew.agent import _autoimport_kiro_hooks
+
+        hooks_dir = tmp_path / "hooks"
+        self._make_script(
+            hooks_dir, "tool_guard.sh", body="# matcher: execute_bas?\nexit 0\n"
+        )
+
+        result = _autoimport_kiro_hooks(hooks_dir)
+
+        assert result.get("preToolUse"), "hook should have been loaded"
+        assert result["preToolUse"][0]["matcher"] == "execute_bas?"
 
     def test_kiro_hooks_autoimport_skips_non_executable(self, tmp_path: Path, caplog):
         """Non-executable ``.sh`` files are skipped; executable siblings still load."""
