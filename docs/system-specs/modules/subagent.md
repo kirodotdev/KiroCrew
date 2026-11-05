@@ -4046,7 +4046,9 @@ when the parent's own call already returned every member it carries:
   kiro-cli gives up on without sending `notifications/cancelled` (the stdio
   dispatcher drops a call it is told about), whose answer is still written into
   the open pipe while the same turn goes on to end on `end_turn`, so that
-  turn's landing confirms a result it never read. A dashboard-born tab parent
+  turn's landing confirms a result it never read. How kiro-cli ends an
+  abandoned call is not documented upstream and no test pins it; #25261
+  tracks getting it confirmed. A dashboard-born tab parent
   still acknowledges a returned result while its own turn can be stopped, as on
   main (#23495). Members are judged against Kiro Crew's own `MAX_RESPONSE_LEN`
   cut; a harness with a smaller cap of its own (Claude Code saves an oversized
