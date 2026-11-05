@@ -27,6 +27,7 @@ from __future__ import annotations
 from typing import Any, Collection, Mapping
 
 from kiro_crew.acp.session_mcp import session_mcp_projection
+from kiro_crew.acp.session_mcp_env_refs import keep_env_references
 from kiro_crew.agent_sdk.backends import ACP_BACKEND_GOOSE
 from kiro_crew.providers.mirrors.base import TOOLS_SETTINGS_GATE_CHANNEL, AgentConfigMirror, Concern
 from kiro_crew.providers.mirrors.base import Disposition as _D
@@ -66,6 +67,11 @@ def goose_projection(
         agent,
         stub_server_names=stub_server_names,
         work_dir=work_dir,  # type: ignore[arg-type]
+    )
+    # goose writes each server's envs into its own sessions.db, so a resolved
+    # reference must not ride its array (session_mcp_env_refs).
+    projection = projection._replace(
+        servers=keep_env_references(projection.servers, projection.agent_spec)
     )
     narrowed = frozenset(server for server, _tool in projection.disabled_tools)
     out = place_single_binary_array(
