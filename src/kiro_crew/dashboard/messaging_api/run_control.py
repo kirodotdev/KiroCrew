@@ -38,6 +38,7 @@ if TYPE_CHECKING:
         _sel,
         _spawn_on_loop,
         _stopped_before_start,
+        app_token_refusal,
         body_int,
         body_not_object_error,
         dashboard_slot_key,
@@ -983,8 +984,9 @@ async def api_spawn_delete(request: web.Request) -> web.Response:
                 resources="dashboard-only dismissal of a persisted run",
                 error="app tokens cannot dismiss persisted subagent runs",
             )
-            return web.json_response(
-                {"error": "app token not allowed", "code": "app_token_forbidden"}, status=403
+            return app_token_refusal(
+                "dismiss a finished subagent run the gateway no longer tracks",
+                "Dismiss the run's card from the dashboard instead.",
             )
         outcome = await asyncio.to_thread(record_panel_dismissal_outcome, agent_id)
         # The dismissal the PANEL reads: an entry in the owning session's crew log.
@@ -1052,8 +1054,9 @@ async def api_spawn_stop_all(request: web.Request) -> web.Response:
             resources="dashboard-only bulk cancellation",
             error="app tokens cannot stop dashboard subagent waves",
         )
-        return web.json_response(
-            {"error": "app token not allowed", "code": "app_token_forbidden"}, status=403
+        return app_token_refusal(
+            "stop every subagent of a chat at once",
+            "Stop them from the dashboard instead.",
         )
     if not state.subagents:
         return web.json_response(
