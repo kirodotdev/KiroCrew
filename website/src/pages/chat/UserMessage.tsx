@@ -24,6 +24,7 @@ import InfoTip from '../../components/InfoTip'
 import ErrorNotice from '../../components/ErrorNotice'
 import { Btn } from '../../components/ui'
 import SteerDecisionLine from './SteerDecisionLine'
+import EditSkillPicker, { type EditFieldBinding, type EditSkillPickerTarget } from './EditSkillPicker'
 import QuoteCard from './QuoteCard'
 import MessageContextMenu, { type MessageMenuItem } from './MessageContextMenu'
 import MessageActionMenuItems, { NO_ACTIONS, useMessageActionsFor } from '../../messageActions/MessageActionMenuItems'
@@ -99,6 +100,10 @@ interface UserMessageProps {
   doubleClickToEdit?: boolean
   slotKey?: string
   slotTitle?: string
+  /** Opt-in: typing `$` in the Edit & Resend field opens the composer's skill
+   *  menu for this chat, agent and project. A host that cannot name them (a
+   *  remote crew's window, an embed) leaves it out and the field stays plain. */
+  editSkillPicker?: EditSkillPickerTarget
   /** Session titles by key, and the opener for one. Both given, a message
    *  another session delivered (`meta.relay`) names its sender's title as a
    *  link beside the "From …" label; either absent, the label alone. */
@@ -170,7 +175,7 @@ interface UserMessageProps {
   steerActionRequestFailed?: boolean
 }
 
-const UserMessage = memo(function UserMessage({ content, meta, timestamp, timestampTitle, renderContent, canEdit, messageIndex, messageTs, onEditResend, doubleClickToEdit = false, slotKey, slotTitle, sessions, onSessionOpen, mode, pinned, onTogglePin, onReplyInThread, slotRunning, showQueuedSend, hideSteerBadge, tone = 'default', editRequest, onEditConsumed, onQuoteMessage, onJumpToQuote, onSteerAction, steerActionPending, steerActionRefusal, steerActionRequestFailed }: UserMessageProps) {
+const UserMessage = memo(function UserMessage({ content, meta, timestamp, timestampTitle, renderContent, canEdit, messageIndex, messageTs, onEditResend, doubleClickToEdit = false, slotKey, slotTitle, editSkillPicker, sessions, onSessionOpen, mode, pinned, onTogglePin, onReplyInThread, slotRunning, showQueuedSend, hideSteerBadge, tone = 'default', editRequest, onEditConsumed, onQuoteMessage, onJumpToQuote, onSteerAction, steerActionPending, steerActionRefusal, steerActionRequestFailed }: UserMessageProps) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const [editing, setEditing] = useState(false)
   const ime = useImeGuard()
@@ -213,6 +218,8 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
       : state === 'failed' ? i18nT('pages.chat.userMessage.copy_failed')
         : idle
   const taRef = useRef<HTMLTextAreaElement>(null)
+  // The edit bubble: the `$` skill menu anchors to it, as the composer's does.
+  const editBubbleRef = useRef<HTMLDivElement>(null)
   // Track the copy-reset timer so it can be cleared on unmount.  Without this,
   // the 1.5 s setTimeout below survives test teardown and fires after jsdom
   // has been disposed, throwing "ReferenceError: window is not defined" from
@@ -534,6 +541,31 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
   }
 
   if (editing) {
+    // One field for both paths: with `editSkillPicker` the `$` menu supplies
+    // its change and focus handlers, without it the draft is all there is.
+    const renderEditField = (bind: EditFieldBinding) => (
+      <textarea
+        ref={taRef}
+        rows={1}
+        aria-label={i18nT('pages.chat.userMessage.edit_message')}
+        // focus-cue-ok: the cue is the wrapping .edit-grow frame above, which
+        // paints a 2px accent outline for the whole edit session; a second
+        // ring on the textarea would double-paint the one control.
+        className="bg-transparent text-card-fg resize-none overflow-hidden focus:outline-hidden leading-relaxed"
+        style={{ fontSize: 'var(--mc-message-font-size, 14px)' }}
+        value={draft}
+        onChange={bind.onChange}
+        {...ime.bindComposition<HTMLTextAreaElement>({ onFocus: bind.onFocus, onBlur: bind.onBlur })}
+        onKeyDown={e => {
+          // Rule 1: textarea — claim the key, so a declined (IME) Enter is
+          // still consumed instead of inserting a newline into the draft.
+          // An open `$` menu takes Enter and Escape first (its document
+          // capture listener), so a pick never sends and never cancels.
+          if (e.key === 'Enter' && !e.shiftKey) { if (ime.claimEnter(e)) submit() }
+          if (e.key === 'Escape') { ime.reset(); cancel() }
+        }}
+      />
+    )
     return (
       // `data-message-editing`: usePinnedPrompt reads this off the row it is about
       // to hide and refuses to pin it. The stand-in state hides the whole row and
@@ -547,29 +579,14 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
             bubble it replaces, capped at the content column (Settings → Chat →
             Content Width, via the row's --mc-content-width). No JS measurement. */}
         <div
+          ref={editBubbleRef}
           className="edit-grow user-bubble px-4 py-2 leading-relaxed rounded-xl bg-card text-card-fg overflow-hidden min-w-0 w-fit max-w-full outline-solid outline-2 -outline-offset-2 outline-accent/60 focus-within:outline-accent"
           data-replicated-value={draft}
           style={{ overflowWrap: 'anywhere', wordBreak: 'break-word', fontSize: 'var(--mc-message-font-size, 14px)' }}
         >
-          <textarea
-            ref={taRef}
-            rows={1}
-            aria-label={i18nT('pages.chat.userMessage.edit_message')}
-            // focus-cue-ok: the cue is the wrapping .edit-grow frame above, which
-            // paints a 2px accent outline for the whole edit session; a second
-            // ring on the textarea would double-paint the one control.
-            className="bg-transparent text-card-fg resize-none overflow-hidden focus:outline-hidden leading-relaxed"
-            style={{ fontSize: 'var(--mc-message-font-size, 14px)' }}
-            value={draft}
-            onChange={e => setDraft(e.target.value)}
-            {...ime.bindComposition()}
-            onKeyDown={e => {
-              // Rule 1: textarea — claim the key, so a declined (IME) Enter is
-              // still consumed instead of inserting a newline into the draft.
-              if (e.key === 'Enter' && !e.shiftKey) { if (ime.claimEnter(e)) submit() }
-              if (e.key === 'Escape') { ime.reset(); cancel() }
-            }}
-          />
+          {editSkillPicker
+            ? <EditSkillPicker target={editSkillPicker} value={draft} onValueChange={setDraft} textareaRef={taRef} anchorRef={editBubbleRef} renderField={renderEditField} />
+            : renderEditField({ onChange: e => setDraft(e.target.value) })}
         </div>
         {/* Actions sit BELOW the bubble (like the read-only action row) so they
             never impose a min-width floor on the auto-sized bubble. */}

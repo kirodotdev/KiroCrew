@@ -154,6 +154,10 @@ interface TranscriptRenderingOptions {
   steerActionPending: Readonly<Record<string, SteerRetractAction>>
   steerActionRefusals: Readonly<Record<string, SteerRetractRefusalNotice>>
   steerActionRequestFailures: Readonly<Record<string, true>>
+  /** The agent and project the composer scopes its `$` skill menu by, so the
+   *  Edit & Resend field opens the same menu (see UserMessage `editSkillPicker`). */
+  editSkillAgent?: string
+  editSkillProject?: string
 }
 
 /**
@@ -175,6 +179,7 @@ export function useTranscriptRendering({
   openDefaultModelSetting, openKiroSignIn, openMemberCapabilities, openModelPickerFromError, openTurnLimitSetting, quoteWholeMessage, handleAsk, handleQuote, handleEditResend, editLast, farmPassRef,
   handleEditConsumed, renderUserContentCb, transcriptHot, toggleAct, handleSpeak, handleApplyPlan, renderedDisplayItems, stableMsgKey, handleLoadEarlier, isPinned, handleJumpToQuote,
   handleTogglePinForMessage, handleSteerAction, steerActionPending, steerActionRefusals, steerActionRequestFailures,
+  editSkillAgent, editSkillProject,
 }: TranscriptRenderingOptions) {
   // Precomputed O(n) map from message index → visible (user/assistant) index,
   // used by the fork button. Avoids a per-row O(i) filter that would make the
@@ -252,6 +257,12 @@ export function useTranscriptRendering({
   }, [messages, replacingMids])
   const newReplyStarted = firstNewReplyIdx >= 0
   const slotStateRef2 = useRef(slotState); slotStateRef2.current = slotState
+  // One object per chat, agent and project, so memo(UserMessage) keeps
+  // short-circuiting on unrelated renders.
+  const editSkillPicker = useMemo(
+    () => (activeSlot ? { slotId: activeSlot, agentName: editSkillAgent, project: editSkillProject } : undefined),
+    [activeSlot, editSkillAgent, editSkillProject],
+  )
 
   // Row action handlers that never change identity. Their sources are rebuilt on
   // every chunk flush (handleEditResend and handleRegenerate close over
@@ -355,6 +366,7 @@ export function useTranscriptRendering({
               onEditConsumed={farmPassRef.current ? undefined : handleEditConsumed}
               slotKey={activeSlot || undefined}
               slotTitle={activeSlotTitle}
+              editSkillPicker={editSkillPicker}
               sessions={connected ? sessionTitles : undefined}
               onSessionOpen={selectSessionTab}
               mode={mode}
@@ -495,7 +507,7 @@ export function useTranscriptRendering({
       bubble,
     ])
     return { renderers, fallback: bubble }
-  }, [slotRunning, handleFileOpen, handleArtifactOpen, selectSessionTab, sessionTitles, connected, handleFork, forkDirectionChoice, forkHasLaterMessages, handleQuote, handleAsk, stableJumpToQuote, chatConfig, copyOnSelect, activeSlot, regenerating, replacingMids, firstNewReplyIdx, newReplyStarted, activeSlotRemoteBound, stableRegenerate, stableEditResend, rowHandlersFor, editLast, handleEditConsumed, slotHasMore, loadingOlder, cursorIsForActiveSlot, slotOldestIndex, handleLoadEarlier, renderUserContentCb, highlightTs, activeSlotTitle, mode, embedded, popout, handleOpenDiff, planTaskId, artifactPaths, automationId, toolDisclosure, setToolDisclosureFor, linkPreviewsOn, socialShareOn, voiceRecoverySlot, handleSubagentPanelOpen, isPinned, showRefusedPress, transcriptHot, revealAppInPanel, continuable, interrupted, continuing, handleContinue, openModelPickerFromError, openDefaultModelSetting, openKiroSignIn, openMemberCapabilities, openTurnLimitSetting, handleFreshSession, freshSession, handleRepairImages, repairImages, handleFolderOpen, handleSpeak, handleApplyPlan, mcpAppPanel, redactionCoachTs, setAutomationOpen, farmPassRef, messagesRef, handleSteerAction, steerActionPending, steerActionRefusals, steerActionRequestFailures, handleOpenCrewTab])
+  }, [slotRunning, handleFileOpen, handleArtifactOpen, selectSessionTab, sessionTitles, connected, handleFork, forkDirectionChoice, forkHasLaterMessages, handleQuote, handleAsk, stableJumpToQuote, chatConfig, copyOnSelect, activeSlot, regenerating, replacingMids, firstNewReplyIdx, newReplyStarted, activeSlotRemoteBound, stableRegenerate, stableEditResend, rowHandlersFor, editLast, handleEditConsumed, slotHasMore, loadingOlder, cursorIsForActiveSlot, slotOldestIndex, handleLoadEarlier, renderUserContentCb, highlightTs, activeSlotTitle, mode, embedded, popout, handleOpenDiff, planTaskId, artifactPaths, automationId, toolDisclosure, setToolDisclosureFor, linkPreviewsOn, socialShareOn, voiceRecoverySlot, handleSubagentPanelOpen, isPinned, showRefusedPress, transcriptHot, revealAppInPanel, continuable, interrupted, continuing, handleContinue, openModelPickerFromError, openDefaultModelSetting, openKiroSignIn, openMemberCapabilities, openTurnLimitSetting, handleFreshSession, freshSession, handleRepairImages, repairImages, handleFolderOpen, handleSpeak, handleApplyPlan, mcpAppPanel, redactionCoachTs, setAutomationOpen, farmPassRef, messagesRef, handleSteerAction, steerActionPending, steerActionRefusals, steerActionRequestFailures, handleOpenCrewTab, editSkillPicker])
 
   const renderMessage = useCallback((i: number, m: ChatMessage) => {
     // Key identity rules (clientTs preference + streaming->assistant role
