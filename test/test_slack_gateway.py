@@ -42,7 +42,7 @@ from kiro_crew.monitoring.models import (
 )
 from kiro_crew.slack import gateway as gw
 from kiro_crew.slack.gateway import _EPOCH_WINDOW_SECS, GatewayOrchestrator, _result_hash
-from kiro_crew.testing.wait import async_wait_until, await_until
+from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS, async_wait_until, await_until
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Tests: __init__ and constructor
@@ -1029,8 +1029,12 @@ class TestShutdown:
     async def test_a_wedged_autonudge_drain_is_cut_so_the_teardown_still_runs(self, monkeypatch):
         """A drain whose write never settles is cut on its own budget. Its window
         closes inside the graceful bound, and the teardown after it runs in full
-        instead of being cancelled before its first step."""
-        monkeypatch.setattr(gw, "GRACEFUL_SHUTDOWN_SECS", 1.0)
+        instead of being cancelled before its first step.
+
+        The graceful bound is a safety net, never a race: the wedged drain never
+        settles, so only this method's own cut lets ``_shutdown`` return, and a
+        regression that drops the cut still reaches the bound and fails."""
+        monkeypatch.setattr(gw, "GRACEFUL_SHUTDOWN_SECS", FALLBACK_TIMEOUT_SECS)
         # Absent before the drain had a budget of its own; set so a regression
         # reaches the graceful bound below instead of failing on the attribute.
         monkeypatch.setattr(gw, "PERSISTENCE_DRAIN_GRACE_SECS", 0.05, raising=False)
