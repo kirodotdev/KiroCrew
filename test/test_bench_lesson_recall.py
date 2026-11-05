@@ -282,7 +282,7 @@ class TestCli:
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
         assert bench_cmd(self._args(golden=str(tmp_path / "nope.json"))) == 1
-        assert "golden set" in capsys.readouterr().out
+        assert "golden set" in capsys.readouterr().err
 
     def test_real_embedder_refuses_when_warmup_times_out(
         self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
@@ -291,4 +291,4 @@ class TestCli:
 
         monkeypatch.setattr(emb.InProcessEmbedder, "wait_ready", lambda self, timeout=None: False)
         assert bench_cmd(self._args(real_embedder=True, no_embeddings=False)) == 1
-        assert "did not become ready within 120 seconds" in capsys.readouterr().out
+        assert "did not become ready within 120 seconds" in capsys.readouterr().err
