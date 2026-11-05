@@ -673,6 +673,8 @@ class SessionManager:
     _drain_and_claim = _runtimes._drain_and_claim
     _schedule_replenish = _runtimes._schedule_replenish
     _pool_pids = _runtimes._pool_pids
+    _spare_pid_providers = _runtimes._spare_pid_providers
+    _remove_pooled_providers_by_pid = _runtimes._remove_pooled_providers_by_pid
     _in_flight_pids = _runtimes._in_flight_pids
     _companion_runtime_pids = _runtimes._companion_runtime_pids
     _POOL_HEALTH_INTERVAL = _runtimes._POOL_HEALTH_INTERVAL

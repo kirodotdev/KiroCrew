@@ -378,6 +378,18 @@ def warm_providers(self: SessionManager) -> list[LLMProvider]:
     return self._pool.warm_providers()
 
 
+def _spare_pid_providers(self: SessionManager) -> list[tuple[int, LLMProvider]]:
+    """Snapshot the queued spares as ``(pid, provider)`` without consuming them."""
+    return self._pool._spare_pid_providers()
+
+
+def _remove_pooled_providers_by_pid(
+    self: SessionManager, pids: set[int]
+) -> list[tuple[int, LLMProvider]]:
+    """Take the queued providers whose runtime pid is in ``pids`` out of the pool."""
+    return self._pool._remove_pooled_providers_by_pid(pids)
+
+
 def mark_mcp_config_changed(self: SessionManager) -> None:
     """Tell a warm-pool fill in flight that the MCP config changed (see the pool)."""
     self._pool.mark_mcp_config_changed()
