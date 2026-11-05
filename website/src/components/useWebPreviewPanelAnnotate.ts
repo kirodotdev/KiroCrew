@@ -1,6 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { safeSetSessionItem } from '../utils/safeStorage'
+import { anotherEscapeOwnerIsOpen } from './chat-input/escapeOwners'
+import { useEscapeLayer } from '../hooks/useEscapeLayer'
+import { isEditableElement } from '../utils/editableTarget'
+import { escapeStoppedSpeech } from '../utils/speechStopKey'
 import {
   OPAQUE_ROLE_KEYS, PREVIEW_ANNOTATE_EVENT, annotationScreenshotFile, annotationStamp,
   type AnnotationItem, type PreviewAnnotateDetail,
@@ -137,7 +141,7 @@ function annotateFailureText(res: AnnotateResult): string {
   return res && res.ok === false && typeof res.error === 'string' ? res.error : ''
 }
 
-export function useWebPreviewPanelAnnotate(sessionKey: string | null | undefined, nativeOpen: boolean) {
+export function useWebPreviewPanelAnnotate(sessionKey: string | null | undefined, nativeOpen: boolean, active = true) {
   // ── Annotate: element notes on the live page ──────────────────────────────
   // The user points at elements IN the native page (hover highlight, click to
   // select); that surface is an overlay injected into the page by the main
@@ -279,6 +283,28 @@ export function useWebPreviewPanelAnnotate(sessionKey: string | null | undefined
     // discarded on any path.
     patchMirror(prev => ({ ...prev, live: true, picking: true, page }))
   }, [annotateBusy, annotateOn, picking, callAnnotate, patchMirror, mirror.retained])
+
+  // Esc leaves pick mode, the same as Done. Hovering the native view does not
+  // move keyboard focus into it, so while picking the keys reach THIS renderer
+  // and the overlay's own Esc handler in the page never sees them. A layer on
+  // the shared Escape stack: it is only registered while this Preview is the
+  // visible tab (`active`), the stack itself stands it down behind a remote
+  // Crew, and a press it takes is consumed before any later window listener
+  // (the notification banner) sees it. It yields to IME composition, to an
+  // open dialog or other Escape owner, and to editable fields and menus (the
+  // note editor cancels only its note); a press with focus outside the Preview
+  // panel belongs to that surface.
+  useEscapeLayer(active && canAnnotate && annotateOn && picking, e => {
+    // A press that already stopped voice read-back is spent, as the composer's
+    // stop gate treats it (utils/speechStopKey.ts).
+    if (e.isComposing || escapeStoppedSpeech(e) || anotherEscapeOwnerIsOpen()) return 'yield'
+    const target = e.target instanceof Element ? e.target : null
+    if (target && (isEditableElement(target) || target.closest('[role="menu"], [role="listbox"]'))) return 'yield'
+    const onPage = !target || target === document.body || target === document.documentElement
+    if (!onPage && !target.closest('[data-testid="web-preview-panel"]')) return 'pass'
+    void toggleAnnotate()
+    return 'take'
+  })
 
   // Mirror the overlay while a session is alive. The overlay lives in the
   // page, so the picks the user makes there reach this panel only by asking;
