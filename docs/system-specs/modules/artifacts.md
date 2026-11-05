@@ -713,7 +713,7 @@ code for a responsibility goes to its module:
 | Owner | Responsibility |
 |---|---|
 | `record_serialization.py` | What a route sends back: `_serialize`, the session title it shows, and the redactors (`_redact_text`, webapp and SEL audit metadata, `_redact_remote_response`) |
-| `route_plumbing.py` | The request plumbing every route shares: JSON and error responses, the owner gate (`_non_owner_refusal`), the capped JSON body read, the saving session's key and source, `_audit`, the live-refresh broadcast, the off-loop store runner, folder-reference resolution and `_publish_governance_denied` |
+| `route_plumbing.py` | The request plumbing every route shares: JSON and error responses (`_json_response` sends a stored `Infinity` / `NaN` as `null`, so a hand-edited `meta.json` never makes a reply invalid JSON), the owner gate (`_non_owner_refusal`), the capped JSON body read, the saving session's key and source, `_audit`, the live-refresh broadcast, the off-loop store runner, folder-reference resolution and `_publish_governance_denied` |
 | `library_reads.py` | The read routes: `GET /api/artifacts` with its filters, search snippets and content and snippet caches, and an artifact's detail, asset, versions and event log |
 | `session_documents.py` | `GET /api/artifacts/session-docs` and `POST /api/artifacts/materialize` |
 | `dashboard_package_gate.py` | The `kind="dashboard"` write gate create and update consult: the binding refusals, the promote verdict and the stored-snapshot classification |
