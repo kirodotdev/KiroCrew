@@ -91,6 +91,7 @@ _CRED_CLASS: frozenset[str] = frozenset(
 # bounds latency/memory for a pathologically long unbroken run (only affects a
 # single >512-char secret with no delimiter, which no supported provider issues).
 _STREAM_HOLDBACK_MAX = 512
+_SEAM = "redaction_structured.compat"  # the structured detectors' stream side
 
 # PEM header hold-back: matches an in-progress "BEGIN [type] PRIVATE KEY"
 # phrase in the tail of the commit buffer.  When found, we refuse to commit
@@ -241,7 +242,16 @@ class StreamRedactor:
     character, while a credential is a contiguous credential-class run.
     """
 
-    __slots__ = ("_buf", "_redact", "_discarding", "_discard_kind", "_discarded")
+    __slots__ = (
+        "_buf",
+        "_redact",
+        "_discarding",
+        "_discard_kind",
+        "_discarded",
+        "_ctx",
+        "_engine_tail",
+        "_engine_pad",
+    )
 
     def __init__(self, redactor: "Callable[[str], str] | None" = None) -> None:
         self._buf = ""
@@ -250,15 +260,43 @@ class StreamRedactor:
         self._discarding = False
         self._discard_kind: tuple[str, ...] | None = None
         self._discarded = 0
+        # With the structured detectors on: the raw text already emitted (their
+        # look-behind), and the kind of a unit being dropped to its end.
+        self._ctx = ""
+        self._engine_tail = ""
+        self._engine_pad = 0
 
     def _redact_window(self, text: str) -> str:
         """Redact one context-incomplete window without URL-prefix exemptions."""
         redaction = _submodule("redaction")
+        seam = _submodule(_SEAM)
         suspension = redaction._TOKEN_PARAM_EXEMPT_SUSPENDED.set(True)
         try:
-            return self._redact(text)
+            with seam.look_behind(self._ctx, text):
+                return self._redact(text)
         finally:
             redaction._TOKEN_PARAM_EXEMPT_SUSPENDED.reset(suspension)
+            self._left(text)
+
+    def _left(self, raw: str) -> None:
+        """Note raw text that left the buffer (emitted or dropped), for the look-behind."""
+        if self._ctx or _submodule(_SEAM).use_rule_table():
+            keep = _submodule(_SEAM).stream_context_max()
+            self._ctx = (self._ctx + raw)[-keep:]
+
+    def _engine_discard(self) -> str | None:
+        """Drop a structured unit's continuation; None once the unit has ended."""
+        seam = _submodule(_SEAM)
+        dropped, self._engine_pad, done = seam.discard_run(
+            self._engine_tail, self._engine_pad, self._buf
+        )
+        self._left(self._buf[:dropped])
+        self._buf = self._buf[dropped:]
+        if not done:
+            return ""
+        self._engine_tail = ""
+        self._engine_pad = 0
+        return None
 
     def feed(self, chunk: str) -> str:
         """Accept a chunk; return the redacted prefix that is safe to emit now."""
@@ -269,6 +307,13 @@ class StreamRedactor:
         if not chunk:
             return ""
         self._buf += chunk
+
+        # A structured unit decided while still running is dropped to its own
+        # end (the end of the text, or of its base64 run).
+        if self._engine_tail:
+            held = self._engine_discard()
+            if held is not None or not self._buf:
+                return ""
 
         # Invariant: on entry while `_discarding`, `_buf` holds only the carried
         # tail of the already-tagged drop, which is never emitted unless a label
@@ -393,6 +438,24 @@ class StreamRedactor:
             strong_token_anchor = token_anchor.group("eq") is not None
             if not strong_token_anchor:
                 weak_token_anchor = token_anchor
+
+        # With the structured detectors on, a unit they have not decided yet is
+        # held whole, and one decided while still running is dropped to its end.
+        engine = _submodule(_SEAM).stream_read(self._ctx, self._buf)
+        if engine is not None and engine.tail:
+            commit, raw = self._buf[: engine.cut], self._buf[engine.cut :]
+            self._buf = ""
+            out = self._redact_window(commit) if commit else ""
+            self._left(raw)
+            self._engine_tail, self._engine_pad = engine.tail, 0
+            return out + _redaction._REDACTED_CREDENTIAL_TAG
+        if engine is not None:
+            # Snapped back like the natural cut, so a commit still never ends
+            # inside a credential-class run the passes read whole.
+            engine_cut = engine.cut
+            while engine_cut > 0 and self._buf[engine_cut - 1] in _CRED_CLASS:
+                engine_cut -= 1
+            safety_cuts.append(engine_cut)
 
         # The PEM hold refuses any commit at this boundary.
         i = 0 if pem_hold else min(safety_cuts)
@@ -519,8 +582,10 @@ class StreamRedactor:
                         aws_keyed_anchor.start("val"),
                         len(self._buf) - stream_aws_anchor.LABEL_CARRY,
                     )
-                commit, self._buf = self._buf[:i], self._buf[drop_end:]
+                commit, dropped = self._buf[:i], self._buf[i:drop_end]
+                self._buf = self._buf[drop_end:]
                 out = self._redact_window(commit) if commit else ""
+                self._left(dropped)
                 return out + _redaction._REDACTED_CREDENTIAL_TAG
             i = len(self._buf) - cap
             i -= self._buf.startswith("${", i - 1)  # keep a JS/TS `${` placeholder whole
@@ -547,6 +612,10 @@ class StreamRedactor:
             # `_STREAM_HOLDBACK_MAX = 512`.
             if weak_token_anchor is not None and weak_token_anchor.start() < i:
                 i = weak_token_anchor.start()
+            # A structured unit is bounded by its own maximum length, so its
+            # hold needs no floor: the floor never commits into it.
+            if engine is not None:
+                i = min(i, engine_cut)
 
         if i <= 0:
             return ""  # whole buffer is a (possibly partial) credential run — hold
@@ -555,24 +624,22 @@ class StreamRedactor:
 
     def flush(self) -> str:
         """Redact and return the buffered remainder; clears the buffer."""
-        if self._discarding:
-            self._buf = ""
-            self._discarding = False
-            self._discard_kind = None
+        if self._discarding or self._engine_tail:
+            self.reset()
             return ""
         out = self._redact_window(self._buf) if self._buf else ""
-        self._buf = ""
+        self.reset()
         return out
 
     @property
     def held(self) -> str:
         """The raw run withheld so far (``""`` while a value is being dropped)."""
-        return "" if self._discarding else self._buf
+        return "" if self.discarding else self._buf
 
     @property
     def discarding(self) -> bool:
         """True while the rest of a value is being dropped."""
-        return self._discarding
+        return self._discarding or bool(self._engine_tail)
 
     def reset(self) -> None:
         """Discard the buffer without emitting (segment abandoned/cleared)."""
@@ -580,6 +647,9 @@ class StreamRedactor:
         self._discarding = False
         self._discard_kind = None
         self._discarded = 0
+        self._ctx = ""
+        self._engine_tail = ""
+        self._engine_pad = 0
 
 
 def redact_and_truncate(text: str, max_chars: int = 4000) -> str:

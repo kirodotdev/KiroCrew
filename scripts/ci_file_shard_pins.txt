@@ -602,7 +602,6 @@
 4 test/test_redaction_code_text_scope.py
 2 test/test_redaction_facade.py
 6 test/test_redaction_pem_scan_linear.py
-4 test/test_redaction_rules.py
 5 test/test_refresh_tokens.py
 6 test/test_refusal_inband_notice.py
 3 test/test_registries_api.py

@@ -359,6 +359,8 @@ RULE_TIERS = {
     "encoded_credential": TIER_SECRET,
     "bare_aws_secret": TIER_SECRET,
     "token_parameter": TIER_BEARER_LINK,
+    # The structured credential detectors could not run, so the whole text was replaced.
+    "redaction_unavailable": TIER_SECRET,
     # Outbound-URL pass: each rule removes or blocks a whole URL.
     "exfil_decode_saturated": TIER_BEARER_LINK,
     "exfil_encoded_credential": TIER_BEARER_LINK,
