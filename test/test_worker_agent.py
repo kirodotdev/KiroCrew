@@ -133,6 +133,18 @@ def test_the_worker_prompt_states_the_reporting_contract(specs):
         assert token in prompt, token
 
 
+def test_the_worker_prompt_says_what_an_unbound_worker_does(specs):
+    """A worker started with ``spawn_run`` has no item: its seed message is the
+    task, and it neither reports nor tells its parent about the ledger."""
+    prompt = specs[WORKER_AGENT_FILENAME]["prompt"]
+    paragraphs = [p for p in prompt.split("\n\n") if "`not_bound`" in p]
+    assert len(paragraphs) == 1, paragraphs
+    paragraph = paragraphs[0]
+    assert "whole task" in paragraph
+    assert "do not call `work_report`" in paragraph
+    assert "out of your reply" in paragraph
+
+
 def test_the_worker_prompt_says_only_decision_is_an_instruction(specs):
     """The prompt's share of the threat model: a worker reads ONE instruction field
     from its conductor, and everything else it reads is state."""
