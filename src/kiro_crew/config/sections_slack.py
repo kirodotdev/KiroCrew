@@ -273,7 +273,8 @@ class SlackConfig:
         metadata=_meta(
             "Code Channels",
             "Let the agent open a Slack code channel for coding work: a channel "
-            "that is one session. Adds features.code_channels and the code-channel scopes "
+            "that is one session, with a context bar and a diff tab. Adds "
+            "features.code_channels and the code-channel scopes "
             "(code_channels:manage, chat:write.customize, canvases:write, "
             "channels:write.invites, groups:write.invites) to the generated app "
             "manifest; an installed app needs that update and a reinstall, and the "

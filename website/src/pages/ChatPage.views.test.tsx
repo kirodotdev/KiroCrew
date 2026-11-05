@@ -70,6 +70,12 @@ import { api } from '../api/client'
 import { requestSlotReveal } from '../store/chatSlice'
 import { transcriptShownFor } from '../hooks/useAckCronNotesInView'
 
+// Placeholder Slack thread timestamps (the link builder needs ``\d{10}.\d{6}``);
+// expected permalinks are built from them, never written out.
+const TS1 = '1700000000.000001'
+const threadUrl = (channel: string, ts: string) =>
+  `https://slack.com/archives/${channel}/p${ts.replace('.', '')}`
+
 /** A view's props: the fields a case sets, the rest left undefined (each view reads only what its branch needs). */
 const props = <T,>(over: Partial<T>) => over as T
 /** How long a test waits for ChatPaneChrome's lazy CrewChatWindow chunk to resolve and render. */
@@ -177,6 +183,35 @@ describe('ChatTitleOverlay', () => {
     act(() => { seen.headerMenu!.onReveal!() })
     expect(openSidebar).toHaveBeenCalled()
     expect(phone.setSidebarPinned).not.toHaveBeenCalled()
+  })
+
+  it('marks a Slack code channel session in the header, and nothing else', () => {
+    const codeChannel = {
+      channel_name: 'fix-login', status: 'active' as const,
+      web_url: 'https://slack.com/app_redirect?channel=C0CODE1&team=T0TEAM1',
+    }
+    const { unmount } = render(<ChatTitleOverlay {...base({ currentSlot: { key: 'slot-a', messages: 0, running: false } as never })} />)
+    expect(screen.queryByTestId('code-channel-badge-header')).toBeNull()
+    unmount()
+    render(<ChatTitleOverlay {...base({ currentSlot: {
+      key: 'slot-a', messages: 0, running: false, code_channel: codeChannel,
+      // A bound session is also Slack-linked (its anchor thread): the code
+      // channel's own link must win over the thread link.
+      slack_linked: true, slack_channel: 'C0CODE1', slack_thread_ts: '1700000000.000001',
+    } as never })} />)
+    expect(screen.getByTestId('code-channel-badge-header')).toHaveAttribute('href', codeChannel.web_url)
+    expect(screen.queryByTestId('slack-thread-link-header')).toBeNull()
+  })
+
+  it('links a session mirrored to a Slack thread to that thread in the header', () => {
+    const { unmount } = render(<ChatTitleOverlay {...base({ currentSlot: { key: 'slot-a', messages: 0, running: false, slack_linked: false } as never })} />)
+    expect(screen.queryByTestId('slack-thread-link-header')).toBeNull()
+    unmount()
+    render(<ChatTitleOverlay {...base({ currentSlot: {
+      key: 'slot-a', messages: 0, running: false, slack_linked: true, slack_channel: 'C0THREAD1', slack_thread_ts: '1700000000.000001',
+    } as never })} />)
+    expect(screen.getByTestId('slack-thread-link-header')).toHaveAttribute('href', threadUrl('C0THREAD1', TS1))
+    expect(screen.queryByTestId('code-channel-badge-header')).toBeNull()
   })
 
   it('offers no reveal on an embedded chat, and renames the active session', () => {

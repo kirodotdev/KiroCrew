@@ -22,6 +22,7 @@ Modules
 ``binding``               the gate; the bound dashboard session; mirror bridges
 ``hooks`` / ``status``    turn hooks; the native status subscriber
 ``routing``               the seams ``slack/events.py`` calls
+``workspace`` (package)   diff view / context bar (separate feature)
 ========================= ================================================
 
 Interface for other features
@@ -93,4 +94,7 @@ def install(slack_provider: Any) -> None:
     status.install(slack_provider)
     install_temp_cleanup()
     register_channel_stop_handler(handle_session_stopped, running=channel_session_running)
+    from kiro_crew.slack.code_channels.workspace import core as workspace
+
+    workspace.install(slack_provider)
     _INSTALLED = True
