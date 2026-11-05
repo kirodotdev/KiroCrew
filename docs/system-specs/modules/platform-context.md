@@ -1641,7 +1641,9 @@ representative rather than exhaustive.
     **Ordering is security-critical:** the call site is placed after the
     user-allowlist check and the two activation drops that record nothing
     (`activation=off` without a `!channel` command; an unmentioned message in a
-    `mention`/`review` channel that thread-follow does not admit), and BEFORE
+    `mention`/`review` channel that thread-follow does not admit; a bound
+    Slack code channel answers without a mention, so there that drop waits for
+    the code-channel gate), and BEFORE
     any content is recorded or processed
     (observe-mode `channel_history.push`, audio transcription, image/file
     download, and the non-observe history push all follow it), so an unverified

@@ -280,6 +280,18 @@ def _origin_binding(channel: str, info: ChannelInfo | None) -> Binding | None:
     )
 
 
+def is_bound_code_channel(orch: Any, channel: str) -> bool:
+    """*channel* is one of our bound code channels (feature on).
+
+    Such a channel answers without a mention, so ``_route_message`` lets
+    :func:`inbound_gate` see its unmentioned messages before the mention drop.
+    Never the cold store load: no file I/O on the event loop.
+    """
+    return (
+        code_channels_on(live_config(orch)) and store().get_binding_if_loaded(channel) is not None
+    )
+
+
 async def _inbound_gate(
     orch: Any,
     event: dict[str, Any],
