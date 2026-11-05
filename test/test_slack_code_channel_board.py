@@ -308,6 +308,10 @@ def test_read_board_projects_only_the_published_set_with_liveness():
         "step",
         "turn_started_at",
         "approval_key",  # a digest only for the alert token, never rendered
+        # Who stopped the worker from the Workers tab, and when (model's
+        # published set; cleared by the worker's next turn).
+        "stopped_by",
+        "stopped_at",
     }
 
 
@@ -1030,8 +1034,13 @@ def test_gather_facts_carries_worker_outcomes(monkeypatch):
 
     monkeypatch.setattr(board_pkg, "outcome_lines", lines)
     monkeypatch.setattr(wrapup, "_gather_facts_sync", lambda b: wrapup.Facts(branch="x"))
+    monkeypatch.setattr(source, "scope_admits", lambda state, binding: True)
     facts = asyncio.run(wrapup.gather_facts(_binding()))
     assert facts.workers == ("• A: abandoned",) and facts.branch == "x"
+    # Out of the board's scope: the ledger's outcomes are left out.
+    monkeypatch.setattr(source, "scope_admits", lambda state, binding: False)
+    facts = asyncio.run(wrapup.gather_facts(_binding()))
+    assert facts.workers == () and facts.branch == "x"
 
 
 def test_unfiled_workers_join_the_conductors_folder_and_filed_ones_stay(monkeypatch):

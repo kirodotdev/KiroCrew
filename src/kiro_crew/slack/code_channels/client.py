@@ -128,9 +128,15 @@ class CodeChannelsClient:
         except Exception as exc:
             code = _error_code(exc)
             if code:
+                from kiro_crew.slack.retry import _retry_after_secs
+
                 logger.info("%s refused: %s", method, code)
                 _report(code, method)
-                raise CodeChannelApiError(method, code) from None
+                # A rate limit's Retry-After rides on the error (the shared
+                # parser's reading), so the caller's back-off can honour it.
+                raise CodeChannelApiError(
+                    method, code, retry_after=_retry_after_secs(exc) or 0.0
+                ) from None
             logger.warning("%s did not complete: %s", method, _safe(repr(exc)))
             raise CodeChannelApiError(
                 method, "transport_error", maybe_applied=method not in _READS

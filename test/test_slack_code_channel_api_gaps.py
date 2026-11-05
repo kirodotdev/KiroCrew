@@ -655,7 +655,7 @@ async def test_a_view_tab_recorded_after_the_listing_survives_its_reconcile(env:
             await asyncio.wait_for(release.wait(), timeout=10)
             return [{"view_id": "Va", "view_key": "a"}]  # read before Vb and the Plan tab
 
-    reconciling = asyncio.ensure_future(views._reconcile(Client(), CH))
+    reconciling = asyncio.ensure_future(views.reconcile(Client(), CH))
     await asyncio.wait_for(listed.wait(), timeout=10)
     await views.record_view(CH, key="b", view_id="Vb", type="html")
     await views.record_view(CH, key="plan", view_id="Vplan", type="canvas")
@@ -867,7 +867,9 @@ async def test_slacks_stop_while_making_room_sends_no_removal_or_view(
             raise CodeChannelApiError("agents.conversations.setView", views.TOO_MANY_VIEWS)
         return "Vnew"
 
-    async def room(client: Any, channel_id: str, *, for_key: str, admits: Any = None) -> str:
+    async def room(
+        client: Any, channel_id: str, *, for_key: str, admits: Any = None, fence: Any = None
+    ) -> str:
         status.quiet_after_stop(CH)  # room was made, then Slack's Stop
         return "old"
 
@@ -981,7 +983,9 @@ async def test_a_view_write_whose_channel_goes_off_after_making_room_is_not_rese
             raise CodeChannelApiError("agents.conversations.setView", views.TOO_MANY_VIEWS)
         return "Vnew"
 
-    async def room(client: Any, channel_id: str, *, for_key: str, admits: Any = None) -> str:
+    async def room(
+        client: Any, channel_id: str, *, for_key: str, admits: Any = None, fence: Any = None
+    ) -> str:
         admitted["now"] = False  # room was made, then the channel was set Off
         return "old"
 

@@ -18,6 +18,8 @@ Three parts, each in its own module, wired here:
   (``code_channel_action``), each running the path its command or button runs.
 * :mod:`.comments` -- plan-canvas comments read back into the session.
 * :mod:`.views` -- the view tabs at Slack's five-tab cap.
+* :mod:`.tabs` -- the channel's own tabs: native pull-request tabs and the
+  interactive Workers tab; :mod:`.worker_stop` answers its Stop button.
 
 Everything here is inert while the code-channel gate
 (:func:`.binding.code_channels_on`) is shut: the hooks fire only for a bound
@@ -288,11 +290,13 @@ def policy_gated_handlers() -> tuple[tuple[Any, int], ...]:
     a grant away: Normal is never held back at its commit, a Reject is.
     """
     from kiro_crew.slack.code_channels import (
+        actions,
         agent_picker,
         commands,
         routing,
         tools,
         worker_approvals,
+        worker_stop,
         wrapup,
     )
 
@@ -310,6 +314,11 @@ def policy_gated_handlers() -> tuple[tuple[Any, int], ...]:
         (wrapup.post_wrap_up, 2),  # the wrap-up message (tool and /wrap-up fallback)
         (tools.run_tool, 1),  # every agent tool, incl. the context bar
         (commands.sync_commands, 2),  # the channel's command set, at turn start
+        # Every channel button's entry (the context bar's and the Workers tab's)
+        (actions.admit, 1),
+        # The Workers tab's Stop: its last await, then its synchronous final gate
+        (worker_stop._handle, 1),
+        (worker_stop._channel_still_admitted, 1),
     )
 
 
