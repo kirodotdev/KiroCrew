@@ -1203,11 +1203,22 @@ class OrphanStallMonitor(ManagerComponent):
         ``_run()`` fails to fire (event-loop saturation, orphaned tasks,
         or ``reset()`` hanging in the finally block).
         """
-        try:
-            # Startup FIFO trim (dynamic-subagent-sizing.md *Learned Per-Agent Cost*).
-            compact_cost_log()
-        except Exception:
-            logger.debug("Reaper: startup cost-log compaction failed", exc_info=True)
+
+        async def compact_cost_log_off_loop(label: str = "") -> None:
+            # Off the loop: the trim reads, fsyncs and replaces a file, and on a
+            # slow, saturated disk that held the loop past the stall watchdog.
+            # Not during shutdown: it is housekeeping the next start redoes.
+            if self._manager._shutting_down:
+                return
+            try:
+                await asyncio.get_running_loop().run_in_executor(
+                    maintenance_executor(), compact_cost_log
+                )
+            except Exception:
+                logger.debug("Reaper: %scost-log compaction failed", label, exc_info=True)
+
+        # Startup FIFO trim (dynamic-subagent-sizing.md *Learned Per-Agent Cost*).
+        await compact_cost_log_off_loop("startup ")
         # Seed the dedicated start projection before the first sweep, off-loop,
         # so the first interval after boot does not price at the start cost only.
         try:
@@ -1315,10 +1326,8 @@ class OrphanStallMonitor(ManagerComponent):
                     )
                 except Exception:
                     logger.debug("Reaper: owed tombstone retry failed", exc_info=True)
-            try:
-                compact_cost_log()  # periodic FIFO trim (also bounds a long-running gateway)
-            except Exception:
-                logger.debug("Reaper: cost-log compaction failed", exc_info=True)
+            # Periodic FIFO trim (also bounds a long-running gateway).
+            await compact_cost_log_off_loop()
             for agent_id, info in list(self._manager._agents.items()):
                 if info.done or info._ending_claimed:
                     continue

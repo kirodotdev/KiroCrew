@@ -141,19 +141,19 @@ _BASE_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
         "function",
         True,
         False,
-        "(self, key: 'str', include_history: 'bool' = True) -> '_ConsolidationRefusedSentinel | None'",
+        "(self, key: 'str', include_history: 'bool' = True, *, prefs_window: 'PrefsWindow | None' = None) -> '_ConsolidationRefusedSentinel | None'",
     ),
     "_count_off_loop": (
         "function",
         True,
         False,
-        "(self, key: 'str', claim: '_CountClaim', *, floor: 'int | None') -> 'tuple[int, int] | None'",
+        "(self, key: 'str', claim: '_CountClaim', *, floor: 'int | None', floor_generation: 'int | None' = None) -> 'tuple[int, int] | None'",
     ),
     "_count_rows": (
         "function",
         False,
         False,
-        "(self, key: 'str', floor: 'int | None') -> 'tuple[int, int] | None'",
+        "(self, key: 'str', floor: 'int | None', floor_generation: 'int | None' = None) -> 'tuple[int, int] | None'",
     ),
     "_dedupe_candidate": (
         "function",

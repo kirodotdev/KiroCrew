@@ -139,7 +139,9 @@ async def test_the_threshold_fires_at_exactly_the_threshold(tmp_path):
         c.maybe_consolidate(KEY)
         await _settle(c)
 
-    run.assert_awaited_once_with(KEY, include_history=False)
+    run.assert_awaited_once()
+    assert run.await_args.args == (KEY,)
+    assert run.await_args.kwargs["include_history"] is False
     assert c._prefs_offset[KEY] == THRESHOLD
     assert not c._counting
 
@@ -517,7 +519,9 @@ async def test_the_idle_sweep_counts_through_the_same_claim(tmp_path, monkeypatc
         await _settle(c)
 
     assert held.peak == 1
-    run.assert_awaited_once_with(KEY, include_history=False)
+    run.assert_awaited_once()
+    assert run.await_args.args == (KEY,)
+    assert run.await_args.kwargs["include_history"] is False
 
 
 @pytest.mark.asyncio
