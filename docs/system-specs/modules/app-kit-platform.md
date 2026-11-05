@@ -3755,6 +3755,25 @@ It differs in serving the wider `_ALLOWED_EXTENSIONS` set (`.js`/`.json`/`.mjs`/
 and in being UNAUTHENTICATED, which is why it streams in `_UI_STREAM_CHUNK` pieces
 instead of buffering.
 
+**Text files go gzip-encoded.** A `_GZIP_EXTENSIONS` file (`.mjs`/`.js`/`.css`/`.json`/
+`.svg`/`.map`) of at least `_GZIP_MIN_BYTES` is sent `Content-Encoding: gzip` when
+`Accept-Encoding` admits gzip with a non-zero weight (`_accepts_gzip`): an explicit
+`gzip` entry decides, `q=0` included, and `*` counts only when gzip is not named, so
+`gzip;q=0, *` gets identity. Each
+streamed chunk passes through one per-request `zlib` compressor off the event loop, so
+memory stays one chunk plus the compressor's state, and the body goes chunked (its
+length is not known up front); the `remaining` cap still bounds the bytes read. A file
+that hits EOF short of its validated size (truncated under the descriptor) aborts the
+connection instead of finishing the gzip member, since no `Content-Length` would expose
+the short body. The
+encoded bytes are their own representation: their ETag carries a `-gz` suffix, so an
+identity validator never answers 304 for them, and every compressible type answers
+`Vary: Origin, Accept-Encoding`. Images and fonts are already compressed and go as
+they are. Why it matters: a self-bundled link-preview entry can be megabytes, and on a
+slow remote link the raw bytes outlast the frame's `READY_TIMEOUT_MS`; the frame is
+then torn down mid-download, the partial module is never cached, and every later
+hover starts the same download again and fails the same way (§18a).
+
 `/api/apps/blob` (`handle_blob_proxy`) serves registry art, `.svg` included, through
 `web.FileResponse` from a cache the gateway itself wrote, not an app-owned install
 tree. It answers with the same `default-src 'none'; sandbox` policy, because those
@@ -4322,7 +4341,8 @@ The boundary:
   a revision (entry, version, install and update time); when an app-list refresh shows a new
   revision for a key, its frames are disposed, so the next hover loads the current
   entry (app UI files are `no-cache` with an ETag, so the new frame gets the new
-  bytes).
+  bytes; text files are gzip-encoded, §16, so a cold frame on a slow link still
+  loads its module before `READY_TIMEOUT_MS`).
 - **Embedded instances.** The frame request carries no cookie (credentialless,
   auth bypass), so it cannot read the embedding parent's port the way a dashboard
   page does. The mint, on the person's session, reads the validated
