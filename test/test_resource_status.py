@@ -107,6 +107,36 @@ def test_probe_unknown_when_unreadable(monkeypatch: pytest.MonkeyPatch) -> None:
     assert status.context_line() == ""
 
 
+def _cgroup_usage_unreadable_reading() -> float:
+    """What the memory probe returns for a cgroup limit whose usage cannot be read."""
+    from kiro_crew.subagent_parts import host_memory
+
+    host_memory._memory_check_cause.value = host_memory.MEMORY_CAUSE_CGROUP_USAGE_UNREADABLE
+    return 0.0
+
+
+def test_probe_unknown_when_cgroup_usage_unreadable(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The probe's 0.0 GB stands for "no headroom established", not an empty host:
+    # the posture must read unknown, never critical (#30360).
+    monkeypatch.setattr(rs, "_read_available_gb", _cgroup_usage_unreadable_reading)
+    status = rs.probe(_cfg(4.0, 2.0))
+    assert status.posture == rs.POSTURE_UNKNOWN
+    assert status.available_gb == -1.0
+    assert status.under_pressure is False
+    assert status.context_line() == ""
+
+
+def test_probe_ignores_a_stale_unreadable_cause(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A cause left by an earlier reading must not turn a measured low figure unknown.
+    from kiro_crew.subagent_parts import host_memory
+
+    host_memory._memory_check_cause.value = host_memory.MEMORY_CAUSE_CGROUP_USAGE_UNREADABLE
+    monkeypatch.setattr(rs, "_read_available_gb", lambda: 0.5)
+    status = rs.probe(_cfg(4.0, 2.0))
+    assert status.posture == rs.POSTURE_CRITICAL
+    assert status.available_gb == 0.5
+
+
 def test_probe_never_raises_on_bad_config(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(rs, "_read_available_gb", lambda: 3.0)
     # Garbage thresholds fall back to defaults rather than raising.
