@@ -204,6 +204,9 @@ class TaskRunner:
     _decompose = _plan_mode._decompose
     # ── Run lifecycle: start, resume, stop (run_lifecycle) ──
     _admission_closed = _run_lifecycle._admission_closed
+    begin_shutdown = _run_lifecycle.begin_shutdown
+    _stopping = _run_lifecycle._stopping
+    _settle_stopped_run = _run_lifecycle._settle_stopped_run
     _reserve_start = _run_lifecycle._reserve_start
     _release_start = _run_lifecycle._release_start
     run = _run_lifecycle.run
@@ -310,6 +313,13 @@ class TaskRunner:
         self._plan_task: asyncio.Task | None = None  # type: ignore[type-arg]
         self._on_tool_approval: Callable[[LLMEvent], Awaitable[bool]] | None = None
         self._stall_cancelled_ids: set[str] = set()
+        # Set once by ``begin_shutdown`` when the gateway starts to stop; a run
+        # driver then leaves its run for the next gateway instead of ending it.
+        self._shutdown_started = False
+        # Runs whose driver the stop ended while they were still ``running``.
+        self._stop_frozen: set[str] = set()
+        # Their settle writes after a pause or cancel (``_settle_stopped_run``).
+        self._stop_settles: dict[str, asyncio.Task[None]] = {}
         # task_id -> the conversation the run was started FROM, so a notification
         # can be routed back to the surface the operator is actually watching.
         # Deliberately in memory only and deliberately not on ``Project``: it is
@@ -401,6 +411,8 @@ class TaskRunner:
 
             if run.status in ("paused", "cancelled", "failed"):
                 for t in run.tasks:
+                    if t.superseded:
+                        continue  # a revised plan replaced it; never run it again
                     if fresh or t.status not in (TaskStatus.PASSED, TaskStatus.SKIPPED):
                         t.status = TaskStatus.PENDING
                         t.error = ""
@@ -468,7 +480,7 @@ class TaskRunner:
                 await self._taskq_begin_run(run)
                 watchdog_task = asyncio.create_task(self._watchdog_loop(run))
                 await self._execute_tasks(run, history_key)
-                if run.status == "running":
+                if run.status == "running" and not self._stopping():
                     run.status = "completed"
                     run.finished_at = time.time()
                     await self._apersist_runs()
@@ -478,35 +490,63 @@ class TaskRunner:
                         run=run,
                     )
             except asyncio.CancelledError:
+                # Always a cancellation, never read as the stop: the stop ends a
+                # run through failures, while a cancel can come from an operator
+                # by a path that does not set the status first (Workflow Runs).
                 if run.status != "pausing":
                     run.status = "cancelling"
                 self._reset_incomplete_tasks(run)
             except Exception as exc:
-                logger.exception("Plan execution error")
-                run.status = "failed"
-                run.error = str(exc)
-                await self._notify("\u274c Task error", str(exc), run=run)
+                if self._stopping():
+                    # Most likely a service the stop took away; the restart resumes it.
+                    logger.warning(
+                        "Task run %s stopped by the shutdown (%s)", task_id, type(exc).__name__
+                    )
+                else:
+                    logger.exception("Plan execution error")
+                    run.status = "failed"
+                    run.error = str(exc)
+                    await self._notify("\u274c Task error", str(exc), run=run)
             finally:
                 try:
                     await asyncio.shield(self._cleanup_run_sessions(run))
                 except asyncio.CancelledError:
                     pass  # shield was cancelled but cleanup completed
-                # Finalize cancel status after cleanup
-                if run.status in ("cancelling", "pausing"):
-                    run.status = "paused" if run.status == "pausing" else "cancelled"
-                run.finished_at = time.time()
-                save_progress(run)
                 try:
-                    await self._apersist_runs()
-                    await self._taskq_end_run(run)
-                    if run.branch_name and not workspace_lost:
+                    frozen = run.status == "running" and self._stopping()
+                    if frozen:
+                        # Cut short by the process stopping: record the progress,
+                        # still ``running``, and leave the queue row and the
+                        # worktree for the restart to resume (``begin_shutdown``).
+                        save_progress(run)
                         try:
-                            await git_coord.finalize(run)
-                        except Exception:
-                            logger.debug("Git finalize failed", exc_info=True)
-                    await self._workflow_finalize(run)
-                    if self._consolidator:
-                        self._consolidator.maybe_consolidate(history_key)
+                            await self._apersist_runs()
+                        except asyncio.CancelledError:
+                            # A cancel that landed during this write ends the run as
+                            # asked, below, whichever path sent it.
+                            if run.status == "running":
+                                run.status = "cancelling"
+                        frozen = run.status == "running"
+                    if frozen:
+                        # No driver is left to end it: a later pause or cancel
+                        # settles it directly (``_settle_stopped_run``).
+                        self._stop_frozen.add(run.task_id)
+                    if not frozen:
+                        # Finalize cancel status after cleanup
+                        if run.status in ("cancelling", "pausing"):
+                            run.status = "paused" if run.status == "pausing" else "cancelled"
+                        run.finished_at = time.time()
+                        save_progress(run)
+                        await self._apersist_runs()
+                        await self._taskq_end_run(run)
+                        if run.branch_name and not workspace_lost:
+                            try:
+                                await git_coord.finalize(run)
+                            except Exception:
+                                logger.debug("Git finalize failed", exc_info=True)
+                        await self._workflow_finalize(run)
+                        if self._consolidator:
+                            self._consolidator.maybe_consolidate(history_key)
                 finally:
                     if watchdog_task and not watchdog_task.done():
                         watchdog_task.cancel()
@@ -603,7 +643,7 @@ class TaskRunner:
                 await self._taskq_begin_run(run)
                 watchdog_task = asyncio.create_task(self._watchdog_loop(run))
                 await self._execute_tasks(run, history_key)
-                if run.status == "running":
+                if run.status == "running" and not self._stopping():
                     run.status = "completed"
                     run.finished_at = time.time()
                     await self._apersist_runs()
@@ -612,26 +652,54 @@ class TaskRunner:
                         "\u2705 Task completed", f"{passed}/{len(run.tasks)} passed", run=run
                     )
             except asyncio.CancelledError:
+                # Always a cancellation, never read as the stop: the stop ends a
+                # run through failures, while a cancel can come from an operator
+                # by a path that does not set the status first (Workflow Runs).
                 if run.status != "pausing":
                     run.status = "cancelling"
                 self._reset_incomplete_tasks(run)
             except Exception as exc:
-                logger.exception("Retry failed")
-                run.status = "failed"
-                run.error = str(exc)
+                if self._stopping():
+                    # Most likely a service the stop took away; the restart resumes it.
+                    logger.warning(
+                        "Task run %s stopped by the shutdown (%s)", task_id, type(exc).__name__
+                    )
+                else:
+                    logger.exception("Retry failed")
+                    run.status = "failed"
+                    run.error = str(exc)
             finally:
                 try:
                     await asyncio.shield(self._cleanup_run_sessions(run))
                 except asyncio.CancelledError:
                     pass  # shield was cancelled but cleanup completed
-                if run.status in ("cancelling", "pausing"):
-                    run.status = "paused" if run.status == "pausing" else "cancelled"
-                run.finished_at = time.time()
-                save_progress(run)
                 try:
-                    await self._apersist_runs()
-                    await self._taskq_end_run(run)
-                    await self._workflow_finalize(run)
+                    frozen = run.status == "running" and self._stopping()
+                    if frozen:
+                        # Cut short by the process stopping: record the progress,
+                        # still ``running``, and leave the queue row and the
+                        # worktree for the restart to resume (``begin_shutdown``).
+                        save_progress(run)
+                        try:
+                            await self._apersist_runs()
+                        except asyncio.CancelledError:
+                            # A cancel that landed during this write ends the run as
+                            # asked, below, whichever path sent it.
+                            if run.status == "running":
+                                run.status = "cancelling"
+                        frozen = run.status == "running"
+                    if frozen:
+                        # No driver is left to end it: a later pause or cancel
+                        # settles it directly (``_settle_stopped_run``).
+                        self._stop_frozen.add(run.task_id)
+                    if not frozen:
+                        if run.status in ("cancelling", "pausing"):
+                            run.status = "paused" if run.status == "pausing" else "cancelled"
+                        run.finished_at = time.time()
+                        save_progress(run)
+                        await self._apersist_runs()
+                        await self._taskq_end_run(run)
+                        await self._workflow_finalize(run)
                 finally:
                     if watchdog_task and not watchdog_task.done():
                         watchdog_task.cancel()
