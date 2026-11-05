@@ -308,7 +308,7 @@ class TestPatchRoute:
 
 
 class TestRetiredBrowserKeysOnDashboardSaves:
-    """#30389: ``dashboard.use_builtin_browser`` / ``browser_view_port`` are named at
+    """``dashboard.use_builtin_browser`` / ``browser_view_port`` are named at
     load as "dropped on the next save", and ``save()`` drops them. The dashboard's
     PATCH and PUT edit the raw document instead, so they must drop them too."""
 
