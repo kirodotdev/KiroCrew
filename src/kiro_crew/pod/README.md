@@ -41,7 +41,7 @@ kirocrew pod prune [--older-than 3d] [--all] [--dry-run] [--json]  # bulk-reclai
 kirocrew pod status <wt> [--json] # up/down + health
 kirocrew pod token  <wt> [--ttl]  # (re)mint a dashboard token for a running pod
 kirocrew pod url    <wt>          # print its base_url
-kirocrew pod logs   <wt> [-n N]   # tail its journal
+kirocrew pod logs   <wt> [-n N]   # tail its log (the user journal on Linux, log files on macOS and Windows)
 kirocrew pod down   <wt>          # evict → delete its HOME, verified (zero residue)
 ```
 
