@@ -593,6 +593,63 @@ async def test_the_worker_script_reports_a_missing_harness_instead_of_hanging() 
     assert json.dumps(reply)
 
 
+# Writes a null-id import-failed reply on startup, closes its stdin read end, and
+# exits -- it never reads the request. The closed read end makes a later write to
+# stdin a broken pipe, which forces the write-loses-the-race path deterministically.
+_EXITS_BEFORE_READING_STDIN = (
+    "import sys, json, os\n"
+    "sys.stdout.write(json.dumps({'id': None, 'error': 'import failed: no browser_harness'}) + '\\n')\n"
+    "sys.stdout.flush()\n"
+    "os.close(0)\n"
+    "sys.exit(0)\n"
+)
+
+
+@pytest.mark.asyncio
+async def test_a_worker_that_exits_before_reading_stdin_still_surfaces_its_reply() -> None:
+    """A worker that writes "import failed" and exits without reading stdin makes the
+    request's drain() raise ConnectionResetError. The reply it already wrote is still
+    read and surfaced, not hidden behind "helper worker is gone"."""
+    proc = await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-c",
+        _EXITS_BEFORE_READING_STDIN,
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+    )
+    try:
+        # Wait for the child to exit so the stdin write/drain fails deterministically,
+        # with no sleep. A padded body guarantees the write reaches the closed pipe.
+        await proc.wait()
+        body = {"id": 1, "helper": "page_info", "kwargs": {}, "pad": "x" * 200_000}
+        reply = await supervisor._worker_request(proc, body, 10.0)
+    finally:
+        await supervisor._stop_process(proc)
+    assert reply.get("id") is None
+    assert "import failed" in reply["error"]
+    assert "helper worker is gone" not in reply.get("error", "")
+
+
+@pytest.mark.asyncio
+async def test_a_worker_gone_with_no_reply_still_reports_it_is_gone() -> None:
+    """When the write fails and stdout has nothing, the fallback message is unchanged."""
+    proc = await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-c",
+        "import os, sys; os.close(0); os.close(1); sys.exit(0)\n",
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+    )
+    try:
+        await proc.wait()
+        body = {"id": 1, "helper": "page_info", "kwargs": {}, "pad": "x" * 200_000}
+        reply = await supervisor._worker_request(proc, body, 10.0)
+    finally:
+        await supervisor._stop_process(proc)
+    assert reply["ok"] is False and reply["fatal"] is True
+    assert "helper worker is gone" in reply["error"]
+
+
 _BIG_REPLY_WORKER = (
     "import sys, json\n"
     "for line in sys.stdin:\n"
