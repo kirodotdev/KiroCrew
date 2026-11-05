@@ -163,7 +163,12 @@ KAS_BUNDLE_SPAWN_LABEL = "kas-bundle"
 
 
 def _bundle_route_selected() -> bool:
-    """``agent.kas_bundle`` as configured. Blocking (reads config); call off the loop."""
+    """``agent.kas_bundle`` as configured. Blocking (reads config); call off the loop.
+
+    Not the shared ``kas_bundle_route()`` or its route half: this harness is KAS
+    whatever selected it (a member route or a pin too), and ``resolve_spawn``
+    decides the automatic half itself.
+    """
     from kiro_crew.config.loader import KiroCrewConfig
 
     return bool(KiroCrewConfig.load().agent.kas_bundle)

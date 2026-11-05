@@ -4256,6 +4256,15 @@ pins is installed by the release install every update path runs,
 the unit of install) and the gateway's boot-time outdated-kiro-cli
 warning (skipped) all agree on when kiro-cli is not part of the installation, and all keep their
 relay-route behaviour byte for byte when the predicate is false.
+`kas_bundle_route()`'s route half is `kas_bundle.kas_spawn_takes_bundle(agent)`,
+the one spelling over a loaded `agent` section. The sign-in owner
+(`auth.whoami.agent_owns_sign_in`) reads it behind the backend half and the vault;
+the install probe and spec `permissions` gate (`backend_install._kas_bundle_route`)
+and a `?backend=kas` model list (`crewmate_harness.models_route`) read it bare,
+because they describe KAS whatever the default backend is. The KAS harness reads
+`agent.kas_bundle` alone (`harness/kas._bundle_route_selected`): it is KAS whatever
+selected it, and `resolve_spawn` decides the automatic half itself. Pinned by
+`test_kas_bundle_route_predicate.py`.
 
 **Choosing KAS takes Crew's own engine when kiro-cli cannot run** (decision
 [2026-10-30](../../decisions/2026-10-30-choosing-kas-runs-kiro-crews-own-engine-when-kiro-cli-cannot.md)).
