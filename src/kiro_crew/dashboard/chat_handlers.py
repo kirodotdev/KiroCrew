@@ -568,6 +568,9 @@ from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_req
 from kiro_crew.dashboard.interaction_coordinator import native_resolution_target  # noqa: F401
 from kiro_crew.dashboard.relay_archive import relay_archive_refusal  # noqa: F401
 from kiro_crew.dashboard.request_priority import owner_start_priority  # noqa: F401
+from kiro_crew.dashboard.session_approval_refusal import (  # noqa: F401 -- read by chat_api.slot_approval
+    session_approval_refusal,
+)
 from kiro_crew.dashboard.session_folders import (  # noqa: F401
     SessionFolderError,
     create_session_folder,

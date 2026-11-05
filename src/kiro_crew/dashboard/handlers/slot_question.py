@@ -53,6 +53,7 @@ from kiro_crew.dashboard.handlers.ask_question import (
     pending_question_cards,
 )
 from kiro_crew.dashboard.interaction_coordinator import note_embed_poll
+from kiro_crew.dashboard.session_approval_refusal import session_approval_refusal
 from kiro_crew.dashboard.slot_ownership import (
     _record_isolation_allow,
     app_owns_slot_session,
@@ -105,13 +106,7 @@ async def _after_body_refusal(
         return slot_not_found()
     if not await session_grant(request, request_app, fresh=True):
         audit_app_slot_denial(request_app, operation, name, "session approval permission removed")
-        return web.json_response(
-            {
-                "error": "app cannot manage session approvals",
-                "code": "session_approval_not_granted",
-            },
-            status=403,
-        )
+        return await session_approval_refusal(request_app)
     if slots.get(name) is not slot or not app_owns_slot_session(request_app, slot):
         audit_app_slot_denial(request_app, operation, name, "slot replaced during the grant read")
         return slot_not_found()
@@ -133,7 +128,8 @@ async def _read_caller_refusal(request: web.Request, operation: str) -> web.Resp
             _record_isolation_allow(request_app, operation, request.match_info.get("slot", ""))
             return None
     # Every other case, refusals included, takes the shared check. The grant
-    # verdict is cached on the request, so an ungranted app is not read twice.
+    # verdict is cached on the request, so the check does not decide it again;
+    # only its refusal reads the grant once more, off the loop, to name the cause.
     return await _caller_refusal(request, operation)
 
 

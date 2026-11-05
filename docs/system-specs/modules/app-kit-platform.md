@@ -3076,6 +3076,21 @@ the one-time import first, so the import's lock is the only lock needed.
 grant is enforced through the enabled flag on several session routes rather
 than at one gate, so it is not folded into the approved set.
 
+**A session-approval refusal names the missing part.**
+`session_approval_denial_cause` (`apps/permissions.py`) is the one decision
+`app_can_manage_session_approvals` grants from, and it names why a grant is not
+held: `not_declared` (no `permissions.sessionApproval`), `consent_pending`,
+`disabled`, or `unavailable` (nothing readable, or the record and the enabled
+read disagree). Every `403 session_approval_not_granted`, from
+`deny_session_approval_caller` and from the question routes' post-body recheck,
+is built by `dashboard/session_approval_refusal.py`. It reads the cause again
+off the event loop, after the decision, and returns it as `cause`, with `error`
+saying who clears it: the developer adds
+`"sessionApproval": true` and updates the app (which disables it until the owner
+clicks "Enable and allow chat control"), the owner clicks "Enable and allow chat
+control" or "Enable", or the app retries. A cause read that finds the grant
+held words the refusal `unavailable`, so the wording never decides a refusal.
+
 **Prefix grants are narrowed to owned resources on the cross-session routes.**
 `permissions.api` is a prefix match, so the routes below are judged per resource
 for an app caller (`handlers/sessions.py`, rule in `handlers/sessions_parts/app_scope.py`). The rule keys on the request's `app`
