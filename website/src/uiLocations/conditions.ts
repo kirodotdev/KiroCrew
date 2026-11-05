@@ -38,10 +38,10 @@ export const UI_CONDITIONS = {
   notification_selected: 'a notification is open in the detail panel (select it in the list)',
   notification_read: 'the open notification is already read (opening one marks it read; an unread one shows Mark read here instead)',
   // Crewmates
-  crewmate_selected: 'a crewmate is selected in the list',
-  no_crewmates: 'no crewmate exists yet',
-  has_crewmates: 'at least one crewmate exists',
-  crewmate_editor_open: "a crewmate's editor is open (choose Edit on that crewmate)",
+  crewmate_selected: 'a Bot is selected in the list',
+  no_crewmates: 'no Bot exists yet',
+  has_crewmates: 'at least one Bot exists',
+  crewmate_editor_open: "a Bot's editor is open (choose Edit on that Bot)",
   // Apps
   has_installed_apps: 'at least one app is installed',
   app_details_open: "an app's detail page is open (in Discover, click the app's card)",
@@ -73,8 +73,8 @@ export const UI_CONDITIONS = {
   // Notifications
   new_channel_prompt: 'the first notification from a new channel is asking whether to keep or mute that channel',
   // Crewmates
-  crewmate_danger_zone_open: "the crewmate editor shows its Danger zone section (choose Danger zone in the editor's section list)",
-  crewmate_panel_not_docked: "the crewmate's details panel is not already docked open beside the chat",
+  crewmate_danger_zone_open: "the Bot editor shows its Danger zone section (choose Danger zone in the editor's section list)",
+  crewmate_panel_not_docked: "the Bot's details panel is not already docked open beside the chat",
   // Apps (the app whose detail page is open, not the app that provides the page)
   open_app_not_installed: 'the open app is not installed yet and can be installed from the dashboard',
   open_app_enabled: 'the open app is a regular installed app (not a built-in or independently managed one) and is turned on',
@@ -94,8 +94,8 @@ export const UI_CONDITIONS = {
   job_enabled: 'the open job is active (not paused)',
   job_paused: 'the open job is paused',
   // Crewmates
-  crewmate_place_pane_open: "the crewmate editor shows its Memory section (choose it in the editor's section list)",
-  crewmate_model_pane_open: "the crewmate editor shows its General section, which holds the model (choose it in the editor's section list)",
+  crewmate_place_pane_open: "the Bot editor shows its Memory section (choose it in the editor's section list)",
+  crewmate_model_pane_open: "the Bot editor shows its General section, which holds the model (choose it in the editor's section list)",
   // Artifacts
   artifact_open: "an artifact's own page is open (click the artifact in the library)",
   // Shell: the docked terminal panel (BottomTerminalPanel)
@@ -117,11 +117,11 @@ export const UI_REVEAL_STATES = {
   composer_collapsed: 'the message box is collapsed to a single bar (the choice is remembered after a reload)',
   side_panel_closed: "the chat's side panel is closed",
   terminal_panel_closed: 'the terminal panel is closed (the Terminal row in the navigation rail opens it)',
-  crewmate_roster_folded: 'a crewmate chat is open on a wide screen, which folds the roster column away',
-  crewmate_chat_open_phone: 'a crewmate chat fills the phone screen, so the roster is behind it',
-  crewmate_profile_closed: "the crewmate's profile card is closed (pressing the crewmate's name in the chat header opens it)",
-  crewmate_profile_tab_closed: "the crewmate's profile card is on another tab (the card opens on Sessions; its Profile tab is the last one on the rail)",
-  crewmate_settings_closed: "the crewmate's Settings page is closed (the Settings row on its profile card's Profile tab opens it)",
+  crewmate_roster_folded: 'a Bot chat is open on a wide screen, which folds the roster column away',
+  crewmate_chat_open_phone: 'a Bot chat fills the phone screen, so the roster is behind it',
+  crewmate_profile_closed: "the Bot's profile card is closed (pressing the Bot's name in the chat header opens it)",
+  crewmate_profile_tab_closed: "the Bot's profile card is on another tab (the card opens on Sessions; its Profile tab is the last one on the rail)",
+  crewmate_settings_closed: "the Bot's Settings page is closed (the Settings row on its profile card's Profile tab opens it)",
 } as const
 
 export type UiRevealState = keyof typeof UI_REVEAL_STATES

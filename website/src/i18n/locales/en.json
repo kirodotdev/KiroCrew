@@ -7361,7 +7361,7 @@
         "deferred_followup": "The reply says the agent will follow up later, but this turn set up no monitor, scheduled job or background run, and no monitor is running on this session — so nothing will wake it to send that update. Send a message when you want it, or ask the agent to set up a monitor.",
         "memory_preparing": "Memory is still being prepared after the gateway restart. Queued messages will run when it is ready.",
         "agent_switch_blocked_pinned": "Switching to {{agent}} was blocked — this thread is pinned to {{member}}. The next turn restarts on the pinned crew.",
-        "agent_switch_blocked_crew_mode": "Switching to {{agent}} was blocked — this chat is in Crew Mode, which stays on its conductor. The next turn restarts on the conductor.",
+        "agent_switch_blocked_crew_mode": "Switching to {{agent}} was blocked — this chat is in Ultra Mode, which stays on its own agent. The next turn restarts on that agent.",
         "agent_switch_blocked_channel": "Switching to {{agent}} was blocked — this chat is linked to a Slack channel served by {{channel_agent}}. The next turn restarts on that agent.",
         "channel_message_not_run": "A message from a Slack channel was not run: this session's agent is not the agent that channel uses.",
         "crew_name_undispatchable": "This thread's crew name cannot be dispatched. Rename or recreate the Bot.",

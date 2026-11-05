@@ -110,7 +110,7 @@ const TURN_ROWS: ChatMessage[] = [
   row("notice", "ℹ️ The reply says the agent will follow up later, but this turn set up no monitor, scheduled job or background run, and no monitor is running on this session — so nothing will wake it to send that update. Send a message when you want it, or ask the agent to set up a monitor.", {"notice": "deferred_followup"}),
   row("notice", "ℹ️ Memory is still being prepared after the gateway restart. Queued messages will run when it is ready.", {"notice": "memory_preparing"}),
   row("notice", "📌 Agent switch to researcher was blocked — this thread is pinned to nova. The next turn restarts on the pinned crew.", {"notice": "agent_switch_blocked_pinned", "notice_args": {"agent": "researcher", "member": "nova"}}),
-  row("notice", "📌 Agent switch to researcher was blocked — this chat is in Crew Mode, which stays on its conductor. The next turn restarts on the conductor.", {"notice": "agent_switch_blocked_crew_mode", "notice_args": {"agent": "researcher"}}),
+  row("notice", "📌 Agent switch to researcher was blocked — this chat is in Ultra Mode, which stays on its own agent. The next turn restarts on that agent.", {"notice": "agent_switch_blocked_crew_mode", "notice_args": {"agent": "researcher"}}),
   row("error", "This thread's crew name cannot be dispatched. Rename or recreate the Crew Member.", {"notice": "crew_name_undispatchable"}),
   row("error", "This chat ran on a remote crew and is read-only now. Open the crew's own session to keep going.", {"notice": "remote_crew_read_only"}),
   row("error", "⚠️ Archiving this tab failed after its running turn was cancelled. The tab was kept, but that turn did not finish -- re-send to continue.", {"notice": "archive_failed_turn_cancelled"}),

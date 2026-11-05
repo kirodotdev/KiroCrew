@@ -280,8 +280,8 @@ async def migrate(
             names = ", ".join(f"{k} ({c})" for k, c in sorted(newly_failed.items()))
             _notify(
                 state,
-                "A Crew Mode chat did not move",
-                f"These chats stay on their conductor instead of {target}: {names}. "
+                "An Ultra Mode chat did not move",
+                f"These chats stay on their own agent instead of {target}: {names}. "
                 "Kiro Crew tries again after the next config change or restart.",
             )
         if (

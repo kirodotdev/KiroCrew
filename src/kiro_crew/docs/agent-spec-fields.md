@@ -770,9 +770,9 @@ Kiro Crew owns and rewrites these thirteen filenames in `~/.kiro/agents/`
 list's one copy in the docs. The two Bot specs (`kirocrew-mate-conductor.json`,
 `kirocrew-mate-worker.json`) stay on that list so a leftover copy is still
 recognised, but Crew writes and reads them in `~/.kiro/mates/agents/`.
-The MCP gateway's overlay pass reads that folder too: each crewmate's own file
+The MCP gateway's overlay pass reads that folder too: each Bot's own file
 there gets a broker overlay under `<overlay_dir>/mates/`, so a server routed
-through the gateway reaches the crewmate's worker as it reaches a chat. The mate
+through the gateway reaches the Bot's worker as it reaches a chat. The Bot
 conductor and worker specs themselves get none (architecture/mcp.md, "Crewmate
 overlays").
 

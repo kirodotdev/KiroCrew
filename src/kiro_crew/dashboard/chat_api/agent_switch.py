@@ -324,11 +324,11 @@ def _crew_mode_lock_refusal(
         outcome="denied",
         source=CREW_MODE_LOCKED,
         resources=f"slot={slot.key}",
-        error="a Crew Mode chat stays on its conductor",
+        error="an Ultra Mode chat stays on its own agent",
     )
     return web.json_response(
         {
-            "error": "this chat is in Crew Mode, which stays on its conductor",
+            "error": "this chat is in Ultra Mode, which stays on its own agent",
             "code": CREW_MODE_LOCKED,
         },
         status=409,

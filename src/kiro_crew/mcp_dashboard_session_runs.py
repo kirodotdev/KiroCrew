@@ -387,7 +387,7 @@ def _run_session_create(args: dict[str, Any], ctx: ToolContext) -> str:
         on_model += f", auto-compacting at {resp['autocompact_pct']:g}%"
     # A Crew Mode chat's worker is in the sidebar but filed in no folder.
     where = (
-        "the user's sidebar, unfiled (this chat is in Crew Mode)"
+        "the user's sidebar, unfiled (this chat is in Ultra Mode)"
         if crew_mode
         else "the user's sidebar"
     )

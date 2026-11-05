@@ -6024,10 +6024,10 @@
   },
   "components": {
     "mateWorkers": {
-      "approvals_label": "Approvazioni degli strumenti dalle sessioni di questo compagno: {{n}}",
+      "approvals_label": "Approvazioni degli strumenti dalle sessioni di questo Bot: {{n}}",
       "trust": "Fidati di questa sessione",
       "trust_hint": "Approva questa richiesta e lascia che questa sessione usi gli strumenti senza chiedere fino al riavvio di {{productName}}.",
-      "questions_label": "Domande dalle sessioni di questo compagno",
+      "questions_label": "Domande dalle sessioni di questo Bot",
       "question_from": "{{name}} chiede",
       "answer_not_sent": "La tua risposta a {{name}} non è stata inviata. È di nuovo nella casella di messaggio di {{name}}.",
       "answer_maybe_lost": "La tua risposta a {{name}} potrebbe non essere arrivata. Apri {{name}} per controllare."
@@ -13121,7 +13121,7 @@
         "deferred_followup": "La risposta dice che l’agente si farà sentire più tardi, ma questo turno non ha configurato nessun monitor, job pianificato o esecuzione in background, e in questa sessione non è attivo alcun monitor — quindi niente lo risveglierà per inviare quell’aggiornamento. Invia un messaggio quando lo vuoi o chiedi all’agente di configurare un monitor.",
         "memory_preparing": "La memoria è ancora in preparazione dopo il riavvio del gateway. I messaggi in coda verranno eseguiti quando sarà pronta.",
         "agent_switch_blocked_pinned": "Il passaggio a {{agent}} è stato bloccato — questo thread è fissato a {{member}}. Il turno successivo riparte sulla crew fissata.",
-        "agent_switch_blocked_crew_mode": "Il passaggio a {{agent}} è stato bloccato — questa chat è in Crew Mode, che resta sul suo direttore. Il turno successivo riparte sul direttore.",
+        "agent_switch_blocked_crew_mode": "Il passaggio a {{agent}} è stato bloccato — questa chat è in Ultra Mode, che resta sul suo agente. Il turno successivo riparte su quell'agente.",
         "agent_switch_blocked_channel": "Il passaggio a {{agent}} è stato bloccato — questa chat è collegata a un canale Slack servito da {{channel_agent}}. Il prossimo turno riparte su quell'agente.",
         "channel_message_not_run": "Un messaggio da un canale Slack non è stato eseguito: l'agente di questa sessione non è quello usato da quel canale.",
         "crew_name_undispatchable": "Il nome della crew di questo thread non può essere usato. Rinomina o ricrea il Bot.",

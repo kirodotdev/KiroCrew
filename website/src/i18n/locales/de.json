@@ -5863,10 +5863,10 @@
   },
   "components": {
     "mateWorkers": {
-      "approvals_label": "Tool-Freigaben aus den Sitzungen dieses Crewmates: {{n}}",
+      "approvals_label": "Tool-Freigaben aus den Sitzungen dieses Bot: {{n}}",
       "trust": "Dieser Sitzung vertrauen",
       "trust_hint": "Gibt dies frei und lässt diese Sitzung Tools ohne Nachfrage nutzen, bis {{productName}} neu startet.",
-      "questions_label": "Fragen aus den Sitzungen dieses Crewmates",
+      "questions_label": "Fragen aus den Sitzungen dieses Bot",
       "question_from": "{{name}} fragt",
       "answer_not_sent": "Deine Antwort an {{name}} wurde nicht gesendet. Sie steht wieder im Eingabefeld von {{name}}.",
       "answer_maybe_lost": "Deine Antwort an {{name}} ist vielleicht nicht angekommen. Öffne {{name}}, um nachzusehen."
@@ -12827,7 +12827,7 @@
         "deferred_followup": "Die Antwort sagt, dass sich der Agent später meldet, aber diese Runde hat keine Überwachung, keinen geplanten Job und keinen Hintergrundlauf eingerichtet, und in dieser Sitzung läuft keine Überwachung — also weckt ihn nichts, um dieses Update zu senden. Sende eine Nachricht, wenn du es möchtest, oder bitte den Agenten, eine Überwachung einzurichten.",
         "memory_preparing": "Der Speicher wird nach dem Neustart des Gateways noch vorbereitet. Nachrichten in der Warteschlange laufen, sobald er bereit ist.",
         "agent_switch_blocked_pinned": "Der Wechsel zu {{agent}} wurde blockiert — dieser Thread ist an {{member}} angeheftet. Die nächste Runde startet neu auf der angehefteten Crew.",
-        "agent_switch_blocked_crew_mode": "Der Wechsel zu {{agent}} wurde blockiert — dieser Chat ist im Crew Mode, der bei seinem Dirigenten bleibt. Die nächste Runde startet neu auf dem Dirigenten.",
+        "agent_switch_blocked_crew_mode": "Der Wechsel zu {{agent}} wurde blockiert — dieser Chat ist im Ultra Mode, der bei seinem eigenen Agenten bleibt. Die nächste Runde startet neu auf diesem Agenten.",
         "agent_switch_blocked_channel": "Der Wechsel zu {{agent}} wurde blockiert — dieser Chat ist mit einem Slack-Kanal verknüpft, den {{channel_agent}} bedient. Die nächste Runde startet neu auf diesem Agenten.",
         "channel_message_not_run": "Eine Nachricht aus einem Slack-Kanal wurde nicht ausgeführt: Der Agent dieser Sitzung ist nicht der Agent, den dieser Kanal verwendet.",
         "crew_name_undispatchable": "Der Crew-Name dieses Threads kann nicht verwendet werden. Benenne den Bot um oder erstelle ihn neu.",
@@ -20678,7 +20678,7 @@
       "profile_effort_hint": "Höhere Stufen denken länger, antworten langsamer und kosten mehr.",
       "profile_settings_waiting": "Das lässt sich ändern, sobald der Chat mit diesem Bot offen ist.",
       "profile_permission_changed": "Die Berechtigung wurde woanders geändert. Das ist die aktuelle Einstellung.",
-      "profile_mode_normal_desc": "{{name}} fragt dich vor jedem Werkzeug, in jedem Chat mit diesem Crewmitglied.",
+      "profile_mode_normal_desc": "{{name}} fragt dich vor jedem Werkzeug, in jedem Chat mit ihm.",
       "profile_mode_reads_desc": "{{name}} führt reine Lesebefehle selbst aus und fragt beim Rest, in jedem Chat damit.",
       "profile_mode_trust_desc": "{{name}} führt Werkzeuge aus, ohne dich vorher zu fragen, in jedem Chat damit.",
       "profile_model_inherited_hint": "Verwendet {{model}}, den Crew-Standard",

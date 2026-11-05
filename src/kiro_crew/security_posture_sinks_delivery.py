@@ -882,7 +882,7 @@ _DELIVERY_SINKS: tuple[tuple[str, str, str], ...] = (
     (
         "Mate-written dashboard field values",
         "dashboard_agentic.py",
-        "Every string a mate writes into its own dashboard's agentic fields, on "
+        "Every string a Bot writes into its own dashboard's agentic fields, on "
         "its way to the rendered page. The scrub runs on the way IN, so what the "
         "registry stores is already redacted and no later reader has to remember to "
         "scrub it. Both shared redactors run, exfiltration URLs first, and the walk "
@@ -895,11 +895,11 @@ _DELIVERY_SINKS: tuple[tuple[str, str, str], ...] = (
         "cap after it.",
     ),
     (
-        "Script-cron records appended for a mate's dashboard page",
+        "Script-cron records appended for a Bot's dashboard page",
         "dashboard/handlers/agent_panel_record.py",
         "Every string a member-bound script cron sends through the record door "
-        "(`POST /api/agent-panel/dashboard/record`) on its way into the mate's own crew "
-        "log, where the custom fold keeps it and the mate's page draws it. The scrub runs "
+        "(`POST /api/agent-panel/dashboard/record`) on its way into the Bot's own crew "
+        "log, where the custom fold keeps it and the Bot's page draws it. The scrub runs "
         "on the way IN, like the agentic value's, with the same two redactors in the "
         "same order and the same recursive walk over arrays and objects, keys included; "
         "and each string value is judged a second time beside its key, because a bearer "
@@ -909,7 +909,7 @@ _DELIVERY_SINKS: tuple[tuple[str, str, str], ...] = (
         "crew_log_append`) scrubs too, but it is one caller of the route and not its gate.",
     ),
     (
-        "Field values pushed to a mate's dashboard page",
+        "Field values pushed to a Bot's dashboard page",
         "dashboard/handlers/member_dashboard_fields.py",
         "Every subscribed field's value on its way to the owner's socket and into the "
         "page's data island. This is the ONE place such a value is produced -- the "

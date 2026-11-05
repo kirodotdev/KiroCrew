@@ -307,7 +307,7 @@ async def _on_agent_switched(turn: _ChatTurn, event) -> Literal[_Flow.BREAK] | N
         # loaded companion's patterns apply (test_security_posture).
         _crew_veto_agent = redact_log_via_context(event.text or "")
         logger.warning(
-            "agent switch to %r vetoed on Crew Mode chat %s",
+            "agent switch to %r vetoed on Ultra Mode chat %s",
             _crew_veto_agent,
             slot.key,
         )
@@ -317,13 +317,13 @@ async def _on_agent_switched(turn: _ChatTurn, event) -> Literal[_Flow.BREAK] | N
             outcome="denied",
             source="crew_mode_locked",
             resources=f"slot={slot.key} agent={_crew_veto_agent}",
-            error="a Crew Mode chat stays on its conductor",
+            error="an Ultra Mode chat stays on its own agent",
         )
         slot.append(
             "notice",
             f"📌 Agent switch to {new_agent} was blocked — this chat is in "
-            "Crew Mode, which stays on its conductor. The next turn restarts "
-            "on the conductor.",
+            "Ultra Mode, which stays on its own agent. The next turn restarts "
+            "on that agent.",
             "msg msg-info",
             meta=gn.gateway_notice_meta(
                 gn.GATEWAY_NOTICE_AGENT_SWITCH_BLOCKED_CREW_MODE, agent=str(new_agent)

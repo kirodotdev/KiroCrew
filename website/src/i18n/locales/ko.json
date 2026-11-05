@@ -5702,10 +5702,10 @@
   },
   "components": {
     "mateWorkers": {
-      "approvals_label": "이 크루메이트 세션의 도구 승인: {{n}}",
+      "approvals_label": "이 Bot 세션의 도구 승인: {{n}}",
       "trust": "이 세션 신뢰",
       "trust_hint": "이 요청을 승인하고 {{productName}}이(가) 다시 시작될 때까지 이 세션이 묻지 않고 도구를 실행하도록 허용합니다.",
-      "questions_label": "이 크루메이트 세션의 질문",
+      "questions_label": "이 Bot 세션의 질문",
       "question_from": "{{name}}의 질문",
       "answer_not_sent": "{{name}}에게 보낸 답변이 전송되지 않았습니다. {{name}}의 메시지 입력란에 다시 넣어 두었습니다.",
       "answer_maybe_lost": "{{name}}에게 보낸 답변이 도착하지 않았을 수 있습니다. {{name}}을(를) 열어 확인하세요."
@@ -12533,7 +12533,7 @@
         "deferred_followup": "답변에는 에이전트가 나중에 후속 소식을 전한다고 되어 있지만, 이 턴은 모니터·예약 작업·백그라운드 실행을 하나도 설정하지 않았고 이 세션에서 실행 중인 모니터도 없습니다 — 그래서 그 업데이트를 보내도록 에이전트를 깨울 것이 없습니다. 원할 때 메시지를 보내거나 에이전트에게 모니터를 설정해 달라고 요청하세요.",
         "memory_preparing": "게이트웨이를 다시 시작한 뒤 메모리를 아직 준비하고 있습니다. 준비되면 대기 중인 메시지가 실행됩니다.",
         "agent_switch_blocked_pinned": "‘{{agent}}’(으)로 전환하는 것이 차단되었습니다 — 이 스레드는 ‘{{member}}’에 고정되어 있습니다. 다음 턴은 고정된 크루에서 다시 시작합니다.",
-        "agent_switch_blocked_crew_mode": "‘{{agent}}’(으)로 전환하는 것이 차단되었습니다 — 이 채팅은 Crew Mode이며 지휘자에 고정됩니다. 다음 턴은 지휘자에서 다시 시작합니다.",
+        "agent_switch_blocked_crew_mode": "‘{{agent}}’(으)로 전환하는 것이 차단되었습니다 — 이 채팅은 Ultra Mode이며 자체 에이전트에 고정됩니다. 다음 턴은 그 에이전트에서 다시 시작합니다.",
         "agent_switch_blocked_channel": "{{agent}}(으)로의 전환이 차단되었습니다 — 이 채팅은 {{channel_agent}}이(가) 담당하는 Slack 채널에 연결되어 있습니다. 다음 턴은 그 에이전트로 다시 시작합니다.",
         "channel_message_not_run": "Slack 채널의 메시지가 실행되지 않았습니다: 이 세션의 에이전트는 그 채널이 사용하는 에이전트가 아닙니다.",
         "crew_name_undispatchable": "이 스레드의 크루 이름은 사용할 수 없습니다. Bot의 이름을 바꾸거나 다시 만드세요.",
@@ -13768,7 +13768,7 @@
       "only_show_sessions_that_have_no_tags": "태그가 없는 세션만 표시",
       "opens_here_runs_on_instance": "이 세션을 여기서 엽니다 — 실행은 {{name}}에서 계속됩니다",
       "opens_on_members_page": "Bot의 개인 스레드 — 멤버 페이지에서 열립니다",
-      "members_page_chip": "멤버 페이지",
+      "members_page_chip": "Bots 페이지",
       "opened_sessions_count_other": "이 세션이 열은 세션 {{count}}개",
       "opens_on_crew_switches_there": "{{name}}에서 엽니다 — 해당 Crew로 전환하며 여기서는 열지 않습니다",
       "remote_instances_list_unavailable": "원격 크루를 나열할 수 없어 해당 세션이 표시되지 않습니다.",

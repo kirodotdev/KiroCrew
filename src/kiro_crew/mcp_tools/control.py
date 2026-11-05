@@ -474,7 +474,7 @@ def _ask_question_blocking(sk: str, questions: list[dict]) -> "str | DeferredToo
         if code == "crew_worker_asks_conductor":
             # A Crew Mode worker: the gateway's own instruction, not "ask in plain
             # text", which would put the question in front of the person after all.
-            logger.info("ask_question: a Crew Mode worker's question goes to its conductor")
+            logger.info("ask_question: an Ultra Mode worker's question goes to its conductor")
             return str(opened.get("error") or "Ask your conductor with work_report.")
         if isinstance(opened, dict) and "clients" in opened and not opened.get("clients"):
             why = "no dashboard window is open to show it"

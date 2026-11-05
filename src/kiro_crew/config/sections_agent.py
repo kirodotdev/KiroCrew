@@ -360,8 +360,8 @@ class AgentConfig:
     crew_mode_agent: str = field(
         default=_CREW_MODE_AGENT_DEFAULT,
         metadata=_meta(
-            "Crew Mode conductor",
-            "The conductor template a chat runs when Crew Mode is turned on. "
+            "Ultra Mode agent",
+            "The agent template a chat runs when Ultra Mode is turned on. "
             "Empty falls back to the default. Takes effect live for new chats; "
             "no gateway restart.",
         ),
