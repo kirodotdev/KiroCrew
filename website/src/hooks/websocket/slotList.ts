@@ -12,6 +12,7 @@ import type { StreamBuffers } from './streamBuffers'
 import { clearIdleRowRefreshes, recordIdleRowRefresh } from './idleRowRefresh'
 import { CHAT_FOLDERS_WRITE_KEY } from '../../api/chatFoldersWrite'
 import { autoBatched } from '../../lib/streamBatch'
+import { noteAppSlotRows } from '../../utils/appSlotPush'
 
 export interface SlotListSync {
   /** A new connection: forget the last-seen generations and raw frame. */
@@ -265,6 +266,8 @@ export function useSlotListSync(
         staleKeys.delete('chat-folders')
       }
       for (const key of staleKeys) queryClient.invalidateQueries({ queryKey: [key] })
+      // App embeds re-read a watched slot whose row moved (utils/appSlotPush.ts).
+      noteAppSlotRows(data)
       notifyAppsSlotsChanged()
     },
     onSlotPatch(frame) {
@@ -288,6 +291,7 @@ export function useSlotListSync(
         dispatch(reconcileSubagentQueuedFromSlots(patchRows))
       }
       dispatch(sseSlotPatch(frame))
+      noteAppSlotRows(frame.slots)
       notifyAppsSlotsChanged()
     },
   }), [buffers, dispatch, queryClient])

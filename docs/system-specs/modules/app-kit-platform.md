@@ -558,6 +558,23 @@ and admitted by the gateway for an own slot only. It also pins the reverse:
 every other slot-scoped frame is named in `_READ_UNCHANGED` with why it leaves
 the read as it was, so a new slot-scoped frame fails until it is placed.
 
+The slot list is the second signal source. A row can enter a slot with no
+slot-scoped frame: the gateway sends no user-row `chat_message` for a `?ws=1`
+send without `meta.sendId`, because its sender may have drawn the row. The
+`slots` frame that follows still restates the slot's row. `useSlotListSync`
+(`hooks/websocket/slotList.ts`) hands each list it applies, a full `slots` frame
+or the partial rows of a `slot_patch`, to `noteAppSlotRows`. For a watched slot
+it compares `messages`, `running`, `stopping`, `queue_depth` and
+`pending_approval` (`SLOT_ROW_FIELDS`) with the values it last saw, and a change
+signals the owning app as a frame does. A field a `slot_patch` row omits keeps
+its last value. The first values are the row this tab lists when the watch
+starts, because the embed reads at mount. A slot not listed then signals on its
+first row, which can already carry a send the mount read missed: a spurious
+signal costs one read, a missed one a backstop poll. An app token receives the same row for its own slot
+(`filter_slots_for_app`), so this source grants nothing new either. The cost is
+up to one extra read when a turn starts or ends, joined with the frame signals
+of the same moment by the 250 ms gap below.
+
 Reads: a signal reads at once. Signals during an in-flight read collapse into
 one trailing read, at least 250 ms after the previous one, and the read joins
 an in-flight request rather than aborting it (`cancelRefetch: false`), so a
@@ -591,9 +608,11 @@ whose slot is unowned; session controls; the vendored iframe SDK) pass none
 and poll.
 Writers: `website/src/app-sdk/slotPush.ts`, `website/src/app-sdk/ChatEmbed.tsx`,
 `website/src/utils/appSlotPush.ts`, `website/src/hooks/useWebSocket.ts`,
+`website/src/hooks/websocket/slotList.ts`,
 `website/src/hooks/websocket/gatewayConnectivity.ts`.
 Tests: `website/src/test/ChatEmbed.pushRead.test.tsx`,
-`website/src/test/appSlotPush.test.ts`, `test/test_app_slot_push_frames.py`.
+`website/src/test/appSlotPush.test.ts`,
+`website/src/test/useWebSocket.appSlotRows.test.ts`, `test/test_app_slot_push_frames.py`.
 
 ## App Store source selection
 
