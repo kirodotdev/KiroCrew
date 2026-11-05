@@ -839,6 +839,24 @@ manifest file, so an explicit refresh always retries, and the marker lives in
 `by-source/`, so the GC sweep reclaims it. A missing, expired or unreadable
 marker reads as absent and the listing fetches.
 
+A failed registry-index fetch is remembered the same way, one level up.
+`_fetch_and_cache_external_registry` writes an empty `_registry_<stem>.failed.json`
+marker beside the index cache when the fetch fails, and removes it when a fetch
+succeeds. For `_EXTERNAL_REGISTRY_FAILURE_TTL` (ten minutes, read off the
+marker's mtime) `_load_external_registries` serves the stale index cache, or no
+rows for that registry when there is none, instead of cloning the index again. A
+marker dated more than `_EXTERNAL_REGISTRY_FAILURE_CLOCK_SLACK` (one minute) in
+the future reads as absent, so a planted marker holds a fetch back for one window
+plus a minute at most. The writer sets the marker's mtime to its own
+`time.time()` at the failure, so the reader compares one clock with itself rather
+than with the filesystem's stamp, which comes from a coarser clock on Windows and
+from the file server on a network data home. The slack covers filesystem
+rounding (FAT keeps two-second mtimes) and a clock stepped back between the write
+and the read. Only the listing reads it: `refresh_registries`
+calls the fetch directly, so an explicit refresh always retries. The marker sits
+at the cache-dir root beside the index cache it describes, one per configured
+registry identity, outside the `by-source/` sweep.
+
 An installed app's own `app.json` is cached apart. When `_fetch_app_manifest`
 answers from the installed checkout (it reports that through its `provenance`
 argument), `_resolve_manifest` writes the answer to
