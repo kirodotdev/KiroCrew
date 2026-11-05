@@ -16,9 +16,9 @@
  *   1. Before: two subfolders under one parent, drawn in their stored order.
  *   2. The nested rows are registered sortables (the ring the drag moves within).
  *   3. Mid-drag: the ghost follows the pointer.
- *   4. On drop near a sibling's edge: ONE atomic reorder POST fires, carrying new
- *      `order` values for the two siblings and for nobody else -- `order` is a
- *      per-container index, so a root row's number must not be touched.
+ *   4. On drop near a sibling's edge: ONE folder PATCH fires, naming the dragged
+ *      folder and the sibling it should sit before. The server owns rank generation,
+ *      so the client sends no numeric positions and does not touch a root row.
  *   5. After: the two subfolders render in the swapped order, and the parent and
  *      the root lane are unchanged (a reorder is not a re-parent).
  *   6. Re-parent still works from a nested row: dropping on the middle band of a
@@ -73,8 +73,8 @@ const slots = [
   mkSlot('chat-w1', 'Sprint planning', OTHER),
 ]
 
-/** Every reorder POST body, so the drop is asserted rather than eyeballed. */
-const reorders = []
+/** Every anchored position PATCH, so the drop is asserted rather than eyeballed. */
+const positionPatches = []
 /** Every re-parent PATCH, for the second gesture. */
 const patches = []
 
@@ -91,23 +91,28 @@ async function main() {
 
   const extra = async (path, route) => {
     const method = route.request().method()
-    // Atomic sibling renumber: POST /api/chat/folders/reorder {orders:[...]}.
-    if (path === '/api/chat/folders/reorder' && method === 'POST') {
-      const body = route.request().postDataJSON?.() ?? {}
-      const orders = Array.isArray(body.orders) ? body.orders : []
-      reorders.push(orders)
-      for (const o of orders) {
-        const f = folders.find(x => x.id === o.id)
-        if (f) f.order = o.order       // persist so the refetch reflects it
-      }
-      await json(route, { ok: true })
-      return true
-    }
     if (path.startsWith('/api/chat/folders/') && method === 'PATCH') {
       const id = decodeURIComponent(path.slice('/api/chat/folders/'.length))
       const body = route.request().postDataJSON?.() ?? {}
       const f = folders.find(x => x.id === id)
-      if (f) Object.assign(f, body)
+      if ('before' in body || 'after' in body) {
+        positionPatches.push({ id, body })
+        // Mirror the server result for this fixture: both children become ranked,
+        // with the dragged child sorting before its anchor on the refetch.
+        const anchorId = body.before ?? body.after
+        const anchor = folders.find(x => x.id === anchorId)
+        if (f && anchor) {
+          if ('before' in body) {
+            f.rank = 'F'
+            anchor.rank = 'V'
+          } else {
+            anchor.rank = 'F'
+            f.rank = 'V'
+          }
+        }
+      } else if (f) {
+        Object.assign(f, body)
+      }
       if ('parent_id' in body) patches.push({ id, parent_id: body.parent_id })
       await json(route, f ?? { ok: true })
       return true
@@ -207,20 +212,17 @@ async function main() {
   record('mid-drag: the drag ghost follows the pointer', !!drag.ghostBox,
     drag.ghostBox ? `ghost y=${Math.round(drag.ghostBox.y)}` : 'no ghost box')
 
-  record('drop fires exactly one atomic reorder write', reorders.length === 1,
-    `posts=${reorders.length}`)
-  const orders = reorders[0] ?? []
-  const touched = orders.map(o => o.id).sort()
-  record('the reorder renumbers the two siblings and nobody else',
-    touched.length === 2 && touched[0] === A && touched[1] === B,
-    `touched=[${touched.join(', ')}]`)
-  const newB = orders.find(o => o.id === B)?.order
-  const newA = orders.find(o => o.id === A)?.order
-  record('the dragged subfolder takes the earlier index',
-    typeof newB === 'number' && typeof newA === 'number' && newB < newA,
-    `${B}.order=${newB} ${A}.order=${newA}`)
-  record('the reorder wrote no parent_id (a reorder is not a re-parent)',
-    patches.length === 0, `patches=${patches.length}`)
+  record('drop fires exactly one anchored folder PATCH', positionPatches.length === 1,
+    `patches=${positionPatches.length}`)
+  const positionPatch = positionPatches[0]
+  record('the PATCH names the dragged folder and its following sibling',
+    positionPatch?.id === B
+    && positionPatch?.body?.before === A
+    && !('after' in positionPatch.body),
+    `id=${positionPatch?.id} body=${JSON.stringify(positionPatch?.body)}`)
+  record('the reorder PATCH does not re-parent the folder',
+    positionPatch && !('parent_id' in positionPatch.body),
+    `body=${JSON.stringify(positionPatch?.body)}`)
 
   const afterOrder = await subfolderOrder()
   record('after: the subfolders render in the swapped order',
@@ -247,7 +249,7 @@ async function main() {
   await shot('05-after-nested-reparent-dark')
 
   // -- Light theme: the reordered state, for reviewers on light --------------
-  // The fixture already carries the new orders (mutated by the writes above), so
+  // The fixture already carries the new ranks (mutated by the writes above), so
   // a fresh load renders the end state directly -- no second drag needed.
   //
   // Skipped in clip mode, and the skip is what keeps the clip usable: `load`

@@ -6,8 +6,9 @@
  *  list-level notices (seed, crew names, read failures, close refusal, folder
  *  writes and order, create, rename, title, peer sessions). */
 import { Fragment, useLayoutEffect, useRef } from 'react'
+import { Trans } from 'react-i18next'
 import { AnimatePresence, motion } from 'framer-motion'
-import { X, ArrowUpDown, EyeOff, ZapOff, ChevronRight, Clock, Check, List, ListTree, Pin, RotateCcw, Rows3, Server, Pause, Play, WifiOff } from 'lucide-react'
+import { X, CornerDownRight, ArrowUpDown, EyeOff, ZapOff, ChevronRight, Clock, Check, List, ListTree, Pin, RotateCcw, Rows3, Server, Pause, Play, WifiOff } from 'lucide-react'
 import ErrorNotice from '../../components/ErrorNotice'
 import FolderGlyph from '../../components/FolderGlyph'
 import { useQuery } from '@tanstack/react-query'
@@ -147,6 +148,17 @@ export const FOLDER_SORT_LABEL_KEY: Record<FolderSortMode, string> = {
   created: 'pages.chatSidebar.folder_order_created',
 }
 
+/**
+ * One folder name in the Undo fallback line, as plain React text. It takes the name as a
+ * prop, not as children, so `<Trans>` uses the element as it is. Given an element WITH
+ * children, `<Trans>` wraps it in a component type it creates on every render, and React
+ * then remounts the name each time the sidebar re-renders. The line is a `role="status"`
+ * region, so a remount can make a screen reader read the whole line again.
+ */
+function FolderNameSlot({ text }: { text: string }) {
+  return <strong className="font-semibold text-text">{text}</strong>
+}
+
 /** The ONE notice for a failed ['instances'] read issued by the rows'
  *  runs-elsewhere chips, mounted only where InstanceTabBar is not: an embedded pane (the bar never
  *  polls there) and a top-level /embed/* route (that layout has no top bar).
@@ -188,13 +200,13 @@ export function renderSearchDock(shell: SidebarScope): { field: React.ReactNode;
     closeRefused, columnsError, columnsFailed, commitRecentAmount, conductorView, connected, cycleLane, dismissSortError,
     dismissUnfiledAboveFoldersError, dispatch,
     filterCounts, filterHiddenFolders, filterSortOpen, filtersPaused, pausedFilters, flatLaneActive, folderActionError, groupByKind, toggleGroupByKind,
-    folderFilterRows, folderOfflineNotice, folderReorderHint, folderReorderHintRef, folderRowsDrawn, folderSortMode,
+    folderFilterRows, folderOfflineNotice, folderReorderHint, folderReorderHintRef, folderRowsDrawn, folderSortMode, folderUndoAnchorGone,
     folderSortMut, folderSortRead, folders, foldersError, foldersFailed, foldersShelved,
     hasRemoteExecutedRow, hiddenFilters, hiddenFolderCount, instanceSessions, isMobile, lane,
     laneSwitchLabel, listNarrowed, manualOrderError, modelFilterInverted, modelFilterRows, newChatError, nextLane, pinnedOrderError, prStatusRefreshError,
     recentAmountDraft, recentUnitDraft, recentWindowMs, refetchColumns, refetchFolders, remoteSessionsError,
     renameError, seedError, seedStateLanesMutation, selectRecentPreset, setAllFiltersPaused, toggleFilterPaused,
-    setAutoTitleError, setFilterSortOpen, setFolderActionError, setFolderOfflineNotice, setManualOrderError, setModelFilterExcluded, setNewChatError,
+    setAutoTitleError, setFilterSortOpen, setFolderActionError, setFolderOfflineNotice, setFolderUndoAnchorGone, setManualOrderError, setModelFilterExcluded, setNewChatError,
     setPinnedOrderError, setPrStatusRefreshError, setRecentAmountDraft, setRenameError, setSeedError, setSlotFilter, setSortKey, setStaleCollapseMs,
     setToggleSaveFailed, showAllFolders, slotFilter, sortError, sortKey, staleCollapseMs, tagFilterRows, toggleFilter,
     toggleFolderFilter, toggleFoldersShelved, toggleFoldersUnreadFirst, foldersUnreadFirst, toggleHideFilter, toggleModelFilter, toggleSaveFailed,
@@ -1331,6 +1343,9 @@ export function renderSearchDock(shell: SidebarScope): { field: React.ReactNode;
         title={i18nT('pages.chatSidebar.folder_update_failed')}
         message={folderActionError}
         askAgent={connected}
+        // The sidebar is ~300px wide: beside the copy, the hand-off column
+        // squeezes a server refusal to one word per line.
+        actionPlacement="below"
         onDismiss={() => setFolderActionError('')}
         className="mx-2 mt-2 shrink-0"
         testId="folder-action-error"
@@ -1363,6 +1378,50 @@ export function renderSearchDock(shell: SidebarScope): { field: React.ReactNode;
         className="mx-2 mt-2 shrink-0"
         testId="unfiled-above-folders-error"
       />
+      {/* A drag-move Undo that landed, but not where the folder sat: the sibling
+       *  it was anchored to had moved, so the parent-only retry seated it last in
+       *  its old section. Status, not error -- the write succeeded, so it must not
+       *  sit under "Folder update failed" -- in the same neutral surface as the
+       *  reorder hint below. Names the folder: the line renders detached at the
+       *  top of the sidebar, so "this folder" points at nothing. Dismissable like
+       *  the error line: it describes a moment, and the tree already shows the
+       *  outcome. Custom order only: "at the end" describes the STORED order,
+       *  and under By name or By date created the folder draws at its name or
+       *  date position whatever its rank, so the fallback changes nothing on
+       *  screen and the line would be false. The reveal still runs in every
+       *  mode, so the person sees where the folder is. */}
+      {folderUndoAnchorGone && folderSortMode === 'custom' && (
+        <div
+          role="status"
+          className="mx-2 mt-2 shrink-0 rounded-lg border border-border bg-bg-elevated px-3 py-2 text-[12px] text-muted flex items-start gap-2"
+          data-testid="folder-undo-anchor-gone"
+        >
+          <CornerDownRight size={14} className="mt-[1px] shrink-0" aria-hidden="true" />
+          <span className="min-w-0 flex-1" style={{ overflowWrap: 'anywhere' }}>
+            {/* The names render as React text inside self-closing <name/> and
+             *  <parent/> slots, never as interpolated `values`: interpolation runs
+             *  before the line is parsed for its slots, and escapeValue is off,
+             *  so a folder named "<br/>" would be read as markup and vanish. */}
+            <Trans
+              i18nKey={folderUndoAnchorGone.parent === null
+                ? 'pages.chatSidebar.folder_undo_anchor_gone_top'
+                : 'pages.chatSidebar.folder_undo_anchor_gone'}
+              components={{
+                name: <FolderNameSlot text={folderUndoAnchorGone.name} />,
+                parent: <FolderNameSlot text={folderUndoAnchorGone.parent ?? ''} />,
+              }}
+            />
+          </span>
+          <IconButton
+            className="shrink-0 -my-[3px] -mr-[3px]"
+            aria-label={i18nT('components.errorNotice.dismiss')}
+            title={i18nT('components.errorNotice.dismiss')}
+            onClick={() => setFolderUndoAnchorGone(null)}
+          >
+            <X size={14} aria-hidden="true" />
+          </IconButton>
+        </div>
+      )}
       {/* The folder order (dashboard.folder_sort) could not be read AND there is
        *  no body to fall back on: the tree is drawn in the stored order meanwhile
        *  and sibling drags are withdrawn, so the person is told why the order they
