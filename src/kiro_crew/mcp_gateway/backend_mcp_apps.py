@@ -111,9 +111,11 @@ def _mcp_apps_enabled() -> bool:
     ``mcp_gateway.enabled`` is not checked: ``enabled: false`` yields an empty
     stub set, so this gate never runs there.
 
-    Fails CLOSED when config cannot be read. Read per call (the load is
-    fingerprint-cached) so a config change applies without a daemon restart,
-    including on an adopted daemon.
+    Fails CLOSED when config cannot be read, and while a config file does not
+    parse or ``mcp_gateway`` is not an object: those loads hold the default, not
+    a stored ``false``. Read per call (the load is fingerprint-cached) so a
+    config change applies without a daemon restart, including on an adopted
+    daemon.
     """
     override = mcp_apps_env_override()
     if override is False:
@@ -121,11 +123,13 @@ def _mcp_apps_enabled() -> bool:
     try:
         from kiro_crew.config.loader import KiroCrewConfig
 
-        gw = KiroCrewConfig.load().mcp_gateway
+        cfg = KiroCrewConfig.load()
     except Exception:  # pragma: no cover - defensive; fail closed
         logger.debug("mcp-apps: config unreadable; treating feature as disabled", exc_info=True)
         return False
-    return bool(gw.apps_enabled)
+    if cfg._base_unreadable or cfg._overlay_unreadable or "mcp_gateway" in cfg.degraded_sections:
+        return False
+    return bool(cfg.mcp_gateway.apps_enabled)
 
 
 def _inject_client_extensions(msg: dict[str, Any]) -> dict[str, Any]:

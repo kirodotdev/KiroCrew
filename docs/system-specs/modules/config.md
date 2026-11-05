@@ -3038,7 +3038,7 @@ file whole but the load carries `*`, the fingerprint is re-read, and a read the
 file moved under is treated as torn (previous snapshot kept, next tick reloads).
 So on a dispatched change `*` is only the loader's memory of a repaired tear,
 and the section flags — which the loader assigns only to the fail-closed
-sections `agent`, `dashboard` (including `dashboard.tailscale`), `hooks`, `memory`,
+sections `agent`, `dashboard` (including `dashboard.tailscale`), `hooks`, `mcp_gateway`, `memory`,
 `publish` and `workspaces` (`validation._FAIL_CLOSED_PATHS`; validation removes a malformed
 non-object anywhere else before the loader could flag it) — are the ones a tear
 never produces and a save destroys the evidence of, hence the ones that stay
