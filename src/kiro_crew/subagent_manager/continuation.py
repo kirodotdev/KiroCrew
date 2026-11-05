@@ -336,9 +336,10 @@ class ContinuationCoordinator(ManagerComponent):
         """The typed ``native_child_not_resumable`` reason when *conversation_id*
         is a harness-native child of a LIVE session, else None.
 
-        Asks every live ``AcpSessionHandle`` (the provider's ``client`` on the
-        runtime path); a handle that is not one, or a session manager without
-        a registry, answers nothing. Read-only: no session is created.
+        Asks every live session's provider ``client``: an ``AcpSessionHandle`` on
+        the runtime path, the ``AcpClient`` itself on the claude backend. A client
+        without the method, or a session manager without a registry, answers
+        nothing. Read-only: no session is created.
         """
         sessions = getattr(self._manager._sessions, "_sessions", None)
         if not isinstance(sessions, dict):

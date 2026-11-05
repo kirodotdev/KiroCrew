@@ -44,7 +44,11 @@ from kiro_crew.acp.native_child_stamp import parent_tool_use
 from kiro_crew.acp.session_handle_native_children import (
     NATIVE_CHILD_LABEL_CAP,
     NATIVE_CHILD_ROSTER_CAP,
+    NATIVE_CHILDREN_UNCHARGED_KIND,
     _note_native_child,
+)
+from kiro_crew.acp.session_handle_native_children import (
+    native_child_resume_refusal as _handle_resume_refusal,
 )
 from kiro_crew.acp.types import (
     ACP_BACKEND_CLAUDE,
@@ -359,3 +363,32 @@ def _native_child_events(self: AcpClient, msg: JsonRpcMessage) -> tuple[list[Acp
     # Anything else a child sends (its plan, its commands, its session info)
     # describes the child, never the parent.
     return events, True
+
+
+def native_child_resume_refusal(self: AcpClient, conversation_id: str) -> str | None:
+    """The typed ``native_child_not_resumable`` reason when *conversation_id* is one
+    of this session's Claude children, else None.
+
+    The same refusal an ``AcpSessionHandle`` gives a kiro-cli or KAS child, read
+    from the same child-id set: the continuation and ``POST /api/spawn`` paths ask
+    the provider's client, which on the claude backend is this one.
+    """
+    return _handle_resume_refusal(self, conversation_id)
+
+
+def report_native_children(self: AcpClient, budget: Any) -> int:
+    """Report this turn's Claude children to *budget* as uncharged residency,
+    returning the count reported.
+
+    The count an ``AcpSessionHandle`` reports, read from this client's turn: the
+    children seen this turn plus the ones the cap refused. The child-id set is not
+    the count, because its ids outlive the turn and a finished child stays in it.
+    The children run inside the parent's adapter process, which is already charged,
+    so this reports and never charges. Session health asks the slot's client, which
+    on the claude backend is this one.
+    """
+    count = len(self._native_child_turn) + self._native_child_overflow
+    report = getattr(budget, "report_uncharged", None)
+    if callable(report):
+        report(NATIVE_CHILDREN_UNCHARGED_KIND, count, label=self._session_id)
+    return count
