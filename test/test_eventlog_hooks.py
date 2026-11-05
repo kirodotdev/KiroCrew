@@ -43,8 +43,11 @@ def test_emit_swallows_a_raising_service(monkeypatch):
             raise NotImplementedError
 
     monkeypatch.setattr(svc_mod, "get_service", lambda: _Raiser())
-    # Must not raise despite ensure() blowing up.
-    eventlog_hooks.emit("some-slug", "Some Name", "member/message", {"ts": 1.0, "preview": "hi"})
+    # Must not raise despite ensure() blowing up, and must report the drop.
+    landed = eventlog_hooks.emit(
+        "some-slug", "Some Name", "member/message", {"ts": 1.0, "preview": "hi"}
+    )
+    assert landed is False
 
 
 def test_emit_calls_ensure_then_append(monkeypatch):
@@ -69,8 +72,8 @@ def test_emit_no_slug_is_noop(monkeypatch):
         raise AssertionError("get_service must not be called for an empty slug")
 
     monkeypatch.setattr(svc_mod, "get_service", _boom)
-    eventlog_hooks.emit("", "Name", "member/message", {})
-    eventlog_hooks.emit(None, "Name", "member/message", {})
+    assert eventlog_hooks.emit("", "Name", "member/message", {}) is False
+    assert eventlog_hooks.emit(None, "Name", "member/message", {}) is False
 
 
 # ---------------------------------------------------------------------------

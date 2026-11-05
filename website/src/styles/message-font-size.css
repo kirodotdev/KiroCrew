@@ -25,9 +25,10 @@
 .mc-message-font-scope.msg-content p,
 .mc-message-font-scope.msg-content li {
   font-size: inherit;
-  /* Tailwind's `leading-relaxed` value, applied here directly since the
-   * ancestor's font-size is now variable rather than the fixed default. */
-  line-height: 1.625;
+  /* The renderer's own `leading-normal` (typography.ts), restated here since
+   * the ancestor's font-size is now variable rather than the fixed default.
+   * The block margins need no restating: they are in `em` of each element. */
+  line-height: 1.5;
 }
 
 /* Headings keep their proportions to the (now variable) body size instead of
@@ -80,8 +81,8 @@
  * that would otherwise become the anchor for every `em` below it, so it is
  * re-anchored to the bubble first. `text-sm` also sets a fixed 20px
  * line-height (`1.25rem`); the table's is re-derived as a length so th (which
- * inherits) and td (whose own `text-sm` is overridden back to inherit) keep
- * rows at 20/14 of the setting instead of tightening as the text grows. The
+ * inherits) keeps its row at 20/14 of the setting instead of tightening as the
+ * text grows, and td takes the body text's unitless 1.5. The
  * cells themselves carry `text-[13px]` (th) and `text-sm` (td), both
  * root-relative. */
 .mc-message-font-scope.msg-content table {
@@ -93,7 +94,8 @@
 }
 .mc-message-font-scope.msg-content td {
   font-size: 1em;
-  line-height: inherit;
+  /* Body cells read like body text (typography.ts `MD_TABLE_CELL_CLS`). */
+  line-height: 1.5;
 }
 
 /* The bordered forge/Jira link chips MarkdownRenderer renders inline next to

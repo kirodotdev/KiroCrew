@@ -1,8 +1,8 @@
 """The app platform's boot work in ``start_dashboard``.
 
 Warming the PreToolUse gate's builtin app names and the materialized-agent snapshot,
-reconciling every enabled app's resources, starting the app backends with the App SDK
-gateway hooks system, and the bound-port wave started once the listener serves.
+reconciling every enabled app's resources, and starting the app backends, in one
+wave, with the App SDK gateway hooks system.
 """
 
 from __future__ import annotations
@@ -22,7 +22,6 @@ if TYPE_CHECKING:
         on_gateway_shutdown,
         on_gateway_startup,
         refresh_materialized_agents,
-        start_deferred_app_backends,
         start_enabled_app_backends,
         stop_hook_reconciler,
         subprocess_executor,
@@ -199,26 +198,6 @@ async def _start_app_backends(app: web.Application, state: DashboardState) -> No
     app.on_cleanup.append(_hooks_shutdown)
 
 
-async def _start_bound_port_app_backends() -> None:
-    """Start the app backends the main wave deferred until the listener serves.
-
-    The backend the main wave deferred (``apps.backend.DEV_FLEET_APP_NAME``):
-    ``apps/backend.py`` hands the Dev Fleet backend ``KIROCREW_BOUND_PORT`` at
-    spawn. Under ``start_dashboard``'s port reservation that value exists before
-    the main wave too, but the admission split lives in
-    ``apps/backend_runtime/startup.py`` and is shared with the headless entrypoint,
-    where the value only exists post-listen -- so the second wave stays. Same
-    bulkhead as the main wave; admission already ran there.
-    """
-    deferred_apps = await asyncio.get_running_loop().run_in_executor(
-        subprocess_executor(), start_deferred_app_backends
-    )
-    if deferred_apps:
-        logger.info(
-            "Started %d bound-port app backend(s): %s", len(deferred_apps), ", ".join(deferred_apps)
-        )
-
-
 def _kick_default_app_installs(state: DashboardState) -> None:
     """Install the edition's default registry apps as a tracked background task.
 
@@ -232,5 +211,45 @@ def _kick_default_app_installs(state: DashboardState) -> None:
     # No catch here: the pass handles every failure itself and re-raises only
     # ``PlatformCompositionError``, which must surface rather than degrade.
     task = asyncio.create_task(reconcile_default_installs())
+    state._background_tasks.add(task)
+    task.add_done_callback(state._background_tasks.discard)
+
+
+async def _apply_builtin_adoptions(app: web.Application) -> None:
+    """Swap staged former built-ins onto their own repository, BEFORE any route exists.
+
+    Network-free (the fetch happened in an earlier run's background staging), and
+    awaited before ``_register_mcp_routes``, ``register_all`` and
+    ``register_builtin_apps``: a released wheel copy then never registers a route,
+    and on Windows its store is never open while the tree is swapped. Then stores
+    on *app* the packages ``routes.system.register`` skips, read off the event
+    loop because the read walks the shipped manifests and the app records.
+    """
+    from kiro_crew.apps.builtin_adoption import apply_builtin_adoptions, released_builtin_packages
+    from kiro_crew.apps.builtins import BUILTIN_NAMES
+    from kiro_crew.dashboard.routes.system import RELEASED_BUILTIN_PACKAGES
+
+    # No catch: the pass handles each app's failure itself and re-raises only
+    # ``PlatformCompositionError`` and cancellation.
+    outcomes = await apply_builtin_adoptions()
+    if outcomes:
+        logger.info("Built-in adoption: %s", outcomes)
+    app[RELEASED_BUILTIN_PACKAGES] = await asyncio.to_thread(
+        released_builtin_packages, BUILTIN_NAMES
+    )
+
+
+def _kick_builtin_adoption_staging(state: DashboardState) -> None:
+    """Fetch pinned former built-ins in the background, after the listener serves.
+
+    Never mutates an app record; the swap happens at the next boot. Nothing
+    waits on it, and it returns at once when nothing is pinned.
+    """
+    from kiro_crew.apps.builtin_adoption import stage_builtin_adoptions
+    from kiro_crew.apps.builtin_adoption_pins import adoption_pin_names
+
+    if not adoption_pin_names():
+        return
+    task = asyncio.create_task(stage_builtin_adoptions())
     state._background_tasks.add(task)
     task.add_done_callback(state._background_tasks.discard)

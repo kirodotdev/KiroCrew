@@ -13,6 +13,7 @@ not open.
 from __future__ import annotations
 
 import errno
+import logging
 import os
 from pathlib import Path
 
@@ -37,11 +38,19 @@ def _raise(code: int):
     return _fsync
 
 
+_LOGGER = "kiro_crew.atomic_write"
+
+
+def _levels(caplog: pytest.LogCaptureFixture) -> list[int]:
+    return [r.levelno for r in caplog.records if r.name == _LOGGER]
+
+
 @pytest.mark.parametrize("code", sorted(_DIR_SYNC_UNSUPPORTED))
 def test_a_filesystem_that_cannot_sync_a_directory_is_a_noop(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, code: int
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, code: int
 ) -> None:
     """Every unsupported errno is swallowed, so an apply on such a mount still finishes."""
+    caplog.set_level(logging.DEBUG, logger=_LOGGER)
     fd = _open_dir(tmp_path)
     try:
         monkeypatch.setattr(os, "fsync", _raise(code))
@@ -49,6 +58,8 @@ def test_a_filesystem_that_cannot_sync_a_directory_is_a_noop(
         fsync_open_dir(fd, tmp_path)
     finally:
         os.close(fd)
+    # Expected on such a mount, so it is noted at DEBUG and never warns on every write.
+    assert _levels(caplog) == [logging.DEBUG]
 
 
 def test_a_genuine_io_failure_still_propagates(
@@ -67,15 +78,18 @@ def test_a_genuine_io_failure_still_propagates(
 
 
 def test_best_effort_downgrades_even_a_genuine_failure(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     """A caller already past its point of no return can ask for warn-not-raise."""
+    caplog.set_level(logging.DEBUG, logger=_LOGGER)
     fd = _open_dir(tmp_path)
     try:
         monkeypatch.setattr(os, "fsync", _raise(errno.EIO))
         fsync_open_dir(fd, tmp_path, best_effort=True)  # no raise
     finally:
         os.close(fd)
+    # A genuine failure is downgraded, not hidden: it still warns.
+    assert _levels(caplog) == [logging.WARNING]
 
 
 def test_a_clean_sync_leaves_the_descriptor_open(tmp_path: Path) -> None:

@@ -11,6 +11,7 @@ from __future__ import annotations
 import ast
 
 import pytest
+import split_credential_boundary_checks
 from split_credential_boundary_helpers import HEAD, KEY, SRC, TAIL, _name_of, _on_screen, _rejoins
 
 from kiro_crew.messaging.display_safety import joins_to_a_credential, redact_for_display
@@ -297,6 +298,8 @@ class TestTheGradeNeverRunsOnTheEventLoop:
         ("whatsapp/renderer.py", "render_chunks"),
         ("telegram/renderer.py", "_split_markdown_bounded"),
         ("whatsapp/turn_renderer.py", "repaired_after_a_sent_tail"),
+        ("weixin/turn_renderer.py", "render_chunks"),
+        ("weixin/transport.py", "_chunk"),
     ]
 
     @pytest.mark.parametrize("path,target", OFFLOADED)
@@ -463,7 +466,12 @@ class TestAHardByteCapIsNeverExceeded:
         ],
     )
     def test_every_capped_caller_runs_the_bound(self, path: str) -> None:
-        """A transport that truncates has to bound the splitter's whole answer."""
+        """A transport that truncates has to bound the splitter's whole answer.
+
+        ``chunk_for_transport`` counts as the bound: both of its paths end in
+        ``bounded_for_delivery``, which ``test_chunk_for_transport_runs_the_bound``
+        pins, so a caller delegating to it is bounded by it.
+        """
         tree = ast.parse((SRC / path).read_text(encoding="utf-8"))
         called = {_name_of(node.func) for node in ast.walk(tree) if isinstance(node, ast.Call)}
         offloaded = {
@@ -471,9 +479,32 @@ class TestAHardByteCapIsNeverExceeded:
             for node in ast.walk(tree)
             if isinstance(node, ast.Call) and _name_of(node.func) == "to_thread" and node.args
         }
-        assert "bounded_for_delivery" in (
+        assert {"bounded_for_delivery", "chunk_for_transport"} & (
             called | offloaded
         ), f"{path} sends the splitter's answer without bounding it"
+
+    def test_chunk_for_transport_runs_the_bound(self) -> None:
+        """Every return of the shared chunker hands back a bounded answer."""
+        tree = ast.parse((SRC / "messaging" / "renderer.py").read_text(encoding="utf-8"))
+        func = next(
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef) and node.name == "chunk_for_transport"
+        )
+        # Its own returns only: a nested helper's return is not the chunker's answer.
+        returns: list[ast.Return] = []
+        stack: list[ast.AST] = list(func.body)
+        while stack:
+            node = stack.pop()
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+                continue
+            if isinstance(node, ast.Return):
+                returns.append(node)
+            stack.extend(ast.iter_child_nodes(node))
+        assert returns
+        for ret in returns:
+            assert isinstance(ret.value, ast.Call), ast.dump(ret)
+            assert _name_of(ret.value.func) == "bounded_for_delivery", ast.dump(ret)
 
 
 class TestTheFramesAChannelActuallySends:
@@ -491,7 +522,9 @@ class TestTheFramesAChannelActuallySends:
         )
 
 
-class TestTelegramRotatesWithoutHandingOverAKey:
+class TestTelegramRotatesWithoutHandingOverAKey(
+    split_credential_boundary_checks.TheBudgetAloneHandsTheReaderTheKey
+):
     """The rotation cut, through the function the channel rotates with.
 
     A rotation seals every chunk but the last as its own message and redacts each
@@ -507,13 +540,6 @@ class TestTelegramRotatesWithoutHandingOverAKey:
     def _body(self) -> str:
         """Filler, then the key's halves either side of a line break."""
         return ("w " * 180) + HEAD + "\n" + TAIL + " and some trailing words after it"
-
-    def test_the_budget_alone_hands_the_reader_the_key(self) -> None:
-        """The control: without the redactor this is exactly what ships."""
-        chunks = split_markdown_safe(self._body(), self.BUDGET)
-        assert len(chunks) > 1
-        assert _rejoins(chunks)
-        assert KEY in _on_screen(chunks)
 
     def test_the_rotation_cut_moves_instead(self) -> None:
         chunks = _split_markdown(self._body(), self.BUDGET)

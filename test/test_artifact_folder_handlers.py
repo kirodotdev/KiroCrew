@@ -185,6 +185,29 @@ class TestFolderUpdate:
         assert resp.status == 400
         assert fstore.get(f["id"])["order"] == f["order"]
 
+    @pytest.mark.parametrize(
+        "bad",
+        [
+            {"order": "abc"},
+            {"color": "red"},
+            {"parent_id": "child"},
+        ],
+        ids=["bad-order", "bad-color", "reparent-cycle"],
+    )
+    @pytest.mark.asyncio
+    async def test_refused_field_saves_nothing(self, stores, patch_restricted, bad) -> None:
+        """One bad field 400s the whole PATCH and leaves the folder as it was."""
+        _store, fstore = stores
+        f = fstore.create("Old", color="#112233")
+        child = fstore.create("Child", parent_id=f["id"])
+        if bad.get("parent_id") == "child":
+            bad = {"parent_id": child["id"]}
+        before = fstore.get(f["id"])
+        body = {"name": "New", "icon": "🔥", "color": "#445566", "order": 7, **bad}
+        resp = await api_artifact_folder_update(_request(body=body, match={"id": f["id"]}))
+        assert resp.status == 400
+        assert fstore.get(f["id"]) == before
+
     @pytest.mark.asyncio
     async def test_unknown_404(self, stores, patch_restricted) -> None:
         resp = await api_artifact_folder_update(

@@ -153,7 +153,7 @@ export function SkillsPanel() {
         />
         <SettingsToggle
           label={i18nT('pages.settings.skillsPanel.require_approval_before_generated_skills_go_live')}
-          description={i18nT('pages.settings.skillsPanel.keep_every_auto_generated_candidate_in_the_pendi')}
+          description={i18nT('pages.settings.skillsPanel.keep_every_auto_generated_candidate_in_the_pendi_summary')} hint={i18nT('pages.settings.skillsPanel.keep_every_auto_generated_candidate_in_the_pendi')}
           checked={approvalRequired}
           onChange={(v) => patchMut.mutate({ path: 'skills.approval_required', value: v })}
           disabled={disabled || !autoCreate}
@@ -163,7 +163,7 @@ export function SkillsPanel() {
             the round trip, so a slow success cannot land on text it never saw. */}
         <SettingsInput
           label={i18nT('pages.settings.skillsPanel.extra_skill_paths')}
-          description={i18nT('pages.settings.skillsPanel.extra_skill_paths_description')}
+          description={i18nT('pages.settings.skillsPanel.extra_skill_paths_description_summary')} hint={i18nT('pages.settings.skillsPanel.extra_skill_paths_description')}
           placeholder={i18nT('pages.settings.skillsPanel.extra_skill_paths_placeholder')}
           value={extraPathsDraft ?? storedExtraPaths.join('\n')}
           onChange={setExtraPathsDraft}

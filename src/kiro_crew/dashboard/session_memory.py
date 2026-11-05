@@ -33,10 +33,11 @@ import sys
 import time
 from collections import deque
 from collections.abc import Iterable, Mapping
-from typing import TYPE_CHECKING, Callable, Optional
+from typing import TYPE_CHECKING, Any, Callable, Optional
 
 from kiro_crew import resource_status
 from kiro_crew.acp.runtime import _get_rss_tree_mb, _iter_descendant_pids
+from kiro_crew.dashboard import creator_titles
 from kiro_crew.dashboard.handlers_system import _get_static_system_info
 from kiro_crew.dashboard.state import NEW_SESSION_TITLE
 from kiro_crew.executors import subprocess_executor
@@ -207,6 +208,12 @@ def lineage_parents(
     citation off ``slot``. Both payloads get it from this one call, so neither view can
     place those workers where the other does not.
 
+    A creator with no live row in this payload -- closed, or never seen running -- is
+    the one case the payload cannot name from its own rows, so the edge then carries
+    the creator's last-known ``title`` when :mod:`~kiro_crew.dashboard.creator_titles`
+    remembers one, and omits it otherwise. The titles are remembered here, from every
+    live row this join sees, which is why neither caller reads the disk for them.
+
     Only the slots payload carries these two fields (``slot_projection.serialize_slot``
     writes them). The Sessions table's rows come from the session manager's runtime
     map, so they have neither and this fallback is not reached there -- that view keeps
@@ -223,36 +230,25 @@ def lineage_parents(
         return {}
     from kiro_crew.crew_log.session_tree import parent_payload
 
-    # Session key -> slot key as given, and slot key -> session key inverted. Built
-    # once per call rather than per row: the map is the whole live registry, and the
-    # inverse is read for every row.
-    #
-    # Last writer wins in the inverse, matching the forward map's own documented rule
-    # for two slots claiming one session identity. A slot has exactly one effective
-    # session key, so the collision this can produce is the same one the forward map
-    # already carries rather than a new one.
-    forward: dict[str, str] = {}
-    inverse: dict[str, str] = {}
-    if isinstance(spend_slot_by_session, dict):
-        for session_key, slot_key in spend_slot_by_session.items():
-            if isinstance(session_key, str) and isinstance(slot_key, str):
-                if session_key and slot_key:
-                    forward[session_key] = slot_key
-                    inverse[slot_key] = session_key
+    # Built once per call rather than per row: the map is the whole live registry,
+    # and the inverse is read for every row.
+    forward, inverse = _alias_maps(spend_slot_by_session)
 
     def slot_spellings(row_key: str) -> list[str]:
-        spellings = [row_key, _bare_slot_key(row_key)]
-        for extra in (forward.get(row_key), inverse.get(row_key)):
-            if isinstance(extra, str) and extra:
-                spellings.append(extra)
-        return spellings
+        return _slot_spellings(row_key, forward, inverse)
 
     live_key_of: dict[str, str] = {}
     for row in rows:
         row_key = row.get("key")
         if isinstance(row_key, str) and row_key:
-            for spelling in slot_spellings(row_key):
+            spellings = slot_spellings(row_key)
+            for spelling in spellings:
                 live_key_of.setdefault(spelling, row_key)
+            # Remembered while the session is LIVE, under every spelling a child's
+            # citation can use, so the title is still there once it closes. Only the
+            # slots rows carry ``title`` (already redacted by ``slot_projection``); the
+            # Sessions table remembers its own in ``sample`` before calling this.
+            creator_titles.remember(spellings, row.get("title"), placeholder=NEW_SESSION_TITLE)
 
     out: dict[str, Optional[dict[str, object]]] = {}
     for row in rows:
@@ -262,8 +258,80 @@ def lineage_parents(
         node = next((nodes[s] for s in slot_spellings(key) if s in nodes), None)
         if node is None:
             node = _minted_node(row, key)
-        out[key] = parent_payload(node, live_key_of, key, nodes)
+        payload = parent_payload(node, live_key_of, key, nodes)
+        if payload is not None:
+            _name_closed_creator(payload, live_key_of)
+        out[key] = payload
     return out
+
+
+def _name_closed_creator(payload: dict[str, Any], live_key_of: Mapping[str, str]) -> None:
+    """Add the CLOSED creator's last-known ``title`` to *payload*, IN PLACE, when known.
+
+    Only for a creator with no live row: a live creator is named by its own row in the
+    same payload, and two names for one session could disagree. "Not live" is read off
+    the same *live_key_of* the join just used, under both spellings of the cited slot,
+    so a creator this payload nests a child under never gets one -- whatever
+    ``parent_payload`` decided about the edge (a cycle and a self-citation answer
+    ``key: None`` for a creator that IS live, and they must not be named as closed).
+
+    Omitted, never ``None``, when no title is remembered, so an edge this cannot name
+    is the payload it has always been and the surface keeps its generic label.
+    """
+    cited = payload.get("slot")
+    if not isinstance(cited, str) or not cited:
+        return
+    spellings = [cited, _bare_slot_key(cited)]
+    if any(s in live_key_of for s in spellings):
+        return
+    title = creator_titles.last_known(spellings)
+    if title is not None:
+        payload["title"] = title
+
+
+def _alias_maps(spend_slot_by_session: object) -> tuple[dict[str, str], dict[str, str]]:
+    """Session key -> slot key as given, and slot key -> session key inverted.
+
+    Last writer wins in the inverse, matching the forward map's own documented rule
+    for two slots claiming one session identity. A slot has exactly one effective
+    session key, so the collision this can produce is the same one the forward map
+    already carries rather than a new one.
+    """
+    forward: dict[str, str] = {}
+    inverse: dict[str, str] = {}
+    if isinstance(spend_slot_by_session, dict):
+        for session_key, slot_key in spend_slot_by_session.items():
+            if isinstance(session_key, str) and isinstance(slot_key, str):
+                if session_key and slot_key:
+                    forward[session_key] = slot_key
+                    inverse[slot_key] = session_key
+    return forward, inverse
+
+
+def _slot_spellings(
+    row_key: str, forward: Mapping[str, str], inverse: Mapping[str, str]
+) -> list[str]:
+    """Every key a crew-log citation can use for the row keyed *row_key*."""
+    spellings = [row_key, _bare_slot_key(row_key)]
+    for extra in (forward.get(row_key), inverse.get(row_key)):
+        if isinstance(extra, str) and extra:
+            spellings.append(extra)
+    return spellings
+
+
+def remember_slot_title(row_key: str, title: object, spend_slot_by_session: object = None) -> None:
+    """Remember one LIVE row's already-redacted *title* under every citation spelling.
+
+    The per-slot counterpart of what :func:`lineage_parents` does for a whole payload,
+    for a title published without a full frame (``push_slot_patch``): a rename that
+    reaches the sidebar as a patch must also be the name a closed-creator label reads.
+    """
+    if not isinstance(row_key, str) or not row_key:
+        return
+    forward, inverse = _alias_maps(spend_slot_by_session)
+    creator_titles.remember(
+        _slot_spellings(row_key, forward, inverse), title, placeholder=NEW_SESSION_TITLE
+    )
 
 
 def _minted_node(row: dict[str, object], key: str) -> "TreeNode | None":
@@ -728,6 +796,28 @@ class SessionMemorySampler:
         assert isinstance(lineage_cap, int)
         now_wall = time.time()
 
+        # Each row's display name, resolved BEFORE the lineage join so it can be
+        # remembered first: a creator that closes later is named by the title it had
+        # here (see ``creator_titles``). Remembered under the session key and the slot
+        # key ``session_title`` resolved, the two spellings a child's citation uses.
+        named_by_key: dict[str, dict[str, object]] = {}
+        for row in rows:
+            key = row.get("key")
+            if not isinstance(key, str):
+                continue
+            named = (
+                session_title(key, get_slot)
+                if get_slot is not None
+                else {"title": key, "slot_key": "", "untitled": False}
+            )
+            named_by_key[key] = named
+            if get_slot is not None and not named["untitled"]:
+                slot_key = named["slot_key"]
+                spellings = [key, _bare_slot_key(key)]
+                if isinstance(slot_key, str) and slot_key:
+                    spellings.append(slot_key)
+                creator_titles.remember(spellings, named["title"], placeholder=NEW_SESSION_TITLE)
+
         # Which LIVE row a creator citation lands on, per row. The join lives in
         # ``lineage_parents`` because the dashboard slot payload needs the same
         # answer, and two implementations of it would let the Sessions table and
@@ -764,8 +854,8 @@ class SessionMemorySampler:
             key = row.get("key")
             spend_row = _spend_for_session(spend, key, spend_slot_by_session)
             named = (
-                session_title(key, get_slot)
-                if get_slot is not None and isinstance(key, str)
+                named_by_key.get(key, {"title": key, "slot_key": "", "untitled": False})
+                if isinstance(key, str)
                 else {"title": key, "slot_key": "", "untitled": False}
             )
             sessions_out.append(

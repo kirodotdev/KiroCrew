@@ -1847,3 +1847,28 @@ class TestPaperTitleRoute:
             )
         )
         assert _FAKE_AWS_SECRET not in _json_of(response)["title"]
+
+
+def test_each_finished_compile_is_counted_after_the_compile():
+    """``app.task.completed`` counts a Papyrus compile once it has finished."""
+    import ast
+
+    tree = ast.parse(Path(routes.__file__).read_text(encoding="utf-8"))
+    fn = next(
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.AsyncFunctionDef) and n.name == "_handle_compile"
+    )
+
+    def lines(name: str) -> list[int]:
+        return [
+            n.lineno
+            for n in ast.walk(fn)
+            if isinstance(n, ast.Call)
+            and (n.func.attr if isinstance(n.func, ast.Attribute) else getattr(n.func, "id", ""))
+            == name
+        ]
+
+    (rec_line,) = lines("record_app_task")
+    (compile_line,) = lines("compile_project")
+    assert rec_line > compile_line

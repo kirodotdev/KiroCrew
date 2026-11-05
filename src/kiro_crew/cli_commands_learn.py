@@ -91,21 +91,35 @@ def _learn(args: argparse.Namespace) -> None:
     jsonl_store = LessonStore()
     cfg = KiroCrewConfig.load()
     action = getattr(args, "learn_action", None)
+    # A blank argument (an unset "$VAR") is refused before the vector store is
+    # opened and before any lesson is read or written, with the same words as
+    # POST/DELETE /api/lessons. Every rule contains the empty string, so a blank
+    # `remove` selector would delete every lesson, and a blank `add` would save
+    # a lesson with no rule.
+    if action == "add" and not str(args.rule).strip():
+        print("rule is required", file=sys.stderr)
+        sys.exit(2)
+    if action == "remove" and not str(args.query).strip():
+        print("rule substring required", file=sys.stderr)
+        sys.exit(2)
     # Global persistence switch (memory.persistence_enabled): the CLI writes to
     # the store directly (no HTTP), so it carries its own check mirroring the
     # POST /api/lessons refusal. Refused ahead of the vector store because
     # constructing and init-ing it creates or migrates memory.db, which a
     # refused write must not do; list and remove still need that store, so the
     # check is scoped to the add action. memory.writes_enabled is refused the
-    # same way.
+    # same way. Nothing was saved, so it goes to stderr with a non-zero exit,
+    # like the store's own refusal below: a script driving this command sees
+    # the failure instead of a success.
     writes_off = memory_writes_off_key(cfg.memory)
     if action == "add" and writes_off is not None:
         print(
             "Lesson NOT saved: persistent memory writes are disabled "
             f"({writes_off} is false). Re-enable with: "
-            f"kirocrew config set {writes_off} true"
+            f"kirocrew config set {writes_off} true",
+            file=sys.stderr,
         )
-        return
+        sys.exit(1)
     vs = VectorMemoryStore(embedding_dim=cfg.memory.embedding_dim, config=cfg)
     vs.init()
     try:

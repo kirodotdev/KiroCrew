@@ -211,8 +211,9 @@ class TestApplyChannelPin:
         [
             ("dashboard approve", "dashboard/handlers/updates_step_up.py", "run_wheel_apply("),
             ("scheduled auto-apply", "slack/gateway_runtime/update_apply.py", "run_wheel_apply("),
-            ("server update CLI", "cli_server_update.py", "apply_wheel_update("),
-            ("run_wheel_apply", "platform/wheel_apply.py", "wheel_engine.apply_wheel_update,"),
+            ("server update CLI", "cli_server_update.py", "release_apply.apply_release("),
+            ("run_wheel_apply", "platform/wheel_apply.py", "release_apply.apply_release("),
+            ("release apply", "platform/release_apply.py", "wheel_engine.apply_wheel_update("),
         ],
     )
     def test_each_install_route_goes_through_the_engine(self, route, module, call) -> None:
@@ -385,6 +386,46 @@ class TestSlackChannels:
         assert channel_refusal("C0123") == ""
         assert channel_refusal("D9999") == ""
         assert "refused by the security policy" in channel_refusal("C0999")
+
+    @pytest.mark.parametrize("edition", EDITIONS)
+    @pytest.mark.parametrize(
+        "doc",
+        [None, _doc(), _doc(channels={"members": {"mode": "allow", "allow": ["slack"]}})],
+        ids=["no-ceiling", "unnamed", "no-leaf"],
+    )
+    def test_a_channel_not_yet_created_with_no_list_follows_the_edition(
+        self, monkeypatch, edition, doc
+    ) -> None:
+        # No list: an oss build opens channels as before; a locked-off
+        # (enterprise) build admits none until the policy names the leaf.
+        from kiro_crew.slack.channel_policy import new_channel_refusal
+
+        enterprise = _set_edition(monkeypatch, edition)
+        _install(monkeypatch, doc)
+        assert bool(new_channel_refusal()) is enterprise
+
+    @pytest.mark.parametrize("edition", EDITIONS)
+    @pytest.mark.parametrize(
+        ("allowed", "admitted"),
+        [
+            (("C0123", "D*"), False),
+            (("C0*",), False),
+            (("CN*",), False),  # matching ignores case: no lower-case tail slips through
+            (("*-*",), False),
+            (("C*",), True),
+            (("*",), True),
+        ],
+    )
+    def test_a_channel_not_yet_created_is_admitted_only_by_a_pattern_for_any_id(
+        self, monkeypatch, edition, allowed, admitted
+    ) -> None:
+        # Its id is unknown until Slack creates it, so a list of explicit ids
+        # (or a narrower glob) cannot vouch for it.
+        from kiro_crew.slack.channel_policy import new_channel_refusal
+
+        _set_edition(monkeypatch, edition)
+        _install(monkeypatch, _slack_channels(*allowed))
+        assert (new_channel_refusal() == "") is admitted
 
     @pytest.mark.parametrize("edition", EDITIONS)
     @pytest.mark.parametrize(

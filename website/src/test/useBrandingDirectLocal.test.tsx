@@ -55,6 +55,27 @@ describe('useBranding — directLocal mapping', () => {
     expect(result.current.directLocal).toBe(false)
   })
 
+  // The other half of the OS-desktop gate: whether the gateway host can open a
+  // file manager right now. Absent reads as false, so a gateway that did not
+  // say offers no file manager rather than one that can only copy.
+  it('maps desktop_launcher, and reads its absence as false', async () => {
+    brandingMock.mockResolvedValueOnce({ bot_name: 'Host', avatar: '/a.png', direct_local: true, desktop_launcher: true })
+    const withLauncher = renderHook(() => useBranding(), { wrapper })
+    await waitFor(() => expect(withLauncher.result.current.desktopLauncher).toBe(true))
+
+    brandingMock.mockResolvedValueOnce({ bot_name: 'Headless', avatar: '/a.png', direct_local: true })
+    const without = renderHook(() => useBranding(), { wrapper })
+    await waitFor(() => expect(without.result.current.botName).toBe('Headless'))
+    expect(without.result.current.directLocal).toBe(true)
+    expect(without.result.current.desktopLauncher).toBe(false)
+  })
+
+  it('holds desktopLauncher false while the branding has not loaded', () => {
+    brandingMock.mockImplementation(() => new Promise(() => {}))
+    const { result } = renderHook(() => useBranding(), { wrapper })
+    expect(result.current.desktopLauncher).toBe(false)
+  })
+
   it('holds the defaults (directLocal false) while every fetch fails', async () => {
     brandingMock.mockRejectedValue(new Error('network'))
     const { result } = renderHook(() => useBranding(), { wrapper })

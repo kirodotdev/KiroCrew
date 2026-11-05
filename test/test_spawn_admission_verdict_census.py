@@ -58,6 +58,7 @@ _POLICY_REFUSALS = frozenset(
     {
         "rejected_empty_task",
         "rejected_invalid_cwd",
+        "rejected_depth_cap",  # the child would sit past _MAX_SPAWN_DEPTH
         "denied",  # governance, and the parent spec's availableAgents
         "rejected",  # the spawn-approval prompt said no, or had no surface
         "rejected_spawn",
@@ -143,6 +144,8 @@ _REFUSAL_TEXTS = frozenset(
         "memory_unavailable: the parent's memory mode could not be established",
         "memory_unavailable: {}",
         "spawn refused: {}",  # the cwd allowlist, and the parent spec's allowlist
+        "spawn refused: a sub-agent at depth {} would exceed the nesting cap of {}; "
+        "do this work in the current run instead of delegating it further",
         "spawn refused by governance: {}",
         "spawn denied by governance",
         "<gov_spawn_err>",

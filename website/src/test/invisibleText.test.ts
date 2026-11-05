@@ -13,6 +13,8 @@ import { describe, it, expect } from 'vitest'
 import { readdirSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { isInvisibleOnly, isHiddenInvisibleAssistantRow } from '../utils/invisibleText'
+import type { ChatMessage } from '../types'
+import { replyShowsFooter } from '../pages/chat/replyFooter'
 
 describe('isInvisibleOnly', () => {
   it('treats a bare ZWSP as invisible (the quiet monitor-cycle reply)', () => {
@@ -103,7 +105,13 @@ describe('ChatPage inline chain consults the skip (source contract)', () => {
   })
 
   it('passes over hidden rows in the footer-host scan', () => {
-    expect(src).toMatch(/if \(isHiddenInvisibleAssistantRow\(later\)\) continue/)
+    // The footer walk is the shared `replyShowsFooter`: a quiet cycle's hidden
+    // say-nothing row after a reply must not read as "another reply follows".
+    expect(src).toContain('replyShowsFooter(m, messagesRef.current, i, slotRunning)')
+    const reply = { role: 'assistant', content: 'done', cls: '' } as ChatMessage
+    const quiet = { role: 'assistant', content: '\u200b', cls: '' } as ChatMessage
+    const user = { role: 'user', content: 'next', cls: '' } as ChatMessage
+    expect(replyShowsFooter(reply, [reply, quiet, user], 0, true)).toBe(true)
   })
 
   it('anchors Regenerate/variant affordances on the last DRAWN reply', () => {

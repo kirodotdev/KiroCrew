@@ -5,7 +5,7 @@
  * - EmbedSettingsPage
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, fireEvent, act } from '@testing-library/react'
+import { render, screen, fireEvent, act, waitFor, within } from '@testing-library/react'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -290,10 +290,40 @@ describe('EmbedSettingsPage', () => {
     expect(screen.getByTestId('display-panel')).toBeTruthy()
   })
 
-  it('switches to Chat panel on tab click', () => {
+  it('switches to Chat panel on tab press', () => {
     wrap(<EmbedSettingsPage />)
-    fireEvent.click(screen.getByText('Chat'))
+    // Radix selects on the mouse press, not the click.
+    fireEvent.mouseDown(screen.getByRole('tab', { name: 'Chat' }))
     expect(screen.getByTestId('chat-panel')).toBeTruthy()
+  })
+
+  // The selected tab used to be shown by colour alone: plain buttons, no
+  // tablist, nothing a screen reader could announce as "selected".
+  it('exposes the tab bar as a labelled tablist with the selection announced', () => {
+    wrap(<EmbedSettingsPage />)
+    const list = screen.getByRole('tablist', { name: 'Settings' })
+    const tabs = within(list).getAllByRole('tab')
+    expect(tabs.map(t => t.textContent)).toEqual(['Display', 'Chat', 'Notifications'])
+    expect(tabs.map(t => t.getAttribute('aria-selected'))).toEqual(['true', 'false', 'false'])
+    // The selected tab names the panel it controls, and that panel exists.
+    const panelId = tabs[0].getAttribute('aria-controls')
+    expect(panelId).toBeTruthy()
+    const panel = document.getElementById(panelId!)
+    expect(panel?.getAttribute('role')).toBe('tabpanel')
+    expect(panel?.contains(screen.getByTestId('display-panel'))).toBe(true)
+  })
+
+  it('moves the selection with the arrow keys', async () => {
+    wrap(<EmbedSettingsPage />)
+    const display = screen.getByRole('tab', { name: 'Display' })
+    act(() => { display.focus() })
+    fireEvent.keyDown(display, { key: 'ArrowRight' })
+    const chat = screen.getByRole('tab', { name: 'Chat' })
+    // Radix moves roving focus on the next task, then selects on focus.
+    await waitFor(() => expect(document.activeElement).toBe(chat))
+    expect(chat.getAttribute('aria-selected')).toBe('true')
+    expect(screen.getByTestId('chat-panel')).toBeTruthy()
+    expect(screen.queryByTestId('display-panel')).toBeNull()
   })
 
   it('back button navigates to active chat when slot exists', () => {

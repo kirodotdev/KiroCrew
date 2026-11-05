@@ -14,6 +14,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
+from kiro_crew import enterprise_sign_in
 from kiro_crew.dashboard import enterprise_gate_middleware as gate_mw
 from kiro_crew.dashboard import routes as routes_pkg
 from kiro_crew.enterprise_gate import REASON_LOGIN_REQUIRED, EnterpriseGate, LoginWatch
@@ -617,12 +618,55 @@ async def test_closed_gate_status_asks_an_established_install_to_sign_in(
         body = await (await client.get("/api/kiro-prerequisite")).json()
         assert body["initial_setup_complete"] is False
         assert body["enterprise_login_required"] is True
+        # The gate reads Crew's vault sign-in, so the remedy is the vault command.
+        assert body["enterprise_sign_in_command"].endswith("kas login --provider idc --start-url")
+        # Copied into a shell as-is, so it never carries a `<placeholder>`.
+        assert "<" not in body["enterprise_sign_in_command"]
+        assert ">" not in body["enterprise_sign_in_command"]
+        if owner:
+            assert isinstance(body["enterprise_sign_in_needs_start_url"], bool)
+        else:
+            assert "enterprise_sign_in_needs_start_url" not in body
+            # A non-owner never learns this host's launcher path.
+            assert body["enterprise_sign_in_command"] == enterprise_sign_in.BARE_SIGN_IN_COMMAND
 
         login.signed_in = True
         await watch.check()
         body = await (await client.get("/api/kiro-prerequisite")).json()
         assert body["initial_setup_complete"] is True
         assert "enterprise_login_required" not in body
+        assert "enterprise_sign_in_command" not in body
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_closed_gate_status_reads_the_vault_off_the_event_loop(
+    enterprise: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import threading
+
+    from kiro_crew import enterprise_sign_in
+
+    loop_thread = threading.get_ident()
+    readers: list[int] = []
+
+    class Store:
+        def resolve(self) -> None:
+            readers.append(threading.get_ident())
+            return None
+
+    monkeypatch.setattr("kiro_crew.auth.bridge.default_token_store", lambda: Store())
+    login = FakeLogin(signed_in=False)
+    app = _status_app(monkeypatch, login, owner=True)
+    client = await _client(app)
+    watch: LoginWatch = app[gate_mw.LOGIN_WATCH_APP_KEY]
+    try:
+        await watch.stop()
+        body = await (await client.get("/api/kiro-prerequisite")).json()
+        assert body["enterprise_sign_in_command"] == enterprise_sign_in.vault_sign_in_command()
+        # The vault read decrypts a file: it must never block the event loop.
+        assert readers and loop_thread not in readers
     finally:
         await client.close()
 

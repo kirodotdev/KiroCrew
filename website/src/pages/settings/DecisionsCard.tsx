@@ -363,6 +363,7 @@ export function DecisionsCard() {
     ),
     'memory.recall': i18nT('pages.developer.featurePreviewsTab.decisions_point_memory_recall'),
     'nudge.wake': i18nT('pages.developer.featurePreviewsTab.decisions_point_nudge_wake'),
+    'browser.step': i18nT('pages.developer.featurePreviewsTab.decisions_point_browser_step'),
   }
   const POINT_WHAT: Record<string, string> = {
     'skills.select': i18nT('pages.developer.featurePreviewsTab.decisions_what_skills_select'),
@@ -376,6 +377,7 @@ export function DecisionsCard() {
       'pages.developer.featurePreviewsTab.decisions_what_memory_recall',
     ),
     'nudge.wake': i18nT('pages.developer.featurePreviewsTab.decisions_what_nudge_wake'),
+    'browser.step': i18nT('pages.developer.featurePreviewsTab.decisions_what_browser_step'),
   }
   const STATUS_WORD: Record<string, string> = {
     [POINT_ACTIVE]: i18nT('pages.developer.featurePreviewsTab.decisions_status_active'),
@@ -391,12 +393,14 @@ export function DecisionsCard() {
     compaction: i18nT('pages.developer.featurePreviewsTab.decisions_compaction'),
     memory_text: i18nT('pages.developer.featurePreviewsTab.decisions_memory_text'),
     nudge_evidence: i18nT('pages.developer.featurePreviewsTab.decisions_nudge_evidence'),
+    browser: i18nT('pages.developer.featurePreviewsTab.decisions_browser'),
   }
   const SCOPE_DESC: Record<string, string> = {
     tool_args: i18nT('pages.developer.featurePreviewsTab.decisions_tool_args_desc'),
     compaction: i18nT('pages.developer.featurePreviewsTab.decisions_compaction_desc'),
     memory_text: i18nT('pages.developer.featurePreviewsTab.decisions_memory_text_desc'),
     nudge_evidence: i18nT('pages.developer.featurePreviewsTab.decisions_nudge_evidence_desc'),
+    browser: i18nT('pages.developer.featurePreviewsTab.decisions_browser_desc'),
   }
   const TIER_LABEL: Record<string, string> = {
     simple: i18nT('pages.developer.featurePreviewsTab.decisions_tier_simple'),
@@ -428,6 +432,7 @@ export function DecisionsCard() {
     compaction: view.compaction,
     memory_text: view.memoryText,
     nudge_evidence: view.nudgeEvidence,
+    browser: view.browser,
   }
 
   const nameOf = (id: string) => POINT_NAME[id] ?? id
@@ -500,7 +505,7 @@ export function DecisionsCard() {
           is asserted against. `settingsCoverage.test.ts` fails when that happens. */}
       <SettingsToggle
         label={i18nT('pages.developer.featurePreviewsTab.decisions')}
-        description={i18nT('pages.developer.featurePreviewsTab.decisions_desc')}
+        hint={i18nT('pages.developer.featurePreviewsTab.decisions_desc')}
         checked={view.enabled}
         onChange={v => consentMut.mutate(v)}
         // With no model the switch can still be turned OFF: a consent that stood
@@ -744,7 +749,7 @@ export function DecisionsCard() {
                 below names the config path the seam asks with. */}
             <SettingsInput
               label={i18nT('pages.developer.featurePreviewsTab.decisions_history_label')}
-              description={i18nT('pages.developer.featurePreviewsTab.decisions_history_desc')}
+              description={i18nT('pages.developer.featurePreviewsTab.decisions_history_desc_summary')} hint={i18nT('pages.developer.featurePreviewsTab.decisions_history_desc')}
               type="number"
               min={0}
               value={budgetDraft ?? String(historyBudget)}
@@ -942,6 +947,10 @@ export function DecisionsCard() {
                     scopeDisabled={frozen || consentMut.isPending || scopeMut.isPending}
                     onScopeChange={v =>
                       scopeMut.mutate({ scope: shownRow.needsScope as string, value: v })
+                    }
+                    browserImages={view.browserImages}
+                    onBrowserImagesChange={v =>
+                      scopeMut.mutate({ scope: 'browser_images', value: v })
                     }
                     modelRoute={modelRoute}
                     modelNames={modelsQ.data.map(m => m.name)}

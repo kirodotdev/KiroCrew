@@ -1,3 +1,5 @@
+import { isAcceptedWork } from '../api/sharedCrewUi'
+
 /** Shape of `POST /api/chat`'s JSON receipt, as far as the send paths read it. */
 export interface SendReceiptBody {
   /** The server dispatched the message immediately. */
@@ -170,7 +172,9 @@ export async function readSendReceipt(response: SendResponseLike): Promise<SendR
     console.warn('send receipt unreadable on an accepted response — delivery unknown')
     return { body, outcome: 'unknown' }
   }
-  return { body, outcome: body.ok || body.queued ? 'accepted' : 'refused' }
+  // A Shared Crew host that queues a send answers 202 with the accepted `work`
+  // item and neither flag: the host has custody, so it is accepted, not refused.
+  return { body, outcome: body.ok || body.queued || isAcceptedWork(body.work) ? 'accepted' : 'refused' }
 }
 
 /** Did `POST /api/chat` actually take custody of this message, as the row the

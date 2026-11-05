@@ -108,7 +108,7 @@ def sh(args: list[str], timeout: int = 120) -> subprocess.CompletedProcess:
     told what to fix.
     """
     try:
-        return subprocess.run(args, capture_output=True, text=True, timeout=timeout)
+        return subprocess.run(args, capture_output=True, text=True, encoding="utf-8", timeout=timeout)
     except subprocess.TimeoutExpired:
         die(f"timed out after {timeout}s: {' '.join(args)} "
             "(a wedged CoreSimulator is the usual cause -- see the skill's "
@@ -308,7 +308,7 @@ def _owns_pid(pid: int, udid: str) -> bool:
     try:
         p = subprocess.run(
             ["ps", "-p", str(pid), "-o", "command="],
-            capture_output=True, text=True, timeout=15,
+            capture_output=True, text=True, encoding="utf-8", timeout=15,
         )
     except (subprocess.TimeoutExpired, OSError):
         return False

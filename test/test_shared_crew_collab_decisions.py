@@ -72,6 +72,56 @@ def _registry() -> DecisionRegistry:
     return DecisionRegistry(clock=lambda: float(next(ticks)))
 
 
+def test_a_verified_person_settles_as_a_person_and_the_host_as_the_host():
+    reg = _registry()
+    reg.open("d1", DecisionKind.APPROVAL, "s1", ALICE)
+    person = reg.resolve(
+        "d1", response_id="r", responder=BOB, outcome="approved", apply=lambda: True
+    )
+    assert person.decision.settled_by == "person"
+    assert person.decision.to_public_dict()["settled_by"] == "person"
+    assert person.decision.to_dict()["settled_by"] == "person"
+
+    for index, responder in enumerate((Principal.unknown(), Principal.system("app:notes"))):
+        reg.open(f"h{index}", DecisionKind.APPROVAL, "s1", ALICE)
+        host = reg.resolve(
+            f"h{index}", response_id="", responder=responder, outcome="approved", apply=lambda: True
+        )
+        assert host.decision.settled_by == "host"
+
+
+def test_settle_after_wait_with_an_outcome_is_the_host_settling_it():
+    from types import SimpleNamespace
+
+    from kiro_crew.shared_crew.decisions import settle_after_wait
+
+    state = SimpleNamespace(
+        broadcast_ws=lambda *a, **k: None, _log=MagicMock(), _shared_crew_decisions=_registry()
+    )
+    reg = state._shared_crew_decisions
+    reg.open("d1", DecisionKind.APPROVAL, "s1", ALICE)
+    settle_after_wait(state, "d1", "approved", DecisionState.EXPIRED)
+    settled = reg.get("d1")
+    assert settled.state is DecisionState.RESOLVED
+    assert settled.settled_by == "host" and settled.responder == Principal.unknown()
+
+
+def test_settled_by_survives_a_round_trip_and_an_older_record_reads_as_person():
+    from kiro_crew.shared_crew.collab import SharedDecision
+
+    reg = _registry()
+    reg.open("d1", DecisionKind.APPROVAL, "s1", ALICE)
+    host = reg.resolve(
+        "d1", response_id="", responder=Principal.unknown(), outcome="approved", apply=lambda: True
+    ).decision
+    assert SharedDecision.from_dict(host.to_dict()).settled_by == "host"
+    legacy = host.to_dict()
+    del legacy["settled_by"]
+    assert SharedDecision.from_dict(legacy).settled_by == "person"
+    legacy["settled_by"] = "robot"
+    assert SharedDecision.from_dict(legacy).settled_by == "person"
+
+
 def test_first_response_wins_once_and_names_both_people():
     reg = _registry()
     reg.open("d1", DecisionKind.APPROVAL, "s1", ALICE)
@@ -534,3 +584,77 @@ async def test_by_id_with_nothing_pending_returns_none(state):
         )
         is None
     )
+
+
+@pytest.mark.parametrize("slot", [SLOT, ""])
+@pytest.mark.asyncio
+async def test_coordinator_target_decide_records_the_verified_responder(state, slot):
+    """A decide that names its coordinator target (slot and instance) settles
+    through the registry like a decide by id, so the decision names the person
+    who pressed it, not an unknown responder settled by the host."""
+    from kiro_crew.dashboard.handlers.sessions_parts.live_turn import api_approval_resolve
+
+    task = asyncio.get_running_loop().create_task(
+        state.request_approval("rid-c", "cron:nightly", "fs_write", slot=slot)
+    )
+    for _ in range(200):
+        if "rid-c" in state._pending_approvals:
+            break
+        await asyncio.sleep(0)
+    instance = state._pending_approvals["rid-c"]["instance"]
+    app = _app(state, BOB)
+    app.router.add_post("/api/approvals/{id}/{action}", api_approval_resolve)
+    if not slot:
+        # A slotless approval is decided only from the owner's browser session.
+        import kiro_crew.dashboard.chat_handlers as chat_handlers
+
+        original = chat_handlers.bare_approval_decide_allowed
+        chat_handlers.bare_approval_decide_allowed = lambda _request: True
+    try:
+        async with TestClient(TestServer(app)) as bob:
+            resp = await bob.post(
+                "/api/approvals/rid-c/approve",
+                params={"origin": "coordinator", "slot": slot, "instance": instance},
+                json={"response_id": "r1"},
+            )
+            body = await resp.json()
+    finally:
+        if not slot:
+            chat_handlers.bare_approval_decide_allowed = original
+    assert resp.status == 200
+    assert await await_until(task) is True
+    decided = decisions_for(state).get(state_approval_decision_id("rid-c"))
+    assert decided.state is DecisionState.RESOLVED
+    assert decided.responder == BOB
+    assert decided.settled_by != "host"
+    assert body["decision"]["responder"]["id"] == BOB.id
+
+
+@pytest.mark.asyncio
+async def test_a_coordinator_target_decide_after_the_winner_keeps_its_responder(state):
+    """A second decide that reaches the route after the first settled the future,
+    while the record is still listed, is a lost race: it leaves the winner's
+    decision and responder as they were."""
+    from kiro_crew.dashboard.handlers.sessions_parts.live_turn import api_approval_resolve
+
+    future = asyncio.get_running_loop().create_future()
+    state._approval_futures["rid-r"] = future
+    state._pending_approvals["rid-r"] = {"id": "rid-r", "slot": SLOT, "instance": "shown"}
+    target = {"origin": "coordinator", "slot": SLOT, "instance": "shown"}
+    app = _app(state, BOB)
+    app.router.add_post("/api/approvals/{id}/{action}", api_approval_resolve)
+    async with TestClient(TestServer(app)) as bob:
+        first = await bob.post(
+            "/api/approvals/rid-r/approve", params=target, json={"response_id": "r1"}
+        )
+        assert first.status == 200
+        # The record stays listed: the wait that would pop it has not resumed.
+        second = await bob.post(
+            "/api/approvals/rid-r/reject", params=target, json={"response_id": "r2"}
+        )
+    assert second.status == 404
+    assert future.result() is True
+    decided = decisions_for(state).get(state_approval_decision_id("rid-r"))
+    assert decided.state is DecisionState.RESOLVED
+    assert decided.responder == BOB
+    assert decided.response_id == "r1"

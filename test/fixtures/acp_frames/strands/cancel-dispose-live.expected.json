@@ -1,0 +1,60 @@
+[
+  {
+    "agent_capabilities": {
+      "loadSession": true,
+      "mcpCapabilities": {
+        "http": true,
+        "sse": true
+      },
+      "promptCapabilities": {
+        "embeddedContext": true,
+        "image": true
+      }
+    },
+    "agent_version": "0.0.1",
+    "frame": "response",
+    "id": 1,
+    "protocol_version": 1
+  },
+  {
+    "frame": "response",
+    "id": 2,
+    "session_id": "strands-session-1"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call",
+        "title": "block",
+        "tool_call_id": "tooluse_k4_block",
+        "tool_kind": "other",
+        "wire_title": "block"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "error": {
+      "code": -32603,
+      "data": {
+        "details": "The Python agent did not stop after cancellation. Reload it to continue."
+      },
+      "message": "Internal error"
+    },
+    "frame": "response",
+    "id": 3
+  },
+  {
+    "error": {
+      "code": -32603,
+      "data": {
+        "details": "The Python agent did not stop after cancellation. Reload it to continue."
+      },
+      "message": "Internal error"
+    },
+    "frame": "response",
+    "id": 4
+  }
+]

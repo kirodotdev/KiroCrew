@@ -66,7 +66,7 @@ def _service(request: web.Request) -> KiroPrerequisiteService:
     return service
 
 
-def _with_gate_state(request: web.Request, snapshot: dict[str, Any]) -> dict[str, Any]:
+async def _with_gate_state(request: web.Request, snapshot: dict[str, Any]) -> dict[str, Any]:
     """*snapshot* marked locked while an enterprise login gate is closed.
 
     Every handler here that answers a status snapshot goes through this, since
@@ -78,7 +78,21 @@ def _with_gate_state(request: web.Request, snapshot: dict[str, Any]) -> dict[str
     """
     if not login_screen_required(request.app):
         return snapshot
-    return {**snapshot, "initial_setup_complete": False, "enterprise_login_required": True}
+    # The enterprise gate reads Crew's vault sign-in, not kiro-cli's, so the
+    # remedy the sign-in screen and relock notice name is the vault command.
+    from kiro_crew.enterprise_sign_in import sign_in_command
+
+    # The vault's recorded start URL fills the command in, so it runs as copied;
+    # without one the screen says where the start URL comes from. The vault read
+    # decrypts a file, so it runs off the event loop.
+    command, complete = await asyncio.to_thread(sign_in_command)
+    return {
+        **snapshot,
+        "initial_setup_complete": False,
+        "enterprise_login_required": True,
+        "enterprise_sign_in_command": command,
+        "enterprise_sign_in_needs_start_url": not complete,
+    }
 
 
 def _caller(request: web.Request) -> str:
@@ -171,7 +185,7 @@ async def api_kiro_prerequisite_status(request: web.Request) -> web.Response:
             bool(service.initial_setup_complete),
             probe_error=f"{type(exc).__name__}: {exc}"[:400],
         )
-    snapshot = _with_gate_state(request, snapshot)
+    snapshot = await _with_gate_state(request, snapshot)
     if _is_dashboard_owner(request):
         return web.json_response({**snapshot, "setup_allowed": True})
 
@@ -179,6 +193,8 @@ async def api_kiro_prerequisite_status(request: web.Request) -> web.Response:
     # application gate does not lock them out after the owner completes setup.
     # Do not expose the host platform, candidate state, operation output, URLs,
     # or mutations to those users.
+    from kiro_crew.enterprise_sign_in import BARE_SIGN_IN_COMMAND
+
     return web.json_response(
         {
             "platform": "gateway",
@@ -187,7 +203,13 @@ async def api_kiro_prerequisite_status(request: web.Request) -> web.Response:
             "ready": bool(snapshot.get("ready")),
             "initial_setup_complete": bool(snapshot.get("initial_setup_complete")),
             **(
-                {"enterprise_login_required": True}
+                {
+                    "enterprise_login_required": True,
+                    # The bare command, never the owner's start URL: it picks the
+                    # sign-in screen, which tells a non-owner to ask the owner and
+                    # shows no command.
+                    "enterprise_sign_in_command": BARE_SIGN_IN_COMMAND,
+                }
                 if snapshot.get("enterprise_login_required")
                 else {}
             ),
@@ -257,7 +279,7 @@ async def api_kiro_prerequisite_repair_specs(request: web.Request) -> web.Respon
     if denied is not None:
         return denied
     snapshot = await _service(request).repair_agent_specs(_caller(request))
-    return web.json_response({**_with_gate_state(request, snapshot), "setup_allowed": True})
+    return web.json_response({**(await _with_gate_state(request, snapshot)), "setup_allowed": True})
 
 
 async def api_kiro_prerequisite_update_cli(request: web.Request) -> web.Response:
@@ -278,4 +300,4 @@ async def api_kiro_prerequisite_update_cli(request: web.Request) -> web.Response
     if denied is not None:
         return denied
     snapshot = await _service(request).update_cli(_caller(request))
-    return web.json_response({**_with_gate_state(request, snapshot), "setup_allowed": True})
+    return web.json_response({**(await _with_gate_state(request, snapshot)), "setup_allowed": True})

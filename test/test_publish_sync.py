@@ -409,6 +409,7 @@ async def test_push_version_skips_already_synced_version(store, fake_client):
     # No new KiroCrew version since publish → push is a no-op (we push exactly
     # once per KiroCrew version to preserve the 1:1 invariant + idempotency).
     await publish_sync.push_version(store.get("d"))
+    assert store.get("d").publication.last_pushed_sha256 == "sha-v1"
     assert fake_client.called("upload_version") == []
     # force=True (re-publish path) pushes anyway.
     await publish_sync.push_version(store.get("d"), force=True)
@@ -446,6 +447,7 @@ async def test_push_version_skips_non_widget_on_wrapper_revision_bump(store, fak
 
     await publish_sync.push_version(store.get("t"))
     # Text artifact → no wrapper staleness → skip.
+    assert store.get("t").publication.last_pushed_sha256 == "sha-v1"
     assert fake_client.called("upload_version") == []
 
 

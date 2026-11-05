@@ -196,6 +196,9 @@ class TestWheelAutoApplyUsesTheShadowEngine:
         await orch._auto_apply_wheel_update("stable", "9.9.9", mandatory=True, mandatory_key="k")
         await orch._retry_pending_update_restart()  # the coordinator loop's bare retry
 
+        # The deferred restart stays pending and still carries the floor's key.
+        assert orch._pending_update_respawn is not None
+        assert (orch._pending_update_mandatory, orch._pending_update_mandatory_key) == (True, "k")
         assert prepare.await_args_list == [
             call(mandatory=True, mandatory_key="k"),
             call(mandatory=True, mandatory_key="k"),
@@ -226,6 +229,42 @@ class TestWheelAutoApplyUsesTheShadowEngine:
             await orch._retry_pending_update_restart()
 
         assert "remains deferred after its grace period" in caplog.text
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("mandatory", [False, True], ids=["routine", "floor"])
+    async def test_unattended_installs_turned_off_mid_build_stop_only_a_routine_swap(
+        self, monkeypatch, mandatory
+    ):
+        """The tree builds, then the policy decides at the swap: a routine install
+        defers (the next cycle only notifies); a floor's mandatory update promotes."""
+        orch = _make_orchestrator()
+        orch.dashboard_state = _mock_dashboard_state()
+
+        def engine(**kwargs):
+            kwargs["before_promote"]()
+            return Path("/x/crew-venv-9.9.9")
+
+        wire_wheel_apply(monkeypatch, apply=MagicMock(side_effect=engine))
+        monkeypatch.setattr(
+            "kiro_crew.platform.wheel_apply.snapshot_memory_before_update", lambda: (1, "")
+        )
+        monkeypatch.setattr("kiro_crew.memory_backup.newest_backup", lambda *a: None)
+        monkeypatch.setattr(
+            "kiro_crew.platform.update_governance.unattended_apply_allowed", lambda: False
+        )
+        restart = AsyncMock()
+        monkeypatch.setattr(orch, "_retry_pending_update_restart", restart)
+
+        await orch._auto_apply_wheel_update(
+            "stable", "9.9.9", mandatory=mandatory, mandatory_key="k" if mandatory else ""
+        )
+
+        if mandatory:
+            restart.assert_awaited_once()
+        else:
+            restart.assert_not_awaited()
+            assert orch._pending_update_respawn is None
+            assert orch._update_apply_deferred is True, "retried on the short cadence"
 
     @pytest.mark.asyncio
     async def test_a_held_lock_defers_quietly(self, monkeypatch):
@@ -378,12 +417,12 @@ class TestWheelAutoApplyUsesTheShadowEngine:
                     raise ImportError("the install tree is gone")
                 return None
 
-        # flake-ok: pre-existing sys.modules eviction that monkeypatch restores, moved verbatim; tracked for a de-flake pass
+        # monkeypatch restores sys.modules at teardown; the refusing finder below fails any import.
         monkeypatch.delitem(sys.modules, "kiro_crew.platform.wheel_apply", raising=False)
         monkeypatch.setattr(sys, "meta_path", [_RefuseApplyModule(), *sys.meta_path])
         orch = _make_orchestrator()
-        # flake-ok: pre-existing parked stand-in task the test cancels, moved verbatim; tracked for a de-flake pass
-        task = asyncio.create_task(asyncio.sleep(10))
+        # The stand-in parks on an event nothing sets, and the test cancels it below.
+        task = asyncio.create_task(asyncio.Event().wait())
         task.cancel()
 
         await orch._settle_update_work(task)

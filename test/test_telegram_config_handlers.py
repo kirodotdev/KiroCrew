@@ -12,6 +12,8 @@ from aiohttp.test_utils import make_mocked_request
 import kiro_crew.config.loader as loader
 from kiro_crew.secrets import SecretVault
 
+SHARED_CONFIG_HANDLER_CHECKS = ("save_rejects_non_numeric_user_ids", "soft_threshold_bounds")
+
 
 def _vault_value(env: Path, key: str) -> str | None:
     """The vault secret a channel save stored beside *env* under *key*."""
@@ -153,16 +155,6 @@ def test_save_proceeds_with_warning_when_telegram_unreachable(tmp_path: Path, mo
     assert _vault_value(env, "TELEGRAM_BOT_TOKEN") == VALID_TOKEN
 
 
-def test_save_rejects_non_numeric_user_ids(tmp_path: Path, monkeypatch) -> None:
-    import kiro_crew.dashboard.handlers.messaging as mod
-
-    _accept_token(monkeypatch, mod)
-    status_body, _ = _client_put(mod, monkeypatch, tmp_path, {"allowed_user_ids": ["@username"]})
-    status, body = status_body
-    assert status == 400
-    assert "numeric" in body["error"]
-
-
 def test_clear_also_removes_legacy_config_token(tmp_path: Path, monkeypatch) -> None:
     """Clearing the token must also drop config.json's legacy telegram.bot_token.
 
@@ -291,18 +283,6 @@ def test_restart_required_only_on_actual_change(tmp_path: Path, monkeypatch) -> 
     status_body, _ = _client_put(mod, monkeypatch, tmp_path, {"bot_token": VALID_TOKEN})
     assert status_body[0] == 200
     assert status_body[1]["restart_required"] is True
-
-
-def test_soft_threshold_bounds(tmp_path: Path, monkeypatch) -> None:
-    import kiro_crew.dashboard.handlers.messaging as mod
-
-    _accept_token(monkeypatch, mod)
-    for bad in (0, 101, "80", True):
-        status_body, _ = _client_put(mod, monkeypatch, tmp_path, {"soft_threshold_pct": bad})
-        assert status_body[0] == 400, f"soft_threshold_pct={bad!r} should be rejected"
-        # A machine-readable code, not prose only: the dashboard renders `error`
-        # verbatim into a localized UI, so prose alone is untranslatable.
-        assert status_body[1]["code"] == "soft_threshold_pct_invalid"
 
 
 def test_get_masks_token_and_reports_state(tmp_path: Path, monkeypatch) -> None:

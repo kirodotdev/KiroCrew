@@ -184,6 +184,42 @@ class TestPolicyParsing:
         assert ceiling.updates.source == ""
 
 
+class TestUnattendedApplyPin:
+    """``updates.unattended_apply``: may the gateway install without being asked?"""
+
+    @staticmethod
+    def _parse(value: object) -> UpdatePins:
+        doc = {"version": 1, "boot": {}, "updates": {"unattended_apply": value}}
+        return parse_policy(doc).updates
+
+    def test_absent_and_null_keep_unattended_installs_on(self):
+        assert parse_policy(_policy()).updates.unattended_apply is True
+        assert self._parse(None).unattended_apply is True
+
+    @pytest.mark.parametrize("value", [False, True])
+    def test_a_boolean_is_parsed_as_written(self, value):
+        assert self._parse(value).unattended_apply is value
+
+    @pytest.mark.parametrize("bad", ["false", "no", 0, 1, [], {}])
+    def test_a_non_boolean_fails_closed_not_coerced(self, bad):
+        """`"false"` is truthy: coercing it would turn installs ON, not off."""
+        with pytest.raises(PlatformCompositionError, match="must be true or false"):
+            self._parse(bad)
+
+    def test_the_seam_reads_the_active_pin(self, monkeypatch):
+        monkeypatch.setattr(
+            "kiro_crew.platform.governance.active_update_pins",
+            lambda: UpdatePins(unattended_apply=False),
+        )
+        assert update_governance.unattended_apply_allowed() is False
+
+    def test_an_ungoverned_host_installs_unattended(self, monkeypatch):
+        monkeypatch.setattr(
+            "kiro_crew.platform.governance.active_update_pins", lambda: UpdatePins()
+        )
+        assert update_governance.unattended_apply_allowed() is True
+
+
 class TestSeam:
     """The shared gate the API, CLI and boot paths call."""
 

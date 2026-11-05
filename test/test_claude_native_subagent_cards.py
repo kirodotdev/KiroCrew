@@ -7,7 +7,8 @@ the capability (section 1), the frames of one live capture turned into the roste
 and activity events the native cards read (section 2), the state table and the
 bounds (section 3), the cards those events draw (section 4), the approval gate a
 running child leaves as it is (section 5), and the held text a turn cut short puts on
-the card (section 6).
+the card (section 6), and the parent the children belong to: a resume naming one is
+refused and the set is reported as uncharged residency (section 7).
 
 The capture is ``test/fixtures/claude_native_subagents/agent-task-0.94.0.jsonl``,
 claude-agent-acp 0.94.0 with ``subagents`` declared and one Agent call.
@@ -19,7 +20,7 @@ import json
 import logging
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from turn_harness import (
@@ -40,7 +41,9 @@ from kiro_crew.acp.client_native_children import (
 )
 from kiro_crew.acp.session_handle_native_children import (
     NATIVE_CHILD_LABEL_CAP,
+    NATIVE_CHILD_NOT_RESUMABLE,
     NATIVE_CHILD_ROSTER_CAP,
+    NATIVE_CHILDREN_UNCHARGED_KIND,
 )
 from kiro_crew.acp.types import (
     ACP_CLIENT_CAPABILITIES,
@@ -64,6 +67,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_PI,
 )
 from kiro_crew.agent_sdk.capabilities import capabilities_for
+from kiro_crew.dashboard import session_health
 from kiro_crew.dashboard.chat_runner import _native_subagent_sync
 from kiro_crew.hook_runtime.hook_types import HooksConfig
 from kiro_crew.hooks import HookManager
@@ -327,7 +331,10 @@ async def test_a_child_with_no_task_holds_back_only_its_own_row() -> None:
 def test_a_session_that_declares_nothing_keeps_no_child_state() -> None:
     """The per-turn reset is a no-op off the claude backend, including on a client
     built with ``__new__`` that never ran ``__init__``."""
-    _client(ACP_BACKEND_KIRO)._reset_native_child_turn()
+    kiro = _client(ACP_BACKEND_KIRO)
+    kiro._native_child_overflow = 3
+    kiro._reset_native_child_turn()
+    assert kiro._native_child_overflow == 3, "a no-op reset must leave the client untouched"
     AcpClient.__new__(AcpClient)._reset_native_child_turn()
 
 
@@ -857,3 +864,86 @@ async def test_a_stop_pressed_while_a_child_replies_keeps_the_reply_on_its_card(
     record = await run_turn(TurnScript(events=events, provider=_over(client)))
     [result] = _done_results(record)
     assert result.endswith("\npong")
+
+
+# ── 7. The parent is the boundary ──────────────────────────────────────────────
+
+
+async def _client_after_capture() -> AcpClient:
+    """A claude client that read the capture's turn, so it knows ``CHILD``."""
+    _, frames = _capture()
+    client = _client()
+    await _turn(client, [JsonRpcMessage.from_dict(frame) for frame in frames])
+    return client
+
+
+@pytest.mark.asyncio
+async def test_a_resume_naming_a_claude_child_is_refused_naming_the_parent() -> None:
+    client = await _client_after_capture()
+    reason = client.native_child_resume_refusal(CHILD)
+    assert reason is not None
+    assert reason.startswith(f"{NATIVE_CHILD_NOT_RESUMABLE}: {CHILD}")
+    assert PARENT in reason
+    assert client.native_child_resume_refusal("some-conversation") is None
+    assert client.native_child_resume_refusal(PARENT) is None
+
+
+@pytest.mark.asyncio
+async def test_claude_children_are_reported_as_uncharged_residency() -> None:
+    """Every child the client knows is reported, overflow past the cap included,
+    under the parent's session id, and nothing is charged."""
+    client = await _client_after_capture()
+    client._native_child_overflow = 2
+    budget = MagicMock(spec=["report_uncharged"])
+    assert client.report_native_children(budget) == 3
+    budget.report_uncharged.assert_called_once_with(NATIVE_CHILDREN_UNCHARGED_KIND, 3, label=PARENT)
+    assert _client().report_native_children(budget) == 0
+
+
+@pytest.mark.asyncio
+async def test_a_finished_child_is_not_reported_on_a_later_turn_but_stays_refused() -> None:
+    """The child ids outlive the turn, but residency is this turn's children: a
+    turn that hears nothing from the finished child reports none, and its id is
+    still a child's, never a conversation."""
+    client = await _client_after_capture()
+    await _turn(client, [])
+    budget = MagicMock(spec=["report_uncharged"])
+    assert client.report_native_children(budget) == 0
+    budget.report_uncharged.assert_called_once_with(NATIVE_CHILDREN_UNCHARGED_KIND, 0, label=PARENT)
+    assert client.native_child_resume_refusal(CHILD) is not None
+
+
+@pytest.mark.asyncio
+async def test_session_health_counts_a_claude_slots_children(monkeypatch) -> None:
+    client = await _client_after_capture()
+    mirror = session_health.UnchargedMirror()
+    monkeypatch.setattr(session_health, "_UNCHARGED_MIRROR", mirror)
+    slot = SimpleNamespace(key="web-1", running=True, _acp_client=client, messages=[])
+    assert session_health.snapshot_slot(slot).native_children == 1
+    assert mirror.snapshot() == {NATIVE_CHILDREN_UNCHARGED_KIND: 1}
+
+
+@pytest.mark.asyncio
+async def test_spawn_continue_on_a_claude_child_gets_the_typed_refusal() -> None:
+    """Through the real ``continue_conversation`` path, with the claude client as
+    a live session's provider client: the child id has no conversation, so the
+    run is refused with ``native_child_not_resumable`` before any session starts."""
+    from kiro_crew.subagent import SubagentManager
+
+    client = await _client_after_capture()
+    sessions = MagicMock()
+    sessions._sessions = {"web-1": SimpleNamespace(provider=SimpleNamespace(client=client))}
+    sessions.get_pid = MagicMock(return_value=None)
+    sessions.get_or_create = AsyncMock()
+    sessions.resumable_sid = MagicMock(return_value=None)
+    sessions.is_continuable = MagicMock(return_value=False)
+    ctx = MagicMock()
+    ctx.hooks.auto_approve_subagent_spawn = True
+    manager = SubagentManager(sessions=sessions, ctx_builder=ctx)
+    with patch("kiro_crew.subagent.sel"), patch("kiro_crew.subagent.read_state", return_value=None):
+        info = manager.continue_conversation(CHILD, "keep going")
+    assert info is not None and info.done
+    assert info.error and info.error.startswith(f"{NATIVE_CHILD_NOT_RESUMABLE}: {CHILD}")
+    assert PARENT in info.error
+    sessions.get_or_create.assert_not_called()
+    assert CHILD not in manager._agents

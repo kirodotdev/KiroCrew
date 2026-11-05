@@ -102,6 +102,7 @@ import { DEFAULT_PET_NAME } from './builtinPacks'
 import { activityTypeLabel, moodLabel, stateLabel, watchKindLabel, watchStatusLabel } from './i18nKeys'
 import {
   formatCompanionTime,
+  formatDate,
   formatThinkingTime,
   getTopMoods,
   shouldShowStat,
@@ -425,7 +426,7 @@ function ActivityList({ rows }: { rows: ReturnType<typeof formatActivity> }) {
       <div className="space-y-1 max-h-64 overflow-y-auto">
         {rows.slice(page * PER_PAGE, (page + 1) * PER_PAGE).map((e, i) => (
           <div key={i} className="flex items-start gap-3 px-2.5 py-1.5 text-[13px]">
-            <span className="text-muted/60 font-mono w-16 shrink-0 whitespace-nowrap">
+            <span className="text-muted font-mono w-16 shrink-0 whitespace-nowrap">
               {e.time}
             </span>
             <span
@@ -467,7 +468,7 @@ function PlanTimeline({ tasks }: { tasks: TimelineRow[] }) {
               t.done ? 'text-muted line-through' : 'text-text'
             }`}
           >
-            <span className="text-muted/60 font-mono w-16 shrink-0 whitespace-nowrap">
+            <span className="text-muted font-mono w-16 shrink-0 whitespace-nowrap">
               {t.time}
             </span>
             <span
@@ -777,20 +778,20 @@ function memoryRows(s: CompanionStats, petName: string): Array<[React.ReactNode,
   }
   if (shouldShowStat(s.walkSteps)) {
     rows.push([<Footprints className="w-4 h-4" />,
-      i18nT('apps.mochi.stats.walks', { count: fmtNumber(s.walkSteps) })])
+      i18nT('apps.mochi.stats.walks', { count: s.walkSteps, n: fmtNumber(s.walkSteps) })])
   }
   if (shouldShowStat(s.screenshots)) {
     rows.push([<Camera className="w-4 h-4" />,
-      i18nT('apps.mochi.stats.screenshots', { count: fmtNumber(s.screenshots) })])
+      i18nT('apps.mochi.stats.screenshots', { count: s.screenshots, n: fmtNumber(s.screenshots) })])
   }
   if (shouldShowStat(s.peeks)) {
     rows.push([<Eye className="w-4 h-4" />,
-      i18nT('apps.mochi.stats.peeks', { count: fmtNumber(s.peeks) })])
+      i18nT('apps.mochi.stats.peeks', { count: s.peeks, n: fmtNumber(s.peeks) })])
   }
   if (shouldShowStat(s.drags)) {
     rows.push([
       <MousePointer2 className="w-4 h-4" />,
-      i18nT('apps.mochi.stats.drags', { count: fmtNumber(s.drags) }),
+      i18nT('apps.mochi.stats.drags', { count: s.drags, n: fmtNumber(s.drags) }),
     ])
   }
   if (shouldShowStat(s.thinkingSeconds)) {
@@ -808,13 +809,13 @@ function memoryRows(s: CompanionStats, petName: string): Array<[React.ReactNode,
     rows.push([
       <Flame className="w-4 h-4" />,
       i18nT('apps.mochi.stats.busiest_day', {
-        date: s.busiestDay.date, count: fmtNumber(s.busiestDay.messages),
+        date: formatDate(s.busiestDay.date), count: s.busiestDay.messages, n: fmtNumber(s.busiestDay.messages),
       }),
     ])
   }
   if (shouldShowStat(s.longestChat)) {
     rows.push([<MessagesSquare className="w-4 h-4" />,
-      i18nT('apps.mochi.stats.longest_chat', { count: fmtNumber(s.longestChat) })])
+      i18nT('apps.mochi.stats.longest_chat', { count: s.longestChat, n: fmtNumber(s.longestChat) })])
   }
   return rows
 }

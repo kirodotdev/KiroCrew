@@ -63,13 +63,16 @@ from kiro_crew.validation import (
 
 def _format_schedule(schedule: object, *, tz_name: str = "") -> str:
     """Human-readable schedule description (CLI shows full date for 'at' jobs)."""
+    from kiro_crew.cron import resolve_timezone_name
 
     if not isinstance(schedule, CronSchedule):
         return str(schedule)
     if schedule.kind == "at" and schedule.at_ts:
         try:
             if tz_name:
-                dt = datetime.fromtimestamp(schedule.at_ts, ZoneInfo(tz_name))
+                dt = datetime.fromtimestamp(
+                    schedule.at_ts, ZoneInfo(resolve_timezone_name(tz_name) or "UTC")
+                )
                 return f"at {dt:%Y-%m-%d %H:%M %Z}"
             _, configured_tz = get_local_tz()
             dt = datetime.fromtimestamp(schedule.at_ts, configured_tz)
@@ -95,6 +98,21 @@ def _cron_add_bounds(field_name: str) -> tuple[int, int]:
     spec = next(s for s in CRON_ADD_SCHEMA.fields if s.name == field_name)
     assert spec.min_val is not None and spec.max_val is not None, field_name
     return int(spec.min_val), int(spec.max_val)
+
+
+def _cron_update_not_found(job_id: str) -> NoReturn:
+    """Audit a ``cron update`` of an unknown id, report it on stderr, exit 1."""
+    sel().log_api_access(
+        caller="cli",
+        operation="cron.update",
+        outcome="not_found",
+        source="cli",
+        resources=f"job_id={job_id} reason=not_found",
+    )
+    print(f"Job not found: {job_id}", file=sys.stderr)
+    # Same exit and stream as remove/pause/resume/trigger on a missing job, so a
+    # script that updates a stale id sees the failure.
+    sys.exit(1)
 
 
 def _cron_add_fail(msg: str, *, audit_kind: str = "") -> NoReturn:
@@ -173,6 +191,8 @@ def _cron_add(svc: CronService, args: argparse.Namespace) -> None:
     guard: a job that would be refused at every wake is refused once, here,
     with a non-zero exit, instead of being stored and silently never running.
     """
+    from kiro_crew.cron import resolve_timezone_name
+
     every = getattr(args, "every", None)
     cron_expr = (getattr(args, "cron_expr", None) or "").strip() or None
     at_raw = str(getattr(args, "at", None) or "").strip()
@@ -249,6 +269,13 @@ def _cron_add(svc: CronService, args: argparse.Namespace) -> None:
         )
 
     # ── Schedule: exactly one of --every / --cron / --at ──
+    # A zero or blank value is the schedule flag the caller DID pass (the parser
+    # admits only one of the three), so it gets its own reason rather than the
+    # "provide exactly one" line meant for a missing one.
+    if every is not None and every == 0:
+        _cron_add_fail("--every must be a positive number of seconds, got 0")
+    if getattr(args, "cron_expr", None) is not None and cron_expr is None:
+        _cron_add_fail("--cron must not be empty")
     given = [
         flag for flag, val in (("--every", every), ("--cron", cron_expr), ("--at", at_raw)) if val
     ]
@@ -288,7 +315,7 @@ def _cron_add(svc: CronService, args: argparse.Namespace) -> None:
             if at_ts < _time.time():
                 # Render in the zone parse_time_string resolved the value in,
                 # so the refusal echoes a wall clock the operator recognises.
-                shown_tz = ZoneInfo(tz) if tz else get_local_tz()[1]
+                shown_tz = ZoneInfo(resolve_timezone_name(tz) or "UTC") if tz else get_local_tz()[1]
                 local = datetime.fromtimestamp(at_ts, shown_tz)
                 _cron_add_fail(
                     f"resolved time {local.strftime('%Y-%m-%d %I:%M %p %Z')} is in the past"
@@ -346,7 +373,11 @@ def _cron_add(svc: CronService, args: argparse.Namespace) -> None:
 
     # ── Storage-time security vet for the two zero-token kinds ──
     if command:
-        err = _vet_shell_command(command)
+        # Imported in-function: a module-scope import would surface on the
+        # cli_commands star-import facade, whose import inventory is frozen.
+        from kiro_crew.mcp_cron import _command_cron_platform_refusal
+
+        err = _vet_shell_command(command) or _command_cron_platform_refusal()
         if err:
             _cron_add_fail(err, audit_kind="command")
     if script:
@@ -416,6 +447,7 @@ def _cron_add(svc: CronService, args: argparse.Namespace) -> None:
             timeout=int(timeout) if timeout else 0,
             timeout_secs=int(timeout_secs) if timeout_secs else 0,
             auto_pause_after_failures=getattr(args, "auto_pause_after_failures", None),
+            alert_after_failures=getattr(args, "alert_after_failures", None),
         )
         # ``member_id`` rides in the call ONLY when ``--agent`` resolved to a
         # crew member; a non-member (template or default) agent keeps the exact
@@ -423,6 +455,11 @@ def _cron_add(svc: CronService, args: argparse.Namespace) -> None:
         # into the common path.
         if member_id:
             fields["member_id"] = member_id
+        # Same rule as ``member_id``: only a job that names a project directory
+        # carries the kwarg, so every other create keeps its exact call shape.
+        project_path = (getattr(args, "project_path", "") or "").strip()
+        if project_path:
+            fields["project_path"] = project_path
         if managed_by is not None:
             job = svc.add_managed_job(managed_by, **fields)
         else:
@@ -461,6 +498,12 @@ def _cron_add(svc: CronService, args: argparse.Namespace) -> None:
             "cron add success audit emit failed", exc_info=True
         )
     print(f"Added job: {job.id} ({job.name}) [{sched_desc}]")
+    # Read from its home, not bound here: ``cli_commands`` serves this module's
+    # names through a frozen import inventory.
+    from kiro_crew.cron_service.schedule import never_fires_warning
+
+    if never_fires := never_fires_warning(job.schedule):
+        print(f"Warning: {never_fires}", file=sys.stderr)
 
 
 def _cron(args: argparse.Namespace) -> None:
@@ -506,6 +549,7 @@ def _cron(args: argparse.Namespace) -> None:
 
 def _cron_dispatch(args: argparse.Namespace) -> None:
     """Dispatch cron subcommands: list, add, remove, pause, resume."""
+    from kiro_crew.cron import job_zone_name
 
     svc = CronService(base_dir=config_dir())
 
@@ -517,7 +561,7 @@ def _cron_dispatch(args: argparse.Namespace) -> None:
             return
         for j in jobs:
             status = "✅" if j.enabled else "⏸️"
-            sched = _format_schedule(j.schedule, tz_name=j.timezone or "")
+            sched = _format_schedule(j.schedule, tz_name=job_zone_name(j))
             print(f"  {status} {j.id}  {j.name}  ({sched})  {j.message[:60]}")
             # Ownership is printed because it decides which surfaces can manage
             # the job at all: a job with no owning session is outside every chat
@@ -537,6 +581,8 @@ def _cron_dispatch(args: argparse.Namespace) -> None:
                 detail += f"  created by: {provenance}"
             if j.managed_by:
                 detail += f"  managed by: {j.managed_by}"
+            if j.project_path:
+                detail += f"  project: {j.project_path}"
             print(f"      {detail}")
 
     elif action == "adopt":
@@ -646,6 +692,7 @@ def _cron_dispatch(args: argparse.Namespace) -> None:
             "channel",
             "timeout_secs",
             "auto_pause_after_failures",
+            "alert_after_failures",
         ):
             val = getattr(args, field, None)
             if val is not None:
@@ -673,12 +720,36 @@ def _cron_dispatch(args: argparse.Namespace) -> None:
             kwargs["agent_id"] = agent_val
         if getattr(args, "approval_mode", None) is not None:
             kwargs["approval_mode"] = "" if args.approval_mode == "default" else args.approval_mode
+        if getattr(args, "project_path", None) is not None:
+            kwargs["project_path"] = args.project_path.strip()
+        # ``--every 0`` and a blank ``--cron`` name no schedule, and the store
+        # treats an empty schedule value as "unchanged". Say so instead of
+        # reporting an update that did not happen; the other fields still apply.
+        blank_schedule = False
+        if "every_secs" in kwargs and kwargs["every_secs"] == 0:
+            del kwargs["every_secs"]
+            blank_schedule = True
+            print("Warning: --every 0 leaves the schedule unchanged", file=sys.stderr)
+        if "cron_expr" in kwargs and not str(kwargs["cron_expr"]).strip():
+            del kwargs["cron_expr"]
+            blank_schedule = True
+            print("Warning: an empty --cron leaves the schedule unchanged", file=sys.stderr)
         if not kwargs:
-            print("Provide at least one field to update")
-            return
+            # A blank schedule was the only field: nothing is written, but a
+            # stale id still fails as it does with any other field. An
+            # unreadable store reads as empty, so probe it first: a corrupt
+            # file must refuse, not report every id as missing.
+            if blank_schedule:
+                svc.raise_if_store_unreadable()
+                if svc.get_job(args.job_id) is None:
+                    _cron_update_not_found(args.job_id)
+            # Nothing is written, so exit 1 on stderr like the other update
+            # refusals: `cron update x && next` must not read it as success.
+            print("Provide at least one field to update", file=sys.stderr)
+            sys.exit(1)
         if "every_secs" in kwargs and "cron_expr" in kwargs:
-            print("Provide --every or --cron, not both")
-            return
+            print("Provide --every or --cron, not both", file=sys.stderr)
+            sys.exit(1)
         try:
             updated = svc.update_job(args.job_id, **kwargs)
         except ValueError as e:
@@ -699,16 +770,12 @@ def _cron_dispatch(args: argparse.Namespace) -> None:
                 resources=audit_resources,
             )
             print(f"Updated job: {updated.id} ({updated.name})")
-        else:
+            from kiro_crew.cron_service.schedule import never_fires_warning
 
-            sel().log_api_access(
-                caller="cli",
-                operation="cron.update",
-                outcome="not_found",
-                source="cli",
-                resources=f"job_id={args.job_id} reason=not_found",
-            )
-            print(f"Job not found: {args.job_id}")
+            if never_fires := never_fires_warning(updated.schedule):
+                print(f"Warning: {never_fires}", file=sys.stderr)
+        else:
+            _cron_update_not_found(args.job_id)
 
     elif action == "remove":
         job_id = getattr(args, "job_id", None)
@@ -748,14 +815,14 @@ def _cron_dispatch(args: argparse.Namespace) -> None:
         if svc.enable_job(args.job_id, enabled=False):
             print(f"Paused job: {args.job_id}")
         else:
-            print(f"Job not found: {args.job_id}")
+            print(f"Job not found: {args.job_id}", file=sys.stderr)
             sys.exit(1)
 
     elif action == "resume":
         if svc.enable_job(args.job_id, enabled=True):
             print(f"Resumed job: {args.job_id}")
         else:
-            print(f"Job not found: {args.job_id}")
+            print(f"Job not found: {args.job_id}", file=sys.stderr)
             sys.exit(1)
 
     elif action == "trigger":
@@ -765,7 +832,9 @@ def _cron_dispatch(args: argparse.Namespace) -> None:
         port, _evidence_backed = resolve_client_port_ex(None)
         secret_path = config_dir() / ".local_secret"
         ok, msg = trigger_cron_job(args.job_id, port, secret_path)
-        print(msg)
+        # The success line is the command's output; a failure reason goes to
+        # stderr like every other cron refusal.
+        print(msg, file=sys.stdout if ok else sys.stderr)
         sel().log_api_access(
             caller="cli",
             operation="cron.trigger",
@@ -800,7 +869,7 @@ def _cron_preview(args: argparse.Namespace) -> None:
             source="cli",
             resources=f"script={args.script} reason={type(e).__name__}",
         )
-        print(f"Error: {e}")
+        print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
 
     # Set env vars before loading module so top-level code can see them
@@ -812,7 +881,7 @@ def _cron_preview(args: argparse.Namespace) -> None:
     # Load the script module
     spec = importlib.util.spec_from_file_location("_cron_preview_module", script_path)
     if spec is None or spec.loader is None:
-        print(f"Error: cannot load {script_path}")
+        print(f"Error: cannot load {script_path}", file=sys.stderr)
         sys.exit(1)
     module = importlib.util.module_from_spec(spec)
     # Registered before exec, as the production child does: dataclasses resolves
@@ -821,11 +890,12 @@ def _cron_preview(args: argparse.Namespace) -> None:
     spec.loader.exec_module(module)
     func = getattr(module, func_name, None)
     if func is None:
-        print(f"Error: function '{func_name}' not found in {script_path}")
+        print(f"Error: function '{func_name}' not found in {script_path}", file=sys.stderr)
         sys.exit(1)
     if inspect.iscoroutinefunction(func):
         print(
-            f"Error: function '{func_name}' is async; cron preview only supports synchronous functions"
+            f"Error: function '{func_name}' is async; cron preview only supports synchronous functions",
+            file=sys.stderr,
         )
         sys.exit(1)
 

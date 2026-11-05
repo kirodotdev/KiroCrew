@@ -36,6 +36,14 @@
 #                                        of the managed default (sticky: later
 #                                        runs and updates keep the choice)
 #                                        (env KIROCREW_MANAGED_PYTHON=0)
+#   --no-kas                             skip downloading the KAS engine this
+#                                        release pins (env KIROCREW_INSTALL_KAS=0)
+#
+# KAS engine: after the wheel is installed, the installer runs the new
+# `kirocrew kas install`, which fetches the engine this release pins into the
+# data home (`engines/kas/`) and verifies it against the pin. A failed download
+# only warns and prints the command to retry; the install still succeeds. The
+# switch (agent.kas_bundle) is never turned on here.
 # ──────────────────────────────────────────────────────────────────────
 set -eu
 
@@ -59,6 +67,9 @@ PIN_VERSION=""
 # value or flag always outranks the marker, so an operator can override a
 # sticky choice.
 MANAGED_PYTHON="${KIROCREW_MANAGED_PYTHON:-}"
+# 1 = run `kirocrew kas install` after the wheel is installed (the default);
+# 0 = skip it (--no-kas).
+INSTALL_KAS="${KIROCREW_INSTALL_KAS:-1}"
 
 # Pinned uv release used to provision a managed Python interpreter when the
 # system has none (or when --managed-python asks for one). uv is only ever
@@ -97,6 +108,8 @@ while [ $# -gt 0 ]; do
     --cdn=*) FEED_BASE="${1#*=}"; ARTIFACT_BASE="${1#*=}"; shift ;;
     --managed-python) MANAGED_PYTHON=1; shift ;;
     --system-python) MANAGED_PYTHON=0; shift ;;
+    --no-kas) INSTALL_KAS=0; shift ;;
+    --kas) INSTALL_KAS=1; shift ;;
     -h|--help)
       cat <<'EOF'
 KiroCrew CLI installer (channel / wheel based).
@@ -123,6 +136,10 @@ Options / env:
                                        instead of the managed default (sticky:
                                        later runs and updates keep the choice)
                                        (env KIROCREW_MANAGED_PYTHON=0)
+  --no-kas                             skip downloading the KAS engine this
+                                       release pins; by default the installer
+                                       runs `kirocrew kas install` once the
+                                       wheel is in (env KIROCREW_INSTALL_KAS=0)
   KIROCREW_VENV                        override the managed venv location
   KIROCREW_PYTHON_DIR                  override where uv-provisioned interpreters
                                        are stored (default: beside the data home,
@@ -954,6 +971,11 @@ echo "Verified SHA-256."
 # hardened and blessed. We OR the caller's umask with 022 so we only ever ADD
 # the write-mask bits -- a stricter umask (e.g. 077) is preserved, never
 # loosened. Each branch restores it once its tree is built.
+#
+# _KC_REPLACED_INSTALL turns 1 when this run writes over an existing install
+# (both branches install into the same tree a running gateway was loaded
+# from); the closing restart hint is printed only then.
+_KC_REPLACED_INSTALL=0
 _KC_PREV_UMASK="$(umask)"
 umask "$(printf '%03o' "$(( $(umask) | 022 ))")"
 if command -v pipx >/dev/null 2>&1; then
@@ -997,6 +1019,9 @@ if command -v pipx >/dev/null 2>&1; then
         && err "another kirocrew installer run has been working on $_PIPX_VENV for 15 minutes (lock $_PIPX_LOCK). Nothing was changed. Wait for it to finish, or stop it, then re-run this installer." \
         || err "could not take the install lock $_PIPX_LOCK. Nothing was changed."
     fi
+  fi
+  if [ -n "$_PIPX_VENV" ] && [ -f "$_PIPX_VENV/pyvenv.cfg" ]; then
+    _KC_REPLACED_INSTALL=1
   fi
   if [ -n "$_PIPX_VENV" ] && [ -f "$_PIPX_VENV/pyvenv.cfg" ] && [ ! -L "$_PIPX_VENV" ]; then
     _PIPX_VENV_BACKUP="$_PIPX_VENV.pre-rebuild.$$"
@@ -1110,6 +1135,9 @@ else
   trap 'exit 130' INT
   trap 'exit 143' TERM
   trap 'exit 129' HUP
+  if [ -f "$VENV/pyvenv.cfg" ]; then
+    _KC_REPLACED_INSTALL=1
+  fi
   if [ -f "$VENV/pyvenv.cfg" ] && [ ! -L "${VENV%/}" ]; then
     _VENV_BACKUP="${VENV%/}.pre-rebuild.$$"
     # A tree already at the backup path (a crashed earlier run whose PID was
@@ -1260,6 +1288,9 @@ except OSError:
     elif _is_within "$_NEW_CANON" "$_OLD_CANON" || _is_within "$_OLD_CANON" "$_NEW_CANON"; then
       : # overlapping trees — removing either would damage the new installation
     elif "$VENV/bin/python" -c 'import kiro_crew' >/dev/null 2>&1; then
+      # A gateway still running from the retired venv loses its interpreter
+      # and package tree here, so the closing restart hint applies to it.
+      _KC_REPLACED_INSTALL=1
       echo "Removing the superseded in-data-home venv at $_OLD_VENV ..."
       rm -rf "$_OLD_VENV"
     else
@@ -1312,6 +1343,34 @@ case ":$PATH:" in
   *":$BIN:"*) : ;;
   *) echo "Add $BIN to your PATH first (e.g. add it in your shell profile)." ;;
 esac
+
+# The KAS engine this release pins. The just-installed CLI fetches it from the
+# project's CDN and verifies it against the pin the wheel carries, into the
+# data home's read-only `engines/kas/` leaf (never the venv). It is a separate
+# download, not part of the wheel, so it must never fail the install: a host
+# that cannot reach the CDN keeps a working Kiro Crew and is told the exact
+# command to retry. A version already on disk is a success with no fetch, so a
+# re-run is cheap. agent.kas_bundle is left alone: turning the route on is the
+# user's own step.
+_KAS_RETRY="$BIN/kirocrew kas install"
+if [ "$INSTALL_KAS" = "1" ]; then
+  echo ""
+  echo "Downloading the built-in KAS engine (kirocrew kas install; skip with --no-kas) ..."
+  # Exit 3 is `kas install`'s "this host cannot run the engine" (cli_kas.py
+  # HOST_UNSUPPORTED_EXIT): it already printed why, and a retry cannot help.
+  _kas_rc=0
+  if [ -x "$BIN/kirocrew" ]; then
+    "$BIN/kirocrew" kas install || _kas_rc=$?
+  else
+    _kas_rc=1
+  fi
+  if [ "$_kas_rc" -eq 3 ]; then
+    echo "NOTE: this host cannot run the built-in KAS engine (see above); Kiro Crew is installed without it." >&2
+  elif [ "$_kas_rc" -ne 0 ]; then
+    echo "WARNING: could not download the built-in KAS engine; Kiro Crew is installed without it." >&2
+    echo "Retry when online: $_KAS_RETRY" >&2
+  fi
+fi
 # Point at the actual next step, not just --help: a user who ran the one-liner
 # wants a running gateway. The persistent-service path (systemd/launchd) is
 # otherwise buried in the docs, which is the #1 remote-crew onboarding
@@ -1326,3 +1385,100 @@ echo ""
 echo "Need a non-default port (e.g. 5476 is already taken)? Set it at install time;"
 echo "it is baked into the service unit:"
 echo "  KIROCREW_PORT=5477 kirocrew service install"
+
+# A re-run installs into the same tree a running gateway was loaded from, so
+# that gateway keeps its already-imported old modules while every later import
+# reads the new files, until something restarts it. Name the command that
+# restarts it on this host. Detection is read-only (`systemctl show`,
+# `launchctl print`, `ps`) and nothing here starts, stops or restarts
+# anything. The systemd answer follows service/common.py's
+# restart_command_hint: one active scope gets its own command, both active
+# defer to `kirocrew restart`, which reads both managers. A gateway outside a
+# service manager is found through the pid gateway.lock records, accepted only
+# when that pid still runs a Kiro Crew gateway (the stamp is never cleared, so
+# a stale pid may name an unrelated process).
+#
+# A systemd scope counts only when the manager reports the canonical
+# Id=kirocrew.service, the same ownership test service/linux_systemctl.py's
+# _UnitState.ours applies: on an alias, `systemctl show` answers for the unit
+# the alias points at, and a command naming kirocrew would restart that unit.
+# Properties are read as Key=value lines, without --value, which systemd 219
+# does not have.
+_rg_unit_up() {
+  _rg_show="$(systemctl "$@" show -p Id -p ActiveState kirocrew.service 2>/dev/null || true)"
+  _rg_show="
+$_rg_show
+"
+  case "$_rg_show" in
+    *"
+Id=kirocrew.service
+"*) ;;
+    *) return 1 ;;
+  esac
+  case "$_rg_show" in
+    *"
+ActiveState=active
+"*|*"
+ActiveState=reloading
+"*) return 0 ;;
+  esac
+  return 1
+}
+
+_running_gateway_restart_command() {
+  _rg_uid="$(id -u 2>/dev/null || true)"
+  if command -v systemctl >/dev/null 2>&1; then
+    _rg_system=0
+    _rg_user=0
+    if _rg_unit_up; then _rg_system=1; fi
+    if _rg_unit_up --user; then _rg_user=1; fi
+    if [ "$_rg_system" = 1 ] && [ "$_rg_user" = 1 ]; then
+      echo "kirocrew restart"
+      return 0
+    fi
+    if [ "$_rg_system" = 1 ]; then
+      if [ "$_rg_uid" = 0 ]; then
+        echo "systemctl restart kirocrew"
+      else
+        echo "sudo systemctl restart kirocrew"
+      fi
+      return 0
+    fi
+    if [ "$_rg_user" = 1 ]; then
+      echo "systemctl --user restart kirocrew"
+      return 0
+    fi
+  fi
+  if [ -n "$_rg_uid" ] && command -v launchctl >/dev/null 2>&1 \
+     && launchctl print "gui/$_rg_uid/dev.kirocrew.gateway" >/dev/null 2>&1; then
+    echo "launchctl kickstart -k gui/$_rg_uid/dev.kirocrew.gateway"
+    return 0
+  fi
+  _rg_lock="$_DATA_HOME/gateway.lock"
+  if [ -f "$_rg_lock" ] && [ ! -L "$_rg_lock" ] && command -v ps >/dev/null 2>&1; then
+    _rg_pid=""
+    IFS= read -r _rg_pid < "$_rg_lock" 2>/dev/null || true
+    case "$_rg_pid" in
+      ''|*[!0-9]*) return 1 ;;
+    esac
+    _rg_args="$(ps -p "$_rg_pid" -o args= 2>/dev/null || true)"
+    case "$_rg_args" in
+      # `gateway` as its own word anywhere after the program, so global
+      # flags in between (`kirocrew -v gateway`) still match.
+      *kirocrew*\ gateway|*kirocrew*\ gateway\ *|*kiro_crew*\ gateway|*kiro_crew*\ gateway\ *)
+        echo "kirocrew restart"
+        return 0
+        ;;
+    esac
+  fi
+  return 1
+}
+
+if [ "$_KC_REPLACED_INSTALL" = 1 ]; then
+  if _KC_RESTART_CMD="$(_running_gateway_restart_command)"; then
+    echo "" >&2
+    echo "WARNING: a Kiro Crew gateway is running and still has the previous version loaded." >&2
+    echo "Until it restarts it runs a mix of old and new code. Restart it now:" >&2
+    echo "  $_KC_RESTART_CMD" >&2
+  fi
+fi

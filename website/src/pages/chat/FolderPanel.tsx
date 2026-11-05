@@ -3,9 +3,8 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
 import { Folder, RotateCw, ExternalLink, ChevronDown, ChevronUp, Search, X } from 'lucide-react'
 import DetailPanel from '../../components/DetailPanel'
-import { revealOrOpen, useRevealFailure, useRevealLabel } from '../../components/FilePathMenu'
+import { revealOrOpen, useCanReveal, useRevealFailure, useRevealLabel } from '../../components/FilePathMenu'
 import ErrorNotice from '../../components/ErrorNotice'
-import { useBranding } from '../../hooks/useBranding'
 import { useGatewayPlatform } from '../../hooks/useGatewayPlatform'
 import { api } from '../../api/client'
 import { fileIcon, colorForExt } from '../../utils/fileIcons'
@@ -22,6 +21,7 @@ import {
   type SearchErrorCause,
 } from '../../lib/searchErrorCause'
 import { PierreWorkspaceTree } from '../../pierre/tree'
+import { treeIsPartial } from '../../pierre/treeFolderListings'
 import { useTreeState, useTreeQuery } from './FileBrowserRail'
 import { pathBasename, stripTrailingSeparators } from '../../utils/pathBasename'
 import { mergeTreeMatches } from '../../lib/treeSearchMatches'
@@ -177,7 +177,7 @@ export default function FolderPanel({ path, projectDir, onClose, onFileOpen, onA
   // the recursive search only while the payload is whole. A truncated payload
   // (the server capped its rows) sends the query to the search instead, which
   // reaches the whole project.
-  const treeFiltersLocally = treeMode && treeData?.truncated !== true
+  const treeFiltersLocally = treeMode && !treeIsPartial(treeData)
 
   // A different query is a different search: expansion applies to the result set
   // the user was looking at, not to whatever they type next. Also covers
@@ -371,10 +371,10 @@ export default function FolderPanel({ path, projectDir, onClose, onFileOpen, onA
   // editable field is a transient search string, not a durable draft.
   const reveal = useRevealFailure(cwd)
   // `/api/reveal` shells out on the gateway, so revealing `cwd` only makes sense
-  // when the browser is on that same machine. A remote/tunneled session would
-  // otherwise get a mis-worded "Path copied" alert; hide the button there, the
-  // same directLocal gate every other file-location surface applies.
-  const { directLocal } = useBranding()
+  // when the browser is on that same machine and the machine can open a file
+  // manager. Anywhere else the click could only copy the path, so the button is
+  // hidden by the same gate every other file-location surface applies.
+  const canReveal = useCanReveal()
 
   return (
     <DetailPanel
@@ -398,8 +398,10 @@ export default function FolderPanel({ path, projectDir, onClose, onFileOpen, onA
             className={`flex items-center justify-center h-[26px] rounded-md cursor-pointer transition-colors text-muted hover:text-text hover:bg-bg-hover bg-transparent border-none aria-disabled:cursor-default ${
               reserveRefreshLabel ? 'gap-1 px-1.5' : 'w-[26px]'
             }`}
-            title={t('pages.chat.folderPanel.refresh')}
-            aria-label={t('pages.chat.folderPanel.refresh')}
+            // While inert the name says why, keyed on the same flag as `aria-disabled`: a
+            // listing read the press did not start leaves the control live and its name plain.
+            title={refreshing ? t('pages.chat.folderPanel.refreshing') : t('pages.chat.folderPanel.refresh')}
+            aria-label={refreshing ? t('pages.chat.folderPanel.refreshing') : t('pages.chat.folderPanel.refresh')}
           >
             <RotateCw size={14} className={refreshBusy ? 'animate-spin' : undefined} />
             {/* Laid out before it is needed, never animated: a 26px→auto morph cannot transition,
@@ -413,7 +415,7 @@ export default function FolderPanel({ path, projectDir, onClose, onFileOpen, onA
               </span>
             )}
           </button>
-          {directLocal && (
+          {canReveal && (
             <button
               onClick={() => { void revealOrOpen(cwd, 'reveal', reveal) }}
               className="flex items-center justify-center w-[26px] h-[26px] rounded-md cursor-pointer transition-colors text-muted hover:text-text hover:bg-bg-hover bg-transparent border-none"

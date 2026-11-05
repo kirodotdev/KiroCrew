@@ -190,6 +190,43 @@ def test_main_pipe_proves_the_token_and_moves_bytes(tmp_path, monkeypatch):
         client_mod.main(["--pipe", "127.0.0.1:x", "--token-file", token])
 
 
+def _main_with_fake_pipe(monkeypatch, pipe_arg, *, refuse=False):
+    """Run ``main`` up to the dial; return the (host, port) it would dial."""
+    dialed = []
+
+    def read_token(_path):
+        if refuse:
+            pytest.fail(f"read the token instead of refusing {pipe_arg!r}")
+        return b"tok"
+
+    async def fake_pipe(host, port, *_rest):
+        dialed.append((host, port))
+        return client_mod.EXIT_FINISHED
+
+    monkeypatch.setattr(client_mod, "_read_token", read_token)
+    monkeypatch.setattr(client_mod, "pipe", fake_pipe)
+    monkeypatch.setattr(sys, "stdin", SimpleNamespace(fileno=lambda: 0))
+    assert client_mod.main(["--pipe", pipe_arg, "--token-file", "t"]) == client_mod.EXIT_FINISHED
+    return dialed
+
+
+@pytest.mark.parametrize(
+    "port_text", ["²", "0", "65536", "-1", pytest.param("9" * 5000, id="5000-digits")]
+)
+def test_main_refuses_a_bad_pipe_port_with_a_cli_error(monkeypatch, port_text):
+    # Refused before the token is read, as a CLI message, never a traceback.
+    with pytest.raises(SystemExit) as exc:
+        _main_with_fake_pipe(monkeypatch, f"h:{port_text}", refuse=True)
+    assert isinstance(exc.value.code, str) and exc.value.code.startswith("--pipe")
+
+
+@pytest.mark.parametrize(
+    "pipe_arg,want", [("h:8080", ("h", 8080)), ("h:65535", ("h", 65535)), ("::1:1", ("::1", 1))]
+)
+def test_main_dials_a_pipe_port_in_range(monkeypatch, pipe_arg, want):
+    assert _main_with_fake_pipe(monkeypatch, pipe_arg) == [want]
+
+
 def test_pipe_refusals(tmp_path):
     with pytest.raises(PermissionError):
         client_mod._read_token(_private(tmp_path, "t", "tok", 0o644))

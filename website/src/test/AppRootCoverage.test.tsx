@@ -14,6 +14,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { act, screen, fireEvent, waitFor, within } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
+import { namedCeiling } from './namedCeiling'
 import { setUpdateProgress, sseConnected, sseDisconnected } from '../store/dashboardSlice'
 
 vi.mock('../pages/ChatPage', () => ({ default: () => <div data-testid="chat-page">ChatPage</div> }))
@@ -47,6 +48,8 @@ vi.mock('../api/client', () => ({
     listInstances: vi.fn().mockResolvedValue({ instances: [], warm_set_cap: 5 }),
     patchConfig: vi.fn().mockResolvedValue({}),
     chatSlotAgent: vi.fn().mockResolvedValue({}),
+    // The left dock reads the roster; an empty one keeps its notice out of these frames.
+    members: vi.fn().mockResolvedValue({ members: [] }),
     chatSlotReasoningEffort: vi.fn().mockResolvedValue({}),
     chatSlotModel: vi.fn().mockResolvedValue({}),
     chatMode: vi.fn().mockResolvedValue({}),
@@ -137,10 +140,12 @@ function renderShell(route = '/chat') {
 const changelogDialog = () => screen.findByRole('dialog', { name: 'Changelog' })
 
 describe('baseline probe', () => {
-  it('renders the shell', () => {
+  it('renders the shell', async () => {
     localStorage.setItem('mc-last-version', '0.4.0')
-    renderWithProviders(<App />, { route: '/chat' })
+    const { queryClient } = renderWithProviders(<App />, { route: '/chat' })
     expect(screen.getByTestId('dashboard-shell')).toBeInTheDocument()
+    // Chain: the shell's mount-time queries (status, system, kiro-usage, apps, ...) each answer and re-render App.
+    await waitFor(() => expect(queryClient.isFetching()).toBe(0), namedCeiling('SHELL_QUERIES_SETTLED', 5000))
   })
 })
 
@@ -228,7 +233,8 @@ describe('App — changelog modal controls', () => {
 async function startUpdate(route = '/chat') {
   const rendered = renderShell(route)
   const dialog = await changelogDialog()
-  fireEvent.click(within(dialog).getByRole('button', { name: 'Update Now' }))
+  // applyUpdate's failure lands in App a few microtasks after the click: keep it inside the act.
+  await act(async () => { fireEvent.click(within(dialog).getByRole('button', { name: 'Update Now' })) })
   return rendered
 }
 
@@ -254,6 +260,36 @@ describe('App — applying an update', () => {
     expect(screen.queryByText('Updating Kiro Crew…')).toBeNull()
 
     fireEvent.click(within(dialog).getByRole('button', { name: 'Dismiss' }))
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Update error' })).toBeNull())
+  })
+
+  it('keeps focus inside the failure dialog and dismisses it on Escape', async () => {
+    vi.mocked(api.applyUpdate).mockRejectedValueOnce(new Error('no space left on device'))
+    await startUpdate()
+
+    const dialog = await screen.findByRole('dialog', { name: 'Update error' })
+    // Focus moves in once the dialog's effects have run.
+    await waitFor(() => expect(dialog.contains(document.activeElement)).toBe(true))
+    // The agent hand-off stays beside Dismiss.
+    const ask = within(dialog).getByRole('button', { name: /ask the agent/i })
+    const dismiss = within(dialog).getByRole('button', { name: 'Dismiss' })
+    dismiss.focus()
+    fireEvent.keyDown(dismiss, { key: 'Tab' })
+    expect(document.activeElement).toBe(ask)
+    fireEvent.keyDown(ask, { key: 'Tab', shiftKey: true })
+    expect(document.activeElement).toBe(dismiss)
+
+    // A page shortcut typed inside the dialog stays inside it.
+    const pageKeys = vi.fn()
+    window.addEventListener('keydown', pageKeys)
+    try {
+      fireEvent.keyDown(dismiss, { key: 'k', ctrlKey: true })
+      expect(pageKeys).not.toHaveBeenCalled()
+    } finally {
+      window.removeEventListener('keydown', pageKeys)
+    }
+
+    fireEvent.keyDown(dismiss, { key: 'Escape' })
     await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Update error' })).toBeNull())
   })
 
@@ -289,10 +325,10 @@ describe('App — update progress overlay', () => {
     const { store } = await startUpdate()
     await screen.findByText('Updating Kiro Crew…')
 
-    act(() => { store.dispatch(setUpdateProgress({ step: 'restarting', detail: 'Restarting server…' })) })
+    await act(async () => { store.dispatch(setUpdateProgress({ step: 'restarting', detail: 'Restarting server…' })) })
     expect(screen.getByText('Page will reconnect when ready…')).toBeInTheDocument()
 
-    act(() => { store.dispatch(sseDisconnected()) })
+    await act(async () => { store.dispatch(sseDisconnected()) })
     const note = screen.getByTestId('update-reconnecting')
     expect(note.textContent).toContain('Gateway is restarting — reconnecting…')
     // The idle copy stands down: both lines together would say "waiting" and
@@ -301,7 +337,7 @@ describe('App — update progress overlay', () => {
 
     // Reconnected (the gateway is back, the reload latch takes it from here):
     // the transient line yields back to the idle copy.
-    act(() => { store.dispatch(sseConnected()) })
+    await act(async () => { store.dispatch(sseConnected()) })
     expect(screen.queryByTestId('update-reconnecting')).toBeNull()
     expect(screen.getByText('Page will reconnect when ready…')).toBeInTheDocument()
   })
@@ -339,9 +375,9 @@ describe('App — header capsule resource posture', () => {
     } as never)
     renderWithProviders(<App />, { route: '/chat' })
 
-    expect(await screen.findByText('Critical')).toBeInTheDocument()
+    const chip = await screen.findByRole('button', { name: 'Critical' })
     expect(screen.getByText('· cap: 2')).toBeInTheDocument()
-    expect(screen.getByTitle(/Host memory is critically low \(1.3 GB free\)/)).toBeInTheDocument()
+    expect(chip).toHaveAccessibleDescription(/Memory is very low on this computer \(1.3 GB free\).*Up to 2 subagents can run at once/)
   })
 
   it('flags a tight host posture', async () => {
@@ -352,8 +388,8 @@ describe('App — header capsule resource posture', () => {
     } as never)
     renderWithProviders(<App />, { route: '/chat' })
 
-    expect(await screen.findByText('Tight')).toBeInTheDocument()
-    expect(screen.getByTitle(/Host memory is tight \(3.0 GB free\)/)).toBeInTheDocument()
+    const chip = await screen.findByRole('button', { name: 'Tight' })
+    expect(chip).toHaveAccessibleDescription('Memory is low on this computer (3.0 GB free). Heavy work may be slower.')
     // No cap reported, so no cap clause is appended.
     expect(screen.queryByText(/cap:/)).toBeNull()
   })
@@ -454,6 +490,8 @@ describe('App — notification popover dismissal', () => {
 
     fireEvent.pointerDown(document.body)
     expect(bell.getAttribute('aria-expanded')).toBe('false')
+    // Chain: closePanel starts the slide-out; its settle callback flips the sheet to `closed` and unmounts it.
+    await waitFor(() => expect(document.querySelector('[data-nc-phase]')).toBeNull(), namedCeiling('NC_SHEET_SLID_OUT', 5000))
   })
 
   it('stays open when the press lands on the bell itself', async () => {

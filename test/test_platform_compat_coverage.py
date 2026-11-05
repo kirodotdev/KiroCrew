@@ -972,11 +972,6 @@ class TestProcessHandles:
         monkeypatch.delattr(pc.ctypes, "WinDLL", raising=False)
         assert pc.process_handle_active(9) is False
 
-    def test_close_handle_swallows_a_failure(self, monkeypatch):
-        monkeypatch.setattr(pc, "IS_WINDOWS", True)
-        monkeypatch.delattr(pc.ctypes, "WinDLL", raising=False)
-        pc.close_process_handle(9)  # suppressed, must not raise
-
 
 class TestWindowsImageNameMatching:
     def test_image_name_is_read_from_the_snapshot(self, monkeypatch):

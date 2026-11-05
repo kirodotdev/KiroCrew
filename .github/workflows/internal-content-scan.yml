@@ -38,15 +38,25 @@ permissions: {}
 jobs:
   scan:
     name: internal-content-scan
-    # `kirocrew-runners` larger-runner group, reached by its runner LABEL rather
-    # than by GROUP. This is a `workflow_call` target, so `github.repository` is
-    # the CALLER's, and onboarding another repository is a copy of the caller:
-    # naming this repository keeps every other caller on the hosted image rather
-    # than asking for a label no runner it can see carries, which would wait out
-    # GitHub's pending limit instead of running. See "Larger runners for the
-    # review lanes and CodeQL" in docs/ci/ci-and-reviews.md.
-    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}
-    timeout-minutes: 10
+    # The CodeBuild fleet, under this repository's shared actor and event
+    # admission. A `workflow_call` target has no event of its own, so
+    # `github.event_name` and `github.repository` are the CALLER's: the events
+    # named below are the three internal-content-scan-gate.yml delivers.
+    #
+    # Both non-fleet branches are load-bearing. A run the fleet did not admit --
+    # an actor outside CODEBUILD_ACTOR_IDS, or the variable unset -- takes the
+    # `kirocrew-runners` group's own runner LABEL, which keeps it off the
+    # enterprise-shared standard pool. A call from any OTHER repository stays on
+    # the hosted image: onboarding is a copy of the caller at "no repo-specific
+    # configuration", and a job asking for a label no runner it can see carries
+    # waits out GitHub's pending limit instead of running. A fork pull request
+    # reaches neither, because the caller's job-level `if` skips the call. See
+    # "Larger runners for the review lanes and CodeQL" in
+    # docs/ci/ci-and-reviews.md.
+    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && (github.event_name == 'push' || github.event_name == 'merge_group' || (github.event_name == 'pull_request' && (github.event.action == 'opened' || github.event.action == 'synchronize') && github.event.pull_request.head.repo.full_name == github.repository)) && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}
+    # A full-history checkout on the CodeBuild fleet can take most of ten
+    # minutes even with the blobless filter below; 20 leaves headroom.
+    timeout-minutes: 20
     permissions:
       contents: read
       id-token: write # AWS OIDC; no long-lived keys exist for this role
@@ -56,6 +66,10 @@ jobs:
           persist-credentials: false
           # Both ends of the range have to be present to diff them.
           fetch-depth: 0
+          # Blobless: every commit still arrives and the working tree is
+          # checked out in full; git fetches the blobs the diff needs on
+          # demand instead of downloading every historical blob up front.
+          filter: blob:none
 
       - name: Compute the diff
         env:

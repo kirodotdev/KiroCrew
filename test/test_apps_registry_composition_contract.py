@@ -38,6 +38,7 @@ from types import ModuleType, SimpleNamespace
 from typing import Any
 from unittest import mock
 
+import composition_contract_checks
 import pytest
 
 from kiro_crew.apps import registry
@@ -99,6 +100,7 @@ FROZEN_NAMES: tuple[str, ...] = (
     "Iterator",
     "Literal",
     "NATIVE_WINDOWS_HOOK_REFUSAL",
+    "NATIVE_WINDOWS_SHELL_REFUSAL",
     "Path",
     "PinnedPathRefusal",
     "PlatformCompositionError",
@@ -212,6 +214,7 @@ FROZEN_NAMES: tuple[str, ...] = (
     "_looks_like_git_url",
     "_manifest_cache_dir",
     "_manifest_cache_path",
+    "_manifest_shell_platform_refusal",
     "_manifest_source_coordinates",
     "_merge_manifest",
     "_move_checkout_aside",
@@ -324,6 +327,7 @@ FROZEN_NAMES: tuple[str, ...] = (
     "runtime_provisions_requirements",
     "sandboxed_spawn_argv",
     "sandboxed_spawn_argv_async",
+    "sanitize_links",
     "scrub_env",
     "sel",
     "set_app_provenance",
@@ -439,10 +443,7 @@ def _source(module: ModuleType) -> str:
 # ---------------------------------------------------------------------------
 
 
-class TestTheSurfaceSurvivesTheSplit:
-    def test_the_frozen_inventory_is_not_empty(self) -> None:
-        # An emptied list would make the case below pass while checking nothing.
-        assert len(FROZEN_NAMES) > 200
+class TestTheSurfaceSurvivesTheSplit(composition_contract_checks.TheFrozenInventoryIsNotEmpty):
 
     @pytest.mark.parametrize("name", FROZEN_NAMES)
     def test_every_name_the_module_bound_still_resolves_to_its_owners_object(
@@ -731,6 +732,7 @@ class TestAPatchOnTheFacadeReachesEveryCallSite:
             # catalog: a detectInstalled probe (its spawn failure reads as absent).
             probe = [{"name": "demo-app", "detectInstalled": "true"}]
             patched.setattr(registry, "app_execution_denied", lambda *a, **k: None)
+            patched.setattr(registry, "_manifest_shell_platform_refusal", lambda: None)
             assert await registry._detect_installed_probe(probe, {}) == set()
             # indexes: an external index fetch (its spawn failure reads as None).
             assert (
@@ -934,7 +936,7 @@ def _facade_reads(source: str) -> set[tuple[str, str]]:
     return found
 
 
-class TestLayering:
+class TestLayering(composition_contract_checks.TheFacadeHelperIsOnlyEverCalledInPlace):
     def test_the_import_reader_sees_every_spelling_of_an_engine_import(self) -> None:
         # A reader that saw only absolute module strings would pass an owner importing
         # the facade lazily or relatively, which is the violation it exists to catch.
@@ -978,24 +980,6 @@ class TestLayering:
                 if isinstance(node, ast.Constant) and isinstance(node.value, str)
             }
             assert registry.__name__ not in constants, f"{part.__name__} spells the facade"
-
-    def test_the_facade_helper_is_only_ever_called_in_place(self) -> None:
-        # An alias (``f = _facade``) or a stored module would hide a fourth call site
-        # from the reader above, so every reference to ``_facade`` in an owner is its
-        # import or the callee of a call.
-        for part in PARTS:
-            tree = ast.parse(_source(part))
-            callees = {
-                id(node.func)
-                for node in ast.walk(tree)
-                if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
-            }
-            stray = [
-                node.lineno
-                for node in ast.walk(tree)
-                if isinstance(node, ast.Name) and node.id == "_facade" and id(node) not in callees
-            ]
-            assert stray == [], f"{part.__name__} refers to _facade at lines {stray}"
 
     def test_the_call_site_reader_can_fail(self) -> None:
         assert _facade_reads("def f():\n    return _facade()._run_app_build(1)\n") == {

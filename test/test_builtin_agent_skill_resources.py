@@ -77,7 +77,7 @@ AGENTS: dict[str, tuple[object, tuple[str, ...]]] = {
     ),
     "kirocrew-team-lead": (
         service_agents._install_team_lead_agent,
-        ("team-lead", "goal-conductor", "dashboard"),
+        ("team-lead", "goal-conductor", "dashboard", "widgets", "living-ui", "artifacts"),
     ),
     "kirocrew-dashboard-manager": (
         service_agents._install_dashboard_manager_agent,

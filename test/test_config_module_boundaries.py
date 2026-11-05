@@ -333,6 +333,10 @@ _OWNER_CONFIG_IMPORTS = {
         "kiro_crew.config.sections_slack",
     },
     "kiro_crew.config.sections_stt": {"kiro_crew.config.fields"},
+    "kiro_crew.config.sections_browser": {
+        "kiro_crew.config.fields",
+        "kiro_crew.config.sections_defaults",
+    },
     "kiro_crew.config.sections_decisions": {
         "kiro_crew.config.fields",
         "kiro_crew.config.sections_agent_fields",
@@ -349,15 +353,18 @@ _OWNER_CONFIG_IMPORTS = {
     "kiro_crew.config.migration": {
         "kiro_crew.config.sections",
         "kiro_crew.config.superseded_defaults",
+        "kiro_crew.config.windows_exec_adoption",
     },
     "kiro_crew.config.loader_credentials": {"kiro_crew.config.paths", "kiro_crew.config.sections"},
     "kiro_crew.config.loader_locations": {"kiro_crew.config.paths", "kiro_crew.config.sections"},
+    "kiro_crew.config.write_provenance": {"kiro_crew.config.paths"},
     "kiro_crew.config.loader_document": {
         "kiro_crew.config.loader_locations",
         "kiro_crew.config.migration",
         "kiro_crew.config.paths",
         "kiro_crew.config.sections",
         "kiro_crew.config.validation",
+        "kiro_crew.config.write_provenance",
     },
     "kiro_crew.config.loader_builders": {
         "kiro_crew.config.loader_document",
@@ -411,6 +418,7 @@ _OWNER_CONFIG_IMPORTS = {
         "kiro_crew.config.sections",
         "kiro_crew.config.superseded_defaults",
         "kiro_crew.config.validation",
+        "kiro_crew.config.windows_exec_adoption",
     },
 }
 

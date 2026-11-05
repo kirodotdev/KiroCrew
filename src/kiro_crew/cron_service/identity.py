@@ -42,35 +42,18 @@ def agent_sequence_dispatches(seq: list[str]) -> bool:
 def split_cron_agent_member(agent_id: str, member_id: str) -> tuple[str, str]:
     """Classify a cron create's agent name as a provider template OR a member.
 
-    ``--agent`` / the ``agent`` field is the one slot every create surface offers
-    for naming either a provider template or a crew member. The dashboard's own UI
-    resolves a member pick client-side and sends a separate ``member_id``; the CLI,
-    the MCP ``cron_add`` tool and a scripted dashboard POST do not, so a member name
-    arrives in ``agent_id`` and is captured as ``selection_kind='template'`` with the
-    member name mistaken for a provider template -- which the cron chat's reply path
-    then cannot resolve, failing to bind the agent on every reply.
+    The CLI, the MCP ``cron_add`` tool and a scripted dashboard POST send a member
+    name in ``agent_id``; recorded as a template, the cron chat's reply path could
+    not resolve it. When ``member_id`` is not given, the live resolver
+    (:func:`kiro_crew.config.loader._resolve_agent_selection`) decides. It checks the
+    member alias first, so a member that also ships ``~/.kiro/agents/<name>.json``
+    (e.g. ``kirocrew-conductor``) is still a member: returned as ``("", name)``.
+    A provider template, or an explicit ``member_id``, is returned unchanged.
 
-    Resolve that split ONCE, here, so every entry point agrees: when ``member_id`` is
-    not already given, defer the classification to the live resolver
-    (:func:`kiro_crew.config.loader._resolve_agent_selection`) and read its result,
-    rather than re-coding the precedence. The resolver checks the crew-member alias
-    FIRST -- a name in ``config.agents`` is an alias hit regardless of whether a
-    materialized provider template of the same name also exists -- so a member whose
-    name also ships a ``~/.kiro/agents/<name>.json`` spec (e.g. ``kirocrew-conductor``)
-    still classifies as a member, not a template. When the resolver reports an alias
-    hit carrying a durable ``member_id`` we return it as the member (``agent_id``
-    cleared, ``member_id`` set); a name that resolves to a bare provider template, and
-    an explicit ``member_id`` the caller already resolved, are returned unchanged.
-
-    This is a CREATE-only fix: it runs at the three owner-driven create callers
-    (CLI ``cron add``, MCP ``cron_add``, dashboard ``POST /api/crons``) that know
-    the user just picked an agent. The App Kit SDK (``ctx.cron.add_job``)
-    deliberately does NOT call this -- apps are confined and must not reach a
-    member's private memory by naming it. It leaves ``bind_cron_memory``'s
-    record-level ``agent_id``-is-a-template contract untouched -- the promotion
-    never happens inside ``add_job`` -- so editing an existing schedule's
-    ``agent`` field to a member name still records a template (the update paths
-    are out of scope).
+    Only the owner-driven create callers (CLI ``cron add``, MCP ``cron_add``,
+    ``POST /api/crons``) call this. The App Kit SDK (``ctx.cron.add_job``) must
+    not: an app may not reach a member's private memory by naming it. Update
+    paths keep recording ``agent_id`` as a template (``bind_cron_memory``).
 
     A name to classify loads the configuration from disk on every call, so an
     ``async`` caller hands this function to ``asyncio.to_thread``.
@@ -90,25 +73,13 @@ def split_cron_agent_member(agent_id: str, member_id: str) -> tuple[str, str]:
 def build_cron_session_context(job: CronJob) -> tuple[str, str]:
     """Compute (session_key, prompt) for one cron run.
 
-    When ``job.persistent_session`` is True (default, legacy behaviour):
-      - session_key is stable across runs: ``cron:{job.id}``
-      - the prompt is ``job.message``; the previous run's result travels
-        separately, as :func:`cron_prior_result_context`, so it lands in the
-        context region ahead of the current-request boundary rather than
-        inside the owner's request
+    A persistent job (the default) keys every run ``cron:{job.id}``; its previous
+    result travels separately (:func:`cron_prior_result_context`), ahead of the
+    current-request boundary. A stateless job gets ``cron:{job.id}:{uuid}``, a
+    fresh session per run with no carried result. Both keep the ``cron:{job.id}``
+    prefix the reaper matches on. The prompt is ``job.message`` either way.
 
-    When ``job.persistent_session`` is False:
-      - session_key is unique per call: ``cron:{job.id}:{uuid}``
-        → each run opens a fresh agent session; no context accumulation
-      - prompt is the bare ``job.message`` and there is no carried result
-        (accumulated state is the other half of the bug)
-
-    The key prefix ``cron:{job.id}`` is preserved in both modes so the
-    reaper's existing session-matching logic continues to work.
-
-    This is a pure function — all side effects (session creation, Slack
-    delivery, acked_items handling) happen in the caller. Keep it that way
-    so it stays trivially unit-testable.
+    Pure: the caller does every side effect.
     """
     if job.persistent_session:
         return f"cron:{job.id}", job.message
@@ -163,25 +134,11 @@ def cron_prior_result_context(job: CronJob) -> str:
 def cron_session_key_is_stable(job: CronJob) -> bool:
     """Whether every run of *job* presents the SAME session key.
 
-    Lives beside :func:`build_cron_session_context` because it is the inverse of
-    that function's branch, and a predicate that can silently disagree with the
-    code that mints the key is worse than no predicate: it fails QUIET, as a
-    warning that stops firing or one that fires on the wrong job.
-
-    Two minting paths feed this, which is the whole reason callers must not infer
-    the answer from the key's shape:
-
-    * :func:`build_cron_session_context` -- ``cron:<job_id>`` when
-      ``persistent_session``, else ``cron:<job_id>:<run_id>`` with a fresh
-      ``uuid4`` per fire, so the three-segment form there is EPHEMERAL.
-    * the sequential-agent path in the Slack gateway -- ``cron:<job_id>:<agent>``
-      whenever ``agent_sequence`` holds more than one agent. It builds the key
-      directly rather than calling the function above, and an agent NAME is
-      stable, so the three-segment form there is DURABLE.
-
-    So the two forms are indistinguishable by separator count, and only the job
-    record separates them. The sequential path ignores ``persistent_session``
-    entirely, which is why it is checked second rather than combined.
+    Kept beside :func:`build_cron_session_context` so the two cannot disagree.
+    The key's shape cannot answer it: ``cron:<job_id>:<run_id>`` from
+    :func:`build_cron_session_context` is fresh per fire, while the Slack
+    gateway's sequential-agent path mints ``cron:<job_id>:<agent>``, which is
+    stable. That path ignores ``persistent_session``, so it is checked first.
     """
     if agent_sequence_dispatches(job.agent_sequence):
         return True
@@ -256,20 +213,12 @@ def _is_legacy_member_schedule(job: CronJob) -> bool:
 def legacy_member_cron_execution(job: CronJob, *, config: Any = None) -> ExecutionContext | None:
     """The member a V2 schedule with no captured execution runs as, or a refusal.
 
-    0.7.0-insider.1 to .5 stored a member schedule as ``{member_id: <alias>,
-    memory_store}`` with no ``execution_context``. The start-of-process store
-    upgrade gives that store its ``owner_member_id``, and
-    :func:`migrate_legacy_member_schedules` then captures this result into the
-    record once; dispatch never runs an uncaptured one. Attribution is the one
-    shared by a chat with the same shape
-    (``execution_context.attribute_legacy_member``, which
-    ``_backfill_legacy_member_record`` also calls): the store's declared
-    owner must be exactly one configured member, the schedule's ``member_id``
-    must name that member by alias or by id, and the member must still resolve
-    to this store. Nothing is guessed. The result is the member's own execution;
-    :func:`migrate_legacy_member_schedules` then keeps whatever ``agent_id`` the
-    schedule named as its template and brings the session record the old build
-    left under ``cron:<id>`` into agreement.
+    The legacy shape is ``{member_id: <alias>, memory_store}`` with no
+    ``execution_context``; :func:`migrate_legacy_member_schedules` captures this
+    result into the record once. Attribution is shared with chats
+    (``execution_context.attribute_legacy_member``): the store's declared owner
+    must be exactly one configured member, ``member_id`` must name that member by
+    alias or id, and the member must still resolve to this store. Nothing is guessed.
 
     ``None`` for any other shape, including a member schedule on a V1 store,
     which keeps its V1 dispatch. Every refusal is a
@@ -336,22 +285,16 @@ def legacy_member_cron_execution(job: CronJob, *, config: Any = None) -> Executi
 def migrate_legacy_member_schedules(store_dir: Path) -> list[str]:
     """Capture the execution of every pre-identity member schedule once; never raises.
 
-    Run after the start-of-process store upgrade, before the scheduler arms, so
-    every reader of the record -- dispatch, the dashboard's session registry, the
-    crewmate pages, which compare ``member_id`` with the member's permanent id --
-    sees an ordinary captured schedule rather than re-deriving one on each fire.
-    A compare-and-set keyed on shape: under the store's own lock, only a record
-    that still has no ``execution_context`` is rewritten, and only its
-    ``execution_context`` and ``member_id`` change. A named ``agent_id`` is kept
-    unchanged and captured as the execution's template, as :func:`bind_cron_memory`
-    does for a schedule that names an agent today. Before capturing the schedule,
-    the session record the old build left under its stable key is brought into
-    agreement (:func:`_reconcile_legacy_cron_session`), since dispatch publishes
-    the capture under that key and refuses a record that disagrees. If that step
-    raises, the schedule stays uncaptured for the next start to retry. A
-    schedule that cannot be attributed is left as it was and logged with its
-    repair; dispatch refuses it, and any schedule still uncaptured, through
-    :func:`resolve_cron_memory`. Returns the ids of the schedules it captured.
+    Run after the store upgrade, before the scheduler arms, so every reader of the
+    record (dispatch, the session registry, crewmate pages) sees an ordinary
+    captured schedule. Under the store lock, only a record with no
+    ``execution_context`` is rewritten, and only ``execution_context`` and
+    ``member_id`` change; a named ``agent_id`` becomes the template, as in
+    :func:`bind_cron_memory`. The session record under the stable key is
+    reconciled first (:func:`_reconcile_legacy_cron_session`) because dispatch
+    refuses a record that disagrees; if that raises, the schedule stays
+    uncaptured for the next start. An unattributable schedule is logged with its
+    repair and refused by :func:`resolve_cron_memory`. Returns the captured ids.
     """
     from dataclasses import replace
 
@@ -428,35 +371,21 @@ def migrate_legacy_member_schedules(store_dir: Path) -> list[str]:
 def _reconcile_legacy_cron_session(job: CronJob, execution: ExecutionContext) -> None:
     """Make the session record the old build left under *job*'s key carry *execution*.
 
-    0.7.0-insider.1 to .5 wrote a member schedule's session as
-    ``{memory_store: <store>, agent: <member_id selector>}`` under ``cron:<id>``
-    on its first fire, whatever ``agent_id`` the schedule named. The single-agent
-    fire publishes the captured execution under that same key with
-    ``bind_session_execution(key, execution)`` -- no ``replace_existing`` -- which
-    refuses any record that decodes to something else. The first read of that
-    record backfills it into the member's OWN template
-    (``execution_context._backfill_legacy_member_record``), so a schedule that
-    named an agent would be refused on every fire until it auto-paused; a record
-    whose ``agent`` is not the member is never backfilled and is refused as
-    identity-less instead. Either way the record is the schedule's own: the key
-    is minted from the job id, and its store is the one the schedule was just
-    attributed through. So the capture is written into it here, once.
+    The legacy record is ``{memory_store: <store>, agent: <member_id selector>}``
+    under ``cron:<id>``. Dispatch publishes the capture there with a plain
+    ``bind_session_execution`` that refuses any record decoding to something
+    else, and the first read backfills the record into the member's OWN template
+    (``_backfill_legacy_member_record``); without this step a schedule naming an
+    agent would be refused every fire until it auto-paused. The record is the
+    schedule's own: the key comes from the job id and the store was just attributed.
 
-    Two shapes, one identity. A record still in the legacy shape is rewritten
-    by a compare-and-set against exactly that shape: no carrier, the schedule's
-    store, persistent, no app, and an ``agent`` naming what the schedule itself
-    names -- its ``member_id`` selector as the old build wrote it, the member's
-    id, or the ``agent_id`` it kept. A record some earlier read already
-    backfilled is rebound through :func:`bind_session_execution` with
-    ``replace_existing`` and the decoded value as ``expected``, and only when it
-    differs from the capture in its selection alone -- same member, store, mode
-    and app (:func:`_differs_in_selection_only`) -- so the rewrite changes
-    nothing else. Nothing here guesses a
-    member: the identity written is the one
-    :func:`legacy_member_cron_execution` attributed, and a record that names
-    anyone else, a restricted mode or an app is left as it is and logged, since
-    dispatch will refuse it with its own reason. Not vouched: a cron key is never
-    the caller slot of an own-store admission.
+    A record still in the legacy shape is rewritten by a compare-and-set on that
+    exact shape: no carrier, the schedule's store, persistent, no app, and an
+    ``agent`` that is the ``member_id`` selector, the member's id or the kept
+    ``agent_id``. An already backfilled record goes to
+    :func:`rebind_cron_session_template`. Any other record is left and logged;
+    dispatch refuses it with its own reason. Not vouched: a cron key is never the
+    caller slot of an own-store admission.
 
     Only the stable single-agent key is reconciled. A per-run key is fresh on
     every fire, and the sequential path reads the record and replaces it itself.
@@ -579,23 +508,17 @@ def recapture_cron_template(job: CronJob, agent_id: str) -> dict[str, Any] | Non
     a member schedule, else the ``kirocrew`` floor that dispatch maps to the
     configured default. Store, member, mode and app are left as captured.
 
-    An owner update that names a crew member in ``agent_id`` is REFUSED rather
-    than silently recorded as a non-resolving template. Re-pointing an existing
-    schedule at a member is not supported: it would change the capture's store
-    and identity under the schedule's stable ``cron:<id>`` session key, which the
-    first run binds and the next fire's rebind cannot reconcile. The member split
-    is run here only to DETECT that case and refuse it clearly; the create paths
-    are the supported way to run a schedule as a member. An app-owned job is not
-    classified -- the App Kit SDK (:meth:`AppCronSDK.update_job`) forwards
-    ``agent_id`` after only an ownership check, and an app must not even name a
-    member here -- so for an app, and for a real provider template name,
-    ``agent_id`` is re-pointed verbatim.
+    An owner update naming a crew member in ``agent_id`` is REFUSED: it would
+    change the store and identity under the stable ``cron:<id>`` session key,
+    which the next fire's rebind cannot reconcile. Create a new schedule instead.
+    An app-owned job is not classified (:meth:`AppCronSDK.update_job` forwards
+    ``agent_id`` after only an ownership check), so for an app, and for a provider
+    template name, ``agent_id`` is re-pointed verbatim.
 
     Returns ``None`` when nothing moves: no capture yet (an uncaptured record
     dispatches from ``agent_id`` already), an ``agent_id`` equal to the stored
-    one (the job form resubmits the field on every edit, and a schedule made
-    from a template chat names its template only in the capture), or a template
-    the capture already names.
+    one (the job form resubmits the field on every edit), or a template the
+    capture already names.
     """
     from dataclasses import replace
 
@@ -607,16 +530,12 @@ def recapture_cron_template(job: CronJob, agent_id: str) -> dict[str, Any] | Non
     app_owned = (job.created_by or "").startswith("app:")
     already_member = execution.member_id is not None or execution.selection_kind == "member"
     if agent_id and not app_owned and not already_member:
-        # Classify the name the same way create does, but only to REFUSE a member
-        # name: re-pointing an existing schedule at a member is unsupported (it
-        # cannot be done without changing the stable session's identity, which
-        # the next fire refuses). Refusing beats recording a member name as a
-        # non-resolving template -- which the create-path fix removed -- so the
-        # name is never silently mis-recorded. A provider template falls through.
+        # Classify as create does, only to REFUSE a member name rather than record
+        # it as a non-resolving template. A provider template falls through.
         _resolved_agent, member_name = split_cron_agent_member(agent_id, "")
         if member_name:
             raise ValueError(
-                "re-pointing an existing schedule to a crew member isn't "
+                "re-pointing an existing schedule to a Bot isn't "
                 f"supported; create a new schedule to run as {agent_id}"
             )
     if agent_id:

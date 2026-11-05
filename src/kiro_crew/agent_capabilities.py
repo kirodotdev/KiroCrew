@@ -1974,8 +1974,8 @@ def member_backend_warning(spec: dict) -> dict | None:
         if code is None:
             continue
         warning: dict[str, Any] = {"code": code, "backend": backend, "setting": setting}
-        # Also on a harness refusal: switching to a member backend that loads
-        # saved specs (kas) would then refuse these, so the page names both fixes.
+        # Also on a harness refusal: some member backends that load saved specs
+        # (claude, codex, deepseek, pi) would then refuse these, so the page names both fixes.
         if limited:
             warning["servers"] = list(limited)
         return warning

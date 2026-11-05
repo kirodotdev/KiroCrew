@@ -6,10 +6,14 @@ import { stubPathKinds } from './pathKindStub'
 
 // ── Mocks ────────────────────────────────────────────────────────────────────
 
-const brandingEnv = vi.hoisted(() => ({ directLocal: true }))
+const brandingEnv = vi.hoisted(() => ({ directLocal: true, desktopLauncher: true }))
 
 vi.mock('../hooks/useBranding', () => ({
-  useBranding: () => ({ botName: 'Test', avatar: '', directLocal: brandingEnv.directLocal }),
+  useBranding: () => ({
+    botName: 'Test', avatar: '',
+    directLocal: brandingEnv.directLocal,
+    desktopLauncher: brandingEnv.desktopLauncher,
+  }),
 }))
 
 vi.mock('../api/client', () => ({
@@ -51,6 +55,7 @@ function rightClick(el: Element) {
 beforeEach(() => {
   vi.clearAllMocks()
   brandingEnv.directLocal = true
+  brandingEnv.desktopLauncher = true
   __resetPathKindCache()
 })
 
@@ -163,6 +168,7 @@ describe('MarkdownRenderer path chips — context menu (FilePathMenu)', () => {
   })
 
   it('"Copy path" calls copyToClipboard with the chip path', async () => {
+    vi.mocked(copyToClipboard).mockResolvedValueOnce(true)
     stubKind('file')
     const { container } = render(
       <MarkdownRenderer content={`\`${TEST_PATH}\``} />,
@@ -186,6 +192,8 @@ describe('MarkdownRenderer path chips — context menu (FilePathMenu)', () => {
     fireEvent.click(copyItem!)
 
     expect(copyToClipboard).toHaveBeenCalledWith(TEST_PATH)
+    // The write settles after the click (the menu stays open); wait for the row to confirm it.
+    await waitFor(() => expect(document.querySelector('[role="menu"]')?.textContent).toContain('Path copied'))
   })
 
   it('hides open/reveal when directLocal is false (remote session)', async () => {
@@ -245,6 +253,75 @@ describe('MarkdownRenderer path chips — context menu (FilePathMenu)', () => {
     expect(title).toContain('Shift+click to copy path')
     expect(title).not.toContain('reveal in Finder')
     expect(title).not.toContain('file manager')
+  })
+
+  // The reported case: a browser that reads as direct-local (an `ssh -L` tunnel)
+  // on a gateway host with no desktop launcher. A directory chip in a bubble
+  // that wires no in-app opener offered "Show in file manager" and "Copy path",
+  // and the first one copied the path. Neither the menu nor the hover may
+  // promise a file manager there.
+  describe('on a direct-local session whose gateway host has no desktop launcher', () => {
+    beforeEach(() => { brandingEnv.desktopLauncher = false })
+
+    it('a directory chip menu offers Copy path, and no file manager', async () => {
+      stubKind('dir')
+      const { container } = render(
+        <MarkdownRenderer content={'`/home/user/project/reports`'} />,
+      )
+      const chip = await waitFor(() => {
+        const c = container.querySelector('code[data-path-kind="dir"]')
+        expect(c).not.toBeNull()
+        return c!
+      })
+
+      rightClick(chip)
+
+      await waitFor(() => {
+        const menu = document.querySelector('[role="menu"]')
+        expect(menu).not.toBeNull()
+        const rows = Array.from(menu!.querySelectorAll('[role="menuitem"]'))
+          .map(r => r.getAttribute('aria-label'))
+        expect(rows).toEqual(['Copy path'])
+      })
+      expect(api.revealPath).not.toHaveBeenCalled()
+    })
+
+    it('the hover promises a path copy, not a file manager', async () => {
+      stubKind('file')
+      const { container } = render(
+        <MarkdownRenderer content={`\`${TEST_PATH}\``} />,
+      )
+      const chip = await waitFor(() => {
+        const c = container.querySelector('code[data-path-kind="file"]') as HTMLElement | null
+        expect(c).not.toBeNull()
+        return c!
+      })
+      const title = chip.getAttribute('title') ?? ''
+      expect(title).toContain('Shift+click to copy path')
+      expect(title).not.toContain('file manager')
+    })
+
+    it('shift+click copies the path, without its line, and asks the gateway for nothing', async () => {
+      vi.mocked(copyToClipboard).mockResolvedValue(true)
+      stubPathKinds(asked => (/:\d+$/.test(asked) ? null : 'file'))
+      const onFileOpen = vi.fn()
+      const { container } = render(
+        <MarkdownRenderer content={`\`${TEST_PATH}:12\``} onFileOpen={onFileOpen} />,
+      )
+      const chip = await waitFor(() => {
+        const c = container.querySelector('code[data-path-kind="file"]') as HTMLElement | null
+        expect(c).not.toBeNull()
+        return c!
+      })
+
+      fireEvent.click(chip, { shiftKey: true })
+
+      expect(copyToClipboard).toHaveBeenCalledWith(TEST_PATH)
+      expect(api.revealPath).not.toHaveBeenCalled()
+      expect(onFileOpen).not.toHaveBeenCalled()
+      // Acknowledged the way the chip's other copy gesture is: the title.
+      await waitFor(() => expect(chip.getAttribute('title')).toBe('Copied!'))
+    })
   })
 
   it('right-click on a directory chip opens the menu WITHOUT "Open with default app"', async () => {

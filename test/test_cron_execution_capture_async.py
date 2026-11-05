@@ -29,6 +29,7 @@ async def _callback(monkeypatch):
     gw._owner_id = "synthetic-owner"
     gw.subagent_mgr = None
     gw._cron_injecting = {}
+    gw._cron_runs_holding = set()
     gw._no_crons = False
     callbacks = []
 

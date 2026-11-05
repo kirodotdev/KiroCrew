@@ -462,8 +462,10 @@ def test_every_vm_provider_is_wired_to_launch_and_the_move_guard():
 
     wired = routing._vm_environments()
     assert set(wired) == {provider for provider, _key, _label in se.VM_PROVIDERS}
+    # Kiro Cloud is the one provider with no VM: KAS creates its sandbox.
     assert set(se.PROVIDER_IDS) == {
         session_launch.PROVIDER_ID,
+        session_launch.KIRO_CLOUD_PROVIDER_ID,
         *wired,
     }
     assert session_launch.CHOICE_PROVIDERS == frozenset(se.PROVIDER_IDS)

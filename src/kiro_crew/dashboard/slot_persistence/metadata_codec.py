@@ -191,6 +191,7 @@ class SaveFolds:
     last_consolidated: object = 0
     closed: bool = False
     closed_at: object = None
+    closed_id: str = ""
     dismissed_source_links: list[str] | None = None
     deferred_notes: list[dict] = field(default_factory=list)
     queued_prompts: list[dict] = field(default_factory=list)
@@ -641,16 +642,18 @@ def _read_tags(r: _Read) -> None:
     raw = r.meta.get("tags")
     if not isinstance(raw, list):
         return
+    # Imported here: an owner of the chat_persistence facade imports at module
+    # scope only what the facade itself imports.
+    from kiro_crew.dashboard.tag_vocabulary_read import known_tag_ids, prune_tag_ids
+
     slot = r.slot
-    slot.tags = [str(t) for t in raw if isinstance(t, str) and t]
     # Prune ids missing from the vocabulary: tag deletion commits the vocab
     # write first (crash-atomic), so a crash mid-delete can leave dangling ids on
-    # the line. FAIL-OPEN only when the vocabulary is UNKNOWN (tags.json parse or
-    # I/O failure): pruning then would wipe EVERY assignment and the next save
-    # persists the loss. A legitimately-empty vocabulary IS authoritative.
-    if getattr(r.state, "_tags_authoritative", True):
-        known = {t.get("id") for t in r.state._tags}
-        slot.tags = [t for t in slot.tags if t in known]
+    # the line. The one vocabulary reader decides the rule for every prune site:
+    # FAIL-OPEN only when the vocabulary is UNKNOWN (tags.json parse or I/O
+    # failure), since pruning then would wipe EVERY assignment and the next save
+    # persists the loss; a legitimately-empty vocabulary IS authoritative.
+    slot.tags = prune_tag_ids(raw, known_tag_ids(r.state))
     # "tags changed => revision changed" wherever tags are replaced. A resume
     # rotates through the tag module's helper, which also mints a revision for a
     # duck-typed slot without the method; the startup reads call the method only.
@@ -1271,6 +1274,17 @@ FIELDS: tuple[Field, ...] = (
         line=lambda s, f: f.closed_at if f.closed else OMIT,
         merge=lambda s, f: f.closed_at if f.closed else OMIT,
     ),
+    # The identity of the close that wrote this line's ``closed``: a nonce the
+    # save mints beside ``closed_at`` (``metadata_line.close_identity``), which
+    # the owed-dismissal marker also writes for its own stamp. A clear keyed on
+    # it removes exactly the stamp its writer put there: two closes stamped on
+    # the same clock tick carry the same ``closed_at`` and different ids.
+    Field(
+        "closed_id",
+        frozenset(),
+        line=lambda s, f: f.closed_id if f.closed and f.closed_id else OMIT,
+        merge=lambda s, f: f.closed_id if f.closed and f.closed_id else OMIT,
+    ),
     Field(
         "rotation_generation",
         frozenset(),
@@ -1288,6 +1302,7 @@ LINE_ORDER: tuple[str, ...] = (
     "last_consolidated",
     "closed",
     "closed_at",
+    "closed_id",
     "memory_mode",
     "title",
     "title_origin",
@@ -1385,6 +1400,7 @@ MERGE_ORDER: tuple[str, ...] = (
     "channel_folder_filed",
     "closed",
     "closed_at",
+    "closed_id",
     "dismissed_source_links",
     "deferred_notes",
 )

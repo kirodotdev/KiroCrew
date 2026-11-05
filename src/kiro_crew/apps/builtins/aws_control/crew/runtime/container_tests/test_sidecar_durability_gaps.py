@@ -568,7 +568,7 @@ def test_a_permanently_unreachable_entry_leaves_the_authority_files_published(tm
 
     The example is one entry under a healthy root, which is what the accepted residue
     actually is. A refused ROOT is the other case and withholds -- see
-    :func:`test_an_unreachable_data_root_withholds_the_authority_files`.
+    :func:`test_an_unreachable_sessions_root_withholds_the_authority_files`.
     """
     settings = _settings(tmp_path)
     _transcript(settings, b"a turn\n")

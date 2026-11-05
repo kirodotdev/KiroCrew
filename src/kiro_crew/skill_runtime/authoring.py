@@ -290,11 +290,37 @@ def _write_skill_md(skill_file: Path, content: str, *, dir_fd: int | None) -> bo
     return True
 
 
+def rewrite_pinned(content: str, pinned: bool) -> str | None:
+    """Return *content* with its top-level ``pinned:`` setting rewritten.
+
+    Every TOP-LEVEL ``pinned:`` line is dropped and ``pinned=True`` appends
+    ``pinned: true``. An indented ``pinned:`` line belongs to a block scalar (a
+    description that mentions pinning) and is kept. The block keeps the line
+    ending of its opening fence, a leading UTF-8 byte-order mark is kept, and
+    the body after the block is returned byte-for-byte, as
+    :func:`rewrite_inject_on_trigger` does.
+
+    Returns None when *content* has no frontmatter block to edit.
+    """
+    bom = "\ufeff" if content.startswith("\ufeff") else ""
+    m = re.match(r"^---(\r?\n)(.*?)\r?\n---(?:\r?\n)?(.*)$", content[len(bom) :], re.DOTALL)
+    if not m:
+        return None
+    nl = m.group(1)
+    fm_lines = [
+        ln.removesuffix("\r") for ln in m.group(2).split("\n") if not ln.startswith("pinned:")
+    ]
+    if pinned:
+        fm_lines.append("pinned: true")
+    return f"{bom}---{nl}" + nl.join(fm_lines) + f"{nl}---{nl}" + m.group(3)
+
+
 def set_pinned(loader: SkillsLoader, name: str, pinned: bool) -> bool:
     """Pin/unpin an auto-skill (exempt from lifecycle eviction).
 
-    Edits the ``pinned:`` frontmatter line in place. Returns True on
-    success. Only auto-generated skills may be pinned.
+    Edits the top-level ``pinned:`` frontmatter line in place through
+    :func:`rewrite_pinned`. Returns True on success. Only auto-generated
+    skills may be pinned.
     """
     from kiro_crew import skills as sk  # circular import: the facade imports this module
 
@@ -303,17 +329,19 @@ def set_pinned(loader: SkillsLoader, name: str, pinned: bool) -> bool:
     skill_file = loader._dir / name / "SKILL.md"
     if not skill_file.exists():
         return False
-    content = skill_file.read_text(encoding="utf-8")
-    m = re.match(r"^---\n(.*?)\n---\n?(.*)$", content, re.DOTALL)
-    if not m:
+    # Bytes, not read_text: a universal-newline read folds CRLF to LF, and the
+    # write below would then rewrite every line ending while toggling one key.
+    try:
+        content = skill_file.read_bytes().decode("utf-8")
+    except (OSError, UnicodeDecodeError):
         return False
-    fm_lines = [ln for ln in m.group(1).split("\n") if not ln.strip().startswith("pinned:")]
-    if pinned:
-        fm_lines.append("pinned: true")
-    new_content = "---\n" + "\n".join(fm_lines) + "\n---\n" + m.group(2)
+    new_content = rewrite_pinned(content, pinned)
+    if new_content is None:
+        return False
     # Atomic write (temp + rename): a partial write must never truncate the
     # live SKILL.md and lose the skill's content on a full-disk failure.
-    sk.atomic_write(skill_file, new_content)
+    # newline="" writes the text as built, with no line-ending translation.
+    sk.atomic_write(skill_file, new_content, newline="")
     loader._invalidate_iter_cache()
     logger.info("%s auto skill: %s", "Pinned" if pinned else "Unpinned", name)
     return True

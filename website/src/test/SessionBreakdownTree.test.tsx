@@ -12,6 +12,7 @@ import { describe, it, expect, afterEach, vi } from 'vitest'
 import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
+import { i18next } from '../i18n/all'
 import { SessionBreakdownTree, nodeSegments } from '../pages/SessionBreakdownTree'
 import { type ContextTrace } from '../pages/ContextBreakdownPanel'
 import type { SubagentActivity } from '../types'
@@ -133,6 +134,28 @@ describe('SessionBreakdownTree', () => {
     })
     expect(screen.getByText(/stalled/i)).toBeTruthy()
     expect(screen.getByText(/7 tools/i)).toBeTruthy()
+  })
+
+  it('says "1 tool", not "1 tools", for a single tool call', () => {
+    renderTree({
+      a: sub({ id: 'a', agent: 'one-shot', status: 'running', toolCount: 1, childSession: 'subagent:a', startedAt: 1 }),
+    })
+    expect(screen.getByText('1 tool')).toBeTruthy()
+  })
+
+  // The plural form is chosen from the raw number. Handing i18next the
+  // formatted text instead ("1 001" in Russian) parses as NaN and always lands
+  // on the generic form, so 1,001 would read as a few-form, not the one-form.
+  it('picks the plural form from the number, not its formatted text', async () => {
+    await i18next.changeLanguage('ru')
+    try {
+      renderTree({
+        a: sub({ id: 'a', agent: 'busy', status: 'running', toolCount: 1001, childSession: 'subagent:a', startedAt: 1 }),
+      })
+      expect(screen.getByText(/^1\s001 инструмент$/u)).toBeTruthy()
+    } finally {
+      await i18next.changeLanguage('en')
+    }
   })
 
   it('falls back to a generic sub-agent label when the node has no agent name', () => {

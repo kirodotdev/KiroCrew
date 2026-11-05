@@ -1,27 +1,14 @@
 """`session_status`: the roster, the liveness, and the honesty of a short list.
 
-The verb joins two sources that answer different halves, so the tests are grouped
-by what each source contributes and by what happens when one of them is missing.
+The live slots supply the status, and each value drives a patrol: it waits on
+`working` and `queued`, decides on `idle`, ignores `closed`, and re-dispatches `lost`.
 
-The LIVE slots supply the status, and the values are not decoration — a patrol
-waits on `working` and `queued`, decides on `idle`, ignores `closed`, and
-re-dispatches `lost` — so each one is pinned on its own.
+The crew log supplies the roster, including `closed` and `lost` rows that live slots
+cannot show. The ``session/closed`` edge tells them apart, and a short list under
+`unreadable` is not evidence that nothing was created.
 
-The CREW LOG supplies the roster, and `closed`/`lost` are the rows only it can
-produce. A worker that was closed, or lost with the process that ran it, is absent
-from the live slots entirely: on a live-only list it is indistinguishable from a
-worker that was never dispatched, and those states call for opposite actions. The
-two durable fates are themselves told apart by the ``session/closed`` edge — a
-worker that finished and closed its tab reads `closed` (with `closed_at`), one
-gone without a close reads `lost`. So the tests below assert not only that the row
-appears, but that a caller is TOLD which fate it was, and TOLD when the durable
-read could not be made — a short list under `unreadable` is not evidence that
-nothing was created.
-
-The ownership fence applies to the ROWS and not merely to the verb, because the
-rows carry other sessions' titles. That is asserted here rather than left to the
-gate tests, since the gate cannot see it: a fenced caller passes the caller-side
-gate and the leak would be in the listing.
+The ownership fence applies to the rows, which carry other sessions' titles; the
+caller-side gate cannot see a leak in the listing.
 """
 
 from __future__ import annotations
@@ -100,24 +87,13 @@ def _emitted(
 ) -> None:
     """Write a REAL session log on disk under *parent*, optionally closed.
 
-    Unlike :func:`_recorded`, which only applies the in-memory tree edge, this
-    writes an announced unit through ``emit.on_session_opened`` -- the gateway's own
-    path, which both advances the projection AND leaves a disk log -- so the
-    slot-keyed status fold the `closed`/`lost` split reads has units to fold. A
-    ``session/closed`` edge is appended when *closed*, which is the one fact that
-    separates a worker that finished from one lost with its process.
+    Unlike :func:`_recorded`, this goes through ``emit.on_session_opened`` so the
+    slot-keyed status fold has units to fold. ``reason`` is the ``session/closed``
+    reason; only ``"removed"`` (the default, a deliberate tab close) reads ``closed``.
 
-    ``reason`` is the ``session/closed`` reason, so a test can write the DELIBERATE
-    tab close (``"removed"``, the default -- what the ``_close_slot`` close path
-    emits) versus a process recycle (``"reset"``) or a ``destroy`` (``"destroyed"``);
-    only ``"removed"`` reads ``closed``. ``open_turn`` leaves a ``turn/started`` with
-    no ``turn/completed`` before the close, which models a session torn down with a
-    turn still in flight -- the projection keeps the open turn set on the close.
-    ``completed_stop_reason`` instead closes that turn with a real
-    ``turn/completed`` carrying that ``stop_reason`` before the ``session/closed``
-    edge -- the shape a deliberate MID-TURN close actually leaves, where cancelling
-    the running task makes its ``finally`` record a non-clean completion that clears
-    ``turn_open``.
+    ``open_turn`` leaves a ``turn/started`` with no ``turn/completed`` before the close.
+    ``completed_stop_reason`` instead completes that turn with that ``stop_reason``, as
+    a deliberate mid-turn close leaves it once the cancelled task's ``finally`` runs.
     """
     emit.on_session_opened(
         f"sid-{parent}", agent="kirocrew", slot=parent, model="m", cwd="/w", owner="o"
@@ -209,16 +185,9 @@ class TestLiveness:
 
 class TestTheDurableRoster:
     def test_a_session_the_dashboard_no_longer_holds_without_a_close_is_lost(self, tmp_path):
-        """The row only the durable half can produce, and the reason this verb is
-        not a filter over the live slots.
+        """A tree edge with no ``session/closed`` reads `lost`, which a patrol re-dispatches.
 
-        A tree edge with no recorded ``session/closed`` -- the shape ``_recorded``
-        leaves, and the shape a worker lost with its process leaves -- reads `lost`:
-        the fail-safe reading a patrol re-dispatches.
-
-        Mutation guard: drop the crew-log read and a worker that died vanishes from
-        the list entirely, where it is indistinguishable from one that was never
-        dispatched — and those call for opposite actions.
+        Without the crew-log read, a dead worker would look like one never dispatched.
         """
         state = _make_state(tmp_path)
         caller = _slot(state, "chat-1")
@@ -258,15 +227,10 @@ class TestTheDurableRoster:
         assert "closed_at" not in row
 
     def test_a_worker_reset_then_gone_is_lost_not_closed(self, tmp_path):
-        """A process recycle (idle expiry, RSS recycle, model/provider switch, the
-        watchdogs) writes a ``session/closed`` edge with reason ``reset``, but the
-        tab and conversation survive it — the worker did NOT finish. Reading that
-        close as `closed` is the fail-OPEN harm this split removes: it would tell a
-        conductor a lost worker finished and stop it looking. So a reset-then-gone
-        slot reads `lost`.
+        """A slot closed with reason ``reset`` and then gone reads `lost`.
 
-        Mutation guard: a reader keyed only on ``lifecycle == "closed"`` reads this
-        `closed`; keying on the deliberate close reason keeps it `lost`.
+        A process recycle writes ``session/closed`` but the worker did not finish, so
+        the reader keys on the deliberate close reason, not ``lifecycle == "closed"``.
         """
         state = _make_state(tmp_path)
         caller = _slot(state, "chat-1")
@@ -287,13 +251,7 @@ class TestTheDurableRoster:
         assert "closed_at" not in row
 
     def test_a_worker_closed_with_an_open_turn_is_lost_not_closed(self, tmp_path):
-        """A session cut off with a turn still in flight did not finish, however it
-        was torn down. The projection keeps the open turn set on a close for exactly
-        this reader, so even a deliberate-reason close with ``turn_open`` reads
-        `lost`.
-
-        Mutation guard: dropping the ``turn_open`` check reads this `closed`.
-        """
+        """Even a deliberate-reason close with ``turn_open`` still set reads `lost`."""
         state = _make_state(tmp_path)
         caller = _slot(state, "chat-1")
         _emitted("chat-7", caller.key, closed=True, reason="removed", open_turn=True)
@@ -302,20 +260,11 @@ class TestTheDurableRoster:
         assert "closed_at" not in row
 
     def test_a_worker_closed_mid_turn_is_lost_not_closed(self, tmp_path):
-        """A deliberate tab close WHILE a turn is in flight did not finish the work,
-        so it must read `lost` -- the conductor has something to re-dispatch.
+        """A deliberate tab close while a turn is in flight reads `lost`.
 
-        The real path is subtle and is why the ``turn_open`` guard above is not
-        enough on its own: ``_close_slot`` cancels ``slot.task`` first, and the
-        cancelled turn's ``finally`` records a real ``turn/completed`` (here
-        ``stop_reason="failed"``) that CLEARS ``turn_open`` before the deliberate
-        ``removed`` close is written. So the fold sees ``lifecycle=closed``,
-        ``turn_open=False`` and ``close_reason="removed"`` -- every earlier guard
-        passes -- and only the newest turn's non-clean ``last_stop_reason`` reveals
-        the work was cut off.
-
-        Mutation guard: without the ``last_stop_reason`` check this reads `closed`
-        and the conductor is told there is nothing to re-dispatch.
+        ``_close_slot`` cancels ``slot.task`` first, and its ``finally`` records a
+        ``turn/completed`` that clears ``turn_open`` before the ``removed`` close. Only
+        the non-clean ``last_stop_reason`` shows the work was cut off.
         """
         state = _make_state(tmp_path)
         caller = _slot(state, "chat-1")
@@ -489,11 +438,10 @@ class TestTheDurableReadsQuality:
     def test_an_unreadable_tree_is_said_out_loud_and_the_answer_is_live_only(
         self, tmp_path, monkeypatch
     ):
-        """A short list means opposite things under `readable` and `unreadable`, so
-        the flag is the load-bearing field.
+        """A short list means opposite things under `readable` and `unreadable`.
 
-        Mutation guard: report `readable` unconditionally and a caller reads "you
-        created one worker" from an answer that could not see the other seven.
+        Reporting `readable` regardless would read "one worker" from an answer that
+        could not see the other seven.
         """
         state = _make_state(tmp_path)
         caller = _slot(state, "chat-1")
@@ -907,14 +855,9 @@ class TestRosterRetentionBounds:
     ):
         """The union cut is its own fact and must not borrow another source's.
 
-        Signalling it as ``history: "incomplete"`` with ``history_omitted`` left
-        alone says two false things at once: it tells a caller a transcript read it
-        completed was faulty, and it reports nothing omitted while rows are dropped.
-        Neither is actionable — re-reading history cannot recover a row the union
-        bound cut.
-
-        The roster here is built from LIVE children only, so the transcript read is
-        genuinely complete and any ``incomplete`` on it is the borrowed reason.
+        ``history: "incomplete"`` would wrongly blame the transcript read and report
+        nothing omitted. The roster is built from live children only, so the
+        transcript read is complete and any ``incomplete`` is borrowed.
         """
         cap = 3
         over = 2
@@ -990,20 +933,11 @@ class TestRosterRetentionBounds:
 
 
 class TestTheCallerSurfaceIsRecheckedAfterTheScan:
-    """The roster's rows carry other sessions' TITLES -- the names of the user's
-    private work -- and the caller-surface gate runs BEFORE a disk-bound history
-    scan that suspends. A channel mirror can be bound onto an already-open
-    dashboard session while that scan is on its worker thread, from the channel
-    picker and from the Slack link route, neither of which requires an idle slot.
-    Without a re-check the reply is published past a gate that passed.
+    """The gate is re-checked after each suspension, because rows carry other titles.
 
-    The gone-row lifecycle fold is a SECOND suspension, later still, and the
-    workspace-boundary containment every live row is filtered on is built after
-    it -- so a worker moved across the boundary during that fold is excluded by a
-    containment read as the slots now stand, not admitted on its pre-move
-    workspace. The last two tests pin that: the fold is monkeypatched to move a
-    slot mid-await, the window the synchronous gate and the first re-check both
-    predate.
+    A channel mirror can bind onto the session during the history scan. The
+    workspace containment is built after the gone-row fold, so the last two tests
+    move a slot mid-fold and expect it excluded as the slots now stand.
     """
 
     def test_a_mirror_bound_during_the_scan_refuses_instead_of_replying(
@@ -1127,13 +1061,10 @@ class TestTheCallerSurfaceIsRecheckedAfterTheScan:
     def test_a_live_only_child_gone_during_the_gone_fold_is_dropped_not_a_keyerror(
         self, tmp_path, monkeypatch
     ):
-        """Regression: the gone-row fold is the verb's last suspension, and the
-        creator's live children were read into the roster BEFORE it. A worker the
-        caller created that never took a first turn (no tree edge) and left no
-        history row can have its tab closed WHILE the fold runs. The row loop then
-        reaches it with ``slot is None`` and neither durable source present. Reading
-        ``history_children[key]`` there raised ``KeyError`` and failed the whole
-        roster; the row must simply be dropped instead.
+        """A child closed during the gone-row fold, with no durable row, is dropped.
+
+        Live children are read before the fold, so the row loop meets it with
+        ``slot is None`` and no ``history_children[key]`` to read.
         """
         state = _make_state(tmp_path)
         caller = _slot(state, "chat-1")

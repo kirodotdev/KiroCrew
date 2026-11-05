@@ -43,7 +43,8 @@ export const CC_CSS = `
 .cc-every { display:flex; align-items:center; gap:6px; padding:7px 0; }
 .cc-every-label { flex:1; font-size:13px; }
 .cc-pill { font-size:12px; background:transparent; color:var(--muted); border:1px solid var(--border); border-radius:8px; padding:3px 9px; cursor:pointer; }
-.cc-pill[aria-pressed="true"] { background:var(--accent); color:var(--accent-fg, #fff); border-color:var(--accent); }
+.cc-every-pills { display:flex; align-items:center; gap:6px; }
+.cc-pill[aria-checked="true"] { background:var(--accent); color:var(--accent-fg, #fff); border-color:var(--accent); }
 .cc-num { width:46px; padding:3px 4px; text-align:center; font-size:12px; border-radius:999px; border:1px solid var(--border); background:transparent; color:var(--muted); }
 .cc-num.is-custom { background:var(--accent); color:var(--accent-fg, #fff); }
 .cc-num::-webkit-inner-spin-button, .cc-num::-webkit-outer-spin-button { -webkit-appearance:none; appearance:none; margin:0; }

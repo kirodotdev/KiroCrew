@@ -17,7 +17,7 @@ from chat_test_helpers import _make_app, _make_state
 
 from kiro_crew.dashboard import channel_slots
 from kiro_crew.dashboard import chat_utils as cu
-from kiro_crew.dashboard import wire_render
+from kiro_crew.dashboard import mcp_oauth_provenance, wire_render
 from kiro_crew.history import _safe_key
 from kiro_crew.security import exfil
 from kiro_crew.security.redaction_switch import owner_view
@@ -148,6 +148,8 @@ class TestEveryOutsideInputIsInTheKey:
         assert wire_render.render_memo_info()[0] > before
 
     def test_live_child_change_re_renders_the_oauth_row(self) -> None:
+        # The banner child c-1 sent, so liveness is what decides the link here.
+        mcp_oauth_provenance.record_emitted("c-1", "https://auth.example.com/authorize?x=1")
         rows = _rows()
         alive = _actual(rows, live_child="c-1")
         dead = _actual(rows, live_child="c-2")

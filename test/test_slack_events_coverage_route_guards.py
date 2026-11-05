@@ -20,8 +20,46 @@ from slack_events_coverage_helpers import _isolated_home_fixture  # noqa: F401
 from slack_events_coverage_helpers import _mock_sel_fixture  # noqa: F401
 from slack_events_coverage_helpers import _drain, _event, _make_orch
 
+from kiro_crew.channel_history import ChannelHistory
 from kiro_crew.config.loader import ACTIVATION_OFF, ACTIVATION_REVIEW, ChannelConfig, SlackConfig
 from kiro_crew.slack import events as ev
+
+
+@pytest.fixture(name="_real_sel")
+def _real_sel_fixture(_mock_sel, tmp_path, monkeypatch):
+    """Back the in-memory SEL fake with a real synchronous log under tmp_path.
+
+    The fake keeps recording, and every write also lands as a row the test reads back.
+    """
+    from kiro_crew import sel as sel_mod
+
+    monkeypatch.setattr(sel_mod.SecurityEventLog, "_instance", None)
+    monkeypatch.setattr(sel_mod.SecurityEventLog, "_initialized", False)
+    (tmp_path / "sel").mkdir()
+    log = sel_mod.SecurityEventLog(base_dir=tmp_path / "sel", sync=True)
+    # Leave the process singleton unset so no other caller is handed this log.
+    monkeypatch.setattr(sel_mod.SecurityEventLog, "_instance", None)
+    monkeypatch.setattr(sel_mod.SecurityEventLog, "_initialized", False)
+    _mock_sel.log_api_access.side_effect = log.log_api_access
+    _mock_sel.log_tool_invocation.side_effect = log.log_tool_invocation
+    return log
+
+
+def _audit_rows(log, operation: str) -> list[tuple[str, str, str]]:
+    """``(caller, outcome, error)`` of every *operation* row, oldest first."""
+    rows = [r for r in reversed(log.recent()) if r["operation"] == operation]
+    return [(r["caller_identity"], r["outcome"], r["error"]) for r in rows]
+
+
+def _history_orch(**kw) -> MagicMock:
+    orch = _make_orch(**kw)
+    orch.channel_history = ChannelHistory()
+    return orch
+
+
+def _history_texts(orch: MagicMock, channel: str = "D1") -> list[str]:
+    return [e.text for e in orch.channel_history._channels.get(channel, ())]
+
 
 # ---------------------------------------------------------------------------
 # _route_message guard branches
@@ -132,7 +170,7 @@ class TestMalformedSharedMessageScalars:
     async def test_route_ignores_malformed_sibling_and_dispatches_plain_fallback(
         self, event_fields, monkeypatch
     ):
-        orch = _make_orch()
+        orch = _history_orch()
         monkeypatch.setattr(ev, "_trusted_bot_turns", ev.TrustedBotTurnLedger())
         event = _event(
             user="",
@@ -154,21 +192,27 @@ class TestMalformedSharedMessageScalars:
 
         hm.assert_awaited_once()
         assert hm.await_args.args[3] == "plain fallback"
+        assert _history_texts(orch) == ["plain fallback"]
 
 
 class TestRouteMessageGuards:
     @pytest.mark.asyncio
-    async def test_activation_off_drops_plain_message(self, _mock_sel):
-        orch = _make_orch(channels={"C1": ChannelConfig(activation=ACTIVATION_OFF)})
+    async def test_activation_off_drops_plain_message(self, _mock_sel, _real_sel):
+        orch = _history_orch(channels={"C1": ChannelConfig(activation=ACTIVATION_OFF)})
         with patch("kiro_crew.slack.events.is_allowed_user", return_value=True):
             with patch("kiro_crew.slack.events.handle_message", new_callable=AsyncMock) as hm:
                 await ev._route_message(orch, _event(channel="C1"), ev.SeenCache())
         hm.assert_not_called()
         assert _mock_sel.log_api_access.call_args.kwargs["error"] == "activation=off"
+        assert _audit_rows(_real_sel, "slack.message") == [
+            ("U_OWNER", "allowed", ""),
+            ("U_OWNER", "denied", "activation=off"),
+        ]
+        assert _history_texts(orch, "C1") == []
 
     @pytest.mark.asyncio
     async def test_activation_off_lets_bang_channel_through(self):
-        orch = _make_orch(channels={"C1": ChannelConfig(activation=ACTIVATION_OFF)})
+        orch = _history_orch(channels={"C1": ChannelConfig(activation=ACTIVATION_OFF)})
         with patch("kiro_crew.slack.events.is_allowed_user", return_value=True):
             with patch("kiro_crew.slack.events.handle_message", new_callable=AsyncMock) as hm:
                 await ev._route_message(
@@ -177,10 +221,11 @@ class TestRouteMessageGuards:
                 await _drain(orch)
         hm.assert_awaited_once()
         assert hm.await_args.args[3] == "!channel on"
+        assert _history_texts(orch, "C1") == ["!channel on"]
 
     @pytest.mark.asyncio
     async def test_activation_off_strips_mention_before_bang_check(self):
-        orch = _make_orch(channels={"C1": ChannelConfig(activation=ACTIVATION_OFF)})
+        orch = _history_orch(channels={"C1": ChannelConfig(activation=ACTIVATION_OFF)})
         with patch("kiro_crew.slack.events.is_allowed_user", return_value=True):
             with patch("kiro_crew.slack.events.handle_message", new_callable=AsyncMock) as hm:
                 await ev._route_message(
@@ -192,6 +237,7 @@ class TestRouteMessageGuards:
                 await _drain(orch)
         hm.assert_awaited_once()
         assert hm.await_args.args[3] == "!channel on"
+        assert _history_texts(orch, "C1") == ["<@BOT1> !channel on"]
 
     @pytest.mark.asyncio
     async def test_missing_sender_or_text_returns_early(self):
@@ -207,8 +253,8 @@ class TestRouteMessageGuards:
         assert orch._session_tasks == {}
 
     @pytest.mark.asyncio
-    async def test_channels_governance_denial_blocks_message(self, _mock_sel):
-        orch = _make_orch()
+    async def test_channels_governance_denial_blocks_message(self, _mock_sel, _real_sel):
+        orch = _history_orch()
         with patch("kiro_crew.slack.events.is_allowed_user", return_value=True):
             with patch(
                 "kiro_crew.slack.events.channel_inbound_permitted",
@@ -219,6 +265,12 @@ class TestRouteMessageGuards:
                     await ev._route_message(orch, _event(), ev.SeenCache())
         hm.assert_not_called()
         assert _mock_sel.log_api_access.call_args.kwargs["error"] == "channels governance policy"
+        assert _audit_rows(_real_sel, "slack.message")[-1] == (
+            "U_OWNER",
+            "denied",
+            "channels governance policy",
+        )
+        assert _history_texts(orch) == []
 
     @pytest.mark.asyncio
     async def test_stop_is_recorded_before_the_liveness_checks(self):
@@ -256,7 +308,7 @@ class TestRouteMessageGuards:
         orch.sessions.note_stop.assert_called_once_with("dashboard:chat-7")
 
     @pytest.mark.asyncio
-    async def test_flat_dm_stop_targets_a_dashboard_linked_thread_owner(self):
+    async def test_flat_dm_stop_targets_a_dashboard_linked_thread_owner(self, _real_sel):
         """With dm_single_session on, `!stop` typed inside a DM thread that a
         dashboard send-to-Slack OWNS must stop that linked owner -- the running
         turn lives under it, keyed by the thread ts -- not the channel-scoped
@@ -282,9 +334,10 @@ class TestRouteMessageGuards:
         orch.sessions.stop_turn.assert_awaited_once()
         assert orch.sessions.stop_turn.await_args.args[0] == "dashboard:chat-7"
         orch.sessions.note_stop.assert_called_once_with("dashboard:chat-7")
+        assert _audit_rows(_real_sel, "!stop") == [("dashboard:chat-7", "stopped", "")]
 
     @pytest.mark.asyncio
-    async def test_flat_dm_stop_ignores_a_self_derived_thread_owner(self):
+    async def test_flat_dm_stop_ignores_a_self_derived_thread_owner(self, _real_sel):
         """A DM thread claimed only by its own per-thread session
         (``slack:<thread_ts>`` -- the shape dm_single_session merges away) is
         NOT a real binding, so `!stop` still targets the flat channel key."""
@@ -304,9 +357,10 @@ class TestRouteMessageGuards:
                 )
         orch.sessions.stop_turn.assert_awaited_once()
         assert orch.sessions.stop_turn.await_args.args[0] == "slack:D1"
+        assert _audit_rows(_real_sel, "!stop") == [("slack:D1", "stopped", "")]
 
     @pytest.mark.asyncio
-    async def test_pure_stop_is_exempt_from_governance_denial(self):
+    async def test_pure_stop_is_exempt_from_governance_denial(self, _real_sel):
         orch = _make_orch()
         orch.sessions.has_session = MagicMock(return_value=False)
         with patch("kiro_crew.slack.events.is_allowed_user", return_value=True):
@@ -319,21 +373,23 @@ class TestRouteMessageGuards:
                     await ev._route_message(orch, _event(text="!stop"), ev.SeenCache())
         gate.assert_not_called()
         orch.slack.post_message.assert_awaited_with("D1", "Nothing running.", "100.0")
+        assert _audit_rows(_real_sel, "!stop") == [("100.0", "no_session", "")]
+        assert _audit_rows(_real_sel, "slack.message") == [("U_OWNER", "allowed", "")]
 
     @pytest.mark.asyncio
     async def test_display_name_resolved_from_slack(self):
-        orch = _make_orch()
+        orch = _history_orch()
         orch.slack.get_user_info = AsyncMock(return_value={"real_name": "Ada L"})
         with patch("kiro_crew.slack.events.is_allowed_user", return_value=True):
             with patch("kiro_crew.slack.events.handle_message", new_callable=AsyncMock) as hm:
                 await ev._route_message(orch, _event(), ev.SeenCache())
                 await _drain(orch)
         assert hm.await_args.kwargs["user_display_name"] == "Ada L"
-        orch.channel_history.set_user_name.assert_called_with("U_OWNER", "Ada L")
+        assert orch.channel_history._user_names == {"U_OWNER": "Ada L"}
 
     @pytest.mark.asyncio
     async def test_display_name_lookup_failure_falls_back_to_config(self):
-        orch = _make_orch()
+        orch = _history_orch()
         orch._cfg.slack.allowed_users = [{"slack_id": "U_OWNER", "name": "Ada From Config"}]
         orch.slack.get_user_info = AsyncMock(side_effect=RuntimeError("no scope"))
         with patch("kiro_crew.slack.events.is_allowed_user", return_value=True):
@@ -341,15 +397,20 @@ class TestRouteMessageGuards:
                 await ev._route_message(orch, _event(), ev.SeenCache())
                 await _drain(orch)
         assert hm.await_args.kwargs["user_display_name"] == "Ada From Config"
+        assert orch.channel_history._user_names == {"U_OWNER": "Ada From Config"}
 
     @pytest.mark.asyncio
-    async def test_unauthorized_sender_gets_ephemeral(self):
-        orch = _make_orch()
+    async def test_unauthorized_sender_gets_ephemeral(self, _real_sel):
+        orch = _history_orch()
         with patch("kiro_crew.slack.events.is_allowed_user", return_value=False):
             with patch("kiro_crew.slack.events.handle_message", new_callable=AsyncMock) as hm:
                 await ev._route_message(orch, _event(), ev.SeenCache())
         hm.assert_not_called()
         assert "not authorized" in orch.slack.post_ephemeral.await_args[0][2]
+        assert _audit_rows(_real_sel, "slack.message") == [
+            ("U_OWNER", "denied", "unauthorized sender")
+        ]
+        assert _history_texts(orch) == []
 
     @pytest.mark.asyncio
     async def test_trusted_bot_is_authorized_and_processed(self, _mock_sel):
@@ -379,7 +440,7 @@ class TestRouteMessageGuards:
 
     @pytest.mark.asyncio
     async def test_trusted_bot_attachment_fallback_is_recovered(self):
-        orch = _make_orch()
+        orch = _history_orch()
         event = _event(
             user="",
             bot_id="B_TRUSTED",
@@ -397,6 +458,7 @@ class TestRouteMessageGuards:
                 await _drain(orch)
         assert hm.await_args is not None, "trusted-bot attachment text was dropped"
         assert hm.await_args[0][3] == "🚨 CloudWatch Alarm | myapi-5xx-alarm"
+        assert _history_texts(orch) == ["🚨 CloudWatch Alarm | myapi-5xx-alarm"]
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
@@ -429,7 +491,7 @@ class TestRouteMessageGuards:
 
     @pytest.mark.asyncio
     async def test_trusted_bot_malformed_attachment_member_is_skipped(self):
-        orch = _make_orch()
+        orch = _history_orch()
         event = _event(
             user="",
             bot_id="B_TRUSTED",
@@ -449,10 +511,11 @@ class TestRouteMessageGuards:
         hm.assert_awaited_once()
         assert hm.await_args is not None
         assert hm.await_args.args[3] == "plain fallback"
+        assert _history_texts(orch) == ["plain fallback"]
 
     @pytest.mark.asyncio
     async def test_trusted_bot_attachment_blocks_are_recovered(self):
-        orch = _make_orch()
+        orch = _history_orch()
         event = _event(
             user="",
             bot_id="B_TRUSTED",
@@ -480,6 +543,7 @@ class TestRouteMessageGuards:
                 await _drain(orch)
         assert hm.await_args is not None, "trusted-bot attachment blocks were dropped"
         assert hm.await_args[0][3] == "Alarm is *firing*"
+        assert _history_texts(orch) == ["Alarm is *firing*"]
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("marker", ["is_share", "is_msg_unfurl"])
@@ -539,7 +603,7 @@ class TestRouteMessageGuards:
     @pytest.mark.asyncio
     @pytest.mark.parametrize("fallback", ["", "This message contains interactive elements."])
     async def test_trusted_bot_section_fields_are_recovered(self, fallback):
-        orch = _make_orch()
+        orch = _history_orch()
         event = _event(
             user="",
             bot_id="B_TRUSTED",
@@ -570,6 +634,7 @@ class TestRouteMessageGuards:
                 await _drain(orch)
         hm.assert_awaited_once()
         assert hm.await_args.args[3] == "Alarm: *firing*\nRegion: `us-west-2`"
+        assert _history_texts(orch) == ["Alarm: *firing*\nRegion: `us-west-2`"]
 
     def test_trusted_bot_section_fields_skip_malformed_and_stop_at_budget(self):
         class _ExplodingField(dict):
@@ -678,7 +743,7 @@ class TestRouteMessageGuards:
             {"type": "section", "text": {"type": "mrkdwn", "text": "section"}},
             {"type": "context", "elements": [{"text": "context"}]},
         ]
-        orch = _make_orch()
+        orch = _history_orch()
         event = _event(
             user="",
             bot_id="B_TRUSTED",
@@ -699,6 +764,7 @@ class TestRouteMessageGuards:
         hm.assert_awaited_once()
         assert hm.await_args[0][3] == "- one:tada:\n> site (https://a.invalid)\nsection\ncontext"
         assert hm.await_args[0][3] == ev._extract_blocks_text(blocks)
+        assert _history_texts(orch) == ["- one:tada:\n> site (https://a.invalid)\nsection\ncontext"]
 
     def test_trusted_bot_attachment_recovery_validates_and_caps_input(self):
         assert ev._extract_trusted_bot_attachment_text({"attachments": "bad"}) == ""
@@ -935,6 +1001,7 @@ class TestRouteMessageGuards:
                     )
                     await _drain(orch)
             assert hm.await_count == 1
+            assert ev._trusted_bot_turns.count("D_RESET:300.0") == 1
             # Allowed human posts in the thread: count resets.
             with patch("kiro_crew.slack.events.is_allowed_user", return_value=True):
                 await ev._route_message(
@@ -943,6 +1010,7 @@ class TestRouteMessageGuards:
                     seen,
                 )
                 await _drain(orch)
+            assert ev._trusted_bot_turns.count("D_RESET:300.0") == 0
             # Trusted bot admitted again after the reset.
             with patch("kiro_crew.slack.events.is_allowed_user", return_value=False):
                 await ev._route_message(
@@ -959,6 +1027,7 @@ class TestRouteMessageGuards:
                 )
                 await _drain(orch)
         assert hm.await_count == 3  # bot turn 1 + human turn + bot turn after reset
+        assert ev._trusted_bot_turns.count("D_RESET:300.0") == 1
 
     @pytest.mark.asyncio
     async def test_turn_counts_are_per_thread(self):
@@ -998,6 +1067,8 @@ class TestRouteMessageGuards:
                 )
                 await _drain(orch)
         assert hm.await_count == 2  # thread A turn 1 + thread B turn 1
+        assert ev._trusted_bot_turns.count("D_ISO:400.0") == 1
+        assert ev._trusted_bot_turns.count("D_ISO:500.0") == 1
 
     @pytest.mark.asyncio
     async def test_non_dispatching_messages_do_not_burn_the_budget(self):
@@ -1025,6 +1096,7 @@ class TestRouteMessageGuards:
                 )
                 await _drain(orch)
                 hm.assert_not_called()
+                assert ev._trusted_bot_turns.count("D_EMPTY:600.0") == 0
                 # The thread's budget is intact: a real message still dispatches.
                 await ev._route_message(
                     orch,
@@ -1042,6 +1114,7 @@ class TestRouteMessageGuards:
                 await _drain(orch)
         hm.assert_awaited_once()
         assert hm.await_args.args[3] == "real content"
+        assert ev._trusted_bot_turns.count("D_EMPTY:600.0") == 1
 
     @pytest.mark.asyncio
     async def test_bot_without_trusted_flag_is_not_processed(self):
@@ -1096,7 +1169,7 @@ class TestRouteMessageGuards:
 
     @pytest.mark.asyncio
     async def test_duplicate_event_is_dropped(self):
-        orch = _make_orch()
+        orch = _history_orch()
         seen = ev.SeenCache()
         with patch("kiro_crew.slack.events.is_allowed_user", return_value=True):
             with patch("kiro_crew.slack.events.handle_message", new_callable=AsyncMock) as hm:
@@ -1105,6 +1178,7 @@ class TestRouteMessageGuards:
                 await ev._route_message(orch, _event(), seen)
                 await _drain(orch)
         assert hm.await_count == 1
+        assert _history_texts(orch) == ["hello"]
 
     @pytest.mark.asyncio
     async def test_missing_channel_history_is_reported_not_fatal(self, caplog):

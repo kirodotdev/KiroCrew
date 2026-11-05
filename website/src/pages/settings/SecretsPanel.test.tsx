@@ -12,6 +12,20 @@ import en from '../../i18n/locales/en.json'
 // key out of both files at once, so this is the one place it can be read from.
 import enManual from '../../i18n/locales/en.manual.json'
 
+// The Custom-secrets section gates its authorize command on the gateway
+// platform: on Windows the mediated call route refuses every call, so the
+// command is replaced by a notice. Drive the platform from a mutable the tests
+// set, defaulting to a non-Windows host so every other case renders the command
+// exactly as it did before this gate existed.
+const platformEnv = vi.hoisted(() => ({ value: 'other' as 'darwin' | 'windows' | 'other' }))
+vi.mock('../../hooks/useGatewayPlatform', () => ({
+  useGatewayPlatform: () => platformEnv.value,
+}))
+
+/** Resolve a held request inside act: the panel's state changes land on resolve. */
+const settle = (resolve: (r: Response) => void, response: Response) =>
+  act(async () => { resolve(response) })
+
 /**
  * The panel talks to `/api/secrets` through the shared `api` client, which issues
  * the request with the global `fetch`, so the seam under test is still the global
@@ -161,6 +175,7 @@ beforeEach(() => {
   listUnused = []
   listManagedError = false
   listShouldFail = false
+  platformEnv.value = 'other'
   localStorage.setItem('kiro_crew_token', 'test-token')
   installFetch()
 })
@@ -320,6 +335,37 @@ describe('SecretsPanel', () => {
     await user.click(screen.getByRole('button', { name: 'Delete Jira API token' }))
     await user.click(screen.getByRole('button', { name: 'Delete' }))
     expect(screen.queryByRole('status')).not.toBeInTheDocument()
+  })
+
+  it('clears a failed delete error once a replacement is typed and saved', async () => {
+    const user = userEvent.setup()
+    listNames = ['JIRA_API_TOKEN']
+    listManaged = [{ name: 'JIRA_API_TOKEN', kind: 'jira_api_token' }]
+    const acknowledge = installFetch().getMockImplementation()!
+    stubFetch((input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === 'DELETE') {
+        return Promise.resolve({
+          ok: false,
+          status: 500,
+          json: () => Promise.resolve({ error: 'disk full' }),
+        } as Response)
+      }
+      return acknowledge(input, init)
+    })
+    mount()
+    await screen.findByText('Jira API token')
+
+    await user.click(screen.getByRole('button', { name: 'Delete Jira API token' }))
+    await user.click(screen.getByRole('button', { name: 'Delete' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Could not delete secret')
+
+    await user.click(screen.getByRole('button', { name: 'Replace' }))
+    await user.type(screen.getByLabelText('Jira API token'), 'replacement-value')
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Save JIRA_API_TOKEN' }))
+
+    expect(await screen.findByRole('status')).toHaveTextContent('Saved')
+    expect(screen.queryByText(/Could not delete secret/)).not.toBeInTheDocument()
   })
 
   it('removes a configured managed credential only after confirmation', async () => {
@@ -581,7 +627,7 @@ describe('SecretsPanel', () => {
     expect(screen.getByRole('button', { name: 'Cancel' })).toBeDisabled()
     expect(screen.getByRole('button', { name: 'Save JIRA_API_TOKEN' })).toBeDisabled()
 
-    resolvePost({
+    await settle(resolvePost, {
       ok: true,
       status: 200,
       json: () => Promise.resolve({ ok: true }),
@@ -626,7 +672,7 @@ describe('SecretsPanel', () => {
     expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled()
 
     // Once the delete settles, no stray POST should have been sent.
-    resolveDelete({
+    await settle(resolveDelete, {
       ok: true,
       status: 200,
       json: () => Promise.resolve({ ok: true }),
@@ -671,7 +717,7 @@ describe('SecretsPanel', () => {
       expect(screen.getByRole('button', { name: 'Delete Jira API token' })).toBeDisabled(),
     )
 
-    resolvePost({
+    await settle(resolvePost, {
       ok: true,
       status: 200,
       json: () => Promise.resolve({ ok: true }),
@@ -817,6 +863,23 @@ describe('SecretsPanel custom secrets card', () => {
     expect(screen.queryByText(/No custom secrets stored yet/)).not.toBeInTheDocument()
     // Value is masked, never rendered in plaintext.
     expect(screen.getByText('••••••••')).toBeInTheDocument()
+  })
+
+  it('shows the Windows notice instead of the authorize command on a Windows gateway', async () => {
+    // On Windows the mediated call route refuses every call, so the authorize
+    // command would only sign a grant the host can never use. The panel shows
+    // the notice in its place rather than the command.
+    platformEnv.value = 'windows'
+    mount()
+    expect(await screen.findByText('Custom secrets')).toBeInTheDocument()
+    expect(
+      screen.getByText(enManual.settings.secrets.custom_authorize_windows),
+    ).toBeInTheDocument()
+    // The command and its own authorize sentence are gone on Windows.
+    expect(screen.queryByText(SECRETS_AUTHORIZE_COMMAND)).not.toBeInTheDocument()
+    expect(
+      screen.queryByText(/then run the command below in a shell or on the Terminal page/),
+    ).not.toBeInTheDocument()
   })
 
   it('adds a custom secret through the write-only vault contract', async () => {
@@ -1092,7 +1155,7 @@ describe('SecretsPanel error feedback and in-flight guards', () => {
 
     expect(screen.getByRole('button', { name: 'Cancel' })).toBeDisabled()
 
-    resolvePost({
+    await settle(resolvePost, {
       ok: true,
       status: 200,
       json: () => Promise.resolve({ ok: true }),
@@ -1138,7 +1201,7 @@ describe('SecretsPanel error feedback and in-flight guards', () => {
     expect(screen.getByRole('button', { name: 'Delete' })).toBeDisabled()
     expect(deletes).toHaveLength(1)
 
-    resolveDelete({
+    await settle(resolveDelete, {
       ok: true,
       status: 200,
       json: () => Promise.resolve({ ok: true }),
@@ -1178,7 +1241,7 @@ describe('SecretsPanel error feedback and in-flight guards', () => {
 
     expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled()
 
-    resolveDelete({
+    await settle(resolveDelete, {
       ok: true,
       status: 200,
       json: () => Promise.resolve({ ok: true }),
@@ -1315,7 +1378,7 @@ describe('SecretsPanel error feedback and in-flight guards', () => {
     await waitFor(() => expect(save).toBeDisabled())
 
     // Release the in-flight request so the test does not leak a pending promise.
-    resolvePost({
+    await settle(resolvePost, {
       ok: true,
       status: 200,
       json: () => Promise.resolve({ ok: true }),

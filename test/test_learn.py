@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gc
 import os
 import stat
 import sys
@@ -105,6 +106,25 @@ class TestUnreadableRows:
         assert [le.rule for le in store.load_all()] == ["Run the linter first", "Write tests first"]
         context = store.get_context()
         assert "Run the linter first" in context and "Write tests first" in context
+        assert "Skipped 1 of 3 rows" in caplog.text
+
+    def test_a_too_deeply_nested_row_is_skipped_and_counted(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A row nested past the recursion limit costs only itself, like any bad row."""
+        caplog.set_level("WARNING", logger="kiro_crew.learn")
+        store = self._store_with(tmp_path, "[" * 15000)
+        # Keep a cyclic-GC pass (and any finalizer it runs) out of the deep parse.
+        gc.collect()
+        was_enabled = gc.isenabled()
+        gc.disable()
+        try:
+            rules = [le.rule for le in store.load_all()]
+        finally:
+            if was_enabled:
+                gc.enable()
+            gc.collect()
+        assert rules == ["Run the linter first", "Write tests first"]
         assert "Skipped 1 of 3 rows" in caplog.text
 
     @pytest.mark.parametrize("rule", ["5", "null", '["a"]'])

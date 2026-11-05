@@ -9,7 +9,7 @@ layout is derived from `aws/amazon-q-developer-cli`'s
 `src/kiro_crew/mcp_grant.py` and `src/kiro_crew/connections/ownership.py`.
 
 > Current supported paths: interactive kiro-cli provides `/mcp logout <server>`,
-> while Kiro Crew's **Settings > Connections > Disconnect** removes configuration
+> while Kiro Crew's **Customize > Connections > Disconnect** removes configuration
 > it owns and, only after a sharer/ownership census, unlinks the server's paired
 > local grant artifacts. Manual file operations are recovery tools, not the normal
 > product workflow.
@@ -126,7 +126,7 @@ operations want different scopes.
 
 ### From Kiro Crew
 
-For a registry-backed provider, open **Settings > Connections** and choose
+For a registry-backed provider, open **Customize > Connections** and choose
 **Disconnect**. The endpoint cancels an in-flight mint, removes the MCP entries
 Kiro Crew owns, and considers the stored grant in the same locked transaction.
 It unlinks both the token and registration artifacts only when its configuration

@@ -167,7 +167,18 @@ jobs:
   sign:
     name: Sign with signing service (${{ inputs.channel }})
     if: ${{ !inputs.promote }}
-    runs-on: ubuntu-latest
+    # `kirocrew-runners` larger-runner group, reached by LABEL inside a
+    # repository conditional rather than by `group:`; see "Larger runners for
+    # the review lanes and CodeQL" in docs/ci/ci-and-reviews.md. This is a
+    # reusable workflow, so `runs-on` resolves in the CALLER's context, and
+    # both of its callers can be started inside a personal fork: `nightly.yml`
+    # by `workflow_dispatch`, `release.yml` by a `v*` tag push. An organization
+    # runner group is unreachable from outside the org, so a `group:` request
+    # would leave this job waiting out the 24-hour timeout there instead of
+    # running. The `||` leg degrades to the hosted image wherever the group
+    # cannot be reached, which is what keeps a fork's nightly working the way
+    # it does today.
+    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}
     # Upload of a ~1 GB zip plus sign.sh's 45-minute poll window (MAX_WAIT)
     # must both fit; the notarize job keeps its own budget.
     timeout-minutes: 60
@@ -668,7 +679,9 @@ jobs:
       ${{ always() && inputs.write_feed && vars.CLI_DIST_BUCKET != '' &&
           ((!inputs.promote && needs.notarize.result == 'success') ||
            (inputs.promote && needs.notarize.result == 'skipped')) }}
-    runs-on: ubuntu-latest
+    # Same group, same label spelling, and the same reason for it, as `sign`
+    # above.
+    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}
     timeout-minutes: 15
     # Same OIDC subject alignment as the jobs above (S3 writes assume the
     # signing role). No Secrets Manager access here -- the Apple credential

@@ -39,6 +39,8 @@ from kiro_crew.doctor_checks import render
 # back. Read through the ``cli_doctor`` facade, not imported by name here: this
 # family binds no project module (test_cli_doctor_refactor_family_reads), and the
 # facade holds the constant so the two can never drift.
+# It is the floor: ``cli_doctor.skill_view_ceiling`` raises it with the authored
+# agent count, exactly as the projection does.
 _SKILL_VIEW_BACKLOG_WARN = cli_doctor.SKILL_VIEW_PROJECTION_CEILING
 
 
@@ -950,9 +952,9 @@ def _kirocrew_test_homes(root: str) -> tuple[int, bool]:
 def _tmpfs_usage(root: str) -> tuple[float, float, int, int] | None:
     """``(free_space_pct, free_inode_pct, free_inodes, tmp_entries)`` for *root*.
 
-    ``None`` when the root does not exist or cannot be measured, or when the
-    platform has no ``os.statvfs`` (Windows; the doctor section that calls this
-    is Linux-only, so this is belt-and-braces for direct callers). ``tmp_entries``
+    ``None`` when the root does not exist or cannot be measured. A platform
+    without ``os.statvfs`` (Windows) reads free space only, with inodes
+    unconstrained; the doctor section that calls this is Linux-only. ``tmp_entries``
     counts the names carrying the sandbox launcher's mount-source prefix
     (``kirocrew_sb_<pid>_``), so a warning can say how much of the pressure is
     Kiro Crew's own; every other temporary entry belongs to somebody else and
@@ -1559,7 +1561,12 @@ def _doctor_skill_view_census(agents_dir: Path) -> None:
         if foreign:
             detail += f", {foreign}{floor} owned by another Kiro Crew home"
         detail += ")"
-    warn = bool(unreadable) or total > _SKILL_VIEW_BACKLOG_WARN
+    # The same sizing the projection's ceiling uses, so a host the doctor warns
+    # about is still a host whose next spawn falls back.
+    warn_at = cli_doctor.skill_view_ceiling(
+        cli_doctor.count_authored_agent_files(agents_dir), _SKILL_VIEW_BACKLOG_WARN
+    )
+    warn = bool(unreadable) or total > warn_at
     print(f"  skill views: {'⚠️ ' if warn else '✅'} {detail}")
     if truncated:
         print(f"{render._INDENT}(floors: the census stopped at its retention bound)")
@@ -1571,7 +1578,7 @@ def _doctor_skill_view_census(agents_dir: Path) -> None:
             f"{stopped[1:]}, move that directory out of the way; every"
             f" live projection republishes its own lease."
         )
-    if total <= _SKILL_VIEW_BACKLOG_WARN:
+    if total <= warn_at:
         return
     if unreadable:
         drain = " Nothing is reclaimed until the unreadable lease record(s) above are gone."

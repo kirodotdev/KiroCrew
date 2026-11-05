@@ -18,6 +18,7 @@ import urllib.error
 import urllib.request
 
 import pytest
+from loopback_servers import LoopbackHTTPServer
 
 from kiro_crew.apps import official_catalog as oc
 
@@ -326,6 +327,11 @@ class TestHostileFieldTypes:
     def test_a_hostile_type_never_raises(self, field, bad):
         rows = [{"name": "demo-app", "displayName": "From Manifest"}]
         oc.annotate(rows, [{"name": "demo-app", field: bad}])
+        expected = {"name": "demo-app", "displayName": "From Manifest"}
+        if field == "tags" and bad == ["a"]:
+            # A list of strings is a well-formed tag list, so it lands.
+            expected["tags"] = ["a"]
+        assert rows == [expected]
 
     def test_a_non_list_tags_is_dropped_rather_than_iterated(self):
         """`list(5)` raised TypeError; `list("ab")` silently made two tags."""
@@ -896,7 +902,7 @@ class TestRedirectsAreRefused:
         errors elsewhere in the same shard -- which is exactly how this file made
         `Backend Tests (*, 3)` fail on two platforms while passing in isolation.
         """
-        srv = http.server.HTTPServer(("127.0.0.1", 0), handler_cls)
+        srv = LoopbackHTTPServer(("127.0.0.1", 0), handler_cls)
         t = threading.Thread(target=srv.serve_forever, daemon=True)
         t.start()
 

@@ -155,7 +155,7 @@ class Runner:
             ["bash", "-c", self.scripts[name]],
             cwd=self.work,
             env={**self.env, **extra},
-            text=True,
+            text=True, encoding="utf-8",
             capture_output=True,
         )
 

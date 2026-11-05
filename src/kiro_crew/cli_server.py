@@ -854,6 +854,8 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         desktop_app_supervisor,
     )
     from kiro_crew.cli_server_update import (  # noqa: F401
+        _DETACHED_BRANCH_ORDER,
+        _detached_upstream_branch,
         _refresh_agent_config,
         _revalidate_gateway_update_check,
         _snapshot_memory_or_exit,
@@ -862,3 +864,4 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _update_wheel,
     )
     from kiro_crew.dashboard.tailnet import POLICY_OFF_DETAIL, policy_off  # noqa: F401
+    from kiro_crew.platform import release_apply  # noqa: F401

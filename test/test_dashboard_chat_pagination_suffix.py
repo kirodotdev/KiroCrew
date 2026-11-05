@@ -8,7 +8,7 @@ from chat_test_helpers import _make_app, _make_state
 
 
 class TestSlotDetailPaginationPersistedSuffix:
-    """TestSlotDetailPagination: the persisted suffix, approvals and live rows across a bounded read."""
+    """The persisted suffix, approvals and live rows across a bounded read."""
 
     @pytest.mark.asyncio
     async def test_interleaved_foreign_row_does_not_duplicate_the_persisted_suffix(
@@ -16,28 +16,13 @@ class TestSlotDetailPaginationPersistedSuffix:
     ):
         """A foreign row BETWEEN two window rows must not end the ordered scan.
 
-        The save is non-destructive against a cross-process append: it preserves
-        rows another writer added and merges them back in TIME order
-        (``_interleave_foreign_lines``, ``chat_persistence.py:1337-1357``, whose
-        docstring notes such rows "genuinely happened BETWEEN the window's turns").
-        So the on-disk window region can read ``[window, foreign, window]``.
+        The save merges another writer's rows back in TIME order
+        (``_interleave_foreign_lines``), so disk can read ``[window, foreign, window]``.
+        An unmatched row there means "not mine", not "end of window".
 
-        An unmatched row there means "not mine", not "end of window". Stopping at it
-        leaves every persisted row after it in the tail, and those rows are appended
-        a second time — duplication of an already-persisted suffix.
-
-        Built through the real save path so the interleave is produced by the code
-        that really orders these rows, and guarded so it cannot pass vacuously if no
-        interleave occurs.
-
-        The window timestamps are set EXPLICITLY, far apart, rather than left to the
-        clock. The foreign row takes its real "now" and must sort strictly between
-        them. With three clock-minted timestamps the test is platform-fragile: on a
-        coarse-clock platform the foreign append and the second window row land in
-        the same tick, and a shared ``ts`` carried by exactly one unmatched window
-        entry and one unmatched disk line is the save's UNAMBIGUOUS in-place-edit
-        case (``chat_persistence.py:1573-1587``), so the foreign row is dropped and
-        the interleave never happens. Do not collapse these back to clock defaults.
+        The window timestamps are EXPLICIT and far apart: on a coarse clock the foreign
+        row could share a ``ts`` with the second window row, which the save treats as an
+        in-place edit and drops. Do not collapse these back to clock defaults.
         """
         from kiro_crew.dashboard.chat_persistence import _save_slot_to_history
 
@@ -87,17 +72,12 @@ class TestSlotDetailPaginationPersistedSuffix:
     ):
         """A row the SAVE redacted must still match its raw window copy.
 
-        The redaction is asymmetric in a session that was never restored. The save
-        redacts every non-user role (``chat_persistence.py:1282-1284``) while the
-        window keeps the text verbatim (``state_parts/slot_transcript.py`` ``append``), so the disk
-        side is redacted and the window side is raw. Redacting only the disk side cannot
-        converge on that pair, because redacting an already-redacted body just
-        reproduces it. The row then reads as un-flushed, the walk stops, and the
-        persisted suffix is appended a second time.
+        The save redacts every non-user role while the window keeps the text verbatim
+        (``state_parts/slot_transcript.py`` ``append``), so only redacting the disk side
+        can never match the pair.
 
-        Driven through the real writers, and the fixture asserts both preconditions
-        first: the disk window region is MIXED, which is what selects the ordered
-        path, and the two sides genuinely differ by the redaction transform.
+        The fixture asserts the disk region is MIXED (which selects the ordered path)
+        and that the two sides really differ by the redaction.
         """
         from kiro_crew.dashboard.chat_persistence import (
             _save_slot_to_history,
@@ -115,15 +95,9 @@ class TestSlotDetailPaginationPersistedSuffix:
         slot = state.get_or_create_slot("redactdup")
         key = "dashboard:redactdup"
 
-        # Explicit stamps, far apart, so the foreign row's real "now" sorts
-        # strictly between them and can equal neither. On a coarse-clock platform
-        # (Windows ticks in ~15.6 ms steps) clock-minted stamps put the foreign
-        # append and the second window row in the same tick, and a ``ts`` carried
-        # by exactly one unmatched window entry and one unmatched disk line is the
-        # save's UNAMBIGUOUS in-place-edit case, so the second save DROPS the
-        # foreign line and the region is not mixed. Do not collapse these
-        # back to clock defaults; the sibling interleave test pins them for the
-        # same reason.
+        # Explicit stamps, far apart, as in the interleave test: on a coarse clock
+        # (Windows, ~15.6 ms) a shared ``ts`` reads as an in-place edit and the save
+        # drops the foreign line. Do not collapse these back to clock defaults.
         slot.append("user", "q1", ts="2020-01-01T00:00:00.000000+00:00")
         slot.drain()
         _save_slot_to_history(state, slot, force=True)
@@ -166,16 +140,9 @@ class TestSlotDetailPaginationPersistedSuffix:
     ):
         """Two DIFFERENT secrets redact alike; they must not be treated as one row.
 
-        The redaction-equivalent compare exists for one shape only: a row and its
-        own persisted copy, which differ by the transform because one side was
-        redacted on save or load. That pair always carries the SAME ``ts`` — the
-        save copies it verbatim (``chat_persistence.py:1288``) and so does the load
-        (``:714``). So requiring the stamps to match costs the legitimate case
-        nothing, and it stops a foreign row whose credential merely redacts to the
-        same text from being consumed as the window's own.
-
-        It cannot disturb a durable injection either: that pair is byte-identical,
-        so it returns at the plain-equality branch above and never reaches here.
+        The redaction-equivalent compare is for a row and its own persisted copy, which
+        always share a ``ts`` (save and load both copy it), so the compare also requires
+        matching stamps.
         """
         from kiro_crew.dashboard.chat_persistence import (
             _save_slot_to_history,
@@ -188,9 +155,8 @@ class TestSlotDetailPaginationPersistedSuffix:
             out, _ = redact_credentials(out)
             return out
 
-        # Two different credential KINDS rather than two near-identical keys: an
-        # access-key id and a labelled secret-key assignment redact to the same tag,
-        # so no second key-shaped literal is needed to make the bodies collide.
+        # Two credential KINDS that redact to the same tag, so no second key-shaped
+        # literal is needed.
         mine = "key AKIAIOSFODNN7EXAMPLE here"
         theirs = "key aws_secret_access_key=x here"
         assert mine != theirs, "fixture needs two DISTINCT bodies"
@@ -242,12 +208,8 @@ class TestSlotDetailPaginationPersistedSuffix:
     async def test_bounded_read_runs_the_tail_match_off_the_event_loop(self, tmp_path, monkeypatch):
         """The tail match must not run on the event loop.
 
-        It walks the whole window against the whole disk window region and applies
-        the redaction transform to both sides of every candidate compare, so on a
-        large mixed or id-less history the cost is real. Running it inline blocks
-        every other request on the loop, and the loop-stall watchdog treats a long
-        enough block as a hung gateway. The disk read immediately above it already
-        goes through ``asyncio.to_thread``; this makes the pair consistent.
+        It redacts both sides of every compare across the whole window, which on a
+        large history is slow enough for the loop-stall watchdog to call the gateway hung.
         """
         import threading
 
@@ -289,15 +251,8 @@ class TestSlotDetailPaginationPersistedSuffix:
     ):
         """An un-flushed row BEFORE a persisted one must still reach the response.
 
-        Recording a prefix boundary on the id walk would fail here: on a match it set
-        ``start = i + 1``, and a miss simply did not advance. So an un-flushed row
-        followed by a matching row had the boundary moved PAST it, and the bounded
-        response omitted it entirely — a drop, not a duplicate.
-
-        Identity does not need a prefix. An id present in the disk window region
-        proves that row reached disk, so the owed set is the rows whose id did NOT,
-        taken in window order. That is a strict generalisation: when the persisted
-        rows really are a prefix it gives the same answer.
+        A prefix boundary would move past it on the next match and drop it. The owed set
+        is every window row whose id is NOT in the disk region, in window order.
         """
         from kiro_crew.dashboard.chat_persistence import _save_slot_to_history
 
@@ -350,13 +305,8 @@ class TestSlotDetailPaginationPersistedSuffix:
     ):
         """A transient row mid-window must not push persisted rows into the tail.
 
-        Negative control for the test above. Transient roles are dropped by the
-        save, and ``queued`` is outside ``_WIRE_ONLY_ROLES`` so it still gets an id
-        minted — an id that can never appear on disk. Ending the walk at the first
-        miss would therefore stop at this row and re-append every persisted row
-        after it, which is the duplication this change exists to prevent.
-
-        Driven through the real writers.
+        ``queued`` is dropped by the save but, being outside ``_WIRE_ONLY_ROLES``, still
+        gets an id, so ending the walk at the first miss would re-append what follows.
         """
         from kiro_crew.dashboard.chat_persistence import _save_slot_to_history
 
@@ -399,21 +349,11 @@ class TestSlotDetailPaginationPersistedSuffix:
     async def test_pending_approval_survives_a_bounded_read(self, tmp_path, monkeypatch):
         """A live ``permission`` row must reach the bounded response.
 
-        ``_TRANSIENT_ROLES`` documents itself as being about a *window-region disk
-        line* (``chat_persistence.py:1320-1322``), and that is how
-        ``chat_persistence.py:1571`` uses it. The owed-set loop applies it to
-        in-memory ``slot.messages`` instead, which answers a different question:
-        which rows does the client still need? A pending approval is actionable, and
-        the client reads it straight out of the transcript
-        (``store/chat/selectors.ts`` ``selectSlotPendingApproval``), so dropping it makes the
-        approval bar vanish while the server is still waiting on an answer.
+        ``_TRANSIENT_ROLES`` is about disk lines, not which rows the client needs. The
+        client reads a pending approval from the transcript (``selectSlotPendingApproval``
+        in ``store/chat/selectors.ts``), so dropping it hides the approval bar.
 
-        Skipping it also bought nothing: ``permission`` is never persisted
-        (``chat_persistence.py:1274`` returns ``None`` for it), so it can never have
-        a disk counterpart for the id dedup to match.
-
-        Single delivery is safe because the client REPLACES its transcript from this
-        payload (``store/chat/slotSwitch.ts`` ``state.messages = next``) rather than appending,
+        The client REPLACES its transcript from this payload (``store/chat/slotSwitch.ts``),
         so returning the row once cannot double it.
         """
         import json as _json
@@ -469,16 +409,9 @@ class TestSlotDetailPaginationPersistedSuffix:
     ):
         """A RESOLVED approval must not be re-appended after later persisted rows.
 
-        ``permission`` is never persisted (``chat_persistence.py:1274`` returns
-        ``None``), so a permission row in the window is ALWAYS owed. For a pending
-        one that is right — it is the last row, and the client needs it. A resolved
-        one is historical: the agent has continued past it and those later turns
-        have reached disk, so putting it in the tail moves it AFTER them and the
-        rendered order is wrong.
-
-        Resolution is an in-place edit of the row's ``cls`` JSON
-        (``state_parts/transcript_rows.py`` ``_mark_permission_resolved``), so the row stays in the
-        window and its position cannot distinguish it.
+        ``permission`` is never persisted, so a resolved one in the tail would render
+        AFTER the later turns that reached disk. Resolution edits the row's ``cls`` JSON in
+        place (``_mark_permission_resolved``), so only that marks it.
         """
         import json as _json
 
@@ -534,14 +467,8 @@ class TestSlotDetailPaginationPersistedSuffix:
     async def test_live_chunk_row_survives_a_bounded_read(self, tmp_path, monkeypatch):
         """A live ``chunk`` row must reach the bounded response.
 
-        ``_prepare_messages`` does not discard chunk rows, it ACCUMULATES them and
-        emits one ``streaming`` row (``chat_utils_display._prepare_messages_scoped``).
-        That is the only way in-flight assistant text reaches the client through this endpoint,
-        because the client filters raw ``chunk`` itself (``store/chat/wire.ts``
-        ``SKIP_ROLES``). So skipping chunk rows in the owed set does not merely omit
-        noise — it destroys the partial answer.
-
-        Driven through the real producer's call shape (``chat_runner.py:3784``).
+        ``_prepare_messages`` folds chunk rows into one ``streaming`` row, the only way
+        in-flight text reaches the client (which drops raw ``chunk`` in ``SKIP_ROLES``).
         """
         from kiro_crew.dashboard.chat_persistence import _save_slot_to_history
 
@@ -587,15 +514,10 @@ class TestSlotDetailPaginationPersistedSuffix:
     def test_window_snapshot_survives_a_trim_between_the_two_reads(self):
         """A trim landing mid-snapshot must not duplicate a persisted row.
 
-        The scan runs in a worker thread, so an event-loop append can trim the
-        front of the window and bump ``_disk_older_count``
-        (``state_parts/slot_transcript.py`` ``append``) while the snapshot is being taken. Pairing a
-        PRE-trim window with a POST-trim count shortens ``window_disk``, hides the
-        trimmed rows' ids, and re-appends rows the disk read already returned.
-
-        ``slot._lock`` is an ``asyncio.Lock`` and cannot be taken from this thread,
-        so the fix is the bounded re-read ``_save_slot_to_history`` already uses
-        (``chat_persistence.py:1711-1722``).
+        The scan runs in a worker thread, so an event-loop append can trim the window
+        and bump ``_disk_older_count`` mid-snapshot. ``slot._lock`` is an ``asyncio.Lock``
+        this thread cannot take, so the snapshot uses ``_save_slot_to_history``'s
+        bounded re-read.
         """
         from types import SimpleNamespace
 

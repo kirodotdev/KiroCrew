@@ -28,6 +28,15 @@ logger = logging.getLogger(__name__)
 WORK_ID_HEADER = "X-Shared-Crew-Work"
 WORK_STATE_HEADER = "X-Shared-Crew-Work-State"
 
+#: Cancel tasks the hooks below start and do not await, held until each finishes:
+#: the loop keeps only a weak reference to a task.
+_BACKGROUND_TASKS: set["asyncio.Future[Any]"] = set()
+
+
+def _hold(task: "asyncio.Future[Any]") -> None:
+    _BACKGROUND_TASKS.add(task)
+    task.add_done_callback(_BACKGROUND_TASKS.discard)
+
 
 # -- chat turns ------------------------------------------------------------------
 
@@ -320,19 +329,28 @@ def subagent_probe(manager: Any) -> Callable[[str], OperationState | None]:
             if getattr(info, "user_stopped", False):
                 return OperationState.CANCELLED
             return OperationState.FAILED if getattr(info, "error", "") else OperationState.COMPLETED
-        store = None
+        # Absence is proof only after a successful read of an open queue store.
+        # While the store is still opening, failed to open (a retry is armed) or
+        # the read raises, a run it holds may still dispatch: decide later.
+        pending = getattr(manager, "_taskq_init_task", None)
+        if pending is not None and not pending.done():
+            return None
         try:
             store = manager.taskq_store()
         except Exception:
-            store = None
-        if store is not None:
-            try:
-                row = store.get(agent_id)
-            except Exception:
-                row = None
-            if row is not None:
-                mapped = TASKQ_STATE_MAP.get(str(row.state))
-                return mapped if mapped is not None and mapped.value in _TERMINAL_VALUES else None
+            return None
+        if store is None:
+            if getattr(manager, "_taskq_unavailable", None):
+                return None
+            # The durable queue is off: no row can survive a restart to run later.
+            return OperationState.UNKNOWN_OUTCOME
+        try:
+            row = store.get(agent_id)
+        except Exception:
+            return None
+        if row is not None:
+            mapped = TASKQ_STATE_MAP.get(str(row.state))
+            return mapped if mapped is not None and mapped.value in _TERMINAL_VALUES else None
         # Neither the manager nor the queue knows it: it may have run, and is gone.
         return OperationState.UNKNOWN_OUTCOME
 
@@ -362,7 +380,7 @@ def subagent_cancel(manager: Any, loop: Any) -> Callable[[AcceptedWork], None]:
         if not agent_id or stop is None:
             return
         try:
-            loop.create_task(stop_child(work, agent_id))
+            _hold(loop.create_task(stop_child(work, agent_id)))
         except Exception:
             logger.debug("shared crew: subagent cancel failed", exc_info=True)
 
@@ -541,7 +559,7 @@ def _cancel_hook(cancel: Callable[[str], Any]) -> Callable[[AcceptedWork], None]
         try:
             result = cancel(run_id)
             if inspect.isawaitable(result):
-                asyncio.ensure_future(result)
+                _hold(asyncio.ensure_future(result))
         except Exception:
             logger.debug("shared crew: cancelling run %s failed", run_id, exc_info=True)
 

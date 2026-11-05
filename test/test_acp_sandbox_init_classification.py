@@ -1,36 +1,14 @@
 """A sandbox that refuses to initialize must fail fast and name the layer.
 
-A host whose OS sandbox cannot be built reported only the downstream symptom --
-the agent process exited -- while the cause sat one line earlier on the child's
-stderr (``sandbox initialization failed: Operation not permitted``). The death
-summary now carries that tail, so the line is at least visible, but the failure
-is still treated as a transport fault: the reconnect ladder respawns, the same
-host refuses identically, and every entry in the UI crash-loops.
+The refusal is deterministic, so respawning hits the same wall; like ``AcpAuthRequired``
+it is non-retryable. Asserted: one spawn attempt, a classified type, and the layer taken
+from the argv Kiro Crew built (a nested harness sandbox fails with the harness's wording
+while the layer to change is Crew's).
 
-The refusal is DETERMINISTIC, which is the whole argument. The repo already has
-the shape for that -- ``AcpAuthRequired`` and ``AcpToolGateUnroutable`` are
-non-retryable because respawning hits the same wall -- and this is the third
-member of that family.
-
-Two things are asserted, and the second is the one that makes the error useful:
-
-* exactly ONE spawn attempt, and a classified type rather than a generic death;
-* the layer that wrapped the spawn, plus a remedy whose STRENGTH matches the
-  evidence. Signature alone cannot supply the layer: a harness's internal sandbox
-  nested inside Crew's wrap fails with the HARNESS's wording while the layer the
-  operator must change is CREW's, which is how the field reports were actually
-  resolved. So the layer comes from the argv Kiro Crew itself built.
-
-  The switch that turns a layer OFF is a separate question, and the stderr cannot
-  answer it: the dead child is the unverified binary the sandbox exists to
-  contain, so a planted one could otherwise print a refusal and talk the operator
-  into removing the isolation it runs under. The switch is emitted only on a
-  verdict from a TRUSTED launcher run.
-
-A control tail must stay retryable throughout. ``Operation not permitted`` and
-``Failed to spawn child process`` are ordinary output for a missing binary or a
-denied credential file, and latching a permanent verdict onto those would delete
-retries that work today.
+The switch that turns a layer off is shown only on a verdict from a trusted launcher run:
+the dead child is the unverified binary, and could print a refusal to talk the operator
+out of its isolation. ``Operation not permitted`` alone stays retryable; it is ordinary
+output for a missing binary or a denied credential file.
 """
 
 import asyncio
@@ -130,11 +108,8 @@ def test_a_control_tail_stays_retryable(lines):
 def test_the_bare_errno_alone_is_not_enough():
     """The mutation this classifier must not survive.
 
-    Dropping the sandbox anchor -- matching ``Operation not permitted`` or
-    ``Failed to spawn child process`` on its own, as the reported burst's other
-    two lines invite -- makes every ordinary spawn failure permanent. Asserted as
-    its own case because it is the single change that would make the parametrized
-    control above pass for the wrong reason.
+    Matching ``Operation not permitted`` or ``Failed to spawn child process`` without
+    the sandbox anchor would make every ordinary spawn failure permanent.
     """
     assert is_sandbox_init_failure_output("Operation not permitted") is False
     assert is_sandbox_init_failure_output("Failed to spawn child process") is False
@@ -148,12 +123,8 @@ def test_the_bare_errno_alone_is_not_enough():
 async def test_an_uncorroborated_refusal_never_hands_out_the_disable_switch():
     """The security property, and the reason this is not a message-formatting test.
 
-    The tail is the dead child's own stderr, and that child is the unverified
-    binary the sandbox exists to contain. A message answering it with the
-    ``agent.sandbox off`` switch would let a planted binary print one line and have
-    Kiro Crew instruct the operator to remove the isolation it is running under.
-    So the switch is withheld and the operator is routed to the check that can
-    reach a verdict.
+    The tail is the unverified child's own stderr; answering it with
+    ``agent.sandbox off`` would let a planted binary talk the operator out of isolation.
     """
     for crew_wrap in (True, False):
         exc = await sandbox_init_failure("\n".join(HARNESS_SANDBOX_STDERR), crew_wrap=crew_wrap)
@@ -254,12 +225,8 @@ async def test_an_uncorroborated_harness_refusal_names_no_switch_either():
 async def test_a_crew_launcher_verdict_cannot_unlock_the_harness_switch():
     """No cross-layer inference, and this is the case that tempts one.
 
-    Corroboration re-runs KIRO CREW'S OWN launcher, so its verdict is evidence
-    about Crew's layer and says nothing about the harness's internal sandbox. A
-    host that cannot build Crew's namespace would otherwise hand the operator the
-    key that turns off the OTHER sandbox -- and on this branch that sandbox is the
-    only isolation the child had, so the one confirmed outcome would be that the
-    isolation is gone.
+    Corroboration re-runs Crew's own launcher, so it says nothing about the harness
+    sandbox, which on this branch is the child's only isolation.
     """
     path, key = kiro_internal_sandbox_switch()
     with patch(
@@ -647,11 +614,8 @@ def test_the_retry_deciders_all_refuse_it():
 def test_a_launcher_line_that_is_not_a_sandbox_failure_stays_retryable(line):
     """The prefixes are not the test; ``launcher_refusal``'s own verdict is.
 
-    Two of these are actively retryable. ``FATAL ... did not publish`` is a failed
-    pipe handshake that says nothing about the host and self-heals on the next
-    spawn; the hardlink refusal means the sandbox built fine and found host state
-    it must not paper over. Classifying either as a permanent sandbox-init failure
-    would hand the operator the opt-out for a layer that is working.
+    ``FATAL ... did not publish`` self-heals on the next spawn, and the hardlink
+    refusal means the sandbox built fine; neither may offer the opt-out.
     """
     assert is_sandbox_init_failure_output(line) is False
 
@@ -671,11 +635,8 @@ def test_a_real_refusal_below_a_non_refusal_is_still_found():
 async def test_a_mid_life_sandbox_line_does_not_latch():
     """The latch arms only while startup is unfinished.
 
-    The harness's own sandbox can refuse when IT spawns a tool subprocess, long
-    after the agent process started fine. That says nothing about whether the
-    agent process can start, so latching it would turn the NEXT unrelated death --
-    a broken pipe, an OOM kill -- into a permanent "your sandbox is broken", and
-    permanently is how long the wrong verdict would last.
+    A refusal when the harness spawns a tool subprocess says nothing about startup;
+    latching it would turn the next unrelated death into a permanent verdict.
     """
     runtime = _runtime(HARNESS_SANDBOX_STDERR)
     runtime._first_session_ready = True
@@ -687,11 +648,8 @@ async def test_a_mid_life_sandbox_line_does_not_latch():
 async def test_a_refusal_after_the_handshake_still_latches():
     """Startup does not end at ``initialize``, and this is the gap that closes.
 
-    ``session/new`` starts the child's own MCP servers, and a sandboxed launcher
-    among them can refuse there -- after the handshake returned. Closing the window
-    at the handshake would leave every such refusal unclassified on exactly the
-    translation site (``create_session``) that exists to catch it, and the caller
-    would emit a generic retryable startup failure instead.
+    ``session/new`` starts the child's MCP servers, and a sandboxed launcher can
+    refuse there; ``create_session`` must still classify it.
     """
     runtime = _runtime(HARNESS_SANDBOX_STDERR)
     runtime._initialized = True
@@ -788,15 +746,9 @@ def test_every_shared_runtime_startup_site_consults_the_latch():
 async def test_the_losing_schedule_is_reproduced_and_closed():
     """The race, driven deterministically rather than hoped against.
 
-    The latch is written by the ``_drain_stderr`` TASK. The death that brings a
-    caller to the classifier is discovered on the stdout side, where ``_mark_dead``
-    fails the pending ``initialize`` synchronously -- so both are runnable together
-    and the read can happen first. That is the ordinary shape of a real refusal:
-    the child writes its signature and closes stdout at once.
-
-    Reproduced by creating the drain task and NOT letting it run: the first assert
-    IS the losing schedule, and it fails on any implementation that closes the race
-    by luck instead of by waiting.
+    The ``_drain_stderr`` task writes the latch, but ``_mark_dead`` fails ``initialize``
+    from the stdout side, so the read can come first. The drain task is created and
+    not run, so the first assert is the losing schedule.
     """
     import asyncio
 
@@ -1191,14 +1143,8 @@ async def test_the_shared_translation_settles_before_it_reads():
 def test_the_failed_handshake_settles_the_drain_before_teardown():
     """Ordering, asserted on the source: settle FIRST, then tear down.
 
-    ``spawn()``'s failure handler tears the runtime down, and that teardown
-    cancels the stderr drain. A line still in the pipe when it does is a line
-    nobody will ever read -- the caller's own settle then finds the task already
-    done and learns nothing, so a real refusal reports as a generic crash and the
-    ladder retries into the same wall.
-
-    Asserted on the file because what can go wrong is the two statements swapping
-    places, which no behavioural double can pin without driving a whole real spawn.
+    Teardown cancels the stderr drain, losing any line still in the pipe. Asserted on
+    the source because the risk is the two statements swapping places.
     """
     import sys
     from pathlib import Path
@@ -1250,11 +1196,8 @@ async def test_a_cancelled_drain_is_what_the_early_settle_prevents():
 async def test_the_summary_shape_does_not_hide_the_launcher_line():
     """The display string and the classified string are different shapes.
 
-    The shared runtime's retained summary folds the tail onto ONE line behind a
-    ``returncode`` prefix, for a person to read. The launcher's refusal is
-    recognised per LINE, so classifying that summary matches nothing --
-    corroboration would silently never run and the switch would be unreachable on
-    the very path the Linux launcher case arrives by.
+    The summary folds the tail onto one line behind ``returncode``, but the launcher
+    refusal is matched per line, so classifying the summary would match nothing.
     """
     summary = (
         "runtime failed [returncode=1] stderr_tail: sandbox: BLOCKED -- "

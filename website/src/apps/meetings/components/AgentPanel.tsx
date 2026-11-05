@@ -40,11 +40,19 @@
 // to tell apart: that they are looking at their own text rather than the agent's, and
 // that the agent has written more since. HTML and chat agents are not editable; see
 // `EDITABLE_WIDGET_TYPE` in the backend constants for why.
+//
+// Any non-chat agent's panel can also be EXPANDED (#21179): the parent hides the
+// transcript and the sibling panels (see AgentPanelSlot), and this card grows to fill the workspace,
+// with the diagram frame and the notes pane taking the freed height. It is view
+// state only. The same header button or Escape restores the compact layout, which
+// stays the default, and focus returns to that button.
 
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   FileText,
+  Maximize2,
   MessageSquare,
+  Minimize2,
   Pencil,
   RotateCcw,
   Volume2,
@@ -59,6 +67,8 @@ import { Btn, Card, CardTitle, Input, SendBtn } from '../../../components/ui'
 import type { AgentDef, OutputEdit } from '../api'
 import { buildSketchSrcdoc } from '../lib/sketchSrcdoc'
 import { useImeGuard } from '../../../hooks/useImeGuard'
+import { ESCAPE_PRIORITY, useEscapeLayer } from '../../../hooks/useEscapeLayer'
+import { isModalLayer } from '../../../hooks/modalLayer'
 
 interface Props {
   agent: AgentDef
@@ -79,6 +89,27 @@ interface Props {
   /** Absent for an agent whose output is not editable (html widgets, chat agents). */
   onSaveOutput?: (content: string) => Promise<unknown>
   onRevertOutput?: () => Promise<unknown>
+  /** This panel fills the meeting workspace instead of its grid cell. */
+  expanded?: boolean
+  /** Absent: no expand control (the panel cannot be enlarged here). */
+  onToggleExpanded?: () => void
+}
+
+/**
+ * Whose Escape is this? The expanded panel answers only a press that starts
+ * inside its own card, or on the page body (nothing focused). Anything else
+ * belongs to its own control: the meeting title's cancel, a menu, a dialog. An
+ * IME composition is closing its candidate list and must yield outright.
+ */
+function escapeVerdictFor(e: KeyboardEvent, card: Element | null): 'take' | 'pass' | 'yield' {
+  if (e.isComposing) return 'yield'
+  const target = e.target instanceof Element ? e.target : null
+  if (target === null || target === document.body || target === document.documentElement) return 'take'
+  if (card === null || !card.contains(target)) return 'pass'
+  for (let el: Element | null = target; el && el !== card; el = el.parentElement) {
+    if (isModalLayer(el)) return 'yield'
+  }
+  return 'take'
 }
 
 export default function AgentPanel({
@@ -93,6 +124,8 @@ export default function AgentPanel({
   onSendMessage,
   onSaveOutput,
   onRevertOutput,
+  expanded = false,
+  onToggleExpanded,
 }: Props) {
   const ime = useImeGuard()
   const { confirm, confirmDialog } = useConfirm()
@@ -121,6 +154,28 @@ export default function AgentPanel({
   // controls but wrong for the button label — an idle panel must not read
   // "Saving…" because a sibling agent's write is in flight.
   const [savePending, setSavePending] = useState(false)
+
+  const expandRef = useRef<HTMLButtonElement>(null)
+  const canExpand = onToggleExpanded != null && !isChatAgent
+  // Restoring must land the keyboard on the control that expanded the panel,
+  // whichever way the restore came (the button itself, or Escape from inside the
+  // enlarged notes). Keyed to the true -> false edge, never to mount.
+  const wasExpanded = useRef(expanded)
+  useEffect(() => {
+    if (wasExpanded.current && !expanded) expandRef.current?.focus()
+    wasExpanded.current = expanded
+  }, [expanded])
+  useEscapeLayer(
+    expanded && onToggleExpanded != null,
+    e => {
+      const verdict = escapeVerdictFor(e, expandRef.current?.closest('[data-agent-panel]') ?? null)
+      if (verdict === 'take') onToggleExpanded?.()
+      return verdict
+    },
+    ESCAPE_PRIORITY.flyout,
+  )
+  // Grid cell by default; the whole workspace height while expanded.
+  const cardClass = `col-span-2 flex flex-col gap-2${expanded ? ' flex-1 min-h-min' : ''}`
 
   const saveDraft = async () => {
     if (draft === null || onSaveOutput == null) return
@@ -190,6 +245,30 @@ export default function AgentPanel({
     <div className="flex items-center justify-between gap-2">
       <div className="flex items-center gap-2 min-w-0">
         <CardTitle>{agent.name}</CardTitle>
+        {/* Beside the title, apart from the right-hand view controls: it acts on
+            the panel's size, not on what the panel shows or hears. */}
+        {canExpand && (
+          <Btn
+            ref={expandRef}
+            onClick={onToggleExpanded}
+            aria-label={
+              expanded
+                ? i18nT('apps.meetings.agentPanel.collapse', { name: agent.name })
+                : i18nT('apps.meetings.agentPanel.expand', { name: agent.name })
+            }
+            title={
+              expanded
+                ? i18nT('apps.meetings.agentPanel.collapse', { name: agent.name })
+                : i18nT('apps.meetings.agentPanel.expand', { name: agent.name })
+            }
+          >
+            {expanded ? (
+              <Minimize2 className="lucide-inline" />
+            ) : (
+              <Maximize2 className="lucide-inline" />
+            )}
+          </Btn>
+        )}
         {/* Which copy is on screen is the first thing to know about an edited panel,
             so it is stated next to the name rather than hidden in a tooltip. */}
         {edit && !editing && (
@@ -247,12 +326,15 @@ export default function AgentPanel({
 
   if (showChat) {
     return (
-      <Card className="col-span-2 flex flex-col gap-2">
+      <Card className={cardClass} data-agent-panel={agent.id}>
         {header}
         {/* A revert that rejects after the user switched to the chat view must still
             say so here. No hand-off: the message input below holds unsent text. */}
         <ErrorNotice message={outputError} />
-        <div className="flex-1 min-h-[120px] max-h-[320px] overflow-y-auto flex flex-col gap-2">
+        {/* Expanded, the cap gives way to the card's height; size containment keeps
+            the thread's length out of the card's `min-h-min` floor (as for the notes
+            pane), so a long thread scrolls here and the input stays on screen. */}
+        <div className={`flex-1 min-h-[120px] ${expanded ? 'contain-size ' : 'max-h-[320px] '}overflow-y-auto flex flex-col gap-2`}>
           {sent.length === 0 ? (
             <p className="text-[13px] text-muted">
               {i18nT('apps.meetings.agentPanel.chatEmpty', { name: agent.name })}
@@ -291,7 +373,7 @@ export default function AgentPanel({
 
   if (agent.widget_type === 'html') {
     return (
-      <Card className="col-span-2 flex flex-col gap-2">
+      <Card className={cardClass} data-agent-panel={agent.id}>
         {header}
         {output ? (
           <iframe
@@ -312,7 +394,7 @@ export default function AgentPanel({
             // can reach this page, its cookies, or the gateway. This is the HARD
             // boundary; the CSP above is the egress control the sandbox lacks.
             sandbox="allow-scripts"
-            className="w-full border border-border rounded-md bg-white"
+            className={`w-full border border-border rounded-md bg-white${expanded ? ' flex-1 min-h-0' : ''}`}
             // The transform is the same compositing promotion every sandbox-doc
             // frame carries: a laid-out document whose first paint is skipped
             // shows an empty box (silent — correct height, no error state), and
@@ -320,7 +402,14 @@ export default function AgentPanel({
             // post-load timing. This frame builds its document inline (srcDoc,
             // outside the sandbox-doc mint), so it was left out when the mint's
             // consumers were promoted.
-            style={{ minHeight: 340, height: 340, transform: 'translateZ(0)' }}
+            //
+            // Expanded, the fixed height gives way to `flex-1` so the frame takes
+            // the card's freed height; 340 px stays the floor.
+            style={
+              expanded
+                ? { minHeight: 340, transform: 'translateZ(0)' }
+                : { minHeight: 340, height: 340, transform: 'translateZ(0)' }
+            }
           />
         ) : (
           <p className="text-[13px] text-muted">
@@ -333,7 +422,7 @@ export default function AgentPanel({
 
   if (editing) {
     return (
-      <Card className="col-span-2 flex flex-col gap-2">
+      <Card className={cardClass} data-agent-panel={agent.id}>
         {header}
         <textarea
           value={draft.text}
@@ -351,7 +440,7 @@ export default function AgentPanel({
           // indistinguishable to a screen reader.
           aria-label={i18nT('apps.meetings.agentPanel.editorLabel', { name: agent.name })}
           spellCheck
-          className="min-h-[280px] max-h-[520px] resize-y bg-transparent border border-border rounded-md outline-hidden p-3 text-[13px] leading-relaxed text-text font-body focus-ring"
+          className={`min-h-[280px] ${expanded ? 'flex-1 resize-none' : 'max-h-[520px] resize-y'} bg-transparent border border-border rounded-md outline-hidden p-3 text-[13px] leading-relaxed text-text font-body focus-ring`}
         />
         {/* No hand-off: the minutes draft in the textarea above is unsaved. */}
         <ErrorNotice message={outputError} />
@@ -374,7 +463,7 @@ export default function AgentPanel({
   }
 
   return (
-    <Card className="col-span-2 flex flex-col gap-2">
+    <Card className={cardClass} data-agent-panel={agent.id}>
       {header}
       {/* No hand-off: this panel's message-to-agent input holds unsent text. */}
       <ErrorNotice message={outputError} />
@@ -423,7 +512,15 @@ export default function AgentPanel({
         // phone (the workspace gives this column ~380px there), so touch
         // scrolling never traps inside a pane taller than its container.
         // `vh` stays as the fallback, same idiom as AgentsPage.
-        className="max-h-[min(520px,60vh)] supports-[height:100svh]:max-h-[min(520px,60svh)] overflow-y-auto"
+        //
+        // Expanded, the cap gives way to the card's own height. Size containment
+        // keeps the notes' length out of the card's `min-h-min` floor, so long
+        // notes scroll here instead of stretching the card past the workspace.
+        className={
+          expanded
+            ? 'flex-1 min-h-0 contain-size overflow-y-auto'
+            : 'max-h-[min(520px,60vh)] supports-[height:100svh]:max-h-[min(520px,60svh)] overflow-y-auto'
+        }
       >
         {output ? (
           <MarkdownRenderer content={output} />

@@ -99,6 +99,15 @@ describe('latinLeaks', () => {
     }
   })
 
+  it('exempts the pre-registered Google Workspace provider names whole', () => {
+    // Visible as "needs configuration" cards on capabilities-mcp; each name must be
+    // stripped as one term so no bare "Drive" or "Docs" run is left behind.
+    for (const brand of ['Gmail', 'Google Drive', 'Google Calendar', 'Google Sheets', 'Google Docs', 'Google Slides']) {
+      expect(ALWAYS_LATIN).toContain(brand)
+      expect(latinLeaks(brand)).toEqual([])
+    }
+  })
+
   it('removes longer terms first, so GitHub does not leave a bare Hub', () => {
     expect(ALWAYS_LATIN).toContain('Git')
     expect(ALWAYS_LATIN).toContain('GitHub')

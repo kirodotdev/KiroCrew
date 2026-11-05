@@ -1,5 +1,5 @@
 # Smoke: Settings > Developer is a list of pages. Feature Previews comes first,
-# then the internals pages (Logs, System, Telemetry, Storage, MCP Management,
+# then the internals pages (Logs, System, Telemetry, Storage,
 # Memory, Config, Debug tools, Archive). There is no Developer Mode switch and
 # no "Developer" item in the left rail. The flow opens the Logs page from the
 # list and reads it; nothing is turned on or off, so a retry starts from the

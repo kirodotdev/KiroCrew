@@ -79,37 +79,16 @@ CALLER_IDENTITY_CAPABILITY = "kirocrew.caller-identity"
 # test fails if hashing grows a prefix this does not cover.
 ROTATING_SECRET_ENV_PREFIXES: tuple[str, ...] = ("AWS_SECRET", "AWS_SESSION", "OAUTH")
 
-# Server capabilities that DEGRADE when a backend is shared.
+# Server capabilities that DEGRADE when a backend is shared. Notes only, never
+# a disqualifier: an unattributable notification is already DROPPED
+# (``backend._notification_owner``), and each entry is a gap in OUR broker, not
+# the server. ``logging/setLevel`` is process-global, but a broker could emit at
+# the finest level asked for and filter per stub.
 #
-# Reported as notes and nothing more: they do not disqualify a server and they do
-# not withhold a recommendation. Two reasons, and the second is the load-bearing
-# one.
-#
-# First, it is not a leak. The broker already refuses to guess: an unattributable
-# request-scoped notification is DROPPED (deny-by-default in
-# ``backend._notification_owner``) rather than broadcast, so no co-tenant ever
-# receives another tenant's content.
-#
-# Second, and this is why it informs rather than gates: **it describes a gap in
-# OUR broker, not a property of the server.** A proxy that can correlate a frame
-# to a caller can route it, and correlation is a feature we can build:
-#
-# ``logging`` -- ``logging/setLevel`` is process-global, but a proxy can emit at
-# the finest level any tenant asked for and filter DOWN per stub, giving each
-# tenant the verbosity it requested from one process.
-#
-# Withholding pooling for it would be charging the operator for work we have
-# not done. It is filed as a broker gap instead, and the contract on this table
-# is that an entry is DELETED — not relaxed — the moment the broker learns to
-# attribute the frames it covers. ``resources.subscribe`` is absent from this
-# table under exactly that contract: the broker keeps a ``uri -> {stub_uuid}``
-# subscription table (``backend._resource_subscriptions``) and routes each
-# ``notifications/resources/updated`` to the stubs subscribed to its URI, so
-# subscriptions survive pooling and there is nothing to warn about.
-#
-# ``*.listChanged`` is deliberately NOT here: those notifications are global
-# broadcasts (``backend._GLOBAL_BROADCAST_NOTIFICATIONS``) and are safe to
-# fan out to every attached stub.
+# Contract: DELETE an entry once the broker can attribute its frames (as with
+# ``resources.subscribe``, routed via ``backend._resource_subscriptions``).
+# ``*.listChanged`` is a global broadcast
+# (``backend._GLOBAL_BROADCAST_NOTIFICATIONS``) and safe to fan out.
 _SHARED_BACKEND_DEGRADATIONS: tuple[tuple[tuple[str, ...], str], ...] = (
     (("logging",), "logging_level"),
 )
@@ -277,9 +256,7 @@ def _all_tools_read_only(annotations: list[dict]) -> bool:
     return all(a.get("readOnlyHint") is True for a in annotations)
 
 
-def assess(
-    evidence: ShareEvidence, identity_keys: Collection[str] = ()
-) -> ShareVerdict:
+def assess(evidence: ShareEvidence, identity_keys: Collection[str] = ()) -> ShareVerdict:
     """Turn evidence into a verdict. Pure; no IO, no config, no clock.
 
     ``identity_keys`` is passed IN rather than read here precisely to keep that
@@ -352,9 +329,7 @@ def assess(
     #    Checked BEFORE the probe gate: it is a config fact, true whether or not
     #    the server ever started.
     if evidence.session_bound_by_construction:
-        return verdict(
-            Strength.DISQUALIFIED, [Reason("session_bound_by_construction")]
-        )
+        return verdict(Strength.DISQUALIFIED, [Reason("session_bound_by_construction")])
 
     # 4. Config-derived notes. Computed BEFORE the probe gate for the same reason.
     #
@@ -394,33 +369,15 @@ def assess(
     if not evidence.probe_ok or evidence.capabilities is None:
         return verdict(Strength.UNKNOWN, [Reason("not_probed")] + notes)
 
-    # 4. Notes that travel with the verdict instead of replacing it.
+    # 4. Notes that travel with the verdict; neither DISQUALIFIES.
     #
-    #    Neither of these DISQUALIFIES: reading either as disqualifying is an
-    #    inference dressed as a finding. They are collected here and appended to
-    #    whichever tier the evidence actually supports.
+    #    * ``degrades_when_shared`` names a feature our broker breaks when shared.
+    #    * ``handshake_not_reproducible`` withholds NOTHING: a difference between
+    #      two samples cannot say whether it came from ``clientInfo`` or from the
+    #      server's own variance, and gating on a per-pass sample would make
+    #      eligibility flap.
     #
-    #    They are NOT equally load-bearing, and the difference is what this layer
-    #    is for. It exists to turn pooling ON for an operator who never got round
-    #    to it, so "no" is its failure mode rather than its caution.
-    #
-    #    * ``degrades_when_shared`` can withhold an automatic share, but only for
-    #      the entry that names a feature which BREAKS. That is a deterministic
-    #      consequence of our own broker, not a guess about the server.
-    #    * ``handshake_not_reproducible`` withholds NOTHING. It is the two-identity
-    #      comparison finding a difference, and it cannot say WHY: an answer
-    #      computed from ``clientInfo`` (the real hazard) and an answer that varies
-    #      for the server's own reasons -- startup feature detection, a
-    #      reachability probe -- are indistinguishable from two samples that both
-    #      vary the identity. The second kind gives every co-tenant of one process
-    #      the SAME answer, which is what an unpooled process does too. It is also
-    #      re-derived every pass, so gating on it would make a server's
-    #      eligibility flap with the last sample -- a gate nobody can predict is
-    #      worse than none. Pure information.
-    #
-    #    Both still recommend the STUB, which keeps the backend 1:1 with the
-    #    session -- the same topology as no gateway at all -- so nothing here is a
-    #    reason to withhold that.
+    #    Both still recommend the STUB (backend 1:1 with the session).
     notes += _shared_backend_degradations(evidence.capabilities)
     if evidence.preflight_ran and evidence.preflight_caller_sensitive:
         notes.append(Reason("handshake_not_reproducible"))
@@ -450,42 +407,14 @@ def assess(
             reasons.append(Reason("preflight_not_run"))
         return verdict(Strength.DECLARED, reasons + notes, stub=True, share=share)
 
-    # 6. Nothing objected. Which of the two remaining tiers this is depends on
-    #    whether anybody actually provoked the server:
+    # 6. Nothing objected. The pre-flight ran with no divergence -> MEASURED;
+    #    it never ran, or it diverged -> NO_OBJECTION (nothing was ruled out).
     #
-    #    * the pre-flight ran and found no divergence -> MEASURED. Something was
-    #      ruled OUT: this server does not answer the handshake per caller.
-    #    * it never ran -> NO_OBJECTION, an absence of evidence rather than
-    #      evidence of absence.
-    #
-    #    NEITHER recommends sharing, and the reason is the same for both: what
-    #    the pre-flight compares is the HANDSHAKE (``initialize`` capability
-    #    shapes, ``protocolVersion``, ``serverInfo``, and the read-only listings).
-    #    It never makes a tool call. A server whose state is process-global -- one
-    #    browser context, one database connection, one working directory -- replays
-    #    that handshake identically for two callers and still cannot serve two
-    #    sessions, and on a shared backend one caller would receive state another
-    #    caller put there.
-    #
-    #    That is why MEASURED does NOT inherit DECLARED's share flag even though
-    #    it sits directly below it: a declaration is a claim about ISOLATION ("I
-    #    can tell my callers apart"), while a measurement is a fact about
-    #    DETERMINISM ("you answered the same twice"). Conflating the two would let
-    #    a bulk action co-tenant a stateful server on evidence that cannot see the
-    #    hazard -- and the ledger cannot catch it afterwards either, because its
-    #    codes describe unroutable frames, not state a server handed to the wrong
-    #    session.
-    #
-    #    What both tiers DO recommend is the stub, which keeps the backend 1:1
-    #    with the session (same topology as no gateway) and is what unlocks
-    #    server-authored UI. Splitting stub from share is what makes a verdict
-    #    short of a declaration still actionable without being reckless.
-    #
-    #    A pass that RAN and saw the handshake differ has not earned MEASURED
-    #    either. MEASURED's whole content is that something was ruled out, and a
-    #    divergence rules nothing out -- so it falls to NO_OBJECTION carrying the
-    #    note, which is the honest reading: no durable objection exists, and one
-    #    sample looked odd.
+    #    NEITHER recommends sharing: the pre-flight compares only the HANDSHAKE
+    #    and never calls a tool, so a server with process-global state (one
+    #    browser, one DB connection) passes it yet cannot serve two sessions.
+    #    A declaration claims ISOLATION; a measurement shows only DETERMINISM.
+    #    Both tiers recommend the stub (backend 1:1 with the session).
     measured = bool(evidence.preflight_ran) and not evidence.preflight_caller_sensitive
     reasons = [Reason("preflight_passed" if measured else "no_objection_found")]
     if _all_tools_read_only(evidence.tool_annotations):

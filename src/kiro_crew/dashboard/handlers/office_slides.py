@@ -5,8 +5,7 @@ a presentation is its layout, so the panel also needs the slides as pictures.
 Nothing in the dashboard can draw a slide itself: that takes an office suite,
 and the one open-source renderer with a faithful Impress import is LibreOffice
 (``soffice``), a system package the product neither ships nor installs from a
-browser request (the same stance ``apps/builtins/pptx_maker`` takes for its own
-thumbnails). So this module renders WHEN ``soffice`` is on the gateway host and
+browser request. So this module renders WHEN ``soffice`` is on the gateway host and
 reports honestly when it is not, and the panel degrades to the text outline.
 
 Two endpoints:
@@ -112,7 +111,7 @@ from typing import Any, BinaryIO
 
 from aiohttp import web
 
-from kiro_crew import platform_compat, security
+from kiro_crew import platform_compat, security, soffice_discovery
 from kiro_crew.config.loader import config_dir
 from kiro_crew.dashboard import token_secret as _token_secret
 from kiro_crew.dashboard.handlers import files as _files
@@ -195,18 +194,14 @@ def cache_root() -> Path:
 def soffice_path() -> str | None:
     """``soffice`` on this host, or ``None``.
 
-    The pptx-maker app already owns the answer -- ``PATH`` first, then the fixed
-    Windows install root a by-name lookup cannot reach -- so this asks it rather
-    than growing a second discovery. Imported lazily, the way
-    ``handlers/aws_consent.py`` reaches the AWS Control backend: the builtin
-    app package is heavier than this module and only needed on a miss.
+    Discovery is the core's own (``kiro_crew.soffice_discovery``: ``PATH`` first, then
+    the fixed Windows install root a by-name lookup cannot reach), so slide previews
+    never depend on an app being installed.
     """
-    from kiro_crew.apps.builtins.pptx_maker.backend import engine
-
-    candidate = engine.optional_dep_path("soffice")
+    candidate = soffice_discovery.find_soffice()
     if not candidate:
         return candidate
-    # `optional_dep_path` resolves via PATH (`shutil.which`) unvalidated, so an
+    # `find_soffice` resolves via PATH (`shutil.which`) unvalidated, so an
     # agent that planted a `soffice` on an agent-writable PATH directory
     # (e.g. ~/.local/bin) would otherwise have it run UNSANDBOXED against the
     # staged deck. Gate it through the same provenance check every provider CLI
@@ -220,10 +215,8 @@ def soffice_path() -> str | None:
 
 
 def soffice_hint() -> str | None:
-    """The per-OS install command the app shows for a missing ``soffice``, if any."""
-    from kiro_crew.apps.builtins.pptx_maker.backend import preview_tools
-
-    return preview_tools.soffice_hint()
+    """The per-OS install command for a missing ``soffice``, if any."""
+    return soffice_discovery.soffice_install_hint()
 
 
 def _sel():

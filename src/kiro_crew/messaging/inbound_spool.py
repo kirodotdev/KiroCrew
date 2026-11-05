@@ -14,13 +14,12 @@ It records the refused message durably and, on the next start, tells the user
 in that same conversation that the message was never processed, quoting it back
 so a resend is one tap. It does **not** re-drive the message as a turn.
 
-The re-dispatch half was built and then removed. Replaying a spooled entry as
+Replaying a spooled entry as
 the operator's own turn makes the spool a second, parallel INTAKE path into the
 model, and every authorization the live path applies at intake -- the peer
 allow-list, Telegram's forum gate, Discord's thread roster, WhatsApp's group
 gate, conversation rotation -- has to be re-established on it, per channel, and
-kept in step with the live path forever. Ten review rounds re-derived that
-surface one gate at a time. A notice is a proactive SEND, and a proactive send
+kept in step with the live path forever. A notice is a proactive SEND, and a proactive send
 already has exactly one authorization seam in this codebase:
 ``MessagingTransport.may_send_to``. Scoping replay to the notice puts the whole
 feature behind a gate that already exists and is already owned, instead of
@@ -539,7 +538,7 @@ def _read_entries(path: Path) -> list[SpooledInbound]:
                     continue
                 try:
                     raw = json.loads(stripped)
-                except ValueError:
+                except (ValueError, RecursionError):  # past the nesting limit
                     continue
                 if not isinstance(raw, dict):
                     continue

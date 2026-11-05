@@ -77,7 +77,7 @@ window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
       default_memory_mode: 'persistent', widget_density: 'more', verbosity: 'default',
       quick_send: false, session_grid: false, tail_fork_enabled: false, link_previews: false,
       mcp_app_panel: false, auto_open_git_panel: false, session_card_source_links: true,
-      folder_suggestions_enabled: true, use_builtin_browser: true,
+      folder_suggestions_enabled: true,
     })
   }
   if (url.includes('/api/tips/status')) return json({ enabled_config: true, opted_out: false })

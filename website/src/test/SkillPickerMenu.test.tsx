@@ -81,6 +81,54 @@ describe('SkillPickerMenu', () => {
     expect(screen.queryByText('$grill')).not.toBeInTheDocument()
   })
 
+  it('finds a skill from the starts of its words (#28150)', async () => {
+    render(<Harness query="tpull" open />)
+    expect(await screen.findByText('$ticket-pull')).toBeInTheDocument()
+    expect(screen.queryByText('$oncall-handover')).not.toBeInTheDocument()
+    expect(screen.queryByText('$grill')).not.toBeInTheDocument()
+  })
+
+  it('finds a skill from runs that each start a word', async () => {
+    render(<Harness query="onhand" open />)
+    expect(await screen.findByText('$oncall-handover')).toBeInTheDocument()
+  })
+
+  it('reaches a word start past an earlier mid-word copy of the same letter', async () => {
+    // `$ps`: the leftmost `s` sits inside `personal`; the match must take the
+    // `s` that starts `shopper`. Same shape for `$tc` and `ticket-close`.
+    mockApi.skills.mockResolvedValue([
+      { key: 'personal-shopper', name: 'personal-shopper', description: 'd', source: 'kirocrew' },
+      { key: 'ticket-close', name: 'ticket-close', description: 'd', source: 'kirocrew' },
+    ])
+    const { unmount } = render(<Harness query="ps" open />)
+    expect(await screen.findByText('$personal-shopper')).toBeInTheDocument()
+    unmount()
+    render(<Harness query="tc" open />)
+    expect(await screen.findByText('$ticket-close')).toBeInTheDocument()
+  })
+
+  it('lists substring matches first, in catalog order, then word-start fuzzy matches', async () => {
+    mockApi.skills.mockResolvedValue([
+      { key: 'git-review', name: 'git-review', description: 'd', source: 'kirocrew' },
+      { key: 'grill', name: 'grill', description: 'd', source: 'kirocrew' },
+      { key: 'agree', name: 'agree', description: 'd', source: 'kirocrew' },
+    ])
+    render(<Harness query="gr" open />)
+    await screen.findByText('$git-review')
+    const rows = screen.getAllByText(/^\$/).map((el) => el.textContent)
+    expect(rows).toEqual(['$grill', '$agree', '$git-review'])
+  })
+
+  it('does not match letters that only appear in order inside words', async () => {
+    // `hello` is a subsequence of `the-cello`, but `h` sits mid-word, so the
+    // menu stays empty and Enter still sends the message.
+    mockApi.skills.mockResolvedValue([
+      { key: 'the-cello', name: 'the-cello', description: 'd', source: 'kirocrew' },
+    ])
+    render(<Harness query="hello" open />)
+    expect(await screen.findByText(/No matching skills/)).toBeInTheDocument()
+  })
+
   it('shows the description as secondary text', async () => {
     render(<Harness query="grill" open />)
     expect(await screen.findByText('Structured questioning')).toBeInTheDocument()

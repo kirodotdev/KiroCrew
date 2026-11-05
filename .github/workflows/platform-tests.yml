@@ -115,21 +115,34 @@ jobs:
     # MEASURED at 5 shards: a nightly took 34, 31, 30, 30 and 28 minutes of job
     # wall, and on a slow runner day a shard at that shape crosses 40:00 and is
     # cancelled. So 6 shards: about 25 minutes a shard, 1.6x inside the cap.
-    # The 6 shards run 4 at a time (test_workflow_matrix_max_parallel.py holds
+    # MEASURED at 6 shards, once the suite had grown into them: the pytest step
+    # across all six shards summed to 8,690 s on run 40517628878 (217,756
+    # tests) and 9,902 s on run 41783325047 (240,552 tests), so the suite gained
+    # about 10% in tests and 14% in time over eight days. On run 41783325047 the
+    # shards took 32, 35, 27, 26, 26 and 27 minutes of job wall, and the
+    # heaviest file-hash shard's pytest step is 1.2x the mean. The same shard
+    # ran 18 and 31 minutes on two runs a few hours apart at nearly the same
+    # commit, so runner speed alone moves a shard by 1.7x, and on run
+    # 41920614742 shard 2 was cancelled at 40:00 with its progress line at 96%.
+    # So 8 shards: the 9,902 s spread eight ways is about 21 minutes of pytest a
+    # shard, about 26 for the heaviest mix and about 31 on a slow-runner day,
+    # still inside the cap.
+    # The 8 shards run 4 at a time (test_workflow_matrix_max_parallel.py holds
     # every matrix job to that shared-pool rule), so they run in two waves, 4
-    # then 2. Any count from 5 to 8 is two waves, so the sixth shard joins the
-    # second wave rather than opening a third: each JOB drops to about 25
+    # then 4. Any count from 5 to 8 is two waves, so the extra shards join the
+    # second wave rather than opening a third: each JOB drops to about 21-26
     # minutes inside the cap, which is the invariant, for about the same total
-    # lane wall time.
+    # lane wall time. Eight is also the last count that stays two waves; past
+    # it the next lever is the slow tests themselves, not a ninth shard.
     timeout-minutes: 40
     strategy:
       max-parallel: 4
       # Full failure picture across shards, same as backend-test.
       fail-fast: false
       matrix:
-        group: [1, 2, 3, 4, 5, 6]
+        group: [1, 2, 3, 4, 5, 6, 7, 8]
     env:
-      SHARD_COUNT: 6
+      SHARD_COUNT: 8
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

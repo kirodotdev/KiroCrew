@@ -362,6 +362,7 @@ def _ssh_effective_config(tmp_path, config_text: str, ssh_args: list[str], host:
         ["ssh", "-G", "-F", str(cfg), *ssh_args, host],
         capture_output=True,
         text=True,
+        encoding="utf-8",
         timeout=_SSH_CONFIG_PROBE_TIMEOUT_SECS,
         cwd=tmp_path,
     )
@@ -468,6 +469,7 @@ class TestSshTunnelMultiplexing:
             ["ssh", "-G", "-F", str(cfg), *args, self._HOST],
             capture_output=True,
             text=True,
+            encoding="utf-8",
             timeout=_SSH_CONFIG_PROBE_TIMEOUT_SECS,
             cwd=tmp_path,
         )

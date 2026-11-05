@@ -141,7 +141,35 @@ class TestTheDefaultNeedsNoFile:
         def deny(*a, **k):
             raise OSError(13, "Permission denied")
 
-        monkeypatch.setattr(Path, "read_text", deny)
+        monkeypatch.setattr(Path, "read_bytes", deny)
+        with pytest.raises(redact.RedactionSwitchUnreadable):
+            redact.outbound_redaction_enabled()
+
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            (b"\xef\xbb\xbf" + b'{"redact_uploads": true}\n', True),
+            (b"\xef\xbb\xbf" + b'{"redact_uploads": false}\n', False),
+            (b"\xff\xfe" + '{"redact_uploads": true}\r\n'.encode("utf-16-le"), True),
+        ],
+        ids=["utf8-bom-true", "utf8-bom-false", "utf16le-bom-crlf-true"],
+    )
+    def test_a_windows_saved_switch_reads_as_its_value(
+        self, home: Path, raw: bytes, expected: bool
+    ) -> None:
+        """Notepad "UTF-8 with BOM" and the PowerShell 5.1 ``>`` redirect write these bytes.
+
+        The content is the documented switch, so it is a decision, not an unreadable file.
+        """
+        switch = redact.redaction_switch_path()
+        switch.parent.mkdir(parents=True, exist_ok=True)
+        switch.write_bytes(raw)
+        assert redact.outbound_redaction_enabled() is expected
+
+    def test_bytes_in_no_json_encoding_still_raise(self, home: Path) -> None:
+        switch = redact.redaction_switch_path()
+        switch.parent.mkdir(parents=True, exist_ok=True)
+        switch.write_bytes(b'{"redact_uploads": "\xff\xfe\xfa"}')
         with pytest.raises(redact.RedactionSwitchUnreadable):
             redact.outbound_redaction_enabled()
 

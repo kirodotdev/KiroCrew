@@ -40,8 +40,8 @@ _NOT_INSTALLED = (
 
 # What OpenSSH does with `ProxyCommand /abs/path/connect-helper %h`: it runs the
 # proxy under its own PATH, and the proxy looks the plugin up by name. On
-# success it prints what a remote `kirocrew token` would. KC_STANDIN_RC lets a
-# test choose a different outcome.
+# success it prints what a remote `kirocrew token` would, or KC_STANDIN_OUT when
+# a test sets it. KC_STANDIN_RC lets a test choose a different outcome.
 _STANDIN = f"""
 import os, shutil, sys
 rc = os.environ.get("KC_STANDIN_RC")
@@ -52,7 +52,7 @@ if shutil.which("session-manager-plugin") is None:
     sys.stderr.write({_NOT_INSTALLED!r} + "\\n")
     sys.stderr.write("kex_exchange_identification: Connection closed by remote host\\n")
     sys.exit(255)
-sys.stdout.write("http://localhost:7777?token={_TOKEN}\\n")
+sys.stdout.write(os.environ.get("KC_STANDIN_OUT", "http://localhost:7777?token={_TOKEN}") + "\\n")
 """
 
 
@@ -91,6 +91,10 @@ def gui_gateway(monkeypatch, tmp_path):
         monkeypatch.setenv("PATHEXT", ".CMD")
     monkeypatch.setenv("PATH", str(sysbin))
     monkeypatch.setattr(engine, "_AWS_BIN_DIRS", (str(install),))
+    monkeypatch.setattr(engine, "_TRUSTED_AWS_BIN_DIRS", ())
+    from kiro_crew import github_runner
+
+    monkeypatch.setattr(github_runner, "validate_provider_directory", lambda candidate: candidate)
 
     real_exec = asyncio.create_subprocess_exec
     heads: list[str] = []
@@ -130,16 +134,55 @@ async def test_diagnostics_ssh_probe_through_a_proxycommand_finds_the_plugin(gui
     assert _is_resolved_ssh(heads[-1], sysbin)
 
 
+@pytest.mark.asyncio
+async def test_diagnostics_dashboard_probe_through_a_proxycommand_finds_the_plugin(
+    gui_gateway, monkeypatch
+):
+    sysbin, _install, heads = gui_gateway
+    # The HTTP status the remote curl prints for a dashboard that answers.
+    monkeypatch.setenv("KC_STANDIN_OUT", "200")
+    assert await diagnostics._probe_remote_dashboard("ds-abc", 7777, connect_timeout_secs=5)
+    assert _is_resolved_ssh(heads[-1], sysbin)
+
+
 def test_every_ssh_spawn_gets_the_same_env_as_the_ssm_aws_child(gui_gateway):
     """One widening rule: the ssh env is the aws env for the same resolved head."""
     sysbin, install, _heads = gui_gateway
+    assert engine._TRUSTED_AWS_BIN_DIRS == ()
+
     argv, env = token_mint.ssh_spawn_argv_env(["ssh", "-n", "ds-abc", "true"])
+
     assert _is_resolved_ssh(argv[0], sysbin)
     assert argv[1:] == ["-n", "ds-abc", "true"]
     assert env == engine.aws_spawn_env(argv[0])
     parts = env["PATH"].split(os.pathsep)
     # Appended: the inherited PATH keeps first claim on every name.
     assert parts == [str(sysbin), str(install)]
+
+
+def test_ssh_env_excludes_a_directory_refused_without_an_aws_walk(monkeypatch, tmp_path):
+    sysbin = tmp_path / "sysbin"
+    sysbin.mkdir()
+    _plant(sysbin, "ssh")
+    install = tmp_path / "usr-local-bin"
+    install.mkdir()
+    if os.name == "nt":
+        monkeypatch.setenv("PATHEXT", ".CMD")
+    monkeypatch.setenv("PATH", str(sysbin))
+    monkeypatch.setattr(engine, "_AWS_BIN_DIRS", (str(install),))
+    monkeypatch.setattr(engine, "_TRUSTED_AWS_BIN_DIRS", ())
+    from kiro_crew import github_runner
+
+    def _refuse_directory(_candidate):
+        raise ValueError("directory trust refused")
+
+    monkeypatch.setattr(github_runner, "validate_provider_directory", _refuse_directory)
+
+    argv, env = token_mint.ssh_spawn_argv_env(["ssh", "ds-abc"])
+
+    assert _is_resolved_ssh(argv[0], sysbin)
+    assert env["PATH"] == str(sysbin)
+    assert engine._TRUSTED_AWS_BIN_DIRS == ()
 
 
 def test_ssh_found_only_in_the_install_dirs_is_not_widened_into_reach(monkeypatch, tmp_path):

@@ -72,6 +72,7 @@ async def _client(tmp_path, monkeypatch, *, owner=True):
     app.router.add_get("/s/{slot}", handlers.api_chat_slot_environment_get)
     app.router.add_put("/s/{slot}", handlers.api_chat_slot_environment_put)
     app.router.add_get("/b/{slot}", handlers.api_chat_slot_environment_browse)
+    app.router.add_get("/h/{slot}", handlers.api_chat_slot_environment_health)
     app.router.add_put("/w/{slot}", handlers.api_chat_slot_environment_file_put)
     app.router.add_post("/check", handlers.api_session_environments_check)
     app.router.add_get("/ws", handlers.api_session_environments_workspaces_get)
@@ -596,6 +597,17 @@ async def test_terminal_remote_slot_never_falls_back_to_a_local_shell(tmp_path, 
     argv, why, code = await terminal._remote_terminal_argv(request, "main")
     assert argv is None and "not available" in why and code == "terminal_placement_unavailable"
 
+    async def cloud(key):
+        raise session_browse.CloudSandboxOnly("this session runs in a Kiro Cloud Sessions sandbox")
+
+    # A Kiro Cloud chat has no shell Kiro Crew can reach, and never will: the tab
+    # parks instead of redialing an outage that is not one.
+    monkeypatch.setattr(session_browse, "remote_terminal_argv", cloud)
+    argv, why, code = await terminal._remote_terminal_argv(request, "main")
+    assert (
+        argv is None and "Kiro Cloud Sessions sandbox" in why and code == "terminal_wrong_machine"
+    )
+
     async def remote(key):
         return ["coder", "ssh", "--disable-autostart", "crewenv-x"]
 
@@ -633,6 +645,8 @@ async def test_the_title_poller_never_reports_gateway_paths_for_a_workspace_shel
     finally:
         poller.cancel()
         await asyncio.gather(poller, return_exceptions=True)
+    # Nothing was pushed, so the dedup markers still hold no gateway value.
+    assert (sess.last_title, sess.last_cwd) == (None, None)
     title.assert_not_called()
     cwd.assert_not_called()
     ws.send_str.assert_not_awaited()
@@ -1014,3 +1028,105 @@ async def test_a_failing_pty_test_leaves_no_shell_running(tmp_path, monkeypatch)
             await _close_with_shells(client, app)
     assert sess is not None and not registry
     assert not terminal._sess_alive(sess)
+
+
+@sync
+async def test_the_git_views_are_unreachable_with_the_developer_flag_off(tmp_path, monkeypatch):
+    """The Git panel's three reads go through the real browse path and choices
+    gate: with KIROCREW_DEV_MODE off a chat bound to a remote profile reads as
+    local, so every git op answers ``not_remote`` and nothing reaches a guest.
+    Removing the flag check from the choices gate fails this test."""
+    async with _client(tmp_path, monkeypatch) as client:
+        assert (await _choose(client, "dev")).status == 200
+        assert (await _env_of(client))["profile"] == "dev"
+
+        async def never_asked(*_args, **_kwargs):
+            raise AssertionError("flag off must not reach the workspace")
+
+        monkeypatch.setattr(session_browse, "_ask", never_asked)
+        monkeypatch.delenv("KIROCREW_DEV_MODE")
+        for query in ("op=git_status", "op=git_log", "op=git_diff&path=a.py&from=b.py"):
+            resp = await client.get("/b/main?" + query)
+            assert resp.status == 409, query
+            assert (await resp.json())["code"] == "not_remote", query
+
+
+@sync
+async def test_browse_endpoint_forwards_a_rename_source(tmp_path, monkeypatch):
+    calls = []
+
+    async def fake_browse(*args):
+        calls.append(args[1:])
+        return {"root": "/r", "git": True, "output": ""}
+
+    async with _client(tmp_path, monkeypatch) as client:
+        monkeypatch.setattr(session_browse, "browse_session", fake_browse)
+        await client.get("/b/main?op=git_diff&path=new.txt&from=old.txt")
+        await client.get("/b/main?op=git_diff&path=new.txt")
+    assert calls == [("git_diff", "new.txt", "old.txt"), ("git_diff", "new.txt", None)]
+
+
+@sync
+@pytest.mark.parametrize(
+    "profiles",
+    [
+        pytest.param({}, id="cloud-profile-deleted"),
+        pytest.param(
+            {"profiles": [SimpleNamespace(id="cloud", name="R", template="micro", workdir="/w")]},
+            id="id-reused-by-coder",
+        ),
+        pytest.param(
+            {"sprites_profiles": [{"id": "cloud", "name": "R", "workdir": "/w"}]},
+            id="id-reused-by-sprites",
+        ),
+    ],
+)
+async def test_a_cloud_chat_stays_a_cloud_sandbox_once_its_profile_is_gone(
+    tmp_path, monkeypatch, profiles
+):
+    """The row's recorded ``kiro_cloud`` decides before any profile lookup: a deleted
+    or reused profile id never sends a cloud chat's files, health or terminal to
+    Coder or to another provider, and the terminal parks instead of redialing."""
+    from kiro_crew.config import live
+    from kiro_crew.dashboard import chat_utils
+
+    section = _config(**{"profiles": [], "kiro_cloud_profiles": [], **profiles})
+    monkeypatch.setattr(live, "snapshot", lambda: SimpleNamespace(session_environments=section))
+
+    def no_compute(*_a, **_k):
+        raise AssertionError("a Kiro Cloud Sessions chat reaches no Coder or VM provider")
+
+    monkeypatch.setattr(session_launch, "resolve_coder_bin", no_compute)
+    monkeypatch.setattr(session_launch, "CoderSessionEnvironments", no_compute)
+    monkeypatch.setattr(session_browse.vm_browse, "_resolve_persistent", no_compute)
+    async with _client(tmp_path, monkeypatch) as client:
+        session_launch.SessionEnvironmentChoices(tmp_path / "coder" / "session-choices.json").set(
+            "dashboard:main", "cloud", session_launch.KIRO_CLOUD_PROVIDER_ID
+        )
+        for path in ("/b/main?op=list&path=.", "/h/main"):
+            resp = await client.get(path)
+            assert resp.status == 409, path
+            assert (await resp.json())["code"] == "cloud_sandbox", path
+        monkeypatch.setattr(
+            chat_utils, "effective_session_key", lambda slot: f"dashboard:{slot.key}"
+        )
+        argv, why, code = await terminal._remote_terminal_argv(
+            SimpleNamespace(app=client.app), "main"
+        )
+    assert argv is None and code == "terminal_wrong_machine"
+    assert "only by its own agent" in why
+
+
+@sync
+async def test_health_of_a_cloud_sandbox_is_a_409_not_a_failure(tmp_path, monkeypatch):
+    """Only a Kiro Cloud sandbox's own agent reaches it, so a health read is answered
+    with ``cloud_sandbox`` (the browse routes' code), never the 502 of a broken read."""
+    async with _client(tmp_path, monkeypatch) as client:
+
+        async def cloud(_key):
+            raise session_browse.CloudSandboxOnly("runs in a Kiro Cloud Sessions sandbox")
+
+        monkeypatch.setattr(session_browse, "session_health", cloud)
+        resp = await client.get("/h/main")
+        assert resp.status == 409
+        assert (await resp.json())["code"] == "cloud_sandbox"

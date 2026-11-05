@@ -1,13 +1,10 @@
 """A dashboard package is written by the crewmate it is bound to, and by nobody else.
 
-The split this protects is the one that makes a free-HTML page safe to run at all: the
-owner composes the page and a person approves it, workers only `work_report` and the fold
-carries their reports to it. A worker that could write the package could write the page --
-and the page runs script inside the frame that holds the owner's own fold values.
+Workers only `work_report`; a worker that could write the package could write the page,
+and the page runs script in the frame that holds the owner's fold values.
 
-The refusal is a SENTENCE because the party that reads it is an agent that can act on it:
-whose dashboard this is, and what to do instead. A code would be rendered to a worker as
-`owner_only` with nothing to do next.
+The refusal is a SENTENCE because an agent reads it: whose dashboard this is, and what to
+do instead.
 """
 
 from __future__ import annotations
@@ -272,11 +269,8 @@ class TestAnAppTokenCannotWriteAPackage:
     """An app token carries no internal secret, so the person's exemption must not be
     reachable by one.
 
-    Every condition is ordinary rather than exotic, which is why this is a test and not
-    a note: app-token requests carry `request["app"]`, the artifact routes' own
-    `_non_owner_refusal` returns early for exactly that claim, and shipped apps already
-    declare `/api/artifacts` grants and write through that route. So nothing between the
-    token and the store asked whose page it was.
+    `_non_owner_refusal` returns early for `request["app"]`, and shipped apps already
+    write through `/api/artifacts`, so this gate is the only check on whose page it is.
     """
 
     class _AppReq:
@@ -333,14 +327,9 @@ class TestAnAppTokenCannotWriteAPackage:
 class TestTheWriteLandsOnTheSNAPSHOTTheGateJudged:
     """The gate reads the stored binding, and the write happens later.
 
-    Two moments, so a rebind arriving between them is the hazard: an authorization made
-    against the binding the slug held at the read, committed by a store whose default is
-    last-write-wins, puts the caller's page on the crewmate who just took the slug --
-    and nothing puts the owner's binding back. An agent holding several PATCHes open
-    chooses that timing itself.
-
-    What closes it is carrying the token of the read the gate judged into the write, so
-    the store refuses a write based on a snapshot that has moved on.
+    A rebind between the two would put the caller's page on the crewmate who just took
+    the slug. The write carries the token of the read the gate judged, so the store
+    refuses it once that snapshot has moved on.
     """
 
     def test_the_store_refuses_the_write_when_the_record_moved_under_it(
@@ -422,10 +411,8 @@ class TestTheDedupPathReadsTheRecordItLandsOn:
     """A save carrying a ``source_path`` lands on whatever artifact already points at
     that path, and that record is found by SCANNING META -- so it carries no content.
 
-    Handing that to the gate is the empty-snapshot hole wearing another hat: with no
-    stored binding to check, the gate judges only the binding the caller submitted,
-    which the caller wrote. A member who copies another member's source path and
-    re-saves it through this route would take their page.
+    Without reading the record, the gate would judge only the caller's own binding, so
+    copying another member's source path would take their page.
     """
 
     @pytest.mark.asyncio
@@ -460,12 +447,10 @@ class TestTheDedupPathReadsTheRecordItLandsOn:
     async def test_a_snapshot_that_is_gone_by_the_read_refuses_the_write(
         self, worker: None, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """The source-path lookup found a record and the read by slug found none, which
-        is the window between them: the target deleted, and its slug free to be
-        recreated as somebody else's dashboard before this write lands.
+        """The source-path lookup found a record and the read by slug found none: the
+        slug may be recreated as somebody else's dashboard before this write lands.
 
-        There is no snapshot to authorize and no token to carry, so the write is
-        refused rather than committed under the caller's own claim.
+        With no snapshot to authorize and no token to carry, the write is refused.
         """
         status, reached = await _save_onto_a_deduped_record(
             monkeypatch,
@@ -504,7 +489,7 @@ class TestTheDedupPathReadsTheRecordItLandsOn:
         self, roster: None, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """The requirement belongs to this gate, not to the artifact library: a note
-        de-duped onto its own path is saved the way it is on base."""
+        de-duped onto its own path is saved as usual."""
         status, reached = await _save_onto_a_deduped_record(
             monkeypatch,
             stored="# yesterday",
@@ -584,11 +569,8 @@ async def _save_onto_a_deduped_record(
 
     monkeypatch.setattr(handler, "_non_owner_refusal", _allowed)
 
-    # THE PROMOTE VERDICT, which is what decides whether a path is dedup-able at all
-    # and canonicalizes it. Stubbed to "a linked path, these bytes" so this test is
-    # about the gate rather than about path classification, which owns its own tests:
-    # a path under the system temp dir is classified disposable and never reaches the
-    # dedup branch, so a test that did not stub this would silently measure nothing.
+    # The promote verdict decides whether a path is dedup-able. Stubbed because a path
+    # under the system temp dir is disposable and would never reach the dedup branch.
     async def _verdict(_request: Any, _raw: str) -> Any:
         return "/repo/page.json", "/repo", False, ""
 
@@ -626,13 +608,9 @@ async def _create_under_a_fresh_slug(
 ) -> tuple[int, bool]:
     """Drive ``api_artifacts_create`` down the NEW-SLUG branch.
 
-    The source-path lookup finds nothing, so the dedup branch above is skipped and the
-    create path is reached -- the third write path, where there is no stored record to
-    compare against and the submitted bytes are all the gate has.
-
-    ``body_content`` and ``promoted`` are kept separate on purpose: the request body and
-    the file behind ``source_path`` are two different sources of bytes, and only the
-    second is what gets stored when the first is absent.
+    No stored record exists, so the submitted bytes are all the gate has.
+    ``body_content`` and ``promoted`` stay separate: when the body has no content, the
+    file behind ``source_path`` is what gets stored.
     """
     import json
     from types import SimpleNamespace
@@ -696,12 +674,8 @@ class TestTheCreatePathGatesTheBytesItStores:
     """The new-slug branch stores the PROMOTED bytes when the body carries no content,
     so that is what the gate has to judge.
 
-    Judging ``body["content"]`` alone is a privilege-class hole with no stored record to
-    fall back on: an empty body parses as no package at all, the gate finds no binding
-    to object to, and the file behind ``source_path`` is then written under whatever
-    ``bound_to`` it declares. The route's binding resolver accepts a copy-only record,
-    so the named crewmate's own tab would serve and run this caller's page beside that
-    crewmate's fold values.
+    Judging ``body["content"]`` alone would let an empty body through, and the file
+    behind ``source_path`` would land under whatever ``bound_to`` it declares.
     """
 
     @pytest.mark.asyncio
@@ -751,11 +725,9 @@ class TestTheCreatePathGatesTheBytesItStores:
 class TestAReadThatFailedAuthorizesNothing:
     """A snapshot read has three outcomes, and two of them are not "nothing stored".
 
-    Collapsing them is a privilege-class hole: with the stored content read as empty,
-    the gate has only the binding the CALLER submitted -- a claim the caller wrote --
-    and there is no token to carry into the write. So both guards are skipped at once,
-    and the write lands. Two ways in: a transient read failure on an existing package,
-    and an owner creating the slug between the read and the write.
+    Read as empty, the gate would have only the caller's own binding and no token, so
+    both guards would be skipped: on a transient read failure, or when an owner creates
+    the slug between the read and the write.
     """
 
     @pytest.mark.asyncio
@@ -1076,26 +1048,12 @@ async def _update_body_through_the_route(
 class TestAContentLessWriteIsFencedForAPackage:
     """THE WINDOW, CLOSED UNDER THE STORE'S OWN LOCK.
 
-    The update route authorizes a dashboard-package write against the snapshot it READ
-    (`api_artifact_update` in `handlers/artifacts_parts/create_update.py` reads, gates,
-    then writes) and hands the store that read's ``content_token`` so a rebind landing
-    in the gap becomes a conflict rather than a silent overwrite.
+    `api_artifact_update` reads, gates, then writes, handing the store the read's
+    ``content_token``. A ``kind``-only PATCH must honour it too: ``dashboard`` is not a
+    user-selectable kind, so a flipped page stays broken without a human.
 
-    A comparison limited to writes that carry CONTENT leaves a ``kind``-only PATCH
-    arriving with the token attached and ignored, so an agent de-authorized by a rebind
-    inside that gap can still flip the kind of the package the owner has just taken. No
-    bytes are lost and later writes stay owner-gated, but ``dashboard`` is not a
-    user-selectable kind, so nothing puts it back without a human -- a page a departing
-    agent can break.
-
-    The comparison belongs in the store because only the store holds the lock the
-    record is loaded under; the handler's read is by definition a moment earlier. And it
-    is scoped by the kind the RECORD holds, never the kind submitted -- the dangerous
-    PATCH submits ``markdown``, so reading the submitted value would let exactly this
-    write escape the guard it is meant to trip.
-
-    Written against a real store on disk, because what is under test is the comparison
-    inside its lock.
+    The compare is scoped by the kind the RECORD holds, never the kind submitted (the
+    dangerous PATCH submits ``markdown``), and runs on a real store under its lock.
     """
 
     @pytest.fixture()
@@ -1121,8 +1079,8 @@ class TestAContentLessWriteIsFencedForAPackage:
         stale, and the kind flip it was carrying must not apply."""
         from kiro_crew.artifacts import ArtifactConflictError
 
-        # THE REBIND, which is a content write and so rotates the token. Under its own
-        # read's token, as every write that lands on a dashboard now must be.
+        # THE REBIND, a content write that rotates the token. Under its own read's
+        # token, as every write that lands on a dashboard must be.
         live.store.update(
             live.slug,
             content=_package_text("crewmate:nyx"),
@@ -1144,7 +1102,7 @@ class TestAContentLessWriteIsFencedForAPackage:
     def test_a_rename_with_no_token_is_still_unguarded(self, tmp_path: Any) -> None:
         """THE BEHAVIOUR NOT WIDENED. A metadata-only write on an ordinary artifact
         keeps last-write-wins, which the editor's autosave and every tag edit depend
-        on. Guarding those would be a product change hidden inside a bug fix."""
+        on."""
         from kiro_crew.artifacts import ArtifactStore
 
         store = ArtifactStore(root=tmp_path / "plain")
@@ -1162,30 +1120,14 @@ class TestAnUntokenedWriteCannotTakeADashboardOver:
     """THE SAME WINDOW FROM THE OTHER SIDE: the caller read a record that was not a
     dashboard, so it sent no token at all.
 
-    The class above fences a write that arrives with a STALE token. It cannot fence
-    one that arrives with NONE, and the route only attaches a token when the snapshot
-    it read -- or the content submitted -- classifies as a package. So a PATCH of
-    ``{"kind": "markdown", "content": ...}`` against a slug holding an ordinary
-    artifact, or holding nothing, is forwarded with ``expected_token=None``; if the
-    owner's dashboard arrives in the gap, the store had nothing to compare and
-    rewrote both the kind and the content of a page it was never authorized for.
+    The rule lives in the store, on the record its lock loaded: a record whose CURRENT
+    kind is ``dashboard`` is never written without a matching snapshot token, and an
+    ABSENT token is a REFUSAL. The handler passes ``snapshot_token`` on every write and
+    classifies nothing; a time-of-check guard in the caller cannot close this.
 
-    So the rule is stated ONCE, in the store, on the record that lock loaded:
-
-        a record whose CURRENT kind is ``dashboard`` is never written without a
-        matching snapshot token, and an ABSENT token is a REFUSAL.
-
-    The handler classifies nothing any more. It reports the token of the read it
-    authorized against -- ``snapshot_token``, for every write it makes -- and the
-    store decides. Three rounds of scoping this in the handler each left the race in
-    the case the handler had not classified; a time-of-check guard in the caller
-    cannot close a time-of-use hole in the store, and this is the time of use.
-
-    SCOPED to writes that can take the page away: its ``kind``, its bytes, or any
-    write whose caller named a snapshot. A rename naming none keeps last-write-wins,
-    which is what ``publish_sync``'s snapshot bump and the deploy route's
-    ``webapp_metadata`` write depend on -- neither reads the record first and neither
-    can move a page to another owner.
+    SCOPED to writes that can take the page away (its ``kind``, its bytes, or a named
+    snapshot). A rename naming none keeps last-write-wins for ``publish_sync`` and the
+    deploy route's ``webapp_metadata`` write.
     """
 
     @pytest.fixture()
@@ -1213,15 +1155,10 @@ class TestAnUntokenedWriteCannotTakeADashboardOver:
         assert owners_page.store.get(owners_page.slug).kind == "dashboard"
 
     def test_an_absent_token_cannot_replace_the_page_with_prose(self, owners_page: Any) -> None:
-        """THE REPORTED PATCH, both fields at once, which is what gets past the
-        package validator.
+        """Both fields at once, which is what gets past the package validator.
 
-        A content-only write is already refused, but by the layout validator rather
-        than by any fence: the record is still a ``dashboard``, so ``# replacement``
-        is read as a package and fails to parse. Sending ``kind`` in the same call
-        sets the record's kind FIRST, so the validator never runs on the new bytes --
-        which is why the two fields together are the shape worth pinning, and why
-        this finding was strictly worse than the content-less one before it.
+        Content alone fails the layout validator. Sending ``kind`` in the same call
+        sets the kind FIRST, so the validator never runs on the new bytes.
         """
         from kiro_crew.artifacts import ArtifactConflictError
 
@@ -1257,12 +1194,10 @@ class TestAnUntokenedWriteCannotTakeADashboardOver:
         assert owners_page.store.get(owners_page.slug).kind == "markdown"
 
     def test_a_metadata_only_write_naming_no_snapshot_still_applies(self, owners_page: Any) -> None:
-        """THE BEHAVIOUR NOT WIDENED, and the one case this scoping exists for.
+        """THE BEHAVIOUR NOT WIDENED.
 
-        ``publish_sync`` calls ``update(slug, snapshot=True)`` and the deploy route
-        calls it with ``webapp_metadata`` only. Neither reads the record first, so
-        neither can name a snapshot -- and neither can take a page from its owner.
-        Requiring a token of them would have broken both to close a hole in neither.
+        ``publish_sync`` (``snapshot=True``) and the deploy route (``webapp_metadata``)
+        never read the record first, so they cannot name a snapshot.
         """
         owners_page.store.update(owners_page.slug, name="Renamed", tags=["pinned"])
         owners_page.store.update(owners_page.slug, snapshot=True, actor="user")
@@ -1270,9 +1205,8 @@ class TestAnUntokenedWriteCannotTakeADashboardOver:
         assert held.name == "Renamed" and held.kind == "dashboard"
 
     def test_a_metadata_only_write_that_DOES_name_one_is_fenced(self, owners_page: Any) -> None:
-        """And the finding before this one stays closed: a caller that named a
-        snapshot is held to it even where the write carries no content, because the
-        `kind`-only PATCH that arrived with a stale token was exactly that write."""
+        """A caller that named a snapshot is held to it even with no content, as for
+        the `kind`-only PATCH with a stale token."""
         from kiro_crew.artifacts import ArtifactConflictError
 
         with pytest.raises(ArtifactConflictError):
@@ -1282,13 +1216,9 @@ class TestAnUntokenedWriteCannotTakeADashboardOver:
     def test_the_fence_does_not_swallow_the_callers_own_stale_token(self, owners_page: Any) -> None:
         """TWO QUESTIONS, ASKED SEPARATELY.
 
-        The fence asks whether this write names the record it is landing on, and the
-        handler can always answer it with its own fresh read. The caller's
-        ``expected_token`` asks something else: whether the record still holds what
-        THAT client last saw. Answering the first with the handler's token and then
-        skipping the second lets an owner's stale tab overwrite a newer layout with
-        no 409 -- an agent and an open tab editing one dashboard is the ordinary case
-        for this feature, not an extreme one.
+        The handler's ``snapshot_token`` answers the fence; the caller's
+        ``expected_token`` still asks whether the record holds what THAT client saw,
+        or an owner's stale tab would overwrite a newer layout with no 409.
         """
         from kiro_crew.artifacts import ArtifactConflictError
 
@@ -1341,11 +1271,8 @@ class TestAnUntokenedWriteCannotTakeADashboardOver:
     ) -> None:
         """AND THE ROUTE IS WHAT MUST SAY IT, on the write that carries no token.
 
-        This is the reported PATCH as the route sees it: an ordinary artifact at the
-        read, ``markdown`` and prose submitted. Nothing classifies it as a package, so
-        no token is attached -- and what reaches the store instead is the kind the read
-        found, which is the only thing that lets the store refuse once the record has
-        become somebody's dashboard.
+        An ordinary artifact at the read, ``markdown`` and prose submitted: the route
+        must still name its read, so the store can refuse once the slug is a dashboard.
         """
         wrote = await _update_through_the_route(
             monkeypatch,
@@ -1400,10 +1327,8 @@ class TestAnUntokenedWriteCannotTakeADashboardOver:
             content=_package_text("crewmate:atlas"),
             source="dashboard",
         )
-        # The harness's token is a readable stand-in rather than a real digest, so it
-        # is respelled as a syntactically valid one the store will actually compare.
-        # What carries over from the route is that a token travelled AT ALL and that it
-        # describes the record the caller read, not this page.
+        # The harness token is a readable stand-in, so it is respelled as a valid digest;
+        # what carries over is that a token describing the caller's read travelled.
         assert wrote.get("snapshot_token"), "the route named no read, so this proves nothing"
         with pytest.raises(ArtifactConflictError):
             store.update(
@@ -1454,28 +1379,14 @@ def _agent_request(*, crew: str) -> Any:
 class TestOwnershipDoesNotDependOnLayoutValidity:
     """A STORED PACKAGE THE VALIDATOR REJECTS STILL HAS AN OWNER.
 
-    The write gate authorizes against BOTH bindings, and the stored one decides whether
-    the slug may be written at all -- checking only the submitted binding authorizes the
-    caller against a claim the caller wrote.
-
-    The stored binding was read by PARSING the stored package, so a package the current
-    validator rejects classified as "not a package": the gate then skipped it and
-    checked only the incoming binding, and a worker submitting a package bound to itself
-    could overwrite and rebind a crewmate's page.
-
-    This PR is what makes that reachable. It adds the credential-shaped field-name
-    refusal, so a dashboard stored BEFORE it -- whose model the old validator accepted --
-    now fails `parse_package`. An ordinary existing record is enough.
-
-    So ownership is read off the stored ENVELOPE, independently of whether the layout
-    still validates, and a stored record whose ownership cannot be established at all is
-    REFUSED rather than skipped. Same reasoning as `resolve_bound_slug` matching the
-    envelope rather than a validated package: a layout the validator rejects is still
-    somebody's.
+    The stored binding decides whether the slug may be written at all. A stored
+    dashboard can fail the current validator (a credential-shaped field name), so
+    ownership is read off the ENVELOPE, as `resolve_bound_slug` does, and a record whose
+    ownership cannot be established is REFUSED rather than skipped.
     """
 
-    #: A package the CURRENT validator rejects, for the reason this PR introduced: a
-    #: field name shaped like a credential. Its `bound_to` is perfectly readable.
+    #: A package the CURRENT validator rejects for a credential-shaped field name.
+    #: Its `bound_to` is perfectly readable.
     STALE_BUT_OWNED = (
         '{"kind": "dashboard", "bound_to": "crewmate:atlas", '
         '"model": {"types": {"ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": '
@@ -1512,8 +1423,8 @@ class TestOwnershipDoesNotDependOnLayoutValidity:
     def test_the_owner_itself_is_still_allowed(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """The limit: reading ownership off the envelope must not lock the real owner
         out of repairing the very package the validator now rejects."""
-        # A roster whose keys ARE the names these callers use, because the gate now
-        # requires the binding's slug to name exactly one crewmate in it.
+        # A roster whose keys ARE the callers' names: the gate requires the binding's
+        # slug to name exactly one crewmate in it.
         _install_roster(monkeypatch, {"atlas": "atlas", "nyx": "nyx"})
         from kiro_crew.dashboard.handlers import member_dashboard_fields as fields
 
@@ -1556,31 +1467,20 @@ class TestOwnershipDoesNotDependOnLayoutValidity:
 
 
 class TestTheOwnerRefusalRedactsEveryNameItQuotes:
-    """AND THE THIRD PATH, WHICH IS WHERE THE RULE NOW LIVES.
+    """``binding_refusal`` redacts every name it quotes.
 
-    The declared-name check and the `view.html` validator each learned to redact at
-    their own call site. ``binding_refusal`` is a third reader of the same string and
-    did not: ``_BOUND_TO_RE`` accepts a name shaped like a GitLab PAT or a Slack bot
-    token, the refusal quotes that name, and the named dashboard GET returns it as the
-    HTTP 403 body.
-
-    So the redaction moved INTO ``binding_refusal``, the one function that composes
-    these sentences, rather than onto the route that returns them. Three call sites had
-    the same defect and two of them were found one at a time; the fourth caller to
-    read this string gets the rule for free.
+    ``_BOUND_TO_RE`` accepts a name shaped like a GitLab PAT or a Slack bot token, and
+    the named dashboard GET returns the refusal as its HTTP 403 body. Redaction lives in
+    the one function that composes these sentences, so every caller gets it.
     """
 
     @staticmethod
     def _tokens() -> list[str]:
         """Shapes the redactor rewrites that ``_BOUND_TO_RE`` also accepts.
 
-        No ``_`` and no upper case, which rules out a ``ghp_`` or an AWS key for a
-        BINDING and leaves these two.
-
-        ASSEMBLED rather than written out: these are synthetic shapes, but GitHub's
-        push protection matches the shape and refuses the push, and asking for a
-        scanning exemption to land a test fixture would spend a real exemption on a
-        string that is not a secret. The value the redactor sees is the same.
+        No ``_`` and no upper case, which rules out a ``ghp_`` or an AWS key.
+        ASSEMBLED rather than written out, because GitHub's push protection matches the
+        shape and refuses the push.
         """
         return ["gl" + "pat-" + "a" * 20, "xo" + "xb-" + "1" * 12 + "-" + "abcdefghijklmnop"]
 
@@ -1596,7 +1496,7 @@ class TestTheOwnerRefusalRedactsEveryNameItQuotes:
             )
 
     def test_a_session_binding_is_not_echoed_either(self) -> None:
-        """The branch GPT named beside the crewmate one. Both quote a name."""
+        """The session branch quotes a name just like the crewmate one."""
         from kiro_crew.artifact_store import dashboard_package as dp
 
         for secret in self._tokens():
@@ -1634,18 +1534,11 @@ class TestTheOwnerRefusalRedactsEveryNameItQuotes:
 
 
 class TestAnUndeclaredBindingNameIsRedactedInTheRefusal:
-    """THE SAME RULE, ON THE SIBLING PATH THAT MISSED IT.
+    """THE SAME RULE, FOR UNDECLARED BINDING NAMES.
 
-    A field NAME travels further than its value, so a name shaped like a credential is
-    refused as a name -- and the refusal names it by its REDACTED spelling, because
-    echoing back the thing just identified as credential-shaped puts it exactly where
-    the check exists to keep it out of.
-
-    That redaction ran only on DECLARED `model.types` names. The `view.html` validator
-    lists the UNDECLARED `data-dashboard-field` names it found straight into its
-    refusal, and the artifact route returns that string as the HTTP error body -- so an
-    agent submitting a page that binds a credential-shaped name it never declared gets
-    the credential echoed back unredacted.
+    A credential-shaped field name is refused by its REDACTED spelling. The `view.html`
+    validator lists UNDECLARED `data-dashboard-field` names in its refusal, which the
+    artifact route returns as the HTTP error body, so those are redacted too.
     """
 
     def test_an_undeclared_credential_shaped_binding_is_not_echoed(self) -> None:
@@ -1707,20 +1600,10 @@ class TestAnUndeclaredBindingNameIsRedactedInTheRefusal:
 class TestTheFenceAndTheGateClassifyTheSameWay:
     """OWNERSHIP AND THE FENCE ARE HALVES OF ONE ANSWER.
 
-    The route does two things with the stored snapshot: it decides WHO owns the record
-    (so the write can be refused) and it decides whether to forward that read's
-    ``content_token`` (so a rebind landing in the gap becomes a conflict). Reading the
-    record one way for the first and another way for the second is worse than either
-    reading on its own.
-
-    That is what a layout-invalid stored package produced. Ownership moved to the
-    envelope, so a legacy package whose field name the current validator rejects is
-    enforced -- and the token decision still PARSED, so the same record classified as
-    "not a package" and no token was forwarded. Its own former owner's kind-only PATCH
-    then passed the gate with nothing fencing it, and a concurrent repair or rebind was
-    committed over.
-
-    So both read the record the same way.
+    The route decides WHO owns the stored record and whether to forward its
+    ``content_token``. Both must read it the same way: a layout-invalid package whose
+    owner is enforced but whose token is not forwarded lets a kind-only PATCH through
+    unfenced.
     """
 
     def test_a_layout_invalid_package_still_forwards_the_snapshot_token(self) -> None:
@@ -1736,9 +1619,7 @@ class TestTheFenceAndTheGateClassifyTheSameWay:
         )
 
     def test_the_two_classifiers_agree_on_every_shape_that_matters(self) -> None:
-        """Stated as the agreement rather than as one case, because the defect was the
-        disagreement. Anything the gate will enforce a binding for must also be fenced.
-        """
+        """Anything the gate will enforce a binding for must also be fenced."""
         from kiro_crew.dashboard.handlers import artifacts as handler
         from kiro_crew.dashboard.handlers import member_dashboard_fields as fields
 
@@ -1770,16 +1651,12 @@ class TestTheFenceAndTheGateClassifyTheSameWay:
     ) -> None:
         """AND IT MUST NOT LOCK ITS OWNER OUT.
 
-        A markdown document can begin with ``{`` and nest deeper than the JSON
-        decoder's stack. ``RecursionError`` is a ``RuntimeError``, so the
-        ``(ValueError, TypeError)`` arm never saw it: it escaped, and every later
-        PATCH of that slug answered 500 -- including the one replacing the content
-        with plain text, so nothing could undo it.
+        A markdown document can begin with ``{`` and nest past the JSON decoder's
+        stack; ``RecursionError`` is not a ``ValueError``, and escaping would make every
+        PATCH of the slug a 500.
 
-        ``None`` rather than ``BINDING_UNPROVABLE`` is the answer, and the write path
-        is why: ``dashboard_package._decode_package`` refuses exactly this depth, so
-        no stored dashboard record can be this deep. Calling it unprovable would
-        refuse every write to an ordinary document instead.
+        ``None`` rather than ``BINDING_UNPROVABLE``: ``_decode_package`` refuses this
+        depth, so no stored dashboard can be this deep.
         """
         from kiro_crew.dashboard.handlers import artifacts as handler
         from kiro_crew.dashboard.handlers import member_dashboard_fields as fields
@@ -1787,8 +1664,7 @@ class TestTheFenceAndTheGateClassifyTheSameWay:
         too_deep = '{"items": ' + "[" * 100_000 + "]" * 100_000 + "}"
         assert fields.stored_package_binding(too_deep) is None
         assert not handler._is_dashboard_package(too_deep, None)
-        # And the gate built on it answers rather than raising, which is what the 500
-        # was: the refusal string is empty because there is no stored owner to protect.
+        # The gate answers rather than raising: empty, as there is no stored owner.
         assert fields.package_write_refusal(None, "# plain text now", too_deep) == ""
 
 
@@ -1796,14 +1672,8 @@ class TestAValidationRefusalDoesNotEchoACredential:
     """THE VALIDATOR QUOTES THE VALUE IT REFUSED, and the render path returns that
     sentence as an HTTP 409 body.
 
-    A refusal names the offending key and its value so the author can fix the page --
-    and a value in a stored package can be credential-shaped, because a snapshot on
-    disk is not re-validated by the writer that put it there. So the quoted text is
-    redacted before it leaves the process, the same rule the declared-name check, the
-    ``view.html`` validator and ``binding_refusal`` already follow.
-
-    Pinned at the route, because the error itself is the validator's to word: what this
-    change owns is that the route does not hand it to a reader unredacted.
+    A stored value can be credential-shaped, since a snapshot on disk is not
+    re-validated, so the route redacts the message before it leaves the process.
     """
 
     def test_the_route_redacts_the_validator_message(self) -> None:

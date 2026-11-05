@@ -48,6 +48,12 @@ from kiro_crew.subagent_manager.run import RunEventCoordinator
 
 pytestmark = pytest.mark.xdist_group(name="tree_scan_run_bindings")
 
+SHARED_BINDINGS_CHECKS = (
+    "the_member_set_is_the_frozen_inventory",
+    "the_resolution_scan_can_fail",
+    "nothing_else_in_src_imports_an_owner",
+)
+
 _PACKAGE = "kiro_crew.subagent_manager"
 _RUN = f"{_PACKAGE}.run"
 _OWNERS = ("run_records", "run_lifecycle", "run_turn", "run_yields", "run_start")
@@ -446,10 +452,6 @@ def test_the_kind_reader_tells_each_kind_apart() -> None:
     )
 
 
-def test_the_member_set_is_the_frozen_inventory() -> None:
-    assert sorted(_members()) == sorted(_MEMBERS)
-
-
 @pytest.mark.parametrize("name", sorted(_MEMBERS))
 def test_each_member_keeps_its_kind_signature_and_holder(name: str) -> None:
     kind, signature, holder = _MEMBERS[name]
@@ -521,13 +523,6 @@ def _unresolved(function: FunctionType) -> list[str]:
         for name in _global_loads(function.__code__)
         if name not in namespace and not hasattr(builtins, name)
     )
-
-
-def test_the_resolution_scan_can_fail() -> None:
-    def reads_a_missing_global(self: object) -> object:
-        return _a_name_no_module_binds  # type: ignore[name-defined]  # noqa: F821
-
-    assert _unresolved(reads_a_missing_global) == ["_a_name_no_module_binds"]
 
 
 @pytest.mark.parametrize("name", sorted(n for n in _MEMBERS if n.endswith("_impl")))
@@ -683,10 +678,6 @@ def test_the_owner_importer_scan_can_fail(tmp_path: Path) -> None:
         "kiro_crew.other",
         "kiro_crew.subagent_manager.terminal",
     ]
-
-
-def test_nothing_else_in_src_imports_an_owner() -> None:
-    assert _owner_importers(_REPO_ROOT / "src") == []
 
 
 # --------------------------------------------------------------------------- #

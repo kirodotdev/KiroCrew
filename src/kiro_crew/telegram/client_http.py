@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import os
 import time
 import urllib.parse
@@ -397,6 +398,9 @@ async def _api_request(
                         retry_after = float((data.get("parameters") or {}).get("retry_after", 1.0))
                     except (TypeError, ValueError):
                         pass
+                    if not math.isfinite(retry_after):
+                        # JSON NaN parses, survives the clamp and would sleep forever.
+                        retry_after = 1.0
                     await asyncio.sleep(min(max(retry_after, 0.5), 5.0))
                     continue
                 if record:

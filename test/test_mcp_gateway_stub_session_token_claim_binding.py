@@ -59,9 +59,7 @@ _clean_gateway_state = mcp_gateway_stub_session_token_helpers._clean_gateway_sta
 pytestmark = pytest.mark.xdist_group("mcp_gateway")
 
 
-# ---------------------------------------------------------------------------
 # Claim-push keyed by (pid, token) — the three topologies
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -71,12 +69,9 @@ async def test_claim_across_token_topologies(
 ) -> None:
     """One runtime, two connections, three deployment shapes.
 
-    ``no-token``: neither connection carries one (a hand-written config, an
-    overlay predating the token) — a tokenless claim re-targets both, exactly as
-    it always did. ``all-tokens``: both name a session, and a claim for one
-    reaches only that one. ``mixed``: the tokened connection is selected by the
-    claim and the tokenless one rides along, because it has no finer identity
-    than the process tree the claim named.
+    ``no-token``: a tokenless claim re-targets both. ``all-tokens``: a claim reaches
+    only its own session. ``mixed``: the tokenless one rides along, having no finer
+    identity than the process tree the claim named.
     """
     token_first = "" if topology == "no-token" else TOKEN_A
     token_second = TOKEN_B if topology == "all-tokens" else ""
@@ -147,13 +142,9 @@ async def test_a_tokenless_stub_is_not_handed_to_a_co_tenant(
 ) -> None:
     """A tokenless stub on a runtime hosting SEVERAL sessions stays where it is.
 
-    One runtime, three connections: two that name their session with a token, and
-    one launched outside the token path that names none. While only one session has
-    claimed, the tokenless stub rides along on the process tree exactly as it always
-    did — the runtime still has one plausible owner. Once a SECOND session claims the
-    same runtime, the tree stops naming a session, and the next claim must not take
-    the tokenless stub with it: that stub's ``work_brief`` and ``work_report`` would
-    then read and write the claiming session's ledger instead of its own.
+    With one claimed session the tokenless stub rides along on the process tree. Once
+    a second session claims the runtime, the next claim must not take it, or its
+    ``work_brief`` and ``work_report`` would use the claiming session's ledger.
     """
     token_c = "c" * 64
     a_backend, a_reader, a_task = await _live_conn(monkeypatch, "", TOKEN_A, "stub-a")
@@ -196,16 +187,10 @@ async def test_a_cleared_stub_regains_identity_after_co_tenant_disconnects(
 ) -> None:
     """A cleared tokenless stub is re-attributed once the co-tenant leaves.
 
-    Two recovery paths exist for a cleared stub. This test pins the second one:
-    once the co-tenant's token-carrying connections have disconnected,
-    ``_pid_live_tenants`` drops below two, ``shared_pid`` becomes False, and a
-    tokened claim from the remaining session can retarget the tokenless stub.
-    The first path (a tokenless claim) is already covered by
-    ``test_claim_across_token_topologies``; this test covers the second so the
-    comment's two named routes are each backed by a test.
-
-    The test also pins item 2: ``identity_refused`` is reset when the connection
-    is retargeted, so the recaller is not permanently blocked after recovery.
+    When the co-tenant disconnects, ``_pid_live_tenants`` drops below two and a tokened
+    claim can retarget the stub (the tokenless-claim path is in
+    ``test_claim_across_token_topologies``). ``identity_refused`` is reset on
+    retarget, so the recaller is not blocked for good.
     """
     a_backend, a_reader, a_task = await _live_conn(monkeypatch, "", TOKEN_A, "stub-a")
     b_backend, b_reader, b_task = await _live_conn(monkeypatch, "", TOKEN_B, "stub-b")
@@ -288,12 +273,9 @@ async def test_a_refused_stub_cannot_name_itself_with_a_recaller(
 ) -> None:
     """Clearing an identity must not hand the stub a way to choose a new one.
 
-    The recaller is deny-by-default and may fill exactly one state: a key-less,
-    tokenless connection that nothing has named yet. A co-tenancy refusal
-    produces a connection that LOOKS like that, so without a verdict flag the
-    refused stub could name any session it liked -- and the key it would send
-    comes from its own process-tree walk, which on a shared runtime is the very
-    per-runtime answer the refusal rejected.
+    The recaller may fill only a key-less, tokenless, never-named connection, and a
+    co-tenancy refusal looks just like one. Without a verdict flag the stub could
+    name any session, from the very process-tree walk the refusal rejected.
     """
     a_backend, a_reader, a_task = await _live_conn(monkeypatch, "", TOKEN_A, "stub-a")
     b_backend, b_reader, b_task = await _live_conn(monkeypatch, "", TOKEN_B, "stub-b")
@@ -359,13 +341,8 @@ async def test_sequential_claims_on_one_runtime_are_not_sharing(
 ) -> None:
     """A runtime claimed by one session and later by another is NOT shared.
 
-    "How many sessions has this pid ever been claimed for" and "how many does it
-    serve now" are different questions, and only the second one makes a PID-keyed
-    answer a guess. A warm-pool runtime hands over: session A finishes, session B
-    takes the process. Reading that as two tenants would refuse to retarget the
-    runtime's tokenless stubs, so they would keep A's identity while B is the
-    only session there -- which is the very misattribution this guard exists to
-    prevent, re-created on a single-session runtime.
+    Tenancy counts sessions served now, not ever. A warm-pool hand-over from A to B
+    read as two tenants would leave the tokenless stubs on A's identity.
     """
     plain_backend, plain_reader, plain_task = await _live_conn(monkeypatch, "", "", "stub-plain")
 
@@ -428,9 +405,7 @@ def test_the_binding_table_is_bounded() -> None:
     assert gw._token_caller(f"tok-{gw._MAX_TOKEN_BINDINGS + 9}", [_PID]) is not None
 
 
-# ---------------------------------------------------------------------------
 # Register-time identity: the binding outranks both process-tree sources
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -512,12 +487,9 @@ async def test_a_self_reported_ancestry_cannot_authenticate_a_token(
 ) -> None:
     """The register frame is peer-supplied IN FULL, ``ancestor_pids`` included.
 
-    So the actor who read another session's token out of ``/proc`` can also name
-    that session's runtime in its own chain, and a token checked against the
-    self-reported pids would let one actor satisfy both halves — the second
-    factor would authenticate nothing. Only the chain gatewayd walks from the
-    kernel's peer pid counts: here the stub claims the victim's runtime pids and
-    the kernel places it somewhere else entirely.
+    An actor who read a token from ``/proc`` can also claim the victim's pids, so only
+    the chain gatewayd walks from the kernel's peer pid counts. Here the stub claims
+    the victim's pids and the kernel places it elsewhere.
     """
     _attest(monkeypatch, [777001, 777002])
     await gw._apply_claim(_claim_with_token(_PID, PARENT_KEY, TOKEN_A))
@@ -607,29 +579,19 @@ async def test_recaller_cannot_name_a_token_carrying_connection(
     await _close(reader, task)
 
 
-# ---------------------------------------------------------------------------
 # End to end: a spawn_run-shaped subagent survives the parent's rekey
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
 async def test_a_subagent_session_survives_its_parents_rekey(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """The whole item, end to end, on the real topology.
+    """A subagent's stub keeps the subagent's identity after its parent rekeys.
 
-    ``ProcessTopology`` models the tree a ``spawn_run`` subagent actually runs
-    in: ONE kiro-cli under the session host, with the gateway's
-    ``session_pid_<host_pid>.txt`` naming the PARENT slot — so both the stub's
-    own walk and gatewayd's peer walk resolve the parent for BOTH sessions'
-    stubs. Two connections are opened under that one runtime, each carrying its
-    session's token; the parent then rekeys (warm-pool re-claim) and the
-    subagent's stub must still forward as the SUBAGENT.
-
-    Then the consequence that matters: with the identity gatewayd stamps on that
-    connection, ``require_strict_session_key`` — the one gate ``monitor_start``
-    and every other reflexive tool routes through — answers with the subagent's
-    key. A subagent cannot arm a loop on, or report into, its parent's slot.
+    ``ProcessTopology`` models one kiro-cli whose ``session_pid_<host_pid>.txt`` names
+    the parent, so both process walks resolve the parent for both stubs. Then
+    ``require_strict_session_key`` (the gate ``monitor_start`` uses) must answer
+    with the subagent's key.
     """
     topo = ProcessTopology(tmp_path)
     topo.add(GATEWAY, 1)
@@ -695,9 +657,7 @@ async def _live_conn_on(
     return backend, reader, task
 
 
-# ---------------------------------------------------------------------------
 # The ordering the register loses: a claim that binds while the register runs
-# ---------------------------------------------------------------------------
 
 
 def _claim_during_register(
@@ -705,12 +665,9 @@ def _claim_during_register(
 ) -> list[dict[str, Any]]:
     """Push *frame* while the register is parked on its start-id snapshot.
 
-    That await is the race. Register-time resolution has already run and read an
-    unbound token, and the connection is not in ``_CONN_INDEX`` yet — so the
-    claim binds the token and reaches nothing, which is the measured
-    ``unclaimed session token`` / ``claim matched no connections yet`` pair. The
-    snapshot is an executor hop, so driving the claim from that seam makes the
-    ordering deterministic rather than hoping to catch it.
+    That await is the race: the register has read an unbound token and the connection
+    is not in ``_CONN_INDEX`` yet. The snapshot is an executor hop, so driving the
+    claim from it makes the ordering deterministic.
     """
     loop = asyncio.get_running_loop()
     hop = LoopHop(loop)

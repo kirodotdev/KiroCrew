@@ -7,17 +7,22 @@
  *  capability sends no hello, so the tab sends nothing and keeps receiving
  *  every board's frames, as before. */
 import type { QueryClient } from '@tanstack/react-query'
+import { SESSION_DASHBOARD_QUERY_PREFIX } from './serverState'
 
 /** The frame a capable gateway sends right after connect. */
 export const FOLD_HELLO_FRAME = 'fold_hello'
 
-/** The roots of every mounted `['command-center', root, 'work']` query: the
- *  boards this tab shows. Sorted, so two equal sets compare equal. */
+/** The roots of every mounted `['command-center', root, 'work']` query and of
+ *  every mounted root session page (`[SESSION_DASHBOARD_QUERY_PREFIX, slot, ...]`):
+ *  the boards this tab shows. A session page is composed from its slot's folds, so
+ *  an open Overview with no work board beside it still needs that slot's frames
+ *  to know when to re-read. Sorted, so two equal sets compare equal. */
 export function watchedBoards(queryClient: QueryClient): string[] {
   const roots = new Set<string>()
   for (const query of queryClient.getQueryCache().getAll()) {
     const key = query.queryKey
-    if (key.length !== 3 || key[0] !== 'command-center' || key[2] !== 'work') continue
+    const board = key.length === 3 && key[0] === 'command-center' && key[2] === 'work'
+    if (!board && key[0] !== SESSION_DASHBOARD_QUERY_PREFIX) continue
     if (typeof key[1] !== 'string' || !key[1]) continue
     if (query.getObserversCount() === 0) continue
     roots.add(key[1])

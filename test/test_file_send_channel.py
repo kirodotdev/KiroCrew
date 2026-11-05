@@ -310,6 +310,54 @@ class TestFileUploadBinary:
                 slack.upload_file.assert_not_called()
 
 
+class TestFileUploadRedactionFailure:
+    """Behaviour: a scan that raises returns a stable message, not the exception text."""
+
+    @pytest.mark.asyncio
+    async def test_scan_error_returns_stable_message(self, tmp_path, outbox_file):
+        """The 500 body and the audit record carry no exception text, only its type."""
+        from kiro_crew.dashboard.handlers import files as files_handlers
+
+        real_redact = files_handlers.redact
+
+        def _raising_redact(text, *args, **kwargs):
+            if text == "hello world":  # the file content; the filename check passes
+                raise RuntimeError("scan detail from hello world")
+            return real_redact(text, *args, **kwargs)
+
+        sel = MagicMock()
+        slack = MagicMock()
+        slack.upload_file = AsyncMock()
+        app = _make_app(slack, tmp_path)
+
+        with patch(
+            "kiro_crew.config.loader.outbox_dir",
+            return_value=outbox_file.parent,
+        ), patch(
+            "kiro_crew.config.loader.workspace_root",
+            return_value=tmp_path,
+        ), patch(
+            "kiro_crew.dashboard.handlers.files._sel",
+            return_value=sel,
+        ), patch(
+            "kiro_crew.dashboard.handlers.files.redact",
+            _raising_redact,
+        ):
+            async with TestClient(TestServer(app)) as client:
+                resp = await client.post(
+                    "/api/slack/upload-file",
+                    json={"file_path": str(outbox_file), "filename": "report.txt"},
+                )
+                body = await resp.json()
+
+        assert resp.status == 500
+        assert body == {"error": "Redaction failed", "code": "redaction_failed"}
+        errors = [c.kwargs.get("error") for c in sel.log_tool_invocation.call_args_list]
+        assert "redaction_failed: RuntimeError" in errors
+        assert not any("scan detail" in str(e) for e in errors)
+        slack.upload_file.assert_not_called()
+
+
 class TestFileUploadSlotThreading:
     """Behaviour: file_send resolves thread_ts from session_map when not explicitly provided."""
 

@@ -55,9 +55,10 @@ _AWS_KEY_BODY = "A2B3C4D5E6F7G8H9"  # 16 of [A-Z0-9], per AWS_KEY_ID_BODY
 _AWS_KEY_SAMPLES = tuple(prefix + _AWS_KEY_BODY for prefix in _cred.AWS_KEY_ID_PREFIXES.split("|"))
 
 #: A destination only the URL scanner objects to: the credential scanners clear it
-#: (probed above the assertion in ``test_the_two_scanners_are_distinguished``), so
+#: (probed above the assertion in ``test_the_two_scanners_are_distinguished_in_the_row``), so
 #: it is what separates the two scrub categories rather than doubling the first.
-_EXFIL_URL = "see https://collector.example.invalid/x?sess" + "ion=" + "b" * 40
+# ``x`` and not a hex letter: a 40-run of hex is a git object name and is kept.
+_EXFIL_URL = "see https://collector.example.invalid/x?sess" + "ion=" + "x" * 40
 
 POINT = "skills.select"
 QUESTIONS = [Choice(id="verdict", prompt="Which skill?", options=["NONE", "DUP"])]
@@ -176,14 +177,14 @@ class _SlowOracle:
 def install_impl(monkeypatch):
     """Replace the one implementation ``decide`` constructs.
 
-    ``decide`` imports ``JevOracle`` inside its own body (the import stays off a
+    ``decide`` imports ``SystemOneProvider`` inside its own body (the import stays off a
     hot path's import graph), so the patch lands on the module the import
     resolves against, not on a name in ``gate``.
     """
-    import kiro_crew.decisions.impl_jev as impl_mod
+    import kiro_crew.decisions.impl_systemone as impl_mod
 
     def _install(oracle):
-        monkeypatch.setattr(impl_mod, "JevOracle", lambda provider: oracle)
+        monkeypatch.setattr(impl_mod, "SystemOneProvider", lambda provider: oracle)
         return oracle
 
     return _install
@@ -609,6 +610,7 @@ class TestPointName:
             "compaction.keep",
             "memory.recall",
             "nudge.wake",
+            "browser.step",
         )
 
     @pytest.mark.parametrize("unknown", ["skills.dedupe", "cron.novelty", "", "skills.Select"])
@@ -686,7 +688,9 @@ class TestPointName:
 
         Driven off the gate's own table so a point added with a new scope is covered
         without this test being touched, and with NO point exempted: the assertion is
-        universal or it is not a ratchet.
+        universal or it is not a ratchet. The browser scope is the owner's default-on
+        exception (``consented_browser``), so the input records its no explicitly;
+        every other scope stays absent.
 
         :data:`gate.JUDGE_POINT` reaches it by pinning the lane whose authority IS the
         scope. That point carries two lanes (``is_enabled`` resolves them through
@@ -699,8 +703,27 @@ class TestPointName:
         install_impl(_RecordingOracle())
         assert is_enabled("skills.select", config=_config()) is True
         assert is_enabled("message.steer", config=_config()) is True
+        # The one default-on scope reads as granted when absent, so a keystone that
+        # records "no scope" has to say no to it in so many words.
+        keystone = consent_mod.consent_path()
+        state = json.loads(keystone.read_text(encoding="utf-8"))
+        keystone.write_text(
+            json.dumps({**state, consent_mod.STATE_KEY_BROWSER: False}),
+            encoding="utf-8",
+        )
         for name in gate_mod._POINT_SCOPES:
             assert is_enabled(name, config=_config(judge_provider=gate_mod.LANE_JEV)) is False, name
+
+    def test_the_default_on_point_scope_is_pinned_and_an_explicit_no_holds(
+        self, install_impl, tmp_path
+    ):
+        """``browser`` is on by default once consent stands; ``false`` still turns it off."""
+        install_impl(_RecordingOracle())
+        assert is_enabled("browser.step", config=_config()) is True
+        keystone = tmp_path / "decisions_consent.json"
+        state = json.loads(keystone.read_text(encoding="utf-8"))
+        keystone.write_text(json.dumps({**state, "browser": False}), encoding="utf-8")
+        assert is_enabled("browser.step", config=_config()) is False
 
 
 # ---------------------------------------------------------------------------
@@ -845,7 +868,7 @@ class TestScrub:
         assert model not in json.dumps(log_home())
 
     def test_an_empty_provider_model_is_the_default_and_passes(self, install_impl):
-        """The gate scrubs the id ``impl_jev`` would send, so "" is the default, not
+        """The gate scrubs the id ``impl_systemone`` would send, so "" is the default, not
         a refusal."""
         oracle = install_impl(_RecordingOracle())
         assert asyncio.run(decide(POINT, "clean", QUESTIONS, config=_config(model=""))) is not None
@@ -1488,7 +1511,7 @@ class TestExtraRowFields:
 
 
 class _MetaOracle:
-    """A passing oracle that exposes ``last_response_meta`` the way ``JevOracle`` does."""
+    """A passing oracle that exposes ``last_response_meta`` the way ``SystemOneProvider`` does."""
 
     def __init__(self, meta):
         self.last_response_meta = meta

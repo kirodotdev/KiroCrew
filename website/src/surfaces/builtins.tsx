@@ -23,7 +23,7 @@ import type { RootState } from '../store'
 // reference (which is the standard Redux Toolkit pattern).
 //
 // Silenced and passive rows are excluded, matching the backend's own
-// `_unread_count` and the rule the bell sheet's badge applies. This sum reaches
+// `notification_coordinator.unread_count` and the rule the bell sheet's badge applies. This sum reaches
 // the user as the browser-tab attention number, and a muted note counted here is
 // a `(n)` in the title that no surface the user can open accounts for: the bell
 // omits it and the feed keeps silenced rows behind the muted disclosure, so

@@ -138,10 +138,11 @@ export function useSessionGrid(anchorSlot?: string | null) {
   }, [])
 
   /** Seed the grid when entering split mode. With a current session, "split it
-   *  in place": that session becomes the left pane and a fresh placeholder opens
-   *  beside it (Warp/tmux ⌘D semantics). With no current session, seed a single
-   *  empty placeholder. Called only when nothing was restored from persistence. */
-  const seedFromSession = useCallback((slot: string | null) => {
+   *  in place": that session becomes the first pane and a fresh placeholder opens
+   *  beside it (`dir` 'right', the default: Warp/tmux ⌘D semantics) or below it
+   *  (`dir` 'down'). With no current session, seed a single empty placeholder.
+   *  Called only when nothing was restored from persistence. */
+  const seedFromSession = useCallback((slot: string | null, dir: SplitDir = 'right') => {
     if (!slot) {
       const leaf = newLeaf()
       setTree(leaf)
@@ -150,7 +151,7 @@ export function useSessionGrid(anchorSlot?: string | null) {
     }
     const current = newLeaf('session', { slot })
     const blank = newLeaf()
-    setTree({ type: 'split', id: uid(), dir: 'col', children: [current, blank], sizes: [0.5, 0.5] })
+    setTree({ type: 'split', id: uid(), dir: dir === 'right' ? 'col' : 'row', children: [current, blank], sizes: [0.5, 0.5] })
     setFocusedId(blank.id)
   }, [])
 

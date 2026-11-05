@@ -177,8 +177,6 @@
   "augmented_path",
   "await_under_no_progress_bound",
   "bind_voice_safe_agent_workspace_async",
-  "browser_session_env",
-  "browser_socket_env",
   "build_permission_event",
   "build_prompt_blocks",
   "bump_resolution_generation",

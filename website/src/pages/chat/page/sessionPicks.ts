@@ -5,7 +5,7 @@ import { store, type AppDispatch } from '../../../store'
 import type { ChatSlot } from '../../../types'
 import { useAnchoredTriggerRect } from '../../../hooks/useAnchoredTriggerRect'
 import { resolveByApprovalId, setAgentSwitchNotice } from '../../../store/chatSlice'
-import { removeNotificationByTs } from '../../../store/notificationsSlice'
+import { endApprovalRow, liveApprovalRows } from '../../../store/notificationsSlice'
 import { updateSlot } from '../../../store/dashboardSlice'
 import { inFlightSlotSwitchOutcome, stagedSlotSwitchTarget, performSlotSwitch } from '../../../lib/slotSwitch'
 import { performAgentSlotSwitch } from '../../../lib/agentSwitch'
@@ -197,6 +197,7 @@ interface SessionChoicesOptions {
 export function useSessionChoices({
   dispatch, queryClient, activeSlot, codexPairModels, setModelDropdown, modelPickerReturnsFocusRef, setPendingAgent, setPendingModel, setPendingProject,
 }: SessionChoicesOptions) {
+  const [projectSwitches, setProjectSwitches] = useState<Readonly<Record<string, number>>>({})
   const approve = useCallback(async (action: string) => { if (activeSlot) await api.approveChatSlot(activeSlot, action) }, [activeSlot])
   // Approvals dismissed through the CollapsibleToolGroup mounts resolve via the
   // ONE-SHOT `api.resolveApproval` endpoint, which has no trust verb. The shared
@@ -205,10 +206,16 @@ export function useSessionChoices({
   // a standing grant the backend never records (#5400, #5434).
   const dismissApproval = useCallback((aid: string, decision?: string) => {
     dispatch(resolveByApprovalId({ id: aid, slot: activeSlot || undefined, decision }))
-    const n = store.getState().notifications.items.find(x => x.approval_id === aid)
-    if (n) dispatch(removeNotificationByTs(n.ts))
+    // The id recurs and the feed keeps a refused press's retired row, so only
+    // a live row under the id is this decision's.
+    const n = liveApprovalRows(store.getState().notifications, aid).at(-1)
+    if (n) dispatch(endApprovalRow(n.ts))
   }, [activeSlot, dispatch])
-  const switchAgent = useCallback(async (agentName: string, kind?: 'member' | 'template') => {
+  // Resolves `true` once the switch landed (or was held as the pending pick of a
+  // chat not created yet), `false` when it was refused: the refusal is already
+  // shown as the shared notice, so a caller only needs the answer to know
+  // whether to finish what it started.
+  const switchAgent = useCallback(async (agentName: string, kind?: 'member' | 'template'): Promise<boolean> => {
     if (!activeSlot) {
       setPendingAgent(agentName, kind)
       // Clear any explicit pick made for the PREVIOUS agent rather than
@@ -216,7 +223,7 @@ export function useSessionChoices({
       // `model`, which lets the backend resolve the new agent's own chain at
       // create time. Seeding the resolved id here pinned it instead (#2035).
       setPendingModel('')
-      return
+      return true
     }
     dispatch(setAgentSwitchNotice(null))
     try {
@@ -227,11 +234,13 @@ export function useSessionChoices({
       // The cold effort answer was judged on the previous crew's model; without
       // this it holds until the next poll, up to 30 s once the poll backs off.
       void queryClient.invalidateQueries({ queryKey: ['slot-selection-capabilities', activeSlot] })
+      return true
     } catch (error) {
       // Closing the picker is the call sites' job and already happens
       // synchronously alongside this call, so a failure surfaces as the shared
       // notice rather than by holding the dropdown open.
       dispatch(setAgentSwitchNotice(agentSwitchFailureNotice(error, agentName)))
+      return false
     }
     // The setPending* setters are useState setters, so they are stable and cost
     // nothing to list, as is `queryClient`. `installedAgents` and `provider` are
@@ -347,6 +356,10 @@ export function useSessionChoices({
   }, [switchModel, setModelDropdown, modelPickerReturnsFocusRef])
   const setProject = useCallback(async (path: string) => {
     if (!activeSlot) { setPendingProject(path); return }
+    // Counted per slot, so overlapping picks clear only when the last one
+    // ends, and a pick still waiting on one chat never shows on another.
+    const slot = activeSlot
+    setProjectSwitches(prev => ({ ...prev, [slot]: (prev[slot] ?? 0) + 1 }))
     try {
       // Same protocol as switchModel above; the server realpath-normalizes
       // the directory, so the response's spelling is what gets written.
@@ -360,10 +373,21 @@ export function useSessionChoices({
       dispatch(setAgentSwitchNotice(agentSwitchErrorNotice(e)))
       // eslint-disable-next-line no-console -- surface setProject failures for debugging
       console.error('setProject failed', e)
+    } finally {
+      setProjectSwitches(prev => {
+        const left = (prev[slot] ?? 1) - 1
+        const next = { ...prev }
+        if (left > 0) next[slot] = left
+        else delete next[slot]
+        return next
+      })
     }
     // setPendingProject is a stable ref-backed setter.
   }, [activeSlot, dispatch, setPendingProject])
+  // True while a project pick on the active chat is still waiting: the route
+  // holds the turn-preparation lock, so a cold spawn can take seconds (#20351).
+  const projectSwitching = !!activeSlot && (projectSwitches[activeSlot] ?? 0) > 0
   return {
-    approve, dismissApproval, switchAgent, pickModel, setProject,
+    approve, dismissApproval, switchAgent, pickModel, setProject, projectSwitching,
   }
 }

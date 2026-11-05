@@ -21,6 +21,7 @@ from typing import Any
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from crew_log_drain import assert_drained
 
 from kiro_crew.context_blocks import PHASE_PER_TURN, PHASE_SESSION_START, USER_LABEL
 from kiro_crew.crew_log import eager as crew_log_eager
@@ -114,7 +115,7 @@ def _refused(*, unit: str = UNIT, turn: int = 1, reason: str = "oversized") -> N
 
 
 def _flush() -> None:
-    crew_log_emit.flush(timeout=5.0)
+    assert_drained()
     crew_log.forget_slot_folds()
 
 

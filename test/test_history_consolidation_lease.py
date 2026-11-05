@@ -17,6 +17,7 @@ holder's claim stops counting, and that a refused pass leaves every piece of
 import asyncio
 import contextlib
 import json
+import logging
 import os
 import threading
 import time
@@ -80,6 +81,78 @@ def _live_lease(token: str = "someone-else", at: float | None = None) -> dict:
     if start:
         record[_LEASE_START] = start
     return record
+
+
+def test_a_held_transcript_still_grants_the_lease(tmp_path, monkeypatch):
+    """A Windows reader holding the transcript must not defeat the lease claim.
+
+    The lease claim rewrites the metadata line off the event loop, through
+    ``_update_metadata_locked`` -> ``atomic_write`` -> the publishing rename. On
+    Windows that rename fails with WinError 5 while any reader holds the file,
+    and the count-based retry gives up inside half a second, so a reader that
+    outlasts it defeats the whole consolidation pass. The transcript rewrites
+    carry an elapsed-time budget, so the rename survives a reader that closes
+    within it and the lease is granted.
+
+    Driven on the Windows simulator so the fault is deterministic on POSIX CI;
+    the backoff sleep is advanced on a fake clock so the budget boundary is exact
+    without a wall-clock wait. ``os.replace`` faults 11 times (past the 10-attempt
+    count ceiling) then succeeds, standing in for a reader that closes partway
+    through the 3 s budget.
+    """
+    from windows_sim import replace_sharing_violation
+
+    from kiro_crew import atomic_write as aw
+    from kiro_crew import platform_compat
+    from kiro_crew.testing.clock import ManualClock
+
+    monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
+
+    # A manual clock on atomic_write's OWN time binding, so the backoff advances
+    # the virtual instant with no wall-clock wait and the rest of the worker
+    # keeps real time.
+    ManualClock(monotonic_start=0.0).install(monkeypatch, aw)
+
+    log = _seed_log(tmp_path)
+    c = _make_consolidator(log)
+
+    # 11 faults beats the count arm's 10 attempts; the metadata rewrite the lease
+    # claim makes carries the 3 s budget, so the rename lands and the lease holds.
+    with replace_sharing_violation(match=".jsonl", times=11) as sim:
+        token = c._acquire_consolidation_lease(KEY)
+
+    assert token, "the lease was refused despite a reader that closes within the budget"
+    assert sim["n"] >= 11  # the count arm would have stopped at 10
+    assert log.get_metadata(KEY)[_LEASE_TOKEN] == token
+
+
+def test_a_held_transcript_refuses_the_lease_without_the_budget(tmp_path, monkeypatch):
+    """The non-vacuity twin: the SAME faults with the count arm refuse the lease.
+
+    Proves the test above exercises the budget and not some unrelated recovery:
+    forcing the metadata rewrite through the count-based retry (no budget) against
+    the same 11 faults leaves the rename failing and ``_acquire_consolidation_lease``
+    returning ``None`` — the behaviour the issue reports.
+    """
+    from windows_sim import replace_sharing_violation
+
+    from kiro_crew import atomic_write as aw
+    from kiro_crew import history_projection, platform_compat
+
+    monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
+    monkeypatch.setattr(aw, "_REPLACE_BACKOFF_SECONDS", 0)
+    # Drop the budget at the call site the lease claim takes (the durable=False
+    # metadata rewrite), forcing the count-based arm. The name is read from this
+    # module's namespace, so patch it here rather than on atomic_write.
+    monkeypatch.setattr(history_projection, "TRANSCRIPT_REPLACE_BUDGET_SECONDS", None)
+
+    log = _seed_log(tmp_path)
+    c = _make_consolidator(log)
+
+    with replace_sharing_violation(match=".jsonl", times=11):
+        token = c._acquire_consolidation_lease(KEY)
+
+    assert token is None, "the count arm should still give up under a held reader"
 
 
 class TestWhoStillHoldsALease:
@@ -191,7 +264,7 @@ class TestTheHeartbeatKeepsALiveHolder:
 
     @pytest.mark.asyncio
     async def test_the_heartbeat_stops_once_the_lease_is_someone_elses(
-        self, tmp_path, monkeypatch
+        self, tmp_path, monkeypatch, caplog
     ) -> None:
         """A lost lease stops renewal rather than spinning."""
         monkeypatch.setattr(
@@ -200,8 +273,14 @@ class TestTheHeartbeatKeepsALiveHolder:
         log = _seed_log(tmp_path)
         c = _make_consolidator(log)
 
-        with patch.object(c, "_renew_consolidation_lease", return_value=False):
+        with (
+            patch.object(c, "_renew_consolidation_lease", return_value=False),
+            caplog.at_level(logging.WARNING, logger="kiro_crew.history"),
+        ):
             await asyncio.wait_for(c._heartbeat_consolidation_lease(KEY, "gone"), timeout=30)
+
+        messages = [r.getMessage() for r in caplog.records if r.name == "kiro_crew.history"]
+        assert f"Consolidation lease lost for {KEY}; aborting pass" in messages
 
     @pytest.mark.asyncio
     async def test_a_pass_renews_while_the_provider_turn_is_in_flight(

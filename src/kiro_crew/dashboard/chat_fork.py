@@ -32,6 +32,7 @@ from kiro_crew.dashboard.chat_utils import (
 )
 from kiro_crew.dashboard.handlers.memory import _store_unavailable_response
 from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+from kiro_crew.dashboard.mate_folders import inherited_folder
 from kiro_crew.dashboard.relay_archive import is_relay_archive
 from kiro_crew.dashboard.slot_ownership import deny_app_slot_access, slot_not_found
 from kiro_crew.dashboard.state import (
@@ -39,8 +40,10 @@ from kiro_crew.dashboard.state import (
     MAX_LIVE_SLOTS,
     VALID_MEMORY_MODES,
     DashboardState,
+    _safe_folder_tree,
     request_slot_origin,
 )
+from kiro_crew.dashboard.token_auth_callers import folder_principal
 from kiro_crew.dashboard.transcript_snapshot import (
     FORK,
     SlotView,
@@ -50,6 +53,7 @@ from kiro_crew.dashboard.transcript_snapshot import (
 from kiro_crew.history import carry_provenance
 from kiro_crew.history_projection import drop_persisted_tail_prefix as _drop_persisted_tail_prefix
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.security.redaction_allow import allowed_hosts_for
 from kiro_crew.sel import sel
 
 if TYPE_CHECKING:
@@ -134,12 +138,17 @@ def _fork_execution_context(
 
 
 def _bind_fork_execution(source, child_key: str, execution) -> None:
-    from kiro_crew.execution_context import bind_session_execution
+    from kiro_crew.execution_context import bind_session_execution, source_vouch_agrees
     from kiro_crew.memory_stores import UnknownMemoryStore
 
     if _fork_execution_context(*source) != execution:
         raise UnknownMemoryStore("The fork source's execution changed")
-    bind_session_execution(child_key, execution)
+    # The child's identity is copied from the source's own record, which the
+    # source can write, so the fork never vouches on that record's word. It
+    # carries own-store authority only when the gateway already vouches the source
+    # for the same member and store; otherwise a fork of a member conversation
+    # could never open a worker on its own memory.
+    bind_session_execution(child_key, execution, vouch=source_vouch_agrees(source[0], execution))
 
 
 def _forget_fork_child_binding(child_key: str) -> None:
@@ -402,7 +411,7 @@ async def api_chat_slot_fork(request: web.Request) -> web.Response:
                 "error": f"slot cap reached ({MAX_LIVE_SLOTS})",
                 "code": "slot_cap_reached",
             },
-            status=429,
+            status=409,
         )
 
     # App ownership check (App Kit §5.2): the shared decision, so a slot owned by
@@ -517,6 +526,7 @@ async def api_chat_slot_fork(request: web.Request) -> web.Response:
         # ownership, which an allow-listed non-owner passes for a slot the
         # owner armed.
         jev_route_allowed=is_owner_dashboard_request(request),
+        folder_principal=folder_principal(state, request),
         audit_caller=request_app or "dashboard",
         # A person forking a pinned session gets a pinned fork, so it stays
         # beside its parent in the pinned group. Set through ``stamp`` so the
@@ -544,9 +554,19 @@ async def api_chat_slot_fork(request: web.Request) -> web.Response:
 
 
 def _shape_fork_child(
-    new_slot: "_ChatSlot", slot: "_ChatSlot", *, direction: str, jev_route_allowed: bool
+    new_slot: "_ChatSlot",
+    slot: "_ChatSlot",
+    *,
+    direction: str,
+    jev_route_allowed: bool,
+    folders: list[dict[str, Any]],
+    folder_principal: str,
 ) -> None:
     """Copy onto the just-minted *new_slot* what it inherits from its parent *slot*.
+
+    *folders* is the committed folder tree and *folder_principal* the forker's
+    folder principal: a parent filed in a mate's home the forker may not write
+    into hands the child no folder.
 
     Synchronous and assignment-only. :func:`fork_slot` runs it in the
     push-suspended window that began at the mint, so the child's first
@@ -568,8 +588,9 @@ def _shape_fork_child(
     # Keep the app-owned agent binding with the agent it binds: the fork runs as
     # the same app agent, so the per-turn shadow check must still apply to it.
     new_slot.app_agent_owner = slot.app_agent_owner
-    # Inherit the sidebar folder so the fork appears next to its parent in the UI.
-    new_slot.folder_id = slot.folder_id
+    # Inherit the sidebar folder so the fork appears next to its parent in the UI,
+    # unless it is a mate's home (or inside one) the forker may not file into.
+    new_slot.folder_id = inherited_folder(folders, slot.folder_id, folder_principal)
     # Inherit tags (copied, so later edits to either slot's list stay independent).
     new_slot.tags = list(slot.tags)
     # "tags changed => revision changed": the slot was constructed with an empty
@@ -612,6 +633,7 @@ async def fork_slot(
     origin: str,
     count_user_session: bool,
     jev_route_allowed: bool,
+    folder_principal: str,
     audit_caller: str,
     audit_operation: str = FORK_AUDIT_OPERATION,
     stamp: "Callable[[_ChatSlot], None] | None" = None,
@@ -627,8 +649,9 @@ async def fork_slot(
     (``at_index`` against the visible-row count, ``at_message_id`` against the
     rows' ids). It has no request: the pieces the human route derives from one
     (``request_app``, ``origin``, ``count_user_session``, ``jev_route_allowed``,
-    ``audit_caller``) are passed in, so ``session_control.fork_session`` can run
-    the identical copy for an agent caller with its own answers to them.
+    ``audit_caller``, ``folder_principal``) are passed in, so
+    ``session_control.fork_session`` can run the identical copy for an agent
+    caller with its own answers to them.
 
     ``stamp``, when given, is called on the child once it is fully shaped
     (title, folder, tags, inherited memory identity) and BEFORE the transcript
@@ -1226,8 +1249,15 @@ async def fork_slot(
                     return _store_unavailable_response(inherited_store, exc)
                 raise
         try:
+            # The committed folder tree, read synchronously: nothing suspends
+            # between this read and the assignment, so no folder move can land.
             _shape_fork_child(
-                new_slot, slot, direction=direction, jev_route_allowed=jev_route_allowed
+                new_slot,
+                slot,
+                direction=direction,
+                jev_route_allowed=jev_route_allowed,
+                folders=_safe_folder_tree(state._folders),
+                folder_principal=folder_principal,
             )
             if stamp is not None:
                 stamp(new_slot)
@@ -1259,7 +1289,18 @@ async def fork_slot(
             # channel turn keeps the origin it actually had.
             carry_provenance(new_slot.messages[-1], m)
         new_slot.drain()
-        await save_slot_off_loop(state, new_slot)
+        # Every row is a copy of a parent row, so the parent's stored display
+        # verdicts already judge them. Without this the birth save rescans the
+        # whole copied window whenever the process cache has gone cold (a
+        # restart, or other sessions' renders): 1,624 scans and 2.7 s of a
+        # 2.9 s fork for a 25 MB parent. Stored tags carry the workspace's
+        # allowed link hosts and the save judges with none, so with any host
+        # allowed no tag would match; the scope is skipped rather than seeding
+        # the parent's sidecar with tags no render reads.
+        reuse = not await asyncio.to_thread(allowed_hosts_for, slot.workspace)
+        await save_slot_off_loop(
+            state, new_slot, verdict_source=slot_history_key(slot) if reuse else None
+        )
         new_slot._resumed_count = len(new_slot.messages)
     except Exception:
         # The child's row was announced when the mint block exited. A partial

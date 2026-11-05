@@ -725,9 +725,10 @@ class TestLeafPurity:
         env = dict(os.environ)
         env["PYTHONPATH"] = src_dir + os.pathsep + env.get("PYTHONPATH", "")
         out = subprocess.run(
-            [sys.executable, "-c", code],
+            [sys.executable, "-X", "utf8", "-c", code],
             capture_output=True,
             text=True,
+            encoding="utf-8",
             check=True,
             env=env,
         )

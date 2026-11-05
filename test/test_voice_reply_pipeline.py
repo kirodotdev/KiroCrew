@@ -271,6 +271,40 @@ class TestStreamingVoiceReply:
         # Only the odd-numbered calls succeed (1, 3).
         assert collected == [0, 2]
 
+    @pytest.mark.asyncio
+    async def test_an_aws_rejection_stops_the_stream_at_the_first_sentence(self) -> None:
+        """A repeating rejection raises instead of being retried per sentence.
+
+        ``_synthesize_polly`` raises ``voice_polly_rejected`` on an AWS CLI
+        rejection when it is told a person is waiting; the stream must let it
+        travel so the dashboard shows the cause, rather than skip the sentence
+        and try the next one against the same doomed engine/region.
+        """
+        from kiro_crew.voice_reply import VoiceSynthesisError, streaming_voice_reply
+
+        calls = {"n": 0}
+
+        async def rejects(ssml, **kwargs):
+            calls["n"] += 1
+            raise VoiceSynthesisError(
+                "voice_polly_rejected",
+                "Amazon Polly does not offer the selected voice or engine in the "
+                "selected AWS region. In the Text-to-speech settings, pick a different "
+                "Voice, Engine, or Region.",
+            )
+
+        with (
+            patch("kiro_crew.voice_reply._synthesize_polly", side_effect=rejects),
+            pytest.raises(VoiceSynthesisError) as rejected,
+        ):
+            async for _idx, _sent, _data in streaming_voice_reply("First. Second."):
+                pass
+
+        assert rejected.value.code == "voice_polly_rejected"
+        assert (
+            calls["n"] == 1
+        ), "the stream must stop at the first rejection, not retry per sentence"
+
 
 class TestStreamingVoiceReplyConsent:
     """The dashboard stream raises only when no consent is recorded.
@@ -412,11 +446,12 @@ class TestTextTypeAutoDetection:
     """Tests for --text-type dynamic selection (ssml vs text)."""
 
     @pytest.fixture(autouse=True)
-    # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- no test in this module calls monkeypatch.undo()
-    def _passthrough_sandbox(self, monkeypatch, _polly_consented):
+    def _passthrough_sandbox(self, _floor_monkeypatch, _polly_consented):
         # See TestSynthesizePolly._passthrough_sandbox.
-        monkeypatch.setattr("kiro_crew.voice_reply.wrap_argv", lambda argv, **k: (list(argv), None))
-        _patch_aws_on_path(monkeypatch)
+        _floor_monkeypatch.setattr(
+            "kiro_crew.voice_reply.wrap_argv", lambda argv, **k: (list(argv), None)
+        )
+        _patch_aws_on_path(_floor_monkeypatch)
 
     @pytest.mark.asyncio
     async def test_ssml_input_uses_ssml_text_type(self, tmp_path) -> None:
@@ -464,7 +499,6 @@ class TestTextTypeAutoDetection:
 
     @pytest.mark.asyncio
     async def test_standard_engine_text_to_ssml_returns_ssml(self) -> None:
-        """Standard engine should return SSML."""
         result = text_to_ssml("Hello world", engine="standard")
         assert result.startswith("<speak")
         assert "</speak>" in result

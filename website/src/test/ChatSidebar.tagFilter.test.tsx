@@ -7,7 +7,7 @@
  * lane (unlike Folders), so `board view on` is covered too.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { render, fireEvent, waitFor } from '@testing-library/react'
+import { act, render, fireEvent, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
@@ -320,7 +320,7 @@ describe('chat sidebar — filter menu Tags section', () => {
       // Wait for the tag vocabulary to load and actually exclude the target,
       // which is the precondition the reveal effect's filter-drop branch tests.
       await waitFor(() => expect(utils.queryByText('beta session')).toBeNull())
-      utils.store.dispatch(requestSlotReveal('k-beta'))
+      act(() => { utils.store.dispatch(requestSlotReveal('k-beta')) })
       await waitFor(() =>
         expect(JSON.parse(localStorage.getItem('mc-session-tag-filter') || '[]')).toEqual([]))
       expect(utils.queryByText('beta session')).not.toBeNull()

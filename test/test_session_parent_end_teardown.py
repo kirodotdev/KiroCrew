@@ -32,15 +32,9 @@ class TestParentEndCancelsItsChildrenTeardownRules(_TestParentEndCancelsItsChild
     async def test_a_child_parked_on_a_spawn_approval_is_not_cancelled(self):
         """An approval is a decision a person was asked for; a teardown may not answer it.
 
-        Observed, not theorised: the private-workflow E2E spawns a child that parks on a
-        spawn approval, the pooled worker's ``destroy`` cancelled it, and the test's
-        ``POST /api/approvals/spawn:<id>/approve`` then answered 404 "not found or
-        expired" -- indistinguishable from the person having taken too long to reply.
-
-        ``cancel_for_parent_impl`` already applies this rule for Stop-all; the teardown
-        snapshot did not, which is the asymmetry. ``_exec_started is None`` is part of the
-        test: a run that HAS begun and is parked on a later approval is live work, and a
-        parent end does stop that.
+        Cancelling it makes the approve call answer 404, which looks like a timed-out reply.
+        ``_exec_started is None`` matters: a run that has begun and parks on a later
+        approval is live work, and a parent end does stop it.
         """
         from types import SimpleNamespace
 
@@ -146,7 +140,7 @@ class TestParentEndCancelsItsChildrenTeardownRules(_TestParentEndCancelsItsChild
         # Only a finished child, or one parked at a spawn approval, or a resume
         # row -> False (nothing a retirement would cancel). This is the IN-MEMORY
         # half only: a durable-only / window-held store child is read off the loop
-        # by the sweep's own probe (``_parent_has_store_children``), not here.
+        # by the sweep's own probe (``has_pending_store_children``), not here.
         idle_mgr = _Manager(
             {
                 "done": _run("done", done=True),
@@ -168,16 +162,10 @@ class TestParentEndCancelsItsChildrenTeardownRules(_TestParentEndCancelsItsChild
     async def test_a_finished_but_undelivered_child_is_gated_without_being_cancelled(self):
         """Done is not delivered, and only the delivered ones may be let through.
 
-        ``_reported_to_parent`` is set the moment ``_on_done`` returns, so a run that is
-        ``done`` without it still has a report, a digest hold or a queued announce
-        outstanding. Selecting only the not-done runs left that class of child free to
-        inject -- and the injector resolves the parent key through the session registry
-        and CREATES a session when none is live, so the delivery rebuilds the very
-        conversation the teardown took down.
-
-        It is marked but NOT returned: there is nothing left to cancel, and handing it to
-        the cancel loop would publish a synthetic "never started" terminal over a run
-        that finished.
+        A ``done`` run without ``_reported_to_parent`` still has a delivery outstanding,
+        and the injector creates a session when none is live, rebuilding the conversation.
+        It is marked but not returned: cancelling it would publish a synthetic "never
+        started" terminal over a run that finished.
         """
         from types import SimpleNamespace
 
@@ -234,15 +222,9 @@ class TestParentEndCancelsItsChildrenTeardownRules(_TestParentEndCancelsItsChild
     async def test_a_reset_leaves_a_healthy_child_running(self, cfg):
         """A reset recycles a process; it does not end the conversation.
 
-        The session-map entry keeps its resume sid, so the next turn on the key restores
-        the same native conversation through ``session/load``. A child therefore has
-        somewhere to deliver and is bounded by its own run timeout, and stopping it would
-        discard live work belonging to a conversation that is coming back.
-
-        This is the invariant for EVERY reset caller, which is why it is asserted on the
-        bare call: the verb is what every evict-and-retry path reaches for -- a wedged
-        prompt, a failed auto-compaction, a provider switch, an idle expiry, the channel
-        watchdog -- and each of those is a retry, not an ending.
+        The map entry keeps its resume sid, so the next turn restores the conversation and
+        the child still has somewhere to deliver. Asserted on the bare call because every
+        evict-and-retry path uses it.
         """
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
         _snapshotted, cancelled, handler = self._recorder()
@@ -276,19 +258,9 @@ class TestParentEndCancelsItsChildrenTeardownRules(_TestParentEndCancelsItsChild
     def test_the_delivery_parked_states_are_enumerated_from_the_producers(self):
         """The parked-delivery states come from the WRITERS, not from failures.
 
-        "Has this run's outcome reached its parent" has several representations, and each
-        round of review found one more by hitting it: the report returning
-        (``_reported_to_parent``), the wave hold (``_digest_held`` and its separate
-        timestamp ``_digest_held_at``), the siblings held on this member
-        (``_digest_settle_deliveries``) and the announce parked in the parent's slot queue
-        (``_delivery_queued``). Discovering them one failure at a time is what made the
-        teardown gate wrong four times.
-
-        So the set is derived the other way: walk the four modules that WRITE routing state
-        on a ``SubagentInfo`` and require every attribute they assign to be classified in
-        ``DELIVERY_ROUTING_FIELDS``. A new parked state has to be written by one of them, so
-        adding one without a teardown rule fails here rather than in a conversation that
-        was supposed to be over.
+        Every ``SubagentInfo`` attribute the routing modules assign must be classified in
+        ``DELIVERY_ROUTING_FIELDS``, so a new parked state without a teardown rule fails
+        here.
         """
         import ast
         import pathlib
@@ -376,15 +348,8 @@ class TestParentEndCancelsItsChildrenTeardownRules(_TestParentEndCancelsItsChild
     async def test_the_teardown_records_one_audit_line_naming_its_verb(self, caplog):
         """A parent end cancels work someone may be waiting on, so it says what it took.
 
-        Several verbs reach one helper, and from outside the only evidence a run was cancelled
-        by a teardown is the absence of its result — which is indistinguishable from a
-        cancelled-too-early row. The line carries the verb, the key, whether the retired
-        generation still held, and the ids from each source, so the two can be told apart
-        from a log alone.
-
-        One line at one choke point rather than a print at each verb: a log statement
-        copied into each verb drifts, and only the teardown itself sees the ids from
-        every source.
+        Otherwise a teardown cancel looks like a cancelled-too-early row. One line at the
+        shared helper, since only it sees the ids from every source.
         """
         import logging
 
@@ -516,15 +481,9 @@ class TestParentEndCancelsItsChildrenTeardownRules(_TestParentEndCancelsItsChild
     async def test_a_teardown_leaves_a_claimed_but_unstarted_row_to_its_claimer(self):
         """A teardown may not cancel a CLAIMED-but-unstarted durable row.
 
-        Two reasons meeting at one place. Its claimer sits between the claim and the
-        registration, so cancelling here leaves that claimer to register and run work the
-        teardown believed it had stopped -- and the claimer's own state re-read before
-        registering has nothing to catch, because the row is gone rather than claimable.
-        And a row in that window may carry a decision a person made (a spawn approval is
-        the visible case), which a teardown has no standing to revoke for them.
-
-        Both halves are asserted: the store cancel is asked to refuse an ``admitted`` row,
-        and the refusal does not then reach the live reap through the other door.
+        Its claimer would still register and run it, and the row may carry a person's
+        decision such as a spawn approval. The store cancel must refuse an ``admitted`` row
+        and the refusal must not reach the live reap.
         """
         from kiro_crew.subagent_manager.cancellation import CancellationCoordinator
 
@@ -582,13 +541,8 @@ class TestParentEndCancelsItsChildrenTeardownRules(_TestParentEndCancelsItsChild
     async def test_a_started_row_the_store_refuses_still_takes_the_live_reap(self):
         """The contrast: a row a drain has STARTED is a live run, and is reaped.
 
-        The refusal has two reasons and they want opposite things, so the probe that tells
-        them apart has to be exercised both ways or the narrowing above silently becomes
-        "never reap a refused row".
-
-        The record has to be LIVE for the reap to be reached at all: ``cancel`` walks into
-        the synchronous ``_unqueue`` store call, so it is only for a row with a task behind
-        it, never a blind retry of what the store just declined.
+        Without this case the narrowing above could become "never reap a refused row". The
+        record must be live: ``cancel`` reaches the synchronous ``_unqueue`` store call.
         """
         from types import SimpleNamespace
 
@@ -650,22 +604,10 @@ class TestParentEndCancelsItsChildrenTeardownRules(_TestParentEndCancelsItsChild
     async def test_a_child_that_finished_mid_teardown_never_reaches_the_sync_store_call(self):
         """A record that is PRESENT is not a record that is RUNNING.
 
-        The live branch at the top of the loop tests ``not info.done``. The fallback below
-        it, reached when the store declines the row, tested only presence -- and those are
-        different questions for exactly one child: one that was live when the snapshot
-        named it and finished during this loop's own awaits. ``_force_reap`` marks such a
-        record done and drops its task, but does not pop it from ``_agents``, so the record
-        lingers, terminal.
-
-        Reading presence alone sent that record into ``cancel`` -> ``_unqueue``, whose
-        store call is the SYNCHRONOUS one, from a coroutine on the gateway loop -- the
-        stall ``no-sync-store-call-from-a-coroutine`` forbids, and the very thing the
-        fallback's own comment claims to be avoiding. There was nothing to gain either:
-        the row is already terminal.
-
-        Driven through the real coordinator with the store answering as it does for a
-        terminal row -- nothing to cancel, not claimed-and-unstarted -- because that
-        combination is what puts the record on this branch at all.
+        ``_force_reap`` marks a child done but leaves it in ``_agents``, so a fallback that
+        checks presence alone would send it to the synchronous ``_unqueue`` store call from
+        the loop, which ``no-sync-store-call-from-a-coroutine`` forbids. The store answers
+        as for a terminal row, the only answer that reaches this branch.
         """
         from types import SimpleNamespace
 
@@ -779,11 +721,8 @@ class TestParentEndCancelsItsChildrenTeardownRules(_TestParentEndCancelsItsChild
     async def test_ending_the_children_leaves_the_process_alone(self, cfg):
         """The conversation-ended half on its own, for a caller that keeps the process.
 
-        A pooled workflow worker hands its warm process to the next task by replacing the
-        conversation (``provider.new_conversation()``). The children of the conversation
-        that ended have nowhere to report, and the process surviving does not change that.
-        So this verb makes exactly one claim -- the conversation is over -- and must not
-        shut the provider down, delete the map entry or release the runtime.
+        A pooled worker reuses its process via ``provider.new_conversation()``, so this
+        verb must not shut the provider down, delete the map entry or release the runtime.
         """
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
         _snapshotted, cancelled, handler = self._recorder()
@@ -815,24 +754,10 @@ class TestParentEndCancelsItsChildrenTeardownRules(_TestParentEndCancelsItsChild
     async def test_a_teardown_disarms_the_watcher_of_a_delivered_run(self):
         """A DELIVERED run still holds a watcher, and that watcher can still speak.
 
-        The sibling test above covers a run that is still running. This one covers the case
-        the three selected lists cannot reach: a run that is ``done`` AND whose terminal
-        already reached the parent. It is in none of them -- not live, not approval-parked,
-        not undelivered -- and it is not even MARKED, because there is nothing left to
-        cancel and nothing parked to gate.
-
-        But a follow-up watcher outlives its run BY DESIGN. It dispatches after the run
-        finishes, which is exactly why the dispatch cannot read the asking ordinal. So at a
-        parent end such a watcher is still armed, and it has two ways to speak into a
-        conversation that is over: dispatch the queued continuation on the retired key, or
-        announce a failure built as a SYNTHETIC record with ``uuid4`` for an id -- a fresh
-        id no gate keyed on the original run recognises, handed to ``_on_done``, which
-        resolves the parent through the session-creating ``get_or_create``.
-
-        Disarming is therefore keyed on OWNERSHIP, not on what was selected: every run this
-        parent owns loses its watcher. Dropping the follow-up silently is the right outcome
-        -- it was a correction queued for a conversation that has ended, and announcing it
-        is the very injection the teardown exists to prevent.
+        Such a run is in none of the selected lists, but its follow-up watcher outlives it
+        and could dispatch on the retired key or announce a synthetic ``uuid4`` failure no
+        gate recognises. So disarming is keyed on ownership: every run the parent owns
+        loses its watcher, and the follow-up is dropped silently.
         """
         import asyncio as _asyncio
         from types import SimpleNamespace
@@ -962,15 +887,9 @@ class TestParentEndCancelsItsChildrenTeardownRules(_TestParentEndCancelsItsChild
     def test_throwing_the_conversation_away_ends_its_children(self):
         """``clear_conversation=True`` IS the conversation ending, so it must end children.
 
-        The compaction module's still-critical reset is the only ``clear_conversation=True``
-        caller in ``src/``. That keyword clears the native resume sid and suppresses replay,
-        so the successor cold-starts with none of this conversation's history -- there is
-        nothing for a child to deliver into, and a child that reports anyway resolves its
-        parent through ``get_or_create`` and re-opens the conversation the reset threw away.
-
-        Pinned as an IMPLICATION rather than a path: any caller that discards the
-        conversation has ended it, so this asserts the two keywords travel together instead
-        of naming the one site that does it today.
+        It clears the resume sid, so a child reporting anyway would re-open the conversation
+        through ``get_or_create``. Asserted as "the two keywords travel together" rather
+        than by naming today's one call site.
         """
         import pathlib
         import re
@@ -998,12 +917,8 @@ class TestParentEndCancelsItsChildrenTeardownRules(_TestParentEndCancelsItsChild
     def test_the_conversation_ending_reset_callers_say_so(self):
         """The ``ends_conversation=True`` call sites are pinned by PATH.
 
-        The AST ratchet over ``release_subagent_runtime`` cannot see these: they are
-        callers of ``reset``, not release sites, and the intent is a keyword rather than a
-        structure. Losing one is silent — a conversation ends and its children run on to
-        their own timeouts — so the set is asserted here. Adding a site means adding it
-        here with its reason; the reasons are in
-        ``docs/system-specs/modules/session.md``.
+        The AST ratchet over ``release_subagent_runtime`` cannot see a keyword, and losing
+        one is silent. Each site's reason is in ``docs/system-specs/modules/session.md``.
         """
         import pathlib
         import re
@@ -1021,8 +936,6 @@ class TestParentEndCancelsItsChildrenTeardownRules(_TestParentEndCancelsItsChild
                 found.add(rel)
 
         assert found == {
-            # The user asked the agent to forget the conversation.
-            "dashboard/handlers_channel.py",
             # A cancelled cron job's conversation is over.
             "cron_service/service/run_kill.py",
             # Cancel cleanup ends every step conversation of the run.
@@ -1058,37 +971,10 @@ class TestParentEndCancelsItsChildrenTeardownRules(_TestParentEndCancelsItsChild
     def test_every_parent_end_release_site_ends_its_children(self):
         """Ratchet: the halves of ending a parent stay together.
 
-        ``release_subagent_runtime`` IS this module's parent-end boundary, so a
-        site that reaps the companion runtime without ending the runs is a parent
-        end that lets a per-process harness's children survive. A future author
-        adding such a path is caught here rather than by an operator finding the
-        process.
-
-        Matched on the AST rather than on a proximity window: a reformat moves
-        lines around and a line-distance rule fails on it for no reason, while the
-        question being asked — does this method call both halves — is structural.
-
-        Two methods are exempt, each for a fact about itself rather than by
-        convenience. ``close_all`` is gateway shutdown, where
-        ``SubagentManager.cancel_all`` runs instead and additionally drains
-        follow-up watchers. ``_retire_kiro_subagent_runtimes`` KILLS only IDLE
-        companion runtimes — a runtime answering
-        ``has_active_or_initializing_sessions()`` is never killed; under the
-        spawn-identity predicate a busy wrong-account one is parked to drain
-        (no process ends, its running children finish on the parked process)
-        and the kill happens on a later pass only once it answers idle — so it
-        has no running child to end, and the parent conversation it belongs to
-        continues. Narrower
-        reaps (the spawn-identity stamp gate) delegate to it with a predicate
-        rather than releasing themselves, so this exemption never widens.
-
-        ``reset`` is NOT exempt: it calls both halves, under
-        ``ends_conversation``. That keyword defaults to False because almost every one of
-        its ~46 callers is an evict-and-retry (wedged prompt, failed auto-compaction,
-        provider switch, idle expiry, channel watchdog), and the callers that do end a
-        conversation are pinned by
-        ``test_the_conversation_ending_reset_callers_say_so`` — a structural ratchet
-        cannot see a keyword.
+        A ``release_subagent_runtime`` site that does not end the runs lets a per-process
+        harness's children survive. Exempt: ``close_all`` (``SubagentManager.cancel_all``
+        runs instead) and ``_retire_kiro_subagent_runtimes``, which kills only idle
+        runtimes. ``reset`` is not exempt; it does both under ``ends_conversation``.
         """
         import ast
         import inspect

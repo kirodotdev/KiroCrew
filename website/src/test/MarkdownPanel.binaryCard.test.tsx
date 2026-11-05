@@ -8,7 +8,7 @@
  * nothing about the file's name keeps the editor away — only the verdict does.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor, act } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
@@ -283,13 +283,14 @@ describe('MarkdownPanel binary gate', () => {
     await userEvent.click(screen.getByRole('menuitem', { name: /refresh/i }))
     await waitFor(() => expect(fetchMock).toHaveBeenCalled())
     view.rerenderPanel({ filePath: '/home/user/b.md', content: '# b', onDiskContent })
-    resolveRead({
-      ok: true,
-      status: 200,
-      headers: { get: () => null },
-      text: () => Promise.resolve('# stale text'),
-    } as unknown as Response)
-    await new Promise(resolve => setTimeout(resolve, 0))
+    await act(async () => {
+      resolveRead({
+        ok: true,
+        status: 200,
+        headers: { get: () => null },
+        text: () => Promise.resolve('# stale text'),
+      } as unknown as Response)
+    })
 
     expect(onDiskContent).not.toHaveBeenCalled()
     expect(signal?.aborted).toBe(true)
@@ -307,13 +308,16 @@ describe('MarkdownPanel binary gate', () => {
     expect(screen.getByTestId('pierre-editor')).toBeInTheDocument()
   })
 
-  it('keeps markdown in its viewer when the bytes decode on a later read', () => {
+  it('keeps markdown in its viewer when the bytes decode on a later read', async () => {
     // The control for the rule above: markdown's default is the PREVIEW, so the
     // same flip must not push it into an editor the user never asked for.
     const view = renderPanel({ filePath: '/home/user/notes.md', content: '', binary: true })
     expect(screen.getByTestId('binary-file-card')).toBeInTheDocument()
 
     view.rerenderPanel({ filePath: '/home/user/notes.md', content: '# hi', binary: false })
+    // The outline rail reads the rendered headings through a MutationObserver;
+    // wait for the heading it reads so its update lands inside the wait.
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'hi' })).toBeInTheDocument())
     expect(screen.queryByTestId('binary-file-card')).toBeNull()
     expect(screen.queryByTestId('pierre-editor')).toBeNull()
   })

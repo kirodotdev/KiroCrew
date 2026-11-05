@@ -1,10 +1,8 @@
 """Tests for the macOS Mach memory probe (subagent._macos_vm_reclaimable_pages).
 
-Regression guard for the Mach send-right leak: ``mach_host_self`` returns a send
-right that MUST be released with ``mach_port_deallocate`` on every probe — on the
-success path AND the ``host_statistics64`` failure path — or each probe leaks a
-port reference. The Mach path cannot run on the Linux CI fleet, so we inject a
-fake ``libSystem`` via ``ctypes.CDLL`` and drive both paths directly.
+``mach_host_self``'s send right must be released with ``mach_port_deallocate`` on success
+and on ``host_statistics64`` failure. Linux CI cannot run Mach, so a fake ``libSystem`` is
+injected via ``ctypes.CDLL``.
 """
 
 from __future__ import annotations
@@ -128,11 +126,8 @@ def _present_as_loaded_mac(monkeypatch) -> None:
 def test_spawn_floor_reads_host_available_mib_not_the_loose_sum(monkeypatch):
     """The floor compares against what a new process can really take.
 
-    Tight figure (``host_available_mib``): free + purgeable + min(inactive,
-    external) = 1000 + 50 + 600 = 1650 MiB. The loose sum adds speculative
-    again and all of inactive: 1000 + 900 + 100 + 50 = 2050 MiB. A 1.75 GB
-    floor sits between them, so a floor reading the loose sum admits and the
-    floor reading the tight figure defers.
+    Tight (``host_available_mib``): 1000 + 50 + min(inactive, external) 600 = 1650 MiB; the
+    loose sum is 2050 MiB. A 1.75 GB floor between them defers only on the tight figure.
     """
     from kiro_crew import platform_compat
 

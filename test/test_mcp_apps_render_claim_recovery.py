@@ -37,13 +37,9 @@ def _reconcile(slot_key: str, rows: list[dict]) -> int:
 class TestARestoreRecoversAFlagItsClaimOutlived:
     """The claim is durable at once; the row's flag waits for the slot save.
 
-    A gateway death between those two writes leaves a SPENT claim on an unflagged
-    row, so the app is gone and nothing says it existed -- the same silence this
-    module exists to remove, reached through a crash rather than a reload. Nothing
-    recovered it: the in-turn recovery lives in ``handle_tool_result``, whose only
-    caller is the live turn path, and the marker a replay would need was stripped
-    before the row was written. Recovery therefore reads the claim back, which is
-    what the claim's ``{slot_key, rows}`` body is for.
+    A gateway death between the writes leaves a spent claim on an unflagged row. The
+    in-turn recovery runs only on the live path and the marker was stripped, so the
+    restore reads the claim's ``{slot_key, rows}`` body back.
     """
 
     def _claim(self, spool, sid, slot_key, rows, call="tc"):
@@ -55,11 +51,8 @@ class TestARestoreRecoversAFlagItsClaimOutlived:
     def test_the_key_the_claim_was_written_under_is_the_key_that_finds_it(self, spool):
         """A claim is keyed by the CANONICAL producing session, not the bare slot.
 
-        ``_take_claim`` receives ``binding_key``, so the body records the canonical
-        key; the bare slot key is what every OTHER chat event routes on. A restore
-        that asks with the bare key matches nothing and recovers nothing, in
-        silence -- the same bare-vs-canonical trap the render call already guards
-        against, one layer down on the read side.
+        ``_take_claim`` receives ``binding_key``; other chat events route on the bare
+        slot key. A restore asking with the bare key would silently match nothing.
         """
         sid = _hex()
         ts = "2026-01-01T00:00:00.000001Z"
@@ -256,12 +249,9 @@ class TestARestoreRecoversAFlagItsClaimOutlived:
 class TestEachClaimGetsItsOwnLead:
     """Two app occurrences can share a ``tool_call_id``, so the lead cannot key on it.
 
-    A reset that preserves the transcript hands a genuinely new call an id an older
-    row already used. The recovery first keyed its lead on that id, so an older
-    flagged row claimed it and the newer occurrence recovered beside it got NO lead
-    -- its absence notice never rendered and two lost apps read as one. That is the
-    same mistake the client's superseded rules made, reached through the restore,
-    and review caught it here. The claim is the occurrence, so the claim is the key.
+    A reset that keeps the transcript can hand a new call an id an older row used. A
+    lead keyed on the id leaves the newer occurrence without one, so the claim is
+    the key.
     """
 
     def _claim(self, spool, sid, slot_key, rows, call="tc"):
@@ -347,13 +337,9 @@ class TestEachClaimGetsItsOwnLead:
 class TestAnOversizedSidecarIsRefusedRatherThanRead:
     """The caps bound what a read KEEPS; this bounds what it READS.
 
-    A sidecar is disk content this module does not author, so its size is not this
-    module's to trust. Reading the body whole and then capping what came out of it
-    leaves the entire body in memory first, which is the step the caps above cannot
-    reach.
-
-    The limit is DERIVED from the two caps, so the largest claim this code can write is
-    comfortably under it and no legitimate claim is ever refused.
+    A sidecar is untrusted disk content; capping after a whole read still loads it
+    all. The limit is derived from the two caps, so no claim this code writes is
+    refused.
     """
 
     def test_the_limit_is_above_the_largest_claim_this_code_writes(self):
@@ -412,13 +398,9 @@ class TestAnOversizedSidecarIsRefusedRatherThanRead:
     def test_a_slot_key_too_long_to_read_back_is_omitted_not_raised(self):
         """An unencodable key costs the attribution only, never the render.
 
-        The key cannot be truncated -- a shortened key is a real key belonging to
-        whichever slot's own key is that prefix, so truncating attributes the claim to
-        the WRONG slot. Omitting it loses the attribution and nothing else. Raising
-        instead reaches the blanket handler around the claim, which strips the marker and
-        records nothing, so the app is neither rendered nor recoverable: the sidecar bars
-        a second render as well as carrying the recovery, and only the recovery needs the
-        key.
+        A truncated key is another slot's real key, so it is omitted. Raising would hit
+        the blanket handler, which strips the marker and records nothing, so the app
+        would be neither rendered nor recoverable.
         """
         payload = mcp_apps_render._claim_payload(
             "d:" + "x" * mcp_apps_render._MAX_SLOT_KEY_LEN, "tc", ["t"], ["m"]
@@ -490,15 +472,9 @@ class TestAnOversizedSidecarIsRefusedRatherThanRead:
 class TestOneClaimCarriesABoundedNumberOfRowIdentities:
     """Capping the claims is not a bound while one claim's set can grow freely.
 
-    A claim's row identities come from the tool rows sharing one ``tool_call_id``, so a
-    call whose frames repeat writes a claim far larger than the two rows an
-    auto-approved call produces. With the claim COUNT capped and each set unbounded,
-    the retention is still unbounded through the nesting -- which is what a bound
-    bounding every field it retains means.
-
-    The sidecar is disk content this pass does not author, so the load side is bounded
-    as well as the write side: a corrupt or oversized body has to cost a bounded amount
-    of memory rather than an arbitrary one.
+    Row identities come from all tool rows sharing one ``tool_call_id``, so repeating
+    frames grow one claim. Both write and load sides are bounded, since the sidecar
+    is untrusted disk content.
     """
 
     def test_the_write_side_caps_what_one_claim_records(self):
@@ -556,16 +532,9 @@ class TestOneClaimCarriesABoundedNumberOfRowIdentities:
 class TestTheRestoreKeepsABoundedNumberOfClaims:
     """One restore's retention is capped, and the cap drops the OLDEST claims.
 
-    The spool is swept at 24h, so a slot that renders apps steadily leaves far more
-    sidecars than a restored transcript could ever match, and retaining one group
-    per claim made the retention grow with the spool's age instead of with the work
-    in front of it.
-
-    The ORDER is what makes a cap safe, which is why it is pinned here and not just
-    the count. The loss this pass exists to repair is the one that just happened, so
-    the newest claims are the ones a restored row can still match and the oldest are
-    the ones worth dropping. A cap over an arbitrary scan order would drop the claim
-    the user is waiting on as readily as a spent one.
+    The spool is swept at 24h, so a busy slot leaves far more sidecars than a restore
+    can match. The order is pinned, not just the count: the newest claims are the
+    ones a restored row can still match.
     """
 
     def _claim_at(self, spool, slot_key, stamp, mtime):
@@ -618,13 +587,8 @@ class TestTheRestoreKeepsABoundedNumberOfClaims:
     def test_the_newest_win_whatever_order_the_directory_reports(self, spool, monkeypatch):
         """The cap must not inherit the directory's order.
 
-        ``os.scandir`` reports entries in whatever order the directory hands back,
-        and on some filesystems that is ALREADY newest-first -- so a test that only
-        reads the result passes even with no ordering in the code at all, and a
-        mutation that deletes the ordering survives it.
-
-        This one hands the scan the worst order on purpose. With the oldest reported
-        first, keeping the newest three can only be the code's own ordering.
+        Some filesystems already list newest-first, so the scan is handed the oldest
+        first on purpose: keeping the newest three can then only be the code's order.
         """
         monkeypatch.setattr(mcp_apps_render, "_MAX_RESTORE_CLAIMS", 3)
         stamps = self._spread(spool, 8)
@@ -655,12 +619,7 @@ class TestTheRestoreKeepsABoundedNumberOfClaims:
     def test_the_directory_handle_is_closed(self, spool, monkeypatch):
         """The scan is streamed, so the handle it opens has to be closed here.
 
-        Streaming is what keeps retention bounded, and it leaves an open directory
-        handle behind. Leaving that handle to the collector is what turns a bounded
-        scan into a leak under repeated restores.
-
-        Retention itself is not observable from a test. This observes the one
-        consequence of streaming that is.
+        Left to the collector, the handle leaks under repeated restores.
         """
         monkeypatch.setattr(mcp_apps_render, "_MAX_RESTORE_CLAIMS", 3)
         self._spread(spool, 5)
@@ -698,13 +657,9 @@ class TestTheRestoreKeepsABoundedNumberOfClaims:
 async def test_the_owner_rows_are_persisted_before_the_claim_is_taken(spool, monkeypatch):
     """A durable claim must be strictly newer than the rows it names.
 
-    ``_take_claim`` writes its sidecar durably, while the transcript rows it
-    records live in memory until a flush writes them. A hard exit between the two
-    leaves a claim naming rows that never reached disk -- and with the rows gone
-    NEITHER recovery can reach them: the ``"spent"`` branch needs the row to
-    replay, and the restore-time pass matches claims against rows the transcript
-    actually has. So the persist is ORDERED before the claim rather than running
-    beside it.
+    The sidecar is durable at once, the rows only after a flush. A hard exit between
+    them leaves a claim on rows that never reached disk, which neither the
+    ``"spent"`` branch nor the restore pass can recover.
     """
     sid = _hex()
     _write_spool(spool, sid, {"server": "s", "tool": "t", "html": "h"})
@@ -742,11 +697,8 @@ async def test_the_owner_rows_are_persisted_before_the_claim_is_taken(spool, mon
 async def test_a_claim_that_names_no_row_persists_nothing(spool):
     """A claim that attributes nothing needs no row on disk.
 
-    A caller with no owned rows -- and the collapsed-id path, which deliberately
-    passes none -- reaches here with both lists empty. The claim is still written
-    for its render-once half, but it names no row, so there is no row whose
-    durability it could outlive. Flushing anyway would spend a transcript write
-    on every such render for nothing.
+    The collapsed-id path passes no rows; the claim is still written to bar a second
+    render, and a flush would be a wasted transcript write.
     """
     sid = _hex()
     _write_spool(spool, sid, {"server": "s", "tool": "t", "html": "h"})

@@ -177,6 +177,18 @@ const SubagentCompletionCard = memo(function SubagentCompletionCard({
           ) : (
             <CheckCircle2 size={15} className="text-ok" />
           )}
+          {/* The glyph is aria-hidden (lucide's default). A single run's outcome
+              chip already says the state in words; a batch has no such chip,
+              so its glyph gets sr-only words. */}
+          {parsed.kind === 'batch' && (
+            <span className="sr-only" data-testid="glyph-state">
+              {failed
+                ? i18nT('pages.chat.subagentCompletionCard.state_some_failed')
+                : partial
+                  ? i18nT('pages.chat.subagentCompletionCard.state_partial')
+                  : i18nT('pages.chat.subagentCompletionCard.completed')}
+            </span>
+          )}
         </span>
         <Bot size={12} className="text-accent/70 shrink-0" aria-hidden />
         <span id={headlineId} className="truncate text-[13px] leading-5 font-medium text-text-strong">{headline(parsed)}</span>
@@ -188,7 +200,7 @@ const SubagentCompletionCard = memo(function SubagentCompletionCard({
                 : interrupted
                   ? 'bg-warn-subtle border-warn/20 text-warn-text'
                   : stopped
-                    ? 'bg-muted/15 border-border text-muted'
+                    ? 'bg-bg-hover border-border text-muted'
                     : 'bg-ok-subtle border-ok/20 text-ok-text'
             }`}
           >
@@ -198,17 +210,20 @@ const SubagentCompletionCard = memo(function SubagentCompletionCard({
           <>
             {parsed.ok > 0 && (
               <span className={`${CHIP} bg-ok-subtle border-ok/20 text-ok-text`} data-testid="chip-ok">
-                <CheckCircle2 size={10} aria-hidden /> {parsed.ok}
+                <CheckCircle2 size={10} aria-hidden /> <span aria-hidden="true">{parsed.ok}</span>
+                <span className="sr-only">{i18nT('pages.chat.subagentCompletionCard.chip_ok', { count: parsed.ok })}</span>
               </span>
             )}
             {parsed.failed > 0 && (
               <span className={`${CHIP} bg-danger-subtle border-danger/20 text-danger-text`} data-testid="chip-failed">
-                <AlertCircle size={10} aria-hidden /> {parsed.failed}
+                <AlertCircle size={10} aria-hidden /> <span aria-hidden="true">{parsed.failed}</span>
+                <span className="sr-only">{i18nT('pages.chat.subagentCompletionCard.chip_failed', { count: parsed.failed })}</span>
               </span>
             )}
             {parsed.stopped > 0 && (
-              <span className={`${CHIP} bg-muted/15 border-border text-muted`} data-testid="chip-stopped">
-                <Square size={10} aria-hidden /> {parsed.stopped}
+              <span className={`${CHIP} bg-bg-hover border-border text-muted`} data-testid="chip-stopped">
+                <Square size={10} aria-hidden /> <span aria-hidden="true">{parsed.stopped}</span>
+                <span className="sr-only">{i18nT('pages.chat.subagentCompletionCard.chip_stopped', { count: parsed.stopped })}</span>
               </span>
             )}
           </>
@@ -228,7 +243,7 @@ const SubagentCompletionCard = memo(function SubagentCompletionCard({
                   ? 'bg-warn-subtle border-warn/20 text-warn-text'
                   : resolvedKnown
                     ? 'bg-accent/10 border-accent/20 text-accent/80'
-                    : 'bg-bg-hover border-border text-muted/60'
+                    : 'bg-bg-hover border-border text-muted'
               }`}
               data-testid="subagent-completion-model"
               title={
@@ -245,9 +260,12 @@ const SubagentCompletionCard = memo(function SubagentCompletionCard({
               {modelDowngraded && <AlertCircle size={10} aria-hidden />}
               {/* Left-truncate: long ids share a provider prefix
                   (us.anthropic.claude-…), so clipping the END hides the one part
-                  that says WHICH model. rtl+plaintext keeps the glyphs in logical
-                  LTR order while the ellipsis falls on the left (UX review #3582). */}
-              <span className="truncate inline-block max-w-full [direction:rtl] [unicode-bidi:plaintext] text-left align-bottom">{displayModel}</span>
+                  that says WHICH model. The span is rtl so its ellipsis falls on the
+                  left, and the id sits in an ltr <bdi> so its glyphs keep their
+                  order. Not `unicode-bidi: plaintext`, which re-derives the
+                  direction from the (LTR) id and puts the ellipsis back on the
+                  right (UX review #3582). */}
+              <span className="truncate inline-block max-w-full [direction:rtl] text-left align-bottom"><bdi dir="ltr">{displayModel}</bdi></span>
             </code>
           )
         })()}

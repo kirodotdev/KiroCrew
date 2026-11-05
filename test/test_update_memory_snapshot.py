@@ -181,7 +181,7 @@ def test_the_configured_retention_is_the_one_the_copy_prunes_to(
     monkeypatch.setattr(
         memory_backup,
         "prune_backups",
-        lambda path, keep=7: (seen.append(keep), real(path, keep))[1],
+        lambda path, keep=7, **kwargs: (seen.append(keep), real(path, keep, **kwargs))[1],
     )
 
     cli_server._update()

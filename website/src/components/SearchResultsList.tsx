@@ -4,6 +4,7 @@ import type { ChatMessage } from '../types'
 import { searchableTextMemo } from '../utils/searchableText'
 
 import { i18nT } from '../i18n/t'
+import { fmtNumber } from '../i18n/format'
 interface SearchResultsListProps {
   matches: SearchMatch[]
   currentIdx: number
@@ -149,7 +150,7 @@ export default function SearchResultsList({
       })}
       {matches.length > MAX_ROWS && (
         <div className="px-3 py-1.5 text-[11px] text-muted border-t border-border">
-          {i18nT('components.searchResultsList.showing')} {snippets.length} {i18nT('components.searchResultsList.of')} {matches.length} {i18nT('components.searchResultsList.matches_around_the_current_result_narrow_your_se')}
+          {i18nT('components.searchResultsList.showing_matches', { count: matches.length, n: fmtNumber(matches.length), shown: fmtNumber(snippets.length) })}
         </div>
       )}
     </div>

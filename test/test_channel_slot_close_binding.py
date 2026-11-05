@@ -266,7 +266,6 @@ class TestCloseLandsOnTheTranscriptTheRestorePathReads:
         assert not (tmp_path / "sessions" / PHANTOM).exists()
 
     def test_bound_channel_tab_still_writes_the_channel_transcript(self, tmp_path):
-        """A bound channel tab still writes the channel transcript."""
         state = _state(tmp_path, resolves=CHANNEL_KEY)
         _seed_channel_transcript(state)
         slot = _restored_tab(state)

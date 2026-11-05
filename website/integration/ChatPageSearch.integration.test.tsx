@@ -130,7 +130,7 @@ describe('ChatPage in-session search integration', () => {
   it('Cmd+F opens search state (SearchBar renders in chat area)', async () => {
     renderChatPage(testMessages)
     expect(screen.queryByPlaceholderText('Find in chat…')).not.toBeInTheDocument()
-    await act(() => { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'f', metaKey: true, bubbles: true })) })
+    await act(async () => { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'f', metaKey: true, bubbles: true })) })
     expect(screen.getByPlaceholderText('Find in chat…')).toBeInTheDocument()
   })
 

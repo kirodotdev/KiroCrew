@@ -51,6 +51,19 @@ def _fast_poll(monkeypatch):
     monkeypatch.setattr(queue_drain, "_HELD_POLL_MAX_SECS", 0.0)
 
 
+def _retry_on_a_closed_loop() -> Any:
+    """A pending retry whose loop is gone, so its done callback can never run."""
+    other = asyncio.new_event_loop()
+    try:
+        retry = other.create_future()
+        # Registered like the real retry's ``_forget``: cancelling it would schedule
+        # that callback onto the closed loop.
+        retry.add_done_callback(lambda _f: None)
+        return retry
+    finally:
+        other.close()
+
+
 def _msg(text: str) -> TelegramInboundMessage:
     return TelegramInboundMessage(
         channel_type="telegram",
@@ -259,6 +272,27 @@ class TestDrainWhenFree:
     async def test_a_channel_with_no_registered_drain_is_skipped(self, _fast_poll) -> None:
         assert drain_when_free(channel="telegram", session_key=_KEY, is_busy=lambda _k: False)
         await async_wait_until(lambda: _SLOT not in queue_drain._HELD_RETRIES, timeout=10)
+
+    @pytest.mark.asyncio
+    async def test_a_retry_left_by_a_torn_down_loop_does_not_hold_the_slot(
+        self, _fast_poll
+    ) -> None:
+        """A retry whose loop was torn down never drops itself: the slot is free on a new loop."""
+        queue_drain._HELD_RETRIES[_SLOT] = _retry_on_a_closed_loop()
+        drained: list[str] = []
+
+        async def _drain(key: str) -> None:
+            drained.append(key)
+
+        register_drain("telegram", _drain)
+        assert drain_when_free(channel="telegram", session_key=_KEY, is_busy=lambda _k: False)
+        await async_wait_until(lambda: drained, timeout=10)
+        assert drained == [_KEY]
+
+    def test_resetting_skips_a_retry_whose_loop_is_closed(self) -> None:
+        queue_drain._HELD_RETRIES[_SLOT] = _retry_on_a_closed_loop()
+        reset_drains()
+        assert queue_drain._HELD_RETRIES == {}
 
 
 class TestTheClientCloseRetiresTheDrain:

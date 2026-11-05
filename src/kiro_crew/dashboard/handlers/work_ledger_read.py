@@ -71,6 +71,14 @@ async def api_work_ledger_get(request: web.Request) -> web.Response:
     assert options is not None
     compact = bool(options.get("compact", False))
     tail = int(options.get("events", _MAX_EVENT_TAIL))
+    remote_on = await asyncio.to_thread(_remote_dispatch_on)
+    if remote_on:
+        # Remote dispatch (preview): pull each open remote item's peer copy and file
+        # what is new BEFORE the snapshot below, outside its lock (the pull is network).
+        from kiro_crew.dashboard.handlers import remote_ingest, remote_puller
+
+        remote_puller.ensure_running(request.app["state"])
+        await remote_ingest.ingest_board(request.app["state"], key)
     # Under the board lock for the same reason the brief read is: a write's
     # cache commit and its record append are two steps, and a read between them
     # would publish a mutation the record may yet roll back. The header and the
@@ -108,6 +116,7 @@ async def api_work_ledger_get(request: web.Request) -> web.Response:
     undelivered = await asyncio.to_thread(
         lambda: {item.item_id: work_ledger.read_undelivered(key, item) for item in shown}
     )
+    remote_live = await asyncio.to_thread(work_ledger.remote_liveness_map, key, shown)
     rows: list[dict[str, Any]] = []
     for item in shown:
         row = _row_with_flags(
@@ -116,9 +125,27 @@ async def api_work_ledger_get(request: web.Request) -> web.Response:
             conductor_alive=conductor_alive,
             patrolled=patrolled,
             report_undelivered=undelivered.get(item.item_id),
+            board=key,
+            remote_live=remote_live.get(item.item_id),
         )
+        if item.worker_instance_id or item.retired_bindings:
+            row.update(await asyncio.to_thread(_remote_row_fields, key, item))
         if compact:
-            rows.append({name: row[name] for name in _COMPACT_ROW_FIELDS})
+            compact_row = {name: row[name] for name in _COMPACT_ROW_FIELDS}
+            if item.worker_instance_id or item.retired_bindings:
+                from kiro_crew.dashboard.handlers.remote_ingest import (
+                    REMOTE_ROW_FIELDS,
+                    RETIRED_ROW_FIELDS,
+                )
+
+                compact_row.update(
+                    {
+                        name: row[name]
+                        for name in REMOTE_ROW_FIELDS + RETIRED_ROW_FIELDS
+                        if name in row
+                    }
+                )
+            rows.append(compact_row)
             continue
         events = event_tails[item.item_id]
         row["events"] = [event.to_dict() for event in events]
@@ -140,8 +167,8 @@ async def api_work_ledger_get(request: web.Request) -> web.Response:
         )
     _audit(key, "work_ledger_read", "ok", resources=f"{len(rows)} item(s)")
     # ``goal_items_used`` and ``cap_exceeded`` are derived, never stored: the
-    # number the conductor's "items used: N of <item_cap>" line reports, and
-    # whether that line has gone past its cap, both read off the same header.
+    # goal's item count, and whether it has gone past ``item_cap`` (which the
+    # conductor tells the user once), both read off the same header.
     # Advisory: the compact read carries them so a patrol that reads only the
     # status columns still sees a goal spending past what the user expected.
     # ``max_depth`` is the conducting depth cap in force right now (never stored),
@@ -170,6 +197,8 @@ def _row_with_flags(
     conductor_alive: bool,
     patrolled: bool,
     report_undelivered: dict[str, str] | None = None,
+    board: str = "",
+    remote_live: tuple[bool, bool] | None = None,
 ) -> dict[str, Any]:
     """One item as a read row, with the flags the store derives at read time.
 
@@ -204,11 +233,16 @@ def _row_with_flags(
     """
     row = item.to_dict()
     row["orphaned"] = work_ledger.is_orphaned(item, conductor_slot_exists=conductor_alive)
-    row["stale"] = work_ledger.is_stale(
+    running, closed, looping = work_ledger.item_liveness(
+        board,
         item,
-        worker_running=_slot_running(state, item.worker_session_key or ""),
-        worker_closed=_slot_closed(state, item.worker_session_key or ""),
-        worker_looping=_slot_looping(item.worker_session_key or ""),
+        running=lambda k: _slot_running(state, k),
+        closed=lambda k: _slot_closed(state, k),
+        looping=_slot_looping,
+        remote=remote_live if item.worker_instance_id else None,
+    )
+    row["stale"] = work_ledger.is_stale(
+        item, worker_running=running, worker_closed=closed, worker_looping=looping
     )
     row["acceptance_concrete"] = work_ledger.is_acceptance_concrete(item.acceptance)
     row["unpatrolled"] = item.state == "open" and not patrolled
@@ -335,6 +369,19 @@ def _passes_filters(item: work_ledger.WorkItem, options: dict[str, Any]) -> bool
 #: context — the opposite of what a patrol cycle needs. Newest kept, oldest
 #: dropped, which is the slice ``read_events``' own ``limit`` already applies.
 _MAX_EVENT_TAIL = 20
+
+
+def _remote_dispatch_on() -> bool:
+    """``work_ledger.remote_dispatch``, read on every call. Blocking; fails closed."""
+    from kiro_crew.remote_dispatch import remote_dispatch_enabled
+
+    return remote_dispatch_enabled()
+
+
+def _remote_row_fields(key: str, item: work_ledger.WorkItem) -> dict[str, Any]:
+    from kiro_crew.dashboard.handlers.remote_ingest import remote_row_fields
+
+    return remote_row_fields(key, item)
 
 
 def _tail_events(key: str, item_id: str, limit: int) -> list[work_ledger.WorkEvent]:

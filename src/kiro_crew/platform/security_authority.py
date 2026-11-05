@@ -101,6 +101,7 @@ class PolicyAuthority:
         *,
         denied_regexes: "list[str] | None" = None,
         reason_notes: "dict[str, str] | None" = None,
+        waived: "frozenset[str]" = frozenset(),
     ) -> "str | None":
         """Evaluate a command/tool against the effective deny set.
 
@@ -119,6 +120,11 @@ class PolicyAuthority:
         Critical ADD-only invariant: the overlay patterns travel via
         ``extra_patterns`` and are NEVER routed through ``denied_regexes``, so a
         user opt-out of a built-in rule can never weaken the companion overlay.
+
+        ``waived`` carries the refusal keys a person overrode in-session: an
+        audited step-aside of one refusal site per key (``security.is_denied``).
+        Every overlay pattern is removed from it first, so no waiver ever steps an
+        overlay rule aside, even one whose text equals an operator rule's.
         """
         overlay_patterns = list(self._overlay.extra_deny_patterns())
         combined = overlay_patterns + list(extra_patterns or [])
@@ -127,6 +133,7 @@ class PolicyAuthority:
             extra_patterns=combined or None,
             denied_regexes=denied_regexes,
             reason_notes=reason_notes,
+            waived=frozenset(waived) - set(overlay_patterns),
         )
 
     @final
@@ -137,6 +144,7 @@ class PolicyAuthority:
         *,
         extra_patterns: "list[str] | None" = None,
         reason_notes: "dict[str, str] | None" = None,
+        waived: "frozenset[str]" = frozenset(),
     ) -> "str | None":
         """Evaluate a SYNTHESIZED target (see ``security``); overlay stays ADD-only.
 
@@ -152,6 +160,8 @@ class PolicyAuthority:
         ``assert_security_floor`` enforces that at runtime for this method too.
         """
         overlay_patterns = list(self._overlay.extra_deny_patterns())
+        # No waiver steps an overlay pattern aside, here or in the tier below.
+        waived = frozenset(waived) - set(overlay_patterns)
         if overlay_patterns:
             # Empty regex tier, NOT None: ``None`` fails closed to every built-in, which
             # would evaluate the whole shipped catalogue against a synthesized target and
@@ -161,6 +171,7 @@ class PolicyAuthority:
                 overlay_patterns,
                 denied_regexes=[],
                 reason_notes=reason_notes,
+                waived=waived,
             )
             if overlay_reason:
                 return overlay_reason
@@ -169,6 +180,7 @@ class PolicyAuthority:
             patterns,
             extra_patterns=extra_patterns,
             reason_notes=reason_notes,
+            waived=waived,
         )
 
 

@@ -81,7 +81,11 @@ env:
 jobs:
   metrics:
     name: Deterministic metrics
-    runs-on: ubuntu-latest  # schedule/workflow_dispatch (and workflow_call inherited from a schedule caller) has no live collaborator actor for the AWS webhook allowlist to check -- stays on ubuntu-latest.
+    # schedule/workflow_dispatch (and workflow_call inherited from a schedule caller) has no live collaborator actor for the AWS webhook allowlist to check -- stays off the CodeBuild fleet.
+    # Use the larger-runner label upstream; forks cannot reach the org group.
+    # "Larger runners for the review lanes and CodeQL" in
+    # docs/ci/ci-and-reviews.md.
+    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}
     # Sized for the worst observed week (57 min) twice over: SZZ cost scales
     # with fix volume and `window_days` is a dispatch input.
     timeout-minutes: 120
@@ -92,6 +96,18 @@ jobs:
         with:
           fetch-depth: 0 # SZZ blames arbitrary history depth
           persist-credentials: false
+
+      # A weekly run that fails on a spent API rate limit loses the week's
+      # numbers, so every `gh` call in this job, the ones fix_loop_metrics.py
+      # runs included, goes through the rate-limit-aware wrapper
+      # (.github/actions/gh-rate-limit). Its 20 min of waits fit inside the
+      # 120 above. The analyze job does not take it: its model step holds Write
+      # over this runner's disk, so neither a wrapper installed before that
+      # step nor an action read from the checkout after it can be trusted.
+      - name: Install rate-limit-aware gh
+        uses: ./.github/actions/gh-rate-limit
+        with:
+          max-wait: "1200"
 
       - name: Compute deterministic metrics
         id: metrics
@@ -179,7 +195,11 @@ jobs:
   analyze:
     name: Classify and narrate
     needs: metrics
-    runs-on: ubuntu-latest  # schedule/workflow_dispatch (and workflow_call inherited from a schedule caller) has no live collaborator actor for the AWS webhook allowlist to check -- stays on ubuntu-latest.
+    # schedule/workflow_dispatch (and workflow_call inherited from a schedule caller) has no live collaborator actor for the AWS webhook allowlist to check -- stays off the CodeBuild fleet.
+    # Use the larger-runner label upstream; forks cannot reach the org group.
+    # "Larger runners for the review lanes and CodeQL" in
+    # docs/ci/ci-and-reviews.md.
+    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}
     # The model half alone. 09-07 was cut off two minutes into it because the
     # metrics half had spent 57 of the shared 60.
     timeout-minutes: 40

@@ -19,20 +19,9 @@ from kiro_crew.cli_commands import _cron_preview
 def _bytecode_stays_in_tmp_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     """Keep the bytecode of the script each test imports inside ``tmp_path``.
 
-    ``_cron_preview`` loads the script with ``spec.loader.exec_module``, and CPython
-    writes its ``.pyc`` under ``sys.pycache_prefix`` -- the suite-wide redirect the
-    rootdir conftest installs, ``<cache root>/kirocrew/pycache`` -- mirrored under the
-    script's ABSOLUTE path. That mirror is keyed on ``tmp_path``, a directory that is
-    new on every run, so each run minted a fresh
-    ``<cache>/<basetemp>/<test>0/s.cpython-312.pyc`` that no later run ever reads and
-    nothing ever reclaims: the host that found this carried 14,800 such files (5.3 GB)
-    under its per-user cache. The prefix is the seam the import system reads, so
-    pointing it at ``tmp_path`` for the test's duration puts the bytecode beside its
-    source, where pytest's own ``tmp_path`` retention removes it.
-
-    The teardown assertion is what turns a regression into a red test rather than a
-    directory on someone's disk: it checks the pyc for the script the test wrote
-    both RESOLVES under ``tmp_path`` and was actually WRITTEN there.
+    The conftest's suite-wide ``sys.pycache_prefix`` mirrors the script's absolute path,
+    which is a new ``tmp_path`` each run, so a ``.pyc`` would pile up per run and never be
+    reclaimed. The teardown checks the pyc was written under ``tmp_path``.
     """
     monkeypatch.setattr(sys, "pycache_prefix", str(tmp_path / "pycache"))
     yield
@@ -146,20 +135,41 @@ class TestCronPreviewValidation:
         ):
             with pytest.raises(SystemExit):
                 _cron_preview(_make_args("~/.kirocrew/crons/bad.py:run"))
-        assert "blocked" in capsys.readouterr().out
+        out = capsys.readouterr()
+        assert out.out == ""
+        assert out.err == "Error: blocked by policy\n"
 
-    def test_missing_function(self, tmp_path: Path):
+    def test_unloadable_script_refused_on_stderr(self, tmp_path: Path, capsys):
+        # Not named s.py: the bytecode fixture expects s.py to be imported,
+        # and this script never is.
+        _write_script(tmp_path, "unloadable.py", "def run(ctx): pass\n")
+        with _patch_resolve(tmp_path, name="unloadable.py"), patch(
+            "importlib.util.spec_from_file_location", return_value=None
+        ):
+            with pytest.raises(SystemExit) as exc:
+                _cron_preview(_make_args(f"{tmp_path / 'unloadable.py'}:run"))
+        assert exc.value.code == 1
+        out = capsys.readouterr()
+        assert out.out == ""
+        assert out.err.startswith("Error: cannot load ")
+
+    def test_missing_function(self, tmp_path: Path, capsys):
         _write_script(tmp_path, "s.py", "def other(ctx): pass\n")
         with _patch_resolve(tmp_path, func="run"):
             with pytest.raises(SystemExit):
                 _cron_preview(_make_args(f"{tmp_path / 's.py'}:run"))
+        out = capsys.readouterr()
+        assert out.out == ""
+        assert "Error: function 'run' not found in " in out.err
 
     def test_async_function_rejected(self, tmp_path: Path, capsys):
         _write_script(tmp_path, "s.py", "async def run(ctx): pass\n")
         with _patch_resolve(tmp_path):
             with pytest.raises(SystemExit):
                 _cron_preview(_make_args(f"{tmp_path / 's.py'}:run"))
-        assert "async" in capsys.readouterr().out
+        out = capsys.readouterr()
+        assert out.out == ""
+        assert "Error: function 'run' is async" in out.err
 
 
 class TestCronPreviewEnv:

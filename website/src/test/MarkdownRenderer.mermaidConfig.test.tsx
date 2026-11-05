@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, cleanup } from '@testing-library/react'
+import { render, cleanup, screen, waitFor } from '@testing-library/react'
+import { namedCeiling } from './namedCeiling'
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
@@ -32,9 +33,15 @@ afterEach(() => {
 
 async function initializedWith() {
   render(<MarkdownRenderer content={FENCE} />)
-  await vi.waitFor(() => expect(mermaid.initialize).toHaveBeenCalled())
+  await waitFor(() => expect(mermaid.initialize).toHaveBeenCalled(), MERMAID_DRAWN)
+  // The draw ends with the SVG and the ⋯ menu mounting; wait for that so those updates land in this wait.
+  await screen.findByTestId('mermaid-more-actions', {}, MERMAID_DRAWN)
   return vi.mocked(mermaid.initialize).mock.calls[0][0]
 }
+
+// Chain: MermaidBlock.draw() -> dynamic import('mermaid') -> render -> SVG install. A wait behind that lazy
+// boundary carries an explicit ceiling instead of the 1000 ms default.
+const MERMAID_DRAWN = namedCeiling('MERMAID_DRAWN', 5000)
 
 describe('MarkdownRenderer mermaid initialize config', () => {
   it('draws a light-theme diagram under the strict security level', async () => {
@@ -89,7 +96,8 @@ describe('MarkdownRenderer mermaid initialize config', () => {
 
   it('re-initializes before every draw so a theme switch between diagrams applies', async () => {
     render(<MarkdownRenderer content={`${FENCE}\n\ntext\n\n\`\`\`mermaid\ngraph LR;C-->D\n\`\`\``} />)
-    await vi.waitFor(() => expect(mermaid.render).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(mermaid.render).toHaveBeenCalledTimes(2), MERMAID_DRAWN)
+    await waitFor(() => expect(screen.getAllByTestId('mermaid-more-actions')).toHaveLength(2), MERMAID_DRAWN)
     expect(mermaid.initialize).toHaveBeenCalledTimes(2)
   })
 })

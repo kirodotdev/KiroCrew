@@ -18,11 +18,14 @@
 #
 # Options:
 #   --voice   Install optional voice extras (pip install -e .[voice])
-#   --kas     Download the KAS engine this release pins (kirocrew kas install)
-#             so the built-in engine route can be turned on later with no
-#             download. The switch (agent.kas_bundle) is NOT turned on: the
-#             route is in shadow testing on every platform, so the default
-#             stays kiro-cli until you flip it yourself.
+#   --no-kas  Skip downloading the KAS engine this release pins. By default
+#             the installer runs `kirocrew kas install` after installing, so
+#             the built-in engine route can be turned on with no download; a
+#             failed download only warns and prints the command to retry.
+#             The switch (agent.kas_bundle) is NOT turned on: the route is in
+#             shadow testing on every platform, so the default stays kiro-cli
+#             until you flip it yourself. (--kas, the former opt-in, is still
+#             accepted and changes nothing.)
 #   --mise    Use mise (https://mise.jdx.dev) for Python and Node.js
 #             instead of system package managers. Does not modify your
 #             global mise config.
@@ -45,12 +48,15 @@ unset PYTHONPATH PYTHONHOME
 # ── Parse arguments ──
 USE_MISE=0
 WITH_VOICE=0
-WITH_KAS=0
+KAS_DOWNLOAD_FAILED=0
+KAS_HOST_UNSUPPORTED=0
+WITH_KAS=1
 for _arg in "$@"; do
     case "$_arg" in
         --mise)  USE_MISE=1 ;;
         --voice) WITH_VOICE=1 ;;
         --kas)   WITH_KAS=1 ;;
+        --no-kas) WITH_KAS=0 ;;
         *) echo "Error: unknown argument '$_arg'" >&2; exit 1 ;;
     esac
 done
@@ -210,6 +216,24 @@ install_node_via_ensure() {
     if [ -s "$KIROCREW_DATA_DIR/node-bin-dir" ]; then
         PATH="$(cat "$KIROCREW_DATA_DIR/node-bin-dir"):$PATH"
         export PATH
+    fi
+}
+
+# After a distro package install ($1 names the package manager): keep its Node
+# only when it meets the floor. A distro Node below it (node 18 on Amazon Linux
+# 2023, Debian's archive) cannot build the dashboard, so install a supported one
+# through ensure-node.sh instead of building against it.
+node_to_floor() {
+    if node_supported; then
+        ok "Node.js $(node --version) installed via $1"
+        return 0
+    fi
+    info "The $1 Node.js is missing or below v$NODE_MIN_VERSION — installing Node.js $NODE_VERSION via ensure-node.sh…"
+    install_node_via_ensure
+    if node_supported; then
+        ok "Node.js $(node --version) now active"
+    else
+        warn "Node.js is still below v$NODE_MIN_VERSION — the frontend build will fail"
     fi
 }
 
@@ -414,16 +438,16 @@ elif has node; then
         || warn "Node.js is still below v$NODE_MIN_VERSION — the frontend build will fail"
 elif has apt-get; then
     info "Installing nodejs via apt…"
-    sudo apt-get install -y nodejs npm >/dev/null 2>&1
-    has node && ok "Node.js $(node --version) installed via apt" || warn "Node.js install failed — run: sudo apt-get install -y nodejs npm"
+    sudo apt-get install -y nodejs npm >/dev/null 2>&1 || true
+    node_to_floor apt
 elif has dnf; then
     info "Installing nodejs via dnf…"
-    sudo dnf install -y nodejs >/dev/null 2>&1
-    has node && ok "Node.js $(node --version) installed via dnf" || warn "Node.js install failed — run: sudo dnf install -y nodejs"
+    sudo dnf install -y nodejs >/dev/null 2>&1 || true
+    node_to_floor dnf
 elif has brew; then
     info "Installing Node.js via Homebrew…"
-    brew install node >/dev/null 2>&1
-    has node && ok "Node.js $(node --version) installed via brew" || warn "Node.js install failed — run: brew install node"
+    brew install node >/dev/null 2>&1 || true
+    node_to_floor brew
 else
     info "Installing Node.js via ensure-node.sh…"
     install_node_via_ensure
@@ -475,11 +499,11 @@ else
     detail "npm i -g $ACP_NPM_PKG"
 fi
 if [ "$WITH_KAS" -eq 1 ]; then
-    info "The built-in KAS engine will be downloaded (--kas); the switch stays off until you turn it on."
+    info "The built-in KAS engine will be downloaded after install (skip with --no-kas); the switch stays off until you turn it on."
 else
     warn "The default Kiro agent requires Kiro CLI; this installer does not install or sign in to it."
     detail "Install it separately from https://kiro.dev/cli/ and run: kiro-cli login"
-    detail "Or re-run with --kas to download the built-in engine instead (no kiro-cli)."
+    detail "Or run kirocrew kas install after install to download the built-in engine instead (no kiro-cli)."
 fi
 
 # ══════════════════════════════════════════════════════════════════════
@@ -845,14 +869,29 @@ if [ -n "$_kirocrew" ]; then
         # verified against the pin baked into this checkout. The switch is left
         # alone on purpose: the route is in shadow testing, so turning it on is
         # the user's own step (Settings → Agent Harness, or `kirocrew config set
-        # agent.kas_bundle true`), never the installer's.
+        # agent.kas_bundle true`), never the installer's. A failed download
+        # (offline host, CDN outage) leaves a working install, so it only warns.
         info "Downloading the built-in KAS engine (kirocrew kas install)…"
-        if "$_kirocrew" kas install; then
+        # Exit 3 is `kas install`'s "this host cannot run the engine"
+        # (cli_kas.py HOST_UNSUPPORTED_EXIT): it already printed why, and a
+        # retry cannot help, so no retry advice follows it.
+        _kas_rc=0
+        "$_kirocrew" kas install || _kas_rc=$?
+        if [ "$_kas_rc" -eq 0 ]; then
             ok "Built-in KAS engine installed (switch it on: kirocrew config set agent.kas_bundle true)"
+        elif [ "$_kas_rc" -eq 3 ]; then
+            KAS_HOST_UNSUPPORTED=1
+            warn "This host cannot run the built-in KAS engine (see above); Kiro Crew is installed without it."
         else
-            warn "kirocrew kas install failed — run it again after install"
+            KAS_DOWNLOAD_FAILED=1
+            warn "Could not download the built-in KAS engine; Kiro Crew is installed without it."
+            detail "Retry when online: kirocrew kas install"
         fi
     fi
+elif [ "$WITH_KAS" -eq 1 ]; then
+    KAS_DOWNLOAD_FAILED=1
+    warn "kirocrew not in PATH — the built-in KAS engine was not downloaded."
+    detail "After reloading your shell, run: kirocrew kas install"
 fi
 
 ok "Run ${CYAN}kirocrew setup${RESET} to configure agent, workspace, and integrations"
@@ -884,8 +923,11 @@ echo ""
 echo "    ${CYAN}2.${RESET} Set up the default Kiro agent (skip if you selected another ACP backend):"
 echo "       ${GREEN}Install Kiro CLI from https://kiro.dev/cli/${RESET}"
 echo "       ${GREEN}kiro-cli login${RESET}"
-if [ "$WITH_KAS" -eq 1 ]; then
+if [ "$WITH_KAS" -eq 1 ] && [ "$KAS_HOST_UNSUPPORTED" -eq 0 ]; then
 echo "       To try the built-in KAS engine instead (shadow testing, off by default):"
+if [ "$KAS_DOWNLOAD_FAILED" -eq 1 ]; then
+echo "       ${GREEN}kirocrew kas install${RESET}  (the download failed during install; retry it first)"
+fi
 echo "       ${GREEN}kirocrew config set agent.kas_bundle true${RESET}  then sign in from the dashboard"
 fi
 echo ""

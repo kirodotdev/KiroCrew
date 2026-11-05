@@ -260,12 +260,9 @@ def test_autonudge_stop_short_circuits_for_non_nudgeable_session(monkeypatch, ga
 class _FakeLoop:
     """Prompt-loop double.
 
-    ``gate`` mirrors ``NudgeLoop.gate``: a prompt loop carries probe state in
-    ``monitor`` only when it is gated, and ``is_structured_monitor_loop`` reads
-    ``monitor is not None and not gate`` to tell a controller-owned structured
-    monitor apart from a prompt loop. A double that sets ``monitor`` without
-    ``gate=True`` is therefore routed to the structured ``monitor_update`` path,
-    which refuses ``message``/``max_cycles``/``active`` as legacy fields.
+    ``is_structured_monitor_loop`` reads ``monitor is not None and not gate``, so a
+    double with ``monitor`` but no ``gate=True`` routes to the structured path, which
+    refuses ``message``/``max_cycles``/``active``.
     """
 
     def __init__(
@@ -384,14 +381,8 @@ _RESEARCH_SESSION = "dashboard:research-a1b2c3d4"
 def test_applier_ack_discloses_the_gated_cadence(monkeypatch):
     """A gated loop must not be acknowledged with an every-interval promise.
 
-    This applier defaults ``gate`` to True, so the unconditional "re-injects every
-    {idle_secs}s" was wrong for its own default: a quiet tick on a gated loop spends no
-    turn at all. The MCP tool's ack already disclosed this; the dashboard directive
-    applier did not, and the pull request's own description claims the arming surface
-    says so.
-
-    The cadence is read off the ARMED loop rather than the request, because this surface
-    knows what the tool has to infer -- whether a monitor was actually attached.
+    A quiet tick on a gated loop (this applier's default) spends no turn. The cadence is
+    read off the ARMED loop, which knows whether a monitor was actually attached.
     """
     from kiro_crew.monitoring.models import MonitorState
 
@@ -719,13 +710,8 @@ def test_applier_monitor_update_budget_stopped_denial_names_the_budget(monkeypat
 def test_a_probe_state_double_is_a_legacy_loop_only_while_it_carries_the_gate():
     """Pin ``_FakeLoop``'s premise against the production predicate itself.
 
-    ``monitor_update`` splits on record KIND before it reads a single bound, and a
-    ``monitor`` object alone does not decide that kind. So every paused-loop test
-    below depends on ``gate=True`` putting its double on the LEGACY side — a
-    dependency the class docstring states but nothing executes, so an edit to
-    ``is_structured_monitor_loop`` reports itself only as five assertion failures
-    against a refusal string that names neither the flag nor the routing. This one
-    fails alongside them naming the predicate, so the batch has a cause in it.
+    The paused-loop tests below rely on ``gate=True`` putting the double on the LEGACY
+    side; if the predicate changes, this failure names the cause.
     """
     from kiro_crew.autonudge import is_structured_monitor_loop
 
@@ -742,14 +728,8 @@ def test_a_probe_state_double_is_a_legacy_loop_only_while_it_carries_the_gate():
 def test_applier_owed_terminal_turn_is_not_reported_as_a_spent_cap(monkeypatch, pending, delivered):
     """A channel loop whose subject MERGED must not be told it ran out of cycles.
 
-    A channel-bound loop does not settle on observation: the probe records the owed
-    final turn in ``monitor.terminal_pending`` and leaves the loop active with no
-    ``outcome``. If that turn is refused (a busy thread) and the retry finds the cap
-    spent, the loop deactivates with ``stopped_reason="cycle_cap"`` before the
-    settlement that would promote the debt ever runs. Reading the reason alone then
-    contradicts a fact already durably on disk — and because the cap is also being
-    raised here, the loop would be REVIVED to watch a subject that already merged,
-    which is the wasted fresh loop this costs.
+    The owed final turn sits in ``terminal_pending``; if the cap is spent first the loop
+    stops as ``cycle_cap``. Raising the cap would then revive a watch on a merged subject.
     """
     loop = _FakeLoop(
         "loop-owed-merged",
@@ -1173,14 +1153,8 @@ _MISS_MESSAGE = (
 def test_applier_autonudge_stop_miss_logs_caller_binding_and_active_slot_keys(monkeypatch, caplog):
     """The miss branch records the pair that identifies WHICH miss this is.
 
-    A miss has two possible causes — a slot-key spelling the lookup does not
-    model, or an arming path that registered a key the session later resolves
-    differently — and they are told apart only by the caller's resolved binding
-    next to the slot keys the store actually holds. Nothing else captures that
-    pair, so the diagnostic has to be emitted where the miss is detected.
-
-    Server-side ONLY: the log carries the slot keys, the returned message must
-    stay byte-identical and keep reporting a count.
+    The caller's binding next to the stored slot keys tells an unmodelled spelling from
+    a re-resolved key. Server-side ONLY: the returned message keeps the keys out.
     """
     loops = [
         _FakeLoop("loop-a", slot_key="chat-91-1700009991"),
@@ -1237,11 +1211,8 @@ def test_applier_autonudge_stop_logs_nothing_when_no_loop_exists(monkeypatch, ca
 def test_autonudge_stop_directive_does_not_read_as_confirmation(default_install):
     """The tool's OWN return is the only text the model receives in-turn.
 
-    The consumer applies the effect after the model already has this string, and
-    the applier's outcome lands on the transcript rather than rewriting the
-    model's tool result — so this wording must not let a caller conclude a loop
-    was found or stopped. The measured failure it guards is a loop that called
-    stop repeatedly, read a success-shaped reply each time, and never checked.
+    The effect is applied after the model has this string, so the wording must not
+    claim a loop was found or stopped.
     """
     result = _call_tool_inner("autonudge_stop", {"reason": "done"})
     assert session_directive.decode(result, "autonudge_stop") == {"reason": "done"}
@@ -1252,13 +1223,9 @@ def test_autonudge_stop_directive_does_not_read_as_confirmation(default_install)
 
 # ── The wake judge at the tool surface ────────────────────────────────────────
 #
-# These exist because the feature was unreachable while every Python-level test
-# passed. The handler read ``args.get("judge")`` and the applier stored it, so a
-# test that called the tool with a judge argument went green -- but the field was
-# absent from the model-facing ``inputSchema``, so no agent could ever send one.
-# QA found a real agent arming a loop with ``judge == {}`` and the criteria pasted
-# into ``message`` as prose. The schema assertion below is the one that fails
-# without the fix; the payload assertion guards the hop after it.
+# A handler test with a judge argument passes even when ``judge`` is missing from the
+# model-facing ``inputSchema``, which no agent could then send. So the schema is
+# asserted directly, and the payload assertion guards the hop after it.
 
 
 def _schema_for(tool_name: str) -> dict:

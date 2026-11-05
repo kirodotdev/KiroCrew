@@ -32,7 +32,7 @@ from kiro_crew.sel import sel
 from .chunker import CHUNK_OVERLAP, CHUNK_TOKEN_SIZE, HeadingAwareChunker
 from .dedup import PERSISTENT_SOURCE_TYPES, dedup_document
 from .embedder import embedder_signature, floats_to_bytes
-from .extractor import EntityExtractor
+from .extractor import EntityExtractor, _is_harness_refusal, extraction_source
 from .ingestion_budget import ImportChunkBudget, _import_chunk_budget
 from .readers import FileReader
 from .store import AUTO_ADDED_PROP, KnowledgeStore
@@ -552,6 +552,31 @@ class IngestionPipeline:
         except Exception:
             logger.debug("Post-ingest dedup skipped", exc_info=True)
 
+    def _record_harness_refusal(self, job_id: str, source_id: str,
+                                content_hash: str, exc: BaseException) -> None:
+        """Fail *job_id* on the enterprise pool's harness refusal (RFC D6).
+
+        The job ends ``failed`` with the refusal's remedy in ``error``, and the source
+        reads ``error``. The source forgets *content_hash* when it holds it (a source
+        this ingest created stores it up front), so the unchanged document is
+        ingested again once the harness is fixed. Nothing else is written: the
+        refusal arrives before any item, so the source's old items stay.
+        """
+        db = self.store.db
+        db.execute(
+            "UPDATE ingestion_jobs SET status = 'failed', error = ?, updated_at = ? WHERE id = ?",
+            (str(exc)[:2000], datetime.now().isoformat(), job_id))
+        db.commit()
+
+        # A delta under the store's write lock, never a snapshot rewrite: a
+        # concurrent pause or scan stamp on the same row must survive.
+        def _forget_hash(props: dict) -> str:
+            if props.get('content_hash') == content_hash:
+                props.pop('content_hash')
+            return 'error'
+
+        self.store.revise_source_properties(source_id, _forget_hash)
+
     @asynccontextmanager
     async def _ingestion_in_flight(self) -> AsyncIterator[None]:
         """Hold the store's ingestion gate for one whole ingest, entered off-loop.
@@ -807,6 +832,11 @@ class IngestionPipeline:
             on_progress('reading', 0, 1)
         text, meta = await asyncio.to_thread(
             self.reader.read, path, include_paths=include_paths, included=included)
+        if original_name and meta.get('title') == p.stem:
+            # The reader titles a document by the stem of the path it read. An
+            # upload is read from a staging copy (``kn_<hex>``), so its title is
+            # the name the caller gave, as ``display_name`` already is.
+            meta['title'] = Path(original_name).stem
         if meta.get('format') == 'error':
             raise RuntimeError(f"Failed to read {path}: {meta.get('error')}")
 
@@ -910,7 +940,14 @@ class IngestionPipeline:
                 budget_token=budget_token,
                 on_committed_in_txn=on_committed_in_txn,
             )
-        except Exception:
+        except Exception as exc:
+            if _is_harness_refusal(exc):
+                try:
+                    await run_to_completion(functools.partial(
+                        self._record_harness_refusal, job_id, source_id, content_hash, exc))
+                except Exception:  # noqa: BLE001 - never mask the original error
+                    logger.warning("failed to mark ingestion job %s failed", job_id, exc_info=True)
+                raise
             try:
                 # Also a run_to_completion hop: this is the write that stops the
                 # folder watcher retrying the file every scan, so a cancellation
@@ -964,7 +1001,8 @@ class IngestionPipeline:
 
         # 5. Extract all chunks in batch via pool
         chunk_contents = [chunk['content'] for chunk in chunks]
-        extractions = await self.extractor.extract_batch(chunk_contents)
+        with extraction_source(source_id):
+            extractions = await self.extractor.extract_batch(chunk_contents)
 
         # What THIS call wrote, collected at the write itself rather than
         # inferred from a before/after comparison of the source. `import_bundle`
@@ -1123,8 +1161,9 @@ class IngestionPipeline:
             # finalize hop so a failure or cancel here cannot strand the job row.
             try:
                 await self.generate_source_summary(source_id)
-            except Exception:
-                logger.debug("Source summary generation skipped for %s", source_id, exc_info=True)
+            except Exception as exc:
+                logger.warning("Source summary generation failed for source_id=%s: %s",
+                               source_id, type(exc).__name__)
         # Cross-source dedup for whole-source ingests (upload / remote / chat). Folder-file
         # ingests (old_item_ids is a list) are swept by FolderWatcher at end of scan.
         if processed == total and old_item_ids is None:
@@ -1250,7 +1289,16 @@ class IngestionPipeline:
         total = len(chunks)
 
         chunk_contents = [chunk['content'] for chunk in chunks]
-        extractions = await self.extractor.extract_batch(chunk_contents)
+        try:
+            with extraction_source(source_id):
+                extractions = await self.extractor.extract_batch(chunk_contents)
+        except Exception as exc:
+            # The enterprise harness refusal fails the job (see ingest_file); any
+            # other extraction error keeps its existing path.
+            if _is_harness_refusal(exc):
+                await run_to_completion(functools.partial(
+                    self._record_harness_refusal, job_id, source_id, content_hash, exc))
+            raise
 
         # What THIS call wrote, collected at the write itself rather than
         # inferred from a before/after comparison of the source -- a snapshot
@@ -1345,8 +1393,9 @@ class IngestionPipeline:
             # cannot strand the job row.
             try:
                 await self.generate_source_summary(source_id)
-            except Exception:
-                logger.debug("Source summary generation skipped for %s", source_id, exc_info=True)
+            except Exception as exc:
+                logger.warning("Source summary generation failed for source_id=%s: %s",
+                               source_id, type(exc).__name__)
         # Cross-source dedup for whole-source ingests (upload / remote / chat).
         # Group-level replaces (old_item_ids provided -- e.g. a single artifact's
         # group within the aggregate Artifacts source) defer to the folder-scan
@@ -1508,8 +1557,17 @@ class IngestionPipeline:
                     self.store.db.commit()
 
                 await asyncio.to_thread(_store_summary)
-        except Exception:
-            logger.debug("Source summary generation failed for %s", source_id, exc_info=True)
+            else:
+                # The reply is never logged: it is model output over document text.
+                logger.warning(
+                    "Source summary for source_id=%s got %s reply; the source keeps "
+                    "no topic or themes", source_id,
+                    "an empty" if not (response or "").strip() else "an unusable")
+        except Exception as exc:
+            # The type only: the message can echo the prompt, which carries the
+            # document's section summaries.
+            logger.warning("Source summary generation failed for source_id=%s: %s",
+                           source_id, type(exc).__name__)
 
 
 # This module is the facade of the ingestion owners and keeps the pipeline itself:
@@ -1522,11 +1580,13 @@ class IngestionPipeline:
 #
 #   ``ingestion_budget`` -- the explicit-import chunk budget and its refusal.
 #   ``ingestion_rebuild`` -- the corpus re-embed sweep and its single-flight job row.
+#   ``ingestion_jobs`` -- the startup sweep of source-ingest job rows a stopped gateway left.
 #
 #: Owner modules, lowest layer first: the first holder of a name answers its reads.
 _OWNERS = (
     "kiro_crew.knowledge.ingestion_budget",
     "kiro_crew.knowledge.ingestion_rebuild",
+    "kiro_crew.knowledge.ingestion_jobs",
 )
 for _owner in _OWNERS:
     _importlib.import_module(_owner)
@@ -1541,6 +1601,10 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.knowledge.ingestion_budget import (  # noqa: F401
         _IMPORT_CHUNK_BUDGET_WINDOW_SECS,
         ImportChunkBudgetError,
+    )
+    from kiro_crew.knowledge.ingestion_jobs import (  # noqa: F401
+        INTERRUPTED_JOB_ERROR,
+        reclaim_interrupted_ingest_jobs,
     )
     from kiro_crew.knowledge.ingestion_rebuild import (  # noqa: F401
         _REBUILD_BATCH_SIZE,

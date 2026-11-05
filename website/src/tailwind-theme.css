@@ -220,7 +220,7 @@
  * screen. The shell insets its in-flow chrome once with `p-safe`; every `fixed`
  * surface escapes that padding and opts in on its own, which
  * src/test/safeArea.guard.test.ts enforces. Only the utilities this codebase
- * uses are emitted (`p-safe`, the four `<edge>-safe`, the four
+ * uses are emitted (`p-safe`, `p-safe-or-*`, `px-safe`, `pt-safe`, the four `<edge>-safe`, the four
  * `<edge>-safe-offset-*`, and `bottom-`/`left-safe-or-*`); anything else
  * compiles to nothing, and the guard test reads this file's `@utility` names so
  * a leftover like `me-safe` or an unemitted `top-safe-or-3` is caught rather
@@ -248,6 +248,28 @@
   padding-bottom: env(safe-area-inset-bottom);
   padding-left: env(safe-area-inset-left);
 }
+/* `p-safe` with a minimum gutter on all four edges: max(inset, n) per edge.
+ * For a full-viewport `fixed inset-0` container that lays out a dialog or sheet
+ * (`flex items-center justify-center p-4`): its plain `p-4` would let the child
+ * reach under a side inset once that inset is wider than the gutter. Where every
+ * inset is 0 it computes to the same padding as `p-<n>`. */
+@utility p-safe-or-* {
+  padding-top: max(var(--safe-area-top, env(safe-area-inset-top)), --spacing(--value(number)));
+  padding-top: max(var(--safe-area-top, env(safe-area-inset-top)), --value([*]));
+  padding-right: max(env(safe-area-inset-right), --spacing(--value(number)));
+  padding-right: max(env(safe-area-inset-right), --value([*]));
+  padding-bottom: max(env(safe-area-inset-bottom), --spacing(--value(number)));
+  padding-bottom: max(env(safe-area-inset-bottom), --value([*]));
+  padding-left: max(env(safe-area-inset-left), --spacing(--value(number)));
+  padding-left: max(env(safe-area-inset-left), --value([*]));
+}
+/* Single-axis halves of `p-safe`, for a surface whose other edge is padded by
+ * a child (a sheet whose footer clears the bottom inset itself). */
+@utility px-safe {
+  padding-right: env(safe-area-inset-right);
+  padding-left: env(safe-area-inset-left);
+}
+@utility pt-safe { padding-top: var(--safe-area-top, env(safe-area-inset-top)); }
 @utility top-safe { top: var(--safe-area-top, env(safe-area-inset-top)); }
 @utility right-safe { right: env(safe-area-inset-right); }
 @utility bottom-safe { bottom: env(safe-area-inset-bottom); }

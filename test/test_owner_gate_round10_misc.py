@@ -1,4 +1,4 @@
-"""Owner gate on four dashboard routes that reach the owner's logs, config or interpreter.
+"""Owner gate on three dashboard routes that reach the owner's logs or config.
 
 An allow-listed channel user can hold a dashboard token whose claims are
 ``app == ""`` with a non-owner subject. These routes must refuse that caller:
@@ -7,8 +7,6 @@ An allow-listed channel user can hold a dashboard token whose claims are
   build and serve a bundle carrying the owner's gateway and chat logs.
 * ``POST /api/memory/embedding-model`` rewrites the owner's model config and
   re-embeds the owner's vector store.
-* ``POST /api/apps/auto-improvement/deps/install`` runs pip in the gateway
-  interpreter. Only the dashboard owner may run it; an app token is refused.
 
 Every side effect is a stub that records whether it was reached.
 """
@@ -182,58 +180,6 @@ async def test_embedding_model_allows_owner(monkeypatch) -> None:
     assert applied == [("STORE", _MODEL["path"])]
 
 
-# ── auto-improvement deps install ────────────────────────────────────────────
-
-
-def _deps_app(monkeypatch: pytest.MonkeyPatch) -> tuple[web.Application, list]:
-    from kiro_crew.apps.builtins.auto_improvement.backend import deps, routes
-
-    calls: list = []
-
-    def _fake_install() -> dict:
-        calls.append(True)
-        return {"ok": True, "installed": ["ruff"]}
-
-    monkeypatch.setattr(routes, "is_app_enabled", lambda _name: True)
-    monkeypatch.setattr(deps, "install_deps", _fake_install)
-
-    app = _base_app()
-    app.router.add_post(
-        "/api/apps/auto-improvement/deps/install",
-        routes._require_enabled(routes._handle_deps_install),
-    )
-    return app, calls
-
-
-async def test_deps_install_refuses_non_owner_dashboard_user(monkeypatch) -> None:
-    app, calls = _deps_app(monkeypatch)
-    async with _client(app, NON_OWNER) as client:
-        resp = await client.post("/api/apps/auto-improvement/deps/install")
-        status, body = resp.status, await resp.json()
-    assert status == 403
-    assert body["code"] == "owner_only"
-    assert calls == []
-
-
-async def test_deps_install_allows_owner(monkeypatch) -> None:
-    app, calls = _deps_app(monkeypatch)
-    async with _client(app, OWNER) as client:
-        resp = await client.post("/api/apps/auto-improvement/deps/install")
-        status = resp.status
-    assert status == 200
-    assert calls == [True]
-
-
-async def test_deps_install_refuses_an_app_token(monkeypatch) -> None:
-    """An app token is not the owner, even the app's own token."""
-    app, calls = _deps_app(monkeypatch)
-    async with _client(app, "app-subject", app_claim="auto-improvement") as client:
-        resp = await client.post("/api/apps/auto-improvement/deps/install")
-        status = resp.status
-    assert status == 403
-    assert calls == []
-
-
 # ── allowed decisions are audited ────────────────────────────────────────────
 
 
@@ -270,25 +216,3 @@ async def test_diagnostics_collect_audits_the_allowed_build(monkeypatch, tmp_pat
     ]
     assert [a["outcome"] for a in allowed] == ["allowed"]
     assert "_audit_collect_allowed_sync" in offloaded, "the audit must run off the event loop"
-
-
-async def test_deps_install_audits_the_allowed_install(monkeypatch) -> None:
-    import kiro_crew.sel as sel_mod
-    from kiro_crew.apps.builtins.auto_improvement.backend import routes
-
-    app, calls = _deps_app(monkeypatch)
-    audit = MagicMock()
-    monkeypatch.setattr(sel_mod, "sel", lambda: audit)
-    offloaded = _record_offloads(monkeypatch, routes)
-    async with _client(app, OWNER) as client:
-        resp = await client.post("/api/apps/auto-improvement/deps/install")
-        status = resp.status
-    assert status == 200
-    assert calls == [True]
-    allowed = [
-        c.kwargs
-        for c in audit.log_api_access.call_args_list
-        if c.kwargs.get("operation") == "auto_improvement.deps_install"
-    ]
-    assert [(a["outcome"], a["caller"]) for a in allowed] == [("allowed", OWNER)]
-    assert "_audit_deps_install_allowed_sync" in offloaded, "the audit must run off the event loop"

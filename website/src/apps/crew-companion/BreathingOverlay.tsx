@@ -24,6 +24,11 @@ import './breathing.css'
 import { PetAvatar, type PetState } from './PetAvatar'
 import { i18nT } from '../../i18n/t'
 import { breathStateAt, BREATH_CYCLES, type BreathState } from './breathing'
+import { useDialogFocusTrap } from '../../hooks/useDialogFocusTrap'
+
+// Escape stays on this overlay's own window listener (below), so the trap is
+// wired with Escape off and a stable no-op in its place.
+const NO_ESCAPE = () => {}
 
 export interface BreathingOverlayProps {
   /** Called when the exercise completes on its own. */
@@ -123,6 +128,10 @@ export default function BreathingOverlay({ onDone, onEnd }: BreathingOverlayProp
     return () => window.removeEventListener('keydown', onKey)
   }, [onEnd])
 
+  // Focus moves in on open, Tab stays inside, focus returns on close.
+  const dialogRef = useRef<HTMLDivElement>(null)
+  useDialogFocusTrap(dialogRef, NO_ESCAPE, { handleEscape: false })
+
   /**
    * The phase phrase, split so the route can be styled down while keeping the
    * translation's WORD ORDER. English puts the manner after the verb ("Inhale
@@ -174,7 +183,7 @@ export default function BreathingOverlay({ onDone, onEnd }: BreathingOverlayProp
   const isHold = state.phaseIndex === 1
 
   return (
-    <div className="cc-breathe" role="dialog" aria-modal="true"
+    <div ref={dialogRef} className="cc-breathe" role="dialog" aria-modal="true"
          aria-label={i18nT('apps.crewCompanion.breathe.start')}>
       <button
         type="button"

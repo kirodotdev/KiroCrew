@@ -553,7 +553,7 @@ async def test_publish_copies_in_lock_reread_not_stale_snapshot(tmp_path):
             if "refreshedHook" not in result:
                 updated = dict(result)
                 updated["refreshedHook"] = True
-                src.write_text(json.dumps(updated))
+                src.write_text(json.dumps(updated), encoding="utf-8")
         return result
 
     with (

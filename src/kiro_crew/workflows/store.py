@@ -33,6 +33,7 @@ from kiro_crew import platform_compat, windows_acl
 from kiro_crew.atomic_write import on_event_loop, replace_with_retry
 from kiro_crew.config.paths import config_dir
 from kiro_crew.execution_context import execution_from_record
+from kiro_crew.owner_only_files import OWNER_ONLY_FILE_MODE
 from kiro_crew.pinned_fs import fd_real_path
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
@@ -88,7 +89,8 @@ def _redact(obj):
 
     A non-finite float becomes ``None``, so the file stays strict JSON. A file that
     already holds a bare ``Infinity`` still loads: ``json.load`` accepts the token,
-    and the response redactor nulls it on the way out."""
+    and the response redactor nulls it on the way out. A tuple is walked like a
+    list, as ``json.dump`` writes it as one."""
     if isinstance(obj, float) and not math.isfinite(obj):
         return None
     if isinstance(obj, str):
@@ -97,7 +99,7 @@ def _redact(obj):
         return s
     if isinstance(obj, dict):
         return {k: _redact(v) for k, v in obj.items()}
-    if isinstance(obj, list):
+    if isinstance(obj, (list, tuple)):
         return [_redact(v) for v in obj]
     return obj
 
@@ -197,7 +199,7 @@ class WorkflowRunStore:
             # Lock the temp file down while it is still empty, so the run record
             # never sits in a file other local users can read. The rename keeps
             # the temp file's permissions, so the published file is owner-only.
-            tmp.touch()
+            tmp.touch(mode=OWNER_ONLY_FILE_MODE)
             self._restrict_run_file(tmp)
             tmp.write_text(payload, encoding="utf-8")
             replace_with_retry(tmp, path)

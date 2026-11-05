@@ -38,6 +38,7 @@ from conductor_wake_helpers import (
     _service,
     _Svc,
 )
+from crew_log_drain import assert_drained
 
 from kiro_crew import conductor_wake, work_ledger
 from kiro_crew.testing.wait import async_wait_until, default_timeout
@@ -503,7 +504,7 @@ def _write(unit: str, **fields) -> None:
     from kiro_crew.crew_log import emit as crew_log_emit
 
     assert crew_log_emit.on_work_recorded(unit, dict(fields), timeout=5.0) is True
-    crew_log_emit.flush(timeout=5.0)
+    assert_drained()
     assert crew_log_eager.drain(timeout=10.0)
 
 
@@ -1069,11 +1070,14 @@ def _record_close(monkeypatch, *, save_fails: bool) -> list[str]:
     events: list[str] = []
     monkeypatch.setattr(autonudge, "_INSTANCE", None)
 
-    async def _save(_state, _slot, *_a, **kw) -> None:
+    async def _save(_state, _slot, *_a, **kw) -> bool:
         if kw.get("closed"):
             events.append("save")
             if save_fails:
                 raise OSError("disk full")
+        # True: this double models the durable write itself; a bare None reads
+        # as the save's own refusal, which the close answers rather than ignores.
+        return True
 
     async def _wake(_svc, board: str, item_id: str = "") -> str:
         events.append(f"wake:{board}:{item_id}")

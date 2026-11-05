@@ -1,16 +1,8 @@
 """Auto-generated and manual emoji icons on chat folders.
 
-The generator (``generate_emoji_for_name``) is shared with the artifact
-library and already covered elsewhere; these tests pin the CHAT-FOLDER wiring:
-
-* create never generates an icon — an explicit ``icon`` value is stored,
-  anything else means the default glyph,
-* PATCH accepts ``icon`` (set / clear) and ``regenerate_icon`` (the explicit
-  Auto-generate action, the only path that spawns generation), rejecting the
-  two together,
-* the write-back goes through ``mutate_folders`` and re-finds the folder by
-  id, so a folder deleted mid-generation is never resurrected,
-* app ownership gates icon writes exactly like every other folder field.
+``generate_emoji_for_name`` is tested elsewhere; these pin the chat-folder wiring. Only
+PATCH ``regenerate_icon`` spawns generation, and the write-back re-finds the folder by id
+so a folder deleted mid-generation is never resurrected.
 """
 
 from __future__ import annotations
@@ -28,6 +20,7 @@ import kiro_crew.dashboard.chat_folders as chat_folders
 from kiro_crew.dashboard.chat_folders import (
     api_chat_folder_create,
     api_chat_folder_delete,
+    api_chat_folder_icon_preview,
     api_chat_folder_update,
 )
 from kiro_crew.dashboard.state import DashboardState, _ChatSlot
@@ -76,6 +69,7 @@ def _make_app(state: DashboardState) -> web.Application:
     app.router.add_post("/api/chat/folders", api_chat_folder_create)
     app.router.add_patch("/api/chat/folders/{id}", api_chat_folder_update)
     app.router.add_delete("/api/chat/folders/{id}", api_chat_folder_delete)
+    app.router.add_post("/api/chat/folders/{id}/icon-preview", api_chat_folder_icon_preview)
     return app
 
 
@@ -86,11 +80,9 @@ def _by_id(state: DashboardState, fid: str) -> dict[str, Any] | None:
 async def _drain_icon_tasks() -> None:
     """Wait for every in-flight icon write-back before asserting on state.
 
-    Filtered to the CURRENT event loop: the task set is module-global, so a
-    task leaked by an earlier test (which ran on a different, now-closed
-    loop) would make a bare ``gather`` raise and crash an unrelated test.
-    ``return_exceptions=True`` keeps one failed write-back from masking the
-    assertion this drain is guarding.
+    Filtered to the CURRENT loop: the task set is module-global, and a task from a closed
+    loop would make ``gather`` raise. ``return_exceptions=True`` keeps one failure from
+    masking the assertion.
     """
     loop = asyncio.get_running_loop()
     tasks = [t for t in chat_folders._CHAT_FOLDER_ICON_TASKS if t.get_loop() is loop]
@@ -108,6 +100,7 @@ def _clear_icon_task_registries() -> Any:
     yield
     chat_folders._CHAT_FOLDER_ICON_TASKS.clear()
     chat_folders._CHAT_FOLDER_PENDING_ICON_TASKS.clear()
+    chat_folders._CHAT_FOLDER_ICON_PREVIEWS.clear()
 
 
 HEADERS = {"X-Session-Key": "dashboard:chat-1-100"}
@@ -663,11 +656,8 @@ class TestIconTaskCoalescing:
     async def test_cancel_mid_write_lets_the_started_transaction_finish(self) -> None:
         """A superseding regenerate must not tear an in-flight store write.
 
-        Cancelling the pending task while its ``mutate_folders`` transaction
-        is running must let that transaction finish before the task unwinds:
-        an aborted-midway write would release the store lock while the
-        executor thread keeps writing its stale whole-list snapshot, silently
-        reverting interim committed folder mutations on the next reload.
+        An aborted ``mutate_folders`` would release the lock while the executor thread
+        still writes its stale snapshot, reverting later folder changes.
         """
         state = _state(_ChatSlot("chat-1-100"))
         write_entered = asyncio.Event()
@@ -905,3 +895,323 @@ class TestDeleteEpochLifecycle:
             assert resp.status == 200
         assert chat_folders._CHAT_FOLDER_ICON_EPOCHS.get(PERSON) is None
         assert _by_id(state, PERSON) is None
+
+
+class TestIconPreview:
+    """``POST /api/chat/folders/{id}/icon-preview``: Auto-generate shows
+    the emoji before Save. The route returns one emoji and stores nothing;
+    Save then sends it as an ordinary ``icon``."""
+
+    @pytest.mark.asyncio
+    async def test_preview_returns_the_emoji_and_saves_nothing(self) -> None:
+        state = _state(_ChatSlot("chat-1-100"))
+        with patch.object(
+            chat_folders, "generate_emoji_for_name", AsyncMock(return_value="💼")
+        ) as gen:
+            async with TestClient(TestServer(_make_app(state))) as client:
+                resp = await client.post(
+                    f"/api/chat/folders/{PERSON}/icon-preview", json={}, headers=HEADERS
+                )
+                body = await resp.json()
+        assert resp.status == 200
+        assert body == {"icon": "💼"}
+        gen.assert_awaited_once_with(state, "Work", avoid=())
+        folder = _by_id(state, PERSON)
+        assert folder is not None and "icon" not in folder
+        state.mutate_folders.assert_not_awaited()
+        state.push_slots_update.assert_not_called()
+        assert not chat_folders._CHAT_FOLDER_PENDING_ICON_TASKS
+        assert not chat_folders._CHAT_FOLDER_ICON_PREVIEWS
+
+    @pytest.mark.asyncio
+    async def test_preview_uses_the_draft_name_and_passes_avoid(self) -> None:
+        """The modal sends the name being typed and every icon it showed, so
+        a second click asks for a different emoji for the right name."""
+        state = _state(_ChatSlot("chat-1-100"))
+        with patch.object(
+            chat_folders, "generate_emoji_for_name", AsyncMock(return_value="🚀")
+        ) as gen:
+            async with TestClient(TestServer(_make_app(state))) as client:
+                resp = await client.post(
+                    f"/api/chat/folders/{PERSON}/icon-preview",
+                    json={"name": "  Rocketry  ", "avoid": ["💼", 5, "📈"]},
+                    headers=HEADERS,
+                )
+        assert resp.status == 200
+        gen.assert_awaited_once_with(state, "Rocketry", avoid=("💼", "📈"))
+
+    @pytest.mark.asyncio
+    async def test_preview_without_a_body_uses_the_stored_name(self) -> None:
+        state = _state(_ChatSlot("chat-1-100"))
+        with patch.object(
+            chat_folders, "generate_emoji_for_name", AsyncMock(return_value="💼")
+        ) as gen:
+            async with TestClient(TestServer(_make_app(state))) as client:
+                resp = await client.post(
+                    f"/api/chat/folders/{PERSON}/icon-preview", headers=HEADERS
+                )
+        assert resp.status == 200
+        gen.assert_awaited_once_with(state, "Work", avoid=())
+
+    @pytest.mark.asyncio
+    async def test_a_failed_generation_is_a_502_with_a_code(self) -> None:
+        state = _state(_ChatSlot("chat-1-100"))
+        with patch.object(chat_folders, "generate_emoji_for_name", AsyncMock(return_value="")):
+            async with TestClient(TestServer(_make_app(state))) as client:
+                resp = await client.post(
+                    f"/api/chat/folders/{PERSON}/icon-preview", json={}, headers=HEADERS
+                )
+                body = await resp.json()
+        assert resp.status == 502
+        assert body["code"] == "icon_generate_failed"
+        assert not chat_folders._CHAT_FOLDER_ICON_PREVIEWS
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("avoid", ("💼", {"a": 1}, 3))
+    async def test_a_non_list_avoid_is_a_400(self, avoid: Any) -> None:
+        state = _state(_ChatSlot("chat-1-100"))
+        with patch.object(chat_folders, "generate_emoji_for_name", AsyncMock()) as gen:
+            async with TestClient(TestServer(_make_app(state))) as client:
+                resp = await client.post(
+                    f"/api/chat/folders/{PERSON}/icon-preview",
+                    json={"avoid": avoid},
+                    headers=HEADERS,
+                )
+                body = await resp.json()
+        assert resp.status == 400
+        assert body["code"] == "avoid_invalid"
+        gen.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_an_unknown_folder_is_a_404(self) -> None:
+        state = _state(_ChatSlot("chat-1-100"))
+        with patch.object(chat_folders, "generate_emoji_for_name", AsyncMock()) as gen:
+            async with TestClient(TestServer(_make_app(state))) as client:
+                resp = await client.post(
+                    "/api/chat/folders/fldr99999999/icon-preview", json={}, headers=HEADERS
+                )
+        assert resp.status == 404
+        gen.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_an_app_cannot_preview_a_foreign_folders_icon(self) -> None:
+        slot = _ChatSlot("chat-1-100")
+        slot._app = "spec-builder"
+        state = _state(slot)
+        with patch.object(chat_folders, "generate_emoji_for_name", AsyncMock()) as gen:
+            async with TestClient(TestServer(_make_app(state))) as client:
+                resp = await client.post(
+                    f"/api/chat/folders/{FOREIGN}/icon-preview", json={}, headers=HEADERS
+                )
+                body = await resp.json()
+        assert resp.status == 403
+        assert body["code"] == "folder_not_owned"
+        gen.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_one_preview_per_folder_at_a_time(self) -> None:
+        """A second preview while one is in flight is refused, so a looping
+        caller cannot queue model calls behind the serialized generator."""
+        state = _state(_ChatSlot("chat-1-100"))
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def _gated(_state: Any, _name: str, *, avoid: tuple[str, ...] = ()) -> str:
+            started.set()
+            await asyncio.wait_for(release.wait(), timeout=30)
+            return "💼"
+
+        with patch.object(chat_folders, "generate_emoji_for_name", AsyncMock(side_effect=_gated)):
+            async with TestClient(TestServer(_make_app(state))) as client:
+                first = asyncio.ensure_future(
+                    client.post(
+                        f"/api/chat/folders/{PERSON}/icon-preview", json={}, headers=HEADERS
+                    )
+                )
+                try:
+                    await asyncio.wait_for(started.wait(), timeout=30)
+                    second = await client.post(
+                        f"/api/chat/folders/{PERSON}/icon-preview", json={}, headers=HEADERS
+                    )
+                    assert second.status == 409
+                    assert (await second.json())["code"] == "icon_busy"
+                finally:
+                    release.set()
+                resp = await asyncio.wait_for(first, timeout=30)
+                assert resp.status == 200
+        assert not chat_folders._CHAT_FOLDER_ICON_PREVIEWS
+
+    @pytest.mark.asyncio
+    async def test_no_preview_while_a_background_regenerate_is_pending(self) -> None:
+        state = _state(_ChatSlot("chat-1-100"))
+        release = asyncio.Event()
+
+        async def _gated(_state: Any, _name: str, *, avoid: tuple[str, ...] = ()) -> str:
+            await asyncio.wait_for(release.wait(), timeout=30)
+            return "📈"
+
+        with patch.object(chat_folders, "generate_emoji_for_name", AsyncMock(side_effect=_gated)):
+            async with TestClient(TestServer(_make_app(state))) as client:
+                try:
+                    resp = await client.patch(
+                        f"/api/chat/folders/{PERSON}",
+                        json={"regenerate_icon": True},
+                        headers=HEADERS,
+                    )
+                    assert resp.status == 200
+                    preview = await client.post(
+                        f"/api/chat/folders/{PERSON}/icon-preview", json={}, headers=HEADERS
+                    )
+                    assert preview.status == 409
+                finally:
+                    release.set()
+                await asyncio.wait_for(_drain_icon_tasks(), timeout=30)
+
+    @pytest.mark.asyncio
+    async def test_save_after_preview_stores_the_previewed_icon(self) -> None:
+        """The modal's Save sends the previewed emoji as a plain ``icon``."""
+        state = _state(_ChatSlot("chat-1-100"))
+        with patch.object(chat_folders, "generate_emoji_for_name", AsyncMock(return_value="💼")):
+            async with TestClient(TestServer(_make_app(state))) as client:
+                resp = await client.post(
+                    f"/api/chat/folders/{PERSON}/icon-preview", json={}, headers=HEADERS
+                )
+                icon = (await resp.json())["icon"]
+                saved = await client.patch(
+                    f"/api/chat/folders/{PERSON}", json={"icon": icon}, headers=HEADERS
+                )
+                assert saved.status == 200
+        folder = _by_id(state, PERSON)
+        assert folder is not None and folder["icon"] == "💼"
+
+
+class TestIconPreviewRepeatsAndAudit:
+    @pytest.mark.asyncio
+    async def test_a_repeated_pick_is_retried_once(self) -> None:
+        """A model that returns an icon already shown does not hand it back:
+        one retry, with the variation selector ignored in the comparison."""
+        state = _state(_ChatSlot("chat-1-100"))
+        gen = AsyncMock(side_effect=["\u2708", "\U0001f9f3"])
+        with patch.object(chat_folders, "generate_emoji_for_name", gen):
+            async with TestClient(TestServer(_make_app(state))) as client:
+                resp = await client.post(
+                    f"/api/chat/folders/{PERSON}/icon-preview",
+                    json={"avoid": ["\u2708\ufe0f"]},
+                    headers=HEADERS,
+                )
+                body = await resp.json()
+        assert resp.status == 200
+        assert body == {"icon": "\U0001f9f3"}
+        assert gen.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_two_repeats_are_a_502_not_the_same_icon(self) -> None:
+        state = _state(_ChatSlot("chat-1-100"))
+        gen = AsyncMock(return_value="💼")
+        with patch.object(chat_folders, "generate_emoji_for_name", gen):
+            async with TestClient(TestServer(_make_app(state))) as client:
+                resp = await client.post(
+                    f"/api/chat/folders/{PERSON}/icon-preview",
+                    json={"avoid": ["💼"]},
+                    headers=HEADERS,
+                )
+                body = await resp.json()
+        assert resp.status == 502
+        assert body["code"] == "icon_generate_failed"
+        assert gen.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_a_pick_older_than_the_prompt_window_is_accepted(self) -> None:
+        """Only the emoji the prompt names are refused: an entry that fell out
+        of the last MAX_ICON_PREVIEW_AVOID is a valid pick again."""
+        state = _state(_ChatSlot("chat-1-100"))
+        oldest = "\U0001f4bc"
+        rest = [chr(0x1F680 + i) for i in range(chat_folders.MAX_ICON_PREVIEW_AVOID)]
+        gen = AsyncMock(return_value=oldest)
+        with patch.object(chat_folders, "generate_emoji_for_name", gen):
+            async with TestClient(TestServer(_make_app(state))) as client:
+                resp = await client.post(
+                    f"/api/chat/folders/{PERSON}/icon-preview",
+                    json={"avoid": [oldest, *rest]},
+                    headers=HEADERS,
+                )
+                body = await resp.json()
+        assert resp.status == 200
+        assert body == {"icon": oldest}
+        assert gen.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_a_foreign_app_refusal_is_audited(self) -> None:
+        slot = _ChatSlot("chat-1-100")
+        slot._app = "spec-builder"
+        state = _state(slot)
+        fake_sel = MagicMock()
+        with (
+            patch.object(chat_folders, "sel", return_value=fake_sel),
+            patch.object(chat_folders, "generate_emoji_for_name", AsyncMock()),
+        ):
+            async with TestClient(TestServer(_make_app(state))) as client:
+                resp = await client.post(
+                    f"/api/chat/folders/{FOREIGN}/icon-preview", json={}, headers=HEADERS
+                )
+        assert resp.status == 403
+        kwargs = fake_sel.log_api_access.call_args.kwargs
+        assert kwargs["outcome"] == "denied"
+        assert kwargs["source"] == "app_isolation"
+        assert kwargs["operation"] == "chat.folder_icon_preview"
+
+    @pytest.mark.asyncio
+    async def test_a_channel_reachable_agent_refusal_is_audited(self) -> None:
+        state = _state(_ChatSlot("chat-1-100"))
+        fake_sel = MagicMock()
+        with (
+            patch.object(chat_folders, "sel", return_value=fake_sel),
+            patch.object(chat_folders, "_audit_origin", return_value=("agent", "agent:x")),
+            patch.object(chat_folders, "_caller_reaches_a_channel", return_value=True),
+            patch.object(chat_folders, "generate_emoji_for_name", AsyncMock()) as gen,
+        ):
+            async with TestClient(TestServer(_make_app(state))) as client:
+                resp = await client.post(
+                    f"/api/chat/folders/{PERSON}/icon-preview", json={}, headers=HEADERS
+                )
+                body = await resp.json()
+        assert resp.status == 403
+        assert body["code"] == "channel_reachable_caller"
+        gen.assert_not_awaited()
+        kwargs = fake_sel.log_api_access.call_args.kwargs
+        assert kwargs["outcome"] == "denied"
+        assert kwargs["source"] == "channel_containment"
+
+
+class TestGenerateEmojiAvoid:
+    @pytest.mark.asyncio
+    async def test_avoid_asks_for_a_different_emoji(self) -> None:
+        state = MagicMock(spec=DashboardState)
+        state.sessions = MagicMock()
+        seen: list[str] = []
+
+        async def _one(_sessions: Any, prompt: str, **_kw: Any) -> str:
+            seen.append(prompt)
+            return "🚀"
+
+        with patch.object(chat_folders, "run_bg_oneliner", AsyncMock(side_effect=_one)):
+            icon = await chat_folders.generate_emoji_for_name(
+                state, "Rocketry", avoid=("💼", "not an emoji", "📈")
+            )
+        assert icon == "🚀"
+        assert "different emoji from these: 💼 📈." in seen[0]
+        assert "not an emoji" not in seen[0]
+
+    @pytest.mark.asyncio
+    async def test_no_avoid_keeps_the_original_prompt(self) -> None:
+        state = MagicMock(spec=DashboardState)
+        state.sessions = MagicMock()
+        seen: list[str] = []
+
+        async def _one(_sessions: Any, prompt: str, **_kw: Any) -> str:
+            seen.append(prompt)
+            return "🚀"
+
+        with patch.object(chat_folders, "run_bg_oneliner", AsyncMock(side_effect=_one)):
+            await chat_folders.generate_emoji_for_name(state, "Rocketry")
+        assert "different" not in seen[0]

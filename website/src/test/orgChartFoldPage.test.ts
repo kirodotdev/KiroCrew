@@ -116,9 +116,9 @@ function mount(items: unknown[]) {
   }
 }
 
-/** A host push: the page's own message listener re-renders on the next tick. */
+/** A host push: the page's `kirocrew-dashboard` listener re-renders on the next tick. */
 function push() {
-  window.dispatchEvent(new MessageEvent('message', { data: { type: 'kirocrew:fields' } }))
+  window.dispatchEvent(new Event('kirocrew-dashboard'))
   vi.advanceTimersByTime(1)
 }
 

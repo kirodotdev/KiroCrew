@@ -142,7 +142,15 @@ REVIEW_CONTRACT_SCRIPT = SCRIPT.with_name("_review_contract.py")
 GREEN_AGE_SCRIPT = SCRIPT.with_name("green_age.py")
 # The owner modules pr_status.py loads the same way.
 STATUS_OWNERS = tuple(
-    SCRIPT.with_name(n) for n in ("pr_status_issue_links.py", "pr_status_verdict.py")
+    SCRIPT.with_name(n)
+    for n in (
+        "pr_status_issue_links.py",
+        "pr_status_verdict.py",
+        # The owners _review_contract.py loads.
+        "_review_fences.py",
+        "_review_pushes.py",
+        "_review_rounds.py",
+    )
 )
 
 _HEAD = "f" * 40
@@ -1002,6 +1010,142 @@ class TestDispositionViolations:
         )
 
         assert violations == []
+
+    def test_fable_target_for_an_opus_span_is_not_cross_lane(self) -> None:
+        """`fable` is the override command's spelling of the OPUS lane, so a
+        `target=fable` disposition naming an opus span is a same-lane answer,
+        exactly as `target=opus` is, and is not reported as cross-lane."""
+        module = _load_script()
+        span_opus = module.span_hash("src/y.py", "opus/BLOCKING")
+        comments = [self._opus_comment(_HEAD, ["**BLOCKING \u2014 src/y.py:5 \u2014 title**"])]
+
+        violations = module.disposition_violations(
+            [self._record("fable", [span_opus], head=_HEAD)],
+            comments,
+            _HEAD,
+            self._bindings(module),
+        )
+
+        assert violations == []
+
+    @pytest.mark.parametrize("target", ["fable", "opus"])
+    def test_spanless_opus_lane_record_is_a_no_span_violation(self, target: str) -> None:
+        """Both spellings of the OPUS lane are held to the one-span claim rule:
+        a span-less record is a violation while that lane has findings."""
+        module = _load_script()
+        comments = [self._opus_comment(_HEAD, ["**BLOCKING \u2014 src/y.py:5 \u2014 title**"])]
+
+        violations = module.disposition_violations(
+            [self._record(target, [], head=_HEAD)],
+            comments,
+            _HEAD,
+            self._bindings(module),
+        )
+
+        assert len(violations) == 1
+        assert "claims no span=" in violations[0]
+        assert "target={}".format(target) in violations[0]
+
+    @pytest.mark.parametrize("target", ["fable", "opus"])
+    def test_opus_lane_record_with_an_unknown_span_is_unresolved(self, target: str) -> None:
+        """A span that resolves to no finding on the judged head is reported for
+        either spelling of the OPUS lane."""
+        module = _load_script()
+        comments = [self._opus_comment(_HEAD, ["**BLOCKING \u2014 src/y.py:5 \u2014 title**"])]
+
+        violations = module.disposition_violations(
+            [self._record(target, ["0" * 12], head=_HEAD)],
+            comments,
+            _HEAD,
+            self._bindings(module),
+        )
+
+        assert len(violations) == 1
+        assert "resolves to no finding" in violations[0]
+
+    def test_spanless_fable_record_is_clean_while_opus_has_no_findings(self) -> None:
+        """The no-span rule applies only while the record's own lane has
+        findings: a span-less `target=fable` beside GPT-only findings is clean."""
+        module = _load_script()
+        comments = [self._gpt_comment(_HEAD, ["BLOCKING -- src/x.py:10 -- current"])]
+
+        violations = module.disposition_violations(
+            [self._record("fable", [], head=_HEAD)],
+            comments,
+            _HEAD,
+            self._bindings(module),
+        )
+
+        assert violations == []
+
+    def test_genuine_cross_lane_claim_names_the_bound_lane(self) -> None:
+        """A real cross-lane claim is still caught, and the remedy names the
+        bound lane: a gpt-targeted record naming an opus span is told to use
+        `target=opus`."""
+        module = _load_script()
+        span_opus = module.span_hash("src/y.py", "opus/BLOCKING")
+        comments = [
+            self._gpt_comment(_HEAD, ["BLOCKING -- src/x.py:10 -- current"]),
+            self._opus_comment(_HEAD, ["**BLOCKING \u2014 src/y.py:5 \u2014 title**"]),
+        ]
+
+        violations = module.disposition_violations(
+            [self._record("gpt", [span_opus], head=_HEAD)],
+            comments,
+            _HEAD,
+            self._bindings(module),
+        )
+
+        assert len(violations) == 1
+        assert "cross-lane" in violations[0]
+        assert "from lane opus" in violations[0]
+        assert "with target=opus" in violations[0]
+
+    def test_target_all_bearing_a_span_is_still_cross_lane(self) -> None:
+        """The override command's `all` wildcard clears every lane for a head,
+        but a disposition record covers one finding -- so `target=all` must NOT
+        answer for every lane. A span-bearing `target=all` claiming a gpt span
+        stays a cross-lane violation; the alias resolver drops the wildcard."""
+        module = _load_script()
+        comments, span_gpt, _span_opus = self._current_head_comments(module)
+
+        violations = module.disposition_violations(
+            [self._record("all", [span_gpt], head=_HEAD)],
+            comments,
+            _HEAD,
+            self._bindings(module),
+        )
+
+        assert len(violations) == 1
+        assert "cross-lane" in violations[0]
+
+    def test_spanless_target_all_stays_clean(self) -> None:
+        """A span-less `target=all` resolves to no lane, so the no-span check
+        does not fire -- it was clean before this change and stays clean."""
+        module = _load_script()
+        comments, _span_gpt, _span_opus = self._current_head_comments(module)
+
+        violations = module.disposition_violations(
+            [self._record("all", [], head=_HEAD)],
+            comments,
+            _HEAD,
+            self._bindings(module),
+        )
+
+        assert violations == []
+
+    def test_disposition_reviewer_names_resolves_alias_without_the_wildcard(self) -> None:
+        """The gate resolver: `fable`->{opus}, the literal name is accepted, and
+        `all` resolves to nothing (unlike the override resolver)."""
+        module = _load_script()
+        bindings = self._bindings(module)
+
+        resolve = module._review_contract.disposition_reviewer_names
+        assert resolve("fable", bindings) == {"opus"}
+        assert resolve("opus", bindings) == {"opus"}
+        assert resolve("gpt", bindings) == {"gpt"}
+        assert resolve("all", bindings) == set()
+        assert resolve("nope", bindings) == set()
 
     def test_blanket_old_record_still_gates_while_its_lane_has_live_findings(self) -> None:
         """A span-less record keeps ledger downgrade power exactly as long as

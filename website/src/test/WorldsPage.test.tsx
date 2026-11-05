@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { screen, fireEvent } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
 import WorldsPage from '../pages/WorldsPage'
+import { i18next } from '../i18n/all'
 import type { AgentSource } from '../hooks/useAgentSync'
 
 // Mock useAgentSync to avoid real API calls
@@ -194,5 +195,18 @@ describe('WorldsPage', () => {
       expect(screen.getByText('Playing in popout window')).toBeInTheDocument()
       expect(screen.getByText('Focus popout')).toBeInTheDocument()
     })
+  })
+})
+
+describe('WorldsPage: localized scene buttons', () => {
+  it('names a scene button in the active language', async () => {
+    const previous = i18next.language
+    await i18next.changeLanguage('de')
+    try {
+      renderWithProviders(<WorldsPage />)
+      expect(screen.getByRole('radio', { name: 'Szene Office: Classic pixel office' })).toBeInTheDocument()
+    } finally {
+      await i18next.changeLanguage(previous)
+    }
   })
 })

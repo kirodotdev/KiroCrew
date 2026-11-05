@@ -375,10 +375,12 @@ class TestJitterWaitEndsOnWallClock:
         assert time_mod.perf_counter() - start >= 0.05 - tick
 
     @pytest.mark.asyncio
-    async def test_scheduled_run_waits_through_the_wall_clock_helper(self):
-        """``_run_job_isolated`` routes its jitter through the helper, not a bare sleep."""
+    async def test_scheduled_run_waits_through_the_wall_clock_helper(self, monkeypatch, tmp_path):
+        """``_run_job_isolated`` routes its jitter through the helper, not a bare sleep:
+        a host that resumes past the wall-clock deadline starts the run at once."""
         import time
-        from unittest.mock import AsyncMock
+
+        import kiro_crew.cron as cron_mod
 
         job = CronJob(
             id="wall1",
@@ -387,14 +389,18 @@ class TestJitterWaitEndsOnWallClock:
             schedule=CronSchedule(kind="cron", cron_expr="0 9 * * 1-5"),
             created_ts=time.time() - 7200,
         )
-        svc = CronService()
+        svc = CronService(base_dir=tmp_path)
         svc._on_job = None
 
-        wait = AsyncMock()
-        with (
-            patch.object(CronService, "_compute_jitter", return_value=1234.0),
-            patch("kiro_crew.cron._sleep_out_jitter", wait),
-        ):
-            await svc._run_job_isolated(job, svc._claim_run(job.id, "scheduled"))
+        base = 1_790_000_000.0
+        # The deadline read, the first remaining check, then the host resumes past it.
+        monkeypatch.setattr(cron_mod, "time", self._clock([base, base, base + 1300]))
+        monkeypatch.setattr(cron_mod, "_JITTER_WALL_SLICE_SECS", 0.01)
+        with patch.object(CronService, "_compute_jitter", return_value=1234.0):
+            # A bare sleep would hold this run for 1234 awake seconds.
+            await finished(
+                svc._run_job_isolated(job, svc._claim_run(job.id, "scheduled")),
+                "the scheduled run past its jitter",
+            )
 
-        wait.assert_awaited_once_with(1234.0)
+        assert job.last_run_ts == base + 1300

@@ -1,10 +1,10 @@
-"""``DELETE /api/agents/{name}``: the record delete, the crew-log unit reclaim and the private-copy prune."""
+"""``DELETE /api/agents/{name}``: the record delete, the crew-log reclaim and the shared teardown."""
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from aiohttp import web
 
@@ -13,9 +13,11 @@ if TYPE_CHECKING:
         KiroCrewConfig,
         UnknownMemoryStore,
         _AmbiguousTemplateName,
+        _avatar_variant_paths,
         _drained_to_thread,
         _get_config_lock,
         _load_template_specs,
+        _pending_avatar_path,
         _refresh_session_defaults,
         _remove_avatar_files,
         _require_owner,
@@ -148,7 +150,9 @@ def _reclaim_deleted_member_crew_log(name: str, cfg: KiroCrewConfig) -> None:
         logger.info("crew delete: the crew log of %r was not removed (%s)", slug, status)
 
 
-async def _remove_goal_check_ins(request: web.Request, name: str, cfg: KiroCrewConfig) -> None:
+async def _remove_goal_check_ins(
+    crons: Any, name: str, cfg: KiroCrewConfig, actor: str
+) -> list[str] | None:
     """Remove a deleted crewmate's goal check-in schedules. Never raises.
 
     Each check-in is a gateway-owned job keyed ``goal-<cadence>:<slug>``
@@ -157,24 +161,35 @@ async def _remove_goal_check_ins(request: web.Request, name: str, cfg: KiroCrewC
     captured while the record was still in it, which the slug is resolved from;
     a slug another live crew still derives keeps its schedules. The goal record
     itself stays, like the rules file beside it.
+
+    Returns the names of the jobs removed, or ``None`` when the removal failed.
     """
-    state = request.app.get("state")
-    crons = getattr(state, "crons", None) if state is not None else None
-    if crons is None:
-        return
+    removed: list[str] = []
     try:
         from kiro_crew.dashboard import goal_reminder
         from kiro_crew.members import member_slug
 
         slug = member_slug(name, cfg)
         if await asyncio.to_thread(_member_slug_is_claimed, slug):
-            return
-        for job in await goal_reminder.reminder_jobs(crons, slug):
-            await crons.remove_job_async(job.id, actor="dashboard", source="agent.delete")
+            return removed
+        jobs = await goal_reminder.reminder_jobs(crons, slug)
+        # An unreadable store lists as empty; that is a failure, not "none".
+        crons.raise_if_store_unreadable()
+        for job in jobs:
+            # The sync removal in a worker thread, not ``remove_job_async``: on a
+            # service no gateway started (the CLI's), the async form would arm a
+            # scheduler timer on this short-lived loop. In the gateway the worker
+            # hands the re-arm back to the service's own loop.
+            if await asyncio.to_thread(
+                crons.remove_job, job.id, actor=actor, source="agent.delete"
+            ):
+                removed.append(job.name or job.id)
+        return removed
     except Exception:
         logger.warning(
             "crew delete: could not remove the goal check-ins of %r", name, exc_info=True
         )
+        return None
 
 
 def _reclaim_deleted_member_dashboard_lock(name: str, cfg: KiroCrewConfig) -> None:
@@ -233,8 +248,19 @@ def _prune_private_copy_of_deleted_crew(crew: str, bound_template: str) -> bool:
     crew's removal is already durable and must not fail on cleanup. Returns
     True when the file was removed, so the caller can drop the template cache.
     """
+    return _prune_private_copy_outcome(crew, bound_template) == "deleted"
+
+
+def _prune_private_copy_outcome(crew: str, bound_template: str) -> str:
+    """:func:`_prune_private_copy_of_deleted_crew`, naming how it ended.
+
+    ``"deleted"`` when the file went, ``"error"`` when a corroborated copy
+    could not be removed (an unlink failure or an unreadable config), and
+    ``""`` when there was nothing of the crew's to remove or the copy stays on
+    purpose (another crew is bound to it, or it is not provably the crew's).
+    """
     if not bound_template:
-        return False
+        return ""
     agents_dir = kiro_agents_dir_path()
     try:
         _spec, copy_name, _taken, copy_path = _load_template_specs(
@@ -245,7 +271,7 @@ def _prune_private_copy_of_deleted_crew(crew: str, bound_template: str) -> bool:
             "crew delete: private copy name %r is ambiguous; leaving file and lineage",
             bound_template,
         )
-        return False
+        return ""
     # Lineage is keyed by the copy's declared name while a binding resolves by
     # declared name OR file stem, so the record is looked up under every name
     # that resolves this file — a stem/name divergence must not hide it.
@@ -260,7 +286,7 @@ def _prune_private_copy_of_deleted_crew(crew: str, bound_template: str) -> bool:
             lineage_key = key
             break
     if not lineage_key:
-        return False
+        return ""
     if copy_path is None:
         # The name resolved to no READABLE spec. That is not proof the file is
         # gone: a malformed or unreadable copy still sits on disk (the spec
@@ -275,17 +301,92 @@ def _prune_private_copy_of_deleted_crew(crew: str, bound_template: str) -> bool:
             "keeping its lineage",
             lineage_key,
         )
-        return False
+        return ""
     if not _spec_path_is_safe(copy_path, agents_dir):
-        return False
+        return ""
     # The deleted crew's record is gone from config, so any binding still
     # resolving the copy is another crew's: the locked helper keeps file and
     # lineage in that case, atomically against concurrent binding writes.
-    if _unlink_copy_unless_referenced(copy_path, agents_dir, *lineage_keys) != "deleted":
-        return False
+    unlinked = _unlink_copy_unless_referenced(copy_path, agents_dir, *lineage_keys)
+    if unlinked != "deleted":
+        return "error" if unlinked == "error" else ""
     with contextlib.suppress(Exception):
         agent_state.prune(lineage_key)
-    return True
+    return "deleted"
+
+
+async def _remove_member_leftovers(
+    name: str, cfg: KiroCrewConfig, bound_template: str, crons: Any, actor: str
+) -> list[tuple[str, str, str]]:
+    """Remove what a deleted crewmate leaves outside its config record. Never raises.
+
+    The one teardown both deletes run once the record is gone --
+    ``DELETE /api/agents/{name}`` and ``kirocrew agent delete``: the avatar, the
+    goal check-in schedules (skipped when *crons* is ``None``), the git worktrees
+    its workers ran in, and its private template copy. *cfg* is the config
+    captured while the record was still in it and *bound_template* the binding
+    read inside the delete's critical section, as each step documents.
+
+    Every step runs whatever the one before it did. Returns one
+    ``(outcome, kind, detail)`` per thing touched: *outcome* is ``"removed"``,
+    ``"kept"`` (a worktree :func:`remove_crewmate_worktrees` keeps on purpose) or
+    ``"failed"``; *kind* is ``"avatar"``, ``"goal check-in"``, ``"worktree"`` or
+    ``"private template copy"``; *detail* names the item, empty for a failure.
+    """
+    report: list[tuple[str, str, str]] = []
+
+    def _avatar() -> None:
+        def present() -> bool:
+            return bool(_avatar_variant_paths(name)) or _pending_avatar_path(name) is not None
+
+        if not present():
+            return
+        _remove_avatar_files(name)
+        report.append(("failed" if present() else "removed", "avatar", ""))
+
+    try:
+        await _drained_to_thread(_avatar)
+    except Exception:
+        logger.warning("crew delete: could not remove the avatar of %r", name, exc_info=True)
+        report.append(("failed", "avatar", ""))
+    if crons is not None:
+        jobs = await _remove_goal_check_ins(crons, name, cfg, actor)
+        if jobs is None:
+            report.append(("failed", "goal check-in", ""))
+        report.extend(("removed", "goal check-in", job) for job in jobs or ())
+    # One with uncommitted changes is kept; its branches and the repositories'
+    # own checkouts are never touched.
+    # Worktrees sit under the slug, so a slug another live crew still derives
+    # keeps them, as it keeps the goal check-ins.
+    from kiro_crew.crewmate_worktree import remove_for_member
+    from kiro_crew.members import member_slug
+
+    def _trees() -> tuple[list[str], list[str]] | None:
+        try:
+            claimed = _member_slug_is_claimed(member_slug(name, cfg))
+        except Exception:
+            logger.warning("crew delete: could not resolve the slug of %r", name, exc_info=True)
+            return None
+        return ([], []) if claimed else remove_for_member(name, cfg)
+
+    trees = await _drained_to_thread(_trees)
+    if trees is None:
+        report.append(("failed", "worktree", ""))
+    else:
+        report.extend(("removed", "worktree", path) for path in trees[0])
+        report.extend(("kept", "worktree", path) for path in trees[1])
+    try:
+        outcome = await _drained_to_thread(_prune_private_copy_outcome, name, bound_template)
+    except Exception:
+        logger.warning(
+            "crew delete: could not remove the private template copy of %r", name, exc_info=True
+        )
+        outcome = "error"
+    if outcome == "deleted":
+        report.append(("removed", "private template copy", bound_template))
+    elif outcome == "error":
+        report.append(("failed", "private template copy", ""))
+    return report
 
 
 async def api_kirocrew_agent_delete(request: web.Request) -> web.Response:
@@ -351,7 +452,7 @@ async def api_kirocrew_agent_delete(request: web.Request) -> web.Response:
                 nonlocal retired_store, bound_template
                 agents = coerce_dict_section(doc, "agents")
                 if name not in agents:
-                    raise UnknownMemoryStore(f"Crew Member {name!r} was removed concurrently")
+                    raise UnknownMemoryStore(f"Bot {name!r} was removed concurrently")
                 # Identity re-enforced on the RAW record this locked read
                 # returned, BEFORE the del and before any crew-log / avatar /
                 # private-copy cleanup. ``agents[name]["member_id"]`` is the
@@ -368,7 +469,7 @@ async def api_kirocrew_agent_delete(request: web.Request) -> web.Response:
                 if doc.get("default_agent") == name or (
                     isinstance(agent_section, dict) and agent_section.get("default_agent") == name
                 ):
-                    raise UnknownMemoryStore(f"Crew Member {name!r} became the default")
+                    raise UnknownMemoryStore(f"Bot {name!r} became the default")
                 entry = agents[name]
                 stores = coerce_dict_section(doc, "memory_stores")
                 store_name = entry.get("memory_store", "") if isinstance(entry, dict) else ""
@@ -441,28 +542,24 @@ async def api_kirocrew_agent_delete(request: web.Request) -> web.Response:
                 from kiro_crew.dashboard.handlers._shared import release_markdown_memory_store
 
                 await release_markdown_memory_store(state, retired_store)
-        # The crew is gone; its uploaded picture must not outlive it. Inside
-        # the same lock so the cleanup cannot run AFTER a concurrent
-        # same-name recreation has already uploaded and committed a new
-        # picture under the same digest stem.
-        await _drained_to_thread(_remove_avatar_files, name)
-        await _remove_goal_check_ins(request, name, cfg)
-        # The git worktrees the crewmate's workers ran in go with it; one with
-        # uncommitted changes is kept, and its branches and the repositories'
-        # own checkouts are never touched.
-        from kiro_crew.crewmate_worktree import remove_for_member
+            from kiro_crew.dashboard.mate_folders import hand_back_home
 
-        await _drained_to_thread(remove_for_member, name, cfg)
-        # Likewise the crew's private template copy: a copy the sidecar marks
-        # private to THIS crew, and that the crew was bound to, has no reader
-        # left once the record is gone — kept, it lists in the Agent Templates
-        # tab under a dead crew's name. Same lock, for the same reason as the
-        # avatar: a same-name recreation must not fork a fresh copy only to
-        # have this cleanup remove it. Best-effort: a locked or unreadable
-        # file never blocks the crew's removal.
-        if await _drained_to_thread(_prune_private_copy_of_deleted_crew, name, bound_template):
+            await hand_back_home(request.app.get("state"), retired_store)
+        # The crew is gone; its picture, goal check-ins, worktrees and private
+        # template copy must not outlive it. Inside the same lock so the cleanup
+        # cannot run AFTER a concurrent same-name recreation has already
+        # uploaded a new picture under the same digest stem or forked a fresh
+        # copy. A private copy the sidecar marks private to THIS crew, and that
+        # the crew was bound to, has no reader left once the record is gone --
+        # kept, it lists in the Agent Templates tab under a dead crew's name.
+        # Best-effort: no step blocks the crew's removal.
+        state = request.app.get("state")
+        leftovers = await _remove_member_leftovers(
+            name, cfg, bound_template, getattr(state, "crons", None), "dashboard"
+        )
+        if ("removed", "private template copy", bound_template) in leftovers:
             clear_list_agents_cache()
-            if (state := request.app.get("state")) is not None:
+            if state is not None:
                 state.push_refresh("agents")
     # A crew DISAPPEARING is the other half of the same invariant: the captured
     # config still holds the record, so a cron or messaging job still naming the

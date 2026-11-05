@@ -1,17 +1,10 @@
 """The two store recovery paths reuse a committed seq, and what a reader does about it.
 
-The store's rule is that a committed line is never rewritten. Two recovery paths bend
-it, and the first half of this file PROVES they do rather than assuming it: an
-unreachable chunk group is dropped and closers are appended from the cut, and a failed
-append is removed after its bytes reached the disk. In both, a seq a reader could
-already have folded comes back carrying different bytes, and the file is longer and its
-newest seq higher -- which every stat and every seq comparison reads as a plain append.
+The first half proves that dropping an orphan chunk group and rolling back a failed
+append both bring back a folded seq with different bytes, in a file that looks appended.
 
-The second half is the reader's side. A continuation has to prove that the records it
-already folded are still those bytes, and hashing them charges a byte walk of everything
-the reader has ever consumed -- on every read of an idle board. The cut counter answers
-the same question from a few bytes, and the tests here pin both that it answers it
-correctly and that the hash is not walked when it does.
+The second half pins that the cut counter proves a warm fold from a few bytes, so the
+folded prefix is not hashed on every read.
 """
 
 from __future__ import annotations
@@ -23,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from crew_log_drain import assert_drained
 
 from kiro_crew import crew_log as lg
 from kiro_crew.crew_log import CrewLog
@@ -62,11 +56,8 @@ def _isolated_home(tmp_path, _floor_monkeypatch: pytest.MonkeyPatch):
 def _a_completed_cut(directory) -> None:
     """Record a cut of *directory*'s log that has FINISHED, as the store records one.
 
-    The store brackets every cut with a raise on either side of the bytes
-    (``_open_cut`` / ``_close_cut``), so a stand-in that raised the counter once would
-    leave it odd -- reported as a cut still in flight, which is a different reading with
-    a different answer. Both halves, in the store's own order, so what this stands for is
-    a completed mutation.
+    Both halves (``_open_cut`` / ``_close_cut``) in the store's order: a single raise
+    would leave the counter odd, which reads as a cut still in flight.
     """
     crew_log_store._open_cut(directory)
     crew_log_store._close_cut(directory)
@@ -113,12 +104,8 @@ def _reused(before: "dict[int, bytes]", after: "dict[int, bytes]") -> "list[int]
 def _orphan_chunk_group(unit_id: str) -> None:
     """Leave a turn open, a tool call open, and one chunk nothing cites.
 
-    What a hard kill during a batched group write leaves behind, written through the
-    store because the emitter always writes the group whole --
-    ``test_crew_log_real_crash.py`` is where a real SIGKILL is shown to produce this
-    shape. ONE chunk and TWO openers, so the repair appends more lines than it drops
-    and the file ends up TALLER than it was: that is the case a reader cannot tell
-    from an append, and a group of two would leave the height level instead.
+    The shape a hard kill mid-group leaves (``test_crew_log_real_crash.py`` shows it).
+    One chunk and two openers, so the repair leaves the file taller, like an append.
     """
     handle = CrewLog.open(lg.KIND_SESSION, unit_id)
     handle.append("turn/started", {"turn": 1, "actor": "user", "depth": 0}, src="acp")
@@ -137,7 +124,7 @@ def _ledger(unit_id: str, **fields: Any) -> None:
     payload: dict[str, Any] = {"slot": SLOT}
     payload.update(fields)
     crew_log_emit.on_ledger_recorded(unit_id, payload)
-    crew_log_emit.flush(timeout=5.0)
+    assert_drained()
 
 
 def _stub_directory_sync(
@@ -145,15 +132,11 @@ def _stub_directory_sync(
 ) -> "dict[str, bool]":
     """Drive `_cuts_dir_forced`'s two outcomes without asking the host which it is.
 
-    Whether a directory can be synced is a PLATFORM fact: Windows has no directory
-    descriptor, and some filesystems reject `fsync` on one. A test that read the real
-    answer would exercise whichever case the runner happens to be, and the other case --
-    the one that decides whether a cut is refused -- would go unasserted on half the
-    matrix. So the three descriptor calls are stubbed for THIS directory only, and
-    delegate for every other path so the rest of the process is untouched.
+    Directory sync support differs by platform, so the three descriptor calls are stubbed
+    for THIS directory only; every other path delegates to the real calls.
 
-    The returned dict records which of the three the function actually made, so a test
-    can tell "reported False" from "never got that far".
+    The returned dict records which calls were made, to tell "reported False" from
+    "never got that far".
     """
     fake_fd = 0x7F000001  # past any real descriptor, so interception is by value
     real_open, real_fsync, real_close = os.open, os.fsync, os.close
@@ -230,13 +213,8 @@ def test_the_orphan_group_repair_reuses_a_committed_seq_with_other_bytes():
 def test_a_rolled_back_append_reuses_a_committed_seq_with_other_bytes(monkeypatch):
     """An append whose fsync fails is removed, and the retry reuses its seq.
 
-    The bytes are written and FLUSHED before the fsync that fails, so a reader holding
-    no lock -- which is every reader -- can read them as a committed entry in that
-    window. The rollback then removes them and the next append writes something else
-    under the same number.
-
-    The window is observed by looking at the file from inside the failing fsync, which
-    is where a lock-free reader's read can land. Nothing here is timed.
+    The bytes are flushed before the failing fsync, so a lock-free reader can fold them.
+    The file is read from inside the failing fsync, so nothing here is timed.
     """
     _unit(UNIT)
     handle = CrewLog.open(lg.KIND_SESSION, UNIT)
@@ -566,15 +544,9 @@ def _rewrite_in_place(unit_id: str, find: str, replace: str) -> None:
 def test_an_uncounted_in_place_rewrite_is_served_warm_on_a_counter_bearing_unit():
     """The accepted narrowing, pinned so it is a decision and not a surprise.
 
-    On a unit with a counter the proof is "nothing the store does changed these
-    records", not "these records hash the same". So an in-place rewrite that is NOT a cut
-    -- a hand-edit, a file-sync tool, corruption -- keeps the count and is served from
-    the warm fold. The store performs no such mutation and nothing else in it defends
-    against one; reverting this would mean hashing the folded prefix on every read.
-
-    The test asserts the DIVERGENCE on purpose. A later build that reinstates the hash
-    will fail here, which is the signal to re-take the decision rather than to re-record
-    it silently.
+    With a counter, an in-place rewrite that is not a cut (hand edit, corruption) keeps
+    the count and is served warm. Asserting the divergence makes a return to hashing
+    the folded prefix a deliberate decision.
     """
     _unit(UNIT)
     _ledger(UNIT, goal="g", event="ORIGINAL-ONE", event_kind="progress")
@@ -662,11 +634,8 @@ def _after_a_restart(units: "tuple[str, ...]") -> str:
 def test_a_savepoint_on_a_counter_bearing_unit_records_the_count_not_a_digest(_cheap_writes):
     """One spelling of the evidence, chosen by what the unit states.
 
-    The savepoint needs the same proof a warm read needs -- that the records its state
-    was folded from are still those bytes -- and the counter answers it from a few bytes
-    where the digest answers it by walking the whole consumed prefix. The digest costs
-    the WRITE side too, which is the part a reader cannot amortize: resolving a record
-    boundary means decoding every record up to it, every time a savepoint is written.
+    A digest would decode every record up to the boundary on each savepoint write; the
+    counter gives the same proof from a few bytes.
     """
     _unit(UNIT)
     for step in range(1, 7):
@@ -797,13 +766,8 @@ def test_a_log_with_no_counter_still_gets_a_digest_witness(_cheap_writes):
 def test_a_reader_that_samples_mid_cut_is_told_nothing_rather_than_a_matchable_count():
     """The window a single raise would leave open, closed by the second one.
 
-    A reader holds no lock, so it can sample the counter after the store has raised it
-    and before the bytes have moved. With one raise that sample is a settled-looking
-    value the reader would find AGAIN after the rewrite -- nothing raises it a third
-    time -- so it would compare equal and continue over records the cut replaced.
-
-    The in-flight value is odd and reports nothing, which is what makes that impossible:
-    there is no reading a reader can take inside a cut and match outside it.
+    A lock-free reader can sample between the raise and the byte move. With one raise
+    that value would match again after the cut; the odd in-flight value reports nothing.
     """
     _unit(UNIT)
     _ledger(UNIT, goal="g", event="one", event_kind="progress")
@@ -846,14 +810,8 @@ def test_a_real_cut_moves_the_settled_count_by_two():
 def test_a_counter_that_cannot_be_raised_is_retired_so_it_proves_nothing():
     """A failed raise must not leave the OLD value standing while the cut goes ahead.
 
-    The likely cause of a failed raise is a full disk -- the append whose rollback is
-    cutting failed for the same reason -- and a write to a temp file needs space the
-    truncation does not. If the counter kept its old value through that, a reader
-    holding it would compare equal across the cut and keep serving records the file no
-    longer holds, which is a wrong answer and not a slow one.
-
-    Retiring the file needs no space, so it is what happens instead: the counter reads
-    as not proven and the digest or a fold from empty decides.
+    A failed raise is likely a full disk; the old value would let readers match across
+    the cut. Retiring needs no space, so the counter reads as not proven instead.
     """
     _unit(UNIT)
     _ledger(UNIT, goal="g", event="ORIGINAL-ONE", event_kind="progress")
@@ -888,11 +846,8 @@ def test_a_counter_that_cannot_be_raised_is_retired_so_it_proves_nothing():
 def test_a_cut_refuses_when_the_counter_can_neither_be_raised_nor_retired():
     """The one case left, and it refuses the cut rather than cutting on a false proof.
 
-    Everywhere else this counter is an optimisation token and a write fault costs only
-    speed. Not here: proceeding would leave every reader holding the old count able to
-    certify the bytes being removed, and the slot savepoint records the same value, so
-    the wrong answer survives restarts. Leaving the file as it was is recoverable -- the
-    next open repairs it again.
+    Cutting here would let the old count (also held by the slot savepoint) certify the
+    removed bytes across restarts. Leaving the file is recoverable: the next open repairs.
     """
     _unit(UNIT)
     _ledger(UNIT, goal="g", event="one", event_kind="progress")
@@ -993,15 +948,8 @@ def test_a_savepoint_cannot_be_written_or_admitted_from_a_mid_cut_reading(_cheap
 def test_a_cut_after_an_interrupted_one_never_re_issues_the_count_it_left(_cheap_writes):
     """A cut left in flight must not be recovered from by starting the count again.
 
-    Every reading of this counter rests on one thing: a held count could only have come
-    from the state it was taken in. A recovery that restarted low breaks exactly that.
-    The unit settles at 2 and a savepoint records 2; a cut then opens and the process
-    never gets to close it, so the counter sits odd at 3. Counting the next cut from
-    "nothing proven" would write 1 and close on 2 -- and the savepoint holding 2 would
-    be admitted over the records that cut removed.
-
-    So the next cut advances from the ODD NUMBER ON DISK, and the settled value it lands
-    on is one no earlier reading of this unit can hold.
+    A savepoint holds 2, then a cut is left open at 3. Restarting from 1 would close on 2
+    and admit that savepoint, so the next cut advances from the odd number on disk.
     """
     _unit(UNIT)
     for step in range(1, 7):
@@ -1035,15 +983,8 @@ def test_a_cut_after_an_interrupted_one_never_re_issues_the_count_it_left(_cheap
 def test_a_cut_after_a_lost_counter_starts_past_every_count_it_could_have_issued(_cheap_writes):
     """The same rule where there is no number on disk to advance from.
 
-    A failed raise retires the counter, and a log written before the counter existed has
-    none either. Both read as nothing proven, which is safe for a READER -- it falls
-    back to the digest -- but it tells a WRITER nothing about what has already been
-    issued. Counting from one there would close on 2, which is the second cut of every
-    log and the commonest value a savepoint holds.
-
-    A fresh phase is taken from the nanosecond clock instead: far past any count a log
-    reaches by being cut, so it cannot collide with a value this unit issued by
-    counting.
+    A retired or never-written counter tells a writer nothing; counting from one would
+    close on 2, the commonest savepoint value. The nanosecond clock starts past any count.
     """
     _unit(UNIT)
     for step in range(1, 7):
@@ -1079,11 +1020,8 @@ def test_a_cut_after_a_lost_counter_starts_past_every_count_it_could_have_issued
 def test_publishing_the_counter_forces_out_the_directory_that_names_it(monkeypatch):
     """A renamed-into-place counter is not durable until its directory is.
 
-    ``atomic_write`` forces the file's bytes and renames it over the old one, but the
-    NAME lives in the parent directory: until that is synced a power-off can return
-    from the rename and come back to the entry that was there before. Since the very
-    next step truncates the log, that is a pre-cut count sitting beside repaired
-    history.
+    The name lives in the parent directory: without a sync, a power-off can bring back the
+    pre-cut count beside the truncated log.
     """
     _unit(UNIT)
     _ledger(UNIT, event="one", event_kind="progress")
@@ -1104,15 +1042,8 @@ def test_publishing_the_counter_forces_out_the_directory_that_names_it(monkeypat
 def test_a_cut_outlives_a_directory_that_cannot_be_synced(monkeypatch):
     """A cut does not need the directory, because the invalidation does not.
 
-    The narrow failure: the raise and the retire both reach the disk, and only the
-    directory sync that would publish the new NAME does not. An earlier shape of this
-    code rested on that sync and had to refuse the cut over it -- and on a filesystem
-    where a directory sync cannot be expressed at all, a silent success was no better.
-
-    Emptying the counter in place answers both. It changes the file's contents, which
-    the descriptor fsync forces, and touches no directory entry, so the old value stops
-    counting whatever the directory does afterwards. The cut goes ahead, the counter
-    proves nothing, and the digest decides -- slower, never wrong.
+    Only the directory sync fails. Emptying the counter in place is forced by the file
+    fsync and needs no directory entry, so the cut goes ahead and the digest decides.
     """
     _unit(UNIT)
     _ledger(UNIT, event="ORIGINAL-ONE", event_kind="progress")
@@ -1156,15 +1087,8 @@ def test_a_cut_outlives_a_directory_that_cannot_be_synced(monkeypatch):
 def test_a_rollback_that_cannot_account_for_its_cut_is_retryable_not_a_refusal(monkeypatch):
     """The bytes are still in the file, so the entry is still worth writing again.
 
-    An append fails after its bytes reached the disk, and the rollback that would remove
-    them cannot record the cut or disown the count -- a filesystem gone read-only fails
-    all three. The rollback then declines to truncate, which is correct, and the bytes
-    stay.
-
-    What that is reported AS decides whether the event survives. A ``CrewLogError`` is
-    the writer's word for "declined before any byte was written", so it would drop the
-    event over a fault that a remount clears. The outcome here is UNKNOWN instead, which
-    is what :class:`IndeterminateAppend` says and what the writer retries.
+    On a read-only filesystem the rollback declines to truncate. A ``CrewLogError`` would
+    make the writer drop the event; :class:`IndeterminateAppend` makes it retry.
     """
     from kiro_crew.crew_log import writer as crew_log_writer
     from kiro_crew.crew_log.errors import IndeterminateAppend
@@ -1204,16 +1128,8 @@ def test_a_rollback_that_cannot_account_for_its_cut_is_retryable_not_a_refusal(m
 def test_a_counter_that_cannot_be_read_is_not_evidence_that_it_was_retired(_cheap_writes):
     """Retirement is an action taken, never a reading taken.
 
-    A counter held open by another process -- a Windows sharing lock denies the replace,
-    the unlink and the open together -- cannot be raised, cannot be removed and cannot
-    be read, while its old even value sits on disk the whole time. Asking whether it
-    reads as nothing would answer yes, because an UNREADABLE counter reports nothing
-    just as an absent one does. The cut would then go ahead, the handle would close, and
-    the old count would come back to certify the records that cut removed: a savepoint
-    holding it would be admitted over them.
-
-    So both attempts failing is reported as a failure. The cut is refused, the file is
-    left as it was, and the count that survives is one that still tells the truth.
+    A Windows sharing lock blocks raise, remove and read while the old value stays on
+    disk. Unreadable reads like absent, so both attempts failing must refuse the cut.
     """
     _unit(UNIT)
     for step in range(1, 7):
@@ -1284,17 +1200,8 @@ def test_a_counter_that_cannot_be_read_is_not_evidence_that_it_was_retired(_chea
 def test_a_torn_tail_repair_that_cannot_account_for_its_cut_keeps_the_event(_cheap_writes):
     """A refused cut must not cost the entry the caller was trying to write.
 
-    Every cut in this store is a RECOVERY done on the way to something else. The one
-    here is the torn-tail truncation an ordinary `append` performs before it writes, so
-    a refused cut surfaces as that append's failure -- and what the append is TOLD
-    decides whether the entry survives. The write-behind reads a `CrewLogError` as
-    "declined on its own merits, retrying is pointless" and drops the event; the causes
-    that refuse a cut are storage faults that clear, so a counter another process holds
-    open for a few seconds would permanently lose a valid entry.
-
-    `CutUnaccounted` is an `OSError` for that reason. The truncation is still refused --
-    the torn bytes stay, the counter still says what it said -- and once the lock lifts
-    the same append lands.
+    The torn-tail cut runs inside `append`, and the write-behind drops on `CrewLogError`.
+    `CutUnaccounted` is an `OSError` so the append is retried once the lock lifts.
     """
     from kiro_crew.crew_log import writer as crew_log_writer
 
@@ -1378,19 +1285,10 @@ def test_a_lost_rename_on_a_filesystem_that_cannot_sync_a_directory_proves_nothi
 ):
     """A directory sync that was never possible is not a durable publication.
 
-    `fsync_dir` returns QUIETLY where the platform cannot express one -- Windows has no
-    directory descriptor, and some filesystems reject `fsync` on a directory. That is
-    the right contract for it and the wrong evidence for a cut: a rename there is as
-    durable as the filesystem feels like being, so a power loss can keep the log's
-    truncation and lose the counter's new name. The name then still points at the OLD
-    inode, and if that inode still held the pre-cut count, a savepoint holding it would
-    be admitted over the records the cut removed.
+    `fsync_dir` returns quietly where unsupported, so a power loss can lose the rename and
+    keep the old inode. Emptying it in place first means a lost rename proves nothing.
 
-    So the old value is emptied IN PLACE before the new one is published. That needs no
-    directory entry, so a lost rename comes back to a counter that proves nothing.
-
-    Modelled here as the two faults together: a directory sync that does nothing (the
-    unsupported filesystem) and a publication whose rename never lands (the power loss).
+    Modelled as a no-op directory sync plus a rename that never lands.
     """
     _unit(UNIT)
     for step in range(1, 7):
@@ -1449,15 +1347,8 @@ def test_a_lost_rename_on_a_filesystem_that_cannot_sync_a_directory_proves_nothi
 def test_a_counter_too_long_to_convert_reads_as_unproven_rather_than_raising():
     """All digits is not the same as convertible, and a fold must not learn that twice.
 
-    CPython refuses to turn a decimal string longer than its integer-conversion limit
-    (4300 digits by default) into an ``int``, and this counter is a plain file that
-    anything on the host can write -- a stray `cat`, a corrupted block, a well-meant
-    hand edit. `str.isdecimal` says yes to all 5000 of those digits, so the guard in
-    front of the conversion lets it through and the conversion is where it breaks.
-
-    A `ValueError` out of `read_cuts` would surface in a reader whose only question was
-    whether a cut had happened, and fail the whole fold. NOT PROVEN is the answer every
-    other unreadable shape already gets: the digest decides, slower and never wrong.
+    CPython refuses ``int`` on more than 4300 digits, though `str.isdecimal` accepts them.
+    A `ValueError` from `read_cuts` would fail the fold, so it reads as not proven.
     """
     _unit(UNIT)
     _ledger(UNIT, event="ORIGINAL-ONE", event_kind="progress")
@@ -1499,20 +1390,10 @@ def test_a_counter_too_long_to_convert_reads_as_unproven_rather_than_raising():
 def test_a_cut_refuses_when_only_an_unsynced_unlink_stands_behind_it(monkeypatch):
     """The weaker retirement is not allowed to rest on a sync that cannot happen.
 
-    Emptying the counter in place is the retirement that needs no directory entry, so
-    when it works nothing else matters. When it FAILS, an unlink is all that is left --
-    and an unlink is a directory change, so it is only as real as that directory is
-    synced. On a filesystem that cannot express a directory sync, ``fsync_dir`` returns
-    quietly and the lenient check would call that success: the counter could come back
-    with its old value, beside a log that had been truncated.
+    When emptying in place fails, the unlink fallback is a directory change, so it needs
+    a directory sync that was actually performed. Neither works here, so the cut refuses.
 
-    So the fallback requires a sync it actually PERFORMED. Neither available here, so
-    the cut is refused and the file is left exactly as it was.
-
-    Both outcomes are STUBBED rather than taken from the host, because whether a
-    directory sync is available is exactly what differs between the platforms this runs
-    on: Windows cannot open a directory at all, so asking the real filesystem would make
-    the supported case unreachable there and the test would decide nothing.
+    Stubbed because directory sync support differs by platform (Windows has none).
     """
     _unit(UNIT)
     _ledger(UNIT, event="one", event_kind="progress")

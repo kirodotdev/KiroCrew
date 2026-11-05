@@ -65,6 +65,12 @@ async def _deliver_pending_decision(
     delivery_id = pending.get("delivery_id", "")
     if not delivery_id:
         return False
+    # The app's process-local outbox claims, keyed by directory + delivery and held
+    # on the dashboard state, which declares neither set: the app creates both on
+    # first use. Directory scope matters because aliases use different slots for
+    # the same files; durable status stays with the decision ledger. A consumed
+    # claim whose ledger finalization failed stays blocked from redispatch while a
+    # later detail poll retries that write.
     inflight = getattr(state, "_spec_decision_deliveries_inflight", None)
     if not isinstance(inflight, set):
         inflight = set()
@@ -293,6 +299,9 @@ async def _deliver_pending_decision(
         message_meta={"spec_decision_delivery_id": delivery_id},
         append_user=not already_relayed,
         directive_user_origin=True,
+        # Composed from the agent's decision title and options: the person only
+        # picked one, so it must not start an MCP sign-in.
+        message_is_typed=False,
         on_consumed=_on_consumed,
         on_irreversibly_consumed=_on_irreversibly_consumed,
     )

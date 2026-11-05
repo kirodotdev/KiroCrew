@@ -3,6 +3,10 @@
 # per-device Feature Previews switch titled "Mates", "Crew Members" or "Crew
 # Members and Crew Mode", so the first step turns that switch on only where it
 # exists. The page is named by its rail label, "Mates". Nightly-only because it is the longest scenario.
+# The tester works from screenshots and cannot see a hover label, and a bare
+# /members reopens the last-used mate with the roster folded into the header's
+# switcher. So the steps say both before the search, or the tester files them
+# as friction.
 name: members-dm-hello
 tier: nightly
 feature: members
@@ -19,8 +23,9 @@ preconditions:
 steps:
   - You are on the Settings page. Open the Developer section and find the Feature Previews list.
   - If the Feature Previews list has a preview whose title starts with "Mates" (or "Crew Members", or "Crew Members and Crew Mode"), make sure it is ON -- click it once if it is off. Current builds have no such preview because Mates is always on; then go straight on. Ignore the Webhooks preview.
-  - Open the Mates page. A "Mates" item is in the left rail, directly under Sessions; click it.
-  - Click the search box at the top of the mates list (its placeholder reads "Search mates…") and type Nova. A mate you have not chatted with yet is hidden from the list until a search reaches it, so Nova Sky (its card may read "nova-sky" instead of a display name) is not in the list before you type; the Mate and default cards being there is normal.
+  - Open the Bots page. A "Bots" item is in the left rail, directly under Sessions (older builds label it "Mates"); click it. The rail shows icons only, and each icon's label appears when you hover or focus it, so an icon with no visible text is normal.
+  - The Bots page reopens the bot you used last, so a conversation may already be open and the mates list is not on screen. That is by design. The list lives in the round avatar switcher at the top left of the page (titled "Switch Bot"); click it to open the list. Its footer also has "Show the full roster", which pins the same list beside the chat; either one works.
+  - Click the search box at the top of the mates list (its placeholder reads "Search Bots…") and type Nova. A mate you have not chatted with yet is hidden from the list until a search reaches it, so Nova Sky (its card may read "nova-sky" instead of a display name) is not in the list before you type; the Mate and default cards being there is normal.
   - Find the member card for Nova Sky (its card may read "nova-sky" instead of a display name; that is the same member) and click it to open a direct-message conversation with it.
   - Type exactly "hello" in the message box and send it with Enter.
   - Wait about two seconds.

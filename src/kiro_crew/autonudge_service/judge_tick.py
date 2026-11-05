@@ -62,31 +62,19 @@ def _judge_quiet_streak_floor(self: AutoNudgeService) -> int:
 async def _judge_tick_is_quiet(self: AutoNudgeService, loop: NudgeLoop) -> bool | None:
     """The wake judge's answer for this tick, or ``None`` when no judge applies.
 
-    ``None`` -- not ``False`` -- for "no judge applies to this tick", so the caller
-    falls through to the typed probe path unchanged. That is what keeps an UNGATED
-    loop, an explicitly opted-out one, and every loop on a machine that has not
-    granted the evidence scope behaving exactly as it does today.
+    ``None`` means no judge applies, so the caller falls through to the typed probe
+    path: ungated loops, opted-out ones, and machines without the evidence scope.
+    Once the scope is granted, a GATED loop with no brief runs under
+    :func:`~kiro_crew.autonudge_judge.default_spec`.
 
-    Once the scope is granted, a GATED loop is screened on every tick whether or not
-    its owner wrote a brief: one that named none runs under
-    :func:`~kiro_crew.autonudge_judge.default_spec`. Requiring a brief made the
-    saving opt-in per loop, and the loops that most need it are armed by agents
-    mid-task who have no reason to spend the extra argument.
+    ``gate=False`` is a loop that acts WHILE its subject is quiet, so its quiet ticks
+    are its work; ``judge: false`` wants observation gating without a judge.
 
-    Two bypasses, and they mean different things. ``gate=False`` is a loop whose duty
-    is to act WHILE its subject is quiet -- a heartbeat, a reviewer chase -- so
-    suppressing its quiet ticks would remove the work rather than the waste.
-    ``judge: false`` is an owner who wants observation gating and no judge.
+    ``True`` skips the turn, only for a QUIET verdict under the streak floor; WAKE,
+    TERMINAL and FALLBACK return ``False`` and spend the tick.
 
-    ``True`` skips the turn. Only a QUIET verdict under the streak floor
-    produces it; WAKE, TERMINAL and FALLBACK all return ``False`` and spend the
-    tick, which is why a provider outage, a scrub that dropped everything and an
-    answer outside its own domain are all indistinguishable from the ungated
-    timer.
-
-    The judge runs BEFORE the probe guard on purpose: a conductor watching
-    sibling sessions has no ``MonitorState`` at all, so anything gated behind
-    ``monitor is not None`` would never reach it.
+    Runs BEFORE the probe guard: a conductor watching sibling sessions has no
+    ``MonitorState``.
     """
     if self._collect_judge_evidence is None or not getattr(loop, "gate", False):
         # The cheapest possible exit: two plain attribute reads, before any import.
@@ -126,35 +114,20 @@ async def _judge_tick_is_quiet(self: AutoNudgeService, loop: NudgeLoop) -> bool 
     brief_kind = judge.BRIEF_CUSTOM
     spec = stored
     if not judge.criteria_of(stored)[0] and not judge.criteria_of(stored)[1]:
-        # No criterion of the owner's own, so the default applies -- but ONLY where
-        # they granted this point's own egress scope. The ``is_enabled`` reading
-        # below is the wrong question for this case: it is satisfied by the LLM lane
-        # on the provider key alone, and ``gate._judge_authority`` documents the
-        # loop's own ``judge`` spec as HALF of that lane's authorization. A loop
-        # whose owner armed nothing supplies no such half, so screening it on that
-        # authority alone would read a watch nobody asked for. Keyed on the
-        # CRITERIA rather than on the spec being empty: a brief naming only
-        # ``targets`` says which subjects to watch and nothing about when to wake,
-        # so it needs the default's sentences and keeps its own targets.
+        # No criterion of the owner's own: the default applies ONLY where they
+        # granted this point's egress scope. ``is_enabled`` below is not enough, as
+        # ``gate._judge_authority`` counts the loop's own spec as half the LLM lane's
+        # authorization. Keyed on CRITERIA: a targets-only brief keeps its targets.
         if not await asyncio.to_thread(
             core_decisions.judge_evidence_scope_granted, session_key=loop.slot_key
         ):
             return None
         spec = {**stored, **judge.default_spec()}
         brief_kind = judge.BRIEF_DEFAULT
-    # The seam's OWN authority, and the only reading of it: ``is_enabled`` routes
-    # this point through ``gate._judge_authority``, which picks the lane and says
-    # whether that lane is armed in one answer -- the Jev lane on the main switch
-    # plus the ``nudge_evidence`` scope, the small-model lane on its runner being
-    # installed. A second resolution here is a second rule, and it can only differ:
-    # one that arms Jev on endpoint consent alone picks that lane on a machine which
-    # consented without granting the scope, the gate refuses it, and the tick is
-    # skipped where the gate itself picks the lane that needs neither.
-    #
-    # Threaded because the keystone is a file and this coroutine runs on the
-    # gateway's event loop, where a per-tick synchronous read would stall chat and
-    # every channel transport behind it. ``is_enabled`` documents itself as running
-    # on the caller's thread for exactly this reason.
+    # The only reading of the seam's authority: ``gate._judge_authority`` picks the
+    # lane and whether it is armed in one answer; a second rule here could only
+    # disagree with it. Threaded because the keystone is a file read and this runs
+    # on the gateway's event loop.
     if not await asyncio.to_thread(
         core_decisions.is_enabled, point_nudge_wake.POINT, session_key=loop.slot_key
     ):
@@ -209,24 +182,11 @@ async def _judge_tick_is_quiet(self: AutoNudgeService, loop: NudgeLoop) -> bool 
         trace=verdict_trace,
     )
     if judge.spec_of(loop) != stored or loop.message != stored_message:
-        # The brief was REPLACED, or the message RETARGETED, while this tick was
-        # reading and judging, and the
-        # reads and the decision both happen outside the service lock. Compared
-        # against what was STORED when the tick began, never against the spec the
-        # tick ran under: those differ whenever the default supplied the sentences,
-        # so comparing the merged form would report every default-brief tick as a
-        # replacement and discard a verdict nobody withdrew.
-        #
-        # Every fact staged here belongs to the brief that is gone: the streak was
-        # earned under criteria nobody is asking about any more, the verdict record
-        # answers a question that was withdrawn, and the cursors say rows were
-        # consumed on a target list that may have changed. The update path clears
-        # all three for exactly that reason, so committing them here reinstates
-        # state nobody armed and can hold the loop quiet on a withdrawn criterion.
-        # Cursors go back to the empty map that path installs, which costs one
-        # re-read and lets the next tick judge those rows under the brief that now
-        # applies. Firing is the safe direction: a turn nobody needed is cheap, and
-        # a suppressed turn on a stale question is not recoverable.
+        # The brief was REPLACED, or the message RETARGETED, outside the service
+        # lock. Compared against what was STORED, not the merged default spec, which
+        # would flag every default-brief tick. Every staged fact (streak, verdict,
+        # cursors) belongs to the withdrawn brief, so drop them as the update path
+        # does, and fire: an unneeded turn is cheap, a suppressed one is not.
         loop.judge_cursors = {}
         logger.info(
             "AutoNudge: loop %s had its judge brief replaced mid-tick -- "
@@ -458,19 +418,13 @@ async def _label_judge_delivery_locked(
 ) -> None:
     """Label this loop's newest unlabelled delivery, and the quiets behind it.
 
-    The rule that decides *acted* lives in one place
-    (:func:`~kiro_crew.autonudge_judge.owner_acted`); this applies its answer to
-    the history and writes one calibration row per label it changed. The loop record
-    is written durably before any calibration row is published, so the log cannot
-    claim a label the loop state does not carry.
+    *acted* comes from :func:`~kiro_crew.autonudge_judge.owner_acted`. The loop
+    record is written durably before any calibration row is published, so the log
+    cannot claim a label the loop state does not carry. *tool_names_known* only
+    rides to the log row, so threshold reads can exclude count-only rows.
 
-    *tool_names_known* rides to the log row rather than changing anything here: it
-    says whether *acted* was decided from NAMED dispatches or from a bare count, and
-    a threshold read excludes the count-only rows instead of pooling two rules.
-
-    Every failure is swallowed. This runs on the gateway's turn-completion hook,
-    which re-arms the loop's timer immediately afterwards, and a calibration
-    label must never be able to stop that.
+    Every failure is swallowed: this runs on the turn-completion hook, which
+    re-arms the loop's timer right after, and a label must never stop that.
     """
     # The local import keeps the decisions graph off the gateway boot path.
     from kiro_crew import autonudge_judge as judge
@@ -608,31 +562,18 @@ def _append_judge_labels(
 async def _persist_judge_state(self: AutoNudgeService, loop: NudgeLoop) -> bool:
     """Write this tick's judge state durably. ``True`` when it landed.
 
-    Awaited rather than scheduled, because by the time this runs the read
-    cursors, the quiet streak and the verdict record are already published in
-    memory. A scheduled write that has not landed when the process stops leaves
-    a restart re-reading the rows this tick consumed and recounting a streak it
-    had already spent.
+    Awaited, not scheduled: the cursors, quiet streak and verdict are already in
+    memory, and a write lost at process stop makes a restart re-read consumed
+    rows and recount a spent streak. Never answer "quiet" on state that has not
+    landed, since a suppressed turn is irreversible: a suppressing caller fires
+    on ``False``.
 
-    The one answer this gate may not give on state that has not landed is
-    "quiet": suppressing a turn is the irreversible direction, since nothing
-    later says the turn was owed. A caller that suppresses checks the result and
-    fires when it is ``False``; a caller already firing does not need to, and
-    gets the durable write anyway.
-
-    CANCELLATION SAFETY: same contract as :meth:`update`, and it is needed here
-    for the same reason. This runs on the timer BEFORE the loop enters
-    ``_firing``, so ``notify_user_input``'s guard does not cover it and ordinary
-    user input cancels this task mid-write. ``_persist_locked`` releases
-    ``_lock`` when its awaiting task is cancelled, which would let a later write
-    land first and then be clobbered by this one's stale snapshot. So the write
-    runs as a SHIELDED supervised task: the cancellation reaches this frame while
-    the write keeps the lock and drains through ``_inflight_adds``.
-    ``CancelledError`` is not caught -- the caller going away is not a
-    persistence failure, and swallowing it would break cancellation. The inner
-    task is a different task from the admitted timer callback, so the callback's
-    lease is handed to it explicitly; a contextvar copy alone would not be
-    recognised as the owner's.
+    CANCELLATION SAFETY (same contract as :meth:`update`): this runs BEFORE
+    ``_firing``, so user input can cancel it mid-write, and ``_persist_locked``
+    would release ``_lock`` and let a later write be clobbered by this stale
+    snapshot. So the write is a SHIELDED task drained through ``_inflight_adds``.
+    ``CancelledError`` is not caught. The callback's admission lease is passed
+    explicitly, since a contextvar copy is not recognised as the owner's.
     """
     inner: "asyncio.Task[None]" = asyncio.ensure_future(
         self._persist_locked(admission=self._effective_admission(None))

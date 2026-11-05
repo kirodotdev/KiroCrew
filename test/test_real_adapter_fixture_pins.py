@@ -22,6 +22,9 @@ kiro-cli and KAS have no lane pin, so their live fixtures are held to a floor
 (``FIXTURE_FLOORS``) instead, with the same shrink-only list (``_BELOW_FLOOR``) for
 the ones below it.
 
+Synthesized fixtures are held to the same pins and floors by the release they
+name, with their own shrink-only list (``_SYNTHESIZED_BEHIND``) and a count ceiling.
+
 The file carries no marker, so backend-test runs it too: a bump reds there as
 well as in the lane, which is the point.
 """
@@ -401,3 +404,204 @@ def test_a_measured_only_pin_is_not_also_in_the_lane_manifest() -> None:
         "move the pin into test/real_adapters/package.json and drop it from "
         "MEASURED_NOT_INSTALLED"
     )
+
+
+#: A synthesized fixture is written by hand, not captured, but it is still written
+#: against one adapter release, and a feature resting on it rests on that release.
+#: The release it names, in its ``agent_version`` header or, when that is not a
+#: release (``unmeasured``), in its note as ``<label> <version>``, must not be older
+#: than the lane pin (or, for kiro-cli and KAS, the floor). One naming none at all
+#: is held too: otherwise writing ``unmeasured`` would dodge the check.
+#: ``<dir>`` -> header key -> the label the note names that release by. pi has
+#: none: its pin is two releases, so a pi one carries ``_pin``'s string as written.
+_NOTE_LABELS: dict[str, dict[str, str]] = {
+    "codex": {"agent_version": "codex-acp"},
+    "opencode": {"agent_version": "opencode"},
+    "claude": {"agent_version": "claude-agent-acp"},
+    "copilot": {"agent_version": "copilot"},
+    "kiro": {"agent_version": "kiro-cli"},
+    "kas": {"agent_version": "KAS", "kiro_cli_version": "kiro-cli"},
+}
+
+#: ``<dir>/<file>:<header key>`` -> (release it names, or "", bar it is behind).
+#: Shrink-only: rewrite or re-capture the fixture, never add to this.
+_SYNTHESIZED_BEHIND: dict[str, tuple[str, str]] = {
+    "codex/mcp-elicitation.jsonl:agent_version": ("", "2.3.0"),
+    "codex/session.jsonl:agent_version": ("1.11.0", "2.3.0"),
+    "kiro/notifications.jsonl:agent_version": ("2.21.1", "2.27.0"),
+}
+
+#: ``_SYNTHESIZED_BEHIND`` as it started; every entry it keeps must equal its entry
+#: here, so re-pinning an entry against a newer bar, or reusing a freed key, reds.
+_SYNTHESIZED_BEHIND_START: dict[str, tuple[str, str]] = {
+    "codex/mcp-elicitation.jsonl:agent_version": ("", "2.3.0"),
+    "codex/session.jsonl:agent_version": ("1.11.0", "2.3.0"),
+    "kiro/notifications.jsonl:agent_version": ("2.21.1", "2.27.0"),
+}
+
+#: ``_SYNTHESIZED_BEHIND`` holds exactly this many entries. It only moves down, and
+#: with the list: a ceiling above the list's size is room for the next offender.
+SYNTHESIZED_BEHIND_CEILING = 3
+
+
+def _named_release(meta: dict, header: str, label: str | None, bar: str) -> str:
+    """The release *meta* says its fixture was written against, or ``""``."""
+    value = str(meta.get(header, ""))
+    if value == bar or _release(value) is not None:
+        return value
+    if label is None:
+        return ""
+    named = re.findall(
+        rf"(?<![\w-]){re.escape(label)} v?(\d+(?:\.\d+)+)(?![\w-]|\.\d)",
+        str(meta.get("note", "")),
+        flags=re.IGNORECASE,
+    )
+    # A note naming two releases is held to the older one.
+    return min(named, key=_release, default="")
+
+
+def _synthesized_versions(corpus: Path = CORPUS) -> list[tuple[str, str, str]]:
+    """``(key, named release, bar)`` for every synthesized fixture of a pinned or floored adapter."""
+    bars = {d: {"agent_version": _pin(p)} for d, (p, _name) in PINNED_FIXTURE_ADAPTERS.items()}
+    bars.update(FIXTURE_FLOORS)
+    found = []
+    for directory, headers in sorted(bars.items()):
+        labels = _NOTE_LABELS.get(directory, {})
+        for path in sorted((corpus / directory).glob("*.jsonl")):
+            meta, _frames = read_fixture(path)
+            if meta.get("recorded") != "synthesized":
+                continue
+            for header, bar in headers.items():
+                named = _named_release(meta, header, labels.get(header), bar)
+                if header == "agent_version" or header in meta or named:
+                    found.append((f"{directory}/{path.name}:{header}", named, bar))
+    return found
+
+
+def synthesized_behind(
+    versions: list[tuple[str, str, str]], allowed: dict[str, tuple[str, str]]
+) -> list[str]:
+    """Every way *versions* and the *allowed* list disagree with the pins and floors."""
+    problems = []
+    seen = set()
+    for key, named, bar in versions:
+        seen.add(key)
+        entry = allowed.get(key)
+        release, floor = _release(named), _release(bar)
+        current = named == bar or (release is not None and floor is not None and release >= floor)
+        if current:
+            if entry is not None:
+                problems.append(f"{key} is at {bar} now: delete its _SYNTHESIZED_BEHIND entry")
+            continue
+        if entry is None:
+            said = f"names {named}" if named else "names no adapter release"
+            problems.append(
+                f"{key} is synthesized and {said}, behind {bar}: re-capture it live "
+                "or rewrite it against the current release"
+            )
+        elif entry != (named, bar):
+            problems.append(
+                f"{key} names {named or 'no release'} against {bar}, but _SYNTHESIZED_BEHIND "
+                f"accepted {entry[0] or 'no release'} against {entry[1]}: rewrite it"
+            )
+    problems += [
+        f"_SYNTHESIZED_BEHIND names {key}, which is not a synthesized fixture behind its bar"
+        for key in allowed.keys() - seen
+    ]
+    return problems
+
+
+def synthesized_ceiling(allowed: dict[str, tuple[str, str]], ceiling: int) -> list[str]:
+    widened = {k: v for k, v in allowed.items() if _SYNTHESIZED_BEHIND_START.get(k) != v}
+    if widened:
+        return [f"_SYNTHESIZED_BEHIND entries not in their original form: {widened}"]
+    if len(allowed) > ceiling:
+        return [f"_SYNTHESIZED_BEHIND has {len(allowed)} entries over its ceiling {ceiling}"]
+    if len(allowed) < ceiling:
+        return [f"SYNTHESIZED_BEHIND_CEILING is {ceiling}: lower it to {len(allowed)}"]
+    return []
+
+
+def test_no_synthesized_fixture_is_behind_its_adapter() -> None:
+    problems = synthesized_behind(_synthesized_versions(), _SYNTHESIZED_BEHIND)
+    assert not problems, "\n".join(problems)
+
+
+def test_the_synthesized_behind_list_only_shrinks() -> None:
+    problems = synthesized_ceiling(_SYNTHESIZED_BEHIND, SYNTHESIZED_BEHIND_CEILING)
+    assert not problems, "\n".join(problems)
+
+
+@pytest.mark.parametrize(
+    ("named", "allowed", "expected"),
+    [
+        ("2.3.0", {}, ""),
+        ("2.4.0", {}, ""),
+        ("1.11.0", {}, "names 1.11.0, behind 2.3.0"),
+        ("", {}, "names no adapter release"),
+        ("1.11.0", {"codex/a.jsonl:agent_version": ("1.11.0", "2.2.2")}, "rewrite it"),
+        ("2.3.0", {"codex/a.jsonl:agent_version": ("1.11.0", "2.3.0")}, "delete"),
+        ("2.3.0", {"codex/b.jsonl:agent_version": ("1.11.0", "2.3.0")}, "not a synthesized"),
+    ],
+    ids=[
+        "at-pin",
+        "above-pin",
+        "behind-pin",
+        "names-nothing",
+        "entry-outlived-pin",
+        "entry-outlived-fixture",
+        "entry-names-no-fixture",
+    ],
+)
+def test_the_synthesized_check_reds_on_each_drift(named, allowed, expected) -> None:
+    problems = synthesized_behind([("codex/a.jsonl:agent_version", named, "2.3.0")], allowed)
+    assert (expected in problems[0]) if expected else not problems
+
+
+def _write_synthesized(corpus: Path, directory: str, name: str, **meta: str) -> None:
+    (corpus / directory).mkdir(exist_ok=True)
+    header = {"_meta": dict({"backend": directory, "recorded": "synthesized"}, **meta)}
+    (corpus / directory / name).write_text(json.dumps(header) + "\n")
+
+
+def test_a_new_stale_synthesized_fixture_reds(tmp_path) -> None:
+    _write_synthesized(
+        tmp_path, "codex", "new.jsonl", agent_version="unmeasured", note="codex-acp 2.2.2 shapes"
+    )
+    problems = synthesized_behind(_synthesized_versions(tmp_path), {})
+    want = (
+        f"codex/new.jsonl:agent_version is synthesized and names 2.2.2, behind "
+        f"{_pin(CODEX_ACP_PACKAGE)}: re-capture it live or rewrite it against the current release"
+    )
+    assert problems == [want]
+
+
+def test_a_kas_note_is_held_on_both_headers(tmp_path) -> None:
+    """A KAS note naming an old kiro-cli reds on that header even with a current engine."""
+    note = f"KAS {KAS_PIN_VERSION} under kiro-cli 2.20.0"
+    _write_synthesized(tmp_path, "kas", "a.jsonl", agent_version="unmeasured", note=note)
+    problems = synthesized_behind(_synthesized_versions(tmp_path), {})
+    assert [p.split(" ", 1)[0] for p in problems] == ["kas/a.jsonl:kiro_cli_version"]
+
+
+def test_dropping_an_entry_while_the_fixture_is_still_behind_reds() -> None:
+    allowed = dict(_SYNTHESIZED_BEHIND)
+    allowed.pop("codex/session.jsonl:agent_version")
+    problems = synthesized_behind(_synthesized_versions(), allowed)
+    assert [p.split(" ", 1)[0] for p in problems] == ["codex/session.jsonl:agent_version"]
+
+
+def test_a_raised_ceiling_or_an_added_entry_reds() -> None:
+    assert synthesized_ceiling(_SYNTHESIZED_BEHIND, SYNTHESIZED_BEHIND_CEILING + 1)
+    grown = dict(_SYNTHESIZED_BEHIND, **{"codex/x.jsonl:agent_version": ("1.0.0", "2.3.0")})
+    assert synthesized_ceiling(grown, SYNTHESIZED_BEHIND_CEILING + 1)
+
+
+def test_a_repinned_or_reused_entry_reds() -> None:
+    """Swapping a key or moving an entry's bar keeps the count but widens the list."""
+    key = "codex/session.jsonl:agent_version"
+    repinned = dict(_SYNTHESIZED_BEHIND, **{key: ("1.11.0", "2.4.0")})
+    assert synthesized_ceiling(repinned, SYNTHESIZED_BEHIND_CEILING)
+    reused = {k: v for k, v in _SYNTHESIZED_BEHIND.items() if k != key}
+    reused["codex/other.jsonl:agent_version"] = ("1.11.0", "2.3.0")
+    assert synthesized_ceiling(reused, SYNTHESIZED_BEHIND_CEILING)

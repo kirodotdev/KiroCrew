@@ -18,7 +18,7 @@ from aiohttp.test_utils import TestClient, TestServer
 from chat_test_helpers import _make_state
 
 from kiro_crew import crew_mode
-from kiro_crew.dashboard.chat_handlers import api_chat_slot_approve
+from kiro_crew.dashboard.chat_handlers import api_chat_mode, api_chat_slot_approve
 from kiro_crew.dashboard.state import SlotOrigin
 
 
@@ -156,6 +156,7 @@ def _server(state, middleware) -> TestServer:
 
     app = web.Application(middlewares=[middleware])
     app["state"] = state
+    app.router.add_post("/api/chat/mode", api_chat_mode)
     app.router.add_post("/api/chat/slots/{slot}/approve", api_chat_slot_approve)
     app.router.add_post(
         "/api/chat/slots/{slot}/crew-workers/{worker}/approve", api_crew_worker_approve
@@ -204,7 +205,7 @@ async def test_B_reject_denies_it_once(state):
 
 
 @pytest.mark.asyncio
-async def test_B_trust_this_worker_trusts_the_worker_slot_only(state):
+async def test_B_trust_this_worker_trusts_the_worker_not_its_conductor(state):
     worker, fut, _mid = _crew(state)
     async with TestClient(_server(state, _owner)) as client:
         resp = await client.post(
@@ -253,7 +254,7 @@ async def test_F1_a_directly_trusted_session_still_passes_its_trust_on(state):
 
 
 @pytest.mark.asyncio
-async def test_G1_card_trust_never_stores_auto_so_subagents_keep_asking(state):
+async def test_G1_card_trust_stores_auto_so_subagents_are_trusted(state):
     from kiro_crew.dashboard.chat_turn.tool_approval import (
         _persistable_session_policy,
         _slot_is_trusted,
@@ -271,14 +272,20 @@ async def test_G1_card_trust_never_stores_auto_so_subagents_keep_asking(state):
         assert resp.status == 200, await resp.text()
     assert worker._trust is True and worker._trust_card_scoped is True
     # The stored policy is what spawn_run's parent_trusted and every subagent's
-    # own approval policy read: it must never be "auto" for a card trust.
+    # own approval policy read: a card trust covers the worker's subagents.
     calls = [c.args for c in state.sessions.set_approval_policy.call_args_list]
-    assert (key, "auto") not in calls
-    assert (key, "") in calls
-    # The per-turn rewrite (turn_admission) writes the same "" value.
-    assert _persistable_session_policy(worker, False) == ""
-    # The worker's own tools still auto-approve, per event.
+    assert calls[-1] == (key, "auto")
+    # The per-turn rewrite (turn_admission) writes the same value.
+    assert _persistable_session_policy(worker, False) == "auto"
     assert _slot_is_trusted(worker)
+    # Revoking the worker's trust stops it reaching a subagent spawned after.
+    state.sessions.set_approval_policy.reset_mock()
+    async with TestClient(_server(state, _owner)) as client:
+        resp = await client.post("/api/chat/mode", json={"mode": "normal", "slot": "w"})
+        assert resp.status == 200, await resp.text()
+    calls = [c.args for c in state.sessions.set_approval_policy.call_args_list]
+    assert (key, "auto") not in calls and (key, "") in calls
+    assert _persistable_session_policy(worker, False) == ""
     # Yolo stays process-wide.
     assert _persistable_session_policy(worker, True) == "auto"
 

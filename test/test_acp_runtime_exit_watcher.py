@@ -77,11 +77,8 @@ async def test_exit_watcher_fires_on_real_root_death_with_descendant_holding_std
     """The discriminating test: a REAL subprocess that forks a child holding
     stdout, then has only its root killed.
 
-    Against ``await process.wait()`` this hangs -- ``wait()`` is woken only once
-    every pipe disconnects, and the surviving child holds stdout, so the watcher
-    never fires and the pending request never fails (the test times out). The
-    returncode poll observes the root's exit the moment it is reaped, regardless
-    of the still-open pipe, so the pending request fails fast.
+    ``process.wait()`` would hang while the child holds stdout; the returncode poll sees
+    the root's exit at once.
     """
     # Own process group (start_new_session) so the finally can kill the ROOT
     # and its forked child together, even if setup raises before the asserts.
@@ -161,11 +158,8 @@ async def test_exit_watcher_drains_a_real_final_frame_before_marking_dead():
     """End to end: a real root writes a final response frame then exits with a
     descendant holding stdout, and that frame is routed, not lost.
 
-    The root flushes a completed turn's response into the pipe and exits on its
-    own; the forked child keeps stdout open so no EOF arrives. The watcher's poll
-    sees the exit, but it must let the reader drain the already-written frame
-    before ``_mark_dead`` fails the pending request. The request resolves with
-    its RESULT rather than ``AcpRuntimeDead``.
+    No EOF arrives, so the watcher must let the reader drain the frame before
+    ``_mark_dead``; the request resolves with its result.
     """
     proc = await asyncio.create_subprocess_exec(
         sys.executable,
@@ -322,11 +316,8 @@ async def test_exit_watcher_is_a_noop_when_reader_already_marked_dead():
 async def test_exit_watcher_retires_tracking_even_when_already_marked_dead():
     """A confirmed exit always owes the registry retirement.
 
-    A broken-pipe write, a reader crash or a write stall marks the runtime dead
-    WITHOUT retiring its PID-ledger entries. When the root then exits for real,
-    the watcher must still run the retirement -- the ``_dead`` flag gates only
-    the re-announcement, never the cleanup -- or a stale ``kiro_session_pids.txt``
-    / ``kiro_pids.txt`` line naming the dead root is left standing for the sweep.
+    Other dead paths do not retire PID-ledger entries; ``_dead`` gates only the
+    re-announcement, or a stale ``kiro_pids.txt`` line would remain.
     """
     rt, proc = _runtime_with_blocking_stdout()
     rt._retire_tracking_after_exit = AsyncMock()
@@ -350,14 +341,8 @@ async def test_exit_watcher_retires_tracking_even_when_already_marked_dead():
 async def test_exit_watcher_drains_a_final_readable_frame_before_marking_dead():
     """A final response readable on stdout at exit is routed, not dropped.
 
-    The backend writes a completed turn's response and then exits. ``_mark_dead``
-    fails every pending request and poisons the session queues, so marking before
-    that frame is routed turns a completed turn into an ``AcpRuntimeDead`` and
-    drops the response. The reader is parked on ``readuntil`` when the frame
-    becomes readable; a single pre-mark yield resumes the watcher before the
-    reader's data callback runs, so only a drain window that keeps yielding while
-    the reader makes progress routes the frame first. The pending request then
-    resolves with its RESULT, not ``AcpRuntimeDead``.
+    A single pre-mark yield resumes the watcher before the reader's data callback, so
+    only a drain window that keeps yielding while the reader progresses routes the frame.
     """
     rt, proc = _runtime_with_blocking_stdout()
     pending = asyncio.get_running_loop().create_future()

@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 
 import pytest
+from crew_log_drain import assert_drained
 
 from kiro_crew import crew_log as lg
 from kiro_crew.crew_log import CrewLog
@@ -98,7 +99,7 @@ def test_every_change_appends_exactly_one_entry_to_the_session_log():
     instance.adopt(SLUG, "fixture-board", session_id=SESSION)
     instance.edit(SLUG, manifest=_retitled(), session_id=SESSION)
     instance.rollback(SLUG, 1, session_id=SESSION)
-    assert crew_log_emit.flush(timeout=5.0), "the crew log writer did not drain"
+    assert_drained()
     rows = _entries()
     assert [r["action"] for r in rows] == ["adopted", "edited", "rolled_back"]
     assert [r["instance_version"] for r in rows] == [1, 2, 3]
@@ -108,7 +109,7 @@ def test_every_change_appends_exactly_one_entry_to_the_session_log():
 def test_an_entry_carries_what_changed_and_never_the_page():
     _open_log()
     instance.adopt(SLUG, "fixture-board", session_id=SESSION)
-    assert crew_log_emit.flush(timeout=5.0)
+    assert_drained()
     (row,) = _entries()
     # The whole reason the entry is bounded by construction: it describes the change,
     # so it can never be refused for size however large the page is.
@@ -132,7 +133,7 @@ def test_a_refused_change_appends_nothing():
             },
             session_id=SESSION,
         )
-    assert crew_log_emit.flush(timeout=5.0)
+    assert_drained()
     assert len(_entries()) == 1
 
 
@@ -140,7 +141,7 @@ def test_the_history_rebuilds_from_the_log_when_its_savepoint_is_lost():
     _open_log()
     instance.adopt(SLUG, "fixture-board", session_id=SESSION)
     instance.edit(SLUG, manifest=_retitled(), session_id=SESSION)
-    assert crew_log_emit.flush(timeout=5.0)
+    assert_drained()
     # The savepoint is a CACHE of the log. Deleting it must cost nothing, which is the
     # property that makes the log the authority rather than a second copy beside it.
     (instance.instance_dir(SLUG) / "history.json").unlink()
@@ -154,7 +155,7 @@ def test_a_rebuild_reads_only_this_crewmates_entries():
     instance.adopt(SLUG, "fixture-board", session_id=SESSION)
     instance.edit(SLUG, manifest=_retitled(), session_id=SESSION)
     instance.adopt("scout", "fixture-board", session_id=SESSION)
-    assert crew_log_emit.flush(timeout=5.0)
+    assert_drained()
     # Three entries in ONE log, two of them this crewmate's.
     assert [r["slug"] for r in _entries()] == [SLUG, SLUG, "scout"]
     for slug in (SLUG, "scout"):

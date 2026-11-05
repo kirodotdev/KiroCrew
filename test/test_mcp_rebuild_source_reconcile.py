@@ -1,27 +1,11 @@
 """A rebuild must reconcile a scope global's spec onto the entry it already wrote.
 
-The generated agent spec is this rebuild's output AND one of its inputs, so the
-merge of ``~/.kiro/settings/mcp.json`` (and of each extra scope global) ran
-``setdefault`` against a name the previous pass had already put there -- a no-op.
-A source the user then CHANGED never reached the file again: a bumped ``timeout``
-stayed at its old value, a moved ``command`` stayed pinned to the old path.
+The generated spec is also an input, so a plain ``setdefault`` merge would ignore a
+changed source. The source owns its MODIFIER keys: overwritten each pass, removed when
+dropped. Every other key is the user's (``autoApprove`` is the key case) and survives.
 
-The rule under test: the source owns its own MODIFIER keys and nothing else.
-Those are overwritten on every pass, and one the source has since dropped is
-removed, so the entry projects what the source says now. Every other key on the
-entry is the user's and survives by omission -- ``autoApprove`` is the
-load-bearing case, because overwriting the entry wholesale would silently revoke
-a grant the user added to the generated spec, and preserving by an explicit
-user-owned LIST would destroy the next user-owned field somebody invents.
-
-Reconciliation applies only to a name a PREVIOUS rebuild left behind, and
-retires it once claimed, so the declared precedence between scopes is untouched:
-the provider global still loses to the kiro global for a name both declare.
-
-These drive the REAL rebuild twice against one on-disk config, which is the only
-way the readback participates at all. Harness shared with
-``test_mcp_rebuild_reconsumption``; seeding each rebuild by hand is what made the
-defect invisible.
+Only a name a PREVIOUS rebuild left behind is reconciled, so scope precedence holds.
+The REAL rebuild runs twice on one on-disk config; hand seeding would skip the readback.
 """
 
 from __future__ import annotations
@@ -41,7 +25,7 @@ def _exe(tmp_path: Path, name: str) -> str:
     """A real resolvable absolute command, so resolution is not the thing failing."""
     path = tmp_path / "bin" / name
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("#!/bin/sh\n")
+    path.write_text("#!/bin/sh\n", encoding="utf-8")
     path.chmod(0o755)
     return str(path)
 
@@ -143,12 +127,8 @@ class TestAChangedSourceReachesTheGeneratedSpec:
 class TestTheCommandsUnitFollowsAnUnchangedCommand:
     """An ``env`` added AFTER the first rebuild reaches the server the entry runs.
 
-    The reporter's shape exactly: the variables declared when the entry was first
-    written reached the child, the two added later in the same ``env`` block did
-    not, and nor did two new ``args``. ``command`` is not reconciled (the xfail
-    above), so these pin that ``args`` and ``env`` follow a command the source has
-    NOT changed -- and stay put when it has, because pairing one program's env
-    with another program's command is what the as-a-unit rule forbids.
+    ``command`` is not reconciled (the xfail above), so ``args`` and ``env`` follow an
+    unchanged command and stay put when it changed: the as-a-unit rule.
     """
 
     def test_an_env_key_added_later_lands(self, tmp_path: Path) -> None:
@@ -292,12 +272,8 @@ class TestAUserFieldOnTheEntrySurvives:
 class TestAnAppAssignedNameStillOutranksAGlobal:
     """The app manifest claims by ASSIGNMENT, which must also retire the name.
 
-    ``_stale`` is seeded before the app loop, so an app entry the PREVIOUS rebuild
-    wrote is in it. If the app loop did not discard the name on assignment, a
-    same-named leftover in a shared global would reconcile onto the freshly
-    manifest-derived spec, and the app server would launch with the leftover's
-    values -- inverting the precedence the merge-order comment declares ("an app's
-    namespaced entry outranks any same-named leftover in the shared global file").
+    ``_stale`` is seeded before the app loop, so without the discard a same-named
+    leftover in a shared global would reconcile onto the manifest-derived spec.
     """
 
     def test_a_shared_global_leftover_does_not_reconcile_onto_an_app_entry(

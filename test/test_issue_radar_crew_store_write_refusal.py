@@ -12,7 +12,6 @@ The entry one write appends and the answer it returns live in
 ``test_issue_radar_crew_store_unit_order.py``.
 """
 
-import time
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -33,6 +32,7 @@ from kiro_crew.apps.builtins.issue_radar.backend import crew_store as cs
 from kiro_crew.crew_log import emit as crew_log_emit
 from kiro_crew.crew_log import projection as crew_log_projection
 from kiro_crew.crew_log.schema import KIND_SESSION
+from kiro_crew.testing.wait import wait_until
 
 
 @contextmanager
@@ -63,7 +63,9 @@ def test_a_crews_writes_are_serialized_so_two_editors_cannot_both_pass(tmp_path,
     cid = crew["id"]
     release = threading.Event()
     entered = threading.Event()
+    at_lock = threading.Event()
     real_fold = cs._fold_checkpoint
+    real_lock_for = cs._crew_write_lock
 
     def slow_fold(crew_id, units):
         checkpoint = real_fold(crew_id, units)
@@ -72,7 +74,14 @@ def test_a_crews_writes_are_serialized_so_two_editors_cannot_both_pass(tmp_path,
             release.wait(5)  # hold the first write inside its critical section
         return checkpoint
 
+    def lock_for(crew_id):
+        if threading.current_thread().name == "second-writer":
+            at_lock.set()
+        return real_lock_for(crew_id)
+
     monkeypatch.setattr(cs, "_fold_checkpoint", slow_fold)
+    # Through the facade: it reaches every owner that holds the lock factory.
+    monkeypatch.setattr(cs, "_crew_write_lock", lock_for)
     outcomes: dict[int, object] = {}
 
     def write(number):
@@ -88,11 +97,11 @@ def test_a_crews_writes_are_serialized_so_two_editors_cannot_both_pass(tmp_path,
     # the lock it folds the same editor-less record, passes the one-editor check and
     # appends -- two editing items. With the lock it waits, folds after the first
     # landed, and is refused.
-    second = threading.Thread(target=write, args=(2264,))
+    second = threading.Thread(target=write, args=(2264,), name="second-writer")
     second.start()
-    # flake-ok: pre-existing 200 ms window for the second writer to reach the held lock, moved verbatim; tracked for a de-flake pass
-    # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing sleep, moved verbatim; tracked for a de-flake pass
-    time.sleep(0.2)
+    # The second writer has asked for the crew's lock. The first write still holds it,
+    # so the second cannot fold until ``release`` is set.
+    wait_until(at_lock.is_set, describe=lambda: "the second writer never reached the crew's lock")
     release.set()
     first.join(10)
     second.join(10)

@@ -50,7 +50,7 @@ class TestBrowseDirs:
     async def test_lists_subdirectories(self, tmp_path, mock_sel):
         (tmp_path / "alpha").mkdir()
         (tmp_path / "beta").mkdir()
-        (tmp_path / "file.txt").write_text("x")
+        (tmp_path / "file.txt").write_text("x", encoding="utf-8")
         async with TestClient(TestServer(_make_app())) as client:
             resp = await client.get(f"/api/browse-dirs?path={tmp_path}")
             data = await resp.json()

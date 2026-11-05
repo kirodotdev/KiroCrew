@@ -31,6 +31,7 @@ from session_control_helpers import (  # noqa: F401 -- the autouse fixtures regi
 
 from kiro_crew.dashboard import session_control as sc
 from kiro_crew.dashboard.chat_utils import slot_history_key
+from kiro_crew.members import DM_SLOT_MODE
 
 # ── Close (archive) ──────────────────────────────────────────────────────────
 
@@ -98,6 +99,64 @@ def test_close_still_refuses_a_channel_linked_caller_closing_itself(tmp_path):
     # The caller IS the target, so the target-side link refusal answers first.
     assert exc.value.code == "linked_session_target"
     assert caller.key in state._slots
+
+
+def _mate_thread(state):
+    """A crewmate's DM thread, the caller the member grant set auto-approves."""
+    return _slot(state, "member-radar", mode=DM_SLOT_MODE)
+
+
+def test_a_crewmate_closes_a_worker_it_created(tmp_path):
+    """``session_close`` is auto-approved for a crewmate, so its cleanup of a
+    finished worker it dispatched goes through the fenced close."""
+    state = _make_state(tmp_path)
+    mate = _mate_thread(state)
+    worker = _slot(state, "chat-2")
+    worker._created_by = mate.key
+
+    result = asyncio.run(
+        sc.close_target(state, caller_session_key=_key(mate), target=worker.key, caller_fenced=True)
+    )
+
+    assert result == {"ok": True, "target": worker.key}
+    assert worker.key not in state._slots
+
+
+def test_a_crewmate_cannot_close_a_session_it_did_not_create(tmp_path):
+    """The fence the auto-approved grant rests on: a crewmate's close of a session
+    it neither created nor manages is refused ``not_creator`` and the session stays."""
+    state = _make_state(tmp_path)
+    mate = _mate_thread(state)
+    persons_chat = _slot(state, "chat-2")
+    other_worker = _slot(state, "chat-3")
+    other_worker._created_by = "member-other"
+
+    for target in (persons_chat, other_worker):
+        with pytest.raises(sc.SessionControlError) as exc:
+            asyncio.run(
+                sc.close_target(
+                    state, caller_session_key=_key(mate), target=target.key, caller_fenced=True
+                )
+            )
+        assert exc.value.code == "not_creator"
+        assert target.key in state._slots
+
+
+def test_a_crewmate_cannot_close_its_own_thread(tmp_path):
+    """Only the person dismisses a crewmate's thread: the self-close waiver every
+    other session gets does not reach a crewmate's DM slot."""
+    state = _make_state(tmp_path)
+    mate = _mate_thread(state)
+
+    with pytest.raises(sc.SessionControlError) as exc:
+        asyncio.run(
+            sc.close_target(
+                state, caller_session_key=_key(mate), target=mate.key, caller_fenced=True
+            )
+        )
+    assert exc.value.code == "member_thread_self_close"
+    assert exc.value.status == 403
+    assert mate.key in state._slots
 
 
 def test_close_maps_a_close_failure_to_its_code(tmp_path, monkeypatch):
@@ -280,7 +339,6 @@ def test_close_slot_runs_the_pre_pop_check_synchronously_after_retirement(tmp_pa
 
     async def _retire(_name):
         order.append("retire")
-        return None
 
     def _check():  # synchronous by contract — no await before the pop
         order.append("check")

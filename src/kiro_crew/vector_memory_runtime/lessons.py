@@ -866,7 +866,14 @@ def delete_lesson(
     that is present but unusable marks a scoped-but-broken row, which the
     injection gate withholds; a scope-selective delete never claims such a
     row, and the unselective (absent) path is what removes it.
+
+    A blank (empty or whitespace-only) *rule_substring* is refused with
+    :class:`ValueError` on the plain substring path: every rule contains the
+    empty string, so it would delete every lesson. *exact* (names only a
+    blank row) and *keep_one* (never removes a lesson's last copy) stay open.
     """
+    if not exact and not keep_one and not rule_substring.strip():
+        raise ValueError("rule substring is blank: it would match every lesson")
     if repo_scope is not None and scope_selector_is_inadmissible(repo_scope):
         raise ValueError(f"repo_scope does not name a usable scope: {repo_scope!r}")
     deleted = False

@@ -12,6 +12,7 @@ import { FOLDER_COLOR_PALETTE } from './folderColorCatalog'
 
 import { i18nT } from '../i18n/t'
 import { crudErrorMessage, policyErrorMessage } from './tagMutationError'
+import { RadioChipGroup, radioChip } from './RadioChipGroup'
 
 /**
  * One failed mutation's notice. `crud` notices (create, rename, recolor, status,
@@ -469,15 +470,14 @@ export default function TagManagerList({ mode, selectedIds = [], onToggleTag, cr
               *  Picking a colour PATCHes the tag and returns focus to the swatch
               *  (the palette unmounts, so focus would otherwise fall to <body>). */}
             {mode === 'manage' && openColorId === t.id && (
-              // The group's only listener is keyboard-only Escape-to-dismiss,
-              // delegated here so it fires whichever swatch holds focus. The
-              // group activates nothing itself — every affordance inside it is a
-              // real <button> — so there is no mouse action a keyboard misses.
-              // eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- container-level Escape dismissal, which IS the keyboard path rather than a substitute for one
-              <div
-                role="group"
+              // A radio group (one colour out of the palette): the group's own
+              // listener adds Escape-to-dismiss, delegated here so it fires
+              // whichever swatch holds focus. Picking a swatch saves it and
+              // closes the palette, so (as in every RadioChipGroup by default)
+              // the arrows only move focus and Space/Enter picks.
+              <RadioChipGroup
                 data-testid={`tag-palette-${t.id}`}
-                aria-label={i18nT('components.tagManagerList.change_color', { name: t.name })}
+                ariaLabel={i18nT('components.tagManagerList.change_color', { name: t.name })}
                 className="flex items-center gap-1 flex-wrap pl-7 pr-1.5 pb-1"
                 onKeyDown={e => {
                   if (e.key !== 'Escape') return
@@ -495,7 +495,7 @@ export default function TagManagerList({ mode, selectedIds = [], onToggleTag, cr
                       data-testid={`tag-color-${t.id}-${value.slice(1)}`}
                       title={i18nT('components.tagManagerList.set_color_to_name', { name: colorName })}
                       aria-label={i18nT('components.tagManagerList.set_color_to_name', { name: colorName })}
-                      aria-pressed={t.color === value}
+                      {...radioChip(t.color === value)}
                       className={`w-4 h-4 rounded-full cursor-pointer border hover:brightness-125 swatch-cue focus-ring-accent ${t.color === value ? 'ring-1 ring-accent ring-offset-1 ring-offset-bg' : ''}`}
                       style={{ background: `color-mix(in srgb, ${value} 30%, var(--bg-elevated))`, borderColor: value }}
                       onClick={() => {
@@ -506,7 +506,7 @@ export default function TagManagerList({ mode, selectedIds = [], onToggleTag, cr
                     />
                   )
                 })}
-              </div>
+              </RadioChipGroup>
             )}
             {renderMutationErrors(t.id)}
             </Fragment>
@@ -524,7 +524,7 @@ export default function TagManagerList({ mode, selectedIds = [], onToggleTag, cr
           aria-disabled={storeDegraded}
           aria-describedby={storeDegraded ? policyUnavailableId : undefined}
           disabled={storeDegraded}
-          className="flex-1 min-w-0 bg-transparent border-none text-[12px] text-text py-0 px-0.5 placeholder:text-muted/60 disabled:cursor-not-allowed disabled:opacity-50"
+          className="flex-1 min-w-0 bg-transparent border-none text-[12px] text-text py-0 px-0.5 placeholder:text-muted disabled:cursor-not-allowed disabled:opacity-50"
           {...ime.bindComposition()}
           onChange={e => {
             newTagDraftRevision.current += 1

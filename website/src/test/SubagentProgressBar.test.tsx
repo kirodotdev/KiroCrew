@@ -358,7 +358,7 @@ describe('SubagentProgressBar — chrome follows the Font Family setting', () =>
     const { container } = renderBar(store)
 
     const warn = [...container.querySelectorAll('span.text-warn')]
-      .find(s => s.textContent?.includes('possibly stalled'))
+      .find(s => s.textContent?.includes('possibly stalled') && !s.closest('[data-testid="subagent-histogram"]'))
     expect(warn).toBeTruthy()
     expect(warn!.textContent).toContain('no activity for 196s')
     // Hedged, not asserted: the bare "stalled ... — no activity" wording is gone.
@@ -378,7 +378,7 @@ describe('SubagentProgressBar — chrome follows the Font Family setting', () =>
       const { container } = renderBar(store)
 
       const idleText = () => [...container.querySelectorAll('span.text-warn')]
-        .find(s => s.textContent?.includes('possibly stalled'))?.textContent ?? ''
+        .find(s => s.textContent?.includes('possibly stalled') && !s.closest('[data-testid="subagent-histogram"]'))?.textContent ?? ''
       expect(idleText()).toContain('no activity for 196s')
 
       // Two 1Hz ticks later the figure has moved with the clock.
@@ -402,7 +402,7 @@ describe('SubagentProgressBar — chrome follows the Font Family setting', () =>
     store.dispatch(sseSubagentStalled({ slot: SLOT, id: 'a1', stalled: true }))
     const { container } = renderBar(store)
     const warn = [...container.querySelectorAll('span.text-warn')]
-      .find(s => s.textContent?.includes('possibly stalled'))
+      .find(s => s.textContent?.includes('possibly stalled') && !s.closest('[data-testid="subagent-histogram"]'))
     expect(warn).toBeTruthy()
     expect(warn!.textContent).toContain('no activity')
     expect(warn!.textContent).not.toContain('no activity for')
@@ -519,5 +519,56 @@ describe('SubagentProgressBar — elapsed figure (#19930)', () => {
     } finally {
       now.mockRestore()
     }
+  })
+})
+
+describe('SubagentProgressBar — overflow row', () => {
+  beforeEach(() => { vi.clearAllMocks(); try { localStorage.clear() } catch { /* not available in this env */ } })
+
+  // The row's accessible name comes from the catalog with a plural count, so a
+  // translated UI does not announce it in English and one extra agent reads as one.
+  it('names the hidden agents with a plural-aware catalog string', () => {
+    renderBar(makeStore(Array.from({ length: 10 }, (_, i) => `a${i}`)))
+    expect(screen.getByTestId('subagent-overflow-row'))
+      .toHaveAttribute('aria-label', 'Show 2 more running subagents in the sidebar')
+  })
+
+  it('says subagent, not subagents, for one hidden agent', () => {
+    renderBar(makeStore(Array.from({ length: 9 }, (_, i) => `a${i}`)))
+    expect(screen.getByTestId('subagent-overflow-row'))
+      .toHaveAttribute('aria-label', 'Show 1 more running subagent in the sidebar')
+  })
+})
+
+/**
+ * The histogram icons are aria-hidden, so a screen reader heard "1 1 1 1" with no
+ * meaning. Each count hides its bare digit and carries sr-only words instead.
+ */
+describe('SubagentProgressBar — histogram counts speak in words', () => {
+  it('labels each count and hides the bare digit', () => {
+    const store = makeStore(['a1', 'a2', 'a3', 'a4'])
+    store.dispatch(sseSubagentDone({ slot: SLOT, id: 'a2', elapsed: 1, outcome: 'completed' }))
+    store.dispatch(sseSubagentDone({ slot: SLOT, id: 'a3', elapsed: 1, outcome: 'failed' }))
+    store.dispatch(sseSubagentDone({ slot: SLOT, id: 'a4', elapsed: 1, outcome: 'stopped' }))
+    store.dispatch(sseSubagentQueued({ slot: SLOT, queued: 2 }))
+    renderBar(store)
+    const words: Record<string, string> = {
+      'subagent-running-count': '1 agent running',
+      'subagent-queued-count': '2 agents queued',
+      'subagent-done-count': '1 agent done',
+      'subagent-failed-count': '1 agent failed',
+      'subagent-stopped-count': '1 agent stopped',
+    }
+    for (const [id, text] of Object.entries(words)) {
+      const chip = screen.getByTestId(id)
+      expect(chip.querySelector('.sr-only')?.textContent).toBe(text)
+      expect(chip.querySelector('span[aria-hidden="true"]')?.textContent).toMatch(/^\d+$/)
+    }
+  })
+
+  it('labels the awaiting count', () => {
+    renderBar(makeStore(['a1'], 'p1'))
+    expect(screen.getByTestId('subagent-awaiting-count').querySelector('.sr-only')?.textContent)
+      .toBe('1 agent waiting for approval')
   })
 })

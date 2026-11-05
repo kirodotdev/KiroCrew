@@ -44,6 +44,8 @@ from kiro_crew.instances.ssh_tunnel_manager import SshTunnelManager
 
 pytestmark = pytest.mark.xdist_group(name="tree_scan_ssh_tunnel_manager_bindings")
 
+SHARED_BINDINGS_CHECKS = ("the_field_scan_counts_every_read_and_write_shape",)
+
 _PACKAGE = "kiro_crew.instances"
 
 #: Member -> (kind, coroutine, signature digest, owning module). Frozen at the split: the
@@ -120,6 +122,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
         "ssh_tunnel_manager_transport",
     ),
     "_resolve_transport": ("function", False, "e04704ab9320", "ssh_tunnel_manager_transport"),
+    "_restart_when_idle": ("function", True, "2cefb15d094d", "ssh_tunnel_manager_remote_ops"),
     "_retire_chained": ("function", True, "c4e68ce7224d", "ssh_tunnel_manager_tokens"),
     "_run_remote_subcommand": ("function", True, "c89d1a190190", "ssh_tunnel_manager_remote_ops"),
     "_schedule_chained_retirement": (
@@ -150,11 +153,11 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "reconfigure": ("function", True, "c50b534715b6", "ssh_tunnel_manager_lifecycle"),
     "refresh_token": ("function", True, "427800bb96d3", "ssh_tunnel_manager_tokens"),
     "remote_update_job": ("function", False, "0f4ffeaa2f07", "ssh_tunnel_manager_remote_ops"),
-    "restart_remote": ("function", True, "5f5f7672543c", "ssh_tunnel_manager_remote_ops"),
+    "restart_remote": ("function", True, "eda7a3c85e67", "ssh_tunnel_manager_remote_ops"),
     "search_sessions_remote": ("function", True, "5ab0af6948cd", "ssh_tunnel_manager_peer"),
     "send_session_bundle": ("function", True, "e549c097311f", "ssh_tunnel_manager_peer"),
     "shutdown": ("function", True, "b60c5fea256e", "ssh_tunnel_manager_lifecycle"),
-    "start_remote_update": ("function", True, "5f5f7672543c", "ssh_tunnel_manager_remote_ops"),
+    "start_remote_update": ("function", True, "eda7a3c85e67", "ssh_tunnel_manager_remote_ops"),
     "status": ("function", False, "c4d8b0fe5305", "ssh_tunnel_manager_lifecycle"),
     "status_all": ("function", False, "954711b52218", "ssh_tunnel_manager_lifecycle"),
     "sync_hop_holds": ("function", False, "6e67e49bb5fd", "ssh_tunnel_manager_ports"),
@@ -462,16 +465,6 @@ def _fields(fns: list[ast.FunctionDef | ast.AsyncFunctionDef]) -> tuple[set[str]
             ):
                 (written if func.id == "setattr" else read).add(node.args[1].value)
     return written - set(_MEMBERS), read - written - set(_MEMBERS)
-
-
-def test_the_field_scan_counts_every_read_and_write_shape() -> None:
-    tree = ast.parse(
-        "def f(self):\n"
-        "    self.a = 1\n    del self.b\n    self.c[k] = v\n    del self.d[k]\n"
-        "    self.e.add(1)\n    self.f.setdefault(k, v)\n    setattr(self, 'g', 1)\n"
-        "    return self.h, getattr(self, 'i', None), hasattr(self, 'j'), self.e\n"
-    )
-    assert _fields([tree.body[0]]) == ({"a", "b", "c", "d", "e", "f", "g"}, {"h", "i", "j"})
 
 
 def _listed(doc: str, label: str) -> set[str]:

@@ -33,6 +33,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import deny_notice_checks
 import pytest
 
 from kiro_crew import llm_helpers, subagent
@@ -375,7 +376,10 @@ async def _run_subagent(
         patch.object(subagent, "update_state"),
         patch.object(subagent, "create_agent_folder", MagicMock()),
         patch.object(subagent, "turn_spec_hooks", AsyncMock(return_value=spec)),
-        patch("kiro_crew.subagent_manager.run.permission_pre_tool_block", pre_tool or AsyncMock()),
+        patch(
+            "kiro_crew.subagent_manager.run.permission_pre_tool_block",
+            pre_tool or AsyncMock(return_value=None),
+        ),
         patch.object(manager, "_write_tombstone"),
     ):
         await asyncio.wait_for(manager._run_inner(info, "subagent:a1"), 30)
@@ -615,7 +619,11 @@ def _site_for(sites: tuple[_Site, ...], lines: list[str], lo: int, hi: int) -> _
     return hits[0]
 
 
-class _InlineSurface:
+class _InlineSurface(
+    deny_notice_checks.EveryHostDenyIsPrecededByTheSharedSteer,
+    deny_notice_checks.EveryRejectAuditsBeforeTheSteer,
+    deny_notice_checks.EverySteerNamesItsCauseExplicitly,
+):
     """A module that denies inline: audit, then the shared steer, then reject."""
 
     MODULE = ""
@@ -634,44 +642,6 @@ class _InlineSurface:
         lines = _lines(self.MODULE)
         seen = sorted(site.fingerprint for _i, site in self._walk(lines))
         assert seen == sorted(s.fingerprint for s in self.SITES)
-
-    def test_every_host_deny_is_preceded_by_the_shared_steer(self):
-        lines = _lines(self.MODULE)
-        bare: list[int] = []
-        for i, site in self._walk(lines):
-            assert site.verdict == "host"
-            steers = [j for j in range(max(0, i - self.WINDOW), i) if _STEER.match(lines[j])]
-            if not steers:
-                bare.append(i + 1)
-        assert not bare, (
-            "these host denies hand the model kiro-cli's generic 'user denied' with "
-            f"nothing to correct it -- await _steer_host_deny(...) first: lines {bare}"
-        )
-
-    def test_every_reject_audits_before_the_steer(self):
-        lines = _lines(self.MODULE)
-        late: list[int] = []
-        previous = -1
-        for i, _site in self._walk(lines):
-            floor = max(0, i - self.AUDIT_WINDOW, previous + 1)
-            steers = [j for j in range(max(0, i - self.WINDOW), i) if _STEER.match(lines[j])]
-            audits = [j for j in range(floor, i) if _AUDIT.match(lines[j])]
-            if not audits or not steers or not audits[-1] < steers[-1]:
-                late.append(i + 1)
-            previous = i
-        assert not late, (
-            "the SEL row must be written before the steer and the reject, or a "
-            f"stalled pipe cancels the coroutine with the decision unaudited: lines {late}"
-        )
-
-    def test_every_steer_names_its_cause_explicitly(self):
-        lines = _lines(self.MODULE)
-        unnamed = [
-            i + 1
-            for i in _matches(_STEER, lines)
-            if "cause=DENY_CAUSE_" not in "\n".join(lines[i : i + self.WINDOW])
-        ]
-        assert not unnamed, unnamed
 
     def _walk(self, lines: list[str]) -> list[tuple[int, _Site]]:
         out: list[tuple[int, _Site]] = []

@@ -18,9 +18,12 @@ import argparse
 from typing import TYPE_CHECKING
 
 from kiro_crew import cli_help
-from kiro_crew.cli_arg_types import positive_int
-from kiro_crew.config.loader import DASHBOARD_PORT
-from kiro_crew.cron_service.model import _AUTO_PAUSE_MAX, _AUTO_PAUSE_THRESHOLD
+from kiro_crew.cli_arg_types import non_negative_int, positive_int
+from kiro_crew.cron_service.model import (
+    _ALERT_AFTER_DEFAULT,
+    _AUTO_PAUSE_MAX,
+    _AUTO_PAUSE_THRESHOLD,
+)
 
 if TYPE_CHECKING:
     _Commands = argparse._SubParsersAction[argparse.ArgumentParser]
@@ -33,6 +36,11 @@ _AUTO_PAUSE_AFTER_HELP = (
     f"above {_AUTO_PAUSE_THRESHOLD}, from the {_AUTO_PAUSE_THRESHOLD}th consecutive "
     "failure each further run waits 5 minutes, doubling per failure up to "
     "one hour, until it succeeds or reaches a nonzero limit)"
+)
+_ALERT_AFTER_HELP = (
+    f"Consecutive failed runs before the failure message is sent (1..{_AUTO_PAUSE_MAX}, "
+    f"default {_ALERT_AFTER_DEFAULT}). The dashboard bell still records every failure; "
+    "policy denials and the run that auto-pauses the job always alert"
 )
 
 # Helper for commands with examples
@@ -114,15 +122,16 @@ Examples:
         dest="at",
         help="One-shot: fire once at this time and then delete the job. A Unix timestamp, "
         "or a time string ('5pm', 'in 30 minutes', 'tomorrow 9am', '2026-10-01 09:00') "
-        "read in --timezone, or in the configured timezone when --timezone is omitted.",
+        "read in --timezone, or in the default timezone when --timezone is omitted.",
     )
     cron_add.add_argument(
         "--timezone",
         dest="timezone",
         default="",
         help="IANA timezone the job's wall clock is read in (e.g. America/New_York): the "
-        "--cron expression's fields, or an --at time string such as '9am'. Defaults to the "
-        "configured timezone; refused with --every (an interval has no wall clock).",
+        "--cron expression's fields, or an --at time string such as '9am'. 'local' follows "
+        "this computer's time zone wherever it travels. Defaults to the configured "
+        "timezone, else 'local'; refused with --every (an interval has no wall clock).",
     )
     cron_add.add_argument("--channel", help="Slack channel ID to post results to")
     # One job KIND per job. A script or command job never launches an agent,
@@ -184,6 +193,13 @@ Examples:
         help=_AUTO_PAUSE_AFTER_HELP,
     )
     cron_add.add_argument(
+        "--alert-after",
+        type=int,
+        dest="alert_after_failures",
+        default=None,
+        help=_ALERT_AFTER_HELP,
+    )
+    cron_add.add_argument(
         "--model",
         dest="model",
         default="",
@@ -225,6 +241,15 @@ Examples:
         "The CLI does not create folders — create them in the dashboard's Schedule page.",
     )
     cron_add.add_argument(
+        "--project-path",
+        dest="project_path",
+        default="",
+        metavar="DIR",
+        help="Run the job's agent session in this project directory, so that "
+        "repo's own .kiro/steering/ and AGENTS.md load (absolute path to an "
+        "existing directory; agent jobs only). Omit to keep today's directory.",
+    )
+    cron_add.add_argument(
         "--approval-mode",
         dest="approval_mode",
         choices=["auto"],
@@ -260,6 +285,13 @@ Examples:
         default=None,
         help=_AUTO_PAUSE_AFTER_HELP,
     )
+    cron_update.add_argument(
+        "--alert-after",
+        type=int,
+        dest="alert_after_failures",
+        default=None,
+        help=_ALERT_AFTER_HELP,
+    )
     cron_update.add_argument("--cron", dest="cron_expr", help="New cron expression")
     cron_update.add_argument("--channel", help="New channel ID")
     cron_update.add_argument(
@@ -268,6 +300,14 @@ Examples:
         default=None,
         help="New agent name (empty string resets to agent.default_agent, "
         "or the kirocrew agent when that is unset or not eligible)",
+    )
+    cron_update.add_argument(
+        "--project-path",
+        dest="project_path",
+        default=None,
+        metavar="DIR",
+        help="New project directory for the job's agent session (empty string "
+        "clears it, back to the default directory)",
     )
     cron_update.add_argument(
         "--approval-mode",
@@ -332,7 +372,7 @@ def register_spawn_parser(sub: _Commands) -> None:
 Examples:
   kirocrew spawn run 'check my open CRs'        # Wait for result
   kirocrew spawn run --async 'analyze logs'     # Fire-and-forget
-  kirocrew spawn run --crew ops 'triage alerts' # Run as crew member 'ops'
+  kirocrew spawn run --crew ops 'triage alerts' # Run as Bot 'ops'
   kirocrew spawn run --agent reviewer 'review'  # Run under agent 'reviewer'
   kirocrew spawn run --model MODEL_ID 'task'    # Run on model MODEL_ID
   kirocrew spawn list                           # Show active subagents
@@ -357,7 +397,7 @@ Examples:
         "--crew",
         metavar="NAME",
         help=(
-            "Run as this crew member, with its memory store and template; "
+            "Run as this Bot, with its memory store and template; "
             "an unknown member is refused, never replaced"
         ),
     )
@@ -367,7 +407,12 @@ Examples:
         help="Run on this model id; it outranks the member's and the template's pin",
     )
     spawn_sub.add_parser("list", help="List subagents")
-    spawn_parser.add_argument("--port", type=int, default=DASHBOARD_PORT, help="Dashboard port")
+    spawn_parser.add_argument(
+        "--port",
+        type=int,
+        default=None,
+        help="Dashboard port (default: found as `kirocrew status` finds it)",
+    )
 
 
 def register_run_parser(sub: _Commands, _jail_opts: argparse.ArgumentParser) -> None:
@@ -641,7 +686,7 @@ def register_memory_parser(sub: _Commands) -> None:
     mem_sub.add_parser("migrate", help="Migrate legacy markdown memory to vector store")
     mem_backup = mem_sub.add_parser("backup", help="Back up active memory stores now")
     mem_backup.add_argument(
-        "--keep", type=int, default=None, help="How many backups to keep per store"
+        "--keep", type=positive_int, default=None, help="How many backups to keep per store"
     )
     mem_backups = mem_sub.add_parser("backups", help="List memory backups, newest first")
     mem_backups.add_argument("--store", default=None, help="Only this store")
@@ -707,8 +752,10 @@ def register_memory_parser(sub: _Commands) -> None:
         choices=["scope", "surface", "crew", "session_key", "derived_from", "kind"],
         help="Report counts grouped by this axis instead of listing rows",
     )
-    mem_carve.add_argument("--limit", type=int, default=50, help="How many rows to list")
-    mem_carve.add_argument("--offset", type=int, default=0, help="Rows to skip when listing")
+    mem_carve.add_argument("--limit", type=positive_int, default=50, help="How many rows to list")
+    mem_carve.add_argument(
+        "--offset", type=non_negative_int, default=0, help="Rows to skip when listing"
+    )
     mem_retired = mem_sub.add_parser(
         "retired", help="List episodes a semantic write superseded, and restore one"
     )
@@ -719,7 +766,11 @@ def register_memory_parser(sub: _Commands) -> None:
     mem_forget = mem_sub.add_parser(
         "forget",
         help="Delete one semantic memory key after you confirm it (owner only; "
-        "needs a terminal and the running gateway)",
+        "needs a terminal and the running gateway; not on native Windows)",
+        description="Delete one semantic memory key after you confirm it. Owner only: "
+        "it needs an interactive terminal and the running gateway, and it is not "
+        "available on native Windows, which has no dashboard Unix socket. There, "
+        "delete the key from the dashboard Memory page.",
     )
     mem_forget.add_argument("key", help="Semantic memory key to forget")
     mem_forget.add_argument(
@@ -785,10 +836,7 @@ def register_agent_parser(sub: _Commands) -> None:
     )
     agent_update.add_argument(
         "--memory-store",
-        help=(
-            "Existing memory store identity (cannot be changed, except to 'default' "
-            "from a store name the config refuses)"
-        ),
+        help="Existing memory store identity (cannot be changed; any other value is refused)",
     )
     agent_update.add_argument(
         "--model",
@@ -799,6 +847,18 @@ def register_agent_parser(sub: _Commands) -> None:
     )
     agent_delete = agent_sub.add_parser("delete", help="Delete a Kiro Crew agent")
     agent_delete.add_argument("name", help="Agent name to delete")
+    agent_pin = agent_sub.add_parser(
+        "pin",
+        help=(
+            "Choose which spec file an agent name runs when several declare it "
+            "(agent.spec_pins); with no arguments, list the pins"
+        ),
+    )
+    agent_pin.add_argument("name", nargs="?", help="Agent name the specs declare")
+    agent_pin.add_argument(
+        "file", nargs="?", help="Bare file name in the agents directory, e.g. PkgA-helper.json"
+    )
+    agent_pin.add_argument("--clear", action="store_true", help="Remove the pin for this name")
     agent_reset_model = agent_sub.add_parser(
         "reset-model",
         help="Clear an agent spec's pinned model so it tracks the shipped default again",
@@ -852,6 +912,8 @@ Examples:
   kirocrew app install /path/to/oncall-watchtower
   kirocrew app list
   kirocrew app enable oncall-watchtower
+  kirocrew app update oncall-watchtower
+  kirocrew app update oncall-watchtower --source /path/to/oncall-watchtower
   kirocrew app disable oncall-watchtower
   kirocrew app info oncall-watchtower
   kirocrew app uninstall oncall-watchtower
@@ -882,6 +944,18 @@ Examples:
     app_sub.add_parser("list", help="List installed apps")
     app_enable = app_sub.add_parser("enable", help="Enable an installed app")
     app_enable.add_argument("name", help="App name to enable")
+    app_update = app_sub.add_parser(
+        "update",
+        help="Update an installed app to its newest published version (needs a running gateway)",
+    )
+    app_update.add_argument("name", help="App name")
+    app_update.add_argument(
+        "--source",
+        help=(
+            "App directory to update from; it becomes the app's recorded source "
+            "(default: the recorded source, where it was installed or last updated from)"
+        ),
+    )
     app_disable = app_sub.add_parser("disable", help="Disable an installed app")
     app_disable.add_argument("name", help="App name to disable")
     app_mcp = app_sub.add_parser(

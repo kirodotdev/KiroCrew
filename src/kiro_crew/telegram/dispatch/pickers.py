@@ -39,30 +39,19 @@ _MODEL_PICKER_MAX = 50
 
 
 #: Buttons a picker shows. Telegram renders a one-per-row keyboard fine at this
-#: size, and the list is the account's own model set, not a catalogue.
-#: Shared by both pickers, like the TTL and the retention cap above: the lists
-#: are this account's own models and this machine's own agent specs, not
-#: catalogues, so one bound fits both.
+#: size, and both lists (this account's models, this machine's agent specs) are
+#: short, not catalogues, so one bound fits both pickers.
 _PICKER_LIMIT = 24
 
 
-#: An agent kept out of the channel ``/agent`` picker BY DEFAULT: the picker
-#: offers the agents a person driving from Telegram actually chooses between,
-#: not Kiro Crew's own machinery. Two disjoint signals, both authoritative on
-#: their own field rather than on the display name:
+#: Agents hidden from the channel ``/agent`` picker BY DEFAULT, by field, never
+#: by display name:
 #:
-#: * ``kirocrew_owned`` — the Kiro Crew-generated internal agents (the chat
-#:   agent, the background/heartbeat/conductor/worker/knowledge specs). This is
-#:   the ``name in OWNED_KIRO_AGENT_FILES`` flag ``list_agents`` already sets, so
-#:   a user's OWN hand-authored ``kirocrew-custom.json`` — which merely shares
-#:   the ``kirocrew`` name prefix and is not owned — is NOT hidden. The prefix
-#:   would over-match it; the ownership flag is exactly the set to hide.
-#: * an app-installed agent, whose spec is materialised under the
-#:   ``<app>--<agent>.json`` link filename (see ``apps.bridges``/``apps.execution``).
-#:   These belong to an installed app, not to the person picking an agent, so
-#:   they are hidden alongside the internals. The double-dash is a filename
-#:   convention Kiro Crew writes, not a name a user types, so matching the
-#:   FILENAME (not the possibly-bare declared name) is what identifies them.
+#: * ``kirocrew_owned`` — Kiro Crew's generated internal agents. The flag, not
+#:   the ``kirocrew`` prefix, so a user's own ``kirocrew-custom.json`` still shows.
+#: * app-installed agents, linked as ``<app>--<agent>.json`` (see
+#:   ``apps.bridges``/``apps.execution``): the double dash is a filename Kiro Crew
+#:   writes, so the FILENAME identifies them, not the declared name.
 _APP_AGENT_LINK_SEP = "--"
 
 
@@ -254,16 +243,13 @@ async def _apply_model(
 ) -> str:
     """Record *model_id* for *route* and push it to the live session.
 
-    *model_id* comes verbatim from the session's advertised list, so it is
-    already the id this backend accepts — no canonical translation, which
-    would differ per backend and could mangle an id that was correct.
+    *model_id* comes verbatim from the session's advertised list, so no
+    per-backend canonical translation can mangle it.
 
-    The preference is stored unconditionally so it reaches the NEXT session
-    even when there is nothing live to switch (the common case right after
-    ``/new``). When a session does exist, the switch is attempted in place —
-    ``session/set_model`` carries the conversation across — and the semaphore
-    is taken atomically so the switch cannot interleave JSON-RPC with a turn
-    on the same stdio channel.
+    The preference is stored so the NEXT session gets it even with nothing live
+    (common right after ``/new``). A live session switches in place via
+    ``session/set_model``, under the semaphore so the JSON-RPC cannot interleave
+    with a turn on the same stdio channel.
 
     Returns the user-facing outcome line.
     """
@@ -498,21 +484,14 @@ async def _apply_agent(
 ) -> str:
     """Switch *route* to *agent_id* and report what it changed.
 
-    The switch itself is :func:`switch_channel_agent`, the step every channel's
-    ``/agent`` shares: it refuses while a reply is streaming (everything about
-    a running turn — ``_active_renderers`` for the steer chip, the queue
-    receipt, ``/stop``'s provider lookup — is keyed on the session key, so
-    moving the key would leave that turn with no route back), sets the pick,
-    and reseeds the route's generation from the new agent's own saved
-    conversations, so a later ``/new`` never lands on one of them. Only the
-    picker's wording lives here.
+    The switch is the shared :func:`switch_channel_agent`: it refuses while a
+    reply streams (the running turn's renderer, receipt and ``/stop`` are keyed on
+    the session key), sets the pick, and reseeds the generation so a later
+    ``/new`` never lands on a saved conversation. Only the wording lives here.
 
-    The agent is part of the session key, so a pick necessarily LEAVES the
-    running conversation — there is no in-place swap to claim, and the message
-    says so rather than implying the running conversation changed spec. What it
-    lands on is the new agent's latest saved conversation when it has one (the
-    reseed), else a fresh one, so the reply promises neither. The previous
-    conversation is not destroyed: switching back reaches the same key again.
+    The agent is part of the session key, so a pick LEAVES the running
+    conversation (switching back returns to it); it lands on the new agent's
+    latest saved conversation or a fresh one, so the reply promises neither.
     """
     configured = self._configured_agent()
     # *label* is the pressed button's text, so the reply names what the user

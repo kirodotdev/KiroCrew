@@ -121,11 +121,15 @@ def test_session_control_guard_is_unchanged_only_the_lesson_path_matches_effecti
 
 def test_explicit_workspace_still_wins(state):
     mine = _slot(state, "chat-mine", "client-a", 1)
+    stores = {ws: MagicMock(name=ws) for ws in ("client-a", "client-c")}
     state.context_builder = MagicMock()
-    state.context_builder.get_lessons_for = MagicMock(return_value=MagicMock())
+    state.context_builder.get_lessons_for = MagicMock(side_effect=stores.__getitem__)
 
-    cron._lesson_jsonl_store(state, "", "workspace", "client-c", session_key=slot_history_key(mine))
+    store = cron._lesson_jsonl_store(
+        state, "", "workspace", "client-c", session_key=slot_history_key(mine)
+    )
 
+    assert store is stores["client-c"]
     state.context_builder.get_lessons_for.assert_called_once_with("client-c")
 
 

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { screen, fireEvent, waitFor, within } from '@testing-library/react'
+import { act, screen, fireEvent, waitFor, within } from '@testing-library/react'
 import { renderWithProviders as renderUnderHost } from '../../test/helpers'
 import { AppIdentityProvider } from '../../app-sdk/identity'
 
@@ -516,8 +516,8 @@ describe('overview pane', () => {
   })
 
   it('each metric card opens the pane that owns its figure', async () => {
-    // StatCard lifts on hover whether or not it is a target, so a card that
-    // went nowhere signalled a click it did not have.
+    // A metric card restates a figure some pane owns, so the card is the way
+    // through to that pane.
     renderWithProviders(<AwsControlPage />)
     fireEvent.click(await screen.findByTestId('overview-stat-spend'))
     expect(screen.getByTestId('rail-usage').getAttribute('aria-current')).toBe('page')
@@ -974,7 +974,9 @@ describe('accounts pane', () => {
     // The totals strip answers "how much is connected and is it healthy".
     expect(screen.getByTestId('accounts-totals')).toHaveTextContent(
       i18nT('apps.awsControl.page.totals_summary', {
-        accounts: fmtNumber(2), keys: fmtNumber(2), healthy: fmtNumber(1),
+        count: 2,
+        accounts: fmtNumber(2),
+        keys: i18nT('apps.awsControl.page.keys_healthy', { count: 2, n: fmtNumber(2), healthy: fmtNumber(1) }),
       }),
     )
     // The selected account's connection keys live on this pane too.
@@ -1326,6 +1328,26 @@ describe('add accounts', () => {
     await waitFor(() => {
       expect(awsControlApi.accounts).toHaveBeenCalledTimes(2)
     })
+  })
+
+  it('a box ticked while a register is in flight stays ticked when it lands', async () => {
+    let land!: (v: { added: number; skipped: number }) => void
+    vi.mocked(awsControlApi.registerProfiles).mockImplementation(
+      () => new Promise((resolve) => { land = resolve }),
+    )
+    await openAccountsPane()
+    fireEvent.click(await screen.findByTestId('add-accounts-toggle'))
+    const box = async (name: string) =>
+      (await screen.findAllByTestId('add-accounts-checkbox')).find((b) => b.getAttribute('data-name') === name)!
+    fireEvent.click(await box('staging'))
+    fireEvent.click(screen.getByTestId('add-accounts-register'))
+    await waitFor(() => expect(awsControlApi.registerProfiles).toHaveBeenCalledWith(['staging']))
+
+    fireEvent.click(await box('sandbox'))
+    expect(await box('sandbox')).toBeChecked()
+    await act(async () => { land({ added: 1, skipped: 0 }) })
+    await waitFor(() => expect(awsControlApi.accounts).toHaveBeenCalledTimes(2))
+    expect(await box('sandbox')).toBeChecked()
   })
 
   it('says so on an unsupported platform instead of showing a picker', async () => {

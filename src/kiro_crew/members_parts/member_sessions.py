@@ -42,12 +42,7 @@ def is_member_session_key(session_key: str | None) -> bool:
     """
     if not session_key:
         return False
-    key = session_key
-    for prefix in ("dashboard_", "dashboard:"):
-        if key.startswith(prefix):
-            key = key[len(prefix) :]
-            break
-    return key.startswith(DM_SLOT_KEY_PREFIX)
+    return _slot_part(session_key).startswith(DM_SLOT_KEY_PREFIX)
 
 
 def _slot_part(session_key: str) -> str:
@@ -89,8 +84,8 @@ def crewmate_worker_prompt_in_context(session_key: str | None) -> bool:
 
 #: The crewmate (its immutable ``member_id``) each known worker slot belongs to,
 #: written with :data:`_CREWMATE_WORKER_SLOTS` from the same execution record. It
-#: names whose harness pin the worker runs on (``crewmate_harness``); the set above
-#: stays the one answer to "is this a worker".
+#: names whose harness pin the worker runs on (``crewmate_harness``);
+#: :data:`_CREWMATE_WORKER_SLOTS` stays the one answer to "is this a worker".
 _CREWMATE_WORKER_MEMBERS: dict[str, str] = {}
 
 
@@ -188,7 +183,7 @@ def select_provider_backend(
     if crew_backend is not None:
         backend = crew_backend.backend
         logger.info(
-            "crewmate session %s: routing to acp_backend=%r (agents.%s.acp_backend=%r)",
+            "Bot session %s: routing to acp_backend=%r (agents.%s.acp_backend=%r)",
             session_key,
             backend,
             crew_backend.crew,

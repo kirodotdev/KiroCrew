@@ -7,6 +7,7 @@ import { Glass } from './Glass'
 
 import { i18nT } from '../i18n/t'
 import { ASK_MAX_ANSWER_LEN, NATIVE_MAX_ANSWER_LEN } from '../utils/askQuestionTool'
+import { reportUiControlClick } from '../lib/uiControlTelemetry'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 interface QuestionOption {
   label: string
@@ -267,8 +268,12 @@ function QuestionCard({ questions, askId, onSubmit, draftAnswers, onDismiss, bus
   useEffect(() => {
     draftRef.current?.(currentDraftAnswers)
   }, [currentDraftAnswers])
-  const handleSubmit = () =>
+  const handleSubmit = () => {
+    // Only whether a typed answer was used is reported, never the answer.
+    const typed = Object.values(customInputs).some(v => (v ?? '').trim() !== '')
+    reportUiControlClick(typed ? 'question_card_freetext' : 'question_card_answer')
     onSubmit(Object.fromEntries(Object.entries(currentDraftAnswers).map(([q, a]) => [q, a.trim()])))
+  }
 
   /* Every question must be answered before Submit unlocks. The answer map is
      keyed by question text, so a partial submit resumes the blocked agent with

@@ -204,7 +204,7 @@ function InstanceRow({
           </span>{' '}
           {usesSsmTransport(inst) ? inst.ssm_target : inst.ssh_host}
           {usesSsmTransport(inst) && inst.aws_region ? ` (${inst.aws_region})` : ''}{' '}
-          {i18nT('pages.settings.instancesPanel.port_2')} {inst.remote_port} {i18nT('pages.settings.instancesPanel.ttl')} {inst.ttl}
+          {i18nT('pages.settings.instancesPanel.remote_port_ttl', { port: inst.remote_port, ttl: inst.ttl })}
           {typeof ttl === 'number' ? ' ' + i18nT('pages.settings.instancesPanel.token_left', { time: humanizeSecs(ttl) }) : ''}
         </div>
         <div className="mt-1"><StatusBadge status={inst.status} /></div>
@@ -396,7 +396,7 @@ export function InstancesPanel() {
           <span className={`inline-block w-2 h-2 rounded-full ${active ? 'bg-ok' : 'bg-warn'}`} aria-hidden />
           <span className="text-muted">
             {i18nT('pages.settings.instancesPanel.multi_instance_management_is')} <span className="text-text font-medium">{i18nT('pages.settings.instancesPanel.enabled')}</span>
-            {active ? '' : ' — not active until restart'}
+            {active ? '' : ` ${i18nT('pages.settings.instancesPanel.not_active_until_restart')}`}
           </span>
         </div>
         <Btn onClick={() => setEnabledMutation.mutate(false)} disabled={setEnabledMutation.isPending} aria-label={i18nT('pages.settings.instancesPanel.disable_multi_instance_management')}>
@@ -487,7 +487,7 @@ export function InstancesPanel() {
                 ))}
               </div>
               <p className="mt-2 text-[12px] text-muted">
-                {i18nT('pages.settings.instancesPanel.up_to')} {warmCap} {i18nT('pages.settings.instancesPanel.instances_stay_warm_live_tunnel_at_once_the_rest')}{' '}
+                {i18nT('pages.settings.instancesPanel.warm_cap_count', { count: warmCap })}{' '}
                 <SettingRef configKey="instances.warm_set_cap" />.
               </p>
             </Card>

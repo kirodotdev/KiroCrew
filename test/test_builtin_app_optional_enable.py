@@ -709,7 +709,6 @@ class TestProperty6EnableDisableRoundTrip:
         assert meta is not None
         assert meta.enabled is False
 
-        # Enable
         result = enable_app("roundtrip-app")
         assert result.ok
 
@@ -773,7 +772,6 @@ class TestProperty6EnableDisableRoundTrip:
         assert meta is not None
         assert meta.enabled is True
 
-        # Disable
         result = disable_app("roundtrip-app2")
         assert result.ok
 

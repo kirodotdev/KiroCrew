@@ -44,6 +44,9 @@ class FakeEvent:
     # Mirrors LLMEvent's diff-content-block path (default ""): the edit gate
     # reads it on every permission frame, not only behind an edit tool_kind.
     diff_path: str = ""
+    # Mirrors LLMEvent's Side Chat refusal (default ""): _resolve_permission
+    # reads it on every permission frame, under any policy.
+    side_read_only_refusal: str = ""
 
 
 class FakeProvider:

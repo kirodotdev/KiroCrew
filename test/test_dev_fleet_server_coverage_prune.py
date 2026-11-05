@@ -21,6 +21,7 @@ from dev_fleet_server_coverage_helpers import (  # noqa: F401 -- the autouse fix
 )
 
 from kiro_crew.apps.builtins.dev_fleet import fleet_state, repository, worktree_ops
+from kiro_crew.testing.wait import async_wait_until, await_until
 
 
 # --------------------------------------------------------------------------
@@ -302,15 +303,20 @@ async def test_prune_candidates_closed_dirty_lands_in_kept_with_loss_counts(monk
 async def test_prunable_passes_full_head_oid_to_pr_status_cached(monkeypatch, tmp_path):
     """Prune cache invalidation uses full commit identity for branch reuse."""
     full_head = "a" * 40
-    cache = AsyncMock(return_value=None)
+    # The cache only knows the PR under the full OID, so the verdict below shows
+    # which identity the lookup used.
+    cache = AsyncMock(
+        side_effect=lambda branch, head: {"state": "CLOSED"} if head == full_head else None
+    )
     monkeypatch.setattr(fleet_state, "_pr_status_cached", cache)
     monkeypatch.setattr(repository, "_own_commits_count", AsyncMock(return_value=0))
     monkeypatch.setattr(repository, "_real_dirty", AsyncMock(return_value=False))
     git = AsyncMock(return_value=full_head)
     monkeypatch.setattr(repository, "_git", git)
 
-    await worktree_ops._prunable(str(tmp_path), "feat")
+    out = await worktree_ops._prunable(str(tmp_path), "feat")
 
+    assert out["code"] == "closed_unverified"
     git.assert_awaited_once_with(str(tmp_path), "rev-parse", "HEAD")
     cache.assert_awaited_once_with("feat", full_head)
 
@@ -359,6 +365,7 @@ async def test_prune_candidates_scans_concurrently(monkeypatch):
     in_flight = 0
     peak = 0
     started = asyncio.Event()
+    overlapped = asyncio.Event()
 
     async def fake_prunable(path, branch):
         nonlocal in_flight, peak
@@ -366,11 +373,11 @@ async def test_prune_candidates_scans_concurrently(monkeypatch):
         peak = max(peak, in_flight)
         started.set()
         try:
-            # Yield so siblings queued in the same gather can start before this
-            # one finishes -- a serial loop would resolve each before the next.
-            # flake-ok: pre-existing two one-turn yields that let queued siblings start, moved verbatim; tracked for a de-flake pass
-            await asyncio.sleep(0)
-            await asyncio.sleep(0)
+            # Hold each verdict until two are in flight at once. A serial loop
+            # never gets there, so the wait ends by its lost-run bound and fails.
+            if in_flight >= 2:
+                overlapped.set()
+            await await_until(overlapped, timeout=30, what="two verdicts in flight")
             return {"ok": True, "code": "merged"}
         finally:
             in_flight -= 1
@@ -415,16 +422,26 @@ async def test_prune_candidates_output_order_is_deterministic(monkeypatch):
         "/repo/wt-d": {"ok": False, "code": "active", "dirty": False},
     }
 
+    # Each verdict waits on its own gate; the test opens them one at a time, in
+    # the inverted order, and waits for each to finish before opening the next.
+    gates = {path: asyncio.Event() for path in delays}
+    finished: list[str] = []
+
     async def fake_prunable(path, branch):
-        # flake-ok: pre-existing real-time delays that scramble completion order, moved verbatim; tracked for a de-flake pass
-        await asyncio.sleep(delays[path])
+        await await_until(gates[path], timeout=30, what=f"gate for {path}")
+        finished.append(path)
         return verdicts[path]
 
     monkeypatch.setattr(repository, "_discover_worktrees", AsyncMock(return_value=wts))
     monkeypatch.setattr(worktree_ops, "_prunable", fake_prunable)
 
-    out = await worktree_ops._prune_candidates()
+    scan = asyncio.ensure_future(worktree_ops._prune_candidates())
+    for path in sorted(delays, key=delays.get):
+        gates[path].set()
+        await async_wait_until(lambda p=path: p in finished, timeout=30, describe=lambda: path)
+    out = await scan
 
+    assert finished == ["/repo/wt-d", "/repo/wt-c", "/repo/wt-b", "/repo/wt-a"]
     assert [c["name"] for c in out["candidates"]] == ["wt-a", "wt-c"]
     assert [k["name"] for k in out["kept"]] == ["wt-b", "wt-d"]
     assert out["scanned"] == 4

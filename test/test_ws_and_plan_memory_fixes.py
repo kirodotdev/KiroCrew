@@ -128,7 +128,8 @@ class TestWsDeadClientCleanup:
         ws = MagicMock()
         state.register_ws(ws)
         state.unregister_ws(ws)
-        state.unregister_ws(ws)  # should not raise
+        state.unregister_ws(ws)
+        assert ws not in state._ws_clients
 
 
 # ── WS user experience edge cases ───────────────────────────────────
@@ -165,8 +166,8 @@ class TestWsNormalUserExperience:
         alive1.send_str.assert_called_once()
         alive2.send_str.assert_called_once()
         dead.send_str.assert_not_called()
-        # Verify message content is identical for both alive clients
         assert alive1.send_str.call_args == alive2.send_str.call_args
+        assert state._ws_clients == [alive1, alive2]
 
     @pytest.mark.asyncio
     async def test_client_dies_mid_session_next_broadcast_cleans(
@@ -205,6 +206,7 @@ class TestWsNormalUserExperience:
 
         alive.send_str.assert_called_once()
         dead.send_str.assert_not_called()
+        assert state._ws_clients == [alive]
 
     def test_multiple_tabs_independent_lifecycle(self, state: DashboardState) -> None:
         """3 tabs open, 1 dies — other 2 unaffected across multiple broadcasts."""

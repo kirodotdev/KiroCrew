@@ -935,6 +935,8 @@ class TestOffsetDurability:
         client = TelegramClient(token="t:1", offset_path=tmp_path / "f" / "offset.json")
         client._offset_path.parent.write_text("i am a file", encoding="utf-8")
         client._save_offset(3)  # must not raise
+        # The blocking file is left as it was, not replaced to make room.
+        assert client._offset_path.parent.read_text(encoding="utf-8") == "i am a file"
 
 
 # ---------------------------------------------------------------------------

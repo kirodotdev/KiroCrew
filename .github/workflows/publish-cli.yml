@@ -59,7 +59,14 @@ permissions:
 jobs:
   publish-cli:
     name: Publish CLI wheel (${{ inputs.channel }})
-    runs-on: ubuntu-latest
+    # `kirocrew-runners` larger-runner group, reached by its runner LABEL rather
+    # than by GROUP. nightly.yml calls this lane with no repository guard, so a
+    # fork running its own nightly starts it too; there an organization runner
+    # group is unreachable and a job asking for a label no runner there carries
+    # would wait out GitHub's pending limit instead of running. See
+    # "Larger runners for the review lanes and CodeQL" in
+    # docs/ci/ci-and-reviews.md.
+    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}
     timeout-minutes: 30
     # REQUIRED for tag-triggered (release) runs: the signing role's OIDC trust
     # accepts exactly two subjects -- ref:refs/heads/main and environment:prod.

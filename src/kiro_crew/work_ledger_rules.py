@@ -14,6 +14,8 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from kiro_crew.work_ledger_records import (
+    ACCEPTANCE_CHECK_NAME,
+    ACCEPTANCE_CHECK_REF,
     ACCEPTANCE_GH_REPO,
     ACCEPTANCE_KINDS,
     ACCEPTANCE_PLACEHOLDERS,
@@ -373,8 +375,7 @@ def is_stale(
         # and now it is not. With no report the two are indistinguishable, so the window
         # decides as it did before, which is the behaviour that gap always had.
         return True
-    handed_back = _decided_after_report(item) if item.status in WAITING_STATUSES else None
-    reference = handed_back or item.last_report_at or item.created_at
+    reference = quiet_since(item)
     if not reference:
         return True
     # Through ``parse_stamp``, whose UTC fallback covers a stamp at either end of
@@ -387,6 +388,16 @@ def is_stale(
     if moment.tzinfo is None:
         moment = moment.astimezone()
     return moment - stamped > timedelta(seconds=max(window_secs, 0.0))
+
+
+def quiet_since(item: WorkItem) -> str:
+    """The stamp :func:`is_stale` measures *item*'s quiet window from, ``""`` for none.
+
+    The conductor's ``decide`` when it answered a ``blocked`` / ``question`` report,
+    else the last report, else the item's creation.
+    """
+    handed_back = _decided_after_report(item) if item.status in WAITING_STATUSES else None
+    return handed_back or item.last_report_at or item.created_at or ""
 
 
 def _worker_owns_next_move(item: WorkItem) -> bool:
@@ -483,8 +494,10 @@ def is_acceptance_concrete(acceptance: Any) -> bool:
     :data:`ACCEPTANCE_KINDS`; a placeholder STRING (blank, or ``"TBD"`` in any case) in
     a field this ``kind``'s evaluator reads; or one of those fields mistyped — a
     ``pr_checks`` or ``pr_merged`` ``pr`` that is not a positive integer, a
-    ``pr_merged`` ``repo`` that is not a string of the evaluator's own pattern, a ``file`` ``path`` that is not a string, a ``file`` ``exists`` that
-    is not a bool. An explicit ``null`` in an
+    ``pr_merged`` ``repo`` that is not a string of the evaluator's own pattern, an
+    ``edition_check`` ``check`` or ``ref`` that is not a string of the evaluator's own
+    pattern, a ``file`` ``path`` that is not a string, a ``file`` ``exists`` that is
+    not a bool. An explicit ``null`` in an
     OPTIONAL read field is absence, which the evaluator handles, so it is concrete; in a
     required one the type rule refuses it.
 
@@ -518,6 +531,13 @@ def is_acceptance_concrete(acceptance: Any) -> bool:
         # Required here, unlike ``pr_checks``, and held to the evaluator's pattern.
         repo = acceptance.get("repo")
         if not isinstance(repo, str) or not ACCEPTANCE_GH_REPO.fullmatch(repo):
+            return False
+    if kind == "edition_check":
+        check = acceptance.get("check")
+        ref = acceptance.get("ref")
+        if not isinstance(check, str) or not ACCEPTANCE_CHECK_NAME.fullmatch(check):
+            return False
+        if not isinstance(ref, str) or not ACCEPTANCE_CHECK_REF.fullmatch(ref):
             return False
     if kind == "file":
         if not isinstance(acceptance.get("path"), str):

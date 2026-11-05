@@ -20,11 +20,15 @@ import { i18nT } from '../i18n/t'
 
 // ── Mocks ────────────────────────────────────────────────────────────────────
 
-const brandingEnv = vi.hoisted(() => ({ directLocal: false }))
+const brandingEnv = vi.hoisted(() => ({ directLocal: false, desktopLauncher: true }))
 const platformEnv = vi.hoisted(() => ({ value: 'other' as 'other' | 'darwin' | 'windows' }))
 
 vi.mock('../hooks/useBranding', () => ({
-  useBranding: () => ({ botName: 'Test', avatar: '', directLocal: brandingEnv.directLocal }),
+  useBranding: () => ({
+    botName: 'Test', avatar: '',
+    directLocal: brandingEnv.directLocal,
+    desktopLauncher: brandingEnv.desktopLauncher,
+  }),
 }))
 
 vi.mock('../hooks/useGatewayPlatform', () => ({
@@ -61,6 +65,7 @@ const realFetch = globalThis.fetch
 beforeEach(() => {
   vi.clearAllMocks()
   brandingEnv.directLocal = false
+  brandingEnv.desktopLauncher = true
   platformEnv.value = 'other'
   __resetPathKindCache()
 })
@@ -214,6 +219,24 @@ describe('FilePathMenu in-app rows', () => {
       expect(nativeOpen).toBeGreaterThan(separator)
       fireEvent.click(item('Show in file manager'))
       await waitFor(() => expect(api.revealPath).toHaveBeenCalledWith(FILE, 'reveal'))
+    })
+
+    it('a direct-local session on a host with no desktop launcher keeps only the in-app rows and Copy path', async () => {
+      // The reported case: an `ssh -L` browser reads as direct-local, and the
+      // headless gateway host can answer a reveal only with a clipboard copy.
+      // The rows that act on the viewer's own screen are what is left to offer.
+      brandingEnv.directLocal = true
+      brandingEnv.desktopLauncher = false
+      const menu = await openMenu(
+        <FilePathMenu filePath={FILE} onFileOpen={vi.fn()} onFolderOpen={vi.fn()}>
+          <span data-testid="trigger">report.md</span>
+        </FilePathMenu>,
+      )
+      expect(menu.textContent).toContain(OPEN_IN_PANEL())
+      expect(menu.textContent).toContain(OPEN_FOLDER())
+      expect(menu.textContent).toContain('Copy path')
+      expect(menu.textContent).not.toContain('Open with default app')
+      expect(menu.textContent).not.toContain('Show in file manager')
     })
 
     it('a Windows gateway still hides "Open with default app" when in-app handlers are passed', async () => {

@@ -89,6 +89,7 @@ from kiro_crew.agent_parts.kirocrew_launcher import (
     _stale_mcp_purge_marker,
     _through_stable_link,
     ensure_kirocrew_on_path,
+    refresh_own_kirocrew_link,
     run_first_run_setup,
 )
 from kiro_crew.agent_parts.shared_home import (
@@ -160,18 +161,25 @@ from kiro_crew.agent_parts.spec_grants import (
     _WORKER_WORK_GRANTS,
 )
 from kiro_crew.agent_parts.spec_lookup import (
+    _claimed_pin_path,
     _conflicting_spec_for,
+    _pinned_spec_path,
     _project_shadow_of,
     _read_spec_capped,
+    _resolve_spec_path,
     _spec_path_is_safe,
     _spec_path_shape_refusal,
     agent_spec_path,
     markdown_spec_for_agent,
+    session_agent_spec_path,
 )
 from kiro_crew.agent_parts.spec_prompts import (
+    _CONDUCTOR_PROMPT_SECTIONS,
     _CONDUCTOR_SYSTEM_PROMPT,
     _CONDUCTOR_WORK_LEDGER_PROTOCOL,
     _DASHBOARD_MANAGER_SYSTEM_PROMPT,
+    _DEPENDENT_CALLS_RULE,
+    _LEDGER_CONDUCTOR_RULES,
     _PIPELINE_CONDUCTOR_SYSTEM_PROMPT,
     _SECURITY_CONDUCTOR_SYSTEM_PROMPT,
     _TEAM_LEAD_SYSTEM_PROMPT,
@@ -252,6 +260,7 @@ from kiro_crew.env import (
 from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes_nolink
 from kiro_crew.owner_only_files import mkdirs_owner_only, write_text_owner_only
 from kiro_crew.platform import (
+    PlatformCompositionError,
     current_context,
 )
 from kiro_crew.platform import redact_log_via_context as redact_log
@@ -390,6 +399,7 @@ if TYPE_CHECKING:  # served by ``__getattr__`` at runtime; named here for mypy
         _mcp_registry_mode,
         _mcp_server_emission_eligible,
         _mcp_spec_gate_open,
+        _registry_marker_for,
         _spec_gate_answers_closed,
         crew_owned_mcp_servers,
         emission_eligible_mcp_servers,
@@ -453,7 +463,13 @@ if TYPE_CHECKING:  # served by ``__getattr__`` at runtime; named here for mypy
         _install_research_agent,
         _install_team_lead_agent,
         knowledge_agent_model,
+        knowledge_view_without_registered_injection,
         repair_knowledge_agent_spec,
+    )
+    from kiro_crew.agent_materialization.shared_template_view import (  # noqa: F401
+        govern_shared_template_injected_servers,
+        govern_shared_template_view,
+        governed_view_names,
     )
     from kiro_crew.agent_materialization.skill_resources import (  # noqa: F401
         map_prompt_skills,
@@ -858,6 +874,29 @@ _aim_skill_paths = _all_skill_paths
 _DEFAULT_KIRO_HOOKS_DIR = Path.home() / ".kiro" / "hooks"
 
 
+def resolved_kiro_hooks_dir() -> Path:
+    """The user's ``~/.kiro/hooks`` directory, honouring ``agent.kiro_hooks_dir``.
+
+    Reads ``~/.kiro/crew/config.json`` and resolves the configured directory
+    through the HOME-contained check the ``*.sh`` autoimport uses
+    (:func:`kiro_crew.agent_materialization.kiro_hooks.resolve_kiro_hooks_dir`),
+    so the standalone ``*.json`` hook-file loader and the script autoimport read
+    one directory under one rule. Falls back to ``~/.kiro/hooks`` on any failure.
+    """
+    try:
+        mc_cfg = _load_json(_mc_config_path()) or {}
+    except Exception:  # noqa: BLE001 - a missing/unreadable config falls back
+        mc_cfg = {}
+    agent_cfg = mc_cfg.get("agent") if isinstance(mc_cfg, dict) else None
+    # audit=False: this runs on every KAS turn, so a rejected override must not
+    # warn and SEL-audit each time -- the install path (audit default True) reports
+    # it once, where it happens. The owner is reached through the module bound by
+    # the tail re-export below, so this core keeps its single owner import.
+    return kiro_hooks.resolve_kiro_hooks_dir(
+        agent_cfg if isinstance(agent_cfg, dict) else {}, audit=False
+    )
+
+
 # --------------------------------------------------------------------------- #
 # Compatibility facade. The hook normalization that stood here, and the MCP
 # projection, governance and derived-agent installers further down, live in
@@ -930,6 +969,7 @@ _EXPORTS_BY_OWNER: dict[str, tuple[str, ...]] = {
         "_HOME_DERIVING_ENV_KEYS",
         "_LAUNCHER_EXEC_ENV_KEYS",
         "_mcp_registry_mode",
+        "_registry_marker_for",
         "_managed_mcp_env",
         "_mcp_spec_gate_open",
         "_spec_gate_answers_closed",
@@ -1019,6 +1059,11 @@ _EXPORTS_BY_OWNER: dict[str, tuple[str, ...]] = {
         "name_has_another_claimant",
         "hold_spawn_gate",
     ),
+    "kiro_crew.agent_materialization.shared_template_view": (
+        "governed_view_names",
+        "govern_shared_template_injected_servers",
+        "govern_shared_template_view",
+    ),
     "kiro_crew.agent_materialization.service_agents": (
         "_install_guest_agent",
         "_install_lite_agent_fallback",
@@ -1030,6 +1075,7 @@ _EXPORTS_BY_OWNER: dict[str, tuple[str, ...]] = {
         "_install_team_lead_agent",
         "_install_dashboard_manager_agent",
         "repair_knowledge_agent_spec",
+        "knowledge_view_without_registered_injection",
         "_DASHBOARD_MANAGER_AGENT_FILENAME",
         "_GUEST_AGENT_FILENAME",
         "_KNOWLEDGE_AGENT_FILENAME",
@@ -1578,6 +1624,7 @@ from kiro_crew.agent_materialization import (  # noqa: E402, F401 -- the owners 
     mcp_aliases,
     mcp_sources,
     service_agents,
+    shared_template_view,
     skill_resources,
     worker_agent,
 )

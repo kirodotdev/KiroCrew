@@ -715,14 +715,17 @@ class TestModelStepsRunAfterTheCredentialFilesAreScrubbed:
                         ), f"{where}: the step before it is {prev!r}, not the scrub"
         # Guard the enumeration itself: a rename that makes `_is_model_step` match
         # nothing would otherwise turn this into a vacuous pass.
-        assert seen == 5, f"expected 5 model steps across both lanes, found {seen}"
+        # Six: the fork Opus lane's rate-limit retry of validation is a model
+        # step too, and needs its own scrub.
+        assert seen == 6, f"expected 6 model steps across both lanes, found {seen}"
 
     def test_the_scrub_is_byte_identical_at_every_site(self) -> None:
-        # Three scrub sites remain: the fork GPT lane's Opus adjudication pass and
-        # both fork Opus lane model passes. The two GPT codex passes are now
+        # Four scrub sites remain: the fork GPT lane's Opus adjudication pass and
+        # the fork Opus lane's three model passes (discovery, validation and its
+        # rate-limit retry). The two GPT codex passes are now
         # fronted by the stronger UID-boundary steps instead.
         bodies = self._scrub_bodies()
-        assert len(bodies) == 3, f"expected 3 scrub steps, found {len(bodies)}"
+        assert len(bodies) == 4, f"expected 4 scrub steps, found {len(bodies)}"
         assert len(set(bodies)) == 1, "the scrub bodies have drifted apart"
 
     def test_every_boundary_step_also_truncates_the_set_env_files(self) -> None:

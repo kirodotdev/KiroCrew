@@ -5,7 +5,8 @@
  *  approval shortcuts leave the covered local pane alone), and the cover's
  *  siblings are inert (so nothing behind it can be focused or pressed). */
 import { useEffect, useRef } from 'react'
-import { closeCrewWindow, coverSiblings, markCrewWindowShown } from './crewWindowStore'
+import { closeCrewWindow, markCrewWindowShown } from './crewWindowStore'
+import { coverSiblings } from '../../../utils/coverSiblings'
 
 export default function CrewWindowGuard({ onClose = closeCrewWindow }: { onClose?: () => void }) {
   const ref = useRef<HTMLDivElement>(null)

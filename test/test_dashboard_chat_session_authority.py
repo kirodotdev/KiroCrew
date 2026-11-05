@@ -898,6 +898,7 @@ class TestCloseBroadcastDurability:
 
         async def _save(*args, **kwargs):
             calls.append("save")
+            return True
 
         monkeypatch.setattr(chat_handlers, "save_slot_off_loop", _save)
 
@@ -1002,24 +1003,27 @@ class TestCloseBroadcastDurability:
             side_effect=lambda _key: (calls.append("broadcast"), seen.set())
         )
 
+        release = asyncio.Event()
+
         async def _hang(*args, **kwargs):
             calls.append("remove")
-            # flake-ok: the stubbed session remove hangs so the close stays in flight
-            # nosemgrep: kirocrew.test-sleep-as-barrier -- the stubbed session remove hangs so the close stays in flight
-            await asyncio.sleep(30)
+            await release.wait()  # the teardown never returns; the cleanup below ends it
 
         state.sessions.remove = AsyncMock(side_effect=_hang)
 
         async with TestClient(TestServer(_make_app(state))) as client:
             close = asyncio.get_running_loop().create_task(client.delete("/api/chat/slots/s1"))
-            await await_until(seen, what="the broadcast firing")
-            assert "save" in calls and calls.index("save") < calls.index("broadcast")
-            assert "s1" not in state._slots
-            close.cancel()
             try:
-                await close
-            except asyncio.CancelledError:
-                pass
+                await await_until(seen, what="the broadcast firing")
+                assert "save" in calls and calls.index("save") < calls.index("broadcast")
+                assert "s1" not in state._slots
+                close.cancel()
+                try:
+                    await close
+                except asyncio.CancelledError:
+                    pass
+            finally:
+                release.set()
 
     @pytest.mark.asyncio
     async def test_active_slot_set_is_published_only_after_the_teardown(

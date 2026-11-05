@@ -508,15 +508,17 @@ class TestList:
 
         bad_tags = store.root / "bad-tags"
         bad_tags.mkdir()
-        # tags as an int — list(42) raises TypeError.
+        # tags as an int: the tolerant load reads it as no tags rather than
+        # refusing the whole record (see test_artifact_meta_tags_decode.py).
         (bad_tags / "meta.json").write_text(
             '{"slug": "bad-tags", "tags": 42}',
             encoding="utf-8",
         )
 
-        # list() must not raise; only the healthy artifact is returned.
-        results = store.list()
-        assert {a.slug for a in results} == {"ok"}
+        # list() must not raise; the bad version is skipped, the bad tags read as none.
+        results = {a.slug: a for a in store.list()}
+        assert set(results) == {"ok", "bad-tags"}
+        assert results["bad-tags"].tags == []
 
     def test_list_does_not_include_content(self, store: ArtifactStore) -> None:
         store.create(name="x", content="big payload")

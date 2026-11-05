@@ -13,12 +13,17 @@ from __future__ import annotations
 import json
 import logging
 from datetime import datetime, timezone
+from enum import Enum
 from pathlib import Path
 from typing import Any
 
 from kiro_crew import member_records, platform_compat
 from kiro_crew.atomic_write import atomic_write, read_bytes_with_retry
-from kiro_crew.members_parts.member_sessions import is_member_session_key, member_slot_key
+from kiro_crew.members_parts.member_sessions import (
+    _slot_part,
+    is_member_session_key,
+    member_slot_key,
+)
 from kiro_crew.members_parts.member_space import (
     DM_BINDINGS_DIR_NAME,
     DM_SLOT_KEY_PREFIX,
@@ -68,12 +73,113 @@ def read_dm_binding(slug: str) -> dict | None:
     function's write-side twin, :func:`write_dm_binding`, just atomically
     replaced) — off-loop only, matching this function's own calling contract.
     """
+    data = _read_canonical_binding(slug)
+    if data is None:
+        return None
+    outcome = _resolve_canonical_binding(slug, data)
+    return outcome if isinstance(outcome, dict) else None
+
+
+class DmBindingOutcome(Enum):
+    """Non-binding answers: only confirmed absence permits pruning a reopen seed."""
+
+    UNKNOWN = "unknown"
+    CONFIRMED_ABSENT = "confirmed_absent"
+
+
+def resolve_dm_binding_outcome(slot_key: str) -> dict | DmBindingOutcome:
+    """Resolve one canonical read, distinguishing absence from uncertainty.
+
+    Total and blocking: async callers must use ``asyncio.to_thread``.
+    """
+    try:
+        slug = slug_from_dm_slot_key(slot_key)
+        if slug is None:
+            return DmBindingOutcome.UNKNOWN
+        data = _read_canonical_binding(slug)
+        if data is None or data["slot_key"] != slot_key:
+            return DmBindingOutcome.UNKNOWN
+        return _resolve_canonical_binding(slug, data, require_healthy_config=True)
+    except Exception:
+        return DmBindingOutcome.UNKNOWN
+
+
+def _resolve_canonical_binding(
+    slug: str, data: dict, *, require_healthy_config: bool = False
+) -> dict | DmBindingOutcome:
+    """Share identity checks with the legacy reader without changing its answers."""
+    # And the member must actually BELONG to this slug: a tampered dm.json in
+    # slug A's directory naming crew B (a real, registered crew whose slug
+    # differs) would otherwise pin A's thread — and A's restored transcript —
+    # to B's identity. Colliding names are fine: every name that slugifies to
+    # this slug passes; anything else reads as absent.
+    if data.get("member_id") == slug:
+        from kiro_crew.config.loader import KiroCrewConfig
+        from kiro_crew.config.resolution import DEGRADED_WHOLE_CONFIG
+        from kiro_crew.execution_context import member_config_for_id
+
+        try:
+            config = KiroCrewConfig.load()
+        except ValueError:
+            return DmBindingOutcome.UNKNOWN
+        # A unique match resolves whatever the health markers say: they stay
+        # sticky until restart, so a boot read that failed mid-write would
+        # otherwise block every later retry. Two matches are never absence.
+        try:
+            alias, _ = member_config_for_id(config, slug)
+        except ValueError:
+            pass
+        else:
+            data["member"] = alias
+            return data
+        if any(getattr(m, "member_id", "") == slug for m in config.agents.values()):
+            return DmBindingOutcome.UNKNOWN
+        # No match: either lost file, or an agents/whole-config marker, can
+        # hide the crewmate. Unrelated degraded sections do not hide agents.
+        if require_healthy_config and (
+            config._base_unreadable
+            or config._overlay_unreadable
+            or config.degraded_sections & {"agents", DEGRADED_WHOLE_CONFIG}
+        ):
+            return DmBindingOutcome.UNKNOWN
+        return DmBindingOutcome.CONFIRMED_ABSENT
+    elif slug_for_name(data["member"]) != slug:
+        return DmBindingOutcome.UNKNOWN
+    return data
+
+
+def dm_binding_depends_on_config(slot_key: str) -> bool:
+    """Whether *slot_key*'s binding is well formed on disk and names its crewmate by id.
+
+    Such a binding resolves only through the Crew config (the crewmate whose
+    ``member_id`` it names), so when :func:`read_dm_binding_for_slot` answers
+    ``None`` for it, the answer is the config's at that moment, not the
+    binding's: a config read that saw no such crewmate, or two. A restore that
+    gets that answer keeps the thread for a later attempt instead of dropping
+    it, since a config rewrite can bring the crewmate back. A binding that is
+    absent, malformed or of another generation is not this case. Total and
+    blocking file IO, like :func:`read_dm_binding`; reads no config.
+    """
+    slug = slug_from_dm_slot_key(slot_key)
+    if slug is None:
+        return False
+    data = _read_canonical_binding(slug)
+    return data is not None and data["slot_key"] == slot_key and data.get("member_id") == slug
+
+
+def _read_canonical_binding(slug: str) -> dict | None:
+    """The binding file's payload when it is well formed and canonical for *slug*.
+
+    Everything :func:`read_dm_binding` checks before it resolves the crewmate;
+    total in the same way.
+    """
     try:
         path = dm_binding_path(slug)
     except (MemberSlugError, OSError, RuntimeError):
-        # member_dir resolves (and may mkdir) real filesystem paths, so an
-        # unreadable directory or a symlink loop surfaces here — the totality
-        # contract above says every such state reads as "not bound", and the
+        # dm_binding_path resolves real filesystem paths (and the one-time records
+        # move it can trigger creates directories), so an unreadable directory or
+        # a symlink loop surfaces here — read_dm_binding's
+        # totality contract says every such state reads as "not bound", and the
         # restore paths rely on that to survive any on-disk state at boot.
         return None
     try:
@@ -112,22 +218,6 @@ def read_dm_binding(slug: str) -> dict | None:
         return None
     if data["slot_key"] != canonical:
         return None
-    # And the member must actually BELONG to this slug: a tampered dm.json in
-    # slug A's directory naming crew B (a real, registered crew whose slug
-    # differs) would otherwise pin A's thread — and A's restored transcript —
-    # to B's identity. Colliding names are fine: every name that slugifies to
-    # this slug passes; anything else reads as absent.
-    if data.get("member_id") == slug:
-        from kiro_crew.config.loader import KiroCrewConfig
-        from kiro_crew.execution_context import member_config_for_id
-
-        try:
-            alias, _ = member_config_for_id(KiroCrewConfig.load(), slug)
-        except ValueError:
-            return None
-        data["member"] = alias
-    elif slug_for_name(data["member"]) != slug:
-        return None
     return data
 
 
@@ -145,13 +235,8 @@ def write_dm_binding(slug: str, *, member: str, slot_key: str, memory_store: str
     report failure instead of advertising a thread that will not be found
     again.
 
-    No fsync, deliberately: the binding is re-derivable — the slot key is a
-    pure function of the slug and the endpoint that writes it is idempotent —
-    so losing it to a crash costs one re-create, while a durability barrier
-    would stall the event-loop thread pool for every thread open. The write
-    itself is atomic (unique temp file + rename), so a torn file is never
-    observable. Not a secret (a slot key and a crew name), so no owner-only
-    permission tightening.
+    The write is atomic (unique temp file + rename), so a torn file is never
+    observable, and fsynced, for the reason given at the write below.
     """
     path = dm_binding_path(slug)
     if slot_key != member_slot_key(slug, memory_store):
@@ -221,11 +306,7 @@ def member_identity_for_session(session_key: str | None) -> dict[str, str] | Non
     """
     if not session_key or not is_member_session_key(session_key):
         return None
-    key = session_key
-    for prefix in ("dashboard_", "dashboard:"):
-        if key.startswith(prefix):
-            key = key[len(prefix) :]
-            break
+    key = _slot_part(session_key)
     binding = read_dm_binding_for_slot(key)
     slug = slug_from_dm_slot_key(key)
     if binding is None or not slug:

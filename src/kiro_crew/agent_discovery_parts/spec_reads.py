@@ -14,16 +14,18 @@ from __future__ import annotations
 import errno
 import logging
 import os
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Callable, Iterator, Mapping, Sequence
 
-from kiro_crew import hooks
+from kiro_crew import hooks, platform_compat
 from kiro_crew.agent_spec_format import (
     is_markdown_spec,
     iter_agent_spec_files,
     markdown_head_is_fenceless,
     parse_agent_spec_bytes,
 )
+from kiro_crew.atomic_write import retry_read_sharing_window
 from kiro_crew.config.paths import kiro_agents_dir
 from kiro_crew.hooks import FileTooLargeError, is_unc_shape, unc_probe_allowed
 from kiro_crew.pinned_fs import open_fenced_for_read
@@ -74,7 +76,7 @@ class _SpecReadRefused(OSError):
 _SpecReadRefused.__module__ = "kiro_crew.agent_discovery"
 
 
-def _read_spec_bytes(real: Path) -> bytes:
+def _read_spec_bytes(real: Path, *, fence: Callable[[Path], bool] | None = None) -> bytes:
     """Read a resolved, fence-judged spec path pinned to the descriptor it opens.
 
     :func:`pinned_fs.open_fenced_for_read` refuses a link at the final
@@ -86,15 +88,31 @@ def _read_spec_bytes(real: Path) -> bytes:
     past it, so a multi-gigabyte "agent config" is still refused at the cap
     instead of being slurped into memory. Nothing here submits to the resolver
     pool off the event loop.
+
+    A consumer *fence* judges *real* before the open and the opened inode's
+    kernel path alongside :func:`_fence_refuses`; a refusal raises
+    :class:`_SpecReadRefused`.
     """
-    fd = open_fenced_for_read(
-        real,
-        fence=lambda fd_real: _fence_refuses(Path(fd_real)),
-        refusal=_SpecReadRefused,
-    )
+    if fence is not None and fence(real):
+        raise _SpecReadRefused(f"consumer fence refused {str(real)!r}")
+
+    def refused(fd_real: str) -> bool:
+        opened = Path(fd_real)
+        return _fence_refuses(opened) or (fence is not None and fence(opened))
+
     cap = hooks.MAX_FILE_BYTES
-    with os.fdopen(fd, "rb") as fh:
-        data = fh.read(cap + 1)
+
+    def read_once() -> bytes:
+        fd = open_fenced_for_read(real, fence=refused, refusal=_SpecReadRefused)
+        with os.fdopen(fd, "rb") as fh:
+            return fh.read(cap + 1)
+
+    # On Windows a read that lands while a writer replaces the spec (the
+    # dashboard's MCP enable, disable and remove paths rewrite kirocrew.json)
+    # fails with a sharing violation. That spec is present and valid, so the
+    # pinned open and read are retried with read_bytes_with_retry's budget,
+    # off the event loop only; POSIX keeps the single attempt.
+    data = retry_read_sharing_window(read_once, real)
     if len(data) > cap:
         raise FileTooLargeError(f"File exceeds {cap // (1024 * 1024)} MB safety cap")
     return data
@@ -167,6 +185,7 @@ def _read_agent_spec(
     *,
     operation: str = "list_agents",
     source: str = "list_agents",
+    fence: Callable[[Path], bool] | None = None,
 ) -> dict[str, Any] | None:
     """Parse an agent config file, or ``None`` when it is not usable.
 
@@ -199,6 +218,10 @@ def _read_agent_spec(
     to exactly today's trail); they are not for new call sites.
     ``caller`` stays fixed at ``"agent_discovery"``: the reader genuinely is the
     caller into SEL, and a fixed value keeps the trail greppable by module.
+
+    *fence* is an optional consumer policy judged on the resolved target and on
+    the opened inode's kernel path. A refusal is audited as ``consumer fence
+    rejected`` and the spec reads as unusable.
     """
     if path.name.startswith("._"):
         return None
@@ -212,8 +235,32 @@ def _read_agent_spec(
             error="untrusted UNC path rejected",
         )
         return None
+    to_resolve = path
+    if _WINDOWS:
+        # A local spelling can still be a link (or sit under one) whose target
+        # names a share, and ``resolve`` would follow it into the SMB probe the
+        # check above exists to prevent. The hooks screen reads each link's own
+        # target without traversing it, so a chain reaching an untrusted share
+        # is refused before anything follows it. The screened target is what is
+        # resolved: re-following the original links would let a link retargeted
+        # after the screen reach the share anyway. *path* still names the spec
+        # for parsing and for the audit trail, and the pinned open below judges
+        # the inode actually read.
+        screened = hooks._screen_windows_links(str(path))
+        if screened is None:
+            _audit_denied(
+                operation=operation,
+                source=source,
+                resources=str(path),
+                error="untrusted link target rejected",
+            )
+            return None
+        if screened != str(path):
+            # A path with no link screens to itself; anything else had a
+            # link rewritten to its vetted target.
+            to_resolve = Path(screened)
     try:
-        real = path.resolve(strict=True)
+        real = to_resolve.resolve(strict=True)
     except (OSError, RuntimeError):
         # OSError: broken link / permission; RuntimeError: pathlib's signal for
         # a symlink LOOP (a self-referential agent symlink is one `ln -s` away
@@ -222,8 +269,8 @@ def _read_agent_spec(
         # `!agent` handler exits without replying.
         return None
     if _unc_refused(str(real)):
-        # A local link into a share: the resolve has already probed, and the
-        # read must still not load the remote document.
+        # A share the link screen admitted, or a resolve that still landed on
+        # one: the read must not load the remote document.
         _audit_denied(
             operation=operation,
             source=source,
@@ -240,8 +287,22 @@ def _read_agent_spec(
             error="sensitive path rejected",
         )
         return None
+
+    def audited_fence(candidate: Path) -> bool:
+        refused = fence is not None and fence(candidate)
+        if refused:
+            _audit_denied(
+                operation=operation,
+                source=source,
+                resources=str(candidate),
+                error="consumer fence rejected",
+            )
+        return refused
+
     try:
-        raw = _read_spec_bytes(real)
+        raw = (
+            _read_spec_bytes(real) if fence is None else _read_spec_bytes(real, fence=audited_fence)
+        )
     except FileTooLargeError:
         logger.debug("Skipping oversized agent config: %r", path)
         return None
@@ -256,6 +317,15 @@ def _read_agent_spec(
         # quotes the spelling), so they are rendered with ``%r``: a newline in
         # the name is escaped instead of starting a forged log record.
         logger.warning("Skipping agent config %r: %r", path, exc)
+        return None
+    except PermissionError:
+        if platform_compat.IS_WINDOWS:
+            # The spec is present but stayed locked past the retry budget: a
+            # reader of this None would show its MCP servers as never
+            # configured, so the miss is logged where an operator sees it.
+            logger.warning("Skipping agent config %r: still locked by another process", path)
+        else:
+            logger.debug("Skipping unreadable agent config: %r", path)
         return None
     except OSError:
         # Absent or unreadable: "not a readable spec".
@@ -488,8 +558,9 @@ class AmbiguousAgentSpecError(ValueError):
 
     Which of them is live is undefined, so a resolver that picked one would
     hand the caller an agent the operator did not name, with that agent's tools
-    and prompt. Every declared-name resolver refuses instead; the message names
-    each file so the operator can remove or rename one. A reader of parsed
+    and prompt. Every declared-name resolver refuses instead, unless
+    ``agent.spec_pins`` pins the name to one of them; the message names each file
+    and the ``kirocrew agent pin`` command that chooses it. A reader of parsed
     content (:func:`spec_by_declared_name`) raises this only when the
     claimants' content differs: identical files answer the same question
     whichever is live, so it hands back that one answer instead. A writer
@@ -501,16 +572,78 @@ class AmbiguousAgentSpecError(ValueError):
     crosses the wire into a model-visible refusal, and the message's full
     paths disclose the account name and on-disk layout there. Empty when the
     raiser did not supply them; the message is then the only record.
+
+    ``agent`` is the declared name the files share, and ``packages`` maps each
+    path to the package that installed it (``agent_spec_pins.spec_package``), or
+    ``None``: the dashboard's chooser shows both. ``summaries`` maps each path to
+    the fields of its parse the chooser compares (``agent_spec_pins.SHOWN_FIELDS``),
+    so the chooser never reopens the files. ``pin`` is the pinned file name when a
+    pin is in force and broken (:class:`AgentSpecPinError`), else ``None``.
     """
 
-    def __init__(self, message: str, *, paths: Sequence[Path] = ()) -> None:
+    pin: str | None = None
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        paths: Sequence[Path] = (),
+        agent: str = "",
+        packages: Mapping[Path, str | None] | None = None,
+        summaries: Mapping[Path, dict[str, Any]] | None = None,
+    ) -> None:
         super().__init__(message)
         self.paths: tuple[Path, ...] = tuple(paths)
+        self.agent = agent
+        self.packages: dict[Path, str | None] = dict(packages or {})
+        self.summaries: dict[Path, dict[str, Any]] = dict(summaries or {})
 
 
 # Named by the path callers import it from: a traceback or a log line renders the
 # raised class as ``module.qualname``, so the owner module must not leak into it.
 AmbiguousAgentSpecError.__module__ = "kiro_crew.agent_discovery"
+
+
+class AgentSpecPinError(AmbiguousAgentSpecError):
+    """``agent.spec_pins`` pins a name to a file that none of its claimants is.
+
+    The pinned file is missing, unreadable, or declares another name, while two or
+    more specs declare the name. Every resolver refuses: falling back to another
+    claimant would run a file the operator did not choose. A subclass, so every
+    caller that refuses an ambiguous name refuses this too.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        pin: str,
+        paths: Sequence[Path] = (),
+        agent: str = "",
+        packages: Mapping[Path, str | None] | None = None,
+        summaries: Mapping[Path, dict[str, Any]] | None = None,
+    ) -> None:
+        super().__init__(message, paths=paths, agent=agent, packages=packages, summaries=summaries)
+        self.pin = pin
+
+
+AgentSpecPinError.__module__ = "kiro_crew.agent_discovery"
+
+
+@dataclass(frozen=True)
+class DeclaredSpecClaim:
+    """What :func:`declared_spec_claim` resolved a declared name to.
+
+    ``path`` and ``spec`` are the file that runs and its parse; ``claimants`` every
+    file that declares the name, in walk order; ``divergent`` whether their parses
+    differ; ``pinned`` whether ``agent.spec_pins`` chose ``path`` among several.
+    """
+
+    path: Path
+    spec: dict[str, Any]
+    claimants: tuple[Path, ...]
+    divergent: bool
+    pinned: bool
 
 
 def spec_by_declared_name(
@@ -519,6 +652,7 @@ def spec_by_declared_name(
     *,
     operation: str,
     source: str,
+    pins: Mapping[str, str] | None = None,
 ) -> dict[str, Any] | None:
     """Return the parsed spec in *agents_dir* whose declared ``name`` is *agent_id*.
 
@@ -530,8 +664,8 @@ def spec_by_declared_name(
     find no ``<agent_id>.json``: the KAS projection that starts a session
     (:func:`kiro_crew.acp.kas_agents.load_agent_spec`) and the tool-policy read
     that session's managed MCP servers then make, so those two agree on which
-    file an id means. Other surfaces still carry their own inline
-    ``data.get("name") == agent`` scans; routing them here is tracked, not done.
+    file an id means. Every reader of the file a session runs follows the same
+    rule, ``agent.spec_pins`` included (:func:`declared_spec_claim`).
 
     Reads go through :func:`_read_agent_spec`, the one hardened reader, so a
     scan of a user-writable directory applies the same guards as the listing
@@ -578,27 +712,138 @@ def spec_by_declared_name(
     The cache also hands out its own rows to be treated as read-only, where
     this returns a parse the caller owns.
     """
+    entry = declared_spec_entry(agents_dir, agent_id, operation=operation, source=source, pins=pins)
+    return None if entry is None else entry[1]
+
+
+def declared_spec_entry(
+    agents_dir: Path,
+    agent_id: str,
+    *,
+    operation: str,
+    source: str,
+    fence: Callable[[Path], bool] | None = None,
+    pins: Mapping[str, str] | None = None,
+) -> tuple[Path, dict[str, Any]] | None:
+    """:func:`spec_by_declared_name` with the listed path of the first claimant.
+
+    *fence* is handed to :func:`_read_agent_spec` for every scanned entry, so a
+    caller can hold followed links to its own policy. The path names the entry
+    as listed and is never reopened by this scan. *pins* is a snapshot of
+    ``agent.spec_pins``, for a caller that keys a memo by the same snapshot.
+    """
+    claim = declared_spec_claim(
+        agents_dir, agent_id, operation=operation, source=source, fence=fence, pins=pins
+    )
+    return None if claim is None else (claim.path, claim.spec)
+
+
+def declared_spec_claim(
+    agents_dir: Path,
+    agent_id: str,
+    *,
+    operation: str,
+    source: str,
+    fence: Callable[[Path], bool] | None = None,
+    pins: Mapping[str, str] | None = None,
+    parsed_rows: Sequence[tuple[dict[str, Any], Path]] | None = None,
+) -> DeclaredSpecClaim | None:
+    """The one declared-name resolver, with ``agent.spec_pins`` applied.
+
+    Walks *agents_dir* through :func:`_read_agent_spec` and collects every spec
+    that declares *agent_id*. With one claimant, or several identical ones and no
+    pin, the first is the answer, as :func:`spec_by_declared_name` documents.
+    When two or more declare it, the pin for *agent_id* (:mod:`kiro_crew.agent_spec_pins`,
+    read at call time unless *pins* is given) decides:
+
+    * the pinned file is a claimant: it is the answer, ``pinned`` is set;
+    * a pin naming none of them: :class:`AgentSpecPinError`, never another file;
+    * no pin and differing content: :class:`AmbiguousAgentSpecError`, whose
+      message lists each file and the ``kirocrew agent pin`` command for it.
+
+    A pin naming the only claimant is ignored; a pin naming none of the claimants
+    is refused however many are left. Only the first
+    match and the pinned match are held; every other parse is dropped as the walk
+    moves on. Snapshot readers may pass *parsed_rows* from the hardened
+    :func:`parsed_agent_specs` cache to select without reopening unchanged files.
+    They retain the snapshot's freshness and attribution contract. A consumer
+    *fence* requires a fresh read and cannot be combined with cached rows.
+    """
+    if parsed_rows is not None and fence is not None:
+        raise TypeError("parsed_rows and fence cannot be combined")
+    # Call-time: the pin store is not part of this family, so the facade serves no
+    # binding of it.
+    from kiro_crew import agent_spec_pins
+
     match: dict[str, Any] | None = None
+    pin = agent_spec_pins.spec_pin_for(agent_id, pins)
+    pinned_spec: dict[str, Any] | None = None
+    pinned_path: Path | None = None
     match_paths: list[Path] = []
+    packages: dict[Path, str | None] = {}
+    summaries: dict[Path, dict[str, Any]] = {}
     divergent = False
-    for path in iter_agent_spec_files(agents_dir):
-        spec = _read_agent_spec(path, operation=operation, source=source)
+    rows = (
+        parsed_rows
+        if parsed_rows is not None
+        else (
+            (_read_agent_spec(path, operation=operation, source=source, fence=fence), path)
+            for path in iter_agent_spec_files(agents_dir)
+        )
+    )
+    for spec, path in rows:
         if isinstance(spec, dict) and spec.get("name") == agent_id:
             if match is None:
                 match = spec
             elif not strict_json_equal(spec, match):
                 divergent = True
+            if pin is not None and path.name == pin and pinned_spec is None:
+                pinned_spec, pinned_path = spec, path
             match_paths.append(path)
+            packages[path] = agent_spec_pins.spec_package(spec)
+            summaries[path] = {key: spec.get(key) for key in agent_spec_pins.SHOWN_FIELDS}
+    if match is None:
+        if pin is not None:
+            # Pinned, but no file declares the name: not "no spec", which would let
+            # a filename fallback run some other file. The pin is broken.
+            raise AgentSpecPinError(
+                agent_spec_pins.broken_pin_message(agent_id, pin, []),
+                pin=pin,
+                agent=agent_id,
+            )
+        return None
+    decision, _pin = agent_spec_pins.pin_decision(
+        agent_id, [path.name for path in match_paths], {} if pin is None else {agent_id: pin}
+    )
+    file_names = [path.name for path in match_paths]
+    if decision == "broken":
+        assert pin is not None
+        raise AgentSpecPinError(
+            agent_spec_pins.broken_pin_message(agent_id, pin, file_names),
+            pin=pin,
+            paths=match_paths,
+            agent=agent_id,
+            packages=packages,
+            summaries=summaries,
+        )
+    if decision == "use" and pinned_spec is not None and pinned_path is not None:
+        return DeclaredSpecClaim(pinned_path, pinned_spec, tuple(match_paths), divergent, True)
     if len(match_paths) > 1:
         # Paths are repr'd: a filename in this user-writable, tool-shared
         # directory is untrusted input, and both texts reach a terminal.
-        names = ", ".join(repr(str(path)) for path in match_paths)
         if divergent:
+            # The message is what a refused session start shows the user, so it
+            # names every file and the command that picks one of them.
             raise AmbiguousAgentSpecError(
-                f"{len(match_paths)} specs declare the name {agent_id!r} with differing "
-                f"content: {names}. Which one is live is undefined -- remove or rename one.",
+                agent_spec_pins.ambiguous_message(
+                    agent_id, [str(path) for path in match_paths], file_names
+                ),
                 paths=match_paths,
+                agent=agent_id,
+                packages=packages,
+                summaries=summaries,
             )
+        names = ", ".join(repr(str(path)) for path in match_paths)
         # The name and the filenames are untrusted input from a user-writable
         # directory and this line persists in gateway.log: the same log-egress
         # redaction every other operational line carrying foreign text applies
@@ -611,7 +856,28 @@ def spec_by_declared_name(
             redact_log_via_context(repr(agent_id)),
             redact_log_via_context(names),
         )
-    return match
+    return DeclaredSpecClaim(match_paths[0], match, tuple(match_paths), divergent, False)
+
+
+def iter_declared_specs(
+    agents_dir: Path, *, operation: str, source: str
+) -> Iterator[tuple[str, dict[str, Any]]]:
+    """Yield ``(declared name, parsed spec)`` for every spec in *agents_dir* that declares one.
+
+    The walk :func:`spec_by_declared_name` makes, through the same reader and
+    under the caller's SEL labels, without choosing a name: a caller that needs
+    the answer for every declared name reads the directory once instead of once
+    per name. A spec that is refused, is not an object, or declares no string
+    ``name`` is skipped, as that scan skips it. Each parse is yielded and then
+    dropped, so the caller decides what to keep. Propagates ``OSError`` from
+    the directory walk itself.
+    """
+    for path in iter_agent_spec_files(agents_dir):
+        spec = _read_agent_spec(path, operation=operation, source=source)
+        if isinstance(spec, dict):
+            name = spec.get("name")
+            if isinstance(name, str):
+                yield name, spec
 
 
 def agent_spec_stems(agents_dir: Path, *, operation: str, source: str) -> list[str]:

@@ -22,12 +22,15 @@ from kiro_crew import pinned_fs
 from kiro_crew.atomic_write import replace_with_retry
 from kiro_crew.frontmatter import SKILL_LOADER, parse_frontmatter
 from kiro_crew.hooks import FileTooLargeError, safe_read_file, safe_read_file_bytes_nolink
+from kiro_crew.owner_only_files import ensure_directory
 from kiro_crew.platform_compat import ensure_owner_rwx_dirs, is_link_or_junction, rmtree_force
 from kiro_crew.skill_runtime import authoring as _authoring
 from kiro_crew.skills_builtin_provenance import (
     _FINGERPRINT_MAX_ENTRIES,
     _PROVENANCE_MARKER,
     _recorded_fingerprint,
+    _released_skill_owners,
+    _ships_for_released_app,
     _skill_tree_fingerprint,
     _tree_entries,
     _verified_unchanged_fingerprint,
@@ -469,6 +472,7 @@ def _ensure_builtin_skills(base: Path) -> None:
     """
     source_names: set[str] = set()
     supplied: set[str] = set()
+    released = _released_skill_owners()
     for src_root in (_project_skills_dir(), _BUILTIN_SKILLS_DIR):
         if not src_root or not src_root.exists():
             continue
@@ -484,6 +488,12 @@ def _ensure_builtin_skills(base: Path) -> None:
             if name in supplied:
                 continue
             supplied.add(name)
+            if _ships_for_released_app(src_file, released):
+                # Neither installed nor updated: the adopted app's own skills
+                # replace it, and an update here would claim, and quarantine,
+                # a directory that app's namespace may share. An installed copy
+                # stays in place; the catalog withholds it.
+                continue
             src_dir = src_file.parent
             dest_dir = base / name
             dest_file = dest_dir / "SKILL.md"
@@ -587,6 +597,7 @@ def _ensure_builtin_skills(base: Path) -> None:
             # written by the copy itself, so the published file is created
             # once, with the packaged mode, and never read back and rewritten.
             carried = _carried_skill_md(src_dir) if carry_opt_out else None
+            ensure_directory(base)  # copytree would create the skills root at the umask default
             try:
                 if carried is None:
                     shutil.copytree(src_dir, dest_dir)

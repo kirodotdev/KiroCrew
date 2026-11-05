@@ -1063,6 +1063,25 @@ def test_a_copied_work_store_never_sends_the_purge_at_the_canonical_ledger():
     assert {c.store for c in result.removed} == {canonical.name}
 
 
+def test_purge_summary_does_not_call_a_keyed_copy_keyless():
+    """A copy skipped because its key names another store HAS a key, so the
+    purge summary must not count it as "without a key"."""
+    import shutil
+
+    canonical = _work_ledger()
+    copy = canonical.parent / f"{canonical.name}-copy"
+    shutil.copytree(canonical, copy)
+
+    report = sweep.scan(older_than_days=30)
+    assert {c.store: c for c in report.candidates}[copy.name].key == CONDUCTOR
+
+    result = sweep.purge(report)
+    assert {c.store for c in result.skipped_unaddressable} == {copy.name}
+
+    summary = sweep.render(report, purged=result)[-1]
+    assert summary == "  purged 1, skipped 1 report-only", summary
+
+
 def test_a_copied_session_store_is_reported_and_never_purged():
     import shutil
 
@@ -1416,3 +1435,88 @@ def test_the_cli_reports_an_unreadable_root_as_a_failure(monkeypatch, capsys):
         sweep.run_command(purge=False, older_than_days=None, purge_unreadable=False)
     assert exit_info.value.code == 1
     assert "could not read the ledger stores" in capsys.readouterr().out
+
+
+# ── the exit code says whether the purge did what it listed ─────────────────
+
+
+def test_a_purge_whose_delete_fails_finishes_the_rest_and_exits_non_zero(monkeypatch, capsys):
+    """A failed delete must not read as a clean run to a script that checks the
+    exit code. The sweep still finishes every other delete, names the store that
+    did not go on stderr, and exits 1."""
+    stuck = _work_ledger("chat-30-stuck")
+    gone = _session_ledger("chat-31-gone", phase="done", age_days=90)
+    real_purge_conductor = wl.purge_conductor
+
+    def _refuse_one(slot_key, **kwargs):
+        if slot_key == "chat-30-stuck":
+            raise PermissionError(13, "Permission denied")
+        return real_purge_conductor(slot_key, **kwargs)
+
+    monkeypatch.setattr(wl, "purge_conductor", _refuse_one)
+
+    with pytest.raises(SystemExit) as exit_info:
+        sweep.run_command(purge=True, older_than_days=None, purge_unreadable=False)
+
+    assert exit_info.value.code == 1
+    captured = capsys.readouterr()
+    assert "purged 1, failed 1" in captured.out
+    assert f"could not delete work {stuck.name}" in captured.err
+    assert "key=chat-30-stuck" in captured.err
+    assert not gone.exists(), "the other delete still runs"
+    assert stuck.is_dir()
+
+
+def test_a_purge_with_no_failure_returns_normally(capsys):
+    """The success path keeps exit 0: only a delete that did not go changes it."""
+    work = _work_ledger("chat-32-clean")
+
+    sweep.run_command(purge=True, older_than_days=None, purge_unreadable=False)
+
+    captured = capsys.readouterr()
+    assert "purged 1" in captured.out and "failed" not in captured.out
+    assert captured.err == ""
+    assert not work.exists()
+
+
+def test_purge_unreadable_without_purge_is_refused_not_ignored(monkeypatch, capsys):
+    """``--purge-unreadable`` modifies ``--purge``. Alone it must not run a dry
+    run that exits 0 and reads like a purge that found nothing: it is refused
+    with exit 2 before any store is read."""
+    scanned: list[float] = []
+
+    def _fake_scan(*, older_than_days):
+        scanned.append(older_than_days)
+        return sweep.SweepReport((), 0, older_than_days)
+
+    monkeypatch.setattr(sweep, "scan", _fake_scan)
+
+    with pytest.raises(SystemExit) as exit_info:
+        sweep.run_command(purge=False, older_than_days=None, purge_unreadable=True)
+
+    assert exit_info.value.code == 2
+    assert "--purge-unreadable only works with --purge" in capsys.readouterr().err
+    assert scanned == []
+
+
+def test_a_work_ledger_an_overlapping_sweep_removed_is_not_a_failure(monkeypatch, capsys):
+    """Two purges over one report: the second finds the store gone and
+    ``purge_conductor`` answers False. The store is gone, so it counts as
+    removed and the command exits 0."""
+    work = _work_ledger("chat-33-raced")
+    report = sweep.scan(older_than_days=30)
+    real_purge_conductor = wl.purge_conductor
+
+    def _already_gone(slot_key, **kwargs):
+        real_purge_conductor(slot_key, **kwargs)
+        return False
+
+    monkeypatch.setattr(wl, "purge_conductor", _already_gone)
+    monkeypatch.setattr(sweep, "scan", lambda *, older_than_days: report)
+
+    sweep.run_command(purge=True, older_than_days=None, purge_unreadable=False)
+
+    captured = capsys.readouterr()
+    assert "purged 1" in captured.out and "failed" not in captured.out
+    assert captured.err == ""
+    assert not work.exists()

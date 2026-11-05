@@ -133,7 +133,7 @@ Two adjacent pieces of work are easy to mistake for a provisioner lane, so state
 
 ### Lifecycle routes are not part of the seam
 
-The stop, start and delete routes under `/api/cloud/{tag}/...` are EC2-specific — they take a CloudFormation stack tag and talk to EC2. Fargate has the read-only `GET /api/cloud/launch/{id}/task` route, resolved by engine capability rather than by a hard-coded provider id. A lane that needs other lifecycle actions contributes its own routes through the `dashboard` seam's `contribute_routes`.
+The stop, start and delete routes under `/api/cloud/{tag}/...` are EC2-specific — they take a CloudFormation stack tag and talk to EC2. Fargate has the read-only `GET /api/cloud/launch/{id}/task` route, resolved by engine capability rather than by a hard-coded provider id. A lane that needs other lifecycle actions contributes its own routes through the `dashboard` seam's `contribute_routes`, and can draw them on its crews' rows through `registerCrewRowActions` (step 6).
 
 There is also **no** `capabilities.remote_provisioners` governance scope today. The existing lanes carry none, and the spec names a row mirroring `capabilities.mobile_connect` as the natural follow-up for narrowing provisioners independently. If your lane needs to be governable, that scope is work you are adding, not work you are inheriting.
 
@@ -216,6 +216,8 @@ Call `registerRemoteProvisionerRenderer` from `website/src/components/remoteProv
 ### 6. Contribute lifecycle routes if you need them
 
 Mount them through `contribute_routes` on the `dashboard` seam. Do not extend `/api/cloud/{tag}/...`; those are EC2's.
+
+To put those actions on the crew's own row in "Your crews", call `registerCrewRowActions` from `website/src/components/remoteCrewRowActions.tsx` during composition, keyed on the `provisioner_id` your `register` stamps on the record. It takes up to two components, each handed the row (`inst`) and a `disabled` flag that is set while the row is busy with a core action: `menuItems` renders `DropdownMenuItem`s in the row's overflow menu between Edit and Remove, and `detail` renders under the row header, for the machine's own state or an action in progress. The registry refuses `aws_ec2`, whose lifecycle the core already draws, and never applies to a chained row, whose stamp the announcing pane chose. It only draws: every action still goes through your own routes, which must authorize the caller.
 
 ### 7. Test it
 

@@ -143,6 +143,22 @@ class TestIngestText:
             assert (await resp.json())["error"] == "no text provided"
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("text", [[1], 5, {"a": 1}], ids=["list", "int", "dict"])
+    async def test_non_string_text_is_a_coded_400(self, store, text):
+        sid = store.add_source("s", "web", "https://example.com")
+        pipeline = MagicMock(ingest_file=AsyncMock(return_value="job-9"))
+        async with _client(_make_app(store, pipeline=pipeline)) as client:
+            resp = await client.post(
+                f"/api/knowledge/sources/{sid}/ingest-text", json={"text": text}
+            )
+            assert resp.status == 400
+            assert await resp.json() == {
+                "error": "text must be a string",
+                "code": "invalid_field_type",
+            }
+        pipeline.ingest_file.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_ingests_and_marks_source_synced(self, store):
         sid = store.add_source("s", "web", "https://example.com")
         pipeline = MagicMock(ingest_file=AsyncMock(return_value="job-9"))

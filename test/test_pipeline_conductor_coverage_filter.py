@@ -1,26 +1,12 @@
 """Coverage filter - the batch open-PR exclusion the queue build subtracts with.
 
-The defect behind this script: a work source selects and excludes by LABEL, and a
-contributor who opens a PR carrying ``Fixes #N`` applies no label, so an item
-whose fix is already in flight is indistinguishable from a free one. Measured on
-kirodotdev/KiroCrew, 25 of 29 label-clean candidates were referenced by an open
-PR.
+A work source excludes by label, and a PR carrying ``Fixes #N`` applies none, so an
+item whose fix is in flight looks free. ``claim_preflight.py`` answers the same question
+at claim time, so :class:`TestVocabularyAgreesWithClaimPreflight` guards against drift.
 
-``claim_preflight.py`` already refuses those at claim time, so the risk in adding
-a second answer to one question is DRIFT. Two things here are therefore about the
-relationship rather than about this script alone:
-
-* :class:`TestVocabularyAgreesWithClaimPreflight` pins the reference spellings
-  against the other script's, and pins the agreement that a bare mention
-  subtracts on neither side -- an asymmetry there, where one layer reads a bare
-  mention as coverage and the other does not, is a defect rather than a nuance;
-* every direction test asserts the filter can only SUBTRACT. ``UNCOVERED`` and
-  ``UNKNOWN`` are the halves a careless edit would turn into permission, and an
-  ``UNKNOWN`` that printed an ``uncovered`` list would read as a finding about
-  items nothing scanned. ``MENTIONED`` is the third answer: a reference with no
-  closing keyword, reported without subtracting, because ``Refs #N`` is this
-  repository's idiom for referenced-but-deliberately-not-closed and subtracting
-  on it removes items nobody is fixing.
+Every direction test asserts the filter can only SUBTRACT: ``UNKNOWN`` prints no
+``uncovered`` list, and ``MENTIONED`` (no closing keyword, e.g. ``Refs #N``) is reported
+without subtracting.
 """
 
 from __future__ import annotations
@@ -182,17 +168,10 @@ class TestVocabularyAgreesWithClaimPreflight:
         assert mod.item_reference_re(REPO, ITEM).search(text)
 
     def test_a_bare_mention_subtracts_nowhere_and_is_reported_on_both_sides(self, mod, preflight):
-        """The keyword is required on BOTH sides, and that is what keeps the two
-        layers in agreement: neither admits an item the other refuses, and a bare
-        mention is reported rather than acted on in both.
+        """The keyword is required on BOTH sides, so a bare mention is reported, not acted on.
 
-        A tempting asymmetry argues that a queue subtraction is the weakest
-        verdict, so this layer alone could subtract on a bare reference. It cannot.
-        ``Refs #N`` is this repository's own idiom for
-        referenced-but-deliberately-not-closed, so a layer that subtracts on it
-        removes items whose referencing PR says in plain words it is not fixing
-        them -- silently, since such an item prints as covered rather than as
-        refused-for-a-reason.
+        ``Refs #N`` means "referenced, deliberately not closed", so subtracting on it here
+        would silently drop items nobody is fixing.
         """
         mention = "related to #11516, different fix"
         assert preflight.closing_reference_re(REPO, ITEM).search(mention) is None
@@ -226,16 +205,10 @@ class TestVocabularyAgreesWithClaimPreflight:
         "text", ["fixes otherowner/OtherRepo#11516", "same shape as v1.2#11516"]
     )
     def test_a_qualified_number_is_declined_here(self, mod, text):
-        """The one place this script is deliberately STRICTER, and the reason is
-        the direction of its only failure mode: a subtractive filter that
-        over-matches removes an item nobody is fixing, silently. A number
-        carrying somebody else's repository, or a version, is not a reference to
-        this repository's item.
+        """This script is deliberately STRICTER: another repository's number or a version
+        is not a reference, and over-matching silently drops an item nobody is fixing.
 
-        Only this side is asserted. The preflight's bare alternative reads the
-        same text differently, and pinning that here would turn an improvement in
-        another file into a red in this one - what needs guarding is THIS filter
-        going lax."""
+        Only this side is asserted; the preflight reads the same text differently."""
         assert mod.item_reference_re(REPO, ITEM).search(text) is None
 
 

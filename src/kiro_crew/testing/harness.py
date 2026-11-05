@@ -1063,7 +1063,8 @@ def harness_environment(
     test process exports (``KIROCREW_EMBED_MODEL_URL``, ``OLLAMA_MODELS``) reach
     the gateway, then pinned: the data home, the agent-spec home, the test-rig
     marker, unbuffered stdout, the app store's off-network switch
-    (``KIROCREW_SKIP_APP_STORE_FETCH=1``), and -- unless ``skip_model_download``
+    (``KIROCREW_SKIP_APP_STORE_FETCH=1``), the test-owned adoption pin table
+    (``KIROCREW_HARNESS_ADOPTION_PINS``), and -- unless ``skip_model_download``
     is False -- the ``KIROCREW_SKIP_MODEL_DOWNLOAD=1`` escape hatch. That flag is
     the ONLY default a caller can drop, and only through this keyword: it is what a
     dedicated download-failure evidence gateway needs, because the production
@@ -1112,6 +1113,13 @@ def harness_environment(
         # the name (``SKIP_FETCH_ENV``) and this module does not import the apps
         # package.
         "KIROCREW_SKIP_APP_STORE_FETCH": "1",
+        # The former built-in adoption pin table is read from this test-owned
+        # path instead of the wheel's, so a harness boot never fetches a shipped
+        # pin from GitHub. Nothing writes it here, and an absent table is an
+        # empty one, so the boot adopts nothing unless a test writes a fixture
+        # pin to it. Spelled literally for the same reason as the switch above
+        # (``apps.builtin_adoption_pins`` owns ``HARNESS_PINS_ENV``).
+        "KIROCREW_HARNESS_ADOPTION_PINS": str(home / "harness-adoption-pins.json"),
     }
     if skip_model_download:
         # Embeddings are default-on; never let a harness-spawned gateway

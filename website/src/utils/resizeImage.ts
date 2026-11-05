@@ -59,7 +59,7 @@ async function canvasToBlob(canvas: CanvasLike, type: string, quality?: number):
 }
 
 /** Draw the bitmap at w x h and encode to the given mime. Returns null on failure. */
-async function renderToBlob(
+export async function renderToBlob(
   bitmap: ImageBitmap,
   w: number,
   h: number,
@@ -79,8 +79,9 @@ async function renderToBlob(
   return canvasToBlob(canvas, mime, quality)
 }
 
-/** Swap a filename's extension (e.g. shot.PNG -> shot.png). */
-function withExtension(name: string, ext: string): string {
+/** Swap a filename's extension (e.g. shot.PNG -> shot.png). A name with no
+ *  extension gets one appended. */
+export function withExtension(name: string, ext: string): string {
   return name.replace(/\.[^./\\]+$/, '') + '.' + ext
 }
 

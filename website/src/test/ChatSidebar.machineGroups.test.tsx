@@ -47,6 +47,8 @@ vi.mock('../api/client', async (importOriginal) => {
       listInstances: listInstancesMock,
       instanceChatSlots: instanceChatSlotsMock,
       crewPeerGet: crewPeerGetMock,
+      // A gateway without the Shared Crew routes.
+      sharedCrewCapabilities: vi.fn().mockResolvedValue(null),
     },
   }
 })

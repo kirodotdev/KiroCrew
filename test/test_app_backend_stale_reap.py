@@ -1,10 +1,7 @@
 """Tests for the app-backend startup stale-reap (pidfile + PID-reuse-safe kill).
 
-These pin the safety contract of ``_reap_stale_app_backends``: it terminates a
-recorded app-backend pid ONLY when the pid is alive AND its start_time POSITIVELY
-matches what was recorded at spawn (so a recycled pid, an unreadable start_time,
-or a pid owned by another uid is never killed). Entries it cannot confirm-and-kill
-but that are still alive are KEPT for a later attempt; handled entries are dropped.
+``_reap_stale_app_backends`` kills a recorded pid ONLY when it is alive and its
+start_time POSITIVELY matches the spawn record. Live entries it cannot confirm are KEPT.
 """
 from __future__ import annotations
 
@@ -36,11 +33,8 @@ def test_record_read_forget_roundtrip(pidfile):
 def _model_a_host_without_ps(monkeypatch, *, identity):
     """Model a platform whose start-time probe is NOT `/proc` and NOT `ps`.
 
-    That is precisely Windows: `sys.platform` is not "linux", and there is no
-    standard `ps` for the fallback to reach. `platform_compat` is the layer that
-    can still answer there (process creation FILETIME through a query-only
-    handle) — its real per-platform behaviour is pinned in
-    test_platform_compat_process_identity.
+    That is Windows, where only `platform_compat` can answer (pinned in
+    test_platform_compat_process_identity).
     """
     monkeypatch.setattr(backend_mod.sys, "platform", "win32")
 
@@ -56,12 +50,8 @@ def _model_a_host_without_ps(monkeypatch, *, identity):
 def test_a_host_without_ps_still_records_a_reapable_identity(pidfile, monkeypatch):
     """The stale-reap must not be structurally dead on a `ps`-less platform.
 
-    `_record_app_pid` stores whatever the start-time probe returns, and the reap
-    refuses to signal when the recorded identity is falsy ("identity unconfirmed
-    -> do not kill", and the entry is KEPT). A probe that can only answer via
-    `/proc` or `ps` therefore records None on Windows, and every stale backend
-    there survives forever while its pidfile entry accumulates — the reap fails
-    safe into never reaping at all.
+    The reap never signals a falsy recorded identity, so a probe limited to `/proc` or
+    `ps` would record None on Windows and never reap there.
     """
     _model_a_host_without_ps(monkeypatch, identity="WIN-CREATION-8817")
 
@@ -100,6 +90,16 @@ def test_record_ignores_nonpositive_pid(pidfile):
 
 def test_reap_empty_pidfile_returns_zero(pidfile):
     assert backend_mod._reap_stale_app_backends() == 0
+
+
+@pytest.mark.parametrize("row", [4242, None, "4242", ["pid", 4242]])
+def test_reap_drops_a_row_that_is_not_an_object(pidfile, row):
+    """A hand-edited row must not crash the reap: it runs on every gateway start."""
+    backend_mod._write_pidfile({"broken": row})
+
+    assert backend_mod._reap_stale_app_backends() == 0
+
+    assert backend_mod._read_pidfile() == {}
 
 
 def test_reap_kills_matched_alive_orphan(pidfile):
@@ -363,15 +363,9 @@ def test_reap_skips_sigkill_when_pid_recycled_during_grace(pidfile):
 def test_reap_keeps_the_entry_when_the_kill_identity_cannot_be_pinned(pidfile):
     """The reap goes through the identity-PINNED terminate, and honours its refusal.
 
-    ``kill_process_tree_pinned`` returns False when the process cannot be opened
-    or its identity does not match, which on Windows is the pid having been
-    recycled between the start-time check and the signal. That must behave like
-    every other unconfirmed-identity case here: no kill, and the entry is KEPT so
-    a later start can retry -- leak-not-mis-kill.
-
-    Liveness is stubbed at ``platform_compat.pid_liveness`` rather than at
-    ``os.kill`` so the case is about the pin and runs identically on every host;
-    the Windows liveness probe is an ``OpenProcess``, not an ``os.kill``.
+    A False from ``kill_process_tree_pinned`` (pid recycled) keeps the entry, like any
+    unconfirmed identity. Liveness is stubbed at ``platform_compat.pid_liveness``, not
+    ``os.kill``, so this runs the same on every host.
     """
     backend_mod._write_pidfile({"app": {"pid": 4321, "start_time": "ST-1", "port": 9100}})
     with (
@@ -429,15 +423,10 @@ def test_reap_hands_the_recorded_identity_to_the_pinned_kill(pidfile):
 
 
 class TestDeadLeaderOrphanedGroup:
-    """The leak behind the reported 502.
+    """A dead leader's surviving group is signalled, never by bare group number.
 
-    A backend is spawned with ``start_new_session=True``, so it leads its own
-    process group and the group OUTLIVES it. When the gateway is SIGKILLed the
-    leader can exit while a worker child keeps the app's port bound. The reap used
-    to read ``PID_DEAD``, drop the pidfile row, and stop -- so the survivor stayed,
-    the next generation spawned onto the port it still owned, and the route
-    answered 502. These pin that a dead leader now costs its group a signal, and
-    that the signal is never aimed at the bare group number.
+    With ``start_new_session=True`` the group outlives its leader, and a surviving worker
+    holding the port makes the next spawn's route answer 502.
     """
 
     @staticmethod
@@ -610,11 +599,8 @@ class TestDeadLeaderOrphanedGroup:
     def test_a_replacement_forked_on_sigterm_keeps_the_row(self, pidfile, monkeypatch):
         """Retention must read the group at DECISION time, not the opening snapshot.
 
-        A supervisor/worker backend can fork a replacement from its SIGTERM handler. That
-        child inherits the session group and the instance token, so it is a vouched
-        member — but it did not exist when the first census ran. Deciding on that
-        snapshot drops the row once the originally-censused members die, leaving the
-        replacement holding the app's port with nothing left naming it.
+        A SIGTERM handler can fork a vouched replacement after the first census; the
+        snapshot would drop the row while that child holds the port.
         """
         backend_mod._write_pidfile(
             {"app": {"pid": 4321, "start_time": "ST-1", "port": 9100, "spawn_instance": "inst-a"}}
@@ -697,14 +683,10 @@ class TestDeadLeaderOrphanedGroup:
         )
 
     def test_a_group_whose_signals_are_all_refused_keeps_its_row(self, pidfile, monkeypatch):
-        """The regression the signalled-count could not see.
+        """Live members whose signals were all refused keep the row.
 
-        The members are ALIVE and the kernel refused every signal (EPERM, or no
-        pidfd to pin the identity with), so nothing was signalled. Reading that as
-        "the group is gone" discards the only record naming a process that still
-        holds the app's port — and no later start could find it again, since the
-        periodic sweep does not cover an app backend's worker. The vouch census is
-        what tells this apart from a genuinely empty group.
+        Zero signalled is not "group gone": the vouch census tells it apart, and the row is
+        the only record of the port holder.
         """
         backend_mod._write_pidfile(
             {"app": {"pid": 4321, "start_time": "ST-1", "port": 9100, "spawn_instance": "inst-a"}}
@@ -752,11 +734,8 @@ class TestDeadLeaderOrphanedGroup:
     ):
         """An empty census is not evidence of an empty group.
 
-        Every read the vouch makes is fail-OPEN — the /proc scan, each stat and each
-        environ read all swallow OSError — so fd exhaustion produces an empty census
-        without raising. Dropping on that would discard the orphan's only handle
-        exactly when the host is under pressure, so absence has to be confirmed by a
-        probe that cannot fail open.
+        The vouch reads swallow OSError, so fd exhaustion yields an empty census; absence
+        must be confirmed by a probe that cannot fail open.
         """
         row = {"pid": 4321, "start_time": "ST-1", "port": 9100, "spawn_instance": "inst-a"}
         self._dead_leader(monkeypatch)
@@ -806,13 +785,8 @@ class TestDeadLeaderOrphanedGroup:
     def test_a_row_without_an_instance_token_is_never_signalled(self, pidfile, monkeypatch):
         """No incarnation pin, no authority.
 
-        A row written by a build that did not stamp the token leaves nothing to
-        vouch the group with, and the group NUMBER is the dead leader's pid --
-        which the kernel may have reissued to an unrelated session leader. Leaking
-        is the correct trade; ``killpg`` on that number would take a stranger's
-        tree. The row IS dropped here: a token is never added to an existing row,
-        so no later start could do better and keeping it would grow the pidfile
-        forever.
+        Without a token, ``killpg`` on a possibly reissued pid could take a stranger's tree,
+        so it leaks. The row is dropped: no later start could gain a token for it.
         """
         backend_mod._write_pidfile({"app": {"pid": 4321, "start_time": "ST-1", "port": 9100}})
         self._dead_leader(monkeypatch)

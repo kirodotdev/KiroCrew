@@ -125,6 +125,9 @@ async def test_cancellation_during_the_debounce_wait_is_clean(monkeypatch) -> No
     task.cancel()
     await asyncio.gather(task, return_exceptions=True)
 
+    # The task absorbs the cancel and returns normally instead of ending cancelled.
+    assert not task.cancelled()
+    assert task.result() is None
     bg.assert_not_awaited()
     ws.send_json.assert_not_awaited()
 
@@ -191,11 +194,21 @@ def _handler_for(ws, endpointer=None):
     return stt_stream._make_handler(ws, endpointer)(MagicMock())
 
 
+def _real_endpointer(monkeypatch, ws):
+    """A real ``_Endpointer`` whose judgment never runs within the test."""
+    monkeypatch.setattr(stt_stream, "run_bg_oneliner", AsyncMock(return_value="COMPLETE"))
+    return stt_stream._Endpointer(ws, object(), debounce=60.0, timeout=1.0)
+
+
 @pytest.mark.asyncio
-async def test_handler_drops_everything_once_the_ws_is_closed() -> None:
+async def test_handler_drops_everything_once_the_ws_is_closed(monkeypatch) -> None:
     ws = _fake_ws(closed=True)
-    await _handler_for(ws).handle_transcript_event(_event(_result("hi", is_partial=True)))
+    endpointer = _real_endpointer(monkeypatch, ws)
+    await _handler_for(ws, endpointer).handle_transcript_event(
+        _event(_result("hi", is_partial=True), _result("hi there", is_partial=False))
+    )
     ws.send_json.assert_not_awaited()
+    assert (endpointer._gen, endpointer._finals, endpointer._tasks) == (0, [], set())
 
 
 @pytest.mark.asyncio
@@ -207,11 +220,15 @@ async def test_handler_skips_results_without_alternatives() -> None:
 
 
 @pytest.mark.asyncio
-async def test_handler_feeds_the_endpointer_before_sending() -> None:
+async def test_handler_feeds_the_endpointer_before_sending(monkeypatch) -> None:
     """A partial invalidates a pending verdict, a final schedules a new one --
     both BEFORE the awaited send, or a stale COMPLETE can slip through."""
     ws = _fake_ws()
-    endpointer = MagicMock()
+    endpointer = _real_endpointer(monkeypatch, ws)
+    fed_at_send: list[tuple[int, list[str]]] = []
+    ws.send_json = AsyncMock(
+        side_effect=lambda _frame: fed_at_send.append((endpointer._gen, list(endpointer._finals)))
+    )
     handler = _handler_for(ws, endpointer)
 
     await handler.handle_transcript_event(_event(_result("deploy the", is_partial=True)))
@@ -219,8 +236,10 @@ async def test_handler_feeds_the_endpointer_before_sending() -> None:
         _event(_result("deploy the service", is_partial=False))
     )
 
-    endpointer.note_partial.assert_called_once_with("deploy the")
-    endpointer.note_final.assert_called_once_with("deploy the service")
+    # The endpointer state each send observed: already advanced by its own event.
+    assert fed_at_send == [(1, []), (2, ["deploy the service"])]
+    assert len(endpointer._tasks) == 1
+    await endpointer.aclose()
     assert [c.args[0] for c in ws.send_json.await_args_list] == [
         {"type": "partial", "text": "deploy the"},
         {"type": "final", "text": "deploy the service"},
@@ -243,13 +262,16 @@ async def test_handler_redacts_before_the_text_leaves_the_process() -> None:
 
 
 @pytest.mark.asyncio
-async def test_handler_stops_processing_after_a_failed_send() -> None:
+async def test_handler_stops_processing_after_a_failed_send(monkeypatch) -> None:
     """A disconnected client must not produce one traceback per event."""
     ws = _fake_ws()
     ws.send_json = AsyncMock(side_effect=ConnectionResetError("client gone"))
+    endpointer = _real_endpointer(monkeypatch, ws)
 
-    await _handler_for(ws).handle_transcript_event(
+    await _handler_for(ws, endpointer).handle_transcript_event(
         _event(_result("one", is_partial=True), _result("two", is_partial=False))
     )
 
     assert ws.send_json.await_count == 1
+    # Only the partial before the failed send reached the endpointer; "two" never did.
+    assert (endpointer._gen, endpointer._finals, endpointer._tasks) == (1, [], set())

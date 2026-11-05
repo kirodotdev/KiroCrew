@@ -41,7 +41,7 @@ export default memo(function StopEventCard({ message }: { message: ChatMessage }
       <div
         role="status"
         aria-label={i18nT('pages.chat.stopEventCard.stop_declined_compacting')}
-        className="text-muted text-[13px] leading-5 font-mono px-3 py-2 rounded-md bg-muted/15 inline-flex items-center gap-2"
+        className="text-muted text-[13px] leading-5 font-mono px-3 py-2 rounded-md bg-bg-hover inline-flex items-center gap-2"
         data-testid="stop-event-card"
         data-state={state}
       >

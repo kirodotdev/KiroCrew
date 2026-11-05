@@ -13,16 +13,18 @@ import hashlib
 import json
 import logging
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from aiohttp import web
 
-from kiro_crew import hooks
+from kiro_crew import agent_spec_pins, hooks
 from kiro_crew.agent_discovery import (
+    _AGENTS_DIR_MEMO_MAX_KEYS,
     AgentsDirMemo,
     AmbiguousAgentSpecError,
     SensitiveAgentSpecPathError,
     _SpecReadRefused,
+    iter_declared_specs,
     plain_markdown_document,
     read_agent_spec_strict,
     spec_by_declared_name,
@@ -33,6 +35,7 @@ from kiro_crew.agent_spec_format import (
     is_markdown_spec,
     iter_agent_spec_files,
 )
+from kiro_crew.agent_spec_pins import pinned_memo_key
 from kiro_crew.config.paths import kiro_agents_dir
 from kiro_crew.dashboard.handlers._shared import guard_owner_surface_routes, internal_memory_scope
 from kiro_crew.dashboard.handlers.sessions_parts.app_scope import _sel
@@ -119,12 +122,12 @@ def _ambiguous_spec_reason(agent_name: str, exc: AmbiguousAgentSpecError) -> str
     """
     if not exc.paths:
         return str(exc)
-    names = ", ".join(repr(path.name) for path in exc.paths)
+    file_names = [path.name for path in exc.paths]
+    if exc.pin is not None:
+        return agent_spec_pins.broken_pin_message(agent_name, exc.pin, file_names)
     return (
-        f"{len(exc.paths)} specs in the agents directory declare the name {agent_name!r} "
-        f"with differing content: {names}. Which one is live is undefined, so the policy "
-        f"for {agent_name!r} is unknown. Remove or rename one of them in the agents "
-        f"directory (~/.kiro/agents unless relocated); no restart needed."
+        f"{agent_spec_pins.ambiguous_message(agent_name, file_names, file_names)}\n"
+        f"Until one is chosen, the policy for {agent_name!r} is unknown; no restart needed."
     )
 
 
@@ -341,12 +344,61 @@ def _read_managed_tool_policy_sync(agents_dir: Path, agent_name: str) -> dict[st
     request, and the state it reports is the one a fix to the directory clears.
     The revision and store rules are the memo's; see its docstring.
     """
+    # The pin is part of the key, so a pin change is a miss (see pinned_memo_key);
+    # one snapshot keys and resolves, so a concurrent pin write cannot cross them.
+    pins = agent_spec_pins.spec_pins()
     return _TOOL_POLICY_MEMO.get(
-        agents_dir, agent_name, lambda: _read_managed_tool_policy_uncached(agents_dir, agent_name)
+        agents_dir,
+        pinned_memo_key(agent_name, pins),
+        lambda: _read_managed_tool_policy_uncached(agents_dir, agent_name, pins),
+        prefill=lambda: _prefill_managed_tool_policies(agents_dir, requested=agent_name),
     )
 
 
-def _read_managed_tool_policy_uncached(agents_dir: Path, agent_name: str) -> dict[str, Any] | None:
+def _prefill_managed_tool_policies(
+    agents_dir: Path, *, requested: str | None = None
+) -> dict[str, dict[str, Any] | None]:
+    """Every answer one walk of *agents_dir* can give, keyed by declared name. Blocking.
+
+    The prefill of :data:`_TOOL_POLICY_MEMO`, so each managed server's first
+    policy read under an unchanged directory is a hit instead of another walk.
+    A name is answered only when exactly one spec declares it and its policy
+    reads: that is the case where :func:`_read_managed_tool_policy_uncached`
+    answers from the declared-name scan's one match, through the same
+    :func:`_policy_of_spec`. A name two specs declare (identical or not), a
+    policy that refuses, and a name no spec declares are left out, and the
+    memo computes them per call as before.
+
+    The walk keeps at most as many policies as the memo can store (one below
+    :data:`~kiro_crew.agent_discovery._AGENTS_DIR_MEMO_MAX_KEYS`), so a
+    directory of many large specs does not hold every policy at once.
+    *requested*, the name the caller asked for, always has a place; a name past
+    the bound is left out and read one by one as before. Every declared name is
+    still counted, so a name two specs declare is left out wherever it falls.
+    """
+    answers: dict[str, dict[str, Any] | None] = {}
+    claimants: dict[str, int] = {}
+    room = _AGENTS_DIR_MEMO_MAX_KEYS - 1
+    others = room - 1 if requested is not None else room
+    for name, spec in iter_declared_specs(
+        agents_dir, operation="session_tool_policy", source="dashboard"
+    ):
+        claimants[name] = claimants.get(name, 0) + 1
+        if claimants[name] > 1:
+            answers.pop(name, None)
+            continue
+        if name != requested and len(answers) - (requested in answers) >= others:
+            continue
+        try:
+            answers[name] = _policy_of_spec(spec, name, None)
+        except ManagedToolPolicyUnreadable:
+            continue
+    return answers
+
+
+def _read_managed_tool_policy_uncached(
+    agents_dir: Path, agent_name: str, pins: Mapping[str, str] | None = None
+) -> dict[str, Any] | None:
     """Read one agent's ``managedToolPolicy`` from disk. Blocking.
 
     Split out so the whole filesystem transaction -- the existence probe, the
@@ -396,7 +448,7 @@ def _read_managed_tool_policy_uncached(agents_dir: Path, agent_name: str) -> dic
     spec_path: Path | None = None
     try:
         config: Any = spec_by_declared_name(
-            agents_dir, agent_name, operation="session_tool_policy", source="dashboard"
+            agents_dir, agent_name, operation="session_tool_policy", source="dashboard", pins=pins
         )
         if config is None:
             # ``<name>.json`` then ``<name>.md``: beside a twin the JSON wins,
@@ -472,6 +524,19 @@ def _read_managed_tool_policy_uncached(agents_dir: Path, agent_name: str) -> dic
             f"agent spec for {agent_name!r} could not be read: {spec_path.name!r} is "
             f"valid JSON but not an object. {_unreadable_spec_remedy(spec_path)}"
         )
+    return _policy_of_spec(config, agent_name, spec_path)
+
+
+def _policy_of_spec(
+    config: dict[str, Any], agent_name: str, spec_path: Path | None
+) -> dict[str, Any]:
+    """The answer for *agent_name* from its parsed spec *config*.
+
+    *spec_path* is the file a direct-filename read came from, or ``None`` for a
+    spec the declared-name scan resolved. Raises
+    :class:`ManagedToolPolicyUnreadable` for a ``managedToolPolicy`` of the
+    wrong shape, and through :func:`_policy_answer`.
+    """
     policy = config.get("managedToolPolicy", {})
     if isinstance(policy, dict):
         return _policy_answer(policy, config, agent_name, spec_path)

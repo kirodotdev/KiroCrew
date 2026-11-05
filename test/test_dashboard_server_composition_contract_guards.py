@@ -23,6 +23,11 @@ from dashboard_server_composition_contract_helpers import (
 )
 from source_corpus import repo_root
 
+# One worker per file, so the shared checks run beside the tests that load this module.
+pytestmark = pytest.mark.xdist_group(name="dashboard_server_composition_contract_guards")
+
+SHARED_FACADE_CHECKS = ("the_globstar_matcher_reads_patterns_as_the_reviewers_do",)
+
 # ── the guards keep their reach ───────────────────────────────────────────────
 
 #: Constructs repository guards read by path, with the count each guard asserts and
@@ -30,9 +35,9 @@ from source_corpus import repo_root
 #: its ``server_runtime`` owners and its two pure-data modules): the strict
 #: internal-path literal, the single heap-trim maintainer after the serving bind, the
 #: diag recorder's off switch, the channel manager's broadcast hand-off, the
-#: inherited-trust teardown and its wiring, the crew-log and browser-view drains, both
+#: inherited-trust teardown and its wiring, the crew-log drain, both
 #: runner constructions, both Kiro prerequisite seeds, both skill-read observers, the
-#: migrated-builtin sweep, the browser CLI override, the per-boot secret mint, the
+#: migrated-builtin sweep, the per-boot secret mint, the
 #: dashboard contributor seam and both cron-folder loads. Each guard reads the file
 #: named here, so a construct that moved anywhere else would leave the guard's sight.
 _GUARDED_CONSTRUCTS = (
@@ -49,12 +54,10 @@ _GUARDED_CONSTRUCTS = (
     (r"functools\.partial\(_suspend_override_derived_trust, state\)$", 1, {"server": 1}),
     (r"^    def _on_override_expired\(source: str\) -> None:$", 1, {"server": 1}),
     (r"app\.on_cleanup\.append\(_crew_log_drain\)", 1, {"instances_lifecycle": 1}),
-    (r"app\.on_cleanup\.append\(_browser_view_shutdown\)", 1, {"browser_lifecycle": 1}),
     (r"build_hardened_runner\(app", 2, {"server": 1, "api_entrypoint": 1}),
     (r"KiroPrerequisiteService,$", 2, {"server": 1, "api_entrypoint": 1}),
     (r"register_skill_read_observer\(", 2, {"server": 1, "api_entrypoint": 1}),
     (r"^    from kiro_crew\.apps\.builtins import _MIGRATED_BUILTINS$", 1, {"server": 1}),
-    (r"asyncio\.to_thread\(browser_cli_launch\.cli_env_overrides\)", 1, {"server": 1}),
     (r"_internal_secret = os\.urandom\(16\)\.hex\(\)$", 2, {"server": 1, "api_entrypoint": 1}),
     (r"current_context\(\)\.dashboard\.contribute_routes\(app\)", 1, {"server": 1}),
     (
@@ -139,13 +142,6 @@ def _autosde_rules() -> list[dict]:
         for name in ("AUTOSDE.yaml", "website/AUTOSDE.yaml")
         for rule in yaml.safe_load((root / name).read_text(encoding="utf-8"))["custom-rules"]
     ]
-
-
-def test_the_globstar_matcher_reads_patterns_as_the_reviewers_do() -> None:
-    assert _globstar("src/a/**/*.py").match("src/a/b.py")
-    assert _globstar("src/a/**/*.py").match("src/a/x/y/b.py")
-    assert not _globstar("src/a/*.py").match("src/a/x/b.py")
-    assert _globstar("src/a/**").match("src/a/x/b.py")
 
 
 def test_every_review_rule_on_the_facade_also_covers_its_owners() -> None:

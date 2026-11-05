@@ -132,11 +132,19 @@ _NEVER_SHIPPED_HERE = [
 #: release is shown to have shipped there and a later one stopped shipping. Every
 #: other entry is shipped today and needs no archaeology; an entry can join this
 #: residue only by being added here with its provenance.
+#: The folder verbs retired from every conductor when dispatchers stopped managing
+#: folders (rfc-crewmate-workers-under-the-crewmate.md, Design 6).
+_FOLDER_TREE_AND_CREATE = frozenset(
+    {"@kirocrew-dashboard/chat_folder_tree", "@kirocrew-dashboard/chat_folder_create"}
+)
+_FOLDER_FILE_SELF = frozenset({"@kirocrew-dashboard/chat_folder_file_self"})
 _VERIFIED_RETIREMENTS: dict[str, frozenset[str]] = {
-    "kirocrew-conductor": frozenset({"@kirocrew-core"}),
-    "kirocrew-ledger-conductor": frozenset(),
-    "kirocrew-pipeline-conductor": frozenset(),
-    "kirocrew-security-conductor": frozenset(),
+    "kirocrew-conductor": frozenset({"@kirocrew-core"})
+    | _FOLDER_TREE_AND_CREATE
+    | _FOLDER_FILE_SELF,
+    "kirocrew-ledger-conductor": _FOLDER_TREE_AND_CREATE | _FOLDER_FILE_SELF,
+    "kirocrew-pipeline-conductor": _FOLDER_TREE_AND_CREATE,
+    "kirocrew-security-conductor": _FOLDER_TREE_AND_CREATE | _FOLDER_FILE_SELF,
 }
 
 

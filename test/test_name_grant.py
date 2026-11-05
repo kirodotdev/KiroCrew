@@ -528,8 +528,16 @@ class TestPathFormPrograms:
         # The contract is total: whatever a caller passes, this returns a verdict.
         system_dir, _ = world
         _program(system_dir, "head")
-        name_grant.name_grant_refusal(command)
-        name_grant.program_names(command)
+        # A NUL in an operand leaves the program inspectable; one in a program
+        # position is refused as uninspectable.
+        expected_code, expected_names = {
+            "head /tmp/a\x00b": (None, ["head"]),
+            "/tmp/a\x00b": (name_grant.UNINSPECTABLE, ["/tmp/a\x00b"]),
+            "head file; /tmp/a\x00b": (name_grant.UNINSPECTABLE, ["head", "/tmp/a\x00b"]),
+        }[command]
+        refusal = name_grant.name_grant_refusal(command)
+        assert (refusal and refusal.code) == expected_code
+        assert name_grant.program_names(command) == expected_names
 
     def test_an_alias_for_a_dispatcher_is_refused(self, world, monkeypatch):
         # GPT 5.6 round-19. The dispatcher rule read the name as WRITTEN, so an

@@ -28,7 +28,7 @@
  * deleted). The first Editor + Send pair (`atoms.tsx`) is the store-free one
  * ChatEmbed mounts; `ChatInput` keeps its own until it is rebuilt on them.
  */
-import { createContext, forwardRef, useCallback, useContext, useImperativeHandle, useLayoutEffect, useMemo, useRef, useSyncExternalStore, type ReactNode } from 'react'
+import { createContext, forwardRef, useCallback, useContext, useImperativeHandle, useLayoutEffect, useMemo, useReducer, useRef, useSyncExternalStore, type ReactNode } from 'react'
 import { useNavigate } from 'react-router-dom'
 import VoiceDisabledModal from '../../components/VoiceDisabledModal'
 import { settingsPath } from '../../components/settingsPath'
@@ -38,7 +38,7 @@ import type { ComposerPasteSlice } from './composerPastes'
 
 /** Host-supplied dictation behaviour the Voice atom cannot know on its own.
  *  Everything is optional; a per-slot composer (a pane) passes nothing. */
-export type ComposerVoiceOptions = Pick<ComposerVoiceHost, 'isComposerFor' | 'deliverOffScreen' | 'onAutoSubmit' | 'pushToTalk'> & {
+export type ComposerVoiceOptions = Pick<ComposerVoiceHost, 'isComposerFor' | 'deliverOffScreen' | 'onAutoSubmit' | 'pushToTalk' | 'startBlocked'> & {
   /** Where the "voice needs setting up" modal sends the user. Defaults to Settings → Voice. */
   settingsRoute?: string
   /** Host-owned caret refs, when the host also reads them (ChatPage's resources
@@ -162,6 +162,13 @@ const NO_DRAFT: ComposerDraftStore = { get: () => '', set: () => {}, subscribe: 
 export function useComposerDraftText(): string | null {
   const draft = useContext(ComposerContext)?.editor.draft ?? null
   const text = useComposerDraft(draft ?? NO_DRAFT)
+  // Re-render on a store write the text on screen does not show yet. The
+  // subscription above alone missed the ↑ recall right after a send: the
+  // composer kept the cleared text until something else re-rendered it, which
+  // a per-render voice callback did until #23423 (dd2799cf6) made it stable.
+  const [, rerender] = useReducer((n: number) => n + 1, 0)
+  const shownRef = useRef(text); shownRef.current = text
+  useLayoutEffect(() => draft?.subscribe(() => { if (draft.get() !== shownRef.current) rerender() }), [draft])
   return draft ? text : null
 }
 
@@ -269,6 +276,7 @@ function VoiceAtomInner({ ctx }: { ctx: ComposerContextValue }) {
     deliverOffScreen: voiceOptions.deliverOffScreen,
     onAutoSubmit: voiceOptions.onAutoSubmit,
     pushToTalk: voiceOptions.pushToTalk,
+    startBlocked: voiceOptions.startBlocked,
     caretRef: voiceOptions.caretRef,
     pendingCaretRef: voiceOptions.pendingCaretRef,
   })

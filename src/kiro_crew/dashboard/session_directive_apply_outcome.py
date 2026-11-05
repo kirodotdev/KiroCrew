@@ -18,8 +18,16 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
-from kiro_crew.messaging.link import is_channel_session_key
-from kiro_crew.session_surface import has_dashboard_surface
+# The directive families below stay served through the facade under these names.
+from kiro_crew.directive_origin import (  # noqa: F401
+    USER_ORIGIN_DIRECTIVES as _USER_ORIGIN_DIRECTIVES,
+)
+from kiro_crew.directive_origin import (  # noqa: F401
+    USER_SURFACE_DIRECTIVES as _USER_SURFACE_DIRECTIVES,
+)
+from kiro_crew.directive_origin import has_user_surface as _shared_has_user_surface
+from kiro_crew.messaging.link import is_channel_session_key  # noqa: F401
+from kiro_crew.session_surface import has_dashboard_surface  # noqa: F401
 
 logger = logging.getLogger("kiro_crew.dashboard.session_directive_apply")
 
@@ -57,7 +65,9 @@ class DirectiveOutcome:
 # the current turn to own the slot it would mutate. (``ask_question`` is not a
 # directive: it blocks and returns the answers as its own tool result.)
 _DASHBOARD_ONLY_DIRECTIVES = frozenset({"suggest_followup"})
-_USER_SURFACE_DIRECTIVES = frozenset({"set_project", "reset_conversation", "chat_tag"})
+# ``_USER_SURFACE_DIRECTIVES`` (set_project, reset_conversation, chat_tag) and the
+# provenance set ``_USER_ORIGIN_DIRECTIVES`` live in kiro_crew.directive_origin, so
+# the prompt guidance reads the same gate without importing the dashboard.
 # Directives whose effect is "this session will be woken later". A refusal of
 # one of these is the failure the caller can least observe: the MCP tool has
 # already answered "requested" over its own pipe by the time this consumer
@@ -294,15 +304,9 @@ def _describe_next_wake(loop: Any, *, verb: str = "first wake") -> str:
     return f"{verb} in ~{remaining}s ({stamp})"
 
 
-# The provenance gate's set: the user-surface directives plus ``suggest_followup``,
-# whose surface gate alone (``_DASHBOARD_ONLY_DIRECTIVES``) only asks whether a tab
-# exists -- which a cron or sub-agent turn riding a user's slot satisfies.
-_USER_ORIGIN_DIRECTIVES = _USER_SURFACE_DIRECTIVES | frozenset({"suggest_followup"})
-
-
 def _has_user_surface(session_key: str) -> bool:
     """Return whether *session_key* names a user-facing conversation."""
-    return has_dashboard_surface(session_key) or is_channel_session_key(session_key)
+    return _shared_has_user_surface(session_key)
 
 
 class _DirectiveDenied(Exception):

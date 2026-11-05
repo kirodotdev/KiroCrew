@@ -19,17 +19,14 @@ from kiro_crew.acp.liveness import (
     VERDICT_WORKING,
     LivenessOracle,
 )
+from kiro_crew.testing.clock import ManualClock
 
 
 class TestAcpClientStaleTurn:
     """The stale-turn check does not fire falsely on the thinking path.
 
-    The staleness check in ``_prompt_loop`` must fold in ``_last_activity``
-    (refreshed by the stderr drain when the agent streams ``thinking_tokens``)
-    and not rely solely on the stdout clock. Otherwise a turn that streams its
-    final text and then thinks silently on stdout — while still emitting
-    thinking events on stderr — is falsely declared stale, burning
-    ~_STALE_TURN_TIMEOUT seconds per turn and reaping long subagent runs.
+    ``_prompt_loop`` folds in ``_last_activity`` (refreshed by the stderr drain on
+    ``thinking_tokens``), so a turn silent on stdout but thinking on stderr is alive.
     """
 
     def _client_with_silent_stdout(self, tmp_path):
@@ -43,24 +40,26 @@ class TestAcpClientStaleTurn:
         return client
 
     @pytest.mark.asyncio
-    async def test_recent_stderr_activity_prevents_stale_turn(self, tmp_path, caplog):
+    async def test_recent_stderr_activity_prevents_stale_turn(self, tmp_path, caplog, monkeypatch):
         """thinking_tokens on stderr (recent _last_activity) keeps the turn alive.
 
         With a tiny stale timeout, a turn whose stdout is silent but whose
         _last_activity keeps refreshing (as the stderr drain does during
         thinking) must NOT be declared stale.
         """
+        # The client family reads one clock. A virtual one makes every silent
+        # read cost exactly 50 ms of it, whatever the host's speed.
+        clock = ManualClock()
+        clock.install(monkeypatch, acp_client)
         client = self._client_with_silent_stdout(tmp_path)
 
         # Emulate the stderr drain refreshing _last_activity on every poll, so
         # the turn is continuously "active" even though stdout yields nothing.
-        # Sleep well under the stale timeout each poll so liveness never lapses
-        # (mirrors thinking_tokens streaming faster than _STALE_TURN_TIMEOUT).
+        # Each poll costs 50 ms, well under the stale timeout, so liveness never
+        # lapses (mirrors thinking_tokens streaming faster than _STALE_TURN_TIMEOUT).
         async def read_and_touch(*args, **kwargs):
-            # flake-ok: pre-existing 50 ms pacing in the stubbed read, moved verbatim; tracked for a de-flake pass
-            # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing poll pacing inside the stubbed read, moved verbatim; the comment above explains it
-            await asyncio.sleep(0.05)
-            client._last_activity = time.monotonic()
+            clock.advance(0.05)
+            client._last_activity = clock.monotonic()
             return None
 
         client._read_message = AsyncMock(side_effect=read_and_touch)
@@ -76,6 +75,9 @@ class TestAcpClientStaleTurn:
                 async for action, _msg in client._prompt_loop(req_id=1, timeout=1.0):
                     actions.append(action)
 
+        # The stdout clock alone passes the 0.2s window on the fifth silent read,
+        # so the check had its chances to fire and the absence below is not vacuous.
+        assert client._read_message.await_count >= 5
         assert actions == []  # stdout silent → nothing yielded
         assert "Stale turn detected" not in caplog.text  # fix: not falsely stale
 
@@ -99,12 +101,8 @@ class TestAcpClientStaleTurn:
 class TestAcpClientStaleTurnOracleGate:
     """The 90s stale-turn cutoff is oracle-gated.
 
-    A turn whose stdout AND stderr are silent but whose backend process
-    subtree is provably WORKING (CPU/IO movement) must NOT be declared stale
-    at ``_STALE_TURN_TIMEOUT`` — the kiro shared-runtime path already defers on
-    a WORKING liveness verdict; the ``AcpClient`` capture path must converge
-    onto the same contract instead of a blunt wall-clock. A non-WORKING verdict
-    preserves today's behavior exactly (the turn ends).
+    A silent turn whose backend subtree is WORKING (CPU/IO movement) is not stale at
+    ``_STALE_TURN_TIMEOUT``, as on the kiro shared-runtime path; any other verdict ends it.
     """
 
     def _silent_client(self, tmp_path):
@@ -141,19 +139,12 @@ class TestAcpClientStaleTurnOracleGate:
         assert client._consult_liveness_model_wait.await_count >= 2
 
     @pytest.mark.asyncio
-    async def test_real_oracle_movement_defers_via_fake_proc(self, tmp_path, caplog):
+    async def test_real_oracle_movement_defers_via_fake_proc(self, tmp_path, caplog, monkeypatch):
         """End-to-end with the REAL LivenessOracle over a fake /proc tree.
 
-        Guards the priming bug the mock hides: the oracle needs a prior sample
-        to compute a movement delta, so the loop must consult it repeatedly to
-        build a baseline before the cutoff. Here the backend subtree's IO
-        counter grows between reads → real WORKING verdict → deferral.
-
-        Builds a minimal fake ``/proc`` inline (only the files the model-wait
-        oracle reads: ``<pid>/stat``, ``<pid>/task/<tid>/children``,
-        ``<pid>/io``) rather than importing a helper from another test module —
-        a cross-``test``-package import fails in the pipeline runner where
-        ``test`` is not an importable package (``ModuleNotFoundError``).
+        The oracle needs a prior sample for a delta, so the loop must consult it
+        repeatedly before the cutoff. The fake ``/proc`` is inline because ``test``
+        is not an importable package in the pipeline runner.
         """
         proc = tmp_path / "proc"
 
@@ -175,10 +166,16 @@ class TestAcpClientStaleTurnOracleGate:
         _write_pid(4242, children=[4243], io_bytes=0)
         _write_pid(4243, children=[], io_bytes=1000)
 
+        # The client family reads one clock; a virtual one lets each silent read
+        # cost exactly its 20 ms on it, so the idle window is arithmetic. The
+        # oracle compares counters, not times, and keeps its own clock.
+        clock = ManualClock()
+        clock.install(monkeypatch, acp_client)
+
         client = AcpClient(work_dir=tmp_path)
         client._is_process_alive = MagicMock(return_value=True)
         client._stale_eligible = True
-        client._last_activity = time.monotonic()
+        client._last_activity = clock.monotonic()
         client._pid = 4242
         # Real oracle, tiny sample window so movement is detectable within the
         # fast test loop; point it at the fake /proc tree.
@@ -188,9 +185,7 @@ class TestAcpClientStaleTurnOracleGate:
         _io = {"n": 1000}
 
         async def read_and_move(*args, **kwargs):
-            # flake-ok: pre-existing 20 ms pacing in the stubbed read, moved verbatim; tracked for a de-flake pass
-            # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing pacing inside the stubbed read so IO moves between oracle samples, moved verbatim
-            await asyncio.sleep(0.02)
+            clock.advance(0.02)
             _io["n"] += 5000
             _set_io(4243, _io["n"])
             return None
@@ -204,6 +199,10 @@ class TestAcpClientStaleTurnOracleGate:
                     async for action, _msg in client._prompt_loop(req_id=42, timeout=0.5):
                         actions.append(action)
 
+        # Three silent reads (60 ms) outlast the 50 ms cutoff, so the loop did
+        # need the oracle's WORKING verdict to defer it and the absence below is
+        # not vacuous.
+        assert client._read_message.await_count >= 3
         assert actions == []
         assert "Stale turn detected" not in caplog.text  # real movement → deferred
 
@@ -265,13 +264,8 @@ class TestAcpClientStaleTurnOracleGate:
     async def test_consult_consumes_a_failed_prior_consults_exception(self, tmp_path):
         """Reopening the guard must consume a failed prior consult's exception.
 
-        ``wait_for`` cancels shield's outer future while the /proc walk is still
-        running, and shield's outer-done callback then detaches the inner-done
-        callback that would have retrieved the inner result — so a walk that
-        raises after the timeout leaves its exception unretrieved.
-        ``Future.__del__`` reports that through the loop exception handler, which
-        the gateway records as an unhandled-asyncio crash for an ordinary probe
-        failure.
+        ``wait_for`` cancelling shield's outer future detaches the callback that would
+        retrieve the inner result, so ``Future.__del__`` would report an unhandled crash.
         """
         client = AcpClient(work_dir=tmp_path)
         client._pid = 4242
@@ -292,11 +286,8 @@ class TestAcpClientStaleTurnOracleGate:
     async def test_consult_reports_unknown_when_the_submission_itself_fails(self, tmp_path):
         """A failed executor submission must degrade to UNKNOWN, not raise.
 
-        The caller is a silent-read poll inside ``_prompt_loop``; an exception
-        escaping here aborts the live turn. Submission can fail for ordinary
-        reasons — a shut-down executor during teardown, or thread creation
-        refused under load — so it stays inside the same guard that already
-        converts probe failures to UNKNOWN.
+        An exception here would abort the live turn in ``_prompt_loop``, and
+        submission fails for ordinary reasons (executor shut down, thread refused).
         """
         client = AcpClient(work_dir=tmp_path)
         client._pid = 4242
@@ -319,11 +310,8 @@ class TestAcpClientStaleTurnOracleGate:
     async def test_reset_state_releases_a_consult_from_the_dead_generation(self, tmp_path):
         """A walk wedged on the dead PID must not gate the replacement process.
 
-        ``_reset_state`` is the process-generation boundary. A /proc walk blocked
-        on the old PID can never say anything about the new one, so retaining it
-        answers every later poll with "prior consult still in flight" — and
-        ``_prompt_loop``'s UNKNOWN cutoff then completes a healthy turn early,
-        truncating its output.
+        Kept past ``_reset_state``, it would answer every poll "prior consult still in
+        flight" and ``_prompt_loop``'s UNKNOWN cutoff would truncate a healthy turn.
         """
         client = AcpClient(work_dir=tmp_path)
         client._pid = 4242
@@ -373,14 +361,8 @@ class TestAcpClientStaleTurnOracleGate:
     async def test_reset_state_retires_the_liveness_oracle(self, tmp_path):
         """A detached walk must not be able to pollute the next generation's baseline.
 
-        The executor job captures ``self._liveness_oracle`` as a bound method and
-        its /proc walk keeps running after the wait times out. Samples are keyed
-        ``"io"``/``"cpu"`` with no PID in the key, so a late write lands on
-        whatever the current generation reads — and any nonzero delta counts as
-        movement, including the negative one from comparing a different process
-        tree. That reads WORKING for a genuinely wedged turn and defers recovery
-        to the 2h backstop. Retiring the instance confines a late writer to an
-        object nobody reads.
+        Samples are keyed ``"io"``/``"cpu"`` with no PID, so a late write would read as
+        movement (WORKING) for a wedged turn. Retiring the instance strands the writer.
         """
         client = AcpClient(work_dir=tmp_path)
         client._pid = 4242
@@ -412,12 +394,8 @@ class TestAcpClientStaleTurnOracleGate:
     async def test_every_prompt_path_retires_liveness_state(self, tmp_path):
         """Retirement must sit where all prompt paths funnel, not on one of them.
 
-        ``send_message`` reaches ``_prompt_loop`` via ``_read_prompt_response``,
-        and ``send_message_stream`` reaches it directly — neither goes through
-        ``_dispatch_events``. Retiring only there leaves the worker-pool prompt
-        API carrying the previous turn's wedged consult, so its next turn is
-        answered "prior consult still in flight" and reaped at the 90s cutoff.
-        ``_prompt_loop`` is the one place every consumer funnels through.
+        ``send_message`` and ``send_message_stream`` reach ``_prompt_loop`` without
+        ``_dispatch_events``, so retirement lives in ``_prompt_loop``.
         """
         client = AcpClient(work_dir=tmp_path)
         client._pid = 4242
@@ -486,12 +464,8 @@ class TestAcpClientStaleTurnOracleGate:
     async def test_the_submitted_walk_is_bound_to_the_oracle_it_sampled(self, tmp_path):
         """The walk must capture its oracle, not resolve one when it finally runs.
 
-        Retirement isolates a late writer only if the submitted callable holds the
-        instance it was submitted with. Handing the executor something that
-        resolves ``self._liveness_oracle`` at execution time would make a detached
-        walk write into whatever oracle is live *then*, silently defeating every
-        retirement in this change while leaving the other tests green. This guards
-        behaviour that is already correct rather than fixing anything.
+        Resolving ``self._liveness_oracle`` at execution time would write into the live
+        oracle and defeat retirement while the other tests stay green.
         """
         from concurrent.futures import Future as ThreadFuture
 
@@ -532,11 +506,8 @@ class TestAcpClientStaleTurnOracleGate:
     async def test_a_real_submission_is_recorded_and_gates_the_next_poll(self, tmp_path):
         """The guard is only worth anything if a real submission is tracked.
 
-        Injecting ``_consult_future`` by hand exercises the guard but proves
-        nothing about the submission path: if the assignment were dropped, every
-        timed-out walk would leave the field ``None`` and the next silent read
-        would submit another executor job — the starvation defect this exists to
-        stop.
+        Injecting ``_consult_future`` by hand proves nothing about submission; without
+        the assignment each silent read would submit another job and starve the pool.
         """
         from concurrent.futures import Future as ThreadFuture
 
@@ -613,11 +584,8 @@ class TestAcpClientStaleTurnOracleGate:
     async def test_pending_consult_exception_is_consumed_without_a_reset(self, tmp_path):
         """A stale turn can return with a consult still pending and never reset.
 
-        The retrieval callback must be attached when the walk is SUBMITTED, not
-        only when a later poll observes it or ``_reset_state`` releases it. A turn
-        that reaches the 90s cutoff returns while the walk is still running; if the
-        client then goes idle, a walk that raises afterwards reaches
-        ``Future.__del__`` unretrieved and is recorded as an unhandled crash.
+        So the retrieval callback is attached at submission; otherwise a walk failing
+        after the client goes idle reaches ``Future.__del__`` unretrieved.
         """
         from concurrent.futures import Future as ThreadFuture
 
@@ -662,11 +630,8 @@ class TestAcpClientStaleTurnOracleGate:
     async def test_cancelled_consult_still_consumes_a_later_failure(self, tmp_path):
         """Cancellation is what proves the callback is attached at SUBMISSION.
 
-        Attaching it in the ``except Exception`` arm instead would cover the
-        timeout path and look equivalent — but ``CancelledError`` is a
-        ``BaseException``, so a turn cancelled while the walk is still running
-        would skip it and the walk's later failure would reach ``Future.__del__``
-        unretrieved.
+        ``CancelledError`` is a ``BaseException``, so an ``except Exception`` arm
+        would cover the timeout path but skip a cancelled turn.
         """
         from concurrent.futures import Future as ThreadFuture
 
@@ -701,14 +666,9 @@ class TestAcpClientStaleTurnOracleGate:
 class TestStaleTurnOpenToolCall:
     """An OPEN tool call defers the stale-turn cutoff.
 
-    Only kiro-cli streams ``tool_call_update`` progress frames while a tool
-    runs; a third-party backend that runs a tool to completion and only then
-    reports the result is silent for the whole tool. Text streamed before the
-    dispatch leaves ``_stale_eligible`` set, and off Linux the liveness oracle
-    can only answer UNKNOWN, so the cutoff declared that turn complete and tore
-    it down MID-TOOL. An open tool call is positive evidence the turn is alive:
-    the silence is handed to the tool-stall watchdog, which owns a much longer
-    budget and RECOVERS the slot instead of reporting a truncated turn as done.
+    Third-party backends are silent for a whole tool (only kiro-cli streams
+    ``tool_call_update``), and off Linux the oracle answers only UNKNOWN. The
+    silence goes to the tool-stall watchdog, which has a longer budget and recovers.
     """
 
     def _silent_client(self, tmp_path, *, tool_dispatched: bool):
@@ -747,12 +707,15 @@ class TestStaleTurnOpenToolCall:
         """Deferral is not a disarm: once the tool resolves, the cutoff fires."""
         monkeypatch.setattr(acp_client, "_TOOL_STALL_TIMEOUT", 30.0)
         monkeypatch.setattr(acp_client, "_READ_TIMEOUT", 0.02)
+        # A virtual clock for the client family: each silent read costs exactly
+        # its 20 ms on it, so the 50 ms cutoff is passed on the third read.
+        clock = ManualClock()
+        clock.install(monkeypatch, acp_client)
         client = self._silent_client(tmp_path, tool_dispatched=True)
+        client._last_activity = clock.monotonic()
 
         async def _resolve_then_stay_silent(*_args, **_kwargs):
-            # flake-ok: pre-existing 20 ms pacing in the stubbed read, moved verbatim; tracked for a de-flake pass
-            # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing pacing inside the stubbed read before the tool resolves, moved verbatim
-            await asyncio.sleep(0.02)
+            clock.advance(0.02)
             # What _dispatch_events does when the tool's result frame arrives.
             client._tool_dispatched = False
             return None
@@ -792,17 +755,8 @@ class TestStaleTurnOpenToolCall:
 class TestStaleTurnProbeAccounting:
     """The stale cutoff must measure BACKEND silence, not our own probe.
 
-    Two ways the gate can end a live turn on no evidence at all:
-
-    * the idle clock was read AFTER awaiting the liveness consult, so a cold
-      walk's latency (executor warm-up plus the subtree read) was charged to the
-      backend's silence budget;
-    * the oracle's baseline-priming answer (``EVIDENCE_SAMPLING``) counted as a
-      negative verdict, although it is structurally incapable of reading WORKING
-      -- it means "ask me again", not "idle".
-
-    Together they reaped a turn on its FIRST silent read, which is the
-    truncation the per-silent-read consulting exists to avoid.
+    The idle clock is read before awaiting the consult, so walk latency is not
+    charged to the backend, and ``EVIDENCE_SAMPLING`` means "ask again", not idle.
     """
 
     def _silent_client(self, tmp_path):
@@ -844,14 +798,18 @@ class TestStaleTurnProbeAccounting:
     ):
         """A consult slower than the cutoff must not itself end the turn."""
         monkeypatch.setattr(acp_client, "_READ_TIMEOUT", 0.01)
+        # The client family reads one clock; a virtual one lets the stubbed
+        # consult cost 0.15 s on it, so the consult's runtime is arithmetic
+        # and no wall-clock wait stands in for it.
+        clock = ManualClock()
+        clock.install(monkeypatch, acp_client)
         client = self._silent_client(tmp_path)
+        client._last_activity = clock.monotonic()
         consults = {"n": 0}
 
         async def _slow_consult():
             consults["n"] += 1
-            # flake-ok: the stubbed consult outlasts the patched cutoff on purpose; the assertion is about that latency
-            # nosemgrep: kirocrew.test-sleep-as-barrier -- the stubbed consult is slower than the cutoff on purpose; the test measures that latency
-            await asyncio.sleep(0.15)  # 3x the cutoff patched below
+            clock.advance(0.15)  # 3x the cutoff patched below
             return VERDICT_UNKNOWN, "flat counters"
 
         client._consult_liveness_model_wait = _slow_consult
@@ -1065,6 +1023,11 @@ class TestToolStallKeepalive:
 
         monkeypatch.setattr(acp_client, "_TOOL_STALL_TIMEOUT", 0.5)
         monkeypatch.setattr(acp_client, "_READ_TIMEOUT", 0.05)
+        # A virtual clock for the client family: the stubbed reads and the
+        # keepalive cadence below both run on it, so no host speed decides
+        # whether a ping lands inside the stall window.
+        clock = ManualClock()
+        clock.install(monkeypatch, acp_client)
 
         client = AcpClient(work_dir=tmp_path)
         client._turn_done.clear()
@@ -1072,41 +1035,30 @@ class TestToolStallKeepalive:
         client._stale_eligible = False
         client._is_process_alive = lambda: True
 
-        # _read_message must actually yield to the event loop (simulating the
-        # real readline timeout) so the keepalive pinger gets scheduled.
+        # Simulate keepalive pings refreshing _last_activity every 0.1s
+        # while no stdout data arrives: each stubbed read is one 50 ms readline
+        # timeout, and every second one is followed by a ping.
+        reads = 0
+
         async def slow_read(*_a, **_kw):
-            # flake-ok: pre-existing 50 ms pacing in the stubbed read, moved verbatim; tracked for a de-flake pass
-            # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing pacing inside the stubbed read so the keepalive pinger runs, moved verbatim
-            await asyncio.sleep(0.05)
+            nonlocal reads
+            reads += 1
+            clock.advance(0.05)
+            if reads % 2 == 0:
+                # Pings well inside the stall window are what keep the watchdog quiet.
+                client.touch_activity()
             return None
 
         client._read_message = slow_read  # type: ignore[assignment]
-
-        # Simulate keepalive pings refreshing _last_activity every 0.1s
-        # while no stdout data arrives.
-        stop = asyncio.Event()
-
-        async def keepalive_pinger():
-            while not stop.is_set():
-                client.touch_activity()
-                # Pings well inside the stall window are what keep the watchdog quiet.
-                await asyncio.sleep(
-                    0.1
-                )  # flake-ok: the keepalive cadence is the stimulus under test
-
-        pinger = asyncio.create_task(keepalive_pinger())
 
         actions: list[object] = []
         # Outer timeout 1.2s > stall window 0.5s.  Without the fix, the
         # watchdog would fire at ~0.5s.  With the fix, keepalive keeps it
         # alive and the loop runs to the outer deadline.
-        t0 = time.monotonic()
+        t0 = clock.monotonic()
         async for action, _ in client._prompt_loop(req_id=1, timeout=1.2):
             actions.append(action)
-        elapsed = time.monotonic() - t0
-
-        stop.set()
-        await pinger
+        elapsed = clock.monotonic() - t0
 
         # Loop ran to outer timeout (1.2s), NOT cut short by stall watchdog (0.5s).
         assert elapsed >= 1.0, f"loop exited at {elapsed:.2f}s — watchdog fired despite keepalive"

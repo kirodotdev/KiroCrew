@@ -254,34 +254,40 @@ class TestCCWorkerStreamJson:
         drain() waits; reused, the worker would hand its reply to the next caller."""
         worker = await _fed_worker(monkeypatch, [], eof=False)
         draining = asyncio.Event()
+        release = asyncio.Event()
 
         async def _drain():
             draining.set()
-            # flake-ok: pre-existing park on an Event nothing sets, in a fake drain the test cancels; moved verbatim and tracked for a de-flake pass
-            await asyncio.Event().wait()
+            await release.wait()  # held until the send is cancelled, or released in the finally
 
         assert worker._proc is not None
         cast(Any, worker._proc.stdin).drain = _drain
         send = asyncio.create_task(worker.send_message("p1", timeout=10))
-        await await_until(draining, what="the fake drain being entered")
-        send.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await send
+        try:
+            await await_until(draining, what="the fake drain being entered")
+            send.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await send
+        finally:
+            release.set()
         assert not worker.is_alive()
         cast(AsyncMock, llm_pool.platform_compat.kill_and_reap).assert_awaited()
 
     @pytest.mark.asyncio
     async def test_a_drain_that_never_returns_is_bounded_by_the_timeout(self, monkeypatch):
         worker = await _fed_worker(monkeypatch, [], eof=False)
+        release = asyncio.Event()
 
         async def _drain():
-            # flake-ok: pre-existing park on an Event nothing sets, in a fake drain the send's own timeout cancels; moved verbatim and tracked for a de-flake pass
-            await asyncio.Event().wait()
+            await release.wait()  # held until the send's own timeout cancels it, or released in the finally
 
         assert worker._proc is not None
         cast(Any, worker._proc.stdin).drain = _drain
-        with pytest.raises(asyncio.TimeoutError):
-            await asyncio.wait_for(worker.send_message("p1", timeout=0.05), timeout=10)
+        try:
+            with pytest.raises(asyncio.TimeoutError):
+                await asyncio.wait_for(worker.send_message("p1", timeout=0.05), timeout=10)
+        finally:
+            release.set()
         assert not worker.is_alive()
 
     @pytest.mark.asyncio

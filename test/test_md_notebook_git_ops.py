@@ -52,8 +52,8 @@ async def _communicate_result() -> tuple[bytes, bytes]:
 
 #: git's access-rights boilerplate, emitted for every fetch/push failure, with
 #: an SSH transport diagnosis printed ABOVE it. A remote reachable only through
-#: a ``ProxyCommand``/host alias in ``~/.ssh/config`` fails exactly this way once
-#: the sandbox's ``ssh -F /dev/null`` discards that config.
+#: a ``ProxyCommand``/host alias in ``~/.ssh/config`` fails exactly this way when
+#: the sandbox falls back to ``ssh -F /dev/null`` and discards that config.
 _SSH_RESOLVE_FAILURE = (
     "ssh: Could not resolve hostname git.example.com: Name or service not known\n"
     "fatal: Could not read from remote repository.\n"

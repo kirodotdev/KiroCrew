@@ -11,7 +11,7 @@
  */
 
 import { describe, it, expect, vi, afterAll } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { act, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
 import React from 'react'
@@ -49,16 +49,18 @@ describe('CapabilitiesPage — the tab rail follows the active language', () => 
     await i18next.changeLanguage('en')
     wrap(<CapabilitiesPage />)
     await waitFor(() =>
-      expect(screen.getByRole('button', { name: 'Mates' })).toBeTruthy(),
+      expect(screen.getByRole('button', { name: 'Bots' })).toBeTruthy(),
     )
 
-    await i18next.changeLanguage('ja')
+    await act(async () => {
+      await i18next.changeLanguage('ja')
+    })
 
     // The Japanese label for the same tab. Without the language in the memo's
     // dependencies the rail keeps rendering "Crewmates" here.
     await waitFor(() =>
-      expect(screen.getByRole('button', { name: 'クルーメイト' })).toBeTruthy(),
+      expect(screen.getByRole('button', { name: 'Bot' })).toBeTruthy(),
     )
-    expect(screen.queryByRole('button', { name: 'Mates' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Bots' })).toBeNull()
   })
 })

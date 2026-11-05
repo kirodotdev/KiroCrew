@@ -25,6 +25,7 @@ import bisect
 import contextvars
 import math
 import re
+import urllib.parse
 import zlib
 from collections import Counter
 from collections.abc import Iterator
@@ -730,6 +731,321 @@ _DOCUMENT_LINK_RE = re.compile(
     r"(?P<diagram>" + _PLANTUML_DIAGRAM + r")"
     r")/?(?![A-Za-z0-9+/_-])"
 )
+
+
+# ── Outlook on the web and Slack links, matched by structure ──
+# An Outlook mail or calendar item id is the base64 of an Exchange id with its
+# `+`, `/` and `=` written `%2B`, `%2F` and `%3D`, and a Slack `client` link
+# joins its two ids and its message stamp into one 40+ char run, so pass 3
+# masks both. They are exempt by structure, with no pattern: the link is cut
+# out of the text by fixed character sets, split by `urllib.parse.urlsplit`,
+# its host compared exactly against a fixed set, its path segments compared
+# as exact tokens, and its ids checked character by character:
+#   * `https://` right after a character that cannot glue onto a key (the
+#     same rule as `_DOCUMENT_LINK_RE`), then a lowercase literal host and a
+#     path of `_LINK_PATH_CHARS` only. The link ends at the first other
+#     character, so the query, the fragment and a sentence's `.` are outside
+#     it and everything there is judged as before. A host with userinfo, a
+#     port, or an uppercase letter is not a link here at all;
+#   * Outlook: one of `_OUTLOOK_HOSTS`, then `mail/[<n>/][<folder>/]id/<id>`
+#     (a folder is one of `_OUTLOOK_FOLDERS`; a folder id is not admitted),
+#     `mail/deeplink/<compose|read>/<id>`, `calendar/[<n>/]item/<id>` or
+#     `calendar/deeplink/read/<id>`, the id last, with no trailing `/`. The id
+#     opens with an Exchange id prefix (`AAMk`, `AAQk`, `AQMk`, `AQQk`), then
+#     12-252 characters of `[A-Za-z0-9_-]` or the escapes `%2B`, `%2F`,
+#     `%3D`, and must decode to one whole Exchange id (`_is_whole_exchange_id`);
+#   * Slack: `app.slack.com`, `<workspace>.slack.com` or
+#     `<workspace>.enterprise.slack.com`, then exactly `client/<id>/<id>/<msg>`
+#     and one optional trailing `/`, where an id is one uppercase letter and
+#     7-11 uppercase letters or digits and a message is `p` and 16 digits;
+#   * no piece of the link is a whole key, as for a document link. An Outlook
+#     link is also cut with each `%XX` escape read as a separator (a key
+#     between two escapes) and with each `/` segment holding an escape
+#     percent-decoded (a key whose own `/` or `+` is escaped).
+# So a key as an id or a segment, glued to an id, after the route, escaped, or
+# inside a crafted Exchange header is still redacted.
+_LINK_ALNUM = frozenset("0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz")
+_LINK_HOST_CHARS = frozenset("0123456789abcdefghijklmnopqrstuvwxyz.-")
+_LINK_PATH_CHARS = _LINK_ALNUM | frozenset("+/_-%")
+#: Longest path a chat or mail link is read for; a real one is a few hundred chars.
+_LINK_PATH_MAX = 2048
+_OUTLOOK_HOSTS = frozenset(
+    {"outlook.office.com", "outlook.office365.com", "outlook.live.com", "outlook.cloud.microsoft"}
+)
+# Well-known folder names only: a folder given by its id would let a key whose
+# last character is `/` hide as the tail of that id plus its separator.
+_OUTLOOK_FOLDERS = frozenset(
+    {"inbox", "drafts", "sentitems", "deleteditems", "archive", "junkemail", "outbox", "search"}
+)
+_OUTLOOK_ID_PREFIXES = ("AAMk", "AAQk", "AQMk", "AQQk")
+_OUTLOOK_ID_ESCAPES = frozenset({"%2B", "%2b", "%2F", "%2f", "%3D", "%3d"})
+#: A URL path's segment separator: `/` on every platform, never `os.sep`.
+_URL_PATH_SEP = "/"
+
+
+def _char_runs(text: str, alphabet: frozenset[str]) -> Iterator[str]:
+    """Yield every maximal run of *text* whose characters are all in *alphabet*."""
+    start = -1
+    for i, ch in enumerate(text):
+        if ch in alphabet:
+            if start < 0:
+                start = i
+        elif start >= 0:
+            yield text[start:i]
+            start = -1
+    if start >= 0:
+        yield text[start:]
+
+
+def _escapes_as_slash(text: str) -> str:
+    """*text* with every `%XX` escape replaced by `/`, a separator."""
+    out = []
+    i = 0
+    while i < len(text):
+        hex_pair = text[i + 1 : i + 3]
+        if (
+            text[i] == "%"
+            and len(hex_pair) == 2
+            and all(c in "0123456789ABCDEFabcdef" for c in hex_pair)
+        ):
+            out.append("/")
+            i += 3
+        else:
+            out.append(text[i])
+            i += 1
+    return "".join(out)
+
+
+def _chat_mail_link_pieces(link: str, *, outlook: bool) -> Iterator[str]:
+    """Yield every piece of a chat or mail link that could be a whole key.
+
+    Cut like pass 3's own pieces, with and without `+`; an Outlook link is also
+    cut with each escape as a separator and with each escaped segment decoded.
+    """
+    alphabets = (_LINK_ALNUM | frozenset("+"), _LINK_ALNUM)
+    texts = (link, _escapes_as_slash(link)) if outlook else (link,)
+    for text in texts:
+        for alphabet in alphabets:
+            yield from _char_runs(text, alphabet)
+    if outlook:
+        for segment in link.split(_URL_PATH_SEP):
+            if "%" in segment:
+                decoded = urllib.parse.unquote(segment)
+                yield from _char_runs(decoded, _LINK_ALNUM | frozenset("+/"))
+
+
+def _outlook_item_id(segments: list[str]) -> str | None:
+    """The item id when *segments* are an Outlook mail or calendar item route."""
+    if len(segments) < 2 or segments[0] not in ("mail", "calendar"):
+        return None
+    app, route, item = segments[0], tuple(segments[1:-1]), segments[-1]
+    deeplinks = (
+        {("deeplink", "compose"), ("deeplink", "read")} if app == "mail" else {("deeplink", "read")}
+    )
+    if route in deeplinks:
+        return item
+    # An optional one- or two-digit account index, then (mail only) a folder.
+    if route[:1] and 0 < len(route[0]) <= 2 and all(c in "0123456789" for c in route[0]):
+        route = route[1:]
+    if app == "mail" and route[:1] and route[0] in _OUTLOOK_FOLDERS:
+        route = route[1:]
+    return item if route == (("id",) if app == "mail" else ("item",)) else None
+
+
+def _is_outlook_id(item: str) -> bool:
+    """Whether *item* has an Outlook id's prefix, alphabet and length, and decodes whole."""
+    if not item.startswith(_OUTLOOK_ID_PREFIXES):
+        return False
+    units = 0
+    i = len(_OUTLOOK_ID_PREFIXES[0])
+    while i < len(item):
+        if item[i] in _LINK_ALNUM or item[i] in "_-":
+            i += 1
+        elif item[i : i + 3] in _OUTLOOK_ID_ESCAPES:
+            i += 3
+        else:
+            return False
+        units += 1
+        if units > 252:
+            return False
+    return units >= 12 and _is_whole_exchange_id(item)
+
+
+def _is_slack_host(host: str) -> bool:
+    """Whether *host* is `app.slack.com` or one workspace's own Slack host."""
+    if host == "app.slack.com":
+        return True
+    for suffix in (".enterprise.slack.com", ".slack.com"):
+        if host.endswith(suffix):
+            label = host[: -len(suffix)]
+            return (
+                0 < len(label) <= 63
+                and "." not in label
+                and label[0] != "-"
+                and label[-1] != "-"
+                and all(c in _LINK_HOST_CHARS for c in label)
+            )
+    return False
+
+
+def _is_slack_client_route(segments: list[str]) -> bool:
+    """Whether *segments* are exactly `client/<id>/<id>/p<16 digits>`, one `/` allowed after."""
+
+    def is_id(segment: str) -> bool:
+        return (
+            8 <= len(segment) <= 12
+            and "A" <= segment[0] <= "Z"
+            and all("A" <= c <= "Z" or "0" <= c <= "9" for c in segment)
+        )
+
+    if segments[-1:] == [""]:
+        segments = segments[:-1]
+    if len(segments) != 4 or segments[0] != "client":
+        return False
+    message = segments[3]
+    return (
+        is_id(segments[1])
+        and is_id(segments[2])
+        and len(message) == 17
+        and message[0] == "p"
+        and all("0" <= c <= "9" for c in message[1:])
+    )
+
+
+def _chat_mail_link_at(text: str, start: int) -> int | None:
+    """The end of an exempt Outlook or Slack link at *start*, or None."""
+    if start and (text[start - 1] in _LINK_ALNUM or text[start - 1] in "+.-"):
+        return None
+    host_start = host_end = start + len("https://")
+    while host_end < len(text) and text[host_end] in _LINK_HOST_CHARS:
+        host_end += 1
+    end = host_end
+    limit = min(len(text), host_end + _LINK_PATH_MAX + 1)
+    while end < limit and text[end] in _LINK_PATH_CHARS:
+        end += 1
+    if end - host_end > _LINK_PATH_MAX:
+        return None
+    host, link = text[host_start:host_end], text[start:end]
+    parts = urllib.parse.urlsplit(link)
+    if (
+        parts.scheme != "https"
+        or parts.netloc != host
+        or parts.hostname != host
+        or parts.query
+        or parts.fragment
+        or not parts.path.startswith("/")
+    ):
+        return None
+    segments = parts.path[1:].split(_URL_PATH_SEP)
+    outlook = host in _OUTLOOK_HOSTS
+    if outlook:
+        item = _outlook_item_id(segments)
+        if item is None or not _is_outlook_id(item):
+            return None
+    elif not (_is_slack_host(host) and _is_slack_client_route(segments)):
+        return None
+    if any(
+        len(piece) == _SECRET_KEY_LEN and _looks_like_secret_key(piece)
+        for piece in _chat_mail_link_pieces(link, outlook=outlook)
+    ):
+        return None
+    return end
+
+
+def _chat_mail_link_spans(text: str) -> list[tuple[int, int]]:
+    """Return the spans of the Outlook and Slack links in *text* that hold no key."""
+    spans = []
+    start = text.find("https://")
+    while start >= 0:
+        end = _chat_mail_link_at(text, start)
+        if end is not None:
+            spans.append((start, end))
+        start = text.find("https://", start + 1)
+    return spans
+
+
+# The decoded Exchange id: a compression flag, the id storage type, the 36-byte
+# mailbox GUID text with its 16-bit length, a processing byte, then the store id
+# with its 16-bit length, which must end the id exactly and (for a long-term id)
+# carry an entry id's fixed flag, type and padding bytes.
+#: Offsets of the four `-` in a GUID's 36-byte text form; every other byte is hex.
+_EXCHANGE_GUID_DASHES = frozenset({8, 13, 18, 23})
+_EXCHANGE_ID_MAX_BYTES = 1024
+
+
+def _expand_exchange_runs(data: bytes) -> bytes | None:
+    """Undo an Exchange id's run-length compression, or return None if malformed.
+
+    Two equal bytes in a row are followed by a count of further repeats.
+    """
+    out = bytearray()
+    i = 0
+    while i < len(data):
+        if i + 1 < len(data) and data[i] == data[i + 1]:
+            if i + 2 >= len(data):
+                return None
+            out += bytes([data[i]]) * (2 + data[i + 2])
+            i += 3
+        else:
+            out.append(data[i])
+            i += 1
+        if len(out) > _EXCHANGE_ID_MAX_BYTES:
+            return None
+    return bytes(out)
+
+
+def _is_whole_exchange_id(text: str) -> bool:
+    """Whether an Outlook item id decodes to one complete Exchange id.
+
+    Every field length must account for every decoded byte, so a key glued after
+    an id, or after a bare id prefix, fails the decode instead of riding the route.
+    """
+    encoded = urllib.parse.unquote(text).replace("-", "+").replace("_", "/").rstrip("=")
+    if len(encoded) % 4 == 1:
+        return False
+    try:
+        data = base64.b64decode(encoded + "=" * (-len(encoded) % 4), validate=True)
+    except ValueError:
+        return False
+    if data[:1] == b"\x01":
+        expanded = _expand_exchange_runs(data[1:])
+        if expanded is None:
+            return False
+        data = b"\x01" + expanded
+    if len(data) < 43 or data[1] not in (3, 4) or data[2:4] != b"\x24\x00":
+        return False
+    if not _is_guid_text(data[4:40]):
+        return False
+    store = data[43:]
+    if len(store) != (data[41] | data[42] << 8):
+        return False
+    if data[1] == 4:
+        return len(store) == 16
+    return _is_item_entry_id(store)
+
+
+def _is_item_entry_id(store: bytes) -> bool:
+    """Whether a store id is a folder or message entry id with its fixed bytes.
+
+    Zero flags, the folder (1) or message (7) type and the zero padding after
+    each long-term id leave no free stretch longer than 22 bytes, about 30
+    base64 characters, so no 40-char key fits in one.
+    """
+    if len(store) not in (46, 70) or store[:4] != b"\0\0\0\0":
+        return False
+    kind = b"\x07\x00" if len(store) == 70 else b"\x01\x00"
+    pads = store[44:46] + store[68:70]
+    return store[20:22] == kind and pads == b"\0" * len(pads)
+
+
+def _is_guid_text(raw: bytes) -> bool:
+    """Whether *raw* is a GUID's 36-byte text form: hex in 8-4-4-4-12 groups."""
+    return len(raw) == 36 and all(
+        byte == ord("-") if i in _EXCHANGE_GUID_DASHES else byte in b"0123456789ABCDEFabcdef"
+        for i, byte in enumerate(raw)
+    )
+
+
 _PLANTUML_ALPHABET = {
     c: i for i, c in enumerate("0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz-_")
 }

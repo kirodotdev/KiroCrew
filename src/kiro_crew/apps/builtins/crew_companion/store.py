@@ -66,12 +66,23 @@ from kiro_crew.apps.builtins.crew_companion.reminders import (
     skip_once,
     to_iso,
 )
+from kiro_crew.atomic_write import read_bytes_with_retry, replace_with_retry
 from kiro_crew.platform_compat import chmod_safe
+from kiro_crew.user_json import loads_user_json
 
 logger = logging.getLogger(__name__)
 
 #: Refuse an absurdly large store rather than trying to parse it.
 MAX_BYTES = 2_000_000
+
+
+class StoreUnreadableError(OSError):
+    """The store file could not be read or set aside, so a save would replace it.
+
+    An ``OSError``, so every caller's existing write-failure path applies: the
+    routes answer 503 and the tick keeps running.
+    """
+
 
 #: Tick cadence, seconds. Reminders are minute-grained, so a second is ample and
 #: the work per tick is a dict comparison unless something is actually due.
@@ -211,6 +222,9 @@ class CompanionStore:
         #: _persisted (see _save_locked's failure path).
         self._persisted_pending: list[Fire] = []
         self._persisted_seq = 0
+        #: Why the file on disk could not be read, while it still sits there
+        #: unread. ``None`` when a save is free to replace the file.
+        self._write_blocked: str | None = None
         self._pending: list[Fire] = []
         self._seq = 0
         self._next_break_at = 0.0
@@ -227,16 +241,47 @@ class CompanionStore:
 
         Missing file (first run), bad JSON, wrong shape — none of them raise. A
         reminder app that throws on load is worse than one that starts empty.
+
+        Starting empty never costs the file. One leading UTF-8 byte-order mark
+        reads normally. A file too large, not JSON, or not a JSON object is moved
+        to ``<name>.corrupt-<utc>`` with a warning before anything saves. When the
+        read itself fails, or that move does, the file stays where it is and every
+        save raises :class:`StoreUnreadableError` until a later ``load`` reads it.
+
+        The whole load holds the store lock, so a save racing a reload of a
+        refused store waits for it and cannot write the empty state over the file.
         """
+        with self._lock:
+            self._load_locked()
+
+    def _load_locked(self) -> None:
+        """The body of :meth:`load`. The caller holds ``self._lock``."""
         raw: Any = None
+        self._write_blocked = None
         try:
             if self._path.is_file():
                 if self._path.stat().st_size > MAX_BYTES:
-                    logger.warning("crew-companion: store too large, ignoring")
+                    self._set_aside(f"larger than {MAX_BYTES} bytes")
                 else:
-                    raw = json.loads(self._path.read_text("utf-8"))
-        except (OSError, ValueError) as exc:
-            logger.warning("crew-companion: unreadable store (%s), starting empty", exc)
+                    data = read_bytes_with_retry(self._path)
+                    try:
+                        raw = loads_user_json(data.decode("utf-8"))
+                    except ValueError as exc:
+                        self._set_aside(exc)
+                    else:
+                        if not isinstance(raw, dict):
+                            raw = None
+                            self._set_aside("not a JSON object")
+        except OSError as exc:
+            # A failed read says nothing about the bytes, which may hold every
+            # reminder: the file is kept and saves are refused instead.
+            self._write_blocked = f"could not be read ({exc})"
+            logger.warning(
+                "crew-companion: store %s could not be read (%s); starting empty"
+                " and not saving over it",
+                self._path,
+                exc,
+            )
 
         with self._lock:
             self._state = _State(
@@ -280,7 +325,9 @@ class CompanionStore:
             # What we just read IS what is on disk — the rollback pair starts here.
             self._persisted_pending = list(self._pending)
             self._persisted_seq = self._seq
-            if not self._state.stats.first_launch:
+            # A file left unread may carry its own stamp, so none is invented here
+            # while saves are refused.
+            if not self._state.stats.first_launch and self._write_blocked is None:
                 # Stamp it AND persist it. Setting this in memory only meant every
                 # load re-stamped it, so "together since" silently reset to today
                 # on each gateway restart — the one number in Memories that is
@@ -320,6 +367,11 @@ class CompanionStore:
         payload["seq"] = self._seq
         tmp = self._path.with_suffix(f".json.tmp.{os.getpid()}")
         try:
+            if self._write_blocked is not None:
+                # Raised inside the try, so memory rolls back like any failed write.
+                raise StoreUnreadableError(
+                    f"store {self._path} {self._write_blocked}; not saving over it"
+                )
             serialized = json.dumps(payload, indent=2)
             # Enforce the SAME cap the loader applies. `load()` ignores a file
             # over MAX_BYTES and starts from defaults — so a successful write
@@ -340,7 +392,7 @@ class CompanionStore:
             # platform_compat shim, which is a no-op where POSIX modes mean
             # nothing (Windows) instead of raising or silently misleading.
             chmod_safe(tmp, 0o600)
-            os.replace(tmp, self._path)
+            replace_with_retry(tmp, self._path)
         except OSError as exc:
             logger.warning("crew-companion: store write failed: %s", exc)
             try:
@@ -361,6 +413,38 @@ class CompanionStore:
         self._persisted = self._state
         self._persisted_pending = list(self._pending)
         self._persisted_seq = self._seq
+
+    @property
+    def write_blocked(self) -> bool:
+        """Whether saves are refused because the file on disk could not be read."""
+        return self._write_blocked is not None
+
+    def _set_aside(self, reason: object) -> None:
+        """Move an unusable store to ``<name>.corrupt-<utc>`` so a save cannot destroy it.
+
+        When the move fails, saves are refused instead (see ``_write_blocked``).
+        """
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+        aside = self._path.with_name(f"{self._path.name}.corrupt-{stamp}")
+        try:
+            replace_with_retry(self._path, aside)
+        except OSError as exc:
+            self._write_blocked = f"could not be used ({reason}) or moved aside ({exc})"
+            logger.warning(
+                "crew-companion: store %s could not be used (%s) or moved aside (%s);"
+                " starting empty and not saving over it",
+                self._path,
+                reason,
+                exc,
+            )
+            return
+        logger.warning(
+            "crew-companion: store %s could not be used (%s); moved it to %s and"
+            " starting empty",
+            self._path,
+            reason,
+            aside.name,
+        )
 
     # ── reads ───────────────────────────────────────────────────────────────
 
@@ -442,7 +526,7 @@ class CompanionStore:
         The natural-language parsing happens in the renderer, which POSTs a
         concrete ``fireAt``. This deliberately does no natural-language parsing:
         duplicating 900 lines of span-alignment and day-part rules in a second
-        language would re-earn every bug they took ten review rounds to remove.
+        language would bring back every edge-case bug already fixed there.
 
         It does, however, insist the instant is READABLE. Rejecting it here and
         not in the route keeps one chokepoint for every writer, and the route
@@ -784,7 +868,11 @@ class CompanionStore:
         if thread is not None:
             thread.join(timeout=5.0)
         with self._lock:
-            self._save_locked()
+            try:
+                self._save_locked()
+            except StoreUnreadableError:
+                # Already logged. Shutdown keeps the unread file as it is.
+                pass
 
     def _run(self) -> None:
         while not self._stop.wait(TICK_SECONDS):

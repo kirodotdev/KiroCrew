@@ -59,3 +59,15 @@ def test_the_publish_lane_labels_the_image_with_the_pin() -> None:
     (resolve,) = [s for s in steps if s.get("id") == "kirocli"]
     assert "packaging/kiro-cli-version" in resolve["run"]
     assert "manifest.json" not in resolve["run"]
+
+
+def test_the_install_step_lands_kiro_cli_in_usr_local_bin_for_both_installer_layouts() -> None:
+    text = _text(_DOCKERFILE)
+    # Older installers read Q_INSTALL_GLOBAL, newer ones KIRO_CLI_INSTALL_GLOBAL.
+    assert "Q_INSTALL_GLOBAL=1" in text
+    assert "KIRO_CLI_INSTALL_GLOBAL=1" in text
+    # A per-user install is moved out of the home volume, never linked into it.
+    assert '"${HOME}"/.local/bin/kiro-cli*' in text
+    assert 'mv -f "${bin}" /usr/local/bin/' in text
+    assert not re.search(r"ln\s+-s\S*\s+\S*\.local/bin", text)
+    assert "test -x /usr/local/bin/kiro-cli; \\\n    kiro-cli --version" in text

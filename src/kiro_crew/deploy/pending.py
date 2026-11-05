@@ -16,10 +16,11 @@ import os
 import tempfile
 import time
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from kiro_crew.atomic_write import replace_with_retry
+from kiro_crew.atomic_write import read_bytes_with_retry, replace_with_retry
 from kiro_crew.config.paths import config_dir
 from kiro_crew.platform_compat import file_lock, open_lock_file
 
@@ -33,17 +34,74 @@ def _store_path() -> Path:
     return config_dir() / "deploy" / "pending-deploys.json"
 
 
+class PendingStoreUnreadable(Exception):
+    """The pending store cannot be read or set aside, so a write would replace it."""
+
+
 def _load_raw() -> list[dict[str, Any]]:
+    """The tolerant read for :func:`list_pending` and :func:`claim_pending`.
+
+    A present file that cannot be read or parsed reads as no entries. That is safe
+    for a reader and for a claim, which saves only on a hit. One leading UTF-8
+    byte-order mark is not content and reads normally.
+    """
     p = _store_path()
     if not p.is_file():
         return []
     try:
-        data = json.loads(p.read_text(encoding="utf-8"))
+        data = json.loads(p.read_text(encoding="utf-8-sig"))
         if isinstance(data, list):
             return data
-    except (json.JSONDecodeError, OSError):
+    except (OSError, ValueError, RecursionError):
         pass
     return []
+
+
+def _load_for_update() -> list[dict[str, Any]]:
+    """The read :func:`add_pending` and :func:`remove_pending` save from.
+
+    Both save whatever they loaded, so the empty answer :func:`_load_raw` gives a
+    present-but-unreadable file would be written over every entry still in it. Here
+    a file that cannot be decoded or parsed as a list is moved aside to
+    ``<name>.corrupt-<utc>`` with a warning first, and the write starts from an
+    empty store with the old bytes kept. When the read itself fails, or the move
+    does, the write raises :class:`PendingStoreUnreadable` and the file stays as it is.
+    """
+    p = _store_path()
+    try:
+        data = json.loads(read_bytes_with_retry(p).decode("utf-8-sig"))
+    except FileNotFoundError:
+        return []
+    except OSError as e:
+        # A read that fails says nothing about the bytes, which may be a good store:
+        # moving it aside would hide every entry, so the write is refused instead.
+        raise PendingStoreUnreadable(f"{p} could not be read ({e}); not saving over it") from e
+    except (ValueError, RecursionError) as e:
+        # RecursionError: JSON nested past the interpreter's limit, a hand-edited file.
+        _set_aside(p, e)
+        return []
+    if not isinstance(data, list):
+        _set_aside(p, f"a JSON {type(data).__name__}, not a list")
+        return []
+    return data
+
+
+def _set_aside(p: Path, reason: object) -> None:
+    """Move an unreadable store to ``<name>.corrupt-<utc>`` so a save cannot destroy it."""
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    aside = p.with_name(f"{p.name}.corrupt-{stamp}")
+    try:
+        replace_with_retry(p, aside)
+    except OSError as e:
+        raise PendingStoreUnreadable(
+            f"{p} could not be read ({reason}) or moved aside ({e}); not saving over it"
+        ) from e
+    logger.warning(
+        "pending deploy store %s could not be read (%s); moved it to %s before saving",
+        p,
+        reason,
+        aside.name,
+    )
 
 
 def _save_raw(entries: list[dict[str, Any]]) -> None:
@@ -110,7 +168,7 @@ def add_pending(params: dict[str, Any]) -> dict[str, Any]:
     # the Windows rationale.
     with open_lock_file(lock_path) as fd:
         with file_lock(fd, exclusive=True, required=True):
-            entries = _prune_expired(_load_raw())
+            entries = _prune_expired(_load_for_update())
             entries.append(entry)
             # Cap at _MAX_PENDING, drop oldest
             if len(entries) > _MAX_PENDING:
@@ -132,7 +190,7 @@ def remove_pending(entry_id: str) -> bool:
     # open_lock_file: writable but non-truncating; see add_pending above.
     with open_lock_file(lock_path) as fd:
         with file_lock(fd, exclusive=True, required=True):
-            entries = _prune_expired(_load_raw())
+            entries = _prune_expired(_load_for_update())
             before = len(entries)
             entries = [e for e in entries if e.get("id") != entry_id]
             _save_raw(entries)

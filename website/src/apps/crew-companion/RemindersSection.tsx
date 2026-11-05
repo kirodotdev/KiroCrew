@@ -26,15 +26,37 @@ function ReminderRow({ r, tag, onEdit, onSkip, onRemove, hold }: {
   const open = () => { opened.current = r.text; setDraft(r.text) }
   const editing = draft !== null
   useEffect(() => { hold(r, editing) }, [hold, r, editing])
-  const close = () => { setDraft(null); setError(null) }
-  const save = () => {
+  // The control the editor was opened from: the Edit button, or the More-actions
+  // trigger on a skippable row. Closing unmounts the focused input and a browser
+  // then drops focus to document.body, so Enter and Escape hand focus back here
+  // (the pattern in MeetingTitle). A pointer blur saves but moves nothing:
+  // redirecting focus off the element the user clicked is the context change
+  // WCAG 3.2.2 forbids.
+  const triggerRef = useRef<HTMLButtonElement | null>(null)
+  // Only take back focus the unmount dropped: a save can resolve after the user
+  // has already moved on to another control, and that control keeps it.
+  const restoreFocus = () => requestAnimationFrame(() => {
+    const at = document.activeElement
+    if (at === null || at === document.body) triggerRef.current?.focus({ preventScroll: true })
+  })
+  const close = (restore = false) => { setDraft(null); setError(null); if (restore) restoreFocus() }
+  // restore=true for a keyboard close (Enter/Escape); a pointer blur passes false.
+  const save = (restore = false) => {
     if (draft === null || busy.current) return
     const next = draft.trim()
-    if (!next || next === opened.current) return close()
+    if (!next || next === opened.current) return close(restore)
     // Close only if the user has not typed on while this save was in flight.
     busy.current = true
     onEdit(r.id, next).then(
-      () => { opened.current = next; setError(null); setDraft((d) => (d !== null && d.trim() !== next ? d : null)) },
+      () => {
+        opened.current = next
+        setError(null)
+        setDraft((d) => {
+          if (d !== null && d.trim() !== next) return d
+          if (restore) restoreFocus()
+          return null
+        })
+      },
       // A failed reply may still have saved, so the next save must not skip as "unchanged".
       (e: unknown) => { opened.current = ''; setError(i18nT('apps.issueRadar.views.crews.desk.settings_failed', { error: errorText(e) })) },
     ).finally(() => { busy.current = false })
@@ -50,7 +72,7 @@ function ReminderRow({ r, tag, onEdit, onSkip, onRemove, hold }: {
       {onSkip ? (
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <button type="button" className="cc-icon-btn cc-edit" title={more} aria-label={more}>
+            <button ref={triggerRef} type="button" className="cc-icon-btn cc-edit" title={more} aria-label={more}>
               <MoreHorizontal className="lucide-inline" aria-hidden /></button>
           </DropdownMenuTrigger>
           {/* Focus goes to the editor, not back to the trigger, or its blur would close it. */}
@@ -60,7 +82,7 @@ function ReminderRow({ r, tag, onEdit, onSkip, onRemove, hold }: {
           </DropdownMenuContent>
         </DropdownMenu>
       ) : (
-        <button type="button" className="cc-icon-btn cc-edit" title={label}
+        <button ref={triggerRef} type="button" className="cc-icon-btn cc-edit" title={label}
           aria-label={label} onClick={open}><Pen className="lucide-inline" aria-hidden /></button>
       )}
       <button type="button" className="cc-icon-btn is-remove" title={i18nT('apps.crewCompanion.reminders.remove_title')}
@@ -73,7 +95,7 @@ function ReminderRow({ r, tag, onEdit, onSkip, onRemove, hold }: {
     <div className="cc-rem-edit">
       <input className="cc-add-input" value={draft} autoFocus aria-label={label}
         onChange={(e) => setDraft(e.target.value)}
-        {...ime.bindEnter({ onEnter: save, onEscape: close, onBlur: save })} />
+        {...ime.bindEnter({ onEnter: () => save(true), onEscape: () => close(true), onBlur: () => save(false) })} />
       {/* No hand-off: the unsaved reminder draft is still in the input above. */}
       <ErrorNotice message={error} variant="inline" />
     </div>

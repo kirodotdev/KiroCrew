@@ -14,6 +14,7 @@ import { PanelLeftLight, PanelLeftSolid, PanelRightSolid } from '../../component
 import { useTranslation } from 'react-i18next'
 import { type MemberRosterRow } from '../../api/client'
 import { crewDisplayName } from '../../components/AgentSelector'
+import { useLabelTip } from '../../components/InstantTip'
 import CrewMonitoredAvatar from '../../components/crew/CrewMonitoredAvatar'
 import Glass from '../../components/Glass'
 import HeaderControl from './HeaderControl'
@@ -46,6 +47,34 @@ interface MembersPageThreadHeaderProps {
   openQuick: () => void
   createHeld: string | null
   active: MemberRosterRow
+}
+
+/** The side panel's opener. Icon-only, like the chat page's side-panel toggle,
+ *  so it shows its aria-label in an InstantTip on hover or keyboard focus, at
+ *  once, instead of a native title the browser holds back for about a second.
+ *  Its own component so the tip's state mounts and unmounts with the button:
+ *  a click that docks the panel removes the opener under the pointer, and a
+ *  tip held by the header would paint again, stale, when the opener returns. */
+function PanelOpener({ inBar, pressed, onToggle }: { inBar: boolean; pressed: boolean; onToggle: () => void }) {
+  const { t } = useTranslation()
+  const tip = useLabelTip(t('pages.membersPage.panel_toggle'))
+  return (
+    <HeaderControl
+      inBar={inBar}
+      chipClassName="glass-hover flex items-center justify-center w-8 h-8 rounded-full shrink-0 text-text cursor-pointer"
+      barClassName="mc-touch-hit p-2 rounded-md shrink-0 text-text hover:text-text-strong hover:bg-bg-hover cursor-pointer bg-transparent border-none"
+      onClick={onToggle}
+      aria-pressed={pressed}
+      aria-controls="member-side-panel"
+      aria-label={t('pages.membersPage.panel_toggle')}
+      data-testid="member-panel-toggle"
+      {...uiLocation('members.details')}
+      {...tip.handlers}
+    >
+      <PanelRightSolid size={inBar ? 18 : 15} />
+      {tip.bubble}
+    </HeaderControl>
+  )
 }
 
 /** The thread header, portaled into the shell's top bar while the page has one there. */
@@ -278,22 +307,7 @@ export function MembersPageThreadHeader({
         {/* A Glass chip over the pane, like the switcher opposite
             (#18325): there a bare icon sat on scrolled text. Bare in the
             shell bar, like the bell beside it and the Sessions bar. */}
-        {showOpener && (
-          <HeaderControl
-            inBar={headerInBar}
-            chipClassName="glass-hover flex items-center justify-center w-8 h-8 rounded-full shrink-0 text-text cursor-pointer"
-            barClassName="mc-touch-hit p-2 rounded-md shrink-0 text-text hover:text-text-strong hover:bg-bg-hover cursor-pointer bg-transparent border-none"
-            onClick={togglePanel}
-            aria-pressed={panelVisible}
-            aria-controls="member-side-panel"
-            aria-label={t('pages.membersPage.panel_toggle')}
-            title={t('pages.membersPage.panel_toggle')}
-            data-testid="member-panel-toggle"
-            {...uiLocation('members.details')}
-          >
-            <PanelRightSolid size={headerInBar ? 18 : 15} />
-          </HeaderControl>
-        )}
+        {showOpener && <PanelOpener inBar={headerInBar} pressed={panelVisible} onToggle={togglePanel} />}
       </div>
       {/* The unread column (issue #19045), hanging under the switcher
           chip. Absolutely placed at the header's bottom edge (pulled

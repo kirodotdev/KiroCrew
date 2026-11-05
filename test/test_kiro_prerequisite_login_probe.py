@@ -1,4 +1,8 @@
-"""The enterprise sign-in check runs through the first-party carve-out on a no-backend host.
+"""The kiro-cli login probe runs through the first-party carve-out on a no-backend host.
+
+The probe is ``KiroPrerequisiteService.boot_login_status``. The enterprise start check
+itself reads Crew's vault sign-in (RFC D4) and never runs kiro-cli
+(``test_the_enterprise_start_check_never_runs_kiro_cli``).
 
 Owner decision (enterprise smoke test P9): the sandbox must never block the
 sign-in check, so an enterprise build boots, and its login gate stays open, on
@@ -132,8 +136,9 @@ async def test_a_no_backend_host_boots_and_the_gate_stays_open(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     host = _host(tmp_path, monkeypatch)
-    service = await enterprise_boot.require_kiro_login()
-    assert service is host.service and service.authenticated
+    service = host.service
+    status = await service.boot_login_status()
+    assert status.authenticated and service.authenticated
 
     gate = EnterpriseGate(closed_for=())
     watch = LoginWatch(gate, service)
@@ -163,7 +168,7 @@ async def test_require_sandbox_does_not_block_the_sign_in_check(
     policy = SimpleNamespace(governance=SimpleNamespace(boot=SimpleNamespace(require_sandbox=True)))
     monkeypatch.setattr("kiro_crew.platform.context.current_context", lambda: policy)
     host = _host(tmp_path, monkeypatch)
-    assert await enterprise_boot.require_kiro_login() is host.service
+    assert (await host.service.boot_login_status()).authenticated
     assert host.runs() == ["--version", "whoami"]
 
 
@@ -187,9 +192,10 @@ async def test_every_other_refusal_keeps_the_probe_sandboxed(
     for name, value in refusal.items():
         monkeypatch.setattr(sandbox_mod, name, value)
     host = _host(tmp_path, monkeypatch)
-    with pytest.raises(SystemExit):
-        await enterprise_boot.require_kiro_login()
-    assert "Fix the sandbox error above" in capsys.readouterr().err
+    status = await host.service.boot_login_status()
+    # Fails closed: no unconfined probe, and the answer is "sandbox unavailable",
+    # never a sign-in.
+    assert status.sandbox_unavailable and not status.authenticated
     assert host.runs() == []
 
 
@@ -201,10 +207,43 @@ async def test_signed_out_still_refuses_boot(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    _host(tmp_path, monkeypatch, whoami='echo "error: Not logged in" >&2; exit 1')
-    with pytest.raises(SystemExit):
-        await enterprise_boot.require_kiro_login()
-    assert "no Kiro sign-in was found" in capsys.readouterr().err
+    host = _host(tmp_path, monkeypatch, whoami='echo "error: Not logged in" >&2; exit 1')
+    status = await host.service.boot_login_status()
+    assert not status.authenticated and not status.sandbox_unavailable
+    assert host.runs() == ["--version", "whoami"]
+
+
+@pytest.mark.asyncio
+async def test_the_full_probe_logs_the_confirmed_sign_in(
+    enterprise: None,
+    no_backend: None,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Smoke test N1: the carve-out confirmed the sign-in, so the log says so."""
+    host = _host(tmp_path, monkeypatch)
+    with caplog.at_level("WARNING", logger="kiro_crew.kiro_prerequisite"):
+        status = await host.service._probe(force=True)
+    assert status.sandbox_unavailable and status.authenticated and not status.ready
+    messages = [r.getMessage() for r in caplog.records]
+    assert not any("could not be verified" in m for m in messages)
+    assert any("is signed in" in m and "agent sessions still need a sandbox" in m for m in messages)
+
+
+@pytest.mark.asyncio
+async def test_the_full_probe_keeps_the_old_line_when_signed_out(
+    enterprise: None,
+    no_backend: None,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    host = _host(tmp_path, monkeypatch, whoami='echo "error: Not logged in" >&2; exit 1')
+    with caplog.at_level("WARNING", logger="kiro_crew.kiro_prerequisite"):
+        status = await host.service._probe(force=True)
+    assert status.sandbox_unavailable and not status.authenticated and not status.ready
+    assert any("could not be verified" in r.getMessage() for r in caplog.records)
 
 
 def _gone(pid: int) -> bool:
@@ -225,11 +264,9 @@ async def test_a_hung_whoami_is_killed_and_boot_refused(
 ) -> None:
     monkeypatch.setattr("kiro_crew.kiro_prerequisite._IDENTITY_PROBE_TIMEOUT_SECS", 2)
     host = _host(tmp_path, monkeypatch, whoami="echo $$ > {pidfile}; exec sleep 60")
-    with pytest.raises(SystemExit):
-        await enterprise_boot.require_kiro_login()
-    err = capsys.readouterr().err
-    assert "whoami timed out" in err
-    assert "no Kiro sign-in was found" not in err
+    status = await host.service.boot_login_status()
+    assert "whoami timed out" in status.probe_error
+    assert not status.authenticated
     pid = int(host.pidfile.read_text(encoding="utf-8"))
     await async_wait_until(lambda: _gone(pid), describe=lambda: f"pid {pid} still alive")
 
@@ -244,8 +281,8 @@ async def test_a_helper_left_behind_does_not_hold_the_sign_in_check_open(
         monkeypatch,
         whoami="(sleep 60 >/dev/null 2>&1 & echo $! > {pidfile}); " + _SIGNED_IN,
     )
-    # Without reaping, the helper would hold whoami to its timeout and refuse boot.
-    assert await enterprise_boot.require_kiro_login() is host.service
+    # Without reaping, the helper would hold whoami to its timeout and fail the check.
+    assert (await host.service.boot_login_status()).authenticated
     pid = int(host.pidfile.read_text(encoding="utf-8"))
     await async_wait_until(lambda: _gone(pid), describe=lambda: f"pid {pid} still alive")
 
@@ -257,8 +294,34 @@ async def test_a_relative_cli_override_reaches_the_probe_absolute(
     host = _host(tmp_path, monkeypatch)
     monkeypatch.chdir(host.executable.parent)
     host.service._environ["KIROCREW_KIRO_BIN"] = "./kiro-cli"
-    assert await enterprise_boot.require_kiro_login() is host.service
+    assert (await host.service.boot_login_status()).authenticated
     assert host.runs() == ["--version", "whoami"]
+
+
+@pytest.mark.asyncio
+async def test_the_enterprise_start_check_never_runs_kiro_cli(
+    enterprise: None, no_backend: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The start check reads Crew's vault sign-in (RFC D4), not ``kiro-cli whoami``."""
+    from datetime import datetime, timedelta, timezone
+
+    from kiro_crew.auth.store import KasToken, TokenStore
+
+    store = TokenStore(tmp_path / "vault")
+    monkeypatch.setattr("kiro_crew.auth.bridge.default_token_store", lambda: store)
+    store.save(
+        KasToken(
+            access_token="vault-access",
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+            provider="Enterprise",
+            identity="identity_center",
+            profile_arn="arn:aws:codewhisperer:us-east-1:123456789012:profile/ABCDEFGHIJKL",
+            auth_method="identity_center",
+        )
+    )
+    host = _host(tmp_path, monkeypatch)
+    assert await enterprise_boot.require_kiro_login() is None
+    assert host.runs() == []
 
 
 @pytest.mark.asyncio

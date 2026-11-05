@@ -25,6 +25,7 @@ if TYPE_CHECKING:
         _LockedSectionWrite,
         _mask_secret,
         _sel,
+        _stored_threshold_pct,
         _threshold_pct_rejection,
         _write_env_or_roll_back,
         channel_restart_required,
@@ -279,7 +280,7 @@ async def _wecom_config_save_locked(request: web.Request) -> web.Response:
         return _deny(bad_pct[1], code=bad_pct[0])
     if "soft_threshold_pct" in body:
         pct = int(body["soft_threshold_pct"])
-        if pct != int(wc_cfg.get("soft_threshold_pct", 80)):
+        if pct != _stored_threshold_pct(wc_cfg, "soft_threshold_pct", 80):
             staged["soft_threshold_pct"] = pct
             applied.append("soft_threshold_pct")
 

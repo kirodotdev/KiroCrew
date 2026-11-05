@@ -68,7 +68,10 @@ _BINDINGS_DIR = "bindings"
 _UNDELIVERED_DIR = "undelivered"
 #: The directories under the work-ledger root that are NOT a conductor's store, so a
 #: sweep or a purge walking the root must step over them.
-RESERVED_ROOT_DIRS: frozenset[str] = frozenset({_BINDINGS_DIR, _UNDELIVERED_DIR})
+#: Per-item records of what the hub last learnt about a REMOTE worker's slot
+#: (:mod:`kiro_crew.work_ledger_remote`). A gateway observation, like the above.
+_REMOTE_DIR = "remote"
+RESERVED_ROOT_DIRS: frozenset[str] = frozenset({_BINDINGS_DIR, _UNDELIVERED_DIR, _REMOTE_DIR})
 
 
 def mint_item_id() -> str:
@@ -618,7 +621,13 @@ def _coalesce_progress(events: list[WorkEvent], incoming: WorkEvent) -> list[Wor
 
 
 def _append_event_locked(
-    slot_key: str, item_id: str, kind: str, text: str, *, status: str | None = None
+    slot_key: str,
+    item_id: str,
+    kind: str,
+    text: str,
+    *,
+    status: str | None = None,
+    id_salt: str = "",
 ) -> WorkEvent:
     """Append one event to *item_id*'s log. THE CALLER MUST HOLD THE ITEM LOCK.
 
@@ -639,7 +648,9 @@ def _append_event_locked(
     ts = _now_iso()
     trimmed = text[:MAX_EVENT_TEXT_CHARS]
     incoming = WorkEvent(
-        id=event_id(ts, item_id, kind, trimmed, status=status),
+        # *id_salt* tells apart two events the same second with the same text: an
+        # ingested remote report passes the peer's own event identity.
+        id=event_id(ts, item_id, kind, trimmed + id_salt, status=status),
         ts=ts,
         item_id=item_id,
         kind=kind,
@@ -698,7 +709,13 @@ def _require_record_fits(payload: dict[str, Any]) -> None:
 
 
 def _commit_item_locked(
-    slot_key: str, item: WorkItem, kind: str, text: str, *, status: str | None = None
+    slot_key: str,
+    item: WorkItem,
+    kind: str,
+    text: str,
+    *,
+    status: str | None = None,
+    id_salt: str = "",
 ) -> WorkEvent:
     """Persist one item change AND the event that explains it. HOLD THE ITEM LOCK.
 
@@ -715,7 +732,7 @@ def _commit_item_locked(
     _require_record_fits(payload)
     events_path = item_events_path(slot_key, item.item_id)
     log_before = _read_text_or_none(events_path)
-    event = _append_event_locked(slot_key, item.item_id, kind, text, status=status)
+    event = _append_event_locked(slot_key, item.item_id, kind, text, status=status, id_salt=id_salt)
     try:
         _write_record(item_path(slot_key, item.item_id), payload)
     except BaseException:

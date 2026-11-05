@@ -488,7 +488,7 @@ describe('ui.show: point at an indexed location, never click it', () => {
     expect(stepBoundHolds(uninstall)).toBe(false)
   })
 
-  it('walks to Delete mate through the editor and its Danger zone row, which it points at', () => {
+  it('walks to Delete Bot through the editor and its Danger zone row, which it points at', () => {
     const r = resolveGuideAction(show('agents.delete'))
     if (!r.ok) throw new Error(r.reason)
     expect(r.action.steps.map(st => st.complete.kind)).toEqual(['select', 'reach', 'ack'])
@@ -720,12 +720,12 @@ describe('ui.show: point at an indexed location, never click it', () => {
     }
   })
 
-  it('the Delete mate guide carries the Danger zone notice as its caution text', () => {
+  it('the Delete Bot guide carries the Danger zone notice as its caution text', () => {
     const r = resolveGuideAction(show('agents.delete'))
     if (!r.ok) throw new Error(r.reason)
     const last = r.action.steps[r.action.steps.length - 1]
     expect(last.cautionKey).toBe('pages.kiroCrewAgentsPage.deleting_a_crew_unbinds_it_from_new_sessions_its')
-    expect(i18nT(last.cautionKey!)).toMatch(/only unbinds/)
+    expect(i18nT(last.cautionKey!)).toMatch(/workspace, memory and past chats are kept/)
     expect(r.action.steps.slice(0, -1).every(st => st.cautionKey === undefined)).toBe(true)
   })
 

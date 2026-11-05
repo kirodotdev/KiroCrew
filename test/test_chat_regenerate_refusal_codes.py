@@ -34,28 +34,12 @@ MODULE = DASHBOARD / "chat_regenerate.py"
 PAIR = re.compile(r'"error":\s*"(?P<sentence>[^"]+)"\s*,\s*"code":\s*"(?P<code>[a-z_]+)"', re.S)
 
 # Sentences whose code is settled across the whole dashboard tree, so a second
-# spelling is drift. Kept deliberately small: a sentence earns a place here only
-# once a recursive scan shows it already has exactly one spelling, otherwise the
-# guard reds on code it never asked to change.
+# spelling is drift. A sentence joins only once a scan shows exactly one spelling.
 #
-# NOT here, and each for its own reason:
-#
-# - "not found" is a generic sentence whose SUBJECT differs per endpoint, and the
-#   tree correctly pairs it with five codes (slot_not_found, not_found,
-#   pin_not_found, instance_not_found, launch_job_not_found). There the code
-#   carries information the sentence does not, so demanding one spelling would
-#   be demanding a worse API.
-#
-# - "invalid JSON" is settled at 44 sites as `invalid_json` and diverges at
-#   exactly one: `handlers/security_trusted_apps.py` (allow-all) answers an UNPARSEABLE
-#   body with `invalid_value`, the code its own next guard uses for a parseable body whose
-#   `value` has the wrong type -- so that endpoint currently returns one code for
-#   two conditions, and its own audit line on the line above calls the branch
-#   `invalid_json`. It looks like a genuine bug, but fixing it changes a security
-#   endpoint's response contract and the test that pins it
-#   (`test_allow_all_rejects_unparseable_body_with_code`), which belongs in that
-#   endpoint's own change with its own review, not folded into this one. Pinning
-#   the sentence here before then would only red on existing code.
+# Left out: "not found" pairs with five per-endpoint codes, which carry real
+# information. "invalid JSON" diverges at `handlers/security_trusted_apps.py`
+# (`invalid_value`, pinned by `test_allow_all_rejects_unparseable_body_with_code`),
+# a security contract change that needs its own review.
 SETTLED = {
     "slot is running": "slot_running",
 }

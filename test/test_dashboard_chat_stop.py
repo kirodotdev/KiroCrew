@@ -230,6 +230,10 @@ class TestStopReasonCancelled:
 
         await _run_chat(state, slot, "hello")
 
+        assert [(m["role"], m["content"]) for m in slot.messages] == [
+            ("assistant", "done"),
+            ("done", ""),
+        ]
         state.sessions.record_success.assert_called_once_with(effective_session_key(slot))
         state.consolidator.maybe_consolidate.assert_called_once_with(effective_session_key(slot))
 
@@ -251,6 +255,12 @@ class TestStopReasonCancelled:
         state.sessions.record_success = MagicMock()
 
         await _run_chat(state, slot, f"{MONITOR_WAKE_PREFIX}\nChecks failed.")
+
+        # The wake's reply still lands in the transcript and the turn closes.
+        assert [(m["role"], m["content"]) for m in slot.messages] == [
+            ("assistant", "monitor action complete"),
+            ("done", ""),
+        ]
 
         state.sessions.record_success.assert_called_once_with(effective_session_key(slot))
         state.consolidator.maybe_consolidate.assert_not_called()

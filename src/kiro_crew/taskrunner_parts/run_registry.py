@@ -147,6 +147,7 @@ def _serialize_runs(self: TaskRunner) -> str:
                             # would restore the task to a verbatim replay of a
                             # possibly-executed step.
                             "resume_hint": t.resume_hint or "",
+                            "superseded": t.superseded,
                             "verification": t.verification,
                         }
                         for t in run.tasks
@@ -334,6 +335,7 @@ def _load_runs(self: TaskRunner) -> None:
                     error=t.get("error", ""),
                     result=t.get("result", ""),
                     resume_hint=t.get("resume_hint", ""),
+                    superseded=t.get("superseded", False) is True,
                     verification=str(t.get("verification", "")),
                     attempts=t.get("attempts", 1),
                     depends_on=t.get("depends_on", []),

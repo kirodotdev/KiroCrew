@@ -1,4 +1,5 @@
 import { afterEach, describe, it, expect, vi } from 'vitest'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { act, cleanup, render, renderHook, screen, fireEvent } from '@testing-library/react'
 
 import type { ChatFolder } from '../types'
@@ -42,6 +43,9 @@ describe('folderProjectMismatch', () => {
 type BandProps = { activeSlot: string; folderId: string | undefined; project: string; locked?: boolean }
 
 function renderBand(initial: BandProps, setProject = vi.fn(async () => {})) {
+  // The band reads Shared Crew capabilities, so it needs a query client.
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  const wrapper = ({ children }: { children: React.ReactNode }) => <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
   const hook = renderHook((p: BandProps) => useComposerAboveBand({
     langGen: 0,
     controls: {
@@ -64,8 +68,8 @@ function renderBand(initial: BandProps, setProject = vi.fn(async () => {})) {
     projectLocked: !!p.locked,
     activeTip: null,
     dismissTip: () => {},
-  }), { initialProps: initial })
-  const view = render(hook.result.current)
+  }), { initialProps: initial, wrapper })
+  const view = render(hook.result.current, { wrapper })
   return { setProject, hook, view }
 }
 

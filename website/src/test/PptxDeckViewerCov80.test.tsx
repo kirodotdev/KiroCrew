@@ -31,13 +31,18 @@ class ApiError extends Error {
 }
 vi.mock('../api/client', () => ({ api: { revealPath }, ApiError }))
 
-// The "Reveal folder" action is gated on branding.directLocal: a remote session
-// cannot drive the operator's file manager, so the button is hidden there.
-// Default to a local session so the reveal cases below hold; a dedicated case
-// flips it to pin the hidden (remote) state.
-const brandingEnv = vi.hoisted(() => ({ directLocal: true }))
+// The "Reveal folder" action is gated on the shared reveal gate
+// (branding.directLocal AND branding.desktopLauncher): a remote session, or a
+// gateway host with no launcher, cannot drive the operator's file manager, so
+// the button is hidden there. Default to a local desktop session so the reveal
+// cases below hold; a dedicated case flips it to pin the hidden (remote) state.
+const brandingEnv = vi.hoisted(() => ({ directLocal: true, desktopLauncher: true }))
 vi.mock('../hooks/useBranding', () => ({
-  useBranding: () => ({ botName: 'Test', avatar: '', directLocal: brandingEnv.directLocal }),
+  useBranding: () => ({
+    botName: 'Test', avatar: '',
+    directLocal: brandingEnv.directLocal,
+    desktopLauncher: brandingEnv.desktopLauncher,
+  }),
 }))
 
 // The three leaf renderers are stubbed: this file's job is tab routing and the
@@ -97,6 +102,7 @@ beforeEach(() => {
   vi.clearAllMocks()
   revealPath.mockResolvedValue(undefined)
   brandingEnv.directLocal = true
+  brandingEnv.desktopLauncher = true
 })
 
 describe('DeckViewer — shell states', () => {
@@ -230,6 +236,17 @@ describe('DeckViewer — header actions', () => {
     // A remote session cannot drive the host's file manager, so the affordance
     // is gated out rather than firing a reveal the backend degrades to a copy.
     brandingEnv.directLocal = false
+    deck.mockResolvedValue(detail({ dirPath: '/zzq/decks/one' }))
+    renderViewer()
+    await screen.findByText('Slides')
+    expect(screen.queryByText('Reveal folder')).toBeNull()
+    expect(revealPath).not.toHaveBeenCalled()
+  })
+
+  it('hides the reveal action when the gateway host has no desktop launcher', async () => {
+    // Direct-local (an `ssh -L` browser reads as one) but headless: the reveal
+    // could only be answered with a copy of the folder path.
+    brandingEnv.desktopLauncher = false
     deck.mockResolvedValue(detail({ dirPath: '/zzq/decks/one' }))
     renderViewer()
     await screen.findByText('Slides')

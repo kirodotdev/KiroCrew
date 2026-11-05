@@ -159,7 +159,7 @@ class TestPrivateLoginDir:
         shim = tmp_path / "shim"
         shim.mkdir()
         fake_chmod = shim / "chmod"
-        fake_chmod.write_text("#!/bin/sh\nexit 1\n")
+        fake_chmod.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
         fake_chmod.chmod(0o755)
         env = {
             "HOME": str(tmp_path),

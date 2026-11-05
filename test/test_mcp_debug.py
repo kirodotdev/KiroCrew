@@ -1,22 +1,13 @@
 """The ``kirocrew-debug`` MCP server: its tool set, its caps, and its refusals.
 
-Five things are pinned here that no other suite can see:
-
-* **The tool set is exactly five READS.** The server reads host and cross-session
-  state, so a write tool would be the one addition that changes what the set IS.
-  The names are ratcheted: adding one fails this file rather than shipping.
-* **No ``autoApprove``, structurally.** An autoApproved MCP tool is approved inside
-  kiro-cli and emits no permission request, so ``hooks.on_tool_call`` -- the deny
-  floor, the sensitive-path check, the governance ceiling -- is never reached for
-  it. For a server this wide that is not a style preference.
-* **The diag gap is relayed VERBATIM.** Three tools depend on a package that lands
-  in sibling changes. An agent must be able to tell "this build cannot answer yet"
-  from "the answer is nothing", so the 501 body and the relayed message are pinned
-  to the same string here.
-* **The refusal classifier separates a timeout from a match.** This is the most
-  consequential line of the whole feature: a path the resolver could not finish
-  judging reads identically to a real match, and an agent that confuses them stops
-  when it should have retried.
+* **The tool set is exactly five READS**, ratcheted by name: a write tool would change
+  what a server reading cross-session state is.
+* **No ``autoApprove``.** An autoApproved tool emits no permission request, so
+  ``hooks.on_tool_call`` (deny floor, sensitive paths, governance) never runs for it.
+* **The diag gap is relayed VERBATIM**, so an agent can tell "this build cannot answer
+  yet" from "the answer is nothing".
+* **The refusal classifier separates a timeout from a match**; an agent that confuses
+  them stops when it should retry.
 * **Every failure is a typed code**, never a traceback and never prose alone.
 """
 
@@ -26,6 +17,7 @@ import json
 from typing import Any
 from unittest.mock import patch
 
+import mcp_tool_set_checks
 import pytest
 
 from kiro_crew import mcp_debug as server
@@ -49,7 +41,7 @@ def _call(name: str, **args: Any) -> dict[str, Any]:
     return json.loads(server._call_tool(name, args))
 
 
-class TestTheToolSetIsRatcheted:
+class TestTheToolSetIsRatcheted(mcp_tool_set_checks.TheDeclaredSetMatchesWhatIsAdvertised):
     """The whole point of the server: five reads, and no way to add a write."""
 
     def test_exactly_five_tools_by_name(self) -> None:
@@ -60,9 +52,6 @@ class TestTheToolSetIsRatcheted:
             "debug_processes",
             "debug_snapshots",
         ]
-
-    def test_the_declared_set_matches_what_is_advertised(self) -> None:
-        assert server.TOOLS == tuple(t["name"] for t in server._list_tools())
 
     def test_no_tool_name_reads_as_a_write(self) -> None:
         """A name-level ratchet, so a write cannot arrive under a read's clothing."""
@@ -108,14 +97,9 @@ class TestTheToolSetIsRatcheted:
     def test_a_dump_name_cannot_carry_a_path(self) -> None:
         """``read`` names a dump inside the store, so a separator is refused here.
 
-        The route resolves the name inside the crash-dump directory, so traversal
-        would fail there too -- but refusing at the schema means the attempt never
-        reaches a path join at all.
-
-        A schema rejection comes back as the wrapper's plain ``Error: ...`` string
-        rather than this server's JSON envelope, because validation runs BEFORE the
-        dispatcher that builds one. Asserted in that shape deliberately: wrapping it
-        would mean the refusal had reached the handler.
+        Refused at the schema, so the attempt never reaches a path join. Validation runs
+        before the dispatcher, so the refusal is the wrapper's plain ``Error: ...`` string,
+        not this server's JSON envelope.
         """
         for attempt in ("../../etc/passwd", "a/b", "x\\y", "/abs"):
             with patch.object(server, "_get") as get:
@@ -266,12 +250,8 @@ class TestRedaction:
     def test_a_secret_in_a_payload_does_not_reach_the_caller(self) -> None:
         """Every string leaves through the context redactor, whatever the route sent.
 
-        The sentinel is ASSEMBLED at runtime rather than written as one literal. A
-        credential-shaped constant in an added line is what the internal-content and
-        secret scanners are built to catch, and they are right to: they cannot tell a
-        test fixture from the real thing. Joining the halves keeps the runtime value
-        exactly what the redactor must recognise while leaving no scannable literal
-        in the source.
+        The sentinel is assembled at runtime so the secret scanners find no
+        credential-shaped literal in the source.
         """
         secret = "AKIA" + "IOSFODNN7EXAMPLE"
         payload = {"series": [{"env": f"AWS_SECRET_ACCESS_KEY={secret}"}]}
@@ -391,11 +371,8 @@ class TestTheRefusalClassifier:
 class TestTheRouteAuthorizationMatrix:
     """Every arm of the gate, driven through the real handlers.
 
-    The handlers are called directly rather than over a socket: the gate reads
-    headers, query and ``app["state"]``, all of which a mocked request carries
-    faithfully, and a real server would add a port and a thread without adding a
-    branch. What matters is that no arm is asserted about in the abstract -- each
-    test drives the handler and reads the status it actually returns.
+    Handlers are called directly: the gate reads only headers, query and
+    ``app["state"]``, which a mocked request carries. Each test reads the real status.
     """
 
     OWNER = "dashboard:chat-owner"
@@ -732,13 +709,10 @@ class TestTheRouteAuthorizationMatrix:
         assert mod._daemon_block()["running"] is False
 
     def test_the_recorder_absence_is_a_fact_not_an_error(self, monkeypatch) -> None:
-        """``debug_gateway`` is the tool that must work when nothing else does, so a
-        missing diag package is reported rather than raised.
+        """A missing diag package is reported by ``debug_gateway``, not raised.
 
-        Absence is simulated, because the package ships now. A ``None`` entry in
-        ``sys.modules`` makes this probe's own import raise, which is the condition a
-        build without diag presents. The route-level tests cannot stand in for this:
-        they patch ``_diag_module``, and this probe imports the recorder directly.
+        A ``None`` entry in ``sys.modules`` makes this probe's own import raise. The
+        route-level tests patch ``_diag_module``, while this probe imports the recorder.
         """
         from kiro_crew.dashboard.handlers import debug as mod
 
@@ -1091,12 +1065,8 @@ class TestTheRouteAuthorizationMatrix:
     def test_a_diag_route_relays_the_gap_when_its_module_is_absent(self) -> None:
         """The contract string the MCP relay matches on, plus its error code.
 
-        Driven through ``_diag_module`` rather than through whichever ``kiro_crew.diag``
-        submodules this checkout happens to ship. The gap relay is a standing contract
-        -- an agent must tell "this build cannot answer yet" from "the answer is
-        nothing" -- so what is pinned is the route's answer when the module is missing,
-        not the fact that it is missing. Asserting the latter dies the moment a diag
-        submodule lands, which is exactly what happened to the assertion this replaces.
+        Driven through ``_diag_module``, so it pins the route's answer when the module is
+        missing, independent of which ``kiro_crew.diag`` submodules this checkout ships.
         """
         from kiro_crew.dashboard.handlers import debug as mod
 
@@ -1283,11 +1253,9 @@ class TestTheRouteAuthorizationShape:
     def test_lineage_never_exempts_a_caller_from_its_class(self) -> None:
         """The class test precedes the lineage arm, and that order is the invariant.
 
-        A dispatch grant does not exempt a caller from its class. Without that
-        ordering a target inside the caller's spawn tree reaches ``granted`` with no
-        class test at all, and a channel-linked caller's read of a spawned child's
-        refusal rows lands in that channel's thread. Same ordering ``crew_log``
-        states, for the same reason: the exclusions are about where an answer lands.
+        Otherwise a target in the caller's spawn tree is ``granted`` untested, and a
+        channel-linked caller's read of a child's refusal rows lands in that channel's
+        thread. ``crew_log`` states the same order.
         """
         import inspect
 
@@ -1433,13 +1401,9 @@ class TestTheDiagImportStaysLazy:
     def test_importing_the_route_module_loads_no_diag_submodule(self) -> None:
         """This module is on the gateway's boot path.
 
-        A build without the diag package must still import the dashboard, and a
-        build WITH it must not pay to load a diagnostics package to start.
-
-        The prefix is ``kiro_crew.diag.`` WITH the dot, plus the package itself.
-        ``kiro_crew.diagnostics`` is a different, unrelated module that the
-        dashboard does import, and a bare ``kiro_crew.diag`` prefix matches it --
-        which would fail this test forever for the wrong reason.
+        The prefix is ``kiro_crew.diag.`` with the dot, plus the package itself: a bare
+        prefix would match the unrelated ``kiro_crew.diagnostics``, which the dashboard
+        does import.
         """
         import subprocess
         import sys

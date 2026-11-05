@@ -10,6 +10,7 @@ import { bindSlotReadSender, emitSlotRead, flushSlotRead } from '../../lib/slotR
 import { bindComposeIntentSender } from '../../lib/composeIntent'
 import { getViewedThreadSlot } from '../../lib/viewedThread'
 import { getMountedMemberThreadSlot, subscribeMountedMemberThread } from '../../lib/mountedMemberThread'
+import { subscribeRouteChange } from '../../lib/routeChange'
 import { isMemberThreadSlot } from '../unreadOnAttention'
 import { crewRootOf } from '../../lib/crewMode'
 import { slotLastTsOf } from '../../store/slotLastTs'
@@ -57,13 +58,25 @@ let splitPaneFocus: string | null | undefined
 const storeFocusedSlot = (): string | null =>
   getMountedMemberThreadSlot() || store.getState().chat.activeSlot
 
+const isCrewModeRootSlot = (slot: string | null): boolean =>
+  !!slot && store.getState().dashboard.slots.some(s => s.key === slot && s.crew_mode_root === true)
+
+/** The active chat as this window reports it. `chat.activeSlot` is retained
+ *  off the chat routes; a Crew Mode root there is not on screen, so it reports
+ *  none, and its warm brief cannot fire on a Settings reveal. Every other
+ *  chat keeps reporting the retained slot. */
+const reportedActiveSlot = (): string | null => {
+  const active = store.getState().chat.activeSlot
+  return isCrewModeRootSlot(active) && !isChatSurfaceVisible() ? null : active
+}
+
 /** The one slot this window reports as focused, for every announcement
- *  (connect and reconnect, focus changes, page reveal): a mounted crewmate
- *  thread, else the focused split-view pane, else the active chat. One
- *  resolver keeps the server's foreground row, the next hide and the next
- *  return naming the same slot. */
+ *  (connect and reconnect, focus changes, page reveal, route changes): a
+ *  mounted crewmate thread, else the focused split-view pane, else the active
+ *  chat. One resolver keeps the server's foreground row, the next hide and the
+ *  next return naming the same slot. */
 export const focusedSlotForCurrentSurface = (): string | null =>
-  getMountedMemberThreadSlot() || (splitPaneFocus !== undefined ? splitPaneFocus : store.getState().chat.activeSlot)
+  getMountedMemberThreadSlot() || (splitPaneFocus !== undefined ? splitPaneFocus : reportedActiveSlot())
 
 /** Whether a page hide may arm a warm task brief: a mounted crewmate
  *  transcript, or, on a chat route, a Crew Mode root as the slot the server
@@ -137,6 +150,7 @@ export function emitSlotFocused(slot: string | null): void {
 /* Re-announces the current surface's slot; bound by attachFocusRelay. */
 let reannounceFocusImpl: () => void = () => {}
 
+
 /** Split view unmounted: focus goes back to the active slot. It is announced
  *  now, because leaving the grid need not change activeSlot, and the server
  *  and the next hide must stop naming the pane that had focus. */
@@ -189,6 +203,17 @@ export function attachFocusRelay({ socket, flushSlotActivity, onActiveSlotChange
   reannounceFocusImpl = () => {
     if (!document.hidden) sendFocus(focusedSlotForCurrentSurface())
   }
+  // Entering or leaving the chat routes changes what a Crew Mode root reports
+  // (`reportedActiveSlot`), so that one case re-announces: leaving starts its
+  // away time, coming back is its return. Every other slot sends nothing here.
+  let onChatSurface = isChatSurfaceVisible()
+  const unsubRoute = subscribeRouteChange(() => {
+    const now = isChatSurfaceVisible()
+    if (now === onChatSurface) return
+    onChatSurface = now
+    if (getMountedMemberThreadSlot() || splitPaneFocus !== undefined) return
+    if (isCrewModeRootSlot(store.getState().chat.activeSlot)) reannounceFocusImpl()
+  })
   // A view that starts showing more slots' subagent cards asks for their
   // finished runs on the same best-effort contract.
   bindSubagentReplaySender(slots => socket.sendIfOpen({ type: 'subagent_replay', slots }))
@@ -222,7 +247,7 @@ export function attachFocusRelay({ socket, flushSlotActivity, onActiveSlotChange
     // the split-view pane focus until a pane reports again.
     splitPaneFocus = undefined
     onActiveSlotChange()
-    if (!document.hidden) sendFocus(active)
+    if (!document.hidden) sendFocus(focusedSlotForCurrentSurface())
   }
   const unsubFocus = store.subscribe(syncFocus)
   const unsubMemberThread = subscribeMountedMemberThread(syncFocus)
@@ -273,6 +298,7 @@ export function attachFocusRelay({ socket, flushSlotActivity, onActiveSlotChange
     unsubMemberThread()
     sendSlotFocusedImpl = () => {}
     reannounceFocusImpl = () => {}
+    unsubRoute()
     bindSubagentReplaySender(null)
     bindComposeIntentSender(null)
   }

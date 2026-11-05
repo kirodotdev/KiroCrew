@@ -16,7 +16,7 @@ import { api } from '../api/client'
 import { ApiError } from '../api/apiError'
 import chatReducer, {
   restoreSideConversation, resyncWaitingSideConversations, sideClose, sideOptimisticAccepted, sideOptimisticAppend, sideOptimisticRollback, sideRestore, sideResync,
-  sseSideResult,
+  sseSideQueue, sseSideResult,
 } from '../store/chatSlice'
 import type { SideSnapshot } from '../types'
 
@@ -535,7 +535,7 @@ describe('resyncWaitingSideConversations', () => {
     vi.mocked(api.sideState).mockReset()
   })
 
-  it('reads again only a restored panel that still waits on a turn', async () => {
+  it('reads again every restored panel, idle or waiting, and no unrestored one', async () => {
     const store = createTestStore()
     store.dispatch(sideRestore({ slot: SLOT, snapshot: running() }))
     store.dispatch(sideRestore({ slot: 'idle', snapshot: finished() }))
@@ -545,9 +545,99 @@ describe('resyncWaitingSideConversations', () => {
 
     await store.dispatch(resyncWaitingSideConversations())
 
-    expect(vi.mocked(api.sideState).mock.calls).toEqual([[SLOT]])
+    expect(vi.mocked(api.sideState).mock.calls).toEqual([[SLOT], ['idle']])
     expect(store.getState().chat.slotSide[SLOT].messages.map(m => m.content)).toContain('A2')
     expect(store.getState().chat.slotSide[SLOT].pending).toBe(false)
+  })
+
+  it('shows an idle panel the exchange another tab had while its socket was down', async () => {
+    const store = createTestStore()
+    store.dispatch(sideRestore({ slot: SLOT, snapshot: finished() }))
+    const asked = running({
+      last_run_id: 'r3',
+      running: false,
+      messages: [
+        ...(finished().messages ?? []),
+        { id: 'u3', run_id: 'r3', role: 'user', content: 'Q3', ts: '2026-10-21T06:00:06.000Z' },
+        { id: 'a3', run_id: 'r3', role: 'assistant', content: 'A3', ts: '2026-10-21T06:00:07.000Z' },
+      ],
+    })
+    vi.mocked(api.sideState).mockResolvedValue(asked)
+
+    await store.dispatch(resyncWaitingSideConversations())
+
+    const side = store.getState().chat.slotSide[SLOT]
+    expect(side.messages.map(m => m.content)).toEqual(['Q1', 'A1', 'Q2', 'A2', 'Q3', 'A3'])
+    expect(side.lastRunId).toBe('r3')
+    expect(side.pending).toBe(false)
+  })
+
+  it('takes the queue from the read: a card that ran or was cancelled goes, one queued elsewhere appears', async () => {
+    const store = createTestStore()
+    store.dispatch(sideRestore({ slot: SLOT, snapshot: running({ queue: [
+      { id: 'q-ran', content: 'ran meanwhile', ts: '2026-10-21T06:00:05.000Z' },
+      { id: 'q-cancelled', content: 'cancelled meanwhile', ts: '2026-10-21T06:00:06.000Z' },
+      { id: 'q-still', content: 'still queued', ts: '2026-10-21T06:00:07.000Z' },
+    ] }) }))
+    vi.mocked(api.sideState).mockResolvedValue(running({ queue: [
+      { id: 'q-still', content: 'still queued', ts: '2026-10-21T06:00:07.000Z' },
+      { id: 'q-other-tab', content: 'queued in another tab', ts: '2026-10-21T06:00:08.000Z' },
+    ] }))
+
+    await store.dispatch(resyncWaitingSideConversations())
+
+    const side = store.getState().chat.slotSide[SLOT]
+    expect(side.queue?.map(entry => entry.id)).toEqual(['q-still', 'q-other-tab'])
+    // A late push for a card the read retired cannot bring it back.
+    store.dispatch(sseSideQueue({ slot: SLOT, action: 'push', queue_id: 'q-ran', content: 'ran meanwhile' }))
+    expect(store.getState().chat.slotSide[SLOT].queue?.map(entry => entry.id)).toEqual(['q-still', 'q-other-tab'])
+  })
+
+  it('still hands back the text of a card this tab cancelled when the cancel is answered after the read', async () => {
+    const store = createTestStore()
+    store.dispatch(sideRestore({ slot: SLOT, snapshot: running({ queue: [
+      { id: 'q-mine', content: 'my question', ts: '2026-10-21T06:00:05.000Z' },
+    ] }) }))
+    vi.mocked(api.sideState).mockResolvedValue(running({ queue: [] }))
+
+    await store.dispatch(resyncWaitingSideConversations())
+    expect(store.getState().chat.slotSide[SLOT].queue).toEqual([])
+
+    // The cancel's own HTTP answer lands after the read, then its frame.
+    store.dispatch(sseSideQueue({ slot: SLOT, action: 'cancel', queue_id: 'q-mine', content: 'my question raw', raw: true }))
+    store.dispatch(sseSideQueue({ slot: SLOT, action: 'cancel', queue_id: 'q-mine', content: 'my question' }))
+    expect(store.getState().chat.slotSide[SLOT].releasedText).toBe('my question raw')
+  })
+
+  it('releases nothing for a dropped card that ran', async () => {
+    const store = createTestStore()
+    store.dispatch(sideRestore({ slot: SLOT, snapshot: running({ queue: [
+      { id: 'q-drained', content: 'ran meanwhile', ts: '2026-10-21T06:00:05.000Z' },
+    ] }) }))
+    vi.mocked(api.sideState).mockResolvedValue(running({ queue: [] }))
+
+    await store.dispatch(resyncWaitingSideConversations())
+    store.dispatch(sseSideQueue({ slot: SLOT, action: 'drain', queue_id: 'q-drained' }))
+    store.dispatch(sseSideQueue({ slot: SLOT, action: 'cancel', queue_id: 'q-drained', content: 'ran meanwhile' }))
+
+    expect(store.getState().chat.slotSide[SLOT].releasedText).toBeUndefined()
+  })
+
+  it('keeps a card queued after the read was sent, which the read cannot know', async () => {
+    const store = createTestStore()
+    store.dispatch(sideRestore({ slot: SLOT, snapshot: running({ queue: [
+      { id: 'q-old', content: 'old', ts: '2026-10-21T06:00:05.000Z' },
+    ] }) }))
+    let answer: (snapshot: SideSnapshot) => void = () => {}
+    vi.mocked(api.sideState).mockImplementationOnce(() => new Promise<SideSnapshot>(resolve => { answer = resolve }))
+    const resync = store.dispatch(resyncWaitingSideConversations())
+    await vi.waitFor(() => expect(api.sideState).toHaveBeenCalledTimes(1))
+
+    store.dispatch(sseSideQueue({ slot: SLOT, action: 'push', queue_id: 'q-new', content: 'new', raw: true }))
+    answer(running({ queue: [] }))
+    await resync
+
+    expect(store.getState().chat.slotSide[SLOT].queue?.map(entry => entry.id)).toEqual(['q-new'])
   })
 
   it('stops thinking and keeps its rows when the read finds another conversation', async () => {

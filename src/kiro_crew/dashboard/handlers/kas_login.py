@@ -9,10 +9,11 @@ from typing import Any
 import aiohttp
 from aiohttp import web
 
-from kiro_crew.auth.login.builder_id import BuilderIdAuthError
+from kiro_crew.auth.login.builder_id import BuilderIdAuthError, StartUrlRejectedError
 from kiro_crew.auth.login.device import DeviceAuthError
 from kiro_crew.auth.service import (
     InvalidRegionError,
+    InvalidStartUrlError,
     KasLoginService,
     LoopbackUnavailableError,
     MissingStartUrlError,
@@ -179,6 +180,13 @@ async def api_kas_login_begin_device(request: web.Request) -> web.Response:
             {"error": "Not a valid AWS region name.", "code": "invalid_region"},
             status=400,
         )
+    except InvalidStartUrlError as err:
+        return web.json_response({"error": str(err), "code": "invalid_start_url"}, status=400)
+    except StartUrlRejectedError as err:
+        # AWS refused what the user typed (the URL or the region): a 400 the form
+        # can fix, not an auth-service failure.
+        await _audit(request, "kas_login_begin_device", "failed", error=str(err))
+        return web.json_response({"error": str(err), "code": "invalid_start_url"}, status=400)
     except (DeviceAuthError, BuilderIdAuthError) as err:
         await _audit(request, "kas_login_begin_device", "failed", error=str(err))
         return web.json_response(

@@ -1,6 +1,7 @@
 /** View types the sidebar's owners share. `Slot` is the sidebar's narrowed view of a
  *  chat slot; the wire type is `ChatSlot` in ../../types. */
-import type { SessionLink, SourceProviderId } from '../../types'
+import type { CodeChannelInfo, CrewWorkFacts, SessionLink, SourceProviderId, WorkAggregate } from '../../types'
+import type { SessionAttribution } from '../../api/sharedCrew'
 
 export interface Slot {
   key: string
@@ -21,7 +22,7 @@ export interface Slot {
    * nearest session above it that is still open. The row then wears the same
    * closed-creator glyph an orphan does, one level in.
    */
-  parent?: { slot?: string; key?: string | null; ancestor?: boolean } | null
+  parent?: { slot?: string; key?: string | null; ancestor?: boolean; title?: string } | null
   /** Present and true while the gateway's lineage projection is still seeding for the
    *  current store, which makes THIS frame's `parent` provisional rather than final.
    *  Absent on an ordinary frame, and absent when there is nothing to wait for (the
@@ -78,6 +79,8 @@ export interface Slot {
   // Newest-reply-only by construction — any later turn that talks over the
   // marker clears it, so a superseded ask can never be resurrected (#10615).
   has_options?: boolean
+  /** This session's work ledger in brief (`ChatSlot.crew_work`). */
+  crew_work?: CrewWorkFacts
   // The transcript shows the last turn ending without a reply (trailing error
   // row or unanswered user row) — the state behind the composer's Resume
   // button. Always false while a turn runs. Read by the goal-loop subtitle so a
@@ -118,6 +121,8 @@ export interface Slot {
   executor?: 'local' | 'remote'
   instance_id?: string
   created?: string
+  /** Shared Crew creator, when the gateway records one. Display only. */
+  attribution?: SessionAttribution | null
   last_ts?: string
   // Settled activity instant: the last prompt or turn completion, NOT every
   // streamed row. What the list is ordered, segmented and labelled by — see
@@ -126,6 +131,10 @@ export interface Slot {
   last_message?: string
   slack_linked?: boolean
   links?: SessionLink[]
+  /** The Slack code channel this session runs in; absent for every other row. */
+  code_channel?: CodeChannelInfo
+  /** The crew's work-ledger summary (see `WorkAggregate`); null with no workers. */
+  work_aggregate?: WorkAggregate | null
   color_index?: number | null
   color_hex?: string | null
   memory_mode?: 'persistent' | 'incognito' | 'temporary'

@@ -791,7 +791,7 @@ function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, onEditDraft,
                       )}
                       {isFrontCollapsed && messages.length > 1 && (
                         <span className="shrink-0 flex items-center gap-1 text-[11px] opacity-70">
-                          {messages.length} {i18nT('components.queueStack.queued')}
+                          {i18nT('components.queueStack.queued_count', { count: messages.length })}
                           <ChevronUp size={12} />
                         </span>
                       )}

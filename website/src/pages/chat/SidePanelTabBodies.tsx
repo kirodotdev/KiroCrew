@@ -9,7 +9,7 @@
  * at panel level. `SidePanel.tsx` decides which tabs mount and which one shows,
  * and renders the category views itself; this module never imports it.
  */
-import { useState, useRef, useEffect, Suspense, lazy } from 'react'
+import { useState, useRef, useEffect, useCallback, Suspense, lazy } from 'react'
 import { Hash, Pen, Columns2 } from 'lucide-react'
 import DiffPanel from '../../components/DiffPanel'
 import DetailPanel from '../../components/DetailPanel'
@@ -17,9 +17,10 @@ import MarkdownPanel, { type MarkdownPanelHandle } from '../../components/Markdo
 import ArtifactPanel from '../../components/ArtifactPanel'
 import FolderPanel from './FolderPanel'
 import FileBrowserRail from './FileBrowserRail'
-import WebPreviewPanel from '../../components/WebPreviewPanel'
+import PreviewTabBody from '../../components/PreviewTabBody'
 import CliPanel from '../../components/CliPanel'
 import { countLines } from '../../components/FileChangeChips'
+import { pathBasename } from '../../utils/pathBasename'
 import { useQueryClient } from '@tanstack/react-query'
 import type { PanelTab } from '../../hooks/usePanelTabs'
 import { usePanelTerminalsPending } from '../../hooks/usePanelTabs'
@@ -132,7 +133,7 @@ function McpAppTabBody({ tab, slot }: { tab: PanelTab; slot: string }) {
  * and file-open host it stays mounted through tree-read failures so its notice,
  * toggle, and Refresh escape hatch remain reachable.
  */
-function FileTabBody({ tab, active, projectDir, scrollMemoryKey, onContentChange, onDiskContent, onDiffModeChange, onFileSave, onFileOpen, onFolderOpen, onAddToContext, onClose, onSubmitComments, connected = true, onRevealConsumed }: {
+function FileTabBody({ tab, active, projectDir, scrollMemoryKey, onContentChange, onDiskContent, onDiffModeChange, onFileSave, onFileOpen, onFolderOpen, onAddToContext, onClose, onPanelHandle, onSubmitComments, connected = true, onRevealConsumed }: {
   tab: PanelTab
   /** Is this the visible tab? Background file tabs stay mounted, so the panel
    *  needs this to keep its Cmd+F handler off a document the user cannot see. */
@@ -147,12 +148,15 @@ function FileTabBody({ tab, active, projectDir, scrollMemoryKey, onContentChange
   onDiskContent: (c: string, binary?: boolean, partial?: boolean) => void
   onDiffModeChange: (diffMode: boolean) => void
   onFileSave: (fp: string, c: string) => Promise<void>
-  onFileOpen?: (p: string, opts?: { diffMode?: boolean; line?: number; replaceId?: string; canReplace?: () => boolean }) => void
+  onFileOpen?: (p: string, opts?: { diffMode?: boolean; line?: number; endLine?: number; replaceId?: string; canReplace?: () => boolean }) => void
   /** The header path menu's "Show folder in side panel" target. */
   onFolderOpen?: (p: string) => void
   /** Right-click "Add to context" on a rail row. */
   onAddToContext?: (absPath: string, kind: 'file' | 'dir') => void
   onClose: () => void
+  /** Receives this tab's close/navigate guard (`null` on unmount), so the tab
+   *  strip's × closes through the same prompts as the panel's own close. */
+  onPanelHandle?: (tabId: string, handle: MarkdownPanelHandle | null) => void
   onSubmitComments?: (m: string, count?: number) => void | boolean | Promise<void | boolean>
   connected?: boolean
   onRevealConsumed: () => void
@@ -161,10 +165,15 @@ function FileTabBody({ tab, active, projectDir, scrollMemoryKey, onContentChange
   const railUsable = !!projectDir && !!onFileOpen
   // The rail re-targets this tab in place, so the panel's own dirty guard has to
   // approve the navigation the way it approves a close.
-  const panelRef = useRef<MarkdownPanelHandle>(null)
+  const panelRef = useRef<MarkdownPanelHandle | null>(null)
+  const tabId = tab.id
+  const setPanelRef = useCallback((handle: MarkdownPanelHandle | null) => {
+    panelRef.current = handle
+    onPanelHandle?.(tabId, handle)
+  }, [onPanelHandle, tabId])
   return (
     <MarkdownPanel
-      ref={panelRef}
+      ref={setPanelRef}
       embedded
       active={active}
       filePath={tab.path || ''}
@@ -186,6 +195,7 @@ function FileTabBody({ tab, active, projectDir, scrollMemoryKey, onContentChange
       revealLine={tab.revealLine}
       onRevealConsumed={onRevealConsumed}
       onFolderOpen={onFolderOpen}
+      onFileOpen={onFileOpen ? (p, opts) => onFileOpen(p, opts?.line != null ? { line: opts.line, endLine: opts.endLine } : undefined) : undefined}
       railOpen={railUsable && railOpen}
       onRailToggle={railUsable ? () => setRailOpen(v => !v) : undefined}
       browserRail={railUsable ? (
@@ -297,11 +307,13 @@ function HydratingFileTab({ path, onDiskContent }: { path: string; onDiskContent
   return <div data-testid="file-tab-hydrating" className="h-full p-4"><ContentSkeleton rows={8} /></div>
 }
 
-function TabBody({ tab, active, slot, projectDir, onClose, onContentChange, onDiskContent, onDiffModeChange, onRevealConsumed, onPathChange, onFileSave, onFileOpen, onFolderOpen, onAddToContext, onSubmitComments, connected = true, onTerminalSendToChat, diffLineNumbers, setDiffLineNumbers, diffSideBySide, setDiffSideBySide }: {
+function TabBody({ tab, active, slot, projectDir, onClose, onPanelHandle, onContentChange, onDiskContent, onDiffModeChange, onRevealConsumed, onPathChange, onFileSave, onFileOpen, onFolderOpen, onAddToContext, onSubmitComments, connected = true, onTerminalSendToChat, diffLineNumbers, setDiffLineNumbers, diffSideBySide, setDiffSideBySide }: {
   tab: PanelTab; active: boolean; slot: string
   /** The chat's project directory — the file-browser rail's tree root. */
   projectDir?: string
   onClose: () => void
+  /** A file or working-tree diff tab's close guard; see `FileTabBody`. */
+  onPanelHandle?: (tabId: string, handle: MarkdownPanelHandle | null) => void
   onContentChange: (c: string) => void
   /** Disk-originated content (file watch / Refresh): restamps the tab's saved
    *  baseline alongside the buffer, so a re-open still treats the tab clean. */
@@ -313,7 +325,7 @@ function TabBody({ tab, active, slot, projectDir, onClose, onContentChange, onDi
    *  so the strip label tracks where the user actually is. */
   onPathChange: (p: string) => void
   onFileSave: (fp: string, c: string) => Promise<void>
-  onFileOpen?: (p: string, opts?: { diffMode?: boolean; line?: number; replaceId?: string; canReplace?: () => boolean }) => void
+  onFileOpen?: (p: string, opts?: { diffMode?: boolean; line?: number; endLine?: number; replaceId?: string; canReplace?: () => boolean }) => void
   /** Open a directory as a folder tab: the file tab header's "Show folder in
    *  side panel" row. */
   onFolderOpen?: (p: string) => void
@@ -331,7 +343,8 @@ function TabBody({ tab, active, slot, projectDir, onClose, onContentChange, onDi
   const terminalsPending = usePanelTerminalsPending()
   // A restored shell may be gone: connecting before the ruling would spawn a new one.
   if (tab.kind === 'terminal') return terminalsPending ? null : <CliPanel sessionId={tab.sessionId ?? ''} cwd={tab.cwd} remoteSlot={tab.remoteSlot} chatSlot={slot || undefined} visible={active} onSendToChat={onTerminalSendToChat} />
-  if (tab.kind === 'browser') return <WebPreviewPanel sessionKey={slot} active={active} />
+  // The Preview tab: the local dev-server preview, or the agent's browser big.
+  if (tab.kind === 'browser') return <PreviewTabBody sessionKey={slot} active={active} />
   if (tab.kind === 'app') return <McpAppTabBody tab={tab} slot={slot} />
   // Cross-remount scroll identity for document bodies. Same slot+id key shape
   // as the app-frame list: the tab id is unique within a slot and stable in
@@ -361,6 +374,7 @@ function TabBody({ tab, active, slot, projectDir, onClose, onContentChange, onDi
         onFolderOpen={onFolderOpen}
         onAddToContext={onAddToContext}
         onClose={onClose}
+        onPanelHandle={onPanelHandle}
         onSubmitComments={onSubmitComments}
         connected={connected}
         onRevealConsumed={onRevealConsumed}
@@ -415,7 +429,7 @@ function TabBody({ tab, active, slot, projectDir, onClose, onContentChange, onDi
             <button className="text-[12px] text-text-strong truncate hover:text-accent cursor-pointer transition-colors bg-transparent border-none p-0" onClick={() => { onFileOpen?.(tab.path || '') }} title={i18nT('pages.chat.sidePanel.open_in_editor_2', { path: tab.path || '' })}>
               {/* Bare filename: the tab title carries '- Diff', which would
                   read redundantly next to the Turn Diff badge here. */}
-              {(tab.path || '').split('/').pop() || tab.title}
+              {pathBasename(tab.path || '') || tab.title}
             </button>
             <span className="text-[10px] px-1.5 py-0.5 rounded bg-accent/15 text-accent font-medium shrink-0">{i18nT('pages.chat.sidePanel.turn_diff')}</span>
             {(added > 0 || removed > 0) && <span className="text-[11px] font-mono font-semibold shrink-0">{added > 0 && <span className="text-ok">+{added}</span>}{removed > 0 && <span className="text-danger ml-1.5">-{removed}</span>}</span>}

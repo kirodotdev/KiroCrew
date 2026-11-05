@@ -71,6 +71,19 @@ def _fresh_reexec_environment(_floor_monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _fresh_released_sessions_warning(_floor_monkeypatch):
+    """Start every test with the stranded-records warning not yet given.
+
+    ``released_sessions.sweep`` warns once per process about records that wait on a
+    backend that is not selected, so a test that drives that warning would
+    otherwise silence it for every later test on the same worker.
+    """
+    from kiro_crew import released_sessions
+
+    _floor_monkeypatch.setattr(released_sessions, "_stranded_warned", False)
+
+
+@pytest.fixture(autouse=True)
 def _approve_every_mcp_launch(request, _floor_monkeypatch):
     """Treat every gatewayd launch as operator-approved, except where it is the subject.
 
@@ -298,6 +311,21 @@ def _forget_enterprise_profile_pin():
 
 
 @pytest.fixture(autouse=True)
+def _forget_legacy_auth_sweep_clean_roots(_floor_monkeypatch):
+    """Forget which roots the legacy auth-store temp sweep has found clean.
+
+    ``sandbox_staging._LEGACY_AUTH_SWEEP_CLEAN`` remembers, for the process lifetime, a
+    root a sweep listed and found no legacy temp in, so later spawns skip the listing.
+    Each test's data home is a fresh path, so a stale entry cannot match today; a fresh
+    dict per test keeps that true for a test that reuses a fixed path, which would
+    otherwise find its planted orphan skipped by an earlier test's clean pass.
+    """
+    from kiro_crew import sandbox_staging
+
+    _floor_monkeypatch.setattr(sandbox_staging, "_LEGACY_AUTH_SWEEP_CLEAN", {})
+
+
+@pytest.fixture(autouse=True)
 def _forget_sandbox_launch_mark():
     """Forget that an entry point saw the sandbox marker.
 
@@ -375,6 +403,24 @@ def _restore_autonudge_singleton():
                 except Exception:  # noqa: BLE001 - teardown must not mask the test result
                     pass
         _an._INSTANCE = inherited
+
+
+@pytest.fixture(autouse=True)
+def _fresh_aws_bin_dir_trust(_floor_monkeypatch):
+    """Start each test with the deploy engine's empty fallback-directory trust state.
+
+    ``deploy.engine`` keeps two process globals for the AWS tooling dirs: the
+    ``_TRUSTED_AWS_BIN_DIRS`` snapshot that every resolver walk, ``run_aws`` and
+    ssh spawn republishes, and ``_WARNED_AWS_BIN_DIR_REFUSALS``, the refusals
+    already logged. A test that builds a child env from an absolute head reads
+    the snapshot, so one an earlier test on the same worker left would decide
+    what that child's PATH holds. Patched only when the module is already
+    imported: importing it here would load the deploy engine into every test.
+    """
+    engine = sys.modules.get("kiro_crew.deploy.engine")
+    if engine is not None:
+        _floor_monkeypatch.setattr(engine, "_TRUSTED_AWS_BIN_DIRS", ())
+        _floor_monkeypatch.setattr(engine, "_WARNED_AWS_BIN_DIR_REFUSALS", set())
 
 
 @pytest.fixture(autouse=True)
@@ -1087,6 +1133,7 @@ def _reset_materialized_agents_snapshot():
             ("_MATERIALIZED_AGENTS", frozenset()),
             ("_MATERIALIZED_AGENTS_READY", False),
             ("_MATERIALIZED_COMPLETE", False),
+            ("_MATERIALIZED_SKIPPED", None),
             ("_MATERIALIZED_MATE_ONLY", frozenset()),
             ("_MATERIALIZED_AGENTS_GENERATION", 0),
             ("_MATERIALIZED_REFRESH_APPLIED", 0),
@@ -1100,6 +1147,11 @@ def _reset_materialized_agents_snapshot():
         for name in ("_MATERIALIZED_SEEN", "_MATERIALIZED_STEMS"):
             if hasattr(loader_mod, name):
                 setattr(loader_mod, name, {})
+        # The agent catalog's scan gate remembers a stamp of a snapshot this reset
+        # just dropped; a fresh gate makes the next fetch scan.
+        catalog_mod = sys.modules.get("kiro_crew.dashboard.handlers.agent_catalog")
+        if catalog_mod is not None and hasattr(catalog_mod, "_REFRESH_GATE"):
+            catalog_mod._REFRESH_GATE = catalog_mod._RefreshGate()
 
     clear()
     try:

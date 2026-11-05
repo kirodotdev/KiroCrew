@@ -28,11 +28,8 @@ _isolated_home = crew_log_core_helpers._isolated_home
 def test_a_group_is_written_contiguously_with_its_citing_entry_last():
     """`append_many` allocates one contiguous seq run and writes it once.
 
-    A body too large for one line becomes chunk entries plus the entry that CITES
-    their seqs. Appended one at a time, a hard kill between them leaves the chunks on
-    disk with nothing pointing at them: the body is stored and unreachable, and the
-    message it belongs to has no record at all. One write leaves either the whole
-    group or a torn tail, which the next append truncates.
+    Chunks appended one at a time could be left on disk with no citing entry after a hard
+    kill. One write leaves either the whole group or a torn tail the next append truncates.
     """
     session = _session()
     written = session.append_many(
@@ -76,13 +73,10 @@ def test_a_group_is_refused_whole_and_leaves_the_file_identical():
 
 
 def test_repair_drops_a_chunk_group_whose_citing_entry_never_landed(caplog):
-    """The torn-tail case the batch cannot rule out, and its bounded residual.
+    """Repair drops chunks whose citing entry never landed.
 
-    One write still tears, and the citing entry is the last line -- so what a hard
-    kill can leave is chunks nothing points at. Dropping them costs the one message
-    that was mid-write, the same residual as any single entry lost the same way, and
-    it leaves the file free of lines whose only purpose was to be cited by an entry
-    that does not exist.
+    The citing entry is the last line, so a torn write leaves only uncited chunks; dropping
+    them loses just the message that was mid-write.
     """
     session = _session()
     session.append("turn/started", {"turn": 1, "actor": "user", "depth": 0}, src="acp")
@@ -137,18 +131,9 @@ def test_repair_keeps_a_chunk_group_that_was_completed():
 def test_a_newer_format_version_says_upgrade_rather_than_corrupt():
     """A file this build cannot read is not a damaged file.
 
-    A newer format need not satisfy any of this build's structural checks: its new
-    required event type surfaces as `unknown_entry_type`, its header shape as
-    `bad_header`. Both tell the reader the log is damaged when the truth is that
-    the reader is old, and a durable record that cries corruption at its own
-    successor is worse than useless -- someone will delete the file.
-
-    Refused before the remaining header checks and before any row is decoded, which
-    is the only ordering where the diagnosis can be right. Carrying a version is
-    pointless otherwise: nothing else in the module reads it.
-
-    Mutation guard: dropping the comparison makes this raise `bad_header` or
-    `unknown_entry_type` instead.
+    A newer format can fail any structural check (`unknown_entry_type`, `bad_header`), and a
+    log that claims corruption at its successor invites deletion. So the version is checked
+    before the other header checks and before any row is decoded.
     """
     session = _session()
     session.append("turn/started", {"turn": 1, "actor": "user", "depth": 0}, src="acp")
@@ -184,12 +169,7 @@ def test_the_current_and_older_versions_still_open():
 def test_a_group_with_no_data_is_refused_rather_than_written_empty():
     """`data` is validated as itself, not defaulted into an empty object.
 
-    Substituting `{}` for a missing or falsey value made two different mistakes
-    validate: a caller that forgot the body, and one that passed `None`. Either
-    would have had its entry written with no data at all -- a line claiming a fact
-    and carrying none, in a file nothing rewrites.
-
-    Mutation guard: restoring the `or {}` fallback makes both of these pass.
+    An `or {}` fallback would let a missing body or `None` write an entry with no data.
     """
     session = _session()
     session.append("turn/started", {"turn": 1, "actor": "user", "depth": 0}, src="acp")
@@ -211,13 +191,8 @@ def test_a_group_with_no_data_is_refused_rather_than_written_empty():
 def test_a_point_read_finds_an_entry_in_an_older_segment():
     """`get` walks segments, so a rotated seq is not reported as absent.
 
-    Reading only the newest file made a point read of a rotated entry answer `None`,
-    which a caller cannot tell from "no such entry" -- so a seq it had just been
-    handed would come back missing. Retention is the one thing that legitimately
-    removes an entry, and it deletes whole segments; while a segment is on disk its
-    entries are readable.
-
-    Mutation guard: reading only `self._path` makes seqs 1-8 answer None.
+    Retention deletes whole segments; while a segment is on disk its entries are readable,
+    and `None` must mean "no such entry".
     """
     led = _session("seg-get")
     for n in range(1, 13):
@@ -237,12 +212,8 @@ def test_a_point_read_finds_an_entry_in_an_older_segment():
 def test_paging_walks_past_a_segment_boundary():
     """Paging spans segments, so history does not silently stop at a rotation.
 
-    Reading only the newest file made a page stop at the boundary AND report
-    `next_before` as None -- telling the caller it had seen the whole history when it
-    had seen one segment. Paging renders history for a human, and truncating it
-    silently is the one answer it must not give.
-
-    Mutation guard: reading only `self._path` cuts the walk to the last segment.
+    Reading only the newest file would stop at the boundary with `next_before` None, claiming
+    the whole history was seen.
     """
     led = _session("seg-page")
     for n in range(1, 13):
@@ -266,22 +237,10 @@ def test_paging_walks_past_a_segment_boundary():
 def test_a_group_cites_the_seqs_it_was_actually_allocated():
     """A writer that appends at the lock boundary must not shift a citation.
 
-    The citing entry's ``chunks`` are the ONLY path from a message to its body, and
-    the lock this store takes is a cross-process one -- it exists because a second
-    handle can be appending to the same file. So the allocation a citation names has
-    to be the allocation the write commits to. Deciding it from an earlier, unlocked
-    read of the tail leaves a window: another handle appends, the run shifts, and the
-    ``chunks`` name entries belonging to the intruder. Those seqs exist and parse, so
-    no later read can tell -- the body a reader reconstructs is simply the wrong one.
-
-    The intruder is interposed exactly at that window: a hook fires once, just before
-    this group takes the lock, and appends through a SECOND handle to the same file.
-    Nothing is held at that point, so the intruder is not blocked and the boundary is
-    real rather than simulated.
-
-    Mutation guard: allocating from a tail read before the lock (the shape
-    ``plan_group_seqs`` served) makes the citation name the intruder's seq and reddens
-    the equality below.
+    The ``chunks`` are the only path from a message to its body, and the lock is
+    cross-process. Seqs planned from an unlocked tail read would name the intruder's entries,
+    which parse fine. A hook appends through a second handle just before this group takes
+    the lock, so the boundary is real, not simulated.
     """
     from kiro_crew.crew_log import store as store_mod
 
@@ -334,18 +293,9 @@ def test_a_group_cites_the_seqs_it_was_actually_allocated():
 def test_repair_leaves_the_file_alone_when_a_record_cannot_be_accounted_for(caplog):
     """A byte offset is only usable if every byte before it was counted.
 
-    The orphan-group scan walks byte lengths to find where to truncate. Read with the
-    skipping posture, an over-cap record is dropped in full -- terminator included --
-    without being yielded, so the walk stops matching the file at that record and
-    every offset after it is short by its length. Truncating at a short offset cuts
-    valid entries, which is the one thing an append-only file must never do to itself.
-
-    Failing closed is the answer: a record that cannot be delivered intact aborts the
-    scan, nothing is truncated, and the warning says why. The unreachable chunks stay
-    -- which costs a reader one unusable body, against losing history that is fine.
-
-    Mutation guard: reading this scan with the skipping posture again lets the
-    truncation run at a short offset and drops the valid entry below.
+    The orphan-group scan walks byte lengths. The skipping posture drops an over-cap record
+    unseen, so later offsets come out short and truncation would cut valid entries. The scan
+    fails closed instead: nothing is truncated and the warning says why.
     """
     session = _session()
     kept = session.append("turn/started", {"turn": 1, "actor": "user", "depth": 0}, src="acp")
@@ -383,14 +333,8 @@ def test_repair_leaves_the_file_alone_when_a_record_cannot_be_accounted_for(capl
 def test_a_group_refuses_a_cite_that_does_not_return_an_entry():
     """A caller bug is refused, not retried.
 
-    An entry shape the store cannot use will be produced identically every time, so
-    it belongs in the refusal class -- a loss now, counted and named. Left as a raw
-    TypeError it lands in the "might clear" class the write-behind retries, spending
-    the whole attempt budget on a verdict that cannot change and holding every later
-    entry of that session behind it.
-
-    Mutation guard: dropping the isinstance check lets a list through to `.get` and
-    raises AttributeError instead, which is not a CrewLogError and reddens this.
+    A bad entry shape repeats every time, so it must be a CrewLogError refusal. A raw
+    TypeError would land in the retry class and block the session's later entries.
     """
     session = _session()
     session.append("turn/started", {"turn": 1, "actor": "user", "depth": 0}, src="acp")
@@ -421,22 +365,11 @@ def _fsync_failing_once(burned: list, real=os.fsync):
 
 
 def test_a_failed_append_leaves_the_file_exactly_as_it_was():
-    """A failure has to be DEFINITE, or a retry cannot be safe.
+    """A failure has to be definite, or a retry cannot be safe.
 
-    Bytes reach the file before the fsync runs, so a failing fsync alone leaves an
-    outcome nobody knows: the entry may well be durable. The write-behind retains and
-    retries a failure, and a retry against an unknown outcome writes the same fact
-    twice under two seqs -- a duplicate no reader can tell from a real repeat, in a
-    file nothing rewrites.
-
-    So the append rolls itself back: the file returns to the exact bytes it held
-    before the attempt, and the retry writes cleanly. Truncating this is not an
-    exception to the never-rewrite rule -- the bytes removed are the caller's own
-    failed append, and the same append lock is held throughout, so no other handle's
-    entries can be inside the range.
-
-    Mutation guard: dropping the rollback leaves the entry on disk and the retry adds
-    a second copy, which reddens the count below.
+    Bytes reach the file before fsync, so a failed fsync alone leaves an unknown outcome and
+    a retry could write the fact twice. The append rolls back to its exact prior bytes; the
+    lock is held throughout, so only its own failed bytes are removed.
     """
     session = _session()
     session.append("turn/started", {"turn": 1, "actor": "user", "depth": 0}, src="acp")
@@ -464,14 +397,8 @@ def test_a_failed_append_leaves_the_file_exactly_as_it_was():
 def test_a_rollback_never_removes_another_writers_entries():
     """The truncation is bounded to this call's own bytes.
 
-    A rollback cuts back to the size the file had when this append started. Another
-    handle appending BEFORE that point is behind the cut and untouched; one appending
-    after it cannot exist, because the append lock is held across the write and its
-    rollback. This pins the first half -- an intruder's entry survives a rollback that
-    happens after it.
-
-    Mutation guard: rolling back to a size captured before the intruder's append (or
-    truncating the whole tail) destroys its entry and reddens this.
+    The rollback cuts to the size at this append's start, so an intruder's earlier entry
+    survives; a later one cannot exist while the lock is held.
     """
     session = _session()
     session.append("turn/started", {"turn": 1, "actor": "user", "depth": 0}, src="acp")
@@ -492,16 +419,10 @@ def test_a_rollback_never_removes_another_writers_entries():
 
 
 def test_a_failed_group_append_rolls_back_the_whole_group():
-    """The group path needs it more than the single one.
+    """A failed group append rolls back the whole group.
 
-    A group is the body-split write -- several chunks plus their citing entry in one
-    ``write()`` -- so it is the largest write this format makes and the likeliest to
-    be the one that fails part-way. A duplicated group is worse than a duplicated
-    entry too: the second copy brings its own citation, and a reader folding the file
-    finds the same message body twice under two seq runs.
-
-    Mutation guard: dropping the rollback leaves the group on disk and the retry
-    writes a second one, reddening the counts below.
+    A group is the largest write and the likeliest to fail part-way; a duplicated group would
+    bring its own citation, so a reader sees the same body twice.
     """
     session = _session()
     session.append("turn/started", {"turn": 1, "actor": "user", "depth": 0}, src="acp")
@@ -534,15 +455,10 @@ def test_a_failed_group_append_rolls_back_the_whole_group():
 
 
 def test_an_append_whose_rollback_also_fails_says_so():
-    """When the cleanup fails too, the caller is told the file may hold residue.
+    """When the rollback fails too, the caller is told the file may hold residue.
 
-    Whatever broke the write is often still broken, so the rollback can fail as well.
-    That leaves bytes no entry claims -- an unterminated or unparseable tail, which is
-    the shape the next open truncates, so the recovery exists. What must not happen is
-    reporting it as an ordinary failure, because that is a claim the file is untouched.
-
-    Mutation guard: letting the rollback error propagate as a plain OSError makes this
-    raise the wrong type and reddens.
+    The untracked tail is the shape the next open truncates, but reporting an ordinary
+    OSError would claim the file is untouched.
     """
     session = _session()
     session.append("turn/started", {"turn": 1, "actor": "user", "depth": 0}, src="acp")

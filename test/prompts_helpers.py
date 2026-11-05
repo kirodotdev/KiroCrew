@@ -23,11 +23,10 @@ from kiro_crew.security.credential_sources import CredentialEvidence
 
 
 @pytest.fixture(autouse=True)
-# nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- the prompt modules' autouse home isolation, moved verbatim; tracked for a de-flake pass with the one marked bare undo in test_prompts_link_gates.py
-def _isolate_home(tmp_path, monkeypatch):
+def _isolate_home(tmp_path, _floor_monkeypatch):
     """All tests get an isolated $HOME and no project dir."""
-    monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    monkeypatch.setattr("kiro_crew.agent._project_dir", lambda: None)
+    _floor_monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    _floor_monkeypatch.setattr("kiro_crew.agent._project_dir", lambda: None)
     # Clear prompt cache between tests
     import kiro_crew.dashboard.handlers as h
 
@@ -36,8 +35,7 @@ def _isolate_home(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-# nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- the prompt modules' autouse turn-tail stub, moved verbatim; tracked for a de-flake pass with the one marked bare undo in test_prompts_link_gates.py
-def _no_turn_tail(monkeypatch):
+def _no_turn_tail(_floor_monkeypatch):
     """Skip the turn's tail, which needs far more of a slot than ``_Slot`` models.
 
     The tail (and the done row the cycle's end appends) is pinned with a real
@@ -48,7 +46,7 @@ def _no_turn_tail(monkeypatch):
     async def _skip(*_args, **_kwargs):
         return None
 
-    monkeypatch.setattr("kiro_crew.dashboard.chat_runner._end_turn_tail", _skip)
+    _floor_monkeypatch.setattr("kiro_crew.dashboard.chat_runner._end_turn_tail", _skip)
 
 
 @pytest.fixture(name="aim_dir")

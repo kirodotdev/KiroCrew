@@ -25,7 +25,6 @@ from unittest.mock import MagicMock
 import pytest
 
 from kiro_crew import github_runner, platform_compat
-from kiro_crew.apps.builtins.issue_radar.backend import gitlab_client as gl
 from kiro_crew.dashboard.handlers import source_providers as source
 
 pytestmark = pytest.mark.skipif(os.name != "posix", reason="multicall links are a POSIX layout")
@@ -524,16 +523,6 @@ class TestConsumersLaunchTheKeptName:
             return link
 
         return install
-
-    def test_issue_radar_glab(self, monkeypatch, installed_as):
-        monkeypatch.setenv("KIROCREW_ISSUE_RADAR_GLAB", str(installed_as("glab")))
-        monkeypatch.setattr(gl, "_glab_bin_cache", None)
-        monkeypatch.setattr(gl, "_audit", lambda *args, **kwargs: None)
-
-        proc = gl._glab_run(["glab", "-c", _REPORT_NAME], host="gitlab.com", timeout=30.0)
-
-        assert proc.returncode == 0, proc.stderr
-        assert proc.stdout.strip() == "glab"
 
     def test_run_gh(self, monkeypatch, installed_as):
         monkeypatch.setenv(github_runner.GH_BIN_ENV, str(installed_as("gh")))

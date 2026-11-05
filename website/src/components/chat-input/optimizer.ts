@@ -82,6 +82,9 @@ export function usePromptOptimizer({ slotId, chatStore, valueRef, pasteBlocks, o
     try {
       inserted = typeof document.execCommand === 'function' && document.execCommand('insertText', false, text)
     } catch { inserted = false }
+    // A host that locked meanwhile keeps its lock: the rendered readOnly stays
+    // true through the optimize, so React will not write it back.
+    if (composerDisabled) el.readOnly = true
     // Reconcile through the controlled value either way, exactly as handlePaste
     // does: after a real insert this is the same string the textarea's own
     // onChange already pushed up (React bails), while an insert React never saw
@@ -96,7 +99,7 @@ export function usePromptOptimizer({ slotId, chatStore, valueRef, pasteBlocks, o
     requestAnimationFrame(() => {
       if (el && document.activeElement === el) el.setSelectionRange(text.length, text.length)
     })
-  }, [onChange, lexicalComposer, lexicalLoadFailed, composerControl, valueFromUserRef, inputRef])
+  }, [onChange, lexicalComposer, lexicalLoadFailed, composerControl, valueFromUserRef, inputRef, composerDisabled])
 
   const optimizeMutation = useMutation({
     onMutate: () => { setOptimizeError('') },

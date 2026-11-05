@@ -10,11 +10,13 @@ from typing import TYPE_CHECKING, Any
 from kiro_crew.dashboard.chat_delivery import attachment_meta
 from kiro_crew.dashboard.chat_utils import RecoveryPayload
 from kiro_crew.dashboard.recovery_replays import replays_of
+from kiro_crew.dashboard.slot_queue_repository import stamp_source_channels
 from kiro_crew.wakatime.heartbeats import CADENCE_MIN_INTERVAL_SECS
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_runner import (
         COMMANDS_OFF_META_KEY,
+        START_BACKGROUND_META_KEY,
         SUBAGENT_COMPLETION_KIND,
         KiroCrewConfig,
         ReplayFamily,
@@ -93,12 +95,32 @@ def _queue_recovery(
     admitted; a row found by scanning the transcript may have been restored
     from disk, and a write target is never taken from there.
     """
+    if turn._agent_started:
+        # Every recovery replays or continues the prompt a turn answered, and a
+        # turn the agent started answered none: queueing one would send the
+        # agent a prompt no one wrote. Returns no queue id. The arms that
+        # announce a retry skip such a turn before they reach here (they take
+        # their nested-turn give-up), so a caller that still asks is one that
+        # announced nothing, such as a Stop hook's block.
+        logger.info("No recovery queued for agent-started turn on slot %s", turn.slot.key)
+        return ""
     _commands_off = turn._commands_off
     _crew_log_actor = turn._crew_log_actor
     _current_message = turn._current_message
     _current_replay_message = turn._current_replay_message
     _directive_channel_origin = turn._directive_channel_origin
     _directive_user_origin = turn._directive_user_origin
+    # The owner mark is read off the SLOT, not the turn's call: it is the
+    # dispatcher's `_directive_owner_origin` as the turn's entry adopted it and as
+    # any non-owner steer since has narrowed it, and the turn's end clears it. A recovery is a
+    # second turn of the same request, so it carries the mark exactly as it
+    # stands now -- a retried owner lookup keeps its authority, and a turn a
+    # peer steered into does not regain the authority that steer took away.
+    # Never wider than the user mark, which is the rule everywhere the owner
+    # mark is written.
+    _recovery_owner_origin = getattr(turn.slot, "_turn_owner_sent", False) is True and bool(
+        _directive_user_origin
+    )
     _on_consumed = turn._on_consumed
     _on_irreversibly_consumed = turn._on_irreversibly_consumed
     _recovery_turn_id = turn._recovery_turn_id
@@ -129,6 +151,10 @@ def _queue_recovery(
         # arrived as turn content stays turn content when its retry drains, or
         # the retry would run the words the original turn was told not to.
         _recovery_meta[COMMANDS_OFF_META_KEY] = True
+    if turn._turn_start_background:
+        # The same holds for a BACKGROUND start a bulk Resume asked for: nobody
+        # waits on its retry either, so the retry starts BACKGROUND too.
+        _recovery_meta[START_BACKGROUND_META_KEY] = True
     if payload == RecoveryPayload.ORIGINAL and isinstance(_current_replay_message, dict):
         # ORIGINAL replays must preserve the triggering row's attachment
         # lists. The provider prompt already carries the full markers, but
@@ -162,11 +188,16 @@ def _queue_recovery(
         ),
         directive_user_origin=_directive_user_origin,
         directive_channel_origin=_directive_channel_origin,
+        directive_owner_origin=_recovery_owner_origin,
     )
     # A recovery a Regenerate turn queues before it has any reply (a replay of
     # its message or a continuation) is the same Regenerate's next attempt: it
     # settles the previous reply, not this turn.
     carry_regenerate_target(slot, _recovery_qid)
+    # A recovery of a channel message is still that channel's words: it keeps
+    # the channels admission judges it by. A restriction only, so it is kept
+    # even on a turn whose channel-origin flag a restart removed.
+    stamp_source_channels(slot, _recovery_qid, getattr(turn, "_directive_source_channels", ()))
     if content == turn.message and _turn_is_completion:
         # A verbatim requeue still replays the completion; runner-written
         # text queued after it (a continuation, a retry prompt) does not.
@@ -196,6 +227,12 @@ def _queue_recovery(
                 getattr(state, "sessions", None), _refusal_key or session_key
             ),
         )
+    # A queued continuation means the turn is NOT a terminal dead end: it will
+    # run on this same slot. Retract any dead-turn bell a terminal arm set
+    # earlier this turn (a refusal arm whose Stop-hook continuation is queued
+    # afterward, a transient give-up that is then re-queued), so the finally
+    # choke point does not ring "a chat stopped" while the chat continues.
+    turn.died_notice = None
     return _recovery_qid
 
 

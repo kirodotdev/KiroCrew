@@ -48,6 +48,8 @@ from kiro_crew.atomic_write import (  # noqa: F401 - read by the pinned_writes o
     _XATTR_UNSUPPORTED_ERRNOS,
     _is_access_control_xattr,
     _should_carry_xattr,
+    read_bytes_with_retry,
+    replace_with_retry_checked,
 )
 from kiro_crew.config import paths as _config_paths
 
@@ -97,11 +99,14 @@ from kiro_crew.hook_runtime.descriptor_identity import (  # noqa: F401
 # bound here, not only in gate_tiers.
 from kiro_crew.hook_runtime.gate_tiers import (  # noqa: F401
     GateFacts,
+    _command_matches_any,
+    _is_spec_write_call,
     _operator_confirms,
     _rule_exfil,
     _rule_sensitive_bash,
     _rule_sensitive_path,
     _spec_builtin_names,
+    _spec_command_composed,
     _spec_command_granted,
     _tier_app_own_server,
     _tier_deny_rules,
@@ -112,9 +117,12 @@ from kiro_crew.hook_runtime.gate_tiers import (  # noqa: F401
     _tier_read_only,
     _tier_search_target,
     _tier_spec_builtin_grant,
+    _tier_spec_shell_allowlist,
+    _tier_spec_write_allowlist,
     _tier_targets,
     _tier_unverifiable_shell,
     _tier_write_protected,
+    _write_target_uncovered,
     gate_tier_problems,
     grant_spec_builtin,
     shell_rules,
@@ -192,6 +200,7 @@ from kiro_crew.hook_runtime.stream_caps import (  # noqa: F401
 )
 from kiro_crew.hook_runtime.tool_identity import (  # noqa: F401
     ToolCall,
+    _allowlist_patterns,
     _app_owns_mcp_server,
     _builtin_app_for_agent,
     _context_matches,
@@ -209,6 +218,7 @@ from kiro_crew.hook_runtime.tool_identity import (  # noqa: F401
     _is_host_search_builtin_call,
     _normalize_tool_name,
     _note_title_only_grant_pattern,
+    _plain_str,
     _search_root_anchored,
     _tool_matches,
     event_is_spawn_run,
@@ -235,10 +245,11 @@ from kiro_crew.hook_runtime.windows_paths import (  # noqa: F401
 # simulate a host where a descriptor's path cannot be read.
 from kiro_crew.pinned_fs import fd_real_path as _fd_real_path  # noqa: F401
 from kiro_crew.platform import current_context, redact_via_context
-from kiro_crew.platform.governance import (
+from kiro_crew.platform.governance import (  # noqa: F401  (read by hook_runtime owners)
     CU_CLASS_OBSERVE,
     computer_use_action_classes,
     computer_use_action_from_title,
+    mcp_title_to_ref,
 )
 
 # The bounded, depth-aware target-path walk lives one layer below both this
@@ -409,6 +420,37 @@ def uncounted_gate():
         yield
     finally:
         _GATE_UNCOUNTED.reset(token)
+
+
+#: Set by :func:`unattended_turn`; read by ``_governance_denial``.
+_UNATTENDED_TURN: ContextVar[bool] = ContextVar("kirocrew_unattended_turn", default=False)
+
+
+@contextmanager
+def unattended_turn(active: bool = True):
+    """Judge the gate calls made inside this block as an UNATTENDED turn's.
+
+    For a turn no person is watching: a cron job, a heartbeat task, a monitor
+    wake. The one thing it changes is what the governance tier does when its own
+    evaluation raises: an unattended call is refused, because nobody is there to
+    notice that policy went unchecked, while an attended call keeps "no
+    governance opinion" so a transient fault never refuses an ordinary user
+    action. Every other tier judges the call exactly as before.
+
+    The marker is a ContextVar, so it reaches the tool-gate pool thread (which
+    runs the call in a copy of the caller's context) and nothing outside this
+    block. Wrap the single gate consultation, not a whole turn, so a task the
+    turn spawns does not inherit it. ``active=False`` is a no-op, for a call site
+    that only sometimes runs unattended.
+    """
+    if not active:
+        yield
+        return
+    token = _UNATTENDED_TURN.set(True)
+    try:
+        yield
+    finally:
+        _UNATTENDED_TURN.reset(token)
 
 
 #: The reason a call is refused when the gate itself raised while judging it.
@@ -667,6 +709,7 @@ class HookManager:
         app: str = "",
         classifier_only: bool = False,
         trust_reads: bool = False,
+        deny_waivers: frozenset[str] = frozenset(),
     ) -> ToolHookResult:
         """Whether *call* is auto-approved, denied, or handled normally.
 
@@ -719,6 +762,14 @@ class HookManager:
         ``read_only`` auto-approve for one of those tools, never the reverse, and
         an operator ``confirm_tools`` match still asks first. Default ``False``:
         every other mode and surface judges an MCP call as before.
+
+        ``deny_waivers`` are the refusal keys a person overrode on the dashboard
+        approval card (``docs/request-for-change/rfc-deny-session-override.md``).
+        Only the ``deny-rules`` tier reads them, after dropping every
+        governance-pinned key, and each one it uses is audited or refuses; every
+        other tier judges the call exactly as without them. Default empty: only
+        the dashboard's override path and the transport floor it approves through
+        pass any.
         """
         if _GATE_TABLE_PROBLEMS:
             return ToolHookResult.deny(GATE_TABLE_UNSOUND_REASON)
@@ -730,6 +781,7 @@ class HookManager:
             app=app,
             classifier_only=classifier_only,
             trust_reads=trust_reads,
+            deny_waivers=frozenset(deny_waivers),
         )
         for tier in GATE_TIERS:
             verdict = tier.judge(facts, tier)
@@ -737,7 +789,7 @@ class HookManager:
                 if not verdict.tier:
                     verdict.tier = tier.name
                 return verdict
-        return ToolHookResult.allow()
+        return ToolHookResult.allow(facts.ask_note)
 
     @_fail_closed_on_gate_crash
     def on_tool_call(
@@ -759,12 +811,16 @@ class HookManager:
         kas_builtin_ids: bool = False,
         spec_granted_builtins: frozenset[str] = frozenset(),
         spec_granted_commands: tuple[str, ...] = (),
+        spec_shell_allowlist: tuple[str, ...] | None = None,
+        spec_write_allowlist: tuple[str, ...] | None = None,
+        spec_write_cwd: str = "",
         harness_builtin_tool: str = "",
         deepseek_tool_name: str = "",
         spawn_target: str = "",
         resolved_agent: str = "",
         classifier_only: bool = False,
         trust_reads: bool = False,
+        deny_waivers: frozenset[str] = frozenset(),
     ) -> ToolHookResult:
         """:meth:`judge`, for a caller that holds the call as keywords.
 
@@ -796,6 +852,13 @@ class HookManager:
                 kas_builtin_ids=kas_builtin_ids,
                 spec_granted_builtins=frozenset(spec_granted_builtins),
                 spec_granted_commands=tuple(spec_granted_commands),
+                spec_shell_allowlist=(
+                    None if spec_shell_allowlist is None else tuple(spec_shell_allowlist)
+                ),
+                spec_write_allowlist=(
+                    None if spec_write_allowlist is None else tuple(spec_write_allowlist)
+                ),
+                spec_write_cwd=spec_write_cwd,
                 harness_builtin_tool=harness_builtin_tool,
                 deepseek_tool_name=deepseek_tool_name,
                 spawn_target=spawn_target,
@@ -806,6 +869,7 @@ class HookManager:
             app=app,
             classifier_only=classifier_only,
             trust_reads=trust_reads,
+            deny_waivers=deny_waivers,
         )
 
     def _effective_denied(self, ctx: object) -> list[str]:
@@ -1423,6 +1487,12 @@ _AUDIT_ONLY_READ_IDS: dict[str, str] = {
     # no value is returned. The audit is owed regardless, because the file holds
     # live credential material whatever this reader touches.
     "kiro_cli.idc_identity_probe": ".local/share/kiro-cli/data.sqlite3",
+    # Same store, read by ``kiro_crew.enterprise_sign_in`` (the shared sign-in
+    # resolver) when Crew's vault holds no sign-in: the token rows and the
+    # ``api.codewhisperer.profile`` row, for the enterprise rules fetch and account
+    # lock and for the oss KAS spawn owner. Read-only, never logged; a token is
+    # handed back only once its ``success`` audit is recorded.
+    "enterprise_sign_in.kiro_cli_store": ".local/share/kiro-cli/data.sqlite3",
     # Same store, read by ``kiro_crew.kiro_prerequisite.identity_fingerprint`` to
     # answer one question on the turn path: does the account signed in NOW differ
     # from the one the running kiro-cli children loaded? Only stable account
@@ -1603,6 +1673,10 @@ class ScriptHook:
       ``ScriptHookResult.error``, then stderr, then "exited with code N").
       Every other event stays warn-only (stderr shown to user). There is no
       per-hook advisory/fail-open opt-out.
+    - Exception: an agent spec's own hook (``spec_origin`` set, see
+      :mod:`kiro_crew.agent_sdk.spec_hooks`) follows kiro-cli, which runs it on
+      the kiro-cli backend. Only a delivered exit 2 blocks; a refused, failed,
+      killed or timed-out spec hook warns and the tool runs.
     """
 
     id: str = ""
@@ -1622,9 +1696,17 @@ class ScriptHook:
     last_status: str = ""  # "ok", "error", "timeout", "blocked"
     last_error: str = ""  # human-readable reason for the most recent non-ok status
     run_count: int = 0
+    #: Where an agent spec's own hook came from: ``"user"`` (the user-level agents
+    #: tree, read-only to every sandboxed process), ``"project"`` (a trusted
+    #: checkout's spec), or ``""`` for a Hooks-page hook. Set only in memory by
+    #: :mod:`kiro_crew.agent_sdk.spec_hooks`; never saved, and ``from_dict`` never
+    #: reads it, so a hand-written ``hooks.json`` cannot claim a spec origin.
+    spec_origin: str = ""
 
     def to_dict(self) -> dict:
-        return asdict(self)
+        data = asdict(self)
+        data.pop("spec_origin", None)
+        return data
 
     @classmethod
     def from_dict(cls, data: dict) -> "ScriptHook":
@@ -1711,6 +1793,8 @@ class ScriptHook:
 # the retained prefix is always enough to decode and truncate for display, yet
 # small enough that a runaway hook cannot exhaust memory.
 _HOOK_STREAM_CAP_BYTES = 64 * 1024
+# How long a timed-out hook's killed tree may take to close its pipes and exit.
+_HOOK_REAP_SECS = 5.0
 # Marker appended to a decoded stream when its raw bytes exceeded the cap, so
 # truncation is visible rather than silent.
 _HOOK_TRUNCATION_MARKER = "\n…[output truncated]"
@@ -1792,6 +1876,8 @@ GATE_TIERS: tuple[GateTier, ...] = (
     GateTier("mcp-auto-deny", "deny", _tier_mcp_auto_deny),
     GateTier("search-target", "deny", _tier_search_target),
     GateTier("governance", "deny_policy", _tier_governance),
+    GateTier("spec-shell-allowlist", "deny_policy", _tier_spec_shell_allowlist),
+    GateTier("spec-write-allowlist", "deny_policy", _tier_spec_write_allowlist),
     GateTier("app-own-server", "grant", _tier_app_own_server),
     GateTier("operator-grants", "grant", _tier_operator_grants),
     GateTier("spec-builtin-grant", "grant", _tier_spec_builtin_grant),

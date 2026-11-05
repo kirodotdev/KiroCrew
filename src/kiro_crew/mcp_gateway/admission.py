@@ -102,6 +102,8 @@ _INIT_WATCH_GRACE_SECS = 1.0
 #: A successful initialize that took at least this fraction of its own
 #: deadline counts as slow: it was close to failing. Relative, so a server an
 #: operator gave a longer ``initialize_timeout_secs`` is judged against that.
+#: The deadline is the backend's effective one (``Backend.initialize_timeout_secs``,
+#: never below the cold-start floor), the same value its own reaper fires at.
 SLOW_INIT_FRACTION = 0.8
 
 #: Window over which slow inits are counted for the snapshot's ``slow_inits``,

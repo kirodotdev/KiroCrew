@@ -36,6 +36,7 @@ from service_helpers import (  # noqa: F401 -- fixtures are found by name
     _systemctl_stub,
 )
 
+from kiro_crew.service import common as svc_common
 from kiro_crew.service import controller
 from kiro_crew.service.common import (
     LAUNCHD_LABEL,
@@ -174,6 +175,8 @@ class TestLinuxUnitRendering:
         # `id -gn tester` would return some real group; mock it to a known value
         # so the test asserts both User= and Group= are populated correctly.
         gid_result = MagicMock(returncode=0, stdout="amazon\n", stderr="")
+        # The PATH branch of the resolver, not the running install's own script.
+        monkeypatch.setattr(svc_common, "_running_install_bin", lambda: None)
         with patch(
             "kiro_crew.service.common.shutil.which",
             return_value="/home/u/.toolbox/bin/kirocrew",
@@ -984,6 +987,8 @@ class TestMacOSPlistRendering:
         from kiro_crew.service import macos as svc_macos
 
         monkeypatch.setattr(svc_macos, "LIVE_PROGRAM", tmp_path / "live-gateway")
+        # The PATH branch of the resolver, not the running install's own script.
+        monkeypatch.setattr(svc_common, "_running_install_bin", lambda: None)
         with patch(
             "kiro_crew.service.common.shutil.which", return_value="/opt/homebrew/bin/kirocrew"
         ):

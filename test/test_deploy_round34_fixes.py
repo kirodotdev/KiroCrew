@@ -5,6 +5,7 @@ F1: the deploy_web migration cleanup must run off the event loop
 F2: attach/detach backend helpers must NEVER spawn AWS commands without the
     sandbox chokepoint — the ImportError fallback must fail closed.
 """
+
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
@@ -34,9 +35,9 @@ class TestF2FailClosedSandbox:
             src = (SCRIPTS / name).read_text(encoding="utf-8")
             assert "sandboxed_spawn_argv" in src, name
             # the fail-open fallback shape must be gone
-            assert "wrapped_argv, env, cleanup = cmd, None, None" not in src, (
-                f"{name}: unsandboxed ImportError fallback must not exist"
-            )
+            assert (
+                "wrapped_argv, env, cleanup = cmd, None, None" not in src
+            ), f"{name}: unsandboxed ImportError fallback must not exist"
             # ImportError path must exit non-zero (fail closed)
             block = src.split("except ImportError", 1)[1][:600]
             assert "sys.exit(1)" in block, f"{name}: ImportError must fail closed"

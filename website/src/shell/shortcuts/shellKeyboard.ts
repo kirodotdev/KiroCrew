@@ -16,6 +16,7 @@ import { agentSwitchErrorNotice, agentSwitchFailureNotice, modelSwitchDeferredMe
 import { api } from '../../api/client'
 import { newTerminalByChord, toggleTerminalByChord } from '../../lib/terminalChordFocus'
 import { focusPopout as focusTerminalPopout } from '../../utils/terminalPopout'
+import { focusPopout as focusChatPopout, getSnapshot as getChatPopouts, openPopout as openChatPopout } from '../../utils/chatPopout'
 import { useKeyboardShortcuts } from '../../hooks/useKeyboardShortcuts'
 import { useInstanceShortcuts } from '../../hooks/useInstanceShortcuts'
 import { useAutoConnectInstances } from '../../hooks/useAutoConnectInstances'
@@ -339,6 +340,18 @@ export function useShellKeyboard({ toggleFocusMode, toggleNav, terminalEnabled, 
     // a popped-out panel is focused rather than grown from out of sight.
     onNewTerminal: terminalEnabled && !isPopout && !isEmbed
       ? () => { if (terminalPoppedOut) focusTerminalPopout(); else newTerminalByChord(activeSlotProject) }
+      : undefined,
+    // Same command as the chat header's pop-out button: focus the session's
+    // window when it is already out, otherwise open one. A popout or embedded
+    // pane shows no such button, so the chord is unbound there.
+    onPopOutSession: !isPopout && !isEmbed
+      ? () => {
+        const s = appStore.getState()
+        const slot = s.chat.activeSlot
+        if (!slot) return
+        if (getChatPopouts().has(slot)) focusChatPopout(slot)
+        else openChatPopout(slot, s.dashboard.slots.find(x => x.key === slot)?.title)
+      }
       : undefined,
   })
   // Cmd+1..9 (⌘ mac / Ctrl win-linux) switches instance panes: 1=Local,

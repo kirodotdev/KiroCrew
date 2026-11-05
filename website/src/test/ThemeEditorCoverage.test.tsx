@@ -249,7 +249,8 @@ describe('useThemeEditor', () => {
     act(() => result.current.setThemeName('   '))
     await act(async () => { await result.current.saveTheme() })
 
-    expect(result.current.error).toBe('Theme name is required.')
+    expect(result.current.hint).toBe('Theme name is required.')
+    expect(result.current.error).toBe('')
     expect(themeStore.addCustomTheme).not.toHaveBeenCalled()
     expect(result.current.saving).toBe(false)
   })
@@ -288,7 +289,8 @@ describe('useThemeEditor', () => {
     act(() => { result.current.setCreatorMode('json'); result.current.setJsonText('{ nope') })
     await act(async () => { await result.current.saveTheme() })
 
-    expect(result.current.error).toBe('Invalid JSON — check syntax and try again.')
+    expect(result.current.hint).toBe('Invalid JSON — check syntax and try again.')
+    expect(result.current.error).toBe('')
     expect(themeStore.addCustomTheme).not.toHaveBeenCalled()
   })
 
@@ -297,7 +299,8 @@ describe('useThemeEditor', () => {
     act(() => { result.current.setCreatorMode('json'); result.current.setJsonText('{"dark":{},"light":{}}') })
     await act(async () => { await result.current.saveTheme() })
 
-    expect(result.current.error).toBe('JSON must include a "name" field.')
+    expect(result.current.hint).toBe('JSON must include a "name" field.')
+    expect(result.current.error).toBe('')
   })
 
   it('rejects JSON missing either mode map', async () => {
@@ -305,7 +308,8 @@ describe('useThemeEditor', () => {
     act(() => { result.current.setCreatorMode('json'); result.current.setJsonText('{"name":"X","dark":{}}') })
     await act(async () => { await result.current.saveTheme() })
 
-    expect(result.current.error).toBe('JSON must include "dark" and "light" objects.')
+    expect(result.current.hint).toBe('JSON must include "dark" and "light" objects.')
+    expect(result.current.error).toBe('')
   })
 
   it('creates from valid JSON, defaulting the emoji', async () => {
@@ -579,14 +583,14 @@ describe('ThemeEditorPanel', () => {
     await waitFor(() => expect(screen.queryByLabelText('Theme Name')).toBeNull())
   })
 
-  it('surfaces a validation refusal as an alert and keeps the form open', async () => {
+  it('surfaces a validation refusal as a status hint, not an alert, and keeps the form open', async () => {
     openNew()
     fireEvent.click(btn(/Paste JSON/))
     fireEvent.change(screen.getByLabelText('Theme JSON'), { target: { value: '{oops}' } })
     fireEvent.click(btn('Save Theme'))
 
-    const alert = await screen.findByRole('alert', undefined, { timeout: 5_000 })
-    expect(alert).toHaveTextContent('Invalid JSON')
+    expect(await screen.findByText(/Invalid JSON/, undefined, { timeout: 5_000 })).toHaveAttribute('role', 'status')
+    expect(screen.queryByRole('alert')).toBeNull()
     expect(screen.getByLabelText('Theme JSON')).toBeInTheDocument()
   })
 

@@ -99,6 +99,12 @@ describe('WebhooksPage run duration label', () => {
     expect(await runRowText(59_400)).toMatch(/— 59s ·/)
   })
 
+  it('a run just under ten seconds that rounds up reads 10s, not 10.0s (9.96s)', async () => {
+    const text = await runRowText(9_960)
+    expect(text).not.toMatch(/10\.0s/)
+    expect(text).toMatch(/— 10s ·/)
+  })
+
   it('control: a short run keeps its tenth (4.2s)', async () => {
     expect(await runRowText(4_200)).toMatch(/— 4\.2s ·/)
   })

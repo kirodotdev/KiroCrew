@@ -25,6 +25,7 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Awaitable, Callable
 
+from kiro_crew import host_timezone
 from kiro_crew.cron_service.model import CronJob
 from kiro_crew.cron_service.store import CronStoreBusy, quarantine_unreadable_store
 
@@ -116,6 +117,10 @@ async def start(self: CronService) -> None:
     # off-loop re-arm during this service's lifetime self-heals to it.
     self._loop = asyncio.get_running_loop()
     await asyncio.to_thread(self._load)
+    # The host zone a "local" schedule follows: read once now, off the loop, so
+    # the first due check and the first prompt do not run before it is known.
+    # The timer's scan keeps it current from here (see _tick_scan_locked).
+    await asyncio.to_thread(host_timezone.refresh_host_timezone)
     self._running = True
     await self._history.rotate_all()
     # BEFORE the timer is armed: a job the previous gateway died running

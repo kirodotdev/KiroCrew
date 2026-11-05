@@ -284,7 +284,7 @@ default, while the pin is deliberately KEPT -- the composer chip still shows it,
 clearing it would delete an explicit user setting on the evidence of one session's
 advertised list. An unpinned slot is the mirror case: it names no model of its own,
 and the model it runs on is known only after the handle exists (when only its
-mate pins a model, its pin is backfilled from the provider then).
+Bot pins a model, its pin is backfilled from the provider then).
 
 So `session/opened` and `request/configured` read `served_model`, the session fact,
 through one helper. It is empty when the backend serves its own default, and the entry
@@ -521,13 +521,16 @@ handle-holding caller. The static pin cannot see that case; a retention test cov
 ### A dying turn still records what it produced
 
 The recovery handlers -- cancellation, a signed-out CLI, a dead backend process, an
-exhausted prompt-busy retry, and branches of the generic `AcpError` arm --
-persist the turn's partial reply straight through `slot.append` rather than
-`_flush_segment`, because they purge the chunk rows first and must not broadcast a
-segment. They go through one helper, `_persist_partial_reply`, which writes the body to
-the log as well, marked `interrupted`, BEFORE the turn's closers run, and then writes the
-turn's abnormal-end usage row (`_record_abnormal_turn_usage`) whether or not there was
-partial text. One helper rather than the block inline in each handler, for the reason
+exhausted prompt-busy retry, branches of the generic `AcpError` arm, the generic
+`Exception` arm, and the four arms that complete a turn and return before the
+end-of-turn flush to queue a recovery (a stale turn, a tool stall, a failed
+compaction, a retryable `error:` failure) -- persist the turn's partial reply
+straight through `slot.append` rather than `_flush_segment`, because they purge the
+chunk rows first and must not broadcast a segment. They go through one helper,
+`_persist_partial_reply`, which writes the body to the log as well, marked
+`interrupted`, BEFORE the turn's closers run, then gives the reply its footer, and
+then writes the turn's abnormal-end usage row (`_record_abnormal_turn_usage`)
+whether or not there was partial text. One helper rather than the block inline in each handler, for the reason
 redaction lives at the emitter's boundary: a new handler cannot forget it, and a test asserts that structurally
 rather than per branch, since each branch needs its own error class, retry counter and
 depth to reach. Without the log copy the transcript holds text the user
@@ -702,6 +705,13 @@ it. A log whose seq disagrees with causality is worse than a short one, because 
 cannot detect it: a short tail is visible, a reordered one reads as fact. A synchronous
 caller therefore waits a bounded time for the batch to finish and then hands its job to
 the writer rather than racing it.
+
+The same rule binds the other way: while the shutdown thread drains inline, it holds the
+claim a pass would. It takes it in the lock hold that found no batch claimed and releases
+it in the hold that takes its last look at the buffers. A producer arriving meanwhile
+queues behind the drain instead of starting a pass that would take the session's newer
+entries and write them ahead of the batch the shutdown thread is still writing; one
+arriving after that last look starts a pass of its own.
 
 **The residual:** a batch a wedged writer still holds cannot be finished from the
 shutdown thread, and the entries buffered behind it are left alone rather than written

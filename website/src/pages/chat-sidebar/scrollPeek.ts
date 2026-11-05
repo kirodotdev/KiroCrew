@@ -10,10 +10,13 @@ import { loadChatConfig } from '../chat/ChatSettings'
  * peek off there; the row's `title` attribute and the rename box remain the
  * way to the full string.
  *
- * Session titles never wrap (one line, `truncate`), so a narrow sidebar clips
- * most of them. While the user scrolls the session lane, each title in view
- * that the row clips is shown in full in a floating layer laid exactly over
- * it (see ScrollPeekLayer). The rows themselves never change: the card keeps
+ * A session title is cut off either at the end of its one line (`truncate`,
+ * the default) or after its last allowed line (Title Lines 2 or 3, which wrap
+ * and clamp), so a narrow sidebar clips many of them. While the user scrolls
+ * the session lane, each title in view that the row clips is shown in full on
+ * one line in a floating layer laid exactly over it (see ScrollPeekLayer). A
+ * clamped title's chip covers only its first line, so its later lines stay
+ * visible below the chip. The rows themselves never change: the card keeps
  * the user's stored width, nothing scrolls horizontally, and the layer is
  * click-through, so a click lands on whatever is under it (the row, or the
  * chat beside the sidebar).
@@ -61,6 +64,8 @@ export interface PeekTitle {
   text: string
   left: number
   top: number
+  /** The title's height; for a clamped title, its first line's (see
+   *  firstLineHeight). */
   height: number
   /** Full single-line width the title wants. */
   width: number
@@ -68,8 +73,43 @@ export interface PeekTitle {
   maxWidth: number
 }
 
+/** The computed style of a title that wraps and is cut off after its last
+ *  allowed line; null for any other title. A one-line `truncate` title is
+ *  excluded by its `nowrap`: a tall glyph (an emoji) can push its scrollHeight
+ *  past its line box without hiding any text. */
+function clampedStyle(el: HTMLElement): CSSStyleDeclaration | null {
+  if (el.scrollHeight - el.clientHeight < 1) return null
+  const cs = getComputedStyle(el)
+  return cs.whiteSpace === 'nowrap' ? null : cs
+}
+
+function lineCount(el: HTMLElement, cs: CSSStyleDeclaration): number {
+  return Math.round(el.clientHeight / parseFloat(cs.lineHeight)) || 1
+}
+
+/** Height of the clamped title's first line box, which its chip covers; the
+ *  title's whole height where `line-height` is not a length (`normal`). */
+function firstLineHeight(cs: CSSStyleDeclaration, fallback: number): number {
+  const lh = parseFloat(cs.lineHeight)
+  return Number.isFinite(lh) && lh > 0 ? lh : fallback
+}
+
+let measureCtx: CanvasRenderingContext2D | null | undefined
+
+/** Width of `text` on one line in the title's font, read without touching the
+ *  title: the peek re-measures on every `style` write in the lane. Falls back
+ *  to `maxWidth` (the chip then ends in an ellipsis) where canvas text
+ *  measurement is unavailable. */
+function singleLineWidth(text: string, cs: CSSStyleDeclaration, maxWidth: number): number {
+  if (measureCtx === undefined) measureCtx = document.createElement('canvas').getContext('2d')
+  if (!measureCtx) return maxWidth
+  measureCtx.font = `${cs.fontStyle} ${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`
+  return Math.ceil(measureCtx.measureText(text).width)
+}
+
 /**
- * Every title in view in `lane` that its row clips by PEEK_MIN_OVERFLOW px or more.
+ * Every title in view in `lane` that its row clips by PEEK_MIN_OVERFLOW px or
+ * more, or that is cut off after its last allowed line.
  *
  * `hoveredRow` (the row under the pointer) is left out: its hover actions
  * (menu, copy, close) sit at the row's right edge, and a chip over them would
@@ -88,7 +128,11 @@ export function measureClippedTitles(lane: HTMLElement, windowWidth: number, hov
     .filter(s => s.width > 0 && s.height > 0)
   const out: PeekTitle[] = []
   for (const el of lane.querySelectorAll<HTMLElement>('[data-session-title]')) {
-    if (el.scrollWidth - el.clientWidth < PEEK_MIN_OVERFLOW) continue
+    let clamped: CSSStyleDeclaration | null = null
+    if (el.scrollWidth - el.clientWidth < PEEK_MIN_OVERFLOW) {
+      clamped = clampedStyle(el)
+      if (!clamped) continue
+    }
     const r = el.getBoundingClientRect()
     // Only rows fully inside the lane's visible band: a half-scrolled row would
     // float its title over the sidebar header or the search dock.
@@ -114,15 +158,17 @@ export function measureClippedTitles(lane: HTMLElement, windowWidth: number, hov
     for (const s of stops) {
       if (s.left > r.left && r.top < s.bottom && r.bottom > s.top) maxWidth = Math.min(maxWidth, s.left - r.left)
     }
-    // Stopped before it shows anything the row does not: no chip.
-    if (maxWidth < el.clientWidth + PEEK_MIN_OVERFLOW) continue
+    // Stopped before it shows anything the row does not: no chip. A clamped
+    // title already shows about one clientWidth of text per line.
+    const shown = clamped ? el.clientWidth * lineCount(el, clamped) : el.clientWidth
+    if (maxWidth < shown + PEEK_MIN_OVERFLOW) continue
     out.push({
       key: `${row?.dataset.sessionScope ?? ''}:${row?.dataset.sessionRow ?? out.length}`,
       text: el.textContent ?? '',
       left: r.left,
       top: r.top,
-      height: r.height,
-      width: el.scrollWidth,
+      height: clamped ? firstLineHeight(clamped, r.height) : r.height,
+      width: clamped ? singleLineWidth(el.textContent ?? '', clamped, maxWidth) : el.scrollWidth,
       maxWidth,
     })
   }

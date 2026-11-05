@@ -40,8 +40,10 @@ from kiro_crew.apps.manager import (
     get_app,
 )
 from kiro_crew.apps.manifest import Dependencies, PlatformConfig
-from kiro_crew.apps.registry import minimal_env
+from kiro_crew.apps.point_grants import point_grant_families
+from kiro_crew.apps.registry import _manifest_shell_platform_refusal, minimal_env
 from kiro_crew.apps.routes_lifecycle import (
+    _backend_platform_refusal,
     _deregister_app_off_loop,
     _redact_warning,
     _refuse_while_startup_hook_runs,
@@ -297,14 +299,14 @@ async def handle_enable_app(request: web.Request) -> web.Response:
             # same "no body" path as malformed JSON, not a 500.
             pass
     session_approval_consent = body.get("sessionApprovalConsent") is True
-    # The entries the owner was shown, as {"api": [...], "events": [...]}.
+    # The entries the owner was shown, as {"api": [...], "events": [...], ...}.
     # Anything else approves nothing: a bare flag cannot say what was seen.
     raw_grants = body.get("grantsConsent")
     grants_consent: dict[str, list[str]] | None = None
     if isinstance(raw_grants, dict):
         grants_consent = {
             family: [e for e in raw_grants.get(family) or [] if isinstance(e, str)]
-            for family in ("api", "events")
+            for family in ("api", "events", *point_grant_families())
             if isinstance(raw_grants.get(family) or [], list)
         }
     if session_approval_consent or grants_consent is not None:
@@ -320,7 +322,17 @@ async def handle_enable_app(request: web.Request) -> web.Response:
     resources = info.get("resources", "gateway")
     manifest = info.get("manifest", {})
     on_enable = (manifest.get("setup") or {}).get("onEnable", "")
-    enable_timeout = int((manifest.get("setup") or {}).get("onEnableTimeout", 30))
+    # The record carries the timeout as `int()` read it, the form the signature
+    # covers; the 1..300 bound is applied (and a clamp logged) here, where the script
+    # runs under the app lifecycle lock. A local import keeps this helper out of the
+    # names the routes facade serves from this module.
+    from kiro_crew.apps.manifest import lifecycle_timeout_seconds
+
+    enable_timeout = lifecycle_timeout_seconds(
+        (manifest.get("setup") or {}).get("onEnableTimeout"),
+        app_name=name,
+        field_name="onEnableTimeout",
+    )
 
     # Per-app lifecycle lock: enable mutates metadata, registers resources,
     # and starts the backend — must not interleave with a concurrent
@@ -367,6 +379,11 @@ async def handle_enable_app(request: web.Request) -> web.Response:
             resp["registration"] = reg.to_dict()
             if backend:
                 resp["backend"] = backend.to_dict()
+            # A native-Windows exec backend is refused with the same None as "no
+            # backend"; name the refusal so the enable does not read as a clean start.
+            backend_refused = await _backend_platform_refusal(name, backend)
+            if backend_refused:
+                resp["backend_refused"] = backend_refused
 
         # Resolve declared dependencies (if any)
         deps_data = manifest.get("dependencies")
@@ -596,7 +613,13 @@ async def handle_disable_app(request: web.Request) -> web.Response:
         # multi-word builtin, which is all of them but `meetings`, `mochi` and
         # `papyrus`.
         module_name = name.replace("-", "_")
-        if module_name in BUILTIN_NAMES:
+        from kiro_crew.apps.builtin_adoption import builtin_package_released
+
+        # An adopted app's hooks are its own; the wheel package's must not run. The
+        # check walks the shipped manifests, so it runs off the loop.
+        if module_name in BUILTIN_NAMES and not await asyncio.to_thread(
+            builtin_package_released, module_name
+        ):
             try:
                 mod = importlib.import_module(f"kiro_crew.apps.builtins.{module_name}")
                 if hasattr(mod, "on_disable"):
@@ -660,7 +683,8 @@ async def handle_open_app(request: web.Request) -> web.Response:
     launches the app.  This endpoint executes it in the background.
 
     On cloud/remote environments (no display), returns the command
-    for the user to run locally instead of executing it.
+    for the user to run locally instead of executing it. On native Windows,
+    which has no ``/bin/sh``, answers 409 ``app_open_unsupported_platform``.
     """
     # local import: avoids a circular import with dashboard.handlers
     from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
@@ -697,6 +721,23 @@ async def handle_open_app(request: web.Request) -> web.Response:
     )
     if denied:
         return web.json_response({"error": denied, "code": "app_execution_denied"}, status=403)
+
+    # Native Windows has no /bin/sh to launch the command through. Refuse here,
+    # before the display test below: a Windows desktop sets no DISPLAY, so it would
+    # read as a remote host and be handed a POSIX command to "run locally".
+    platform_refusal = _manifest_shell_platform_refusal()
+    if platform_refusal:
+        error = f"openCommand not run: {platform_refusal}"
+        sel().log_api_access(
+            caller="dashboard",
+            operation="app_open",
+            outcome="denied",
+            resources=name,
+            error=error,
+        )
+        return web.json_response(
+            {"error": error, "code": "app_open_unsupported_platform"}, status=409
+        )
 
     # Detect cloud/remote — no DISPLAY and not macOS desktop
     import platform

@@ -61,6 +61,7 @@ from kiro_crew.monitoring.models import (
     MonitorBudgets,
     MonitorOutcome,
     MonitorState,
+    monitor_frontend_contract,
     monitor_state_public_dict,
 )
 from kiro_crew.monitoring.registry import (
@@ -557,6 +558,28 @@ def _monitor_config(
         ),
         wake_instructions=wake.strip(),
     )
+
+
+async def api_monitor_contract(request: web.Request) -> web.Response:
+    """GET /api/monitor-contract — the monitor data contract, built at runtime.
+
+    The dashboard bundle ships a checked-in snapshot of this contract
+    (``website/src/monitoring/contract.json``) and treats a monitor whose kind is
+    absent from it as an unsupported, non-actionable record. An edition can
+    contribute its own pull-request-shaped kind at boot (``register_monitor_kind``),
+    and the backend probes it, so the snapshot's ``pullRequestMonitorKinds`` can
+    lag the kinds the gateway actually serves. This route returns the live
+    contract (``monitor_frontend_contract()``), and the dashboard prefers it over
+    the bundled copy, so a contributed kind shows its real state rather than
+    "blocked".
+
+    A read with no secret: it is the same vocabulary the bundle already carries,
+    carries no per-session or owner data, and is served under the browser's cookie
+    auth like the neighbouring ``GET /api/autonudge`` (deliberately NOT on
+    ``_STRICT_INTERNAL_API_PATHS``). An older gateway has no such route, so the
+    dashboard falls back to the bundled snapshot on 404.
+    """
+    return web.json_response(monitor_frontend_contract())
 
 
 async def api_autonudge_list(request: web.Request) -> web.Response:

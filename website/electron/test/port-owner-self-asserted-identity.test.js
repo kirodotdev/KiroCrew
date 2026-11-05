@@ -145,6 +145,16 @@ const IDENTITY_SITES = [
     times: 1,
   },
   {
+    what: "stale dialog: only a service owner is re-checked against launchd's job list",
+    code: 'if (localOwner !== "service" || !launchdJobPids) return localOwner;',
+    times: 1,
+  },
+  {
+    what: "stale dialog: a launchd-parented orphan is described as a plain local gateway",
+    code: 'const ORPHAN_DIALOG_OWNER = "kirocrew";',
+    times: 1,
+  },
+  {
     what: "unresponsive holder: probe who holds the port that failed its health check",
     code: 'const localOwner = await probeGatewayPortOwner(PORT);',
     times: 1,

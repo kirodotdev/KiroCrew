@@ -1021,12 +1021,12 @@ def test_a_write_failure_mid_state_leaves_the_prior_streak_loadable(tmp_path, mo
             return real_write(fd, data[: max(1, len(data) // 2)])
         raise OSError(errno.ENOSPC, "No space left on device")
 
-    monkeypatch.setattr(os, "write", failing_write)
+    with monkeypatch.context() as mp:
+        mp.setattr(os, "write", failing_write)
 
-    with pytest.raises(OSError):
-        l0_drift.write_state(path, {"notion": 3})
+        with pytest.raises(OSError):
+            l0_drift.write_state(path, {"notion": 3})
 
-    monkeypatch.undo()
     assert path.read_text(encoding="utf-8") == original
     # Still a usable streak, not a discard -- the point of the atomic write.
     assert l0_drift.load_streaks(path).streaks == {"notion": 2}
@@ -1046,11 +1046,11 @@ def test_a_successful_state_write_replaces_the_file_atomically(tmp_path, monkeyp
         renames.append((str(src), str(dst)))
         return real_replace(src, dst, **kwargs)
 
-    monkeypatch.setattr(os, "replace", tracking_replace)
+    with monkeypatch.context() as mp:
+        mp.setattr(os, "replace", tracking_replace)
 
-    l0_drift.write_state(path, {"notion": 3})
+        l0_drift.write_state(path, {"notion": 3})
 
-    monkeypatch.undo()
     assert [dst for _src, dst in renames] == [str(path)]
     assert l0_drift.load_streaks(path).streaks == {"notion": 3}
     assert sorted(p.name for p in tmp_path.iterdir()) == ["state.json"]
@@ -1379,12 +1379,12 @@ def test_a_write_failure_mid_record_leaves_the_registry_intact(tmp_path, monkeyp
             return real_write(fd, data[: max(1, len(data) // 2)])
         raise OSError(errno.ENOSPC, "No space left on device")
 
-    monkeypatch.setattr(os, "write", failing_write)
+    with monkeypatch.context() as mp:
+        mp.setattr(os, "write", failing_write)
 
-    with pytest.raises(l0_record.RecordError, match="could not write"):
-        l0_record.record_baselines(path, _changing_capture(original), date(2026, 5, 4))
+        with pytest.raises(l0_record.RecordError, match="could not write"):
+            l0_record.record_baselines(path, _changing_capture(original), date(2026, 5, 4))
 
-    monkeypatch.undo()
     assert path.read_text(encoding="utf-8") == original
     # No temp file left behind for a later reader to trip over.
     assert sorted(p.name for p in tmp_path.iterdir()) == ["registry.json"]
@@ -1400,12 +1400,12 @@ def test_an_interrupt_mid_record_leaves_the_registry_intact(tmp_path, monkeypatc
     def interrupt(fd, data):
         raise KeyboardInterrupt
 
-    monkeypatch.setattr(os, "write", interrupt)
+    with monkeypatch.context() as mp:
+        mp.setattr(os, "write", interrupt)
 
-    with pytest.raises(KeyboardInterrupt):
-        l0_record.record_baselines(path, _changing_capture(original), date(2026, 5, 4))
+        with pytest.raises(KeyboardInterrupt):
+            l0_record.record_baselines(path, _changing_capture(original), date(2026, 5, 4))
 
-    monkeypatch.undo()
     assert path.read_text(encoding="utf-8") == original
     assert sorted(p.name for p in tmp_path.iterdir()) == ["registry.json"]
 
@@ -1423,13 +1423,13 @@ def test_a_successful_record_replaces_the_file_atomically(tmp_path, monkeypatch)
         renames.append((str(src), str(dst)))
         return real_replace(src, dst, **kwargs)
 
-    monkeypatch.setattr(os, "replace", tracking_replace)
+    with monkeypatch.context() as mp:
+        mp.setattr(os, "replace", tracking_replace)
 
-    outcome = l0_record.record_baselines(
-        path, _changing_capture(original), date(2026, 5, 4)
-    )
+        outcome = l0_record.record_baselines(
+            path, _changing_capture(original), date(2026, 5, 4)
+        )
 
-    monkeypatch.undo()
     assert outcome.changed
     assert [dst for _src, dst in renames] == [str(path)]
     assert path.read_text(encoding="utf-8") != original

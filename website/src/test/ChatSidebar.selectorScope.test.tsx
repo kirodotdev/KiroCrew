@@ -11,7 +11,8 @@ import { createTestStore, settleSidebarRowAnim } from './helpers'
 import { ThemeProvider } from '../hooks/useTheme'
 import { sseSubagentBatchChunks, sseSubagentSpawn } from '../store/chatSlice'
 
-// Counts renders of ChatSidebar.
+// Counts renders of the sidebar's session rows, each of which calls the hook
+// mocked below.
 const { sidebarRenders } = vi.hoisted(() => ({ sidebarRenders: { n: 0 } }))
 
 // Mock framer-motion to avoid jsdom projection issues.
@@ -33,7 +34,17 @@ vi.mock('framer-motion', async () => {
       }
       return React.createElement(tag, { ...clean, ref }, props.children as React.ReactNode)
     })
-  const motion = new Proxy({}, { get: (_t, tag: string) => make(tag) })
+  // One component per tag, kept for the file. A fresh `motion.div` type on every
+  // read makes each sidebar commit remount the rows under it, and the remounts'
+  // own mount work keeps re-rendering them after the warm-up: on a loaded runner
+  // that lands in the windows the tests count.
+  const cache = new Map<string, unknown>()
+  const motion = new Proxy({}, {
+    get: (_t, tag: string) => {
+      if (!cache.has(tag)) cache.set(tag, make(tag))
+      return cache.get(tag)
+    },
+  })
   return {
     motion,
     AnimatePresence: ({ children }: { children?: React.ReactNode }) => React.createElement(React.Fragment, null, children),
@@ -64,7 +75,8 @@ Object.defineProperty(window, 'matchMedia', {
 })
 
 // The actual sidebar, but with a render counter injected via a hook mock.
-// We mock useSimplifiedToolNames since it's called unconditionally at render.
+// We mock useSimplifiedToolNames since every session row calls it
+// unconditionally at render.
 vi.mock('../hooks/useSimplifiedToolNames', () => ({
   useSimplifiedToolNames: () => {
     sidebarRenders.n++

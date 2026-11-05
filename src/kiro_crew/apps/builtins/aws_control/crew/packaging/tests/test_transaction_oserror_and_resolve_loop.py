@@ -443,10 +443,7 @@ def test_a_symlink_loop_at_a_derived_path_refuses_rather_than_crashes(
             return real(looped, already_resolved=False)
         return real(dir_path, already_resolved=already_resolved)
 
-    monkeypatch = pytest.MonkeyPatch()
-    monkeypatch.setattr(mod, "_open_dir_nofollow_pinned", _loop_on_staging)
-    try:
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(mod, "_open_dir_nofollow_pinned", _loop_on_staging)
         with pytest.raises(mod.ExportRefused):
             _build(mod, home, out, {"skills": {"faq"}})
-    finally:
-        monkeypatch.undo()

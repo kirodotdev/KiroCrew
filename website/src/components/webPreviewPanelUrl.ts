@@ -262,18 +262,19 @@ export function isolateFrameTarget(url: string): string {
  * notifies an already-mounted panel to load it live. Pass ``open=false`` to
  * pre-fill WITHOUT auto-loading (the heuristic "offer" path: it loads only when
  * the user actually opens the tab, never as a drive-by GET). Returns the
- * normalized+isolated URL, or null if unusable.
+ * normalized URL, or null if unusable.
  */
 export function setSessionPreviewUrl(sessionKey: string, rawUrl: string, open = true): string | null {
   if (!sessionKey) return null
   const norm = normalizeUrl(rawUrl)
   if (!norm) return null
-  const isolated = isolateFrameTarget(norm)
-  safeSetItem(`${URL_KEY_PREFIX}${sessionKey}`, isolated)
+  // Stored as the target itself: the panel checks the allowlist against this and
+  // applies the cookie-isolation rewrite to the URL it frames.
+  safeSetItem(`${URL_KEY_PREFIX}${sessionKey}`, norm)
   if (open) {
-    window.dispatchEvent(new CustomEvent(PREVIEW_URL_EVENT, { detail: { slot: sessionKey, url: isolated } }))
+    window.dispatchEvent(new CustomEvent(PREVIEW_URL_EVENT, { detail: { slot: sessionKey, url: norm } }))
   }
-  return isolated
+  return norm
 }
 
 /**
@@ -292,7 +293,7 @@ export function setSessionPreviewUrl(sessionKey: string, rawUrl: string, open = 
  * rejected too: it can never be framed (see `isDashboardOrigin`), so offering it
  * would only produce a Load button that leads to a blank panel. The manual URL
  * bar is not restricted (typing a URL is the user's own action). Returns the
- * normalized+isolated URL, or null when unusable, non-loopback, or self.
+ * normalized URL, or null when unusable, non-loopback, or self.
  */
 export function setSessionPreviewPending(sessionKey: string, rawUrl: string): string | null {
   if (!sessionKey) return null
@@ -304,10 +305,9 @@ export function setSessionPreviewPending(sessionKey: string, rawUrl: string): st
     return null
   }
   if (isDashboardOrigin(norm)) return null
-  const isolated = isolatePreviewHost(norm)
-  safeSetItem(`${PENDING_KEY_PREFIX}${sessionKey}`, isolated)
-  window.dispatchEvent(new CustomEvent(PREVIEW_PENDING_EVENT, { detail: { slot: sessionKey, url: isolated } }))
-  return isolated
+  safeSetItem(`${PENDING_KEY_PREFIX}${sessionKey}`, norm)
+  window.dispatchEvent(new CustomEvent(PREVIEW_PENDING_EVENT, { detail: { slot: sessionKey, url: norm } }))
+  return norm
 }
 
 /** Whether the launcher would refuse *url* for its shape alone (see `refused`).

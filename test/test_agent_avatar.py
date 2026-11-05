@@ -660,11 +660,8 @@ class TestUploadedAvatarEndpoints:
     async def test_pinless_image_record_serves_nothing(self, seeded_agent):
         """A hand-edited ``{"kind": "image"}`` without a ``file`` pin selects no file.
 
-        Every writer stamps the pin at the commit, so a pinless record never
-        names a committed picture; falling back to "any stored variant" would
-        serve an orphaned install left by a crash between the install and the
-        config save. The GET 404s, and a picture-keeping save refuses rather
-        than adopting the unknown file.
+        Any stored variant may be an orphan from a crash before the config save, so the
+        GET 404s and a picture-keeping save refuses.
         """
         from aiohttp.test_utils import TestClient, TestServer
 
@@ -1187,20 +1184,9 @@ class TestSafeAvatarGhostReactions:
 class TestReactionsBelongToTheirOwnTier:
     """Which reaction each tier may carry, and why the two keys differ.
 
-    ``motions`` is the GHOST's alone: it names a built-in animation of a
-    trait-composed face, so a picture has nothing to move and a pack animates
-    from its own files.
-
-    ``sounds`` is legal EVERYWHERE, because the shipped renderer reads a
-    crew-record cue kind-agnostically (``CrewStateAvatar.tsx`` plays
-    ``soundsFrom(avatar)`` whatever face it draws). Retiring it on the picture and
-    pack tiers ahead of that renderer would silence a crew on an unrelated save
-    with no way to restore the sound, so the key stays until the frontend stops
-    reading it.
-
-    A key illegal on a tier is stripped rather than refused -- the same
-    forgiveness every other field here has, because a hand-written or
-    version-skewed record must not cost the crew its face.
+    ``motions`` is the ghost's alone. ``sounds`` is legal everywhere because
+    ``CrewStateAvatar.tsx`` plays ``soundsFrom(avatar)`` whatever face it draws.
+    An illegal key is stripped, not refused, so a skewed record keeps its face.
     """
 
     _IMAGE = {"kind": "image", "v": 17, "file": "0123456789abcdef.png"}
@@ -1300,11 +1286,8 @@ class TestGhostReactionsRoundTripThroughTheEndpoints:
     def _request(method: str, path: str, *, match_info=None, body=None):
         """A Request the handler can read, built without binding a socket.
 
-        The body rides on ``aiohttp.streams.StreamReader``, not
-        ``asyncio.StreamReader``: ``request.json()`` reads through aiohttp's own
-        payload protocol, so the asyncio one hands it nothing and the handler
-        answers 400 "invalid JSON" -- a green-looking test asserting the wrong
-        thing.
+        Uses ``aiohttp.streams.StreamReader``: with ``asyncio.StreamReader``,
+        ``request.json()`` reads nothing and the handler answers 400.
         """
         import asyncio as _asyncio
         import unittest.mock as _mock
@@ -1466,13 +1449,8 @@ class TestGhostReactionsRoundTripThroughTheEndpoints:
     async def test_a_committed_picture_keeps_its_cue_and_drops_its_motions(self, seeded_agent):
         """The commit rebuilds the record, so the cue has to ride across it.
 
-        A cue is validated INPUT rather than commit output: without the carry, a
-        save that sets a sound on a picture crew returns 200 and stores nothing.
-        ``motions`` is dropped by the validator on this tier, so the rebuild has
-        none to carry.
-
-        A real server here, unlike its siblings: the staging POST is multipart, so
-        it needs a genuine request stream.
+        Without the carry, a save setting a sound returns 200 and stores nothing. A real
+        server here: the staging POST is multipart and needs a genuine request stream.
         """
         from aiohttp.test_utils import TestClient, TestServer
 
@@ -1545,11 +1523,8 @@ _PACK = {"kind": "pack", "id": "aurora-ghost"}
 class TestSafeAvatarPackKind:
     """The third tier: the crew wears a pack from the shared library.
 
-    Two properties carry the tier. The id is validated by the SAME rule the pack
-    store applies to a directory name, so a value stored here can always be
-    looked up; and validation never touches the disk, so config load stays a
-    pure parse and a pack deleted since the save reads back as a dangling
-    reference rather than crashing the load.
+    The id uses the pack store's directory-name rule, and validation never touches
+    disk, so a deleted pack reads back as a dangling reference.
     """
 
     def test_valid_pack_round_trips(self):

@@ -232,7 +232,7 @@ def test_every_omitted_test_file_carries_a_capability_guard() -> None:
     retired eleven-file list rotted: it was justified by a `--deselect` and a "~6 minutes
     against a real git" cost, both of which had been gone for some time while the omit
     stayed. A deselected file is exempt for a second, separate reason and is allowed here
-    too, but the deselect itself has to survive `test_ci_deselects_no_test_file`.
+    too, but the deselect itself has to survive `test_no_workflow_deselects_a_test_file`.
     """
     deselected = [path for _workflow, path in _ci_deselected_paths()]
     unjustified: list[str] = []

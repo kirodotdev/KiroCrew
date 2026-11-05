@@ -10,8 +10,10 @@ never part of ``gpt-review-core.md``.
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -28,19 +30,14 @@ from ai_review_workflows_helpers import (
     _stub_path,
     _workflow,
 )
+from prepare_pr_rounds_helpers import _contract
 from workflow_token_scopes import WORKFLOWS, load_workflow, missing_scopes
 
 PROMPT_NAME = "gpt-push-budget.md"
 STEP = "Write review prompt"
 HEAD = "a" * 40
-LANES = (
-    "codex-review",
-    "claude-review",
-    "design-review",
-    "ux-review",
-    "first-principles-review",
-    "security-scope-review",
-)
+COUNTER_TREE = "src/kiro_crew/builtin_skills/kirocrew-dev/kirocrew-prepare-pr/scripts"
+ROOT = REVIEW_PROMPTS.parents[1]
 
 
 def _budget_block() -> str:
@@ -52,7 +49,7 @@ class TestThePromptText:
     def test_it_carries_the_designed_instruction(self) -> None:
         text = _flat(_prompt(PROMPT_NAME))
 
-        assert "This PR has had %BLOCKED_PUSHES% blocked pushes." in text
+        assert "This PR has had at least %BLOCKED_PUSHES% blocked pushes." in text
         assert (
             "For each BLOCKING item add one `Sites:` line naming every other spelling, "
             "path or reader of the same root cause you can ground in THIS head" in text
@@ -119,17 +116,23 @@ class TestThePlacementInTheWorkflow:
         assert '-ge "$PUSH_BUDGET_MIN"' in block
         assert "sed " in block and ">> /tmp/codex-prompt.md" in block
 
-    def test_every_call_is_a_read(self) -> None:
+    def test_the_count_is_the_base_commits_blocked_push_count(self) -> None:
+        """One definition: the block runs `_review_pushes.py`, the module `--rounds`
+        and the sweep check call, staged from the BASE commit outside the workspace."""
         block = _budget_block()
 
-        calls = re.findall(r"gh api[^\n]*", block)
-        assert calls, "the count makes no gh api call"
-        assert not re.search(r"--method\s+(POST|PUT|PATCH|DELETE)", block)
+        assert "gh api" not in block, "the lane must not count blocked pushes on its own"
+        assert f'counter_tree="{COUNTER_TREE}"' in block
+        assert 'counter_dir="${RUNNER_TEMP:-/tmp}/push-budget-count"' in block
+        assert 'git archive --format=tar "$BASE_SHA" -- "$counter_tree"' in block
+        assert (
+            'REVIEW_PUSHES_STOP_AT="$PUSH_BUDGET_MIN" \\\n'
+            '    python3 "$counter_dir/$counter_tree/_review_pushes.py"'
+            ' --repo "$REPO" --pr "$PR"' in block
+        ), "the count stops at the threshold, the only number the section needs"
+        assert (ROOT / COUNTER_TREE / "_review_pushes.py").is_file()
         assert "gh pr " not in block and "gh issue " not in block
         assert "--input" not in block
-        # The lane list the count reads: all review lanes, never a free choice.
-        for lane in LANES:
-            assert lane in block, lane
 
     def test_the_run_block_stays_free_of_template_expressions(self) -> None:
         # A run block with an expression is capped at 21,000 characters.
@@ -138,7 +141,9 @@ class TestThePlacementInTheWorkflow:
     def test_the_token_can_read_what_the_count_reads(self) -> None:
         workflow = load_workflow(WORKFLOWS / "codex-review.yml")
 
-        assert workflow["permissions"]["actions"] == "read"
+        # The PR timeline (issues/<n>/timeline) and each head's check runs.
+        assert workflow["permissions"]["issues"] == "read"
+        assert workflow["permissions"]["checks"] == "read"
         assert not missing_scopes("codex-review.yml", workflow)
 
     def test_no_write_scope_was_added(self) -> None:
@@ -148,48 +153,68 @@ class TestThePlacementInTheWorkflow:
             "contents": "read",
             "pull-requests": "write",
             "id-token": "write",
-            "actions": "read",
+            "issues": "read",
+            "checks": "read",
         }
 
 
-# The stubs are shell FUNCTIONS prepended to the extracted block, not files on
-# PATH: a function wins over any executable of the same name on every platform,
-# whereas a PATH stub can lose to the real ``git`` (Windows Git Bash keeps its
-# own directories on PATH), which silently turns the block into a no-op.
+# ``git`` and ``sleep`` are shell FUNCTIONS prepended to the extracted block, not
+# files on PATH: a function wins over any executable of the same name, whereas a
+# PATH stub can lose to the real ``git``. ``git archive`` hands back this checkout's
+# counting scripts as a tar, standing in for the base commit's. ``gh`` and
+# ``python3`` are PATH shims instead, because the count runs in Python and calls
+# ``gh`` as a child process, where a shell function is not visible.
 _STUBS = r"""
-gh() {
-  local path="" jqx="" fixture
-  echo "$@" >> "$CALLS"
-  while [ $# -gt 0 ]; do
-    case "$1" in
-      api|GET|--paginate) shift ;;
-      --method) shift 2 ;;
-      -f) echo "$2" >> "$CALLS"; shift 2 ;;
-      --jq) jqx="$2"; shift 2 ;;
-      -*) shift ;;
-      *) path="$1"; shift ;;
-    esac
-  done
-  fixture="$FIXTURES/$(printf '%s' "$path" | tr '/' '_')"
-  if [ ! -f "$fixture" ]; then
-    echo "gh: HTTP 403: Resource not accessible by integration" >&2
-    return 1
-  fi
-  if [ -n "$jqx" ]; then
-    jq -r "$jqx" "$fixture"
-  else
-    cat "$fixture"
-  fi
-}
 git() {
-  if [ -n "${BUDGET_TEXT:-}" ] && [ -f "$BUDGET_TEXT" ]; then
-    cat "$BUDGET_TEXT"
-    return 0
-  fi
+  echo "$@" >> "$GIT_CALLS"
+  case "$1" in
+    show)
+      if [ -n "${BUDGET_TEXT:-}" ] && [ -f "$BUDGET_TEXT" ]; then
+        cat "$BUDGET_TEXT"
+        return 0
+      fi
+      ;;
+    archive)
+      if [ -n "${COUNTER_SRC:-}" ]; then
+        local last
+        for last; do :; done
+        tar -cf - -C "$COUNTER_SRC" "$last"
+        return $?
+      fi
+      ;;
+  esac
   echo "fatal: path does not exist in the base commit" >&2
   return 128
 }
 sleep() { return 0; }
+"""
+
+# The PR's GitHub history, served to the count from a JSON fixture. Check-run ids
+# rise in list order, so a later row is the newer run of its lane.
+_GH_STUB = r"""
+import json, os, re, sys
+with open(os.environ["CALLS"], "a", encoding="utf-8") as log:
+    log.write(" ".join(sys.argv[1:]) + "\n")
+with open(os.environ["GH_FIXTURE"], encoding="utf-8") as f:
+    fx = json.load(f)
+args = sys.argv[1:]
+if len(args) != 2 or args[0] != "api":
+    sys.stderr.write("unexpected gh call\n")
+    sys.exit(2)
+url = args[1]
+page = int(re.search(r"[?&]page=(\d+)", url).group(1))
+if "/timeline" in url:
+    if fx.get("broken_timeline"):
+        sys.stderr.write("gh: HTTP 502\n")
+        sys.exit(1)
+    print(json.dumps(fx["events"][(page - 1) * 100 : page * 100]))
+    sys.exit(0)
+sha = re.search(r"/commits/([0-9a-f]+)/check-runs", url).group(1)
+rows = [
+    {"id": i, "name": name, "conclusion": conclusion, "status": "completed"}
+    for i, (name, conclusion) in enumerate(fx["checks"].get(sha, []), 1)
+]
+print(json.dumps({"total_count": len(rows), "check_runs": rows[(page - 1) * 100 : page * 100]}))
 """
 
 
@@ -197,58 +222,104 @@ def _sha(ch: str) -> str:
     return ch * 40
 
 
+def _force(sha: str) -> dict:
+    return {"event": "head_ref_force_pushed", "commit_id": sha}
+
+
+def _review(sha: str, state: str = "changes_requested", rid: int = 1) -> dict:
+    return {
+        "event": "reviewed",
+        "id": rid,
+        "state": state,
+        "commit_id": sha,
+        "user": {"login": "alice"},
+    }
+
+
+SCOPE = "Security Scope Review"
+
+# Five heads; the last is the head under review. A Security-Scope-only block, a
+# GPT block, an Opus block and a Design block replaced: four blocked pushes.
+FOUR_BLOCKED = {
+    "events": [_force(_sha(c)) for c in "12345"],
+    "checks": {
+        _sha("1"): [(SCOPE, "failure"), ("GPT 6.1 Review", "success")],
+        _sha("2"): [("GPT 6.1 Review", "failure")],
+        _sha("3"): [("Opus 5.5 Review", "failure")],
+        _sha("4"): [("Design Review", "failure")],
+    },
+}
+
+# Three blocked pushes, the first by Security Scope Review alone.
+SCOPE_TIPS_IT = {
+    "events": [_force(_sha(c)) for c in "1234"],
+    "checks": {
+        _sha("1"): [(SCOPE, "failure")],
+        _sha("2"): [("UX Review", "failure")],
+        _sha("3"): [("First Principles Review", "failure")],
+    },
+}
+
+# Every earlier head was blocked once, but an approval cleared the first and a
+# green re-run cleared the second: one blocked push is left. A count of every
+# head that ever failed or drew a request would say three.
+CLEARED = {
+    "events": [
+        _force(_sha("1")),
+        _review(_sha("1")),
+        _review(_sha("1"), "approved", rid=2),
+        _force(_sha("2")),
+        _force(_sha("3")),
+        _force(_sha("4")),
+    ],
+    "checks": {
+        _sha("2"): [("GPT 6.1 Review", "failure"), ("GPT 6.1 Review", "success")],
+        _sha("3"): [(SCOPE, "failure")],
+    },
+}
+
+
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="the gh and python3 shims are shell scripts, which a Windows child process cannot run",
+)
 class TestTheCountRunsAgainstStubbedReads:
-    """Run the ACTUAL block with ``gh``, ``git`` and ``sleep`` stubbed as functions."""
+    """Run the ACTUAL block and the staged ``_review_pushes.py`` against one history."""
 
-    def _fixtures(
-        self,
-        tmp_path: Path,
-        *,
-        reviews: list | None = None,
-        failures: dict[str, list] | None = None,
-        branch: str = "feature/x",
-    ) -> Path:
-        fixtures = tmp_path / "fixtures"
-        fixtures.mkdir()
-
-        def put(path: str, payload: object) -> None:
-            name = path.replace("/", "_")
-            (fixtures / name).write_text(json.dumps(payload), encoding="utf-8")
-
-        put("repos/example/repo/pulls/7", {"head": {"ref": branch}})
-        put("repos/example/repo/pulls/7/reviews", reviews or [])
-        failures = failures or {}
-        for lane in LANES:
-            runs = [
-                {
-                    "head_sha": sha,
-                    "conclusion": conclusion,
-                    "pull_requests": [{"number": number}],
-                }
-                for sha, conclusion, number in failures.get(lane, [])
-            ]
-            put(
-                f"repos/example/repo/actions/workflows/{lane}.yml/runs",
-                {"workflow_runs": runs},
-            )
-        return fixtures
+    def _shims(self, tmp_path: Path) -> None:
+        stub = tmp_path / "gh_stub.py"
+        stub.write_text(_GH_STUB, encoding="utf-8")
+        for name, body in (
+            ("gh", f'exec "{sys.executable}" "{stub}" "$@"'),
+            ("python3", f'exec "{sys.executable}" "$@"'),
+        ):
+            shim = tmp_path / name
+            shim.write_text(f"#!/bin/sh\n{body}\n", encoding="utf-8")
+            shim.chmod(0o755)
 
     def _run(
         self,
         tmp_path: Path,
-        fixtures: Path,
+        history: dict,
         *,
         base_has_text: bool = True,
-        head: str = HEAD,
+        base_has_counter: bool = True,
         pr: str = "7",
     ):
         bash = _bash()
         if bash is None:
             pytest.skip("the block is Bash; skip where Bash is absent")
+        self._shims(tmp_path)
+        fixture = tmp_path / "history.json"
+        fixture.write_text(json.dumps(history), encoding="utf-8")
         prompt = tmp_path / "codex-prompt.md"
         prompt.write_text("EXISTING PROMPT\n", encoding="utf-8", newline="\n")
         calls = tmp_path / "calls.txt"
         calls.write_text("", encoding="utf-8")
+        git_calls = tmp_path / "git-calls.txt"
+        git_calls.write_text("", encoding="utf-8")
+        runner_temp = tmp_path / "runner-temp"
+        runner_temp.mkdir()
         script = _STUBS + _budget_block().replace("/tmp/codex-prompt.md", '"$PROMPT_OUT"')
         (tmp_path / ".review-prompts-gpt").mkdir()
         env = {
@@ -257,15 +328,19 @@ class TestTheCountRunsAgainstStubbedReads:
             "LC_ALL": "C",
             "REPO": "example/repo",
             "PR": pr,
-            "HEAD": head,
+            "HEAD": HEAD,
             "BASE_SHA": "b" * 40,
             "CALLS": str(calls),
+            "GIT_CALLS": str(git_calls),
+            "GH_FIXTURE": str(fixture),
             "PROMPT_OUT": str(prompt),
-            "FIXTURES": str(fixtures),
+            "RUNNER_TEMP": str(runner_temp),
             "TMPDIR": str(tmp_path),
         }
         if base_has_text:
             env["BUDGET_TEXT"] = str(REVIEW_PROMPTS / PROMPT_NAME)
+        if base_has_counter:
+            env["COUNTER_SRC"] = str(ROOT)
         result = subprocess.run(
             [bash, "-e", _script_file(tmp_path, script)],
             check=False,
@@ -275,168 +350,141 @@ class TestTheCountRunsAgainstStubbedReads:
             env=_child_env(env),
             cwd=tmp_path,
         )
-        return result, prompt.read_text(encoding="utf-8"), calls.read_text(encoding="utf-8")
-
-    def test_three_blocked_pushes_append_the_section_with_the_count(self, tmp_path: Path):
-        fixtures = self._fixtures(
-            tmp_path,
-            reviews=[
-                {"state": "CHANGES_REQUESTED", "commit_id": _sha("1")},
-                {"state": "APPROVED", "commit_id": _sha("9")},
-            ],
-            failures={
-                "codex-review": [(_sha("2"), "failure", 7), (_sha("3"), "success", 7)],
-                "ux-review": [(_sha("4"), "failure", 7)],
-            },
+        return (
+            result,
+            prompt.read_text(encoding="utf-8"),
+            calls.read_text(encoding="utf-8"),
+            git_calls.read_text(encoding="utf-8"),
         )
 
-        result, prompt, _calls = self._run(tmp_path, fixtures)
+    def _rounds_count(self, tmp_path: Path, history: dict) -> int | None:
+        """What `--rounds` counts on the same history, through the same gh stub."""
+        self._shims(tmp_path)
+        fixture = tmp_path / "rounds-history.json"
+        fixture.write_text(json.dumps(history), encoding="utf-8")
+        env = {
+            **os.environ,
+            "CALLS": str(tmp_path / "rounds-calls.txt"),
+            "GH_FIXTURE": str(fixture),
+        }
+
+        def run(args: list[str]):
+            proc = subprocess.run(
+                [sys.executable, str(tmp_path / "gh_stub.py"), *args[1:]],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                env=env,
+                check=False,
+            )
+            return proc.returncode, proc.stdout, proc.stderr
+
+        return _contract().blocked_push_count("example/repo", 7, run)
+
+    @pytest.mark.parametrize("history", [FOUR_BLOCKED, SCOPE_TIPS_IT], ids=["four", "scope"])
+    def test_the_gpt_lane_reports_the_threshold_the_rounds_count_reaches(
+        self, tmp_path: Path, history
+    ):
+        """Same definition as `--rounds`, stopped at the threshold the section needs."""
+        expected = self._rounds_count(tmp_path, history)
+        assert expected is not None and expected >= 3
+
+        result, prompt, _calls, _git = self._run(tmp_path, history)
 
         assert result.returncode == 0, _proc_log(result)
         assert prompt.startswith("EXISTING PROMPT\n")
-        assert "This PR has had 3 blocked pushes." in _flat(prompt)
+        assert "This PR has had at least 3 blocked pushes." in _flat(prompt)
         assert "%BLOCKED_PUSHES%" not in prompt
         assert "`Sites:` line" in prompt
 
-    def test_two_blocked_pushes_leave_the_prompt_byte_identical(self, tmp_path: Path):
-        fixtures = self._fixtures(
-            tmp_path,
-            reviews=[{"state": "CHANGES_REQUESTED", "commit_id": _sha("1")}],
-            failures={"codex-review": [(_sha("2"), "failure", 7)]},
-        )
+    def test_the_count_stops_reading_heads_at_the_threshold(self, tmp_path: Path):
+        """A full count reads every replaced head; the lane reads only until three."""
+        self._rounds_count(tmp_path, FOUR_BLOCKED)
+        full = (tmp_path / "rounds-calls.txt").read_text(encoding="utf-8")
 
-        result, prompt, _calls = self._run(tmp_path, fixtures)
+        result, _prompt, calls, _git = self._run(tmp_path, FOUR_BLOCKED)
 
         assert result.returncode == 0, _proc_log(result)
-        assert prompt == "EXISTING PROMPT\n"
+        assert full.count("/check-runs") == 4
+        assert calls.count("/check-runs") == 3
 
-    def test_a_head_counts_once_however_many_lanes_or_reviews_blocked_it(self, tmp_path: Path):
-        fixtures = self._fixtures(
-            tmp_path,
-            reviews=[
-                {"state": "CHANGES_REQUESTED", "commit_id": _sha("1")},
-                {"state": "CHANGES_REQUESTED", "commit_id": _sha("1")},
-            ],
-            failures={
-                "codex-review": [(_sha("1"), "failure", 7), (_sha("2"), "failure", 7)],
-                "claude-review": [(_sha("1"), "failure", 7), (_sha("2"), "failure", 7)],
-            },
-        )
-
-        result, prompt, _calls = self._run(tmp_path, fixtures)
+    def test_a_security_scope_block_tips_the_count_to_three(self, tmp_path: Path):
+        result, prompt, _calls, _git = self._run(tmp_path, SCOPE_TIPS_IT)
 
         assert result.returncode == 0, _proc_log(result)
-        assert prompt == "EXISTING PROMPT\n", "two heads were counted as more"
+        assert "This PR has had at least 3 blocked pushes." in _flat(prompt)
+
+    def test_an_approval_and_a_green_rerun_clear_their_heads(self, tmp_path: Path):
+        assert self._rounds_count(tmp_path, CLEARED) == 1
+
+        result, prompt, _calls, _git = self._run(tmp_path, CLEARED)
+
+        assert result.returncode == 0, _proc_log(result)
+        assert prompt == "EXISTING PROMPT\n", "cleared heads were counted as blocked"
 
     def test_the_current_head_is_never_counted(self, tmp_path: Path):
-        fixtures = self._fixtures(
-            tmp_path,
-            reviews=[{"state": "CHANGES_REQUESTED", "commit_id": HEAD}],
-            failures={
-                "codex-review": [(HEAD, "failure", 7), (_sha("1"), "failure", 7)],
-                "design-review": [(_sha("2"), "failure", 7)],
-            },
-        )
+        history = {
+            "events": [_force(_sha(c)) for c in "123"] + [_review(_sha("3"))],
+            "checks": {h: [("GPT 6.1 Review", "failure")] for h in map(_sha, "123")},
+        }
 
-        result, prompt, _calls = self._run(tmp_path, fixtures)
+        result, prompt, _calls, _git = self._run(tmp_path, history)
 
         assert result.returncode == 0, _proc_log(result)
         assert prompt == "EXISTING PROMPT\n", "nothing was pushed past the current head"
 
-    def test_a_run_of_another_pull_request_is_not_counted(self, tmp_path: Path):
-        fixtures = self._fixtures(
-            tmp_path,
-            failures={
-                "codex-review": [
-                    (_sha("1"), "failure", 7),
-                    (_sha("2"), "failure", 8),
-                    (_sha("3"), "failure", 8),
-                ],
-            },
-        )
-
-        result, prompt, _calls = self._run(tmp_path, fixtures)
-
-        assert result.returncode == 0, _proc_log(result)
-        assert prompt == "EXISTING PROMPT\n"
-
-    def test_a_cancelled_or_dismissed_signal_is_not_a_block(self, tmp_path: Path):
-        fixtures = self._fixtures(
-            tmp_path,
-            reviews=[{"state": "DISMISSED", "commit_id": _sha("1")}],
-            failures={
-                "codex-review": [(_sha("2"), "cancelled", 7), (_sha("3"), "skipped", 7)],
-                "ux-review": [(_sha("4"), "success", 7)],
-            },
-        )
-
-        result, prompt, _calls = self._run(tmp_path, fixtures)
-
-        assert result.returncode == 0, _proc_log(result)
-        assert prompt == "EXISTING PROMPT\n"
-
     def test_an_unreadable_count_skips_the_section_and_never_fails_the_step(self, tmp_path: Path):
-        fixtures = self._fixtures(
-            tmp_path,
-            failures={"codex-review": [(_sha(c), "failure", 7) for c in "1234"]},
-        )
-        (fixtures / "repos_example_repo_actions_workflows_ux-review.yml_runs").unlink()
+        history = {**FOUR_BLOCKED, "broken_timeline": True}
 
-        result, prompt, calls = self._run(tmp_path, fixtures)
+        result, prompt, calls, _git = self._run(tmp_path, history)
 
         assert result.returncode == 0, _proc_log(result)
         assert prompt == "EXISTING PROMPT\n", "a count that was never read produced a section"
         assert "::notice::" in result.stdout
-        # Three bounded attempts, each reading the PR first.
-        assert calls.count("repos/example/repo/pulls/7 ") == 3
+        # Three bounded attempts, each reading the timeline first.
+        assert calls.count("/timeline?") == 3
 
-    def test_without_the_text_on_the_base_nothing_is_read_or_appended(self, tmp_path: Path):
-        fixtures = self._fixtures(
-            tmp_path,
-            failures={"codex-review": [(_sha(c), "failure", 7) for c in "1234"]},
-        )
-
-        result, prompt, calls = self._run(tmp_path, fixtures, base_has_text=False)
+    def test_without_the_text_on_the_base_nothing_is_staged_read_or_appended(self, tmp_path: Path):
+        result, prompt, calls, git_calls = self._run(tmp_path, FOUR_BLOCKED, base_has_text=False)
 
         assert result.returncode == 0, _proc_log(result)
         assert prompt == "EXISTING PROMPT\n"
         assert calls.strip() == "", "the API was read for a section that cannot be appended"
+        assert "archive" not in git_calls
 
-    def test_every_recorded_call_is_a_get_on_the_pull_request_or_its_runs(self, tmp_path: Path):
-        fixtures = self._fixtures(
-            tmp_path,
-            failures={"codex-review": [(_sha(c), "failure", 7) for c in "123"]},
-        )
-
-        result, _prompt_text, calls = self._run(tmp_path, fixtures)
+    def test_without_the_counting_scripts_on_the_base_the_section_is_off(self, tmp_path: Path):
+        result, prompt, calls, _git = self._run(tmp_path, FOUR_BLOCKED, base_has_counter=False)
 
         assert result.returncode == 0, _proc_log(result)
-        for line in calls.splitlines():
-            if line.startswith(("event=", "branch=", "per_page=")):
-                continue
-            assert line.startswith("api "), line
-            assert not re.search(r"--method (POST|PUT|PATCH|DELETE)", line), line
-            assert "repos/example/repo/pulls/7" in line or "actions/workflows/" in line, line
-        assert "branch=feature/x" in calls
+        assert prompt == "EXISTING PROMPT\n"
+        assert "::notice::" in result.stdout
+        assert calls.strip() == "", "no checkout copy of the counter may stand in"
 
-    def test_a_branch_name_is_data_never_shell_or_jq_text(self, tmp_path: Path):
-        marker = tmp_path / "pwned"
-        branch = f'x"; touch {marker}; echo "'
-        fixtures = self._fixtures(
-            tmp_path,
-            branch=branch,
-            failures={"codex-review": [(_sha(c), "failure", 7) for c in "123"]},
-        )
-
-        result, prompt, _calls = self._run(tmp_path, fixtures)
+    def test_the_scripts_come_from_the_base_commit(self, tmp_path: Path):
+        result, _prompt_text, _calls, git_calls = self._run(tmp_path, FOUR_BLOCKED)
 
         assert result.returncode == 0, _proc_log(result)
-        assert not marker.exists()
-        assert "This PR has had 3 blocked pushes." in _flat(prompt)
+        assert f"archive --format=tar {'b' * 40} -- {COUNTER_TREE}" in git_calls
+        staged = tmp_path / "runner-temp" / "push-budget-count" / COUNTER_TREE
+        assert (staged / "_review_pushes.py").is_file()
 
-    def test_a_non_numeric_pr_is_refused_before_it_reaches_jq(self, tmp_path: Path):
-        fixtures = self._fixtures(tmp_path)
-        result, prompt, calls = self._run(tmp_path, fixtures, pr="7 or true")
+    def test_every_recorded_call_is_a_get_on_the_pull_request_or_a_head(self, tmp_path: Path):
+        result, _prompt_text, calls, _git = self._run(tmp_path, FOUR_BLOCKED)
+
+        assert result.returncode == 0, _proc_log(result)
+        lines = calls.splitlines()
+        assert lines
+        for line in lines:
+            words = line.split()
+            assert words[0] == "api" and len(words) == 2, line
+            assert re.match(
+                r"repos/example/repo/(issues/7/timeline|commits/[0-9a-f]{40}/check-runs)\?",
+                words[1],
+            ), line
+
+    def test_a_non_numeric_pr_is_refused_before_any_read(self, tmp_path: Path):
+        result, prompt, calls, _git = self._run(tmp_path, FOUR_BLOCKED, pr="7 or true")
+
         assert result.returncode == 0, _proc_log(result)
         assert prompt == "EXISTING PROMPT\n"
         assert calls.strip() == ""

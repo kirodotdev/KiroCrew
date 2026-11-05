@@ -6,7 +6,7 @@ import { filterInteractiveModels, legacyCodexEffort, modelWithoutEffort } from '
 import { useKirocrewConfigReader } from '../../../hooks/useKirocrewConfigReader'
 import { useSettingsDefaultModel } from '../../../hooks/useSettingsDefaultModel'
 import { i18nT } from '../../../i18n/t'
-import { modelSupportsEffort, selectionCapabilitiesFailed } from '../../../lib/effort'
+import { effortOffOnAuto, modelSupportsEffort, selectionCapabilitiesFailed } from '../../../lib/effort'
 import { displayModel, modelChipMarker } from '../../../lib/model'
 import type { useProvider } from '../../../providers'
 import { modelHealthKey, useModelsDegraded } from '../../../providers/modelListHealth'
@@ -151,6 +151,13 @@ export function useComposerChips({
       : modelSupportsEffort(shownModel === 'auto' ? '' : shownModel)
   )
   const effortLevelsOverride = effortCaps?.effort_levels?.length ? effortCaps.effort_levels : undefined
+  // No effort control on `auto`: the picker says why instead (#11546).
+  const effortAutoNote = effortOffOnAuto(
+    provider.capabilities.reasoningEffort,
+    effortSupported,
+    selectionCapabilitiesFailed(selectionCapabilitiesQ),
+    shownModel,
+  )
   // The same answer WITHOUT that substitution, for the pin-to-agent row: that
   // row asks about the PIN, and it must stay disabled for a withheld one even
   // now that the chip names the model the session inherited instead.
@@ -220,7 +227,7 @@ export function useComposerChips({
     ? ''
     : projectGit?.branch || (projectGit?.detached ? projectGit.head || '' : '')
   return {
-    shownModel, _pinShownModel, chipDefault, modelMarker, effortSupported, effortLevelsOverride,
+    shownModel, _pinShownModel, chipDefault, modelMarker, effortSupported, effortLevelsOverride, effortAutoNote,
     _modelPinAgent, _modelPinActive, _modelPinPinned, pinModelToAgentMut,
     defaultEffort, effectiveEffort,
     _slotProject, projectGit, projectGitError, projectBranch,

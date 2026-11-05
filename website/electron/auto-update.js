@@ -146,6 +146,9 @@ const EXTERNALLY_MANAGED_MAX_BYTES = 8192;
 const MANAGED_BY_MAX_CHARS = 128;
 const UPDATE_COMMAND_MAX_CHARS = 512;
 const CHECK_COMMAND_MAX_CHARS = 512;
+// A path, so an over-cap value is refused rather than cut: a truncated path
+// names a different file.
+const RELAUNCH_PATH_MAX_CHARS = 1024;
 
 /**
  * Is this install's update lifecycle owned by an external package manager?
@@ -178,8 +181,14 @@ const CHECK_COMMAND_MAX_CHARS = 512;
  * `managedBy` names the owning system for the About panel, `updateCommand` is
  * the command the panel offers to copy AND (when the managed auto-update path
  * is active) the command run to apply an update, and `checkCommand` is the
- * optional command run to discover whether an update is available. Every
- * degenerate marker — empty, unparsable,
+ * optional command run to discover whether an update is available. The optional
+ * `relaunchPath` is the executable (absolute, or `~/`-relative; see
+ * resolveRelaunchPath) the managed lane relaunches after a
+ * successful apply, instead of the path this process was started as: a macOS
+ * app opened from the Dock runs its version's own payload path, so a bare
+ * `app.relaunch()` brings back the version that was just replaced (#22774). A
+ * packager that keeps a stable launch link names the binary behind it here.
+ * Every degenerate marker — empty, unparsable,
  * over-cap, a directory, a symlink, a dangling symlink — still means MANAGED:
  * an operator who dropped SOMETHING at that name gets the safe behavior
  * (updater off) even when the metadata is wrong, never a silent fallback to
@@ -202,7 +211,8 @@ const CHECK_COMMAND_MAX_CHARS = 512;
  * @param {(p:string)=>boolean} [o.probeMarkerRewritable=canRewriteMarker]
  * @param {string} [o.bakedMarkerPath]  where the in-code marker lives; defaults
  *   to `EXTERNALLY-MANAGED` beside this module (inside app.asar when packaged)
- * @returns {{managedBy:string, updateCommand:string, checkCommand:string}|null} null when not managed
+ * @param {() => string} [o.homeDir]  the account's home, for a `~/` relaunchPath
+ * @returns {{managedBy:string, updateCommand:string, checkCommand:string, relaunchPath:string}|null} null when not managed
  */
 function readExternallyManaged({
   env = process.env,
@@ -226,6 +236,8 @@ function readExternallyManaged({
   // (Electron's fs shim reads through the archive), and the module directory
   // in a dev checkout, where the file simply does not exist.
   bakedMarkerPath = require("path").join(__dirname, EXTERNALLY_MANAGED_MARKER),
+  // The account's home, for a `~/` relaunchPath (see resolveRelaunchPath).
+  homeDir = () => require("os").userInfo().homedir,
 } = {}) {
   let raw = null;
   let markerPath = "";
@@ -294,6 +306,7 @@ function readExternallyManaged({
   let managedBy = "";
   let updateCommand = "";
   let checkCommand = "";
+  let relaunchPath = "";
   try {
     const parsed = JSON.parse(raw);
     if (parsed && typeof parsed === "object") {
@@ -306,11 +319,43 @@ function readExternallyManaged({
       if (typeof parsed.checkCommand === "string") {
         checkCommand = parsed.checkCommand.trim().slice(0, CHECK_COMMAND_MAX_CHARS);
       }
+      if (typeof parsed.relaunchPath === "string") {
+        relaunchPath = resolveRelaunchPath(parsed.relaunchPath, { homeDir });
+      }
     }
   } catch {
     // Presence alone is the signal; a bare marker means managed, no metadata.
   }
-  return { managedBy, updateCommand, checkCommand };
+  return { managedBy, updateCommand, checkCommand, relaunchPath };
+}
+
+/**
+ * The marker's `relaunchPath`, as the absolute path the lane relaunches, or ""
+ * to keep the bare relaunch.
+ *
+ * Kept: an absolute path, or one starting with `~/`, which is the account's
+ * home. A baked marker is the same file for every user, and a stable launch
+ * link usually lives under the home, so `~/` is how it names one. The home is
+ * read from the account entry (os.userInfo), not from HOME: the launch
+ * environment is the user's to rewrite, the account entry is not, and the
+ * marker's own commands derive the home the same way. Dropped: anything
+ * relative, with a NUL, or over the cap (a cut path names another file).
+ *
+ * @param {string} raw
+ * @param {{homeDir?: () => string}} [o]  injectable for tests
+ * @returns {string}
+ */
+function resolveRelaunchPath(raw, { homeDir = () => require("os").userInfo().homedir } = {}) {
+  const path = require("path");
+  let p = String(raw).trim();
+  if (!p || p.length > RELAUNCH_PATH_MAX_CHARS || p.includes("\0")) return "";
+  if (p.startsWith("~/")) {
+    let home = "";
+    try { home = homeDir() || ""; } catch { home = ""; }
+    if (!home || !path.isAbsolute(home)) return "";
+    p = path.join(home, p.slice(2));
+  }
+  return path.isAbsolute(p) ? p : "";
 }
 
 // Can THIS process rewrite the externally-managed marker?
@@ -579,6 +624,11 @@ function resolveChannel(stamped, preference, required = "") {
  * stays loadable outside an Electron runtime; a stubbed/absent semver yields
  * null (fail-open) rather than throwing.
  *
+ * A packager can number its builds with a fourth part (`0.12.0.3`, then
+ * `0.12.0.4`). semver has no fourth part and coerces both to `0.12.0`, so when
+ * the first three parts tie the fourth decides; a version without one counts
+ * as `.0`.
+ *
  * @param {string} candidate
  * @param {string} current
  * @returns {boolean|null}
@@ -595,10 +645,17 @@ function isNewerVersion(candidate, current) {
   const b = semver.valid(current) || semver.valid(semver.coerce(current));
   if (!a || !b) return null;
   try {
+    if (semver.eq(a, b)) return fourthVersionPart(candidate) > fourthVersionPart(current);
     return semver.gt(a, b);
   } catch {
     return null;
   }
+}
+
+// The fourth part of a four-part build number (`0.12.0.4` -> 4), else 0.
+function fourthVersionPart(version) {
+  const match = /^v?\d+\.\d+\.\d+\.(\d+)$/.exec(String(version).trim());
+  return match ? Number(match[1]) : 0;
 }
 
 /**
@@ -924,6 +981,9 @@ function classifyError(err) {
  *   the "writable external disk still updates" case is unassertable.
  * @param {object} [deps.nativeAutoUpdater]     - Electron's native autoUpdater, observed
  *   for `before-quit-for-update` to know the installer took over (tests inject a stub)
+ * @param {() => Array<{isDestroyed:Function, destroy:Function}>} [deps.getAllWindows]
+ *   - every open window, so a darwin install can close one that refuses to
+ *   (defaults to Electron's BrowserWindow.getAllWindows)
  * @param {string} [deps.feedBase]             - override feed host
  * @param {(state:object) => void} [deps.onUpdateState] - if provided, the
  *   in-app UI drives the install prompt: state transitions are pushed here
@@ -993,6 +1053,18 @@ function initAutoUpdate(deps) {
     nativeAutoUpdater = (() => {
       try { return require("electron").autoUpdater || null; } catch { return null; }
     })(),
+    // Every open BrowserWindow. On darwin Squirrel hands the swap to ShipIt only
+    // once ALL windows have closed (see forceExitFailsafe), so the lane needs to
+    // reach a window that refuses to close. Resolved lazily for the same reason
+    // as nativeAutoUpdater; outside Electron there are no windows.
+    getAllWindows = () => {
+      try {
+        const { BrowserWindow } = require("electron");
+        return BrowserWindow && typeof BrowserWindow.getAllWindows === "function"
+          ? BrowserWindow.getAllWindows()
+          : [];
+      } catch { return []; }
+    },
     feedBase = process.env.KIROCREW_UPDATE_FEED || DEFAULT_FEED_BASE,
     onUpdateState = null,
     log = console,
@@ -1080,6 +1152,9 @@ function initAutoUpdate(deps) {
       launchCheckDelayMs: LAUNCH_CHECK_DELAY_MS,
       checkIntervalMs: CHECK_INTERVAL_MS,
       isPolicyGoverned,
+      getMainWindow,
+      Notification,
+      osPlatform,
       log,
     });
   }
@@ -1187,6 +1262,7 @@ function initAutoUpdate(deps) {
     linux,
     macDistArch,
     nativeAutoUpdater,
+    getAllWindows,
     getMainWindow,
     feedBase,
     uiDriven,

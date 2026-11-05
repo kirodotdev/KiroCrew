@@ -2,10 +2,10 @@
 
 *Who this is for: the person who owns (or can create) a Google Cloud project and wants Kiro Crew agents to search and read files in a Google Drive account through Google's remote Drive MCP server. Expected time: 30–45 minutes of clicking, plus a wait of "a couple of days" for Google to accept you into the Developer Preview Program if you are not already a member.*
 
-**Google Drive has no Connections entry yet** — see the
-[index](README.md) for the providers pre-registered on this build — so its card
-and its **Connect** button appear once that entry ships. Registering the redirect
-URI below now means it already matches when it does.
+Google Drive is a pre-registered Connections entry. Its card shows **Needs configuration** until a client is
+saved in **Settings → OAuth Apps**, and the entry stays launch-gated until a person walks the
+manual launch-gate check with a real client. One Google client can serve every Google card; see
+[One Google client for every Google card](README.md#one-google-client-for-every-google-card).
 
 Google's Drive MCP server is a **Developer Preview** feature. Google accepts a plain-http loopback redirect URI, so Kiro Crew's callback works as-is; the gating items are program enrollment and OAuth scope class, both covered below.
 
@@ -55,7 +55,7 @@ gcloud services enable drive.googleapis.com drivemcp.googleapis.com --project=PR
 
 1. Go to **Google Auth Platform → Branding**: [https://console.cloud.google.com/auth/branding](https://console.cloud.google.com/auth/branding). If you see **Google Auth Platform not configured yet**, click **Get Started**.
 2. **App Information**: App name `Kiro Crew Drive MCP` (any name is fine; Google's own example is `Drive MCP Server`). **User support email**: pick your address. Click **Next**.
-3. **Audience**: select **Internal** if the option is offered. If it is greyed out you are not in an Organization; select **External**. Click **Next**.
+3. **Audience**: select **Internal** if the option is offered. If it is greyed out you are not in an Organization; select **External**. Click **Next**. With **External** and publishing status **Testing**, each test user must consent again every 7 days; **Internal** avoids this for Google Workspace accounts (section 4).
 4. **Contact Information**: enter an email address. Click **Next**.
 5. **Finish**: tick **I agree to the Google API Services: User Data Policy**, click **Continue**, then **Create**.
 6. If you chose **External**: open **Audience** ([https://console.cloud.google.com/auth/audience](https://console.cloud.google.com/auth/audience)), under **Test users** click **Add users**, enter the Google Account(s) that will click **Connect** in Kiro Crew, click **Save**. Leave **Publishing status** at **Testing** for now (see section 4).
@@ -67,8 +67,9 @@ gcloud services enable drive.googleapis.com drivemcp.googleapis.com --project=PR
 2. **Application type**: **Web application**. (Why not "Desktop app": see section 2.)
 3. **Name**: `Kiro Crew` (or anything).
 4. Leave **Authorized JavaScript origins** empty.
-5. Under **Authorized redirect URIs** click **+ Add URI** and paste `http://127.0.0.1:48103/callback` exactly. If you also plan to register Gmail and Google Calendar, add `http://127.0.0.1:48104/callback` and `http://127.0.0.1:48105/callback` to the same client now; one client may carry all three URIs and you then paste the same Client ID and secret into all three Kiro Crew cards.
-6. Click **Create**. A dialog shows the **Client ID** (ends in `.apps.googleusercontent.com`) and the **Client secret**. Copy both immediately. Google states the secret "will only be shown after you create the client" and later displays only its last four characters; if you lose it, use **Add Secret** on the client page to rotate.
+5. Under **Authorized redirect URIs** click **+ Add URI** and paste `http://127.0.0.1:48103/callback` exactly. If you will use other Google cards too, add every URI in [One Google client for every Google card](README.md#one-google-client-for-every-google-card) to this same client now.
+6. **Tick Use this client for an AI-powered agent.** From 2026-11-11 Google's Workspace MCP servers reject requests from clients without this box ticked, and a client not marked by 2026-11-12 can never be marked later ([Workspace release notes, 2026-10-12](https://developers.google.com/workspace/chat/release-notes); [Configure the Google Workspace MCP servers](https://developers.google.com/workspace/guides/configure-mcp-servers)). If you reuse an older client that cannot be changed, create a new one.
+7. Click **Create**. A dialog shows the **Client ID** (ends in `.apps.googleusercontent.com`) and the **Client secret**. Copy both immediately. Google states the secret "will only be shown after you create the client" and later displays only its last four characters; if you lose it, use **Add Secret** on the client page to rotate.
 
 ## 2. Redirect URI
 
@@ -120,11 +121,11 @@ KIROCREW_CONNECTIONS_GOOGLE_DRIVE_CLIENT_ID=1234567890-abc.apps.googleuserconten
 KIROCREW_CONNECTIONS_GOOGLE_DRIVE_CLIENT_SECRET=GOCSPX-...
 ```
 
-After saving, the Google Drive card on **Capabilities → Connections** switches from "Needs configuration" to "Connect".
+After saving, the Google Drive card on **Customize → Connections** switches from "Needs configuration" to "Connect".
 
 ## 6. Verify the connection
 
-1. On **Capabilities → Connections**, click **Connect** on the Google Drive card. A Google sign-in and consent page opens. If the project is External/Testing you first see "Google hasn't verified this app"; click **Continue**. The consent page should list "View and download all your Drive files" (that is `drive.readonly`).
+1. On **Customize → Connections**, click **Connect** on the Google Drive card. A Google sign-in and consent page opens. If the project is External/Testing you first see "Google hasn't verified this app"; click **Continue**. The consent page should list "View and download all your Drive files" (that is `drive.readonly`).
 2. Approve. The browser lands on `http://127.0.0.1:48103/callback?...`. On a local install the page closes itself; on a remote install paste the URL back into the dashboard.
 3. The card shows **Connected**.
 4. In a chat session, ask the agent: **"Summarize the file Marketing Plan."** (substitute a real file name). Google's test description says the client "calls `drive.search_files` to locate 'Marketing Plan', then uses `drive.read_file_content` to retrieve and summarize its content." A successful tool call from `https://drivemcp.googleapis.com/mcp/v1` confirms the end-to-end path.
@@ -136,8 +137,9 @@ If something fails:
 - `access_denied` / "app is being tested": the signing-in account is not in **Test users**.
 - `403` or "API has not been used in project": `drivemcp.googleapis.com` or `drive.googleapis.com` is not enabled, or the project is not yet registered in the Developer Preview.
 - Consent works but tools fail: check the OAuth log events in the Workspace admin security investigation tool (Google's troubleshooting tip), and consider `roles/mcp.toolUser`.
+- Sign-in succeeds but every MCP call is rejected, with an older client: the client is not marked **Use this client for an AI-powered agent** and cannot be marked now. Create a new client with the box ticked (section 1.5) and paste its Client ID and secret into Kiro Crew.
 
-To disconnect on the Google side, the user opens [https://myaccount.google.com/permissions](https://myaccount.google.com/permissions) and removes the app. Google notes revocation "removes all OAuth 2.0 scopes previously granted to a project", so if Drive, Gmail and Calendar share one project, all three connections are revoked together.
+To disconnect on the Google side, the user opens [https://myaccount.google.com/permissions](https://myaccount.google.com/permissions) and removes the app. Google notes revocation "removes all OAuth 2.0 scopes previously granted to a project", so every Google card connected through the same project is revoked together.
 
 ## Known limits
 
@@ -150,8 +152,9 @@ To disconnect on the Google side, the user opens [https://myaccount.google.com/p
 
 ## Sources
 
+- https://developers.google.com/workspace/chat/release-notes (2026-10-12 entry, accessed 2026-11-02)
 - https://developers.google.com/workspace/drive/api/guides/configure-mcp-server (accessed 2026-09-10)
-- https://developers.google.com/workspace/guides/configure-mcp-servers (accessed 2026-09-10)
+- https://developers.google.com/workspace/guides/configure-mcp-servers (accessed 2026-09-10; agent-client step and troubleshooting re-checked 2026-11-02)
 - https://docs.cloud.google.com/mcp/supported-products (accessed 2026-09-10)
 - https://docs.cloud.google.com/mcp/set-up-authentication-mcp-servers (accessed 2026-09-10)
 - https://docs.cloud.google.com/mcp/configure-mcp-ai-application (accessed 2026-09-10)

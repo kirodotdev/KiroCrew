@@ -50,6 +50,7 @@ from kiro_crew.config.loader import (
     _coerce_session_folder,
 )
 from kiro_crew.config.schema import requires_restart
+from kiro_crew.dashboard.chat_folder_order import next_folder_order
 from kiro_crew.sel import sel
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -174,13 +175,22 @@ def _find_folder(folders: list[dict], name: str, namespace: str) -> dict | None:
     the folder's capitalization. A folder already stamped for *namespace* wins
     over an unrelated same-named one, which keeps repeat passes stable when a
     user happens to have two folders whose names differ only in case.
+
+    A mate's home folder, or a folder inside one, never answers: those hold
+    only the mate's own sessions, so a channel that names one gets a folder of
+    its own instead.
     """
+    # Function-local: ``mate_folders`` pulls in the folder records module.
+    from kiro_crew.dashboard.mate_folders import home_owner_of
+
     target = name.strip().lower()
     if not target:
         return None
     fallback: dict | None = None
     for folder in folders:
         if str(folder.get("name", "")).strip().lower() != target:
+            continue
+        if home_owner_of(folders, str(folder.get("id") or "")):
             continue
         if str(folder.get("channel", "")).lower() == (namespace or "").lower():
             return folder
@@ -324,7 +334,7 @@ async def ensure_channel_folder(
         folder = {
             "id": uuid.uuid4().hex[:12],
             "name": name,
-            "order": len(folders),
+            "order": next_folder_order(folders),
             "collapsed": False,
             "hidden": False,
             "parent_id": "",

@@ -700,7 +700,7 @@ async def test_begin_device_evicts_expired_pending(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 from kiro_crew.auth.login import builder_id, control_plane  # noqa: E402
-from kiro_crew.auth.service import MissingStartUrlError  # noqa: E402
+from kiro_crew.auth.service import InvalidStartUrlError, MissingStartUrlError  # noqa: E402
 
 
 def _oidc_auth(expires_in_secs: float = 300) -> builder_id.DeviceAuthorization:
@@ -757,6 +757,45 @@ async def test_begin_idc_uses_company_start_url_and_region(tmp_path, monkeypatch
         "start_url": "https://acme.awsapps.com/start",
         "region": "eu-west-1",
     }
+
+
+@pytest.mark.parametrize(
+    "typed",
+    [
+        "acme.awsapps.com/start",  # no scheme: refused by SSO-OIDC as typed
+        "https://acme.awsapps.com",  # no /start: refused by SSO-OIDC as typed
+        "https://acme.awsapps.com/start/#/",  # the portal's own address bar
+        "  https://acme.awsapps.com/start/  ",
+    ],
+)
+@pytest.mark.asyncio
+async def test_begin_idc_sends_the_canonical_start_url(tmp_path, monkeypatch, typed):
+    """What people paste is completed to the one form SSO-OIDC accepts, and the
+    same form the cloud login target stores, before AWS ever sees it."""
+    service, _ = _service(tmp_path)
+    result = await _begin_oidc(service, monkeypatch, "idc", start_url=typed)
+    assert result["_seen"]["start_url"] == "https://acme.awsapps.com/start"
+    pending = service._pending[result["login_id"]]
+    assert pending.start_url == "https://acme.awsapps.com/start"
+
+
+@pytest.mark.parametrize(
+    "typed",
+    ["http://acme.awsapps.com/start", "https://acme.awsapps.com/start?x=1", "https://[acme"],
+)
+@pytest.mark.asyncio
+async def test_begin_idc_refuses_an_unusable_start_url_before_calling_aws(
+    tmp_path, monkeypatch, typed
+):
+    service, _ = _service(tmp_path)
+
+    async def _never(*_a, **_k):
+        raise AssertionError("SSO-OIDC must not be called for a refused start URL")
+
+    monkeypatch.setattr(builder_id, "register_client", _never)
+    with pytest.raises(InvalidStartUrlError, match="awsapps.com/start"):
+        await service.begin_device("idc", start_url=typed)
+    assert service._pending == {}
 
 
 @pytest.mark.asyncio
@@ -932,6 +971,14 @@ def test_control_plane_url_is_the_regional_cps_host():
     assert (
         control_plane.control_plane_url("eu-central-1")
         == "https://management.eu-central-1.kiro.dev/"
+    )
+    # eu-west-1 is the EU region the dashboard picker offers, and it has no CPS
+    # host of its own: its profiles live on the Frankfurt control plane. The
+    # us-east-1 fallback would answer zero profiles for it, and the sign-in
+    # would stall with "no available Kiro profiles" after a successful browser
+    # authorization.
+    assert (
+        control_plane.control_plane_url("eu-west-1") == "https://management.eu-central-1.kiro.dev/"
     )
     # No dedicated CPS for that region: same fallback as kiro-cli's DEFAULT_ENDPOINT.
     assert control_plane.control_plane_url("ap-southeast-2") == control_plane.control_plane_url(

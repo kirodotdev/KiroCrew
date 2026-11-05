@@ -1,20 +1,9 @@
 """The ``kirocrew-dashboard-manager`` subagent, and the base prompt that routes to it.
 
-Two surfaces that only work together. A crewmate holds `dashboard_fields` and
-`dashboard_write` and nothing else about the page, so every "show me another one"
-has to leave its session; the member base prompt is the only thing that tells it
-where to send one, and it sends it by NAME.
-
-That name is a wire string. kiro-cli resolves an agent by reading
-``<agents dir>/<name>.json``, so a prompt naming something the installer does not
-write routes the member to an agent that does not resolve -- which fails the turn
-rather than degrading the feature, and fails it on an unattended cycle where nobody
-is reading. So the central claim here is the cheap one: the name in the prompt, the
-name in the spec and the spec's filename are one string.
-
-The rest is what the spec may carry. This agent runs on a request forwarded out of a
-chat it never read, which is the reason its surface is small on purpose rather than
-by omission.
+The prompt names the agent, and kiro-cli resolves it from ``<agents dir>/<name>.json``,
+so the name in the prompt, in the spec and the spec's filename must be one string or the
+turn fails. The agent's surface is small on purpose: it runs on requests from a chat it
+never read.
 """
 
 from __future__ import annotations
@@ -73,12 +62,8 @@ class TestTheNameIsOneString:
     def test_the_prompt_names_every_page_verb_the_crewmate_holds(self) -> None:
         """The crewmate drives its OWN page, and the prompt has to say so.
 
-        An earlier wording routed every page request to the subagent and told the
-        crewmate it had no tools for it. ``_MEMBER_PANEL_GRANTS`` grants it all six,
-        and the crewmate is the one of the two whose identity the panel's tools can
-        resolve -- so that wording took a working path away and pointed at a weaker
-        one. Read the verbs off the GRANT tuple rather than spelling them, so a verb
-        added to the surface and not to the prompt fails here.
+        ``_MEMBER_PANEL_GRANTS`` grants the crewmate the panel's tools. The verbs are read
+        off that tuple, so a verb added to the surface and not the prompt fails here.
         """
         verbs = [ref.rsplit("/", 1)[-1] for ref in agent_mod._MEMBER_PANEL_GRANTS]
         for verb in verbs:
@@ -129,17 +114,10 @@ class TestTheSpecsSurfaceIsSmallOnPurpose:
         assert installed["tools"] == ["fs_read", "@kirocrew-panel"]
 
     def test_every_declared_server_is_also_configured(self, installed: dict[str, Any]) -> None:
-        """THE POD BUG: declared in ``tools``, absent from ``mcpServers``.
+        """Every server declared in ``tools`` is configured in ``mcpServers``.
 
-        kiro-cli answered "MCP servers unusable in this session - declared by the
-        agent spec but not configured: @kirocrew-panel", mounted no tool, and this
-        agent was dispatched with nothing to answer with. No local error: the grant
-        was simply dead, and the only place it showed was a running pod.
-
-        Asked as a RULE over every ``@`` ref the spec declares rather than about the
-        one name, because the next server added to ``tools`` would reproduce this
-        exactly. ``includeMcpJson`` is off here, so ``mcpServers`` is the only place
-        a declared server can be configured from.
+        kiro-cli mounts no tool for a declared but unconfigured server, with no local
+        error. ``includeMcpJson`` is off, so ``mcpServers`` is the only source.
         """
         declared = {ref[1:].split("/", 1)[0] for ref in installed["tools"] if ref.startswith("@")}
         assert declared, "the fixture no longer declares an MCP server"
@@ -154,11 +132,8 @@ class TestTheSpecsSurfaceIsSmallOnPurpose:
     ) -> None:
         """An entry with no command is as dead as an absent one.
 
-        Compared against ``_managed_opt_in_entry``, which is the one helper that
-        knows the two fields a hand-built opt-in entry forgets -- the registry
-        ``type`` a registry-mode client needs to not DROP the entry, and the
-        ``KIROCREW_HOME`` pin without which the shim reads the default data home
-        while the gateway runs under an override.
+        ``_managed_opt_in_entry`` adds what a hand-built entry forgets: the registry
+        ``type`` (or the client drops it) and the ``KIROCREW_HOME`` pin.
         """
         entry = installed["mcpServers"]["kirocrew-panel"]
         assert entry == managed_mcp._managed_opt_in_entry("mcp-panel")
@@ -168,11 +143,8 @@ class TestTheSpecsSurfaceIsSmallOnPurpose:
     def test_it_has_no_file_write_and_no_shell(self, installed: dict[str, Any]) -> None:
         """Every page it produces goes through ``dashboard_preview``.
 
-        That step validates the manifest/page pair and stages it where only
-        ``dashboard_apply`` can commit it. A file-writing tool would let this agent
-        put a template into the user catalogue directly, skipping both the
-        validation and the person's yes -- which are the two things the preview step
-        exists to be.
+        A file-writing tool would skip the preview's validation and the person's yes at
+        ``dashboard_apply``.
         """
         mounted = set(installed["tools"]) | set(installed["allowedTools"])
         for forbidden in ("fs_write", "code", "execute_bash"):
@@ -188,16 +160,9 @@ class TestTheSpecsSurfaceIsSmallOnPurpose:
     def test_its_grants_are_the_crewmates_own_tuple_reused(self, installed: dict[str, Any]) -> None:
         """REUSED, not copied.
 
-        Two tuples would drift into a surface this agent may call and its caller may
-        not, and the caller is the one the ownership argument for those grants was
-        written about.
-
-        Read through the governance ceiling, which is the second half of the same
-        argument: ``allowedTools`` is the one list whose entries never reach the
-        PreToolUse gate, so a ref the ceiling withholds from the crewmate has to be
-        withheld here too. Asserting the raw tuple would pass while this agent held an
-        auto-approve its caller does not -- which is the drift, arriving from the other
-        direction.
+        Two tuples would drift apart. Read through the governance ceiling:
+        ``allowedTools`` skips the PreToolUse gate, so a ref withheld from the crewmate
+        must be withheld here too.
         """
         expected = [
             ref
@@ -243,7 +208,7 @@ class TestTheSpecsSurfaceIsSmallOnPurpose:
     def test_the_prompt_forbids_doing_the_crewmates_work(self) -> None:
         """A subagent that answered the question the page is about would be a second
         crewmate with a smaller surface, which is not what anybody dispatched."""
-        assert "You do not do the crewmate's work." in agent_mod._DASHBOARD_MANAGER_SYSTEM_PROMPT
+        assert "You do not do the Bot's work." in agent_mod._DASHBOARD_MANAGER_SYSTEM_PROMPT
 
 
 class TestItIsOwnedButNotRequired:

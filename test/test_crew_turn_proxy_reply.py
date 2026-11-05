@@ -29,11 +29,8 @@ from kiro_crew.dashboard import handlers_crew_turn as mod
 class TestTheCrewsReplyIsRedactedBeforeItReachesTheCaller:
     """A crew's reply is model output, and model output can carry a credential.
 
-    The crew runs with a Kiro identity and its own control secret in its
-    environment, and it reads whatever its tools fetch. So a reply can quote a
-    credential either because the model repeated its own environment or because an
-    injected page told it to. This route's answer lands in the owner's browser and
-    in a transcript, so it is redacted on the way out like every other peer reply.
+    The model may repeat its own environment or follow an injected page, and this answer
+    reaches the owner's browser and a transcript, so it is redacted like any peer reply.
     """
 
     _KEY = "AKIAIOSFODNN7EXAMPLE"
@@ -122,12 +119,9 @@ class TestTheCrewsReplyIsRedactedBeforeItReachesTheCaller:
     async def test_a_leading_bom_does_not_hide_an_escaped_credential(self, monkeypatch):
         """A BOM at the head of the stream must not cost the JSON-aware pass.
 
-        ``_redact_sse_event`` sends a ``data:`` line through the JSON decoder, which
-        is what sees a credential written as a JSON escape; every other line goes
-        through the plain-text chain, which cannot. So a stream whose first line is
-        ``\\ufeffdata: ...`` does not match ``data:``, takes the text chain, and the
-        escaped credential passes through -- while the browser, which skips the BOM
-        per the SSE spec, parses the field and decodes the credential back.
+        Only ``data:`` lines go through the JSON decoder in ``_redact_sse_event``. A first line
+        ``\\ufeffdata: ...`` would take the text chain and pass an escaped credential, while
+        the browser skips the BOM per the SSE spec and decodes it.
         """
         import json
 
@@ -183,13 +177,9 @@ class TestTheCrewsReplyIsRedactedBeforeItReachesTheCaller:
 class TestTheCrewsReplyIsBoundedAndTyped:
     """What the far end sends is not what this gateway agrees to hold or forward.
 
-    The crew is a separate machine running a model with tools. Its reply can be
-    arbitrarily large, of any content type, and -- once it is on the loop -- the
-    redaction of it is CPU work on the sole event loop that also serves chat,
-    websockets, timers and the heartbeat. So the reply is capped before it is
-    read, typed before it is trusted, and scrubbed in a worker thread.
-
-    The peer proxy already does all three; these pin that this route does too.
+    The reply can be any size and content type, and redacting it on the event loop would
+    stall chat and the heartbeat. So it is capped before it is read, typed before it is
+    trusted, and scrubbed in a worker thread, as the peer proxy does.
     """
 
     @staticmethod
@@ -363,11 +353,8 @@ class TestTheCrewsReplyIsBoundedAndTyped:
 class TestTheCrewsRefusalIsRedactedBeforeItIsCut:
     """The streamed error frame carries a slice of the crew's refusal body.
 
-    Cut first and the slice is raw text, so a credential that straddles the cut
-    is two fragments the redactor does not recognise and the leading one is
-    forwarded -- and a raw-text pass has no JSON decode, which is the pass that
-    sees a credential written as a ``\\uXXXX`` escape. So the body is capped,
-    redacted whole, and only then cut.
+    Cut first, a credential straddling the cut is two unrecognised fragments, and a raw-text
+    pass misses a ``\\uXXXX`` escape. So the body is capped, redacted whole, then cut.
     """
 
     _KEY = "AKIAIOSFODNN7EXAMPLE"
@@ -451,12 +438,9 @@ class TestTheCrewsRefusalIsRedactedBeforeItIsCut:
 class TestANonStreamedCrewErrorIsARefusalNotAContentTypeComplaint:
     """A crew's 4xx/5xx on the non-streamed path is reported as what it is.
 
-    The content-type gate is for a reply this route would FORWARD. A refusal body
-    is never forwarded, so gating it by type reported the crew's error as
-    ``crew_content_type_refused`` -- which names the gateway's own check and
-    hides the status and the words the crew actually sent. Both types of refusal
-    body now become ``crew_refused``, carrying the crew's status and the same
-    capped, redacted slice the streamed frame carries.
+    The content-type gate is for replies this route forwards; a refusal body never is, and
+    ``crew_content_type_refused`` would hide the crew's status and words. Both body types
+    become ``crew_refused`` with the same capped, redacted slice as the streamed frame.
     """
 
     _KEY = "AKIAIOSFODNN7EXAMPLE"

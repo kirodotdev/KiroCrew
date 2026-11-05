@@ -260,7 +260,9 @@ class TestWhatDashboardFieldsReturns:
 
     def test_every_field_carries_its_full_schema(self) -> None:
         rows = {row["field"]: row for row in self._listing()["fields"]}
-        manifest = json.loads((BUILTIN / "project-report/manifest.json").read_text())
+        manifest = json.loads(
+            (BUILTIN / "project-report/manifest.json").read_text(encoding="utf-8")
+        )
         for name, spec in manifest["fields"].items():
             # `upkeep` is prose for the crewmate's upkeep skill, not part of the shape.
             want = {k: v for k, v in spec.items() if k not in ("source", "upkeep")}

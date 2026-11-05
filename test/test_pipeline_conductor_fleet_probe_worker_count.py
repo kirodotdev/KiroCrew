@@ -134,10 +134,8 @@ def test_a_capped_run_stays_quiet_when_a_later_argument_names_the_runner(
     """A single-process run stays one when a LATER argument spells the runner's name.
 
     ``--junitxml=build/pytest.xml`` and ``--log-file /var/tmp/pytest-run.log`` are
-    ordinary arguments. A forward-only lookahead re-tries at that second occurrence,
-    where the ``-n0`` is behind it, and reports the run --
-    two deterministic false rows on a live fleet. The rows stay pinned: a second runner
-    token must never be read as a second, differently-counted invocation.
+    ordinary arguments; a forward-only lookahead re-trying there would miss the ``-n0``
+    behind it. A second runner token is never a second invocation.
     """
     prefixes = install_prefixes(tmp_path)
     root = host_proc(tmp_path, monkeypatch)
@@ -159,18 +157,10 @@ def test_a_capped_run_stays_quiet_when_a_later_argument_names_the_runner(
 def test_the_count_reader_reads_every_spelling_its_flags_have(mod):
     """The reader's COVERAGE, enumerated from ``_CAP_FLAGS`` rather than from the reader.
 
-    The implication pin below asks "whatever the reader calls budgeted is never
-    reported", which is the asymmetry itself -- but it reads its own subject, so a reader
-    that stops recognising a spelling simply drops out of it and the pin stays green while
-    a budgeted run starts being reported, or an unbudgeted one stops being. This asserts
-    the other half: each flag's spellings are generated from the flag list, and the reader
-    must read every one of them, in BOTH directions -- ``0``, ``1``, ``auto`` and
-    ``logical`` as budgeted, ``4`` as not.
-
-    Glued digits are asserted only for a SHORT flag. The file documents why:
-    ``--numprocessesN`` is not a spelling that option has, so a longer token starting with
-    it is a different option; with no other ``-n`` the run inherits ``addopts`` and is
-    budgeted.
+    The implication pin below reads its own subject, so a dropped spelling would leave it
+    green. Here every spelling must read both ways: ``0``, ``1``, ``auto``, ``logical``
+    budgeted, ``4`` not. Glued digits apply only to a short flag (``--numprocessesN`` is
+    a different option).
     """
     assert mod._CAP_FLAGS, "no count flags to enumerate"
     for flag in sorted(mod._CAP_FLAGS):
@@ -209,13 +199,9 @@ def test_the_count_reader_reads_every_spelling_its_flags_have(mod):
 def test_the_count_is_judged_lexically_so_no_value_can_raise(mod, tmp_path, monkeypatch, value):
     """No ``-n`` value, however long or however spelled, raises out of the reader.
 
-    The reader runs inside ``_host_lines`` with nothing above it catching a ``ValueError``,
-    so a value the interpreter refuses to convert -- a run of digits past its conversion
-    limit, or a character ``str.isdigit`` accepts and ``int`` does not -- ends the patrol
-    cycle, and ends it again on every cycle while that pid lives. The count is compared as
-    a string instead. Every such value is also a count no budget bounds, so the answer is
-    the reporting one; ``-n0`` under the same fixture stays quiet so the reporting is not
-    the fixture's.
+    Nothing above ``_host_lines`` catches a ``ValueError``, so a value ``int`` refuses
+    would end every patrol cycle; the count is compared as a string and reported.
+    ``-n0`` under the same fixture stays quiet, so the reporting is not the fixture's.
     """
     assert mod._count_is_budgeted(value) is False
     assert mod._argv_worker_pool_is_budgeted(["pytest-3", "-n", value, "test/"]) is False
@@ -242,12 +228,9 @@ def test_leading_zeros_do_not_change_which_count_is_single_process(mod):
 def test_the_terminator_ends_the_walk_for_the_runs_own_count(mod):
     """``--`` is where pytest stops reading options, and so does the reader.
 
-    ``pytest -n32 -- -n0`` is a 32-worker run pointed at a path called ``-n0``; a walk
-    that read the second token as the count would let that run through on last-wins.
-    The converse holds too: ``-n0 -- -n32`` is one process pointed at a path, and
-    ``-- -n 4`` names two paths and inherits ``addopts``. A ``--`` inside an
-    ``addopts`` override terminates the run's own options as well, because pytest
-    prepends the override to them.
+    ``pytest -n32 -- -n0`` is a 32-worker run pointed at a path called ``-n0``, and the
+    converse holds. A ``--`` inside an ``addopts`` override also ends the run's own
+    options, because pytest prepends the override.
     """
     assert mod._argv_worker_pool_is_budgeted(["pytest", "-n32", "--", "-n0"]) is False
     assert mod._argv_worker_pool_is_budgeted(["pytest", "-n0", "--", "-n32"]) is True
@@ -258,15 +241,10 @@ def test_the_terminator_ends_the_walk_for_the_runs_own_count(mod):
 def test_an_addopts_override_is_walked_before_the_runs_own_tokens(mod, tmp_path, monkeypatch):
     """``-o addopts=...`` / ``--override-ini addopts=...`` carry the count pytest starts from.
 
-    pytest replaces the tree's ``addopts`` with the override and puts its tokens in front
-    of the run's own, so ``-o addopts='-n 16'`` is a 16-worker run with no ``-n`` token of
-    its own -- a reader that only read the run's own tokens would call it budgeted and
-    drop it. The override is folded in first: its ``-n`` is the run's unless a later token
-    of the run's own overrides it, the last override of the same key wins, an override of
-    another key is not read, an override that supplies no ``-n`` runs one process, and a
-    value the splitter refuses (an unbalanced quote, which pytest refuses too) is answered
-    fail-closed. The alias path is where the fail-closed answer is observable: the joined
-    rule's scan does not cross an unbalanced quote, so ``pytest-3`` carries it.
+    pytest puts the override's tokens in front of the run's own, so
+    ``-o addopts='-n 16'`` is a 16-worker run. Later own tokens and later overrides win;
+    an unbalanced quote is fail-closed, observable via ``pytest-3`` because the joined
+    rule's scan does not cross it.
     """
     reader = mod._argv_worker_pool_is_budgeted
     assert reader(["pytest", "--override-ini=addopts=-n 16", "test/"]) is False
@@ -297,12 +275,8 @@ def test_an_addopts_override_is_walked_before_the_runs_own_tokens(mod, tmp_path,
 def test_the_reader_answers_from_argv_and_does_not_open_a_named_config(mod):
     """``-c other.ini`` names a file; its ``addopts`` are the checkout's business.
 
-    The reader's contract is the command line: a count it can see there is judged, and a
-    count that would have to be read out of a file is not -- the probe keys the stop on
-    ``cwd=fleet`` for exactly the reason that the checkout decides what ``auto`` means.
-    Pinned so the boundary is a stated one: a run naming another config and no count of
-    its own inherits that config's ``addopts``, which this reader reports as budgeted, and
-    a count it does see under such a run is judged as everywhere else.
+    The reader judges only the command line. A run naming another config with no count
+    of its own reads as budgeted; a count it does see is judged as everywhere else.
     """
     reader = mod._argv_worker_pool_is_budgeted
     assert reader(["pytest", "-c", "other.ini", "test/"]) is True
@@ -313,15 +287,9 @@ def test_the_reader_answers_from_argv_and_does_not_open_a_named_config(mod):
 def test_the_readers_verdict_decides_every_detectable_shape(mod, tmp_path, monkeypatch):
     """THE ASYMMETRY, as an implication: reader says budgeted, so the scan stays silent.
 
-    A false negative costs a signal. A false positive is a fleet-owned row, which is
-    ``session_stop`` and a worker's discarded in-flight turn with no automatic recovery.
-    So the one thing that must never happen is a row against a run the reader calls
-    budgeted -- and the converse is pinned in the same enumeration, so the two paths
-    (joined-line rule, argv-only spelling) cannot drift apart on a spelling.
-
-    The count positions are enumerated FROM SOURCE -- every flag in ``_CAP_FLAGS``,
-    every spelling around it -- and which of them are budgeted is decided by
-    ``_argv_worker_pool_is_budgeted`` itself rather than by a list written here.
+    A false positive is ``session_stop`` and a discarded in-flight turn, so a run the
+    reader calls budgeted must never get a row; the converse is pinned too. Positions
+    come from ``_CAP_FLAGS`` and the verdict from ``_argv_worker_pool_is_budgeted``.
     """
     candidates: list[list[str]] = []
     for flag in sorted(mod._CAP_FLAGS):
@@ -382,12 +350,9 @@ def test_the_readers_verdict_decides_every_detectable_shape(mod, tmp_path, monke
 def test_every_argv_only_spelling_is_also_a_recognised_runner_base(mod):
     """A spelling the argv path admits must also be one the CAP check can see.
 
-    `_runner_token_index` keys on `_is_runner_base`, and `_argv_worker_pool_is_budgeted`
-    declines to answer (not budgeted) when no runner token stands alone. So a member of
-    `_ARGV_ONLY_RUNNER_BASES` that `_is_runner_base` does not recognise is reported
-    while its own `-n0` is invisible -- a single-process run drawing a stop, the most
-    expensive direction this file has. The invariant is asserted over the whole set
-    rather than one token, so adding a spelling cannot reopen it.
+    `_argv_worker_pool_is_budgeted` answers "not budgeted" when no runner token stands
+    alone, so an `_ARGV_ONLY_RUNNER_BASES` member unknown to `_is_runner_base` would have
+    its `-n0` ignored and draw a stop. Asserted over the whole set.
     """
     for base in sorted(mod._ARGV_ONLY_RUNNER_BASES):
         assert mod._is_runner_base(base), f"{base} is admitted but its count cannot be read"

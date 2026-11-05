@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import socket
 import time
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
@@ -243,14 +244,22 @@ class TestRunStdoutPump:
     @pytest.mark.asyncio
     async def test_cancellation_propagates(self) -> None:
         backend = _make_backend()
-        backend.stdout = cast(Any, _reader(eof=False))
+        reader = _reader(eof=False)
+        parked = asyncio.Event()
+        real_readuntil = reader.readuntil
+
+        async def _readuntil_signalling(separator: bytes = b"\n") -> bytes:
+            # Set once the pump is parked on stdout, so the cancel lands on a running pump.
+            parked.set()
+            return await real_readuntil(separator)
+
+        reader.readuntil = _readuntil_signalling  # type: ignore[method-assign]
+        backend.stdout = cast(Any, reader)
         task = asyncio.create_task(backend.run_stdout_pump())
-        # flake-ok: pre-existing one-tick yield, moved verbatim; tracked for a de-flake pass
-        await asyncio.sleep(0)
+        await await_until(parked, what="stdout pump parked on the backend stdout")
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
-            # flake-ok: pre-existing await of the pump task the test just cancelled, moved verbatim
-            await task
+            await await_until(task, what="cancelled stdout pump task")
 
 
 # --- _fail_oversize_request -------------------------------------------------
@@ -384,11 +393,15 @@ class TestFailOversizeRequest:
 class TestWriteJsonLine:
     @pytest.mark.asyncio
     async def test_serialises_one_newline_terminated_frame(self) -> None:
-        writer = MagicMock()
-        writer.drain = AsyncMock()
-        await _write_json_line(cast(Any, writer), {"a": 1})
-        assert writer.write.call_args.args[0] == b'{"a":1}\n'
-        writer.drain.assert_awaited_once()
+        near, far = socket.socketpair()
+        _, writer = await asyncio.open_connection(sock=near)
+        peer, peer_writer = await asyncio.open_connection(sock=far)
+        try:
+            await _write_json_line(writer, {"a": 1})
+            writer.close()
+            assert await finished(peer.read(), "serialized frame EOF") == b'{"a":1}\n'
+        finally:
+            peer_writer.close()
 
     @pytest.mark.asyncio
     async def test_per_backend_lock_is_used_when_present(self) -> None:
@@ -404,15 +417,18 @@ class TestWriteJsonLine:
     ) -> None:
         monkeypatch.setattr(backend_mod, "_WRITE_DRAIN_TIMEOUT_SECS", 0)
         writer = MagicMock()
+        never_drained = asyncio.Event()
 
         async def _slow_drain() -> None:
-            # flake-ok: pre-existing drain stand-in that never finishes; the patched zero drain timeout fires first, moved verbatim
-            # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing hang of the stubbed drain moved verbatim; the zeroed drain timeout cuts it short
-            await asyncio.sleep(3600)
+            # Stands in for a drain that never finishes; the zeroed drain timeout ends the wait.
+            await never_drained.wait()
 
         writer.drain = _slow_drain
-        with pytest.raises(BrokenPipeError, match="drain timed out"):
-            await _write_json_line(cast(Any, writer), {"a": 1})
+        try:
+            with pytest.raises(BrokenPipeError, match="drain timed out"):
+                await _write_json_line(cast(Any, writer), {"a": 1})
+        finally:
+            never_drained.set()
 
 
 class TestPumpStderr:
@@ -810,8 +826,7 @@ class TestStrayStdoutLines:
         resolver = asyncio.create_task(_ready_then_dead())
         with pytest.raises(BackendGone, match="stdout EOF"):
             await backend.prime_initialize({"method": "initialize", "id": 1}, timeout=10)
-        # flake-ok: pre-existing await of the resolver task, which sets the handshake event and returns, moved verbatim
-        await resolver
+        await await_until(resolver, what="resolver task that marks the backend dead")
 
     @pytest.mark.asyncio
     async def test_the_pre_init_reader_skips_stray_lines_and_initializes(self) -> None:

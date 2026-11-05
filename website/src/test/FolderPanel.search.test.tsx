@@ -9,7 +9,7 @@
  * query, and that the truncation note appears only on a full page.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, waitFor, within, fireEvent } from '@testing-library/react'
+import { render, screen, waitFor, within, fireEvent, act } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import FolderPanel from '../pages/chat/FolderPanel'
@@ -85,7 +85,7 @@ describe('FolderPanel search', () => {
     await screen.findByText('README.md')
     await type('a')
 
-    await vi.advanceTimersByTimeAsync(500)
+    await act(async () => { await vi.advanceTimersByTimeAsync(500) })
     expect(search).not.toHaveBeenCalled()
     // The listing stays put rather than being replaced by an empty result set.
     expect(screen.getByText('README.md')).toBeInTheDocument()

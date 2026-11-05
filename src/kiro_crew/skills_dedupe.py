@@ -15,9 +15,7 @@ call); when unavailable, the caller falls back to the lexical ``find_similar``.
 The judge returns a **tri-state** verdict: a candidate can be genuinely NEW,
 a plain DUP (same skill, nothing to add), or an UPDATE (same skill but the
 candidate carries meaningful new requirements/steps worth folding into the
-existing one). ``metadata_dedupe_verdict`` exposes the full tri-state; the
-legacy ``metadata_dedupe`` is a thin wrapper that returns the matched key for
-either DUP or UPDATE (else ``None``) so existing callers keep working.
+existing one). ``metadata_dedupe_verdict`` returns that tri-state.
 """
 
 from __future__ import annotations
@@ -80,8 +78,15 @@ def _tokens(text: str) -> set:
     Matching ONLY on whole tokens avoids a substring test resolving a longer,
     distinct key (``auto/deploy-helper-v2``) to a shorter existing one
     (``auto/deploy-helper``). Prose, quoting, and fences are still handled.
+
+    ``.`` is a key char, so a sentence-ending period sticks to the token
+    (``DUP auto/deploy-timeout.``). Each token also yields its form with
+    trailing periods removed; only names in the caller's valid keys ever
+    match, so the extra form cannot invent a key.
     """
-    return set(re.findall(r"[A-Za-z0-9._/\-]+", text))
+    toks = set(re.findall(r"[A-Za-z0-9._/\-]+", text))
+    stripped = {t.rstrip(".") for t in toks if t.endswith(".")}
+    return toks | (stripped - {""})
 
 
 def _match_key(text: str, valid_keys: Sequence[str]) -> Optional[str]:
@@ -91,28 +96,6 @@ def _match_key(text: str, valid_keys: Sequence[str]) -> Optional[str]:
         if k in toks:
             return k
     return None
-
-
-def parse_dedupe_response(text: str, valid_keys: Sequence[str]) -> Optional[str]:
-    """Extract a matched existing-skill key from the judge reply.
-
-    Returns the matched key iff the reply names one of *valid_keys*; otherwise
-    (including an explicit ``NONE``) returns ``None``. Robust to extra prose,
-    code fences, and quoting.
-
-    This is the legacy (binary) parser. It is retained for backward
-    compatibility and treats any reply that names a valid key — with or without
-    a ``DUP``/``UPDATE`` prefix — as a match.
-    """
-    if not text:
-        return None
-    cleaned = text.strip().strip("`").strip()
-    if cleaned.upper() == _NONE_TOKEN or cleaned.upper().startswith(_NONE_TOKEN):
-        # Only treat as NONE when no valid key also appears (guards a reply like
-        # "NONE of these except auto/foo").
-        if not any(k in text for k in valid_keys):
-            return None
-    return _match_key(text, valid_keys)
 
 
 def parse_dedupe_verdict(
@@ -195,23 +178,3 @@ def metadata_dedupe_verdict(
     except Exception:
         return (VERDICT_NEW, None)
     return parse_dedupe_verdict(reply or "", valid_keys)
-
-
-def metadata_dedupe(
-    candidate: dict,
-    existing: Sequence[dict],
-    judge_fn: Optional[Callable[[str], str]],
-) -> Optional[str]:
-    """Return the key of an existing skill *candidate* duplicates, else ``None``.
-
-    Thin wrapper over :func:`metadata_dedupe_verdict`: returns the matched key
-    for either a ``DUP`` or an ``UPDATE`` verdict, else ``None``. Preserves the
-    original binary semantics for existing callers.
-
-    - No existing skills, or no ``judge_fn`` supplied → ``None``.
-    - Any judge error → ``None`` (fail open; never raise into the caller).
-    """
-    verdict, key = metadata_dedupe_verdict(candidate, existing, judge_fn)
-    if verdict in (VERDICT_DUP, VERDICT_UPDATE):
-        return key
-    return None

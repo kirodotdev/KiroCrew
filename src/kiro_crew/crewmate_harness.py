@@ -72,6 +72,29 @@ class CrewmateHarnessUnavailable(RuntimeError):
         )
 
 
+class KasUnavailable(CrewmateHarnessUnavailable):
+    """An enterprise session would run on KAS, and KAS cannot start on this host.
+
+    RFC D6: KAS is the enterprise floor and nothing falls back to the Kiro CLI
+    harness. The gateway started because its main sessions do not run KAS (a
+    policy-allowed pick of another harness); this session does (a crewmate DM or worker, a
+    ``spawn_run(backend=...)`` override, a main backend switched to KAS), so it is
+    refused before any process exists (``enterprise_boot.refuse_unstartable_kas``).
+    Same ``code`` as an unstartable pin (H17), so every caller that handles that
+    refusal handles this one. *failed* and *fix* come from
+    ``enterprise_boot.kas_refusal``.
+    """
+
+    def __init__(self, failed: str, fix: str) -> None:
+        self.crew = ""
+        self.stored = _backends.backend_to_stored(_backends.ACP_BACKEND_KAS)
+        RuntimeError.__init__(
+            self,
+            f"{HARNESS_UNAVAILABLE_CODE}: this session runs on KAS, and {failed}. "
+            f"{fix} Nothing runs on another harness in its place.",
+        )
+
+
 #: The two harnesses ``tool_gate.label_for`` answers with their raw id; every
 #: other known harness, Kiro CLI included, takes its name from that one map.
 _LABELS = {"kas": "Kiro Agent", "claude": "Claude Code"}
@@ -351,8 +374,9 @@ def models_route(config: Any, query: Any) -> tuple[str, bool] | None:
 
     With no ``?backend=`` it is the installation's harness and the shared bundle
     predicate (``agent_sdk.kas_bundle.kas_bundle_route``). With one, the asked
-    harness names its own route: the bundle only for KAS with ``agent.kas_bundle``
-    on, whatever the installation runs. ``None`` for a harness that is not
+    harness names its own route: the bundle only for KAS on the bundle route
+    (``agent.kas_bundle`` on, or chosen because kiro-cli's relay cannot run),
+    whatever the installation runs. ``None`` for a harness that is not
     selectable. Blocking (the bundle predicate reads config).
     """
     asked = query["backend"] if "backend" in query else None
@@ -363,7 +387,13 @@ def models_route(config: Any, query: Any) -> tuple[str, bool] | None:
     backend = harness_for_query(asked)
     if backend is None:
         return None
-    on_bundle = backend == _backends.ACP_BACKEND_KAS and bool(
-        getattr(config.agent, "kas_bundle", False)
-    )
+    on_bundle = False
+    if backend == _backends.ACP_BACKEND_KAS:
+        from kiro_crew.agent_sdk import kas_bundle
+
+        # The route rule the spawn applies (``acp/kas_route.py``): the switch, or
+        # the automatic bundle route when kiro-cli's relay cannot run here.
+        on_bundle = bool(getattr(config.agent, "kas_bundle", False)) or bool(
+            kas_bundle.kas_route().bundle
+        )
     return backend, on_bundle

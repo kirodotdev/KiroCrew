@@ -1107,10 +1107,16 @@ def _agent_includes_crew_context(agent: str | None) -> bool:
     """
     if not agent or agent == "kirocrew":
         return True
-    cached = _INCLUDE_CREW_CONTEXT_CACHE.get(agent)
+    from kiro_crew import agent_spec_pins
+
+    # Keyed with the pin folded in, from one snapshot that also drives the read: a
+    # pin change picks another file, whose flag may differ.
+    pins = agent_spec_pins.spec_pins()
+    key = agent_spec_pins.pinned_memo_key(agent, pins)
+    cached = _INCLUDE_CREW_CONTEXT_CACHE.get(key)
     if cached is None:
-        cached = _read_include_crew_context(agent)
-        _INCLUDE_CREW_CONTEXT_CACHE[agent] = cached
+        cached = _read_include_crew_context(agent, pins)
+        _INCLUDE_CREW_CONTEXT_CACHE[key] = cached
     return cached
 
 
@@ -1302,8 +1308,6 @@ def _skills_injection_plan(
     hand-copied second gate is exactly what let the re-injection path ship
     without scoping, handing a mapped agent the catalog its mapping excludes.
     """
-    from kiro_crew.agent_files import is_kirocrew_default_agent
-
     inherit = provider_type == PROVIDER_ACP
     pinned = pinned_skill_globs(session_key, project_dir=project_dir, inherit_defaults=inherit)
     if pinned is not None:
@@ -1317,11 +1321,9 @@ def _skills_injection_plan(
         )
     else:
         globs = []
-    is_custom = (
-        bool(agent)
-        and not is_kirocrew_default_agent(agent)
-        and agent not in WHOLE_CATALOG_TEMPLATES
-    )
+    # ``WHOLE_CATALOG_TEMPLATES`` holds every default agent, so it is the whole test:
+    # ``session_skill_globs`` reads the same set, and the two cannot disagree.
+    is_custom = bool(agent) and agent not in WHOLE_CATALOG_TEMPLATES
     return (bool(globs) or not is_custom), globs
 
 

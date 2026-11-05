@@ -143,9 +143,10 @@ def _run_helper(
     ``openssl`` it shells out to -- can then only ever write there.
     """
     return subprocess.run(
-        [sys.executable, str(HELPER), *args],
+        [sys.executable, "-X", "utf8", str(HELPER), *args],
         check=check,
         text=True,
+        encoding="utf-8",
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         env=env,
@@ -258,6 +259,7 @@ def test_helper_builds_a_canonical_independently_verifiable_manifest(
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        encoding="utf-8",
         cwd=tmp_path,
     )
     assert verified.returncode == 0, verified.stderr
@@ -818,7 +820,7 @@ def test_no_documented_cli_pin_is_below_the_declared_cutoff() -> None:
             f"{guide.name} states {floor_text}"
         )
 
-    # `playwright-cli.sh --version` is a different installer on its own version
+    # a different installer script's `--version` is on its own version
     # line, so the lookbehind keeps `-cli.sh` suffixes out of the scan.
     invocation = re.compile(r"(?<![\w.-])cli\.sh\b")
     pin = re.compile(r"--version[= ]([0-9]+(?:\.[0-9]+)+)")

@@ -71,16 +71,17 @@ def test_the_owner_opt_in_off_keeps_the_tool_prompting(ungoverned, monkeypatch):
 
 
 def test_a_pre_tool_hook_on_the_server_outranks_the_permission(ungoverned):
-    """KAS resolves the most restrictive rule, so the unscoped ``ask`` the hook
-    withholding adds keeps the call on Crew's permission path, where the hook runs."""
+    """KAS resolves the most restrictive rule, so the ``ask`` the hook withholding
+    adds keeps the call on Crew's permission path, where the hook runs. An
+    ``@server`` hook asks on that server's tools alone (P1-5)."""
     spec = _spec(mcpServers={"docs-mcp": dict(_DOCS)})
     out = to_client_custom_agent("a", spec, "p", pre_tool_hook_matchers=("@docs-mcp",))
     asks = [
         r
         for r in out["permissions"]["rules"]
-        if r.get("capability") == "mcp" and r.get("effect") == "ask" and not r.get("match")
+        if r.get("capability") == "mcp" and r.get("effect") == "ask"
     ]
-    assert asks
+    assert asks == [{"capability": "mcp", "match": ["docs-mcp/*"], "effect": "ask"}]
 
 
 @pytest.mark.parametrize(

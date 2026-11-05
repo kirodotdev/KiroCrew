@@ -1,14 +1,8 @@
 """Tests for the subagent startup watchdog (subagent.py).
 
-Covers ``SubagentManager._is_startup_stalled`` (which a wedged, never-started
-subagent trips) and ``_force_reap(reason="startup_timeout")`` (the clear
-"failed to start" error + tombstone cause it produces).
-
-A subagent whose ``_run_inner`` wedges before launching its runtime (no pid)
-and before its first turn must not sit for the full 1800s deadline and then
-surface a misleading "Reaped after 1800s [turn 0/100]" error. The startup
-watchdog reaps it after a short window with an accurate "Failed to start"
-message, while never touching an agent that is merely awaiting spawn approval.
+A subagent wedged before its runtime starts (no pid) and before its first turn is reaped
+after a short window with "Failed to start", not after the 1800s deadline with
+"Reaped after 1800s [turn 0/100]". An agent awaiting spawn approval is never touched.
 """
 
 from __future__ import annotations
@@ -348,17 +342,10 @@ async def test_force_reap_midrun_tool_parked_keeps_deadline_message():
 
 @pytest.mark.asyncio
 async def test_spawn_with_approval_marks_awaiting_flag_while_parked():
-    """The pre-execution spawn gate must set ``_awaiting_approval`` for the
-    duration of the human approval wait.
+    """The spawn gate sets ``_awaiting_approval`` for the whole human approval wait.
 
-    This is the production wire that ``_force_reap``'s approval-parked branch
-    depends on: without it, a run reaped while parked on an unanswered spawn
-    approval has ``_awaiting_approval`` False and falls through to the generic
-    deadline message — the exact bug this task fixes. The unit tests above
-    hand-set the flag, so only this test catches a regression that stops the
-    gate from setting it. It also pins ``_exec_started is None`` at the wait,
-    which is what makes the reap branch distinguish "never started" from a
-    mid-run tool prompt.
+    The tests above hand-set the flag, so only this one catches the gate not setting it.
+    ``_exec_started is None`` at the wait is what tells "never started" from a mid-run prompt.
     """
     mgr = _make_manager(startup_timeout=120)
 

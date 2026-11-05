@@ -200,6 +200,81 @@ def test_issue_body_has_no_absolute_zip_path(tmp_path, monkeypatch):
     assert "secret(s) auto-redacted" in body
 
 
+def test_bundle_includes_every_kept_boot_log(tmp_path, monkeypatch):
+    """The older boots behind gateway.log.prev ride in the bundle, redacted like it."""
+    home = tmp_path / "home"
+    _isolate(monkeypatch, home)
+    boots = home / "logs" / "gateway-boots"
+    boots.mkdir(parents=True)
+    (home / "gateway.log").write_text("live run\n")
+    (home / "gateway.log.prev").write_text("boot 1 back\n")
+    (boots / "gateway.log.4").write_text("boot 2 back\n" + _GATEWAY)
+    (boots / "gateway.log.2").write_text("boot 4 back\n")
+
+    r = diagnostics.collect_bundle(output_dir=tmp_path / "out")
+
+    with zipfile.ZipFile(r.zip_path) as z:
+        names = set(z.namelist())
+        assert {
+            "gateway.log.prev",
+            "gateway-boots/gateway.log.4",
+            "gateway-boots/gateway.log.2",
+        } <= names
+        older = z.read("gateway-boots/gateway.log.4").decode()
+        assert z.read("gateway-boots/gateway.log.2").decode() == "boot 4 back\n"
+    for secret in _SECRETS:
+        assert secret not in older, f"secret leaked into bundle: {secret!r}"
+    assert older.startswith("boot 2 back\n")
+    # A boot that was never kept is neither a member nor reported as skipped.
+    assert not [m for m in r.skipped if m.startswith("gateway-boots/")]
+
+
+def test_bundle_with_no_older_boot_logs_skips_only_prev(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    _isolate(monkeypatch, home)
+    (home / "gateway.log").write_text("live run\n")
+
+    r = diagnostics.collect_bundle(output_dir=tmp_path / "out")
+
+    boot_skips = [m for m in r.skipped if "gateway.log.prev" in m or "gateway-boots" in m]
+    assert boot_skips == ["gateway.log.prev"]
+
+
+@requires_symlinks
+def test_bundle_refuses_a_symlinked_older_boot_log(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    _isolate(monkeypatch, home)
+    boots = home / "logs" / "gateway-boots"
+    boots.mkdir(parents=True)
+    (home / "gateway.log").write_text("live run\n")
+    outside = tmp_path / "outside.txt"
+    outside.write_text("not a log\n")
+    (boots / "gateway.log.2").symlink_to(outside)
+
+    r = diagnostics.collect_bundle(output_dir=tmp_path / "out")
+
+    with zipfile.ZipFile(r.zip_path) as z:
+        assert "gateway-boots/gateway.log.2" not in z.namelist()
+    assert "gateway-boots/gateway.log.2" in r.skipped
+
+
+@requires_symlinks
+def test_bundle_never_lists_a_linked_boot_dir(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    _isolate(monkeypatch, home)
+    (home / "logs").mkdir()
+    (home / "gateway.log").write_text("live run\n")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "gateway.log.1").write_text("someone else's log\n")
+    (home / "logs" / "gateway-boots").symlink_to(outside, target_is_directory=True)
+
+    r = diagnostics.collect_bundle(output_dir=tmp_path / "out")
+
+    with zipfile.ZipFile(r.zip_path) as z:
+        assert not [n for n in z.namelist() if n.startswith("gateway-boots/")]
+
+
 def test_collapse_skips_root_and_single_segment_and_respects_boundary(monkeypatch):
     """Ruling 2: a root/single-segment HOME is skipped; a prefix match is segment-bounded.
 

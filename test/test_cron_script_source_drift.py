@@ -1,19 +1,9 @@
 """Second-hop cron script source verification.
 
-The packaged ``builtin_skills/`` to installed-skills hop is content-verified,
-``scripts/`` included -- ``test_builtin_skill_sync_safety.py`` pins that with
-``test_script_only_package_update_reaches_the_install``. The next hop, installed
-skill asset to ``<config_dir>/crons/``, is a hand-run ``cp`` that nothing ever
-compared, so a deployed cron script could run superseded code indefinitely while
-looking healthy.
-
-These tests pin the hop-2 comparison. The load-bearing one is
-``test_diverged_deploy_is_detected``: an identical-copy test alone stays green
-even if the comparison is deleted outright, so agreement is not evidence the
-instrument works. The scope guard matters just as much -- a deployed script with
-no source at all must NOT be reported, because cron script bodies are
-LLM-writeable by design and whether they ought to have sources is a product
-question this check does not raise.
+Hop 1 (``builtin_skills/`` to installed skills) is pinned in
+``test_builtin_skill_sync_safety.py``. Hop 2, installed skill asset to
+``<config_dir>/crons/``, is a hand copy, so ``test_diverged_deploy_is_detected`` is the
+key test. A deployed script with no source is not reported: cron bodies are LLM-writeable.
 """
 
 from __future__ import annotations
@@ -165,24 +155,9 @@ class TestHopTwoVerification:
 class TestDoctorRendersNamesInert:
     """A deployed script's NAME is chosen by an agent, so doctor must not print it raw.
 
-    ``cron_script.py`` states that bodies under ``<config_dir>/crons/`` are
-    LLM-writeable by design and enumerates the mitigations that make that
-    acceptable. So the filename is not merely untrusted in the abstract -- the
-    design deliberately lets an agent pick it, which makes a diagnostic that
-    echoes it the wrong consumer for that directory. An OSC/ANSI sequence would
-    drive the operator's terminal, and a newline would let a name forge the
-    surrounding verdict lines.
-
-    The contract under test is what doctor PRINTS, so these inject the state
-    rather than staging a file. That is deliberate and not a convenience: a
-    control character is legal in a POSIX filename and rejected by Win32, so an
-    on-disk fixture would test the filesystem's rules instead of the renderer's,
-    and would fail on Windows with ``EINVAL`` before reaching the code under
-    test. Injecting covers the renderer identically on every platform.
-
-    Each test asserts the RAW escape is absent and the escaped form present.
-    Asserting that an ordinary name renders correctly would pass with or without
-    ``_safe_display``, so it would prove nothing.
+    An OSC/ANSI sequence would drive the operator's terminal, and a newline could forge
+    verdict lines. State is injected, not staged on disk: Win32 rejects control
+    characters with ``EINVAL``. Each test checks the raw escape is absent.
     """
 
     ESC_NAME = "pr_watch\x1b[31m\n_forged.py"
@@ -272,3 +247,29 @@ def test_control_character_name_on_disk_is_enumerated_and_escaped(
     assert "DIVERGED" in out
     assert "\x1b" not in out
     assert "\\x1b" in out
+
+
+def test_diverged_hint_names_each_side_and_no_skill_recipe(
+    data_home: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The remedy line must describe something the operator can act on.
+
+    No built-in skill documents copying a skill asset into ``crons/``, so a hint
+    that sends the operator to "the owning skill's own copy recipe" points at
+    nothing. The hint instead says what each side is, which is the information
+    needed to choose which one to keep, and still refuses to pick a direction.
+    """
+    from kiro_crew import cli_doctor
+
+    _ship_skill_script(data_home, "pack/skill", "poller.py", "def run(ctx):\n    pass\n")
+    _deploy(data_home, "poller.py", "def run(ctx):\n    return 1\n")
+
+    issues: list[str] = []
+    cli_doctor._doctor_cron_script_sources(issues)
+    out = capsys.readouterr().out
+
+    assert issues == ["deployed cron script diverged from its skill source"]
+    assert "recipe" not in out
+    assert "the path after DIVERGED is the installed skill's copy" in out
+    assert "the crons/ file is what the cron runs" in out
+    assert "does not overwrite either one" in out

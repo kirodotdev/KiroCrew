@@ -29,6 +29,7 @@ from kiro_crew import (
     sandbox_seatbelt,
 )
 from kiro_crew.config.paths import config_dir
+from kiro_crew.config.write_provenance import launcher_record as _published_file_record
 from kiro_crew.platform import current_context
 from kiro_crew.sandbox_aliases import (
     _referent_identity,
@@ -50,6 +51,7 @@ from kiro_crew.sandbox_seals import (
     _refuse_linked_models_leaf,
 )
 from kiro_crew.sandbox_staging import (
+    _materialize_env_mask_target,
     _materialize_live_target_mask_target,
     _materialize_maskable_dirs,
     _materialize_md_notebook_mask_targets,
@@ -414,6 +416,7 @@ def _spawn_plan(
     required_mask_targets: tuple[str, ...] = (),
     mask_occupants: "Mapping[str, tuple[int, ...]] | None" = None,
     crew_home_aliases: tuple[tuple[str, str, int, int], ...] = (),
+    published_file_record: tuple[str, str, tuple[str, ...]] | tuple[()] = (),
     exec_cwd: str = "",
 ) -> sandbox_plan.ConfinementPlan:
     """Plan one spawn for *backend* against this host, logging what the plan refused.
@@ -439,6 +442,7 @@ def _spawn_plan(
         required_mask_targets=tuple(required_mask_targets),
         mask_occupants=tuple((mask_occupants or {}).items()),
         crew_home_aliases=tuple(crew_home_aliases),
+        published_file_record=published_file_record,
         exec_cwd=exec_cwd,
     )
     plan = sandbox_plan.plan_confinement(request, _live_plan_host(request))
@@ -464,6 +468,7 @@ def _build_launcher_script(
     required_mask_targets: tuple[str, ...] = (),
     mask_occupants: "Mapping[str, tuple[int, ...]] | None" = None,
     crew_home_aliases: tuple[tuple[str, str, int, int], ...] = (),
+    published_file_record: tuple[str, str, tuple[str, ...]] | tuple[()] = (),
     exec_cwd: str = "",
 ) -> str:
     """The Linux namespace launcher program for one spawn, as Python source text.
@@ -492,6 +497,7 @@ def _build_launcher_script(
             required_mask_targets=required_mask_targets,
             mask_occupants=mask_occupants,
             crew_home_aliases=crew_home_aliases,
+            published_file_record=published_file_record,
             exec_cwd=exec_cwd,
         )
     )
@@ -582,6 +588,8 @@ def namespace_argv(
     # creatable from any sandbox simply because the data-home ROOT is writable there and
     # an absent name has no mask. Publishing the stub first makes the mask non-vacuous.
     _materialize_live_target_mask_target(_required_targets)
+    # The channel-credential file has the same gap: an absent ``.env`` gets no mask.
+    _materialize_env_mask_target(_required_targets)
     # CLEANUP BEFORE THE REFUSAL, and this order is a contract rather than a preference.
     # Both sweeps and the reconciliation remove names that are themselves hard links to a
     # masked credential leaf -- a pre-upgrade orphan is a link to the signing key by
@@ -698,6 +706,10 @@ def namespace_argv(
         # builder stays free of filesystem calls and still hands the launcher one
         # name per crew directory on a symlinked home.
         crew_home_aliases=_crew_home_alias_roots(),
+        # Where the gateway records the config files it published itself, so a save of
+        # its own between the pass above and the launcher's pin is told apart from a
+        # substitution rather than refused. See ``config.write_provenance``.
+        published_file_record=_published_file_record(),
         exec_cwd=exec_cwd,
     )
     run_dir = _ensure_run_dir()

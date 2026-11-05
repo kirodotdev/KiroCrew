@@ -94,6 +94,7 @@ from pathlib import Path
 
 from kiro_crew import platform_compat
 from kiro_crew.config.loader import config_dir
+from kiro_crew.owner_only_files import mkdirs_owner_only
 
 logger = logging.getLogger(__name__)
 
@@ -360,7 +361,7 @@ def allocate_work(key: str) -> Path:
     # through a link is ordinary, and refusing it would break every caller on
     # such a host rather than protect it.
     _refuse_linked(root, f"managed root {WORK_DIRNAME!r}")
-    root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    mkdirs_owner_only(root)
     _refuse_linked(root, f"managed root {WORK_DIRNAME!r}")
     path = root / safe
     lock_file = _lock_path(root, safe)

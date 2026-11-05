@@ -57,7 +57,11 @@ cron resume <id>
 
 `cron_expr` uses five fields: `min hour dom month dow`; the MCP schema documents numeric day-of-week values `0=Sun` through `6=Sat`.
 
-A job's `timezone` (CLI `--timezone`) is the zone its wall clock is read in: a `cron_expr`'s hour and minute fields, and a clock time given as `at_time` / `--at` such as `"9am"` or `"tomorrow 17:30"`. Without one, both are read in the global config timezone, falling back to UTC. `cron_add(at_time="9am", timezone="America/Los_Angeles")` therefore fires at 9am in Los Angeles even on a gateway whose config timezone is UTC. A clock time the zone skips (such as the hour lost when daylight saving time starts) is refused rather than moved. A relative `at_time` (`"in 2 hours"`), a Unix `at` and a `delay` name an instant already, so the timezone only changes how the job is displayed.
+A job's `timezone` (CLI `--timezone`) is the zone its wall clock is read in: a `cron_expr`'s hour and minute fields, and a clock time given as `at_time` / `--at` such as `"9am"` or `"tomorrow 17:30"`. Without one, both are read in the global config timezone, and with no config timezone in `local`. `cron_add(at_time="9am", timezone="America/Los_Angeles")` therefore fires at 9am in Los Angeles even on a gateway whose config timezone is UTC.
+
+`local` is the time zone of the computer Kiro Crew runs on, as it is now. A laptop that travels switches its system zone, and a `local` job follows it: a daily `0 9 * * *` job runs at 09:00 in Shanghai, and at 09:00 in San Francisco after the flight. The gateway re-reads the zone at least every 30 seconds while it runs; `TZ` in the gateway's environment wins over the system setting. Two rules cover the trip itself. Flying west, a time that already ran is not run again on the same date: 09:00 on the 3rd in Shanghai is not followed by 09:00 on the 3rd in San Francisco. Flying east, a time the clock jumped over is not caught up, as a time the laptop slept through is not. A one-shot `at_time` in `local` is read in the zone you are in when you create it and then stays at that instant. Pick a named zone instead when a job belongs to a place rather than to you, such as a report for an office.
+
+Jobs saved by an earlier version without a timezone, on an install with no config timezone, ran in UTC. On the first load after the upgrade those jobs are given the timezone `UTC`, so they keep running when they did; edit one to `local` to have it follow you. A clock time the zone skips (such as the hour lost when daylight saving time starts) is refused rather than moved. A relative `at_time` in seconds, minutes or hours (`"in 2 hours"`, `"in 90 mins"`), a Unix `at` and a `delay` name an instant already, so the timezone only changes how the job is displayed. A relative day or week count (`"in 3 days"`, `"in 1 week"`, `"in 2d"`) is counted in calendar days in that zone, so it keeps the clock time across a daylight saving change, like `"tomorrow"`.
 
 A zone's rules come from the timezone data the gateway's Python finds: the operating system's zoneinfo where it has one (macOS and most Linux hosts), otherwise the `tzdata` package Kiro Crew installs (Windows, and Linux hosts without the system `tzdata` package). Out-of-date data still resolves every zone name, so a job in a zone whose rules changed runs at the old rule's hour (with data older than IANA tzdb 2026b, a 9am job in `America/Vancouver` runs at 10am from 2026-11-01). `kirocrew doctor` reports such data on its `tz data` row and names the update; restart the gateway afterwards, since it keeps every zone it already loaded.
 
@@ -81,7 +85,7 @@ Each run appends a pair of rows so the runs stay distinguishable inside that one
 | `user` | `# Cron Run: <name> \| <date time tz>` | the job's `message` — what this run was asked to do, or, for a long unchanged instruction, a reference to the row that holds it (below) |
 | `assistant` | `# Cron Job Result: <name> \| <date time tz>` | what the run produced |
 
-The timestamp is the moment the run produced its result, to the second, rendered in the job's `timezone` (then the config timezone, then UTC). It is what lets a follow-up turn tell which run it is answering, so when you reply to a daily job, answer the newest pair. Rows written before this behaviour shipped carry no timestamp.
+The timestamp is the moment the run produced its result, to the second, rendered in the job's `timezone` (then the config timezone, then `local`). It is what lets a follow-up turn tell which run it is answering, so when you reply to a daily job, answer the newest pair. Rows written before this behaviour shipped carry no timestamp.
 
 The stamp is rendered ONCE, when the result is recorded, and stored with it — later edits to the job's `timezone` do not respell an existing row. That matters because a row is recognised as already-written by its exact text, so a re-render under changed settings would append a second copy of a run instead of recognising the first.
 
@@ -137,7 +141,7 @@ def run(ctx):
     raise Report("Result recorded; keep this cron scheduled")
 ```
 
-`ctx.notify(text, **kwargs)` sends a gateway message and `ctx.call_tool(server, tool, args)` invokes an MCP tool. `call_tool` keeps one server per name for the whole run: a call the server answers, with a result or a tool error, leaves it running for the next call; a call that fails any other way stops it, and the next call starts a fresh one. `kirocrew cron preview` uses the same lifecycle. `raise Skip()` ends this tick silently, `raise Done()` completes and removes the job, and `raise Report(message)` delivers a message while keeping the job scheduled.
+`ctx.notify(text, **kwargs)` sends a gateway message and `ctx.call_tool(server, tool, args)` invokes an MCP tool and returns every text block of its result, in order, joined by newlines (a tool that puts a notice ahead of its JSON returns both, the notice first). `call_tool` keeps one server per name for the whole run: a call the server answers, with a result or a tool error, leaves it running for the next call; a call that fails any other way stops it, and the next call starts a fresh one. `kirocrew cron preview` uses the same lifecycle. `raise Skip()` ends this tick silently, `raise Done()` completes and removes the job, and `raise Report(message)` delivers a message while keeping the job scheduled.
 
 A script can also drive dashboard sessions. Each method raises `RuntimeError` carrying the gateway's reason when the gateway refuses or cannot be reached:
 
@@ -147,7 +151,7 @@ A script can also drive dashboard sessions. Each method raises `RuntimeError` ca
 - `ctx.send_to_session(slot, message)` queues the message as that slot's next turn and returns at once: `{"ok": True, "slot": <key>}` when the slot was idle, or `{"ok": True, "queued": True, "queue_id": <id>}` when it was busy.
 - `ctx.set_session_mode(slot, mode)` sets that session's tool approval mode to `trust` or `trust_reads` and returns `{"ok": True, "mode": <mode>}`. Any other mode is refused with `mode_not_allowed` and an unnamed slot with `slot_required`.
 
-Folder names, session names and messages are redacted like `notify()` text. With `agent.session_control` off, `open_session`, `send_to_session` and `set_session_mode` are refused with `session_control_disabled`; `send_to_session` or `set_session_mode` on a slot another creator made is refused with `not_creator`. A cron bound to a crew member is refused on `open_session` and `send_to_session`. These calls use the cron's own internal credential: do not shell out to `kirocrew token` for a dashboard token.
+Folder names, session names and messages are redacted like `notify()` text. With `agent.session_control` off, `open_session`, `send_to_session` and `set_session_mode` are refused with `session_control_disabled`; `send_to_session` or `set_session_mode` on a slot another creator made is refused with `not_creator`. A cron bound to a Bot is refused on `open_session` and `send_to_session`. These calls use the cron's own internal credential: do not shell out to `kirocrew token` for a dashboard token.
 
 Preview a script cron locally with real MCP tools; notifications are captured and printed instead of delivered:
 
@@ -204,7 +208,7 @@ Jobs can skip specific dates — useful for holidays, vacation, or one-off excep
 
 When a job is due but the current local date is in `skip_dates`, the job is silently not fired. `last_run_ts` is not updated, so the next run naturally covers the skipped period — agents using "since last run" logic handle gaps automatically.
 
-The `timezone` field determines what "today" means. Without it, the global config timezone is used, falling back to UTC. This matters when a UTC date boundary differs from the user's local date.
+The `timezone` field determines what "today" means. Without it, the global config timezone is used, falling back to `local` (this computer's zone). This matters when a UTC date boundary differs from the user's local date.
 
 ### Examples
 
@@ -262,14 +266,18 @@ The CLI has no flag for this. `kirocrew cron add` leaves `strict_schedule` at it
 | List | Schedule page | `cron list` | `kirocrew cron list` |
 | Pause | Pause button | `cron pause <id>` | `kirocrew cron pause <id>` |
 | Resume | Resume button | `cron resume <id>` | `kirocrew cron resume <id>` |
+| Run now | Run button | — | `kirocrew cron trigger <id>` |
 | Delete | Delete button | `cron remove <id>` | `kirocrew cron remove <id>` |
+| Delete an installer's job | Delete button | — | `kirocrew cron remove --managed-by <key>` |
 | Adopt / release | — | — | `kirocrew cron adopt <id> --session-of <slot>` / `--release` |
+
+`kirocrew cron add --managed-by <key>` registers a job for an external installer. The key is unique across the store: a second add with the same key is refused, so a re-install runs `kirocrew cron remove --managed-by <key>` first and then adds again. `kirocrew cron list` prints the key as `managed by: <key>`.
 
 ### Which chat session owns a job
 
 A job's `session_key` names the chat session it belongs to, and that one field carries one meaning: it is also where the job's output is delivered (`session="origin"` sends and script results both resolve a slot from it). A job created outside a chat — `kirocrew cron add`, the dashboard Schedule page, an onboarding import — therefore has no owning session, which is truthful rather than a defect: there is no chat to deliver into.
 
-The consequence is worth stating plainly, because it is easy to read as a job that disappeared. A job with no owning session is outside every chat session's scope: `cron_list` from chat does not list it, and the mutating cron tools answer a deliberately vague `job not found` so the reply cannot be used to enumerate jobs the caller may not see. Those jobs are managed from the operator surfaces instead: `kirocrew cron list`, which is the only surface that shows *who* owns a job, and the dashboard Schedule page, which lists and manages every job regardless of owner but does not yet display ownership (its API payload does not carry `session_key`).
+The consequence is worth stating plainly, because it is easy to read as a job that disappeared. A job with no owning session is outside every chat session's scope: `cron_list` from chat does not list it, and the mutating cron tools answer a deliberately vague `job not found` so the reply cannot be used to enumerate jobs the caller may not see. Those jobs are managed from the operator surfaces instead: `kirocrew cron list` and the dashboard Schedule page. Both list and manage every job regardless of owner and show who owns it: the Schedule page prints the owning `session_key` under the job's name, or says the job has no owning session.
 
 `kirocrew cron adopt` is the way across that line, in both directions:
 
@@ -295,4 +303,5 @@ If the key names no recorded session the command still succeeds but warns: a bra
 
 - **Failure alerts** — a failed run delivers its REASON to the dashboard bell and (when Slack is configured) to the job's channel or the owner's DM, not only to the gateway log. Covers all three job kinds and a fire-time policy denial, which is otherwise invisible.
 - **Failure dedup** — a repeat of the same reason withholds the Slack DM and marks the bell as suppressed; a different reason alerts in full, and the DM returns after an hour. A `silent: true` job alerts nowhere. Both still count toward auto-pause: dedup silences the DM, never the evidence. Success clears the failure state, so a relapse alerts fresh.
-- **Zombie reaper** — a periodic sweep (60s interval, 30 min deadline) force-kills cron executions that exceed their deadline. Prevents resource leaks from stuck jobs. When the kill cannot be delivered or confirmed, the run's `last_error` ends `; kill failed: <reason>` and its audit outcome is `failed`. Cancelling a run behaves the same.
+- **Alert threshold** — `alert_after_failures` (default 1) is how many failed runs in a row it takes before the failure message is sent; earlier failures only ring the dashboard bell. A policy denial and the run that auto-pauses the job always alert. Set to 2, a 10-minute watcher with a one-off failure pages nobody; `silent` is not the tool for that, since it also hides the job's results.
+- **Zombie reaper** — a periodic sweep (every 60s) force-kills a cron execution that runs past its deadline. The deadline is per job: its `timeout_secs`, capped at 24 hours and never below 30 minutes, and for a `script` or `command` job also the time it may spend in the run queue, the fire-time gate and the claim-time vet before its own code starts. Prevents resource leaks from stuck jobs. When the kill cannot be delivered or confirmed, the run's `last_error` ends `; kill failed: <reason>` and its audit outcome is `failed`. Cancelling a run behaves the same.

@@ -81,6 +81,7 @@ import { PANE_ACTIVE_SLOT_TYPE, PANE_SLOT_HINT_PARAM, readPaneSlot, rememberPane
 import ErrorNotice from './ErrorNotice'
 import { errMessage } from '../utils/thunkError'
 import { reportInstanceFailure } from '../utils/instanceFailureReport'
+import { canProbePanePort, panePortUrl, probePanePort, type PanePortProbe } from '../utils/panePortProbe'
 import type { ErrorReport } from '../utils/errorReport'
 import { isElectron, isLinuxFramelessElectron, isWinElectron } from '../lib/electron'
 import type { DragGap } from '../lib/dragGaps'
@@ -107,6 +108,13 @@ const REFRESH_MIN_INTERVAL_MS = 10_000
 // deps below precisely so that a re-mint arriving inside the window cannot
 // postpone it.
 const PANE_LOAD_TIMEOUT_MS = 15_000
+// What the panel says when this browser cannot reach the pane's port. Worded as
+// the likely cause next to the restart one, because a same-host forward whose
+// far end is down fails the probe the same way. The catalog value carries the
+// `ssh -L` command with the port interpolated on both sides.
+function panePortUnreachableMessage(port: number): string {
+  return i18nT('components.instancesViewport.pane_port_unreachable', { port })
+}
 // Gap between successive auto-warm iframe mounts on first load (see the
 // auto-warm effect). Long enough for a tunnel's shell + entry bundle to land
 // before the next pane starts pulling its own; short enough that four panes
@@ -1022,6 +1030,35 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
     return () => window.clearTimeout(t)
   }, [activeId, activeWarmPort, activeSeq, activeReady, nonLoopbackOrigin])
 
+  // After a load timeout, ask whether THIS browser can reach the pane's port at
+  // all (utils/panePortProbe.ts). The tunnel's `connected` is measured on the
+  // gateway host, so when the dashboard is reached through a forward of its own
+  // port only, nothing listens on the pane port on the browser's machine and the
+  // timeout is otherwise all the user sees. One probe per LOAD, keyed like the
+  // watchdog (id, port, Retry count), so Retry probes again and a re-mint does not.
+  const activeLoadKey = activeId && activeWarmPort !== undefined ? `${activeId}|${activeWarmPort}|${activeSeq}` : ''
+  const activeTimedOutNow = activeId !== null && !!timedOut[activeId] && !activeReady
+  const probeHost = window.location.hostname
+  const portProbeable = !nonLoopbackOrigin && canProbePanePort(probeHost)
+  const [portProbe, setPortProbe] = useState<{ load: string; verdict: PanePortProbe } | null>(null)
+  useEffect(() => {
+    if (!activeTimedOutNow || !portProbeable || !activeLoadKey || activeWarmPort === undefined) return
+    let cancelled = false
+    const load = activeLoadKey
+    const url = panePortUrl(probeHost, activeWarmPort)
+    void probePanePort(url).then(verdict => {
+      if (cancelled) return
+      paneLog('port-probe', { id: activeId, port: activeWarmPort, verdict })
+      setPortProbe({ load, verdict })
+    })
+    return () => { cancelled = true }
+  }, [activeTimedOutNow, portProbeable, activeLoadKey, activeWarmPort, activeId, probeHost])
+  const portProbeResult = portProbe && portProbe.load === activeLoadKey ? portProbe.verdict : undefined
+  // Pending while a probe for the current timed-out load has not answered yet.
+  const portProbePending = activeTimedOutNow && portProbeable && portProbeResult === undefined
+  // Only a refused/reset connection counts; a timed-out probe proves nothing.
+  const panePortUnreachable = activeTimedOutNow && portProbeResult === 'unreachable'
+
   // See iframeRefCallbacks: the callback is created once per id and reused
   // across renders, so React invokes it only on a real attach/detach. It reads
   // the reload seq through a ref because a closure over `reloadSeq` state would
@@ -1433,6 +1470,10 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
     // `connecting` state would journal as its own distinct signature, so every
     // Retry would leave a phantom entry between the real ones.
     if (inst?.status?.state === 'connecting') return
+    // Wait for the port probe (a few seconds at most) so the timeout is
+    // journaled once, with its verdict, instead of once before and once after.
+    if (showPanel && portProbePending) { setPanelReport(null); return }
+    const port = warm[activeId]?.port
     setPanelReport(reportInstanceFailure({
       id: activeId,
       name: inst?.name || activeId,
@@ -1447,10 +1488,15 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
       // connected while the pane never loaded — so name that state explicitly
       // rather than journaling nothing for the one failure with no visible cause.
       fallbackMessage: showPanel && activeTimedOut
-        ? i18nT('components.instancesViewport.pane_failed_to_load')
+        ? (panePortUnreachable && port !== undefined
+            ? panePortUnreachableMessage(port)
+            : i18nT('components.instancesViewport.pane_failed_to_load'))
         : '',
+      unreachablePanePort: showPanel && panePortUnreachable && port !== undefined
+        ? { host: probeHost, port }
+        : undefined,
     }))
-  }, [showPanel, activeId, activeTimedOut, instancesQuery.data])
+  }, [showPanel, activeId, activeTimedOut, instancesQuery.data, portProbePending, panePortUnreachable, warm, probeHost])
   if (embedded || (warmIds.length === 0 && !showPanel && !showNonLoopbackCard)) return null
 
   const nameFor = (id: string) =>
@@ -1689,7 +1735,9 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
                 // failure, so it carries the same hand-off as the one below.
                 <ErrorNotice
                   className="w-full text-left text-xs"
-                  message={i18nT('components.instancesViewport.the_tunnel_looks_connected_but_the_remote_dashbo')}
+                  message={panePortUnreachable && activeWarmPort !== undefined
+                    ? panePortUnreachableMessage(activeWarmPort)
+                    : i18nT('components.instancesViewport.the_tunnel_looks_connected_but_the_remote_dashbo')}
                   report={panelReport ?? undefined}
                   askAgent={!!panelReport}
                   onHandoff={() => dispatch(setActiveId(null))}

@@ -36,7 +36,7 @@ class TestLiteAgentDuplicate:
         claude_code provider's cheap background agent.
         """
         aim_file = agents_dir / AIM_LITE_FILENAME
-        aim_file.write_text(json.dumps({"name": "kirocrew-lite"}))
+        aim_file.write_text(json.dumps({"name": "kirocrew-lite"}), encoding="utf-8")
 
         with patch("kiro_crew.agent.KIRO_AGENTS_DIR", agents_dir):
             _install_lite_agent_fallback()

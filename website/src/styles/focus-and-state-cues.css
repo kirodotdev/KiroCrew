@@ -140,15 +140,17 @@
    is keyboard-focused, because `.focus-ring-accent`'s `box-shadow` replaces the
    Tailwind ring. Re-add the selection as an OUTER layer beyond the focus band
    so a focused + selected swatch still reads as chosen: 1px gap (`--bg`) then a
-   2px `--accent` selection ring outside the 3px focus band. `aria-pressed=true`
-   is the selected state the swatch sets.
+   2px `--accent` selection ring outside the 3px focus band. `aria-checked=true`
+   is the selected state the swatch sets (a palette is a radio group, #27459;
+   `aria-pressed=true` is kept for any swatch still drawn as a toggle).
    NARROWED to the swatch's own `.swatch-cue` class: the bare
    `.focus-ring-accent[aria-pressed="true"]` selector also matched two toggles
    that carry no selection ring to restore (the TagManagerList status toggle and
    the band filter chip), giving them an unwanted outer accent ring. Only the
    colour swatch combines `.swatch-cue` + `.focus-ring-accent` + `aria-pressed`,
    so this reaches exactly the one consumer that needs it. */
-.swatch-cue.focus-ring-accent[aria-pressed="true"]:focus-visible{
+.swatch-cue.focus-ring-accent[aria-pressed="true"]:focus-visible,
+.swatch-cue.focus-ring-accent[aria-checked="true"]:focus-visible{
   box-shadow:0 0 0 1px var(--text-strong),0 0 0 3px var(--accent),
              0 0 0 4px var(--bg),0 0 0 6px var(--accent)}
 /* Gap variant: a 1px `--bg` gap between the control edge and the hairline, for

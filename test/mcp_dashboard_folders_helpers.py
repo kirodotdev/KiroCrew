@@ -21,9 +21,7 @@ _FOLDERS = [
     {"id": "cccccccccccc", "name": "Travel", "parent_id": "", "history_count": 0},
 ]
 
-#: The caller slot's birth stamp — ``created`` on every real row. It rides on
-#: the self-filing PATCH as ``expected_created`` so the endpoint can refuse a
-#: write aimed at a slot that was recreated under the same key.
+#: The caller slot's birth stamp — ``created`` on every real row.
 _CALLER_BORN = "2026-09-14T05:00:00.000001+00:00"
 
 _SLOTS = [

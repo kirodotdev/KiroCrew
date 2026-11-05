@@ -1,46 +1,31 @@
 """A cron mutation whose SAVE fails must not survive in the in-memory job list.
 
-``CronService`` mutators edit ``self._jobs`` in place and only then call
-``_save()``. The unreadable-store LATCH (``_load_failed`` ->
-``CronStoreUnreadable``) is refused up front by ``_sync_for_write`` and covered
-by ``test_cron_store_unreadable_boundaries.py``. A DIFFERENT failure is not: a
-save that gets PAST that latch and then raises a bare ``OSError`` from the
-atomic write itself -- ``ENOSPC`` (disk full), ``EROFS`` (read-only remount),
-``EIO``, or a fault in the ``mkdir`` / ``encode_store`` / ``atomic_write``
-chain. On that path the in-memory mutation has already landed, the caller is
-told the write failed, yet the change stays in ``self._jobs`` -- visible to
-``list_jobs``, firable by the timer, and persisted by the next save that
-succeeds.
+Mutators edit ``self._jobs`` before ``_save()``. A bare ``OSError`` from the atomic
+write (``ENOSPC``, ``EROFS``, ``EIO``) would otherwise leave the change live, firable
+by the timer and persisted by the next save. The unreadable-store latch is covered
+in ``test_cron_store_unreadable_boundaries.py``.
 
-The contract: a mutator whose owned state is not shared with the execution
-thread rolls its in-memory change back on ANY save failure, the way the remove
-and update cores already do, extended to the add (×2), ack, unack and adopt
-cores plus the loop-stall breaker. ``enable_job`` (pause/resume) is DELIBERATELY
-excluded: its ``enabled``/``auto_paused``/``consecutive_failures`` are
-execution-owned, so a field-scoped rollback races a concurrent
-``record_failure``/``record_success`` and a correct fix needs an execution-state
-revision fence (deferred, see the PR's Not a goal). These tests inject the
-failure at the ``atomic_write`` boundary (a real ``OSError``, NOT
-``CronStoreUnreadable``), so the real ``_save`` -> raise chain runs and the
-``_load_failed`` latch is deliberately NOT what is being exercised.
+``update_job`` restores only fields that still hold the edit's value, and
+``enable_job`` reloads the store, because a run in flight writes the same fields.
 
-The vacuous-pass trap: asserting only that the mutator RAISES passes whether or
-not the rollback exists, because ``_save`` already raised. Every assertion below
-is about ``self._jobs`` (and the live object's fields) AFTER the failed save,
-and a reload from the untouched file -- the state a timer or a later save would
-see.
+Checking only that the mutator raises would pass without any rollback, so every
+assertion reads ``self._jobs`` and a reload after the failed save.
 """
 
 from __future__ import annotations
 
 import contextlib
+import copy
 import errno
-from collections.abc import Iterator
+import time
+from collections.abc import Callable, Iterator
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
-from kiro_crew.cron import CronService
+from kiro_crew.cron import CronJob, CronService
+from kiro_crew.cron_service.store import CronStoreUnreadable
 
 # One xdist worker for the whole file, matching the sibling cron suites. One
 # group PER FILE, never shared: a shared group would serialize unrelated modules.
@@ -48,21 +33,22 @@ pytestmark = pytest.mark.xdist_group(name="tree_scan_test_cron_save_failure_roll
 
 
 @contextlib.contextmanager
-def _disk_full_on_save() -> Iterator[None]:
+def _disk_full_on_save(during: Callable[[], None] | None = None) -> Iterator[None]:
     """Make the next ``atomic_write`` raise ENOSPC, like a full disk would.
 
-    Injected at ``kiro_crew.atomic_write.atomic_write`` -- the exact call
-    ``_save`` makes AFTER its ``_load_failed`` guard and its ``mkdir`` -- so the
-    real ``_save`` runs, the in-memory mutation has already landed, and a bare
-    ``OSError`` (NOT ``CronStoreUnreadable``) comes back out. That distinction is
-    the whole point: the latch path is already guarded and tested elsewhere;
-    this is the write-fault path the issue names.
+    Injected at ``kiro_crew.atomic_write.atomic_write``, after the ``_load_failed``
+    guard, so the real ``_save`` raises a bare ``OSError``, not ``CronStoreUnreadable``.
+
+    ``during`` runs inside the failing write, standing in for a run on the loop
+    thread that writes the same job while the save is in flight.
     """
     import kiro_crew.atomic_write as aw
 
     real = aw.atomic_write
 
     def failing(*_args: object, **_kwargs: object) -> None:
+        if during is not None:
+            during()
         raise OSError(errno.ENOSPC, "No space left on device")
 
     aw.atomic_write = failing  # type: ignore[assignment]
@@ -210,6 +196,263 @@ def test_a_failed_save_does_not_leave_a_loop_stall_pause_in_memory(tmp_path: Pat
     assert reloaded is not None and reloaded.enabled and not reloaded.auto_paused
 
 
+# ── enable_job (pause / resume) ──
+
+
+def _finish_a_run(svc: CronService, job_id: str, *, park: bool) -> CronJob:
+    """Land a run's result the way a finalizer whose merge is still pending does.
+
+    The run writes its outcome on the listed job it executed on, then holds a
+    record of it (``_hold_run_record``) until a save under the lock persists it.
+    ``park`` parks a fired one-shot, as ``_execute`` does.
+    """
+    live = next(j for j in svc._jobs if j.id == job_id)
+    live.last_status = "ok"
+    live.last_run_ts = time.time()
+    live.record_success()
+    if park:
+        live.enabled = False
+    record = copy.copy(live)
+    record.run_generation = live.run_generation + 1
+    svc._hold_run_record(live, record)
+    return record
+
+
+def test_a_failed_save_does_not_leave_a_pause_in_memory(tmp_path: Path) -> None:
+    svc = CronService(base_dir=tmp_path)
+    job = svc.add_job(name="pausable", message="m", every_secs=3600)
+
+    with _disk_full_on_save():
+        with pytest.raises(OSError):
+            svc.enable_job(job.id, enabled=False)
+
+    live = svc._jobs[0]
+    assert live.enabled and not live.user_paused, (
+        "a pause whose save failed must not stay in the live list, where the "
+        "due-scan skips a job the store still has enabled"
+    )
+    reloaded = _reloaded(tmp_path).get_job(job.id)
+    assert reloaded is not None and reloaded.enabled and not reloaded.user_paused
+
+
+def test_a_failed_save_does_not_clear_an_auto_pause_in_memory(tmp_path: Path) -> None:
+    svc = CronService(base_dir=tmp_path)
+    job = svc.add_job(name="failing", message="m", every_secs=3600)
+    with svc._file_lock():
+        svc._sync()
+        stored = svc._jobs[0]
+        stored.enabled, stored.auto_paused, stored.consecutive_failures = False, True, 5
+        svc._save()
+
+    with _disk_full_on_save():
+        with pytest.raises(OSError):
+            svc.enable_job(job.id, enabled=True)
+
+    live = svc._jobs[0]
+    assert (live.enabled, live.auto_paused, live.consecutive_failures) == (False, True, 5), (
+        "a resume whose save failed must leave the auto-pause and its failure count, "
+        "or the timer fires a job the store still has paused"
+    )
+
+
+def test_a_failed_pause_keeps_a_concurrent_run_and_the_stored_enable(tmp_path: Path) -> None:
+    """A run of the job finishes while the pause's save is failing. The live
+    job must carry the run's result AND stay enabled, as the store says: keeping
+    the failed pause's ``enabled=False`` would leave a recurring job the
+    due-scan skips although the caller was told the pause failed."""
+    svc = CronService(base_dir=tmp_path)
+    job = svc.add_job(name="recurring", message="m", every_secs=3600)
+    finished: list[CronJob] = []
+
+    with _disk_full_on_save(lambda: finished.append(_finish_a_run(svc, job.id, park=False))):
+        with pytest.raises(OSError):
+            svc.enable_job(job.id, enabled=False)
+
+    (record,) = finished
+    live = svc._jobs[0]
+    assert live.enabled and not live.user_paused, "the failed pause survived the rollback"
+    assert (live.last_status, live.last_run_ts, live.run_generation) == (
+        "ok",
+        record.last_run_ts,
+        record.run_generation,
+    ), "the rollback dropped the concurrent run's result"
+    assert svc._held_run_records.get(job.id) is record, "the run's record must still await a save"
+
+
+def test_a_failed_pause_keeps_a_concurrent_one_shot_park(tmp_path: Path) -> None:
+    """A one-shot fires and parks while the pause's save is failing. The park
+    is the run's write, not the pause's, so the rollback must keep it, or the
+    fired one-shot is due again on the next tick."""
+    svc = CronService(base_dir=tmp_path)
+    job = svc.add_job(name="once", message="m", at_ts=time.time() + 3600)
+
+    with _disk_full_on_save(lambda: _finish_a_run(svc, job.id, park=True)):
+        with pytest.raises(OSError):
+            svc.enable_job(job.id, enabled=False)
+
+    live = svc._jobs[0]
+    assert live.enabled is False, "the rollback re-enabled a one-shot its run had parked"
+    assert live.last_status == "ok"
+
+
+def test_a_failed_save_whose_reload_also_fails_reloads_on_the_next_sync(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The reload after a failed pause save can fail too. The caller must still
+    get the save's own error, and the next ``_sync`` must reload, so the failed
+    pause does not outlive the next store read."""
+    svc = CronService(base_dir=tmp_path)
+    job = svc.add_job(name="pausable", message="m", every_secs=3600)
+    real_sync = svc._sync
+
+    with caplog.at_level("ERROR", logger="kiro_crew.cron"):
+        with _disk_full_on_save():
+            with patch.object(svc, "_sync", side_effect=[None, RuntimeError("reload failed")]):
+                with pytest.raises(OSError) as exc:
+                    svc.enable_job(job.id, enabled=False)
+    assert exc.value.errno == errno.ENOSPC, "the save's error, not the reload's, reaches the caller"
+    assert "reload after a failed pause/resume save did not run" in caplog.text
+
+    real_sync()
+    live = svc._jobs[0]
+    assert live.enabled and not live.user_paused, "the next sync did not reload the store"
+
+
+def test_a_failed_save_over_an_unreadable_store_refuses_every_later_write(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The store cannot be read back after the pause's save fails. No crash and
+    no partly reloaded list: the save's error reaches the caller, the failure is
+    logged, and the store is latched unreadable so no later save can persist the
+    pause the caller was told failed. Once the store reads again, the next sync
+    reloads it."""
+    svc = CronService(base_dir=tmp_path)
+    job = svc.add_job(name="pausable", message="m", every_secs=3600)
+    other = svc.add_job(name="other", message="m", every_secs=3600)
+    store = tmp_path / "crons.json"
+    real_read = Path.read_bytes
+    reads = {"n": 0}
+
+    def unreadable_after_the_save(path: Path) -> bytes:
+        if path == store:
+            reads["n"] += 1
+            if reads["n"] > 1:  # the first read is the call's own _sync_for_write
+                raise OSError(errno.EIO, "Input/output error")
+        return real_read(path)
+
+    with caplog.at_level("ERROR", logger="kiro_crew.cron"):
+        with _disk_full_on_save():
+            with patch.object(Path, "read_bytes", unreadable_after_the_save):
+                with pytest.raises(OSError) as exc:
+                    svc.enable_job(job.id, enabled=False)
+    assert exc.value.errno == errno.ENOSPC, "the save's error, not the reload's"
+    assert "store unreadable after a failed pause/resume save" in caplog.text
+    assert svc._load_failed, "an unreadable reload must latch the store"
+    assert [j.id for j in svc._jobs] == [job.id, other.id], "the list was partly replaced"
+    with pytest.raises(CronStoreUnreadable):
+        svc._save()
+
+    svc._sync()
+    live = svc._jobs[0]
+    assert not svc._load_failed
+    assert live.enabled and not live.user_paused, "the readable store did not reload"
+
+
+# ── update_job (edit) ──
+
+
+def _fail_a_run_to_auto_pause(svc: CronService, job_id: str) -> None:
+    """Fail a run of the job on the live object until it auto-pauses, as the
+    loop thread does while a worker thread holds the store lock for a save."""
+    live = next(j for j in svc._jobs if j.id == job_id)
+    live.last_status = "error"
+    live.last_error = "boom"
+    for _ in range(live.auto_pause_limit()):
+        live.record_failure()
+
+
+def test_a_failed_update_keeps_a_concurrent_runs_auto_pause(tmp_path: Path) -> None:
+    """A run fails into its auto-pause while an edit's save is failing. The
+    pause, the failure count and the run's status are the run's writes, not the
+    edit's, so the rollback must keep them, or a job that just hit its
+    auto-pause threshold keeps firing with a fresh failure budget."""
+    svc = CronService(base_dir=tmp_path)
+    job = svc.add_job(name="flaky", message="m", every_secs=3600)
+    live = svc._jobs[0]
+
+    with _disk_full_on_save(lambda: _fail_a_run_to_auto_pause(svc, job.id)):
+        with pytest.raises(OSError):
+            svc.update_job(job.id, name="renamed")
+
+    assert svc._jobs[0] is live, "the rollback must restore onto the object readers hold"
+    assert live.name == "flaky", "the edit whose save failed must not stay in memory"
+    assert (live.enabled, live.auto_paused, live.consecutive_failures) == (
+        False,
+        True,
+        live.auto_pause_limit(),
+    ), "the rollback undid the concurrent run's auto-pause"
+    assert (live.last_status, live.last_error) == ("error", "boom")
+
+
+def test_a_failed_update_keeps_a_concurrent_one_shot_park(tmp_path: Path) -> None:
+    """A one-shot fires and parks while an edit's save is failing. The park is
+    the run's write, so the rollback must keep it, or the fired one-shot is due
+    again on the next tick."""
+    svc = CronService(base_dir=tmp_path)
+    job = svc.add_job(name="once", message="m", at_ts=time.time() + 3600)
+
+    with _disk_full_on_save(lambda: _finish_a_run(svc, job.id, park=True)):
+        with pytest.raises(OSError):
+            svc.update_job(job.id, message="edited")
+
+    live = svc._jobs[0]
+    assert live.enabled is False, "the rollback re-enabled a one-shot its run had parked"
+    assert live.last_status == "ok"
+    assert live.message == "m"
+
+
+def test_a_failed_update_restores_every_field_it_changed(tmp_path: Path) -> None:
+    svc = CronService(base_dir=tmp_path)
+    job = svc.add_job(name="edited", message="m", every_secs=3600)
+    live = svc._jobs[0]
+    schedule = live.schedule
+
+    with _disk_full_on_save():
+        with pytest.raises(OSError):
+            svc.update_job(
+                job.id,
+                name="new-name",
+                message="new message",
+                every_secs=7200,
+                silent=True,
+                skip_dates=["2030-01-01"],
+            )
+
+    assert svc._jobs[0] is live
+    assert (live.name, live.message, live.silent, live.skip_dates) == ("edited", "m", False, [])
+    assert live.schedule is schedule and live.schedule.every_secs == 3600
+    reloaded = _reloaded(tmp_path).get_job(job.id)
+    assert reloaded is not None and (reloaded.name, reloaded.message) == ("edited", "m")
+
+
+def test_a_failed_update_keeps_a_field_another_writer_changed_since(tmp_path: Path) -> None:
+    """A field the edit changed and another writer then changed again holds the
+    later write: the rollback restores a field only while it still holds the
+    edit's own value."""
+    svc = CronService(base_dir=tmp_path)
+    job = svc.add_job(name="edited", message="m", every_secs=3600)
+    live = svc._jobs[0]
+
+    def overwrite() -> None:
+        live.message = "later"
+
+    with _disk_full_on_save(overwrite):
+        with pytest.raises(OSError):
+            svc.update_job(job.id, name="new-name", message="new message")
+
+    assert (live.name, live.message) == ("edited", "later")
+
+
 # ── NEGATIVE CONTROL: a healthy save must still mutate on every path ──
 #
 # A rollback keyed on the wrong thing could revert a SUCCESSFUL write too. These
@@ -232,6 +475,8 @@ def test_a_healthy_save_still_mutates_on_every_rolled_back_path(tmp_path: Path) 
     svc.unack_job(added.id)
     svc.enable_job(added.id, enabled=True)
     svc.adopt_job(added.id, "dashboard:owner")
+    edited = svc._jobs[0]
+    svc.update_job(added.id, message="edited")
 
     # Every mutation is in the live cache and on disk after a reload.
     live = {j.name: j for j in svc._jobs}
@@ -239,8 +484,10 @@ def test_a_healthy_save_still_mutates_on_every_rolled_back_path(tmp_path: Path) 
     assert live["added"].enabled and not live["added"].user_paused
     assert live["added"].acked_items == []
     assert live["added"].session_key == "dashboard:owner"
+    assert live["added"] is edited and edited.message == "edited"
 
     reloaded = {j.name: j for j in _reloaded(tmp_path).list_jobs(include_disabled=True)}
     assert set(reloaded) == {"added", "absent"}
     assert reloaded["added"].enabled
     assert reloaded["added"].session_key == "dashboard:owner"
+    assert reloaded["added"].message == "edited"

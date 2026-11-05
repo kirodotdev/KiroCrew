@@ -523,7 +523,15 @@ def build_member_section(
             mate_tools_identity = _MATE_TOOLS_IDENTITY_MANUAL
         else:
             mate_tools_identity = _MATE_TOOLS_IDENTITY
-        identity.append(mate_tools_identity + _prompt("conductor.tracking"))
+        # The ledger tools are named only where this chat's spec mounts and grants
+        # them (``member_mate_tools.binding_has_ledger_tools``); elsewhere the
+        # sentence stays the one every crewmate had before they could be mounted.
+        from kiro_crew.member_mate_tools import binding_has_ledger_tools
+
+        tracking = (
+            "conductor.tracking_ledger" if binding_has_ledger_tools(crew) else "conductor.tracking"
+        )
+        identity.append(mate_tools_identity + _prompt(tracking))
 
     parts = ["\n".join(identity)]
     if not desk_withheld:
@@ -839,7 +847,7 @@ def build_v2_essentials(
     return envelope
 
 
-def operating_mode_block(agent_label: str) -> str:
+def operating_mode_block(agent_label: str, *, ledger: bool = False) -> str:
     """The ``[CREW MEMBER OPERATING MODE]`` block for a member's pinned DM session.
 
     The member is a CONTROLLER: its DM thread stays the identity/management loop
@@ -849,8 +857,40 @@ def operating_mode_block(agent_label: str) -> str:
     and the server authorizes member callers automatically
     (``dashboard/session_control_parts/caller_access.py``), bounded to sessions the member created
     itself -- so the instructions hold with zero configuration.
+
+    *ledger* is :func:`kiro_crew.member_mate_tools.binding_has_ledger_tools` for
+    the crewmate: only then is ``conductor.patrol`` appended, which teaches the
+    record-create-bind-seed dispatch for tracked work and the gated
+    ``watch="work-ledger"`` patrol with its renewal. Without it the block is the
+    one a crewmate had before the ledger could be mounted: the worker report is the
+    patrol and no loop is armed.
     """
-    return _fill("conductor.operating_mode", agent_label=agent_label)
+    # The label is the crewmate's config key, a user-written payload: scrub it the
+    # way build_member_section scrubs it for [MEMBER IDENTITY], so both blocks
+    # name the crewmate identically and neither carries a forged marker.
+    block = _fill(
+        "conductor.operating_mode", agent_label=_markers._scrub_member_payload(agent_label)
+    )
+    if ledger:
+        block += ledger_rules_block("conductor.patrol")
+    return block
+
+
+def ledger_rules_block(key: str) -> str:
+    """Crewmate piece *key* with each placeholder filled by the ledger-conductor rule
+    of that name (``agent_parts/spec_prompts.py`` ``_LEDGER_CONDUCTOR_RULES``).
+
+    Those rules are the one copy the root conductor's charter is assembled from as
+    well, so a rule both conductors carry cannot drift between them. A placeholder
+    that names no rule raises ``KeyError``, so a renamed rule fails at the first
+    render rather than reaching a crewmate as a hole. The charter's own outer
+    spacing is stripped; the piece lays its rules out itself.
+    """
+    from kiro_crew import agent as agent_mod
+    from kiro_crew import crewmate_prompts
+
+    rules = agent_mod._LEDGER_CONDUCTOR_RULES
+    return _fill(key, **{name: rules[name].strip() for name in crewmate_prompts.placeholders(key)})
 
 
 def resolve_turn_owner(

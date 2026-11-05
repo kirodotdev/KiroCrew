@@ -894,6 +894,27 @@ class TestUpdatePinsFoldAsRestrictions:
         merged = governance._intersect_ceilings(authority, subordinate)
         assert merged.updates.min_version == expected
 
+    @pytest.mark.parametrize(
+        ("upper", "lower", "expected"),
+        [
+            (None, False, False),  # a subordinate turning installs off narrows: kept
+            (False, True, False),  # a subordinate cannot turn them back on
+            (False, None, False),
+            (True, None, True),
+            (None, None, True),  # silent on both sides: unattended installs stay on
+        ],
+    )
+    def test_unattended_apply_folds_to_off_when_either_tier_turns_it_off(
+        self, upper, lower, expected
+    ):
+        def _updates(value):
+            return {} if value is None else {"updates": {"unattended_apply": value}}
+
+        authority = governance.parse_policy(_doc("authority", **_updates(upper)))
+        subordinate = governance.parse_policy(_doc("subordinate", **_updates(lower)))
+        merged = governance._intersect_ceilings(authority, subordinate)
+        assert merged.updates.unattended_apply is expected
+
     def test_update_commands_stay_the_authoritys_even_when_it_declares_none(self):
         authority = governance.parse_policy(_doc("authority"))
         subordinate = governance.parse_policy(
@@ -1310,3 +1331,80 @@ class TestAnUnexpectedLoaderErrorRefusesBoot:
         with pytest.raises(PlatformCompositionError, match="is unreadable") as info:
             load_security_policy()
         assert "refusing to boot ungoverned" not in str(info.value)
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# A policy saved as "UTF-8 with BOM" loads at its own tier
+# ──────────────────────────────────────────────────────────────────────────
+_UTF8_BOM = b"\xef\xbb\xbf"
+
+
+def _write_policy_bytes(path: Path, raw: bytes) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(raw)
+    return path
+
+
+def _bom_doc(marker: str, **extra: object) -> bytes:
+    # Windows PowerShell 5.1 ``Set-Content -Encoding UTF8``: the mark, the text, CRLF.
+    return _UTF8_BOM + json.dumps(_doc(marker, **extra)).encode("utf-8") + b"\r\n"
+
+
+class TestAUtf8BomPolicyLoadsAtItsTier:
+    """One leading UTF-8 byte-order mark is not content: the file behaves like
+    the same file without it. Every other encoding defect still refuses."""
+
+    def test_the_home_file_loads_as_the_home_tier(self, monkeypatch, tmp_path):
+        _point_home(monkeypatch, _write_policy_bytes(tmp_path / "home.json", _bom_doc("operator")))
+        ceiling = load_security_policy()
+        assert ceiling is not None
+        assert ceiling.tier == TIER_HOME
+        assert ceiling.identity_issuer == "operator"
+
+    def test_the_env_file_loads_as_the_env_tier(self, monkeypatch, tmp_path):
+        env_file = _write_policy_bytes(tmp_path / "env.json", _bom_doc("operator"))
+        monkeypatch.setenv(_POLICY_ENV, str(env_file))
+        ceiling = load_security_policy()
+        assert ceiling is not None
+        assert ceiling.tier == TIER_ENV
+
+    def test_a_home_tightening_beneath_central_applies(
+        self, monkeypatch, tmp_path, central, caplog
+    ):
+        central("fleet", boot={"fail_closed": True, "allow_terminal": True})
+        home = _bom_doc("operator", boot={"fail_closed": True, "allow_terminal": False})
+        _point_home(monkeypatch, _write_policy_bytes(tmp_path / "home.json", home))
+        with caplog.at_level("WARNING", logger=governance.logger.name):
+            ceiling = load_security_policy()
+        assert ceiling is not None
+        assert ceiling.tier == TIER_CENTRAL
+        assert ceiling.boot.allow_terminal is False
+        assert not [r for r in caplog.records if "is unusable" in r.getMessage()]
+
+    @pytest.mark.parametrize(
+        "raw",
+        [json.dumps(_doc("operator")).encode("utf-16"), _UTF8_BOM + b"{ not json"],
+        ids=["utf16", "bom_then_invalid_json"],
+    )
+    def test_any_other_defect_still_refuses_boot_standalone(self, monkeypatch, tmp_path, raw):
+        from kiro_crew.platform.context import PlatformCompositionError
+
+        _point_home(monkeypatch, _write_policy_bytes(tmp_path / "home.json", raw))
+        with pytest.raises(PlatformCompositionError, match="is unreadable"):
+            load_security_policy()
+
+    @pytest.mark.parametrize(
+        "raw",
+        [json.dumps(_doc("operator")).encode("utf-16"), _UTF8_BOM + b"{ not json"],
+        ids=["utf16", "bom_then_invalid_json"],
+    )
+    def test_any_other_defect_is_still_skipped_beneath_central(
+        self, monkeypatch, tmp_path, central, caplog, raw
+    ):
+        central("fleet", boot={"fail_closed": True, "allow_terminal": True})
+        _point_home(monkeypatch, _write_policy_bytes(tmp_path / "home.json", raw))
+        with caplog.at_level("WARNING", logger=governance.logger.name):
+            ceiling = load_security_policy()
+        assert ceiling is not None
+        assert ceiling.boot.allow_terminal is True
+        assert len([r for r in caplog.records if "is unusable" in r.getMessage()]) == 1

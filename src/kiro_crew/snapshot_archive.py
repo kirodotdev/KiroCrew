@@ -1183,7 +1183,7 @@ def _refuse_oversized_archive(probe: tarfile.TarFile, *, max_bytes: int | None =
         if count > facade._MAX_ARCHIVE_MEMBERS:
             raise _ArchiveTooLarge(
                 f"This archive declares more than {facade._MAX_ARCHIVE_MEMBERS:,} "
-                "entries, which no memory bundle produces",
+                "entries, which `kirocrew restore` refuses",
                 kind="entries",
             )
         # Only regular files carry payload; a directory or link header declares a size
@@ -1194,7 +1194,7 @@ def _refuse_oversized_archive(probe: tarfile.TarFile, *, max_bytes: int | None =
                 raise _ArchiveTooLarge(
                     "This archive declares more than "
                     f"{_bound_gib(max_bytes)} GiB of uncompressed content, "
-                    "which no memory bundle produces. If you made it with "
+                    "over the bound `kirocrew restore` holds it to. If you made it with "
                     "`kirocrew snapshot --max-archive-gib N`, pass "
                     "--max-archive-gib N (or larger) here"
                 )

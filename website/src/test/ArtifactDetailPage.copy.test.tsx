@@ -188,6 +188,8 @@ describe('ArtifactDetailPage copy content', () => {
     // wait for the historical body before copying.
     await screen.findByText(/old v1 body/)
     fireEvent.click(copyBtn())
+    // The clipboard resolves after the click; wait for its Copied confirmation.
+    expect(await screen.findByRole('menuitem', { name: 'Copied' })).toBeInTheDocument()
     expect(copyToClipboard).toHaveBeenCalledWith('old v1 body')
   })
 

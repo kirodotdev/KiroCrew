@@ -62,8 +62,8 @@ from kiro_crew.platform.update_capability import (
     bundled_by_desktop_app,
     derive_capability,
 )
+from kiro_crew.platform.update_fetch import fetch_and_pin_upstream
 from kiro_crew.platform.update_governance import (
-    fetch_and_pin_upstream,
     git_command_env,
     min_version,
     repo_exec_config_reason,
@@ -516,9 +516,9 @@ async def _check_git_checkout(proj: str, capability: UpdateCapability) -> None:
 
     # The fetch runs through the shared isolated helper: a repo-defined hook
     # cannot fire on the fetch's ref write (it happens in a git dir the gateway
-    # owns), while the fetched objects land in this checkout and the tip is
-    # pinned into its tracking ref, so the reads below resolve against it with no
-    # ref transaction. The same helper fetches for the unattended apply.
+    # owns), while the fetched objects land in this checkout's object store. The
+    # tip comes back as a commit id the reads below use directly; no ref in this
+    # checkout is written. The same helper fetches for the unattended apply.
     remote_sha = await fetch_and_pin_upstream(
         proj, remote_name, remote_branch, git=git, env=env, timeout=30
     )

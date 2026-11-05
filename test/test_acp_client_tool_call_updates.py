@@ -151,11 +151,8 @@ class TestExtractToolCallUpdate:
     def test_credential_straddling_the_bound_is_still_redacted(self):
         """The 8000-char bound must be applied AFTER redaction, not before.
 
-        A cut taken first splits a connection URI into fragments the credential
-        prefilter (``://user:pass@``) does not match: the head slice keeps
-        ``://admin:<password>`` and drops the ``@``, so the password would reach
-        the dashboard in clear text. The padding here puts the ``@`` exactly on
-        byte 8000 of the serialised output, which is the worst case.
+        A cut first drops the ``@`` the ``://user:pass@`` prefilter needs, leaking the
+        password. The padding puts the ``@`` on byte 8000, the worst case.
         """
         import json as _json
 
@@ -591,13 +588,9 @@ class TestDispatchToolResultContentShapes:
         assert len(unrenderable_content_shapes(padded)) == 4000
 
     def test_collection_stops_early_rather_than_building_the_whole_join(self):
-        """The final ``[:4000]`` alone still VISITS every entry and allocates the
-        full join before cutting, so a near-limit frame could OOM the gateway on the
-        way to a bounded string.
+        """A final ``[:4000]`` alone would build the whole join first and could OOM.
 
-        Asserted by counting entry visits, not by inspecting the output: a
-        length/content assertion passes either way, because the tail is cut off
-        regardless of whether the loop broke early. Counting is what discriminates.
+        Counts entry visits, because the output is cut the same either way.
         """
         from kiro_crew.acp._dispatch import unrenderable_content_shapes
 
@@ -676,13 +669,9 @@ class TestDispatchToolResultContentShapes:
         assert "AKIAIOSFODNN7SECRET" not in out
 
     def test_a_wrapped_inner_block_carrying_no_text_stays_silent(self):
-        """The negative control for the inner check, and the reason it is an
-        allowlist rather than "anything but text".
+        """The negative control: an image, audio or resource block is not a defect.
 
-        An image, audio or resource block renders no text and is NOT a defect, so
-        reporting it would fire this warning on a healthy backend -- the exact
-        false positive `test_content_free_frame_is_not_warned_about` guards at the
-        frame level.
+        Hence an allowlist; see `test_content_free_frame_is_not_warned_about`.
         """
         from kiro_crew.acp._dispatch import unrenderable_content_shapes
 

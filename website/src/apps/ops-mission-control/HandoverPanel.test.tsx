@@ -9,7 +9,7 @@
  * here: a successful copy confirms, and a failed one does not.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { screen, fireEvent, waitFor } from '@testing-library/react'
+import { act, screen, fireEvent, waitFor } from '@testing-library/react'
 
 import { renderWithProviders } from '../../test/helpers'
 import { i18nT } from '../../i18n/t'
@@ -63,14 +63,18 @@ describe('HandoverPanel copy-as-text', () => {
     renderWithProviders(<HandoverPanel />)
 
     const btn = await screen.findByText(i18nT('apps.opsMissionControl.handoverPanel.copy_as_text'))
-    fireEvent.click(btn)
+    await act(async () => {
+      fireEvent.click(btn)
+    })
 
     await waitFor(() => expect(copyToClipboard).toHaveBeenCalledWith('shift handover text'))
     await waitFor(() =>
       expect(screen.getByText(i18nT('apps.opsMissionControl.handoverPanel.copied'))).toBeInTheDocument(),
     )
 
-    vi.advanceTimersByTime(2100)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2100)
+    })
     await waitFor(() =>
       expect(screen.getByText(i18nT('apps.opsMissionControl.handoverPanel.copy_as_text'))).toBeInTheDocument(),
     )
@@ -81,7 +85,9 @@ describe('HandoverPanel copy-as-text', () => {
     renderWithProviders(<HandoverPanel />)
 
     const btn = await screen.findByText(i18nT('apps.opsMissionControl.handoverPanel.copy_as_text'))
-    fireEvent.click(btn)
+    await act(async () => {
+      fireEvent.click(btn)
+    })
 
     await waitFor(() => expect(copyToClipboard).toHaveBeenCalled())
     expect(screen.queryByText(i18nT('apps.opsMissionControl.handoverPanel.copied'))).toBeNull()

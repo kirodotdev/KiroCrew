@@ -424,7 +424,8 @@ class TestPrReadiness:
             "codex-review.yml": 3,
             "claude-review.yml": 2,
             "fork-gpt-review.yml": 3,
-            "fork-opus-review.yml": 2,
+            # Discovery, validation, and validation's rate-limit retry.
+            "fork-opus-review.yml": 3,
             "security-scope-review.yml": 1,
             "fork-security-scope-review.yml": 1,
         }

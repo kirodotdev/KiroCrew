@@ -60,7 +60,7 @@ def _guard(slug: str) -> Path:
     return agent_panel.panel_dir() / f"{slug}.dashboard-lock.guard"
 
 
-# --- the departed crewmate's lock goes ---------------------------------------
+# the departed crewmate's lock goes
 
 
 def test_delete_removes_the_departed_crewmates_lock(tmp_path):
@@ -148,7 +148,7 @@ def test_an_unreadable_lock_file_is_still_removed(tmp_path):
     assert not path.exists()
 
 
-# --- a lock the roster still claims stays ------------------------------------
+# a lock the roster still claims stays
 
 
 def test_a_recreated_namesake_keeps_its_lock(tmp_path):
@@ -195,7 +195,7 @@ def test_the_predicate_is_asked_under_the_guard_and_claimed_keeps_the_lock():
     assert path.is_file()
 
 
-# --- unsafe names stay refused -----------------------------------------------
+# unsafe names stay refused
 
 
 def test_a_session_key_has_no_lock_to_remove():
@@ -218,7 +218,7 @@ def test_an_aliased_store_is_refused_and_the_lock_kept(tmp_path, monkeypatch):
     assert path.is_file()
 
 
-# --- the real delete route ---------------------------------------------------
+# the real delete route
 
 
 def _namespace_lock_is_held() -> bool:

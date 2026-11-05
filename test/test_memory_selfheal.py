@@ -119,6 +119,48 @@ class TestFtsSelfHealGating:
         results = store.search("Python")
         assert len(results) >= 1
 
+    def test_search_finds_memory_right_after_self_heal(self, tmp_path):
+        """A search that meets a corrupt index heals it AND re-indexes the sources.
+
+        Without the re-queue the recreated index stayed empty, so every search
+        returned nothing until a separate ``rebuild_index`` ran.
+        """
+        store = MemoryStore(workspace=tmp_path)
+        store.init()
+        store.write_preferences("# Prefs\n\n- likes Python\n")
+        store.rebuild_index()
+        assert len(store.search("Python")) == 1
+
+        (tmp_path / "memory_index.db").write_bytes(b"this is not a valid sqlite database")
+
+        assert len(store.search("Python")) == 1
+        assert store._index_healed is False
+
+    def test_heal_stays_pending_while_sources_cannot_be_read(self, tmp_path, monkeypatch):
+        """A source unreadable during the first post-heal search is re-queued later."""
+        store = MemoryStore(workspace=tmp_path)
+        store.init()
+        store.write_preferences("# Prefs\n\n- likes Python\n")
+        store.rebuild_index()
+        (tmp_path / "memory_index.db").write_bytes(b"this is not a valid sqlite database")
+
+        files = store._files
+        real_read_entry = files.read_entry
+        available = {"sources": False}
+
+        def flaky_read_entry(*args, **kwargs):
+            if not available["sources"]:
+                raise OSError("source directory unavailable")
+            return real_read_entry(*args, **kwargs)
+
+        monkeypatch.setattr(files, "read_entry", flaky_read_entry)
+        assert store.search("Python") == []
+        assert store._index_healed is True
+
+        available["sources"] = True
+        assert len(store.search("Python")) == 1
+        assert store._index_healed is False
+
     def test_self_heal_closes_the_connection_that_found_the_corruption(self, tmp_path, monkeypatch):
         """The open that met the corruption is closed before the index is deleted.
 

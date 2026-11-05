@@ -965,10 +965,12 @@ def test_global_repair_waits_for_boot_migration(monkeypatch):
     monkeypatch.setattr("kiro_crew.slack.gateway.reconcile_store_embedding_space", reconcile)
     try:
         gateway._repair_member_memory_once()
+        assert gateway.vector_memory.embed_fn is None
         gateway.vector_memory.backfill_missing_embeddings.assert_not_called()
         reconcile.assert_not_called()
         migration.done.return_value = True
         gateway._repair_member_memory_once()
+        assert callable(gateway.vector_memory.embed_fn)
         gateway.vector_memory.backfill_missing_embeddings.assert_called_once()
         reconcile.assert_called_once_with(gateway.vector_memory)
     finally:

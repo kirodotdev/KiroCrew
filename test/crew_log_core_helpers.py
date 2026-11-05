@@ -19,10 +19,9 @@ SESSION = "s-7f3a"
 
 
 @pytest.fixture(autouse=True)
-# nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- the autouse fixture of test_crew_log_core.py and the suites split out of it, moved verbatim; none of them calls monkeypatch.undo()
-def _isolated_home(tmp_path, monkeypatch):
+def _isolated_home(tmp_path, _floor_monkeypatch):
     """Every test writes into its own data home, never the live one."""
-    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
+    _floor_monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
     yield
     # The write lease is released when the handle that adopted it is dropped, and
     # the holder table is process-global, so a handle a test here keeps reachable

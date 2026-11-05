@@ -1041,19 +1041,140 @@ def _wheel(path: Path, name: str, version: str, files: dict[str, str], metadata:
 
 
 class TestBuildChildEnvironment:
-    @pytest.mark.timeout(300)
     @pytest.mark.parametrize("trusted", [True, False])
-    def test_an_inherited_pythonpath_cannot_satisfy_the_shadow_dependencies(
+    def test_children_run_isolated_not_through_inherited_pythonpath(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, trusted: bool
     ) -> None:
-        """Offline, end to end, on both routes (the gateway's scrubbed environment,
-        and ``kirocrew update``'s own shell): the dependency lands IN the tree, and
-        a tree without it fails verification.
+        """Every interpreter child carries ``-I``, so an inherited ``PYTHONPATH``
+        cannot leak into venv creation or pip's dependency resolution.
 
-        The caller's environment carries a ``PYTHONPATH`` whose directory already
-        has the dependency installed. A build child that honoured it would report
-        the dependency satisfied and install none, and the tree would only fail at
-        its next clean start. Interpreter children run ``-I``, so it never does.
+        The repo's contract is passing ``-I`` in every child argv; CPython
+        then ignores any inherited ``PYTHONPATH`` without further help.
+        ``test_wheel_engine.py::TestEnvironmentIsolation`` proves the env
+        scrubbing side (``PYTHONPATH`` absent from the child's env for the
+        trusted route); this test proves the argv side.
+
+        Stubs ``_run`` and ``_spawn_build_child`` on the documented patch
+        surface (``wheel_engine``) to keep the test deterministic regardless
+        of shard load: the 120 s ``_VENV_CREATE_TIMEOUT_SECS`` cap on a real
+        venv build is what caused the flake on loaded CodeBuild shards.
+        ``test_build_and_verify_a_real_shadow_venv`` below retains one
+        real end-to-end proof.
+        """
+        kirocrew = _wheel(
+            tmp_path,
+            "kirocrew",
+            "9.9.9",
+            {
+                "kiro_crew/__init__.py": "__version__ = '9.9.9'\n",
+                "kiro_crew/cli.py": "import depdummy\n\ndef main():\n    pass\n",
+                "kirocrew-9.9.9.dist-info/entry_points.txt": (
+                    "[console_scripts]\nkirocrew = kiro_crew.cli:main\n"
+                ),
+            },
+            "Requires-Dist: depdummy\n",
+        )
+        monkeypatch.setenv("PYTHONPATH", str(tmp_path / "foreign-site"))
+        ctx = wheel_engine._BuildContext(trusted_env=trusted)
+
+        pyver = f"{sys.version_info.major}.{sys.version_info.minor}"
+
+        def _fake_run(
+            argv: list[str],
+            timeout: float,
+            step: str,
+            *,
+            ctx: object = None,
+        ) -> None:
+            # The repo's contract: every child argv carries -I.
+            assert "-I" in argv, f"child argv missing -I: {argv}"
+            if "-m" in argv and "venv" in argv:
+                # Build a minimal tree so build_shadow_venv's later steps can
+                # resolve site-packages and bin/python3.
+                shadow = Path(argv[-1])
+                site = shadow / "lib" / f"python{pyver}" / "site-packages"
+                site.mkdir(parents=True, exist_ok=True)
+                (shadow / "pyvenv.cfg").write_text("", encoding="utf-8")
+                bin_dir = shadow / "bin"
+                bin_dir.mkdir(exist_ok=True)
+                (bin_dir / "python3").write_text("", encoding="utf-8")
+                (bin_dir / "python3").chmod(0o755)
+            elif step == "pip install into the shadow venv":
+                shadow = Path(argv[0]).parent.parent  # bin/python3 -> shadow root
+                site = next(shadow.glob("lib/python*/site-packages"))
+                # Write a plausible depdummy install so verify_shadow_venv sees
+                # a satisfied dependency tree.  The value here is not the claim
+                # under test; the claim is -I in the argv above.
+                (site / "depdummy.py").write_text("VALUE = 1\n", encoding="utf-8")
+                di = site / "depdummy-1.0.dist-info"
+                di.mkdir(exist_ok=True)
+                (di / "METADATA").write_text(
+                    "Metadata-Version: 2.1\nName: depdummy\nVersion: 1.0\n",
+                    encoding="utf-8",
+                )
+                (di / "RECORD").write_text("", encoding="utf-8")
+                (shadow / "bin" / "kirocrew").write_text("", encoding="utf-8")
+                (shadow / "bin" / "kirocrew").chmod(0o755)
+
+        def _fake_spawn(
+            argv: list[str],
+            timeout: float,
+            step: str,
+            *,
+            ctx: object = None,
+            want_stdout: bool = False,
+            **kw: object,
+        ) -> tuple[int, bytes, bytes]:
+            # verify_shadow_venv calls _spawn_build_child for pip check and
+            # the import probe.  Both carry -I; check it here too.
+            assert "-I" in argv, f"spawn child argv missing -I: {argv}"
+            if "-m" in argv and "pip" in argv and "check" in argv:
+                shadow = Path(argv[0]).parent.parent
+                site = next(shadow.glob("lib/python*/site-packages"))
+                if not (site / "depdummy.py").exists():
+                    return (
+                        1,
+                        b"depdummy 1.0 requires depdummy, which is not installed.",
+                        b"",
+                    )
+                return (0, b"No broken requirements found.\n", b"")
+            # Import probe: return the version string.
+            return (0, b"9.9.9", b"")
+
+        monkeypatch.setattr(wheel_engine, "_run", _fake_run)
+        monkeypatch.setattr(wheel_engine, "_spawn_build_child", _fake_spawn)
+
+        shadow = tmp_path / "crew-venv-9.9.9"
+        wheel_engine.build_shadow_venv(kirocrew, shadow, ctx=ctx)
+
+        site = next(shadow.glob("lib/python*/site-packages"))
+        assert (site / "depdummy.py").exists()
+        wheel_engine.verify_shadow_venv(shadow, "9.9.9", ctx=ctx)
+
+        (site / "depdummy.py").unlink()
+        for leftover in site.glob("depdummy-*.dist-info"):
+            wheel_engine.shutil.rmtree(leftover)
+        with pytest.raises(WheelUpdateError, match="unmet dependencies"):
+            wheel_engine.verify_shadow_venv(shadow, "9.9.9", ctx=ctx)
+
+    @pytest.mark.real_venv
+    @pytest.mark.timeout(300)
+    def test_build_and_verify_a_real_shadow_venv(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """End-to-end: a real venv + pip install followed by verify_shadow_venv.
+
+        This is the one real-subprocess proof that build_shadow_venv and
+        verify_shadow_venv work against a genuine venv/pip child.  It runs
+        offline (PIP_NO_INDEX + PIP_FIND_LINKS) so the host needs no network
+        access, but it does spawn real subprocesses.
+
+        Excluded from the sharded Backend Tests lane by the ``real_venv``
+        marker (those shards use ``-m "not ipv6_required and not real_venv"``);
+        the ``wheel-engine-real-venv`` CI job runs it alone on a plain
+        ``ubuntu-latest`` runner with no shard contention.  The 300 s mark
+        overrides the per-test timeout cap so a slow runner does not kill a
+        valid real venv build.
         """
         links = tmp_path / "links"
         links.mkdir()
@@ -1065,7 +1186,6 @@ class TestBuildChildEnvironment:
             {
                 "kiro_crew/__init__.py": "__version__ = '9.9.9'\n",
                 "kiro_crew/cli.py": "import depdummy\n\ndef main():\n    pass\n",
-                # The console script verification looks for comes from here.
                 "kirocrew-9.9.9.dist-info/entry_points.txt": (
                     "[console_scripts]\nkirocrew = kiro_crew.cli:main\n"
                 ),
@@ -1084,12 +1204,14 @@ class TestBuildChildEnvironment:
         monkeypatch.setenv("PIP_NO_INDEX", "1")
         monkeypatch.setenv("PIP_FIND_LINKS", str(links))
         monkeypatch.setenv("PIP_DISABLE_PIP_VERSION_CHECK", "1")
-        ctx = wheel_engine._BuildContext(trusted_env=trusted)
+        ctx = wheel_engine._BuildContext(trusted_env=False)
 
         shadow = tmp_path / "crew-venv-9.9.9"
         wheel_engine.build_shadow_venv(kirocrew, shadow, ctx=ctx)
 
         site = next(shadow.glob("lib/python*/site-packages"))
+        # pip installed from links/ (VALUE=1), not from PYTHONPATH (VALUE=0),
+        # because the child ran with -I.
         assert (site / "depdummy.py").read_text(encoding="utf-8") == "VALUE = 1\n"
         wheel_engine.verify_shadow_venv(shadow, "9.9.9", ctx=ctx)
 

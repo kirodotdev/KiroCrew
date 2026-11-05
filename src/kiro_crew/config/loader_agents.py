@@ -81,7 +81,7 @@ def resolve_crew_identity(
     except that a crew's ``member_id`` answers with the key its record is
     stored under (:func:`_crew_key_for_member_id`).
     When absent, the surface convention documented on
-    :func:`_resolve_model_for_agent` applies: Slack threads, cron jobs and
+    :func:`resolve_crew_identity` applies: Slack threads, cron jobs and
     spawned agents pass a CREW name as ``agent``, so crew-namespace membership
     makes it canonical — a membership check on names the surface owns, not a
     cross-namespace match.

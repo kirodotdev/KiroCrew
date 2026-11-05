@@ -27,7 +27,12 @@ from typing import Any
 
 from aiohttp import web
 
-from kiro_crew.acp_backends import ACP_BACKEND_GOOSE, ACP_BACKENDS_SIDE_READONLY
+from kiro_crew import name_grant
+from kiro_crew.acp_backends import (
+    ACP_BACKEND_GOOSE,
+    ACP_BACKEND_STRANDS,
+    ACP_BACKENDS_SIDE_READONLY,
+)
 from kiro_crew.agent_discovery import warm_project_agent_names
 from kiro_crew.agent_sdk.backend_identity import is_claude_backend_name
 from kiro_crew.agent_sdk.drivers.acp import (
@@ -140,6 +145,18 @@ THREAD_BOUNDARY_PROMPT_LISTING = (
     "main chat."
 )
 
+#: The read-only boundary for a thread session whose one tool reads a file's text
+#: by its absolute path (Strands, whose side session proves only its own ``read``).
+THREAD_BOUNDARY_PROMPT_FILE_READS = (
+    "This thread is read-only: lookups work here, but changes don't. Reading a "
+    "file by its absolute path runs without asking, so use it when a reply needs "
+    "it. There is no shell, search or web tool here. Writing or editing files, "
+    "running commands, fetching pages, and MCP tools are refused here, even when "
+    "the user asks for them. Never claim that a tool is unconfigured or suggest "
+    "enabling it. If the user wants a change made, tell them to ask in the main "
+    "chat."
+)
+
 THREAD_BOUNDARY_PROMPT_NO_TOOLS = (
     "This thread is context-only: tools are unavailable here, even when the "
     "user asks for them, so reply from the chat and your own knowledge. Never "
@@ -159,10 +176,10 @@ _NO_TEXT_FALLBACK_NO_TOOLS = (
 #: One sentence per failure. A retry line only where a retry can succeed.
 _FAILED_FALLBACK = "The reply didn't go through. Try again."
 _UNREADABLE_FALLBACK = "This chat's threads can't be read right now, so the reply was not kept."
-_NO_SPEC_FALLBACK = "This mate can't reply in threads right now. Ask in the main chat."
+_NO_SPEC_FALLBACK = "This Bot can't reply in threads right now. Ask in the main chat."
 _CREWMATE_GONE_FALLBACK = (
-    "This mate is no longer available, so the reply was not answered. "
-    "Restore the mate or choose another one."
+    "This Bot is no longer available, so the reply was not answered. "
+    "Restore the Bot or choose another one."
 )
 _FULL_FALLBACK = "This thread is full. Ask in the main chat instead."
 _SIDECAR_FULL_FALLBACK = (
@@ -351,6 +368,7 @@ def build_thread_message(
     tools_available: bool,
     shell_available: bool = True,
     file_reads_available: bool = True,
+    searches_available: bool = True,
 ) -> str:
     """The whole envelope, every time: a thread turn always cold-starts its
     session, so nothing carries over between replies."""
@@ -388,6 +406,8 @@ def build_thread_message(
     else:
         if shell_available:
             parts.append(THREAD_BOUNDARY_PROMPT)
+        elif file_reads_available and not searches_available:
+            parts.append(THREAD_BOUNDARY_PROMPT_FILE_READS)
         elif file_reads_available:
             parts.append(THREAD_BOUNDARY_PROMPT_NO_SHELL)
         else:
@@ -444,7 +464,7 @@ def _resolve_slot(
     if slot.mode != DM_SLOT_MODE:
         return None, web.json_response(
             {
-                "error": "Threads live on a mate's chat.",
+                "error": "Threads live on a Bot's chat.",
                 "code": "not_crewmate_chat",
             },
             status=409,
@@ -661,7 +681,7 @@ async def api_chat_thread_reply(request: web.Request) -> web.Response:
     if flight_key in _in_flight:
         return web.json_response(
             {
-                "error": f"{slot.agent or 'Your mate'} is still replying. Wait for that reply.",
+                "error": f"{slot.agent or 'Your Bot'} is still replying. Wait for that reply.",
                 "code": "thread_turn_in_flight",
             },
             status=409,
@@ -1013,7 +1033,7 @@ async def _thread_turn_body(
                 # a stranger's words under the crewmate's name, with no marker.
                 # The main chat refuses this state; so does the thread.
                 logger.warning(
-                    "Thread turn: crewmate %r no longer resolves for slot=%s; not replying",
+                    "Thread turn: Bot %r no longer resolves for slot=%s; not replying",
                     slot_agent,
                     slot.key,
                 )
@@ -1028,17 +1048,18 @@ async def _thread_turn_body(
             )
         tools_available = backend is not None and backend in ACP_BACKENDS_SIDE_READONLY
         # The same confinement per harness as a Side Chat turn
-        # (dashboard/handlers/side.py): claude and goose through the session
-        # shape their client starts for ``side_read_only``, kiro-cli through the
-        # derived spec.
+        # (dashboard/handlers/side.py): claude, goose and Strands through the
+        # session shape their client starts for ``side_read_only``, kiro-cli
+        # through the derived spec.
         claude_thread = tools_available and is_claude_backend_name(backend)
         if claude_thread and not await asyncio.to_thread(claude_adapter_honours_session_options):
             tools_available = claude_thread = False
         if backend == ACP_BACKEND_GOOSE and not goose_side_home_supported():
             tools_available = False
         goose_thread = tools_available and backend == ACP_BACKEND_GOOSE
+        strands_thread = tools_available and backend == ACP_BACKEND_STRANDS
         session_kwargs: dict[str, Any] = {}
-        if claude_thread or goose_thread:
+        if claude_thread or goose_thread or strands_thread:
             agent: str | None = kiro_agent or slot_agent
             approval_policy = ToolApprovalPolicy.READ_ONLY
             session_kwargs["side_read_only"] = True
@@ -1065,14 +1086,23 @@ async def _thread_turn_body(
         )
         acquired_key = session_key
         threads = await asyncio.to_thread(log.read_threads, history_key)
+        # A shell read runs only when its program name can be vouched for. While
+        # the environment refuses every name (a PowerShell profile, an inherited
+        # BASH_ENV, an ambiguous PATH) each one is declined and a thread has no
+        # card to fall back to, so the boundary names no shell. The check stats
+        # files, so it runs off the loop.
+        shell_available = not (claude_thread or goose_thread or strands_thread)
+        if tools_available and shell_available:
+            shell_available = await asyncio.to_thread(name_grant.environment_refusal) is None
         message = build_thread_message(
             parent,
             context_before,
             threads.get(mid, []),
             text,
             tools_available=tools_available,
-            shell_available=not (claude_thread or goose_thread),
+            shell_available=shell_available,
             file_reads_available=not goose_thread,
+            searches_available=not strands_thread,
         )
         try:
             response_text = redact(

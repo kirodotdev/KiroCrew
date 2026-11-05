@@ -52,6 +52,7 @@ from typing import TYPE_CHECKING
 from aiohttp import web
 
 from kiro_crew import _facade_mirror
+from kiro_crew.atomic_write import read_bytes_with_retry
 from kiro_crew.config.loader import (
     denied_commands_path,
 )
@@ -74,14 +75,23 @@ def _read_denied_data() -> dict:
     For the READ/snapshot path only — a corrupt file degrades to empty state so
     GET still renders. Mutations MUST use :func:`_read_denied_strict`. The file
     root IS the opt-out object (``{disable_all, disabled_ids, user_added}``).
+
+    The read retries the Windows sharing violation a concurrent
+    ``_write_denied_state`` replace causes (:func:`read_bytes_with_retry`), so a
+    reader that lands in that window gets the file, not ``{}``. The rule
+    toggle/delete pre-checks read through here off the event loop; folding that
+    transient into ``{}`` would answer 404 "unknown user rule" for a rule that
+    exists.
     """
     path = denied_commands_path()
     if not path.exists():
         return {}
+    from kiro_crew.user_json import loads_user_json
+
     try:
-        loaded = json.loads(path.read_text(encoding="utf-8"))
+        loaded = loads_user_json(read_bytes_with_retry(path).decode("utf-8"))
         return loaded if isinstance(loaded, dict) else {}
-    except (OSError, json.JSONDecodeError):
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         logger.warning("denied_commands.json unreadable/corrupt; treating as empty", exc_info=True)
         return {}
 
@@ -92,11 +102,15 @@ def _read_denied_strict() -> dict:
     if not path.exists():
         return {}
     try:
-        raw = path.read_text(encoding="utf-8")
-    except OSError as exc:
+        # Same sharing-violation retry as the tolerant reader: a transient
+        # Windows read contention is not a corrupt file.
+        raw = read_bytes_with_retry(path).decode("utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
         raise ConfigCorruptError(str(exc)) from exc
+    from kiro_crew.user_json import loads_user_json
+
     try:
-        loaded = json.loads(raw)
+        loaded = loads_user_json(raw)
     except json.JSONDecodeError as exc:
         raise ConfigCorruptError(f"denied_commands.json is not valid JSON: {exc}") from exc
     if not isinstance(loaded, dict):

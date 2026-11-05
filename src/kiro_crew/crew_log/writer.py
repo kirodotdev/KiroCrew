@@ -91,58 +91,38 @@ _SRC_GATEWAY: Final[str] = "gateway"
 class WriterLimits:
     """Every bound and pace the writer runs on. One frozen value per writer.
 
-    ``batch_deadline_seconds``: how long the writer pauses before a drain pass, so one
-    pass takes a turn's burst rather than waking per entry. Fixed, so the worst case a
-    producer can impose on the file is a constant.
+    ``batch_deadline_seconds``: pause before a drain pass, so one pass takes a turn's
+    burst. Fixed, so a producer's worst case on the file is a constant.
 
     ``pending_high_water``: buffered appends past which the backlog is reported once.
-    NOT a cap: nothing is dropped for crossing it. It exists so a filesystem that has
-    stopped keeping up shows up in the log as memory pressure instead of silently
-    accumulating.
+    NOT a cap; it makes a filesystem that stopped keeping up visible in the log.
 
-    ``max_pending_count`` / ``max_pending_bytes``: the hard ceilings the buffer is
-    bounded by -- a count of appends and a byte total of their bodies, either of which
-    caps memory. They sit far above the high-water mark so a gateway keeping up under
-    real load never reaches them; crossing one means the writer has fallen so far behind
-    that the backlog is a memory-exhaustion risk to the whole process, and losing the
-    newest entries of one overwhelmed buffer is the smaller failure than an OOM that
-    takes every unit's unwritten entries with it, uncounted. The overflow is rejected at
-    the buffer's tail rather than shed from its head: the entries already queued keep
-    their order and their prefix of the log intact, and the loss is the log's tail
-    stopping at a named, counted point instead of its middle silently disagreeing with
-    causality.
+    ``max_pending_count`` / ``max_pending_bytes``: hard ceilings on the buffer (appends
+    and body bytes), far above the high-water mark. Crossing one is a memory-exhaustion
+    risk, and dropping the newest entries of one buffer beats an OOM that loses every
+    unit's entries uncounted. Overflow is rejected at the TAIL, so queued entries keep
+    their order and the loss is a counted stop rather than a hole in the middle.
 
-    ``write_stall_secs``: how long one write may take before the writer says so. A job
-    past this is not failed -- it may still land -- but nothing else for that unit can
-    proceed, so silence here is what a stuck filesystem looks like from the outside.
+    ``write_stall_secs``: how long one write may take before the writer says so. The job
+    is not failed, but nothing else for that unit can proceed.
 
-    ``inline_order_seconds``: how long a synchronous caller waits for an in-flight
-    writer batch before it hands its job over instead of writing inline. Bounded because
-    the caller is a real thread doing real work, and generous because the alternative --
-    writing beside a claimed batch -- reorders the file rather than merely delaying it.
+    ``inline_order_seconds``: how long a synchronous caller waits for an in-flight batch
+    before handing its job over instead of writing inline. Writing beside a claimed
+    batch would reorder the file.
 
-    ``min_shutdown_retry_gap``: floor on the gap between shutdown retry passes. Without
-    it a budget already nearly spent would spin the remaining attempts away in
-    microseconds, which is how a filesystem that needed a moment becomes a permanent
-    hole in the log.
+    ``min_shutdown_retry_gap``: floor between shutdown retry passes, so a nearly spent
+    budget is not burned in microseconds against a filesystem that needed a moment.
 
-    ``second_chance_drain_seconds``: budget for the second inline attempt, after the
-    timed wait on the writer has already spent the caller's timeout. Short on purpose:
-    exit must not be delayed twice over for the same batch.
+    ``second_chance_drain_seconds``: budget for the second inline attempt after the
+    timed wait already spent the caller's timeout. Short, so exit is not delayed twice.
 
-    ``retry_backoff_seconds`` / ``retry_backoff_max_seconds``: how long the writer waits
-    before retrying a batch whose append raised, and the ceiling that wait doubles to.
-    The errors worth retrying are the transient ones -- an ENOSPC a rotation clears, an
-    EIO on a network mount -- which resolve on a timescale a short backoff covers. The
-    wait is per UNIT, so one wedged crew log paces only itself and another unit's
-    entries keep flowing.
+    ``retry_backoff_seconds`` / ``retry_backoff_max_seconds``: wait before retrying a
+    failed batch, doubling to the ceiling; sized for transient ENOSPC/EIO. Per UNIT, so
+    one wedged crew log paces only itself.
 
-    ``max_write_attempts``: how many consecutive failed passes a unit's owed batch
-    survives before it is DROPPED and counted. There has to be such a number: entries
-    live in memory until they are written, so a filesystem that never answers would
-    otherwise hold them forever and every bounded caller -- :meth:`CrewLogWriter.flush`,
-    :meth:`CrewLogWriter.drain_for_shutdown` -- would time out instead of returning. A
-    loss that is counted and named can be investigated; a hang cannot.
+    ``max_write_attempts``: consecutive failed passes before a unit's batch is DROPPED and
+    counted. Without it a filesystem that never answers holds entries in memory forever
+    and :meth:`CrewLogWriter.flush` / :meth:`CrewLogWriter.drain_for_shutdown` time out.
     """
 
     batch_deadline_seconds: float = 0.02
@@ -208,32 +188,20 @@ class _JobPolicy:
 
 #: The whole policy, one row per kind.
 #:
-#: The ceiling bounds the memory held by PAYLOAD entries; the exempt kinds (every kind
-#: but APPEND) are O(1) per unit and must not be refusable by it. Refusing the file-creating OPENING
-#: record means the crew log never exists, so every later entry for that unit --
-#: including the marker that would report the damage -- is discarded. A LOSS_MARKER
-#: reports that the ceiling fired, so the ceiling refusing it would discard the account
-#: of the very pressure that rejected it. A FOLLOW_ON is exempt because the opening entry
-#: that queues it is: refusing only the follow-on creates the successor's log and
-#: abandons the work it was owed, and nothing re-queues a one-shot job for an id that is
-#: never resumed. An exempt job still counts toward the buffer's bookkeeping once
-#: admitted; it is only never turned away.
+#: The ceiling bounds memory held by PAYLOAD entries; every kind but APPEND is O(1) per
+#: unit and is never refused. Refusing the OPENING record means the crew log never exists, so
+#: every later entry, including the damage marker, is discarded. Refusing a LOSS_MARKER
+#: would discard the account of the very pressure that fired. A FOLLOW_ON is exempt
+#: because its opening entry is, and nothing re-queues a one-shot job for an id that is
+#: never resumed. Exempt jobs still count in the buffer's bookkeeping.
 #:
-#: A FOLLOW_ON is queued from INSIDE a job, on the writer thread, so the inline path's
-#: ordering wait would wait for the pass it is inside: it cannot be satisfied, and the
-#: entry reaches the buffer anyway once the wait expires, having held the one writer
-#: thread for that whole time. Declining the inline path only ever declines an
-#: optimisation, so it cannot make an entry land in a weaker order than it would have
-#: otherwise.
+#: A FOLLOW_ON is queued from INSIDE a job on the writer thread, so the inline ordering
+#: wait would wait on its own pass; it never takes the inline path.
 #:
-#: A FOLLOW_ON waits in its unit's bucket, and waiting there is also how it is LOST: a
-#: batch the filesystem refuses is retained with everything behind it, and once the
-#: attempt budget is spent the WHOLE batch is dropped -- the owed append and this job
-#: with it. So it is submitted once more on that drop, behind the loss marker. The
-#: re-submission is a REQUEUED copy, the same policy minus the requeue, and that is what bounds
-#: it at one extra attempt: the order the first submission was waiting for is gone, since
-#: nothing ahead of it will be written now, and a copy that re-armed itself would follow
-#: a wedged disk around its retry budget for as long as the disk stayed wedged.
+#: A FOLLOW_ON is lost when its bucket's batch is dropped after the attempt budget, so it
+#: is submitted once more on that drop, behind the loss marker. The REQUEUED copy has the
+#: same policy minus the requeue, which bounds it at one extra attempt against a wedged
+#: disk.
 _POLICY: Final[Mapping[JobKind, _JobPolicy]] = {
     JobKind.APPEND: _JobPolicy(exempt_ceiling=False, queue_only=False, requeue_on_drop=False),
     JobKind.OPENING: _JobPolicy(exempt_ceiling=True, queue_only=False, requeue_on_drop=False),
@@ -411,32 +379,21 @@ class DrainReport:
 class WarningBudget:
     """Report a failure at warning level once per KIND, then stay quiet for a window.
 
-    One slot per kind of failure, not one per process: :meth:`kind` builds the key from
-    the operation and the exception, so a store refused for ENOSPC is named at default
-    level even though an unrelated listener error spent a slot hours before. *op* names
-    the operation in a fixed string and is the only part of the call that reaches the
-    key; *what* carries the store, unit or entry type for the reader and is kept out of
-    it.
+    :meth:`kind` keys on the operation and the exception, so an ENOSPC is still named
+    after an unrelated listener error spent a slot. Only *op* (a fixed string) reaches the
+    key; *what* (store, unit or entry type) is for the reader.
 
-    Repetition of a kind already named is swallowed and COUNTED, and the count rides on
-    the next warning for that kind once ``rearm_seconds`` has passed -- a budget that ran
-    out has to say so, since a silently spent one hides exactly the ongoing failure it was
-    meant to surface, and naming every repeat would flood the log instead.
+    Repeats of a named kind are swallowed and COUNTED, and the count rides on the next
+    warning for that kind after ``rearm_seconds``, so a spent budget still says so.
 
-    Both records carry the failure as TEXT -- the warning's ``%s`` argument, and on the
-    debug line the traceback RENDERED to a string while the exception is live, rather
-    than ``exc_info``. An exception object handed to a log call, or the ``exc_info``
-    triple, rides on the record with its ``__traceback__`` and ``__context__``, and a
-    handler that keeps records (pytest's per-test capture, a ``MemoryHandler``) would keep
-    the job frames -- and the ``CrewLog`` handle in them -- for as long as it keeps the
-    record. A pre-rendered string holds no frames. See :meth:`CrewLogWriter._run_job` for
-    why that handle must not outlive the pass.
+    Both records carry the failure as TEXT (the traceback rendered while the exception is
+    live, not ``exc_info``). A handler that keeps records (pytest capture, a
+    ``MemoryHandler``) would otherwise keep the job frames and the ``CrewLog`` handle in
+    them; see :meth:`CrewLogWriter._run_job` for why that handle must not outlive the pass.
 
-    Shared: the writer reports its own failures through the instance it is given, and the
-    emitter reports its other failures through the same one, so one budget governs the
-    whole crew log path. ``max_kinds`` bounds the map, oldest kind evicted first; the key
-    parts are program and OS constants, so that is a guard on the map rather than a limit
-    routine traffic reaches.
+    Shared by the writer and the emitter, so one budget governs the crew log path.
+    ``max_kinds`` bounds the map (oldest evicted); key parts are program and OS constants,
+    so routine traffic never reaches it.
     """
 
     def __init__(
@@ -715,35 +672,22 @@ class CrewLogWriter:
     def submit(self, unit: str, job: WriteJob) -> bool:
         """Hand *job* to the writer for *unit*.
 
-        On a running event loop it returns without waiting on the disk; with no loop
-        running it may write inline, waiting at most ``inline_order_seconds`` for the
-        unit's earlier entries first (see below).
+        On a running event loop it returns without waiting on the disk; with no loop it
+        may write inline after waiting at most ``inline_order_seconds`` for the unit's
+        earlier entries.
 
-        Returns ``False`` only when the job was REJECTED at a hard memory ceiling. A
-        rejected job was never admitted: it is counted (``WriterStats.overflowed``),
-        folded into the unit's ``write/dropped`` debt, and named once per unit -- but
-        NONE of its hooks run. Its settlement is the caller's, because only the caller
-        knows what else hangs off that entry, and it can act on the verdict at once;
-        every other outcome (landed, retained, dropped) resolves through the job's own
-        hooks and returns ``True``.
+        Returns ``False`` only when the job was REJECTED at a hard memory ceiling: it is
+        counted (``WriterStats.overflowed``), added to the unit's ``write/dropped`` debt and
+        named once per unit, but NONE of its hooks run, so the caller settles it. Every
+        other outcome resolves through the job's hooks and returns ``True``. Never raises,
+        never blocks an event loop; crossing the high-water mark is only reported.
 
-        Never raises, and never blocks an event loop. A lifecycle record is never dropped merely
-        for crossing the BACKPRESSURE high-water mark: crossing it is reported rather
-        than acted on, and only the hard ceilings far above it ever reject an entry.
-
-        With no event loop running the write happens inline. That is not a fallback on
-        the loop path -- there is no loop to protect, the caller is a thread that asked
-        for this, and it keeps a synchronous caller and the test suite deterministic. It
-        is ORDERED against the writer in both directions. ``flock`` stops two appends
-        from interleaving but does not decide which lands first, so writing here while
-        the writer holds a claimed batch could put this entry at a lower seq than one
-        submitted before it -- and a log whose seq disagrees with causality is worse than
-        a short one, because a fold cannot detect it. So the inline path is taken only
-        for a unit that owes nothing: no retained batch, no buffered entry, no other
-        inline write. And an inline write that FAILS is retained like any other, never
-        swallowed -- otherwise a synchronous caller's entry would be the one kind this
-        writer silently loses. A ``FOLLOW_ON`` job never takes the inline path (see
-        :data:`_POLICY`).
+        The inline path keeps synchronous callers and tests deterministic, and is taken only
+        for a unit that owes nothing (no retained batch, no buffered entry, no other inline
+        write). ``flock`` stops interleaving but does not order writers, so writing beside a
+        claimed batch could give this entry a lower seq than an earlier one, which a fold
+        cannot detect. A failed inline write is retained like any other. A ``FOLLOW_ON``
+        job never writes inline (see :data:`_POLICY`).
         """
         pending = _Pending(
             run=job.run,
@@ -812,39 +756,21 @@ class CrewLogWriter:
     def drain_for_shutdown(self, timeout: float) -> DrainReport:
         """Write out everything buffered, then stop accepting batching pauses.
 
-        The quiescence barrier a restart needs: entries live in memory until the writer
-        takes them, so a process that exits without this loses whatever had not been
-        written yet -- exactly the records a crash-time log is wanted for.
-
-        Blocking here is correct where blocking a producer is not: this runs on the
-        shutdown path, which has nothing left to keep responsive. Bounded all the same, by
-        *timeout*, so a wedged filesystem delays exit rather than hanging it.
+        The quiescence barrier a restart needs: unwritten entries live only in memory.
+        Blocking is fine on the shutdown path, but bounded by *timeout* so a wedged
+        filesystem delays exit rather than hanging it.
 
         The inline fallback runs at most one pass, and only when NO writer batch is
-        claimed. Two threads appending to one file is not merely a race for the lock:
-        ``flock`` serializes the writes but does not order them, so the batch claimed
-        second can reach the file first and a ``turn/started`` can land at a lower seq
-        than the ``session/opened`` before it. A log whose seq disagrees with causality
-        is worse than a short one, because a fold cannot detect it. The timed wait
-        already waits on the writer being idle, so reaching the fallback with a batch
-        still claimed means the writer is wedged holding it -- and then the only safe
-        answer is to write nothing.
+        claimed: ``flock`` serializes but does not order, so a second writer could put
+        ``turn/started`` at a lower seq than the ``session/opened`` before it. Reaching the
+        fallback with a batch still claimed means the writer is wedged, so nothing is
+        written: that batch and the entries behind it are lost rather than misordered, and
+        a report that is not ``drained`` says the tail is short and by how much.
 
-        Residual, in two shapes. A batch the wedged writer holds cannot be finished from
-        this thread. And when that batch is still claimed, the entries buffered BEHIND it
-        are left alone too, so they are lost at exit rather than written out of order. A
-        report that is not ``drained`` means exactly that: the log's tail is short, and
-        the warning says how short.
-
-        A retained batch is retried rather than waited out. Its backoff is a schedule in
-        seconds and this process is leaving, so honouring it here does not defer the
-        write, it loses it. The shutdown therefore CLAMPS the backoff to just inside its
-        deadline (see :meth:`_backoff_ready_at_locked`) -- and PACES the attempts across
-        the remaining budget, because a batch has few attempts before it is dropped and
-        spending them in microseconds turns a filesystem that needed a moment into a
-        permanent hole. What bounds this path is still *timeout*; a batch still owed when
-        it expires is reported by the warning, and one that ran out of attempts is
-        counted as dropped.
+        A retained batch's backoff is CLAMPED to just inside the deadline (see
+        :meth:`_backoff_ready_at_locked`), and attempts are PACED across the remaining
+        budget so its few attempts are not spent in microseconds. A batch still owed at
+        the deadline is reported; one out of attempts is counted as dropped.
         """
         budget = timeout
         with self._lock:
@@ -855,6 +781,8 @@ class CrewLogWriter:
             self._shutdown_deadline = self._shutdown_started + budget
             pending = bool(self._pending or self._pending_loss)
             running = self._busy_locked()
+            if pending and not running:
+                self._claim_here_locked()
         # Outside the lock, and BEFORE the wait below: a writer already parked for the
         # length of a retry backoff has to recompute that pause against the deadline,
         # or the clamp above changes a value nothing rereads.
@@ -881,6 +809,8 @@ class CrewLogWriter:
                 # Re-read under the lock: the wait may have failed on either condition,
                 # and only one of them permits an inline write.
                 claimed = self._busy_locked()
+                if not claimed:
+                    self._claim_here_locked()
             if not claimed:
                 # The writer is gone rather than mid-batch, so nothing else will touch
                 # the file. Finish what is still buffered here instead of losing it. A
@@ -1849,11 +1779,21 @@ class CrewLogWriter:
             else:
                 self._claimed.pop(unit, None)
 
+    def _claim_here_locked(self) -> None:
+        """Claim the writer for an inline drain on THIS thread, even with no executor.
+
+        ``_lock`` held, in the hold that found no batch claimed. Clearing the future keeps
+        a done one from reading as idle. :meth:`_drain_inline_until` releases it.
+        """
+        self._draining = True
+        self._drain_future = None
+
     def _drain_inline_until(self, deadline: float) -> bool:
         """Write buffered entries from THIS thread until quiet or *deadline*.
 
-        Used only by :meth:`drain_for_shutdown`, and only when no writer batch is claimed,
-        so there is no second appender to race.
+        Used only by :meth:`drain_for_shutdown`, under the claim it took with
+        :meth:`_claim_here_locked`, so there is no second appender to race. Every exit
+        releases that claim.
 
         Retries a batch that is inside its retry backoff, because the schedule cannot
         outlive the process: honouring it here means the entries are never written at
@@ -1863,33 +1803,40 @@ class CrewLogWriter:
         permanent hole. So each pass is followed by a wait sized to leave one attempt per
         slice of what is left.
 
-        Returns True when the buffers reached empty with nothing in flight.
+        Returns True when the buffers reached empty. The claim is why that is enough:
+        :meth:`_quiet` would read this drain's own claim as a batch in flight.
         """
         deferred_loss: "set[str]" = set()
-        while True:
-            deferred_loss.update(self._drain_once(deferred_loss))
-            if self._quiet():
-                return True
-            remaining = deadline - self._clock()
-            if remaining <= 0:
-                return False
+        try:
+            while True:
+                deferred_loss.update(self._drain_once(deferred_loss))
+                remaining = deadline - self._clock()
+                with self._lock:
+                    # Nothing left to attempt means at most a marker deferred to the next
+                    # drain is short, which this pass may not touch again.
+                    owed = bool(self._pending) or any(
+                        unit not in deferred_loss for unit in self._pending_loss
+                    )
+                    if remaining <= 0 or not owed:
+                        # Released in the hold that took the last look, so an entry
+                        # submitted after it starts a pass of its own.
+                        self._draining = False
+                        return not self._pending and not self._pending_loss
+                self._sleep(
+                    min(
+                        remaining,
+                        max(
+                            self.limits.min_shutdown_retry_gap,
+                            remaining / self.limits.max_write_attempts,
+                        ),
+                    )
+                )
+        except BaseException:
             with self._lock:
-                owed = bool(self._pending) or any(
-                    unit not in deferred_loss for unit in self._pending_loss
-                )
-            if not owed:
-                # Nothing left to attempt; anything short is a claimed batch or a marker
-                # deferred to the next drain, neither of which this pass may touch again.
-                return self._quiet()
-            self._sleep(
-                min(
-                    remaining,
-                    max(
-                        self.limits.min_shutdown_retry_gap,
-                        remaining / self.limits.max_write_attempts,
-                    ),
-                )
-            )
+                self._draining = False
+            raise
+        finally:
+            self._notify()
 
 
 __all__ = [

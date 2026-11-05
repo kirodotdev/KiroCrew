@@ -28,7 +28,7 @@ const BUNDLE = {
 async function collect() {
   vi.spyOn(api, 'collectDiagnostics').mockResolvedValue(BUNDLE as never)
   const view = renderWithProviders(<ReportProblemModal open onClose={vi.fn()} />)
-  await userEvent.click(screen.getByRole('button', { name: 'Create report' }))
+  await userEvent.click(screen.getByRole('button', { name: 'Prepare issue' }))
   await waitFor(() => expect(screen.getByText('Saved to')).toBeInTheDocument())
   return view
 }

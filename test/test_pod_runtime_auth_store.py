@@ -1,12 +1,7 @@
 """The pod stages the agent runtime's OWN identity store, not just the SSO cache.
 
-`test_the_agent_runtime_auth_stores_stay_visible` in the sandbox-mask suite pins
-`.local/share/kiro-cli` and `.local/share/amazon-q` out of every masking tier
-because "the agent runtime is itself spawned inside this sandbox and resolves its
-own access token from that store". Not masking it is only half the requirement:
-under the pod's remapped ``HOME`` the store must also EXIST there. Staging only
-`.aws/sso/cache` left the pod's child at kiro-cli's login gate with a readable,
-correctly-unmasked corridor -- the cache is not where the token is resolved.
+kiro-cli resolves its token from `.local/share/kiro-cli` (or `amazon-q`), not from
+`.aws/sso/cache`, so under the pod's remapped ``HOME`` that store must exist too.
 """
 
 from __future__ import annotations
@@ -14,6 +9,7 @@ from __future__ import annotations
 import contextlib
 import os
 import sqlite3
+import stat
 import sys
 from pathlib import Path
 
@@ -44,12 +40,8 @@ _OS_HOME_PARTS = ("os-home",)
 def _write_identity_db(path: Path, token: str) -> None:
     """A REAL SQLite identity store holding *token*.
 
-    The fixtures write a real database here, not plain text. Staging is not a byte
-    copy: a live database is snapshotted through SQLite's backup
-    API, which refuses a file that is not a database -- so a text fixture would
-    exercise the refusal path on every test instead of the staging path. Writing a
-    genuine database is also what lets these tests assert the property that matters
-    (the ROWS arrived), rather than that some bytes did.
+    Staging snapshots through SQLite's backup API, which refuses a non-database, so
+    a text fixture would hit the refusal path. A real database lets tests check rows.
     """
     with contextlib.closing(sqlite3.connect(path)) as conn:
         conn.execute("CREATE TABLE IF NOT EXISTS auth (token TEXT)")
@@ -181,6 +173,102 @@ def test_existing_pod_files_are_not_clobbered(tmp_path: Path, host_home: Path) -
     assert (target / "data.sqlite3").read_text() == "pod's own refreshed token"
 
 
+def _mode(path: Path) -> int:
+    return stat.S_IMODE(path.lstat().st_mode)
+
+
+@requires_pinned_walk
+def test_an_owner_executable_store_file_stays_runnable(tmp_path: Path, host_home: Path) -> None:
+    """kiro-cli runs its engine straight from the staged store, so ``node`` must stay executable.
+
+    The host ships ``node`` as 0o755. Staging it at 0o600 is what made every pod's
+    kiro-cli exit at boot with "failed to spawn the v3 engine". Owner execute is
+    kept, and group and other bits are still dropped on both kinds of file.
+    """
+    store = host_home / ".local" / "share" / "kiro-cli"
+    (store / "node").write_bytes(b"\x7fELF engine")
+    (store / "node").chmod(0o755)
+    (store / "tui.js").chmod(0o644)
+    os_home = tmp_path / "pod" / "os-home"
+    os_home.mkdir(parents=True)
+
+    _stage_runtime_auth_store(os_home, _kiro_mapping(host_home))
+
+    target = os_home / ".local" / "share" / "kiro-cli"
+    assert _mode(target / "node") == 0o700
+    assert (target / "node").read_bytes() == b"\x7fELF engine"
+    assert _mode(target / "tui.js") == 0o600
+
+
+@requires_pinned_walk
+def test_a_copy_an_earlier_boot_left_at_0600_gets_owner_exec_back(
+    tmp_path: Path, host_home: Path
+) -> None:
+    """A restart reuses the pod's os-home, and staging is create-only.
+
+    Without a repair, a ``node`` that an earlier boot staged at 0o600 stays
+    unrunnable on every later boot of that pod. The repair adds owner execute
+    only. It does not replace the pod's bytes.
+    """
+    store = host_home / ".local" / "share" / "kiro-cli"
+    (store / "node").write_bytes(b"host engine")
+    (store / "node").chmod(0o755)
+    os_home = tmp_path / "pod" / "os-home"
+    target = os_home / ".local" / "share" / "kiro-cli"
+    target.mkdir(parents=True)
+    (target / "node").write_bytes(b"engine staged by an earlier boot")
+    (target / "node").chmod(0o600)
+
+    _stage_runtime_auth_store(os_home, _kiro_mapping(host_home))
+
+    assert _mode(target / "node") == 0o700
+    assert (target / "node").read_bytes() == b"engine staged by an earlier boot"
+
+
+@requires_pinned_walk
+def test_the_exec_repair_changes_only_a_plain_0600_copy(tmp_path: Path, host_home: Path) -> None:
+    """The repair never follows a link, never changes a hardlinked inode, and keeps other modes.
+
+    It also needs a source that staging would copy: a host executable with a second
+    link, or a FIFO, causes no repair of the pod's copy.
+    """
+    store = host_home / ".local" / "share" / "kiro-cli"
+    for name in ("linked", "aliased", "own-mode", "plain-source", "linked-source"):
+        (store / name).write_bytes(b"host executable")
+        (store / name).chmod(0o755)
+    os.link(store / "linked-source", tmp_path / "second-host-link")
+    os.mkfifo(store / "fifo-source", 0o700)
+    os_home = tmp_path / "pod" / "os-home"
+    target = os_home / ".local" / "share" / "kiro-cli"
+    target.mkdir(parents=True)
+    outside = tmp_path / "outside-the-pod"
+    outside.write_bytes(b"not the pod's file")
+    outside.chmod(0o600)
+    (target / "linked").symlink_to(outside)
+    alias_twin = tmp_path / "alias-twin"
+    alias_twin.write_bytes(b"one inode, two names")
+    alias_twin.chmod(0o600)
+    os.link(alias_twin, target / "aliased")
+    (target / "own-mode").write_bytes(b"pod chose this mode")
+    (target / "own-mode").chmod(0o400)
+    (store / "plain-source").chmod(0o644)
+    (target / "plain-source").write_bytes(b"not executable on the host")
+    (target / "plain-source").chmod(0o600)
+    for name in ("linked-source", "fifo-source"):
+        (target / name).write_bytes(b"copy from an earlier boot")
+        (target / name).chmod(0o600)
+
+    _stage_runtime_auth_store(os_home, _kiro_mapping(host_home))
+
+    assert _mode(outside) == 0o600
+    assert (target / "linked").is_symlink()
+    assert _mode(alias_twin) == 0o600
+    assert _mode(target / "own-mode") == 0o400
+    assert _mode(target / "plain-source") == 0o600
+    assert _mode(target / "linked-source") == 0o600
+    assert _mode(target / "fifo-source") == 0o600
+
+
 def test_the_mapping_set_is_derived_from_the_store_table(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -211,19 +299,9 @@ def test_a_per_platform_host_store_is_staged(
     tmp_path: Path, platform: str, relative: tuple[str, ...]
 ) -> None:
     # Each platform's real layout stages from the table, not from a POSIX guess.
-    #
-    # Two independent axes, which is what made this fail as ``[macos] 0 == 1`` on a
-    # runner that is neither macOS nor Linux. The MAPPING's platform decides the
-    # source and staged layout and is supplied explicitly here, so this test is
-    # about the table's rows rather than the host's identity. Whether staging can
-    # HAPPEN at all is a host CAPABILITY: ``_stage_runtime_auth_store`` refuses and
-    # returns 0 where ``pinned_fs.supports_pinned_walk()`` is False (Windows has no
-    # ``O_DIRECTORY``/``O_NOFOLLOW``/``dir_fd``), because the pod's own credential
-    # tree is published through the pinned no-follow chokepoint and degrading that
-    # to a by-name write is not on offer. So the platform ROWS are parametrized and
-    # the CAPABILITY is gated -- the no-capability half is asserted unconditionally
-    # by ``test_a_platform_without_pinned_walk_stages_nothing``, so nothing about
-    # this contract goes unproven on a host that skips this case.
+    # The mapping's platform is a parameter; whether staging can happen is a host
+    # capability (``pinned_fs.supports_pinned_walk()``, False on Windows), gated here.
+    # ``test_a_platform_without_pinned_walk_stages_nothing`` covers the other half.
     host = tmp_path / f"host-{platform}"
     (host / Path(*relative)).mkdir(parents=True)
     _write_identity_db(host / Path(*relative) / "data.sqlite3", "token")
@@ -251,14 +329,10 @@ def test_an_xdg_redirected_source_is_followed(tmp_path: Path) -> None:
 
 
 class TestALiveDatabaseIsSnapshottedNotFileCopied:
-    """A live store is a SET of files that only agree at an instant.
+    """A live store is a SET of files that only agree at an instant, so it is snapshotted.
 
-    The host's kiro-cli is a running process. Copying ``data.sqlite3`` and then its
-    ``-wal`` with two separate reads takes them at two different times, so a
-    checkpoint landing between the copies yields a main file from after it and a WAL
-    from before -- a torn snapshot staged into the pod as if it were sign-in state.
-    The window is BETWEEN the copies, so no per-file copy loop can close it; the fix
-    is to stop copying the file set and snapshot the database instead.
+    A checkpoint between copying ``data.sqlite3`` and its ``-wal`` tears the pair; no
+    per-file copy loop can close that window.
     """
 
     @staticmethod
@@ -271,14 +345,10 @@ class TestALiveDatabaseIsSnapshottedNotFileCopied:
     def test_a_checkpoint_between_file_copies_cannot_tear_the_snapshot(
         self, tmp_path: Path
     ) -> None:
-        """RED-FIRST: the generation tear, forced at the point it happens.
+        """Rows left uncheckpointed in the WAL still reach the staged store.
 
-        The old loop staged names in sorted order, so ``data.sqlite3`` was read
-        before ``data.sqlite3-wal``. This drives a WAL-mode database to exactly that
-        interleaving: rows are committed into the WAL and left UNCHECKPOINTED, so the
-        main file alone does not contain them. A byte copy of the main file therefore
-        stages a database missing the token, while a snapshot reads through the engine
-        and contains every committed row.
+        The main file alone lacks them, so a byte copy would stage no token; a
+        snapshot reads through the engine.
         """
         host = tmp_path / "host-home"
         store = self._store(host)
@@ -315,11 +385,8 @@ class TestALiveDatabaseIsSnapshottedNotFileCopied:
     def test_a_source_that_is_not_a_database_refuses_the_whole_store(self, tmp_path: Path) -> None:
         """Refuse, don't half-stage: the token is what the store is for.
 
-        A tree staged without a usable database presents the pod as provisioned while
-        every agent turn fails to sign in, which is strictly worse than the
-        signed-out boot the viability probe already reports. Databases are handled
-        before a directory's plain files and the database sits at the store root, so
-        the refusal lands before anything is staged rather than half-way through.
+        A store without a usable database looks provisioned while every turn fails to
+        sign in. Databases are handled first, so the refusal lands before any staging.
         """
         host = tmp_path / "host-home"
         store = self._store(host)
@@ -412,24 +479,14 @@ def test_the_staged_store_is_readable_through_the_pod_mask_in_every_tier(
 
 
 class TestTheStagedStoresResidualIsPinned:
-    """What DOES and does NOT fence the staged identity store, measured.
-
-    The staged store is a host-derived bearer-token database sitting in a tree the
-    pod's agent can reach, so its exposure needs pinning in both directions rather
-    than describing. Three facts, each asserted so a silent drift in any of them
-    fails here:
+    """What DOES and does NOT fence the staged identity store (a bearer-token database).
 
     1. the TOOL gate refuses every staged store path, on every platform row;
-    2. the bash-TEXT layer does not, and that is main's stated posture rather than
-       a gap this staging opened (see the ``KIROCREW_HOME`` parity below);
-    3. the OS bind-mask does not cover the store either, because the harness
-       resolves its token from it and a mask acts on the whole mount namespace.
+    2. the bash-TEXT layer does not, for any path (see the ``KIROCREW_HOME`` parity);
+    3. the OS bind-mask does not, because the harness resolves its token from it.
 
-    Fact 3 is why the finding's "mask it from tool subprocesses only" cannot be
-    implemented as stated: Crew wraps the HARNESS, and the harness spawns its tool
-    subprocesses inside that wrapper, so the two audiences share one namespace and
-    one mask. Closing it means a pod-scoped sign-in that never puts a host bearer in
-    the pod tree -- a design change, not a mask entry.
+    Fact 3 holds because the harness and its tool subprocesses share one mount
+    namespace and one mask; closing it needs a pod-scoped sign-in, not a mask entry.
     """
 
     @staticmethod
@@ -473,14 +530,10 @@ class TestTheStagedStoresResidualIsPinned:
     def test_no_path_spelling_is_covered_by_the_command_matcher_any_more(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Stated, not silent: the text layer fences NO path at all.
+        """The command matcher fences NO path, the real home's credential files included.
 
-        What is left is simpler and worth pinning as such: the command matcher
-        allows every path spelling, the real home's own credential files included,
-        so the pod tree is not a special case and no parity claim applies. The
-        assertion runs in BOTH directions -- the resolving gate still refuses each
-        of these -- so a future round that reinstates a text-layer path matcher, or
-        loses the resolving fence, fails here rather than drifting quietly.
+        Asserted both ways (the resolving gate still refuses each), so a change to
+        either layer fails here.
         """
         os_home = str(tmp_path / "pod-os-home")
         crew_home = str(tmp_path / "crew-home")
@@ -514,14 +567,10 @@ class TestTheStagedStoresResidualIsPinned:
     def test_masking_the_store_would_take_the_harness_with_it(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """The structural reason fact 3 holds, pinned as a requirement.
+        """The staged copy stays reachable at the child's own ``$HOME`` (fact 3).
 
-        ``test_the_agent_runtime_auth_stores_stay_visible`` in the sandbox-mask
-        suite states the harness side: the runtime resolves its own access token
-        from this store while running inside the sandbox. This asserts the pod-home
-        consequence -- the staged copy must be reachable at the path the child's own
-        ``$HOME`` resolves to, so a future mask entry covering it is a break rather
-        than a hardening and fails here.
+        Pod-home side of ``test_the_agent_runtime_auth_stores_stay_visible``: a mask
+        entry covering it would break sign-in.
         """
         os_home = "/pods/p1/os-home"
         monkeypatch.setenv("KIROCREW_POD", "1")

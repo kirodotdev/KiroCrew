@@ -325,3 +325,38 @@ class TestRenameSource:
             resp = await client.patch(f"/api/knowledge/sources/{sid}", data="not json",
                                       headers={"Content-Type": "application/json"})
             assert resp.status == 400
+
+
+class TestFilePathType:
+    """A non-empty file_path that is not a string is caller error, not a 500.
+
+    The sensitive-path check hands it to ``Path()`` and ``is_sensitive_path``,
+    which raise on a number, list, object or bool. An empty value of any type
+    keeps its ``file_path required`` answer.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("verb", ["retry", "skip"])
+    @pytest.mark.parametrize("value", [5, 1.5, True, ["/tmp/vault/a.md"], {"p": "a"}])
+    async def test_a_non_string_file_path_is_400(self, store, verb, value):
+        sid = store.add_source("test", "local_folder", "/tmp/vault")
+        async with TestClient(TestServer(_make_app(store))) as client:
+            resp = await client.post(
+                f"/api/knowledge/sources/{sid}/files/{verb}", json={"file_path": value}
+            )
+            assert resp.status == 400
+            body = json.loads(await resp.text())
+        assert body == {"error": "file_path must be a string", "code": "invalid_field_type"}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("verb", ["retry", "skip"])
+    @pytest.mark.parametrize("value", [None, 0, False, [], {}, ""])
+    async def test_an_empty_file_path_of_any_type_is_still_required(self, store, verb, value):
+        sid = store.add_source("test", "local_folder", "/tmp/vault")
+        async with TestClient(TestServer(_make_app(store))) as client:
+            resp = await client.post(
+                f"/api/knowledge/sources/{sid}/files/{verb}", json={"file_path": value}
+            )
+            assert resp.status == 400
+            body = json.loads(await resp.text())
+        assert body == {"error": "file_path required"}

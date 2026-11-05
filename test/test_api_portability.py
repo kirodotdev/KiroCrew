@@ -806,7 +806,7 @@ async def test_export_disconnect_releases_the_builder_and_its_lock(
     build_done = threading.Event()
 
     def stream(write, _plan):
-        # Hold the real per-chat lock, like _write_planned_sessions does, then keep
+        # Hold the real per-chat lock, like _write_sessions does, then keep
         # handing chunks over. Once the client is gone the handler sets abort and
         # frees the backpressure slots, so the next write() raises _ExportAborted
         # out of here -- which must unwind this `with`, releasing the lock.

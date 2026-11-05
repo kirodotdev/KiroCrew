@@ -28,6 +28,8 @@ import inspect
 import logging
 from typing import Any, Callable, Coroutine, Iterable, Iterator, Mapping, TypeVar
 
+from kiro_crew.metrics.feature_usage import record_channel_message
+from kiro_crew.metrics.usage_attrs import TRIGGER_MONITOR, TRIGGER_USER, set_current_trigger
 from kiro_crew.shared_crew import admission_entry
 from kiro_crew.shared_crew import admission_gate as _gate
 from kiro_crew.shared_crew.admission import OperationKind, ReasonCode
@@ -531,6 +533,12 @@ async def run_channel_turn(
 
     async def _inside() -> T:
         token = _IN_CHANNEL_TURN.set(True)
+        # Admission let the message start a turn. Counted here, once admission
+        # has decided and before the turn runs, so a turn that later fails is
+        # still a received, admitted message. Who started it is declared for a
+        # backend session the turn opens.
+        record_channel_message(session_key, admitted=True, automation=automation)
+        set_current_trigger(TRIGGER_MONITOR if automation else TRIGGER_USER)
         try:
             return await run()
         finally:
@@ -546,6 +554,7 @@ async def run_channel_turn(
         refused=reasons.append,
     )
     if reasons:
+        record_channel_message(session_key, admitted=False, automation=automation)
         return await refused(reasons[0])
     return result  # type: ignore[return-value]
 

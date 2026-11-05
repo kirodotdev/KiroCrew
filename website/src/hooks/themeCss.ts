@@ -154,7 +154,7 @@ function mixHex(a: string, b: string, pct: number): string | null {
  * — there is no light counterpart. A pack with a light `--bg` therefore renders
  * dark-mode surfaces and secondary text under its own light palette: `--card`
  * inherits `#181b22`, so its own dark `--text` lands on a dark card at 1.22:1,
- * and `--muted-fg` inherits `#fff`.
+ * and `--muted-fg` inherits the dark palette's `#000`.
  *
  * So fill the gaps HERE, where the pack's own palette is known, rather than
  * leaving a mode-blind inherit. Only tokens the pack omitted are emitted, so a
@@ -407,7 +407,8 @@ export function buildThemeFontCss(slug: string, theme: CustomThemeData): string 
 // ── §4.2/§5.1 runtime positive-selector scoper ──
 // A selector group from overrides.css is kept only if EVERY selector, after
 // stripping one optional leading [data-theme="…"] / html[data-theme…] scoping
-// prefix, targets one of the 10 allowlisted surfaces (optionally with extra
+// prefix, targets an allowlisted surface: an element in _ALLOWED_ELEMENTS or a
+// class in _ALLOWED_CLASSES (optionally with extra
 // chained classes/pseudo-classes on the SAME base — no descendant/child/sibling
 // combinators, no ids/attribute selectors, never the forbidden set).
 const _ALLOWED_ELEMENTS = new Set(['', 'body', 'button']) // blocks iframe/script/div/…

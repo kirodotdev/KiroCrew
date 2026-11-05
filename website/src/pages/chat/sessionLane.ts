@@ -56,6 +56,18 @@ export interface LaneExtras {
    *  parent blocked waiting on its queued children is Working through its own
    *  `running` turn, and one whose turn has ended is not. */
   detailedSubagentsRunning?: boolean
+  /** A session this one opened is mid-turn: its crew is working. */
+  crewBusy?: boolean
+  /** Its ledger has open work still moving (`lib/crewWork.ts`). Nothing runs, but
+   *  its own `[OPTIONS:]` line is then a courtesy, not a pause on the person. */
+  crewOpenWork?: boolean
+  /** Its ledger has open work gone quiet, its next step not taken: the row says
+   *  Stalled, and the person is who can unstick it. */
+  crewStalled?: boolean
+  /** Its ledger has an open item that names a person (approval / needs a person). */
+  crewPerson?: boolean
+  /** One of the sessions it opened waits on a tool approval: the person owes it. */
+  crewApproval?: boolean
 }
 
 /** Current execution that makes an older `interrupted` flag stale. Shared by
@@ -99,15 +111,21 @@ export const SESSION_LANES: readonly SessionLaneDef[] = [
  */
 export function inferLane(slot: LaneSlotFields, extras: LaneExtras = {}): SessionLaneKey {
   // A tool gate the user owes, or a sub-agent's gate the parent owes.
-  if (slot.pending_approval || (extras.subagentAwaiting ?? 0) > 0) return 'needs_approval'
+  if (slot.pending_approval || (extras.subagentAwaiting ?? 0) > 0 || extras.crewApproval) return 'needs_approval'
   // Parked on a human answer. Deliberately NOT `waiting_for_input`, which is
   // true of every finished turn and would swallow the whole idle lane: only an
   // explicit unanswered question or an options card outranks live work.
-  if (slot.needs_input || slot.has_options) return 'waiting'
-  if (hasLiveSessionWork(slot, extras)) return 'working'
+  // A conductor ends most replies with a courtesy `[OPTIONS:]` line; while its
+  // crew still moves, that line is not a pause on the person (the row's rule).
+  if (slot.needs_input || extras.crewPerson
+    || (extras.crewStalled && !extras.crewBusy && !hasLiveSessionWork(slot, extras))
+    || (slot.has_options && !extras.crewBusy && !extras.crewOpenWork)) return 'waiting'
+  if (hasLiveSessionWork(slot, extras) || extras.crewBusy) return 'working'
   // An interrupted turn waits on the user only when no newer work supersedes
   // it. An armed goal loop does not supersede its own stalled turn.
   if (slot.interrupted) return 'waiting'
-  if (extras.goalLoopActive) return 'working'
+  // An armed loop is work, except a conductor whose ledger work sits between
+  // checks: nothing runs, and its row says Waiting.
+  if (extras.goalLoopActive && !extras.crewOpenWork) return 'working'
   return 'idle'
 }

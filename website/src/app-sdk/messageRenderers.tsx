@@ -35,10 +35,12 @@ import NudgeCard from '../pages/chat/NudgeCard'
 import ElicitationCard from '../pages/chat/ElicitationCard'
 import NoticeCard from '../pages/chat/NoticeCard'
 import { SystemNoticeRow, isSystemNoticeRow } from '../pages/chat/CompactionCard'
+import { replyShowsFooter } from '../pages/chat/replyFooter'
+import { toolRailColor } from '../utils/toolRailColor'
 import SkillLoadCard, { isSkillLoadRow } from '../pages/chat/SkillLoadCard'
 import { ErrorCard } from '../pages/chat/ErrorCard'
 import { decisionStripFieldOf } from '../pages/chat/decisionRecord'
-import { resolveTransientNotice } from '../pages/chat/transientNotice'
+import { resolveGatewayNotice } from '../pages/chat/gatewayNotice'
 import StopEventCard from '../pages/chat/StopEventCard'
 import { warmBriefBodyOf } from '../components/chat/WarmBriefCard'
 import { ToolDetails } from '../pages/chat/ToolDetails'
@@ -304,9 +306,10 @@ export const ToolCallPill = memo(function ToolCallPill({ message, running, onFil
       ? rawLabel + '\n\n' + (message.content || '')
       : (message.content || '')
   const detailsId = React.useId()
-  // Rail colour mirrors the pill's status tone, at the main chat's 70% mix.
+  // Rail colour mirrors the pill's status tone, through the mapping the main
+  // chat's tool row uses too.
   const detailsRail = {
-    color: `color-mix(in srgb, ${isRejected ? 'var(--danger)' : isAutoDenied ? 'var(--warn)' : isDone ? 'var(--ok)' : hasPendingPerm ? 'var(--warn)' : 'var(--accent)'} 70%, transparent)`,
+    color: toolRailColor({ isRejected: !!isRejected, isAutoDenied, isDone: !!isDone, hasPendingPerm: !!hasPendingPerm }),
   }
   // The two budgets above are width-blind, so the collapsed box is also measured
   // once it is on screen: a real browser then detects the wrap case exactly,
@@ -506,6 +509,11 @@ export interface AssistantBubbleOptions {
    *  system policy notice rather than the user's (`turnHadPolicyBlock`). The
    *  raw marker is stripped from the prose either way. */
   suppressSteerAck?: boolean
+  /** Never draw the "N files changed" chips, whatever `meta.file_changes`
+   *  holds. A host whose replies are not file work the reader reviews (a
+   *  crewmate's chat: its notes, scripts and page writes) sets it. Off
+   *  (default) the chips draw as on every other surface. */
+  hideFileChanges?: boolean
   /** Session routing for the reply's markdown: open a session chip, plus the
    *  roster and the active key the chip resolver needs. All three or none — the
    *  renderer gates on (`onSessionOpen` AND `sessions`), so a half-wired host
@@ -525,15 +533,19 @@ export interface AssistantBubbleOptions {
   /** The bubble's own Regenerate action (its hover row), for the host that
    *  can regenerate this reply. Absent: no Regenerate. */
   onRegenerate?: () => void
+  /** The LOCAL slot these rows belong to. Set, the reply draws its lock tags
+   *  from `meta.redactions` and their card offers the owner's reveal of the
+   *  removed value. A host drawing another gateway's rows leaves it unset. */
+  redactionSlot?: string
 }
 
 /**
  * The assistant reply as the SDK draws it, minus the row layout: the footer
- * rule (a finished reply shows its footer once the turn is over — another user
- * or assistant row follows, or nothing follows and the session is idle) and
- * every prop the bubble takes off the message. Exported so a host that places
- * the reply differently (a crewmate's chat draws it as a bordered bubble in a
- * run) renders the SAME bubble rather than a second copy of this logic.
+ * rule (`replyShowsFooter`: a finished reply shows its footer once its turn is
+ * over) and every prop the bubble takes off the message. Exported so a host
+ * that places the reply differently (a crewmate's chat draws it as a bordered
+ * bubble in a run) renders the SAME bubble rather than a second copy of this
+ * logic.
  * Returns null for a say-nothing row (bare U+200B): invisible-only content
  * would draw as an empty bubble.
  */
@@ -565,25 +577,10 @@ export function renderAssistantBubble(
   // Same skip as ChatPage's inline chain — see utils/invisibleText.
   if (isHiddenInvisibleAssistantRow(m)) return null
   const isStreaming = m.role === 'streaming'
-  // The footer belongs to a FINISHED reply. It shows once the turn is over,
-  // which is either because another user or assistant row follows, or
-  // because nothing follows and the session has gone idle.
-  let showFooter = false
-  if (!isStreaming) {
-    let nextRelevant = false
-    for (let j = ctx.index + 1; j < ctx.messages.length; j++) {
-      if (ctx.messages[j].role === 'user') { showFooter = true; nextRelevant = true; break }
-      // A hidden invisible-only row draws nothing, so it cannot host the
-      // footer; pass over it to the row that renders.
-      if (isHiddenInvisibleAssistantRow(ctx.messages[j])) continue
-      // A system-notice row (compaction / session reload) draws a system
-      // card, not a reply, so it cannot end the turn either.
-      if (isSystemNoticeRow(ctx.messages[j])) continue
-      if (ctx.messages[j].role === 'assistant' || ctx.messages[j].role === 'streaming') { nextRelevant = true; break }
-    }
-    if (!nextRelevant) showFooter = !ctx.running
-    if (opts.forceFooter) showFooter = true
-  }
+  // The footer belongs to a FINISHED reply, by the rule every surface shares
+  // (`replyShowsFooter`); a host that groups rows into runs claims it at the
+  // run's end (`forceFooter`).
+  const showFooter = !isStreaming && (opts.forceFooter === true || replyShowsFooter(m, ctx.messages, ctx.index, ctx.running))
   const bubble = (
     <AssistantMessage
       content={m.content}
@@ -607,9 +604,11 @@ export function renderAssistantBubble(
       variantIdx={m.variant_idx}
       turnStats={(m.meta as Record<string, unknown> | undefined)?.turn_stats as TurnStats | undefined}
       decisionsStrip={decisionStripFieldOf(m)}
-      fileChanges={(m.meta as Record<string, unknown> | undefined)?.file_changes as FileChangeEntry[] | undefined}
-      fileChangesOmittedFiles={(m.meta as Record<string, unknown> | undefined)?.file_changes_omitted_files}
+      fileChanges={opts.hideFileChanges ? undefined : (m.meta as Record<string, unknown> | undefined)?.file_changes as FileChangeEntry[] | undefined}
+      fileChangesOmittedFiles={opts.hideFileChanges ? undefined : (m.meta as Record<string, unknown> | undefined)?.file_changes_omitted_files}
       onRegenerate={opts.onRegenerate}
+      redactions={opts.redactionSlot ? (m.meta as Record<string, unknown> | undefined)?.redactions : undefined}
+      redactionSlot={opts.redactionSlot}
       suppressSteerAck={opts.suppressSteerAck || turnHadPolicyBlock(ctx.messages, ctx.index)}
       bubbleClassName={bubbleClassName}
       onReplyInThread={isStreaming ? undefined : replyInThreadFor(m, ctx)}
@@ -754,7 +753,7 @@ export const defaultMessageRenderers: readonly MessageRenderer[] = [
           {cronLabel && <span className="text-muted text-[11px] leading-4 font-medium px-1 mb-1"><Clock size={11} className="inline mr-0.5" />{cronLabel}</span>}
           {!cronLabel && appLabel && <span className="text-muted text-[11px] leading-4 font-medium px-1 mb-1 cursor-help" title={i18nT('components.mcpApp.from_app_tooltip')}><AppWindow size={11} className="inline mr-0.5" />{i18nT('components.mcpApp.from_app', { app: appLabel.split('/')[0] })}</span>}
           <div className="mc-message-font-scope msg-content px-4 py-3 leading-relaxed rounded-lg bg-warn-subtle text-text ring-1 ring-inset forced-colors:border ring-warn/30 rounded-bl-[4px] overflow-hidden min-w-0" style={{ overflowWrap: 'anywhere', wordBreak: 'break-word', fontSize: 'var(--mc-message-font-size, 14px)' }}>
-            <MessageErrorBoundary rawContent={cleanContent}><MarkdownRenderer content={cleanContent} softBreaks /></MessageErrorBoundary>
+            <MessageErrorBoundary rawContent={cleanContent}><MarkdownRenderer content={cleanContent} onArtifactOpen={ctx.onArtifactOpen} softBreaks /></MessageErrorBoundary>
           </div>
         </>,
       )
@@ -766,10 +765,10 @@ export const defaultMessageRenderers: readonly MessageRenderer[] = [
     // The shared ErrorCard, deliberately without `onContinue`: omitting the
     // handler selects its settled (non-continuable) shape, and the app-sdk
     // surface has no turn to resume, so it must never grow the affordance.
-    // Same transient-notice split as transcriptRenderers: a pending gateway
+    // Same gateway-notice split as transcriptRenderers: a pending gateway
     // retry is a soft localized NoticeCard, not a red error.
     render: (m, ctx) => {
-      const transient = resolveTransientNotice(m, ctx.messages, ctx.index)
+      const transient = resolveGatewayNotice(m, ctx.messages, ctx.index)
       if (transient?.card === 'notice') {
         return ctx.row(<NoticeCard content={transient.text} tone={transient.tone} />)
       }
@@ -785,7 +784,13 @@ export const defaultMessageRenderers: readonly MessageRenderer[] = [
   {
     id: 'notice',
     roles: ['notice'],
-    render: (m, ctx) => ctx.row(<NoticeCard content={m.content} />),
+    // A gateway notice row (empty response, model fallback) draws localized
+    // copy keyed on its token; any other notice keeps its own text.
+    render: (m, ctx) => {
+      const notice = resolveGatewayNotice(m, ctx.messages, ctx.index)
+      if (notice?.card === 'notice') return ctx.row(<NoticeCard content={notice.text} tone={notice.tone} />)
+      return ctx.row(<NoticeCard content={m.content} />)
+    },
   },
   {
     // Grouped and lifecycle-only roles have no row of their own: a thinking or

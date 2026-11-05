@@ -148,9 +148,12 @@ grant audits retain their audit-or-deny contract.
   failure exit (`platform_compat.exit_after_failed_restart_exec`) drain an
   existing SEL singleton with `flush_audit_queue_before_hard_exit`, which uses
   the teardown executor and an outer deadline, before the gateway.log tail.
-  Restart retains its inline off-loop drain. These best-effort drains avoid
-  initializing a trust root during exit. The second-signal force exit does not
-  drain SEL yet (#19042).
+  Restart retains its inline off-loop drain. The second-signal force exit
+  drains on its own non-daemon `kc-force-exit` thread with the synchronous
+  `flush_audit_queue`, once before its orphan sweep and once more before the
+  gateway.log tail, and the graceful exit parks rather than drain or exit
+  under it (see the gateway's Shutdown Sequence). These best-effort drains
+  avoid initializing a trust root during exit.
 - **Fallback**: if the writer can't be started, `log()` writes synchronously so
   an event is never silently dropped.
 - **Write failures**: when an append or the chain lock raises `OSError`, the
@@ -177,6 +180,7 @@ Two bounds, and the tighter wins:
 | Slack handler | `tool_invocation` rows (`operation` = tool name; `outcome` invoked / denied / approved / rejected / …) for tool calls and every permission decision | `slack/handler_runtime/permission_ladder.py` |
 | Dashboard chat | `tool_invocation` rows (`operation` = tool name; `outcome` invoked and every permission decision) | `dashboard/chat_turn/tool_rows.py` (invoked), `tool_approval.py` and `permission_prompt.py` (the permission decisions) |
 | Transport permission floor | `tool_invocation` refusals from `permission_floor.audit_refusal` (`source=transport_floor`, `outcome=rejected_transport_floor`) | `permission_floor.py` |
+| Batch write guard | `tool_invocation` refusals from `batch_guard.audit_refusal` (`source=batch_guard`, `outcome=rejected_batch_guard`, `metadata.mechanism=batch_write_guard`, `metadata.cause=batch_read_write`); opt-in, a timing refusal, never a security one | `acp/batch_guard.py` |
 | ACP session cancel | `approval_cancel` rows with `outcome=rejected_on_cancel` for approvals pending when the session is cancelled | `acp/client_turn_control.py` |
 | Chat persist seams | `output_anomaly` / `options_footer_glued_text` (`outcome=labelled`, `source` from the turn's session key, `metadata` `{count, chars, preview (redacted, 200 chars), directive_shaped}`) when a persisted turn carried text glued to its own `[OPTIONS:]` footer; skipped while SEL is cold so the first open never runs on the event loop | `dashboard/chat_turn/segment_flush.py` (`_log_glued_footer_text`) |
 | TaskRunner | `tool_invocation` rows for permission decisions during decomposition and step execution | `task_planner.py`, `tool_permission.py` (`TaskrunnerRows`, through `task_executor.py`'s `sel`) |

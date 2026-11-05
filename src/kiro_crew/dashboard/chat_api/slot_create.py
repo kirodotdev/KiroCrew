@@ -105,6 +105,17 @@ def _created_slot_row(state: Any, request: web.Request, slot: Any) -> dict[str, 
     return row
 
 
+def _mate_home_locked_response() -> web.Response:
+    """The 403 for a create that would file a chat into, or out of, a mate's home."""
+    return web.json_response(
+        {
+            "error": "this folder belongs to a Bot and is managed for you",
+            "code": "mate_home_locked",
+        },
+        status=403,
+    )
+
+
 def _retract_failed_newborn(state: DashboardState, slot: _ChatSlot) -> bool:
     """Withdraw a slot this create minted and is answering with a failure.
 
@@ -175,8 +186,7 @@ async def _check_new_slot_assignment(
             member_store_ownership_holds, cfg, selected, store
         ):
             raise UnknownMemoryStore(
-                f"Crew Member {selected!r} does not own its private memory store; "
-                "no session was created"
+                f"Bot {selected!r} does not own its private memory store; " "no session was created"
             )
 
     chosen = await asyncio.to_thread(
@@ -221,6 +231,15 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
             },
             status=400,
         )
+    # The title is applied after the mint, so its type is checked here: a
+    # non-string one would raise there, a 500 after the slot was made. Falsy
+    # values (null, "", 0, []) still mean "no title", as before.
+    from kiro_crew.dashboard.handlers._shared import string_field_error
+
+    raw_title = body.get("title") or ""
+    title_error = string_field_error("title", raw_title)
+    if title_error is not None:
+        return title_error
     # Remote-dispatch preview (RFC conductor-remote-dispatch §2b): an owner's
     # work-item create on a crew short of memory, CPU or disk is refused before
     # anything is read or minted, and every owner create reply carries the
@@ -283,6 +302,11 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
     # or two and it then jumps into the folder. Validated exactly as
     # PATCH /api/chat/slots/{slot}/folder validates it.
     folder_id = str(body.get("folder_id") or "")
+    from kiro_crew.dashboard.mate_folders import home_owner_of, refuses_refile
+
+    if home_owner_of(state._folders, folder_id):
+        # A mate's home folder holds only the chats that mate opens.
+        return _mate_home_locked_response()
     if folder_id and not any(f["id"] == folder_id for f in state._folders):
         return web.json_response(
             {"error": "folder not found", "code": "folder_not_found"}, status=400
@@ -727,10 +751,17 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
             if is_new_slot:
                 _retract_failed_newborn(state, slot)
             return denied
+        # `name` can address a slot already filed in a mate's home; moving it to
+        # another folder from here would take it out of that home. Checked on
+        # the slot get_or_create_slot returned, before anything below writes it.
+        if folder_id and refuses_refile(state._folders, slot.folder_id, folder_id, ""):
+            if is_new_slot:
+                _retract_failed_newborn(state, slot)
+            return _mate_home_locked_response()
         # Pin title if explicitly provided (prevents auto-title from overwriting).
         # A cron caller uses this route as both create and reopen. Its title names
         # the new session, but a later reopen must not undo a user's rename.
-        title = (body.get("title") or "").strip()[:200] if isinstance(body, dict) else ""
+        title = raw_title.strip()[:200]
         if cron_creator and (not is_new_slot or reopening_persisted_cron):
             title = ""
         if title:

@@ -469,7 +469,7 @@ async def test_on_windows_a_timed_out_lookup_leaves_no_grandchild(tmp_path, monk
     monkeypatch.setattr(git_gateway, "_GH_TIMEOUT_SECS", 5.0)
     with pytest.raises(git_gateway._NoCredential, match="timed out"):
         await git_gateway._run_quiet([sys.executable, "-c", script], env=dict(os.environ))
-    grandchild = int(pid_file.read_text())
+    grandchild = int(pid_file.read_text(encoding="utf-8"))
     try:
         await async_wait_until(
             lambda: not pid_exists(grandchild), describe=lambda: f"grandchild {grandchild} alive"

@@ -12,6 +12,7 @@ import logging
 from types import SimpleNamespace
 
 import pytest
+from shared_crew_host_isolation import host_isolation  # noqa: F401
 
 from kiro_crew.shared_crew import access
 from kiro_crew.shared_crew import attribution as attr
@@ -27,6 +28,8 @@ from kiro_crew.shared_crew.contracts import (
     Transport,
 )
 from kiro_crew.shared_crew.identity import local_operator_principal, tailnet_principal
+
+pytestmark = pytest.mark.usefixtures("host_isolation")
 
 ALICE = tailnet_principal("alice@example.com", "laptop", Provenance.TAILSCALE_SERVE)
 ANA = tailnet_principal(
@@ -105,7 +108,7 @@ def test_setup_paths_default_to_not_configured_and_not_in_this_build():
     assert set(paths) == set(access.SETUP_PATHS)
     assert paths["tailscale"] == {"state": "unavailable", "reason": "not_configured"}
     assert paths["kiro_login"]["reason"] == "not_in_this_build"
-    assert paths["systems_manager"]["reason"] == "not_in_this_build"
+    assert "systems_manager" not in paths
 
 
 @pytest.mark.parametrize(

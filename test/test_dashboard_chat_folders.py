@@ -625,6 +625,69 @@ class TestFolderCRUD:
             assert "sensitive" in data["error"]
 
     @pytest.mark.asyncio
+    async def test_create_folder_resolver_stall_is_reported_as_unverifiable(
+        self, tmp_path, monkeypatch
+    ):
+        """A stalled sensitive-path resolver is not a match. The person is told the
+        directory could not be verified and to retry, not that an ordinary repo is
+        sensitive, and the audit line records the stall rather than a match."""
+        import kiro_crew.dashboard.chat_folders as cf
+        from kiro_crew.security import UNVERIFIABLE_PATH_PREFIX
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        proj = tmp_path / "ordinary-repo"
+        proj.mkdir()
+        monkeypatch.setattr(
+            cf, "canonical_path_refusal", lambda p: f"{UNVERIFIABLE_PATH_PREFIX}: {p}"
+        )
+        audited: list[dict] = []
+        monkeypatch.setattr(
+            cf, "sel", lambda: MagicMock(log_api_access=lambda **kw: audited.append(kw))
+        )
+        state = _make_state(tmp_path)
+        app = _make_folder_app(state)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(
+                "/api/chat/folders", json={"name": "P", "project_dir": str(proj)}
+            )
+            assert resp.status == 400
+            data = await resp.json()
+        assert data["error"] == (
+            "project_dir could not be verified against the sensitive-path list; retry shortly"
+        )
+        assert "refers to a sensitive path" not in data["error"]
+        (event,) = [e for e in audited if e.get("operation") == "chat.folder_project_dir"]
+        assert event["outcome"] == "denied"
+        assert event["error"] == "sensitive path unverifiable"
+
+    @pytest.mark.asyncio
+    async def test_create_folder_project_dir_is_checked_as_a_canonical_path(
+        self, tmp_path, monkeypatch
+    ):
+        """The validator computes the realpath itself and hands THAT to the gate, so
+        a saturated resolver pool cannot refuse a healthy directory off the loop."""
+        import kiro_crew.dashboard.chat_folders as cf
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        proj = tmp_path / "ordinary-repo"
+        proj.mkdir()
+        seen: list[str] = []
+
+        def _gate(p: str) -> str | None:
+            seen.append(p)
+            return None
+
+        monkeypatch.setattr(cf, "canonical_path_refusal", _gate)
+        state = _make_state(tmp_path)
+        app = _make_folder_app(state)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(
+                "/api/chat/folders", json={"name": "P", "project_dir": str(proj)}
+            )
+            assert resp.status == 201
+        assert seen == [os.path.realpath(str(proj))]
+
+    @pytest.mark.asyncio
     async def test_update_folder_project_dir(self, tmp_path, monkeypatch):
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)

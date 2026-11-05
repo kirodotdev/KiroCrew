@@ -10,6 +10,7 @@ How maintainers are added, how they step down, and how decisions get made are co
 |---|---|
 | Bolin Chen | [@bolichen97](https://github.com/bolichen97) |
 | Joe Guo | [@iamwhatever](https://github.com/iamwhatever) |
+| Ray Xu | [@buluoray](https://github.com/buluoray) |
 | Zezhen Xu | [@CrysisDeu](https://github.com/CrysisDeu) |
 
 Every path in this repository is owned by `@kirodotdev/kirocrew-pr-review` and the `@KiroCrewCaptain` automation account in [CODEOWNERS](.github/CODEOWNERS), so reviewers are requested automatically and you do not need to pick one by hand.

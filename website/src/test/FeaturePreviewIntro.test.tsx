@@ -90,6 +90,24 @@ describe('FeaturePreviewIntroButton', () => {
     expect(within(dialog).getByRole('img', { name: 'First capture' })).toBeInTheDocument()
   })
 
+  it('keeps the capture dots to one Tab stop and pages them with the arrows', () => {
+    render(<Harness intro={INTRO} />)
+    fireEvent.click(screen.getByRole('button', { name: 'See what Sample preview looks like' }))
+    const dialog = screen.getByRole('dialog')
+    const dots = within(dialog).getAllByRole('tab')
+    expect(dots.filter(d => d.getAttribute('tabindex') === '0')).toEqual([dots[0]])
+
+    fireEvent.keyDown(dots[0], { key: 'ArrowRight' })
+    expect(within(dialog).getByRole('img', { name: 'Second capture' })).toBeInTheDocument()
+    expect(dots[1]).toHaveFocus()
+    expect(dots[1]).toHaveAttribute('aria-selected', 'true')
+    expect(dots.filter(d => d.getAttribute('tabindex') === '0')).toEqual([dots[1]])
+
+    fireEvent.keyDown(dots[1], { key: 'Home' })
+    expect(within(dialog).getByRole('img', { name: 'First capture' })).toBeInTheDocument()
+    expect(dots[0]).toHaveFocus()
+  })
+
   it("the dialog's switch is the card's switch", () => {
     render(<Harness intro={INTRO} />)
     fireEvent.click(screen.getByRole('button', { name: 'See what Sample preview looks like' }))
@@ -193,7 +211,7 @@ describe('FeaturePreviewsSection — See-what-it-looks-like per card', () => {
     renderSection()
     const toggle = screen.getByRole('switch', { name: 'Ultra Mode' })
     expect(toggle).toHaveAttribute('aria-checked', 'false')
-    expect(screen.getByText('Lets a chat hand tasks to a crew and track them in a Crew tab.')).toBeInTheDocument()
+    expect(screen.getByTitle('Lets a chat hand tasks to a crew and track them on a Board.')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /See what (Ultra|Crew) Mode looks like/ })).toBeNull()
     fireEvent.click(toggle)
     expect(localStorage.getItem('mc-preview-crew-mode')).toBe('1')

@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { fireEvent, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import KiroAccountModal, { type KiroAccountUsage } from '../components/KiroAccountModal'
@@ -34,6 +34,10 @@ vi.mock('../api/client', async importOriginal => {
       ...mod.api,
       sessionsUsageRefresh: vi.fn(),
       kiroUsage: vi.fn(async () => KIRO_USAGE_EMPTY),
+      // The sign-out link's harness read; its own cases live in
+      // KiroAccountModal.signOutLink.test.tsx.
+      kirocrewConfig: vi.fn(async () => ({ agent: { acp_backend: 'kas' } })),
+      kasLoginStatus: vi.fn(async () => ({ authenticated: true, provider: 'Google', identity: 'social' })),
     },
   }
 })
@@ -728,7 +732,7 @@ describe('KiroAccountModal refresh', () => {
       // The click retries the forecast's Usage report; the pill's reading is
       // not re-read until the other refresh has had time to finish.
       expect(invalidate).not.toHaveBeenCalledWith({ queryKey: ['kiro-usage'] })
-      await vi.advanceTimersByTimeAsync(3100)
+      await act(async () => { await vi.advanceTimersByTimeAsync(3100) })
       expect(invalidate).toHaveBeenCalledWith({ queryKey: ['kiro-usage'] })
       // The re-read has landed: the notice has done its job and Refresh is offered again.
       await waitFor(() => expect(within(dialog).queryByRole('alert')).not.toBeInTheDocument())

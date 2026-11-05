@@ -20,24 +20,12 @@ def _enable(_floor_monkeypatch):
 def _no_published_service_outlives_the_test():
     """Unpublish the singleton and bound leftover work after every test.
 
-    ``start()`` publishes the service as the module singleton and only ``stop()``
-    clears it, so a test that starts one and returns leaves ``get_instance()``
-    handing a later test a service bound to a store it is finished with -- and the
-    approval-stall hook reaches the service exactly that way, so the residue
-    lands on the path under test. That is what this fixture is FOR.
+    Only ``stop()`` clears the singleton, and the approval-stall hook reaches the service
+    through ``get_instance()``, so a leftover service lands on the path under test.
+    Cancelling persists is housekeeping; ``store_dir`` keeps late writes safe.
 
-    Cancelling the in-flight persists is housekeeping, not the safety property:
-    it stops work nothing is waiting for. It is explicitly NOT what keeps a late
-    write from landing in a deleted directory -- ``_write_state`` runs on an
-    executor thread, and a thread cannot be cancelled, so no teardown inside the
-    test could promise that. ``store_dir`` owns that guarantee by giving the
-    store a directory no individual test deletes.
-
-    Deliberately a SYNC fixture, following the suite's convention for teardown that must await on the test's own loop.
-    The unpublish is in a ``finally`` because ``stop()``
-    cancels timer tasks first: if that raises against a loop already torn down,
-    the singleton must still be cleared, or one failing teardown poisons every
-    later test in the worker.
+    The unpublish is in a ``finally``: if ``stop()`` raises against a torn-down loop,
+    the singleton must still be cleared, or every later test in the worker is poisoned.
     """
     yield
     svc = _an.get_instance()
@@ -60,20 +48,9 @@ def _no_published_service_outlives_the_test():
 def store_dir(tmp_path_factory):
     """A loop-store directory owned by the SESSION, not by one test.
 
-    The persist path is executor-backed: ``_persist_locked`` hands
-    ``_write_state`` to a thread, and a thread cannot be cancelled, so no
-    teardown running inside the test can guarantee the write is finished. Since
-    ``_write_state`` opens with ``mkdir(parents=True, exist_ok=True)``, a write
-    that lands late against a per-test ``tmp_path`` re-creates a directory pytest
-    already removed.
-
-    Cancelling the task narrows that window but cannot close it, so the fix is
-    not a better teardown: it is giving the store a directory no individual test
-    deletes. ``tmp_path_factory`` is session-scoped, so each test still gets its
-    own isolated store (no cross-test interference) while nothing is removed
-    until the session ends and every task is dead. This is the same remedy the
-    repo's testing guidance prescribes for a background writer that re-creates
-    its directory.
+    ``_write_state`` runs on an uncancellable thread and opens with ``mkdir(parents=True,
+    exist_ok=True)``, so a late write would re-create a removed per-test ``tmp_path``.
+    ``tmp_path_factory`` gives each test its own store that lives until the session ends.
     """
     return tmp_path_factory.mktemp("autonudge-store")
 
@@ -756,12 +733,8 @@ async def test_MUTATION_shutdown_drains_a_hold_registered_before_its_first_step(
 async def test_a_hold_admitted_before_shutdown_lands_and_one_after_is_dropped(store_dir, caplog):
     """The hold is evidence about the NEXT wake, so it is admitted where it arrives.
 
-    One recorded before shutdown closes admission is drained to disk, because after
-    a shutdown the only next wake is the restart that reads the row. The lock is held
-    so that hold parks BEFORE it submits its write, which is the one place admission
-    decides whether the write may land. One that arrives after closure has no wake
-    left to hold: it schedules nothing, writes nothing, announces nothing, and is
-    logged at DEBUG rather than raised into the approval path.
+    The lock is held so the hold parks BEFORE it submits its write, where admission
+    decides. One arriving after closure writes nothing and is logged at DEBUG.
     """
     caplog.set_level(logging.DEBUG, logger="kiro_crew.autonudge")
     svc = AutoNudgeService(base_dir=store_dir)
@@ -880,11 +853,8 @@ async def test_a_held_delivered_terminal_settles_once_after_release_without_a_tu
 ):
     """The hold sits ahead of the delivered-marker settlement, and they never mix.
 
-    A loop held while its owed terminal turn is already DELIVERED neither fires nor
-    re-probes on the hold tick. The release moves only the hold fields and the
-    budget clock (``created_ts``): the delivered marker is a separate monitor field
-    it never writes. The first tick after the release then settles the terminal
-    through the delivered path, with one re-probe and no second model turn.
+    The release moves only the hold fields and ``created_ts``, never the delivered
+    marker, so the next tick settles with one re-probe and no second turn.
     """
     on_fire = AsyncMock(return_value=True)
     svc = AutoNudgeService(base_dir=store_dir, on_fire=on_fire)

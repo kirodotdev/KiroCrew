@@ -6,6 +6,8 @@ import { i18nT } from '../i18n/t'
 import { useAppDispatch, useAppSelector, useAppStore } from '../store'
 import { appendSlotMessage, clearQuestionCard, isAnsweredQuestionEnding, markQuestionSettled, pendingQuestionFor, resolveQuestionCard, setQuestionDraft, setQuestionRequestInFlight } from '../store/chatSlice'
 import { api, ApiError } from '../api/client'
+import { RaisedBy } from './chat-input/TypingLockBanner'
+import { useRaisedBy } from '../pages/chat/shared-crew/useRaisedBy'
 import { answerFailureKey, answerRejectedMessage, answerRejectionReason, answersAsText } from '../utils/questionAnswers'
 
 interface PendingQuestionCardProps {
@@ -50,6 +52,8 @@ export default function PendingQuestionCard({ slotKey, onFallbackSend, onDirectS
     const notices = s.chat.restoredQuestionNotices
     return slotKey && notices && Object.prototype.hasOwnProperty.call(notices, slotKey) ? notices[slotKey] : null
   })
+  const askKey = pending?.ask_id
+  const raisedBy = useRaisedBy(slotKey, askKey ? id => id === `question:${askKey}` : null)
   const durableNotice = questionNotice && slotKey ? questionNotice.kind === 'release_failed' ? (
     /* No hand-off: the open card preserves the user's selected answers. */
     <ErrorNotice
@@ -228,6 +232,7 @@ export default function PendingQuestionCard({ slotKey, onFallbackSend, onDirectS
 
   return (
     <>
+    {raisedBy && <div className="mb-1 flex"><RaisedBy name={raisedBy} /></div>}
     <QuestionCard
       // Remount per ask: QuestionCard holds the selections and custom-answer
       // text in its own state, so without a fresh key the next question in this

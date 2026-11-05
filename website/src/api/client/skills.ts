@@ -103,7 +103,13 @@ export function createSkillsEndpoints({ get, post, put, del, j, jfetch: fetch }:
      *  409 `pending_approval_refused`. */
     approvePendingSkill: (slug: string, contentSha256: string) =>
       post('/api/skills/-/pending/' + encodeURIComponent(slug) + '/approve', { content_sha256: contentSha256 }).then(j),
-    dismissPendingSkill: (slug: string) => post('/api/skills/-/pending/' + encodeURIComponent(slug) + '/dismiss', {}).then(j),
+    /** `contentSha256`, when the card has read the candidate, makes the server
+     *  dismiss only those bytes: 409 `pending_skill_changed` if it moved since. */
+    dismissPendingSkill: (slug: string, contentSha256?: string) =>
+      post(
+        '/api/skills/-/pending/' + encodeURIComponent(slug) + '/dismiss',
+        contentSha256 ? { content_sha256: contentSha256 } : {},
+      ).then(j),
     dismissAllPendingSkills: (slugs: string[]) => post('/api/skills/-/pending/-/dismiss-all', { slugs }).then(j),
     pinSkill: (name: string, pinned: boolean) => post('/api/skills/-/pin', { name, pinned }).then(j),
     /** Opt a skill in/out of full-body injection when its triggers match.
@@ -112,9 +118,10 @@ export function createSkillsEndpoints({ get, post, put, del, j, jfetch: fetch }:
       post('/api/skills/-/inject-on-trigger', { name, inject }).then(j),
     /** Context budget: cost data for the skill control plane. */
     skillsBudget: () => get('/api/skills/-/budget').then(j) as Promise<import('../../types').SkillBudgetResponse>,
-    /** Multi-provider skill discovery (skills.sh, etc.) */
-    discoverSkills: (query: string, opts?: { provider?: string; limit?: number }) =>
-      get(`/api/skills/-/discover?q=${encodeURIComponent(query)}${opts?.provider ? `&provider=${opts.provider}` : ''}${opts?.limit ? `&limit=${opts.limit}` : ''}`).then(j) as Promise<import('../../types').DiscoverSkillsResponse>,
+    /** Multi-provider skill discovery (skills.sh, etc.). An empty query with
+     *  `featured` returns the bundled featured skills. */
+    discoverSkills: (query: string, opts?: { provider?: string; limit?: number; featured?: boolean }) =>
+      get(`/api/skills/-/discover?q=${encodeURIComponent(query)}${opts?.provider ? `&provider=${opts.provider}` : ''}${opts?.limit ? `&limit=${opts.limit}` : ''}${opts?.featured ? '&featured=1' : ''}`).then(j) as Promise<import('../../types').DiscoverSkillsResponse>,
     /** Preview a skill's description, full SKILL.md, and bundle manifest before installing */
     previewDiscoveredSkill: (provider: string, id: string) =>
       get(`/api/skills/-/discover/preview?provider=${encodeURIComponent(provider)}&id=${encodeURIComponent(id)}`).then(j) as Promise<import('../../types').DiscoverSkillPreview>,

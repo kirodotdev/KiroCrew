@@ -21,8 +21,9 @@ import { KIRO_SIGN_IN_HIGHLIGHT_ANCHOR } from '../../hooks/useSettingHighlight'
 import { i18nT } from '../../i18n/t'
 import { clearCachedModels } from '../../providers/adapters/acp'
 import { KiroSignInCard } from './KiroSignInCard'
+import { StrandsSetupCard } from './StrandsSetupCard'
 import { MCP_SERVERS_HREF } from '../connections/useConnectionsSubTab'
-import { KIRO_SIGN_IN_BACKEND } from './kiroSignInLink'
+import { KIRO_SIGN_IN_BACKEND, KIRO_SIGN_IN_SETTING_ID } from './kiroSignInLink'
 import { HarnessLogo } from '../../components/HarnessLogo'
 
 /** The config field the switch owns. Also the schema path the options are gated on. */
@@ -32,6 +33,7 @@ const CONFIG_KEY = 'agent.acp_backend'
 const KIRO = ACP_BACKEND_KIRO
 const CLAUDE = 'claude'
 const KAS = ACP_BACKEND_KAS
+const STRANDS = 'strands'
 
 /**
  * The agents this frontend has a translated name and an icon for.
@@ -43,6 +45,13 @@ const KAS = ACP_BACKEND_KAS
  * names it, labelled with its `policy_id`.
  */
 const NAMED = [KAS, KIRO, CLAUDE]
+
+/**
+ * The harnesses listed first, in this order; the rest follow by `policy_id`. KAS
+ * leads because it is the default, and Strands sits directly under the two Kiro
+ * harnesses by the owner's ruling.
+ */
+const PINNED_ORDER = [KAS, KIRO, STRANDS]
 
 /**
  * The harnesses that never carry the Experimental tag: the default a new install
@@ -618,8 +627,8 @@ export function AgentBackendTab() {
    * the same mistake as disabling one. `current` joins for the same reason: the saved
    * value must always have a row.
    *
-   * Sorted rather than left in arrival order: KAS first because it is the default,
-   * Kiro CLI second, and everything else by `policy_id`. Set iteration order would
+   * Sorted rather than left in arrival order: `PINNED_ORDER` first, then
+   * everything else by `policy_id`. Set iteration order would
    * otherwise follow whichever query resolved first and reshuffle the list.
    */
   const candidates = Array.from(
@@ -630,10 +639,9 @@ export function AgentBackendTab() {
       ...(probeQ.data?.backends ?? []).map(b => b.id),
     ]),
   ).sort((a, b) => {
-    if (a === KAS) return -1
-    if (b === KAS) return 1
-    if (a === KIRO) return -1
-    if (b === KIRO) return 1
+    const pa = PINNED_ORDER.indexOf(a)
+    const pb = PINNED_ORDER.indexOf(b)
+    if (pa !== pb) return pa === -1 ? 1 : pb === -1 ? -1 : pa - pb
     // Byte order, not `localeCompare`/`compareText`: these are machine identifiers,
     // and the point of the sort (see above) is to reproduce the order the probe
     // endpoint already returned them in. A collator reads the READER's locale, so
@@ -927,6 +935,9 @@ export function AgentBackendTab() {
     model_allowlist: (name: string) =>
       i18nT('pages.developer.agentBackendTab.mcp_concern_model_allowlist', { name }),
     hooks: () => i18nT('pages.developer.agentBackendTab.mcp_concern_hooks'),
+    // Where Crew fires every spec hook event itself but the one that can refuse a tool
+    // call, so "your hooks will not run" would be false there.
+    hooks_pre_tool_use: () => i18nT('pages.developer.agentBackendTab.mcp_concern_hooks_pre_tool_use'),
   }
 
   /** One ineffective-setting line: this frontend's phrase, or the setting's own id. */
@@ -1606,6 +1617,11 @@ export function AgentBackendTab() {
                         <KiroSignInCard compact />
                       </ErrorBoundary>
                     )}
+                    {value === STRANDS && (
+                      <ErrorBoundary scope="developer-strands-setup" fallback={null}>
+                        <StrandsSetupCard />
+                      </ErrorBoundary>
+                    )}
                     {facts(value)}
                   </>
                 )}
@@ -1660,7 +1676,9 @@ export function AgentBackendTab() {
  */
 function SignInDeepLink({ onSignIn }: { onSignIn: () => void }) {
   const [params] = useSearchParams()
-  const wanted = params.get('highlight') === `key:${KIRO_SIGN_IN_HIGHLIGHT_ANCHOR}`
+  const highlight = params.get('highlight')
+  // The chat's link sends the anchor; a Settings search hit sends its registry id.
+  const wanted = highlight === `key:${KIRO_SIGN_IN_HIGHLIGHT_ANCHOR}` || highlight === KIRO_SIGN_IN_SETTING_ID
   const callback = useRef(onSignIn)
   callback.current = onSignIn
   useEffect(() => {

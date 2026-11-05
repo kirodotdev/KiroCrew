@@ -1,26 +1,11 @@
 """The pi spawn path: two components, a gate loaded INTO the harness, and its proof.
 
-Three things are pinned here, and they fail apart:
-
-* **Resolution.** Two components resolved separately -- the ``pi-acp`` adapter on
-  the Node-entry ladder and the ``pi`` agent on the plain-binary ladder -- so the
-  not-found message names the half that is missing.
-* **The gate launcher.** pi has no permission gate to configure, so Kiro Crew's own
-  extension is loaded into it through a launcher the adapter is told to run in
-  place of ``pi``. The launcher forwards every argument and appends the extension
-  flag; nothing is written into the work dir or the operator's pi directory.
-* **The read-back.** What makes this routing VERIFIED rather than declared: pi's
-  own command registry is asked, off the event loop and before the first prompt,
-  whether the probe command loaded from Crew's file.
-
-The read-back's refusal vocabulary is exercised through
-``acp_tool_gate.gate_extension_issue``, which owns it, rather than by asserting on
-message wording at the call site.
-
-Where the gate is placed at spawn, the envelope, and the read-back against a real
-child are in ``test_acp_pi_backend_spawn.py``; a session's reasoning-effort channel,
-its model pin, cancel and the signed-out error in ``test_acp_pi_backend_session.py``.
-``acp_pi_backend_helpers.py`` holds what the three share.
+Pinned: resolution of ``pi-acp`` and ``pi`` separately (the error names the missing
+half); the launcher that loads Kiro Crew's gate extension into pi, which has no gate of
+its own, writing nothing to disk; and the read-back of pi's command registry before the
+first prompt. Refusal wording belongs to ``acp_tool_gate.gate_extension_issue``.
+Siblings: ``test_acp_pi_backend_spawn.py``, ``test_acp_pi_backend_session.py``,
+``acp_pi_backend_helpers.py``.
 """
 
 from __future__ import annotations
@@ -32,6 +17,7 @@ import json
 import logging
 import re
 import stat
+import sys
 from pathlib import Path
 
 import acp_pi_backend_helpers
@@ -76,6 +62,7 @@ from kiro_crew.acp.client import (
     pi_gate_extension_path,
 )
 from kiro_crew.acp.harness import pi as pi_mod
+from kiro_crew.acp.transport_errors import AcpError
 from kiro_crew.acp.types import JsonRpcMessage
 from kiro_crew.acp_backends import (
     ACP_BACKEND_OPENCODE,
@@ -365,6 +352,58 @@ class TestGateLauncher:
         other = _ensure_pi_gate_launcher(str(tmp_path / "pi2"), str(tmp_path / "gate.ts"))
         assert other != first
 
+    @staticmethod
+    def _as_windows(monkeypatch, tmp_path, code_page):
+        """Select the ``.cmd`` form with a concrete OEM page standing in for ``oem``.
+
+        ``cmd.exe`` and the ``oem`` codec exist only on Windows. ``raising=False``
+        so the stand-in is a no-op on a build without the encoding seam.
+        """
+        run_dir = tmp_path / "run"
+        run_dir.mkdir()
+        monkeypatch.setattr(acp_client.platform_compat, "IS_WINDOWS", True)
+        monkeypatch.setattr(pi_mod, "_pi_gate_launcher_encoding", lambda: code_page, raising=False)
+        monkeypatch.setattr(pi_mod, "_pi_gate_artifact_dir", lambda: str(run_dir))
+        monkeypatch.setattr(pi_mod, "_pi_gate_launcher_cache", {})
+        return run_dir
+
+    def test_the_windows_launcher_is_written_in_the_console_code_page(self, monkeypatch, tmp_path):
+        """``cmd.exe`` reads a ``.cmd`` in the OEM page, so a UTF-8 ``é`` (two bytes)
+        reads back as two other characters and the launcher cannot find pi."""
+        self._as_windows(monkeypatch, tmp_path, "cp437")
+        pi_bin = str(tmp_path / "José" / "pi.cmd")
+        gate = str(tmp_path / "José" / "gate.ts")
+        launcher = _ensure_pi_gate_launcher(pi_bin, gate)
+        assert launcher.endswith(".cmd")
+        data = Path(launcher).read_bytes()
+        assert data == _pi_gate_launcher_body(pi_bin, gate).encode("cp437")
+        assert "José".encode("cp437") in data
+        assert "José".encode("utf-8") not in data
+        assert data.count(b"\r\n") == 2, "line endings must be written exactly"
+
+    def test_the_windows_launcher_refuses_a_path_the_code_page_cannot_spell(
+        self, monkeypatch, tmp_path
+    ):
+        """A launcher naming a misread path would start no pi at all."""
+        run_dir = self._as_windows(monkeypatch, tmp_path, "cp437")
+        with pytest.raises(AcpError, match="cp437") as caught:
+            _ensure_pi_gate_launcher(str(tmp_path / "日本" / "pi.cmd"), str(tmp_path / "gate.ts"))
+        assert "KIROCREW_HOME" in str(caught.value)
+        assert list(run_dir.iterdir()) == [], "no launcher may be left behind"
+        assert pi_mod._pi_gate_launcher_cache == {}
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="the oem codec exists only on Windows")
+    def test_the_windows_launcher_uses_the_oem_codec(self, monkeypatch, tmp_path):
+        run_dir = tmp_path / "run"
+        run_dir.mkdir()
+        monkeypatch.setattr(pi_mod, "_pi_gate_artifact_dir", lambda: str(run_dir))
+        monkeypatch.setattr(pi_mod, "_pi_gate_launcher_cache", {})
+        # Fixed ASCII stand-ins: the function only writes them into the body, and a
+        # runner temp path the OEM page cannot spell must not fail this test.
+        pi_bin, gate = r"C:\pi\pi.cmd", r"C:\pi\gate.ts"
+        launcher = _ensure_pi_gate_launcher(pi_bin, gate)
+        assert Path(launcher).read_bytes() == _pi_gate_launcher_body(pi_bin, gate).encode("oem")
+
     def test_nothing_is_written_into_the_work_dir_or_the_pi_directory(self, monkeypatch, tmp_path):
         run_dir = tmp_path / "run"
         run_dir.mkdir()
@@ -443,11 +482,8 @@ class TestGateLauncher:
     def test_the_extension_never_drops_the_arguments_it_forwards(self):
         """An oversize call is bounded value by value or refused, never sent without its keys.
 
-        The keys the host's path checks read (``path``, ``file_path``) must survive,
-        and a shell command is never cut: the host's deny rules read its text, so it
-        is forwarded whole and judged on its content like on every other harness,
-        and only an envelope too large to carry at all is refused -- a deny rule
-        cannot judge text it did not see.
+        ``path`` and ``file_path`` must survive, and a shell command is never cut, since
+        deny rules read its text; an envelope too large to carry is refused.
         """
         source = Path(pi_gate_extension_path()).read_text(encoding="utf-8")
         assert "input: null" not in source
@@ -1064,12 +1100,8 @@ class TestTheReadBackStderrDiagnosis:
     def test_nothing_the_child_wrote_is_ever_published(self):
         """The structural guarantee: output is drawn from the vocabulary, or empty.
 
-        This is what makes the credential question unanswerable rather than
-        answered. A scheme that echoes the child's bytes has to show no credential
-        survives any rejoining of them, and the redactors' patterns need contiguity
-        and label anchors that a single inserted byte destroys. Matching instead of
-        echoing means there is no path from a child byte to published text, so a
-        hostile stderr cannot produce one whatever it contains.
+        Redactors need contiguous text that one inserted byte breaks, so output is
+        matched against the vocabulary and no child byte is ever echoed.
         """
         allowed = set(self._phrases())
         secrets = (

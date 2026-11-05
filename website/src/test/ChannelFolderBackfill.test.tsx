@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { ChannelFolderBackfill, type BackfillReport } from '../pages/settings/ChannelFolderBackfill'
 import { isAuthBannerShown, __resetAuthRecoveryStateForTests } from '../api/client'
@@ -615,7 +615,9 @@ describe('ChannelFolderBackfill', () => {
 
     fireEvent.click(screen.getByRole('button'))
     await waitFor(() => expect(screen.queryByText('Standup')).toBeNull())
-    release({ ok: true, status: 200, json: () => Promise.resolve(report({ moved: [] })) })
+    await act(async () => {
+      release({ ok: true, status: 200, json: () => Promise.resolve(report({ moved: [] })) })
+    })
   })
 
   it('keeps a stranded receipt beneath the next run instead of dropping it', async () => {
@@ -799,7 +801,9 @@ describe('ChannelFolderBackfill', () => {
     await waitFor(() => expect(screen.getByRole('button')).toBeDisabled())
     fireEvent.click(screen.getByRole('button'))
     expect(fetchMock).toHaveBeenCalledTimes(1)
-    release({ ok: true, status: 200, json: () => Promise.resolve(report()) })
+    await act(async () => {
+      release({ ok: true, status: 200, json: () => Promise.resolve(report()) })
+    })
   })
 
   it('is inert on a read-only remote session', () => {

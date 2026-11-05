@@ -22,7 +22,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from chat_test_helpers import _make_state
 
-from kiro_crew import history_projection, pinned_fs, platform_compat
+from kiro_crew import history_projection, name_grant, pinned_fs, platform_compat
 from kiro_crew.acp_backends import ACP_BACKEND_KIRO
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.dashboard import chat_threads, ws
@@ -43,6 +43,7 @@ from kiro_crew.dashboard.side_readonly_spec import PublishedSpec, ReadOnlySpecEr
 from kiro_crew.dashboard.ws import broadcast_thread_reply
 from kiro_crew.history import ThreadStoreUnreadable
 from kiro_crew.members import DM_SLOT_MODE
+from kiro_crew.name_grant_refusals import Refusal
 
 _MEMBER_SLOT = "member-radar"
 _ANSWER = "Five are covered by open PRs, three are queued."
@@ -228,14 +229,10 @@ def test_the_flag_is_off_by_default_and_editable_from_the_dashboard():
 
 
 def _stub_turn(monkeypatch, *, hold: asyncio.Event | None = None):
-    """Replace the background turn with a no-op that only clears the in-flight
-    mark, as the real turn's ``finally`` does.
+    """Replace the background turn with a no-op that only clears the in-flight mark.
 
-    Pass *hold* when a test needs the reservation to still be held while it makes
-    its next request: the fake turn then waits on that event before clearing the
-    mark, so the test decides when the turn ends instead of the event loop. The
-    call is recorded before the wait, so a caller counting turns sees it either
-    way.
+    With *hold*, the fake waits on that event before clearing, so the test decides when
+    the turn ends. The call is recorded before the wait.
     """
     calls: list[dict[str, Any]] = []
 
@@ -740,12 +737,8 @@ def test_a_leftover_staged_sidecar_is_never_written_over(tmp_path, monkeypatch):
 def _descriptors_pointing_at(directory: pathlib.Path) -> int | None:
     """How many open descriptors of THIS process refer to *directory*.
 
-    Each descriptor's target is resolved through the kernel (``/proc/self/fd``
-    on Linux, ``F_GETPATH`` on macOS, both behind ``pinned_fs.fd_real_path``),
-    so unrelated handles a shared xdist worker opens and closes on its own
-    schedule are never counted. ``None`` when this host cannot enumerate or
-    resolve descriptors at all -- a whole-process count is not a substitute,
-    it drifts by a few on a loaded macOS runner.
+    Targets resolve through ``pinned_fs.fd_real_path`` so other xdist handles are not
+    counted. ``None`` when the host cannot resolve them; a whole-process count drifts.
     """
     want = os.path.realpath(directory)
     for fd_dir in ("/proc/self/fd", "/dev/fd"):
@@ -1110,16 +1103,10 @@ async def test_second_reply_while_the_crewmate_is_replying_is_refused(tmp_path, 
 
 @pytest.mark.asyncio
 async def test_two_replies_racing_through_the_store_write_run_one_turn(tmp_path, monkeypatch):
-    """The reservation is taken before the store write suspends, so a
-    double-click cannot start two turns on one thread.
+    """The reservation precedes the store write, so a double-click runs one turn.
 
-    The winner's turn is held open for the whole gather. Without that, the loser's
-    409 is a scheduling accident: the winner's turn can clear the mark before the
-    loser reaches the check, and two replies that never overlapped both answer 202
-    -- which is correct behaviour, not the defect this test names. Holding the turn
-    is how the file's other in-flight test pins the same thing, and it also makes
-    the losing status a statement about the reservation rather than about how the
-    loop happened to interleave two sockets on the machine that ran it.
+    The winner's turn is held open for the whole gather; otherwise it could finish before
+    the loser checks, and both would rightly answer 202.
     """
     state = _make_state(tmp_path)
     slot, mid = _member_slot(state)
@@ -1524,6 +1511,70 @@ async def test_a_goose_turn_runs_read_only_on_its_own_goose_home(tmp_path, monke
     assert acquired["side_read_only"] is True
     assert streamed["approval_policy"] == chat_threads.ToolApprovalPolicy.READ_ONLY
     assert chat_threads.THREAD_BOUNDARY_PROMPT_LISTING in streamed["message"]
+
+
+@pytest.mark.asyncio
+async def test_a_kiro_turn_names_no_shell_where_every_program_name_is_refused(
+    tmp_path, monkeypatch
+):
+    """Where the environment refuses every program name each shell read is
+    declined and a thread has no card to fall back to, so the boundary is the
+    no-shell one: it names neither the shell reads nor the shell fallback."""
+    state = _make_state(tmp_path)
+    slot, mid = _member_slot(state)
+    calls = _arm_turn(state, monkeypatch, answer="ok")
+    monkeypatch.setattr(
+        name_grant,
+        "environment_refusal",
+        lambda: Refusal(name_grant.AMBIGUOUS_ENV, "BASH_ENV is set in the inherited environment"),
+    )
+    assert _seed_reply(state, slot, mid, "user", "hi") == "ok"
+    await _run_thread_turn(
+        state, slot, mid, "run-1", "hi", _parent(), [], f"{slot.key}:{mid}", _identity(state, slot)
+    )
+    streamed = next(c for c in calls if "message" in c)
+    assert streamed["approval_policy"] == chat_threads.ToolApprovalPolicy.READ_ONLY
+    assert chat_threads.THREAD_BOUNDARY_PROMPT_NO_SHELL in streamed["message"]
+    assert THREAD_BOUNDARY_PROMPT not in streamed["message"]
+    assert "(cat, grep, ls) instead" not in streamed["message"]
+    assert "read-only shell commands" not in streamed["message"]
+
+
+@pytest.mark.asyncio
+async def test_a_kiro_turn_keeps_the_shell_boundary_where_names_can_be_vouched_for(
+    tmp_path, monkeypatch
+):
+    state = _make_state(tmp_path)
+    slot, mid = _member_slot(state)
+    calls = _arm_turn(state, monkeypatch, answer="ok")
+    monkeypatch.setattr(name_grant, "environment_refusal", lambda: None)
+    assert _seed_reply(state, slot, mid, "user", "hi") == "ok"
+    await _run_thread_turn(
+        state, slot, mid, "run-1", "hi", _parent(), [], f"{slot.key}:{mid}", _identity(state, slot)
+    )
+    streamed = next(c for c in calls if "message" in c)
+    assert THREAD_BOUNDARY_PROMPT in streamed["message"]
+    assert chat_threads.THREAD_BOUNDARY_PROMPT_NO_SHELL not in streamed["message"]
+
+
+@pytest.mark.asyncio
+async def test_a_strands_turn_runs_read_only_with_file_reads_alone(tmp_path, monkeypatch):
+    """On Strands the thread gets the Side Chat's Strands shape: the base agent's
+    session requested with ``side_read_only``, READ_ONLY, and a boundary that names
+    file reads alone, with no shell, search or web tool."""
+    state = _make_state(tmp_path)
+    slot, mid = _member_slot(state)
+    calls = _arm_turn(state, monkeypatch, answer="ok", backend="strands")
+    assert _seed_reply(state, slot, mid, "user", "hi") == "ok"
+    await _run_thread_turn(
+        state, slot, mid, "run-1", "hi", _parent(), [], f"{slot.key}:{mid}", _identity(state, slot)
+    )
+    acquired = next(c for c in calls if "key" in c)
+    streamed = next(c for c in calls if "message" in c)
+    assert acquired["agent"] == "kirocrew"
+    assert acquired["side_read_only"] is True
+    assert streamed["approval_policy"] == chat_threads.ToolApprovalPolicy.READ_ONLY
+    assert chat_threads.THREAD_BOUNDARY_PROMPT_FILE_READS in streamed["message"]
 
 
 @pytest.mark.asyncio

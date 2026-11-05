@@ -30,6 +30,7 @@ from urllib.parse import urlparse
 
 from kiro_crew.config.paths import data_home
 from kiro_crew.git_tmp_packs import reap_stale_tmp_packs
+from kiro_crew.owner_only_files import mkdirs_owner_only
 from kiro_crew.platform.context import redact_via_context
 from kiro_crew.platform_compat import (
     IS_WINDOWS,
@@ -526,7 +527,7 @@ def _quarantine_root() -> Path | None:
         if is_link_or_junction(root) or first_linked_ancestor(root):
             logger.error("quarantine marker root %s is under a link; refusing to use it", root)
             return None
-        root.mkdir(parents=True, mode=0o700, exist_ok=True)
+        mkdirs_owner_only(root)
         if is_link_or_junction(root):
             return None
         probe = root / f".probe-{secrets.token_hex(8)}"

@@ -142,12 +142,19 @@ class SubagentDelivery:
     reconciler would have written, outcome included. Settling writes it in place
     of the ``delivered`` mark, so a cut-off or failed orphan is not relabelled
     completed, and *elapsed* and *credits* go unused.
+
+    *leaked_process* marks a COMPLETED run whose teardown could not end its
+    process (``SubagentInfo._leaked_process``). The ``delivered`` tombstone the
+    settle writes then carries the flag, so the next start ends the survivor
+    (``list_leaked_processes``); without it the tombstone ends the run and the
+    process is reached by nothing.
     """
 
     agent_id: str
     elapsed: float
     credits: float
     report_owed: bool = False
+    leaked_process: bool = False
     tombstone: dict[str, Any] | None = field(default=None, hash=False)
 
 

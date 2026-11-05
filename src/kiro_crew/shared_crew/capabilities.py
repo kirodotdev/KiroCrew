@@ -129,7 +129,7 @@ class CapabilityReport:
     capabilities: Capabilities
     reasons: Mapping[str, str]
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self, *, invites: Optional[dict[str, str]] = None) -> dict[str, Any]:
         """The wire body: the frozen fields plus the additive report keys.
 
         ``setup_paths`` is each shared-access setup path's availability.
@@ -146,7 +146,34 @@ class CapabilityReport:
         body["tailnet_direct"] = direct.to_dict()
         # Which verified path names people, when attribution is available.
         body["attribution_via"] = "tailscale_direct" if direct.active else ""
+        from kiro_crew.shared_crew.host_power import reported
+
+        # Whether a shared Crew can keep this host awake, and whether it is a laptop.
+        body["keep_awake"] = reported()
+        # The route passes ``invites`` computed off the event loop: the probe
+        # evaluates policy and walks the profile directory.
+        body["invites"] = invites if invites is not None else invites_capability()
         return body
+
+
+#: Why invites are unavailable: an enterprise ceiling pins tailnet access off.
+REASON_INVITES_GOVERNANCE_PINNED = "governance_pinned_off"
+
+
+def invites_capability() -> dict[str, str]:
+    """Whether Tailscale invites can be used here, and if not, why.
+
+    Invites follow the same ``capabilities.tailnet_origin`` pin as the direct
+    tailnet listener. A read, so the probe is not audited.
+    """
+    from kiro_crew.dashboard import tailnet
+
+    if tailnet.is_governance_pinned_off():
+        return {
+            "state": CapabilityState.UNAVAILABLE.value,
+            "reason": REASON_INVITES_GOVERNANCE_PINNED,
+        }
+    return {"state": CapabilityState.AVAILABLE.value, "reason": ""}
 
 
 def _weaker_state(a: Optional[CapabilityState], b: CapabilityState) -> CapabilityState:

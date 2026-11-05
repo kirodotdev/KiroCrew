@@ -23,7 +23,8 @@ from session_helpers import (  # noqa: F401 -- the fixture is requested by name
 )
 
 from kiro_crew.session import BACKGROUND_KEY, SessionManager
-from kiro_crew.testing.wait import await_until
+from kiro_crew.session_cleanup import SessionCleanup
+from kiro_crew.testing.wait import async_wait_until, await_until, finished
 
 
 class TestOrphanedDashboardSessions:
@@ -180,6 +181,24 @@ class TestWarmPoolInternals:
         await mgr.close_all()
 
 
+def _end_after_one_sweep(mgr: SessionManager) -> None:
+    """Make ``mgr._pool_health_loop`` run one real sweep, then end by cancellation.
+
+    The health interval is zero, so the loop's sleep yields once and takes no time. The
+    sweep's refill is an inert mock, so the pool a test reads holds only the providers
+    it queued.
+    """
+    real_sweep = mgr._sweep_warm_pool_once
+
+    async def sweep_then_cancel() -> None:
+        await real_sweep()
+        raise asyncio.CancelledError
+
+    mgr._POOL_HEALTH_INTERVAL = 0
+    mgr._fill_warm_pool = AsyncMock()
+    mgr._sweep_warm_pool_once = sweep_then_cancel
+
+
 class TestPoolHealthLoop:
     """Tests for _pool_health_loop periodic sweep."""
 
@@ -198,20 +217,9 @@ class TestPoolHealthLoop:
         mgr._warm_pool.put_nowait((dead_p, time.monotonic()))
 
         # Run one iteration then cancel
-        call_count = 0
-        original_sleep = asyncio.sleep
-
-        async def one_pass_sleep(secs):
-            nonlocal call_count
-            call_count += 1
-            if call_count > 1:
-                raise asyncio.CancelledError
-            await original_sleep(0)
-
-        # flake-ok: asyncio.sleep patched in this with-block so the health loop runs one pass and its second sleep raises; moved verbatim; tracked for a de-flake pass
-        with patch("asyncio.sleep", side_effect=one_pass_sleep):
-            with pytest.raises(asyncio.CancelledError):
-                await mgr._pool_health_loop()
+        _end_after_one_sweep(mgr)
+        with pytest.raises(asyncio.CancelledError):
+            await finished(mgr._pool_health_loop(), "the health loop ending after one sweep")
 
         assert mgr._warm_pool.qsize() == 0
         dead_p.shutdown.assert_awaited_once()
@@ -230,20 +238,9 @@ class TestPoolHealthLoop:
 
         mgr._warm_pool.put_nowait((healthy_p, time.monotonic()))
 
-        call_count = 0
-
-        async def one_pass_sleep(secs):
-            nonlocal call_count
-            call_count += 1
-            if call_count > 1:
-                raise asyncio.CancelledError
-            # instant return for first sleep
-            return
-
-        # flake-ok: asyncio.sleep patched in this with-block so the health loop runs one pass and its second sleep raises; moved verbatim; tracked for a de-flake pass
-        with patch("asyncio.sleep", side_effect=one_pass_sleep):
-            with pytest.raises(asyncio.CancelledError):
-                await mgr._pool_health_loop()
+        _end_after_one_sweep(mgr)
+        with pytest.raises(asyncio.CancelledError):
+            await finished(mgr._pool_health_loop(), "the health loop ending after one sweep")
 
         assert mgr._warm_pool.qsize() == 1
         healthy_p.shutdown.assert_not_awaited()
@@ -262,19 +259,9 @@ class TestPoolHealthLoop:
 
         mgr._warm_pool.put_nowait((stale_p, time.monotonic() - 120))
 
-        call_count = 0
-
-        async def one_pass_sleep(secs):
-            nonlocal call_count
-            call_count += 1
-            if call_count > 1:
-                raise asyncio.CancelledError
-            return
-
-        # flake-ok: asyncio.sleep patched in this with-block so the health loop runs one pass and its second sleep raises; moved verbatim; tracked for a de-flake pass
-        with patch("asyncio.sleep", side_effect=one_pass_sleep):
-            with pytest.raises(asyncio.CancelledError):
-                await mgr._pool_health_loop()
+        _end_after_one_sweep(mgr)
+        with pytest.raises(asyncio.CancelledError):
+            await finished(mgr._pool_health_loop(), "the health loop ending after one sweep")
 
         assert mgr._warm_pool.qsize() == 0
         stale_p.shutdown.assert_awaited_once()
@@ -285,19 +272,9 @@ class TestPoolHealthLoop:
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
         mgr._pool_size = 2
 
-        call_count = 0
-
-        async def one_pass_sleep(secs):
-            nonlocal call_count
-            call_count += 1
-            if call_count > 1:
-                raise asyncio.CancelledError
-            return
-
-        # flake-ok: asyncio.sleep patched in this with-block so the health loop runs one pass and its second sleep raises; moved verbatim; tracked for a de-flake pass
-        with patch("asyncio.sleep", side_effect=one_pass_sleep):
-            with pytest.raises(asyncio.CancelledError):
-                await mgr._pool_health_loop()
+        _end_after_one_sweep(mgr)
+        with pytest.raises(asyncio.CancelledError):
+            await finished(mgr._pool_health_loop(), "the health loop ending after one sweep")
         # No crash, just skipped
         await mgr.close_all()
 
@@ -522,10 +499,10 @@ class TestStartPoolNonBlocking:
         # A backend without a shared runtime, so the boot start is observable.
         monkeypatch.setattr(mgr, "_bg_backend_supports_runtime", lambda: False)
         await mgr.start_pool(blocking=False)
-        # Let background tasks run
-        # flake-ok: fixed 0.1 s barrier for the non-blocking start task to spawn its session; a loaded host can miss it; moved verbatim; tracked for a de-flake pass
-        # nosemgrep: kirocrew.test-sleep-as-barrier -- fixed wait for the non-blocking start task to spawn its session before the assert; moved verbatim; tracked for a de-flake pass
-        await asyncio.sleep(0.1)
+        await async_wait_until(
+            lambda: BACKGROUND_KEY in mgr._sessions,
+            describe=lambda: "the non-blocking start task never spawned its session",
+        )
         assert BACKGROUND_KEY in mgr._sessions
         await mgr.close_all()
 
@@ -562,9 +539,10 @@ class TestScheduleReplenish:
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
         mgr._pool_size = 2
         mgr._schedule_replenish()
-        # flake-ok: fixed 0.1 s barrier for the replenish task to fill the pool; a loaded host can miss it; moved verbatim; tracked for a de-flake pass
-        # nosemgrep: kirocrew.test-sleep-as-barrier -- fixed wait for the replenish task to fill the pool before the qsize assert; moved verbatim; tracked for a de-flake pass
-        await asyncio.sleep(0.1)  # let task run
+        await async_wait_until(
+            lambda: mgr._warm_pool.qsize() >= 1,
+            describe=lambda: "the replenish task never filled the pool",
+        )
         assert mgr._warm_pool.qsize() >= 1
         await mgr.close_all()
 
@@ -647,27 +625,11 @@ class TestCleanupLoopResilience:
         cfg.session.timeout_secs = 360
         call_count = 0
 
-        # Collapse the loop's inter-sweep sleep to ~zero WITHOUT busy-spinning.
-        # The loop sleeps via ``asyncio.wait_for(shutdown_event.wait(), timeout=interval)``
-        # (interval >= 60s). We shrink only THAT call to a tiny real timeout so
-        # the wait actually runs: it returns immediately once shutdown_event is
-        # set, and otherwise times out in ~1ms. Raising
-        # TimeoutError WITHOUT awaiting the wait() would turn the loop into an
-        # unbounded busy-spin — if _expire_idle's shutdown_event.set() landed on
-        # a cross-loop-rebound event (after an earlier asyncio test in the same
-        # process), the top-of-loop is_set() check could miss it and the test
-        # would hang until its own outer deadline. Letting the real wait() run
-        # makes the stop deterministic regardless of prior event-loop binding.
-        # The ``timeout >= 60`` discriminator clamps ONLY the loop's own inter-sweep
-        # wait; the outer guard below is an ``await_until`` on the loop task, which
-        # never routes through this patched ``asyncio.wait_for``.
-        real_wait_for = asyncio.wait_for
-
-        async def _fast_wait_for(coro, *, timeout):
-            if timeout >= 60:
-                # flake-ok: 1 ms real timeout for only the loop's inter-sweep wait of 60 s or more; expiry runs the next sweep and await_until bounds the loop; moved verbatim
-                return await real_wait_for(coro, timeout=0.001)
-            return await real_wait_for(coro, timeout=timeout)
+        # The loop waits ``asyncio.wait_for(shutdown_event.wait(), timeout=interval)``
+        # between sweeps, and ``interval`` is capped at ``MAX_TICK_INTERVAL_SECS``.
+        # With the cap at zero the wait expires at once, so every pass of the loop
+        # runs a tick. The loop ends when ``_expire_then_stop`` sets the shutdown
+        # event, and the ``await_until`` below bounds a loop that never ends.
 
         async def _expire_then_stop(timeout):
             nonlocal call_count
@@ -683,8 +645,7 @@ class TestCleanupLoopResilience:
 
         kiro_crew.shutdown_event.clear()
         with (
-            # flake-ok: asyncio.wait_for patched in this with-block; only 60 s or longer waits shrink to 1 ms; await_until bounds the loop; moved verbatim; tracked for a de-flake pass
-            patch("asyncio.wait_for", side_effect=_fast_wait_for),
+            patch.object(SessionCleanup, "MAX_TICK_INTERVAL_SECS", 0),
             patch.object(mgr, "_expire_idle", side_effect=_expire_then_stop),
             patch("kiro_crew.session.find_orphan_mcp_candidates", return_value=[]),
         ):
@@ -703,17 +664,8 @@ class TestCleanupLoopResilience:
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
         cfg.session.timeout_secs = 360
 
-        # Shrink only the loop's inter-sweep sleep to a tiny REAL timeout (not a
-        # coro.close()+raise) so the loop observes shutdown_event deterministically
-        # instead of busy-spinning — see the note in
-        # test_cleanup_loop_continues_after_expire_idle_crash.
-        real_wait_for = asyncio.wait_for
-
-        async def _fast_wait_for(coro, *, timeout):
-            if timeout >= 60:
-                # flake-ok: 1 ms real timeout for only the loop's inter-sweep wait of 60 s or more; expiry runs the next sweep and await_until bounds the loop; moved verbatim
-                return await real_wait_for(coro, timeout=0.001)
-            return await real_wait_for(coro, timeout=timeout)
+        # A zero tick-interval cap makes the loop's inter-sweep wait expire at once,
+        # as in test_cleanup_loop_continues_after_expire_idle_crash.
 
         async def _crash_and_stop(timeout):
             from kiro_crew import shutdown_event
@@ -725,8 +677,7 @@ class TestCleanupLoopResilience:
 
         kiro_crew.shutdown_event.clear()
         with (
-            # flake-ok: asyncio.wait_for patched in this with-block; only 60 s or longer waits shrink to 1 ms; await_until bounds the loop; moved verbatim; tracked for a de-flake pass
-            patch("asyncio.wait_for", side_effect=_fast_wait_for),
+            patch.object(SessionCleanup, "MAX_TICK_INTERVAL_SECS", 0),
             patch.object(mgr, "_expire_idle", side_effect=_crash_and_stop),
             patch("kiro_crew.session.find_orphan_mcp_candidates", return_value=[]),
         ):

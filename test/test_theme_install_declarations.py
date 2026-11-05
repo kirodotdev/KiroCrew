@@ -10,12 +10,14 @@ behaviour the asset descriptor reports from those declarations, a font face's
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import pytest
 from theme_install_helpers import _VALID_MP3, _VALID_VARS, _make_tiered, _write
 
 from kiro_crew.dashboard.theme_validate import (
+    _THEME_AUDIO_TRIGGERS,
     _THEME_OVERLAY_DEFAULT_POSITION,
     _THEME_OVERLAY_DEFAULT_ZINDEX,
     _overrides_layout_violation,
@@ -229,6 +231,44 @@ class TestValidateAudioManifest:
         )
         desc, err = _validate_audio_manifest(d)
         assert desc is None and err is not None and "exceeds cap" in err
+
+    def test_category_trigger_passes_with_notification_default_cap(self, tmp_path: Path) -> None:
+        d = self._audio_pack(
+            tmp_path, {"triggers": {"category:approval": {"src": "audio/chime.mp3"}}}
+        )
+        desc, err = _validate_audio_manifest(d)
+        assert err is None and desc is not None
+        # No maxDuration given: the category trigger takes notification's 2s cap.
+        assert desc["triggers"]["category:approval"]["maxDuration"] == 2
+
+    def test_category_trigger_over_notification_cap_rejected(self, tmp_path: Path) -> None:
+        d = self._audio_pack(
+            tmp_path,
+            {"triggers": {"category:cron": {"src": "audio/chime.mp3", "maxDuration": 3}}},
+        )
+        desc, err = _validate_audio_manifest(d)
+        assert desc is None and err is not None and "exceeds cap (2s)" in err
+
+    @pytest.mark.parametrize("name", ["category:all", "category:boop", "category:", "category"])
+    def test_unknown_category_trigger_rejected(self, tmp_path: Path, name: str) -> None:
+        d = self._audio_pack(tmp_path, {"triggers": {name: {"src": "audio/chime.mp3"}}})
+        desc, err = _validate_audio_manifest(d)
+        assert desc is None and err is not None and "unknown audio trigger" in err
+
+    def test_category_triggers_match_dashboard_sound_categories(self) -> None:
+        """Every category trigger the validator allows is one the dashboard looks up."""
+        src = (
+            Path(__file__).resolve().parent.parent
+            / "website"
+            / "src"
+            / "hooks"
+            / "useNotificationSound.ts"
+        ).read_text(encoding="utf-8")
+        m = re.search(r"export const SOUND_CATEGORIES = \[(.*?)\] as const", src, re.DOTALL)
+        assert m, "useNotificationSound.ts no longer defines SOUND_CATEGORIES"
+        dashboard = set(re.findall(r"'([^']+)'", m.group(1))) - {"all"}
+        allowed = {t.split(":", 1)[1] for t in _THEME_AUDIO_TRIGGERS if t.startswith("category:")}
+        assert allowed == dashboard
 
     def test_src_outside_audio_dir_rejected(self, tmp_path: Path) -> None:
         d = self._audio_pack(tmp_path, {"triggers": {"notification": {"src": "other/chime.mp3"}}})

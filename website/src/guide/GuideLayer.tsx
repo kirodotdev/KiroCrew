@@ -47,6 +47,7 @@ import { accessibleName, findCandidates, findPick, searchByName, setFindPick, ty
 import { isCautionTarget } from './findTargetPolicy'
 import { GUIDE_KEEP_CLEAR_ATTR } from './trustRoot'
 import { useFindProbe } from './useFindProbe'
+import { RadioChipGroup, radioChip } from '../components/RadioChipGroup'
 
 const ARROW = 24
 const GAP = 6
@@ -702,20 +703,20 @@ function FindMissing({ query, findKey, reason }: { query: FindQuery; findKey: st
       <div className="m-0" role="status" data-testid="guide-find-ambiguous">
         <p className="m-0">{t('components.guideLayer.find_ambiguous', { label: query.label })}</p>
         {contexts.length > 0 && (
-          <ol className="m-0 mt-1 flex list-none flex-col gap-1 p-0">
+          <RadioChipGroup ariaLabel={t('components.guideLayer.find_ambiguous', { label: query.label })} className="m-0 mt-1 flex flex-col gap-1 p-0">
             {contexts.map((c, i) => (
-              <li key={i}>
+              <div key={i}>
                 <Btn
                   className="w-full justify-start text-start"
-                  aria-pressed={picked === i + 1}
+                  {...radioChip(picked === i + 1)}
                   data-testid={`guide-find-pick-${i + 1}`}
                   onClick={() => { setFindPick(findKey, i + 1); setPicked(i + 1) }}
                 >
                   {`${i + 1}. ${c || query.label}`}
                 </Btn>
-              </li>
+              </div>
             ))}
-          </ol>
+          </RadioChipGroup>
         )}
       </div>
     )

@@ -31,6 +31,7 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
 from kiro_crew import _facade_mirror, mcp_core, platform_compat
+from kiro_crew.atomic_write import replace_with_retry
 from kiro_crew.constants import WAIT_TOOL_MAX_SECS
 from kiro_crew.mcp_shared import DeferredTool
 from kiro_crew.mcp_tools.control_parts.directive import (
@@ -318,6 +319,8 @@ def register_hook(name: str, args: dict[str, Any]) -> str:
     if execution.member_id is not None:
         hook_id = f"{execution.store.store_id}:{hook_id}"
     session_key = f"hook:{hook_id}"
+    from kiro_crew.user_json import loads_user_json
+
     # Persist hook registration
     hook_file = mcp_core.config_dir() / "hooks.json"
     hook_file.parent.mkdir(parents=True, exist_ok=True)
@@ -331,7 +334,7 @@ def register_hook(name: str, args: dict[str, Any]) -> str:
             hooks = {}
             if hook_file.exists():
                 try:
-                    hooks = json.loads(hook_file.read_text(encoding="utf-8"))
+                    hooks = loads_user_json(hook_file.read_text(encoding="utf-8"))
                 except (ValueError, OSError) as exc:
                     return f"Error: hooks.json is corrupted, fix or delete it: {exc}"
             if not isinstance(hooks, dict):
@@ -360,7 +363,7 @@ def register_hook(name: str, args: dict[str, Any]) -> str:
                     os.fsync(fd)
                 finally:
                     os.close(fd)
-                os.replace(tmp, str(hook_file))
+                replace_with_retry(tmp, str(hook_file))
             except BaseException:
                 os.unlink(tmp)
                 raise
@@ -471,7 +474,7 @@ def _ask_question_blocking(sk: str, questions: list[dict]) -> "str | DeferredToo
         if code == "crew_worker_asks_conductor":
             # A Crew Mode worker: the gateway's own instruction, not "ask in plain
             # text", which would put the question in front of the person after all.
-            logger.info("ask_question: a Crew Mode worker's question goes to its conductor")
+            logger.info("ask_question: an Ultra Mode worker's question goes to its conductor")
             return str(opened.get("error") or "Ask your conductor with work_report.")
         if isinstance(opened, dict) and "clients" in opened and not opened.get("clients"):
             why = "no dashboard window is open to show it"

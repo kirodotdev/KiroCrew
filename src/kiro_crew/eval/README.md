@@ -28,6 +28,10 @@ kirocrew eval --judge my_scenario
 `--no-jail` (the shared top-level CLI flag) applies here as it does to every
 `kirocrew` command.
 
+The command exits 0 only when every scenario passes. It exits 1 when any
+scenario fails (the report is still written first) or when a scenario name is
+unknown (nothing runs), so `kirocrew eval && next` stops on a failure.
+
 ## Available Scenarios
 
 | Name | Turns | Sessions | Dimensions | Time est. |

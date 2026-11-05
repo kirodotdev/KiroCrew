@@ -19,6 +19,7 @@ import hmac as _hmac
 import logging
 from typing import TYPE_CHECKING
 
+from kiro_crew import milestones
 from kiro_crew.artifact_store import dashboard_package as _dashboard
 from kiro_crew.artifact_store import records as _records
 from kiro_crew.artifact_store import rules as _rules
@@ -195,6 +196,9 @@ def create(
         ARTIFACTS_CREATED,
         {"kind": kind, "source": source, "kind_auto": bool(kind_auto)},
     )
+    # The "first widget" milestone, counted after the write like the counter
+    # above. Best-effort and off the loop; it never raises.
+    milestones.record("widgets")
     return art
 
 
@@ -570,6 +574,28 @@ def update(
             raise ArtifactValidationError(
                 f"invalid event type {event_type!r}: "
                 f"must be one of {sorted(_records.ALLOWED_EVENT_TYPES)}"
+            )
+        # FROM_VERSION VALIDATED HERE TOO, for the same reason: a refusal must
+        # land before the first write. It names the version a revert copied
+        # from, so it must be a real one: an int (never a bool, which is an int
+        # subclass) in 1..the version this record holds now. Anything else
+        # would put "Reverted to v999" on the timeline for a version that
+        # never existed.
+        if from_version is not None and (
+            isinstance(from_version, bool)
+            or not isinstance(from_version, int)
+            or not 1 <= from_version <= art.version
+        ):
+            # A number is echoed; anything else only by its TYPE. A caller may
+            # send any string here, and a 400 must not echo a credential-shaped
+            # one back to the client.
+            got = (
+                str(from_version)
+                if isinstance(from_version, int) and not isinstance(from_version, bool)
+                else f"a {type(from_version).__name__}"
+            )
+            raise ArtifactValidationError(
+                f"from_version must be an integer from 1 to {art.version}; got {got}"
             )
         art.updated_at = _now_iso()
 

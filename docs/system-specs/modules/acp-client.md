@@ -22,6 +22,8 @@ error chains and tracebacks still name the path callers import it from.
 |---|---|
 | `acp/transport_framing.py` | stdio JSON-RPC framing: the oversize-line drain, the no-progress bound on request, response and notification writes, and the failure-path stderr settle (`settle_drain`) |
 | `acp/transport_errors.py` | the `AcpError` family and the reading of a harness failure: the stderr, auth, throttle and sandbox classifiers, `classify_provider_error`, and the text and retry verdict `_format_acp_error` / `_raise_acp_error` produce |
+| `acp/oversized_request_errors.py` | the three refusals of a request too large to send (`_RE_OVERSIZED_REQUEST`, `_RE_ADAPTER_INPUT_TOO_LONG`, `_RE_REQUEST_SIZE_EXCEEDED`), read by `transport_errors` |
+| `acp/model_registry_errors.py` | the engine's model-list refusal (`ModelRegistryUnavailableError`) and its wording, read by `transport_errors` so it is never worded as an HTTP 5xx |
 | `acp/runtime_models.py` | the advertised model catalog: `DEFAULT_MODEL`, `model_is_unusable`, `resolve_usable_model`, `resolve_pin_spelling`, `resolve_pin_spelling_on`, `pick_served_default`, the model-substitution advisory |
 | `acp/runtime_process_tree.py` | descendant enumeration, child identity capture, the escaped-child sweep and RSS-tree measurement |
 | `acp/runtime_start.py` | cold-start admission, `SessionStartGate` / `StartPermit`, `StartCollector` and the session-start timeouts |
@@ -64,6 +66,8 @@ through it reaches every owner binding the same object (`kiro_crew._facade_mirro
 | `acp/client_turn_control.py` | a turn controlled from outside it: kiro, claude, goose and opencode steers, cancel, slash commands and the turn-state queries callers poll |
 | `acp/client_start.py` | the session start: the spawn (kiro-cli's own arm, and every other host's plan through the launch tail both drivers share), the `initialize` handshake and its params, new, loaded, forked and substituted sessions, and `ensure_ready` |
 | `acp/client_turn.py` | the turn loop: sending the prompt, `_prompt_loop`, reading the prompt response, dispatching and processing frames, `send_message`, `send_message_stream`, `stream_events` and `stream_unsolicited`, the tool-interrupted marker, OpenCode's deferred shell permission and the liveness consult |
+| `acp/disposed_session.py` | not a member owner: the per-harness texts that mean a session's backend was disposed in a live process, and the two answers `_prompt_loop` takes from it (see *A session the harness disposed*) |
+| `acp/relaunch_reload.py` | not a member owner: relaunching a live client's process and loading the same session in it, and the MCP mark a relaunch-reload harness applies at its next turn boundary (see *An MCP change applied by relaunch*) |
 | `acp/client_class.py` | the class statement: the constructor, the properties, the class defaults, the member table that binds every owner's members, and the members that stay class-resident |
 | `acp/client_lifecycle.py` | the child after it is spawned: the stderr drain, process-tree tracking, kill, failed-start classification, state reset, the workspace and sandbox discards, re-binding a live process, and shutdown |
 
@@ -212,7 +216,7 @@ row names its responsibility, and a new request shape or turn-metadata parser to
 | `acp/_dispatch_parts/tool_call_provenance.py` | the per-turn tool-call provenance caches: their scoped key, caps, overflow record and admission, the release at a terminal status, and the liveness keys (`liveness_key`, `InFlightIdSet`) |
 | `acp/_dispatch_parts/adapter_signals.py` | claude-agent-acp and codex-acp signals that ride ordinary frames: compaction notices, adapter-written errors, background-launch records and codex compaction updates |
 | `acp/_dispatch_parts/tool_result_events.py` | a `tool_call_update`'s output as `EVENT_TOOL_RESULT`: content and `rawOutput` text, the unrenderable-content diagnostic, the output measure and the `todo_list` snapshot |
-| `acp/_dispatch_parts/permission_requests.py` | a `session/request_permission` as `EVENT_PERMISSION_REQUEST`: option kinds and the least-destructive reject, the gate-extension envelope, MCP identity and approval, KAS consent and `build_permission_event` |
+| `acp/_dispatch_parts/permission_requests.py` | a `session/request_permission` as `EVENT_PERMISSION_REQUEST`: option kinds and the least-destructive reject, the gate-extension envelope and the Strands owner classification (`strands_envelope_identity`), MCP identity and approval, KAS consent and `build_permission_event` |
 | `acp/_dispatch_parts/session_update_parser.py` | the `session/update` parser: chunk text and message ids, the `tool_call` and refinement builders, and `parse_session_update` |
 
 `acp/liveness.py`, the per-session liveness oracle, keeps `LivenessOracle`, the
@@ -234,6 +238,43 @@ reader, interactive rule or tool-call field to the owner whose row names it.
 | `acp/liveness_command.py` | the cached command text: its retention bound (`MAX_RETAINED_*`, `bounded_command_text`) and the readers that recognise what it started (`match_fragment`, `first_program`, `parse_wait_seconds`, and `launch_matches` over a `LaunchRoster`) |
 | `acp/liveness_interactive.py` | interactive-command classification: the program tables, `InteractiveClassification`, `classify_interactive_command` and `non_interactive_hint` |
 | `acp/liveness_tool_state.py` | the in-flight tool call: `ToolCallState`, the `InFlightToolTracker` hand-off rule and `wait_tool_verdict` |
+
+## Kiro Cloud Sessions reconnect lifecycle
+
+The cloud harness alone opts into detach-only teardown (`TeardownPolicy.local_only`).
+`terminate_session` still unregisters in `finally`; a handle's end deletes only when
+it is non-persistent (`delete_cloud_session=True`). A session no caller holds a
+handle for is deleted, too, because nothing records its id: a `session/new` whose
+local setup refuses before `_finish_create_session` returns, a late `session/new`
+answer no one adopts, and the entitlement probe's own session
+(`AcpRuntime._unclaimed_new_sessions`). A failed local setup after loading a
+cloud session never deletes the session it reopened. A start whose new sandbox
+cannot be recorded on the chat's choice row deletes that sandbox before the start
+fails: it holds no conversation yet and nothing else points at it. A fallback that
+replaces a session it could not reopen deletes nothing (it may still hold the
+user's work), and the choice row then names the new session. A session Kiro Crew
+no longer points at, and an ordinary chat's session after the chat is deleted, are
+listed and deleted where Kiro's docs place them: Kiro Web (app.kiro.dev) and the
+IDE's cloud-session menu (**Delete Session**). Local and ordinary KAS teardown
+keep their wire verbs and delivery unchanged.
+
+`load_session` is the unchanged request/setup body on every host. The provider's
+cloud start path, and only it, takes a resume hold around its reopen
+(`AcpRuntime.hold_cloud_resume`, which refuses on a runtime `set_cloud_sandbox` did not
+configure) and settles it with the handle once the reopen finished. The reader asks
+`holds_replayed_permission`, and an unroutable permission's answer comes from
+`unroutable_permission`; every served host answers both as if they did not exist, so
+the runtime tests no harness identity (harness-parity H13). The cloud
+harness's hold owns the exact resumed id's registration future until ALL setup
+completes. The reader retains replayed permission requests through bounded
+answer tasks while that future is pending, leaving history frames on the drop path.
+The cloud hold resolves to the real handle only after init draining; its first-turn
+stale drain preserves those specific request ids for the normal permission parser,
+and keeps preserving them until the drain ends, so a stranded request queued behind
+a replay (whose reject hands the replay back to the queue) cannot turn the replay
+into a stranded reject.
+An unsuccessful or 60-second-expired registration uses the existing audited reject
+answer. No other session id or harness receives this exception.
 
 ## Native skill startup views
 
@@ -277,9 +318,10 @@ file with bad JSON loads with the key at its default; a config load that raises
 disables projection, as `mcp_gateway.apps_enabled` does (`_projection_enabled`). Disabled launches restore the Crew-owned inheritance
 overlay before spawning and bypass alias translation and projected search
 requirements. A spawn-time ceiling takes the same fallback automatically: when
-the agents directory already holds `SKILL_VIEW_PROJECTION_CEILING` (128, the
-constant the doctor's backlog warning also reads) or more
-`kirocrew-skill-view-*.json` files, a fresh preparation stops minting new views
+the agents directory already holds `skill_view_ceiling` or more
+`kirocrew-skill-view-*.json` files -- the larger of
+`SKILL_VIEW_PROJECTION_CEILING` (128) and two per authored agent spec in the
+directory, the same sizing the doctor's backlog warning uses -- a fresh preparation stops minting new views
 and runs the authored agent, so a regression that reopens the leak cannot deepen
 it. The count is the raw total of alias files, including those another Crew home
 sharing the agents directory wrote, because kiro-cli reads every one at startup
@@ -895,12 +937,32 @@ pass covers it. Without this a subagent fan-out queued one full prune per ended
 projection on the lock set_mode re-preparation waits on, and starts ran out
 their in-process wait and were refused. When the end runs on an event-loop thread the lease release and
 the prune both go to a daemon thread, so no session start is stalled behind a
-file-lock wait. A finalizer the cyclic collector runs does none of that work on
-the collecting thread: the collector fires on whatever thread allocated, possibly
-inside a non-reentrant lock such as a `ThreadPoolExecutor.submit` lock the prune's
-own path checks need, so the end is only queued (`SimpleQueue`, safe inside a
-collection) for one daemon reaper thread started when the finalizer is armed. A
-`gc.callbacks` hook records which thread is collecting. Pruning runs ONE bounded lease scan for the whole
+file-lock wait. A finalizer that fires for a dropped projection -- whether the
+cyclic collector freed it OR its last reference simply went -- does none of that
+work on the thread that triggered it: that thread fires on whatever allocated at
+that point, possibly inside a non-reentrant lock such as a
+`ThreadPoolExecutor.submit` lock the prune's own path checks need, so the end is
+only queued (`SimpleQueue`, safe inside a collection) for one daemon reaper thread
+started when the finalizer is armed. The explicit `release()` is told apart from
+the finalizer by HOW it arrives, not by any process flag: it `detach()`es the
+finalizer and calls the same `_end_projection` DIRECTLY with `from_release=True`,
+so off the loop it may run the end inline (a known-safe call site); the finalizer
+path calls with the default `from_release=False` and is never run inline off the
+loop. The one exception is interpreter shutdown: the `atexit` weakref sweep can
+fire a finalizer for a projection never explicitly released, when the daemon
+reaper is either already gone or still alive (daemon threads run while `atexit`
+handlers do) yet may be stopped by finalization before it reaches a queued end.
+An `atexit` hook, `_release_queued_leases_at_exit`, sets `_EXITING`, releases
+the lease of every end still queued on the exiting thread, and then gives an end
+the reaper already took up to `_EXIT_REAPER_WAIT_SECS` (2 s) to finish. Once
+`_EXITING` is set, or when the reaper is not alive, a finalizer releases the
+lease INLINE instead of queueing it. Whichever order the hook and the weakref
+sweep run in, every lease is released before the process ends (the prune, which
+re-enters the executor, is dropped for the next process's boot drain to cover),
+because a retained lock file would block the next process's view of this home.
+The lease release is not run inline in every finalizer: a refused unlink
+reports through `_UNLINK_WARNING_LOCK` and the logging handlers, the same kind
+of non-reentrant lock a dropping thread can hold. Pruning runs ONE bounded lease scan for the whole
 run -- not one scan per candidate, which multiplied the candidate cap by the
 scan cap into a quadratic sweep under the held publication lock -- streaming lease
 records without materializing the directory and stopping at a fixed scan ceiling.
@@ -983,7 +1045,13 @@ remains on disk. If the lock cannot be opened or acquired, preparation retains
 every alias and the current settings file byte-for-byte, then falls back to the
 authored native agent rather than risking a stale-snapshot overwrite or blocking
 startup. Active, foreign-home, unmarked, malformed, unreadable, oversized or
-otherwise uncertain alias files remain on disk.
+otherwise uncertain alias files remain on disk. A global or workspace `cli.json`
+that is present but cannot be read (the credential gate refuses it, it is
+malformed or oversized) takes the same fallback: no view is published, the file
+is left byte-for-byte, and the spawn runs the authored agent, the answer
+`inherits_default_resources` gives for the same file. An absent file reads as
+empty and still projects. A set_mode re-preparation that gets this `None`
+refuses the start, as it does for a busy lock.
 
 `kirocrew doctor`'s Agents Directory section reports the census read-only,
 through `census_projected_aliases` in the reclaim owner
@@ -1011,8 +1079,8 @@ record could be the unreadable one that makes a reclaim pass fail closed, so
 the report says reclaimability is unknown rather than promising a drain. A
 backlog left by a build that predates the reclaim is thereby visible without
 `ls`, and its drain can be watched. Above
-`_SKILL_VIEW_BACKLOG_WARN` (128, the same number the projection enforces as
-`SKILL_VIEW_PROJECTION_CEILING`, so a host the doctor warns about is a host whose
+`skill_view_ceiling` over `_SKILL_VIEW_BACKLOG_WARN` (at least 128, two per
+authored agent spec, the same number the projection enforces, so a host the doctor warns about is a host whose
 next spawn has already fallen back to its authored agent; the number is sized
 for the IDE's drop-down over the measured steady state -- 35 views for 34
 authored agents on a heavily used host, since global agents share one view
@@ -1067,7 +1135,11 @@ late-start adoption. Incognito and Temporary suppress Crew raw-frame recording
 and payload diagnostics, do not resume retained native context, and cannot retain
 native transcripts for continuation. Shared-runtime recording latches off before
 a restricted session can emit its first frame. Normal shutdown and abandoned
-late starts clean the native transcript files supported by the provider. This
+late starts clean the native transcript files supported by the provider. On
+claude, a restricted session's `session/new` envelope also turns Claude Code's
+auto-memory off (`CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` in
+`_meta.claudeCode.options.env`; see
+[claude-code-provider](claude-code-provider.md), "An incognito or temporary chat"). This
 does not add a sandbox or promise control over every external provider's own
 on-disk session format or crash recovery.
 
@@ -1156,6 +1228,26 @@ cancelled caller still lets the worker settle).
 **Unknown server→client requests are answered, never dropped.** `session/request_permission` and the elicitation request (`elicitation/create`, and on KAS `_kiro/mcp/elicitation`; see *MCP elicitation*) are the inbound *requests* `AcpClient` implements. `AcpSessionHandle` serves three more, all KAS-specific: `_kiro/hooks/list`, `_kiro/hooks/sessionStart` and `_kiro/hooks/executeHook`, answered from `acp/kas_wire.py` (see agent-host-contract.md, which states the four gates `executeHook` passes before anything spawns). `_kiro/hooks/executeHook` is routed there only while hooks are announced in the handshake (`kas_wire.hooks_announced()`); `KAS_CLIENT_CAPABILITIES` announces none today, so it is answered `-32601`. They are matched in that handle's own dispatch loop, ahead of the shared classifier, precisely so the classifier keeps reporting them as unknown on the `AcpClient` path — which serves no hooks surface, and where naming an action no branch handles would leave the request unanswered instead of refused. Any other server→client request (method **and** id — e.g. `fs/read_text_file`, `terminal/create`) is classified by `_process_message` as `"server_request_unknown"`. Every prompt dispatch site (`send_message_stream`, `_dispatch_events`, `_read_prompt_response`) handles that action by calling `_reject_unknown_server_request`, which replies with a JSON-RPC `-32601` (`JSONRPC_METHOD_NOT_FOUND`, "Method not found") error via `_send_error`. Without this, JSON-RPC semantics leave the agent blocked forever on an unanswered request — the turn hangs. Notifications (method, no id) are unaffected and still classified `"skip"`.
 
 `PermissionOption` field names differ between backends — kiro-cli uses `id`/`label`, claude-agent-acp uses `optionId`/`name` (per the public ACP spec). `_build_permission_event` reads both and remembers the optionIds keyed by `kind` (`allow_once`/`allow_always`/`reject_once`/`reject_always`) on the request id — recording an entry when **either** an allow option (for `approve_tool`) **or** a reject option (for a clean `reject_tool`) was advertised. `approve_tool(request_id, *, always=False)` echoes the matching allow id back, so the host doesn't need to know whether it's talking to kiro (`"allow_once"`/`"allow_always"`) or claude-agent-acp (`"allow"`/`"allow_always"`). `reject_tool` prefers a **clean reject**: if a reject optionId was advertised it sends `outcome: "selected"` with that id. Both backends advertise one — claude-agent-acp as `{kind:"reject_once", optionId:"reject"}` (→ `behavior:"deny"`), kiro-cli as `{kind:"reject_once", optionId:"reject_once"}` — and the fallback to `outcome: "cancelled"` therefore only applies to a backend that advertises no reject option at all. The distinction is load-bearing, not cosmetic: a clean reject resolves the tool call to `status:"failed"` with kiro-cli's fixed content `"User denied tool execution"` and the turn continues to the next model-inference boundary (`stopReason: "end_turn"`), whereas `cancelled` ends the turn immediately with `stopReason: "refusal"` and no text — and drops any queued `_session/steer` as `AgentExecutionUserMessageCleared`. That is why the host's in-band deny notice (`_steer_policy_notice`) can only be folded in on the clean-reject path, and why `stopReason: "refusal"` is NOT by itself evidence of a model-side content refusal.
+
+**Strands: classified from the gate envelope's owner, never from the card.**
+The Strands CLI asks only for Strands interrupts, so every tool call asks
+through Crew's gate module (`Routing.VERIFIED_GATE_EXTENSION`), and on that
+harness every permission frame must be the module's envelope (`kiro-crew-gate`,
+with the session nonce). The envelope names the tool, its `owner` and the
+call's `toolUseId` as `toolCallId`, which is the id on the CLI's `tool_call`
+card, so the request joins its card. The owner is read off the tool OBJECT
+Strands resolved: `builtin` for an object `strands_harness` built for that
+built-in's slot, `mcp:<server>` for an MCP tool (titled `mcp__<server>__<tool>`),
+`custom` for anything else. The Strands SDK's own shell (a tool whose function `make_shell` defined) is `builtin` wherever it was built, so `Agent(tools=[shell])` still reaches the command tiers; renamed (even to `read`), it gets an owner Crew does not know and is refused. `strands_envelope_identity` derives the kind, the
+shell verdict, the MCP identity and the `strands#…` harness tool id from owner
+and name only (`STRANDS_BUILTIN_TOOL_KINDS`): a project tool named `read` is
+`other` with no tool name, so no read-only tier and no built-in alias proves it.
+The card's own `kind`, which the CLI guesses from name substrings, and the shell
+verdict cached from it are never read on this harness. A frame that is not the
+envelope, an unknown owner, an MCP owner with no readable server or a built-in
+this build has not classified is refused as an unreadable identity. "Always
+allow" stays Crew's own grant; Strands offers only `allow` / `deny`, and Crew
+answers `allow` (one call) for both choices, never writing Strands' config.
 
 Both the shared runtime and the legacy direct `AcpClient` route permission
 frames through `_dispatch.build_permission_event`, including the same provenance
@@ -1336,6 +1428,101 @@ providers declare the keyword with the class attribute `approval_withdrawable`;
 `tool_permission.AcpWire` passes a sub-agent's stop predicate (`Policy.stopping`)
 only to a provider type that declares it.
 
+### Batch write guard in `approve_tool` (`batch_guard.py`)
+
+Opt-in through `hooks.batch_write_guard` (default `false`; only a JSON `true`
+turns it on). After the floor allows a request, both `approve_tool` methods call
+`batch_guard.screen_approval`, which refuses a write-class call that shares its
+parallel tool batch with a read-class call: the model wrote the write's arguments
+before it saw the read's result. Each transport keeps a `BatchWindow` of the
+current batch, fed where it already tracks calls in flight (`AcpClient`:
+`_extract_tool_event`, a terminal `_extract_tool_call_update`,
+`_read_new_tool_results`; `AcpSessionHandle`: `_handle_update`) and reset at each
+prompt turn. A `tool_call` that arrives while no call is open starts a new batch;
+one that arrives while any call is open joins it; a member stays one after it
+settles, until the next batch starts. So membership means overlap in TIME, not
+one model step: on a harness that runs a step's calls one at a time the guard
+never fires. A member stops counting as open at its terminal update, when the
+guard refuses it (a refused call never runs, and its own terminal may never
+arrive), or `OPEN_MEMBER_TTL_SECS` (600 s) after its `tool_call`, whichever comes
+first; the bound keeps a lost terminal from holding every later write of the
+turn in a stale batch, and can only miss a refusal, never add one. A write the
+window never saw is not judged. `batch_guard.classify` reads the harness-stamped identity (never the
+title) against explicit tables: file-write built-ins and Kiro Crew's own
+ledger, report and send tools are writes, file-read built-ins and Kiro Crew's own
+read tools are reads, and EVERY shell command outside the write table is a read
+peer, mutating ones included (`rm`, `sed -i`, `mkdir`, `npm publish`): an
+`fs_write` next to `mkdir -p` is refused and the notice counts the `mkdir` as a
+read. A shell command (its first 8 KiB, with backslash-newline continuations
+folded, split into commands by the shared reader the security floor uses,
+`security.shell_commands.read_commands`, and stepped past wrappers and
+`NAME=value` by `security.argv_rules._program_args`; the guard keeps no shell
+reader of its own; each command judged by its program and subcommand words,
+never by argument text) is a write only for `gh pr|issue
+merge/create/review/comment/...`, `git push|commit`, a non-read `aws`
+operation, and a command starting with one of the operator's own prefixes in
+`hooks.batch_write_guard_commands` (empty by default; matched whole words and
+read at approval time, where it applies to the call being approved and to its
+shell peers, whose bounded commands the window keeps); `gh api` counts as a
+write with a mutating `-X`/`--method`, or with `-f`/`-F`/`--input` and no
+explicit method (a GraphQL call only for a `mutation`). Each approval also
+refreshes the approved call's own member from its permission request, so a
+peer whose frame named only its server is judged by the tool the request
+names. Any other tool is neither, so it is never refused and never
+causes a refusal. A refusal steers its reason into the running turn with cause
+`DENY_CAUSE_BATCH_READ_WRITE` while the request is still unanswered, then
+`batch_guard.reject` answers it: it logs `approve_tool: batch guard refused`,
+writes its own SEL row (`source=batch_guard`, `outcome=rejected_batch_guard`,
+`mechanism=batch_write_guard`, never the floor's row), calls `reject_tool` and
+returns `False`. The reason is kept per request id (`batch_guard.take_refusal`,
+at most 64, bounded keys), so `tool_permission` settles that `False` as a host
+refusal with cause `DENY_CAUSE_BATCH_READ_WRITE` rather than a bare
+`floor_refused`, writes no `floor_refused` approval row for it, and a subagent
+turn's refusal recovery carries it. A consumer that writes its OWN audit row when
+`approve_tool` returns `False` (the dashboard chat path in
+`dashboard/chat_turn/tool_approval.py` and `permission_prompt.py`, the Slack
+ladder in `slack/handler_runtime/permission_ladder.py`) reads the kept reason
+back and maps it through `batch_guard.refusal_outcome`, so that row records
+`rejected_batch_guard` (with `mechanism=batch_write_guard`) when the guard
+refused and keeps `rejected_transport_floor` only when the security floor did.
+`batch_guard.take_client_refusal(client, request_id)` is the one place the kept
+reason is asked of a client — the audit consumers and `tool_permission` all call
+it rather than repeat the getattr/take-once/string-check steps — and it takes the
+reason once, so each refused request reads it at exactly one site. Only the
+dashboard and Slack rows are routed this way. Every OTHER consumer that writes its
+own row when `approve_tool` returns `False` still labels a batch-guard refusal
+`rejected_transport_floor`, the same as a security-floor one: the CLI
+(`cli_chat.py`), the LLM-helpers transport (`llm_helpers_parts/tool_approval.py`),
+the eval runner (`eval/runner.py`), the dashboard hooks handler
+(`dashboard/handlers/hooks.py`), the channel and messaging transports
+(`channel.py`, `messaging/driver.py`) and the task planner (`task_planner.py`).
+The guard's own `source=batch_guard` row for the same `request_id` is still the
+one that names the cause there; relabelling those consumer rows is not part of this
+change.
+
+Coverage: the tables name kiro-cli and KAS built-ins and Kiro Crew's own MCP
+tools, so the guard is expected to work on the kiro-cli and KAS harnesses. On a
+harness whose tool names are not in those tables most calls are neither class
+and the guard rarely fires. Calls an agent spec pre-approves through
+`allowedTools` raise no permission request, so the guard cannot refuse them;
+they still count as peers. Known limit: the shared reader stops at a live
+`<<`, so a write inside a here-document body, or after its terminator on later
+lines, is not judged and passes (fail-open: the guard misses it, it never
+refuses more). A second known gap is the GraphQL body the guard cannot read:
+`_graphql_may_mutate` sees the literal `query`/`-f query=...` argument text, so a
+body given as `@path` (read from a file) already counts as a possible mutation,
+but a `gh api graphql` query whose body is supplied through a shell command
+substitution (`-f query="$(cat file)"`) or a shell variable (`-f query="$Q"`)
+reaches the guard as that unexpanded token, which is not `@`-prefixed and does
+not start with `mutation`, so it classifies as a READ and a mutation hidden there
+is not guarded. This is left as a documented gap rather than closed in code:
+treating every unreadable query body as a possible mutation would make the guard
+refuse more than it does today, and the guard's contract is to never refuse more
+than its explicit tables name (the security floor, which runs first, is the
+control that judges such a call regardless). It has been tested only at the
+transport level; do one live run on the target harness before turning it on.
+Pinned by `test_batch_write_guard.py`.
+
 The rendered tool-input cache is consumed by the first permission event, but
 structured raw params remain keyed by `toolCallId` for the whole turn. A repeated
 permission for the same call therefore retains the fact that a non-shell MCP tool
@@ -1395,6 +1582,8 @@ Both expect the same answer: `{"action": "accept" | "decline" | "cancel"}` plus
 server `-32601` itself — so on that harness nothing reaches Crew. The standard
 `elicitation/complete` NOTIFICATION (a URL ask finished out of band) shares the
 prefix and carries no id; the classifiers leave it to `skip`.
+
+**KAS user input (`_kiro/userInput`, `METHOD_KAS_USER_INPUT`)** is the MODEL's own question (KAS's `user_input` tool), sent only because `KAS_CLIENT_CAPABILITIES` declares `_meta.kiro.userInput`. Params are `{sessionId, toolCallId, question, options}`, each option `{title, description?, recommended?, subOptions?}`. Undeclared, KAS asks through `session/request_permission`, and a Deny with no reject option reaches the model as "move on", which the tool tells it to read as yes. The request rides the elicitation path above (same classifier action, card, pending registry, cancel and stranded-drain paths) as a form: an optional `choice` enum of the option titles, and an `answer` text field that is required only when no option is offered. Sub-options are not drawn; the answer is the chosen title. The request's `method` alone decides the reply's shape, built by `elicitation_reply` / `user_input_response`; a driver deciding without a person passes `person=False` (also through `answer_elicitation`). The reply and is ALWAYS `{"action": "answered", "answer": <non-empty text>}`, because KAS hands the model only an `answered` with a non-empty answer and reads `dismissed` or an error as "move on". An accept sends the chosen title, the typed text, or `choice: text`; a person's Deny (or an empty accept) sends `USER_INPUT_DECLINED_ANSWER`; every exit where no person answered (no consumer can ask, unrenderable, a dashboard card refused for a tainted value, text-only prompt path, turn boundary, stranded request, trust/yolo sweep, window expired, Stop) sends `USER_INPUT_NO_PERSON_ANSWER`. Both texts say plainly that the reply is not agreement. KAS persists a pending question and replays it on `session/load` only as a `session_info_update` history row, which Crew does not read as a live ask; KAS does not re-send `_kiro/userInput` after a restart, so there is nothing for Crew to re-answer.
 
 `acp/elicitation.py` owns the shape on both wires. `parse_elicitation_request`
 reads either into one `ElicitationRequest` **fail-closed**: a shape this client
@@ -1475,7 +1664,13 @@ The route validates a form's content against the row's fields BEFORE resolving t
 future (a refused value is a 400 the card shows inline, the ask stays open) and writes
 the validated answer onto the row, which the runner reads back and sends; its body cap
 (`ELICITATION_BODY_MAX_BYTES`) is sized from `PROPERTIES_MAX` × `STRING_VALUE_MAX_CHARS`,
-so every form the card can draw is answerable. Every other
+so every form the card can draw is answerable. The card (`pages/chat/ElicitationCard.tsx`)
+puts all three MCP answers in the person's hands: Submit / I've finished is `accept`,
+Decline is `decline`, and Close without answering is `cancel` — the person putting the
+question away without choosing, which the server reads apart from an explicit no.
+Close without answering is a muted text button on its own line under the Submit / Decline
+row, so its words are on the card before anyone clicks it rather than only in an
+aria-label, and the action row keeps its two peers of yes / no. Every other
 resolver of that registry speaks the permission vocabulary, and `read_elicitation_answer`
 lets none of its words mean `accept`: a reject button declines, and an approval CANCELS,
 URL ask or form, because it is not a person answering this question. A Stop rejects every
@@ -1530,7 +1725,8 @@ URL, on the `bg-card ring-1 ring-border` notice surface — an unset enum is han
 no option carries so `''` stays a real choice, a fraction in an integer field and an
 integer past the safe range are each refused before submission with their own hint rather
 than sent changed, and every field input carries a per-instance `useId` so two cards on one
-page cannot share a label target;
+page cannot share a label target; a field's description is the `aria-describedby` of its
+control, since each control's own `aria-label` replaces the label text as its name;
 once resolved it retitles ("A tool asked you") and shows the answer that was sent;
 a refused answer renders through the shared `ErrorNotice`, a required-field hint as
 status text.
@@ -1858,10 +2054,10 @@ advertised entry's `_meta.kiro.resource.source.origin`
 (`_dispatch.advertised_mode_origin`). The value `bundled` -- the one stamp
 MEASURED on kiro-cli 2.23.0 for the engine's own agents -- means the engine kept
 its OWN built-in under that id and discarded the `customAgents` definition; a
-`set_mode` would succeed and run the built-in under the mate's name, so the
+`set_mode` would succeed and run the built-in under the Bot's name, so the
 harness answers the refusal text -- the id is reserved for a built-in agent,
 plus the mate-side remedy in the dashboard's own labels (the Agent Template
-tab; on the mate's own copy 'Save as new template…' under another name or
+tab; on the Bot's own copy 'Save as new template…' under another name or
 'Reset my changes'; on a shared template -- one created under a reserved id
 before the refusal existed, where neither control renders -- the template
 picker at the top of the tab), in plain words with no wire vocabulary or
@@ -1870,15 +2066,15 @@ the offline fake, an older engine) is not evidence and never refuses, and a
 positive stamp this code has never measured (an engine that renames `client`)
 is logged at WARNING and let through, because kiro-cli is the operator's own
 install, not pinned by Crew, and an unmeasured value must not become a
-session-start denial of every mate with a rename remedy that cannot help.
+session-start denial of every Bot with a rename remedy that cannot help.
 The ids measured to trip (C) on kiro-cli 2.23.0
 (`agent_files.KAS_RESERVED_AGENT_IDS`) never reach the wire under their own name:
 `attach_kas_custom_agents` sends the batch entry as
 `agent_files.kas_wire_agent_id(id)` (`<id>-crewmate`), and both session-start
 paths read the advertised modes, ask (C) and send `set_mode` with that same wire
-id, so a `default` mate carried over from kiro-cli runs unchanged. Nothing
+id, so a `default` Bot carried over from kiro-cli runs unchanged. Nothing
 else sees the alias: the batch Crew records, `handle.active_agent` and
-`kas_projected_agent` keep the mate's id, and a `current_mode_update` naming
+`kas_projected_agent` keep the Bot's id, and a `current_mode_update` naming
 the alias is mapped back through the registered batch
 (`_dispatch.kas_crew_agent_id`). (C) is the read of the wire itself, so a
 built-in a later engine adds under a new id fails loudly instead of resurrecting
@@ -2128,7 +2324,21 @@ Resolving that invocation probes the filesystem and `PATH` for the `kirocrew`
 launcher, so the KAS harness does it in its `session_extras` thread
 (`kas_agents.resolve_managed_entries`) and carries the result on
 `SessionExtras.managed_entries`; the hoist itself does no I/O on the event loop
-(#15282). On `session/new` the move covers the active agent's managed names only; on
+(#15282). The builtin app servers that run Kiro Crew's own code (`mochi:mochi`)
+are hoisted and tokened the same way, because KAS never reaches
+`kiro_control_plane_servers` and without the element every call refuses as
+`identity_unattestable` (#19798 on kiro-cli, the same defect on KAS). The same
+thread resolves them (`kas_app_identity.resolve_app_identity_launches`, carried
+on `SessionExtras.app_launches`): the launch comes from the shipped manifest via
+`session_mcp.builtin_app_identity_launches`, never the spec, and a server a
+settings file restricts (`session_mcp.native_mount_withholding`), or every one
+when a settings file is unreadable, keeps its native declaration with no token.
+A tokened app element's env is the projected `KIROCREW_PORT` /
+`KIROCREW_SESSION_KEY`, the gateway's bound port, then the pinned `PYTHONPATH` /
+`KIROCREW_HOME`, built by `kas_app_identity.tokened_app_element`. A settings-file
+name does not reserve an app server on load: the resolver already judged it.
+On `session/new` the move covers the active agent's managed names and those app
+servers only; on
 `session/load` it additionally hoists remaining user-declared names
 (`include_user_servers=True` in `hoist_servers_for_session`): kiro-cli
 re-initialises MCP servers from the session-level array only on load — not from
@@ -2145,6 +2355,14 @@ the session cwd's `.kiro/settings/mcp.json`
 call site in `runtime_session_load.py`) — stays in the agent block, so the
 resumed session resolves that name by kiro-cli's own precedence, exactly as
 `session/new` did; a session-level injection would outrank both files.
+A second exception: a user-declared entry whose `env` keeps a `${NAME}`
+reference (a name the edition relays) stays in the agent block on load too.
+KAS expands such a reference in an agent-block entry but hands a session-level
+element's env to the child verbatim, so a hoisted copy started the server with
+the literal `${NAME}` text and it listed no tools on the resumed session. Probed
+on the 0.66.33 bundle with a stdio probe server: the block entry got the value
+on `session/new` and on `session/load` (including a server first declared at
+load), the hoisted element got the literal text.
 `session/new` (`create_session`) is unchanged. Non-managed entries hoisted on
 load travel as projected with no session token. On both paths: a name
 the caller's array already carries is skipped (a broker stub or member dispatch
@@ -2176,6 +2394,14 @@ spec the same way kiro-cli v2 does where the wire allows it:
   place. Only Crew's background agent `kirocrew-lite` gets the inline
   `_KAS_FALLBACK_PROMPT` brief instead. Measured live on kiro-cli 2.35.1: `""`
   registers the agent (its empty `tools` held), a missing key falls back to `vibe`.
+- A `file://` prompt is read by Crew and its text shipped over the wire, so the
+  path is checked first. A relative ref is anchored to the agents directory and
+  may use `..` (`file://../prompts/x.md` loads, as on kiro-cli); relative or
+  absolute, the resolved path (symlinks followed) is refused when it is a
+  sensitive location, `~/.config/gh`, the data home's `app_receipt_secret` or `session_token_*.sig`,
+  or a pseudo-filesystem (`acp/kas_prompt_paths.py`). A spec from
+  a project checkout is untrusted, and its relative ref must stay inside that
+  checkout's `.kiro/agents` (`acp.harness.kas.resolve_projected_spec`).
 - `toolsSettings.subagent` becomes `subagent` rules
   (`kas_permissions.tools_settings_to_permissions`), the capability whose
   resource is the sub-agent's name (a KAS consent names it as such, and KAS writes
@@ -2193,12 +2419,25 @@ spec the same way kiro-cli v2 does where the wire allows it:
   skip the permission request Crew's deny floor runs on. Crew answers a matching
   command at that request itself, through the gate's `spec-builtin-grant` row
   ([security](security.md) § KAS spec built-in grant).
+- `toolsSettings.shell.denyByDefault` travels as no rule either: Crew's gate
+  refuses every shell call of that agent that no usable `allowedCommands` entry
+  matches whole, on every approval policy, through its `spec-shell-allowlist` row
+  ([security](security.md) § KAS spec shell allowlist).
+- `toolsSettings.fs_write.fallbackAction: "deny"` travels as no rule too: Crew's
+  gate refuses every file write of that agent whose target no usable
+  `allowedPaths` entry covers, anchored at the session's directory, on every
+  approval policy, through its `spec-write-allowlist` row
+  ([security](security.md) § KAS spec write allowlist).
 - The spec's `hooks` run from Crew's turn loop (`agent_sdk/spec_hooks.py`); a
   PostToolUse spec hook's tool matcher is matched on the id the call's permission
   request stated, or for a call the frame classified as a shell command, KAS's
   shell tool (`spec_hooks.post_tool_hook_tool_id`), with the call's trusted MCP server and tool name kept beside it, because KAS's `tool_call`
   frame names no built-in tool and titles the call in prose. Pinned through a real
-  `chat_runner._run_chat` turn by `test_kas_spec_hooks_turn_loop.py`.
+  `chat_runner._run_chat` turn by `test_kas_spec_hooks_turn_loop.py`. A command
+  over its form's limit (20,480 characters in the object form, 4,096 in a hook
+  document) does not run; a new session gets one `notice` row naming the hook,
+  its length, that limit and the script-file fix
+  (`test_kas_spec_hook_command_length.py`).
 
 For a derived worker, the projected payload carries both its checked specification
 snapshot and its runtime session key through create and load. Activation checks
@@ -2254,6 +2493,23 @@ adds a pointer to `kirocrew doctor`, whose MCP Governance section checks the
 account's identity before advising the setting. A server the host did report
 (still connecting, or a same-named entry that is not `client` origin) gets the
 plain timeout.
+
+A governed host is not always silent. KAS 0.66.62 under an enterprise registry
+sends a `_kiro/mcp/status` snapshot for the session with `servers` empty and the
+dropped name in `accessModeFilteredServers`. (`unresolvedRegistryServers` is
+not read: no capture shows whether a server listed there is final or still
+resolving.) That is the host's own positive answer, so a required
+server listed there is decided on that frame, with no settle and no deadline,
+unless the same snapshot also has a status entry under that name, of any state
+or origin (then the usual states and timeout rule, so a foreign same-named
+server still times out).
+With registry mode on, the session starts as soon as every pending server is
+such a listed drop, recorded failed with the governed-drop reason; a server
+still connecting beside it keeps the full budget. With registry mode off, the
+start fails at once with `AcpRuntimeError` naming each listed server and the
+field that listed it, and how to declare registry mode; it never starts
+without the servers and never waits out the budget for them. The upstream wire
+limitation is tracked as kirodotdev/Kiro#12231.
 Errors name the required server and sanitize backend failure text. On failure,
 runtime death, or cancellation, no handle escapes. A failed fresh `session/new`
 is terminated through the bounded per-session teardown, freeing its resident state
@@ -2267,13 +2523,17 @@ initialization drain.
 
 A remote OAuth MCP server that KAS cannot reach without a token reports a `failed` status entry with `failedAuthorization: true`. Its `authorizationUrl` comes from a passive connect whose loopback callback listener is already closed, so Crew never renders it. A sign-in that can complete is started by the client: `_kiro/mcp/resetServer` with `{sessionId, serverName, startOAuth: true}` makes the engine keep its callback listener open for the whole connect attempt (the server's connect timeout, 60 s by default) and send the consent URL as a `_kiro/openExternalUrl` request. The engine sends that request only because `KAS_CLIENT_CAPABILITIES` declares `_meta.kiro.openExternalUrl`.
 
-The session handle tracks, from its own status snapshots, which servers need a sign-in: added on `failedAuthorization`, removed once the server connects, is disabled, or leaves the snapshot. A timed-out attempt reports `failedAuthorization: false` with a timeout error, so the server stays tracked. Offers rotate through the needed server names after the last accepted offer, wrapping so a repeatedly timed-out server cannot starve its peers. The tracker reads at most the report's `BUCKET_CAP` entries and skips a name over `NAME_CAP`.
+The session handle tracks, from its own status snapshots, which servers need a sign-in: added on `failedAuthorization`, removed once the server connects, is disabled, or leaves the snapshot. A timed-out attempt reports `failedAuthorization: false` with a timeout error, so the server stays tracked. The tracker reads at most the report's `BUCKET_CAP` entries and skips a name over `NAME_CAP`.
+
+Needing a sign-in never starts one. An unsigned KAS server's tools are invisible to the model (exposure needs the catalog of a `connected` entry, above), so the agent can never call one, and a tool call cannot be the trigger. The trigger is the user's own message: before each user turn, the dashboard runner hands what the person asked (`user_typed_message`: captured before `@prompt`/`$skill` expansion, with no cancelled-turn preamble, sub-agent failure text or app context, any of which could name a server the message did not; only a turn with `_directive_user_origin` from a person's dashboard/channel send or human app-chat hands text over; a generated app dispatch, an OpenAI-compatible request (its prompt is the flattened conversation), a Spec Builder decision answer (composed from the agent's title and options), or a Regenerate replay of a stored row, all `_message_is_typed=False`, a turn restored from the on-disk queue (`_turn_provenance_restored`), synthetic turn, self-wake, slash command, `/prompts get` re-entry, or turn with a `_turn_actor` hands nothing) to the provider's declared `LLMProvider.note_user_message` (a no-op by default; the direct kiro-cli client has no trigger). `AcpProvider.note_user_message` holds the text only until that provider's next `stream()` or `stream_command()`, which takes and clears it at entry before anything can fail; `stream_command()` discards it. For `stream()`, the text then travels as an argument into that one attempt's handle `prompt`/`_run_turn`, after any pending MCP re-injection, so it never outlives the attempt or reaches a later automated turn. After the pre-turn drain, `_run_turn` calls `want_mcp_sign_in_named` with that attempt's text to mark each tracked server it names as wanted. The handle holds the text for that one turn and matches it on each mid-turn status snapshot, each server at most once, so a server whose `failedAuthorization` status was still queued or arrives mid-turn is found; the turn's end clears it, so a later cron or sub-agent turn never matches an old message. A server is named by its configured name or an obvious alias (`mcp_server_aliases`: the words split at separators, the part after a `namespace:` prefix (a one-word part only when it repeats the namespace), a Kiro Power's name without its `power-` prefix with repeated words collapsed (`power-figma-figma` gives `figma`, but a multi-word name's last word alone, such as `search` from `power-aws-docs-search`, never counts), each without a trailing `mcp` or `server` word, repeated words collapsed, derived aliases under three characters or only `mcp`/`server` dropped, while the configured name itself always counts, so a server named `gh` or `mcp` can still be named), case-insensitive and as whole words only. So a chat that never names an unsigned server shows no Authorize card for it, at session start or later. An accepted start removes the server from the wanted set, so one ask starts at most one sign-in. A message that names a server whose sign-in this session already holds in the runtime asks for nothing, which keeps one live card per server. Once an attempt ends (signed in, timed out, or left by the user), only a later message naming the server offers it again; unrelated messages and status snapshots never do.
+
+A task that needs an unsigned server without naming it ("check my design files") gets no card: the user names the server to be offered its sign-in. A start the runtime refuses (its one slot is held) leaves the server wanted for the next offer point, in name order. The wanted set holds at most `BUCKET_CAP` names, and a refused name is logged. Settings > MCP sign-in does not reach KAS yet: it runs a dedicated kiro-cli mint (`connections/mint.py`) whose grant lands in kiro-cli's own OAuth cache, while a KAS engine keeps its grants in its process memory or, with `agent.kas_persist_mcp_sign_in` on, in the `kas/mcp-grants` vault below, and nothing carries one to the other. On KAS the chat card, offered when a message names the server, is therefore the only sign-in path, and its grant lasts as long as that chat's KAS process unless persistence is on. On kiro-cli, `begin_mcp_sign_in` refuses every start (the host opens no external URLs) and the engine sends its own `_kiro.dev/mcp/oauth_request` frames, so none of this changes it.
 
 A sign-in is offered only where a turn is reading the queue, because the consent URL comes back on that queue: at turn start, after the pre-turn stale drain, and mid-turn when the dispatch loop reads a status snapshot. Session start (the managed-readiness barrier and the init drain) reads status without offering: a start that fails there is torn down, and a link it started would land between turns. The pre-turn drain reads every between-turns status snapshot before dropping it, so a server that connected while no turn was reading leaves the set and the turn-start offer never resets a connected server (a reset with `startOAuth` invalidates its credentials). The pre-turn drain keeps an owned `_kiro.dev/mcp/oauth_request` frame only while the runtime holds the sign-in slot for that session and `serverName`; otherwise it drops the stale link.
 
 `_kiro/openExternalUrl` names neither the session nor the server, so the runtime runs at most one sign-in per process (`AcpRuntime.begin_mcp_sign_in`), gated on `ACP_BACKENDS_OPEN_EXTERNAL_URL` and refused while a credential re-attempt (below) is unanswered. The slot is held until the reset is answered, even after its session unregisters, so a departed session's late link is refused rather than handed to a newer sign-in; the slot's own timeout sits past the engine's 600 s connect ceiling. The URL is put on the owning session's queue as an ordinary `_kiro.dev/mcp/oauth_request` frame and answered `{success: true}`; it therefore takes the same URL checks and the same Authorize banner as the kiro-cli engine's own request. It is refused with a JSON-RPC error when no sign-in is in flight, when the owning session is gone, or when the URL is not http(s); the engine raises on that error, so the attempt ends at once instead of waiting for a callback no user was shown. By default `secretStorage` is not declared, so the engine keeps the resulting grant in its own memory: Crew stores no MCP token, and a new KAS process needs a new sign-in.
 
-With `agent.kas_persist_mcp_sign_in` on, the spawn declares `_meta.kiro.secretStorage` on a copy of `KAS_CLIENT_CAPABILITIES` (`runtime_spawn_launch._with_mcp_sign_in_storage`, only for a harness that `opens_external_urls`) and holds a per-process `kas_secret_storage.SecretStorageServer` on the runtime. The engine then sends `_kiro/secret/get {key}`, `_kiro/secret/store {key, value}` and `_kiro/secret/delete {key}`, which name no session; the reader loop answers them off-loop only on a process whose handshake declared the capability, and `-32601` otherwise. Only keys `kiro.mcp.<sha256 hex>.(client|tokens|verifier|discovery)` and values up to 64 KiB are accepted; anything else gets a JSON-RPC error. `client` and `tokens` persist in a dedicated vault at `<data_home>/kas/mcp-grants/.vault/` (own key; not the Secrets vault, so not listed there and not grantable to a cron; under the `kas` keystone leaf), each written with `set_with_revision`. `verifier` and `discovery` stay in the server's memory and die with the process. These frames are never handed to the raw-frame recorder, and no value is logged or put in an error message. Concurrent sessions share one grant; each write is atomic under the vault's cross-process lock and the last writer wins. A delete removes only the entry revision this process last read or wrote (`delete_if_revision`), so a process whose refresh fails cannot erase a grant another process stored since; a key the process never read or wrote is deleted outright.
+`agent.kas_persist_mcp_sign_in` is on by default (owner decision: `docs/decisions/2026-11-03-kas-sign-ins-stay-stored-when-the-setting-is-off.md`). The loader keeps a present key only as a real `true`, and `kas_secret_storage.persistence_enabled` reads it fail-closed: a load that raised, an unreadable `config.json` or `config.local.json`, or a degraded `agent` section (or whole config) is off, because those builds carry the field default rather than the owner's value. A stored `false` from before the change is auto-adopted once (`superseded_defaults`). The vault is gateway-wide, the same scope as the `kiro` backend's host-wide sign-in cache and Shared Crew's access model; a governance ceiling does not gate it, an accepted scope limit recorded in the decision. With it on, the spawn declares `_meta.kiro.secretStorage` on a copy of `KAS_CLIENT_CAPABILITIES` (`runtime_spawn_launch._with_mcp_sign_in_storage`, only for a harness that `opens_external_urls`) and holds a per-process `kas_secret_storage.SecretStorageServer` on the runtime. The engine then sends `_kiro/secret/get {key}`, `_kiro/secret/store {key, value}` and `_kiro/secret/delete {key}`, which name no session; the reader loop answers them off-loop only on a process whose handshake declared the capability, and `-32601` otherwise. Only keys `kiro.mcp.<sha256 hex>.(client|tokens|verifier|discovery)` and values up to 64 KiB are accepted; anything else gets a JSON-RPC error. `client` and `tokens` persist in a dedicated vault at `<data_home>/kas/mcp-grants/.vault/` (own key; not the Secrets vault, so not listed there and not grantable to a cron; under the `kas` keystone leaf), each written with `set_with_revision`. `verifier` and `discovery` stay in the server's memory and die with the process. These frames are never handed to the raw-frame recorder, and no value is logged or put in an error message. Concurrent sessions share one grant; each write is atomic under the vault's cross-process lock and the last writer wins. A delete removes only the entry revision this process last read or wrote (`delete_if_revision`), so a process whose refresh fails cannot erase a grant another process stored since; a key the process never read or wrote is deleted outright.
 
 KAS sends no `_kiro.dev/mcp/server_initialized` frame when a sign-in completes; the server's next status entry reports `connected`, and status snapshots are classified `skip`. The tracker therefore records a tracked server that connects as a completed sign-in, and the dispatch loop yields one `EVENT_MCP_SERVER_INITIALIZED` (`runtime_global: false`) for each such server right after it reads a status snapshot, clearing the server's banner dedupe as the frame-driven branch does. A completion read by the session-start or pre-turn drain is yielded with the next turn's first frame. Only a server that was being tracked for a sign-in qualifies; an ordinary connected server yields nothing. The dashboard handles the event as it handles the engine's own frame: the Authorize banner is marked completed and its dead consent URL is withdrawn.
 
@@ -2300,7 +2560,8 @@ stdout while no request waits. Design record:
   `ensure_ready`, `_initialize_session`, `_wait_for_response`,
   `_drain_notifications`, `wait_for_compaction`,
   `_drain_post_compaction_metadata`, `_read_steer_answers` and `_prompt_loop`
-  in a stdout claim, and
+  in a stdout claim, binds a `_read_message` that holds a pending turn's frames
+  for it (below), and
   makes `_kill_process` and `_reset_state` drop the reader first. The first
   call runs inside the first `ensure_ready`, so only the `_initialize_session`
   claim covers that handshake; the `ensure_ready` claim stops the reader when a
@@ -2357,11 +2618,23 @@ stdout while no request waits. Design record:
   or `plan`, ends the reader: it records that frame as the turn's start and
   calls `on_agent_turn(client)`. A frame that only reports state
   (`usage_update`, `session_info_update`) starts nothing. The hand-off stays
-  pending while the start frame is still in `_buffer`, so whichever reader
-  takes it ends the hand-off. A request wait files a start `session/update` in
-  `_mcp_notifications`, as it files every agent frame it reads, and the
-  restarted reader hands off the next activity frame; a start request (a
-  permission request) goes back to `_buffer`, and the hand-off stands.
+  pending while the start frame is still in `_buffer`, and a turn that takes it
+  ends the hand-off by reading it as its own.
+- **Other readers keep the turn's frames.** A wrapped reader other than a turn
+  (a request wait, `wait_for_compaction`, `_drain_post_compaction_metadata`,
+  or any other method named above) that claims stdout while a hand-off is
+  pending holds each frame of the kind that starts a turn, the start frame
+  included, instead of handling it. When that reader returns, the held frames
+  go back to the front of `_buffer` in arrival order, so the turn still starts
+  on its first frame and the hand-off stands. A request from the agent is held
+  in the same list, so a permission request keeps its place among the chunks
+  around it, and so is the autonomous `usage_update` that closes the turn, so
+  the turn still ends on it; a response is never held. Every other frame gets that reader's own handling: a request wait
+  still files a `usage_update` or `session_info_update` in
+  `_mcp_notifications`. A frame that would not fit in `_buffer` beside the held
+  ones gets that handling too, so putting them back pushes none out. A kill or
+  reset drops what is held. `_agent_turn_pending()` reads False while the
+  frames are held, so `stream_unsolicited()` does not read beside that reader.
 - **Reading the turn.** `stream_unsolicited()` reads the pending turn through
   `_dispatch_events` under request id `-1` and sends nothing. After the turn's
   first activity frame, the bound `_prompt_loop` ends it on the `usage_update`
@@ -2401,8 +2674,15 @@ stdout while no request waits. Design record:
   a prompt inside an open `stream_unsolicited()` loop: the prompt waits for that
   stream to close, so the two wait on each other.
 
-No production caller registers `on_agent_turn`; until one does, the reader
-never starts.
+The one production caller is the dashboard chat: each turn registers
+`on_agent_turn` through `AcpProvider.watch_agent_turns` once it holds its session,
+while `agent.agent_started_turns` is on, and the callback starts a
+`_run_chat(_agent_started=True)` turn that reads the pending turn through
+`AcpProvider.stream_unsolicited` (`claude-code-provider.md`, "A turn Claude Code
+starts on its own"). `watch_agent_turns` registers nothing on a session that is not
+a direct `AcpClient` on a backend in `ACP_BACKENDS_AGENT_STARTED_TURNS`. A session
+no dashboard chat turn runs (the messaging driver's channel sessions, a cron job's
+own session, a sub-agent) leaves `on_agent_turn` unset, so its reader never starts.
 
 ## Key APIs
 
@@ -2453,11 +2733,15 @@ When kiro-cli needs OAuth authentication for an MCP server, `AcpClient` surfaces
 2. `_kiro.dev/mcp/server_initialized` — flips the banner to authenticated state. Clears the per-server dedupe entry so a future token expiry can re-prompt.
 3. `_kiro.dev/mcp/server_init_failure` — flips the banner to failed state with the error string. Also clears dedupe so a retry surfaces a fresh banner.
 
-**Dedupe**: Per-server dedupe via `_oauth_emitted_servers: set[str]` prevents kiro-cli's per-probe retries from spamming the user. Works across both buffered (init drain) and live (mid-session) paths. Cleared on new session.
+**Dedupe**: Per-server dedupe via `_oauth_emitted_servers: set[str]` prevents kiro-cli's per-probe retries from spamming the user. Works across both buffered (init drain) and live (mid-session) paths. Cleared on new session, and cleared for a server by its `mcp_server_init_failure`, so it does not hold across turns: kiro-cli retries a signed-out server's sign-in on each turn.
+
+**Rejected-banner dedupe** (`dashboard/mcp_banner_dedupe.py`): a rejected-URL banner (unsafe scheme, or a URL the credential gate refuses) is posted once per server per sign-in state in a chat, not on every user turn and auto-nudge cycle. `_emit_mcp_oauth_request` skips one whose text and error match the last rejected banner shown for that server in the same chat, in the same ACP session and the same sign-in round. It is shown again when the rejection changes, the ACP session changes (a new chat), the server signs in (a mid-turn event, or the session MCP report listing it as connected when the report is published) or gets an Authorize banner in between, or the user starts that server's sign-in from the MCP Servers page or a Connections card (`POST /api/connections/mint` bumps a process-wide round for the name and its kiro-safe alias). A gateway restart shows it once more: the record lives in memory only. No dedupe applies without a session id or to a name redaction rewrote. The per-chat record holds at most 64 servers and the round table 256 names, oldest evicted first, and keeps only digests of the session id and the banner text. Retry rounds come from one growing counter, so an evicted name never reads as an older round. Authorize banners are never suppressed, because each one carries a fresh link. The MCP Servers page's "Sign-in required" status is not affected.
 
 **Card-owned requests**: a request for a server that a rendered Connections card owns (`_connections_managed_mcp_names`) is tagged `card_owned` on both paths, the init drain and the mid-session `_on_mcp_oauth_request`. The tag rides through every later state of the banner (completed, failed, superseded, expired), and the chat hides tagged banners while `connections_ui` is on, because the card shows the same Authorize action. The KAS sign-in offer re-requests every unauthorized server at each turn start, so an untagged mid-session request would repeat the prompt on every turn of every session.
 
 **URL validation**: `_is_safe_oauth_url()` rejects non-http(s) schemes before dedupe — an unsafe URL doesn't consume the dedupe slot.
+
+**Google offline access**: each place a consent URL is read off the wire (`_drain_notifications()`'s capture, the `mcp_oauth_request` arm of `_dispatch_events()`, and `session_handle_mcp._accept_oauth_request`, which also receives a KAS `_kiro/openExternalUrl` link as its queued `oauth_request` frame) first passes it through `acp/oauth_offline.py:with_google_offline_access`. That sets `access_type=offline` and `prompt=consent` on a URL whose scheme is `https`, netloc exactly `accounts.google.com` and path exactly `/o/oauth2/v2/auth`, replacing any existing value and keeping every other query segment byte for byte; any other URL is returned unchanged. Neither engine sends these parameters, and without them Google issues no refresh token. See `connections.md`, *Pre-registered OAuth clients*.
 
 **Persistence**: Role-aware redaction (`_redact_meta_for_role`) preserves `oauth_url` for `mcp_oauth` messages so the Authorize link survives history rehydrate, while still scrubbing unsafe schemes on the read path.
 
@@ -2471,6 +2755,49 @@ both `AcpClient` and `AcpSessionProvider` (called after `ensure_ready()`).
 `cancel_session()` sends a `session/cancel` JSON-RPC notification to the agent's stdin. It is fire-and-forget — no response ID is awaited.
 
 After the notification it answers every permission request still open (`_permission_options`) with the `cancelled` outcome, as ACP requires. goose and pi do not acknowledge a cancel while a permission request is unanswered, so without this a Stop from a surface that had not rejected the open approval first waited out the ack budget and hard-killed the harness. Each answered request gets one SEL record (`tool_name=approval_cancel`, `outcome=rejected_on_cancel`) before the answers go out: one off-loop hop for all of them, bounded by `_SEL_AUDIT_TIMEOUT_SECONDS`. The answers are ordinary response frames through `_send_response`, so each carries the response-write no-progress bound. Both costs fall inside the cancel grace window. A cancelled pi gate dialog is recorded as denied, the same as a rejection.
+
+### A session the harness disposed (`acp/disposed_session.py`)
+
+A harness in `ACP_BACKENDS_RELOAD_DISPOSED_SESSION` can stop serving one session while its process keeps running, and then answers every `session/prompt` on that id with the same error. The Strands CLI does this when a cancel does not stop its Python worker within 3s: it kills the worker and answers `-32603` with `data.details` "The Python agent did not stop after cancellation. Reload it to continue." (`test/fixtures/acp_frames/strands/cancel-dispose-live.jsonl`). A second process loads the saved session and serves the next prompt (`cancel-dispose-reload-live.jsonl`).
+
+For a member, `_prompt_loop` asks the module about every prompt error and every approval request, so all three prompt APIs behave the same. A harness outside the set never reaches it:
+
+| Read in the turn | What the client does |
+|---|---|
+| A prompt error whose `data.details` is one of the member's disposal texts (`DISPOSED_SESSION_DETAILS`), on a turn Crew cancelled | Ends the turn as `cancelled`, marks the client stalled (`_stdin_stalled`) and keeps this session as `_resume_session_id` |
+| The same error on a turn nobody cancelled | Marks the client the same way and raises a non-transient `AcpError` with a plain message: send the message again |
+| A `session/request_permission` read after `cancel_session` | Answers `cancelled` at once, with the same SEL record as the cancel's own answers (`cause=asked_after_cancel`), and never puts it to a person. The CLI holds its turn open on that answer, so the cancel could not finish while a card waited |
+
+The next `ensure_ready` replaces it through the stalled-child path it already has: it kills the process (force), refuses to spawn beside one it could not confirm dead, and resets state, which clears the flag. The start path itself is unchanged. `_resume_session_id` survives the reset, so the spawn that follows sends `session/load` for the same id and the conversation comes back before the next prompt goes out. Any other error text on the same code stays an ordinary turn failure.
+
+An open approval is a different case, and the client does not handle it. A cancel that finds a Strands approval OPEN ends cleanly as `cancelled`. But Strands CLI 0.2.3 leaves the agent in its interrupt state and saves it, so a bare CLI then fails every later prompt with "must resume from interrupt", and so does a reload (`cancel-approval-open-live.jsonl`). That text is not a disposal, because a fresh process loads the same saved state. Crew's gate module clears it instead: before any prompt that is not itself an interrupt answer, it resumes each open interrupt with a deny (`agent_sdk/gate_extensions/strands/kiro_crew_strands_gate.py`, `_gated_stream_async`).
+
+### An MCP change applied by relaunch (`acp/relaunch_reload.py`)
+
+A harness in `ACP_BACKENDS_MCP_RELAUNCH_RELOAD` reads its MCP servers once, at launch, and keeps its own session records. The Strands CLI is one: its servers come from the `--mcp-config` file the adapter writes at each spawn, and project mode refuses a non-empty `session/new` array. So a running process cannot take a new server. A second process launched with a changed file can: it `session/load`s the same id, replays the saved conversation, answers `{}`, and offers the new set on the next turn (`test/fixtures/acp_frames/strands/mcp-relaunch-add-live.jsonl`, an added server; `mcp-relaunch-remove-live.jsonl`, a withdrawn one).
+
+| Step | Where | What happens |
+|---|---|---|
+| Decide | dashboard MCP writer (`mcp_hot_reload.live_sessions_apply_mcp_live`) | `AcpProvider.mcp_config_relaunch_reload` is True for a direct `AcpClient` on a member, so the all-sessions reset is skipped |
+| Mark | `mark_reinjecting_providers` -> `AcpProvider.mark_mcp_config_changed` | sets `_mcp_relaunch_pending` on the client; a client outside the set keeps no mark |
+| Clear | the Strands adapter's `resolve_spawn` | drops the mark right before `_prepare_session_mcp` reads the spec: this launch already writes the new set. A mark set after that read survives |
+| Apply | `providers/acp_turns._ready_confirmed_session`, after `ensure_ready` and before `confirm_member_projection` | `apply_pending_mcp_relaunch`: skipped while `_turn_lock` is held (never mid-turn) or with no live process holding a session. Otherwise the mark is consumed and `relaunch_and_reload` runs |
+| Relaunch | `relaunch_and_reload` | the disposed-session path: marks the client stalled, keeps the session id as `_resume_session_id`, and calls `ensure_ready`, which kills the process, spawns a new one with a fresh `--mcp-config` and sends `session/load`. Once the same id loads, the stub token is re-claimed for the new process (`reclaim`), as the KAS re-injection does |
+
+A replacement that opened a different session (`ensure_ready` falls back to `session/new` when a load fails) is not this conversation, so it counts as a failure. A spawn refusal that names its own remedy (an `AcpError` such as a wrong CLI version or a missing vault secret) reaches the person unchanged, and a dead process stays transient. A replacement that opened another session, or a failure that is not an `AcpError`, refuses the turn with a plain message (`RELAUNCH_FAILED_TEXT`). Either way the load stays owed (`_relaunch_owed_session`): the client is stalled with the session id as its resume id and as `_session_id` (so the shutdown sweep never saves a fallback session's id as the chat's), and every later turn is refused until a replacement serves that id, so no turn is prompted into another conversation. A chat whose saved session is gone keeps refusing, and the message tells the person to start a new chat. The relaunch keeps the chat's model (`session._model` reaches `--model` again). `relaunch_and_reload` is the shared step for any launch-time setting a live chat must take.
+
+### A model or effort the harness takes at launch (`acp/launch_tuning.py`)
+
+A harness in `ACP_BACKENDS_MODEL_AT_LAUNCH` reads its model from its argv and offers no ACP request that changes it; one in `ACP_BACKENDS_EFFORT_AT_LAUNCH` does the same for effort. Strands is both: `--model` and `--effort` are read when the CLI starts. So `set_model` and the provider's effort verbs move an idle session by replacing its process, the way Strands' own TUI restarts its worker:
+
+| Step | What happens |
+|---|---|
+| Refuse | No session yet, a turn in flight, or (for a model) another harness's id. For Strands a `<provider>/<model>` id with a provider the CLI knows is its own, even when pi or opencode lists the same spelling; any other id another catalog claims is refused (`strands_model_is_foreign`). That refusal is `AcpModelUnavailable`, so a picker answers 4xx and a fallback walk skips the entry. |
+| Record | The new `_model` / `_launch_effort`, which the harness's launch reads. |
+| Relaunch | `relaunch_and_reload` (above) runs now: the replacement reads the new values and `session/load`s the same id, so the harness replays its own history. |
+| Undo | A relaunch that raised, or that opened another session, restores the prior values; the helper leaves the load owed, so the next start reopens the chat on them. |
+
+The switch holds the client's `_launch_tuning_lock` across the relaunch. Every `ensure_ready` a turn or command runs holds it too (`switch_barrier`: the provider's `_ready_confirmed_session`, and the client's send and command entries, which take it after marking the turn started), so no turn starts a process inside a switch, and a switch that wakes after a turn started refuses. Only a member of the launch-time sets takes it. An unchanged value starts nothing. The provider passes a model change and its effort in one relaunch, and its factory carries a saved level for any model id, pinned or not, so a cold start launches on it. A live change, the factory and the launch argv judge the level by one vocabulary, the CLI's own (`agent_sdk.backends.launch_effort_supported` over `EFFORT_LEVELS_AT_LAUNCH_BY_BACKEND`: Crew's five plus `auto`, `off` and `minimal` for Strands), so a level the switch took is never dropped on the next start. Only a level picked for the session reaches the argv: an inherited default (`agent.reasoning_effort`, a crew or role effort) is never passed, so a project that refuses a launch effort still starts. Clearing the override relaunches on the CLI's own default, as a cold start with no slot level does. Such a harness advertises no model list, so `GET /api/models` offers `auto` and the model its own settings name (`settings_default_model`: `agent.strands_provider` / `agent.strands_model`), never kiro-cli's catalog.
 
 ### stopReason Parsing
 
@@ -2553,13 +2880,13 @@ While a turn is dispatching, both ACP transports run a watchdog over a turn gone
 
 watchdogs are **verdict-driven, not timeout-driven**, which avoids the failure mode of a pure timeout death detector: killing healthy-but-slow work (a silent 30-min redirected build `long-build > build.log 2>&1` at exactly the blanket window; healthy long non-streamed reasoning at 90s, where the destructive `session/cancel` probe would be acked by the LIVE turn and surfaced as "Turn cancelled by user").
 
-Once a turn is idle past `watchdog.check_after_secs` (60s), the per-session `LivenessOracle` (`acp/liveness.py`) returns a verdict with evidence: **WORKING** (a live cmdline-matched shell child, a kirocrew-core `wait` call inside its declared duration (at most `WAIT_TOOL_MAX_SECS`, the tool's own 1800s maximum) + slack, selected by the provenance-verified adapter identity (`ToolCallState.is_trusted_wait`) and never by the model-authored title, moving CPU/IO counters, backend socket bytes flowing) is never acted on at any elapsed time, with one exception: an opaque MCP tool's `mcp subtree active` reading (any CPU/IO movement in the runtime's tree, which a warm sibling MCP server also produces, so it cannot tell a live call from one whose result frame was lost) is bounded by `watchdog.tool_stall_hard_cap_secs` on the session's own frame clock and then gets the same session-scoped tool-stall cancel as an UNKNOWN past the cap; its metric point carries `window=working_cap`; the kirocrew-core `spawn_sub_agents`, which pings `/api/session-keepalive` for its whole run (matched by `ToolCallState.is_trusted_keepalive_tool` on the adapter identity) keeps the unbounded deferral (logged at most once per 10 min — at INFO below the escalation mark, which is the lower of 30 min and a quarter of this turn's deadline, and at WARNING past it so a deferral able to hold the turn to its ceiling is visible at the default `agent.log_level`); **DEAD** (tracked shell child exited without a result frame past a 15s grace; model-wait with flat counters and NO established backend socket — the done-but-lost-frame wedge signature) acts immediately, so recovery lands seconds after actual death instead of at a blanket window; **STUCK_INPUT** (matched subtree flat across samples with a process blocked reading a tty/stdin pipe) acts immediately with a cause the recovery nudge names; **UNKNOWN** is the only timeout-governed class — stale probe at `watchdog.stale_window_secs` (600s; extended to `watchdog.model_silent_probe_secs` = 1800s when the evidence is `established_flat`, i.e. probably a non-streamed server-side think), tool cancel at `watchdog.tool_stall_suspect_secs` (5400s / 90 min — clears every shipped budget a single tool call can legitimately spend silent, such as the task runner's 90-minute test command), hard-capped at `watchdog.tool_stall_hard_cap_secs` (7200s / 2h, UNKNOWN and opaque-MCP WORKING; also bounds the per-agent overrides).
+Once a turn is idle past `watchdog.check_after_secs` (60s), the per-session `LivenessOracle` (`acp/liveness.py`) returns a verdict with evidence: **WORKING** (a live cmdline-matched shell child, a kirocrew-core `wait` call inside its declared duration (at most `WAIT_TOOL_MAX_SECS`, the tool's own 1800s maximum) + slack, selected by the provenance-verified adapter identity (`ToolCallState.is_trusted_wait`) and never by the model-authored title, moving CPU/IO counters, backend socket bytes flowing) is never acted on at any elapsed time, with one exception: an opaque MCP tool's `mcp subtree active` reading (CPU/IO movement in the tool's own MCP server subtree when that server can be found, else anywhere in the runtime's tree, which the engine itself and a warm sibling MCP server also move, so it cannot tell a live call from one whose result frame was lost) is bounded by `watchdog.tool_stall_hard_cap_secs` on the session's own frame clock and then gets the same session-scoped tool-stall cancel as an UNKNOWN past the cap; its metric point carries `window=working_cap`; the kirocrew-core `spawn_sub_agents`, which pings `/api/session-keepalive` for its whole run (matched by `ToolCallState.is_trusted_keepalive_tool` on the adapter identity) keeps the unbounded deferral (logged at most once per 10 min — at INFO below the escalation mark, which is the lower of 30 min and a quarter of this turn's deadline, and at WARNING past it so a deferral able to hold the turn to its ceiling is visible at the default `agent.log_level`); **DEAD** (tracked shell child exited without a result frame past a 15s grace; model-wait with flat counters and NO established backend socket — the done-but-lost-frame wedge signature) acts immediately, so recovery lands seconds after actual death instead of at a blanket window; **STUCK_INPUT** (matched subtree flat across samples with a process blocked reading a tty/stdin pipe) acts immediately with a cause the recovery nudge names; **UNKNOWN** is the only timeout-governed class — stale probe at `watchdog.stale_window_secs` (600s; extended to `watchdog.model_silent_probe_secs` = 1800s when the evidence is `established_flat`, i.e. probably a non-streamed server-side think), tool cancel at `watchdog.tool_stall_suspect_secs` (5400s / 90 min — clears every shipped budget a single tool call can legitimately spend silent, such as the task runner's 90-minute test command), hard-capped at `watchdog.tool_stall_hard_cap_secs` (7200s / 2h, UNKNOWN and opaque-MCP WORKING; also bounds the per-agent overrides).
 
 The oracle's evidence is Linux `/proc` where it exists; on macOS (no procfs) it selects an in-process **libproc backend** once per oracle instance (`select_darwin_backend`, injectable for tests): `proc_listchildpids` enumerates the runtime's descendants, `PROC_PIDTBSDINFO` supplies ppid / zombie state / start time, `proc_pidpath` and `sysctl KERN_PROCARGS2` supply the executable and argv for the same cmdline match the `/proc` walk performs, and `PROC_PIDTASKINFO` supplies per-process CPU time summed over the subtree (evidence labelled `darwin cpu-only`, since IO bytes are not readable there). That counter is in Mach ticks, scaled to nanoseconds by `hw.tbfrequency` (the two differ on Apple Silicon; the sysctl is read rather than `mach_timebase_info`, which Rosetta 2 answers 1/1 for an x86_64 process), and a growing sum counts as movement only from one 10 ms Linux tick per sample (`_DARWIN_CPU_FLOOR_NANOS`), so the idle timers of the runtime's MCP servers read flat, as `/proc`'s whole ticks read them. So a shell command is WORKING/DEAD/`shell_child_absent` on macOS by the same rules as Linux, and an active MCP subtree reads WORKING instead of running out the suspect window; evidence only `/proc` carries — the `established_flat` socket tag, the `blocked_read_fd` STUCK_INPUT check, `wchan` — is never invented on macOS: a flat model wait is UNKNOWN tagged `platform_limited` (never `DEAD`), which the dispatch loop gives the same `model_silent_probe_secs` window as `established_flat`, since without socket evidence a non-streamed think and a wedge are one state, and a live tracked shell child whose subtree is flat is UNKNOWN tagged `platform_limited` — bounded by the standard no-progress budget — rather than WORKING, because without stdin-block evidence a stuck child and a quiet one are one state and "alive" must not buy an indefinite deferral (see "Platform evidence matrix" below).
 
 Dispatch stamps on darwin are wall-clock (`time.time()`), the clock libproc dates processes on, and a wall clock can step: a backward NTP or VM-resume correction between the dispatch stamp and the runtime's fork dates a live child before its own dispatch. The stamp is therefore paired with a steady one (`steady_now()`, darwin `CLOCK_MONOTONIC`, which counts sleep), and when wall elapsed and steady elapsed disagree by more than the attribution tolerance the oracle declines to attribute by start time at all — every row reads as possibly this tool's, so a matched child stays WORKING and no `shell_child_absent` claim is made. A missing steady stamp gets the same fail-open answer.
 
-**Windows has no tree backend yet**: the oracle there reads only the runtime's own CPU time (`proc_cpu_nanos_for_pid` via `GetProcessTimes`, root pid only), so every shell and MCP tool call stays UNKNOWN — tagged `platform_limited` so the degradation is visible in the evidence and the metric bucket — and the 90-minute suspect window is the effective tool timeout on that platform (narrowed to the ordinary silence window when the command was classified prompt-shaped, see "Interactive-command policy" below) — a genuinely hung non-interactive tool holds its slot for that long. The trade is accepted rather than sized around: a Toolhelp-based descendant walk is the follow-up that closes it, the same way the darwin backend did for macOS.
+**On Windows the shell-tool check reads a Toolhelp tree, only to prove life** (`WinProcessBackend`, chosen once per oracle on first use when `platform_compat.IS_WINDOWS` and `proc_root` does not exist, `select_windows_backend`): one Toolhelp32 snapshot per check, walked by `platform_compat.attributed_descendants`, so a child created before the parent it is listed under (a recycled pid's stray) is not counted and nothing below it is walked, and `GetProcessTimes` CPU summed over the runtime's live descendants created since the dispatch on the wall clock (`wall_now() - (now() - dispatch_ts)`, widened by the attribution tolerance and the banked park). When that sum grows by at least 10 ms between samples the verdict is WORKING (evidence `windows cpu-only: tree cpu moved`). Every other reading (a flat or shrinking sum, no process started since the dispatch, the baseline sample, an unreadable tree or counter, no dispatch stamp) is UNKNOWN tagged `platform_limited`, the same tag as before the backend, so the interactive narrowing and the `waiting_input` status still apply to a prompt-shaped command and the 90-minute suspect window stays the bound otherwise. A snapshot carries image names but no argv, so no process can be tied to the command (a chain such as `git pull && cargo build`, a shell working in-process, or another session's same-image command on a shared runtime look alike): on Windows the shell check never returns DEAD and never `shell_child_absent`, and telling a finished command from a silent one stays out of scope until the backend can read command lines. A backward wall-clock step or another session's new process can admit a process that is not this tool's and read WORKING, so the dispatch loop caps that reading at `tool_stall_hard_cap_secs` (`_working_tool_bound_reached` matches the `windows cpu-only: tree cpu moved` prefix as it matches the opaque-MCP one); no reading can end a turn before that cap. MCP tool calls and model waits keep the no-tree reading there: root-pid CPU only, UNKNOWN tagged `platform_limited`, with the 90-minute suspect window as their effective timeout. The backend only reads (a snapshot, query-limited handles); nothing is opened with terminate rights.
 
 Four refinements keep the build-scale tool forbearance from sheltering an **LLM-shaped** stall (a model turn riding inside a tool, e.g. kiro-cli `use_subagent`, whose longest legitimate silent gap is minutes) or an **already-finished** one: (1) the oracle tags an UNKNOWN tool verdict with `established_flat` when the subtree's counters are genuinely flat (a real two-sample delta, not the baseline tick) AND the **runtime process itself** holds an established backend socket — deliberately narrower than the model-wait branch's whole-tree socket scan, so an MCP server's own remote call is not read as a model wait (refinement (4) handles that shape separately) — and the tool branch then uses `min(model_silent_probe_secs, tool_stall_suspect_secs)` as the effective suspect window; plain flat-subtree evidence keeps the full window, and under the OS sandbox (pid = launcher parent, no sockets on it) the tag never fires, failing toward the long build-safe window.
 
@@ -2567,7 +2894,7 @@ Four refinements keep the build-scale tool forbearance from sheltering an **LLM-
 
 (3) An agent definition can override the windows per agent (`agents.<name>.watchdog_tool_stall_suspect_secs` / `watchdog_tool_stall_hard_cap_secs`, 0 = inherit the global — the same empty-inherits convention as the agent's `model`), applied in the `WatchdogSettings` snapshot at handle construction (`_load_watchdog_settings(crew_agent)` — a direct lookup on the CANONICAL crew name, resolved by the surface that owns the identity: the dashboard passes the slot member explicitly through `get_or_create(crew_agent=...)`, and crew-name-passing surfaces (Slack threads, cron, spawned agents) are covered by the provider factory's crew-namespace membership fallback; the identity is plumbed provider → runtime → handle, and a warm-pool claim rebinds the live handle via `rebind_watchdog()` so it travels with the SESSION, not the pool key — a name that is not a crew key simply inherits the global) so a pure-LLM agent like a PR reviewer can declare minutes-scale windows without touching the global build budget; an override is bounded by the same load-time ceiling clamp as the global windows, so it cannot smuggle a window past the prompt timeout.
 
-(4) An opaque MCP tool whose subtree is genuinely flat while the in-flight tool's OWN MCP server holds an established TCP connection to a non-loopback peer is tagged `remote_flat` — the shape of a tool blocked on its own remote call, which with no client timeout holds the call until the build-scale window. "Own server" is the server the call names in its trusted `_meta.kiro.mcpServerName` (`ToolCallState.mcp_server_name`, empty and therefore never tagged when the identity is not provenance-verified), and only that server's process subtree is scanned, so another server's persistent connection (a keepalive, `mcp-remote`) or a shell tool's background tunnel elsewhere in the tree cannot tag a quiet tool of a different server. The server process is found from how the session launched it: the runtime hands the handle the agent spec and the final `mcpServers` array it already read for the session (`AcpSessionHandle.record_mcp_launches`, beside the unresolved-ref guard on both `create_session` and `load_session`, in memory, so no scheduling point), `session_handle.mcp_launch_roster` keeps each stdio server's `(command, *args)` from both sources (bounded where it is retained: the session report's `BUCKET_CAP` servers and `NAME_CAP` name length, `_LAUNCH_MAX_ARGS` arguments, `_LAUNCH_MAX_TOKEN` characters per string and `_LAUNCHES_PER_SERVER` launches per name, an entry past any bound refused whole and the refusals logged once per recording), and `liveness.launch_matches` recognizes a process whose argv is that launch exactly, the same program reached by another path, or an interpreter running it as a `#!` script, each with exactly the declared args. The topmost match below the runtime is the server (a launcher that starts a versioned copy of itself as its child matches twice, and the child sits in its subtree), and the oracle declines unless there is exactly ONE such match that fits no other declared server: a second copy is another session's or a subagent's server on a shared runtime, and which copy serves this call cannot be read from the tree. A launcher that re-executes under a different argv, a server the host mounted from a source the roster does not read, and a remote (`url`) server are never found, which keeps the full window. The handle declares the roster (`server_launches=AcpSessionHandle._remote_flat_launches`) only while `watchdog.remote_flat_probe_secs` is above 0, so with the key off the tag, its metric bucket and the window never appear; the roster is read at verdict time, so a resumed session's re-declared servers govern the next probe. The runtime pid is never a server and, when that pid holds no socket at all (the Linux namespace sandbox's launcher parent), neither are its direct children, so kiro-cli's own model connection never counts, and a loopback peer (Kiro Crew's gateway, which in-tree MCP servers such as `spawn_sub_agents` block on for their whole run) never counts either; on macOS the process view is the libproc backend's argv rows and the socket view is `proc_pidinfo(PROC_PIDLISTFDS)` + `proc_pidfdinfo(PROC_PIDFDSOCKETINFO)` (`darwin_established_tcp_count`, refused on any fill size other than the 792-byte `socket_fdinfo`), and Windows has no socket view so the tag never fires there. The tool branch then uses `min(watchdog.remote_flat_probe_secs, tool_stall_suspect_secs)` when the key is above 0. It is **off by default** (0) and 900s is the suggested opt-in value; turning it on by default is a separate decision, and ships as a new default value so the key keeps meaning the same number of seconds for an operator who already set it. That value is shorter than `model_silent_probe_secs` (1800s) on purpose: that window is sized for a documented shape, kiro-cli's own non-streamed extended-effort think, while a flat tool waiting on a remote peer has no such contract and is most often a call with no client timeout; a deployment whose MCP tools legitimately block longer (a long-poll API, a non-streaming model behind a third-party server) raises the key, and the recovery on expiry is the non-lethal continue-nudge, not a lost turn. The window is measured from the later of the last own frame and the last probe that read the tree as WORKING, so a slow stream that moves bytes between flat samples keeps the full window; the full suspect window still applies as an upper bound. Every idle window is bounded at load by the resolved prompt timeout (`resolve_prompt_timeout` — the one deadline every caller shares; 14400s default, following a raised `agent.chat_turn_timeout_secs`) minus 10% headroom for the cancel + ack grace, and an over-ceiling on-disk value is clamped with a warning: a window at or past the deadline makes the UNKNOWN class unreachable, because the turn's timeout fires first and the user gets the generic turn-limit card instead of the tool-stall recovery below. A window above the DASHBOARD ceiling (`agent.chat_turn_timeout_secs`) is reported but **not** clamped — the same handle serves callers that pass their own larger prompt timeout, and shrinking their windows would cancel live work. **Every watchdog action is non-lethal:** a stale probe's cancel-ack is reclassified in the turn-complete branch (`_stale_probe` + `stopReason==cancelled` → `STOP_REASON_STALE_RECOVER`; the flag is single-shot — consumed on reclassification and superseded by a genuine `cancel()`, so a user cancel arriving after a probe is never misattributed to auto-recovery) so the dashboard auto-recovers instead of logging a user cancellation — an oracle mistake costs a regeneration, never a session. A tool stall ends the turn with `STOP_REASON_TOOL_STALL` (`"error: tool stall"`, in the `error:` family so branch-less callers degrade to generic handling) carrying the tool title / redacted command / evidence on the terminal `AcpEvent`; `_turn_stop_recovery`'s (`chat_turn/stop_recovery.py`) dedicated branch queues a **continue-nudge** (`build_tool_stall_recovery_prompt` — check partial results, tail any `> file` redirect target, re-run non-interactively on STUCK_INPUT) instead of the legacy verbatim re-queue of the original user message (which restarted the whole task and re-ran the very command that stalled), charged against a separate `slot._tool_stall_retries` budget (3) so a stall never burns the pipe-death reconnect budget. The runtime is **shared** (multiple sessions multiplexed on one process), so recovery is always `session/cancel` for **this `sessionId` only** (bounded by `asyncio.wait_for(..., 5s)`); siblings keep running. `watchdog.*` config is snapshotted at handle construction (`WatchdogSettings`); the dispatch loop never reads config. The snapshot is **re-bound on a config reload**, so a live handle does not keep boot's windows until its turn ends: `SessionManager._rebind_live_watchdogs(cfg)` fires when a reload touches `watchdog.*`, `agent.chat_turn_timeout_secs`, or any `agents.<name>.watchdog_*` key, walks every registered session's provider (`_watchdog_handle_of` resolves both shapes — `AcpSessionProvider._handle` and `AcpProvider._client._handle`) and calls `handle.rebind_watchdog(crew, _load_watchdog_settings(crew, cfg=cfg))`. It re-runs the loader for the handle's OWN crew identity rather than copying raw seconds across, so the per-agent override overlay and the prompt-timeout ceiling clamp above are re-applied per handle — a raised `agent.chat_turn_timeout_secs` lifts the ceiling that was clamping a window, and a lowered one re-clamps it. The config is the one the watcher already loaded, so the fan-out touches no disk on the loop, and the dispatch loop reads the snapshot every tick, so the new windows govern the next check. A handle that raises is skipped and logged at DEBUG; the rest still rebind.
+(4) An opaque MCP tool whose subtree is genuinely flat while the in-flight tool's OWN MCP server holds an established TCP connection to a non-loopback peer is tagged `remote_flat` — the shape of a tool blocked on its own remote call, which with no client timeout holds the call until the build-scale window. "Own server" is the server the call names in its trusted `_meta.kiro.mcpServerName` (`ToolCallState.mcp_server_name`, empty and therefore never tagged when the identity is not provenance-verified), and only that server's process subtree is scanned, so another server's persistent connection (a keepalive, `mcp-remote`) or a shell tool's background tunnel elsewhere in the tree cannot tag a quiet tool of a different server. The server process is found from how the session launched it: the runtime hands the handle the agent spec and the final `mcpServers` array it already read for the session (`AcpSessionHandle.record_mcp_launches`, beside the unresolved-ref guard on both `create_session` and `load_session`, in memory, so no scheduling point), `session_handle.mcp_launch_roster` keeps each stdio server's `(command, *args)` from both sources (bounded where it is retained: the session report's `BUCKET_CAP` servers and `NAME_CAP` name length, `_LAUNCH_MAX_ARGS` arguments, `_LAUNCH_MAX_TOKEN` characters per string and `_LAUNCHES_PER_SERVER` launches per name, an entry past any bound refused whole and the refusals logged once per recording), and `liveness.launch_matches` recognizes a process whose argv is that launch exactly, the same program reached by another path, or an interpreter running it as a `#!` script, each with exactly the declared args. The topmost match below the runtime is the server (a launcher that starts a versioned copy of itself as its child matches twice, and the child sits in its subtree), and the oracle declines unless there is exactly ONE such match that fits no other declared server: a second copy is another session's or a subagent's server on a shared runtime, and which copy serves this call cannot be read from the tree. A launcher that re-executes under a different argv, a server the host mounted from a source the roster does not read, and a remote (`url`) server are never found, which keeps the full window. The handle declares the roster (`server_launches=AcpSessionHandle._remote_flat_launches`) only while `watchdog.remote_flat_probe_secs` is above 0, so with the key off the tag, its metric bucket and the window never appear; the roster is read at verdict time, so a resumed session's re-declared servers govern the next probe. The runtime pid is never a server and, when that pid holds no socket at all (the Linux namespace sandbox's launcher parent), neither are its direct children, so kiro-cli's own model connection never counts, and a loopback peer (Kiro Crew's gateway, which in-tree MCP servers such as `spawn_sub_agents` block on for their whole run) never counts either; on macOS the process view is the libproc backend's argv rows and the socket view is `proc_pidinfo(PROC_PIDLISTFDS)` + `proc_pidfdinfo(PROC_PIDFDSOCKETINFO)` (`darwin_established_tcp_count`, refused on any fill size other than the 792-byte `socket_fdinfo`), and Windows has no socket view so the tag never fires there. The tool branch then uses `min(watchdog.remote_flat_probe_secs, tool_stall_suspect_secs)` when the key is above 0. The same server lookup, with no `remote_flat_probe_secs` gate (`attribution_launches=AcpSessionHandle._mcp_attribution_launches`), also narrows the opaque-MCP movement sample: when the call's own server is found exactly once, only that server's subtree is sampled (evidence `mcp subtree active (own server pid N: ...)`), so a server blocked on a read reads flat and gets the UNKNOWN windows even while the engine moves. That matters on KAS, whose relay route puts kiro-cli and the Node engine in the runtime's tree above the servers: their own CPU/IO read as the tool working and held a hung call to `tool_stall_hard_cap_secs` whatever `tool_stall_suspect_secs` said (#29794). A server that cannot be found keeps the whole-tree sample. The `remote_flat` tag is **off by default** (0) and 900s is the suggested opt-in value; turning it on by default is a separate decision, and ships as a new default value so the key keeps meaning the same number of seconds for an operator who already set it. That value is shorter than `model_silent_probe_secs` (1800s) on purpose: that window is sized for a documented shape, kiro-cli's own non-streamed extended-effort think, while a flat tool waiting on a remote peer has no such contract and is most often a call with no client timeout; a deployment whose MCP tools legitimately block longer (a long-poll API, a non-streaming model behind a third-party server) raises the key, and the recovery on expiry is the non-lethal continue-nudge, not a lost turn. The window is measured from the later of the last own frame and the last probe that read the tree as WORKING, so a slow stream that moves bytes between flat samples keeps the full window; the full suspect window still applies as an upper bound. Every idle window is bounded at load by the resolved prompt timeout (`resolve_prompt_timeout` — the one deadline every caller shares; 14400s default, following a raised `agent.chat_turn_timeout_secs`) minus 10% headroom for the cancel + ack grace, and an over-ceiling on-disk value is clamped with a warning: a window at or past the deadline makes the UNKNOWN class unreachable, because the turn's timeout fires first and the user gets the generic turn-limit card instead of the tool-stall recovery below. A window above the DASHBOARD ceiling (`agent.chat_turn_timeout_secs`) is reported but **not** clamped — the same handle serves callers that pass their own larger prompt timeout, and shrinking their windows would cancel live work. **Every watchdog action is non-lethal:** a stale probe's cancel-ack is reclassified in the turn-complete branch (`_stale_probe` + `stopReason==cancelled` → `STOP_REASON_STALE_RECOVER`; the flag is single-shot — consumed on reclassification and superseded by a genuine `cancel()`, so a user cancel arriving after a probe is never misattributed to auto-recovery) so the dashboard auto-recovers instead of logging a user cancellation — an oracle mistake costs a regeneration, never a session. A tool stall ends the turn with `STOP_REASON_TOOL_STALL` (`"error: tool stall"`, in the `error:` family so branch-less callers degrade to generic handling) carrying the tool title / redacted command / evidence on the terminal `AcpEvent`; `_turn_stop_recovery`'s (`chat_turn/stop_recovery.py`) dedicated branch queues a **continue-nudge** (`build_tool_stall_recovery_prompt` — check partial results, tail any `> file` redirect target, re-run non-interactively on STUCK_INPUT) instead of the legacy verbatim re-queue of the original user message (which restarted the whole task and re-ran the very command that stalled), charged against a separate `slot._tool_stall_retries` budget (3) so a stall never burns the pipe-death reconnect budget. The runtime is **shared** (multiple sessions multiplexed on one process), so recovery is always `session/cancel` for **this `sessionId` only** (bounded by `asyncio.wait_for(..., 5s)`); siblings keep running. `watchdog.*` config is snapshotted at handle construction (`WatchdogSettings`); the dispatch loop never reads config. The snapshot is **re-bound on a config reload**, so a live handle does not keep boot's windows until its turn ends: `SessionManager._rebind_live_watchdogs(cfg)` fires when a reload touches `watchdog.*`, `agent.chat_turn_timeout_secs`, or any `agents.<name>.watchdog_*` key, walks every registered session's provider (`_watchdog_handle_of` resolves both shapes — `AcpSessionProvider._handle` and `AcpProvider._client._handle`) and calls `handle.rebind_watchdog(crew, _load_watchdog_settings(crew, cfg=cfg))`. It re-runs the loader for the handle's OWN crew identity rather than copying raw seconds across, so the per-agent override overlay and the prompt-timeout ceiling clamp above are re-applied per handle — a raised `agent.chat_turn_timeout_secs` lifts the ceiling that was clamping a window, and a lowered one re-clamps it. The config is the one the watcher already loaded, so the fan-out touches no disk on the loop, and the dispatch loop reads the snapshot every tick, so the new windows govern the next check. A handle that raises is skipped and logged at DEBUG; the rest still rebind.
 
 The tool watchdog remains armed while any dispatched tool-call ID is in flight.
 Only a terminal result removes that ID; partial output and interleaved model text
@@ -2600,11 +2927,11 @@ inferred: an absent row never yields `DEAD` or `STUCK_INPUT`, and never yields
 docstring of `acp/liveness.py` carries and `test_acp_liveness*.py` pins
 (RFC `rfc-overload-resilience.md` §14.9).
 
-| Evidence | Linux (`/proc`) | macOS (`libproc`) | Windows (no tree backend) | Declared degradation |
+| Evidence | Linux (`/proc`) | macOS (`libproc`) | Windows (Toolhelp) | Declared degradation |
 |---|---|---|---|---|
-| process tree | `task/*/children` (`iter_descendants`) | `proc_listchildpids` (`LibprocBackend`) | absent | Windows: every shell/MCP tool verdict is `UNKNOWN` tagged `platform_limited`, bounded by the no-progress budget |
-| shell child match / exit | cmdline + `starttime` | argv/path + start time | absent | same |
-| subtree movement | CPU jiffies + IO bytes | CPU ns only, at least one 10 ms tick per sample | root-pid CPU (model-wait probe only) | a moving subtree is `WORKING` on any host: "no output" alone never kills a task whose CPU/IO moves |
+| process tree | `task/*/children` (`iter_descendants`) | `proc_listchildpids` (`LibprocBackend`) | Toolhelp32 snapshot (`WinProcessBackend`), shell tools only, to prove life | Windows: every MCP tool verdict, and every shell verdict but a moving tree, is `UNKNOWN` tagged `platform_limited`, bounded by the no-progress budget |
+| shell child match / exit | cmdline + `starttime` | argv/path + start time | absent (image names only, no argv) | Windows: never `DEAD`, never `shell_child_absent` |
+| subtree movement | CPU jiffies + IO bytes | CPU ns only, at least one 10 ms tick per sample | shell tool: CPU of the processes started since the dispatch, 10 ms floor; otherwise root-pid CPU (model-wait probe only) | a moving subtree is `WORKING` on any host: "no output" alone never kills a task whose CPU/IO moves |
 | blocked on stdin (`STUCK_INPUT`) | `wchan` + blocked fd; a stdin pipe reader whose pipe has a live writer in the watched subtree (`producer \| consumer`) is a producer wait, not `STUCK_INPUT` (procfs only) | absent | absent | a live tracked shell child whose subtree is FLAT (real two-sample delta) is `UNKNOWN` tagged `platform_limited`, never `WORKING` — "alive" is never sufficient for indefinite deferral |
 | socket / LLM wait (`established_flat`) | `/proc/net` established → `UNKNOWN` or `DEAD` | absent → `UNKNOWN` tagged `platform_limited`, never `DEAD`; probed past `model_silent_probe_secs` | absent | same |
 | socket / remote call (`remote_flat`) | fd inodes + `/proc/net` established, non-loopback peer, in the in-flight tool's own server subtree → `UNKNOWN` tagged | `PROC_PIDFDSOCKETINFO` established, non-loopback peer, in the in-flight tool's own server subtree → `UNKNOWN` tagged | absent → never tagged | same |
@@ -2646,19 +2973,14 @@ terminal — so `PAGER=cat` / `-y` / the ssh options are PROPOSED via the hint t
 recovery nudge carries, not applied. Applying them at the harness is a
 follow-up seam, not a matcher's job.
 
-The ssh hint does not propose `BatchMode=yes`. Once case is folded, that option
-name contains a permission verb, so a proposed `ssh -o BatchMode=yes … /usr/…` is
-refused by the permission deny rows. The hint proposes `-o
+The ssh hint does not propose `BatchMode=yes`. The hint proposes `-o
 StrictHostKeyChecking=yes -o NumberOfPasswordPrompts=0 -o
 PasswordAuthentication=no -o KbdInteractiveAuthentication=no` instead, aimed at
 the prompts ssh_config(5) says BatchMode disables: password prompts and host key
 confirmation. The classifier still counts only `BatchMode` as proof that ssh will
 not prompt. A command using the proposed options stays prompt-shaped, because a
 FIDO/sk key PIN or an encrypted key's passphrase may still be asked for under
-them, and the conservative reading keeps the shorter stall window. A
-permission-row refusal whose command spells `BatchMode` carries remediation text
-naming the same options (`deny_guidance.SSH_BATCHMODE_REMEDIATION`). The rows
-themselves are unchanged, so that spelling is still refused.
+them, and the conservative reading keeps the shorter stall window.
 
 **Post-stall classification.** When the tool branch acts, the stall is a wait
 for input on exactly two grounds: the oracle's own `STUCK_INPUT` (Linux), or a
@@ -2909,15 +3231,19 @@ whose transport behaviour this module owns.
   `structural_terminal=True`, and `context_overflow=True` together in the
   data-field-only structural tag block. The JSON-RPC `message` field cannot set
   those tags, and same-session transient retry never receives this failure.
-  One exception is anchored, not free text: the claude adapter's own refusal,
+  Two exceptions are anchored, not free text. The claude adapter's own refusal,
   `Internal error: API Error: 400 Input is too long.` (or `Prompt is too long`),
   arrives in `message` with only `{"errorKind": "unknown"}` in `data`, so
   `_RE_ADAPTER_INPUT_TOO_LONG` matches it at the START of `message` and sets the
-  same three tags. It is terminal in `_is_transient_raw_error` too, so neither
-  the retry ladder nor the throttle fallback chain re-sends a history every model
-  refuses, and the formatter words it with the cause and the fix (start a fresh
-  session).
-- `AcpPromptBusy` — a prompt is already in progress on the session, classified from kiro-cli's "already in progress" text via `_PROMPT_BUSY_RE` and raised at prompt-dispatch sites. `slack/handler_runtime/turn.py` catches it and auto-resets the wedged session (`sessions.reset`) before recording the failure, so the next message cold-starts cleanly.
+  same three tags; the formatter words it with the cause and the fix (start a
+  fresh session). The model service's byte cap, `Request exceeds the maximum
+  allowed size (Request ID: ...)` (a `GenericValidationError`), may ride in
+  either field, so `_RE_REQUEST_SIZE_EXCEEDED` matches it at the START of `data`
+  or `message` (after the stream envelope or `Internal error:`) and sets the
+  same tags; its provider sentence is shown as is. Both are terminal in
+  `_is_transient_raw_error` too, so neither the retry ladder nor the throttle
+  fallback chain re-sends a history every model refuses.
+- `AcpPromptBusy` — a prompt is already in progress on the session, classified via `_PROMPT_BUSY_RE` from kiro-cli's "already in progress" text or goose's "session already has active run" (its -32602 answer to a `session/prompt` sent while its own run is live), and raised at prompt-dispatch sites. `slack/handler_runtime/turn.py` catches it and auto-resets the wedged session (`sessions.reset`) before recording the failure, so the next message cold-starts cleanly.
 
 ### `AcpProcessDied` on a stalled stdin write
 
@@ -2980,9 +3306,11 @@ Subprocess lifecycle:
 - Spawned with process-tree isolation for clean teardown, dispatched per-platform in the launch tail (`acp.launch.launch`): **POSIX** sets `start_new_session=True` (group leader via `setsid`) so cleanup can `killpg`; **Windows** sets `creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP` (no `setsid`/process groups; an inherited Ctrl-C can't reach the gateway). Both flags are passed explicitly (never via `**dict` unpack, which breaks mypy's Popen overload resolution). Teardown in `_kill_process()` is dispatched per-platform too. **Windows** returns through the owned-handle drain described above and never reaches the signal ladder: `terminate_windows_asyncio_tree` tears the tree down from handles pinned at spawn, so a `taskkill /T` walk that a reaped root leaves empty is not what the teardown depends on. **POSIX** awaits `platform_compat.kill_process_tree_async(pid, SIGTERM)` then `SIGKILL` — `os.killpg(os.getpgid(pid), …)` inline and non-blocking. The Windows `taskkill /T /F` shim in `kill_process_tree_async` remains for callers that hold only a pid, offloaded to `kiro_crew.executors.subprocess_executor` so the event loop is never blocked for the `taskkill.exe` spawn. The escaped-child sweep (`_kill_escaped_children`, which raw-`os.kill`s descendants that reparented out of the killed group) is **POSIX-only** — a no-op on Windows, where the owned-handle drain has already confirmed each retained member's exit before `_kill_process` returns (the drain, not a `taskkill /T` walk, is what the Windows teardown depends on; that shim is only for callers holding a bare pid) and `signal.SIGKILL`/`os.kill(pid,0)` are unavailable/unsafe. The `/proc`+`pgrep`+`ps` child-enumeration helpers (`_direct_children`, `_get_start_time`, `_read_basename`) short-circuit on Windows (return `[]`/`None`) since they only feed that POSIX sweep. `_resolve_ssh_auth_sock()` (called in the spawn prelude) is also a no-op on Windows — its non-darwin branch calls `os.getuid()`, absent on win32, and Windows OpenSSH uses a named pipe with no `SSH_AUTH_SOCK` to repair.
 - **The exit error credits Crew only for a signal it recorded sending**: when a read reaches end of stream and the child has exited, `AcpClient._read_message` raises `ACP process exited (code=N)`. For a signal death (`N < 0`) `_exit_origin` appends the signal's name and an origin. The origin is `killed by Crew (<reason>)` only when the signal is the one `_kill_process` last sent, which it records in `_kill_sent` (SIGTERM with `stop requested`, SIGKILL with `forced stop` or `SIGTERM timed out`); `_spawn` clears the record for every new child, so one child's kill is never credited to the next. Every other signal reads `not sent by this client`, because a crash the child raises on itself (SIGSEGV, SIGABRT), a signal from another Crew path (for example the `session_pid` orphan sweep) and a kill from outside look the same to the client. `test/test_acp_exit_signal_origin.py` pins each case.
 - **The stderr tail on an exit error is published only when neither spelling carries a secret**: the `ACP process exited` detail and the runtime death summary's `stderr_tail` both go through `acp/stderr_tail.py` `safe_stderr_tail`. The ring holds one entry per line, so a secret a harness wrapped across two lines comes back with the join separator inside it and the bare-secret patterns (one contiguous run) miss it. The helper redacts the joined tail AND the same lines joined with no separator; if either is rewritten, the whole tail becomes `stderr withheld: redacted content`. Both spellings are checked on the whole tail first; only a tail that passes is then cut to its last `STDERR_TAIL_MAX_CHARS` (2000) characters, so a secret straddling the cut is still caught. The cut exists because the ring bounds lines, not their length. `test/test_acp_stderr_tail_redaction.py` pins it (#11671).
+- **Child enumeration on Linux**: one reader, `_read_task_children`, serves `_direct_children` and `_own_children`. `_direct_children` answers from `/proc/<pid>/task/<tid>/children`, empty included, and never spawns for it: a leaf process is `[]`, a pid with no `/proc` entry has exited and is `[]`, and a task whose file vanished mid-scan is skipped while the task directory is listed once more; the children either pass read are kept, each pid once, so an empty second pass cannot drop a child the first pass saw. `pgrep -P` stays the fallback only for a kernel without those files, which `_children_interface()` decides once from the real `/proc/self/task/<tid>/children` and caches in `_CHILDREN_INTERFACE`. `pgrep` scans every `/proc` entry (275 to 428 ms a call at about 3,000 processes), so a per-leaf fallback pushes a small tree walked twice past `TREE_REFRESH_TIMEOUT` (3 s). proc(5) calls the files exact only for stopped children; `guarded_tree_pass`'s two walks and its 0.5 s empty-walk retry absorb that race. macOS always uses `pgrep`.
 - **Off-loop PID inspection**: the PID-recycling/ownership helpers that shell out on macOS — `_get_start_time` / `_read_basename` (`ps`), `_get_child_pids` → `_direct_children` (`pgrep`), the `_capture_child_records` batch wrapper, and the `_kill_escaped_children` sweep — MUST run via `run_in_executor(subprocess_executor(), ...)`, never directly on the event loop. The PID-file tracking writes — `_track_pid`, `_track_session_pid`, `_track_child_pids` in `AcpClient._spawn()`, and `_track_child_pids` plus the `_untrack_child_pids` prune in `AcpRuntime._snapshot_descendants()` / `_prune_dead_descendants()` (the latter reached through `asyncio.to_thread`) — carry the same obligation: each takes an exclusive file lock and does a read-modify-append under it, and `ensure_ready()` awaits `_spawn()` from the loop on every cold start, so an on-loop tracker serializes concurrent spawns behind one file lock with the waiter holding the loop. The subprocess spawn (fork/exec) can block, and on a wedged child the loop would freeze (the macOS wedge class). `subprocess_executor` is a *dedicated* bounded pool (distinct from the `maintenance_executor` orphan sweep) so a wedged scan/close cannot starve the recovery sweep. The `ps` and `pgrep` calls each carry a 2s timeout so no offloaded scan occupies a pool worker indefinitely.
-- **Pre-teardown tree refresh**: `_snapshot_process_tree()` records the descendants once, after session initialise, and a turn that runs a command which forks its own children adds processes it never saw. A leaderless process group may only be signalled while a RECORDED member vouches for it (`process_identity._group_member_vouches`), so each teardown path that takes a kill handle -- the subagent run's own `_teardown_run_session`, the subagent reaper's `_force_reap`, and the cron reap's `_end_run_processes` -- first awaits `process_identity.refresh_live_process_tree()`, which calls `refresh_process_tree()` on the client of the session live under the key: an `AcpClient` (non-kiro backends) walks its own leader, and a kiro-backend `AcpSessionProvider` -- whose `_child_pids` the handle reads from its `AcpRuntime` -- hands it to `AcpRuntime.refresh_process_tree()`, the same guarded `_snapshot_descendants()` pass spawn, create and resume run. The `AcpClient` refresh walks only a leader verified as this client's (no return code yet, and the pid reads back the recorded start id before the walk and again before the records are kept), only ever adds records, keeps a new child only when a second walk still finds it under the leader and its start id still reads back as the one captured (a pid reused between the walk and the capture is dropped), persists them through `_replace_child_pids` with that captured id and adds them to the in-memory record only once that write succeeds (a failed write leaves the child unrecorded, so the next refresh retries it), and is bounded by `TREE_REFRESH_TIMEOUT` (3 s); a timeout or error is logged and the teardown goes on with the earlier record. In the subagent run's own teardown the refresh runs before the lease is released, so the key is not claimable while the walk runs; a cancel during the walk still releases the lease and is recorded as an undecided kill, like one during the reset. The bound stops the teardown waiting; it cannot stop a walk already running on `subprocess_executor()`, the same residual the kill's own fresh scan carries. Torn-down sessions are not walked: their handles were captured at the pop. A member started after the last refresh is still never recorded and still cannot vouch, and a leader that already exited before teardown gets no walk at all, so its late children stay unrecorded.
+- **Pre-teardown tree refresh**: `_snapshot_process_tree()` records the descendants once, after session initialise, and a turn that runs a command which forks its own children adds processes it never saw. A leaderless process group may only be signalled while a RECORDED member vouches for it (`process_identity._group_member_vouches`), so each teardown path that takes a kill handle -- the subagent run's own `_teardown_run_session`, the subagent reaper's `_force_reap`, and the cron reap's `_end_run_processes` -- first awaits `process_identity.refresh_live_process_tree()`, which calls `refresh_process_tree()` on the client of the session live under the key: an `AcpClient` (non-kiro backends) walks its own leader, and a kiro-backend `AcpSessionProvider` -- whose `_child_pids` the handle reads from its `AcpRuntime` -- hands it to `AcpRuntime.refresh_process_tree()`, the same guarded `_snapshot_descendants()` pass spawn, create and resume run. The `AcpClient` refresh walks only a leader verified as this client's (no return code yet, and the pid reads back the recorded start id before the walk and again before the records are kept), only ever adds records, keeps a new child only when a second walk still finds it under the leader and its start id still reads back as the one captured (a pid reused between the walk and the capture is dropped), persists them through `_replace_child_pids` with that captured id and adds them to the in-memory record only once that write succeeds (a failed write leaves the child unrecorded, so the next refresh retries it), and is bounded by `TREE_REFRESH_TIMEOUT` (3 s); a timeout or error is logged and the teardown goes on with the earlier record. In the subagent run's own teardown the refresh runs before the lease is released, so the key is not claimable while the walk runs; a cancel during the walk still releases the lease and is recorded as an undecided kill, like one during the reset. The bound stops the teardown waiting; it cannot stop a walk already running on `subprocess_executor()`, the same residual the kill's own fresh scan carries. Torn-down sessions are not walked: their handles were captured at the pop. A member started after the last refresh is still never recorded and still cannot vouch. A leader that exits before teardown gets no walk at teardown, so the same guarded walk also runs at the END of every prompt turn, while the leader is still alive: both turn paths (`AcpSessionProvider.stream` / `stream_command` and `AcpProvider.stream` / `stream_command`) call `process_identity.record_live_children_after_turn()` in their `finally`, which runs the turn's own client's or runtime's `refresh_process_tree()` through the one bounded wrapper `_bounded_tree_refresh` the teardown refresh shares. So a child a turn forked is recorded while the leader is verified alive, and is on the handle a later teardown takes even if the leader exits on its own first. The wrapper swallows a timeout or error but PROPAGATES a cancellation, so the teardown caller's own `except CancelledError` handling (lease release, undecided-kill record) is unchanged; the shared turn path releases its tenancy before the record so that release is never on the walk's cancel path. The same turn-end call also retains the leader's verified group id (`process_identity._retain_verified_group`): `isolated_group_of` read while the leader is alive, stored on the client with the `(pid, start_id)` it was read for. A leader reaped before teardown no longer answers `getpgid`, so `process_handle_of` falls back to that retained id for the same `(pid, start_id)` only (`_retained_group_of`; a respawned or recycled leader gets nothing from it); the group is still signalled only while a recorded member verified by start id vouches for it.
 - **Windows exe-casing normalization** (`acp.launch._normalize_exe_casing`, applied to the Node-adapter ladder (`_resolve_node_adapter_argv`), the self-served binary ladder (`_resolve_self_served_bin`) and the claude-code and pi resolvers (`_resolve_claude_code_executable`, `_resolve_pi_bin`); kiro-cli's own discovery in `kiro_cli.py` applies its own Windows `os.path.realpath` instead): `shutil.which` builds the resolved name's extension from `PATHEXT`, which lists `.EXE` upper-case, so it returns e.g. `…\kiro-cli.EXE` even though the on-disk file is `kiro-cli.exe`. A case-sensitive multiplexer shim spawned as `kiro-cli.EXE` fails to dispatch, exits instantly, and the ACP pipe breaks (`AcpProcessDied`) → the dashboard shows **"session stuck"** on the first chat turn. `os.path.realpath()` restores the true directory-entry casing. No-op on POSIX (case-sensitive FS). Runnability is checked via `platform_compat.is_executable_file()` (POSIX execute bit; on Windows the X-bit is meaningless so a known runnable extension is required instead), so a bare `.js` adapter entry is correctly treated as **not** directly runnable on Windows and gets wrapped with `node`.
+- **Windows npm shims** (`acp.launch._npm_windows_shim_target`): on Windows `npm i -g` writes text shims (`<bin>`, `<bin>.cmd`, `<bin>.ps1`) into the global bin directory instead of a symlink, and Node's `spawn`/`execFile` refuses a `.cmd`/`.bat` without a shell (`spawn EINVAL`, the CVE-2024-27980 fix). Crew's own spawn runs the adapter's `.cmd` fine (Python's `CreateProcess` accepts it), so the Node-adapter ladder is unchanged; the path Crew hands to the Node adapter to run is what must not be a shim. `_resolve_claude_code_executable` therefore matches a shim by layout (a file named for the bin, any extension, beside `node_modules/<package target>`), never by reading its text, and replaces a mise- or PATH-resolved `claude.cmd` with `node_modules/@anthropic-ai/claude-code/bin/claude.exe`, because the adapter `execFile`s `CLAUDE_CODE_EXECUTABLE` with no shell. A batch shim with no such `claude.exe` beside it is withheld (warning logged) rather than passed, so the SDK falls back to its bundled binary or reports that none is installed. An operator-set `CLAUDE_CODE_EXECUTABLE` is honoured as-is. No shell is ever introduced.
 - **Sandbox ownership**: the launch tail both drivers call (`acp.launch.launch`) calls `sandbox.wrap_argv()` to wrap the command with platform-native isolation (Linux: two-stage `unshare -rm` → `unshare -U` bind-mounts + UID drop; macOS: `sandbox-exec` Seatbelt profile). On Windows, where Kiro Crew has no native OS wrapper, an explicitly classified official Kiro backend delegates to Kiro CLI's built-in sandbox; every other backend retains the no-backend fail-closed policy. The parent passes a fully scrubbed child environment on every platform, which is the enforcement point for raw Windows delegation. Configurable via `sandbox_mode` constructor param (`"auto"` default, `"off"` to disable). See `docs/system-specs/modules/security.md`.
 - **Parent-level channel-credential scrub**: both spawn paths (`AcpClient._spawn` and `AcpRuntime._spawn`) hand their plan to the one launch tail (`acp.launch.launch`), which builds the child environment from a raw `os.environ` copy (plus `_extra_env`) and, after merging `_extra_env`, runs `sandbox.scrub_agent_subprocess_env(env, forward_ssh_auth_sock=...)` on it before `create_subprocess_exec`. That one scrub composes `scrub_env` (the `_SPAWN_SCRUB_ENV_PREFIXES` credential families: AWS secret and session variables, `SSH_AUTH_SOCK` unless the operator's forward consent is on, `GNUPGHOME`, `GIT_ASKPASS`, and the Slack/WeCom/Telegram tokens and owner id in `_AGENT_DENIED_ENV_KEYS` seeded into `os.environ` by `config.loader.load_credentials`) with the `_PYTHON_ENV_PREFIXES` interpreter variables. This is required because these paths do NOT route through `sandboxed_spawn_argv`, and the OS-sandbox launcher only strips those keys for the `cc`/`strict` tiers — on the default `auto`/`standard` tier the launcher leaves them in place, so without the parent scrub they would be inherited by the agent subprocess. The exact set and the Windows-delegation rationale are owned by `security.md` (Conditional Python-interpreter env strip). One credential is settled per-backend rather than by the deny list: `KIRO_API_KEY` (kiro-cli's own model credential, in `CREDENTIAL_KEYS` but deliberately NOT in `_AGENT_DENIED_ENV_KEYS`) is re-injected from the data home's `.env` via `config.loader.inject_kiro_cli_api_key` for a kiro-cli child (whose environment is where the CLI reads it — required after the Docker entrypoint scrubs it from the gateway's environ) and actively stripped via `strip_kiro_cli_api_key` for a foreign backend (Claude seam), which must never receive it. The KAS relay is a kiro-cli, so its answer follows the spawn plan's auth owner (`apply_spawn_env(..., cli_owned_auth=not plan.host_auth)`): a cli-owned relay (`--auth-method cli`) is handed the key like the kiro backend, because kiro-cli keeps no stored record of an API-key sign-in and the variable is the whole login; a Crew-owned relay has it stripped, because the engine prefers an environment key over the vault callback; both run inside the spawn paths' existing off-loop env hop.
 - **`.env` `PATH` extension**: the child's `PATH` is the gateway's, plus `augmented_path` in the launch tail, so the one way the data home's `.env` reaches it is `config.loader.load_credentials`, which hands a `PATH=` line to `env.extend_process_path` instead of seeding it with `setdefault` (a process always has a `PATH`, so `setdefault` would leave the line inert). The line is a list of directories to ADD: each must be an absolute directory (`~` expands; a relative or unexpanded entry such as `$HOME/bin` is dropped with a warning), they land behind the existing `PATH`, which is kept byte for byte, and an entry it already holds is skipped so repeated loads do not grow it. It extends the gateway process's own `PATH`, so everything the gateway spawns sees it, and the terminal completion probe still filters that `PATH` through its ownership check. Every other `.env` key is still seeded with `setdefault`, and no allowlist or scrub list changes. Pinned by `test/test_dotenv_path_extension.py`. A non-`PATH` key the environment already holds with a different value therefore keeps the environment's value; `load_credentials` logs that once, naming the key and never a value. Each key is checked only the first time a load sees it per boot (`_shadow_checked_env_keys`), because later the environment may hold the loader's own seed or a dashboard write; a `secret://` reference is not compared. An in-app restart re-execs with the old environment, so its first load names a key whose `.env` line was edited: that edit is not applied until a stop and start. Pinned by `test/test_dotenv_shadow_warning.py`.
@@ -3139,7 +3467,7 @@ reference is withheld, because the KAS environment also holds credentials such a
 the CLI's `KIRO_API_KEY`.
 
 A server Crew did not author also keeps each literal `env` value that is exactly
-`true` or `false` (case-insensitive, trimmed; `kas_agents._relayable_literal`), so
+`true` or `false` (case-insensitive, trimmed; `kas_env_literals._relayable_literal`), so
 a server that takes boolean feature flags from `env` starts with them on KAS as it
 does on kiro-cli, which reads the spec off disk. No secret is a boolean, so the
 rule needs no guess about which names or shapes carry one. A boolean is still
@@ -3259,7 +3587,15 @@ applies it.
   (`_turn_start_priority`: user-origin provenance and `_crew_log_actor ==
   "user"`, not a restored queue entry — a typed turn, a Resume/Continue press,
   the runner's requeue of a person's failed turn, a typed follow-up in a cron
-  tab). The eager respawn that turn arms takes its priority, and so does the
+  tab). **A bulk Resume does not claim it.** `POST /api/chat/slots/resume-all`
+  answers 202 at once and runs every candidate's Continue in the background, so
+  no person waits on any one of the starts it leads to; a FOREGROUND claim per
+  start would put each of them in the person-only reserve ahead of the owner's
+  next typed message. Each queue entry it inserts keeps the owner's provenance
+  and carries `START_BACKGROUND_META_KEY` (`dashboard/chat_delivery.py`); the
+  drain passes `_turn_start_background` only when every entry it consumes
+  carries it, so a typed message drained in the same batch keeps FOREGROUND, and
+  `_turn_start_priority` then answers BACKGROUND. The eager respawn that turn arms takes its priority, and so does the
   poisoned-conversation canary inside it. An eager spawn from the dashboard
   owner's own slot create, agent switch or project switch; the focus resume
   prefetch, a reload and any app-token request stay BACKGROUND. Every messaging
@@ -3274,7 +3610,7 @@ applies it.
   paths pass FOREGROUND unless a trusted bot posted. The CLI chat. **Every
   dashboard claimer reads WHO ASKED**
   (`dashboard/request_priority.owner_start_priority`, which reads
-  `is_owner_dashboard_request`): the composer optimizer, Side Chat, mate
+  `is_owner_dashboard_request`): the composer optimizer, Side Chat, Bot
   reply threads, Task Runner Refine and Plan, workflow authoring, Issue Radar's
   AI routes (`_run_oneshot_model`), and the eager spawn a slot action arms. An
   app token on its own slot is BACKGROUND there, because the person-only
@@ -3520,7 +3856,7 @@ adopted session receives the init frames staged both before and during the
 collector window and none of them is counted as a dropped frame; a settled
 collector (torn down, abandoned or runtime-dead) keeps none and the next start's
 timeout names its own silent servers; two live collectors never claim each
-other's frames; `subagent_manager/run_turn.py` never calls `get_or_create` on
+other's frames; `subagent_manager/turn_session.py` (`acquire_session`) never calls `get_or_create` on
 congestion and continues on a session `subagent_manager/run_start.py` adopted late.
 
 **Adaptive-controller sample.** Every `session/new` outcome is one `AdaptiveController.record_start(duration_ms, ok, attributable_timeout, key="acp:session/new")` when a controller is registered (`adaptive.controller.current()`; a no-op otherwise): duration is measured from gate EXIT (the queue wait is admission's cost), `ok=True` on an answer, `ok=False, attributable_timeout=True` on `AcpRequestTimeout` (the congestion signal the controller's decrease keys on), `ok=False` on any other failure. `test_runloop_integration.py` pins the three shapes.
@@ -3541,6 +3877,8 @@ The `audit_source` constructor param of `AcpClient` (default `None`) tags a clie
 6. Appends an image content block with the content-derived `mimeType`
 7. Replaces the path in the text with `[image: filename.png]`
 8. Sends both text and image blocks in the `prompt` array
+
+**Only the user's own segment is upgraded** (`kiro_crew.prompt_segments`). A prompt is a `SegmentedPrompt`: a `str` whose value is the concatenation of `(source, text)` segments, where `user` is the turn's own text and `injected` is everything the assembly added (memory, lessons, a member's rules and notes, steering, replayed history, a ledger snapshot, a cron job's previous result, the blocks re-sent after a compaction). `build_prompt_blocks` builds extra blocks (an image today; a file, PDF or `resource_link` later goes through the same gate) only from text inside a `user` segment, and sends every `injected` segment as written: no path or rule in it is rewritten. The one edit made in every segment is the backslash before a typed `[image` marker, because an unescaped one reads to the model as a picture attached to this request. A plain `str` is one `user` segment, so a caller that has not moved to segments behaves as before. `ContextBuilder.build_message` returns the segmented prompt, with the measured user span as the `user` segment (or the whole turn part when the caller gave no range), so every channel that sends its result unchanged is covered; when nothing attributable was typed (an `@prompt` body or a quick-prompt expansion), the `user` segment runs from where the typed text stood to the end of the turn, so a prefixed envelope stays injected. The dashboard runner keeps `build_message`'s segments on the turn and re-applies them under its own prefixes, never sending a plain string once segments exist: if the sent tail no longer matches, the whole prompt is marked injected and nothing is upgraded. The subagent run keeps the builder's segments under its hook prefix with `prepend_injected`, marking only the added prefix injected (an empty prefix leaves the prompt object unchanged); initial sends and zero-activity resends reuse that segmented prompt. And the provider's essential-envelope dedup rewrites through `replace_in_injected`, which keeps the segments. A path written as literal text inside a `user` segment -- fenced or inline code, a 4-space-indented line, escaped `\![x](...)` markup -- attaches nothing (`image_refs.mask_literal_spans`, the view the replay scrubber reads too), and each `user` segment is judged on its own: injected text that ends inside a fence it never closes (a cancelled turn's partial answer, a Slack thread root) cannot pair with the user's next fence line and turn the picture between them into code.
 
 **One prompt's own rules** (`build_prompt_blocks`). The marker lands only where the path grammar matched: a URL's own path or a longer path that merely contains the same characters is left alone (one pass over the grammar's match spans, never a whole-text replace), while a local path quoted as a URL query value (`?src=/tmp/a.png`) is a path to the grammar and is rewritten like any other; and the shared path grammar refuses a name that merely begins with a picture's path (`/var/a.png.backup`, `/var/a.png~`, `/var/a.png/other`), so neither this builder nor the replay scrubber treats it as a picture -- nothing is read, rewritten or scrubbed for it; a period followed by a capital letter is sentence punctuation (`/var/a.png.Then`), so the path ends there and the picture is attached. A second distinct file with the same basename in one message gets `[image: filename.png (2)]`, and so on, so every block's marker is unique within the prompt. The same bytes under two names are one block, marked at both places with the first name: the digest of the file's bytes is compared before any cap is consulted, so a duplicate of an attached picture past the cap maps to that picture's block instead of being dropped. A `[image: ...]` or `[image not attached: ...]` token the user typed, in any case, is escaped with a backslash, so only a marker this builder wrote reads as an attachment; the replay scrubber's own `[image not carried into this context]` is left as it is. A kept-out picture written as a markdown image (`![alt](path)`, `![alt](<path>)` or `![alt](path "title")`) gets its note after the closing parenthesis, so the link stays intact. A typed marker is escaped even when the agent takes no images, since the text still reaches the model. One prompt inlines at most `MAX_PROMPT_IMAGE_BLOCKS` (20) images and `MAX_PROMPT_IMAGE_B64_BYTES` (12 MiB) of base64; a picture past either cap stays a path in the text, followed by `[image not attached: prompt image limit]`, exactly as one over the per-image cap (or one that cannot be rendered within the size caps) is followed by `[image not attached: image size limit]`, so neither the user nor the model takes a dropped picture as seen (the notes speak about images, so only bytes that sniff as a raster earn one -- a text file named like a picture stays plain text, and so does an oversize picture reached through a hardlink, which the bounded sniff refuses to read); each is logged, the pictures past the block cap tallied into one line, and a picture past the block cap is read only to tell a duplicate from a new one, never decoded. The byte cap is half of the images' share (three quarters) of the smallest backend request-body ceiling measured so far -- 32 MiB, bracketed by a replayed request of 30.4 MB of base64 that was accepted and one of 33.8 MB that was refused as improperly formed; the count is where the backend's many-image dimension rule begins, and each replayed image costs about 1,600 tokens on every later turn. Both caps bound one prompt alone; what the conversation's replayed history carries in total is not measured here. Nothing here remembers earlier prompts: what a conversation's replayed history may carry in total is the backend's contract, not this builder's.
 
@@ -3876,10 +4214,12 @@ nodejs.org verified against that release's `SHASUMS256.txt`, manifest out,
 optional `aws s3 cp`. The installer still accepts a `.tar.zst` manifest entry
 (stdlib on 3.14+, the `zstandard` package, or a `zstd` executable) for a
 locally built bundle handed to `--from`. The harness reads the flag off the loop and, when
-on, resolves `kas_bundle.installed_bundle()`; nothing installed is an
-`AcpRuntimeError` naming `kirocrew kas install`, never a fallback to the relay —
-the operator chose the route, and a silent relay spawn would make a kiro-cli
-problem look like a bundle problem. The argv is `build_kas_bundle_argv`:
+on (or when the route below is chosen automatically), resolves
+`kas_bundle.installed_bundle()`; nothing installed is installed by the spawn
+itself, in the gateway (`acp/kas_engine_install.install_pinned_engine`, below),
+and a failed install is an `AcpRuntimeError` naming the route, the cause and
+`kirocrew kas install` -- never a fallback to the relay, because a relay spawn
+after a bundle failure would make a bundle problem look like a kiro-cli one. The argv is `build_kas_bundle_argv`:
 `node --experimental-wasm-modules <acp-server.js> --transport=stdio
 --auth=acp-callback`, byte-for-byte what kiro-cli's relay builds for the engine
 minus kiro-cli. There is no `--auth-method` on this route, so the plan carries
@@ -3889,9 +4229,13 @@ minus kiro-cli. There is no `--auth-method` on this route, so the plan carries
 The spawn is labelled `kas-bundle` (a Node program names no engine). Every seam
 after the spawn is unchanged — measured: `initialize`, the
 `_kiro/auth/getAccessToken` callback answered from the vault, and the
-`AcpRuntime` cold start behave as on the relay. `pin_mandatory_mcps_env` sees a
-non-kiro-cli program and keeps every Crew server resident, the conservative
-answer. The `engines` leaf is `READONLY` in every sandbox mode and on the
+`AcpRuntime` cold start behave as on the relay. The KAS harness sees a program
+under `<data home>/engines/kas` or the desktop app's staged copy
+(`bundled_kas_root()`) and calls `defer_mandatory_mcps_env` instead of
+the engine-version gate: that engine keeps its `tools` array fixed when a
+deferred tool loads (measured on 0.66.33 with thinking models), so every Crew
+server defers and only an operator's ambient `ASBX_KIRO_MANDATORY_MCPS` is
+passed. The relay keeps `pin_mandatory_mcps_env`. The `engines` leaf is `READONLY` in every sandbox mode and on the
 file-tool floor ([security.md](security.md)): a sandboxed KAS process reads and
 executes its engine, and nothing in a sandbox rewrites the code the next session
 runs. `kirocrew doctor` reports the route when selected (`_report_kas_bundle`:
@@ -3899,17 +4243,62 @@ installed version against the release pin, the `install.json` path and its two
 entry points, the exact spawn argv, the vault as the only owner with Crew's own
 sign-in remedy) and asks nothing of kiro-cli there; `kirocrew kas status` is the
 same facts alone. The one predicate every kiro-cli-facing diagnostic shares is
-`agent_sdk.kas_bundle.kas_bundle_route()` -- KAS selected AND `agent.kas_bundle`
-on, positive on both halves, read from config at call time -- so doctor's
+`agent_sdk.kas_bundle.kas_bundle_route()` -- KAS selected AND the bundle route
+(`agent.kas_bundle` on, or the automatic switch below), positive on both
+halves, computed at call time -- so doctor's
 Dependencies and Connectivity rows, its per-harness `kas auth:` row, the
 diagnostics bundle's `versions.txt` (`kiro_cli_version:` says the binary is not
 used; `kas_engine:` names the installed engine and the pin), `kirocrew update`'s
 and the unattended auto-apply's `kiro-cli update` step (skipped, the reason
-printed or logged: the route never runs kiro-cli, and the update does not
-install the engine either -- a changed pin needs `kirocrew kas install`, which
-the printed or logged line names) and the gateway's boot-time outdated-kiro-cli
+printed or logged: the route never runs kiro-cli; the engine the new release
+pins is installed by the release install every update path runs,
+`platform/release_apply.apply_release`, see [cli.md](cli.md) § The release is
+the unit of install) and the gateway's boot-time outdated-kiro-cli
 warning (skipped) all agree on when kiro-cli is not part of the installation, and all keep their
 relay-route behaviour byte for byte when the predicate is false.
+
+**Choosing KAS takes Crew's own engine when kiro-cli cannot run** (decision
+[2026-10-30](../../decisions/2026-10-30-choosing-kas-runs-kiro-crews-own-engine-when-kiro-cli-cannot.md)).
+Choosing KAS means Kiro Crew's own engine and Kiro Crew's own sign-in. The
+route is `acp/kas_route.py`, one rule read by the harness and, through
+`agent_sdk.kas_bundle.kas_route()`, by every reader that describes a spawn:
+(1) `agent.kas_bundle` on is the bundle route; (2) a stored Kiro CLI pick
+(`agent.acp_backend == "kiro"`, `acp_backend_stored_as_kiro`) is the relay,
+because it runs on KAS only where kiro-cli itself offers v3
+([2026-10-28](../../decisions/2026-10-28-a-kiro-cli-choice-runs-on-kas.md));
+(3) no kiro-cli resolves: the bundle route; (4) kiro-cli resolves, its own
+sign-in is PROVEN absent (`kiro_cli_signed_out`: no `KIRO_API_KEY` inherited or
+in the data home's `.env`, and `identity_fingerprint` read kiro-cli's store
+definitively empty), and Crew's sign-in cannot stand in for it (no vault
+identity, or no `kiro-cli-chat` entry that skips the launcher's own sign-in
+check, `crew_entry_skips_launcher`): the bundle route; (5) otherwise the relay.
+Every unknown -- an unreadable store, a relocated store, a login the reader cannot
+identify, a kiro-cli lookup that raised -- keeps the relay, whose own error names
+the cause. An operator's `KIROCREW_KIRO_BIN` is never second-guessed
+(`kas_route.is_operator_override`), and it is recognised in every spelling the
+resolver hands it through: on Windows that is its `realpath`, which turns an 8.3
+short name such as `RUNNER~1` into the long one. A kiro-cli
+that cannot run the v3 engine is still the gateway floor's (KAS marked unservable,
+Kiro CLI selected), and rule 2 reads only the installation's `agent.acp_backend`,
+not a Bot's own pin; both are tracked in issue 26629.
+The decision is per spawn, so a later kiro-cli install or sign-in moves the next
+process back. It is never silent: `kas_route.note_spawn_route` logs each change
+of route (WARNING when automatic) and keeps the last spawn's route in a process
+slot that `GET /api/kas-bundle` returns as `route` (the Agent Harness engine card
+says why Crew's engine runs) and that leads the KAS sign-in messages
+(`host_auth._with_kas_route`); `kirocrew doctor` prints a `route:` row computed
+fresh. **The gateway installs a missing engine.** `acp/kas_engine_install.install_pinned_engine`
+runs in the gateway process, one install at a time (a process lock; a second
+caller waits and reads what the first laid down), for both callers: a KAS spawn
+on the bundle route and `POST /api/kas-bundle/install`. Inside an agent sandbox
+(`KIROCREW_SANDBOX_ACTIVE`) it refuses with the command, because the `engines`
+leaf is read-only there. Its state (running, bytes, the last error) is what
+`GET /api/kas-bundle` reports whichever caller started it, and the dashboard's
+app-level `KasEngineNotice` shows a running download and a failed one, with the
+gateway's error text (cause, "if this host is offline, connect it first", and
+`kirocrew kas install`) and a Retry button. The install probe and first-run
+setup treat a missing engine on a host that can run it as installable, not
+missing, so the setup gate lets KAS through without kiro-cli.
 
 **The model picker follows the route.** `GET /api/models` dispatches on the
 positive two-fact test `agent_sdk.kas_bundle.kas_bundle_route` (`acp_backend ==
@@ -3945,7 +4334,7 @@ it reads the newest live provider in the shared `acp` namespace, which after a
 hot switch of `agent.acp_backend` can be a retained kiro-cli session whose own
 list (`auto` alone, say) would hide models the bundle account has.
 
-**Setup and the install probe follow the route.** With `agent.kas_bundle` on, KAS never runs kiro-cli, so the two places that decide "is KAS usable on this host" ask the installed engine instead of the binary: `agent_sdk.backend_install._probe_kas` answers `installed` when `installed_bundle()` finds the pinned engine and `missing` with the one component `COMPONENT_KAS_BUNDLE` (and `kirocrew kas install` as the install command) when it does not, consulting kiro's resolver on neither path; and `KiroPrerequisiteService.record_independent_backend_setup("kas")` records first-run completion on the same reader, deciding the route through the shared `agent_sdk.kas_bundle.kas_bundle_route()` (its callers pass the configured backend, so the predicate's backend half is already settled there), spawning no `--version` / `acp --help` probe. A host with no kiro-cli at all therefore completes setup once the engine is installed, which is what the switch's help text promises. The dashboard's install handler evicts the KAS probe (`forget_probe`) when an install lands, so the Agent Harness row flips without waiting out the probe TTL. With the switch off both checks are unchanged: KAS is kiro-cli's relay and its verdict is a copy of kiro's. **The spec `permissions` block follows the route too.** Crew's auto-approve list reaches KAS's policy engine as the spec's `permissions` block, and the one writer (`agent_materialization/auto_approve._write_derived_permissions`, gate `_spec_permissions_accepted`) writes it only when every program that may read the spec accepts it. With the switch off that is the installed kiro-cli alone (`kiro_cli.spec_permissions_supported(installed_kiro_cli_version())`, floor 2.23.0). With `agent.kas_bundle` on it is the installed engine bundle (`installed_bundle().version` through `kas_pin.engine_spec_permissions_supported`, floor `KAS_SPEC_PERMISSIONS_MIN_ENGINE_VERSION` (0.66.33, the pinned release the block was measured against; `test_kas_pin` keeps the floor at or below the pin so a stock install always passes)), and also kiro-cli whenever one is installed (`kiro_cli.kiro_cli_installed`: a `resolve_kiro_cli` stat, never a spawn; a lookup that raises counts as installed; the doctor row reads the same predicate): the switch changes only the kas backend, and kiro-cli reads the same `~/.kiro/agents` files for a native Kiro session, a member on kiro, or a hand-run `kiro-cli`, where a release below its floor refuses the whole spec. A kiro-cli-free host is never version-probed and gets the block from the engine alone. The gate fails closed the way kiro-cli's does: no engine installed, or an engine below the floor (one selected through `KIROCREW_KAS_VERSION`), is an unknown reader and the block is withheld (an inherited block is removed, as on the relay route). `kirocrew doctor`'s bundle branch (`_report_kas_bundle_spec_permissions`) prints the `auto-approve:` row from the same predicates — written when the engine accepts and no installed kiro-cli refuses, withheld with the floor and the remedy when the engine is below it, withheld without a second issue when nothing is installed, and withheld naming kiro-cli and its update when an installed kiro-cli is old or unprobeable. The switch is read on every spec write through the install probe's own reader (`agent_sdk.backend_install._kas_bundle_route`) and never cached by the writer; a config that cannot be loaded selects the relay gate.
+**Setup and the install probe follow the route.** On the bundle route (`agent.kas_bundle` on, or the automatic switch above), KAS never runs kiro-cli, so the two places that decide "is KAS usable on this host" ask the engine instead of the binary: `agent_sdk.backend_install._probe_kas` answers `installed` when `installed_bundle()` finds the pinned engine or when this host can run the engine the first spawn will install (`_engine_installable_here`: the platform keys and the glibc floor, no network), and `missing` with the one component `COMPONENT_KAS_BUNDLE` (and `kirocrew kas install` as the install command) only on a host that cannot run it, consulting kiro's resolver on neither path; and `KiroPrerequisiteService.record_independent_backend_setup("kas")` records first-run completion on the same rule, deciding the route through the shared `agent_sdk.kas_bundle.kas_bundle_route()` (its callers pass the configured backend, so the predicate's backend half is already settled there), spawning no `--version` / `acp --help` probe. A host with no kiro-cli at all therefore completes setup and gets its engine at the first chat. The dashboard's install handler evicts the KAS probe (`forget_probe`) when an install lands, so the Agent Harness row flips without waiting out the probe TTL. With the switch off both checks are unchanged: KAS is kiro-cli's relay and its verdict is a copy of kiro's. **The spec `permissions` block follows the route too.** Crew's auto-approve list reaches KAS's policy engine as the spec's `permissions` block, and the one writer (`agent_materialization/auto_approve._write_derived_permissions`, gate `_spec_permissions_accepted`) writes it only when every program that may read the spec accepts it. With the switch off that is the installed kiro-cli alone (`kiro_cli.spec_permissions_supported(installed_kiro_cli_version())`, floor 2.23.0). With `agent.kas_bundle` on it is the installed engine bundle (`installed_bundle().version` through `kas_pin.engine_spec_permissions_supported`, floor `KAS_SPEC_PERMISSIONS_MIN_ENGINE_VERSION` (0.66.33, the pinned release the block was measured against; `test_kas_pin` keeps the floor at or below the pin so a stock install always passes)), and also kiro-cli whenever one is installed (`kiro_cli.kiro_cli_installed`: a `resolve_kiro_cli` stat, never a spawn; a lookup that raises counts as installed; the doctor row reads the same predicate): the switch changes only the kas backend, and kiro-cli reads the same `~/.kiro/agents` files for a native Kiro session, a member on kiro, or a hand-run `kiro-cli`, where a release below its floor refuses the whole spec. A kiro-cli-free host is never version-probed and gets the block from the engine alone. The gate fails closed the way kiro-cli's does: no engine installed, or an engine below the floor (one selected through `KIROCREW_KAS_VERSION`), is an unknown reader and the block is withheld (an inherited block is removed, as on the relay route). `kirocrew doctor`'s bundle branch (`_report_kas_bundle_spec_permissions`) prints the `auto-approve:` row from the same predicates — written when the engine accepts and no installed kiro-cli refuses, withheld with the floor and the remedy when the engine is below it, withheld without a second issue when nothing is installed, and withheld naming kiro-cli and its update when an installed kiro-cli is old or unprobeable. The switch is read on every spec write through the install probe's own reader (`agent_sdk.backend_install._kas_bundle_route`) and never cached by the writer; a config that cannot be loaded selects the relay gate.
 
 **Hooks on the bundle route: the same events, in the same shapes (#20729).** Kiro Crew's PreToolUse gate (`HookManager.on_tool_call`, reached through `hook_gate_kwargs`) and its SEL tool records are fed by three engine frames -- the `tool_call` update, the `session/request_permission` request and the `tool_call_update` frames through `completed` -- not by the `_kiro/hooks/*` surface, which the handshake announces on neither route: `KasHarness.client_capabilities` is the one `KAS_CLIENT_CAPABILITIES` constant with no route branch, so the engine asks for no hook on either and `kas_wire.hooks_announced()` is false for both. Measured live (2026-10-17) on the pinned 0.66.33 engine spawned by the bundle argv through a gateway with `agent.kas_bundle = true` and `KIROCREW_ACP_RECORD_FRAMES` set, one shell call (`run_command`) produced: a `tool_call` with `kind: execute`, `rawInput.command` and `_meta.kiro.toolOrigin: default`; a `session/request_permission` whose `_meta.kiro` carries `toolId: run_command`, `command`, `consent {capability: shell, resource, askType: implicit, triggeringResource, workspaceRoot}` and `consentRound`, with the four options `accept` / `always-accept` / `reject` / `always-reject`; and `tool_call_update` frames `in_progress`, `in_progress`, `completed` with `rawOutput {output, exitCode, message}`. Key path by key path those are the relay capture's shapes (`test/fixtures/acp_frames/kas/session.jsonl`, 0.63.3 through `kiro-cli acp --agent-engine v3`). Replayed through the same dispatch, both routes hand the gate the same permission event (`harness_tool_id` and trusted `mcp_tool_name` `run_command`, `is_shell`, `shell_classified`, `raw_params_trusted`, the same option ids) and the gate reaches the same decision; on the live run the SEL recorded the call through the dashboard dispatcher as `tool_invocation` `invoked`, `auto_approved`, then `refined` for each update, and the engine ran the command only after Crew answered the request. Nothing was adapted: the bundle route reaches the existing seam unchanged. The capture is `test/fixtures/acp_frames/kas/bundle-tool-path.jsonl` (its `_meta` names the spawn and the id reduction) and `test/test_kas_bundle_hooks_parity.py` pins the parity frame class by frame class, through `hook_gate_kwargs`, and through the gate's decision. Two differences from the 0.63.3 capture are engine-version, not route -- the relay forwards session frames byte for byte, so neither can be the relay's doing: 0.66.33 emits an engine-internal `tool_call` of `kind: other` with `_meta.kiro.toolId: fetch_cloud_config` before the first prompt, and the completed update's `content[].text` is the `rawOutput.message` text rather than the JSON rendering of `rawOutput`; the parsed `tool_result` event has the same fields either way. The agent-spec `postToolUse` matcher is compared with the call's title on both routes, because the finished call names no tool (the same `spec_hooks` warning the relay logs).
 
@@ -4272,32 +4661,37 @@ The Codex spawn environment also sets `CODEX_SQLITE_HOME`, so concurrent
 `codex app-server` processes (Codex Desktop and each Crew runtime) do not share
 one set of SQLite databases and fail new sessions with `database is locked`. The
 harness names the need (`SpawnPlan.private_state_env`) and the runtime points the
-variable at its own per-process scratch directory -- the one `TMPDIR` already
-names, allocated before the sandbox wrap and reclaimed by
-`agent_scratch.sweep_dead_scratch` once the process is dead -- so no new tree,
-lock or slot exists. Only the databases move: config, auth and the thread
+variable at a scratch allocation of its own (`private-state-<token>`), made before
+the sandbox wrap, mounted as a private window of that process alone and reclaimed
+by `agent_scratch.sweep_dead_scratch` once the process is dead -- so no new tree,
+lock or slot exists. It is not the process's own scratch directory (the one
+`TMPDIR` names): when the process starts a session tree, that directory is the
+tree's work directory, and every subagent, companion runtime and successor
+spawned for its sessions mounts it writable. Only the databases move: config,
+auth and the thread
 rollouts stay in `CODEX_HOME`, and a thread resumes from its rollout (measured on
 codex 0.159), so `spawn_continue` works across runtimes. A value the operator
 set, or one a cron or workflow `extra_env` carries, reaches the child as set.
-Without a scratch directory nothing is set and one warning is logged: the child
-gets codex's shared default rather than a refused spawn.
+Without a private-state directory nothing is set and one warning is logged: the
+child gets codex's shared default rather than a refused spawn.
 
-The scratch directory lives and dies with its process, so each new chat, resume,
-subagent, cron run and knowledge worker that starts Codex begins on an empty
-database home. Left empty,
+The private-state directory lives and dies with its process, so each new chat,
+resume, subagent, cron run and knowledge worker that starts Codex begins on an
+empty database home. Left empty,
 codex rebuilds its index from the rollouts in `CODEX_HOME`, and that cost scales
 with the user's Codex history: about 60 s and 400 MB per runtime at 3,200 threads
 on codex 0.159, and past the 90 s `initialize` timeout at about 17,000 rollouts,
 where every retry restarts the same rebuild. So the harness also names a seed
 (`SpawnPlan.private_state_seed`, `acp/codex_sqlite.py`), which the runtime calls
-on the spawn worker before the child exists, once scratch is allocated and only
-when nobody chose a location for the variable. It copies `CODEX_HOME/state_5.sqlite`
-into scratch with SQLite's online backup (committed WAL pages included, the
-source left unchanged) only when that index reports `backfill_state.status =
-'complete'`, inside a 10 s budget, through a staging file renamed into place.
+on the spawn worker before the child exists, once that directory is allocated
+and only when nobody chose a location for the variable. It copies
+`CODEX_HOME/state_5.sqlite` into it with SQLite's online backup (committed WAL
+pages included, the source left unchanged) only when that index reports
+`backfill_state.status = 'complete'`, inside a 10 s budget, through a staging file
+renamed into place.
 Only the state index is copied, never credentials or the log database, and each
 runtime still owns its own copy. A missing, incomplete or unreadable source, an
-existing destination, or any copy error leaves scratch as it was, and codex
+existing destination, or any copy error leaves the directory as it was, and codex
 falls back to its cold initialization. An operator who sets `CODEX_SQLITE_HOME`
 in the gateway's own environment (for a systemd user unit,
 `Environment=CODEX_SQLITE_HOME=%h/.codex` in a drop-in) gets the shared index

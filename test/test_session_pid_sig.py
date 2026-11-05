@@ -24,21 +24,9 @@ LOGGER_NAME = "kiro_crew.session_pid_sig"
 def records_from_this_module(caplog, level="ERROR"):
     """Captured records this module emitted — scoped by LOGGER as well as level.
 
-    ``caplog.at_level(..., logger=LOGGER_NAME)`` scopes the *level* it captures
-    at; it does not scope *which* loggers land in ``caplog.records``, which
-    still collects everything that propagates to the root handler. So counting
-    by level alone makes every assertion below depend on whether an unrelated
-    test happened to emit an ERROR inside the same window.
-
-    That is not hypothetical: CI saw nine ``asyncio`` "Task was destroyed but it
-    is pending!" records — leaked ``SessionManager._cleanup_loop()`` tasks from
-    other tests sharing the xdist worker, reported whenever those task objects
-    were collected — turn ``assert len(errors) == 1`` into ``assert 10 == 1``.
-    Nothing about this module had changed.
-
-    Scoping by logger name is strictly narrower than scoping by level: these
-    assertions still require an exact count, they just do not count other
-    people's records as ours.
+    ``caplog.at_level(..., logger=LOGGER_NAME)`` scopes only the level; ``caplog.records``
+    still collects every logger, so other tests on the same xdist worker (e.g. asyncio
+    "Task was destroyed" errors) would break exact counts.
     """
     return [r for r in caplog.records if r.levelname == level and r.name == LOGGER_NAME]
 
@@ -49,19 +37,12 @@ def cfg(tmp_path):
     mapping-file dir (config_dir) and the canonical trust-root path accessor
     (sel_hmac_key_path — single source of truth owned by sel.py).
 
-    ``_sel_hmac_key_bytes`` is stubbed to ``None`` so these tests exercise the
-    FILE path in isolation: the in-memory recovery fallback depends on a live
-    ``SecurityEventLog`` singleton, which other tests in the same process may
-    or may not have initialized. Its own behavior is covered by
-    ``TestTrustRootRecovery``.
+    ``_sel_hmac_key_bytes`` is ``None`` to test the FILE path alone: the in-memory
+    fallback depends on a ``SecurityEventLog`` singleton other tests may have set up
+    (covered by ``TestTrustRootRecovery``).
 
-    ``platform_compat.get_process_start_id`` is pinned to ``None`` (no start
-    token) so the fixture is deterministic: the fake pids used here (4242,
-    1000, ...) can be LIVE processes on the test host, and a live pid would
-    otherwise make ``publish_session_pid`` capture a real start token and
-    change the exact ``.txt`` bytes these tests assert on. Recycle-guard
-    tests (``TestPidRecycleGuard``) re-patch it per test with controlled
-    values.
+    ``platform_compat.get_process_start_id`` is ``None`` because fake pids like 4242
+    can be live on the host, and a real start token would change the ``.txt`` bytes.
     """
     (tmp_path / "sel_hmac.key").write_bytes(b"\x01" * 32)
     with (
@@ -312,18 +293,11 @@ class TestLenientReader:
 
 
 class TestPidRecycleGuard:
-    """The mapping and its MAC binding only the pid NUMBER let a recycled pid
-    keep verifying and answer with the previous owner's session key until the
-    next restart's orphan sweep. Publication also records the process START
-    TOKEN (``platform_compat.get_process_start_id``
-    — the same incarnation identity ``session_pid_tracking.py``'s
-    ``<gw>:<pid>:<start_token>`` sweep records use), the signature covers it,
-    and BOTH readers refuse on a proven mismatch.
+    """The mapping records and signs the process START TOKEN, so a recycled pid is refused.
 
-    The asymmetry under test: a MISMATCH is positive evidence of a recycled
-    pid → refuse; an ABSENT recorded token (legacy file) or an UNREADABLE
-    live token (Windows, exited process) is merely unknown → resolve as
-    before the guard existed.
+    A MISMATCH proves a recycle and both readers refuse; an absent recorded token
+    (legacy file) or an unreadable live token (Windows, exited process) is unknown
+    and still resolves.
     """
 
     @staticmethod
@@ -331,9 +305,7 @@ class TestPidRecycleGuard:
         return patch.object(platform_compat, "get_process_start_id", return_value=value)
 
     def test_recycled_pid_refused_by_strict_resolver(self, cfg):
-        """HEADLINE (red against pre-fix main): publish under one process
-        incarnation, present another incarnation of the same pid number —
-        the strict resolver must refuse, not answer with the old key."""
+        """Another incarnation of the same pid number is refused by the strict resolver."""
         with self._live_token("111"):
             session_pid_sig.publish_session_pid(4242, SESSION_KEY)
         with self._live_token("222"):
@@ -358,12 +330,8 @@ class TestPidRecycleGuard:
     def test_a_recycled_mapping_attests_no_membership(self, cfg):
         """A proven recycle discards the TENANT SECTION too, not just the key.
 
-        The roster belonged to the pid's previous owner. Carried through the
-        refusal it would still satisfy ``shared`` (``tenant_count > 1``), which
-        is one half of ``peer_resolve``'s stop condition (``session_key or
-        shared``) -- so a mapping this very function disproved would become the
-        peer walk's ANSWER, and ``admits`` would then deny a legitimate caller
-        against a stale roster with a ``peer_session_mismatch`` 403.
+        A stale roster would still satisfy ``shared``, stopping ``peer_resolve``'s walk,
+        and ``admits`` would deny a legitimate caller with ``peer_session_mismatch``.
         """
         with self._live_token("111"):
             session_pid_sig.publish_session_pid(
@@ -381,10 +349,10 @@ class TestPidRecycleGuard:
         assert mapping.tenant_count == 0
 
     def test_legacy_tokenless_file_still_resolves(self, cfg):
-        """BACKWARD COMPATIBILITY: a signed mapping written before the
-        format change (no token line, MAC over ``"<pid>:<session_key>"``)
-        must not read as tampered or as a mismatch, even when the live
-        token IS readable (absent recorded token = unknown, not mismatch)."""
+        """A tokenless mapping (MAC over ``"<pid>:<session_key>"``) still resolves.
+
+        An absent recorded token is unknown, not a mismatch, even with a readable live token.
+        """
         key = b"\x01" * 32
         (cfg / "session_pid_4242.txt").write_text(SESSION_KEY, encoding="utf-8")
         (cfg / "session_pid_4242.sig").write_text(
@@ -522,14 +490,10 @@ class TestDomainSeparation:
 
 
 class TestTrustRootRecovery:
-    """SEL signs from key bytes it cached at init, while this protocol re-reads
-    the file on every call. The shared accessor re-resolves a key that MOVED
-    (a concurrent legacy -> ``trust/`` migration), so what reaches
-    recovery is the residue no path can resolve: a key deleted, unreadable,
-    truncated, or replaced by bytes that are not the anchor. Those would
-    otherwise take this protocol down for the life of the process — with a
-    healthy audit chain giving no hint. Recovery reads the same bytes SEL
-    validated at init.
+    """A key file deleted, unreadable, truncated or replaced recovers from SEL's cached bytes.
+
+    SEL caches the key at init while this protocol re-reads the file each call; a
+    moved key is already re-resolved by the shared accessor.
     """
 
     def test_missing_file_recovers_from_live_sel_key(self, cfg):
@@ -712,14 +676,10 @@ class TestSigningUnavailableReport:
         assert len(records_from_this_module(caplog)) == 2
 
     def test_a_stray_error_from_another_logger_is_not_counted_as_ours(self, cfg, caplog):
-        """Guards `records_from_this_module` against being narrowed back to a
-        level-only filter.
+        """`records_from_this_module` filters by logger, not only by level.
 
-        Every count in this class is exact, and `caplog.records` collects every
-        record that propagates — not only this module's. A leaked asyncio task
-        being destroyed inside the window (observed in CI) must therefore not be
-        counted as one of our reports, or these assertions fail for a reason
-        that has nothing to do with the code under test.
+        `caplog.records` collects every propagating record, so a leaked asyncio task's
+        error inside the window must not count as ours.
         """
         (cfg / "sel_hmac.key").unlink()
         with caplog.at_level("ERROR", logger=LOGGER_NAME):

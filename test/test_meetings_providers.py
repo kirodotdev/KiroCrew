@@ -659,6 +659,18 @@ class TestParseIcs:
         )
         assert len(cal.parse_ics(text)) == k.MAX_CALENDAR_EVENTS
 
+    def test_the_cap_keeps_the_nearest_events_whatever_the_feed_order(self):
+        total = k.MAX_CALENDAR_EVENTS + 20
+        # Latest first, so every nearer event arrives after the cap is full.
+        text = _ics(
+            *[
+                _vevent(UID=f"u{i}", SUMMARY=f"S{i}", DTSTART=_stamp(1 + i / 60))
+                for i in reversed(range(total))
+            ]
+        )
+        titles = [e.title for e in cal.parse_ics(text)]
+        assert titles == [f"S{i}" for i in range(k.MAX_CALENDAR_EVENTS)]
+
     def test_garbage_input_returns_empty(self):
         assert cal.parse_ics("this is not a calendar at all") == []
         assert cal.parse_ics("") == []
