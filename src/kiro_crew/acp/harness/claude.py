@@ -20,7 +20,9 @@ import json
 import logging
 import os
 import shutil
+from collections.abc import Awaitable, Callable
 from pathlib import Path
+from typing import Any
 
 from kiro_crew import model_registry, platform_compat
 from kiro_crew.acp import launch as launch_mod
@@ -306,6 +308,15 @@ class ClaudeLaunch(ProcessAdapter):
                 override_env="CLAUDE_AGENT_ACP_BIN",
             ),
         )
+
+    async def prepare_spawn_env(
+        self,
+        env: dict[str, str],
+        *,
+        to_thread: Callable[..., Awaitable[Any]],
+    ) -> None:
+        """:meth:`apply_spawn_env` through the guarded hop: its lookup runs ``mise``."""
+        await to_thread(self.apply_spawn_env, env)
 
     def apply_spawn_env(self, env: dict[str, str], *, spawned_binary: str | None = None) -> None:
         """Point the adapter's SDK at a native ``claude`` binary, unless one is named.
