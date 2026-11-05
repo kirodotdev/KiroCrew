@@ -202,8 +202,8 @@ class TestCleanupNeverRaises:
         """
         with patch("kiro_crew.subagent_persistence.Path.home", return_value=tmp_path):
             assert isinstance(_cleanup_session_files_sync(session_id, "acp"), bool)
-            # Only kiro-cli transcripts are reachable here; any other backend
-            # reports failure so the prune keeps its retry metadata.
+            # Without a recorded cwd only kiro-cli transcripts are reachable; any
+            # other backend reports failure so the prune keeps its retry metadata.
             for provider in ("claude_code", "bedrock", "unknown_provider"):
                 assert _cleanup_session_files_sync(session_id, provider) is (session_id == "")
 
