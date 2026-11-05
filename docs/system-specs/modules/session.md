@@ -2100,6 +2100,19 @@ against sweep completeness, and are torn down at `close_all`.
   reason; the other channel namespaces do not carry that prefix, so the
   exclusion is spelled at the record as well.
 
+  The live set SessionManager reads leaves out the workers of a closed root
+  (`chat_utils_slots._closed_root_worker_keys`): an open slot whose `_created_by`
+  is a Crew Mode root (`crew_mode.known_roots`), or a Bot thread
+  (`known_mate_roots`) while the mate sessions preview hides a Bot's sessions,
+  whose own slot is no longer open. The person's list shows those rows only under
+  their root, so after the root's tab closes no tab shows them, and they go on
+  this axis instead of holding their runtime and MCP servers until the idle
+  timeout. A busy one is kept by the guards below; an idle one's runtime is
+  released at the next tick, and its slot and conversation stay, so reopening the
+  root republishes it. Only direct children count, and closed roots are known in
+  memory only, so a restart forgets them. The surface registry still gets every
+  open key.
+
   The record describes ONE incarnation, so on the TERMINATED-OWNER path it
   is released just before that session's `reset`, not left for the next sweep's
   prune: the prune runs during the scan, ahead of every reset, so a record left

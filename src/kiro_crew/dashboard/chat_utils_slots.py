@@ -22,6 +22,7 @@ from dataclasses import dataclass
 
 from aiohttp import web
 
+from kiro_crew import crew_mode
 from kiro_crew.dashboard.state import DashboardState, _ChatSlot, _normalize_slot_key
 from kiro_crew.execution_context import (
     ExecutionContext,
@@ -668,21 +669,49 @@ def _pay_listing_refresh(state: "DashboardState") -> None:
         push_listing_refresh()
 
 
+def _closed_root_worker_keys(slots: list[_ChatSlot]) -> set[str]:
+    """Session keys of open slots that a now-closed Crew Mode root or Bot thread created.
+
+    The person's list hides these rows (they show under their root), so once the
+    root's tab is closed no tab shows them, yet each slot stays open and would hold
+    its runtime and MCP servers until the idle timeout. Leaving them out of the set
+    SessionManager reads puts them on the sweep's slot-gone axis: a busy one is kept,
+    an idle one has its runtime released at the next tick, and the slot and its
+    conversation stay, so a reopened root resumes them. No I/O.
+
+    shortcut: direct children only, and closed roots are known in memory only (a
+    restart forgets them); upgrade to the lineage walk (``crew_mode.live_stamps``)
+    if grandchildren or restarts matter.
+    """
+    roots = set(crew_mode.known_roots())
+    if crew_mode.mate_sessions_hidden():
+        roots |= crew_mode.known_mate_roots()
+    if not roots:
+        return set()
+    roots -= {s.key for s in slots}
+    return {
+        effective_session_key(s) for s in slots if (getattr(s, "_created_by", "") or "") in roots
+    }
+
+
 def _sync_dashboard_slots(state: "DashboardState") -> None:
     """Publish the open slots' session keys to SessionManager and the surface registry.
 
     SessionManager uses the set to reap orphaned sessions; the surface registry
     lets layers with no dashboard import ask whether a session has an open tab
     (see :mod:`kiro_crew.session_surface`). A channel-born slot contributes its
-    channel key, which is what both consumers must match against.
+    channel key, which is what both consumers must match against. SessionManager
+    is not sent the workers of a closed root (:func:`_closed_root_worker_keys`).
     """
     with _PUBLISHED_SLOT_KEYS_LOCK:
-        keys = {effective_session_key(s) for s in state._slots.values()}
+        slots = list(state._slots.values())
+        keys = {effective_session_key(s) for s in slots}
         previous = _published_keys_of(state)
         gained = not keys <= previous
         lost = not previous <= keys
         state._published_slot_keys = frozenset(keys)
-    state.sessions.set_active_dashboard_slots(keys)
+        unattended = _closed_root_worker_keys(slots)
+    state.sessions.set_active_dashboard_slots(keys - unattended)
     set_dashboard_surfaced(keys)
     # A newly open session leaves Older Sessions, and a session whose slot leaves ``_slots``
     # returns to it; tabs re-read only on a ``history`` frame. A shrink owes one, paid by a
