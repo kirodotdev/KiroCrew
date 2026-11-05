@@ -1448,6 +1448,8 @@ class AcpClient:
     _note_session_message = _client_native_children._note_session_message
     _native_child_of = _client_native_children._native_child_of
     _native_child_events = _client_native_children._native_child_events
+    native_child_resume_refusal = _client_native_children.native_child_resume_refusal
+    report_native_children = _client_native_children.report_native_children
     # Their redaction before the turn yields them, and the flush of the text it
     # holds for a turn cut short: ``kiro_crew.acp.client_turn``.
     _redact_native_child_events = _client_turn._redact_native_child_events
