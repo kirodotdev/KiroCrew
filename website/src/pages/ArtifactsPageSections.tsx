@@ -268,12 +268,15 @@ export function RemoteBrowseSection({ provider, onForked, onCloned }: {
       </div>
       {hasNextPage && (
         <div className="mt-2 flex justify-center">
-          {/* Stable aria-label: while loading the button shows only a spinner
-              icon, so it needs an accessible name in both states. */}
+          {/* The button shows only a spinner icon while the next page loads, so
+              it needs an accessible name in both states; the loading one says
+              why it is disabled. */}
           <Btn
             onClick={() => fetchNextPage()}
             disabled={isFetchingNextPage}
-            aria-label={i18nT('pages.artifactsPage.load_more_artifacts', { provider: provider.display_name })}
+            aria-label={isFetchingNextPage
+              ? i18nT('pages.artifactsPage.loading_more_artifacts', { provider: provider.display_name })
+              : i18nT('pages.artifactsPage.load_more_artifacts', { provider: provider.display_name })}
           >
             {isFetchingNextPage
               ? <Loader2 className="lucide-inline w-3.5 h-3.5 animate-spin" />

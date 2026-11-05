@@ -12108,6 +12108,7 @@
       "live": "Ativo",
       "load_more": "Carregar mais",
       "load_more_artifacts": "Carregar mais artefatos do {{provider}}",
+      "loading_more_artifacts": "Carregando mais artefatos do {{provider}}…",
       "loading": "Carregando…",
       "masonry_preview_gallery": "Galeria de prévias em mosaico",
       "more_ways_to_add_an_artifact": "Mais formas de adicionar um artefato",

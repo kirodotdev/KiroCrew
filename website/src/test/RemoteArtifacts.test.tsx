@@ -308,4 +308,37 @@ describe('ArtifactsPage remote-browse gating', () => {
     // Terminal page dropped the token → no more Load more.
     expect(screen.queryByRole('button', { name: /load more/i })).not.toBeInTheDocument()
   })
+
+  it('names the Load more button for the page load while it is disabled, then restores the name', async () => {
+    vi.mocked(api).getArtifactPublishProviders = vi.fn().mockResolvedValue({
+      providers: [mkProvider('companion')],
+      kind: 'widget',
+    })
+    // Hold page 2 open so the in-flight state is observable without a timer.
+    let finishPage2: (value: { artifacts: RemoteArtifact[]; next_page_token: string | null }) => void = () => {}
+    const page2 = new Promise<{ artifacts: RemoteArtifact[]; next_page_token: string | null }>((resolve) => {
+      finishPage2 = resolve
+    })
+    vi.mocked(api).browseRemoteArtifacts = vi.fn().mockImplementation(async (_p, opts) => {
+      if (opts?.pageToken === 'tok-2') return page2
+      return { artifacts: [mkRemote('ext-1')], next_page_token: 'tok-2' }
+    })
+    renderWithProviders(<ArtifactsPage />)
+    await waitFor(() => expect(screen.getByText('Remote ext-1')).toBeInTheDocument())
+
+    await userEvent.click(screen.getByRole('button', { name: /^load more companion provider artifacts$/i }))
+
+    // The button is disabled for the in-flight page and says so, instead of
+    // keeping the idle name a screen reader reads as a disabled "Load more".
+    const loading = await screen.findByRole('button', { name: /^loading more companion provider artifacts/i })
+    expect(loading).toBeDisabled()
+    expect(screen.queryByRole('button', { name: /^load more companion provider artifacts$/i })).not.toBeInTheDocument()
+
+    await act(async () => { finishPage2({ artifacts: [mkRemote('ext-2')], next_page_token: 'tok-3' }) })
+
+    // Settled with another page available: the idle name returns on an enabled button.
+    const idle = await screen.findByRole('button', { name: /^load more companion provider artifacts$/i })
+    expect(idle).toBeEnabled()
+    expect(screen.queryByRole('button', { name: /^loading more/i })).not.toBeInTheDocument()
+  })
 })

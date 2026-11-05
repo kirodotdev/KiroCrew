@@ -11608,6 +11608,7 @@
       "live": "라이브",
       "load_more": "더 불러오기",
       "load_more_artifacts": "{{provider}} 아티팩트 더 불러오기",
+      "loading_more_artifacts": "{{provider}} 아티팩트를 더 불러오는 중…",
       "loading": "불러오는 중…",
       "masonry_preview_gallery": "메이슨리 미리 보기 갤러리",
       "more_ways_to_add_an_artifact": "아티팩트를 추가하는 다른 방법",

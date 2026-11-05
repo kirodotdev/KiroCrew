@@ -5230,6 +5230,7 @@
       "live": "Live",
       "load_more": "Load more",
       "load_more_artifacts": "Load more {{provider}} artifacts",
+      "loading_more_artifacts": "Loading more {{provider}} artifacts…",
       "masonry_preview_gallery": "Masonry preview gallery",
       "more_ways_to_add_an_artifact": "More ways to add an artifact",
       "new_artifact": "New artifact",

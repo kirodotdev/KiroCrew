@@ -11858,6 +11858,7 @@
       "live": "लाइव",
       "load_more": "और लोड करें",
       "load_more_artifacts": "और {{provider}} आर्टिफ़ैक्ट लोड करें",
+      "loading_more_artifacts": "और {{provider}} आर्टिफ़ैक्ट लोड हो रहे हैं…",
       "loading": "लोड हो रहा है…",
       "masonry_preview_gallery": "मेसनरी पूर्वावलोकन गैलरी",
       "more_ways_to_add_an_artifact": "आर्टिफ़ैक्ट जोड़ने के अन्य तरीके",

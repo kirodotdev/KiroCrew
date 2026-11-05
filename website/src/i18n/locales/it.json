@@ -12108,6 +12108,7 @@
       "live": "Online",
       "load_more": "Carica altri",
       "load_more_artifacts": "Carica altri artefatti di {{provider}}",
+      "loading_more_artifacts": "Caricamento di altri artefatti di {{provider}}…",
       "loading": "Caricamento…",
       "masonry_preview_gallery": "Galleria di anteprime a mosaico",
       "more_ways_to_add_an_artifact": "Altri modi per aggiungere un artefatto",

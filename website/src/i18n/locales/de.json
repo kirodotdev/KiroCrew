@@ -11858,6 +11858,7 @@
       "live": "Live",
       "load_more": "Mehr laden",
       "load_more_artifacts": "Weitere {{provider}}-Artefakte laden",
+      "loading_more_artifacts": "Weitere {{provider}}-Artefakte werden geladen…",
       "loading": "Wird geladen…",
       "masonry_preview_gallery": "Masonry-Vorschaugalerie",
       "more_ways_to_add_an_artifact": "Weitere Möglichkeiten, ein Artefakt hinzuzufügen",

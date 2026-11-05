@@ -12108,6 +12108,7 @@
       "live": "En direct",
       "load_more": "Charger plus",
       "load_more_artifacts": "Charger plus d’artefacts {{provider}}",
+      "loading_more_artifacts": "Chargement d’autres artefacts {{provider}}…",
       "loading": "Chargement…",
       "masonry_preview_gallery": "Galerie d’aperçus en mosaïque",
       "more_ways_to_add_an_artifact": "Autres façons d'ajouter un artefact",
