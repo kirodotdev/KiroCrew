@@ -1243,6 +1243,15 @@ class TestEndpoints:
         async with TestClient(TestServer(_make_app(state))) as client:
             resp = await client.get("/api/skills/kiro-user/nope/-/tree")
             assert resp.status == 404
+            assert (await resp.json())["code"] == "skill_not_found"
+
+    @pytest.mark.asyncio
+    async def test_file_endpoint_404_for_unknown(self, fake_home):
+        state = MagicMock(_slots={}, context_builder=None)
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.get("/api/skills/kiro-user/nope/-/file?path=SKILL.md")
+            assert resp.status == 404
+            assert (await resp.json())["code"] == "skill_not_found"
 
     @pytest.mark.asyncio
     async def test_file_endpoint_returns_content(self, fake_home):
