@@ -1,0 +1,6 @@
+{
+  "description": "The goose release the Real Adapter Contract Tests lane downloads. goose ships as a release binary, not an npm package, so it cannot ride the lockfile; this file is its one pin. ci.yml downloads url, refuses it unless its sha256 matches, and test/real_adapter_gate.py reads the same file. Bump by editing all three fields from the release's own asset digest.",
+  "version": "1.50.1",
+  "url": "https://github.com/aaif-goose/goose/releases/download/v1.50.1/goose-x86_64-unknown-linux-gnu.tar.bz2",
+  "sha256": "a5e25bc6d2f950837b579605162e8c84364fce38f74facb5adcb3ff963994d41"
+}
