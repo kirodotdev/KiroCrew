@@ -58,6 +58,13 @@ export function readTagged(data: unknown): (Record<string, unknown> & { type: st
   return m as Record<string, unknown> & { type: string }
 }
 
+/** A relay request from a srcdoc frame (`frameRelay.ts` answers it): no point's
+ *  message, so a point host skips it before its own rate and size bounds. */
+export function isRelayMessage(data: unknown): boolean {
+  const m = readTagged(data)
+  return !!m && (m.type === 'relay' || m.type === 'relay.abort')
+}
+
 export function tagged(msg: { type: string } & Record<string, unknown>): Record<string, unknown> {
   return { [APP_FRAME_TAG]: 1, ...msg }
 }

@@ -877,11 +877,12 @@ At most **one** provider per app; a link goes to the first enabled app whose
 the dashboard creates an iframe for the provider that is `sandbox="allow-scripts"`
 with no `allow-same-origin`, and loads a frame document the gateway serves at
 `/app-frame/<app>/linkPreviews/<id>/…` with its own `Content-Security-Policy: sandbox
-allow-scripts`. The frame's origin is opaque: it cannot read the dashboard's DOM,
+allow-scripts` (behind an authenticating reverse proxy that refuses that load, the
+same document is set as the frame's `srcdoc` instead, with the policy as a `<meta>`). The frame's origin is opaque: it cannot read the dashboard's DOM,
 its cookies, its storage or its token. The iframe is `credentialless`, the frame's
-CSP starts from `default-src 'none'` (scripts and network on the gateway only,
-images from any `https:` host, no workers, frames, objects, forms or `<base>`),
-and it is sent with `Referrer-Policy: no-referrer`. A frame that navigates itself
+CSP starts from `default-src 'none'` (scripts and
+network on the gateway only, images from any `https:` host, no workers, frames,
+objects, forms or `<base>`), and it sends no referrer. A frame that navigates itself
 away is removed. The frame imports `entry` and calls
 `activate(ctx)` once. The dashboard sends it only the hovered URL or text, the
 anchor's rect, the theme and the modifier keys, over `postMessage`, and it
@@ -968,6 +969,29 @@ failed frame and loads a new one for the same link, and a close button; Escape
 closes it too. Without Retry, the next hover at least 30 seconds later tries
 again. When the app is disabled the host sends `hide('disabled')`
 and `dispose`, then removes the frame.
+
+**Behind an authenticating reverse proxy, register your entry.** A sandboxed frame
+sends no cookie, so a proxy in front of the dashboard that signs every request in by
+cookie refuses the frame's own requests: its module import gets the proxy's login
+page. The dashboard then sets the frame document itself (`srcdoc`) when the load
+fails, and makes the frame's refused requests on its behalf (the same path, method, headers and capability).
+When the import is refused it fetches your module the same way and runs it inline,
+where no export can be read. For that path, also hand over `activate`:
+
+```js
+export function activate(ctx) { /* ... */ }
+globalThis.kirocrew?.register(activate)
+```
+
+`register` takes your `activate` function, called with `ctx` as the export is; anything
+else is ignored. It is read only on the
+inline path, so `activate` runs once either way, and the `?.` keeps the module
+loading on a host without the call. Keep the entry one self-contained file: an inline
+module's relative imports do not resolve. A module that only exports `activate` keeps
+working where its import is served (localhost, a plain port forward, a proxy that
+does not authenticate each request) and still fails behind an authenticating proxy.
+The same holds for every frame-backed point below (`messageActions`, `linkOpen`,
+`composerActions`, `selectionActions`).
 
 **Plain text (`textPatterns`).** Each entry names text that is not a link but should
 open the app's card:

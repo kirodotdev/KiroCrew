@@ -15,6 +15,7 @@
  * @module selectionActions/selectionInvocation
  */
 import {
+  isRelayMessage,
   MAX_HOST_MESSAGE_BYTES,
   displaySafe,
   freshRate,
@@ -196,6 +197,7 @@ export class SelectionInvocation {
   private onMessage(e: MessageEvent): void {
     if (!e.source || e.source !== this.el.contentWindow) return
     // Bounded: past the burst allowance or over the size cap, the frame is torn down.
+    if (isRelayMessage(e.data)) return
     if (!takeMessage(this.rate) || messageBytes(e.data) > MAX_HOST_MESSAGE_BYTES) {
       this.fail({ kind: 'no_response' })
       return
