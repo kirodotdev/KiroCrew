@@ -29,7 +29,11 @@ shipped sections. The parser that renders it into the dashboard is
 - **Never delete or edit a shipped section.** A release PR adds one section and
   leaves every earlier one byte-identical. This has already gone wrong once: a section
   was *replaced* rather than prepended and 322 lines of released history went with it,
-  which no test caught and a user reported as an empty Releases page.
+  which no test caught and a user reported as an empty Releases page. The one rewrite
+  the gate accepts is the port of a release's own text to `main`, when `CHANGELOG.md` is
+  the only changed path and the section is byte-identical to the one on the release
+  tag, or on the release branch while that tag does not exist yet
+  ([release.md](release.md) § Changelog).
 
 ## The heading shape
 

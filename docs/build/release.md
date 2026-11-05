@@ -1494,7 +1494,24 @@ rewritten in isolation and lost three shipped sections that `main` still had.
 The rules that keep the two from drifting:
 
 - **Write the section on the release branch first** (it is what ships), then port
-  it to `main` **verbatim** — a port adds a section and removes nothing.
+  it to `main` **verbatim**. A port removes no other section. When `main` already
+  holds an earlier cut of that release's section, the port replaces that cut with
+  the release branch's text.
+- **The port passes the changelog gate by itself**, with no override. Open it as a
+  PR that changes `CHANGELOG.md` and nothing else. `check_changelog_history.py` then
+  waives its "different notes" verdict for each changed section that is
+  byte-identical, heading and body, to the same version's section on `origin` at tag
+  `vX.Y.Z`, or at `release/X.Y.0` while that tag does not exist yet (a patch release
+  such as `0.11.2` is written on its line's branch, `release/0.11.0`). Once the tag
+  exists it alone counts, because the branch keeps moving. The gate reads git
+  objects, so a label, title or PR text cannot earn the waiver; a local run reads
+  whatever its `origin` names, so only CI's result counts. Any other change is
+  refused as before: another changed path, text that differs from the release's, a
+  deleted section, a draft heading, a release text with CR or undecodable bytes, or
+  no readable tag or branch on `origin`. The tag is the shipped record, so a
+  `CHANGELOG.md`-only PR that restores an older section to its tag text passes the
+  same way. The Opus review lane applies the same rule through `AUTOSDE.yaml`, so it
+  does not block a port that matches.
 - **`main` is the recovery source.** If a release branch's changelog is damaged,
   restore from `main` rather than reconstructing by hand; `main` is never rewound
   by a release cut, so its copy is the one that still has the full history.
@@ -1506,12 +1523,12 @@ The rules that keep the two from drifting:
   for rather than sampled. 0.4.0 is the cautionary case: its per-PR accumulation
   reached 721 lines while describing about 11% of the 453 commits it covered, and it
   named none of the eighteen breaking changes it shipped.
-- **Editing the in-flight section after it is written needs the documented human
-  override**, because the immutability rule cannot tell a not-yet-shipped section
-  from a shipped one without a tag lookup, and a shallow CI checkout has no tags.
-  This is the intended trade: a fix cherry-picked into a later RC that deserves a
-  changelog line is rare, and the alternative — an exemption keyed on position in
-  the file — once made the most recently shipped section the only editable one.
+- **Editing a section on `main` that the release ref does not carry still needs the
+  documented human override.** The gate cannot tell a not-yet-shipped section from a
+  shipped one by position in the file; that exemption once made the most recently
+  shipped section the only editable one. It tells them apart by the release ref, so
+  a fix that deserves a changelog line goes onto the release branch first and is
+  then ported as above.
 
 ## Deliberately not built
 
