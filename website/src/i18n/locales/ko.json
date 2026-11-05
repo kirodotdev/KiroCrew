@@ -1788,7 +1788,9 @@
         "fix": "수정 방법",
         "suggestion": "제안",
         "what_i_saw": "본 내용",
-        "where": "위치"
+        "where": "위치",
+        "steps_range": "{{range}}단계",
+        "flow_badge": "흐름"
       },
       "manifest": {
         "use_case_1": "화면 하나 또는 전체 제품 흐름을 보이는 영역과 연결된 심각도순 휴리스틱 기반 결과로 검토합니다.",
@@ -1825,7 +1827,8 @@
         "i_ll_list_the_screens_only_pages_that_render_wit": "화면 목록을 만듭니다. 서버 없이 렌더링되는 페이지만 볼 수 있습니다.",
         "i_ll_pull_the_frames": "I’ll pull the frames.",
         "it_must_be_running_right_now_i_ll_capture_it_liv": "지금 실행 중이어야 합니다. 실시간으로 캡처해서 실제 대비와 크기를 측정합니다.",
-        "not_something_i_recognise_give_me_a_figma_link_a": "인식할 수 없습니다. Figma 링크, GitHub 저장소, 로컬 절대 경로 또는 이미 서비스 중인 URL을 알려 주세요."
+        "not_something_i_recognise_give_me_a_figma_link_a": "인식할 수 없습니다. Figma 링크, GitHub 저장소, 로컬 절대 경로 또는 이미 서비스 중인 URL을 알려 주세요.",
+        "screen_fallback": "화면"
       },
       "waitingScreen": {
         "cancel_this_run": "이 실행 취소",
