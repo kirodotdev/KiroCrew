@@ -134,6 +134,38 @@ class TestServedModel:
         assert provider.served_model == ""
 
 
+class TestPromptsWritten:
+    """The channel completion route reads ``prompts_written`` off the provider the
+    session manager returns, which is this wrapper, so the count has to cross it."""
+
+    @pytest.mark.asyncio
+    async def test_a_session_turn_that_wrote_its_prompt_is_counted_through_the_wrapper(self):
+        handle = AcpSessionHandle("s1", asyncio.Queue(), MagicMock())
+
+        async def mock_prompt(message):
+            handle.prompts_written += 1
+            yield AcpEvent(kind="complete", stop_reason="end_turn")
+
+        handle.prompt = mock_prompt  # type: ignore[method-assign]
+        session = AcpSessionProvider(handle, runtime=MagicMock())
+        provider = _build_provider(ACP_BACKEND_CLAUDE)
+        provider._client = session
+        assert provider.prompts_written == 0
+
+        await _drain(session.stream("report"))
+
+        assert provider.prompts_written == 1
+
+    def test_a_client_that_keeps_no_count_reads_as_unknown(self):
+        provider = _build_provider(ACP_BACKEND_CLAUDE)
+
+        class _RawShape:
+            pass
+
+        provider._client = _RawShape()
+        assert provider.prompts_written is None
+
+
 class TestStreamCommandRouting:
     @pytest.mark.asyncio
     async def test_kiro_backend_uses_commands_execute(self):

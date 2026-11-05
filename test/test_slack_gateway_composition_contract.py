@@ -772,7 +772,7 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         (
             "_inject_with_retry",
             "async method",
-            "(self, info: 'SubagentInfo', client, msg: 'str', parent_key: 'str', label: 'str') -> 'str | None'",
+            "(self, info: 'SubagentInfo', client, msg: 'str', parent_key: 'str', label: 'str', *, delivery: 'dict[str, Any] | None' = None) -> 'str | None'",
         ),
     ),
     "channel_boot": (
