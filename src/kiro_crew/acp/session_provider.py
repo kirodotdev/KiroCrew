@@ -534,10 +534,17 @@ class AcpSessionProvider(LLMProvider):
             self._handle.accepts_elicitation = bool(value)
 
     async def answer_elicitation(
-        self, request_id: str | int, action: str, content: dict[str, Any] | None = None
+        self,
+        request_id: str | int,
+        action: str,
+        content: dict[str, Any] | None = None,
+        *,
+        person: bool = True,
     ) -> bool:
         """Answer a pending MCP elicitation (see AcpSessionHandle.answer_elicitation)."""
-        return await self._guarded(self._handle.answer_elicitation(request_id, action, content))
+        return await self._guarded(
+            self._handle.answer_elicitation(request_id, action, content, person=person)
+        )
 
     async def release_runtime_lease(self) -> None:
         """Give up this provider's lease on the runtime, if it holds one.
