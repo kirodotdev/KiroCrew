@@ -24,7 +24,7 @@ import { useState } from 'react'
 import { api } from '../../api/client'
 import { i18nT } from '../../i18n/t'
 import { isRegistrySourced } from '../../components/appstore/types'
-import { isTrustDeniedError } from '../../components/appstore/TrustAppModal'
+import { isTrustDeniedError, localOnlyTrustRepository } from '../../components/appstore/TrustAppModal'
 import { backendRefusedNotice } from '../../components/appstore/backendRefused'
 import type { AppsData } from './useAppsData'
 
@@ -66,26 +66,47 @@ export function useAppUpdates({
   /** Name of the app whose single in-place update is in flight, or null. */
   const [updatePending, setUpdatePending] = useState<string | null>(null)
   const label = (name: string) => apps.find(a => a.name === name)?.displayName || name
+  /**
+   * The `source` override for an update of *name*: the registry for a path
+   * install that a same-named registry row offers a newer version of (it is in
+   * `updatables`, so its tile and Updates row say Update, not Sync), so the
+   * call installs that version instead of re-copying the folder. Nothing
+   * otherwise: a registry-sourced app's recorded source already is the
+   * registry, and a path install with no update pending is a Sync.
+   */
+  const registrySourceFor = (name: string) => {
+    const target = apps.find(a => a.name === name)
+    const pending = updatables.some(a => a.name === name)
+    return target && pending && !isRegistrySourced(target) ? `registry:${name}` : undefined
+  }
+  /** One update call, with the registry override when `registrySourceFor` gives one. */
+  const callUpdate = (name: string) => {
+    const source = registrySourceFor(name)
+    return source ? api.updateApp(name, source) : api.updateApp(name)
+  }
 
   // Update dispatches on the RECORDED SOURCE, mirroring ``handle_update_app``'s
   // own branch. A registry-sourced app is re-cloned from its registry and the
   // detail page owns that flow (streaming log plus the trust consent modal), so
   // it navigates there — unless `rowUpdatesInPlace` opts the surface into the
   // direct call, which is the same request the detail page and Update All end
-  // up making. An app installed from a path has no registry row: it is
-  // refreshed in place from the directory recorded at install — the same call
-  // Update All makes — and routing it at the registry instead failed every sync
-  // with "not found in registry". A row absent from this list carries no source
-  // to read, so it navigates and the detail page re-dispatches on the record it
-  // loads. Blocked while Update All is running so the same update can't run
-  // twice concurrently.
+  // up making. An app installed from a path is refreshed in place from the
+  // directory recorded at install (the Sync verb), the same call Update All
+  // makes for it otherwise, and routing it at the registry instead failed every
+  // sync with "not found in registry". A path install that a registry row offers
+  // a newer version of is an Update, which installs that version, as the detail
+  // page's Update button does: it routes like a registry-sourced app, and the
+  // in-place call sends the registry source (`registrySourceFor`). A row absent
+  // from this list carries no source to read, so it navigates and the detail
+  // page re-dispatches on the record it loads. Blocked while Update All is
+  // running so the same update can't run twice concurrently.
   // The post-consent retry the trust gate runs: the raw update call, success
   // feedback included, REJECTING on failure so the gate can distinguish a
   // landed grant whose retry still failed (`useTrustGate` requires that
   // shape). Not `runUpdate` itself — that catch-all resolves on failure and
   // would make the gate report success over a failed update.
   const retryUpdate = async (name: string) => {
-    const updateResult = await api.updateApp(name)
+    const updateResult = await callUpdate(name)
     announceAppsChanged()
     if (updateResult?.notice === 'session_approval_reconsent') {
       updateApp(name)
@@ -104,14 +125,15 @@ export function useAppUpdates({
   const runUpdate = async (name: string) => {
     if (updatingAll || updatePending) return
     const target = apps.find(a => a.name === name)
-    if (!target || (isRegistrySourced(target) && !rowUpdatesInPlace)) {
+    const fromRegistry = !!target && (isRegistrySourced(target) || !!registrySourceFor(name))
+    if (!target || (fromRegistry && !rowUpdatesInPlace)) {
       updateApp(name)
       return
     }
     setUpdatePending(name)
     setError('')
     try {
-      const updateResult = await api.updateApp(name)
+      const updateResult = await callUpdate(name)
       announceAppsChanged()
       if (updateResult?.notice === 'session_approval_reconsent') {
         updateApp(name)
@@ -126,16 +148,20 @@ export function useAppUpdates({
       // is a warning, not a success: the update landed but nothing runs.
       const refused = backendRefusedNotice(target.displayName || name, updateResult)
       if (refused) setError(refused)
-      else setSuccess(isRegistrySourced(target)
+      else setSuccess(fromRegistry
         ? i18nT('pages.appsPage.updated_app', { count: 1 })
         : i18nT('pages.appsPage.synced_from_its_source_directory', {
             name: target.displayName || name,
           }))
     } catch (e) {
+      // A grant that covers only the app's local folder: the detail page is the
+      // surface that offers to trust the repository, so the row hands off there,
+      // as it does for an update that needs new chat-control consent.
+      if (localOnlyTrustRepository(e)) updateApp(name)
       // A third-party app whose execution trust lapsed is a consent prompt,
       // not an error — hand it to the surface's trust modal when one is
       // wired, mirroring how the enable path branches on the same code.
-      if (onTrustDenied && isTrustDeniedError(e)) onTrustDenied(name, retryUpdate)
+      else if (onTrustDenied && isTrustDeniedError(e)) onTrustDenied(name, retryUpdate)
       else setError((e as Error)?.message || i18nT('pages.appsPage.failed_to_update', { names: name }))
     } finally {
       setUpdatePending(null)
@@ -153,7 +179,7 @@ export function useAppUpdates({
     const refusedNotices: string[] = []
     for (let i = 0; i < targets.length; i++) {
       try {
-        const updateResult = await api.updateApp(targets[i])
+        const updateResult = await callUpdate(targets[i])
         succeeded += 1
         if (updateResult?.notice === 'session_approval_reconsent') {
           consentNeeded.push(targets[i])

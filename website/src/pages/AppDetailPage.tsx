@@ -25,7 +25,8 @@ import { uiLocation } from '../uiLocations/uiLocation'
 import SessionApprovalModes from '../components/appstore/SessionApprovalModes'
 import AppIcon from '../components/AppIcon'
 import TrustAppModal, {
-  APP_EXECUTION_DENIED, DESKTOP_BUILD_STEP_UNSUPPORTED, isTrustDeniedError, useTrustGate,
+  APP_EXECUTION_DENIED, DESKTOP_BUILD_STEP_UNSUPPORTED, isTrustDeniedError, localOnlyTrustRepository,
+  useTrustGate,
 } from '../components/appstore/TrustAppModal'
 import { isRegistrySourced } from '../components/appstore/types'
 import { REGISTRY_STALE_MS, registryQueryFn } from './apps/useAppsData'
@@ -193,6 +194,9 @@ export default function AppDetailPage() {
    * permanent refusal from a failure worth retrying.
    */
   const installFailureRef = useRef<{ message: string; code: string }>({ message: '', code: '' })
+  /** The repository an `app_trust_local_only` refusal named, offered only while
+   *  the message it was shown under is still the page's error. */
+  const [localSwitch, setLocalSwitch] = useState<{ message: string; repository: string } | null>(null)
   const [clientInstall, setClientInstall] = useState<{ shell?: string; postInstall?: string } | null>(null)
   const [copied, setCopied] = useState(false)
   const [serverHostname, setServerHostname] = useState('')
@@ -558,12 +562,11 @@ export default function AppDetailPage() {
     autoActionTriggered.current = true
     // Clear the state so a refresh or Back/Forward doesn't re-fire it.
     navigate(`${location.pathname}${location.search}`, { replace: true, state: null })
-    // An installed app whose bytes came from a directory on this machine has no
-    // registry row to install from — its refresh is the update endpoint, which
-    // re-copies the source directory recorded at install. The streaming registry
-    // install is for everything else: a registry-sourced app, and an app not
-    // installed at all.
-    if (stateAction === 'update' && app.installed && !isRegistrySourced(app)) {
+    // A directory install with no registry update pending is this page's Sync:
+    // the update endpoint re-copies the recorded directory. Everything else runs
+    // the streaming registry install, as the Update button does: a registry
+    // update offered for a directory install, a registry-sourced app, a new app.
+    if (stateAction === 'update' && app.installed && !isRegistrySourced(app) && !app.updateAvailable) {
       handleAction('update')
       return
     }
@@ -593,6 +596,7 @@ export default function AppDetailPage() {
     // Drop the previous attempt's reason: a retry that fails for a new cause (or
     // is aborted, which has none) must never show the first attempt's.
     installFailureRef.current = { message: '', code: '' }
+    setLocalSwitch(null)
     setBackendRefusedMsg('')
     setClientInstall(null)
     installAbortRef.current?.abort()
@@ -645,7 +649,14 @@ export default function AppDetailPage() {
         await load()
         window.dispatchEvent(new Event('mc:apps-changed'))
       } else {
-        reportInstallFailure(result.error || i18nT('pages.appDetailPage.install_failed'), 'system', result.code || '')
+        const message = result.error || i18nT('pages.appDetailPage.install_failed')
+        reportInstallFailure(message, 'system', result.code || '')
+        const repository = localOnlyTrustRepository(result)
+        if (repository) {
+          // Refused before the clone: the log is empty and the banner's button is the way on.
+          setShowInstallLog(false)
+          setLocalSwitch({ message, repository })
+        }
         return 'failed'
       }
     } catch (e: unknown) {
@@ -698,7 +709,10 @@ export default function AppDetailPage() {
   // instead of the first-party fallback label (#20656).
   // Until the registries list lands (or when it fails) the tier is unknown, so
   // the not-vetted box shows (`consentTierFor`) rather than read it as vetted.
-  const consentTarget = trust.target && app && app.name === trust.target.name && app.origin !== 'local' && app._registry
+  // A local-source switch is the exception to the local rule: what it asks the
+  // user to trust IS the listing's repository, so the listing's claim applies.
+  const consentTarget = trust.target && app && app.name === trust.target.name
+    && (app.origin !== 'local' || trust.target.switchesLocalSource === true) && app._registry
     ? { ...trust.target, _registry: app._registry, ...consentTierFor(app._registry, sourceNames, registriesData === undefined) }
     : trust.target
   const { confirm: confirmConsent, confirmDialog: consentDialog } = useConfirm()
@@ -751,6 +765,48 @@ export default function AppDetailPage() {
             new Error(message || i18nT('pages.appDetailPage.install_failed')),
             code ? { code } : {},
           )
+        }
+      },
+    )
+  }
+
+  /**
+   * The local-only refusal's way on: consent to the repository it named, then the
+   * registry update through the update route with that repository as proof. The
+   * server switches the grant and puts the local one back on failure, so the
+   * retry rejects on failure and the dialog's not-saved state is the true one.
+   */
+  const openLocalSwitch = () => {
+    if (!app || !localSwitch) return
+    const { repository } = localSwitch
+    trust.open(
+      {
+        name: app.name,
+        displayName: app.displayName,
+        trustRepository: repository,
+        origin: app.origin,
+        _registry: app._registry, // the badge names the listing, not the local install
+        sessionApproval: app.manifest?.permissions?.sessionApproval === true,
+        retryInstalls: true,
+        replacesInstalled: true,
+        switchesLocalSource: true,
+      },
+      async () => {
+        const result = await api.updateApp(app.name, `registry:${app.name}`, repository) as
+          { notice?: string; backend_refused?: string } | undefined
+        clearError()
+        setLocalSwitch(null)
+        setShowInstallLog(false)
+        await load()
+        window.dispatchEvent(new Event('mc:apps-changed'))
+        // The same outcomes the Sync path reports: a backend the host refused is
+        // a warning, and an update that newly asks for chat control leaves the
+        // app disabled under its own persistent notice instead of a toast.
+        const refused = backendRefusedNotice(appDisplayName(app), result)
+        if (refused) setBackendRefusedMsg(refused)
+        else if (result?.notice !== 'session_approval_reconsent') {
+          setSuccessMsg(i18nT('pages.appsPage.updated_from_the_registry', { name: appDisplayName(app) }))
+          setTimeout(() => setSuccessMsg(''), 4000)
         }
       },
     )
@@ -1269,7 +1325,19 @@ export default function AppDetailPage() {
             className="mb-4 animate-rise"
           />
         ) : (
-          <ErrorNotice message={error} askAgent onDismiss={clearError} className="mb-4 animate-rise" />
+          <ErrorNotice
+            message={error}
+            askAgent
+            onDismiss={clearError}
+            className="mb-4 animate-rise"
+            // The local-only refusal names its own way forward: trust the
+            // repository and update from it, in the consent dialog.
+            footer={localSwitch && localSwitch.message === error ? (
+              <Btn className="mt-1" onClick={openLocalSwitch} disabled={actionBusy}>
+                <ShieldAlert size={14} /> {i18nT('pages.appDetailPage.trust_repository_and_update')}
+              </Btn>
+            ) : undefined}
+          />
         )}
 
         {/* Third-party execution-trust consent. Opened when an enable OR a

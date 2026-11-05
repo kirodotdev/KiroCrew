@@ -516,7 +516,7 @@ describe('LibraryPage — action dispatch', () => {
     await waitFor(() => expect(disableApp).toHaveBeenCalledWith('secretary'))
   })
 
-  it('Update goes through the shared useAppUpdates hook (in place for a path install)', async () => {
+  it('Update on a path install with a pending registry update opens the detail page', async () => {
     listApps.mockResolvedValue([
       installedApp('secretary', 'Secretary', { origin: 'local', source: '/home/u/apps/secretary' }),
     ])
@@ -529,7 +529,11 @@ describe('LibraryPage — action dispatch', () => {
     renderLibrary()
     const scope = await openTileMenu('secretary', 'Secretary')
     fireEvent.click(scope.getByRole('menuitem', { name: 'Update' }))
-    await waitFor(() => expect(updateApp).toHaveBeenCalledWith('secretary'))
+    // The shared hook sends it to the detail page's registry update, like a
+    // registry-sourced app; the in-place call is Sync's.
+    const probe = await screen.findByTestId('route-probe')
+    expect(probe).toHaveAttribute('data-path', '/apps/detail/secretary')
+    expect(updateApp).not.toHaveBeenCalled()
   })
 
   it('Sync appears for a gateway-lifecycle path install with no pending update and syncs in place', async () => {

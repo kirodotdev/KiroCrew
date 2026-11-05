@@ -55,7 +55,17 @@ logger = logging.getLogger("kiro_crew.apps.routes")
 
 
 async def handle_update_app(request: web.Request) -> web.Response:
-    """POST /api/apps/{name}/update — update an installed app from its source path."""
+    """POST /api/apps/{name}/update — update an installed app from its source path.
+
+    ``source`` (optional) overrides the recorded source; ``registry:<name>``
+    updates the app from the registry. ``trustRepository`` (optional, only with
+    that source) is the consent proof from an ``app_trust_local_only`` refusal:
+    the app's local-only grant is switched to that repository for the update and
+    put back if the update fails (:mod:`kiro_crew.apps.local_trust_switch`).
+    """
+    # Deferred like the gate below: the switch reaches the trust writer in the
+    # dashboard handlers package, which imports this route family.
+    from kiro_crew.apps import local_trust_switch
     from kiro_crew.dashboard.handlers._shared import (
         body_not_object_error,
         require_owner_dashboard_request,
@@ -89,6 +99,29 @@ async def handle_update_app(request: web.Request) -> web.Response:
 
     source = body.get("source", info.get("source", ""))
 
+    # Consent to the repository a registry update installs, sent when the app's
+    # grant covers its local folder only (the ``app_trust_local_only`` refusal
+    # carries this value). Valid only with a registry source for this same app:
+    # the grant it records names this app and the row this update installs.
+    consent = body.get("trustRepository")
+    if consent is not None and (
+        not isinstance(consent, str)
+        or not consent
+        or not isinstance(source, str)
+        or not is_registry_source(source)
+        or registry_name_from_source(source) != name
+    ):
+        return web.json_response(
+            {
+                "error": (
+                    "trustRepository must be a repository string and is accepted only "
+                    "with source registry:<this app>"
+                ),
+                "code": "invalid_repository_consent",
+            },
+            status=400,
+        )
+
     # Registry-installed apps: re-clone from registry.
     # Same order as the local-source branch below: stop the backend and scrub
     # its resources BEFORE the files are replaced. For an already-installed
@@ -121,19 +154,55 @@ async def handle_update_app(request: web.Request) -> web.Response:
                     status=400,
                 )
 
-            # Stop the backend, then deregister old resources -- same order as
-            # uninstall and the disable rollback. Stopping pops the tracking record,
-            # so the health watch cannot re-register the OLD manifest's MCP servers
-            # after the scrub (see app-kit-platform §17).
-            await asyncio.get_running_loop().run_in_executor(
-                subprocess_executor(), stop_app_backend, name
-            )
-            # Deregistering deletes the agent configs that hold the user's edits.
-            prior_agents = await _snapshot_agent_configs_off_loop(name)
-            await _deregister_app_off_loop(name)
+            # The local-to-repository trust switch is checked and written BEFORE
+            # the stop, so a refused consent leaves the running app untouched,
+            # and the grant is in place before ``install_from_registry`` fetches
+            # or runs any repository code.
+            switched_to: local_trust_switch.SwitchedGrant | None = None
+            if consent is not None:
+                switched = await local_trust_switch.switch_cancel_safe(
+                    name, consent, caller=request.get("user", "dashboard")
+                )
+                if isinstance(switched, local_trust_switch.SwitchRefusal):
+                    return web.json_response(
+                        {"ok": False, "name": name, "error": switched.error, "code": switched.code},
+                        status=switched.status,
+                    )
+                switched_to = switched
 
-            reg_install = await install_from_registry(registry_name)
+            # Everything from the stop to the end of the install runs inside one
+            # rollback scope: a step that raises, or a cancelled request, must not
+            # leave the repository grant over the local code that is still there.
+            try:
+                # Stop the backend, then deregister old resources -- same order as
+                # uninstall and the disable rollback. Stopping pops the tracking
+                # record, so the health watch cannot re-register the OLD manifest's
+                # MCP servers after the scrub (see app-kit-platform §17).
+                await asyncio.get_running_loop().run_in_executor(
+                    subprocess_executor(), stop_app_backend, name
+                )
+                # Deregistering deletes the agent configs that hold the user's edits.
+                prior_agents = await _snapshot_agent_configs_off_loop(name)
+                await _deregister_app_off_loop(name)
+                reg_install = await install_from_registry(registry_name)
+            except BaseException:
+                if switched_to:
+                    # Shielded, so a second cancellation cannot stop the revert halfway.
+                    await asyncio.shield(
+                        local_trust_switch.revert_switch(
+                            name, switched_to, caller=request.get("user", "dashboard")
+                        )
+                    )
+                raise
             if not reg_install.get("ok"):
+                if switched_to:
+                    # Before the restore below starts the old local code again,
+                    # so it starts under the grant that covered it.
+                    await asyncio.shield(
+                        local_trust_switch.revert_switch(
+                            name, switched_to, caller=request.get("user", "dashboard")
+                        )
+                    )
                 restore_refused = await _restore_app_after_failed_update(name, prior_agents)
                 if restore_refused:
                     reg_install["backend_refused"] = restore_refused

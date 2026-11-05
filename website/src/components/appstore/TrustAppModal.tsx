@@ -45,6 +45,14 @@ export const SESSION_APPROVAL_CONSENT_REQUIRED = 'session_approval_consent_requi
  * than on the sentence beside it.
  */
 export const DESKTOP_BUILD_STEP_UNSUPPORTED = 'desktop_build_step_unsupported'
+/**
+ * Machine-readable code of a registry update refused because the app's grant
+ * covers only the copy installed from a local folder. Granting through this
+ * dialog's normal path would record that local grant again, so the refusal
+ * carries the repository the update installs (`trustRepository`) and the update
+ * route takes it back as consent to switch the grant (`switchesLocalSource`).
+ */
+export const APP_TRUST_LOCAL_ONLY = 'app_trust_local_only'
 
 /**
  * The subset of an app row the consent modal needs: identity for the grant,
@@ -70,6 +78,13 @@ export type TrustAppTarget = Pick<RegistryApp, 'name' | '_registry' | 'origin'> 
    * update uses its own `update_*` Cancel and failure sentences.
    */
   replacesInstalled?: boolean
+  /**
+   * True when the app's grant covers only its local-folder copy and confirming
+   * runs the update that moves it to `trustRepository`. The retry itself carries
+   * the consent proof and the server writes the grant, putting the local one
+   * back if the update fails, so confirm writes no trust of its own here.
+   */
+  switchesLocalSource?: boolean
   /**
    * `community` when the registry that LISTED this app is a community one
    * (`registryTierFor`): a negative claim, the listing was not vetted, which is
@@ -169,6 +184,27 @@ function errorCode(e: unknown): string | null {
  */
 export function isTrustDeniedError(e: unknown): boolean {
   return errorCode(e) === APP_EXECUTION_DENIED
+}
+
+/**
+ * The repository an `app_trust_local_only` refusal names, or `''` for any other
+ * failure. Read like `errorCode`: a direct property on a resolved stream result,
+ * or the JSON body of a rejected `/update` call. A value that is not already
+ * credential-free is dropped, the same validation `useTrustGate().open` applies.
+ */
+export function localOnlyTrustRepository(e: unknown): string {
+  if (errorCode(e) !== APP_TRUST_LOCAL_ONLY || !e || typeof e !== 'object') return ''
+  let repository: unknown = (e as { trustRepository?: unknown }).trustRepository
+  const body = (e as { body?: unknown }).body
+  if (repository === undefined && typeof body === 'string' && body.trim().startsWith('{')) {
+    try {
+      repository = (JSON.parse(body) as { trustRepository?: unknown }).trustRepository
+    } catch {
+      repository = undefined
+    }
+  }
+  if (typeof repository !== 'string' || !repository) return ''
+  return credentialFreeRepository(repository) === repository ? repository : ''
 }
 
 /** True when enable must continue from the detail disclosure surface. */
@@ -314,7 +350,10 @@ export function useTrustGate(retryEnable: (name: string) => Promise<void>) {
     // closure, and the catch below has to know whether a grant stands.
     let grantLanded = grantStood
     try {
-      if (!grantStood) {
+      // A local-source switch writes its grant inside the retried update and
+      // undoes it there on failure, so there is no grant here to land, stand or
+      // roll back: a failure leaves the not-saved state.
+      if (!grantStood && !gate.app.switchesLocalSource) {
         await api.trustApp(gate.app.name, gate.app.trustRepository)
         grantLanded = true
         setGranted(true)
@@ -784,6 +823,15 @@ export default function TrustAppModal({
           {path === 'update' && !permanentRefusal && (
             <p className="text-text leading-relaxed">
               {i18nT('components.appstore.trustAppModal.update_outcome', { app: name })}
+            </p>
+          )}
+          {/* The switch changes where the app comes from, which the update line
+              above does not say: the copy installed from a local folder is
+              replaced by the repository's, and the app's own trust then follows
+              that repository instead of the folder. */}
+          {path === 'update' && app.switchesLocalSource && !permanentRefusal && (
+            <p className="text-text leading-relaxed">
+              {i18nT('components.appstore.trustAppModal.local_source_switch', { app: name })}
             </p>
           )}
           <p className="text-muted leading-relaxed">{copy.exit}</p>
