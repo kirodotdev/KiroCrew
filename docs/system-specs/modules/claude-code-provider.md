@@ -56,7 +56,9 @@ plain public build:
   forwards it to `@anthropic-ai/claude-agent-sdk` as
   `pathToClaudeCodeExecutable`; without it the SDK fails `session/new` with
   "Claude native binary not found", because it does not search `PATH` for
-  `claude` on its own.
+  `claude` on its own. `prepare_spawn_env` runs the lookup through the driver's
+  guarded thread hop, because it shells out to `mise which claude` and must not
+  block the event loop.
 - The adapter is a **public** npm package, `CLAUDE_ACP_NPM_PKG =
   "@agentclientprotocol/claude-agent-acp"`. Nothing on this path is
   edition-private.
