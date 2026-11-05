@@ -15,6 +15,7 @@ import {
   useCallback,
   type ReactNode,
 } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 // The identity layer this module composes with its own scoped-API layer. Kept in
 // a separate file so a surface that needs identity WITHOUT a sandbox — every
 // builtin page — can mount it on its own, and so it stays off this barrel (see
@@ -332,6 +333,72 @@ export function useNavBadge(): (count: number) => void {
       detail: { appName: info.name, count },
     }))
   }, [info.name])
+}
+
+/** One of this app's own bell notifications, as the host stored it. */
+export interface AppNotification {
+  /** The note's id: what `ack` takes. */
+  ts: string
+  channel: string
+  title: string
+  body: string
+  url?: string
+  priority?: string
+  acked?: boolean
+}
+
+/** What `useAppNotifications()` returns. */
+export interface AppNotifications {
+  /** This app's notes, read and unread, in the bell's order. */
+  items: AppNotification[]
+  /** How many of them the sidebar badge counts. */
+  unread: number
+  /** `ready` once the host has answered; `items` is empty before that and on `error`. */
+  status: 'loading' | 'error' | 'ready'
+  /** Mark one note read; resolves once the host has stored it. */
+  ack: (ts: string) => Promise<void>
+  /** Mark every note of this app read. */
+  ackAll: () => Promise<void>
+}
+
+const OWN_NOTIFICATIONS_PATH = '/api/notifications/own'
+const NO_NOTIFICATIONS: AppNotification[] = []
+
+/**
+ * This app's own bell notifications, the notes behind its sidebar badge, and a way
+ * to clear them. The host returns only the notes it stamped with this app's name.
+ * Needs `/api/notifications/own` in `permissions.api`. Read on mount, on window
+ * focus and after each ack; it does not follow the bell live.
+ */
+export function useAppNotifications(): AppNotifications {
+  const { api, info } = useCtx()
+  const queryClient = useQueryClient()
+  const app = info.name
+  const { data, status } = useQuery({
+    queryKey: ['app-sdk-notifications', app],
+    queryFn: () => api.get<{ notifications: AppNotification[]; unread: number }>(
+      `${OWN_NOTIFICATIONS_PATH}?app=${encodeURIComponent(app)}`,
+    ),
+    // The bell can ack these notes while the page is open, so never trust a cached read.
+    staleTime: 0,
+  })
+  const mark = useCallback(async (action: string, body: object) => {
+    try {
+      await api.post(`${OWN_NOTIFICATIONS_PATH}/${action}`, { app, ...body })
+    } finally {
+      // Re-read on a refusal too: a 404 means the note is already gone from the bell.
+      await queryClient.invalidateQueries({ queryKey: ['app-sdk-notifications', app] })
+    }
+  }, [api, app, queryClient])
+  const ack = useCallback((ts: string) => mark('ack', { ts }), [mark])
+  const ackAll = useCallback(() => mark('ack-all', {}), [mark])
+  return {
+    items: data?.notifications ?? NO_NOTIFICATIONS,
+    unread: data?.unread ?? 0,
+    status: status === 'pending' ? 'loading' : status === 'error' ? 'error' : 'ready',
+    ack,
+    ackAll,
+  }
 }
 
 // ---------------------------------------------------------------------------

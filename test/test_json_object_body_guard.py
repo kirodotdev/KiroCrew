@@ -212,6 +212,8 @@ _CAP_REGISTER: dict[str, tuple[str, str]] = {
         "<default>",
         _BOUNDED_BY_DEFAULT,
     ),
+    # An app's own-note ack: an app name and one note id.
+    "handlers/notifications_push.py::_mark_own": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "handlers/messaging.py::api_teams_activity": (
         "TEAMS_MAX_ACTIVITY_BYTES",
         _BOUNDED_EXPLICIT,

@@ -28,6 +28,10 @@ The JSON object contains:
 
 The endpoint returns the enriched note on success, including resolved source, full channel, effective priority, and `ts`. Validation and registration failures return `400`, including undeclared channels and an invalid manifest channel priority; missing or disabled app identity returns `403`; oversized bodies return `413`; exhausted budgets return `429`; and delivery or persistence failures return `500`. `test_notifications_push.py::TestPushDurability` pins the durability invariant: the handler awaits `DashboardState.last_notification_persist`, so it does not return success when the queued persist fails. Legacy `DashboardState.notify` remains best-effort.
 
+### GET /api/notifications/own and POST /api/notifications/own/{ack,ack-all}
+
+An app reads and acknowledges the notes it pushed, and nothing else, so its page can show and clear exactly what its sidebar badge counts (`website/src/appNotificationBadges.ts`). The handlers in `notifications_push.py` match `source` against `app:<name>`, the value `api_push_notification` stamps. For an app caller (`request["app"]` set by token auth) `<name>` is that identity and any `app` the request names is ignored. Any other caller must be the owner's dashboard (`require_owner_dashboard_request`, which also refuses a relayed teammate and an internal caller with no app), where the app's page runs, and names the app with `?app=` or a body `app`; a missing name is `400`. The list answers `{"notifications": [...], "unread": N}` with `unread_count` over those notes. `ack` takes `{"ts"}` and answers `404` unless the note the bell's `DashboardState.ack_notification` would mark for that `ts` is one of the caller's, so another source's note cannot be told apart from a missing one; it then acks through that same call. `ack-all` takes no `ts` and runs the bell's per-note ack-all over the caller's notes. Both broadcast `notification_ack`, so the bell follows, and both keep the store's persistence contract: the in-memory log is the live record and the rewrite is best-effort, as for every bell ack. The routes are registered beside the push route in `_register_mcp_routes`, and an app token reaches them only through a `permissions.api` grant (see Authorization). The SDK's `useAppNotifications()` calls them through the scoped client. `test_notifications_own.py` pins the scoping; `index.coverage.test.tsx` pins the hook.
+
 ### Deep-linking a push back to its notification
 
 `NotificationBus.push` creates `ts` as the note store id. The push response and notification envelope carry it, and the per-note mutation APIs key on it. Producers can link to a note with:
@@ -63,7 +67,7 @@ The endpoint returns the enriched note on success, including resolved source, fu
 
 ## Authorization
 
-- `dashboard.token_auth.app_token_path_allowed` denies app-token paths by default and explicitly permits `/api/notifications/push`; it does not grant `/api/notifications`, which includes notification-history reads and deletes.
+- `dashboard.token_auth.app_token_path_allowed` denies app-token paths by default and explicitly permits `/api/notifications/push`; it does not grant `/api/notifications`, which includes notification-history reads and deletes. `/api/notifications/own` is not implicit either: an app declares it in `permissions.api`, and the grant exposes only that app's own notes.
 - `_resolve_app_channels` requires an installed, enabled app and manifest declaration. It runs in `asyncio.to_thread` and uses the read-only `is_app_enabled`/`get_app_manifest` path rather than `get_app`, whose version synchronization can write metadata.
 - `api_push_notification` SEL-audits token-identity, disabled/unknown-app, undeclared-channel, rate-limit, delivery, persistence, and successful-grant outcomes. Bounded-body, channel-registration, and payload-validation responses return directly without a `log_api_access` call.
 
