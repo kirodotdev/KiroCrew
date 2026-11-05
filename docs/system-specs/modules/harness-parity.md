@@ -138,14 +138,25 @@ credential from them, so their gateway-backed calls would be refused. Its mirror
 already confirms a saved spec (`strands/saved-spec-projection-live.jsonl`, recorded
 with no mask); it joins once a host-side control-plane transport exists.
 `ACP_BACKENDS_MEMBER_TOOL_LIMITS`
-(Kiro, KAS) says which honour a saved spec's per-tool `disabledTools`; on any
+(Kiro, KAS, claude) says which honour a saved spec's per-tool `disabledTools`; on any
 other backend such a spec is refused before spawn with
 `capability_tool_limits_unsupported`. kiro-cli reads the field off the saved
 file. KAS's wire discards it from the server entry, so the projection carries
 each switched-off tool of a launched server as `@<server>/<tool>` in the
 agent's `excludedTools` (`kas_tool_limits.disabled_tool_exclusions`), the carrier
 the crewmate worker uses; KAS tags each MCP tool `@<server>/<tool>` and drops
-one whose tag equals an `excludedTools` entry. A member DM whose
+one whose tag equals an `excludedTools` entry. claude carries each one as a
+`permissions.deny` rule in the settings Crew governs, the authored seed or the
+inline settings beside a project-owned file (`session_mcp_deny_rules`). The rule
+is spelled the way Claude Code names the tool, each character outside
+`[A-Za-z0-9_-]` written `_` (`claude_mcp_names.claude_mcp_tool_name`), because a
+rule naming `dot.probe` raw matches no tool. A session whose settings Crew does
+not govern gets no MCP array at all, so the limit never rides on an ungoverned
+surface. The captures are `claude/member-tool-limits-live.jsonl` and
+`claude/member-tool-limits-inline-live.jsonl`: the switched-off tools never reach
+the model's tool list while their siblings ask and run, and
+`claude/member-tool-limits-raw-spelling-live.jsonl` shows a raw dotted rule
+letting its tool run. A member DM whose
 `agent.member_acp_backend` is `kiro` runs on KAS (the loader reads it so), so
 it honours them too. A crewmate's WORKER runs a spec built per session
 from the worker base plus that crewmate's file (`mate_worker.worker_session_spec`,

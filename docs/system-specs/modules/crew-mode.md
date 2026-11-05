@@ -763,7 +763,7 @@ per call and is not covered.
 `harness_unsupported` means the backend is outside
 `ACP_BACKENDS_MEMBER_CAPABILITIES`; `tool_limits_unsupported` means the spec
 turns off single MCP tools (`servers` lists them) and the backend is outside
-`ACP_BACKENDS_MEMBER_TOOL_LIMITS`; `servers` is present whenever the spec has
+`ACP_BACKENDS_MEMBER_TOOL_LIMITS` (Kiro, KAS, claude); `servers` is present whenever the spec has
 such servers, a harness refusal included. `member_backend_gap` is the rule, read from
 the same sets as the chat-start refusals, and `tool_limited_servers` is the one
 definition `prepare_member_capabilities` also uses. It is a warning only: the

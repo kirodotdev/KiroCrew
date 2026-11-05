@@ -103,10 +103,18 @@ ACP_BACKENDS_MEMBER_CAPABILITIES = frozenset(
 # ``excludedTools`` entry (``@kiro/agent`` 3.0.0 ``dist/server/acp-server.js``:
 # the MCP tool wrapper's ``tags`` and the tool filter ``BM``). The live capture of
 # that field is ``test/fixtures/acp_frames/kas/worker-kit-live.jsonl`` (KAS 0.66.58,
-# a native tool withheld). A saved spec that uses ``disabledTools`` is refused
-# before spawn on a non-member (``capability_tool_limits_unsupported``) rather than
-# run wider than it was saved.
-ACP_BACKENDS_MEMBER_TOOL_LIMITS = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
+# a native tool withheld). claude re-expresses each switched-off tool as a
+# ``permissions.deny`` rule in the settings Crew governs (``session_mcp_deny_rules``,
+# spelled the way Claude Code names the tool, ``claude_mcp_names``), and a session
+# whose settings Crew does not govern gets no MCP array at all, so the limit never
+# rides on an ungoverned surface. Captured live on claude-agent-acp 0.94.0:
+# ``test/fixtures/acp_frames/claude/member-tool-limits-live.jsonl`` (the authored
+# seed) and ``member-tool-limits-inline-live.jsonl`` (the rules carried inline beside
+# a project-owned file). Each switched-off tool, a dotted server and tool name
+# included, stayed out of the model's tool list while its sibling asked and ran.
+# A saved spec that uses ``disabledTools`` is refused before spawn on a non-member
+# (``capability_tool_limits_unsupported``) rather than run wider than it was saved.
+ACP_BACKENDS_MEMBER_TOOL_LIMITS = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS, ACP_BACKEND_CLAUDE})
 
 # Backends that honour a crewmate WORKER's single-tool limits. The worker's spec
 # is built per session (``mate_worker.worker_session_spec``), with every tool the

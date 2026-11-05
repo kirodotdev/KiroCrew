@@ -114,16 +114,16 @@ class TestTheStartGate:
         {"mcpServers": {"docs": {"command": "x", "disabledTools": ["wipe"]}}}
     )
 
-    def test_kas_is_a_member(self):
-        assert ACP_BACKENDS_MEMBER_TOOL_LIMITS == frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
+    def test_the_members_are_kiro_kas_and_claude(self):
+        assert ACP_BACKENDS_MEMBER_TOOL_LIMITS == frozenset(
+            {ACP_BACKEND_KIRO, ACP_BACKEND_KAS, ACP_BACKEND_CLAUDE}
+        )
 
-    @pytest.mark.parametrize("backend", [ACP_BACKEND_KIRO, ACP_BACKEND_KAS])
+    @pytest.mark.parametrize("backend", [ACP_BACKEND_KIRO, ACP_BACKEND_KAS, ACP_BACKEND_CLAUDE])
     def test_members_start_a_limited_spec(self, backend):
         assert self._LIMITED == ("docs",)
         assert member_backend_gap(backend, self._LIMITED) is None
 
-    @pytest.mark.parametrize(
-        "backend", [ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX, ACP_BACKEND_DEEPSEEK, ACP_BACKEND_PI]
-    )
+    @pytest.mark.parametrize("backend", [ACP_BACKEND_CODEX, ACP_BACKEND_DEEPSEEK, ACP_BACKEND_PI])
     def test_other_member_backends_still_refuse(self, backend):
         assert member_backend_gap(backend, self._LIMITED) == "tool_limits_unsupported"
