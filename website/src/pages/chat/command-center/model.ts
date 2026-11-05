@@ -214,6 +214,17 @@ function failedWorkflowState(endedAt: string | null | undefined, now: number): R
   return Number.isFinite(ended) && now - ended > FAILED_WORKFLOW_BLOCKED_MS ? 'stopped' : 'blocked'
 }
 
+/** The choices an idle session's newest reply offers, or none when it is not
+ *  waiting on them: the session is running or interrupted, or a queued prompt
+ *  may already be the answer. A label starting with `/` is dropped, since sent
+ *  bare it would be parsed as a slash command. The one definition of the rule;
+ *  the Command Center and the sidebar's needs-me card both read it. */
+export function replyOptions(s: Pick<ChatSlot, 'has_options' | 'options' | 'running' | 'interrupted' | 'queue_depth'>): string[] {
+  const labels = s.has_options ? (s.options || []).filter(label => label && !label.trimStart().startsWith('/')) : []
+  if (!labels.length || s.running || s.interrupted || (s.queue_depth ?? 0) > 0) return []
+  return labels
+}
+
 export function buildCommandCenter(source: CommandCenterSources, now = Date.now()) {
   const slots = scopedSlots(source.slots, source.root)
   const keys = new Set(slots.map(s => s.key))
@@ -234,10 +245,8 @@ export function buildCommandCenter(source: CommandCenterSources, now = Date.now(
   // queued prompt may already be the answer: it writes no transcript row until
   // it runs, so `has_options` stays true and the ask must not be offered twice.
   for (const s of slots) {
-    // A model-authored label sent bare would be parsed as a slash command.
-    const labels = s.has_options ? (s.options || []).filter(label => label && !label.trimStart().startsWith('/')) : []
-    if (!labels.length || s.running || s.interrupted || (s.queue_depth ?? 0) > 0
-      || attention.some(a => a.slot === s.key && a.kind === 'question')) continue
+    const labels = replyOptions(s)
+    if (!labels.length || attention.some(a => a.slot === s.key && a.kind === 'question')) continue
     addAttention({ id: `options:${s.key}:${s.options_ts || ''}:${labels.join('\u0000')}`, slot: s.key, kind: 'question',
       question: { slot: s.key, followUp: true, questions: [{ question: '', options: labels.map(label => ({ label })) }] } })
   }

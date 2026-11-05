@@ -3038,7 +3038,7 @@ file whole but the load carries `*`, the fingerprint is re-read, and a read the
 file moved under is treated as torn (previous snapshot kept, next tick reloads).
 So on a dispatched change `*` is only the loader's memory of a repaired tear,
 and the section flags — which the loader assigns only to the fail-closed
-sections `agent`, `dashboard` (including `dashboard.tailscale`), `hooks`, `memory`,
+sections `agent`, `dashboard` (including `dashboard.tailscale`), `hooks`, `mcp_gateway`, `memory`,
 `publish` and `workspaces` (`validation._FAIL_CLOSED_PATHS`; validation removes a malformed
 non-object anywhere else before the loader could flag it) — are the ones a tear
 never produces and a save destroys the evidence of, hence the ones that stay
@@ -3403,6 +3403,7 @@ class SttConfig:
     threads: int = 0               # local decode threads; 0/"auto" = half the cores capped at 16; KIROCREW_STT_THREADS wins
     endpointing: bool = False      # semantic auto-submit on a complete utterance; needs streaming
     submit_on_release: bool = False  # a deliberate stop sends once the transcript settles; any provider
+    slide_to_send: bool = False    # phone hold bar: up-right sends or steers; only while submit_on_release is off
     polish: bool = False           # hand the FINISHED transcript (never the audio) to a fast model; off = nothing leaves the machine
     dictation_panel: bool = True   # animated recording panel; falls back to the status bar
     timeout_secs: int = 300
@@ -4307,8 +4308,12 @@ deterministic. It is the single reader for both transports; matching literals
 drops the purpose for every paraphrased spelling, and the concise pill silently
 falls back to the raw command line while the unrecognized key leaks into the
 arguments view as if it were a real parameter. The dunder prefix is what keeps a
-tool's own functional `purpose` argument out of the match.
-`website/src/utils/toolPurpose.ts` is the frontend mirror, used by the
+tool's own functional `purpose` argument out of the match. A Tool Search
+deferred call's `{tool_id, arguments}` envelope is read through to the tool's
+own arguments (`session_directive.py::deferred_call_arguments`, also used by the
+session-directive digest and the workspace-call gate), so a KAS deferred call
+keeps its purpose.
+`website/src/utils/toolPurpose.ts` is the frontend mirror of the key match, used by the
 pending-approval preview and the Mochi approval bubble.
 
 Three properties are load-bearing:

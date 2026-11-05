@@ -416,7 +416,8 @@ class TestRunConflictGuards:
         assert "Stop the run first." in payload["error"]
 
     @pytest.mark.parametrize(
-        "status", [runner.STATUS_IDLE, runner.STATUS_DONE, runner.STATUS_ERROR]
+        "status",
+        [runner.STATUS_IDLE, runner.STATUS_DONE, runner.STATUS_STOPPED, runner.STATUS_ERROR],
     )
     async def test_a_settled_status_lets_the_request_proceed(
         self, supervisor: FakeSupervisor, status: str

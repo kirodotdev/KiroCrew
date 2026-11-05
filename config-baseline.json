@@ -4205,6 +4205,7 @@
         "threads": 0,
         "endpointing": false,
         "submit_on_release": false,
+        "slide_to_send": false,
         "dictation_panel": true,
         "timeout_secs": 300,
         "transcribe_region": "us-east-1",
@@ -4416,6 +4417,20 @@
       "tags": [],
       "label": "Send when I stop recording",
       "help": "Send the message once the transcript is ready when you deliberately stop dictating: letting go of hold-to-talk, releasing the push-to-talk key, or pressing the mic or the key again. Shift-click the mic, or slide sideways on the phone's hold bar, to keep a draft instead; with a push-to-talk binding that does not use Shift, Shift as you release works too. Cancelling, losing focus and the recording time limit never send. Works with streaming and batch transcription; off by default.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
+      "path": "stt.slide_to_send",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Slide up and right to send",
+      "help": "On the phone's hold-to-talk bar, slide up and to the right before you let go to send what you said, or to steer the agent while it works. Sliding straight up or to the left still cancels. Only while 'Send when I stop recording' is off; with it on, letting go already sends. Off by default.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false

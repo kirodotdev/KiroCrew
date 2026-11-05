@@ -1069,6 +1069,8 @@ def _up(cfg: PodConfig, args: argparse.Namespace) -> None:
                     "base_url": base,
                     "token": token,
                     "ttl": args.ttl,
+                    # The pod's own clone: a pod name is only a worktree basename.
+                    "checkout": str(checkout),
                     **_limits_of(cfg, name).as_json(),
                 }
             )
@@ -1594,6 +1596,8 @@ def _restart(cfg: PodConfig, args: argparse.Namespace) -> None:
                     "port": port,
                     "base_url": base,
                     "home_kept": True,
+                    # The directory the restart booted, as boot expands the pin.
+                    "checkout": str(Path(env_data["CHECKOUT"]).expanduser()),
                     **limits.as_json(),
                 }
             )

@@ -604,6 +604,8 @@ def describe_manual_change(
     if route == ("POST", "/api/security/denied-commands/user"):
         return f"added denied-command rule {s(b.get('pattern'))}"
     if route == ("PATCH", "/api/security/denied-commands/user/{id}"):
+        if "pattern" in b or "note" in b:
+            return f"edited denied-command rule {s(name)}"
         verb = "enabled" if b.get("enabled") else "disabled"
         return f"{verb} denied-command rule {s(name)}"
     if route == ("DELETE", "/api/security/denied-commands/user/{id}"):

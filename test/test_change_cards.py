@@ -504,6 +504,16 @@ def test_memory_descriptions_carry_names_only():
     assert text == "changed config chat.verbosity standard→ultra-brief"
 
 
+def test_memory_line_says_a_deny_rule_was_edited_not_disabled():
+    # The PATCH also edits pattern and note; a body without ``enabled`` must not
+    # read as "disabled" in the operator's history.
+    route = ("PATCH", "/api/security/denied-commands/user/{id}")
+    text = catalog.describe_manual_change(route, {"id": "user-1"}, {"pattern": "x", "note": ""})
+    assert text == "edited denied-command rule user-1"
+    text = catalog.describe_manual_change(route, {"id": "user-1"}, {"enabled": False})
+    assert text == "disabled denied-command rule user-1"
+
+
 def test_memory_names_the_server_a_settings_connect_started():
     # Settings → MCP posts an owner-configured server as ``{"server": ...}``, not
     # ``{"slug": ...}``; the memory line must name it instead of reading "null".

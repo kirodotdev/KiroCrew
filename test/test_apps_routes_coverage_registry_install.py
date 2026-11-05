@@ -138,7 +138,7 @@ class TestRegistryInstall:
         assert "ghp_0123456789abcdefghijABCDEFGHIJ0123456789" not in body["error"]
 
     @pytest.mark.asyncio
-    async def test_success_registers_and_returns_201(
+    async def test_fresh_install_returns_201_and_starts_nothing(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         _setup_env(tmp_path, monkeypatch)
@@ -154,8 +154,9 @@ class TestRegistryInstall:
             resp = await client.post("/api/apps/registry/install", json={"name": APP})
             assert resp.status == 201
             body = await resp.json()
+        # The new record is disabled, so the backend starts at enable, not here.
         assert "registration" in body
-        assert started == [APP]
+        assert started == []
 
     @pytest.mark.asyncio
     async def test_reconsent_stops_and_deregisters_without_restart(

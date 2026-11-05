@@ -1692,6 +1692,33 @@ advance the generation through the public `start_app_backend` or
 `stop_app_backend` entry points, which take `_health_reconcile_lock` and `_lock`
 and call `_advance_lifecycle_locked`, never by mutating `_processes` directly.
 
+### 7.3 An install registers and starts nothing for a disabled record
+
+`register_app` never consults `enabled`, so whether an install publishes an app's
+agents, skills, MCP servers and crons and starts its backend is decided by the
+caller, from the live record. `apps/routes_lifecycle._app_may_run_after_install`
+is that read, for a fresh install and an update alike: True only when the record
+is enabled and not waiting for session-approval consent. `install_app` writes a
+new record disabled, so a fresh managed install from the registry route, its SSE
+stream or the local-path route registers nothing and starts no backend; its
+`registration` is empty and `GET /api/apps` shows it disabled with no files in the
+agents directory. The resources arrive at the guarded `enable_app` transition
+(`routes_enable.handle_enable_app`, `kirocrew app enable`), which the detail
+page's Enable button calls after the install. A record that is enabled after the
+install (an update of an enabled app, a self-managed record
+`register_external_app` writes enabled) registers and starts as before. The
+file-only `kirocrew app install` follows the same rule and prints the enable
+hint. Registry default installs (§15.1) read
+`_app_may_enable_after_install` instead, which answers only "may this be enabled
+without the user" (a record exists and no consent is pending), and then take the
+same `enable_app` transition before registering.
+
+Writers: `apps/routes_lifecycle.py` (`_app_may_run_after_install`,
+`_app_may_enable_after_install`), `apps/routes_registry.py`,
+`apps/routes_install.py::handle_install_app`, `apps/default_installs.py`,
+`cli_commands_app.py`. Pinned by
+`test/test_apps_install_registers_nothing_disabled.py`.
+
 ## 8. An app's EventBus only exists with a real broadcast function
 
 `build_app_context` returns `events=None` when `broadcast_fn` is None, and
@@ -2935,6 +2962,13 @@ independently load-bearing:
   same way, but `inventory_for_install` raises it as `CatalogNoInstallSource`
   (a `CatalogUnavailable` subclass) so the refusal text says the catalog lists
   the app with no install source instead of claiming it could not be reached.
+  The update of an app that records its `sourceUrl` refuses the same way:
+  `_registry_app_candidates` lets `CatalogUnavailable` propagate (every other
+  lookup error still yields no candidate), and `_resolve_install_entry` turns
+  it into fixed outage or no-install-source text instead of "no registry entry
+  matches its recorded source". Both of its branches run the lookup inside
+  `official_catalog.install_attempt()`, so an update click makes a real fetch
+  rather than refusing from a listing page's failure memory.
 - **Supersession is URL-scoped.** A catalog row replaces a same-repo seed row
   (scheme/host case-folded, path case preserved); a different-repo name
   collision keeps the seed, so a republished document cannot silently re-home
@@ -5507,7 +5541,7 @@ records which module owns which part, so a change lands in its owner.
 | `routes_static.py` | An installed app's UI bundle (`handle_app_ui_file`, `_open_ui_file` and the stream bounds), the content types the UI and art routes answer with, and `handle_app_dev_mode` |
 | `routes_art.py` | The installed-art route (`handle_app_art_file`) over an app's manifest-declared art (`_declared_art_paths`, `_read_declared_art`), and the git blob proxy (`handle_blob_proxy`, `_fetch_git_blob`) with the repository and ref validators (`_is_safe_repo_identifier`, `_SAFE_REF_RE`), the fetch timeout and concurrency bound, and the blob-cache touch. Both art paths screen on one extension set |
 | `routes_listing.py` | `handle_list_apps`, `handle_get_app` and `handle_get_manifest` with the trust repository each app is stamped with, `handle_app_config`, and `handle_publish_providers` over `collect_publish_providers` |
-| `routes_install.py` | `handle_install_app` (a local-path install), `handle_update_app` with the cron resync an update drives, and `handle_register_external` |
+| `routes_install.py` | `handle_install_app` (a local-path install), `handle_update_app` with the cron resync an update drives (`_resync_app_crons_after_update`, which the registry install routes also call over an installed app), and `handle_register_external` |
 | `routes_uninstall.py` | `handle_uninstall_app` and `handle_migrate_cleanup` over `_run_uninstall`, `handle_uninstall_preview`, and the bounded cron deregistration retry an uninstall uses (`_deregister_crons_with_retry`) |
 | `routes_enable.py` | `handle_enable_app`, `handle_disable_app` and `handle_open_app`: the built-in service sync (`_BUILTIN_SERVICE_APPS`, `_sync_builtin_config`, `_notify_builtin_service`), the client-install platform check (`_client_install_manifest`) and the desktop environment an `openCommand` launcher keeps |
 | `routes_registry.py` | Browsing, refreshing and installing from the app registry (`handle_registry`, `handle_registry_refresh`, `handle_registry_install`, `handle_registry_install_stream`) and the registry list in `config.json` (`handle_registries`, `handle_registries_refresh`, `_write_registries_config`) |
@@ -5680,8 +5714,7 @@ permissions under "declared by the publisher, not enforced" and the label
 "Community, not reviewed by Kiro Space". `complete_market_install(prepared,
 confirmed=True)` then calls `install_app(<folder>, expected_name=<listing
 name>, market_source=..., source_commit=...)` directly, never the dashboard
-local-path route (which registers the app and starts its backend after a fresh
-install). `install_app` writes `origin = "local"`, `source =
+local-path route. `install_app` writes `origin = "local"`, `source =
 "market:<ref>@<n>"` and `sourceCommit = <zip SHA-256>` in its FIRST record
 write, still `enabled = False`, so no record ever names the staging folder
 (which a local-folder grant would admit), and its install-time trust check

@@ -1,4 +1,4 @@
-"""The kiro-cli <-> goose / opencode tool-name tables a spec hook matcher reads."""
+"""The kiro-cli <-> goose / opencode / claude tool-name tables a hook matcher reads."""
 
 from __future__ import annotations
 
@@ -8,9 +8,7 @@ from kiro_crew.acp import _dispatch
 from kiro_crew.acp._dispatch import harness_tool_name as harness_tool_name_of
 from kiro_crew.acp.harness_tool_names import (
     CLAUDE_READ_ONLY_BUILTINS,
-    GOOSE_TOOL_IDS_BY_KIRO_TOOL,
     HARNESS_TOOL_TABLES,
-    OPENCODE_TOOL_IDS_BY_KIRO_TOOL,
     harness_tool_match_names,
     qualified_harness_tool_id,
     split_harness_tool_id,
@@ -24,6 +22,33 @@ def test_a_shell_call_answers_to_its_kiro_cli_name():
     assert harness_tool_match_names("opencode#bash") == ("execute_bash", "bash", "shell")
     assert harness_tool_match_names("opencode#edit") == ("fs_write", "edit", "write")
     assert harness_tool_match_names("goose#tree") == ("fs_read", "tree", "read")
+
+
+@pytest.mark.parametrize(
+    ("tool_id", "names"),
+    [
+        ("claude#Bash", ("execute_bash", "Bash", "shell")),
+        ("claude#Read", ("fs_read", "Read", "read")),
+        ("claude#Edit", ("fs_write", "Edit", "write")),
+        ("claude#Write", ("fs_write", "Write", "write")),
+        ("claude#MultiEdit", ("fs_write", "MultiEdit", "write")),
+        ("claude#NotebookEdit", ("fs_write", "NotebookEdit", "write")),
+        ("claude#Grep", ("grep", "Grep")),
+        ("claude#Glob", ("glob", "Glob")),
+        ("claude#WebFetch", ("web_fetch", "WebFetch")),
+        ("claude#WebSearch", ("web_search", "WebSearch")),
+        ("claude#Task", ("use_subagent", "Task")),
+        ("claude#Agent", ("use_subagent", "Agent")),
+    ],
+)
+def test_a_claude_builtin_answers_to_its_kiro_cli_name(tool_id, names):
+    assert harness_tool_match_names(tool_id) == names
+
+
+def test_a_claude_mcp_or_unmapped_tool_keeps_only_its_own_name():
+    # claude names an MCP tool mcp__<server>__<tool>, which no row lists.
+    assert harness_tool_match_names("claude#mcp__srv__tool") == ("mcp__srv__tool",)
+    assert harness_tool_match_names("claude#ToolSearch") == ("ToolSearch",)
 
 
 def test_a_tool_no_row_names_keeps_only_its_own_name():
@@ -49,7 +74,6 @@ def test_an_unqualified_id_is_not_read_through_these_tables():
     # A KAS id stays KAS's: None here, so spec_hooks falls back to KAS's table.
     assert harness_tool_match_names("run_command") is None
     assert harness_tool_match_names("bash") is None
-    assert harness_tool_match_names("claude#Bash") is None
     assert harness_tool_match_names("goose#") is None
     assert split_harness_tool_id("kas#run_command") is None
 
@@ -63,17 +87,15 @@ def test_a_kas_id_can_never_carry_the_separator():
 def test_only_a_backend_with_a_table_gets_a_qualified_id():
     assert qualified_harness_tool_id("goose", "shell") == "goose#shell"
     assert qualified_harness_tool_id("opencode", "bash") == "opencode#bash"
-    assert qualified_harness_tool_id("claude", "Bash") == ""
+    assert qualified_harness_tool_id("claude", "Bash") == "claude#Bash"
+    assert qualified_harness_tool_id("codex", "Bash") == ""
     assert qualified_harness_tool_id("", "bash") == ""
     assert qualified_harness_tool_id("goose", "") == ""
 
 
-@pytest.mark.parametrize(
-    "table",
-    [GOOSE_TOOL_IDS_BY_KIRO_TOOL, OPENCODE_TOOL_IDS_BY_KIRO_TOOL],
-    ids=["goose", "opencode"],
-)
-def test_no_harness_tool_is_reached_from_two_kiro_cli_names(table):
+@pytest.mark.parametrize("backend", ["goose", "opencode", "strands", "claude"])
+def test_no_harness_tool_is_reached_from_two_kiro_cli_names(backend):
+    table = HARNESS_TOOL_TABLES[backend]
     seen: dict[str, str] = {}
     for name, ids in table.items():
         for tool_id in ids:
@@ -145,8 +167,7 @@ def _claude_permission_event(
 def test_a_claude_permission_event_names_the_read_builtin_its_frame_stamped(tool, kind, builtin):
     event = _claude_permission_event({"claudeCode": {"toolName": tool}}, kind)
     assert event.harness_builtin_tool == builtin
-    # Still no qualified id: claude has no HARNESS_TOOL_TABLES row.
-    assert event.harness_tool_id == ""
+    assert event.harness_tool_id == f"claude#{tool}"
 
 
 def test_a_claude_frame_without_its_stamp_is_not_named_by_its_title():
@@ -167,6 +188,8 @@ def test_a_main_chat_claude_permission_event_names_no_builtin():
         {"claudeCode": {"toolName": "Read"}}, "read", side_read_only=False
     )
     assert event.harness_builtin_tool == ""
+    # The hook-matching id is named on every session.
+    assert event.harness_tool_id == "claude#Read"
 
 
 def test_every_claude_read_builtin_maps_to_a_host_read_only_tool():

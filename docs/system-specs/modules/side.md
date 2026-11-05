@@ -747,7 +747,10 @@ same mapped name is a deny target and a governance identity, so a deny rule or a
 ceiling's `tools` deny on `web_fetch` binds claude's WebFetch. Only a Side Chat
 session's permission events carry it (`build_permission_event(side_read_only=)`):
 in the main chat a kiro-cli-named rule, such as an `auto_deny_tools` entry for
-shell `grep`, keeps not matching claude's own Grep. The shape rides
+shell `grep`, keeps not matching claude's own Grep. A Hooks-page hook matcher is
+named on every session instead (`harness_tool_id`, through
+`acp/harness_tool_names.CLAUDE_TOOL_IDS_BY_KIRO_TOOL`), because a hook can only
+refuse a call. The shape rides
 `_meta.claudeCode.options`, which only an adapter at
 `CLAUDE_ACP_SETTING_SOURCES_MIN_VERSION` or newer is verified to honour. Below it
 (read from the installed package by `claude_adapter_honours_session_options`) the

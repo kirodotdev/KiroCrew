@@ -226,6 +226,23 @@ describe('SessionStorageScreen (inventory)', () => {
     expect(cancelAt).toBeLessThan(confirmAt)
   })
 
+  /** Arming and Cancel each unmount the focused button; focus must not fall to the page. */
+  it('moves focus to Cancel on arm, and back to Delete forever on Cancel', async () => {
+    inventory = withTrash()
+    renderWithProviders(<SessionStorageScreen onBack={() => {}} />)
+    await waitFor(() => expect(screen.getByText(/Delete forever/)).toBeTruthy())
+
+    const arm = screen.getByRole('button', { name: /Delete forever/ })
+    arm.focus()
+    await userEvent.keyboard('{Enter}')
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Cancel' })))
+
+    await userEvent.keyboard('{Enter}')
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Cancel' })).toBeNull())
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: /Delete forever/ }))
+    expect(emptyFn).not.toHaveBeenCalled()
+  })
+
   it('restores a batch without arming anything', async () => {
     inventory = withTrash()
     renderWithProviders(<SessionStorageScreen onBack={() => {}} />)

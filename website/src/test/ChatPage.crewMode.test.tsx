@@ -17,7 +17,8 @@ import chatReducer, { appendMessage } from '../store/chatSlice'
 import dashboardReducer from '../store/dashboardSlice'
 import notificationsReducer from '../store/notificationsSlice'
 import { ThemeProvider } from '../hooks/useTheme'
-import type { RootState } from '../store'
+import { store as appStore, type RootState } from '../store'
+import { BUSY_SEND_MODE_LS_KEY } from '../components/BusySendButton'
 
 interface VirtuosoMockProps {
   data?: unknown[]
@@ -284,6 +285,29 @@ describe('Ultra Mode on ChatPage', () => {
     // frame, header or hint around it.
     await waitFor(() => expect(box.getAttribute('placeholder')).toBe('Message Worker B: it reads this before its next step'))
     expect(screen.queryByText(/Cuts into its current reply|Starts a new turn in/)).toBeNull()
+  })
+
+  it("a running worker's voice auto-submit steers even with Queue stored", async () => {
+    detail.running = true
+    localStorage.setItem(`${BUSY_SEND_MODE_LS_KEY}:slot-a`, 'queue')
+    sendChat.mockClear()
+    const store = await renderWith({
+      messages: [{ role: 'user', content: 'do part 2' }],
+      agent: 'kirocrew-worker', agentKind: 'template', createdBy: 'root-1', crewRoot: 'root-1',
+      slotKeys: ['slot-a', 'root-1'], slotRunning: true, listedRunning: true, connected: true,
+    })
+    const getState = vi.spyOn(appStore, 'getState').mockImplementation(store.getState)
+    try {
+      const box = within(screen.getByTestId('crew-steer-composer')).getByRole('textbox')
+      fireEvent.change(box, { target: { value: 'dictated words' } })
+      expect(voice.onEndpoint).toBeTypeOf('function')
+      await act(async () => { voice.onEndpoint?.(); await Promise.resolve() })
+      await waitFor(() => expect(sendChat).toHaveBeenCalledTimes(1))
+      expect(sendChat.mock.calls[0][0]).toBe('dictated words')
+      expect(sendChat.mock.calls[0][5]).toBe(true)
+    } finally {
+      getState.mockRestore()
+    }
   })
 
   // ── edge review R2: Y1 / X2, Y2 / X5, Y3 ────────────────────────────────────

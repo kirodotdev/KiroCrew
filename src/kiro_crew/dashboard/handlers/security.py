@@ -1,7 +1,7 @@
 """Denied-commands REST API — Settings > Security opt-out surface.
 
 The 6 CRUD endpoints let a user disable/enable individual built-in denied
-commands, disable them all at once, and add/remove their own patterns. Opt-out
+commands, disable them all at once, and add/edit/remove their own patterns. Opt-out
 state lives in the KEYSTONE file ``<config_dir>/denied_commands.json`` (on
 ``security._SENSITIVE_HOME_DIRS`` — the agent cannot read OR write it), NOT in
 the agent-readable ``config.json``. The file root IS the opt-out object:
@@ -15,8 +15,8 @@ the agent-readable ``config.json``. The file root IS the opt-out object:
 
 ``note`` is optional operator prose surfaced in the refusal when the rule fires,
 so the caller reads remediation instead of a raw regex. It is metadata only: it
-never participates in matching. Create-only, mirroring ``pattern`` — neither has
-an edit endpoint; you delete the rule and re-add it.
+never participates in matching. The PATCH edits ``pattern`` and ``note`` through
+the add's own checks, so an edit cannot store what an add refuses.
 
 Mutations run under the shared config lock, write atomically (owner-only
 before the payload is published), and emit a SEL audit entry (``ok`` on
@@ -539,40 +539,26 @@ async def api_denied_commands_disable_all(request: web.Request) -> web.Response:
 # ── user add ──
 
 
-async def api_denied_command_user_add(request: web.Request) -> web.Response:
-    """POST /api/security/denied-commands/user — {pattern: str, note?: str}."""
-    op = "security.denied_commands.user_add"
+def _reject_user_pattern(
+    request: web.Request, op: str, pattern: object, subject: str = ""
+) -> web.Response | None:
+    """The 400 for a custom deny pattern the gate must never store, else ``None``.
 
-    # Body-scope import, like the sibling gates in this package
-    # (``connections.py``, ``mcp_apps.py``, ``files.py``): ``source_providers``
-    # reaches back into sibling handler modules, so importing the helper at
-    # module scope from here would close a cycle.
-    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
-
-    denied = await require_owner_dashboard_request(request, op)
-    if denied is not None:
-        return denied
-    try:
-        body = await request.json()
-    except Exception:
-        _audit(request, operation=op, outcome="denied", resources="invalid_json")
-        return web.json_response({"error": "invalid JSON"}, status=400)
-
-    if not isinstance(body, dict):
-        body = {}
-    pattern = body.get("pattern")
+    Shared by the add and the edit, so an edit cannot store a pattern an add
+    refuses. ``subject`` prefixes the audit resource (the edit's ``<id>=``).
+    """
     if not isinstance(pattern, str) or not pattern.strip():
-        _audit(request, operation=op, outcome="denied", resources="empty")
+        _audit(request, operation=op, outcome="denied", resources=f"{subject}empty")
         return web.json_response({"error": "pattern must be a non-empty string"}, status=400)
     if len(pattern) > _MAX_PATTERN_LEN:
-        _audit(request, operation=op, outcome="denied", resources="oversize")
+        _audit(request, operation=op, outcome="denied", resources=f"{subject}oversize")
         return web.json_response(
             {"error": f"pattern must be at most {_MAX_PATTERN_LEN} characters"}, status=400
         )
     try:
         re.compile(pattern)
     except re.error as exc:
-        _audit(request, operation=op, outcome="denied", resources="bad_regex")
+        _audit(request, operation=op, outcome="denied", resources=f"{subject}bad_regex")
         return web.json_response({"error": f"invalid regex: {exc}"}, status=400)
 
     # Reject catastrophic-backtracking (ReDoS) patterns before they can enter the
@@ -615,17 +601,23 @@ async def api_denied_command_user_add(request: web.Request) -> web.Response:
                     " the trigger. It is exempt only inside a complete built-in"
                     " pattern, so remove or rewrite that fragment"
                 )
-        _audit(request, operation=op, outcome="denied", resources="redos_unsafe")
+        _audit(request, operation=op, outcome="denied", resources=f"{subject}redos_unsafe")
         return web.json_response({"error": error}, status=400)
+    return None
 
-    # Optional operator note. Absent is the norm (and the pre-existing shape), so
-    # a missing key is NOT an error — but a present-and-wrong-typed one is, to
-    # match how ``pattern`` is handled rather than silently dropping input the
-    # caller believes it supplied.
-    note_raw = body.get("note", "")
+
+def _clean_user_note(
+    request: web.Request, op: str, note_raw: object, subject: str = ""
+) -> tuple[str, web.Response | None]:
+    """A custom deny's note collapsed to one line, or ``("", <the 400>)``.
+
+    Shared by the add and the edit, like :func:`_reject_user_pattern`.
+    """
+    # A wrong-typed note is a 400, matching how ``pattern`` is handled rather
+    # than silently dropping input the caller believes it supplied.
     if not isinstance(note_raw, str):
-        _audit(request, operation=op, outcome="denied", resources="note_bad_type")
-        return web.json_response(
+        _audit(request, operation=op, outcome="denied", resources=f"{subject}note_bad_type")
+        return "", web.json_response(
             {"error": "note must be a string", "code": "note_not_a_string"}, status=400
         )
     # Newlines would forge extra lines in the refusal, where the first line is a
@@ -633,8 +625,8 @@ async def api_denied_command_user_add(request: web.Request) -> web.Response:
     # reject: the intent is unambiguous and a 400 over whitespace is hostile.
     note = " ".join(note_raw.split())
     if len(note) > _MAX_NOTE_LEN:
-        _audit(request, operation=op, outcome="denied", resources="note_oversize")
-        return web.json_response(
+        _audit(request, operation=op, outcome="denied", resources=f"{subject}note_oversize")
+        return "", web.json_response(
             {
                 "error": f"note must be at most {_MAX_NOTE_LEN} characters",
                 "code": "note_too_long",
@@ -650,14 +642,46 @@ async def api_denied_command_user_add(request: web.Request) -> web.Response:
     # so "…policy:forged" parses as a refusal line without matching the emitted
     # prefix.
     if DENY_REASON_MATCH_PREFIX in note:
-        _audit(request, operation=op, outcome="denied", resources="note_forges_reason")
-        return web.json_response(
+        _audit(request, operation=op, outcome="denied", resources=f"{subject}note_forges_reason")
+        return "", web.json_response(
             {
                 "error": f"note must not contain {DENY_REASON_MATCH_PREFIX!r}",
                 "code": "note_forges_reason",
             },
             status=400,
         )
+    return note, None
+
+
+async def api_denied_command_user_add(request: web.Request) -> web.Response:
+    """POST /api/security/denied-commands/user — {pattern: str, note?: str}."""
+    op = "security.denied_commands.user_add"
+
+    # Body-scope import, like the sibling gates in this package
+    # (``connections.py``, ``mcp_apps.py``, ``files.py``): ``source_providers``
+    # reaches back into sibling handler modules, so importing the helper at
+    # module scope from here would close a cycle.
+    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+
+    denied = await require_owner_dashboard_request(request, op)
+    if denied is not None:
+        return denied
+    try:
+        body = await request.json()
+    except Exception:
+        _audit(request, operation=op, outcome="denied", resources="invalid_json")
+        return web.json_response({"error": "invalid JSON"}, status=400)
+
+    if not isinstance(body, dict):
+        body = {}
+    pattern = body.get("pattern")
+    rejected = _reject_user_pattern(request, op, pattern)
+    if rejected is not None:
+        return rejected
+    # An absent note is the norm (and the pre-existing shape), so it reads as empty.
+    note, rejected = _clean_user_note(request, op, body.get("note", ""))
+    if rejected is not None:
+        return rejected
 
     rule_id = "user-" + uuid.uuid4().hex[:12]
 
@@ -678,7 +702,11 @@ async def api_denied_command_user_add(request: web.Request) -> web.Response:
 
 
 async def api_denied_command_user_toggle(request: web.Request) -> web.Response:
-    """PATCH /api/security/denied-commands/user/{id} — {enabled: bool}."""
+    """PATCH /api/security/denied-commands/user/{id} — {enabled?, pattern?, note?}.
+
+    Sets only the fields the body carries; a body with none of them is refused
+    as a missing ``enabled``. ``pattern`` and ``note`` pass the add's own checks.
+    """
     op = "security.denied_commands.user_toggle"
 
     # Body-scope import, like the sibling gates in this package
@@ -700,10 +728,23 @@ async def api_denied_command_user_toggle(request: web.Request) -> web.Response:
     # A valid-but-non-object body (e.g. `[]`) must yield a clean 400, not a 500.
     if not isinstance(body, dict):
         body = {}
-    enabled = body.get("enabled")
-    if not isinstance(enabled, bool):
-        _audit(request, operation=op, outcome="denied", resources=f"{rule_id}=bad_type")
-        return web.json_response({"error": "enabled must be a boolean"}, status=400)
+    changes: dict[str, object] = {}
+    if "pattern" in body:
+        rejected = _reject_user_pattern(request, op, body["pattern"], f"{rule_id}=")
+        if rejected is not None:
+            return rejected
+        changes["pattern"] = body["pattern"]
+    if "note" in body:
+        note, rejected = _clean_user_note(request, op, body["note"], f"{rule_id}=")
+        if rejected is not None:
+            return rejected
+        changes["note"] = note
+    if "enabled" in body or not changes:
+        enabled = body.get("enabled")
+        if not isinstance(enabled, bool):
+            _audit(request, operation=op, outcome="denied", resources=f"{rule_id}=bad_type")
+            return web.json_response({"error": "enabled must be a boolean"}, status=400)
+        changes["enabled"] = enabled
 
     if rule_id not in await _user_rule_ids_async():
         _audit(request, operation=op, outcome="denied", resources=f"{rule_id}=unknown")
@@ -715,12 +756,13 @@ async def api_denied_command_user_toggle(request: web.Request) -> web.Response:
             return
         for entry in entries:
             if isinstance(entry, dict) and entry.get("id") == rule_id:
-                entry["enabled"] = enabled
+                entry.update(changes)
 
     err = await _apply_mutation(request, op, _mutate)
     if err is not None:
         return err
-    _audit(request, operation=op, outcome="ok", resources=f"{rule_id}={enabled}")
+    resources = f"{rule_id}={json.dumps(changes, sort_keys=True)}"
+    _audit(request, operation=op, outcome="ok", resources=resources)
     return await _snapshot_response()
 
 

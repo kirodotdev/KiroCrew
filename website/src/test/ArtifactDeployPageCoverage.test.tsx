@@ -299,6 +299,21 @@ describe('ArtifactDeployPage — profile registry mutations', () => {
     expect(screen.queryByLabelText('Profile name')).toBeNull()
   })
 
+  it('the New profile button says whether the profile form is open', async () => {
+    installFetch()
+    renderPage()
+    await profilesLoaded()
+    const toggle = screen.getByRole('button', { name: /New profile/ })
+
+    expect(toggle).toHaveAttribute('aria-expanded', 'false')
+    fireEvent.click(toggle)
+    expect(screen.getByLabelText('Profile name')).toBeInTheDocument()
+    expect(toggle).toHaveAttribute('aria-expanded', 'true')
+    fireEvent.click(toggle)
+    expect(screen.queryByLabelText('Profile name')).toBeNull()
+    expect(toggle).toHaveAttribute('aria-expanded', 'false')
+  })
+
   it('defaults a blank region to us-west-2 and refuses a nameless profile', async () => {
     const calls = installFetch()
     renderPage()

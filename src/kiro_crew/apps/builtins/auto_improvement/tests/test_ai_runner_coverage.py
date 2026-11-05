@@ -1002,14 +1002,19 @@ class TestStatusAndStop:
         }
 
     @pytest.mark.parametrize(
-        "error,expected",
-        [("", R.STATUS_DONE), ("BaseException: torn down", R.STATUS_ERROR)],
+        "status,error,expected",
+        [
+            (R.STATUS_RUNNING, "", R.STATUS_DONE),
+            (R.STATUS_RUNNING, "BaseException: torn down", R.STATUS_ERROR),
+            (R.STATUS_STOPPING, "", R.STATUS_STOPPED),
+            (R.STATUS_STOPPING, "BaseException: torn down", R.STATUS_ERROR),
+        ],
     )
     def test_a_dead_worker_is_never_reported_running(
-        self, sup: Any, error: str, expected: str
+        self, sup: Any, status: str, error: str, expected: str
     ) -> None:
         with sup._lock:
-            sup._state.status = R.STATUS_RUNNING
+            sup._state.status = status
             sup._state.error = error
         assert sup.status()["status"] == expected
 
@@ -1049,7 +1054,7 @@ class TestStatusAndStop:
         assert outcome["status"] == R.STATUS_STOPPING
         assert driver.stop_calls == 1  # the raise was swallowed, not propagated
         driver.release.set()
-        _await_status(sup, {R.STATUS_DONE})
+        _await_status(sup, {R.STATUS_STOPPED})
 
 
 # ── calibration ──────────────────────────────────────────────────────────────

@@ -198,6 +198,9 @@ if url_port in refused_live_ports:
     raise SystemExit("base_url port %d is reserved for a production gateway" % url_port)
 if claimed != url_port:
     raise SystemExit("port %d does not match base_url port %d" % (claimed, url_port))
+checkout = d.get("checkout", "")
+if not isinstance(checkout, str):
+    raise SystemExit("checkout must be a string")
 canonical_host = "[%s]" % host if ":" in host else host
 print(json.dumps({
     "name": name,
@@ -205,10 +208,11 @@ print(json.dumps({
     "token": token,
     "port": claimed,
     "health": d["health"],
+    "checkout": checkout,
 }, separators=(",", ":")))
 ' "$HANDLE_JSON" "$NAME" "${HANDLE_REFUSED_PORTS[@]}"); then
     echo "FATAL: unusable --handle-json: $HANDLE_JSON" >&2
-    echo '  Expected the object pod_up returns: {"name": ..., "base_url": "http://127.0.0.1:<port>", "token": ..., "port": <port>, "health": ...}' >&2
+    echo '  Expected the object pod_up returns: {"name": ..., "base_url": "http://127.0.0.1:<port>", "token": ..., "port": <port>, "checkout": ..., "health": ...}' >&2
     exit 64
   fi
 fi
@@ -290,6 +294,18 @@ if [ -z "$CHECKOUT" ] || [ ! -d "$CHECKOUT" ]; then
   echo "FATAL: could not resolve worktree checkout for '$NAME'" >&2
   echo "  Ensure a git worktree with basename '$NAME' exists, or set KIROCREW_POD_REPO / KIROCREW_POD_WORKTREES_ROOT" >&2
   exit 66
+fi
+
+# A pod name is only a worktree basename, so a same-named worktree in another
+# clone passes the name check. The handle's own checkout tells the two apart.
+if [ -n "$HANDLE_JSON" ] && ! python3 -c '
+import json, os, sys
+checkout = json.loads(sys.argv[1])["checkout"]
+if checkout and os.path.realpath(checkout) != os.path.realpath(sys.argv[2]):
+    raise SystemExit("handle checkout %r is not this checkout %r" % (checkout, sys.argv[2]))
+' "$CANONICAL_HANDLE_JSON" "$CHECKOUT"; then
+  echo "FATAL: the handle's pod serves another clone; run the harness from the clone that booted it" >&2
+  exit 64
 fi
 
 # Prefer the WORKTREE'S OWN CLI for the pod verbs, now that the checkout is known.

@@ -1059,8 +1059,15 @@ async def api_memory_enable_embeddings(request: web.Request) -> web.Response:
             status=500,
         )
 
+    class _EnableMemorySectionNotObject(Exception):
+        """config.json's ``memory`` entry is present but is not a JSON object."""
+
     def _apply(data: dict) -> dict:
         memory = data.setdefault("memory", {})
+        if not isinstance(memory, dict):
+            # Refuse rather than replace it with {}: whatever the person put
+            # there is theirs to fix, and nothing is written.
+            raise _EnableMemorySectionNotObject
         memory["embedding_provider"] = "llama_cpp"
         memory["embedding_dim"] = active_dim
         memory["migrated"] = True
@@ -1068,6 +1075,20 @@ async def api_memory_enable_embeddings(request: web.Request) -> web.Response:
 
     try:
         await run_config_write(update_config_locked, config_path(), mutate=_apply)
+    except _EnableMemorySectionNotObject:
+        # Leave the setup state at "error", not mid-step: a step left at
+        # "installing_faiss" would refuse every later Enable as already running.
+        _embedding_setup_status = {"step": "error", "error": "config memory entry not an object"}
+        return web.json_response(
+            {
+                "error": (
+                    "config.json has a 'memory' entry that is not an object; "
+                    "fix or remove it, then click Enable again"
+                ),
+                "code": "config_section_not_object",
+            },
+            status=409,
+        )
     except ConfigReadError:
         # Fail closed: writing back a {} baseline would drop every other setting.
         logger.exception("Refusing to persist embedding config: config unreadable")

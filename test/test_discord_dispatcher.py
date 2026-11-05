@@ -126,6 +126,25 @@ class TestDispatcher:
         assert not spool.exists(), "an incognito message was persisted to the spool"
 
     @pytest.mark.asyncio
+    async def test_a_shutdown_refusal_spools_the_attachment_names(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """The restart notice can name the files: the spool keeps each ``filename``."""
+        from kiro_crew.messaging import inbound_spool as S
+
+        monkeypatch.setattr(S, "data_home", lambda: tmp_path)
+        d, _cli, sess = _dispatcher({"u1"})
+        sess.reserve_inbound_callback = lambda: None
+        msg = self._msg("see these")
+        msg.attachments = [{"filename": "a.pdf"}, {"url": "https://cdn.example/b"}]
+
+        await d.handle_message(msg)
+
+        entry, _held = S.peek_next(path=tmp_path / "inbound-spool" / "refused.jsonl")
+        assert entry is not None
+        assert (entry.attachments_dropped, entry.attachment_names) == (2, ("a.pdf",))
+
+    @pytest.mark.asyncio
     async def test_the_pick_follows_a_promotion_before_the_attachment_cleanup(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

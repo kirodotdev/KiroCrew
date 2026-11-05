@@ -934,9 +934,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     onSlashRefused: reportSlashRefusal,
   })
   // The endpointer's auto-submit is an Enter press: the composer's default busy
-  // decision for the active slot (never the flipped chord), so it steers where
-  // Send would steer. Assigned in render so the voice callback (composerHost.ts) always
-  // reaches the latest send() and steer().
+  // decision for the active slot (never the flipped chord), including a worker
+  // composer's steer-only mode, so it steers where Send would steer. Assigned in
+  // render so the voice callback (composerHost.ts) always reaches the latest send() and steer().
   voiceSubmitRef.current = () => {
     // The composer is held (the Crew Mode switch in flight, or a crew member's
     // closed conductor): an endpoint sends nothing. Dictation stops, its text
@@ -945,7 +945,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     const slot = activeSlotRef.current
     // send() owns the disconnected guard and upload hold, so route either state there before steer() can consume the composer.
     if (!connected || isComposerSendHeld(slot) || isComposerSendHeld(composerSlotRef.current)) { void send(); return }
-    const flag = slot ? slotBusySteer(store.getState(), slot, jevAutoConsented) : undefined
+    const flag = slot
+      ? slotBusySteer(store.getState(), slot, jevAutoConsented, currentCrewRoot && currentSlot ? 'steer-only' : undefined)
+      : undefined
     if (flag) steer(flag === 'auto' ? { auto: true } : undefined)
     else void send()
   }

@@ -524,6 +524,7 @@ class TeamsDispatcher:
             user_id=email,
             message_id=inbound.activity_id,
             attachments_dropped=len(files),
+            attachment_names=tuple(a.get("name") or "" for a in files),
         )
         if not await admit_inbound_callback(
             self.sessions,

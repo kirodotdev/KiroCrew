@@ -720,9 +720,9 @@ async def test_user_toggle(config_file: Path, mock_sel):
 
 @pytest.mark.asyncio
 async def test_user_toggle_preserves_note(config_file: Path, mock_sel):
-    # There is no edit endpoint for a note (create-only, mirroring ``pattern``),
-    # so a toggle must carry it through — losing it here would silently strip the
-    # operator's remediation text on the first disable/re-enable.
+    # A toggle sets only ``enabled``, so it must carry the note through — losing
+    # it here would silently strip the operator's remediation text on the first
+    # disable/re-enable.
     async with _client() as client:
         add = await client.post(
             "/api/security/denied-commands/user",
@@ -744,6 +744,76 @@ async def test_user_toggle_preserves_note(config_file: Path, mock_sel):
         reenabled = (await back_on.json())["user_added"][0]
         assert reenabled["enabled"] is True
         assert reenabled["note"] == "use the safe wrapper"
+
+
+@pytest.mark.asyncio
+async def test_user_edit_replaces_pattern_and_note_in_place(config_file: Path, mock_sel):
+    async with _client() as client:
+        add = await client.post(
+            "/api/security/denied-commands/user", json={"pattern": "danger", "note": "old"}
+        )
+        rid = (await add.json())["user_added"][0]["id"]
+        await client.patch(f"/api/security/denied-commands/user/{rid}", json={"enabled": False})
+        resp = await client.patch(
+            f"/api/security/denied-commands/user/{rid}",
+            json={"pattern": "rm -rf /tmp/mine", "note": "use a  scoped\npath"},
+        )
+        assert resp.status == 200
+        edited = (await resp.json())["user_added"]
+    # Same id, same switch position: an edit is not a delete and re-add. The
+    # note is collapsed to one line exactly as the add does it.
+    expected = {
+        "id": rid,
+        "pattern": "rm -rf /tmp/mine",
+        "enabled": False,
+        "note": "use a scoped path",
+    }
+    assert edited == [expected]
+    assert _read_hooks(config_file)["user_added"] == [expected]
+    audited = mock_sel.log_api_access.call_args.kwargs["resources"]
+    assert audited == f'{rid}={{"note": "use a scoped path", "pattern": "rm -rf /tmp/mine"}}'
+
+
+@pytest.mark.asyncio
+async def test_user_edit_sets_only_the_fields_it_carries(config_file: Path, mock_sel):
+    async with _client() as client:
+        add = await client.post(
+            "/api/security/denied-commands/user", json={"pattern": "danger", "note": "old"}
+        )
+        rid = (await add.json())["user_added"][0]["id"]
+        url = f"/api/security/denied-commands/user/{rid}"
+        assert (await client.patch(url, json={"note": "new"})).status == 200
+        assert (await client.patch(url, json={"pattern": "danger2"})).status == 200
+    assert _read_hooks(config_file)["user_added"] == [
+        {"id": rid, "pattern": "danger2", "enabled": True, "note": "new"}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_user_edit_refuses_what_an_add_refuses_and_keeps_the_rule(
+    config_file: Path, mock_sel
+):
+    from kiro_crew.security import DENY_REASON_PREFIX
+
+    async with _client() as client:
+        add = await client.post(
+            "/api/security/denied-commands/user", json={"pattern": "danger", "note": "keep"}
+        )
+        rid = (await add.json())["user_added"][0]["id"]
+        before = _read_hooks(config_file)
+        for edit, resource in (
+            ({"pattern": "("}, "bad_regex"),
+            ({"pattern": "(a+)+$"}, "redos_unsafe"),
+            ({"pattern": "   "}, "empty"),
+            ({"pattern": "x" * 513}, "oversize"),
+            ({"note": DENY_REASON_PREFIX + " forged"}, "note_forges_reason"),
+            ({"pattern": "fine", "note": 42}, "note_bad_type"),
+        ):
+            resp = await client.patch(f"/api/security/denied-commands/user/{rid}", json=edit)
+            assert resp.status == 400, edit
+            kwargs = mock_sel.log_api_access.call_args.kwargs
+            assert (kwargs["outcome"], kwargs["resources"]) == ("denied", f"{rid}={resource}"), edit
+    assert _read_hooks(config_file) == before
 
 
 @pytest.mark.asyncio

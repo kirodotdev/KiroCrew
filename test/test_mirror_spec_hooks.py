@@ -185,7 +185,7 @@ def test_a_live_shell_permission_request_carries_the_harness_tool(backend):
 @pytest.mark.parametrize("backend", _MIRRORS)
 def test_a_backend_with_no_table_gets_no_harness_tool_id(backend):
     # The same frames on a backend with no name table build the event as before.
-    assert _permission_event(backend, as_backend=ACP_BACKEND_CLAUDE).harness_tool_id == ""
+    assert _permission_event(backend, as_backend=ACP_BACKEND_CODEX).harness_tool_id == ""
 
 
 def test_opencodes_later_titles_name_the_command_not_the_tool():

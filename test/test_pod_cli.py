@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 
 import pytest
@@ -204,6 +205,8 @@ class TestUpVerb:
         assert '"port": 7811' in out and '"token": "tok-9"' in out
         # _up must pin the resolved checkout for the systemd boot.
         assert rt.read_env_file(c, "demo").get("CHECKOUT", "").endswith("wts/demo")
+        # The handle names the pod's own clone, not only its worktree basename.
+        assert json.loads(out)["checkout"] == str(tmp_path / "wts" / "demo")
 
     def test_up_with_a_seed_runs_the_landing_verification(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
