@@ -29,8 +29,12 @@ _RESTRICTED = ["incognito", "temporary"]
 
 
 def _client(tmp_path, mode: str, **kw) -> AcpClient:
+    from kiro_crew.acp.claude_project_mcp import ProjectMcpGate
+
     client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_CLAUDE, **kw)
     client.memory_mode = mode
+    # As after the launch's read of the project .mcp.json files, which found none.
+    client._claude_project_mcp_gate = ProjectMcpGate([], False)
     return client
 
 

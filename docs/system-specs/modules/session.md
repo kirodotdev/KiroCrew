@@ -2770,7 +2770,8 @@ runtime notices, is an assistant row carrying one, rewind leaves a `native_fork`
 request (`{sid, message_id}`) on the session-map entry. The next cold start sends
 `session/fork` for the discarded sid cut at that message and restores the fork
 like any resume, so the retained history keeps its tool calls and results instead
-of being rebuilt as text. The discarded suffix stays excluded, because the fork
+of being rebuilt as text. The fork carries the same `claudeCode.options` as that
+load, because the adapter starts the fork's process and its MCP servers first. The discarded suffix stays excluded, because the fork
 copies nothing after the fork point, and the source session is left untouched.
 Any write or clear of the entry's `sid` drops a pending request, so a reset
 issued before the cold start wins. A backend outside

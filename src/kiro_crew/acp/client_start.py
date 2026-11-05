@@ -801,7 +801,12 @@ async def _fork_session(
         "sessionId": source_sid,
         "cwd": await self._session_work_dir(),
         "mcpServers": [],
-        "_meta": {"jetbrains": {"air": {"fork": {"version": 1, "messageId": message_id}}}},
+        "_meta": {
+            # The adapter starts the fork's Claude Code process, and its MCP servers,
+            # before the session/load that follows, so it gets that load's options.
+            **(self._claude_session_meta() if self._is_claude else {}),
+            "jetbrains": {"air": {"fork": {"version": 1, "messageId": message_id}}},
+        },
     }
     try:
         fork_id = await self._send_request(METHOD_SESSION_FORK, params)

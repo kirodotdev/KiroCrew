@@ -1370,7 +1370,11 @@ class TestClientSeam:
         with pytest.raises(client_mod.AcpError, match="no sensitive-path deny rules"):
             side._claude_session_meta()
 
+        from kiro_crew.acp.claude_project_mcp import ProjectMcpGate
+
         main = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_CLAUDE)
+        # As after the launch's read of the project .mcp.json files, which found none.
+        main._claude_project_mcp_gate = ProjectMcpGate([], False)
         await main._prepare_claude_side_read_denies()
         assert main._claude_side_read_denies == ()
         assert main._claude_session_meta() == {"claudeCode": {"options": {}}}

@@ -76,7 +76,7 @@ def delete_claude_session_files(session_id: str, cwd: str) -> bool:
     if not isinstance(session_id, str) or not _SESSION_ID_RE.fullmatch(session_id):
         return False
     project_name = claude_project_dir_name(cwd)
-    root = claude_config_dir()
+    root = claude_config_dir(os.environ)
     if project_name is None or root is None:
         return False
     projects = root / "projects"
