@@ -295,6 +295,9 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
                 # the caller's own reservation must not hold the note back.
                 ("slot_buffers.py", "flush_restored_hold"),
                 ("slot_projection.py", "SlotProjection.to_dict"),
+                # The running turn's project names only a turn that has claimed
+                # its session; a reservation has none yet.
+                ("slot_projection.py", "_running_turn_project"),
                 ("slot_registry.py", "SlotRegistry.running_session_keys"),
                 ("state_parts/chat_slot.py", "_ChatSlot.running"),
             }
