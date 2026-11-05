@@ -676,7 +676,8 @@ ACP_BACKENDS_HARNESS_OWNED_SLASH_COMMANDS = frozenset({ACP_BACKEND_CLAUDE})
 # A non-kiro harness has no ``_kiro.dev/commands/execute``, so ``stream_command``
 # hands it ``/clear`` through ``session/prompt``. A member is a harness whose own
 # prompt handler has no ``clear`` command: the text reaches the model as a user
-# message, the model may answer "Context cleared", and the context stays.
+# message, the model may answer "Context cleared", and the context stays. claude
+# is the one member for a different reason, given at its entry below.
 #
 # - kas: driven live, context usage read 8.42% -> 8.44% across ``/clear``.
 # - codex: codex-acp's ``tryHandleCommand`` knows plan, mcp, skills, status,
@@ -698,11 +699,18 @@ ACP_BACKENDS_HARNESS_OWNED_SLASH_COMMANDS = frozenset({ACP_BACKEND_CLAUDE})
 # goose is NOT a member: its prompt handler runs ``/clear`` itself
 # (``CompactionOperation.run_command`` returns an empty conversation), so it keeps
 # the prompt path. kiro is not a member: it runs ``/clear`` natively over
-# ``_kiro.dev/commands/execute``. claude is not a member: its harness owns its own
-# command set. A harness added later stays out until its ``/clear`` is checked.
+# ``_kiro.dev/commands/execute``. A harness added later stays out until its
+# ``/clear`` is checked.
 ACP_BACKENDS_LOCAL_CLEAR = frozenset(
     {
         ACP_BACKEND_KAS,
+        # claude-agent-acp sends no clear status frame and has no
+        # ``_kiro.dev/commands/execute``, so Crew cannot see whether the Agent SDK
+        # ran a ``/clear`` it was handed as prompt text, and Crew's history, todo
+        # pill and next-turn replay would not follow it either way. claude runs
+        # one adapter per session, so the dashboard's discard drops that adapter's
+        # conversation whatever the SDK would have done with the text.
+        ACP_BACKEND_CLAUDE,
         ACP_BACKEND_CODEX,
         ACP_BACKEND_OPENCODE,
         ACP_BACKEND_PI,
