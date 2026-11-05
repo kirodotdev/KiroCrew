@@ -194,7 +194,11 @@ def post_compaction_parts(
     # its natively loaded ``resources``, so the gate is the session-start one.
     # The files are user-written: scrub the payload, keep the wrapper outside it.
     _steering_ctx = _inclusion.steering_resources_part(
-        agent=agent, is_cc=is_cc, essentials=_essentials, context_groups=context_groups
+        agent=agent,
+        is_cc=is_cc,
+        essentials=_essentials,
+        context_groups=context_groups,
+        project=project,
     )
     if _steering_ctx:
         parts.append(

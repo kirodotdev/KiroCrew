@@ -6,12 +6,13 @@ play, and they are loaded by two different mechanisms:
 
 * ``~/.kiro/steering/**/*.md`` — **global** (``user`` source).  kiro-cli loads
   these for every session, and the dashboard's own CC-backend injection
-  (:func:`kiro_crew.context._load_steering_resources`) globs the agent
-  config's ``file://.kiro/steering/**/*.md`` resource against ``$HOME``, which
-  resolves to exactly this directory.
+  (:func:`kiro_crew.context._load_steering_resources`) adds this directory
+  the way kiro-cli inherits it.
 * ``<project>/.kiro/steering/**/*.md`` — **workspace** (``workspace`` source).
   kiro-cli loads these because the session subprocess runs with the slot's
-  project directory as its cwd.
+  project directory as its cwd; the CC-backend injection anchors the agent
+  config's relative ``file://.kiro/steering/**/*.md`` resource at that
+  project for the same result.
 
 These endpoints back the Steering tab under Agent Capabilities, surfacing which
 steering documents are in effect.

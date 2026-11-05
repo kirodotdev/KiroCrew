@@ -61,16 +61,20 @@ def steering_target_admissible(resolved: Path, base: Path | None = None) -> bool
     The session loader (:func:`_load_steering_resources`) admits a glob hit —
     symlinks included, since ``Path.resolve()`` follows them — when the target
     stays under the trust base, is a regular file, and is not a sensitive
-    location. *base* defaults to ``$HOME``, the loader's own anchor; the
-    dashboard's steering listing admits a leaf symlink through this same
-    predicate with the source's LINK trust base (``$HOME`` for ``user``, the
-    steering root itself for ``workspace``), so a repository-committed link
+    location. The loader passes each entry's own anchor as *base* (the
+    project, the home, or an absolute entry's glob-free prefix); *base*
+    defaults to ``$HOME``. The dashboard's steering listing admits a leaf
+    symlink through this same predicate with the source's LINK trust base
+    (``$HOME`` for ``user``, the steering root itself for ``workspace``), so
+    a repository-committed link
     can never read outside the root it ships in, and the ``user`` case cannot
     disagree with what the loader injects.
     """
     from kiro_crew import context as ctx  # circular import: the facade imports this owner
 
-    base_resolved = str((base or Path.home()).resolve()) + os.sep
+    base_resolved = str((base or Path.home()).resolve())
+    if not base_resolved.endswith(os.sep):
+        base_resolved += os.sep  # a filesystem root already ends in one
     return (
         str(resolved).startswith(base_resolved)
         and resolved.is_file()
@@ -78,16 +82,56 @@ def steering_target_admissible(resolved: Path, base: Path | None = None) -> bool
     )
 
 
-def _load_steering_resources() -> str:
+#: The project half of the resources kiro-cli adds to an agent's own while a
+#: workspace inherits its defaults (``acp/skill_projection_parts/preparation.py``):
+#: the project's steering and ``AGENTS.md``, when a project is bound. The global
+#: half is ``_GLOBAL_DEFAULT_RESOURCE``. The Claude Code backend reads none of
+#: them itself.
+_PROJECT_DEFAULT_RESOURCES = ("file://.kiro/steering/**/*.md", "file://AGENTS.md")
+
+
+#: The global half: the operator's steering under the host ``~/.kiro``. It stays
+#: there under a relocated ``KIRO_HOME`` because the folder-steering dedup
+#: (``folder_steering._double_load_roots``) skips the host tree as delivered on
+#: this backend, and a root it skips must be the root this load reads.
+_GLOBAL_DEFAULT_RESOURCE = "file://~/.kiro/steering/**/*.md"
+
+
+def _steering_glob_anchor(pattern: str, project: Path | None) -> tuple[Path, str]:
+    """``(anchor directory, glob relative to it)`` for one ``file://`` *pattern*.
+
+    kiro-cli's anchoring: ``~/`` is the home, an absolute path is globbed from
+    its own glob-free prefix, and anything else is relative to the session's
+    project, or to the home when none is bound. The anchor is also the trust
+    base the hits are admitted against.
+    """
+    if pattern.startswith("~/"):
+        return Path.home(), pattern[2:]
+    path = Path(pattern)
+    if not path.is_absolute():
+        return (project or Path.home()), pattern
+    parts = path.parts
+    split = next(
+        (i for i, part in enumerate(parts) if any(c in part for c in "*?[")), len(parts) - 1
+    )
+    return Path(*parts[:split]), str(Path(*parts[split:]))
+
+
+def _load_steering_resources(project: str | None = None) -> str:
     """Load steering files from the agent config's resources array.
 
     kiro-cli injects these automatically for its sessions; the dashboard
     must do it explicitly so that dashboard chat sessions also benefit
-    from project-specific steering conventions.
-    Only loads ``file://`` resources matching ``*.md``, and of those only the
-    documents :func:`kiro_crew.folder_steering.every_session_body` keeps: one
-    declaring ``inclusion`` ``manual``, ``auto`` or ``fileMatch`` is withheld,
-    and the front matter is stripped from the rest.
+    from project-specific steering conventions. Only loads ``file://``
+    resources matching ``*.md``, each anchored by
+    :func:`_steering_glob_anchor` against *project*, plus the defaults
+    kiro-cli adds (``_GLOBAL_DEFAULT_RESOURCE``, and
+    ``_PROJECT_DEFAULT_RESOURCES`` when *project* is set), and of those only
+    the documents :func:`kiro_crew.folder_steering.every_session_body` keeps:
+    one declaring ``inclusion`` ``manual``, ``auto`` or ``fileMatch`` is
+    withheld, and the front matter is stripped from the rest. A document two
+    entries match is read once. An entry that cannot be globbed or read skips
+    only itself.
     """
     from kiro_crew import context as ctx  # circular import: the facade imports this owner
     from kiro_crew.folder_steering import every_session_body
@@ -114,29 +158,47 @@ def _load_steering_resources() -> str:
         )
         if cfg is None:
             return ""
-        resources = cfg.get("resources", [])
-        parts: list[str] = []
-        for res in resources:
-            if not isinstance(res, str) or not res.startswith("file://"):
-                continue
-            raw_pattern = res.removeprefix("file://")
-            base = Path.home()
-            for p in sorted(base.glob(raw_pattern)):
-                if p.suffix == ".md" and steering_target_admissible(p.resolve()):
-                    try:
-                        body = every_session_body(ctx.safe_read_file(str(p)))
-                    except PermissionError:
-                        continue
-                    if body is not None:
-                        parts.append(body)
-        if parts:
-            logger.debug(
-                "loaded %d steering bytes from %d files", sum(len(p) for p in parts), len(parts)
-            )
-        return "\n".join(parts) if parts else ""
+        declared = cfg.get("resources", [])
+        project_root = Path(project).expanduser() if project else None
+        resources = [
+            *(declared if isinstance(declared, list) else []),
+            _GLOBAL_DEFAULT_RESOURCE,
+            *(_PROJECT_DEFAULT_RESOURCES if project_root is not None else ()),
+        ]
     except Exception as exc:
         logger.debug("steering load failed: %s", type(exc).__name__)
         return ""
+    parts: list[str] = []
+    seen: set[Path] = set()
+    for res in resources:
+        if not isinstance(res, str) or not res.startswith("file://"):
+            continue
+        try:
+            anchor, pattern = _steering_glob_anchor(res.removeprefix("file://"), project_root)
+            hits = sorted(anchor.glob(pattern))
+        except Exception as exc:
+            # pathlib refuses some patterns outright; skip this entry only.
+            logger.debug("steering resource skipped: %s", type(exc).__name__)
+            continue
+        for p in hits:
+            if p.suffix != ".md":
+                continue
+            try:
+                resolved = p.resolve()
+                if resolved in seen or not steering_target_admissible(resolved, base=anchor):
+                    continue
+                body = every_session_body(ctx.safe_read_file(str(p)))
+            except Exception as exc:
+                logger.debug("steering document skipped: %s", type(exc).__name__)
+                continue
+            seen.add(resolved)
+            if body is not None:
+                parts.append(body)
+    if parts:
+        logger.debug(
+            "loaded %d steering bytes from %d files", sum(len(p) for p in parts), len(parts)
+        )
+    return "\n".join(parts)
 
 
 def _read_include_crew_context(agent: str) -> bool:
