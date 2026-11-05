@@ -174,6 +174,24 @@ class TestTheFixContractIsStepZero:
         assert payload(result)["contract"]["verdict"] == "unverifiable"
         assert "Traceback" not in result.stderr
 
+    def test_a_utf16_contract_takes_the_unreadable_arm_not_the_catch_all(
+        self, staged: Path, tmp_path: Path
+    ) -> None:
+        """A UTF-16 contract is named as unreadable, not as a broken script."""
+        worktree = build_repo(tmp_path, "utf16-contract", committed=("src/kiro_crew/x.py",))
+        held = tmp_path / "utf16-contract-held.json"
+        held.write_bytes(json.dumps(A_CONTRACT).encode("utf-16"))
+        a_golden_path(staged, kind="flow", command="monitor_start")
+        install_verifier(staged, VERIFIER_REJECTED)
+        result = run_fix(
+            staged, tmp_path / "findings.db", worktree, extra=["--contract", str(held)]
+        )
+        assert result.returncode == EXIT_UNVERIFIABLE, result.stdout
+        contract = payload(result)["contract"]
+        assert contract["verdict"] == "unverifiable"
+        assert contract["why"].startswith("the declared fix contract could not be checked: ")
+        assert "not UTF-8" in contract["why"]
+
     def test_an_absent_sibling_is_a_broken_installation_not_a_pass(
         self, staged: Path, tmp_path: Path
     ) -> None:
