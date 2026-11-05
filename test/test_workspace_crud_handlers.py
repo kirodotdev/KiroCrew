@@ -373,6 +373,32 @@ class TestCreateHandler:
         assert leftovers == [], f"staged copy not cleaned up: {leftovers}"
 
     @pytest.mark.asyncio
+    async def test_copy_from_a_source_with_no_folder_warns_and_still_creates(
+        self, tmp_path: Path
+    ) -> None:
+        # The ``default`` source is registered but its folder is never created on
+        # disk, so there is nothing to copy. The create must still succeed (the new
+        # workspace is registered and materialized, as it always was), but the
+        # response must carry a warning naming the missing source so the caller is
+        # not told a copy happened when none did. Mirrors the CLI create's warning.
+        cfg = _cfg()
+        _seed_file(tmp_path, cfg)
+        with (
+            patch(_LOAD, return_value=cfg),
+            patch(_CFGDIR, return_value=tmp_path),
+            patch(_DATAHOME, return_value=tmp_path),
+            patch(_SEL),
+        ):
+            resp = await api_workspaces_create(_req({"name": "copied", "copy_from": "default"}))
+        assert resp.status == 200
+        body = json.loads(resp.body)
+        assert body["ok"] is True
+        assert "copied" in _read_doc(tmp_path)["workspaces"]
+        warnings = body.get("warnings")
+        assert warnings, "a copy_from whose source folder is missing must warn"
+        assert any("nothing was copied" in w and "default" in w for w in warnings), warnings
+
+    @pytest.mark.asyncio
     async def test_create_path_traversal_rejected(self, tmp_path: Path) -> None:
         cfg = _cfg()
         with (

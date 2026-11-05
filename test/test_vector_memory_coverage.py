@@ -1003,6 +1003,22 @@ class TestMigrateFromMarkdown:
         assert counts["skipped"] == 1
         assert len(store.get_lessons()) == 2
 
+    def test_a_lessons_line_that_is_not_utf8_is_skipped(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """One undecodable byte costs only its own line, not the migration."""
+        home = self._home(tmp_path, monkeypatch)
+        (home / "lessons.jsonl").write_bytes(
+            (json.dumps({"rule": "Always pin the release tag before publishing"}) + "\n").encode()
+            + b'{"rule": "bad \xff byte"}\n'
+            + (json.dumps({"rule": "Never bind a debug server to a public address"}) + "\n").encode()
+        )
+        store = _store(tmp_path)
+        counts = store.migrate_from_markdown()
+        assert counts["semantic"] == 2
+        assert counts["skipped"] == 1
+        assert len(store.get_lessons()) == 2
+
     def test_preferences_md(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         home = self._home(tmp_path, monkeypatch)
         oversized = "y" * 5000

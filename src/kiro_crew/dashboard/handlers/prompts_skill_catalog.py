@@ -655,7 +655,7 @@ async def api_skill_tree(request: web.Request) -> web.Response:
             outcome="not_found",
             metadata={"name": name},
         )
-        return web.json_response({"error": "not found"}, status=404)
+        return web.json_response({"error": "not found", "code": "skill_not_found"}, status=404)
     # Sanitize the absolute path — never expose the server's real home to the
     # client.  ``root`` is already resolved (symlinks followed), so compare
     # against the *resolved* home too; otherwise a symlinked home (e.g. macOS
@@ -720,7 +720,7 @@ async def api_skill_file(request: web.Request) -> web.Response:
     )
     if root is None:
         _audit("not_found")
-        return web.json_response({"error": "not found"}, status=404)
+        return web.json_response({"error": "not found", "code": "skill_not_found"}, status=404)
     if err:
         if err == "access denied":
             _audit("blocked")

@@ -355,7 +355,7 @@ async def _skill_detail_verbs(request: web.Request) -> web.Response:
         except Exception:  # noqa: BLE001 — the mutation is committed; never 500 on an audit write
             logger.debug("Could not audit skill delete outcome", exc_info=True)
         if not ok:
-            return web.json_response({"error": "not found"}, status=404)
+            return web.json_response({"error": "not found", "code": "skill_not_found"}, status=404)
         return web.json_response({"ok": True})
 
     if request.method == "PUT":
@@ -441,7 +441,7 @@ async def _skill_detail_verbs(request: web.Request) -> web.Response:
         except Exception:  # noqa: BLE001 — the mutation is committed; never 500 on an audit write
             logger.debug("Could not audit skill update outcome", exc_info=True)
         if not ok:
-            return web.json_response({"error": "not found"}, status=404)
+            return web.json_response({"error": "not found", "code": "skill_not_found"}, status=404)
         return web.json_response({"ok": True})
 
     # GET
@@ -527,7 +527,7 @@ async def _skill_detail_verbs(request: web.Request) -> web.Response:
         if content_value is not None:
             content = content_value
     if content is None:
-        return web.json_response({"error": "not found"}, status=404)
+        return web.json_response({"error": "not found", "code": "skill_not_found"}, status=404)
     # ``hash`` is the edit base a PUT presents as ``base_hash``.
     return web.json_response(
         {

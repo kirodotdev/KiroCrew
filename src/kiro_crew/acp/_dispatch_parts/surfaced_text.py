@@ -16,6 +16,7 @@ import json
 import re
 from typing import Any
 
+from kiro_crew import session_directive
 from kiro_crew.acp._dispatch_parts.tool_call_identity import is_shell_kind
 from kiro_crew.acp.types import TOOL_PURPOSE_KEYS
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
@@ -219,10 +220,12 @@ def extract_tool_purpose(raw_input: object) -> str:
     tool pill falling back to the literal command line.
 
     Off-canonical keys are scanned in sorted order so the choice is
-    deterministic when a call somehow carries more than one.
+    deterministic when a call somehow carries more than one. A Tool Search
+    deferred call is read through its envelope to the tool's own arguments.
     """
     if not isinstance(raw_input, dict):
         return ""
+    raw_input = session_directive.deferred_call_arguments(raw_input) or raw_input
     for key in TOOL_PURPOSE_KEYS:
         value = raw_input.get(key)
         if isinstance(value, str) and value.strip():
