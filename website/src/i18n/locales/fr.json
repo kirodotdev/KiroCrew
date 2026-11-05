@@ -19115,6 +19115,15 @@
         "failed_to_load": "Impossible de charger les réglages Bot.",
         "retry": "Réessayer"
       },
+      "sessionControlSection": {
+        "title": "Contrôle des sessions",
+        "session_control_tools": "Laisser les agents contrôler tes autres sessions",
+        "session_control_tools_desc": "Si c'est désactivé, les agents ne peuvent plus ouvrir, envoyer des messages à, arrêter ni fermer tes autres sessions. Le changement s'applique immédiatement, y compris aux sessions en cours.",
+        "session_control_tools_hint": "Si c'est activé, un agent doté des outils du tableau de bord peut ouvrir des sessions et lire, envoyer des messages à, arrêter ou fermer tes autres sessions dans cet espace de travail. Le désactiver n'arrête aucune de tes sessions, et tes Bots et ton Conductor continuent de piloter les sessions qu'ils ont lancées.",
+        "failed_to_save": "Impossible d'enregistrer le réglage de contrôle des sessions. Réessaie.",
+        "failed_to_load": "Impossible de charger le réglage de contrôle des sessions.",
+        "retry": "Réessayer"
+      },
       "developerPanel": {
         "developer_tools": "Outils de développement",
         "feature_previews": "Aperçus de fonctionnalités",

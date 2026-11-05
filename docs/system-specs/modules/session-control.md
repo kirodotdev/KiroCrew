@@ -2635,6 +2635,13 @@ keeps a quoted `"false"` from loading as enabled — `bool("false")` is `True`, 
 plain coercion would give a user who wrote it in an editor that quotes values the
 opposite of what they read.
 
+Settings > Developer > Feature Previews > Session control
+(`SessionControlSection.tsx`) is the dashboard's write path: the key is a `bool`
+in `_EDITABLE_CONFIG`, so the owner-only `PATCH /api/config/kirocrew` writes it,
+and `session_control_enabled()` reads config on every call, so a change reaches
+running sessions on their next call. A change card that turns it on is a `widen`
+(`_SETTING_ORDER`).
+
 A config read that RAISES still resolves to disabled rather than to the default.
 That is deliberately not symmetric with the absent case: an unreadable config is a
 transient fault the operator can diagnose from the log line, and refusing during it

@@ -1158,7 +1158,7 @@ retry.
 
 | Knob | Default | Effect |
 |---|---|---|
-| `agent.session_control` | `true` | The whole surface. Turn it off to withdraw the capability from every agent at once without editing a spec, except Bot DM sessions and the owner's own-tab Conductor, which keep driving workers they created unless `agent.member_dispatch` is also off |
+| `agent.session_control` | `true` | The whole surface. Turn it off to withdraw the capability from every agent at once without editing a spec, except Bot DM sessions and the owner's own-tab Conductor, which keep driving workers they created unless `agent.member_dispatch` is also off. Switch it in Settings > Developer > Feature Previews > Session control; a change applies on the next call, running sessions included |
 | `agent.session_manager_chain` | `false` | Let a session reach the whole line of sessions under it through `session_handoff`, and hand a closed manager's sessions up |
 | `agent.member_dispatch` | `true` | A Bot's DM session, and the Conductor in the owner's own dashboard tab, drive workers they created even when session control is off. Turn it off to put both back under the switch |
 | `agent.crew_panel` | `true` | A Bot publishes its own webview, shown in that member's drawer on the Crew page. Its own mount and its own switch, so withdrawing session control leaves the drawer alone and withdrawing the drawer leaves session control alone |

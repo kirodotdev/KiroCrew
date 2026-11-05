@@ -8486,6 +8486,15 @@
         "failed_to_load": "Couldn't load the Bot settings.",
         "retry": "Retry"
       },
+      "sessionControlSection": {
+        "title": "Session control",
+        "session_control_tools": "Let agents control your other sessions",
+        "session_control_tools_desc": "When off, agents can no longer open, message, stop or close your other sessions. A change applies at once, even to sessions already running.",
+        "session_control_tools_hint": "When on, an agent with the dashboard tools can open sessions, and read, message, stop or close your other sessions in this workspace. Turning it off stops none of your sessions, and your Bots and Conductor can still drive the sessions they started.",
+        "failed_to_save": "Couldn't save the session control setting. Try again.",
+        "failed_to_load": "Couldn't load the session control setting.",
+        "retry": "Retry"
+      },
       "developerPanel": {
         "feature_previews": "Feature Previews",
         "feature_previews_desc": "Unreleased features and pages. Your choices here are saved on this {{productName}}, so they apply wherever you open the dashboard, in any browser or in the desktop app. The pages stay hidden from the sidebar and from Search Everywhere until you turn them on here; the switches themselves do show up in Settings search. Unpolished on purpose.",

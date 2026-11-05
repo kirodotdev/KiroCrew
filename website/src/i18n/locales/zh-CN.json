@@ -18171,6 +18171,15 @@
         "failed_to_load": "无法加载 Bot 设置。",
         "retry": "重试"
       },
+      "sessionControlSection": {
+        "title": "会话控制",
+        "session_control_tools": "允许代理控制你的其他会话",
+        "session_control_tools_desc": "关闭后，代理不能再打开、停止或关闭你的其他会话，也不能向其发送消息。更改立即生效，正在运行的会话也一样。",
+        "session_control_tools_hint": "开启时，代理若有仪表板工具，可在此工作区打开会话，并读取、停止或关闭其他会话，或向其发送消息。关闭不会停止你的任何会话，Bot 和 Conductor 仍可操作自己启动过的会话。",
+        "failed_to_save": "无法保存会话控制设置。请再试一次。",
+        "failed_to_load": "无法加载会话控制设置。",
+        "retry": "重试"
+      },
       "developerPanel": {
         "developer_tools": "开发者工具",
         "feature_previews": "功能预览",
