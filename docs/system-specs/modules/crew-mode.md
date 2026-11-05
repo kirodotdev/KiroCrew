@@ -3805,7 +3805,10 @@ so the run end IS the turn end — and the "Steered" chip never draws
 (`suppressSteerAck: true`): delivery mechanics stay outside the conversation,
 including a `[STEERING …]` acknowledgement from an explicit steer; the marker is still
 stripped from the prose, and the main chat keeps its chip with the SDK's own
-policy-block rule. The UNFILTERED transcript the pane hands over as the
+policy-block rule. The "N files changed" chips never draw either
+(`hideFileChanges: true`): the mate's own writes (notes, scripts, its page)
+are not file work the user reviews in this chat. `meta.file_changes` is still
+recorded, and the main chat and worker sessions keep their chips. The UNFILTERED transcript the pane hands over as the
 `crewmateTranscript` getter is read for the run position only; the getter is
 called on every row render, so the renderer set keeps its identity while a
 reply streams. User messages keep
