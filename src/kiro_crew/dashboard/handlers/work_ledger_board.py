@@ -386,6 +386,48 @@ def awaits_person(
     )
 
 
+def item_awaits_person(slot_key: str, item: Mapping[str, Any], *, running: bool = False) -> bool:
+    """:func:`awaits_person` for one work-item payload on *slot_key*'s ledger, over
+    its own event tail: the warm welcome's reader, so it and this board agree. A
+    tail that cannot be read leaves the item's stamps to decide; a closed item
+    waits on nobody, as on the board. *running* is :func:`item_running`, read on
+    the loop beforehand; a remote item reads its stored record here. FILE I/O."""
+    if work_item_is_terminal(item.get("state")):
+        return False
+    try:
+        tail = _tail_events(slot_key, str(item.get("item_id")), _MAX_EVENT_TAIL)
+    except Exception:
+        logger.debug("no event tail for a warm welcome item", exc_info=True)
+        tail = []
+    stored = work_ledger.WorkItem.from_dict(dict(item))
+    # A remote worker's turn is its stored record's, as on the board.
+    remote = work_ledger.remote_liveness(slot_key, stored)
+    running = remote[0] if remote is not None else running
+    return awaits_person(stored, [event.to_dict() for event in tail], running=running)
+
+
+def item_running(state: DashboardState, item: Mapping[str, Any]) -> bool:
+    """Whether *item*'s local worker has a turn in flight, as the board reads it.
+    A remote item answers False here: :func:`item_awaits_person` reads its record
+    off the loop. Memory reads."""
+    stored = work_ledger.WorkItem.from_dict(dict(item))
+    if stored.worker_instance_id:
+        return False
+    running, _closed, _looping = work_ledger.item_liveness(
+        "",
+        stored,
+        running=lambda k: _slot_running(state, k),
+        closed=lambda k: _slot_closed(state, k),
+        looping=_slot_looping,
+    )
+    return running
+
+
+def worker_slot(state: DashboardState, worker_key: str) -> Any:
+    """The open slot of a worker session key, or ``None``. Memory reads."""
+    return _find_slot(state, worker_key) if worker_key else None
+
+
 def closed_items(slot_key: str) -> list[dict[str, Any]]:
     """The closed items on thread *slot_key*'s own ledger, as this board reads them.
 
@@ -460,6 +502,9 @@ def with_worker_facts(value: Any, state: Any, conductor: str = "") -> Any:
     """
     if state is None or not isinstance(value, list):
         return value
+    from kiro_crew.dashboard import warm_task_brief_inputs as warm_inputs
+    from kiro_crew.dashboard import warm_task_brief_registry as warm_facts
+
     conductor_alive = _slot_open(state, conductor) if conductor else None
     out: list[Any] = []
     for raw in value:
@@ -490,6 +535,14 @@ def with_worker_facts(value: Any, state: Any, conductor: str = "") -> Any:
             [e for e in events if isinstance(e, dict)] if isinstance(events, list) else [],
             running=running,
         )
+        # The welcome's own facts on this item, from its in-memory cache, so the
+        # board shows the same tags; never a network read on page load.
+        # Keyed by the PR the item holds now: a replaced PR gets no old tags.
+        held = warm_facts.pr_subject(warm_inputs.ledger_ref(dict(raw)))
+        open_item = conductor and not item.is_terminal and held
+        checked = warm_facts.item_facts(conductor, item.item_id, held) if open_item else None
+        if checked is not None:
+            facts["facts"] = checked
         out.append({**raw, **facts})
     return out
 

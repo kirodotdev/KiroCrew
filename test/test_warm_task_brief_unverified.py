@@ -58,7 +58,8 @@ async def test_an_unbacked_sha_or_time_is_kept_and_tagged_unverified(
     assert meta["brief"]["headline"] != warm_task_brief._FAILURE_TEXT["en"]
     for value in shown:
         assert f"{value} {tag}" in posted and f"{value} {tag}" in row["content"]
-    assert meta["brief"]["waiting"] == [{"title": "Pick a layout", "ask": "Grid or list?"}]
+    # The waiting card still draws, as a version 3 card.
+    assert [card["title"] for card in meta["brief"]["cards"]] == ["Pick a layout"]
     # Still a miss: the next return is not read as caught up.
     assert meta["grounding_miss"] == "unbacked_fact"
     assert warm_task_brief._claim_digest(slot.rows) == ""
@@ -141,3 +142,23 @@ def test_a_body_with_a_picture_is_never_tagged():
     tag = warm_task_brief._UNVERIFIED_TEXT["en"]
     assert warm_task_brief._mark_body(body, {"17:05"}, tag) == body
     assert tag in warm_task_brief._mark_body("- note at 17:05", {"17:05"}, tag)
+
+
+def test_a_version_3_cards_model_words_are_tagged_and_its_labels_are_not():
+    brief = warm_task_brief._parse_result(json.dumps({"headline": "Back."}), "")
+    assert brief is not None
+    card = {
+        "subject": "it_1",
+        "title": "Ship at 17:05",
+        "said": {"text": "Built at 17:05", "facts": ["f1"]},
+        "ask": {"what": "Merge at 17:05", "why": "", "recommended": "Yes 17:05",
+                "recommended_why": "", "options": [{"label": "Yes 17:05", "consequence": "lands 17:05"}]},
+    }  # fmt: skip
+    marked = warm_task_brief._marked(replace(brief, version=3, cards=(card,)), ["17:05"], "en")
+    assert marked is not None
+    tag = warm_task_brief._UNVERIFIED_TEXT["en"]
+    (got,) = marked.cards
+    assert got["said"]["text"] == f"Built at 17:05 {tag}"
+    assert got["ask"]["what"] == f"Merge at 17:05 {tag}"
+    assert got["ask"]["options"] == [{"label": "Yes 17:05", "consequence": f"lands 17:05 {tag}"}]
+    assert got["title"] == "Ship at 17:05" and got["ask"]["recommended"] == "Yes 17:05"

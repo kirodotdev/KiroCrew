@@ -514,8 +514,8 @@ async def test_one_model_call_and_one_message_that_is_a_structured_brief(
     state.slots[slot.key] = slot
     state._foreground_slots[1] = slot.key
     snapshot = replace(_snapshot(), pending_options="[OPTIONS: Old]")
-    # A note with new choices lands during the model call: the brief copies
-    # the choices of the last re-read, not of the read before the call.
+    # A note with new choices lands during the model call: with no card
+    # asking, the brief copies the choices of the last re-read.
     after_call = replace(_claimed(snapshot), pending_options="[OPTIONS: Push | Hold]")
 
     async def read_snapshot(*args, **kwargs):
@@ -580,40 +580,30 @@ async def test_one_model_call_and_one_message_that_is_a_structured_brief(
     assert result["role"] == "assistant"
     # What the brief stood on, so an unchanged return is not sent again.
     assert len(result["meta"].pop("facts_digest")) == 64
-    assert result["meta"] == {
-        "kind": "warm_task_brief_result",
-        "fingerprint": "fp",
-        "brief": {
-            "status": "needs_you",
-            "headline": "I reproduced the failure.",
-            "asked": "Fix the failing test",
-            "remaining": "Push the fix and rerun CI",
-            "done": ["Reproduced the failure"],
-            "needs_you": ["Approve the push so CI can run"],
-            "next": ["Apply the fix", "Rerun CI"],
-            "extra": [{"title": "Risk", "items": ["The fix touches a shared helper"]}],
-        },
-    }
-    # The stored content is the same brief as plain text, in the card's order,
-    # for every reader that does not draw the card.
+    brief = result["meta"].pop("brief")
+    assert result["meta"] == {"kind": "warm_task_brief_result", "fingerprint": "fp"}
+    # A version 3 card brief: the older free fields the model returned are
+    # not drawn; nothing here needs a card, so the facts give only the check line.
+    assert brief["version"] == 3 and brief["status"] == "needs_you"
+    assert brief["status_label"] == "Waiting on you"
+    assert brief["headline"] == "I reproduced the failure."
+    assert brief["cards"] == [] and brief["check"][1:] == ["Tasks: 1"]
+    assert brief["check"][0].startswith("✓ Checked at ")
+    assert not {"asked", "needs_you", "done", "next", "extra", "waiting"} & set(brief)
+    # The stored content is the same brief as plain text. No card asks, so
+    # the owner's pending choices stay as working buttons under it.
     assert result["content"] == (
         "Waiting on you: I reproduced the failure.\n"
-        "Needs you:\n- Approve the push so CI can run\n"
-        "Left: Push the fix and rerun CI\n"
-        "You asked: Fix the failing test\n"
-        "Done so far:\n- Reproduced the failure\n"
-        "Next:\n1. Apply the fix\n2. Rerun CI\n"
-        "Risk:\n- The fix touches a shared helper\n\n"
-        # The owner's pending choices stay as working buttons under the brief.
-        "[OPTIONS: Push | Hold]"
+        + " · ".join(brief["check"])
+        + "\n\n[OPTIONS: Push | Hold]"
     )
     prompt = call_kwargs["prompt"]
     assert '"goal": "Fix the test"' in prompt
     # The model sees the gateway's goal-scoped count so its text agrees with it.
     assert '"goal_progress": {"accepted": 0, "total": 1}' in prompt
     assert "checked since HH:MM" in prompt and "add, drop or rename one" in prompt
-    assert '"needs_you"' in prompt and '"lines"' in prompt
-    assert "No links,\nimages or [OPTIONS] lines" in prompt
+    assert '"cards"' in prompt and '"headline_facts"' in prompt
+    assert "No links, images or [OPTIONS] lines" in prompt
     # The user's reply-style choice reaches the prompt.
     assert warm_task_brief._STYLE_HINTS["answer_only"] in prompt
 
@@ -1843,8 +1833,12 @@ async def test_every_grounding_miss_keeps_the_waiting_cards_and_is_not_a_catch_u
     assert meta["kind"] == "warm_task_brief_result"
     assert meta["grounding_miss"] == miss
     assert meta["brief"]["headline"] == warm_task_brief._FAILURE_TEXT["en"]
-    assert meta["brief"]["waiting"] == [{"title": "Pick a layout", "ask": "Grid or list?"}]
-    assert "body" not in meta["brief"]
+    # The waiting item keeps its gateway card and tag; no raw report is shown.
+    (card,) = meta["brief"]["cards"]
+    assert card["title"] == "Pick a layout" and "said" not in card
+    assert "waits on you" in [tag["text"] for tag in card["tags"]]
+    assert "Grid or list?" not in row["content"]
+    assert meta["brief"]["body"] == ""
     # The fallback did not catch the owner up, so the next return is not quiet.
     assert warm_task_brief._claim_digest(slot.rows) == ""
 
@@ -1917,4 +1911,36 @@ async def test_a_note_in_the_live_window_wins_over_the_settled_disk_read(monkeyp
         lambda: SimpleNamespace(agent=SimpleNamespace(resolve_model=lambda role: "background")),
     )
     await warm_task_brief._prepare_warm_task_brief(state, slot)
+    # No card asks: the chip bar is copied, from the live window.
     assert _posted(slot)[-1]["content"].endswith("\n\n[OPTIONS: New | Cancel]")
+
+
+@pytest.mark.asyncio
+async def test_a_card_that_asks_keeps_the_chip_bar(monkeypatch):
+    state = _State()
+    slot = _Slot()
+    state.slots[slot.key] = slot
+    state._foreground_slots[1] = slot.key
+    snapshot = replace(
+        _snapshot(), work_items=(_WAITING_ITEM,), pending_options="[OPTIONS: Push | Hold]"
+    )
+
+    async def read_snapshot(*args, **kwargs):
+        return _claimed(snapshot) if slot.flushed else snapshot
+
+    async def run_model(*args, **kwargs):
+        card = {"subject": "it_1", "ask": {"what": "Pick the layout"}}
+        return json.dumps({"status": "needs_you", "headline": "Back.", "cards": [card]})
+
+    monkeypatch.setattr(warm_task_brief, "_snapshot", read_snapshot)
+    monkeypatch.setattr(warm_task_brief, "run_bg_oneliner", run_model)
+    monkeypatch.setattr(
+        warm_task_brief.KiroCrewConfig,
+        "load",
+        lambda: SimpleNamespace(agent=SimpleNamespace(resolve_model=lambda role: "background")),
+    )
+    await warm_task_brief._prepare_warm_task_brief(state, slot)
+    row = _posted(slot)[-1]
+    assert row["meta"]["brief"]["cards"][0]["ask"]["what"] == "Pick the layout"
+    # The card draws its ask as text; the chip bar stays the one-click answer.
+    assert row["content"].endswith("\n\n[OPTIONS: Push | Hold]")

@@ -161,41 +161,41 @@ def test_the_digest_ignores_read_times_only():
 
 
 @pytest.mark.asyncio
-async def test_a_posted_brief_drops_uncited_lines_and_lists_what_was_checked(monkeypatch):
+async def test_a_posted_brief_keeps_only_cited_card_sentences(monkeypatch):
     monkeypatch.setattr(inputs, "_live_cache", {})
     monkeypatch.setattr(inputs, "probe_github", lambda urls: {})
     state = _State()
     slot = _foreground_slot(state)
     item = {"item_id": "it_0000000a", "title": "Fix the test", "state": "open"}
     base = replace(_snapshot(), work_items=(item,))
-    lines = [
-        {"text": "Fix the test is open", "kind": "task", "facts": ["f1"]},
-        {"text": "edited src/app/main.py", "kind": "file", "facts": []},
-        {"text": "Fix the test is done", "kind": "task", "facts": []},
+    cards = [
+        {"subject": "it_0000000a", "said": {"text": "Fix the test is open", "facts": ["f1"]}},
+        # A subject no fact covers, and a sentence citing an id outside its card.
+        {"subject": "src/app/main.py", "said": {"text": "edited it", "facts": []}},
+        {"subject": "it_0000000a", "said": {"text": "Fix the test is done", "facts": ["f9"]}},
     ]
 
     async def run_model(*args, **kwargs):
-        return json.dumps({"headline": "Back.", "lines": lines, "body": "```\nA --> B\n```"})
+        return json.dumps({"headline": "Back.", "cards": cards, "body": "```\nA --> B\n```"})
 
     _arm_model(monkeypatch, slot, [base, _claimed(base), _claimed(base)], run_model)
     await warm_task_brief._prepare_warm_task_brief(state, slot)
     row = slot.rows[-1]
     brief = row["meta"]["brief"]
-    # The file line and the uncited task line go; the picture stays as written.
-    assert brief["lines"] == [lines[0]]
+    # One card per subject: the first sentence for it, cited; the rest go.
+    (card,) = brief["cards"]
+    assert card["title"] == "Fix the test"
+    assert card["said"] == {"text": "Fix the test is open", "facts": ["f1"]}
     assert brief["body"] == "```\nA --> B\n```"
-    # Copy and reply threads read ``content``: the marks keep their rows.
-    assert (
-        "- Fix the test is open¹\nChecked just now:\n¹ Fix the test (task list)" in row["content"]
-    )
-    assert brief["checked"] == [
-        {
-            "id": "f1",
-            "kind": "task",
-            "label": "Fix the test",
-            "source": "tasks",
-        }
-    ]
+    # Copy and reply threads read ``content``: one line per card, no footnotes.
+    assert "- Fix the test\n  Fix the test is open" in row["content"]
+    assert "Checked just now" not in row["content"]
+    assert brief["checked"][0] == {
+        "id": "f1",
+        "kind": "task",
+        "label": "Fix the test",
+        "source": "tasks",
+    }
 
 
 @pytest.mark.asyncio

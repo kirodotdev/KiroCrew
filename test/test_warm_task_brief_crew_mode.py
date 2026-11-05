@@ -111,11 +111,11 @@ async def test_crew_mode_return_after_45_minutes_briefs_once(monkeypatch):
     # brief shows no count rather than one that reads like today's progress.
     assert "progress" not in result["meta"]["brief"]
     assert '"goal_progress": null' in prompts[0]
-    # The gateway lists what waits on the owner from the ledger, not the model.
-    assert result["meta"]["brief"]["waiting"] == [
-        {"title": "Add the panel", "ask": "Which layout?"}
-    ]
-    assert result["meta"]["brief"]["waiting_total"] == 1
+    # The gateway draws what waits on the owner from the ledger, not the model:
+    # one card for the asking item, tagged, with no raw worker report.
+    (card,) = result["meta"]["brief"]["cards"]
+    assert card["title"] == "Add the panel" and "said" not in card
+    assert "waits on you" in [tag["text"] for tag in card["tags"]]
 
     # Leave and come back again with nothing changed: the claim holds, no spend.
     await _hide_for(state, 1, slot.key, 45 * 60)

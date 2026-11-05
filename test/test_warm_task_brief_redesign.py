@@ -32,6 +32,7 @@ from test_warm_task_brief import (
 
 from kiro_crew.dashboard import warm_task_brief
 from kiro_crew.dashboard import warm_task_brief_inputs as inputs
+from kiro_crew.dashboard.handlers import work_ledger_board
 from kiro_crew.session_summary import TranscriptTurn
 
 _ASK = (
@@ -640,11 +641,11 @@ def test_a_failed_or_dropped_brief_leaves_no_digest_to_match(tail):
 _CARD = {"kind": "card", "text": "Set the milestones", "options": [], "asked_at": ASKED}
 
 
-async def _write_run(monkeypatch, settled_states):
+async def _write_run(monkeypatch, settled_states, **fields):
     """Run one brief whose settled re-reads return *settled_states* in order."""
     state = _State()
     slot = _foreground_slot(state)
-    base = _snap(waiting=(_CARD,), ledger_digest="d0")
+    base = _snap(**{"waiting": (_CARD,), "ledger_digest": "d0", **fields})
     prompts: list[str] = []
 
     async def run_model(sessions, prompt, **kwargs):
@@ -668,28 +669,102 @@ async def test_an_unchanged_state_posts_after_one_call(monkeypatch):
     assert len(prompts) == 1 and len(posted) == 1
 
 
-@pytest.mark.asyncio
-async def test_a_card_pressed_mid_write_drops_the_result_and_redoes_it_once(monkeypatch):
-    # The card is answered while the first call runs; the redo sees no card.
-    prompts, posted = await _write_run(monkeypatch, [{"waiting": ()}, {"waiting": ()}])
-    assert len(prompts) == 2 and len(posted) == 1
-    assert _payload_of(prompts[1])["waiting_on_you"] == []
+def _plain(posted):
+    (row,) = posted
+    meta = row["meta"]
+    assert meta["grounding_miss"] == "changed_during_write"
+    assert meta["brief"]["headline"] == warm_task_brief._FAILURE_TEXT["en"]
+    return meta["brief"]
 
 
 @pytest.mark.asyncio
-async def test_a_ledger_write_mid_write_drops_the_result_and_redoes_it_once(monkeypatch):
+async def test_a_card_pressed_mid_write_posts_the_plain_welcome_once(monkeypatch):
+    # The card is answered while the call runs: no second write.
+    prompts, posted = await _write_run(monkeypatch, [{"waiting": ()}])
+    assert len(prompts) == 1
+    _plain(posted)
+
+
+@pytest.mark.asyncio
+async def test_the_plain_welcome_draws_the_re_reads_waiting_items(monkeypatch):
+    # An item waiting on the owner is drawn by the board's own wait test.
+    asking = _item(2, state="open", status="question", reason="needs_human", summary="Merge?")
+    monkeypatch.setattr(work_ledger_board, "item_awaits_person", lambda *a, **k: True)
     prompts, posted = await _write_run(
-        monkeypatch, [{"ledger_digest": "d1"}, {"ledger_digest": "d1"}]
+        monkeypatch, [{"ledger_digest": "d1"}], waiting=(), work_items=(asking,)
     )
-    assert len(prompts) == 2 and len(posted) == 1
+    assert len(prompts) == 1
+    brief = _plain(posted)
+    assert brief["status"] == "needs_you"
+    assert [card["subject"] for card in brief["cards"]] == [asking["item_id"]]
 
 
 @pytest.mark.asyncio
-async def test_a_second_change_posts_nothing_this_visit(monkeypatch):
+async def test_a_card_that_lands_mid_write_makes_the_plain_welcome_need_you(monkeypatch):
+    # The waiting cards are read again after the last await: a new one shows
+    # and the status says the owner is needed.
+    newer = {**_CARD, "text": "Pick a date"}
+    prompts, posted = await _write_run(monkeypatch, [{"waiting": (_CARD, newer)}])
+    brief = _plain(posted)
+    assert len(prompts) == 1 and brief["status"] == "needs_you"
+    assert [card["title"] for card in brief["cards"]] == ["Set the milestones", "Pick a date"]
+
+
+@pytest.mark.asyncio
+async def test_a_dismissed_ask_does_not_come_back_on_the_plain_welcome(monkeypatch):
+    # The board's own wait test decides: an ask the owner dismissed mid-write
+    # (no ledger stamp moves) is not drawn again as waiting.
+    asking = _item(2, state="open", status="question", reason="needs_human", summary="Merge?")
+    monkeypatch.setattr(work_ledger_board, "item_awaits_person", lambda *a, **k: False)
     prompts, posted = await _write_run(
-        monkeypatch, [{"ledger_digest": "d1"}, {"ledger_digest": "d2"}]
+        monkeypatch, [{"ledger_digest": "d1"}], waiting=(), work_items=(asking,)
     )
-    assert len(prompts) == 2 and posted == []
+    brief = _plain(posted)
+    assert brief["status"] != "needs_you"
+    assert not any(card.get("ask") for card in brief["cards"])
+
+
+@pytest.mark.asyncio
+async def test_a_ledger_write_mid_write_posts_the_plain_welcome_once(monkeypatch):
+    prompts, posted = await _write_run(monkeypatch, [{"ledger_digest": "d1"}])
+    assert len(prompts) == 1
+    _plain(posted)
+
+
+@pytest.mark.asyncio
+async def test_an_on_loop_change_after_the_last_read_posts_the_plain_welcome(monkeypatch):
+    # An approval answered or a turn started while the final re-read waited:
+    # the on-loop facts are compared again in the step that posts.
+    states = iter(["before", "after"])
+    monkeypatch.setattr(warm_task_brief.registry, "loop_state", lambda inp: next(states))
+    prompts, posted = await _write_run(monkeypatch, [{}])
+    assert len(prompts) == 1
+    _plain(posted)
+
+
+@pytest.mark.asyncio
+async def test_nothing_awaits_between_the_last_re_read_and_the_post(monkeypatch):
+    # The last re-read is the last await: once it returns, the post follows in
+    # the same step, so no task can run in between.
+    order: list[str] = []
+    real_settled = warm_task_brief._settled
+    real_post = warm_task_brief._post_message
+
+    async def settled(*args, **kwargs):
+        got = await real_settled(*args, **kwargs)
+        order.append("settled")
+        asyncio.get_running_loop().call_soon(order.append, "other task")
+        return got
+
+    def post(*args, **kwargs):
+        order.append("post")
+        return real_post(*args, **kwargs)
+
+    monkeypatch.setattr(warm_task_brief, "_settled", settled)
+    monkeypatch.setattr(warm_task_brief, "_post_message", post)
+    await _write_run(monkeypatch, [{}])
+    last = len(order) - 1 - order[::-1].index("settled")
+    assert order[last : last + 2] == ["settled", "post"]
 
 
 # ---------------------------------------------------------------- RC4, RC5: live reads and buttons
@@ -771,7 +846,7 @@ async def test_rc4_live_read_past_its_limit_marks_unread_prs_not_checked(monkeyp
 
 
 @pytest.mark.asyncio
-async def test_rc4_one_live_read_limit_covers_every_attempt(monkeypatch):
+async def test_rc4_a_change_after_the_write_reads_github_no_second_time(monkeypatch):
     budgets: list[float] = []
     # A synthetic clock scoped to the brief module: each read takes 3 s and
     # each model call 20 s; only the reads may spend the limit.
@@ -792,11 +867,10 @@ async def test_rc4_one_live_read_limit_covers_every_attempt(monkeypatch):
 
     monkeypatch.setattr(inputs, "read_live_prs", read)
     monkeypatch.setattr(warm_task_brief, "_generate", generate)
-    prompts, posted = await _write_run(
-        monkeypatch, [{"ledger_digest": "d1"}, {"ledger_digest": "d1"}]
-    )
-    assert len(prompts) == 2 and len(posted) == 1
-    assert budgets == [inputs.LIVE_READ_TOTAL_SECS, inputs.LIVE_READ_TOTAL_SECS - 3.0]
+    prompts, posted = await _write_run(monkeypatch, [{"ledger_digest": "d1"}])
+    # A change after the write reads GitHub no second time and writes no more.
+    assert len(prompts) == 1 and len(posted) == 1
+    assert budgets == [inputs.LIVE_READ_TOTAL_SECS]
 
 
 @pytest.mark.asyncio
@@ -1037,7 +1111,7 @@ async def test_rc4_a_pr_after_a_line_break_in_the_transcript_counts_as_named(mon
 
 
 @pytest.mark.asyncio
-async def test_rc4_a_pr_from_the_original_request_passes_the_check(monkeypatch):
+async def test_rc4_a_pr_from_the_original_request_is_no_miss(monkeypatch):
     # "asked" falls back to the original request, which may sit outside the payload.
     state = _State()
     slot = _foreground_slot(state)
@@ -1050,8 +1124,9 @@ async def test_rc4_a_pr_from_the_original_request_passes_the_check(monkeypatch):
     monkeypatch.setattr(warm_task_brief, "_payload", lambda *a, **k: {"goal": "ship"})
     await warm_task_brief._prepare_warm_task_brief(state, slot)
     row = slot.rows[-1]
+    # A card brief keeps no "asked" line, and the request's PR is no miss.
     assert row["meta"]["kind"] == "warm_task_brief_result"
-    assert "#7" in row["meta"]["brief"]["asked"]
+    assert "grounding_miss" not in row["meta"] and "asked" not in row["meta"]["brief"]
 
 
 def test_rc4_a_live_merged_pr_is_not_a_change_since_away():
@@ -1086,7 +1161,7 @@ def test_rc4_a_hex_colour_or_a_capped_number_names_no_pr():
 
 
 @pytest.mark.asyncio
-async def test_rc4_a_capped_asked_fallback_does_not_fail_the_result(monkeypatch):
+async def test_rc4_a_long_request_does_not_fail_a_card_brief(monkeypatch):
     state = _State()
     slot = _foreground_slot(state)
     request = "x" * (warm_task_brief._MAX_ASKED_CHARS - 6) + " #26100 and more"
@@ -1099,6 +1174,6 @@ async def test_rc4_a_capped_asked_fallback_does_not_fail_the_result(monkeypatch)
     monkeypatch.setattr(warm_task_brief, "_payload", lambda *a, **k: {"goal": "ship"})
     await warm_task_brief._prepare_warm_task_brief(state, slot)
     row = slot.rows[-1]
-    # The cap cut the number: what is left names no PR the input lacks.
-    assert row["meta"]["brief"]["asked"].endswith("#261…")
-    assert row["meta"]["kind"] == "warm_task_brief_result"
+    # A card brief draws no "asked" fallback, so the long request cannot fail it.
+    assert "asked" not in row["meta"]["brief"]
+    assert row["meta"]["kind"] == "warm_task_brief_result" and "grounding_miss" not in row["meta"]

@@ -112,7 +112,10 @@
           about: 'About "{t}" ({id}): ',
           fills_chat: 'Buttons fill your chat box. Nothing sends until you press send.',
           state_open: 'open', state_accepted: 'accepted', state_rejected: 'rejected',
-          state_blocked: 'blocked', state_abandoned: 'abandoned', state_unknown: 'unknown'
+          state_blocked: 'blocked', state_abandoned: 'abandoned', state_unknown: 'unknown',
+          fact_conflicts: 'has conflicts', fact_failed: '{n} checks failed', fact_changes: 'changes requested',
+          fact_review: 'review required',
+          fact_checked: 'checked {at}'
         },
         'zh-CN': {
           title: '\u76ee\u6807\u770b\u677f', round: '\u8f6e\u6b21', goal_version: '\u76ee\u6807\u7248\u672c', depth: '\u5c42\u7ea7',
@@ -139,7 +142,10 @@
           pill_quiet: '\u65e0\u52a8\u9759 \u00b7 \u6ca1\u6709\u5b89\u6392\u4efb\u4f55\u4e8b\u5524\u9192\u5b83',
           about: '\u5173\u4e8e\u201c{t}\u201d\uff08{id}\uff09\uff1a',
           state_open: '\u8fdb\u884c\u4e2d', state_accepted: '\u5df2\u63a5\u53d7', state_rejected: '\u5df2\u62d2\u7edd',
-          state_blocked: '\u53d7\u963b', state_abandoned: '\u5df2\u653e\u5f03', state_unknown: '\u672a\u77e5'
+          state_blocked: '\u53d7\u963b', state_abandoned: '\u5df2\u653e\u5f03', state_unknown: '\u672a\u77e5',
+          fact_conflicts: '\u6709\u51b2\u7a81', fact_failed: '{n} \u9879\u68c0\u67e5\u5931\u8d25', fact_changes: '\u9700\u8981\u4fee\u6539',
+          fact_review: '\u5f85\u5ba1\u67e5',
+          fact_checked: '\u6838\u5b9e\u4e8e {at}'
         }
       };
       function locale() {
@@ -518,6 +524,19 @@
           var status = text(it.status);
           // The worker's own last word, which is a CLAIM rather than an acceptance.
           if (status) chips.appendChild(chip(i18n('worker_status', { v: statusLabel(status) }), null));
+          // The warm welcome's own facts on this item (host-stamped from its cache):
+          // the same tags the welcome card shows, a bad one in the danger tone.
+          var wf = it.facts && typeof it.facts === 'object' ? it.facts : null;
+          if (wf) {
+            var bad = 'var(--danger, #ff5c5c)';
+            var fp = wf.pr && typeof wf.pr === 'object' ? wf.pr : {};
+            var fc = fp.checks && typeof fp.checks === 'object' ? fp.checks : {};
+            if (fp.mergeable === 'conflicting') chips.appendChild(chip(i18n('fact_conflicts'), bad));
+            if (num(fc.failed)) chips.appendChild(chip(i18n('fact_failed', { n: fc.failed }), bad));
+            if (fp.review === 'changes_requested') chips.appendChild(chip(i18n('fact_changes'), bad));
+            else if (fp.review === 'review_required') chips.appendChild(chip(i18n('fact_review'), null));
+            if (text(wf.checked_at)) chips.appendChild(chip(i18n('fact_checked', { at: wf.checked_at }), null));
+          }
           var pr = num(it.pr);
           var prAt = pr ? prUrl(it, pr) : null;
           if (prAt) {

@@ -501,7 +501,7 @@ def test_a_marker_opener_split_across_body_lines_is_defanged():
     assert brief is not None and "[" not in brief.body
 
 
-def test_the_prompt_lets_the_model_pick_its_own_picture_and_leaves_waiting_to_the_gateway():
+def test_the_prompt_lets_the_model_pick_its_own_picture_and_leaves_states_to_the_gateway():
     prompt = warm_task_brief._PROMPT
     # A picture is the model's choice, in any of the chat's own forms, with no
     # fixed template; no separate widget field and no progress count.
@@ -511,8 +511,8 @@ def test_the_prompt_lets_the_model_pick_its_own_picture_and_leaves_waiting_to_th
         assert form in prompt
     assert '"progress" count' not in prompt
     assert 'Never add a bare "N of M done"' in prompt
-    for rule in ('"blocked" or "question"', '"approval" or "needs_human"'):
-        assert rule in prompt
+    # The gateway draws every state as tags; the model never restates one.
+    assert "draws every subject's state as tags" in prompt
     rendered = warm_task_brief._build_prompt(
         warm_task_brief.TaskSnapshot(
             slot_key="s",
@@ -705,7 +705,16 @@ def _rendered(brief) -> str:
 )
 def test_facts_the_input_gave_pass_the_check_in_every_body_form(body):
     brief = _body_brief(body)
-    assert warm_task_brief._unbacked_facts(_posted(brief), _GROUNDING, {"09:30"}) == []
+    # 09:12 is a checked fact's read time: one of the times a brief may write.
+    assert warm_task_brief._unbacked_facts(_posted(brief), _GROUNDING, {"09:30", "09:12"}) == []
+
+
+def test_a_time_only_the_snapshot_holds_fails_the_check():
+    # The snapshot carries 09:12, but no fact was checked then: the time may
+    # not be written (RFC 3.9.6: a checked_at, not_checked_since or as-of time).
+    assert "09:12" in _GROUNDING
+    brief = _body_brief("- #27899 green at 09:12")
+    assert warm_task_brief._unbacked_facts(_posted(brief), _GROUNDING, {"09:30"}) == ["09:12"]
 
 
 @pytest.mark.parametrize(

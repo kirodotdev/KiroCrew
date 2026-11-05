@@ -184,7 +184,7 @@ def test_the_prompt_asks_for_structured_asks_and_gives_the_request():
         waiting=WAITING,
     )
     prompt = warm_task_brief._build_prompt(snapshot)
-    for field in ('"asks"', '"source"', '"consequence"', '"recommended"', '"why"'):
+    for field in ('"cards"', '"subject"', '"consequence"', '"recommended"', '"why"'):
         assert field in prompt
     assert '"owner_request": "Make the nightly green"' in prompt
     assert '"needs_you": [' not in prompt

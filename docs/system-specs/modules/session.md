@@ -210,11 +210,15 @@ finished message posts while the flag is
 still up, so it replaces the indicator in place. The claim and every staleness
 check use the first read's fingerprint; what the brief says comes from the
 re-read made once the claim is on disk, so a worker report that lands in
-between is not missed. Just before posting, the gateway re-reads the "Waiting on
-you" list and the ledger digest; if either differs from what the prompt used
-(a card answered or a ledger write during the model call), the result is
-dropped and generated once more from the new state, and a second change
-posts nothing that visit.
+between is not missed. The brief is written once. After the model call the
+gateway gathers the whole local fact registry again (no new GitHub read: PR
+facts keep their check time), then re-reads the "Waiting on you" list and the
+ledger digest. That re-read is the last await: the on-loop facts (worker
+chats, approvals, running turns: `registry.loop_state`) are compared again in
+the same step that posts. If anything differs from what the prompt used (a
+card answered, an approval answered or a ledger write during the model call),
+the plain welcome posts instead: the fixed failure line and the re-read's own
+waiting items, no model word, marked `grounding_miss: changed_during_write`.
 
 The model reads one JSON snapshot assembled by `warm_task_brief_inputs.py`.
 Each section has its own character budget and keeps whole entries, most
@@ -299,8 +303,7 @@ elsewhere). The one-call brief runs instead, once, on a timeout, a failed
 or brief-less turn, the cap, or a harness that does not qualify. A typed
 owner row, a reset or a close during the wake stops it
 (`cancel_warm_task_brief`) and abandons the brief: no one-call brief is made,
-since none could post. Nothing is retried, and a retry after a changed snapshot
-never wakes.
+since none could post. Nothing is retried.
 
 The prompt asks for parts in order: the goal, what changed since the owner
 left (each fact with source and time), numbered asks (what, why only the
@@ -340,8 +343,9 @@ the verified set (a live read, the snapshot or the owner's request, read by
 `inputs.pr_numbers`).
 Before posting, the gateway runs the RFC's section 3.9.6 output check over
 every model field, the whole body included: every commit SHA must appear in
-the snapshot, and every HH:MM must appear in the snapshot or be the prompt's
-"as of" time. An unbacked SHA or time alone keeps the brief: each one gets
+the snapshot, and every HH:MM must be the prompt's "as of" time or a time a
+checked fact carries (its `read_at`, `not_checked_since`, report or decision
+time), never any other time the snapshot happens to hold. An unbacked SHA or time alone keeps the brief: each one gets
 the `_UNVERIFIED_TEXT` tag for the owner's language right after it in every
 model field, and the secret, PR and SHA/time scans run again on the tagged
 strings; a wake check's `label` and `result` are tagged like model fields.
@@ -351,7 +355,7 @@ in inline code or a link, or inside `17:05:30`), any value in a body that
 holds a fenced block or a widget, or one whose tagged field would pass what
 the card keeps (240 UTF-16 units a field, 6,000 characters the body). On any other
 miss every model field is dropped and the card posts with the gateway's
-waiting cards and the fixed failure line as its headline. Both paths store
+cards and the fixed failure line as its headline. Both paths store
 `grounding_miss` on the row. The body may carry one
 picture the model chooses when it helps the owner act: a mermaid block, a
 markdown table or an `<mcwidget>`, with no fixed template; the prompt forbids a
@@ -423,6 +427,65 @@ claim's time keeps a patrol-changed fingerprint from briefing again until
 another 30 minutes pass without the owner typing. Rows from older builds with
 `meta.kind` `warm_task_brief_preparing` (the retired opener) still render and
 stay excluded like the other kinds.
+
+### Version 3: check first, one card per subject (RFC section 3.10)
+
+A new brief is a version 3 card brief (`meta.brief.version: 3`). Before the
+model call the fact registry (`warm_task_brief_registry.py`) runs one checker
+per fact kind over the work items the prompt shows: `pr` (the live read
+above), `task` (ledger state, status, reason, report and decision times, the
+item's PR subject), `waits_on_you` (the work-ledger board's `awaits_person`
+over the item's event tail, so the welcome and the board agree), `chat` (the
+worker chat's `running`, `interrupted`, `idle` or `closed`; `interrupted`
+when the slot's last turn ended with no reply, the sidebar's own test),
+`approval` (the worker slot's pending tool approvals and the coordinator's
+records for it), `ask` (the conductor's goal-board `asks` entry per item,
+then each waiting question or change card as `wN`; a reply's free
+`[OPTIONS: ...]` line is not a source, because it is not keyed by item),
+`file` (`os.stat` only, on at most 10 artifact paths an item names, inside
+the workspace root and never a sensitive path; no contents are read) and
+`time` (the gateway clock). Facts are numbered `f1`… in that order and each
+is marked `bad` when it is a conflict, a failed check, requested changes, a
+closed worker chat or a waiting approval. A checker that raises yields
+nothing for its kind. Worker reports are hints: one older than a read of the
+item's own PR is marked `superseded_by` that fact in the prompt, and its card
+shows one muted "replaced by the HH:MM check" line. A wake turn's proven
+file checks join the table as one more source, and a stat-only file fact no
+line cites then gives way to them.
+
+The model returns `headline`, `headline_facts` and `cards` (`subject`, one
+`said` sentence citing fact ids, one `ask`). The gateway builds the cards
+(`warm_task_brief_cards.py`): one per work item that waits on the owner, has
+a bad fact, has an ask source or that the model wrote about; one per PR no
+item holds; one per waiting question or change card; at most 8, the rest
+counted. Titles, PR pills, tags, the check line ("✓ Checked at 16:47 · PRs
+on GitHub: 2 · Tasks: 2 · #N not checked") and the status label are the
+gateway's words in the brief's language (the script rule of the fixed
+lines), so a welcome has one locale. A `said` sentence stays only when it
+cites facts on its own card and contradicts none of them
+(`warm_task_brief_claims.py`: an exact phrase list keyed by each bad value,
+never an open scan); one citing nothing is the worker's report and is drawn
+"Worker says:". An ask's options come only from its subject's ask fact,
+copied exactly (else the source labels without consequences), one ask per
+subject. The headline must cite a bad fact when one exists and contradict
+no checked fact, else the gateway's fixed headline counts what waits and which
+PRs are in trouble. The older fields (`asked`, `waiting`, `asks`, `lines`,
+the Checked footnotes) are not stored on a version 3 row. A card draws its
+ask's answers as plain text: each option, its consequence, and the
+recommended one starred. The reply's pending `[OPTIONS: ...]` chip bar is
+copied as before and stays the one-click answer. A closed task's card
+keeps no ask. A failed PR read also draws through `ErrorNotice`.
+`WarmBriefCards` draws the cards, one column at 320px and two in a wider pane; the body keeps
+the `welcome` frame profile. A headline that contradicts any checked fact is
+never posted: the fixed headline counts every bad kind, else a plain line
+says where things stand. The table is kept in memory per thread, and
+`with_worker_facts` stamps each open goal-board item row with its cached
+`facts` (`pr` values and `bad`, and `checked_at`, that PR read's own time,
+drawn as "checked HH:MM"; an item whose PR was not read gets no stamp), so
+the board shows the same PR tags with no network read on page load. Chat
+state and approvals change within seconds, so they are never stamped from the
+cache; an entry older than 30 minutes is not stamped, and a restart empties
+the cache until the next welcome.
 
 ## Implementation Boundaries
 
