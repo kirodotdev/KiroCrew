@@ -33,6 +33,7 @@ vi.mock('../../api/client', () => ({
     setDeniedCommandsDisableAll: vi.fn(),
     addUserDeniedCommand: vi.fn(),
     toggleUserDeniedCommand: vi.fn(),
+    editUserDeniedCommand: vi.fn(),
     deleteUserDeniedCommand: vi.fn(),
     redactionAllowedHosts: vi.fn(),
     redactionRevokeHost: vi.fn(),
@@ -80,6 +81,13 @@ import {
  *  catalog landing, while still failing if the panel switches keys. */
 const NOTE_LABEL = () => i18nT('pages.settings.securityPanel.custom_deny_note')
 
+/** Open a custom row's menu. Radix opens on keyboard activation, a path jsdom
+ *  handles, unlike the PointerEvent-driven mouse open. */
+const openRowMenu = (pattern: string) => {
+  fireEvent.keyDown(screen.getByRole('button', { name: `Actions for pattern ${pattern}` }), { key: 'Enter' })
+  return screen.findAllByRole('menuitem')
+}
+
 /** Render the panel with the denied-commands query pre-resolved.
  *
  * Built-in rules live inside per-category accordions that are COLLAPSED by
@@ -105,6 +113,7 @@ describe('SecurityPanel — denied commands', () => {
     // consumed must not leak into the next test's add.
     ;(api.addUserDeniedCommand as ReturnType<typeof vi.fn>).mockReset().mockResolvedValue(snapshot())
     ;(api.toggleUserDeniedCommand as ReturnType<typeof vi.fn>).mockResolvedValue(snapshot())
+    ;(api.editUserDeniedCommand as ReturnType<typeof vi.fn>).mockReset().mockResolvedValue(snapshot())
     ;(api.deleteUserDeniedCommand as ReturnType<typeof vi.fn>).mockResolvedValue(snapshot())
     ;(api.governancePolicy as ReturnType<typeof vi.fn>).mockResolvedValue(govNoPolicy())
     ;(api.securityPosture as ReturnType<typeof vi.fn>).mockResolvedValue(posture())
@@ -465,14 +474,83 @@ describe('SecurityPanel — denied commands', () => {
   it('delete is only available on user rows', async () => {
     await renderPanel()
 
-    // The delete affordance targets the user pattern specifically.
-    const del = screen.getByLabelText(`Delete pattern ${USER_PATTERN}`)
-    fireEvent.click(del)
+    // The delete affordance targets the user pattern specifically, from the
+    // row's own menu.
+    await openRowMenu(USER_PATTERN)
+    fireEvent.click(screen.getByLabelText(`Delete pattern ${USER_PATTERN}`))
     await waitFor(() =>
       expect(api.deleteUserDeniedCommand).toHaveBeenCalledWith('user-1'),
     )
-    // Built-in rows have no delete affordance.
+    // Built-in rows have no delete affordance, and no row menu to hold one.
     expect(screen.queryByLabelText(`Delete pattern ${TOGGLE_DESC}`)).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: `Actions for pattern ${TOGGLE_DESC}` })).not.toBeInTheDocument()
+  })
+
+  it('Edit opens the rule in a dialog and saves both fields in place', async () => {
+    await renderPanel()
+
+    await openRowMenu(NOTED_PATTERN)
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Edit' }))
+    const dialog = await screen.findByRole('dialog')
+    const pattern = within(dialog).getByLabelText('Custom deny pattern')
+    const note = within(dialog).getByLabelText(NOTE_LABEL())
+    expect(pattern).toHaveValue(NOTED_PATTERN)
+    expect(note).toHaveValue(USER_NOTE)
+
+    // Nothing changed yet, so there is nothing to save.
+    const save = within(dialog).getByRole('button', { name: 'Save' })
+    expect(save).toBeDisabled()
+    fireEvent.change(pattern, { target: { value: 'curl .* \\| (ba|z)?sh ' } })
+    fireEvent.click(save)
+
+    // The rule's own id, and only the field that changed: the untouched note is
+    // not re-sent. The pattern goes exactly as typed, trailing space included:
+    // in a regex that space is part of what the rule matches.
+    await waitFor(() =>
+      expect(api.editUserDeniedCommand).toHaveBeenCalledWith('user-2', { pattern: 'curl .* \\| (ba|z)?sh ' }),
+    )
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+  })
+
+  it('a REJECTED edit keeps the dialog and its drafts, with the server reason', async () => {
+    ;(api.editUserDeniedCommand as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new ApiError(400, 'Bad Request', JSON.stringify({ error: 'pattern rejected: unsafe (catastrophic-backtracking) regex' })),
+    )
+    await renderPanel()
+
+    await openRowMenu(USER_PATTERN)
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Edit' }))
+    const dialog = await screen.findByRole('dialog')
+    const pattern = within(dialog).getByLabelText('Custom deny pattern')
+    fireEvent.change(pattern, { target: { value: '(a+)+$' } })
+    fireEvent.keyDown(pattern, { key: 'Enter' })
+
+    await waitFor(() => expect(api.editUserDeniedCommand).toHaveBeenCalledWith('user-1', { pattern: '(a+)+$' }))
+    expect(await within(dialog).findByText('pattern rejected: unsafe (catastrophic-backtracking) regex')).toBeInTheDocument()
+    expect(pattern).toHaveValue('(a+)+$')
+
+    // The reason describes the text that was sent; correcting it clears it.
+    fireEvent.change(pattern, { target: { value: '(a)+$' } })
+    expect(within(dialog).queryByText('pattern rejected: unsafe (catastrophic-backtracking) regex')).not.toBeInTheDocument()
+  })
+
+  it('the A-Z control sorts custom rows by pattern and turns back to insertion order', async () => {
+    await renderPanel()
+
+    const rowOrder = () => screen
+      .getAllByRole('button', { name: /^Actions for pattern / })
+      .map(b => b.getAttribute('aria-label'))
+    // Off by default: the order the rules were added in.
+    expect(rowOrder()).toEqual([`Actions for pattern ${USER_PATTERN}`, `Actions for pattern ${NOTED_PATTERN}`])
+
+    const sort = screen.getByRole('button', { name: 'Sort A to Z' })
+    expect(sort).toHaveAttribute('aria-pressed', 'false')
+    fireEvent.click(sort)
+    expect(sort).toHaveAttribute('aria-pressed', 'true')
+    expect(rowOrder()).toEqual([`Actions for pattern ${NOTED_PATTERN}`, `Actions for pattern ${USER_PATTERN}`])
+
+    fireEvent.click(sort)
+    expect(rowOrder()).toEqual([`Actions for pattern ${USER_PATTERN}`, `Actions for pattern ${NOTED_PATTERN}`])
   })
 
   it('chevron reveals the built-in pattern text', async () => {
