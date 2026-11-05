@@ -66,7 +66,7 @@ import math
 import re
 from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import Any, NamedTuple
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 from kiro_crew.agent_sdk.backend_mcp_ability import ability_for
 from kiro_crew.agent_sdk.capabilities import capabilities_of
@@ -80,6 +80,9 @@ from kiro_crew.hooks import (
     _normalize_hook_timeout,
 )
 from kiro_crew.security.paths import MAX_SCANNABLE_COMMAND_CHARS
+
+if TYPE_CHECKING:
+    from kiro_crew.providers.mirrors.base import Concern
 
 logger = logging.getLogger(__name__)
 
@@ -1102,6 +1105,27 @@ def spec_hooks_run_nowhere(provider: object) -> bool:
     return _HOOKS_CONCERN in ability.no_channel or _HOOKS_CONCERN in ability.withheld
 
 
+def _mirror_rules_unapplied(provider: object, concern: Concern) -> bool:
+    """Whether *provider*'s mirror rules *concern* ``withheld`` or ``no-channel``.
+
+    False for a backend with no mirror and for one whose rulings cannot be read,
+    about which nothing is established.
+    """
+    # circular import: the mirrors package reaches back into agent_sdk.
+    from kiro_crew.providers.mirrors import mirror_for
+    from kiro_crew.providers.mirrors.base import Disposition
+
+    try:
+        mirror = mirror_for(capabilities_of(provider).backend)
+        ruling = mirror.rulings().get(concern) if mirror is not None else None
+    except Exception:  # noqa: BLE001 - an unreadable ruling establishes nothing
+        return False
+    return ruling is not None and ruling.disposition in (
+        Disposition.WITHHELD,
+        Disposition.NO_CHANNEL,
+    )
+
+
 def spec_steering_read_nowhere(provider: object) -> bool:
     """Whether a session on *provider* loads none of its spec's ``file://`` steering.
 
@@ -1113,18 +1137,40 @@ def spec_steering_read_nowhere(provider: object) -> bool:
     rulings cannot be read, about which nothing is established.
     """
     # circular import: the mirrors package reaches back into agent_sdk.
-    from kiro_crew.providers.mirrors import mirror_for
-    from kiro_crew.providers.mirrors.base import Concern, Disposition
+    from kiro_crew.providers.mirrors.base import Concern
 
-    try:
-        mirror = mirror_for(capabilities_of(provider).backend)
-        ruling = mirror.rulings().get(Concern.RESOURCES) if mirror is not None else None
-    except Exception:  # noqa: BLE001 - an unreadable ruling establishes nothing
-        return False
-    return ruling is not None and ruling.disposition in (
-        Disposition.WITHHELD,
-        Disposition.NO_CHANNEL,
-    )
+    return _mirror_rules_unapplied(provider, Concern.RESOURCES)
+
+
+def spec_tools_settings_applied_nowhere(provider: object) -> bool:
+    """Whether a session on *provider* applies none of its spec's ``toolsSettings``.
+
+    True where the backend's mirror rules the ``toolsSettings`` concern
+    ``withheld`` or ``no-channel``. False for a backend with no mirror (kiro-cli
+    reads the field itself, and KAS receives it as ``permissions`` rules and gate
+    allowlists) and for one whose rulings cannot be read, about which nothing is
+    established.
+    """
+    # circular import: the mirrors package reaches back into agent_sdk.
+    from kiro_crew.providers.mirrors.base import Concern
+
+    return _mirror_rules_unapplied(provider, Concern.TOOLS_SETTINGS)
+
+
+def spec_tools_settings_unapplied(agent_id: str, project_dir: str | None = None) -> list[str]:
+    """The active agent spec's ``toolsSettings`` names a session that is not handed it runs without.
+
+    For the session-start notice on a backend where
+    :func:`spec_tools_settings_applied_nowhere` holds; empty when the spec sets
+    nothing such a session loses
+    (:func:`~kiro_crew.agent_sdk.tools_settings_reach.tools_settings_unapplied`).
+    Read through the spec reader the hooks use, so it is the spec the session
+    runs. Raises when the spec cannot be read. *project_dir* is
+    :func:`spec_project_dir` of the session.
+    """
+    from kiro_crew.agent_sdk.tools_settings_reach import tools_settings_unapplied
+
+    return tools_settings_unapplied(_agent_spec(agent_id, project_dir).get("toolsSettings"))
 
 
 def spec_steering_resources(agent_id: str, project_dir: str | None = None) -> list[str]:

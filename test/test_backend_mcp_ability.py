@@ -149,10 +149,11 @@ def test_the_two_off_card_concerns_are_the_context_text_ones() -> None:
     Every mirror rules PROMPT and RESOURCES withheld, and both reach the harness
     anyway -- as ordinary context text rather than through a projection. Rendering
     the withhold verbatim would tell a reader their agent never receives its own
-    instructions, which is the opposite of what happens. A third entry here is a
-    deliberate change to this assertion.
+    instructions, which is the opposite of what happens. ``TOOLS_SETTINGS`` is off
+    for its own reason, pinned below. A fourth entry here is a deliberate change to
+    this assertion.
     """
-    assert set(mcp_mod.OFF_CARD_CONCERNS) == {"PROMPT", "RESOURCES"}
+    assert set(mcp_mod.OFF_CARD_CONCERNS) == {"PROMPT", "RESOURCES", "TOOLS_SETTINGS"}
     for backend, declared in PROJECTIONS.items():
         if declared.kind is not ProjectionKind.MIRROR:
             continue
@@ -160,6 +161,20 @@ def test_the_two_off_card_concerns_are_the_context_text_ones() -> None:
         for name in ("PROMPT", "RESOURCES"):
             cid = Concern[name].name.lower()
             assert ruled.get(cid) == Disposition.WITHHELD.value, (backend, name)
+
+
+def test_tools_settings_is_off_the_card_only_while_no_mirror_applies_it() -> None:
+    """Its off-card reason is that every mirror line would read the same.
+
+    A mirror that comes to apply ``toolsSettings`` makes the line tell harnesses
+    apart, which is when the concern belongs on the card.
+    """
+    applied_nowhere = {Disposition.NO_CHANNEL.value, Disposition.WITHHELD.value}
+    for backend, declared in PROJECTIONS.items():
+        if declared.kind is not ProjectionKind.MIRROR:
+            continue
+        ruled = mcp_mod._dispositions(backend)
+        assert ruled.get("tools_settings") in applied_nowhere, backend
 
 
 # ── 3. every kind and every reach reaches a reader ──────────────────────────
