@@ -122,6 +122,22 @@ def _print_file_only_app_result(app_name: str, *, enabled: bool) -> None:
     )
 
 
+def _register_unrecorded_builtin(app_name: str) -> None:
+    """Write the shipped builtins' records when *app_name* is one that has none yet.
+
+    Only a gateway start registers the shipped builtins, so in a data home no
+    gateway has started in a builtin has no record, and a file-only enable or
+    disable would call it not installed. This writes what that next start
+    writes anyway, and nothing for a name no builtin ships under.
+    """
+    # Call-time import: a module-level import would make this module serve these
+    # names through the ``cli_commands`` facade it does not own.
+    from kiro_crew.apps.manager import register_builtin_apps, shipped_builtin_names
+
+    if app_name in shipped_builtin_names() and get_app(app_name) is None:
+        register_builtin_apps()
+
+
 def _refuse_unsafe_app_name(app_name: str) -> None:
     """Exit 1 when *app_name* is not a single app directory name.
 
@@ -565,6 +581,7 @@ def _handle_app(args: argparse.Namespace) -> None:
     elif action == "enable":
         if _run_app_action_through_gateway("enable", args.name):
             return
+        _register_unrecorded_builtin(args.name)
         result = enable_app(args.name)
         if result.ok:
             reg = register_app(args.name)
@@ -614,6 +631,7 @@ def _handle_app(args: argparse.Namespace) -> None:
         _refuse_unsafe_app_name(args.name)
         if _run_app_action_through_gateway("disable", args.name):
             return
+        _register_unrecorded_builtin(args.name)
         _cleanup_app_crons_from_scheduler(args.name)
         # Flip the authoritative flag BEFORE tearing resources down. A running gateway
         # is a DIFFERENT process: it watches this app's backend and re-registers its MCP

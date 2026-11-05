@@ -97,6 +97,71 @@ class TestHandleApp:
         assert meta is not None
         assert meta.enabled is False
 
+    def test_enable_registers_unrecorded_builtin(self, tmp_path, app_env, monkeypatch):
+        # A data home no gateway has started in has no builtin records yet.
+        import argparse
+
+        import kiro_crew.apps.manager as manager
+        import kiro_crew.cli_commands as cc
+        from kiro_crew.apps.manager import _read_installed
+
+        src = _make_app_source(tmp_path)
+        registered = []
+
+        def _register():
+            registered.append(True)
+            return 1 if install_app(src).ok else 0
+
+        monkeypatch.setattr(manager, "shipped_builtin_names", lambda: {"cli-test-app"})
+        monkeypatch.setattr(manager, "register_builtin_apps", _register)
+
+        cc._handle_app(argparse.Namespace(app_action="enable", name="cli-test-app"))
+
+        assert registered == [True]
+        meta = _read_installed("cli-test-app")
+        assert meta is not None
+        assert meta.enabled is True
+
+    def test_disable_registers_unrecorded_builtin(self, tmp_path, app_env, monkeypatch):
+        # A default-on builtin turned off before the first gateway start.
+        import argparse
+
+        import kiro_crew.apps.manager as manager
+        import kiro_crew.cli_commands as cc
+        from kiro_crew.apps.manager import _read_installed
+
+        src = _make_app_source(tmp_path)
+
+        def _register():
+            install_app(src)
+            return 1 if manager.enable_app("cli-test-app").ok else 0
+
+        monkeypatch.setattr(manager, "shipped_builtin_names", lambda: {"cli-test-app"})
+        monkeypatch.setattr(manager, "register_builtin_apps", _register)
+
+        cc._handle_app(argparse.Namespace(app_action="disable", name="cli-test-app"))
+
+        meta = _read_installed("cli-test-app")
+        assert meta is not None
+        assert meta.enabled is False
+
+    def test_enable_unknown_app_registers_nothing(self, app_env, monkeypatch, capsys):
+        import argparse
+
+        import kiro_crew.apps.manager as manager
+        import kiro_crew.cli_commands as cc
+
+        registered = []
+        monkeypatch.setattr(manager, "shipped_builtin_names", lambda: {"some-builtin"})
+        monkeypatch.setattr(manager, "register_builtin_apps", lambda: registered.append(True))
+
+        with pytest.raises(SystemExit) as exited:
+            cc._handle_app(argparse.Namespace(app_action="enable", name="cli-test-app"))
+
+        assert exited.value.code == 1
+        assert registered == []
+        assert "is not installed" in capsys.readouterr().err
+
     def test_info(self, tmp_path, app_env, capsys):
         import argparse
 
