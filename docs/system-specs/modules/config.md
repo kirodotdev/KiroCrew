@@ -108,7 +108,7 @@ module imports the ACP layer. The rest lives in one owner per responsibility, lo
 | `config/loader_config.py` | `KiroCrewConfig`: fields, `load`, `to_dict`, `save`, model, effort and credential resolution, and the provider factory. |
 | `config/loader_pipeline.py` | The load pipeline (`ConfigDocument`, `read_config_document`, `build_config`, `persist_write_back`) and the one-call loaders built on the class (`workspace_dir_for`, `default_project_dir`, `load_config_with_content_stamp`, `load_loop_stall_exit_after`). |
 
-**The harness-choice record.** `agent.acp_backend` and `agent.member_acp_backend` absent or `""` mean no harness choice and resolve to the default; a stored `"kiro"` is the Kiro CLI choice ([harness-parity](harness-parity.md) H1), except in `agent.member_acp_backend`, where `_read_backend_choice` (`config/loader_builders.py`) reads it as KAS before the selection gate, so every reader of the field sees the backend crewmate threads run on and the mapped value is gated like any other pick. In `agent.acp_backend` `_read_backend_choice` reads that choice as KAS (`kiro_cli_pick_backend`; the selection gate itself answers Kiro CLI for Kiro CLI) once this process confirmed the host's kiro-cli offers v3 and while KAS is selectable (`KIRO_SELECTION_BACKEND`; `docs/decisions/2026-10-28-a-kiro-cli-choice-runs-on-kas.md`) — the gateway's KAS floor confirms it at boot, and a non-gateway process that spawns an ACP agent (the CLI, the eval and task runners, history consolidation) confirms it via `ensure_kiro_cli_kas_verdict` before its config load — so the field and the dashboard response read `"kas"` there while `config.json` keeps `"kiro"`; a process that never confirms it (an MCP server, a process whose kiro-cli lacks v3, the bundle route) reads `"kiro"`; `acp_backend_stored_as_kiro()` (`config/loader_document.py`, overlay first) is the one reader of the stored choice, for the KAS floor, the per-process probe, `kirocrew doctor`, the once-only bell note and the Agent Harness panel's save-KAS offer. The loader maps the stored vocabulary to runtime ids on the way in (`_read_backend_choice`), and `to_dict()` maps back (`_stored_agent_dict`), so `config get`, the dashboard response and every full-document writer see `"kiro"` for a Kiro CLI harness that runs as itself, never the runtime `""`. `to_dict()` carries the RESOLVED value; `save()` writes both keys back as `config.json` stores them (`_restore_stored_harness_fields`, read from disk like `unsandboxed_exec_declared`), so it never invents a choice and never replaces a policy-denied pick with the floor. An in-memory change to either key is therefore not persisted by `save()`; the delta writers (`config set`, the dashboard PATCH) are the write path. `acp_backend_declared()` reports a stored choice, overlay first.
+**The harness-choice record.** `agent.acp_backend` and `agent.member_acp_backend` absent or `""` mean no harness choice and resolve to the default; a stored `"kiro"` is the Kiro CLI choice ([harness-parity](harness-parity.md) H1), except in `agent.member_acp_backend`, where `_read_backend_choice` (`config/loader_builders.py`) reads it as KAS before the selection gate, so every reader of the field sees the backend Bot threads run on and the mapped value is gated like any other pick. In `agent.acp_backend` `_read_backend_choice` reads that choice as KAS (`kiro_cli_pick_backend`; the selection gate itself answers Kiro CLI for Kiro CLI) once this process confirmed the host's kiro-cli offers v3 and while KAS is selectable (`KIRO_SELECTION_BACKEND`; `docs/decisions/2026-10-28-a-kiro-cli-choice-runs-on-kas.md`) — the gateway's KAS floor confirms it at boot, and a non-gateway process that spawns an ACP agent (the CLI, the eval and task runners, history consolidation) confirms it via `ensure_kiro_cli_kas_verdict` before its config load — so the field and the dashboard response read `"kas"` there while `config.json` keeps `"kiro"`; a process that never confirms it (an MCP server, a process whose kiro-cli lacks v3, the bundle route) reads `"kiro"`; `acp_backend_stored_as_kiro()` (`config/loader_document.py`, overlay first) is the one reader of the stored choice, for the KAS floor, the per-process probe, `kirocrew doctor`, the once-only bell note and the Agent Harness panel's save-KAS offer. The loader maps the stored vocabulary to runtime ids on the way in (`_read_backend_choice`), and `to_dict()` maps back (`_stored_agent_dict`), so `config get`, the dashboard response and every full-document writer see `"kiro"` for a Kiro CLI harness that runs as itself, never the runtime `""`. `to_dict()` carries the RESOLVED value; `save()` writes both keys back as `config.json` stores them (`_restore_stored_harness_fields`, read from disk like `unsandboxed_exec_declared`), so it never invents a choice and never replaces a policy-denied pick with the floor. An in-memory change to either key is therefore not persisted by `save()`; the delta writers (`config set`, the dashboard PATCH) are the write path. `acp_backend_declared()` reports a stored choice, overlay first.
 
 Two call cycles run through the owners, and each is broken by one function-local
 import of the higher owner, the idiom this package already uses for the ACP
@@ -168,7 +168,7 @@ contract are documented in
 [learn-cron-dashboard](learn-cron-dashboard.md#automatic-session-status-cards).
 
 Dynamic capabilities is not a `dashboard.*` key: it is a per-crewmate field,
-`agents.<name>.dynamic_capabilities` (default false), set on the crewmate's
+`agents.<name>.dynamic_capabilities` (default false), set on the Bot's
 Profile card and read per request. A config that still holds an old
 `dashboard.crewmate_dynamic_capabilities` key loads unchanged; the key is not
 read. Owned by [crew-mode](crew-mode.md#dynamic-capabilities).
@@ -503,9 +503,9 @@ none" is the single on-disk representation and a PATCH with `[]` clears it.
 The reserved `agents.default` assistant uses the existing Global Memory **V1**.
 Explicit creation of a new Crew Member allocates one **V2** memory store.
 Automatic discovery and existing V1 members retain their V1 bindings. Changing
-`default_agent` picks the roster's default mate (the badge, the undeletable
+`default_agent` picks the roster's default Bot (the badge, the undeletable
 row) with its existing memory version and binding; it never converts member
-memory to Global, and it does not change what a session that picked no mate
+memory to Global, and it does not change what a session that picked no Bot
 reads: that session is a template session on Global Memory V1 (see
 `resolve_agent_bindings` below). A materialized provider template which is not a Crew Member
 continues to use V1.
@@ -1952,7 +1952,7 @@ Resolution order:
    `template`) — use that alias's bindings: template, workspace, memory store
    and model pin.
 2. otherwise a **template session** (#18328): `default_workspace`, Global Memory
-   V1 (`DEFAULT_MEMORY_STORE`), no mate model pin, `resolved_alias` empty,
+   V1 (`DEFAULT_MEMORY_STORE`), no Bot model pin, `resolved_alias` empty,
    `selection_kind="template"`. The template dispatched is `agent_name` when it
    is a **materialized kiro agent config** — a `*.json` under `~/.kiro/agents/`
    or, when `project_dir` is given, under `<project>/.kiro/agents/` — whose
@@ -1965,15 +1965,15 @@ Resolution order:
    neither reports `requested_resolved=False`.
 
 A plain session — no `agent_name` — is rung 2 with the default template. It is
-never the `default` crewmate: `config.default_agent` names the roster's default
-mate and is not read here, so that row's workspace, store and model pin stay
+never the `default` Bot: `config.default_agent` names the roster's default
+Bot and is not read here, so that row's workspace, store and model pin stay
 its own. There is no "first available alias" fallback any more.
 
 Before plain sessions were template sessions they ran the template of the
 roster default's row (the top-level `default_agent`), and an upgraded document
-holds that template only there: the reserved `default` mate bound to a
+holds that template only there: the reserved `default` Bot bound to a
 template of its own (`default` → `default-2`), a template a ★ enrolled as an
-alias, or an existing mate the ★ pointed at because it already ran the
+alias, or an existing Bot the ★ pointed at because it already ran the
 chosen template. The write-back carries it into `agent.default_agent` once
 (`MIGRATE_STAR_DEFAULT_TEMPLATE`, predicate `migration.star_default_template_due`)
 when `agent.default_agent` is unset (any stored value, `kirocrew` included, is a
@@ -1982,9 +1982,9 @@ a row, and that row's template is not `kirocrew`: the load sets
 `agent.default_agent` to that `kiro_agent` (through `dispatch_kiro_agent`) in
 memory at once and in `config.json` under the write lock, re-detected there like
 every other delta. Only the template is carried, whatever the row is called: its
-folder, store and model pin stay the mate's own, so a plain session runs
-that template on the default workspace and Global memory with no mate model
-pin, and a mate with a store of its own keeps it for its DM thread and
+folder, store and model pin stay the Bot's own, so a plain session runs
+that template on the default workspace and Global memory with no Bot model
+pin, and a Bot with a store of its own keeps it for its DM thread and
 explicit picks. The row and the roster default are left alone. One-shot by
 state: once the field holds any value the predicate is false, and the ★ writes
 the field directly, so resetting it to `kirocrew` is never undone by a later
@@ -1994,22 +1994,22 @@ once stored it is indistinguishable from a pick. The
 overlay wins where it supplies the field, so the seed is skipped there. The warm
 pool resolves a blank `session.pool_agent` through the same path as a plain
 session (`pool_kiro_agent`), never through the alias table, so an
-`agent.default_agent` that spells a mate alias binding another template
+`agent.default_agent` that spells a Bot alias binding another template
 prewarms what the session runs.
 
 **Two "default agent" settings, two things.** `config.default_agent` (top-level)
 is a MATE alias — a key of `config.agents` — naming the roster's default
-crewmate: the **Default** badge on the Mates page, its DM thread, and the
+Bot: the **Default** badge on the Bots page, its DM thread, and the
 row the mate-delete guard keeps. No agent-less dispatch path reads it.
 `PUT /api/config/default-agent` writes it for `agent_kind: "member"` (or a bare
-mate alias) and writes `agent.default_agent` for `agent_kind: "template"`.
+Bot alias) and writes `agent.default_agent` for `agent_kind: "template"`.
 `config.agent.default_agent` is a TEMPLATE name — what a plain chat, a CLI
 chat, a warm-pool process, or an agent-less schedule runs when nothing names
 one, and the runtime's own `kirocrew` when unset. The Custom agents tab reads
 that choice through `GET /api/config/default-agent` (see
 [learn-cron-dashboard](learn-cron-dashboard.md)). Its body is
 `{default_agent, default_template, overridden, override_path?}`:
-`default_agent` is the roster's default mate alias; `default_template` is
+`default_agent` is the roster's default Bot alias; `default_template` is
 the effective template, including the managed-template fallback when a stored
 spec is gone; `overridden` says whether `config.local.json` pins
 `agent.default_agent`; and the absolute `override_path` appears only for the
@@ -2019,7 +2019,7 @@ picker writes the template through `PUT /api/config/default-agent` with
 [agent_admin/default_agent.py](../../../src/kiro_crew/dashboard/agent_admin/default_agent.py).
 The template roster reports the setting as a `used_by` reference of kind
 `default`; the writer accepts only an installed GLOBAL template, never a
-mate's private copy, a background-only runtime spec, an app's materialized
+Bot's private copy, a background-only runtime spec, an app's materialized
 agent, or a name the browser mask would hide.
 
 `selection_kind="template"` restricts an existing conversation to the materialized
@@ -2208,7 +2208,7 @@ The snapshot is only ever rebuilt off-loop:
   incomplete scan never heals the default agent. `materialized_snapshot_complete()`
   reads the flag, in memory, and `materialized_skipped_stems()` the user-level
   stems the installed scan skipped (`None` while unknown: no snapshot yet, a failed
-  listing, an incomplete crewmate scan). It returns `True` when its snapshot was
+  listing, an incomplete Bot scan). It returns `True` when its snapshot was
   installed, `False` when the scan raised or a later refresh had already landed.
 - The agent-catalog fetch (`dashboard/handlers/agent_catalog.py`) gates its
   rescan. It stamps both agents directories with `agents_dir_revision` plus the
@@ -2265,8 +2265,8 @@ non-destructive other half — it names the agent that will actually answer, and
 `""` for "nothing to report". The name it reports is the one the runtime
 resolver binds an unhonored request to: the **default template**
 (`default_template(config)`, published in the alias snapshot at load), never a
-mate alias — a plain or unhonored session is a template session on the
-default workspace and Global memory, so a marker naming the `default` mate
+Bot alias — a plain or unhonored session is a template session on the
+default workspace and Global memory, so a marker naming the `default` Bot
 would advertise a store and a model pin the session does not use.
 
 Three properties, all pinned by tests:
@@ -2282,7 +2282,7 @@ Three properties, all pinned by tests:
   so silence during a boot window is the correct answer, not a guess.
 - **Agrees with `resolve_agent_bindings`.** The alias snapshot's fallback slot is
   `default_template(config)`, so the marker and the runtime name the same
-  template; the template's own name and every mate alias report `""`.
+  template; the template's own name and every Bot alias report `""`.
 
 Consumers: the sidebar's session-row marker, and `mochi`'s `ensureSlot`, which
 refuses to send into a slot whose effective agent is someone else.
@@ -3717,7 +3717,7 @@ pass `--profile`.
   on the session cwd and on every key, then compares them component by component.
   The deepest containing key wins. `/a/proj` never matches `/a/project2`, and a
   symlink is judged by its target.
-- **Crewmate worktrees.** A cwd in a crewmate's worktree is matched as the same
+- **Bot worktrees.** A cwd in a Bot's worktree is matched as the same
   path in the repository's own checkout (`crewmate_worktree.source_path`):
   `<workspace>/worktrees/<slug>/app-<hash>/src` matches as `/repos/app/src`, so
   a worker keeps the binding on `/repos/app` and never takes one on its
@@ -4413,9 +4413,9 @@ same check the messaging namer and the session summary run against their own
 taught word) -- while a real title that merely opens with the word ("SKIP and
 KEEP handling", "KEEP-ALIVE header bug") survives.
 
-#### The tag also writes a crewmate's hidden turns
+#### The tag also writes a Bot's hidden turns
 
-A crewmate's first welcome and its goal check-ins are hidden gateway turns
+A Bot's first welcome and its goal check-ins are hidden gateway turns
 (`mate_welcome.dispatch_hidden_turn`) with no user text to follow, and the
 `[UI LANGUAGE]` block scopes itself to tool-call purpose text, so without a
 tag named in the prompt they come back in English. Both preambles
@@ -4524,12 +4524,12 @@ settings without copying them. Foreign credentials, security policy,
 approval/sandbox settings, agent/runtime state, hooks, and arbitrary unknown
 config sections cannot enter configuration through this path.
 
-### Meet Mates first-run state
+### Meet Bots first-run state
 
 `DashboardConfig.crewmates_onboarded` is a legacy completion record of the
 retired guided create flow. Nothing reads it to decide what to show: entering
-Mates opens Mate's chat or the remembered one, and creating a mate
-happens on the New mate card (see [crew-mode](crew-mode.md)), which neither
+Bots opens Bot's chat or the remembered one, and creating a Bot
+happens on the New Bot card (see [crew-mode](crew-mode.md)), which neither
 reads nor writes the flag. `GET /api/theme/boot` and `PUT /api/config/theme`
 keep carrying it for compatibility; the dashboard neither reads nor writes it.
 
