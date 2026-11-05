@@ -3,7 +3,7 @@
 Kiro CLI 3.0.0 sends ``{"message": "<provider sentence>", "data": {"errorType": ...}}``.
 The ``data``-scoped readers saw only the object's ``repr``, so the usage-limit row
 showed the raw dict instead of the provider sentence, and the "temporarily
-unavailable" capacity rejection was never retried (GitHub #29726). The other
+unavailable" capacity rejection was never retried. The other
 shapes -- a string ``data``, claude-agent-acp's ``errorKind`` object, and an
 ``errorType`` object next to the ``Internal error`` boilerplate -- read as before.
 """
@@ -117,7 +117,11 @@ class TestTheStructuredShapeKeepsTheProviderText:
 # Shapes that must read exactly as they did before the structured shape was read.
 OLD_SHAPES = [
     pytest.param(
-        {"code": -32603, "message": "Internal error", "data": f"{_LIMIT_SENTENCE} (request_id: ab-12)"},
+        {
+            "code": -32603,
+            "message": "Internal error",
+            "data": f"{_LIMIT_SENTENCE} (request_id: ab-12)",
+        },
         id="string_data",
     ),
     pytest.param(
@@ -133,7 +137,11 @@ OLD_SHAPES = [
         id="error_kind_object_with_prose",
     ),
     pytest.param(
-        {"code": -32603, "message": "Internal error", "data": {"errorType": "ModelUnavailableError"}},
+        {
+            "code": -32603,
+            "message": "Internal error",
+            "data": {"errorType": "ModelUnavailableError"},
+        },
         id="error_type_object_with_boilerplate",
     ),
     pytest.param({"code": -32603, "message": "Internal error"}, id="no_data"),
