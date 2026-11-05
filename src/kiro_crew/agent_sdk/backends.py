@@ -413,15 +413,16 @@ STORED_BACKEND_KIRO = "kiro"
 DEFAULT_ACP_BACKEND = ACP_BACKEND_KAS
 
 # The harness an explicit Kiro CLI choice runs on once this host's kiro-cli is known
-# to offer its v3 (KAS) engine. kiro-cli serves ``acp`` on v3 by default and is
-# retiring v2, and a bare ``kiro-cli acp`` on v3 reads none of what Crew writes for
-# the v2 harness (the per-spawn skill-view aliases, the ``cli.json`` effort overlay,
-# the re-filtered agent specs). So :func:`resolve_selected_backend` hands the pick
+# to offer its v3 (KAS) engine. kiro-cli is retiring v2, and v3 reads none of what
+# Crew writes for the v2 harness (the per-spawn skill-view aliases, the
+# ``cli.json`` effort overlay, the re-filtered agent specs). So
+# :func:`resolve_selected_backend` hands the pick
 # to Crew's KAS path, which drives that engine with KAS's launch, projection,
 # permissions and compaction -- but only after the gateway's ``acp --help`` probe
 # has CONFIRMED v3 (:func:`confirm_kiro_cli_offers_kas`) and while KAS is
 # selectable. Without that evidence (another process, an unknown verdict, the
-# bundle route, a policy that denies KAS) the pick keeps the v2 launch. The stored
+# bundle route, a policy that denies KAS) the pick keeps the v2 launch, which
+# passes ``--agent-engine v2`` itself (``kiro_cli.kiro_acp_engine_args``). The stored
 # value is never rewritten: ``config.json`` still says ``"kiro"`` until the user
 # saves KAS (the a-kiro-cli-choice-runs-on-kas entry in docs/decisions).
 KIRO_SELECTION_BACKEND = ACP_BACKEND_KAS
@@ -850,9 +851,8 @@ def ensure_kiro_cli_kas_verdict() -> None:
     (:func:`confirm_kiro_cli_offers_kas`); a process that never runs the floor --
     ``kirocrew chat``, an eval run, a peer server -- otherwise reads a stored Kiro
     CLI pick (``agent.acp_backend: "kiro"``) as the v2 kiro-cli launch even where
-    kiro-cli already serves a bare ``acp`` on its v3 (KAS) engine, and once kiro-cli
-    serves v3 by default that bare launch is driven as v2. So such a process reaches
-    the same verdict the gateway does.
+    kiro-cli offers its v3 (KAS) engine. So such a process reaches the same verdict
+    the gateway does.
 
     Probes ONLY when the stored ``agent.acp_backend`` is the Kiro CLI pick and the
     bundle route is off: two cheap document reads
@@ -1040,11 +1040,12 @@ def resolve_selected_backend(value: object) -> str:
 def kiro_cli_pick_backend() -> str:
     """The runtime id a STORED Kiro CLI pick in ``agent.acp_backend`` loads as.
 
-    A Kiro CLI pick launches a bare ``kiro-cli acp``, which kiro-cli now serves on
-    its v3 (KAS) engine by default, and only Crew's KAS path drives that engine. The
+    kiro-cli is retiring its v2 engine, and only Crew's KAS path drives v3. The
     pick moves there only on positive evidence (:func:`confirm_kiro_cli_offers_kas`)
-    and while KAS is selectable; otherwise it keeps the v2 launch. See
-    :data:`KIRO_SELECTION_BACKEND`.
+    and while KAS is selectable; otherwise it keeps the v2 launch, which pins
+    ``--agent-engine v2`` wherever kiro-cli lists it rather than trusting the
+    default (a bare ``acp`` serves v3 from 3.0.0, though its help still says v2).
+    See :data:`KIRO_SELECTION_BACKEND`.
 
     Called only where the stored value is read (``_read_backend_choice``), never
     from :func:`resolve_selected_backend`: an already-resolved Kiro CLI id may be
