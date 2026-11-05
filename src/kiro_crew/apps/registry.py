@@ -796,6 +796,7 @@ if _typing.TYPE_CHECKING:
         _merge_manifest,
         _resolve_manifest,
         official_catalog,
+        sanitize_links,
     )
     from kiro_crew.apps.registry_pipeline.recovery import (  # noqa: F401
         _STALE_CHECKOUT_PATTERN,

@@ -25,6 +25,25 @@ The app manifest (`app.json`) declares your app's identity, resources, and requi
 | `configuration` | string[] | Concise setup or configuration steps shown on the detail page |
 | `screenshots` | string[] | Real product screenshots; paths follow the same distribution rules as hero art |
 | `screenshotsDark` | string[] | Optional dark-appearance screenshot variants |
+| `links` | object[] | Extra links shown as buttons in the detail page's Details card (see below) |
+
+### Store-page links
+
+`links` lists up to 6 extra links, for example a user guide or a wiki:
+
+```json
+"links": [
+  { "label": "User guide", "url": "https://example.com/my-app/guide" },
+  { "label": "Wiki", "url": "https://wiki.example.com/my-app" }
+]
+```
+
+Each `label` is plain text of 1 to 40 characters. Each `url` is at most 2048
+characters and must be `https:` with a plain host: no `user@host` userinfo and
+no port other than 443. Entries past the sixth, and entries that break a rule,
+are dropped with one log line; the rest of the manifest still loads. There is
+no host allowlist: each button shows the URL's host under its label, so the
+reader sees where it goes, and it opens in a new tab.
 
 ## Admission metadata
 

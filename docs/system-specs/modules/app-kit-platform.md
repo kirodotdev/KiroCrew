@@ -3557,6 +3557,18 @@ it: a `subdirectory` the lexical gate rejects is not joined, an absolute path or
 URL is left untouched, and no normalisation happens, so a `..` in the asset path
 still reaches the blob route's own rejection.
 
+`links` is the one store field that is a clickable outbound URL, so it is
+checked rather than copied. `apps/store_links.py` (`sanitize_links`) owns the
+rule: at most 6 entries, a label of 1 to 40 plain-text characters, a URL of at
+most 2048 characters that is `https:` with a host, no userinfo and no port other
+than 443. A bad entry is dropped with one log line and never fails the manifest.
+Every reader goes through it: `AppManifest.from_dict` for an installed app,
+`_merge_manifest` for a registry row, and `official_catalog._curated_links` for
+a catalog row. There is no host allowlist; the Details card
+(`AppDetailLinks.tsx`) re-applies the rule to the row it receives, shows each
+URL's host under its label and opens it in a new tab with
+`rel="noopener noreferrer"`. An app with no `links` renders as before.
+
 **Where the detail page's code lives.** `website/src/pages/AppDetailPage.tsx` is the
 page and its only import path: it loads the app (`load()` resolves the art fields
 described here), holds the page's state, and renders the actions and the info
