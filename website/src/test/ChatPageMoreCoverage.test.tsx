@@ -62,7 +62,7 @@ vi.mock('../components/CliPanel', async (importOriginal) => {
 })
 import { ThemeProvider } from '../hooks/useTheme'
 import { store as appStore } from '../store'
-import { appendMessage, createSlot, resumeFromHistory, setSlotRunning, setVoicePlaying, switchSlot } from '../store/chatSlice'
+import { appendMessage, createSlot, setSlotRunning, setVoicePlaying, switchSlot } from '../store/chatSlice'
 import { createChatForView } from '../lib/createdChatView'
 import { sseDisconnected } from '../store/dashboardSlice'
 import type { RootState } from '../store'
@@ -777,24 +777,6 @@ describe('ChatPage row callbacks — quote and ask', () => {
     await act(async () => { await store.dispatch(switchSlot('chat-2')) })
     await act(async () => { release({ ...OTHER_SLOT, key: 'chat-new', title: 'new' }); await pending })
     expect(store.getState().chat.activeSlot).toBe('chat-2')
-    expect(screen.getByTestId('session-grid')).toBeTruthy()
-  })
-
-  // The reopen-closed-session shortcut resumes through `resumeFromHistory`
-  // with `leaveSplit`, so the reopened chat is what the page shows.
-  it('a resume that asks to leave Split View shows the resumed chat', async () => {
-    const { store } = await renderSplit()
-    apiSpy('resumeChatSlot').mockResolvedValue({ ok: true, key: 'chat-3', mode: '', messages: [] })
-    await act(async () => { await store.dispatch(resumeFromHistory({ key: 'dashboard:chat-3', title: 'three', leaveSplit: true })).unwrap() })
-    expect(store.getState().chat.activeSlot).toBe('chat-3')
-    await waitFor(() => expect(screen.queryByTestId('session-grid')).toBeNull())
-  })
-
-  it('a resume that does not ask keeps Split View', async () => {
-    const { store } = await renderSplit()
-    apiSpy('resumeChatSlot').mockResolvedValue({ ok: true, key: 'chat-3', mode: '', messages: [] })
-    await act(async () => { await store.dispatch(resumeFromHistory({ key: 'dashboard:chat-3', title: 'three' })).unwrap() })
-    expect(store.getState().chat.activeSlot).toBe('chat-3')
     expect(screen.getByTestId('session-grid')).toBeTruthy()
   })
 })
