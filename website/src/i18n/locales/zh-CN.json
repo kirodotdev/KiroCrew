@@ -1689,7 +1689,22 @@
         "rail_pending_local": "本地代码——评判前先渲染。",
         "rail_pending_url": "一个运行中的应用——评判前先渲染。",
         "rail_pending_design": "一个设计——评判前先渲染。",
-        "rail_getting_ready": "正在准备界面。"
+        "rail_getting_ready": "正在准备界面。",
+        "critique_ready_fallback": "评审已完成",
+        "ask_too_long": "耗时太久——请再问一次。",
+        "ask_went_wrong": "出了点问题。",
+        "entry_meta_screens_other": "{{n}} 个界面 · {{when}}",
+        "findings_count_other": "{{n}} 条问题",
+        "nothing_flagged": "未发现问题",
+        "design_critique_fallback": "设计评审",
+        "flow_screens_count_other": "{{n}} 个界面",
+        "screen_n": "界面 {{n}}",
+        "get_overall_read": "对整体表现的总体评价",
+        "get_whats_working": "做得好的地方，好让它在下一轮修改中保留下来",
+        "get_top_things": "最该收紧的几处，并在界面上标出",
+        "no_critiques_narrow": "还没有评审。请在下方放入截图。",
+        "no_critiques_wide": "还没有评审。请把截图放到面板中 →",
+        "the_design_alt": "设计图"
       },
       "findingRow": {
         "based_on": "依据",
