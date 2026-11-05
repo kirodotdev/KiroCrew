@@ -106,6 +106,7 @@ __all__ = [
     "kas_route",
     "last_kas_route",
     "pinned_version",
+    "require_loadable_host",
     "sha256_bytes",
     "sha256_file",
     *sorted(_OWNED),
@@ -164,6 +165,15 @@ def __dir__() -> list[str]:
 def sha256_file(path: Path) -> str:
     """Hex sha256 of a file, for comparing a local manifest against the pin."""
     return _owner("installed_bundle")._sha256_file(path)
+
+
+def require_loadable_host() -> None:
+    """Raise ``KasHostUnsupported`` when this host's glibc is too old for the engine.
+
+    The same check :func:`install_bundle` runs, for a caller that prints progress
+    before calling it and must refuse first.
+    """
+    _owner("install_bundle")._require_loadable_glibc(None, None)
 
 
 def sha256_bytes(data: bytes) -> str:
