@@ -452,7 +452,11 @@ def build_session_context(
     # only, since kiro-cli loads an agent's ``resources`` natively. The gate
     # is shared with post-compaction re-injection.
     steering_ctx = _inclusion.steering_resources_part(
-        agent=agent, is_cc=is_cc, essentials=essentials, context_groups=context_groups
+        agent=agent,
+        is_cc=is_cc,
+        essentials=essentials,
+        context_groups=context_groups,
+        project=project,
     )
     if steering_ctx:
         append_required(

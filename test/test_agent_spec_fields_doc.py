@@ -57,7 +57,7 @@ def test_steering_is_still_the_backend_gated_half(doc_text: str) -> None:
     """The `file://` half IS backend-gated, so the page must keep saying so.
 
     The whole gate is matched as one contiguous block, ending at the
-    ``_load_steering_resources()`` call it guards, in the one helper session start
+    ``_load_steering_resources(project)`` call it guards, in the one helper session start
     and post-compaction re-injection share; both callers are pinned to route
     through it. A token match on ``is_cc`` anywhere would stay green with the
     steering gate's own condition dropped.
@@ -71,7 +71,7 @@ def test_steering_is_still_the_backend_gated_half(doc_text: str) -> None:
         '        return ""\n'
         "    if not _group_included(context_groups, CONTEXT_GROUP_PROJECT):\n"
         '        return ""\n'
-        "    return ctx._load_steering_resources()\n"
+        "    return ctx._load_steering_resources(project)\n"
     )
     assert gate in source, (
         "the steering block's gate no longer reads is_cc together with the default-agent "

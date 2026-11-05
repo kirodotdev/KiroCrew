@@ -575,3 +575,112 @@ def test_an_opted_out_workspace_changes_nothing_for_another_harness(tmp_path, tr
     section = msg[msg.index(FOLDER_STEERING_HEADER) :]
     for rule in (PROJECT_RULE, GLOBAL_RULE, OWN_RULE):
         assert section.count(rule) == 1
+
+
+AGENTS_GUIDE = "PROJECT-AGENTS-GUIDE-5e8b"
+
+
+def _claude_turn(tmp_path, trees, *, fresh: bool, steering_dirs: tuple[str, ...]) -> str:
+    """A non-member Claude Code turn: a fresh session, or the one after a compaction."""
+    msg, _ = _builder(tmp_path).build_message(
+        "hello",
+        fresh,
+        "dashboard:claude",
+        provider_type=PROVIDER_CLAUDE_CODE,
+        project=str(trees["project"]),
+        steering_dirs=steering_dirs,
+        needs_reinjection=not fresh,
+    )
+    return msg
+
+
+@_needs_pinned_walk
+@pytest.mark.parametrize("fresh", [True, False], ids=["fresh", "after-compaction"])
+@pytest.mark.parametrize("declared_in_folder", [True, False], ids=["folder", "no-folder"])
+def test_claude_receives_project_steering_and_agents_md_once(
+    tmp_path, trees, fresh, declared_in_folder
+):
+    """What kiro-cli loads for a project chat reaches Claude Code too, exactly once.
+
+    The shipped relative glob anchors at the project, as kiro-cli anchors it at
+    its working directory, and the global steering and ``AGENTS.md`` kiro-cli
+    inherits come with it. A folder declaring the trees still skips them as
+    delivered, so nothing arrives twice and nothing is lost.
+    """
+    _declare([SHIPPED_STEERING_RESOURCE])
+    _write(trees["project"] / "AGENTS.md", AGENTS_GUIDE)
+    msg = _claude_turn(
+        tmp_path, trees, fresh=fresh, steering_dirs=trees["dirs"] if declared_in_folder else ()
+    )
+    for rule in (PROJECT_RULE, GLOBAL_RULE, AGENTS_GUIDE):
+        assert msg.count(rule) == 1, rule
+    assert msg.count(OWN_RULE) == (1 if declared_in_folder else 0)
+
+
+def test_one_unglobbable_entry_does_not_empty_the_others(tmp_path, trees):
+    """An absolute and a ``~/`` entry anchor at their own roots, and neither
+    takes the global rule down with it."""
+    from kiro_crew.context import _load_steering_resources
+
+    _write(tmp_path / "abs-rules" / "abs.md", "ABSOLUTE-RULE-3a9d")
+    _write(trees["home"] / "notes" / "note.md", "HOME-NOTE-RULE-8c0f")
+    _declare(
+        [
+            f"file://{(tmp_path / 'abs-rules').as_posix()}/*.md",
+            "file://~/notes/*.md",
+            SHIPPED_STEERING_RESOURCE,
+        ]
+    )
+    loaded = _load_steering_resources()
+    for rule in (GLOBAL_RULE, "ABSOLUTE-RULE-3a9d", "HOME-NOTE-RULE-8c0f"):
+        assert loaded.count(rule) == 1, rule
+
+
+@pytest.mark.skipif(not hasattr(Path, "symlink_to"), reason="no symlinks")
+def test_a_project_steering_link_out_of_the_project_is_refused(tmp_path, trees):
+    """A project document is admitted against the project, not the home."""
+    from kiro_crew.context import _load_steering_resources
+
+    outside = _write(tmp_path / "home" / "elsewhere" / "leak.md", "OUTSIDE-RULE-1d4e")
+    link = trees["project"] / ".kiro" / "steering" / "leak.md"
+    try:
+        link.symlink_to(outside)
+    except OSError:
+        pytest.skip("symlinks unavailable on this host")
+    _declare([SHIPPED_STEERING_RESOURCE])
+    loaded = _load_steering_resources(str(trees["project"]))
+    assert PROJECT_RULE in loaded
+    assert "OUTSIDE-RULE-1d4e" not in loaded
+
+
+def test_a_target_under_a_filesystem_root_base_is_admitted(tmp_path):
+    """A root anchor (``file:///rules.md``) already ends in a separator, so the
+    containment prefix is the root itself, not a doubled separator nothing
+    starts with."""
+    from kiro_crew.context import steering_target_admissible
+
+    doc = _write(tmp_path / "rules.md", "ROOT-ANCHORED-RULE").resolve()
+    assert steering_target_admissible(doc, base=Path(doc.anchor))
+
+
+@_needs_pinned_walk
+@pytest.mark.parametrize("fresh", [True, False], ids=["fresh", "after-compaction"])
+def test_a_relocated_kiro_home_keeps_folder_selected_global_steering(
+    tmp_path, trees, monkeypatch, fresh
+):
+    """The global root the load reads is the root the folder dedup skips.
+
+    Under a ``KIRO_HOME`` outside the home, a folder selecting the host
+    ``~/.kiro/steering`` still delivers its rule exactly once, and the moved
+    tree, which nothing selected, is not read.
+    """
+    moved = tmp_path / "kiro-home"
+    _write(moved / "steering" / "moved.md", "MOVED-GLOBAL-RULE-7e2c")
+    _write(
+        moved / "agents" / "kirocrew.json",
+        json.dumps({"name": "kirocrew", "resources": [SHIPPED_STEERING_RESOURCE]}),
+    )
+    monkeypatch.setenv("KIRO_HOME", str(moved))
+    msg = _claude_turn(tmp_path, trees, fresh=fresh, steering_dirs=trees["dirs"])
+    assert msg.count(GLOBAL_RULE) == 1
+    assert "MOVED-GLOBAL-RULE-7e2c" not in msg
