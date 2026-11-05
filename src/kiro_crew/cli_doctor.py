@@ -96,8 +96,10 @@ from kiro_crew.agent_sdk.provider_identity import is_claude_code
 from kiro_crew.agent_spec_format import (  # noqa: F401
     NATIVE_SKILL_ALIAS_PREFIX,
     SKILL_VIEW_PROJECTION_CEILING,
+    count_authored_agent_files,
     is_agent_spec_name,
     shadowed_markdown_specs,
+    skill_view_ceiling,
 )
 from kiro_crew.agents_janitor import sweep_agents_dir  # noqa: F401
 from kiro_crew.atomic_write import atomic_write
