@@ -382,6 +382,47 @@ def test_a_media_only_entry_is_noticed(spool_home: Path) -> None:
     assert report.notified and "1 attachment(s)" in transport.sent[0][1]
 
 
+def test_dropped_attachments_are_named_in_the_notice(spool_home: Path) -> None:
+    """The notice says WHICH files to resend, each on its quoted line, and counts the rest.
+
+    RED-BEFORE: the entry carried a count only, so the user was told how many
+    files to resend and never which.
+    """
+    asyncio.run(
+        S.spool_refused_turn(
+            channel_type="telegram",
+            route=InboundRoute(
+                conversation_id="555",
+                text="see attached",
+                attachments_dropped=3,
+                attachment_names=("report.pdf", "shot\n1.png"),
+            ),
+        )
+    )
+    transport = _Transport()
+
+    asyncio.run(replay_spooled(transports={"telegram": transport}))
+
+    assert (
+        "> (Its 3 attachment(s) are not carried over — resend those too: "
+        "report.pdf, shot 1.png and 1 more.)" in transport.sent[0][1]
+    )
+
+
+def test_attachment_names_are_bounded_on_write_and_on_read(spool_home: Path) -> None:
+    """A long list or a long name is cut where it is stored, and again where it is read."""
+    many = tuple(f"{i}-" + "x" * 200 for i in range(S.ATTACHMENT_NAMES_MAX + 2))
+    _spool(spool_home, attachments_dropped=len(many), attachment_names=many)
+
+    stored = _entries(spool_home)[0]["attachment_names"]
+    assert len(stored) == S.ATTACHMENT_NAMES_MAX
+    assert all(len(name) == S.ATTACHMENT_NAME_CAP for name in stored)
+
+    raw = {"channel_type": "t", "conversation_id": "c", "text": "x"}
+    entry = SpooledInbound.from_dict({**raw, "attachment_names": [*many, 7, None]})
+    assert entry is not None and entry.attachment_names == tuple(stored)
+
+
 def test_the_notice_is_delivered_at_least_once(spool_home: Path) -> None:
     """An UNCONFIRMED send keeps the entry; the next start notices it again.
 
@@ -552,7 +593,13 @@ def test_a_short_quote_is_not_truncated(spool_home: Path) -> None:
 
 def test_the_notice_is_made_display_safe_for_the_transport(spool_home: Path) -> None:
     """A message can carry a broadcast mention; echoing it verbatim would fire it."""
-    _spool(spool_home, channel_type="slack", text="@channel is CI down")
+    _spool(
+        spool_home,
+        channel_type="slack",
+        text="@channel is CI down",
+        attachments_dropped=1,
+        attachment_names=("@channel.png",),
+    )
 
     transport = _Transport()
     asyncio.run(replay_spooled(transports={"slack": transport}))
@@ -560,6 +607,7 @@ def test_the_notice_is_made_display_safe_for_the_transport(spool_home: Path) -> 
     content = transport.sent[0][1]
     assert "@channel is CI down" not in content, "a broadcast mention was echoed live"
     assert "@\u200bchannel is CI down" in content
+    assert "@\u200bchannel.png" in content, "an attachment name skipped the defang"
 
 
 # ── Holding: an absent channel is not a revoked one ───────────────────────────
@@ -1160,6 +1208,7 @@ def test_an_entry_records_only_what_the_notice_reads() -> None:
         "message_id",
         "attachments_dropped",
         "spooled_at",
+        "attachment_names",
     }
     # A record from the earlier shape still parses: unknown keys are ignored.
     legacy = {"channel_type": "t", "conversation_id": "c", "text": "x", "session_key": "s"}

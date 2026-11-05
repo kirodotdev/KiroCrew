@@ -590,6 +590,11 @@ class TelegramDispatcher:
             thread_id=str(reply_thread) if reply_thread else "",
             message_id=str(getattr(msg, "message_id", "") or ""),
             attachments_dropped=len(getattr(msg, "attachments", None) or ()),
+            attachment_names=tuple(
+                a.get("file_name") or ""
+                for a in getattr(msg, "attachments", None) or ()
+                if isinstance(a, dict)
+            ),
         )
         if not await admit_inbound_callback(
             self.sessions,

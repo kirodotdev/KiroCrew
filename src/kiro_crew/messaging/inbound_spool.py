@@ -73,7 +73,8 @@ start where the channel is back, and the age horizon bounds it.
 
 Attachments are NOT spooled: an
 ingested attachment lives in a turn-owned temp path that is gone after a
-restart. The entry records how many were dropped and the notice says so.
+restart. The entry records how many were dropped and any names the channel's
+envelope gives them, and the notice lists both.
 
 Three things this module is trusted with, and why each is enforced rather than
 assumed
@@ -160,7 +161,13 @@ RESTART_NOTICE = (
     "processed — nothing is wrong with it. Resend it when you are ready:\n\n{quoted}"
 )
 
-_ATTACHMENT_NOTE = "\n\n(Its {count} attachment(s) are not carried over — resend those too.)"
+_ATTACHMENT_NOTE = "\n\n(Its {count} attachment(s) are not carried over — resend those too{names}.)"
+
+#: How many attachment names an entry keeps, and how long each may be. A name is
+#: sender-controlled data kept on disk, so it is bounded where it is stored, like
+#: the text.
+ATTACHMENT_NAMES_MAX = 10
+ATTACHMENT_NAME_CAP = 100
 
 
 @dataclass(frozen=True)
@@ -202,6 +209,13 @@ class InboundRoute:
     message_id: str = ""
     attachments_dropped: int = 0
 
+    attachment_names: tuple[str, ...] = ()
+    """The name the platform gives each dropped attachment, where it gives one.
+
+    The notice lists them so the user knows which files to resend. Empty when the
+    envelope names none, and the notice then gives the count alone.
+    """
+
 
 @dataclass(frozen=True)
 class SpooledInbound:
@@ -222,6 +236,7 @@ class SpooledInbound:
     message_id: str = ""
     attachments_dropped: int = 0
     spooled_at: float = 0.0
+    attachment_names: tuple[str, ...] = ()
 
     @property
     def dedupe_key(self) -> str:
@@ -267,6 +282,7 @@ class SpooledInbound:
             "message_id": self.message_id,
             "attachments_dropped": self.attachments_dropped,
             "spooled_at": self.spooled_at,
+            "attachment_names": list(self.attachment_names),
         }
 
     @classmethod
@@ -282,6 +298,7 @@ class SpooledInbound:
             conversation_id = str(raw.get("conversation_id") or "")
             text = str(raw.get("text") or "")
             dropped = max(0, int(raw.get("attachments_dropped") or 0))
+            names = raw.get("attachment_names")
             # Text OR media: an entry with neither has nothing to notify about.
             if not channel_type or not conversation_id or (not text and not dropped):
                 return None
@@ -294,6 +311,7 @@ class SpooledInbound:
                 message_id=str(raw.get("message_id") or ""),
                 attachments_dropped=dropped,
                 spooled_at=float(raw.get("spooled_at") or 0.0),
+                attachment_names=_display_names(names) if isinstance(names, list) else (),
             )
         except (TypeError, ValueError):
             return None
@@ -340,6 +358,7 @@ def _refusal_entry(channel_type: str, route: InboundRoute | None) -> SpooledInbo
         thread_id=route.thread_id,
         message_id=route.message_id,
         attachments_dropped=route.attachments_dropped,
+        attachment_names=route.attachment_names,
     )
 
 
@@ -508,6 +527,15 @@ def _clamp_text(text: str) -> str:
     return text[: max(0, keep)] + _TRUNCATION_MARK
 
 
+def _display_names(names: Iterable[Any]) -> tuple[str, ...]:
+    """The string *names*, each on one line and bounded, blanks dropped.
+
+    One line, so a name cannot open a line of its own in the quote.
+    """
+    clean = (" ".join(n.split())[:ATTACHMENT_NAME_CAP] for n in names if isinstance(n, str))
+    return tuple(n for n in clean if n)[:ATTACHMENT_NAMES_MAX]
+
+
 class SpoolUnreadable(OSError):
     """The spool exists but could not be read.
 
@@ -599,6 +627,7 @@ def record_refusal_sync(
             message_id=entry.message_id,
             attachments_dropped=entry.attachments_dropped,
             spooled_at=entry.spooled_at or stamp,
+            attachment_names=_display_names(entry.attachment_names),
         )
         if not record.channel_type or not record.conversation_id:
             return False
@@ -795,6 +824,8 @@ def _quote(entry: SpooledInbound, transport: Any) -> str:
     channel-neutral defang: a message injected into a group conversation can
     carry a broadcast mention, and echoing it back unescaped would fire it. The
     defang runs on the QUOTE before it is sized, because it inserts characters.
+    The attachment names are the sender's too, so they join the body first and
+    ride the same defang and cap.
 
     Sized to ``capabilities.max_message_chars``, because the notice PREFIXES the
     quote: a message that fit the platform's cap on the way in overflows the cap
@@ -808,7 +839,13 @@ def _quote(entry: SpooledInbound, transport: Any) -> str:
     """
     body = entry.text
     if entry.attachments_dropped:
-        body += _ATTACHMENT_NOTE.format(count=entry.attachments_dropped)
+        names = ", ".join(entry.attachment_names)
+        unnamed = entry.attachments_dropped - len(entry.attachment_names)
+        if names and unnamed > 0:
+            names += f" and {unnamed} more"
+        body += _ATTACHMENT_NOTE.format(
+            count=entry.attachments_dropped, names=f": {names}" if names else ""
+        )
     quoted = "\n".join(f"> {line}" for line in body.splitlines() or [""])
     capabilities = getattr(transport, "capabilities", None)
     if capabilities is not None:
