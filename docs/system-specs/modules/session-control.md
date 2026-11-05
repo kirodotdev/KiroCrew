@@ -1253,6 +1253,23 @@ unreadable config, so the surface can never open wider than the two switches
 behind it. The member DM admission does not widen other scoped callers' access
 or replace the creator-ownership checks in `session_control.py`.
 
+#### The owner's own tab keeps the owner's reach
+
+A scopeless (owner / Global-V1) caller gets no verdict from the gate above, and
+`_caller_is_ownership_fenced` deliberately leaves a tab the person opened unfenced
+(#14342). From that tab, `session_send`, `session_read_message`, `session_stop` and
+`session_close` reach a same-workspace session it did not create; every refusal in
+the table above still applies. The fence follows authority, and that tab's
+authority is the person's own dashboard session: working across the tabs they
+opened by hand is what these tools are for. Run controls differ on purpose
+([subagent](subagent.md): `_run_belongs_to_caller` scopes every internal caller to
+its own runs), because a subagent run belongs to the one session that started it.
+Every population `_caller_is_ownership_fenced` names stays fenced, including any
+session an agent created, at any depth. The accepted cost is that an injected turn
+in the person's own tab has the person's reach; setting `agent.session_control` to
+`false` withdraws it. Pinned by
+`test/test_session_control_member_gate.py::TestOwnerCallerReach`.
+
 #### A created worker receives one execution identity
 
 `create_session` captures the caller's canonical execution before asynchronous
