@@ -280,6 +280,7 @@ class AcpRuntime:
         tool_search: ToolSearchSettings | None = None,
         shared_scratch: Path | None = None,
         launch_agent: str = "",
+        native_skill_projection: bool = True,
     ):
         if work_dir:
             self._work_dir = Path(work_dir)
@@ -296,6 +297,12 @@ class AcpRuntime:
         # ``self._agent`` stays the identity every gate, profile, audit row and
         # hook reads. Empty for every other runtime.
         self._launch_agent = launch_agent
+        # Whether a kiro-cli spawn prepares native skill views. Off for a process
+        # whose agents live in a project scope the spec reader refuses (the warm
+        # mint's generation tree sits in the protected ``run/`` dir): the views
+        # would list none of those agents, and the projected frame would then hide
+        # every one of them but the launch agent from ``availableModes``.
+        self._native_skill_projection_enabled = native_skill_projection
         # Canonical Kiro Crew agent identity (a cfg.agents key) resolved by the
         # surface that created this runtime — a DIFFERENT namespace from
         # ``agent`` (the kiro template the process spawns with). Default for
