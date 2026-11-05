@@ -549,7 +549,9 @@ class _Child:
                 if header is None:
                     raise SubprocessPoolUnavailable("child closed the connection")
                 (length,) = _LEN.unpack(header)
-                response = _read_exactly(stdout, length, deadline)
+                response = _read_exactly(
+                    stdout, length, deadline, drain_secs=_ANSWERED_FRAME_DRAIN_SECS
+                )
                 if response is None:
                     raise SubprocessPoolUnavailable("child truncated its response")
                 if len(response) < 5:
@@ -619,7 +621,21 @@ class _ReaderLost(Exception):
 _CAN_SELECT_PIPES = os.name != "nt"
 
 
-def _read_exactly(stream: Any, count: int, deadline: float | None) -> bytes | None:
+# The least a read of an answer whose length header has already arrived waits for each
+# further chunk, before or after the caller's deadline.  The child builds its whole
+# response before it writes any of it, so after the header the realpath is done and
+# what is left is pipe transfer: the header and body are separate writes, and a body
+# larger than the pipe buffer arrives in pieces, so a child preempted between two
+# writes, or a caller that gets the GIL back late, would otherwise refuse an answer
+# the child has already given.  Each wait starts when the caller is running again,
+# so the caller's own scheduling never spends it, and a child that stops writing
+# mid-frame is still refused this long after.
+_ANSWERED_FRAME_DRAIN_SECS = 0.5
+
+
+def _read_exactly(
+    stream: Any, count: int, deadline: float | None, *, drain_secs: float = 0.0
+) -> bytes | None:
     """Read exactly *count* bytes. ``None`` on EOF; :class:`_ChildTimeout` past *deadline*.
 
     A pipe read has no timeout of its own, so the deadline is armed with
@@ -627,15 +643,24 @@ def _read_exactly(stream: Any, count: int, deadline: float | None) -> bytes | No
     moment this fd has data. That is the property the whole design rests on: the
     waiting thread costs one GIL reacquisition, not one per path component, and
     not a poll loop that would reacquire on every tick.
+
+    A deadline that has passed is checked against the pipe, not against the clock
+    alone: the calling thread can get the GIL back after its deadline although the
+    child answered in time, and calling that a timeout kills a healthy child and
+    samples it idle in ``read`` on its request pipe, which the resolver then counts
+    as a load-arm miss.  So a spent deadline still polls the fd once with a zero
+    timeout and reads a frame that is already there.  The child's ``realpath`` has
+    completed when its answer is in the pipe, so this admits nothing the child did
+    not answer.  *drain_secs* is the least each wait gets for the body of a frame
+    whose header has arrived, before or after the deadline
+    (see ``_ANSWERED_FRAME_DRAIN_SECS``).
     """
     chunks: list[bytes] = []
     remaining = count
     fileno = stream.fileno()
     while remaining:
         if deadline is not None and _CAN_SELECT_PIPES:
-            left = deadline - time.monotonic()
-            if left <= 0:
-                raise _ChildTimeout
+            left = max(deadline - time.monotonic(), drain_secs)
             ready, _, _ = select.select([fileno], [], [], left)
             if not ready:
                 raise _ChildTimeout
@@ -957,6 +982,12 @@ class SubprocessPoolExecutor(Executor):
         child = self._lease(deadline)
         release = child
         try:
+            if deadline is not None and time.monotonic() >= deadline:
+                # The lease can return after the deadline (a thread that got the GIL
+                # back late).  No request is sent then: no answer arrives in zero
+                # time, and a timed-out child is killed.  The slot goes back unused
+                # and the caller is refused as if no child had been free.
+                raise TimeoutError("no free child within the budget")
             if deadline is None or _CAN_SELECT_PIPES:
                 return child.request(op, payload, deadline)
             return self._request_bounded_by_thread(child, op, payload, deadline)

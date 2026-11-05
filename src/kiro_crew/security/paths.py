@@ -777,6 +777,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _extend_cooldown,
         _inline_bounded,
         _is_unc_path,
+        _judgment_budget,
         _load_arm_budget_spent,
         _mark_stalled,
         _outside_bounded_call,
@@ -792,7 +793,9 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _resolved_spellings_inline,
         _ResolvedT,
         _run_resolution_bounded,
+        _running_event_loop,
         _stall_prefix,
+        bounded_judgment,
     )
     from kiro_crew.security.paths_targets import (  # noqa: F401
         _ADAPTER_ROOT_ENVS,
