@@ -675,54 +675,49 @@ _PARENT_ALLOWLIST_MEMO: AgentsDirMemo[_ScopeAllowlists] = AgentsDirMemo()
 _PARENT_PROJECT_ALLOWLIST_MEMO: AgentsDirMemo[_ScopeAllowlists] = AgentsDirMemo()
 
 
-#: The spec files that made the last UNKNOWN answer for each parent template, so
-#: the refusal can name them (:func:`_vet_parent_available_agents`). The answer
-#: itself is memoized per directory revision, so this is written on the scan that
-#: produced it and read on every refusal that answer causes. Bounded like
-#: :data:`_UNRESOLVED_PARENT_WARNED`.
-_UNREADABLE_SPECS: dict[str, tuple[str, ...]] = {}
+def parent_spawn_unreadable_specs(
+    parent_template: str, project_dirs: Sequence[str | Path] = ()
+) -> tuple[str, ...]:
+    """The spec files that make *parent_template*'s allowlists UNKNOWN, as paths.
+
+    Read for the refusal only, from the same directories
+    :func:`parent_spawn_allowlists` resolves for this spawn (the user scope, then
+    each of *project_dirs*), with the same reader, so the files named are the
+    ones that kept this spawn's answer UNKNOWN and no other spawn's. A directory
+    whose answer is not UNKNOWN contributes nothing: a parent whose declaration
+    is readable is never refused by an unrelated broken file. Blocking: call it
+    off the event loop. A walk that fails contributes nothing; the refusal it
+    caused stands without a file name.
+    """
+    if not parent_template or not _AGENT_NAME_RE.match(parent_template):
+        return ()
+    scopes = [(_kiro_agents_dir(), _PARENT_ALLOWLIST_MEMO, "spawn_available_agents")]
+    scopes += [
+        (project_agents_dir(d), _PARENT_PROJECT_ALLOWLIST_MEMO, "spawn_available_agents_project")
+        for d in dict.fromkeys(str(d) for d in project_dirs if d)
+    ]
+    found: list[str] = []
+    for agents_dir, memo, operation in scopes:
+        lists, _found = _scope_spawn_allowlists(agents_dir, parent_template, memo, operation)
+        if lists is not None:
+            continue
+        try:
+            _rows, unreadable = _read_parent_spec_rows(agents_dir, operation)
+        except OSError:
+            continue
+        found += [str(path) for path in unreadable]
+    return tuple(dict.fromkeys(found))
 
 
-_UNREADABLE_SPECS_MAX = 256
+def _read_parent_spec_rows(
+    agents_dir: Path, operation: str
+) -> tuple[list[tuple[dict[str, Any], Path]], list[Path]]:
+    """Read every spec file in *agents_dir*: ``(readable rows, unreadable paths)``.
 
-
-_UNREADABLE_SPECS_SHOWN = 3
-
-
-def _note_unreadable_specs(parent_template: str, paths: Sequence[Path]) -> None:
-    """Remember which files kept *parent_template*'s spec from being read."""
-    if parent_template in _UNREADABLE_SPECS or len(_UNREADABLE_SPECS) < _UNREADABLE_SPECS_MAX:
-        _UNREADABLE_SPECS[parent_template] = tuple(str(path) for path in paths)
-
-
-def _unreadable_specs_hint(parent_template: str) -> str:
-    """``" (could not read: <files>)"`` for the refusal, ``""`` when none is known."""
-    files = _UNREADABLE_SPECS.get(parent_template, ())
-    if not files:
-        return ""
-    shown = [redact_via_context(f) for f in files[:_UNREADABLE_SPECS_SHOWN]]
-    more = len(files) - len(shown)
-    return f" (could not read: {', '.join(shown)}{f' (+{more} more)' if more else ''})"
-
-
-def _scan_parent_spawn_allowlists(
-    agents_dir: Path,
-    parent_template: str,
-    operation: str = "spawn_available_agents",
-    *,
-    pins: Mapping[str, str] | None = None,
-) -> _ScopeAllowlists:
-    """One fresh walk of *agents_dir* for :func:`parent_spawn_allowlists`.
-
-    Answers ``(allowlists, found)``; *found* is whether a readable spec resolved
-    the parent's name (by declared ``name`` or filename stem).
-
-    Every spec file goes through the hardened reader under the gate's own SEL
-    labels (*operation* tells the user scope from the project scope), and a file the reader refuses is kept as UNREADABLE rather than
-    folded into "no spec" -- except a markdown file with no opening frontmatter
-    fence, which is not a spec at all (:func:`plain_markdown_document`) and is
-    skipped like the AppleDouble sidecar. Propagates ``OSError`` from the
-    directory walk.
+    The one walk both :func:`_scan_parent_spawn_allowlists` and
+    :func:`parent_spawn_unreadable_specs` use, so the files a refusal names are
+    exactly the ones that made the answer UNKNOWN. Propagates ``OSError`` from
+    the directory walk.
     """
     rows: list[tuple[dict[str, Any], Path]] = []
     unreadable: list[Path] = []
@@ -749,6 +744,29 @@ def _scan_parent_spawn_allowlists(
             unreadable.append(path)
         else:
             rows.append((data, path))
+    return rows, unreadable
+
+
+def _scan_parent_spawn_allowlists(
+    agents_dir: Path,
+    parent_template: str,
+    operation: str = "spawn_available_agents",
+    *,
+    pins: Mapping[str, str] | None = None,
+) -> _ScopeAllowlists:
+    """One fresh walk of *agents_dir* for :func:`parent_spawn_allowlists`.
+
+    Answers ``(allowlists, found)``; *found* is whether a readable spec resolved
+    the parent's name (by declared ``name`` or filename stem).
+
+    Every spec file goes through the hardened reader under the gate's own SEL
+    labels (*operation* tells the user scope from the project scope), and a file the reader refuses is kept as UNREADABLE rather than
+    folded into "no spec" -- except a markdown file with no opening frontmatter
+    fence, which is not a spec at all (:func:`plain_markdown_document`) and is
+    skipped like the AppleDouble sidecar. Propagates ``OSError`` from the
+    directory walk.
+    """
+    rows, unreadable = _read_parent_spec_rows(agents_dir, operation)
     from kiro_crew import agent_spec_pins
 
     declared_rows = [(data, path) for data, path in rows if data.get("name") == parent_template]
@@ -791,7 +809,6 @@ def _scan_parent_spawn_allowlists(
                 parent_template,
                 ", ".join(repr(path.name) for path in unreadable),
             )
-            _note_unreadable_specs(parent_template, unreadable)
             return None, False
         declared = [data for data, path in rows if path.stem == parent_template]
     lists = (spawn_allowlist(data) for data in declared)
@@ -923,6 +940,20 @@ def conductor_spawn_refusal(parent_template: str) -> str | None:
     )
 
 
+def unreadable_specs_note(paths: Sequence[str]) -> str:
+    """``" (could not read: a, b, c (+N more))"``, or ``""`` for no paths.
+
+    Appended by the spawn gate to the UNKNOWN refusal, with the paths from
+    :func:`parent_spawn_unreadable_specs`, so the operator can find the file
+    without the gateway log.
+    """
+    if not paths:
+        return ""
+    shown = [redact_via_context(p) for p in paths[:3]]
+    more = len(paths) - len(shown)
+    return f" (could not read: {', '.join(shown)}{f' (+{more} more)' if more else ''})"
+
+
 def _vet_parent_available_agents(
     policy: ParentSpawnPolicy, agent: str, *, app: str = ""
 ) -> str | None:
@@ -963,7 +994,6 @@ def _vet_parent_available_agents(
             f"the parent agent {redact_via_context(parent_template)!r} spec could not be "
             "read, so its toolsSettings.subagent.availableAgents is unknown; refusing "
             "(fail-closed) -- fix or remove the unreadable spec file"
-            f"{_unreadable_specs_hint(parent_template)}"
         )
     if not allowlists:
         return None

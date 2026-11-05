@@ -46,12 +46,14 @@ if TYPE_CHECKING:
         on_event_loop,
         parent_project_dirs,
         parent_spawn_policy,
+        parent_spawn_unreadable_specs,
         platform_compat,
         pop_memory_check_cause,
         redact_credentials,
         redact_exfiltration_urls,
         sel,
         time,
+        unreadable_specs_note,
         validate_cwd,
     )
 
@@ -554,11 +556,17 @@ class _GateMixin(ManagerComponent):
             _parent_project_dirs = list(parent_project_dirs(parent_session_key))
         if _gate and _parent_spawn_policy is None:
             _parent_spawn_policy = parent_spawn_policy(parent_session_key, _parent_project_dirs)
+        # An UNKNOWN answer names the files that made it so, read from this
+        # spawn's own scopes; only the refusal path pays the extra directory read.
         allowlist_err = (
             _vet_parent_available_agents(_parent_spawn_policy, execution.template_id, app=app)
             if _gate and _parent_spawn_policy is not None
             else None
         )
+        if allowlist_err and _parent_spawn_policy is not None and _parent_spawn_policy[1] is None:
+            allowlist_err += unreadable_specs_note(
+                parent_spawn_unreadable_specs(_parent_spawn_policy[0], _parent_project_dirs)
+            )
         if allowlist_err:
             if _persistent_diagnostics:
                 logger.warning("Subagent spawn refused by parent agent spec: %s", allowlist_err)

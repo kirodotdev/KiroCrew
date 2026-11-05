@@ -837,9 +837,48 @@ class TestProjectScopeParent:
         )
         lists = sa.parent_template_allowlists("dashboard:repo", "lead")
         assert lists is None
-        denial = sa._vet_parent_available_agents(("lead", lists), "agent1")
-        assert denial is not None and "could not be read" in denial
-        assert str(broken) in denial
+        unreadable = sa.parent_spawn_unreadable_specs("lead", [str(project)])
+        assert unreadable == (str(broken),)
+        assert str(broken) in sa.unreadable_specs_note(unreadable)
+
+    def test_another_projects_broken_spec_is_not_named(
+        self, project: Path, agents_dir: Path, tmp_path: Path, resolver: list[str]
+    ) -> None:
+        """The files named come from the spawn's own scopes, not another project's."""
+        _write_spec(agents_dir, "lead")
+        other = tmp_path / "other"
+        (other / ".kiro" / "agents").mkdir(parents=True)
+        (other / ".kiro" / "agents" / "helper.md").write_text(
+            "---\nname: helper\ndescription: Reviews: the diff\n---\nbody\n", encoding="utf-8"
+        )
+        assert sa.parent_spawn_unreadable_specs("lead", [str(other)]) == (
+            str(other / ".kiro" / "agents" / "helper.md"),
+        )
+        assert sa.parent_spawn_unreadable_specs("lead", [str(project)]) == ()
+
+    @pytest.mark.asyncio
+    async def test_the_gate_refusal_names_the_unreadable_file(
+        self, project: Path, agents_dir: Path, resolver: list[str]
+    ) -> None:
+        from kiro_crew.subagent import SubagentManager
+
+        _write_spec(agents_dir, "lead")
+        broken = project / ".kiro" / "agents" / "helper.md"
+        broken.write_text(
+            "---\nname: helper\ndescription: Reviews: the diff\n---\nbody\n", encoding="utf-8"
+        )
+        manager = SubagentManager(sessions=_mock_sessions(), ctx_builder=_mock_ctx_builder())
+        await manager.wait_taskq_ready()
+        parent = _parent_execution("lead")
+        with (
+            patch("kiro_crew.subagent.Stats"),
+            patch("kiro_crew.subagent.sel", return_value=MagicMock()),
+            patch("kiro_crew.execution_context.read_session_execution", return_value=parent),
+            patch("kiro_crew.subagent.read_session_execution", return_value=parent),
+        ):
+            info = manager.spawn("t", parent_session_key="dashboard:repo", agent="agent1")
+        assert info is not None and info.error_code == sa.AGENT_NOT_AVAILABLE_CODE
+        assert str(broken) in info.error, info.error
 
     def test_an_unreadable_project_spec_is_unknown(
         self, project: Path, resolver: list[str]
