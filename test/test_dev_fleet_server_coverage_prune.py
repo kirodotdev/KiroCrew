@@ -177,7 +177,7 @@ async def test_prunable_closed_unverifiable_head_is_refused(monkeypatch, tmp_pat
 
 @pytest.mark.asyncio
 async def test_prunable_closed_clean_resolves_head_through_real_lookup(monkeypatch, tmp_path):
-    """Issue #30399: with the REAL head-OID lookup (only gh is stubbed), a clean
+    """With the REAL head-OID lookup (only gh is stubbed), a clean
     worktree whose gh answer is CLOSED with the local head OID is a `closed`
     candidate, not `closed_unverified` on every scan."""
     head = "c" * 40
@@ -556,7 +556,7 @@ async def test_prune_candidates_batches_pr_lookups_and_keeps_per_head_verdicts(m
         == per_head
         == {
             "wt-m": "merged",
-            "wt-c": "closed_unverified",
+            "wt-c": "closed",
             "wt-o": "active",
             "wt-r": "merged_unverified",
             "wt-n": "fresh",
