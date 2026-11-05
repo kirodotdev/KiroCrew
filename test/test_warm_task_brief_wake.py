@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from dataclasses import replace
 from types import SimpleNamespace
 
@@ -110,7 +111,7 @@ def test_a_proven_check_takes_the_next_id_and_backs_its_line():
         "id": "f2",
         "kind": "deploy",
         "label": "prod",
-        "values": {"state": "live"},
+        "values": {"result": "live"},
         "source": "wake",
         "evidence": ["id-a"],
     }
@@ -119,6 +120,14 @@ def test_a_proven_check_takes_the_next_id_and_backs_its_line():
         {"text": "deployed", "kind": "deploy", "facts": ["f2"]},
     )
     assert facts.card_facts(table)[1]["evidence"] == ["id-a"]
+
+
+def test_a_check_result_is_shown_as_the_model_wrote_it():
+    # Model text, not a gateway enum: never lower-cased, de-underscored or translated.
+    assert facts.fact_words({"result": "Deployed build_42 to PROD"}) == [
+        "Deployed build_42 to PROD"
+    ]
+    assert facts.fact_words({"result": "UNKNOWN"}) == ["UNKNOWN"]
 
 
 def test_no_completed_call_means_no_check_and_no_file_line():
@@ -189,6 +198,22 @@ async def test_a_reset_during_the_wake_stops_it_and_abandons_the_brief(monkeypat
     assert slot.key in state._warm_task_brief_abandoned
 
 
+@pytest.mark.asyncio
+async def test_a_reset_while_the_harness_resolves_starts_no_wake(monkeypatch):
+    _fake_turn(monkeypatch, json.dumps(_BRIEF))
+    state = _WakeState()
+    slot = _foreground_slot(state)
+
+    def resolve(cfg, slot_):
+        # The owner leaves before any stop event exists: only the abandoned set records it.
+        state._warm_task_brief_abandoned.add(slot_.key)
+        return cfg.agent.acp_backend
+
+    monkeypatch.setattr(wake, "_backend", resolve)
+    assert await wake.run(state, slot, _CFG, "prompt", wake.Calls()) is None
+    assert state.background_turns == 0 and wake._wake_days == {}
+
+
 def test_the_wake_runs_only_on_the_harness_its_session_starts_on():
     # A crewmate pinned or routed elsewhere than the default gets the one-call brief.
     state = _WakeState()
@@ -205,7 +230,7 @@ def test_the_wake_runs_only_on_the_harness_its_session_starts_on():
 def test_words_a_wake_check_wrote_are_scanned_like_model_text():
     checked = (
         {"id": "f1", "kind": "task", "label": "Ship #12", "source": "tasks"},
-        {"id": "f2", "kind": "deploy", "label": "prod", "values": {"state": "via #987654"},
+        {"id": "f2", "kind": "deploy", "label": "prod", "values": {"result": "via #987654"},
          "source": "wake"},
     )  # fmt: skip
     brief = replace(_brief([]), checked=checked)
@@ -216,6 +241,11 @@ def test_words_a_wake_check_wrote_are_scanned_like_model_text():
 @pytest.mark.asyncio
 async def test_six_wakes_a_day_then_the_one_call_brief(monkeypatch):
     _fake_turn(monkeypatch, json.dumps(_BRIEF))
+    # One fixed instant, so the seven wakes never straddle local midnight.
+    clock = SimpleNamespace(
+        time=lambda: 1_800_000_000.0, strftime=time.strftime, localtime=time.localtime
+    )
+    monkeypatch.setattr(wake, "time", clock)
     state = _WakeState()
     slot = _foreground_slot(state)
     texts = [await wake.run(state, slot, _CFG, "p", wake.Calls()) for _ in range(7)]
@@ -286,6 +316,7 @@ async def test_the_turn_is_read_only_capped_and_its_session_destroyed(monkeypatc
     assert (
         seen["max_turns"] == wake.WARM_TASK_BRIEF_WAKE_MAX_TOOL_CALLS == 15
         and seen["unattended"] is True
+        and seen["retry_transient"] is False
     )
     assert calls.order == ["id-a", "id-b"] and calls.done == {"id-b"}
     key = "thread:thread-x:warm-wake"

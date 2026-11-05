@@ -204,7 +204,9 @@ def fact_words(values: Mapping[str, Any]) -> list[str]:
     if "not_checked_since" in values:
         return [f"not checked since {values['not_checked_since']}"]
     words = [_word(values.get(k)) for k in ("state", "status", "review", "mergeable")]
-    return [w for w in (*words, _checks_text(values.get("checks"))) if w]
+    # A wake check's result is the model's own words, shown as written.
+    result = str(values.get("result") or "")
+    return [w for w in (*words, _checks_text(values.get("checks")), result) if w]
 
 
 def lines_text(

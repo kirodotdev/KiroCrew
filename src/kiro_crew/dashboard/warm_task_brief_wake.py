@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import re
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
@@ -36,7 +35,7 @@ WARM_TASK_BRIEF_WAKE_MAX_TOOL_CALLS = 15
 WARM_TASK_BRIEF_WAKE_MAX_PER_THREAD_PER_DAY = 6
 MAX_CHECKS = 8
 _CHECK_KINDS = frozenset({"file", "deploy", "ticket"})
-_CHECK_ID_RE = re.compile(r"c[1-8]")
+_CHECK_IDS = frozenset(f"c{i}" for i in range(1, MAX_CHECKS + 1))
 _MAX_CHECK_CHARS = 160
 _MAX_TRACKED = 1024
 
@@ -142,9 +141,11 @@ def _backend(cfg: Any, slot: "_ChatSlot") -> str | None:
 
     try:
         agent, key = cfg.agent, f"dashboard:{slot.key}"
-        pin = crewmate_backend_pin(cfg, key)
         return select_provider_backend(
-            key, agent.member_acp_backend, agent.acp_backend, crew_backend=pin
+            key,
+            agent.member_acp_backend,
+            agent.acp_backend,
+            crew_backend=crewmate_backend_pin(cfg, key),
         )
     except Exception:
         logger.debug("warm brief wake: no backend for %s", key, exc_info=True)
@@ -178,11 +179,12 @@ async def _turn(
     from kiro_crew.acp_backends import ACP_BACKEND_GOOSE, ACP_BACKEND_STRANDS
     from kiro_crew.agent_discovery import warm_project_agent_names
     from kiro_crew.agent_sdk.backend_identity import is_claude_backend_name
+    from kiro_crew.agent_sdk.context import CONTEXT_EVENT_TOOL as EVENT_TOOL_CALL
+    from kiro_crew.agent_sdk.context import CONTEXT_EVENT_TOOL_RESULT as EVENT_TOOL_RESULT
     from kiro_crew.agent_sdk.drivers.acp import (
         claude_adapter_honours_session_options,
         goose_side_home_supported,
     )
-    from kiro_crew.agent_sdk.drivers.acp_turn_vocab import EVENT_TOOL_CALL, EVENT_TOOL_RESULT
     from kiro_crew.config.loader import resolve_agent_bindings
     from kiro_crew.dashboard.side_readonly_spec import publish_readonly_spec
     from kiro_crew.llm_helpers import ToolApprovalPolicy, stream_and_collect
@@ -229,6 +231,7 @@ async def _turn(
             agent=slot.agent or "kirocrew",
             app=slot._app or "",
             unattended=True,
+            retry_transient=False,  # a failed wake falls back to the one-call brief at once
             allow_image=False,
             on_event=observe,
         )
@@ -253,6 +256,8 @@ async def run(
     if not _may_wake(state, cfg, default):  # the cheap gates first, before any file read
         return ""
     backend = await asyncio.to_thread(_backend, cfg, slot)
+    if slot.key in getattr(state, "_warm_task_brief_abandoned", ()):
+        return None  # the owner typed or left while the harness was resolved
     if backend is None or not _may_wake(state, cfg, backend):
         return ""
     if not _under_cap(slot.key, now):
@@ -303,7 +308,7 @@ def words(checked: Any) -> list[str]:
         str(text)
         for fact in checked
         if fact.get("source") == "wake"
-        for text in (fact.get("label"), (fact.get("values") or {}).get("state"))
+        for text in (fact.get("label"), (fact.get("values") or {}).get("result"))
         if text
     ]
 
@@ -337,7 +342,7 @@ def with_checks(
         ids = [numbered.get(str(ref), "") for ref in cited] if isinstance(cited, list) else []
         if (
             not isinstance(check_id, str)
-            or not _CHECK_ID_RE.fullmatch(check_id)
+            or check_id not in _CHECK_IDS
             or check_id in renamed
             or not (isinstance(kind, str) and kind in _CHECK_KINDS)
             or not (label and result and ids)
@@ -348,7 +353,7 @@ def with_checks(
         renamed[check_id] = fact_id = f"f{len(table) + 1}"
         evidence = list(dict.fromkeys(ids))
         table.append(
-            {"id": fact_id, "kind": kind, "label": label, "values": {"state": result},
+            {"id": fact_id, "kind": kind, "label": label, "values": {"result": result},
              "source": "wake", "evidence": evidence}
         )  # fmt: skip
     known = {fact["id"] for fact in base}
