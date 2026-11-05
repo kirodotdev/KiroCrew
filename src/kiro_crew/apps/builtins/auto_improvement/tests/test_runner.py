@@ -906,6 +906,150 @@ class TestRunCutOffByARestart:
         assert record["status"] == R.STATUS_DONE and record["run_id"] == started["run_id"]
         assert R.RunSupervisor().status()["status"] == R.STATUS_DONE
 
+    def test_a_stopped_run_is_saved_and_read_back_as_stopped(
+        self, supervisor: R.RunSupervisor, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A run that returns after a stop request is recorded as stopped, not as a normal
+        finish, and a fresh process reads the record back the same way."""
+        clone = _tiny_repo(tmp_path / "clone")
+        release = threading.Event()
+
+        class _StoppableDriver:
+            def run(self, **_kw: Any) -> Any:
+                release.wait(10.0)
+                return _FakeStats()
+
+            def request_stop(self) -> None:
+                release.set()
+
+        monkeypatch.setattr(supervisor, "_build_driver", lambda _cfg: _StoppableDriver())
+        started = supervisor.start({"clone": str(clone)})
+        outcome = supervisor.stop()
+        _join(supervisor)
+
+        assert outcome["stopped"] is True and outcome["status"] == R.STATUS_STOPPED
+        st = supervisor.status()
+        assert st["status"] == R.STATUS_STOPPED and not st["error"]
+        assert st["activity"][-1]["note"] == "run stopped"
+        record = json.loads(R._terminal_record_path().read_text(encoding="utf-8"))
+        assert record["status"] == R.STATUS_STOPPED and record["run_id"] == started["run_id"]
+        assert R.RunSupervisor().status()["status"] == R.STATUS_STOPPED
+
+    def test_a_stop_after_the_run_finished_keeps_the_finished_outcome(
+        self, supervisor: R.RunSupervisor, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A stop that lands while a finished run is still writing its record leaves the
+        `done` outcome alone, in memory and on disk, sends no stop signal, and still
+        waits for the record to be written."""
+        clone = _tiny_repo(tmp_path / "clone")
+        persisting = threading.Event()
+        release = threading.Event()
+        stop_calls: list[int] = []
+        real_persist = supervisor._persist_terminal_state
+
+        class _InstantDriver:
+            def run(self, **_kw: Any) -> Any:
+                return _FakeStats()
+
+            def request_stop(self) -> None:
+                stop_calls.append(1)
+
+        def _paused_persist(*args: Any, **kwargs: Any) -> None:
+            if not kwargs.get("in_flight"):
+                persisting.set()
+                release.wait(10.0)
+            real_persist(*args, **kwargs)
+
+        monkeypatch.setattr(supervisor, "_persist_terminal_state", _paused_persist)
+        monkeypatch.setattr(supervisor, "_build_driver", lambda _cfg: _InstantDriver())
+        supervisor.start({"clone": str(clone)})
+        assert persisting.wait(10.0)
+        worker = supervisor._thread
+        assert worker is not None
+        real_join = worker.join
+        joining = threading.Event()
+
+        def _observed_join(timeout: float | None = None) -> None:
+            joining.set()
+            real_join(timeout)
+
+        monkeypatch.setattr(worker, "join", _observed_join)
+        outcomes: list[dict[str, Any]] = []
+        stopper = threading.Thread(target=lambda: outcomes.append(supervisor.stop()))
+        stopper.start()
+        try:
+            # `stop()` has reached the join while the record write is still held.
+            assert joining.wait(10.0)
+            assert not outcomes
+            assert supervisor.status()["status"] == R.STATUS_DONE
+        finally:
+            release.set()
+        stopper.join(timeout=10.0)
+        _join(supervisor)
+
+        assert outcomes and outcomes[0]["status"] == R.STATUS_DONE
+        assert outcomes[0]["stopped"] is True
+        assert not stop_calls
+        assert supervisor.status()["status"] == R.STATUS_DONE
+        record = json.loads(R._terminal_record_path().read_text(encoding="utf-8"))
+        assert record["status"] == R.STATUS_DONE
+
+    def test_a_late_stop_reports_the_finished_outcome_when_the_join_times_out(
+        self, supervisor: R.RunSupervisor, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A late stop whose bounded wait runs out still reports the finished run's own
+        outcome, even when the supervisor's state has been replaced in the meantime."""
+        clone = _tiny_repo(tmp_path / "clone")
+        persisting = threading.Event()
+        release = threading.Event()
+        real_persist = supervisor._persist_terminal_state
+
+        class _InstantDriver:
+            def run(self, **_kw: Any) -> Any:
+                return _FakeStats()
+
+            def request_stop(self) -> None:
+                pass
+
+        def _paused_persist(*args: Any, **kwargs: Any) -> None:
+            if not kwargs.get("in_flight"):
+                persisting.set()
+                release.wait(10.0)
+            real_persist(*args, **kwargs)
+
+        monkeypatch.setattr(supervisor, "_persist_terminal_state", _paused_persist)
+        monkeypatch.setattr(supervisor, "_build_driver", lambda _cfg: _InstantDriver())
+        started = supervisor.start({"clone": str(clone)})
+        assert persisting.wait(10.0)
+        worker = supervisor._thread
+        assert worker is not None
+        real_join = worker.join
+        original = supervisor._state
+        timeouts: list[float | None] = []
+
+        def _join_that_runs_out(timeout: float | None = None) -> None:
+            # Stands in for a join whose bound expires: the worker is still held in its
+            # record write, and a newer run has replaced the state meanwhile.
+            timeouts.append(timeout)
+            with supervisor._lock:
+                supervisor._state = R.RunState(status=R.STATUS_RUNNING, run_id="other-run")
+
+        monkeypatch.setattr(worker, "join", _join_that_runs_out)
+        try:
+            outcome = supervisor.stop()
+        finally:
+            with supervisor._lock:
+                supervisor._state = original
+            release.set()
+            real_join(10.0)
+
+        assert timeouts == [R.STOP_JOIN_TIMEOUT_S]
+        assert outcome == {
+            "status": R.STATUS_DONE,
+            "run_id": started["run_id"],
+            "stopped": False,
+        }
+
     def test_a_failed_write_at_start_is_logged_and_the_run_still_runs(
         self,
         supervisor: R.RunSupervisor,
@@ -1560,7 +1704,7 @@ class TestCalibrationRespondsToStop:
         # The worker must have reached a terminal state and NOT failed for an
         # unrelated reason — otherwise "canary did not run" would be a false pass.
         assert st["status"] != R.STATUS_ERROR, f"calibration errored: {st.get('error')!r}"
-        assert st["status"] in (R.STATUS_DONE, R.STATUS_STOPPING)
+        assert st["status"] in (R.STATUS_STOPPED, R.STATUS_STOPPING)
         assert not canary_ran.is_set(), "the canary ran even though a stop was requested"
 
     def test_stopped_calibration_does_not_write_a_ruler(
