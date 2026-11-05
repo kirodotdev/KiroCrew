@@ -6392,7 +6392,8 @@
         "installing": "इंस्टॉल हो रहा है…",
         "kirocrew_app_install_path": "kirocrew app install <path>",
         "manage_app_sources": "ऐप स्रोत प्रबंधित करें",
-        "path_to_app_directory": "/path/to/app-directory"
+        "path_to_app_directory": "/path/to/app-directory",
+        "app_directory_path_label": "ऐप डायरेक्टरी का पाथ"
       },
       "types": {
         "built_in": "बिल्ट-इन",

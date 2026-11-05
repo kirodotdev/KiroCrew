@@ -6559,7 +6559,8 @@
         "installing": "Instalando…",
         "kirocrew_app_install_path": "kirocrew app install <path>",
         "manage_app_sources": "Gerenciar fontes de apps",
-        "path_to_app_directory": "/path/to/app-directory"
+        "path_to_app_directory": "/path/to/app-directory",
+        "app_directory_path_label": "Caminho do diretório do app"
       },
       "types": {
         "built_in": "Integrado",
