@@ -657,9 +657,10 @@ export const CommentsSidebar = memo(function CommentsSidebar(props: CommentsSide
           <button
             type="button"
             onClick={() => setShowResolved(v => !v)}
+            aria-expanded={showResolved}
             className="w-full inline-flex items-center justify-center gap-1 text-[11px] text-muted hover:text-text bg-transparent border-none cursor-pointer py-1.5 transition-colors"
           >
-            <CheckCircle2 size={12} /> {showResolved
+            <CheckCircle2 size={12} aria-hidden="true" /> {showResolved
               ? i18nT('components.commentsSidebar.hide_resolved_count', { count: resolvedCount })
               : i18nT('components.commentsSidebar.show_resolved_count', { count: resolvedCount })}
           </button>
