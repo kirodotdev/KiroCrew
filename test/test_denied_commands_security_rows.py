@@ -694,9 +694,25 @@ class TestRecursiveForceRmFloor:
 
     @pytest.mark.parametrize(
         "command",
+        ["$1rm -fr ~", "$2rm -fr /", "$@rm -fr ~", "echo ok; $1rm -fr ~", "${1}rm -fr /"],
+    )
+    def test_a_floor_error_refuses_rm_behind_an_unset_parameter(self, monkeypatch, command):
+        """An unset ``$1`` glued to ``rm`` expands to nothing, so bash runs ``rm``."""
+        from kiro_crew.security import rm_floor
+
+        def _boom(_text):
+            raise RuntimeError("walk failed")
+
+        monkeypatch.setattr(rm_floor, "_rm_wipe_targets", _boom)
+        assert "could not read" in (is_denied(command) or "")
+
+    @pytest.mark.parametrize(
+        "command",
         [
             "git log --format=$x",
             "git log --format=%H -n 1",
+            "echo a$1rm",
+            "git log --fo$1rm=%H",
             "make format",
             "docker run --rm alpine true",
             "python3 -m pip install --platform any $PKG",
