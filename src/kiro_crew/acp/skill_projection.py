@@ -27,6 +27,8 @@ from kiro_crew.agent_discovery import (  # noqa: F401
 from kiro_crew.agent_spec_format import (  # noqa: F401
     NATIVE_SKILL_ALIAS_PREFIX,
     SKILL_VIEW_PROJECTION_CEILING,
+    count_authored_agent_files,
+    skill_view_ceiling,
     volatile_env_keys,
 )
 from kiro_crew.atomic_write import atomic_write, on_event_loop  # noqa: F401
