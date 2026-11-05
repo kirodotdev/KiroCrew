@@ -383,7 +383,7 @@ export function createFolderBlocks(shell: SidebarScope & LaneRows) {
     )
   }
 
-  const renderFolderHeader = (folder: ChatFolder, dragHandleProps?: React.HTMLAttributes<HTMLElement>, emptyBody = false, depth = 0) => {
+  const renderFolderHeader = (folder: ChatFolder, dragHandleProps?: React.HTMLAttributes<HTMLElement>, emptyBody = false, depth = 0, dragging = false) => {
     // Same predicate `renderFolderBlock` renders by, so the number describes what
     // the row can actually show. Counting a hidden-when-empty child made the count
     // and the body disagree: the body skipped it, so no body rendered, while the
@@ -436,9 +436,10 @@ export function createFolderBlocks(shell: SidebarScope & LaneRows) {
       // ⋯ button does, positioned at the pointer. The ⋯ button stays: it is the
       // keyboard-reachable path, and the only one on a device with no secondary
       // button. Rename mode opts out so a right-click in the name input keeps the
-      // browser's own edit menu (cut/paste).
+      // browser's own edit menu (cut/paste). A drag opts out too, so a touch
+      // hold that lifted the header does not also open the menu 700 ms in.
       <ContextMenu key={`folder-header-${folder.id}`}>
-        <ContextMenuTrigger asChild disabled={mateManaged || (editingId === folder.id && editScope === 'list')}>
+        <ContextMenuTrigger asChild disabled={dragging || mateManaged || (editingId === folder.id && editScope === 'list')}>
       <div
         // The reveal target for this folder (command palette Folders tab), and the
         // only marker that identifies a folder ROW. Deliberately not the existing
@@ -1024,7 +1025,7 @@ export function createFolderBlocks(shell: SidebarScope & LaneRows) {
           // row that keyboard roving or a reveal scrolls into view lands below
           // them instead of behind them (`scroll-margin-top` in index.css).
           <div ref={setNodeRef} data-folder-drop={folder.id} style={{ '--folder-pin-stack': `calc(var(--folder-row-sticky-h) * ${depth + 1})` } as React.CSSProperties} className={`rounded-md transition-all mb-0.5${isOver ? ' ring-1 ring-accent' : ''}`}>
-            {renderFolderHeader(folder, dragHandleProps, emptyBody, depth)}
+            {renderFolderHeader(folder, dragHandleProps, emptyBody, depth, forceCollapsed)}
             {renderFolderCreateError(folder.id)}
             {wrapped && <FolderBody key={`folder-body-${folder.id}`} padding={FOLDER_BODY_OPEN_PADDING} open={!folder.collapsed && !forceCollapsed} instantClose={instantCloseId === folder.id}>{wrapped}</FolderBody>}
           </div>
