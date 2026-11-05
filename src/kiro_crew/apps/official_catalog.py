@@ -49,6 +49,7 @@ from pathlib import Path
 from typing import Any
 
 from kiro_crew.apps.manifest import KEBAB_RE, app_name_error
+from kiro_crew.apps.store_links import sanitize_links
 from kiro_crew.atomic_write import atomic_write, read_bytes_with_retry
 from kiro_crew.config.loader import config_dir
 
@@ -519,6 +520,13 @@ def _curated_tags(value: Any) -> list[str]:
     return [t for t in value if isinstance(t, str)]
 
 
+def _curated_links(entry: dict[str, Any]) -> list[dict[str, str]]:
+    """The entry's store-page ``links``, checked by the same rule as ``app.json``."""
+    if "links" not in entry:
+        return []
+    return sanitize_links(entry["links"], app_name=_curated_str(entry.get("name")))
+
+
 def _session_approval_manifest(entry: dict[str, Any]) -> dict[str, Any] | None:
     """Project the explicit session approval grant for pre-install disclosure."""
     permissions = entry.get("permissions")
@@ -717,6 +725,8 @@ def inventory(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
             row["heroImageDetail"] = hero_detail
         if shots := _resolve_ref_list(entry.get("screenshotRefs")):
             row["screenshots"] = shots
+        if links := _curated_links(entry):
+            row["links"] = links
         if (stars := _curated_stars(entry)) is not None:
             row["stargazersCount"] = stars
         seen.add(name)
@@ -963,6 +973,8 @@ def annotate(rows: list[dict[str, Any]], entries: list[dict[str, Any]]) -> None:
             row["heroImageDetail"] = hero_detail
         if shots := _resolve_ref_list(entry.get("screenshotRefs")):
             row["screenshots"] = shots
+        if links := _curated_links(entry):
+            row["links"] = links
         # ``stargazersCount`` is deliberately NOT overlaid here. This function
         # matches rows by NAME, and a same-name SEED row can pin a DIFFERENT
         # repository than the catalog entry (seed collisions keep the pin by
@@ -1021,6 +1033,8 @@ def list_catalog_rows() -> list[dict[str, Any]]:
             row["heroImageDetail"] = hero_detail
         if shots := _resolve_ref_list(entry.get("screenshotRefs")):
             row["screenshots"] = shots
+        if links := _curated_links(entry):
+            row["links"] = links
         source = entry.get("source")
         if isinstance(source, dict):
             # The source TYPE is a display marker (builtin vs git), not install

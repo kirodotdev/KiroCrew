@@ -157,6 +157,7 @@ from kiro_crew.apps.manifest_sections import (  # noqa: F401
     lifecycle_timeout_seconds,
     logger,
 )
+from kiro_crew.apps.store_links import sanitize_links
 from kiro_crew.atomic_write import read_bytes_with_retry
 from kiro_crew.constants import WINDOWS_DEVICE_STEMS  # noqa: F401
 
@@ -1058,6 +1059,12 @@ class AppManifest:
     def from_dict(cls, data: dict[str, Any]) -> AppManifest:
         """Parse from dict, preserving unknown fields in ``extra``."""
         extra = {k: v for k, v in data.items() if k not in _KNOWN_FIELDS}
+        if "links" in extra:
+            # Store-page links stay in ``extra`` (display copy, outside the signed
+            # body), but only the entries ``sanitize_links`` keeps get that far.
+            links = sanitize_links(extra.pop("links"), app_name=str(data.get("name", "")))
+            if links:
+                extra["links"] = links
 
         config_keys_raw = data.get("config_keys", [])
         if not isinstance(config_keys_raw, list):

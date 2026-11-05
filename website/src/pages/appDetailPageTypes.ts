@@ -8,6 +8,7 @@
  * is that row after `normalizeRegistryApp`. Types only: this module holds no
  * runtime code and never imports the page.
  */
+import type { AppLink } from './AppDetailLinks'
 import type {
   AppAdoptionRow,
   ComposerActionGrantRow,
@@ -36,6 +37,8 @@ type AppInfo = Pick<RegistryApp, '_registry' | 'provenance'> & {
   highlights?: string[]
   useCases?: string[]
   configuration?: string[]
+  /** The app's own store-page links; `AppDetailLinks` re-checks each entry. */
+  links?: AppLink[]
   screenshots?: string[]
   screenshotsDark?: string[]
   heroImage?: string
@@ -133,6 +136,7 @@ interface AppManifest {
   highlights?: string[]
   useCases?: string[]
   configuration?: string[]
+  links?: AppLink[]
   screenshots?: string[]
   screenshotsDark?: string[]
   // Store-listing metadata. For built-in apps these live on the manifest

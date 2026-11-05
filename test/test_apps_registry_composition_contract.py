@@ -327,6 +327,7 @@ FROZEN_NAMES: tuple[str, ...] = (
     "runtime_provisions_requirements",
     "sandboxed_spawn_argv",
     "sandboxed_spawn_argv_async",
+    "sanitize_links",
     "scrub_env",
     "sel",
     "set_app_provenance",

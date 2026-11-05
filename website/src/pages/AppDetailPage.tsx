@@ -54,6 +54,7 @@ import { fmtDateNumeric, fmtCompact, fmtNumber } from '../i18n/format'
 import { HeroBanner, ScreenshotGallery } from './AppDetailPageArt'
 import { messageActionGrantLabel } from '../messageActions/messageActionRegistry'
 import AppDetailAdoptionNotice from './AppDetailAdoptionNotice'
+import AppDetailLinks from './AppDetailLinks'
 import { selectionActionGrantLabel } from '../selectionActions/selectionActionRegistry'
 import type { AppInfo, NormalizedRegistryEntry, RegistryEntry } from './appDetailPageTypes'
 import { actionGrant } from '../composerActions/composerActionRegistry'
@@ -411,6 +412,7 @@ export default function AppDetailPage() {
             highlights: m.highlights || registryEntry?.highlights || [],
             useCases: m.useCases || registryEntry?.useCases || [],
             configuration: m.configuration || registryEntry?.configuration || [],
+            links: m.links || registryEntry?.links,
             // `||` would be wrong for the list fields: an empty array is truthy,
             // so a declared-but-unresolvable list would short-circuit the
             // blob-proxy fallback instead of falling through to it.
@@ -1803,6 +1805,7 @@ export default function AppDetailPage() {
                   </a>
                 </div>
               )}
+              <AppDetailLinks links={app.links} />
               {typeof app.stargazersCount === 'number' && <div>{i18nT('pages.appDetailPage.github_stars_2', { value: fmtNumber(app.stargazersCount) })}</div>}
               {app.author && <div>{i18nT('pages.appDetailPage.author')} {app.author}</div>}
               {repoUrl && (contribLoading || contributors.length > 0 || contribError) && (

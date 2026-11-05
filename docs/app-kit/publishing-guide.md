@@ -56,6 +56,7 @@ own repo.
 | `license` | Optional SPDX-style identifier, shown on the detail page. |
 | `tags` | Lowercase discovery tags. They also decide the app's Discover category (section 3). |
 | `highlights` | Feature bullets rendered as a list on the detail page. |
+| `links` | Up to 6 `{label, url}` buttons in the detail page's Details card, each showing its host. `https:` only; see [Store-page links](manifest-reference.md#store-page-links). |
 
 ### Store metadata is fetched from your repo, not the registry
 
