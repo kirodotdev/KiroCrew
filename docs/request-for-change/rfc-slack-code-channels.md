@@ -225,7 +225,13 @@ that every switch ships with its reader. It runs behind
   `suspended`; on the turn's end `active`.
 * `agent_session_stopped` cancels the in-flight turn through the existing
   `slack_stop_in_flight` path, then moves the status away from `processing` (Slack
-  does not), stopping the streams named in `streaming_message_ts`.
+  does not), stopping the streams named in `streaming_message_ts`. In a code
+  channel (Phase 2) the app instead sets no status after Slack's own Stop: the
+  [lifecycle](https://docs.slack.dev/ai/slack-code/lifecycle) has it "not ...
+  call any `agents.sessions.*` or `agents.conversations.*` API methods for that
+  context. Slack will update the channel's session status automatically." The
+  channel stays quiet until its next turn starts; Kiro Crew's own Stops (`!stop`,
+  the context bar's Stop) still set it back to `active`.
 * `agent_session_title_changed` updates the session title in the dashboard.
 * Runs only while `agent_sessions_enabled(cfg)` holds. A `feature_disabled`,
   `missing_scope` or `not_allowed_token_type` answer from `setStatus` is passed to
@@ -487,4 +493,26 @@ staying in place.
    pilot workspace and, if needed, make the code-channels switch imply the agent
    view.
 2. `code_channel_action` (context-bar action items) has no published event
-   payload; Phase 2 ships link items only until it does.
+   payload. Slack's [code channel properties](https://docs.slack.dev/ai/slack-code/code-channel-properties/)
+   page documents only the trigger: an item with `item_type: "action"` (no
+   `url`) delivers a `code_channel_action` event to the app when clicked. The
+   events reference has no body for it. Decision (maintainer, 2026-10-23): Phase
+   2 ships two action items, Create PR and Stop, on that documented trigger,
+   with the body read as follows (`slack/code_channels/actions.py:parse`):
+   * channel: `event.channel`, else `event.channel_id`;
+   * person: `event.user` / `event.user_id`; two that name different people make
+     the click nobody's, so every check refuses it;
+   * item key: `action_key`, `key`, `item_key` or `action_id` on the event, else
+     `key` / `action_key` inside a nested `action`, `item` or
+     `context_bar_item` object;
+   * workspace: the envelope's `team_id`, else the event's; de-duplicated on the
+     envelope's `event_id` (else `event_ts` / `action_ts`).
+
+   A click whose person, channel or key cannot be read this way is refused and
+   SEL-audited (a known person in a bound channel is told privately), and the
+   field NAMES of the first click are logged (never values), so the real shape
+   can be pinned down from a live workspace. Each key runs an existing path with
+   that path's own checks and audit: `create-pr` is `/create-pr`, and `stop` is
+   Slack's own Stop handler (owner or allowed user). No action adds a way in.
+   This question closes once Slack publishes the body; then `parse` reads the
+   documented fields only.

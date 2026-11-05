@@ -400,7 +400,8 @@ class AgentSessionStatus:
     async def settle_after_stop(self, channel: str, thread_ts: str | None) -> None:
         """Move a stopped session off ``processing``, as Slack requires of the app.
 
-        Slack does not change the status itself when Stop is pressed. Sent whatever
+        In a thread session Slack does not change the status itself when Stop
+        is pressed (a code channel's own Stop differs: :meth:`settled_by_slack`). Sent whatever
         was last recorded -- the click came from a loader, so Slack believes the
         session is still working, and after a restart nothing is recorded at all.
         The caller decides the session is this bot's before calling.
@@ -425,6 +426,25 @@ class AgentSessionStatus:
             # keepalive back. Its turn has ended, so it sends ``active`` at the
             # next refresh deadline instead of re-sending ``processing``.
             self._arm_keepalive(key, record)
+
+    def settled_by_slack(self, channel: str, thread_ts: str | None) -> None:
+        """Slack moved this session off its lifecycle state itself; send nothing.
+
+        A code channel's own Stop: Slack updates the channel's status and the app
+        makes no ``agents.*`` call for it until a new turn (code channel
+        lifecycle). The record follows what Slack shows, so the next turn's
+        ``processing`` is sent again rather than taken as already shown, and no
+        keepalive re-sends ``processing`` meanwhile. The record is kept (it still
+        says this bot drove the session).
+        """
+        record = self._records.get((channel, thread_ts or None))
+        if record is None:
+            return
+        self._disarm(record)
+        record.turn = None
+        if record.status:
+            record.status = SESSION_STATUS_ACTIVE
+            record.sent_at = self._clock()
 
     async def close(self) -> None:
         for record in self._records.values():
