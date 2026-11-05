@@ -237,9 +237,6 @@ function CommentList({ comments, onEdit, onRemove, onSubmitAll, enableExtraPromp
   )
 }
 
-// Re-exported so its importers keep one import site.
-export { sliceCodePoints }
-
 // The agent payload is model-facing text, so it lives behind the `.prompt.ts`
 // boundary; re-exported here so its importers keep one import site.
 export { formatCommentsMessage } from '../utils/commentsMessage.prompt'
