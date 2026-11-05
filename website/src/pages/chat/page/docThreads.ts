@@ -10,6 +10,10 @@ import { splitReply, type DocActions, type ThreadMsg } from './docConductor'
 import { isGoalWake } from './goalLoop'
 import { GOAL_BEAT_COUNT, goalThread, isQuietReport, type GoalCheck } from './docGoals'
 
+/** The page's main thread: the conversation about the page as a whole, which no
+ *  marker or ask names. Its turns are asks under this id, read like any other. */
+export const MAIN_THREAD = 'main'
+
 const HEADER_RE = /^\[Doc ask ([A-Za-z0-9_-]+)\]\n([\s\S]*?)(?:\n\n---\n|$)/
 
 const ASK_MARKER = /<!-- \/?ask:[A-Za-z0-9_-]+ -->/g
@@ -34,7 +38,9 @@ function lineAbove(doc: string, id: string): string {
  * it is now, markers included, read only to place an empty-spot ask.
  */
 export function buildAskTurn(o: { id: string; request: string; quote: string; doc: string; title: string | null; copy: string | null }): string {
-  const about = o.id.startsWith('goal-')
+  const about = o.id === MAIN_THREAD
+    ? 'About the document as a whole (its main thread, not a highlight). Your answer shows in the main thread.'
+    : o.id.startsWith('goal-')
     ? `The goal's section:\n"""\n${o.quote}\n"""`
     : o.quote.trim()
     ? `Highlighted:\n"""\n${o.quote}\n"""`

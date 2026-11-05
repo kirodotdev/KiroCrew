@@ -13,7 +13,8 @@ import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
 import type { EditorView } from '@codemirror/view'
 import { api, ApiError } from '../../../api/client'
 import ApprovalCard from '../../../components/ApprovalCard'
-import { ConductorControls, SessionMessagesPanel } from './ConductorSession'
+import { SessionMessagesPanel } from './ConductorSession'
+import MainThreadDock from './MainThreadDock'
 import CrewApprovalCards from '../../../components/crew/CrewApprovalCards'
 import ErrorNotice from '../../../components/ErrorNotice'
 import { sendTurn } from '../../../chat-core/transport/sendTurn'
@@ -37,7 +38,7 @@ import { changeForWrite, markerContent, parseMarkers, threadQuote, type Conducto
 import DocThreadPanel from './DocThreadPanel'
 import { rowQuoteLabel } from './docAskRows'
 import { OVERLAY_KEYFRAMES, findAnchor, overlaySlug, parseOverlay, type OverlayItem } from './docOverlay'
-import { buildAskTurn, deriveThreads, docTextForCopy, goalCheckPending } from './docThreads'
+import { MAIN_THREAD, buildAskTurn, deriveThreads, docTextForCopy, goalCheckPending } from './docThreads'
 
 /** Quiet time after the last edit before it is written. */
 const SAVE_DEBOUNCE_MS = 600
@@ -328,7 +329,7 @@ export default function DocPane({ docId, slotKey, title, approvalMode }: { docId
       const rowLabel = followUp ? null : rowQuoteLabel(quote)
       if (rowLabel) setRowLabels({ ...rowLabels, [id]: rowLabel })
       // A new ask opens its thread beside the doc, so the answer is seen arriving.
-      if (!followUp) setActive({ id, focus: 0 })
+      if (!followUp && id !== MAIN_THREAD) setActive({ id, focus: 0 })
       // The markers just went in: write them now, not after the debounce.
       void save()
       const name = title || ''
@@ -401,8 +402,13 @@ export default function DocPane({ docId, slotKey, title, approvalMode }: { docId
         at the bottom left as on the board: Trust here carries to the workers it
         starts, so they stop asking too. */}
     {sessionOpen && <SessionMessagesPanel slotKey={slotKey} onClose={() => setSessionOpen(false)} />}
-    <ConductorControls slotKey={slotKey} approvalMode={approvalMode} sessionOpen={sessionOpen} onToggleSession={() => setSessionOpen(o => !o)} crewSwitch
-      className="absolute bottom-5 left-5 z-[25] rounded-xl border border-border bg-bg-elevated p-1 shadow-lg" testid="doc-approval-mode" />
+    <MainThreadDock slotKey={slotKey} approvalMode={approvalMode} sessionOpen={sessionOpen} onToggleSession={() => setSessionOpen(o => !o)}
+      thread={data.threads[MAIN_THREAD]} running={running} placeholder="Message about the whole doc…" controlsTestid="doc-approval-mode"
+      onSend={text => {
+        const view = viewRef.current
+        if (view) hostRef.current.send(MAIN_THREAD, text, '', view.state.doc.toString(), !!threads[MAIN_THREAD])
+      }}
+      className="z-[25]" />
     <div className="flex min-h-0 flex-1">
     <div className="flex-1 min-h-0 overflow-y-auto relative" data-testid="doc-pane">
       {/* The overlay's animations; the board mounts the same copy. */}
@@ -505,7 +511,7 @@ export default function DocPane({ docId, slotKey, title, approvalMode }: { docId
     {/* The workers' tool approvals: Crew Mode decides those only on their
         conductor's page, and this doc is that page. Stacked above the approval
         mode, which holds the corner. */}
-    <div className="absolute bottom-[68px] left-5 z-30 w-[400px] max-w-[90vw]" data-testid="doc-worker-approvals">
+    <div className="absolute bottom-[150px] left-5 z-30 w-[400px] max-w-[90vw]" data-testid="doc-worker-approvals">
       <CrewApprovalCards root={slotKey} />
     </div>
     </div>

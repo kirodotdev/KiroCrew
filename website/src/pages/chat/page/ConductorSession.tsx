@@ -81,8 +81,11 @@ function PageModeChoice({ slotKey }: { slotKey: string }) {
 
 /** The page's trust picker with the session view's toggle beside it. Positioned by
  *  the caller, which keeps its own corner and test id. */
-export function ConductorControls({ slotKey, approvalMode, sessionOpen, onToggleSession, className, style, testid, crewSwitch = false }: {
+export function ConductorControls({ slotKey, approvalMode, sessionOpen, onToggleSession, className, style, testid, crewSwitch = false, toggleLabel = "Show the conductor's session", toggleTestid = 'conductor-session-toggle' }: {
   slotKey: string
+  /** What the scroll button toggles, when it is not the session view (a page's main thread). */
+  toggleLabel?: string
+  toggleTestid?: string
   /** Offer the page's Plain / Crew choice (docs and boards). */
   crewSwitch?: boolean
   approvalMode?: string
@@ -100,9 +103,9 @@ export function ConductorControls({ slotKey, approvalMode, sessionOpen, onToggle
         type="button"
         onClick={onToggleSession}
         aria-pressed={sessionOpen}
-        aria-label="Show the conductor's session"
-        title="Show the conductor's session"
-        data-testid="conductor-session-toggle"
+        aria-label={toggleLabel}
+        title={toggleLabel}
+        data-testid={toggleTestid}
         className={`h-7 border-none px-2 text-[12px] ${sessionOpen ? 'bg-bg-hover text-text' : 'text-muted'}`}
       >
         <ScrollText size={14} />

@@ -11,7 +11,8 @@ import { ShieldCheck, X } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api, ApiError } from '../../../../api/client'
 import ApprovalCard from '../../../../components/ApprovalCard'
-import { ConductorControls, SessionMessagesPanel } from '../ConductorSession'
+import { SessionMessagesPanel } from '../ConductorSession'
+import MainThreadDock from '../MainThreadDock'
 import CrewApprovalCards from '../../../../components/crew/CrewApprovalCards'
 import ErrorNotice from '../../../../components/ErrorNotice'
 import { sendTurn } from '../../../../chat-core/transport/sendTurn'
@@ -24,7 +25,7 @@ import { runsCrewMode } from '../../../../lib/crewMode'
 import { toApiDecision } from '../../../../utils/approvalDecision'
 import { ANSWER_STYLE, type ThreadView } from '../docConductor'
 import { OVERLAY_CLASS_STYLE, OVERLAY_KEYFRAMES, overlaySlug, parseOverlay, type OverlayItem } from '../docOverlay'
-import { deriveThreads, latestGoalReport } from '../docThreads'
+import { MAIN_THREAD, deriveThreads, latestGoalReport } from '../docThreads'
 import { specToCss } from '../styleSpec'
 import { MENTION_STYLE } from '../docMentions'
 import { MENU_STYLE } from '../docSlash'
@@ -275,8 +276,10 @@ export default function BoardPane({ docId, slotKey, title, approvalMode }: { doc
       {/* The conductor's approval mode, the same control as the chat composer's:
           Trust here carries to the workers it starts, so they stop asking too. */}
       {sessionOpen && <SessionMessagesPanel slotKey={slotKey} onClose={() => setSessionOpen(false)} />}
-      <ConductorControls slotKey={slotKey} approvalMode={approvalMode} sessionOpen={sessionOpen} onToggleSession={() => setSessionOpen(o => !o)} crewSwitch
-        className="absolute bottom-5 left-5 rounded-xl border border-border bg-bg-elevated p-1 shadow-lg" style={{ zIndex: 25 }} testid="board-approval-mode" />
+      <MainThreadDock slotKey={slotKey} approvalMode={approvalMode} sessionOpen={sessionOpen} onToggleSession={() => setSessionOpen(o => !o)}
+        thread={views[MAIN_THREAD]} running={running} centerBottom="bottom-[84px]" placeholder="Message about the whole canvas…" controlsTestid="board-approval-mode"
+        onSend={text => send(MAIN_THREAD, text, boardRef.current, !!threads[MAIN_THREAD])}
+        style={{ zIndex: 25 }} />
       {approvals.length > 0 && (
         <div className="absolute bottom-20 right-5 w-[380px] max-w-[90vw] flex flex-col gap-2" style={{ zIndex: 30 }} data-testid="board-approvals">
           {approvals.map(m => {
@@ -290,7 +293,7 @@ export default function BoardPane({ docId, slotKey, title, approvalMode }: { doc
       )}
       {/* The workers' tool approvals: Crew Mode decides those only on their
           conductor's page, and this board is that page. */}
-      <div className="absolute bottom-20 left-5 w-[400px] max-w-[90vw]" style={{ zIndex: 30 }} data-testid="board-worker-approvals">
+      <div className="absolute bottom-[150px] left-5 w-[400px] max-w-[90vw]" style={{ zIndex: 30 }} data-testid="board-worker-approvals">
         <CrewApprovalCards root={slotKey} />
       </div>
     </div>

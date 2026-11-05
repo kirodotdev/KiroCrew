@@ -100,7 +100,14 @@ describe('DocPane', () => {
       </QueryClientProvider>,
     )
     await editor()
-    expect(screen.getByTestId('doc-approval-mode').className).toContain('bottom-5 left-5')
+    expect(screen.getByTestId('main-thread').className).toContain('bottom-5 left-5')
+    // Front and center, and back off to the side.
+    fireEvent.click(screen.getByTestId('main-thread-place'))
+    expect(screen.getByTestId('main-thread').getAttribute('data-place')).toBe('center')
+    expect(screen.getByTestId('main-thread').className).toContain('justify-center')
+    fireEvent.click(screen.getByTestId('main-thread-place'))
+    expect(screen.getByTestId('main-thread').getAttribute('data-place')).toBe('side')
+    expect(screen.getByTestId('main-thread')).toContainElement(screen.getByTestId('doc-approval-mode'))
     expect(screen.queryByTestId('doc-conversation-bar')).toBeNull()
     vi.useFakeTimers()
     try {
@@ -466,6 +473,8 @@ describe('DocPane', () => {
     renderPane()
     await editor()
     expect(screen.queryByTestId('conductor-session')).toBeNull()
+    // The session's rows are behind the main thread's expanded header.
+    fireEvent.click(screen.getByTestId('main-thread-expand'))
     fireEvent.click(screen.getByTestId('conductor-session-toggle'))
     const rows = screen.getAllByTestId('conductor-session-row').map(r => r.textContent ?? '')
     expect(rows).toHaveLength(4)
@@ -475,6 +484,45 @@ describe('DocPane', () => {
     expect(rows[3]).toContain('[goal g1]')
     fireEvent.click(screen.getByLabelText("Close the conductor's session"))
     expect(screen.queryByTestId('conductor-session')).toBeNull()
+    act(() => { store.dispatch(replaceMessages([])); store.dispatch(setActiveSlot(null)) })
+  })
+
+  it('the main thread peeks its last reply, expands upward, sends about the whole doc, and the scroll button hides it', async () => {
+    getDoc.mockResolvedValue({ content: '# Plan\n', version: 'v1' })
+    send.mockReset()
+    send.mockResolvedValue({ status: 'sent' })
+    act(() => {
+      store.dispatch(setActiveSlot('doc-slot'))
+      store.dispatch(replaceMessages([
+        { role: 'user', content: '[Doc ask main]\nwhere are we?\n\n---\nAbout the document as a whole.', cls: '' },
+        { role: 'assistant', content: '**Two of three** tasks are done.\n\nThe last is in review.', cls: '' },
+      ]))
+    })
+    renderPane()
+    await editor()
+    expect(screen.getByTestId('main-thread-peek').textContent).toContain('Two of three tasks are done.')
+    // Never a pinned thread: nothing opens in the side panel.
+    expect(screen.queryByTestId('doc-thread-panel')).toBeNull()
+    fireEvent.click(screen.getByTestId('main-thread-peek'))
+    expect(screen.getAllByTestId('main-thread-message').map(m => m.getAttribute('data-who'))).toEqual(['you', 'conductor'])
+    const input = screen.getByTestId('main-thread-input')
+    fireEvent.change(input, { target: { value: 'what is left?' } })
+    await act(async () => { fireEvent.keyDown(input, { key: 'Enter' }) })
+    const message = (send.mock.calls.at(-1)![0] as { message: string }).message
+    expect(message.startsWith('[Doc ask main]\nwhat is left?\n\n---\nAbout the document as a whole')).toBe(true)
+    expect(screen.queryByTestId('doc-thread-panel')).toBeNull()
+    // Before the gateway echoes the send, the box shows it and that it is working.
+    expect(screen.getAllByTestId('main-thread-message').at(-1)?.textContent).toContain('what is left?')
+    expect(screen.getByTestId('main-thread-pending')).toBeTruthy()
+    fireEvent.click(screen.getByTestId('main-thread-collapse'))
+    expect(screen.getByTestId('main-thread-peek').textContent).toContain('Thinking')
+    expect(screen.getByTestId('main-thread-peek').querySelector('[data-testid="main-thread-spinner"]')).not.toBeNull()
+    // The scroll button leaves only the page's controls, and brings the box back.
+    fireEvent.click(screen.getByTestId('main-thread-toggle'))
+    expect(screen.queryByTestId('main-thread-input')).toBeNull()
+    expect(screen.getByTestId('doc-approval-mode')).toBeTruthy()
+    fireEvent.click(screen.getByTestId('main-thread-toggle'))
+    expect(screen.getByTestId('main-thread-input')).toBeTruthy()
     act(() => { store.dispatch(replaceMessages([])); store.dispatch(setActiveSlot(null)) })
   })
 
