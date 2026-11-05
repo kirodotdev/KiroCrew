@@ -627,6 +627,15 @@ def _stt_prereq_commands(provider: str = "local") -> list[str]:
     elif provider == "transcribe":
         needs_extra = not _transcribe_extra_importable()
         extra = "voice-aws"
+    elif provider == "codex":
+        from kiro_crew.stt import codex
+
+        # Not `availability().code`: that reports a missing `codex` binary
+        # first, which would hide the extra until the binary is installed.
+        # A host whose sandbox refuses Codex gets no install command at all:
+        # no package makes Codex runnable there.
+        needs_extra = not codex.sandbox_refuses() and not codex.extra_importable()
+        extra = "voice-codex"
     else:
         needs_extra = False
     # Suppressed where no pip channel into this interpreter exists — frozen build,

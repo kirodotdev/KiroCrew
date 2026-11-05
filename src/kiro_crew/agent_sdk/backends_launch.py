@@ -391,3 +391,12 @@ def launch_for(backend: str) -> SelfServedLaunch:
 # These classes keep the facade as their module: it is the path every caller
 # imports them from, so a pickled or logged reference names that path.
 SelfServedLaunch.__module__ = "kiro_crew.agent_sdk.backends"
+
+
+#: Why the codex CLI the codex-acp adapter runs could not be resolved: the
+#: ``reason`` values of ``kiro_crew.acp.client_spawn_env.CodexCliResolution``.
+#: Declared here so application code (dictation) can tell them apart through
+#: :mod:`kiro_crew.agent_sdk` without importing the ACP layer. Empty means found.
+CODEX_CLI_OVERRIDE_UNUSABLE = "override_unusable"
+CODEX_CLI_ADAPTER_MISSING = "adapter_missing"
+CODEX_CLI_UNRESOLVED = "cli_unresolved"

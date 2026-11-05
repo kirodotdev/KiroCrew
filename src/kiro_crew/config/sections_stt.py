@@ -53,10 +53,11 @@ STT_LANGUAGE_FALLBACK = "en-US"
 #: The recognisers a user can select. ``local`` runs whisper.cpp in-process,
 #: ``apple`` uses macOS 26+ on-device recognition, and ``transcribe`` sends audio
 #: to AWS Transcribe (billed, and gated on the AWS consent prompt). All three
-#: produce partial results, so streaming is not a per-provider capability.
+#: produce partial results. ``codex`` adapts Codex's experimental voice transport
+#: using an existing ChatGPT login and the optional ``voice-codex`` extra.
 #: ``off`` selects no recogniser; it is deliberately absent from
 #: ``stt_stream._STREAMING_PROVIDERS``, which grants by positive membership.
-_VALID_STT_PROVIDERS = (STT_PROVIDER_LOCAL, "apple", "transcribe", STT_PROVIDER_OFF)
+_VALID_STT_PROVIDERS = (STT_PROVIDER_LOCAL, "apple", "transcribe", "codex", STT_PROVIDER_OFF)
 
 
 def valid_stt_providers() -> tuple[str, ...]:
@@ -475,7 +476,9 @@ class SttConfig:
             "account (it downloads one model the first time you dictate), `apple` "
             "uses the on-device recogniser built into macOS 26 and later, and "
             "`transcribe` sends your audio to AWS Transcribe, which bills your AWS "
-            "account. `off` runs no recogniser at all, the same as turning speech "
+            "account. `codex` sends audio to OpenAI through an existing Codex "
+            "ChatGPT login (experimental; requires voice access and voice-codex). "
+            "`off` runs no recogniser at all, the same as turning speech "
             "input off.",
             enum=list(_VALID_STT_PROVIDERS),
         ),
