@@ -38,6 +38,15 @@ _MCWIDGET_RE = re.compile(r"<mcwidget\b[^>]*>[\s\S]*?(?:</mcwidget>|\Z)", re.IGN
 # Control-tag comment stripping lives in ``constants.strip_control_comments``
 # (grammar + recognizer split documented on ``constants._TRAILING_CONTROL_LINES_RE``);
 # this module deliberately has no local spelling to drift.
+# A scheduled run's transcript rows (``# Cron Run:`` / ``# Cron Job Result:``)
+# carry an invisible identity marker right under the header, written by
+# ``dashboard.cron_inject.run_marker`` (plus ``<!-- cron-ref -->`` on a repeated
+# prompt). It is an HTML comment so the tab hides it, but a plain-text preview
+# prints it. Anchored to the row's own header at the start of the text, so a
+# marker an assistant merely quotes elsewhere is left alone.
+_CRON_ROW_MARKER_RE = re.compile(
+    r"\A(\s*# Cron (?:Run|Job Result):[^\n]*\n\n)<!-- cron-run:[^\s>]+ -->(?:<!-- cron-ref -->)?"
+)
 # Inline code spans are swapped for ``\x00<n>\x00`` tokens while the link,
 # header and emphasis passes run, then put back, so ``__init__``, ``**kwargs``
 # and ``~~x~~`` inside backticks keep their markers. NUL renders as nothing, so
@@ -204,6 +213,7 @@ def strip_markdown_preview(text: str) -> str:
     cleans.
     """
     t = drop_format_chars(text).replace("\x00", "")
+    t = _CRON_ROW_MARKER_RE.sub(r"\1", t)
     t = _FENCE_RE.sub(_fence_placeholder, t)
     t = _MCWIDGET_RE.sub(" (widget) ", t)
     # Only RECOGNIZED control tags (keep-visible, heartbeat deliver
