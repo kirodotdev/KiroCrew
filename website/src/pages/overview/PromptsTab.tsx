@@ -498,7 +498,7 @@ export default function PromptsTab() {
   }
   const useInChatBtn = selected ? (
     <div className="relative">
-      <Btn onClick={() => setPickerOpen(!pickerOpen)}><MessageSquare className="lucide-inline" /> {i18nT('pages.overview.promptsTab.use_in_chat')}</Btn>
+      <Btn aria-expanded={pickerOpen} onClick={() => setPickerOpen(!pickerOpen)}><MessageSquare className="lucide-inline" /> {i18nT('pages.overview.promptsTab.use_in_chat')}</Btn>
       {pickerOpen && <SlotPicker prompt={selected} onClose={() => setPickerOpen(false)} />}
     </div>
   ) : null
