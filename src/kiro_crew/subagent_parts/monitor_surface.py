@@ -176,6 +176,7 @@ def _note_tool_dispatch(info: SubagentInfo, event: Any) -> None:
     finishes first hands the slot back to one still running instead of
     emptying it.
     """
+    server, tool_name = ToolCallState.identity_of(event)
     state = ToolCallState(
         title=event.title or "",
         command=event.tool_input or "",
@@ -187,14 +188,11 @@ def _note_tool_dispatch(info: SubagentInfo, event: Any) -> None:
         # dashboard dispatch loop's can.
         dispatch_parked_secs=0.0,
         is_shell=bool(getattr(event, "is_shell", False)),
-        tool_name=getattr(event, "tool_name", "") or "",
-        # Only a provenance-verified identity names the server, so a frame
-        # without one cannot select the trusted wait contract.
-        mcp_server_name=(
-            getattr(event, "mcp_server_name", "") or ""
-            if getattr(event, "mcp_identity_trusted", False) is True
-            else ""
-        ),
+        # Only a provenance-verified identity, or KAS's half-identity for a
+        # kirocrew-core call, names the server, so a frame without one cannot
+        # select the trusted wait contract.
+        mcp_server_name=server,
+        tool_name=tool_name,
     )
     # A native child's call (``sub_session_id`` set, from a permission
     # request) is judged so a stall is attributed to the child's command,
