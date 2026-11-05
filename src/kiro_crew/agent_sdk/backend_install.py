@@ -205,17 +205,17 @@ def _kas_bundle_route() -> bool:
     """Whether KAS runs Crew's own engine, not kiro-cli: ``agent.kas_bundle`` is on,
     or kiro-cli's relay cannot run on this host (``acp/kas_route.py``).
 
-    Read on every probe, never remembered here: the panel reads this verdict
-    live, and the probe cache's TTL is the one staleness this module already
-    accepts.
+    The shared route half, with no backend half on purpose: the KAS row describes
+    KAS whatever the default backend is, and the spec ``permissions`` gate guards
+    every backend's specs. Read on every probe, never remembered here: the panel
+    reads this verdict live, and the probe cache's TTL is the one staleness this
+    module already accepts.
     """
     from kiro_crew.agent_sdk import kas_bundle
     from kiro_crew.config import KiroCrewConfig
 
     try:
-        if KiroCrewConfig.load().agent.kas_bundle:
-            return True
-        return bool(kas_bundle.kas_route().bundle)
+        return kas_bundle.kas_spawn_takes_bundle(KiroCrewConfig.load().agent)
     except Exception:
         return False
 

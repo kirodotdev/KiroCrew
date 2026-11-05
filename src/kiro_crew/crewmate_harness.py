@@ -393,7 +393,5 @@ def models_route(config: Any, query: Any) -> tuple[str, bool] | None:
 
         # The route rule the spawn applies (``acp/kas_route.py``): the switch, or
         # the automatic bundle route when kiro-cli's relay cannot run here.
-        on_bundle = bool(getattr(config.agent, "kas_bundle", False)) or bool(
-            kas_bundle.kas_route().bundle
-        )
+        on_bundle = kas_bundle.kas_spawn_takes_bundle(config.agent)
     return backend, on_bundle
