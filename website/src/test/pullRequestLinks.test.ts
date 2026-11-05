@@ -22,6 +22,7 @@ import {
   sourceLinkKey,
   sourceProjectHost,
   sourceProjectPath,
+  forgeChipLabel,
   sourceSelection,
   withSourceSelection,
 } from '../utils/pullRequestLinks'
@@ -606,6 +607,31 @@ describe('parseSourceLinkUrl', () => {
     expect(parseSourceLinkUrl(mr)).toBeNull()
     expect(parseSourceLinkUrl(mr, ['gitlab.acme.internal']))
       .toMatchObject({ provider: 'gitlab', number: 7, repo: 'api', kind: 'change' })
+  })
+
+  it('accepts a self-managed GitLab whose allowlist entry carries a URL root', () => {
+    const mr = 'https://gitlab.acme.internal/gitlab/team/api/-/merge_requests/7'
+    expect(parseSourceLinkUrl(mr, ['gitlab.acme.internal/gitlab']))
+      .toMatchObject({ url: mr, provider: 'gitlab', number: 7, repo: 'api', kind: 'change' })
+  })
+
+  it('keeps the URL root out of the project path of a rooted GitLab link', () => {
+    const mr = 'https://gitlab.acme.internal/gitlab/team/api/-/merge_requests/7'
+    const link = parseSourceLinkUrl(mr, ['gitlab.acme.internal/gitlab'])!
+    expect(link.urlRoot).toBe('gitlab')
+    expect(sourceProjectPath(link)).toBe('team/api')
+    expect(forgeChipLabel(link)).toBe('team/api!7')
+  })
+
+  it('refuses a link outside the URL root and a group work item under it', () => {
+    const hosts = ['gitlab.acme.internal/gitlab']
+    expect(parseSourceLinkUrl('https://gitlab.acme.internal/other/team/api/-/merge_requests/7', hosts)).toBeNull()
+    expect(parseSourceLinkUrl('https://gitlab.acme.internal/gitlab/groups/team/-/work_items/12', hosts)).toBeNull()
+  })
+
+  it('leaves a bare-host entry without a URL root', () => {
+    const mr = 'https://gitlab.acme.internal/team/api/-/merge_requests/7'
+    expect(parseSourceLinkUrl(mr, ['gitlab.acme.internal'])).not.toHaveProperty('urlRoot')
   })
 })
 
