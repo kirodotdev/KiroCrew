@@ -9,7 +9,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
-const { meetingsApi, MeetingsApiError, safeMeetingId, NOTE_KEEPALIVE_MAX_BYTES } = await import('../apps/meetings/api')
+const { meetingsApi, MeetingsApiError, safeMeetingId, NOTE_KEEPALIVE_MAX_BYTES } = await import('./api')
 
 function response(status: number, body: unknown, { json = true } = {}): Response {
   const text = typeof body === 'string' ? body : JSON.stringify(body)

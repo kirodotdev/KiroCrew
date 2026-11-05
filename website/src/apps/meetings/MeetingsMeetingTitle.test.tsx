@@ -4,7 +4,7 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { render, screen, fireEvent, cleanup, waitFor, act } from '@testing-library/react'
 
-import MeetingTitle from '../apps/meetings/components/MeetingTitle'
+import MeetingTitle from './components/MeetingTitle'
 
 afterEach(cleanup)
 

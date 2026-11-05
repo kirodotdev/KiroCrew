@@ -5,9 +5,9 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { render, screen, cleanup, within } from '@testing-library/react'
 
-import AgentPillBar from '../apps/meetings/components/AgentPillBar'
-import type { AgentDef, MeetingStatus, Preset } from '../apps/meetings/api'
-import EN_CATALOG from '../i18n/locales/en.json'
+import AgentPillBar from './components/AgentPillBar'
+import type { AgentDef, MeetingStatus, Preset } from './api'
+import EN_CATALOG from '../../i18n/locales/en.json'
 
 const PB = EN_CATALOG.apps.meetings.pillBar
 

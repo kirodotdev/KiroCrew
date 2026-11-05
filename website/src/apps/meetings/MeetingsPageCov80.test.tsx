@@ -4,7 +4,7 @@ import userEvent from '@testing-library/user-event'
 import { Provider } from 'react-redux'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { store } from '../store'
+import { store } from '../../store'
 
 /**
  * The meetings LIST: three views behind one route (list / one meeting /
@@ -25,12 +25,12 @@ const apiMocks = vi.hoisted(() => ({
   deleteMeeting: vi.fn(),
 }))
 
-vi.mock('../apps/meetings/api', async importOriginal => {
-  const actual = await importOriginal<typeof import('../apps/meetings/api')>()
+vi.mock('./api', async importOriginal => {
+  const actual = await importOriginal<typeof import('./api')>()
   return { ...actual, meetingsApi: apiMocks }
 })
 
-vi.mock('../apps/meetings/MeetingView', () => ({
+vi.mock('./MeetingView', () => ({
   default: ({ eventId, fallbackTitle, onBack, onOpenSettings }: {
     eventId: string
     fallbackTitle?: string
@@ -46,7 +46,7 @@ vi.mock('../apps/meetings/MeetingView', () => ({
   ),
 }))
 
-vi.mock('../apps/meetings/SettingsView', () => ({
+vi.mock('./SettingsView', () => ({
   default: ({ onBack }: { onBack: () => void }) => (
     <div>
       <span data-testid="settings">zzz-settings</span>
@@ -55,7 +55,7 @@ vi.mock('../apps/meetings/SettingsView', () => ({
   ),
 }))
 
-import MeetingsPage from '../apps/meetings/MeetingsPage'
+import MeetingsPage from './MeetingsPage'
 
 function renderPage() {
   const queryClient = new QueryClient({

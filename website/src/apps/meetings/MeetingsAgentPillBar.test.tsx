@@ -9,9 +9,9 @@ import { useState } from 'react'
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { render, screen, fireEvent, cleanup } from '@testing-library/react'
 
-import AgentPillBar from '../apps/meetings/components/AgentPillBar'
-import { menuItemsOf } from '../hooks/useMenuKeyboard'
-import type { AgentDef, Attachment, MeetingStatus, Preset } from '../apps/meetings/api'
+import AgentPillBar from './components/AgentPillBar'
+import { menuItemsOf } from '../../hooks/useMenuKeyboard'
+import type { AgentDef, Attachment, MeetingStatus, Preset } from './api'
 
 const AGENTS: AgentDef[] = [
   { id: 'note-taker', name: 'Note Taker', widget_type: 'markdown' },

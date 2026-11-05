@@ -10,9 +10,9 @@ import { describe, it, expect } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import { readFileSync } from 'node:fs'
 
-import TranslationSidebar from '../apps/meetings/components/TranslationSidebar'
-import type { TranslationLine } from '../apps/meetings/api'
-import EN_CATALOG from '../i18n/locales/en.json'
+import TranslationSidebar from './components/TranslationSidebar'
+import type { TranslationLine } from './api'
+import EN_CATALOG from '../../i18n/locales/en.json'
 
 const SessionSource = readFileSync('src/apps/meetings/hooks/useMeetingSession.ts', 'utf-8')
 const ViewSource = readFileSync('src/apps/meetings/MeetingView.tsx', 'utf-8')
@@ -237,7 +237,7 @@ describe('MeetingView wiring', () => {
   it('releases the sidebar width when narrow, like TaskSidebar', () => {
     // A fixed 340px column beside the meeting clips inside a 320px viewport; the
     // panel stacks with a bounded height below `lg`, the shape TaskSidebar and
-    // appSplitsNarrowA already pin for this app.
+    // meetingsSplitsNarrow already pin for this app.
     const { container } = renderPanel()
     const aside = container.querySelector('aside')!
     expect(aside.className).toMatch(/\bw-full\b/)

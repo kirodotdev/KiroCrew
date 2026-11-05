@@ -2,9 +2,9 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { VirtuosoMockContext } from 'react-virtuoso'
 
-import MeetingWorkspace from '../apps/meetings/components/MeetingWorkspace'
-import TranscriptPanel from '../apps/meetings/components/TranscriptPanel'
-import type { TranscriptSegment } from '../apps/meetings/api'
+import MeetingWorkspace from './components/MeetingWorkspace'
+import TranscriptPanel from './components/TranscriptPanel'
+import type { TranscriptSegment } from './api'
 
 const SEGMENTS: TranscriptSegment[] = [
   {
