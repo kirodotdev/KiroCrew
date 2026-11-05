@@ -15909,7 +15909,7 @@
       "cleanup_failed": "ক্লিনআপ ব্যর্থ",
       "coming_soon_this_app_is_not_yet_available_in_app": "শীঘ্রই আসছে — এই অ্যাপটি এখনও অ্যাপসে উপলব্ধ নয়। পরবর্তী আপডেটের পরে আবার দেখুন।",
       "failed_to_load_app_info": "অ্যাপের তথ্য লোড করা যায়নি",
-      "has_moved_to_a_standalone_app": "একটি স্বতন্ত্র অ্যাপে স্থানান্তরিত হয়েছে",
+      "name_has_moved_to_a_standalone_app": "{{name}} একটি স্বতন্ত্র অ্যাপে স্থানান্তরিত হয়েছে",
       "install_from_apps": "অ্যাপস থেকে ইনস্টল করুন",
       "install_the_standalone_version_to_continue_using": "এই ফিচারটি ব্যবহার চালিয়ে যেতে স্বতন্ত্র সংস্করণটি ইনস্টল করুন।",
       "migration_complete": "মাইগ্রেশন সম্পূর্ণ",

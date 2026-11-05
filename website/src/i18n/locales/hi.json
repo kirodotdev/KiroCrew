@@ -15909,7 +15909,7 @@
       "cleanup_failed": "सफ़ाई विफल",
       "coming_soon_this_app_is_not_yet_available_in_app": "जल्द आ रहा है — यह ऐप अभी ऐप्स में उपलब्ध नहीं है। अगले अपडेट के बाद फिर देखें।",
       "failed_to_load_app_info": "ऐप जानकारी लोड नहीं हो सकी",
-      "has_moved_to_a_standalone_app": "एक स्टैंडअलोन ऐप में चला गया है",
+      "name_has_moved_to_a_standalone_app": "{{name}} एक स्टैंडअलोन ऐप में चला गया है",
       "install_from_apps": "ऐप्स से इंस्टॉल करें",
       "install_the_standalone_version_to_continue_using": "इस सुविधा का उपयोग जारी रखने के लिए स्टैंडअलोन संस्करण इंस्टॉल करें।",
       "migration_complete": "माइग्रेशन पूरा हुआ",
