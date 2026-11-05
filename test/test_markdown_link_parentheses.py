@@ -31,6 +31,7 @@ from markdown_link_parentheses_helpers import (
     _screen_readings,
     _slack,
     _slack_reader_sees,
+    _url_tag,
 )
 
 from conftest import assert_rejected_without_backtracking
@@ -296,7 +297,7 @@ class TestTheWholeTextFallbackKeepsRemovedRedactionTags:
 
     def test_the_display_screen_keeps_a_suspicious_url_tag_hidden_by_a_link(self):
         payload = f"AKIA[]({self._URL}){_KEY[4:]}"
-        suspicious_url_tag = _default_redactor(self._URL)
+        suspicious_url_tag = _url_tag(self._URL)
 
         safe, redacted = redact_for_display(payload, _default_redactor)
 
@@ -308,7 +309,7 @@ class TestTheWholeTextFallbackKeepsRemovedRedactionTags:
 
     def test_discord_keeps_a_suspicious_url_tag_hidden_by_a_link(self):
         payload = f"AKIA[]({self._URL}){_KEY[4:]}"
-        suspicious_url_tag = _default_redactor(self._URL)
+        suspicious_url_tag = _url_tag(self._URL)
 
         delivered = discord_redact_transformed(payload)
 

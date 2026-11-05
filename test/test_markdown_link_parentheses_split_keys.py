@@ -19,6 +19,7 @@ from markdown_link_parentheses_helpers import (
     _nested_link,
     _slack,
     _slack_reader_sees,
+    _url_tag,
 )
 
 from kiro_crew.discord.renderer import _redact_transformed as discord_redact_transformed
@@ -370,7 +371,7 @@ class TestOnlyRedactorTagsStayWhole:
         [
             *CREDENTIAL_REDACTION_TAGS,
             f"{EXFILTRATION_REDACTION_TAG_PREFIX}api.example.com]",
-            *[_default_redactor(url) for url in IPV6_URLS],
+            *[_url_tag(url) for url in IPV6_URLS],
         ],
     )
     def test_every_real_redactor_tag_matches(self, tag):
@@ -378,15 +379,16 @@ class TestOnlyRedactorTagsStayWhole:
 
     @pytest.mark.parametrize("url", IPV6_URLS)
     def test_an_ipv6_redactor_tag_survives_last_resort_paths(self, url):
-        tag = _default_redactor(url)
-
+        tag = _url_tag(url)
         assert _REDACTION_TAG.fullmatch(tag) is not None
-        for safe in [
-            display_safety.redacted_without_markup(tag, _default_redactor),
-            _flattened_for_any_cut(tag, _default_redactor),
-        ]:
-            assert safe == tag
-            assert count_redaction_tags(safe) == (0, 1)
+        text = _default_redactor(url)
+        safe = display_safety.redacted_without_markup(text, _default_redactor)
+        assert safe == text
+        assert count_redaction_tags(safe) == (0, 1)
+        # The last resort drops every whitespace run outside a tag, the reason's too.
+        flat = _flattened_for_any_cut(text, _default_redactor)
+        assert flat.startswith(tag)
+        assert count_redaction_tags(flat) == (0, 1)
 
     @pytest.mark.parametrize("unsafe", ["#", " ", "*", "_", "`", "|", "<", ">", "~"])
     def test_a_suspicious_url_lookalike_with_markup_does_not_match(self, unsafe):

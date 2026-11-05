@@ -922,12 +922,12 @@ class TestRestSurface:
     async def test_an_at_cap_banner_redaction_shrinks_is_still_accepted(self, monkeypatch) -> None:
         """Redaction that does NOT grow the value stays accepted.
 
-        The exfiltration placeholder is 39 characters shorter than the URL it replaces.
+        The exfiltration placeholder is 54 characters shorter than the URL it replaces.
         """
         from aiohttp.test_utils import TestClient, TestServer
 
-        # 48-char padded base64: a run of 40+ on its own, not via ``data=``.
-        url = "https://a.co/upload?data=aGVsbG8gd29ybGQgdGhpcyBpcyBiYXNlNjQgcGF5bG9hZA=="
+        # 105-char base64 value: a run of 40+ on its own, not via ``data=``.
+        url = "https://a.co/upload?data=" + "aGVsbG8gd29ybGQgdGhpcyBpcyBiYXNlNjQ" * 3
         at_cap_with_url = "y" * (MAX_BANNER_CHARS - len(url)) + url
         assert len(at_cap_with_url) == MAX_BANNER_CHARS, "fixture is not at the cap"
         svc = self._svc()

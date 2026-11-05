@@ -47,6 +47,7 @@ from kiro_crew.security import (
     redact_and_truncate,
 )
 from kiro_crew.security.credential_sources import credential_records
+from kiro_crew.security.exfil import EXFIL_RULE_REASON_SUFFIXES
 from kiro_crew.security.redaction import redact_credentials_with_records
 from kiro_crew.sel import SecurityEvent
 
@@ -563,8 +564,20 @@ def _whole_text_refusal(
     return ""
 
 
+def _without_reasons(text: str) -> str:
+    """``text`` without the fixed reason after each blocked-link tag, matched whole.
+
+    A delta cut can trip a different rule than the whole text, so the two copies
+    can carry different reason words, and those words are table text, never reply text.
+    """
+    for reason in EXFIL_RULE_REASON_SUFFIXES:
+        text = text.replace("]" + reason, "]")
+    return text
+
+
 def _kept_removed_values(saved: str, per_delta: str, removed: Iterable[str]) -> list[str]:
     """The removed values ``saved`` holds more often than ``per_delta`` does."""
+    saved, per_delta = _without_reasons(saved), _without_reasons(per_delta)
     return [v for v in removed if saved.count(v) > per_delta.count(v)]
 
 
@@ -584,8 +597,9 @@ _LINK_PLACEHOLDER_RE = re.compile(
 def _blank_tags(text: str) -> str:
     """``text`` with every placeholder set off as its own run: the credential tag
     blanked, a blocked-link placeholder replaced by its domain alone (the reader
-    sees the domain). Text glued to a placeholder becomes a run of its own."""
-    text = text.replace(REDACTED_CREDENTIAL_TAG, " ")
+    sees the domain). Text glued to a placeholder becomes a run of its own. The
+    fixed reason after a tag is dropped (:func:`_without_reasons`)."""
+    text = _without_reasons(text).replace(REDACTED_CREDENTIAL_TAG, " ")
     return _LINK_PLACEHOLDER_RE.sub(lambda m: f" {m.group(1)} ", text)
 
 
