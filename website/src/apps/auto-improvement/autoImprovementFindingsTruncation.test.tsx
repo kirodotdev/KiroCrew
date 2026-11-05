@@ -13,12 +13,13 @@
  * `slice(0, FINDINGS_SHOWN)` would still pass if the notice were deleted.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
 import { Provider } from 'react-redux'
 
 import { createTestStore } from '../../test/helpers'
+import { confirmAction } from '../../test/confirmAction'
 import AutoImprovementPage from './AutoImprovementPage'
 
 /** `n` ledger rows in a status that renders but draws no per-row PR query. */
@@ -144,11 +145,12 @@ describe('auto-improvement commit — failures are visible, publishes are confir
   })
 
   it('asks for confirmation before publishing, and does nothing when declined', async () => {
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    const confirmSpy = vi.spyOn(window, 'confirm')
     const { container } = mountFiled({ status: 200, body: { ok: true } })
     const btn = await screen.findByTitle(/commit/i)
-    btn.click()
-    expect(confirmSpy).toHaveBeenCalled()
+    fireEvent.click(btn)
+    await confirmAction('Cancel')
+    expect(confirmSpy).not.toHaveBeenCalled()
     // Declining must not POST. The fetch mock records every call, so a publish would show up.
     const posts = (globalThis.fetch as unknown as { mock: { calls: unknown[][] } }).mock.calls
       .filter((c) => (c[1] as RequestInit | undefined)?.method === 'POST')
@@ -157,13 +159,13 @@ describe('auto-improvement commit — failures are visible, publishes are confir
   })
 
   it('renders the backend reason when the commit is refused', async () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
     mountFiled({
       status: 400,
       body: { code: 'request_failed', error: 'branch is protected by push policy' },
     })
     const btn = await screen.findByTitle(/commit/i)
-    btn.click()
+    fireEvent.click(btn)
+    await confirmAction('Commit to the branch')
     // The whole point: the operator learns WHY. Before the fix this rendered nothing at all.
     expect(await screen.findByText(/branch is protected by push policy/)).toBeTruthy()
   })
