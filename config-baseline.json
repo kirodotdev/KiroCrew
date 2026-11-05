@@ -2553,6 +2553,8 @@
         "episodic_max_count": 10000,
         "decay_rates": {},
         "semantic_keys": [],
+        "session_affinity": 0.0,
+        "recency_boost": 0.0,
         "history_idle_hours": 3.0,
         "history_max_days": 365,
         "backup_enabled": true,
@@ -2951,6 +2953,34 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": null
+    },
+    {
+      "path": "memory.session_affinity",
+      "kind": "core",
+      "type": "number",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "V2 Session Affinity",
+      "help": "V2 only. Additive boost for memories from the current conversation in recall ranking (0 = disabled; 0.10 = recommended). When a query is ambiguous, same-session episodes score higher than identically relevant episodes from other sessions. The boost is a flat lift added after the recency term, only to entries already admitted on relevance, so it can rank a same-session entry above one from another session that scores up to 0.10 higher. Clamped to 0..0.10.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 0.0
+    },
+    {
+      "path": "memory.recency_boost",
+      "kind": "core",
+      "type": "number",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "V2 Recency Boost",
+      "help": "V2 only. Maximum multiplicative boost for recent memories in recall ranking, falling off hyperbolically: half at 7 days, a third at 14 days (0 = disabled, preserving the default age-neutral ranking; 0.15 = a 15% boost for today's entries). A recent entry can outrank an older one that scores up to (1 + boost) times higher. Clamped to 0..1.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 0.0
     },
     {
       "path": "memory.history_idle_hours",

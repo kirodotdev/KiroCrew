@@ -95,8 +95,40 @@ def relevance_evidence(query_terms: Iterable[str], text: str, cosine: float | No
     }
 
 
-def rank_score(evidence: dict, *, importance: float) -> float:
-    """Rank member memory by relevance and importance, independently of age."""
+SESSION_AFFINITY_BOOST: Final = 0.10
+# Same hyperbolic shape as history_search.py, but 7 days, not 30: that boost ranks
+# whole past sessions, while this one ranks individual memories within a recall.
+RECENCY_HALF_WEIGHT_DAYS: Final = 7.0
+
+
+def rank_score(
+    evidence: dict,
+    *,
+    importance: float,
+    same_session: bool = False,
+    session_affinity: float = 0.0,
+    recency_boost: float = 0.0,
+    age_days: float | None = None,
+) -> float:
+    """Rank member memory by relevance, importance, and optional boosts.
+
+    Session affinity (opt-in via config ``memory.session_affinity``): when
+    ``same_session`` is True the entry originated in the current conversation,
+    so it receives a small additive boost capped at ``SESSION_AFFINITY_BOOST``.
+    This makes "rerun the report" in a trading session prefer the
+    trading-report memory over an identically-worded project-status memory.
+    The boost is a flat lift, not a tie-break: it can rank a same-session
+    entry above one from another session that scores up to the boost higher.
+    Disabled by default (``session_affinity=0``).
+
+    Recency (opt-in via config ``memory.recency_boost``): a bounded
+    multiplicative boost (max ``recency_boost``, falling off hyperbolically:
+    half at ``RECENCY_HALF_WEIGHT_DAYS``, a third at twice that). Disabled by default (``recency_boost=0``),
+    respecting the deliberate age-neutral design. Enable it for workflows
+    where recent context matters more than historical accuracy. When enabled,
+    a recent entry can outrank an older one that scores up to
+    ``1 + recency_boost`` times higher.
+    """
     cosine = max(0.0, evidence["cosine"] or 0.0)
     lexical = evidence["query_coverage"]
     # A row awaiting embedding still competes through the lexical channel, but
@@ -104,7 +136,17 @@ def rank_score(evidence: dict, *, importance: float) -> float:
     # the same weights to both populations prevents missing-vector state alone
     # from promoting a weaker lexical match over stronger cosine evidence.
     relevance = 0.7 * cosine + 0.3 * lexical
-    return round(relevance * (0.85 + 0.15 * importance), 4)
+    base = relevance * (0.85 + 0.15 * importance)
+    # Recency: opt-in multiplicative boost, bounded to (1.0, 1.0 + recency_boost].
+    # Applied to relevance*importance BEFORE affinity so the setting cannot
+    # amplify the affinity lift (the Opus 5.5 review caught the original order).
+    if recency_boost > 0 and age_days is not None and age_days >= 0:
+        base *= 1.0 + recency_boost / (1.0 + age_days / RECENCY_HALF_WEIGHT_DAYS)
+    # Session affinity: flat additive AFTER recency so it is truly independent
+    # of the recency knob — it adds exactly the configured amount regardless.
+    if same_session and session_affinity > 0:
+        base += min(session_affinity, SESSION_AFFINITY_BOOST)
+    return round(base, 4)
 
 
 def superseded_value_is_asserted(text: str, key: str, old_value: str) -> bool:

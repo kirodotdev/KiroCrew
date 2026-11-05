@@ -2203,8 +2203,8 @@ consolidation source. V2 deletion requests become proposals, and learned lessons
 keep their consolidation source. Owner correction and revision controls remain
 available in both versions.
 
-V2 uses `memory_v2.py` for admission, task-term evidence and age-neutral
-ranking. Its cosine cuts are **0.62 for short fragments and 0.57 above 300
+V2 uses `memory_v2.py` for admission, task-term evidence and ranking, which
+is age-neutral unless an operator opts in to the recency term below. Its cosine cuts are **0.62 for short fragments and 0.57 above 300
 characters**, the precision-first points in the committed real-model experiment
 above. That experiment measured P 1.000 / R 0.920 at each cut; it does not prove
 those figures for other models or real conversations. These are provisional,
@@ -2227,8 +2227,18 @@ escapes do not hide Chinese facts or consume their budget as escape sequences.
 Ranking combines cosine and query coverage with weights of 0.7 and 0.3,
 and modest importance weighting. A missing vector contributes zero cosine;
 its lexical contribution still has weight 0.3. Age never
-changes admission or score, including when the shared V1 decay configuration
-is nonzero. V2 does not automatically evict existing episodes at the V1 capacity
+changes admission, including when the shared V1 decay configuration is
+nonzero. Two opt-in terms can change the score of rows that were already
+admitted on evidence alone (`episodic_search.py` admits before scoring):
+`memory.recency_boost` (default 0, clamped to 0..1) multiplies the score by
+`1 + boost / (1 + age_days / 7)`, so a recent row can outrank an older one that
+scores up to `1 + boost` times higher; `memory.session_affinity` (default 0,
+clamped to 0..0.10) then adds a flat lift to episodes whose `conversation_id`
+matches the `memory_recall` caller's session key, so a same-session row can
+outrank one that scores up to that much higher. Episodes get their
+`conversation_id` from history consolidation, so the lift reaches only
+stretches of a session that were already consolidated. With both at 0 the
+score is the evidence-and-importance formula above, unchanged. V2 does not automatically evict existing episodes at the V1 capacity
 threshold; writes and explicit copies retain their content. Persisted count can
 grow, while result limits, MMR pools and recall context remain bounded. These
 weights are explicit product policies,

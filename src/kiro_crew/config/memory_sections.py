@@ -267,6 +267,31 @@ class MemoryConfig:
         default_factory=list,
         metadata=_meta("Semantic Keys", "Keys to index for semantic search."),
     )
+    session_affinity: float = field(
+        default=0.0,
+        metadata=_meta(
+            "V2 Session Affinity",
+            "V2 only. Additive boost for memories from the current conversation "
+            "in recall ranking (0 = disabled; 0.10 = recommended). When a query "
+            "is ambiguous, same-session episodes score higher than identically "
+            "relevant episodes from other sessions. The boost is a flat lift added "
+            "after the recency term, only to entries already admitted on relevance, "
+            "so it can rank a same-session entry above one from another session "
+            "that scores up to 0.10 higher. Clamped to 0..0.10.",
+        ),
+    )
+    recency_boost: float = field(
+        default=0.0,
+        metadata=_meta(
+            "V2 Recency Boost",
+            "V2 only. Maximum multiplicative boost for recent memories in recall "
+            "ranking, falling off hyperbolically: half at 7 days, a third at 14 "
+            "days (0 = disabled, preserving the default "
+            "age-neutral ranking; 0.15 = a 15% boost for today's entries). A recent "
+            "entry can outrank an older one that scores up to (1 + boost) times "
+            "higher. Clamped to 0..1.",
+        ),
+    )
     history_idle_hours: float = field(
         default=3.0,
         metadata=_meta(
