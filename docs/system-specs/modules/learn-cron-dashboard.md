@@ -5104,8 +5104,12 @@ Two layers close that window:
 Accordingly, a status-check failure for a user who has completed setup leaves the
 dashboard mounted and fully usable with **no banner at all** — an unreachable
 status check is not evidence the CLI is broken, and the turn reports the truth
-either way. A genuine first run — nothing remembered, no established home — still
-gets the full setup gate, and `initial_setup_complete` short-circuits ahead of the
+either way. A check refused because this browser's dashboard sign-in lapsed (403
+`X-Auth-Required`, not a proxy's challenge) is not a setup failure either: with
+nothing remembered the gate shows `SessionSignInRequired` ("Sign in again to
+continue") and no retry button, since the session-expired banner is the remedy
+and its token exchange refetches the check. A genuine first run — nothing
+remembered, no established home — still gets the full setup gate, and `initial_setup_complete` short-circuits ahead of the
 non-owner branch so an established non-owner is never shown the owner-restore
 screen either.
 
