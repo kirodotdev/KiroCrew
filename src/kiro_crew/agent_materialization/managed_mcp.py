@@ -148,9 +148,9 @@ _MANAGED_MCP_ENTRY_ITEM_TYPES: dict[str, type] = {
 # Delegating rather than restating is the point. This function exists so the
 # ownership rules live in one place: hand-synced copies drift, a local frozenset
 # of reserved NAMES would be a third copy of a rule env.py already owns, and a
-# name list fails open for the next KIROCREW_ variable somebody adds -- one
-# reachable case is KIROCREW_CLI, which mcp_cron._caller_is_cli() reads as
-# "skip per-session ownership entirely".
+# name list fails open for the next KIROCREW_ variable somebody adds -- and
+# that namespace carries caller identity: mcp_core._resolve_session_key_strict()
+# trusts KIROCREW_SESSION_KEY as a source only the gateway writes.
 # env.py states the reviewable property instead: a config cannot author our
 # namespace. KIROCREW_HOME is stripped by that same namespace rule and then
 # re-pinned below to the gateway's actual override, so ours is the only value
