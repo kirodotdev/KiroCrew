@@ -90,6 +90,7 @@ from kiro_crew.acp.claude_mcp_names import claude_mcp_tool_name
 from kiro_crew.acp.mcp_session_report import sanitize_sink_text
 from kiro_crew.acp.session_label import SESSION_LABEL_MARKER
 from kiro_crew.acp.session_mcp_crewmate import _crewmate_worker_spec
+from kiro_crew.acp.session_mcp_env_refs import expand_entry_env
 from kiro_crew.acp.session_mcp_settings_read import (  # noqa: F401 -- re-exported
     _NATIVE_NAMED_PATH_CHARS,
     _UNREADABLE_CHURN,
@@ -1318,7 +1319,8 @@ def session_mcp_servers(
 
     out: list[dict[str, Any]] = []
     for name in sorted(servers):
-        element = acp_server_element(name, servers[name])
+        # The harness starts the element as written; kiro-cli parity (session_mcp_env_refs).
+        element = acp_server_element(name, expand_entry_env(name, servers[name]))
         if element is not None:
             out.append(element)
     return out
