@@ -361,12 +361,10 @@ def _materialise_slot_from_history(
     # synchronous — no ``await`` inside — so the process-global suspend counter is
     # never held across a yield (holding it across the hydrate loop's yields would
     # swallow every other slot mutation on the gateway for the duration).
-    # Rollback-protected region covers creation, the construction mark, AND the
-    # ``suspend_slots_push`` block exit: that exit flushes the deferred
-    # ``push_slots_update()``, which can raise on a pre-existing poisoned slot
-    # (a non-serializable field) BEFORE hydration begins. If any of it raises,
-    # the except path releases the construction count and drops the slot, so a
-    # failed materialisation never leaks a hidden-but-registered slot that
+    # Rollback-protected region covers creation, the construction mark, the
+    # ``suspend_slots_push`` block exit and the hydration below. If any of it
+    # raises, the except path releases the construction count and drops the
+    # slot, so a failed materialisation never leaks a hidden-but-registered slot that
     # consumes capacity for the process lifetime. ``slot`` may be unbound if
     # ``get_or_create_slot`` itself raised (e.g. the under-construction create
     # guard), so the rollback is conditional on it existing.
@@ -407,10 +405,10 @@ def _materialise_slot_from_history(
             # once when the session is genuinely ready (for import, after Layer B is
             # joined), and the first frame any client sees shows a hydrated session.
             state.begin_slot_construction(slot.key)
-        # The whole fallible body (the block above's exit flush, plus redaction
-        # over up to the transfer bounds of peer content and metadata application)
-        # runs under this try: a raise would otherwise leak the reservation
-        # permanently and inflate the live-slot cap for the process lifetime.
+        # The whole fallible body (redaction over up to the transfer bounds of
+        # peer content and metadata application) runs under this try: a raise
+        # would otherwise leak the reservation permanently and inflate the
+        # live-slot cap for the process lifetime.
         _hydrate_slot_from_history(
             state,
             slot,
@@ -1862,7 +1860,9 @@ async def _resume_slot_from_history_noted(
     # the first frame any client sees, and it shows a fully hydrated session.
     state.end_slot_construction(slot.key)
     _sync_dashboard_slots(state)
-    state.push_slots_update()
+    # Committed: the block's exit logs a failing broadcast instead of 500ing it.
+    with state.suspend_slots_push():
+        state.push_slots_update()
     if rebind_manager:
         from kiro_crew.dashboard import session_managers
 
