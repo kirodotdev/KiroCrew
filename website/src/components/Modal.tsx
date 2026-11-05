@@ -51,6 +51,8 @@ interface ModalProps {
    *  mid-write unmounts the modal, and a rejection settling after that has
    *  nowhere to render. The caller keeps its own footer Cancel in step. */
   dismissDisabled?: boolean
+  /** Allows callers to retain content until its exit animation finishes. */
+  onExitComplete?: () => void
   /** Remove this dialog from focus and pointer input while its own nested
    *  portaled dialog is the active layer. Set it for as long as this modal
    *  has a dialog of its OWN open above it that is portaled outside its panel
@@ -207,7 +209,7 @@ function ModalDialog({ onClose, title, ariaLabel, footer, headerActions, maxWidt
   return trustRoot ? <GuideTrustRootProvider>{dialog}</GuideTrustRootProvider> : dialog
 }
 
-export default function Modal({ open, onClose, maxWidth = 640, guardAccidentalDismiss = false, dismissDisabled = false, layer = 'dialog', ...rest }: ModalProps) {
+export default function Modal({ open, onClose, onExitComplete, maxWidth = 640, guardAccidentalDismiss = false, dismissDisabled = false, layer = 'dialog', ...rest }: ModalProps) {
   const top = layer === 'top'
   /** Backdrop + Escape only. Suppressed while the caller guards unsaved input
    *  and while every dismissal is refused. */
@@ -244,7 +246,7 @@ export default function Modal({ open, onClose, maxWidth = 640, guardAccidentalDi
   // ancestor's clip-path, transform, or filter, and modals can mount inside
   // those shells.
   return <OverlayPortal>
-    <AnimatePresence>
+    <AnimatePresence onExitComplete={onExitComplete}>
       {open && (
         <>
           <motion.div

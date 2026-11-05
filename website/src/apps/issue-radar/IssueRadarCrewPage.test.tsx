@@ -21,10 +21,11 @@
  * two states.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { fireEvent, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 
-import { renderWithProviders } from '../../test/helpers'
+import { deferred, renderWithProviders } from '../../test/helpers'
+import { confirmAction } from '../../test/confirmAction'
 import { i18next } from '../../i18n'
 
 const api = {
@@ -539,6 +540,40 @@ describe('CrewPageView — pause', () => {
 })
 
 describe('CrewPageView — retire', () => {
+  it.each(['loading', 'error', 'missing crew'] as const)(
+    'keeps a pending retirement answerable through the %s branch', async (branch) => {
+      api.retireCrew.mockResolvedValue({ crew: crew({ retired_at: ago(0) }) })
+      const { rerender } = renderPage()
+      fireEvent.click(await screen.findByTestId('crew-retire'))
+      const originalDialog = await screen.findByRole('dialog')
+      expect(originalDialog).toHaveTextContent(copy('retire_confirm_title', { name: 'Andromeda' }))
+
+      const nextDetail = deferred<ReturnType<typeof payload>>()
+      api.crew.mockReturnValue(nextDetail.promise)
+      rerender(<CrewPageView crewId="crew-bootes" />)
+      await screen.findByTestId('crew-page-loading')
+      if (branch === 'error') {
+        await act(async () => nextDetail.reject(new Error('crew read failed')))
+        await screen.findByTestId('crew-page-error')
+      } else if (branch === 'missing crew') {
+        await act(async () => nextDetail.resolve(payload({ crew: null })))
+        await screen.findByTestId('crew-page-error')
+      }
+
+      const dialog = await screen.findByRole('dialog')
+      expect(dialog).toHaveTextContent(copy('retire_confirm_title', { name: 'Andromeda' }))
+      expect(api.retireCrew).not.toHaveBeenCalled()
+      await confirmAction(copy('retire'))
+      await waitFor(() => expect(api.retireCrew).toHaveBeenCalledExactlyOnceWith(
+        { owner: 'o', repo: 'r' }, 'crew-andromeda',
+      ))
+      if (branch === 'loading') {
+        await act(async () => nextDetail.resolve(payload({ crew: crew({ id: 'crew-bootes', name: 'Bootes' }) })))
+        await screen.findByTestId('crew-name')
+      }
+    },
+  )
+
   it('retires this crew in this repo only after the confirmation, then refetches the roster', async () => {
     api.retireCrew.mockResolvedValue({ crew: crew({ retired_at: ago(0) }) })
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
@@ -641,7 +676,7 @@ describe('CrewPageView — retire', () => {
     })
     const dialog = await screen.findByRole('dialog')
     expect(dialog).toHaveTextContent(copy('retire_confirm_title', { name: 'Andromeda' }))
-    await user.click(within(dialog).getByRole('button', { name: copy('retire') }))
+    await confirmAction(copy('retire'))
 
     await waitFor(() => {
       expect(api.retireCrew).toHaveBeenCalledTimes(1)
