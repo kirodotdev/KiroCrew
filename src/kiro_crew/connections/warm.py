@@ -993,6 +993,12 @@ class _WarmMintRuntime:
                 work_dir=work_dir,
                 agent=_WARM_BASE_AGENT,
                 sandbox_mode="auto",
+                # The generation tree sits in the protected ``run/`` dir, which the
+                # skill projection's spec reader refuses, so a projected process
+                # would hide every mint mode but the base one from ``availableModes``
+                # and the activation would refuse ``_WARM_ALL_AGENT`` as missing.
+                # The mint specs carry no skills, so there is nothing to project.
+                native_skill_projection=False,
             )
             # Attach before spawn so a cancelled/failed spawn still carries the only path its
             # cleanup may remove. The marker remains provisional until spawn returns a PID.
@@ -1453,11 +1459,16 @@ async def _warm_activate() -> _WarmMintResult | None:
                 "falling back to the cold path" if last else "respawning it",
             )
         except Exception as exc:  # noqa: BLE001 — the process lives; degrade to cold
+            # The message, not only the class, for the reason the spawn warning gives:
+            # an ``AcpRuntimeError`` here names the refused mode and its remedy, and the
+            # cold path that follows hides the failure.
             logger.warning(
-                "Shared mint activation failed on a live process (%s); "
+                "Shared mint activation failed on a live process (%s: %s); "
                 "falling back to the cold path",
                 type(exc).__name__,
+                exc,
             )
+            logger.debug("Shared mint activation failed", exc_info=True)
             return None
     return None
 
