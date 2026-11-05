@@ -582,6 +582,12 @@ build_backend() {
     fi
   fi
 
+  # The Feishu channel SDK. Settings offers no install command for this bundle,
+  # and every app update replaces the whole bundle, so it ships here or not at all.
+  env PYTHONNOUSERSITE=1 PYTHONPATH= KIROCREW_SKIP_FRONTEND=1 \
+    "$out/bin/python3.12" -m pip install --prefer-binary \
+    --no-warn-script-location --disable-pip-version-check "$ROOT[feishu]"
+
   # Stage the dashboard dist into the package's static dir.
   sp="$out/lib/python3.12/site-packages"
   install_desktop_decoder "$out/bin/python3.12" "$sp" "$want_arch"
@@ -793,6 +799,11 @@ build_backend_windows() {
     --only-binary pywhispercpp \
     --no-warn-script-location --disable-pip-version-check \
     "kirocrew[voice] @ $root_uri"
+  # The Feishu channel SDK, for the same reason as in build_backend.
+  env PYTHONNOUSERSITE=1 PYTHONPATH= KIROCREW_SKIP_FRONTEND=1 \
+    "$out/python.exe" -m pip install --prefer-binary \
+    --no-warn-script-location --disable-pip-version-check \
+    "kirocrew[feishu] @ $root_uri"
 
   sp="$out/Lib/site-packages"
   install_desktop_decoder "$out/python.exe" "$sp" ""
@@ -864,11 +875,13 @@ build_backend_windows() {
   # median 12.5 s on a cold file cache. Both hash modes ignore mtime, which is
   # the property this needs; only the re-read is dropped. The posix tree above
   # stays checked-hash: it is a different mechanism (whole tree, codesigned) and
-  # does not show the symptom.
+  # does not show the symptom. lark_oapi is traced too: the Feishu channel
+  # imports its ~11k modules on the gateway loop, and compiling them there on
+  # the first start stalls that loop.
   log "Precompiling Windows gateway startup modules ($(basename "$out"))…"
   env PYTHONDONTWRITEBYTECODE=1 PYTHONNOUSERSITE=1 PYTHONPATH= \
     "$out/python.exe" -s "$ROOT/packaging/precompile_windows.py" \
-    --root "$out" --module kiro_crew.cli_server
+    --root "$out" --module kiro_crew.cli_server --module lark_oapi
 
   echo "    $(basename "$out") size: $(du -sh "$out" 2>/dev/null | cut -f1)"
 }
