@@ -33,9 +33,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 import subagent_continuable_helpers
 from subagent_continuable_helpers import _stop_reason  # noqa: F401
-from subagent_continuable_helpers import _manager, _mock_sessions
+from subagent_continuable_helpers import _manager, _mock_ctx_builder, _mock_sessions
 
-from kiro_crew.subagent import SubagentInfo
+from kiro_crew.subagent import SubagentInfo, SubagentManager
 from kiro_crew.subagent_persistence import create_agent_folder, write_run_agent
 from kiro_crew.testing.wait import async_wait_until, await_until
 
@@ -418,6 +418,68 @@ class TestContinueConversation:
         assert ts["provider"] == "acp"
         # The prompt must never have been sent on the fresh session.
         provider.stream.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("conversation", "granted", "asked_for"),
+        [
+            ("founded1", {"chat"}, ["founder"]),
+            ("continued1", {"chat"}, ["founder"]),
+            ("founded1", {"chat", "founder"}, []),
+            ("founded1", set(), [""]),
+            ("founded1", {"founder"}, ["chat"]),
+            ("own1", set(), ["chat"]),
+        ],
+    )
+    async def test_continuing_chats_trust_does_not_approve_for_its_founder(
+        self, conversation: str, granted: set[str], asked_for: list[str]
+    ) -> None:
+        """A chat continuing a run another chat started, directly or through an earlier
+        continuation's own id, asks the starting chat for its tools when it has Trust
+        and no chat when it has none, so neither chat's tab Trust approves alone."""
+        import kiro_crew.subagent_persistence as sp
+        from kiro_crew.providers.base import LLMEvent
+
+        keys = {"chat": "dashboard:chat-1", "founder": "dashboard:chat-2", "": ""}
+        chat, founder = keys["chat"], keys["founder"]
+        for run_id, parent in (("founded1", founder), ("continued1", chat), ("own1", chat)):
+            await asyncio.to_thread(
+                sp.create_agent_folder, run_id, parent_session=parent, memory_mode="persistent"
+            )
+            await asyncio.to_thread(sp.write_run_agent, run_id, "")
+        await asyncio.to_thread(sp.update_state, "continued1", conversation_key="subagent:founded1")
+        sessions = _mock_sessions(resumed=True)
+        sessions.get_approval_policy = MagicMock(
+            side_effect=lambda key: "auto" if key in {keys[name] for name in granted} else ""
+        )
+
+        async def _permission_request(*_args: object, **_kwargs: object):  # type: ignore[no-untyped-def]
+            yield LLMEvent(kind="permission_request", request_id="req-1", title="shell: ls")
+
+        provider = sessions.get_or_create.return_value[0]
+        provider.stream = MagicMock(side_effect=lambda *a, **kw: _permission_request())
+        asked: list[str] = []
+
+        async def approver(event: LLMEvent, parent_key: str = "") -> bool:
+            asked.append(parent_key)
+            return True
+
+        manager = SubagentManager(
+            sessions=sessions, ctx_builder=_mock_ctx_builder(), on_tool_approval=approver
+        )
+        with (
+            patch("kiro_crew.subagent.Stats"),
+            patch("kiro_crew.subagent.sel"),
+            patch.object(manager, "_promote_conversation", return_value=object()),
+        ):
+            info = manager.continue_conversation(
+                conversation, "follow-up work", parent_session_key=chat
+            )
+            assert info is not None and not info.error, info.error
+            await await_until(manager._tasks[info.id], what="the continuation's turn")
+        assert not info.error, _stop_reason(info)
+        provider.approve_tool.assert_awaited_once()
+        assert asked == [keys[name] for name in asked_for]
 
 
 # ── steer_run ──

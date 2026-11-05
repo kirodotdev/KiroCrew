@@ -39,12 +39,41 @@ def _facade() -> ModuleType:
     return sys.modules["kiro_crew.subagent"]
 
 
-def resolve_parent_policy(self: RunEventCoordinator, info: SubagentInfo) -> str:
-    """The approval policy the child's tool calls inherit: the parent session's, else
-    ``auto`` from the spawn's own ``approval_mode``, yolo, the global config (only with no
-    live parent) or ``auto_approve_subagent_tools``, each fallback audited."""
+def _founding_session(conversation_key: str) -> str:
+    """The parent session of the run that started *conversation_key*'s conversation.
+
+    A continuation of a continuation names that run's own id, so each record's
+    ``conversation_key`` is followed back to the run that started it."""
+    run_id, seen = conversation_key.removeprefix("subagent:"), set[str]()
+    while run_id not in seen:
+        seen.add(run_id)
+        state = _facade().read_state(run_id) or {}
+        earlier = str(state.get("conversation_key") or "").removeprefix("subagent:")
+        if not earlier or earlier == run_id:
+            return str(state.get("parent_session") or "")
+        run_id = earlier
+    return ""
+
+
+async def resolve_parent_policy(self: RunEventCoordinator, info: SubagentInfo) -> tuple[str, str]:
+    """The approval policy the child's tool calls inherit, and the session its prompts are
+    asked under: the parent session's policy, else ``auto`` from the spawn's own
+    ``approval_mode``, yolo, the global config (only with no live parent) or
+    ``auto_approve_subagent_tools``, each fallback audited. A continuation from another
+    session keeps the parent's ``auto`` only when the session that started the
+    conversation has it too. Otherwise its prompts are asked under that founder when the
+    parent has ``auto``, and under no session when it does not, since a parent's Trust
+    can live on its tab without reaching this policy."""
     _sa = _facade()
-    parent_policy = self._manager._sessions.get_approval_policy(info.parent_session_key)
+    ask_key = info.parent_session_key
+    parent_policy = self._manager._sessions.get_approval_policy(ask_key)
+    if info.conversation_key:
+        founder = await asyncio.to_thread(_founding_session, info.conversation_key)
+        if founder != ask_key and self._manager._sessions.get_approval_policy(founder) != "auto":
+            if parent_policy == "auto":
+                parent_policy, ask_key = "", founder
+            else:
+                ask_key = ""
     # Explicit approval_mode from spawn caller (e.g. Mochi bg agent)
     if not parent_policy and info.approval_mode == "auto":
         parent_policy = "auto"
@@ -104,7 +133,7 @@ def resolve_parent_policy(self: RunEventCoordinator, info: SubagentInfo) -> str:
                 source="subagent",
                 resources=f"subagent_id={info.id}",
             )
-    return parent_policy
+    return parent_policy, ask_key
 
 
 async def acquire_session(
