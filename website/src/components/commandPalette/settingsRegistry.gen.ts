@@ -2039,6 +2039,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "configKey": "dashboard.dynamic_dashboard_cards"
   },
   {
+    "id": "developer.bot-sessions-on-the-bot-s-profile",
+    "label": "Bot sessions on the Bot's profile",
+    "labelKey": "pages.developer.featurePreviewsTab.mate_sessions",
+    "description": "Moves a Bot's chats to its Sessions tab.",
+    "hint": "Moves the chats a Bot opens out of your Sessions list, Recents and grid, onto that Bot's Sessions tab. The Bot's own chat stays where it is, and History and search still find every chat.",
+    "tab": "developer",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "feature-previews"
+    }
+  },
+  {
     "id": "developer.chat-on-a-crew",
     "label": "Chat on a crew",
     "labelKey": "pages.developer.featurePreviewsTab.chat_on_a_crew",
@@ -3268,6 +3281,16 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "tab": "voice",
     "type": "select",
     "occurrence": 1
+  },
+  {
+    "id": "voice.slide-up-and-right-to-send",
+    "label": "Slide up and right to send",
+    "labelKey": "pages.settings.sttSettings.slide_to_send",
+    "hint": "On the phone's hold-to-talk bar, slide up and to the right before letting go to send, or to steer the agent while it works. Sliding straight up still cancels. Only while 'Send when I stop recording' is off.",
+    "tab": "voice",
+    "type": "toggle",
+    "occurrence": 1,
+    "configKey": "stt.slide_to_send"
   },
   {
     "id": "voice.speed",

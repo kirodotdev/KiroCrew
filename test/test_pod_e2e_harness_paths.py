@@ -854,6 +854,10 @@ def test_handle_refuses_a_missing_health_at_the_door(tmp_path):
             '{"name": "smoke", "base_url": "https://127.0.0.1:7811", "token": "t", "port": 7811, "health": 200}',
             "must be http",
         ),
+        (
+            '{"name": "smoke", "base_url": "http://127.0.0.1:7811", "token": "t", "port": 7811, "health": 200, "checkout": 42}',
+            "checkout must be a string",
+        ),
     ],
 )
 def test_a_bad_handle_is_refused_at_the_door(tmp_path, payload, expected):
@@ -997,6 +1001,53 @@ def test_a_missing_handle_file_is_refused_by_name(tmp_path):
     res = _check_handle(tmp_path, str(tmp_path / "nope.json"))
     assert res.returncode == 64, res.stdout + res.stderr
     assert "not found" in res.stderr, res.stderr
+
+
+@pytest.mark.parametrize(
+    "handle_checkout,refused",
+    [("another clone", True), ("this clone via a symlink", False), ("none", False)],
+)
+def test_a_handle_from_another_clone_is_refused(tmp_path, handle_checkout, refused):
+    """A same-named worktree in another clone passes the name check; its checkout does not."""
+    here = tmp_path / "clone-a" / "smoke"
+    other = tmp_path / "clone-b" / "smoke"
+    here.mkdir(parents=True)
+    other.mkdir(parents=True)
+    (tmp_path / "link").symlink_to(here)
+    payload = {
+        "name": "smoke",
+        "base_url": "http://127.0.0.1:7811",
+        "token": "t",
+        "port": 7811,
+        "health": 200,
+    }
+    if handle_checkout != "none":
+        payload["checkout"] = str(
+            other if handle_checkout == "another clone" else tmp_path / "link"
+        )
+    handle = tmp_path / "handle.json"
+    handle.write_text(json.dumps(payload), encoding="utf-8")
+    door = _fragment_or_fail("# A bad handle must fail HERE", "  exit 64\n  fi\nfi")
+    gate = _fragment_or_fail("# A pod name is only a worktree basename", "  exit 64\nfi")
+    snippet = "\n".join(
+        [
+            "set -uo pipefail",
+            'NAME="smoke"',
+            f"HANDLE_JSON={shlex.quote(str(handle))}",
+            door,
+            f"CHECKOUT={shlex.quote(str(here))}",
+            gate,
+            'echo "ACCEPTED"',
+        ]
+    )
+    res = _run(snippet, str(tmp_path))
+    if refused:
+        assert res.returncode == 64, res.stdout + res.stderr
+        assert "serves another clone" in res.stderr
+        assert "ACCEPTED" not in res.stdout
+    else:
+        assert res.returncode == 0, res.stdout + res.stderr
+        assert "ACCEPTED" in res.stdout
 
 
 def _run_handle_through_auth(tmp_path: Path, payload: str) -> subprocess.CompletedProcess:

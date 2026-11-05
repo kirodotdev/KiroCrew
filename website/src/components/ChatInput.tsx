@@ -332,7 +332,7 @@ function ChatInput({
     voiceDeviceLabel = '',
     voiceDeviceId = '',
     voiceDictationPanel = false,
-    voiceSubmitOnRelease = false, voicePttBinding = null,
+    voiceSubmitOnRelease = false, voiceSlideToSend = false, voicePttBinding = null,
     voiceStreaming = false,
     voiceSampleRef,
     voicePartial = '',
@@ -533,7 +533,7 @@ function ChatInput({
     el.click()
     setPlusOpen(false)
   }
-  const { effectiveBusyMode, setBusySendMode, steerOnly, overLimitPending, fireComposer: fireAgentComposer, stopWithTap, sendFollowUp } = useComposerSend({
+  const { effectiveBusyMode, setBusySendMode, steerOnly, steerActive, steerAuto, overLimitPending, fireComposer: fireAgentComposer, stopWithTap, sendFollowUp } = useComposerSend({
     slotId, busyMode, isRunning, stopState, canSteer, onSteer, jevAutoAvailable, disabled, holdSend, voiceTranscribing, value, pasteBlocks, contextWindowTokens,
     pendingFilesCount: pendingFiles.length, pendingSessionsCount: pendingSessions.length, hasQuote: !!pendingQuote, onSend, onStop, onFollowUpSend,
   })
@@ -785,10 +785,10 @@ function ChatInput({
   const {
     transcribeInFlight, transcribingIsHonest, micHeldElsewhere, micBlocked, micOwnerTitle, micHeldElsewhereLabel,
     setHoldTarget, touchPtt, voiceHoldMode, micIsModeSwitch, voiceSettling, textareaParked, toggleVoiceMode, micLabel, micKeyShortcuts, holdBarLabel,
-    voiceModePlaceholder,
+    voiceModePlaceholder, sendZone,
   } = useHoldToTalk({
-    onVoiceStart, onVoiceStop, onVoiceCancel, voiceCaptureActive, voiceRecording, voiceTranscribeActive, voiceTranscribing, voiceDownload, voiceSubmitOnRelease, voicePttBinding,
-    voiceBusyElsewhere, voiceBusyElsewhereSession, composerHasDraft, disabled, optimizing, placeholder, showDictation,
+    onVoiceStart, onVoiceStop, onVoiceCancel, voiceCaptureActive, voiceRecording, voiceTranscribeActive, voiceTranscribing, voiceDownload, voiceSubmitOnRelease, voiceSlideToSend, voicePttBinding,
+    voiceBusyElsewhere, voiceBusyElsewhereSession, composerHasDraft, disabled, optimizing, placeholder, showDictation, voiceSendSteers: steerActive && !steerAuto && !terminal.active,
   })
   // The name in the status row is the way there: one click switches to the
   // chat that holds the mic, where the user can end the capture.
@@ -1395,7 +1395,7 @@ function ChatInput({
         </div>
 
         <VoiceCaptureStatus
-          voiceHoldMode={voiceHoldMode} touchPtt={touchPtt} draftZone={voiceSubmitOnRelease} showDictation={showDictation} value={value} voicePartial={voicePartial}
+          voiceHoldMode={voiceHoldMode} touchPtt={touchPtt} draftZone={voiceSubmitOnRelease} sendZone={sendZone} sendSteers={steerActive && !steerAuto && !terminal.active} showDictation={showDictation} value={value} voicePartial={voicePartial}
           voiceDeviceLabel={voiceDeviceLabel} voiceDeviceId={voiceDeviceId} onSelectVoiceDevice={onSelectVoiceDevice} voiceDeviceSwitchIsLive={voiceDeviceSwitchIsLive}
           voiceStreaming={voiceStreaming} voiceDownload={voiceDownload} voiceRecording={voiceRecording} voiceLevel={voiceLevel} voiceError={voiceError} voiceKeptRecording={voiceKeptRecording}
           onClearVoiceError={onClearVoiceError} voiceDrainCancellable={voiceDrainCancellable} cancelVoiceDrain={cancelVoiceDrain} onVoiceToggle={onVoiceToggle}

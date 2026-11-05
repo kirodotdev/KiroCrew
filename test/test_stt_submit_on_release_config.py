@@ -1,10 +1,10 @@
-"""``stt.submit_on_release`` survives the Settings round trip.
+"""``stt.submit_on_release`` and ``stt.slide_to_send`` survive the Settings round trip.
 
-The flag is read only by the browser, so the whole server side is three places
-that must agree: the loader keeps it, the PUT stores it, and the GET serves it
-to the composer. A setting the GET never returns looks saved in Settings and
-does nothing in the composer, so this asserts the value on disk and in the
-response.
+Both flags are read only by the browser, so the whole server side is three
+places that must agree: the loader keeps it, the PUT stores it, and the GET
+serves it to the composer. A setting the GET never returns looks saved in
+Settings and does nothing in the composer, so this asserts the value on disk
+and in the response.
 """
 
 from __future__ import annotations
@@ -19,6 +19,9 @@ from dashboard_handlers_core_coverage_helpers import seeded_config_fixture  # no
 
 from kiro_crew.config import KiroCrewConfig
 from kiro_crew.dashboard.handlers import core as core_mod
+
+# Browser-only voice toggles, each off by default.
+KEYS = ["submit_on_release", "slide_to_send"]
 
 
 def _stt_app() -> web.Application:
@@ -36,30 +39,30 @@ def quiet_probes(monkeypatch):
     )
 
 
-def test_default_is_off() -> None:
-    assert KiroCrewConfig().stt.submit_on_release is False
+@pytest.mark.parametrize("key", KEYS)
+def test_default_is_off(key: str) -> None:
+    assert getattr(KiroCrewConfig().stt, key) is False
 
 
 @pytest.mark.asyncio
-async def test_put_and_get_round_trip(seeded_config, quiet_probes) -> None:
+@pytest.mark.parametrize("key", KEYS)
+async def test_put_and_get_round_trip(seeded_config, quiet_probes, key: str) -> None:
     async with TestClient(TestServer(_stt_app())) as client:
-        assert (await (await client.get("/api/config/stt")).json())["submit_on_release"] is False
-        on = await client.put("/api/config/stt", json={"submit_on_release": True})
+        assert (await (await client.get("/api/config/stt")).json())[key] is False
+        on = await client.put("/api/config/stt", json={key: True})
         assert on.status == 200
-        assert (await on.json())["submit_on_release"] is True
-        assert (
-            json.loads(seeded_config.read_text(encoding="utf-8"))["stt"]["submit_on_release"]
-            is True
-        )
+        assert (await on.json())[key] is True
+        assert json.loads(seeded_config.read_text(encoding="utf-8"))["stt"][key] is True
         # The loader reads the stored value back, which is what the next GET serves.
-        assert (await (await client.get("/api/config/stt")).json())["submit_on_release"] is True
-        off = await client.put("/api/config/stt", json={"submit_on_release": False})
-        assert (await off.json())["submit_on_release"] is False
+        assert (await (await client.get("/api/config/stt")).json())[key] is True
+        off = await client.put("/api/config/stt", json={key: False})
+        assert (await off.json())[key] is False
 
 
 @pytest.mark.asyncio
-async def test_non_bool_is_ignored(seeded_config, quiet_probes) -> None:
+@pytest.mark.parametrize("key", KEYS)
+async def test_non_bool_is_ignored(seeded_config, quiet_probes, key: str) -> None:
     async with TestClient(TestServer(_stt_app())) as client:
-        await client.put("/api/config/stt", json={"submit_on_release": "yes"})
+        await client.put("/api/config/stt", json={key: "yes"})
     stt = json.loads(seeded_config.read_text(encoding="utf-8")).get("stt", {})
-    assert "submit_on_release" not in stt or stt["submit_on_release"] is False
+    assert key not in stt or stt[key] is False

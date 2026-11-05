@@ -17,8 +17,8 @@
  * synchronous; `usePreviewFlagServerSync` fills the cache from the server copy,
  * carries a cache-only ON up to the server once, and sends each toggle to the
  * server through the writer it registers with {@link setPreviewFlagPersister}.
- * The flag still has no server behavior of its own: the surface's API is the
- * same whichever way it is set.
+ * A flag has no server behavior of its own unless its own note says so
+ * ({@link PREVIEW_MATE_SESSIONS} is the one that does).
  *
  * Retiring a flag is the goal, not an afterthought: when the surface is
  * polished, delete its `previewFlag` from the registry entry and its card from
@@ -183,6 +183,21 @@ export const PREVIEW_CREWMATE_HARNESS = `${PREVIEW_FLAG_PREFIX}crewmate-harness`
 export const PREVIEW_CREW_MODE = `${PREVIEW_FLAG_PREFIX}crew-mode`
 
 /**
+ * A crewmate's sessions leave the person's own lists: every session a mate
+ * thread dispatched (its `mate_root` stamp), at any depth, is left out of the
+ * sidebar, Recents, the grid and unread counts, and shows on the mate's
+ * Sessions tab instead. The mate's own chat stays; History and search still find
+ * every session (step 6 of
+ * docs/request-for-change/rfc-crewmate-workers-under-the-crewmate.md).
+ *
+ * Read it through `mateSessionsHidden()` in `lib/crewMode.ts`. Unlike the other
+ * flags here it also has a server half: a person's `GET /api/chat/slots` leaves
+ * the same rows out (`crew_mode.list_view`). Default OFF, and OFF is every list
+ * as before, a mate's sessions included.
+ */
+export const PREVIEW_MATE_SESSIONS = `${PREVIEW_FLAG_PREFIX}mate-sessions`
+
+/**
  * Explore: the top-bar "Explore N/7" pill and its phone twins (the bar ring and
  * the overflow-menu row), the Explore sheet, the milestone notice, the Try today
  * card on a new chat, and the Display > Explore switch.
@@ -215,6 +230,7 @@ export const PREVIEW_FLAGS: readonly string[] = [
   PREVIEW_SESSION_ENVIRONMENTS,
   PREVIEW_CREWMATE_HARNESS,
   PREVIEW_CREW_MODE,
+  PREVIEW_MATE_SESSIONS,
   PREVIEW_EXPLORE,
 ]
 

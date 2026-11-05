@@ -245,9 +245,13 @@ _CODE_SDK_OUTDATED = "stt_transcribe_sdk_outdated"
 # 400s on accounts/partitions that do not serve it.
 # Debounced so mid-utterance finals don't each fire a model call, and
 # single-flight so at most one bg call runs at once.
+# The timeout bounds the background turn's drive (model pick plus the reply), not
+# just the model's answer, and a turn on the default backend does not fit in 5 s:
+# a shorter budget times out every judgment, so auto-submit never fires. 12 s is
+# the budget the stt polish one-liner gives the same kind of turn.
 _ENDPOINT_MODEL = "auto"
 _ENDPOINT_DEBOUNCE_SECS = 0.35
-_ENDPOINT_TIMEOUT_SECS = 5.0
+_ENDPOINT_TIMEOUT_SECS = 12.0
 _ENDPOINT_PROMPT = (
     "You decide whether a person has FINISHED speaking a complete request or "
     "thought, from a live speech-to-text transcript that may cut off mid-word.\n"
@@ -418,8 +422,8 @@ class _Endpointer:
 
     ``sessions`` is duck-typed (anything exposing ``get_bg_session()`` — the
     ``SessionManager``) so this stays free of a dashboard->session import cycle.
-    Best-effort throughout: any failure logs at debug and never disrupts the
-    live transcript stream.
+    Best-effort throughout: a failure never disrupts the live transcript
+    stream. A failed classification logs at info; other failures log at debug.
     """
 
     def __init__(
@@ -525,8 +529,11 @@ class _Endpointer:
                 # The person is mid-dictation; the verdict drives auto-submit.
                 start_priority=StartPriority.FOREGROUND,
             )
-        except Exception:
-            logger.debug("stt endpointing classification failed", exc_info=True)
+        except Exception as exc:
+            # INFO, not DEBUG: a judgment that always fails silently disables
+            # auto-submit, and nothing else tells the operator why.
+            logger.info("stt endpointing classification failed: %s", type(exc).__name__)
+            logger.debug("stt endpointing classification failure detail", exc_info=True)
         finally:
             self._inflight = False
         # Re-run a superseded final that collided with this in-flight call, if it

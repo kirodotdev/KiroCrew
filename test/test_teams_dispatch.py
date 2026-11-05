@@ -447,6 +447,8 @@ class TestCommands:
 
         dropped = [call.kwargs["route"].attachments_dropped for call in spool.await_args_list]
         assert dropped == [0, 1]
+        names = [call.kwargs["route"].attachment_names for call in spool.await_args_list]
+        assert names == [(), ("log.txt",)]
 
     @pytest.mark.asyncio
     async def test_closed_admission_never_spools_a_restricted_resumed_session(

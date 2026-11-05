@@ -52,7 +52,7 @@ systemd part -- so they are the portable choice, and the only one on a host that
 denies you the bus.
 
 ```
-pod_up     {"worktree": "<wt>"}   -> prose: port, base_url, token (+ its two limits)
+pod_up     {"worktree": "<wt>"}   -> prose: port, base_url, checkout, token (+ its two limits)
            (+ optional "memory": "16G", "cpu": "800%"; defaults 4G / 200%)
 pod_restart {"worktree": "<wt>"}  -> same handle, HOME KEPT (apps, config, models)
 pod_status {"worktree": "<wt>"}   -> status + port + health
@@ -79,7 +79,8 @@ The CLI is the same operations for a human at a terminal:
 # 1. bring the pod up, get a handle (JSON: base_url + token + port)
 kirocrew pod up <wt> --json
 #    → {"name":"<wt>","status":"up","port":7958,
-#       "base_url":"http://127.0.0.1:7958","token":"…","ttl":"2h"}
+#       "base_url":"http://127.0.0.1:7958","token":"…","ttl":"2h",
+#       "checkout":"/home/u/clone-a/<wt>"}
 
 # 2. test against the handle — full stack, ONE port:
 curl -s "$base_url/api/<anything>?token=$token"      # backend API
@@ -184,7 +185,7 @@ own reply into the file: it is labelled prose, and `json.load` rejects it with e
 64.
 
 ```bash
-# pod_up {"worktree": "<wt>"} -> {"name": "<wt>", "base_url": ..., "token": ..., "port": ...}
+# pod_up {"worktree": "<wt>"} -> {"name": "<wt>", "base_url": ..., "token": ..., "port": ..., "checkout": ...}
 # pod_status {"worktree": "<wt>"} -> health
 # keep pod_up's name and write the fresh health code into that object, then:
 bash <app-skills-dir>/pod-e2e/scripts/pod-e2e.sh <wt> --handle-json "$H/handle.json" --video
@@ -192,11 +193,12 @@ bash <app-skills-dir>/pod-e2e/scripts/pod-e2e.sh <wt> --handle-json "$H/handle.j
 ```
 
 The file is a JSON object you build: `name` is the `<wt>` you passed to `pod_up`
-(its reply names it but carries no `name` field), `base_url`, `token` and `port`
-are the values its reply prints, and `health` is the code `pod_status` reports:
+(its reply names it but carries no `name` field), `base_url`, `token`, `port` and
+`checkout` are the values its reply prints, and `health` is the code `pod_status`
+reports:
 
 ```json
-{"name": "<wt>", "base_url": "http://127.0.0.1:7813", "token": "...", "port": 7813, "health": 200}
+{"name": "<wt>", "base_url": "http://127.0.0.1:7813", "token": "...", "port": 7813, "checkout": "/home/u/clone-a/<wt>", "health": 200}
 ```
 
 `name` must be a non-empty string exactly equal to the `<wt>` argument. The
@@ -219,7 +221,7 @@ payload: `base_url` is rebuilt as `http://<loopback-host>:<port>` with no path,
 field reaches the production-port refusal, curl configuration, or Playwright.
 That is not shape pedantry: validating one representation and using another can
 point the harness at the live plane. The `pod_up` producer already emits the
-canonical URL, token, and port; add only the fresh `health` code from
+canonical URL, token, port and checkout; add only the fresh `health` code from
 `pod_status`.
 
 In that mode the script calls no pod verb at all, and three things follow:
@@ -236,14 +238,13 @@ In that mode the script calls no pod verb at all, and three things follow:
   changes pod lifecycle code itself, the CLI path is the one that tests it -- a
   green handle-mode run says the branch's *gateway* boots and renders, not that
   the branch's *pod code* works.
-- **`name` ties the handle to a worktree, not to a clone.** The check refuses a
-  handle whose `name` is not the worktree you asked for, but a pod name is a
-  worktree basename, and two clones on one host can each hold a worktree of that
-  name. Run the harness from the clone whose pod you booted: with a handle from the
-  other one, the specs and the artifact directory come from here while the requests
-  go there, and the verdict is filed under the wrong checkout. Nothing in the
-  handle, and nothing the pod serves, identifies a checkout today -- closing it
-  needs `pod_up` to emit a machine-readable handle that carries one.
+- **`checkout` ties the handle to a clone.** A pod name is a worktree basename,
+  and two clones on one host can each hold a worktree of that name, so `name`
+  alone passes for both. The harness refuses a handle whose `checkout` is not the
+  checkout it resolved for `<wt>` (symlinks resolved), because the specs and the
+  artifact directory would come from here while the requests go there, and the
+  verdict would be filed under the wrong checkout. A handle without `checkout`
+  skips that check, so copy it from the `pod_up` reply.
 
 A missing or malformed handle is refused before any phase runs, naming the field
 that is wrong.

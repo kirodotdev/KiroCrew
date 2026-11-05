@@ -769,9 +769,11 @@ jobs:
       # This step runs the escalation attempts THROUGH `codex sandbox`, which
       # applies the exact Landlock+seccomp confinement codex uses for the
       # review passes, as the SAME job uid the passes run as. It fails the job
-      # CLOSED when either probe shows the boundary is not holding:
+      # CLOSED when any probe shows the boundary is not holding:
       #   * `sudo -n true` succeeds   -> the sandbox did not block escalation;
       #   * the signer credential file is readable -> the boundary leaked;
+      #   * another job process's environment is readable -> the uid boundary
+      #     does not cover it, so the sandbox must;
       #   * `codex sandbox` cannot establish the sandbox at all -> a denied
       #     probe is required, so an un-sandboxed run is treated as a failure.
       - name: Verify the review sandbox fails closed (no sudo, no credential read)
@@ -815,6 +817,37 @@ jobs:
             exit 1
           fi
           echo "sandbox cannot read the signer credential file (expected)."
+
+          # Probe 3: another process's environment. Every job process runs as
+          # the job uid, so the uid boundary does not stop a read of their
+          # /proc/<pid>/environ; only the sandbox can. A
+          # marked sibling outside the sandbox must stay unreadable while the
+          # checkout under review stays readable (else the refusal proves
+          # nothing).
+          env -i KC_SANDBOX_PROBE=sibling sleep 300 </dev/null >/dev/null 2>&1 &
+          probe_pid=$!
+          trap 'kill "$probe_pid" 2>/dev/null' EXIT
+          # Wait, unconfined, until the sibling has exec'd with only the
+          # marker: a sandboxed read that comes earlier would miss it and
+          # pass falsely. The unconfined read is the positive control.
+          tries=0
+          until grep -qaF KC_SANDBOX_PROBE=sibling "/proc/$probe_pid/environ" 2>/dev/null; do
+            tries=$((tries + 1))
+            if [ "$tries" -ge 100 ]; then
+              echo "::error::the marked sibling's environment never became readable outside the sandbox, so the process-environment probe would prove nothing. Failing closed."
+              exit 1
+            fi
+            sleep 0.1
+          done
+          if ! $SANDBOX cat README.md >/dev/null 2>&1; then
+            echo "::error::the review sandbox could not read the checkout, so the process-environment probe would prove nothing. Failing closed."
+            exit 1
+          fi
+          if $SANDBOX grep -qaF KC_SANDBOX_PROBE=sibling "/proc/$probe_pid/environ" 2>/dev/null; then
+            echo "::error::the review sandbox could read another process's environment; a secret in any job process would reach the model. Failing closed."
+            exit 1
+          fi
+          echo "sandbox cannot read another process's environment (expected)."
           echo "review sandbox fail-closed contract holds: no escalation, no credential read."
 
       - name: GPT 6.1 review (discovery pass)

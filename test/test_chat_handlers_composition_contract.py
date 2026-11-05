@@ -55,7 +55,7 @@ _BASE_NAMES = frozenset("""
         STEER_REQUEUED STEER_STEERED SUGGEST_FOLLOWUP_SCHEMA SYNTHETIC_RECOVERY_KIND
         SelectionChange SessionFolderError SlotAgentSwitchCaller SlotCloseError
         SlotContinueRefusal SplitlinesBoundaryRecord TURN_ACTOR_META_KEY TURN_END_WIRE_CLS
-        TYPE_CHECKING TranscriptRevisionChanged UnknownMemoryStore ValidationError
+        TURN_OPENING_INJECT_KINDS TYPE_CHECKING TranscriptRevisionChanged UnknownMemoryStore ValidationError
         _CREATABLE_MODES _ChatSlot _CommitToken _DEFERRED_PLAIN_CREATE_KNOWN_KEYS
         _DurablePrefixMismatch _FLUSH_SNAPSHOT_RETRIES _FOLLOWUP_TEXT_FIELDS
         _GUARDED_WRITE_WAIT_SECS _HandoverDrainResult _MANUAL_CONTINUE_MSG

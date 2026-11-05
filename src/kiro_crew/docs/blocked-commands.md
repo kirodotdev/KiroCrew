@@ -114,9 +114,9 @@ Nothing in that section reads a secret value, and it never fails the overall
 ## Adjusting the rules
 
 **Settings → Security** lets you disable individual built-in rules, disable them
-all, and add your own patterns. When you add your own rule, fill in the **note**
-field: that note is what the agent is shown when your rule fires, instead of a
-raw regex it has to guess the intent of.
+all, and add, edit and sort your own patterns. When you add your own rule, fill
+in the **note** field: that note is what the agent is shown when your rule fires,
+instead of a raw regex it has to guess the intent of.
 
 Two limits are deliberate:
 

@@ -64,6 +64,7 @@ const {
 const { capturePySpyDump } = require("./pyspy-dump");
 const { getRemoteHostConfig } = require("./host-config");
 const { createTunnelKeeper } = require("./tunnel-keeper");
+const { loadDashboardWithToken } = require("./token-retry");
 const {
   remoteCrewAction,
   remoteCrewDraft,
@@ -1009,11 +1010,10 @@ function createGatewaySupervisor({
     });
   }
 
-  function dashboardEntryUrl(targetBackendUrl, initialPath = "", token = "") {
+  function dashboardEntryUrl(targetBackendUrl, initialPath = "") {
     const target = initialPath
       ? new URL(initialPath, targetBackendUrl)
       : new URL(targetBackendUrl);
-    if (token) target.searchParams.set("token", token);
     return target.toString();
   }
 
@@ -1201,7 +1201,8 @@ function createGatewaySupervisor({
         if (token) {
           await fadeLoadingScreen(webContents);
           if (window.isDestroyed()) return;
-          webContents.loadURL(dashboardEntryUrl(targetBackendUrl, initialPath, token));
+          await loadDashboardWithToken(webContents, dashboardEntryUrl(targetBackendUrl, initialPath), token);
+          if (window.isDestroyed()) return;
           if (targetBackendUrl === BACKEND_URL && window === mainWindow()) {
             startLivenessMonitor(window);
           }

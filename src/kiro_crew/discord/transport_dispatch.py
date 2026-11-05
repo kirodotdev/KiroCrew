@@ -551,6 +551,11 @@ class DiscordDispatcher:
                 thread_id=thread_id,
                 message_id=str(getattr(msg, "message_id", "") or ""),
                 attachments_dropped=len(getattr(msg, "attachments", None) or ()),
+                attachment_names=tuple(
+                    a.get("filename") or ""
+                    for a in getattr(msg, "attachments", None) or ()
+                    if isinstance(a, dict)
+                ),
             )
         if not await admit_inbound_callback(
             self.sessions,

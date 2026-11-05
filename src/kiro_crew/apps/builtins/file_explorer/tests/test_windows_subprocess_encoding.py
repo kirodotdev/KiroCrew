@@ -53,7 +53,7 @@ def test_git_status_decodes_both_child_processes_as_utf8(recorded_calls, tmp_pat
 def test_search_rg_decodes_its_child_as_utf8(recorded_calls, monkeypatch, tmp_path):
     """``rg --json`` is UTF-8 by definition, so the reader must say so."""
     monkeypatch.setattr(server, "_contain_in_allowed_roots", lambda p, **kw: p)
-    server._search_rg(tmp_path, "needle", "", "")
+    server._search_rg(tmp_path, "needle", "", "", "rg")
     assert len(recorded_calls) == 1, recorded_calls
     _assert_utf8_decode(recorded_calls[0])
 

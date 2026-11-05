@@ -281,7 +281,8 @@ def print_result(action: str, app_name: str, result: dict[str, object]) -> None:
                     print(f"⚠️  {safe_terminal_line(error)}", file=sys.stderr)
 
     if action == "install":
-        # Same lines the file-only install prints, so both paths read alike.
+        # What the gateway registered. An install whose record is disabled
+        # registers nothing, so these lines print only for an enabled record.
         if isinstance(registration, dict):
             for key, label in (
                 ("agents", "Agents: "),

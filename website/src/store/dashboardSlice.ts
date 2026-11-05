@@ -12,9 +12,9 @@ import { bumpLastTsOverlay, dropCaughtUpLastTs, pruneLastTsOverlay, slotLastTsOf
 import type { SessionColorMode, PaletteName, DefaultColorSetting, IntensityName } from '../utils/sessionColors'
 import { isChatPageSurface } from '../utils/channelOrigin'
 import { slotListHoldTest } from '../utils/slotListHold'
-import { crewModeEnabled } from '../lib/crewMode'
+import { crewModeEnabled, mateSessionsHidden } from '../lib/crewMode'
 import { MANUAL_UNREAD, _relayUnreadToParent, clearSharedUnreadIfCovered, crewMemberKeys, drainUnreadKeys, dropQueuedSharedUnreadCoveredBy, hasUnreadRelayHold, heldOrphanTest, persistManualSentinels, persistSharedUnread, queueSharedUnread, readCovers, relayUnreadCount, relayUnreadIfHolding, relayedUnreadKeys, restoreUnreadBadges, restoreUnreadSince, retireSharedUnreadIfUnchanged, sharedUnreadWatermark } from './dashboard/unread'
-export { selectPersonSlots } from './personSlots'
+export { selectLiveMateThreads, selectPersonSlots } from './personSlots'
 
 /** A close tombstone entry (see `applySlots`). */
 interface CloseHold {
@@ -1952,7 +1952,8 @@ const _unreadByModeCache = new Map<string, UnreadByModeSelector>()
 export function selectUnreadByMode(mode: string): UnreadByModeSelector {
   let sel = _unreadByModeCache.get(mode)
   if (!sel) {
-    // The Crew Mode preview decides whether crew members count (`crewMemberKeys`).
+    // The Crew Mode and mate sessions previews decide whether crew members and a
+    // mate's sessions count (`crewMemberKeys`).
     // It is passed as an argument, not read inside an input selector: the
     // selector memoizes on its arguments, so a flip with the same state would
     // otherwise answer from the cache.
@@ -1963,10 +1964,11 @@ export function selectUnreadByMode(mode: string): UnreadByModeSelector {
       (state: { dashboard: DashboardState }) => state.dashboard.slotsHoldChannels,
       (state: { dashboard: DashboardState }) => state.dashboard.slotsListPartial,
       (_state: { dashboard: DashboardState }, crewMode: boolean) => crewMode,
+      (_state: { dashboard: DashboardState }, _crewMode: boolean, mateSessions: boolean) => mateSessions,
       (slots, unread, heldKeys, holdChannels, listPartial) =>
         countUnreadByMode(slots, unread, mode, heldKeys ?? [], holdChannels === true, listPartial === true),
     )
-    sel = state => count(state, crewModeEnabled())
+    sel = state => count(state, crewModeEnabled(), mateSessionsHidden())
     _unreadByModeCache.set(mode, sel)
   }
   return sel

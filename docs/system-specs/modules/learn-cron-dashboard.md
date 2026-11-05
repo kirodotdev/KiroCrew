@@ -674,6 +674,13 @@ A writer that stores a default zone on a job stores its name, not its resolution
 
 ### Skip Dates
 
+Interval and future one-shot previews advance an excluded deadline to the first
+allowed local day's start. Intervals already due use the preview's current time
+as their starting point. The same exclusion applies when failure backoff moves
+an interval or one-shot deadline. Calendar-day steps respect timezone offset
+changes and the preview never changes the stored schedule or last-run stamp.
+Past one-shot deadlines retain their absent-preview behavior.
+
 Jobs can define `skip_dates` — a list of dates (YYYY-MM-DD) on which the job should not fire. The executor already skipped these at runtime; `compute_next_run_ts` now also advances past skip_dates when computing the display/preview "next run" time. The advance is bounded by a **wall-clock horizon** (~2 years, `_MAX_SKIP_DATE_HORIZON_SECS`) rather than a fixed iteration count, so the bound does not couple to schedule granularity — a daily and a `*/5` cron both simply look ~2 years ahead for the next non-skipped fire (an earlier fixed iteration cap sized for one granularity silently returned `None` — the job never firing again — for finer-grained schedules with long skip ranges). A large absolute iteration ceiling (`_MAX_SKIP_DATE_LOOKAHEAD`) remains only as an anti-infinite-loop safety net for a pathological all-skipped sub-minute config. The `/api/crons` response includes `skip_dates` per job.
 
 ### Strict Schedule (`strict_schedule`)
@@ -902,6 +909,15 @@ cannot forge "already applied". The digest is computed over the DEFINITION, not
 the job — the job holds the resolved script path and folder id, which differ
 between hosts for one manifest. Pinned by `test/test_app_cron_manifest_resync.py`
 against a real `CronService`.
+
+The re-sync reaches an update only where an update calls it. Every route that
+replaces an installed, still-enabled app's files calls
+`routes_install._resync_app_crons_after_update` after re-registering: both
+branches of `POST /api/apps/{name}/update` (local source and registry source),
+and `POST /api/apps/registry/install` and `/install-stream` over an app already
+installed. A fresh install calls nothing: it leaves the app disabled, and the
+enable registers the crons. Pinned per route by
+`test/test_app_registry_update_cron_resync.py`, also against a real `CronService`.
 
 ### Run Time Limit (`timeout_secs`)
 

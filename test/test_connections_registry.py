@@ -72,6 +72,9 @@ EXPECTED_LAUNCH_REGISTRY = {
     # TickTick's own hosted server (mcp.ticktick.com), documented for Claude,
     # ChatGPT, Cursor and VS Code; launch-gated until the manual gate, like Todoist.
     "ticktick",
+    # Railway's hosted server (mcp.railway.com), listed by Claude's connector
+    # directory and ChatGPT's; launch-gated until the manual gate, like TickTick.
+    "railway",
 }
 # Tier 3: the vendor admits OAuth clients from an allowlist or waitlist, so no
 # amount of local verification can pass the gate until Kiro is admitted. They
@@ -108,6 +111,7 @@ LAUNCH_GATED = {
     "google-sheets",
     "google-slides",
     "ticktick",
+    "railway",
 } | VENDOR_APPROVAL_PENDING
 
 
@@ -265,6 +269,16 @@ def test_ticktick_requests_both_scopes_and_admits_the_grant_can_write():
         "fetch": "ticktick_fetch",
         "list_projects": "ticktick_list_projects",
     }
+
+
+def test_railway_requests_the_one_published_scope_and_names_its_writers():
+    """Railway's resource metadata publishes only workspace:member, so the entry
+    asks for it and the card names the tools that deploy or delete."""
+    (railway,) = [p for p in get_all_registry_providers() if p["slug"] == "railway"]
+    assert railway["recommended_scopes"] == ["workspace:member"]
+    assert "the only scope the server publishes" in railway["gotcha_copy"]
+    for tool in ("redeploy", "accept-deploy", "delete-feature-flag", "railway-agent"):
+        assert tool in railway["gotcha_copy"], tool
 
 
 def test_client_id_is_optional_and_unset_for_every_launch_provider():

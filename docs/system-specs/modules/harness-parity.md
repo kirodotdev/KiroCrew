@@ -413,9 +413,11 @@ server it placed on the session array (`permission_requests.claude_mcp_identity`
 `source` is `dynamic`, the name is a placed one, and `toolName` is exactly
 `mcp__<server>__<tool>` as the tool_call frame stamped it), so a heartbeat core read
 such as `kirocrew-core` `spawn_list` is approved there. Its built-ins and the servers of
-the user's own `~/.claude` config still carry no trusted name: the built-in stamp is
-read for the read-only proof only on a Side Chat session (`claude-code-provider.md`,
-"A Side Chat session"), and neither is a row of `_MCP_IDENTITY_META_CHANNELS`.
+the user's own `~/.claude` config still carry no trusted name. Crew reads the built-in
+stamp (`_meta.claudeCode.toolName`) for two things only: the name a hook matcher meets
+(`harness_tool_id`, `acp/harness_tool_names.CLAUDE_TOOL_IDS_BY_KIRO_TOOL`), on every
+session, and the read-only proof, on a Side Chat session only (`claude-code-provider.md`,
+"A Side Chat session"); that key is not a row of `_MCP_IDENTITY_META_CHANNELS`.
 opencode sends `kind="other"` and no identity (`acp/_dispatch_parts/tool_call_identity.py`,
 `classify_tool_call`). On opencode, and for those claude calls, every heartbeat tool
 call is denied and audited `reason=no_trusted_identity`, with one gateway warning per

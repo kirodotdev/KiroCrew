@@ -553,6 +553,65 @@ class TestNodeDispatch:
                 bmod._start_app_backend_body("nodeapp3", _manifest("server.js"))
         assert any("Failed to install npm deps" in r.message for r in caplog.records)
 
+    @staticmethod
+    def _record_npm_cwds(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+        monkeypatch.setattr(bmod, "_find_node_binary", lambda: "/usr/bin/node")
+        monkeypatch.setattr(bmod, "_find_npm_binary", lambda: "/usr/bin/npm")
+        cwds: list[str] = []
+
+        def _run(_argv: Any, **kwargs: Any) -> Any:
+            cwds.append(kwargs["cwd"])
+            return SimpleNamespace(returncode=0)
+
+        monkeypatch.setattr(bmod, "run_limited", _run)
+        _capture_popen(monkeypatch)
+        return cwds
+
+    def test_npm_installs_the_root_and_the_entry_points_own_package_directory(
+        self, spawn_root: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A backend/package.json beside backend/dist/server.js is installed in
+        backend/, after the root's, because Node resolves the entry's imports from
+        the node_modules of both."""
+
+        (spawn_root / "backend" / "dist").mkdir(parents=True)
+        (spawn_root / "backend" / "dist" / "server.js").write_text("// noop\n")
+        (spawn_root / "package.json").write_text(json.dumps({"name": "ui"}))
+        (spawn_root / "backend" / "package.json").write_text(json.dumps({"name": "x"}))
+        cwds = self._record_npm_cwds(monkeypatch)
+        with pytest.raises(_StopSpawn):
+            bmod._start_app_backend_body("nodesub", _manifest("backend/dist/server.js"))
+        real_root = spawn_root.resolve()
+        assert cwds == [str(real_root), str(real_root / "backend")]
+
+    def test_npm_never_runs_above_the_app_root(
+        self, spawn_root: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An entry point spelled through ``..`` back into the root spawns, but the
+        package.json in the directory above the root is never installed."""
+
+        (spawn_root / "server.js").write_text("// noop\n")
+        (spawn_root.parent / "package.json").write_text(json.dumps({"name": "outside"}))
+        cwds = self._record_npm_cwds(monkeypatch)
+        with pytest.raises(_StopSpawn):
+            bmod._start_app_backend_body("nodeup", _manifest(f"../{spawn_root.name}/server.js"))
+        assert cwds == []
+
+    def test_a_nonzero_npm_exit_is_logged_and_the_spawn_goes_ahead(
+        self, spawn_root: Any, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        (spawn_root / "server.js").write_text("// noop\n")
+        (spawn_root / "package.json").write_text(json.dumps({"name": "x"}))
+        monkeypatch.setattr(bmod, "_find_node_binary", lambda: "/usr/bin/node")
+        monkeypatch.setattr(bmod, "_find_npm_binary", lambda: "/usr/bin/npm")
+        _record_runs(monkeypatch, result=SimpleNamespace(returncode=1, stdout=""))
+        seen = _capture_popen(monkeypatch)
+        with caplog.at_level(logging.WARNING):
+            with pytest.raises(_StopSpawn):
+                bmod._start_app_backend_body("nodeapp5", _manifest("server.js"))
+        assert seen["argv"][0] == "/usr/bin/node"
+        assert any("npm exited 1" in r.getMessage() for r in caplog.records)
+
     def test_an_explicit_node_type_wins_over_the_filename_heuristic(
         self, spawn_root: Any, monkeypatch: pytest.MonkeyPatch
     ) -> None:

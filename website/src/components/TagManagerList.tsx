@@ -520,6 +520,7 @@ export default function TagManagerList({ mode, selectedIds = [], onToggleTag, cr
           type="text"
           data-testid={createTestId}
           placeholder={i18nT('components.tagManagerList.new_tag')}
+          aria-label={i18nT('components.tagManagerList.new_tag_label')}
           value={newTagName}
           aria-disabled={storeDegraded}
           aria-describedby={storeDegraded ? policyUnavailableId : undefined}
