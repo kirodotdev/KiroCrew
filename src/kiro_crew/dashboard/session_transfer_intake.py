@@ -759,8 +759,8 @@ async def _read_bundle_body(
             await keep.enter_async_context(_expansion_admission())
         except _ExpansionBusy:
             # Retryable and the sender is at no fault, so it gets a status that
-            # says so. 429 rather than 400 for the same reason the slot cap does:
-            # the body was fine, the host is busy.
+            # says so. 429 rather than 400: the body was fine and the host is
+            # busy, so a retry can win.
             return None, web.json_response(
                 {
                     "error": "too many imports are arriving; please retry",
