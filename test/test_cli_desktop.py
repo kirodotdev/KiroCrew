@@ -73,13 +73,29 @@ class TestLogDirResolution:
         # Compared with as_posix so the assertion does not depend on the host
         # separator: str() of a path is backslash-separated on Windows.
         dirs = [d.as_posix() for d in cli_desktop.desktop_log_dirs({"APPDATA": "/roam"})]
-        assert "/roam/KiroCrew/logs" in dirs
+        assert "/roam/kirocrew-desktop/logs" in dirs
 
     def test_linux_honours_xdg_config_home(self, monkeypatch):
         monkeypatch.setattr(platform_compat, "IS_MACOS", False)
         monkeypatch.setattr(platform_compat, "IS_WINDOWS", False)
         dirs = [d.as_posix() for d in cli_desktop.desktop_log_dirs({"XDG_CONFIG_HOME": "/cfg"})]
-        assert "/cfg/KiroCrew/logs" in dirs
+        assert "/cfg/kirocrew-desktop/logs" in dirs
+
+    @pytest.mark.parametrize(
+        ("is_windows", "env_var"), [(True, "APPDATA"), (False, "XDG_CONFIG_HOME")]
+    )
+    def test_an_artifact_the_app_wrote_is_found(
+        self, monkeypatch, tmp_path, is_windows, env_var
+    ):
+        """On Windows and Linux the app writes under <userData>/logs, and Electron
+        names userData after the npm package, so a product-name probe never finds it."""
+        monkeypatch.setattr(platform_compat, "IS_MACOS", False)
+        monkeypatch.setattr(platform_compat, "IS_WINDOWS", is_windows)
+        logs = tmp_path / "kirocrew-desktop" / "logs"
+        logs.mkdir(parents=True)
+        art = logs / cli_desktop.ARTIFACT_NAME
+        art.write_text("{}", encoding="utf-8")
+        assert cli_desktop.find_metrics_artifact(env={env_var: str(tmp_path)}) == art
 
     def test_unresolvable_home_degrades_instead_of_raising(self, monkeypatch):
         """No HOME and no passwd entry must not raise out of a helper.
@@ -298,11 +314,13 @@ class TestNonNumericValues:
 
 
 class TestNightlyProductDirectory:
-    """Nightly installs under its own productName and so its own log directory.
+    """Nightly installs under its own names and so its own log directory.
 
-    packaging/build-desktop.sh passes `-c.productName=KiroCrew Nightly` for nightly
-    stamps, so probing only "KiroCrew" reported "not found" against a nightly app
-    that was recording correctly -- and nightly users are the likeliest profilers.
+    packaging/build-desktop.sh passes `-c.productName=KiroCrew Nightly` (the macOS
+    log directory) and `-c.extraMetadata.name=kirocrew-desktop-nightly` (the
+    Windows and Linux one) for nightly stamps, so probing only the release name
+    reported "not found" against a nightly app that was recording correctly -- and
+    nightly users are the likeliest profilers.
     """
 
     def test_both_product_directories_are_probed_on_macos(self, monkeypatch):
@@ -312,19 +330,19 @@ class TestNightlyProductDirectory:
         assert any(d.endswith("Library/Logs/KiroCrew") for d in dirs)
         assert any(d.endswith("Library/Logs/KiroCrew Nightly") for d in dirs)
 
-    def test_both_product_directories_are_probed_on_linux(self, monkeypatch):
+    def test_both_package_directories_are_probed_on_linux(self, monkeypatch):
         monkeypatch.setattr(platform_compat, "IS_MACOS", False)
         monkeypatch.setattr(platform_compat, "IS_WINDOWS", False)
         dirs = [d.as_posix() for d in cli_desktop.desktop_log_dirs({"XDG_CONFIG_HOME": "/cfg"})]
-        assert "/cfg/KiroCrew/logs" in dirs
-        assert "/cfg/KiroCrew Nightly/logs" in dirs
+        assert "/cfg/kirocrew-desktop/logs" in dirs
+        assert "/cfg/kirocrew-desktop-nightly/logs" in dirs
 
-    def test_both_product_directories_are_probed_on_windows(self, monkeypatch):
+    def test_both_package_directories_are_probed_on_windows(self, monkeypatch):
         monkeypatch.setattr(platform_compat, "IS_MACOS", False)
         monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
         dirs = [d.as_posix() for d in cli_desktop.desktop_log_dirs({"APPDATA": "/roam"})]
-        assert "/roam/KiroCrew/logs" in dirs
-        assert "/roam/KiroCrew Nightly/logs" in dirs
+        assert "/roam/kirocrew-desktop/logs" in dirs
+        assert "/roam/kirocrew-desktop-nightly/logs" in dirs
 
     def test_the_newest_artifact_wins_when_both_exist(self, monkeypatch, tmp_path):
         """With both installed, the run just reproduced is the one written last."""
@@ -362,6 +380,15 @@ class TestNightlyProductDirectory:
         text = sh.read_text(encoding="utf-8")
         for name in cli_desktop.PRODUCT_NAMES:
             assert name in text, f"{name} not found in build-desktop.sh"
+
+    def test_package_names_stay_in_sync_with_the_electron_package(self):
+        """The Windows and Linux log directory follows the npm package name."""
+        root = Path(__file__).resolve().parents[1]
+        package_json = root / "website" / "electron" / "package.json"
+        release, nightly = cli_desktop.PACKAGE_NAMES
+        assert json.loads(package_json.read_text(encoding="utf-8"))["name"] == release
+        sh = (root / "packaging" / "build-desktop.sh").read_text(encoding="utf-8")
+        assert f"-c.extraMetadata.name={nightly}" in sh
 
 
 class TestSensitivePathGate:
