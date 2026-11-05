@@ -16,6 +16,7 @@ from kiro_crew.dashboard.mcp_banner_dedupe import (
     forget_mcp_banner,
     rejected_banner_is_repeat,
 )
+from kiro_crew.dashboard.mcp_oauth_expiry_watch import watch_open_oauth_banners
 from kiro_crew.dashboard.mcp_oauth_provenance import record_emitted
 from kiro_crew.dashboard.urls import is_loopback
 from kiro_crew.mcp_cleanup import CONTROL_PLANE_SERVERS
@@ -579,6 +580,10 @@ def _emit_mcp_oauth_request(
         "msg msg-info",
         meta=meta,
     )
+    # The read gate withdraws this link on the next fetch once `minted_by` is no
+    # longer the live child, but an open tab does not refetch. This watch tells
+    # it as soon as that happens, however the child ended.
+    watch_open_oauth_banners(state, slot)
 
 
 def _supersede_open_mcp_oauth_banners(
