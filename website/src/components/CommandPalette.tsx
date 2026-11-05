@@ -30,6 +30,7 @@ import ErrorNotice from './ErrorNotice'
 import { i18nT } from '../i18n/t'
 import { useVisualViewport } from '../hooks/useVisualViewport'
 import { focusComposerNow } from '../pages/chat/composerFocus'
+import { isQuickSearchToggleEvent } from '../lib/quickSearchShortcut'
 /**
  * Search Everywhere command palette.
  *
@@ -595,9 +596,15 @@ export default function CommandPalette({
       aria-label={i18nT('components.commandPalette.search_everywhere')}
       onMouseDown={onClose}
     >
-      {/* Containment only: the panel's onMouseDown performs no action, it just
-          keeps a press inside the panel from reaching the backdrop's dismiss.
-          Every control in here is a real input or button. */}
+      {/* Containment only: the panel's handlers perform no action. onMouseDown
+          keeps a press inside the panel from reaching the backdrop's dismiss;
+          onKeyDown keeps a key pressed inside it from reaching the page's
+          global shortcuts (bubble-phase `document` listeners such as the
+          Settings chord), as the shared `Modal` does for its panel. The
+          palette's own keys are handled by capture-phase listeners before they
+          bubble here. The one key let through is the quick-search gesture,
+          whose `window` listener toggles the palette shut. Every control in
+          here is a real input or button. */}
       {/* eslint-disable-next-line jsx-a11y/no-static-element-interactions -- stopPropagation barrier, not an activatable control; there is no behaviour for a keyboard to be given */}
       <div
         className="w-full max-w-xl mx-4 bg-card border border-border rounded-xl shadow-xl overflow-hidden flex flex-col"
@@ -609,6 +616,9 @@ export default function CommandPalette({
         // so the at-rest panel is unchanged.
         style={{ marginTop: Math.round(vv.height * 0.12), maxHeight: Math.round(vv.height * 0.70) }}
         onMouseDown={(e) => e.stopPropagation()}
+        onKeyDown={(e) => {
+          if (!isQuickSearchToggleEvent(e.nativeEvent)) e.stopPropagation()
+        }}
       >
         {/* Search input */}
         <div className="flex items-center gap-2 px-4 py-3 border-b border-border">
