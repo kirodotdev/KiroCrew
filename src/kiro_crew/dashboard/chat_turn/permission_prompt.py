@@ -23,7 +23,6 @@ from kiro_crew.dashboard.turn_dispatch import (
     format_approval_timeout_card,
 )
 from kiro_crew.hooks import HOOK_EVENT_PRE_TOOL_USE
-from kiro_crew.permission_floor import OUTCOME_REJECTED_TRANSPORT_FLOOR
 from kiro_crew.security.readonly_bash import (
     command_invokes_git,
     is_read_only_bash,
@@ -60,6 +59,7 @@ if TYPE_CHECKING:
         _steer_policy_notice,
     )
     from kiro_crew.dashboard.chat_turn.tool_approval import (
+        _audit_approve_refused,
         _deny_override_card_meta,
         _deny_waiver_kwargs,
         _note_override_used,
@@ -835,14 +835,8 @@ async def _on_permission_prompt(
             )
             approval_sent = await client.approve_tool(event.request_id, **_floor_waivers)
             if approval_sent is False:
-                sel().log_tool_invocation(
-                    session_key=session_key,
-                    agent=slot.agent or "kirocrew",
-                    source="dashboard",
-                    tool_name=_redact_display_text(event.title),
-                    tool_kind=event.tool_kind,
-                    outcome=OUTCOME_REJECTED_TRANSPORT_FLOOR,
-                    request_id=event.request_id,
+                _audit_approve_refused(
+                    client, sel, session_key=session_key, agent=slot.agent, event=event
                 )
                 return _Flow.CONTINUE
             _wt_note_approved(turn, event)

@@ -61,7 +61,7 @@ Design of record, including what each later phase moves in here:
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 # One name, because one name has a consumer: the dashboard handler that serves
 # ``GET /api/acp-backends``. The record types and the per-id projection stay inside
@@ -154,6 +154,27 @@ def session_start_concurrency() -> int:
     return _resolve()
 
 
+def take_batch_guard_refusal(client: Any, request_id: Any) -> str | None:
+    """The batch write guard's reason for the approval *client* just refused, taken once.
+
+    The SDK surface for a consumer that writes its own audit row when
+    ``approve_tool`` returns ``False`` and must tell a guard refusal from a
+    security-floor one. Imported lazily (the ACP package imports back into this
+    one at load time)."""
+    from kiro_crew.acp.batch_guard import take_client_refusal
+
+    return take_client_refusal(client, request_id)
+
+
+def batch_guard_refusal_outcome(reason: str | None) -> tuple[str, dict[str, str] | None]:
+    """The ``(outcome, metadata)`` an audit row should carry for a refused approval:
+    the guard's own labels when *reason* is a kept guard reason, the transport-floor
+    label otherwise."""
+    from kiro_crew.acp.batch_guard import refusal_outcome
+
+    return refusal_outcome(reason)
+
+
 TURN_STOP_REASON_CANCELLED = "cancelled"
 TURN_STOP_REASON_END_TURN = "end_turn"
 
@@ -167,6 +188,8 @@ class AgentTurnUsage(Protocol):
 
 __all__ = [
     "session_start_concurrency",
+    "take_batch_guard_refusal",
+    "batch_guard_refusal_outcome",
     "tool_row_text",
     "agents_dir_competing_claim",
     "ContextPromptProvider",

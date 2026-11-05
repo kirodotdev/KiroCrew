@@ -351,6 +351,7 @@ from kiro_crew.slack.handler_runtime.inbound import (  # noqa: F401
 )
 from kiro_crew.slack.handler_runtime.permission_ladder import (  # noqa: F401
     _answer_permission_request,
+    _batch_refusal_outcome,
     _reject_orphaned_tool,
     _request_approval,
     _screen_tool_call,

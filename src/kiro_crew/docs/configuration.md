@@ -730,6 +730,25 @@ edited on Settings → Browser and applies without a restart.
 | `skills.max_triggered` | Maximum skills loaded per message (>=0) | `0` |
 | `skills.lazy_load` | Inject a usage-ranked top-K of on-demand skills at session start, plus one line naming the families it leaves out, and leave the tail discoverable via search, so a large skills set cannot crowd out memory and lessons. Set false for the shorter entry that names eight skills. In both, the user's own skills take up to six of the first eight places and the highest-ranked remaining skills of either kind take the rest, so a new install names the skills its user wrote while a shipped skill with real usage keeps its name | `true` |
 
+### Hooks
+
+The `hooks` section holds script-hook definitions; two keys there are declared on
+the config schema (like `hooks.confirm_tools`), so they are recognized config
+settings with defaults and help, editable in `config.json`. Both are off by
+default:
+
+- **`hooks.batch_write_guard`** (boolean, default `false`). When on, refuse a
+  write-class tool call issued in the same parallel tool batch as a read-class
+  call, so the model cannot write arguments that quote a read it has not seen
+  returned yet; the write is rejected with a note to resend it once the reads
+  return. A discipline guard, not a security control: the security floor runs
+  first and is unchanged.
+- **`hooks.batch_write_guard_commands`** (list, default empty). Extra
+  write-command prefixes (for example `myctl apply`) the batch write guard treats
+  as write-class, for tools only a local install knows. Matched on the command's
+  program and subcommand words, never on argument text. No effect unless
+  `hooks.batch_write_guard` is on.
+
 ### MCP Gateway
 
 | Key | Description | Default |
