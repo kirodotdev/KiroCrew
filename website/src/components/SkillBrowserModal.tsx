@@ -6,7 +6,7 @@
  * in a two-pane layout: results list (left) + detail preview (right).
  * Keyboard-first: arrow keys move the selection, Enter installs.
  */
-import { useState, useCallback, useRef, useEffect, useMemo } from 'react'
+import { useState, useCallback, useRef, useEffect, useMemo, useId } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Download, Check, ExternalLink, Loader2, RefreshCw, FileText, AlertTriangle, ArrowLeft } from 'lucide-react'
 import { api, ApiError } from '../api/client'
@@ -53,7 +53,8 @@ export function providerFailureLines(outcomes: SkillProviderOutcome[]): string[]
 /** Per-skill install lifecycle for UI feedback. */
 type InstallPhase =
   | { step: 'installing' }
-  | { step: 'done'; fileCount: number; kind: string }
+  /** `reinstalled`: the Reinstall button replaced an installed copy. */
+  | { step: 'done'; fileCount: number; kind: string; reinstalled: boolean }
   | { step: 'conflict'; key: string }
   | { step: 'error'; message: string }
 
@@ -161,12 +162,17 @@ export default function SkillBrowserModal({ open, onClose }: Props) {
   }, [])
 
   const installMutation = useMutation({
-    mutationFn: ({ skill, overwrite }: { skill: DiscoveredSkill; overwrite?: boolean }) =>
+    mutationFn: ({ skill, overwrite }: { skill: DiscoveredSkill; overwrite?: boolean; reinstall?: boolean }) =>
       api.installDiscoveredSkill(skill.provider, skill.id, { overwrite }),
     onMutate: ({ skill }) => setPhase(skillKey(skill), { step: 'installing' }),
-    onSuccess: (result, { skill }) => {
+    onSuccess: (result, { skill, reinstall }) => {
       const key = skillKey(skill)
-      setPhase(key, { step: 'done', fileCount: result.file_count, kind: result.kind })
+      setPhase(key, {
+        step: 'done',
+        fileCount: result.file_count,
+        kind: result.kind,
+        reinstalled: !!reinstall && result.kind === 'updated',
+      })
       setInstalledOverride(prev => new Set(prev).add(key))
       queryClient.invalidateQueries({ queryKey: ['skills'] })
     },
@@ -180,8 +186,8 @@ export default function SkillBrowserModal({ open, onClose }: Props) {
     },
   })
 
-  const handleInstall = useCallback((skill: DiscoveredSkill, overwrite?: boolean) => {
-    installMutation.mutate({ skill, overwrite })
+  const handleInstall = useCallback((skill: DiscoveredSkill, overwrite?: boolean, reinstall?: boolean) => {
+    installMutation.mutate({ skill, overwrite, reinstall })
   }, [installMutation])
 
   // Keyboard navigation: ArrowDown/ArrowUp move selection, Enter installs
@@ -381,12 +387,15 @@ function InstallStatus({
   phase,
   onInstall,
   large,
+  reinstallHintId,
 }: {
   skill: DiscoveredSkill
   installed: boolean
   phase: InstallPhase | undefined
-  onInstall: (skill: DiscoveredSkill, overwrite?: boolean) => void
+  onInstall: (skill: DiscoveredSkill, overwrite?: boolean, reinstall?: boolean) => void
   large?: boolean
+  /** Id of the line saying Reinstall replaces the local copy, read with the button. */
+  reinstallHintId?: string
 }) {
   const iconSize = large ? 14 : 12
 
@@ -402,7 +411,9 @@ function InstallStatus({
     return (
       <span className="flex items-center gap-1 text-xs text-ok" role="status">
         <Check size={iconSize} aria-hidden="true" />
-        {phase.fileCount > 1 ? i18nT('components.skillBrowserModal.installed_files', { count: phase.fileCount }) : i18nT('components.skillBrowserModal.installed')}
+        {phase.reinstalled
+          ? (phase.fileCount > 1 ? i18nT('components.skillBrowserModal.reinstalled_files', { count: phase.fileCount }) : i18nT('components.skillBrowserModal.reinstalled'))
+          : (phase.fileCount > 1 ? i18nT('components.skillBrowserModal.installed_files', { count: phase.fileCount }) : i18nT('components.skillBrowserModal.installed'))}
       </span>
     )
   }
@@ -431,7 +442,10 @@ function InstallStatus({
     return (
       <span className="flex items-center gap-1.5">
         {badge}
-        <Btn onClick={(e: React.MouseEvent) => { e.stopPropagation(); onInstall(skill, true) }}>
+        <Btn
+          aria-describedby={reinstallHintId}
+          onClick={(e: React.MouseEvent) => { e.stopPropagation(); onInstall(skill, true, true) }}
+        >
           <RefreshCw size={iconSize} aria-hidden="true" />
           {i18nT('components.skillBrowserModal.reinstall')}
         </Btn>
@@ -460,7 +474,7 @@ function SkillDetailPanel({
   skill: DiscoveredSkill
   installed: boolean
   phase: InstallPhase | undefined
-  onInstall: (skill: DiscoveredSkill, overwrite?: boolean) => void
+  onInstall: (skill: DiscoveredSkill, overwrite?: boolean, reinstall?: boolean) => void
   /** Closes the modal once an agent hand-off proceeds, so the chat it navigates to is visible. */
   onHandoff: () => void
 }) {
@@ -485,6 +499,9 @@ function SkillDetailPanel({
   const stripDescription = parsed.meta.description || preview?.description || skill.description || ''
   const stripTriggers = parsed.meta.triggers ?? ''
   const stripTags = parsed.meta.tags || (skill.tags && skill.tags.length > 0 ? skill.tags.join(', ') : '')
+  // Reinstall overwrites the local copy at once, so the pane says so beside it.
+  const reinstallHintId = useId()
+  const showsReinstall = installed && (!phase || phase.step === 'error')
 
   return (
     <div className="pb-2">
@@ -496,9 +513,21 @@ function SkillDetailPanel({
           </span>
         </div>
         <div className="shrink-0">
-          <InstallStatus skill={skill} installed={installed} phase={phase} onInstall={onInstall} large />
+          <InstallStatus
+            skill={skill}
+            installed={installed}
+            phase={phase}
+            onInstall={onInstall}
+            large
+            reinstallHintId={showsReinstall ? reinstallHintId : undefined}
+          />
         </div>
       </div>
+      {showsReinstall && (
+        <p id={reinstallHintId} className="text-xs text-muted mb-1">
+          {i18nT('components.skillBrowserModal.reinstall_hint', { provider: skill.display_provider })}
+        </p>
+      )}
 
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted mb-3">
         {(preview?.author || skill.author) && <span>{i18nT('components.skillBrowserModal.by_author', { author: preview?.author || skill.author })}</span>}
