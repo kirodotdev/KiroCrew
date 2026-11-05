@@ -12,6 +12,7 @@ import os
 import socket
 import sys
 import urllib.error
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -895,6 +896,33 @@ class TestSpawnCliAuth:
         assert "spawn list" in out
         assert "gateway not running" not in out
 
+    def test_spawn_run_poll_timeout_reports_busy(self, monkeypatch, capsys):
+        """A result poll that times out reads as busy, not as a lost gateway."""
+        monkeypatch.setattr("kiro_crew.cli_commands.read_local_secret", lambda _port, **_kw: "s")
+        monkeypatch.setattr("kiro_crew.cli_commands._time", SimpleNamespace(sleep=lambda _s: None))
+        started = MagicMock()
+        started.read.return_value = b'{"id": "agent-1", "task": "hi"}'
+        started.__enter__ = MagicMock(return_value=started)
+        started.__exit__ = MagicMock(return_value=False)
+
+        def fake_send(req: urllib.request.Request, *_a: object) -> MagicMock:
+            if req.get_method() == "POST":
+                return started
+            raise TimeoutError("timed out")
+
+        monkeypatch.setattr("kiro_crew.cli_commands._gateway_send", fake_send)
+
+        from kiro_crew.cli_commands import _spawn_run
+
+        args = argparse.Namespace(task="do thing", fire_and_forget=False, port=5476)
+        with pytest.raises(SystemExit) as excinfo:
+            _spawn_run(args, "http://localhost:5476")
+        assert excinfo.value.code == 1
+        err = capsys.readouterr().err
+        assert "gateway on port 5476 is up but did not answer in time (busy)" in err
+        assert "spawn list" in err
+        assert "lost connection" not in err
+
     def _list_rows(self, monkeypatch, capsys, payload: dict) -> str:
         """Run ``spawn list`` against a canned gateway answer and return stdout."""
         monkeypatch.setattr("kiro_crew.cli_commands.read_local_secret", lambda _port, **_kw: "s")
@@ -1091,6 +1119,70 @@ class TestArtifactCli:
         assert excinfo.value.code == 1
         err = capsys.readouterr().err
         assert "refusing to read sensitive path" in err
+
+    @pytest.mark.parametrize(
+        ("action", "advice"),
+        [
+            ("list", "try again"),
+            ("save", "artifact list` before re-running"),
+            ("update", "artifact list` before re-running"),
+            ("delete", "artifact list` before re-running"),
+        ],
+    )
+    def test_timeout_reports_busy(
+        self,
+        action: str,
+        advice: str,
+        capsys: pytest.CaptureFixture,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A gateway that took the request and never answered is busy, not a bare timeout.
+
+        A read only asks for a retry; a write may land after the client gives up,
+        so it points at ``artifact list`` instead of a blind re-run.
+        """
+        err = self._artifact_error(action, TimeoutError("timed out"), capsys, monkeypatch)
+        assert "gateway on port 5476 is up but did not answer in time (busy)" in err
+        assert advice in err
+
+    def test_refused_connection_keeps_its_own_error(
+        self, capsys: pytest.CaptureFixture, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Only our own deadline reads as busy; a refused connection keeps its text."""
+        refused = urllib.error.URLError(ConnectionRefusedError("refused"))
+        err = self._artifact_error("list", refused, capsys, monkeypatch)
+        assert "refused" in err
+        assert "busy" not in err
+
+    def _artifact_error(
+        self,
+        action: str,
+        exc: Exception,
+        capsys: pytest.CaptureFixture,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> str:
+        """Run ``artifact <action>`` against a send that raises *exc*; return stderr."""
+        from kiro_crew.cli_commands import _artifact
+
+        monkeypatch.setattr("kiro_crew.cli_commands._client_port", lambda _p: 5476)
+        monkeypatch.setattr("kiro_crew.cli_commands.read_local_secret", lambda _p, **_kw: "s")
+        monkeypatch.setattr(
+            "kiro_crew.cli_commands._gateway_send", lambda *_a, **_k: (_ for _ in ()).throw(exc)
+        )
+        args = argparse.Namespace(
+            artifact_action=action,
+            slug="x",
+            name="x",
+            content="body",
+            content_file=None,
+            tags=None,
+            kind=None,
+            description=None,
+        )
+        with pytest.raises(SystemExit) as excinfo:
+            _artifact(args)
+        assert excinfo.value.code == 1
+        return capsys.readouterr().err
 
     def test_update_refuses_sensitive_content_file(
         self, capsys: pytest.CaptureFixture, monkeypatch: pytest.MonkeyPatch
