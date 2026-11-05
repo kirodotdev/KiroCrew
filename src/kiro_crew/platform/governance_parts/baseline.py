@@ -97,7 +97,8 @@ _OPEN = "open control (RFC D3): "
 
 BASELINE_UNGATED: Dict[str, str] = {
     "approval_mode": "ordinal; never item-queried, so Crew's own approval default applies",
-    "sandbox.min_level": "ordinal; the RFC appendix keeps Crew's current sandbox default",
+    "sandbox.min_level": "ordinal; unnamed keeps Crew's sandbox default, and the organisation's "
+    "crew_sandbox_min_level can only raise it (RFC D7)",
     "mcp": _OPEN + "MCP servers are meant to be governed by KAS and KGL",
     "tools": _OPEN + "a remote policy that names tools still decides; each call meets its own rows",
     "commands": _OPEN

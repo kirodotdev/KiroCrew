@@ -87,6 +87,14 @@ _HASH_PREFIX = "sha256:"
 _DISABLED_TAG = "/disabled/"
 _CONFIG_FIELDS = ("key", "value", "source", "composeBehavior")
 
+#: Which translation wrote a cached document, carried in its etag. A cached version is
+#: sent to the service only when its etag names this revision, so an upgraded build
+#: whose translation reads more of the reply gets a full answer instead of keeping an
+#: older build's document on ``UNCHANGED``. Bump it whenever :func:`translate` would
+#: turn the same reply into a different document. ``t1``: the reply's settings are read
+#: (RFC D7); an etag from before has no revision.
+TRANSLATION_REVISION = "t1"
+
 
 def _sign_in_remedy() -> str:
     return f"sign in with {_sign_in.sign_in_hint()}"
@@ -169,20 +177,22 @@ def fetch(request: pd.FetchRequest) -> pd.FetchedPolicy:
     sent_version = _version_for(request.etag, scope)
     raw = _post(url, identity, sent_version, request.timeout_secs)
     try:
-        status, version_id, policy = parse_envelope(raw, sent_version_id=sent_version)
+        status, version_id, policy, configuration = parse_envelope(
+            raw, sent_version_id=sent_version
+        )
     except EnterprisePolicyError as exc:
         if not exc.cause:
             # A malformed answer: the rules cannot be applied.
             _note_cause(_sign_in.CAUSE_BAD_RULES, str(exc))
         raise
-    etag = f"{scope}:{version_id}" if version_id else ""
+    etag = f"{scope}:{TRANSLATION_REVISION}/{version_id}" if version_id else ""
     if status == STATUS_UNCHANGED:
         return pd.FetchedPolicy(etag=etag, not_modified=True)
     if status == STATUS_DISABLED:
         document = neutral_document()
     else:
         try:
-            document = translate(policy or "")
+            document = translate(policy or "", configuration)
         except TranslationError as exc:
             raise EnterprisePolicyError(
                 f"the organisation's policy cannot be applied: {exc}", _sign_in.CAUSE_BAD_RULES
@@ -436,8 +446,15 @@ def _http_failure(exc: urllib.error.HTTPError) -> str:
     return f"the governance service answered HTTP {exc.code}{named}"
 
 
-def parse_envelope(raw: bytes, *, sent_version_id: str = "") -> Tuple[str, str, Optional[str]]:
-    """``(status, versionId, policy)`` from the control plane's answer, or raise."""
+def parse_envelope(
+    raw: bytes, *, sent_version_id: str = ""
+) -> Tuple[str, str, Optional[str], Tuple[Mapping[str, str], ...]]:
+    """``(status, versionId, policy, configuration)`` from the control plane's answer, or raise.
+
+    *configuration* is the reply's settings (``body.configuration``), parsed on every
+    ``ENABLED`` reply, with or without a hash, so a badly shaped entry refuses the reply
+    (RFC D7). It is ``()`` for every other status.
+    """
     try:
         envelope = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, ValueError):
@@ -456,14 +473,14 @@ def parse_envelope(raw: bytes, *, sent_version_id: str = "") -> Tuple[str, str, 
             _sign_in.CAUSE_NOT_ELIGIBLE,
         )
     if status == STATUS_DISABLED:
-        return STATUS_DISABLED, "", None
+        return STATUS_DISABLED, "", None, ()
     if status == STATUS_UNCHANGED:
         # Only an answer to the version this client sent keeps the cached copy.
         if not sent_version_id or version_id != sent_version_id:
             raise EnterprisePolicyError(
                 "the governance service reported no change for a version not sent"
             )
-        return STATUS_UNCHANGED, version_id, None
+        return STATUS_UNCHANGED, version_id, None, ()
     if status != STATUS_ENABLED:
         raise EnterprisePolicyError(
             f"the governance service answered an unknown status {str(status)[:40]!r}"
@@ -473,14 +490,14 @@ def parse_envelope(raw: bytes, *, sent_version_id: str = "") -> Tuple[str, str, 
     policy = body.get("policy")
     if not isinstance(policy, str):
         raise EnterprisePolicyError("the governance service's answer carries no policy")
+    configuration = _configuration(body.get("configuration"))
     declared = manifest.get("hash")
     if declared is not None:
-        configuration = _configuration(body.get("configuration"))
         if declared != _HASH_PREFIX + body_digest(policy, configuration):
             raise EnterprisePolicyError(
                 "the governance service's answer does not match its own sha256 hash"
             )
-    return STATUS_ENABLED, version_id, policy
+    return STATUS_ENABLED, version_id, policy, configuration
 
 
 def body_digest(policy: str, configuration: Tuple[Mapping[str, str], ...] = ()) -> str:
@@ -525,9 +542,19 @@ def profile_scope(profile_arn: str) -> str:
 
 
 def _version_for(etag: str, scope: str) -> str:
-    """The cached ``versionId`` to send, only when the cache is this profile's."""
-    prefix, sep, version = etag.partition(":")
-    return version if sep and prefix == scope else ""
+    """The cached ``versionId`` to send, only when the cache is this profile's and this
+    build's translation wrote it (:data:`TRANSLATION_REVISION`)."""
+    prefix, sep, rest = etag.partition(":")
+    if not sep or prefix != scope:
+        return ""
+    revision, slash, version = rest.partition("/")
+    return version if slash and revision == TRANSLATION_REVISION else ""
+
+
+def cached_version(etag: str) -> str:
+    """The service ``versionId`` an etag this module wrote carries, or ``""``."""
+    revision, slash, version = etag.partition(":")[2].partition("/")
+    return version if slash and revision == TRANSLATION_REVISION else ""
 
 
 def _encode(doc: Mapping[str, Any]) -> bytes:
