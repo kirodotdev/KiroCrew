@@ -61,6 +61,11 @@ export interface ChatConfig {
    *  so it is the user's call rather than something a client with no stored
    *  config inherits. */
   inlineMarkdown: boolean
+  /** Opt in to Send running "Optimize prompt" first: the first Send of a
+   *  draft leaves the rewrite in the composer for review, and the next Send
+   *  sends it. Default false: it adds an optimizer call before every
+   *  message, so it is the user's call. */
+  optimizeBeforeSend: boolean
   /** Opt in to giving a folder that holds nothing no body at all, so it costs one
    *  row instead of two. Default false: this changes how every empty folder in
    *  the sidebar reads, and the row it removes is the only labelled "New chat in
@@ -139,7 +144,7 @@ const LS_KEY = 'mc-chat-config'
  *  it. The sidebar's view toggle persists this flag BEFORE creating its first
  *  column, so a deliberate board user always has an explicit `true` stored and
  *  is unaffected by the default. */
-const DEFAULTS: ChatConfig = { historyExpanded: true, showTimestamps: true, showTurnStats: true, sendOnEnter: 'enter', collapseAllSteps: true, confirmCloseSession: false, simplifiedToolNames: true, contentWidth: 'compact', tagColumnsEnabled: false, fileChipStyle: 'expanded', followUpLayout: 'scroll', streamMode: 'smooth', showContextPct: false, showContextTokens: false, pinLastPrompt: true, hideEmptyFolderBody: false, sidebarClickOpensTab: false, spellcheck: true, inlineMarkdown: false, showFullPastes: false, toolCallsStartExpanded: false, doubleClickToEdit: false, scrollOnSend: true, dimInactivePanes: true, minimapSide: 'left', messageFontSize: DEFAULT_MESSAGE_FONT_SIZE, fullTitlesOnScroll: false, sessionTitleLines: 1, sessionPreviewLines: 1 }
+const DEFAULTS: ChatConfig = { historyExpanded: true, showTimestamps: true, showTurnStats: true, sendOnEnter: 'enter', collapseAllSteps: true, confirmCloseSession: false, simplifiedToolNames: true, contentWidth: 'compact', tagColumnsEnabled: false, fileChipStyle: 'expanded', followUpLayout: 'scroll', streamMode: 'smooth', showContextPct: false, showContextTokens: false, pinLastPrompt: true, hideEmptyFolderBody: false, sidebarClickOpensTab: false, spellcheck: true, inlineMarkdown: false, optimizeBeforeSend: false, showFullPastes: false, toolCallsStartExpanded: false, doubleClickToEdit: false, scrollOnSend: true, dimInactivePanes: true, minimapSide: 'left', messageFontSize: DEFAULT_MESSAGE_FONT_SIZE, fullTitlesOnScroll: false, sessionTitleLines: 1, sessionPreviewLines: 1 }
 
 const clampMessageFontSize = (n: number): number =>
   Math.max(MIN_MESSAGE_FONT_SIZE, Math.min(MAX_MESSAGE_FONT_SIZE, Math.round(n)))
@@ -180,6 +185,7 @@ export function loadChatConfig(): ChatConfig {
     // composer draws the browser's red spellcheck underlines.
     if (typeof cfg.spellcheck !== 'boolean') cfg.spellcheck = true
     if (typeof cfg.inlineMarkdown !== 'boolean') cfg.inlineMarkdown = false
+    if (typeof cfg.optimizeBeforeSend !== 'boolean') cfg.optimizeBeforeSend = false
     // Coerced, not trusted: a stored non-boolean would otherwise make the empty
     // folder shape depend on a truthy string.
     if (typeof cfg.hideEmptyFolderBody !== 'boolean') cfg.hideEmptyFolderBody = false

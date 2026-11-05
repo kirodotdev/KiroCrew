@@ -1332,6 +1332,17 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "chat.optimize-before-sending",
+    "label": "Optimize Before Sending",
+    "labelKey": "pages.settings.chatPanel.optimize_before_sending",
+    "tab": "chat",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "composer"
+    }
+  },
+  {
     "id": "chat.pin-summary-in-side-panel",
     "label": "Pin Summary in Side Panel",
     "labelKey": "pages.settings.chatPanel.side_panel_pin_summary",

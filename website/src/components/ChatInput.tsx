@@ -82,7 +82,7 @@ import { ESCAPE_PRIORITY, useEscapeLayer } from '../hooks/useEscapeLayer'
 import { INPUT_DRAG_MIN_H, useManualHeight, useStripHeights, useTextareaAutosize } from './chat-input/sizing'
 import { usePromptHistory } from './chat-input/draftHistory'
 import { useUndoHistory } from '../chat-core/composer/undoHistory'
-import { usePromptOptimizer } from './chat-input/optimizer'
+import { useOptimizeBeforeSend, usePromptOptimizer } from './chat-input/optimizer'
 import { usePasteTokens } from '../chat-core/composer/pasteEditor'
 import { FilePreviewStrip } from './chat-input/FilePreviewStrip'
 import { RaisedBy, TypingLockBanner } from './chat-input/TypingLockBanner'
@@ -676,7 +676,7 @@ function ChatInput({
     setTextareaRef(textarea)
     attachListContinuation(textarea)
   }, [setTextareaRef, attachListContinuation])
-  const { optimizeError, setOptimizeError, optimizePending, optimizing, optimizePrompt, cancelOptimize } = usePromptOptimizer({
+  const { optimizeError, setOptimizeError, optimizePending, optimizing, optimizePrompt, cancelOptimize, optimizeBusy, sayBusy } = usePromptOptimizer({
     slotId, chatStore, valueRef, pasteBlocks, onChange, onOptimizeResult, lexicalComposer, lexicalLoadFailed, composerControl, inputRef,
     valueFromUserRef, optimizingRef, appendUndoBoundary: appendBoundary, terminalCommands, optimizerMentionGuard,
     composerDisabled: disabled || typingLocked,
@@ -684,8 +684,13 @@ function ChatInput({
   useEffect(() => { onOptimizingChange?.(optimizing) }, [optimizing, onOptimizingChange])
   // A locked composer (a memory-mode switch is moving its draft) must not
   // start an optimize: the rewrite would land in the slot being deleted.
-  // Every entry -- button, textarea chord, Lexical chord -- goes through here.
-  const optimizeUnlessLocked = useCallback(() => { if (!disabled) optimizePrompt() }, [disabled, optimizePrompt])
+  // Every optimize entry, Send included, goes through here.
+  const optimizeUnlessLocked = useCallback(() => !disabled && optimizePrompt(), [disabled, optimizePrompt])
+  // Enter, Send and the Lexical send; every other send keeps today's path.
+  const sendOrOptimize = useOptimizeBeforeSend({
+    enabled: promptOptimizer && connected && !disabled && !terminal.active && !isRunning && !typingLocked && !voiceTranscribing && !holdSend,
+    slotId, value, optimize: optimizeUnlessLocked, onBusy: sayBusy, send: fireComposer,
+  })
   // A file-tree row dropped here goes to the host's "Add to chat" handler;
   // OS file and text drags fall through to the host's handlers.
   // A typing-locked composer takes no drop at all: a tree row, a folder path
@@ -749,7 +754,7 @@ function ChatInput({
   })
   const handleKeyDown = useComposerKeyDown({
     rawPasteRef, handleUndoKey, endUndoBurst, handleTokenKey, onMentionKey, promptOptimizer: promptOptimizer && !terminal.active, connected, optimizePrompt: optimizeUnlessLocked, sendOnEnter, onChange, valueFromUserRef, optimizingRef,
-    fireComposer, ime, sentMessages, onEditLastRequest, anyPickerOpenRef, promptHistory, valueRef, inputRef, pasteBlocksRef, stopTurnOnEscape,
+    fireComposer: sendOrOptimize, ime, sentMessages, onEditLastRequest, anyPickerOpenRef, promptHistory, valueRef, inputRef, pasteBlocksRef, stopTurnOnEscape,
   })
   const { handleTextareaChange, handleLexicalChange, beforeInputRef } = useEditorInput({ onChange, valueFromUserRef, openPickersForText, recordCaret, lexicalControlRef, voiceCaretRef, mentionEditRange, inputRef })
   // Compose the textarea ref: the existing wiring (autosize + list continuation)
@@ -1232,6 +1237,9 @@ function ChatInput({
           />
         </div>
       )}
+      {optimizeBusy && (
+        <div role="status" data-testid="optimize-busy" className="px-4 mb-1 text-muted text-[13px]">{optimizeBusy}</div>
+      )}
       {approvalNotice && approvalNoticeKind === 'error' && (
         <div className="px-4 mb-1">
           {/* No hand-off: the composer draft below is unsaved. */}
@@ -1476,7 +1484,7 @@ function ChatInput({
                 onChange={handleLexicalChange}
                 onBlocksChange={onPasteBlocksChange}
                 showFullPastes={showFullPastes}
-                onSend={fireComposer}
+                onSend={sendOrOptimize}
                 onOptimizeChord={lexicalOptimizeChord}
                 onUploadFiles={onUploadFiles}
                 controlRef={lexicalControlRef}
@@ -1807,7 +1815,7 @@ function ChatInput({
               ) : (
               <button
                 className="primary w-8 h-8 rounded-full bg-accent text-accent-fg border-none flex items-center justify-center cursor-pointer hover:bg-accent-hover disabled:opacity-30 disabled:cursor-not-allowed transition-all"
-                onClick={fireComposer}
+                onClick={sendOrOptimize}
                 disabled={(!value.trim() && !pendingFiles.length && !hasSessionRefs && !hasQuote) || disabled || holdSend || optimizing || !connected}
                 title={holdSend ? holdSendReason : undefined}
                 aria-label={i18nT('components.chatInput.send')}
