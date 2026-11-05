@@ -850,6 +850,7 @@ class AcpClient:
     _pooled_mcp_servers = _client_mcp_array._pooled_mcp_servers
     _resolve_session_mcp_servers = _client_mcp_array._resolve_session_mcp_servers
     _mirrorless_member_mounts = _client_mcp_array._mirrorless_member_mounts
+    _broker_only_spec_mounts = _client_mcp_array._broker_only_spec_mounts
     _pooled_broker_stubs = _client_mcp_array._pooled_broker_stubs
     _append_member_dispatch_server = _client_mcp_array._append_member_dispatch_server
     _member_mount_withheld = _client_mcp_array._member_mount_withheld
