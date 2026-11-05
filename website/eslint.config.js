@@ -231,7 +231,6 @@ export default [
     // dialog is gone, never add one. Keep it sorted.
     files: [
       'src/apps/auto-improvement/AutoImprovementPage.tsx',
-      'src/apps/auto-research/ResearchLabPage.tsx',
       'src/apps/design-tweak/DesignTweakPage.tsx',
       'src/apps/meetings/MeetingView.tsx',
       'src/apps/meetings/MeetingsPage.tsx',
@@ -242,13 +241,11 @@ export default [
       'src/pages/ArtifactDetailPage.tsx',
       'src/pages/ArtifactsPage.tsx',
       'src/pages/ChannelPage.tsx',
-      'src/pages/ProjectsPage.tsx',
       'src/pages/knowledge/DetailView.tsx',
       'src/pages/knowledge/SourcesList.tsx',
       'src/pages/knowledge/index.tsx',
       'src/pages/members/MembersPage.tsx',
       'src/pages/members/NewCrewmateDialog.tsx',
-      'src/pages/overview/AgentCfgTab.tsx',
       'src/pages/overview/AgentTemplatesTab.tsx',
       'src/pages/overview/KiroCrewCfgTab.tsx',
       'src/pages/overview/MemoryTab.tsx',
