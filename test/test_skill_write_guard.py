@@ -533,5 +533,5 @@ class TestUpdateRefusesAStaleBase:
         response = await prompts.api_skill_detail(request)
 
         assert response.status == 404
-        assert json.loads(response.body) == {"error": "not found"}
+        assert json.loads(response.body) == {"error": "not found", "code": "skill_not_found"}
         loader.update_skill.assert_not_called()
