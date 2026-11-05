@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, waitFor, act } from '@testing-library/react'
+import { render, screen, waitFor, act, within } from '@testing-library/react'
+import { confirmAction } from './confirmAction'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
@@ -89,14 +90,34 @@ afterEach(() => {
 })
 
 describe('KnowledgePage — a row checked while a bulk action runs', () => {
+  it('deletes the confirmed selection when another row is checked before answering', async () => {
+    renderPage()
+    await userEvent.type(await screen.findByPlaceholderText(/Search knowledge/i, {}, PAGE_REQUEST_CHAIN()), 'ledger{Enter}')
+    await userEvent.click(await screen.findByLabelText(`Select ${ACTED_ON.title}`, {}, PAGE_REQUEST_CHAIN()))
+    await userEvent.click(screen.getByRole('button', { name: 'Delete' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Delete' })
+    expect(within(dialog).getByText('Delete 1 item permanently?', { selector: 'p' })).toBeInTheDocument()
+    await userEvent.click(screen.getByLabelText(`Select ${PICKED_LATER.title}`))
+    expect(screen.getByText('2 selected')).toBeInTheDocument()
+    await confirmAction('Delete')
+    await waitFor(() => expect(releaseHeld).not.toBeNull(), PAGE_REQUEST_CHAIN())
+    expect(mockKnowledgeApi.mock.calls.filter(([, opts]) => opts?.method === 'DELETE').map(([path]) => path))
+      .toEqual([`/items/${ACTED_ON.id}`])
+    await act(async () => { releaseHeld!() })
+    expect(await screen.findByText('1 selected', {}, PAGE_REQUEST_CHAIN())).toBeInTheDocument()
+    expect(screen.getByLabelText(`Select ${PICKED_LATER.title}`)).toBeChecked()
+  })
+
   for (const action of ['Delete', 'Archive'] as const) {
     it(`${action}: the later pick is still selected when the action lands`, async () => {
-      vi.stubGlobal('confirm', vi.fn(() => true))
       renderPage()
       await userEvent.type(await screen.findByPlaceholderText(/Search knowledge/i, {}, PAGE_REQUEST_CHAIN()), 'ledger{Enter}')
       await userEvent.click(await screen.findByLabelText(`Select ${ACTED_ON.title}`, {}, PAGE_REQUEST_CHAIN()))
       expect(await screen.findByText('1 selected', {}, PAGE_REQUEST_CHAIN())).toBeInTheDocument()
       await userEvent.click(screen.getByRole('button', { name: action }))
+      if (action === 'Delete') {
+        await confirmAction('Delete')
+      }
       await waitFor(() => expect(releaseHeld).not.toBeNull(), PAGE_REQUEST_CHAIN())
 
       // The acted-on row is hidden while the write runs; check the other one.
