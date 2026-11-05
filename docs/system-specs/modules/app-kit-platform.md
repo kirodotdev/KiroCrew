@@ -4843,7 +4843,7 @@ change lands in its owner.
 | `registry_pipeline/catalog.py` | The store listing and lookups: seed, catalog and external precedence, install status, trust fields, refresh, and the row and candidate resolution install and consent go through |
 | `registry_pipeline/install_desktop_gate.py` | The desktop build-step verdict (`_desktop_build_refusal`) and its code `DESKTOP_BUILD_STEP_UNSUPPORTED`, judged on the copy the install would produce (`_installed_tree_preview`) with the runtime's own provisioning predicates, and the build step's probe of it (`_desktop_gate_probe`) |
 | `registry_pipeline/install_rollback.py` | Putting a refused checkout back: the rejected-checkout rollback (`_unpoison_rejected_checkout`), the layout snapshot taken before `onInstall` (`_desktop_layout_present`), and the post-script removal or set-aside of the layout files the script created (`_roll_back_post_script_refusal`) |
-| `registry_pipeline/install_clone.py` | Clone and build under the per-app lock: clone or pull, the identity and admission gates before the build (`_refuse_identity_mismatch`), the facade's build step, the restore of a same-origin previous checkout when the build fails, the verb-named refusal lines (`_refusal_line`), and the report of the move-asides the install's exits leave retained (`_report_retained_stale_checkouts`) |
+| `registry_pipeline/install_clone.py` | Clone and build under the per-app lock: clone or pull, the identity, admission and downgrade gates before the build (`_refuse_identity_mismatch`, `_downgrade_refusal`), the facade's build step, the restore of a same-origin previous checkout when the build fails, the verb-named refusal lines (`_refusal_line`), and the report of the move-asides the install's exits leave retained (`_report_retained_stale_checkouts`) |
 | `registry_pipeline/install.py` | The install transaction: every gate before repository bytes run, the clone and build through `install_clone`, the sandboxed `setup.onInstall` run, the checks after the build and after the script, registration, provenance, and the single restore-and-report `finally` |
 | `registry_git_preflight.py` | Outside the pipeline order, importing nothing from it: whether `git` resolves on the `PATH` every registry git spawn inherits (`git_unavailable_refusal`, code `git_unavailable`). `install.py` asks it once the row's clone URL is known, before the trust gate, and the registry branch of the update route asks it before it stops the backend |
 
@@ -5896,6 +5896,24 @@ the record stays adopted, is never re-registered or re-adopted, and a
 `minKiroCrewVersion` newer than the host shows `hostTooOld`. There is no automatic
 revert: rewriting a newer record back to `origin=builtin` would run older code over
 data a newer version may have migrated.
+
+**An update never installs an older version.** The same holds for the app itself,
+for every registry app and not only a former built-in: a catalog row can fall
+behind the installed record (a catalog rollback, or a pin bumped ahead of the
+catalog), and a Sync, an update or a registry re-install would then run older code
+over the same data. `install_clone._downgrade_refusal` compares the cloned
+manifest's `version` with the installed record's after the admission gate and
+before the build or `onInstall` runs. An older one is refused with code
+`would_downgrade` and a sentence naming both versions, the checkout is put back the
+way an admission refusal puts it back, and the update route restores the stopped
+app, so the installed version keeps its tree, record and commit. The comparison is
+`catalog._version_newer`, the one the store's `updateAvailable` uses: a pre-release
+of the installed release is older, a re-sync of the same version passes, and a
+version either side cannot read is never refused. A fresh install has no record
+to compare. A local `kirocrew app update --source DIR` is not compared: it installs
+the tree the operator named. There is no override; whether a deliberate catalog
+rollback gets one is a maintainer decision. Pinned by
+`TestDowngradeGateRefusesAnOlderVersionBeforeTheBuild`.
 
 **Security residual (recorded, not fenced).** Before adoption the app's in-process
 Python lived in the read-only installed package; after it, it lives in

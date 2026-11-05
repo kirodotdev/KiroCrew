@@ -2,8 +2,9 @@
 
 An index ``subdirectory`` that escapes the checkout is refused and the refusal never
 writes outside it, the manifest restore re-validates the subdirectory at write time,
-and the containment, identity and admission refusals restore only the restorable
-stale checkouts (``_restorable_stale``).
+the containment, identity and admission refusals restore only the restorable
+stale checkouts (``_restorable_stale``), and an update to a version older than the
+installed one is refused before the build.
 
 ``test_external_registry.py`` holds the index cache, fetch and lookup tests and names
 every sibling; shared fixtures live in ``external_registry_helpers.py``.
@@ -806,3 +807,80 @@ class TestAdmissionGatePreBuildRestoreFromRespectsRestorableStale:
         assert not stale_dir.exists(), "the restorable stale is renamed back into pkg_dir"
         assert app_source.exists()
         assert (app_source / "my-work.txt").read_text(encoding="utf-8") == "important"
+
+
+class TestDowngradeGateRefusesAnOlderVersionBeforeTheBuild:
+    """A registry update whose cloned manifest is older than the installed record is
+    refused with ``would_downgrade`` before the build or ``onInstall`` runs, and the
+    checkout is put back, so the installed version keeps its tree and its commit.
+    """
+
+    @staticmethod
+    def _fake_clone(version):
+        async def _clone(git_url, branch, dest, log_lines, **kwargs):
+            dest.mkdir(parents=True, exist_ok=True)
+            (dest / "app.json").write_text(
+                json.dumps({"name": "testapp", "version": version}), encoding="utf-8"
+            )
+            return None
+
+        return _clone
+
+    async def _run(self, tmp_path, *, installed, incoming):
+        from kiro_crew.apps.registry import _clone_build_app
+
+        app_source = tmp_path / "app-sources" / "testapp"
+        record = None if installed is None else {"name": "testapp", "version": installed}
+        build = AsyncMock(return_value={"ok": True})
+        log_lines: list[str] = []
+        with (
+            patch("kiro_crew.apps.registry.app_source_dir", return_value=app_source),
+            patch("kiro_crew.apps.registry._git_clone_or_pull", new=self._fake_clone(incoming)),
+            patch("kiro_crew.apps.registry.app_admission_denied", return_value=None),
+            patch("kiro_crew.apps.registry.get_app", return_value=record),
+            patch("kiro_crew.apps.registry._run_app_build", new=build),
+            patch("kiro_crew.apps.registry.sel"),
+        ):
+            result = await _clone_build_app(
+                "https://example.com/app.git", "testapp", log_lines, verb="update"
+            )
+        return result, build, app_source, log_lines
+
+    @pytest.mark.asyncio
+    async def test_an_older_version_is_refused_and_never_built(self, tmp_path):
+        result, build, app_source, log_lines = await self._run(
+            tmp_path, installed="1.0.1", incoming="1.0.0"
+        )
+
+        assert result["ok"] is False
+        assert result["code"] == "would_downgrade"
+        assert "v1.0.0 is older than the installed v1.0.1" in result["error"]
+        build.assert_not_awaited()
+        assert not app_source.exists(), "the refused clone this run made is removed"
+        assert f"Refusing update: {result['error']}" in log_lines
+
+    @pytest.mark.asyncio
+    async def test_a_prerelease_of_the_installed_release_is_older(self, tmp_path):
+        result, build, _, _ = await self._run(tmp_path, installed="1.0.0", incoming="1.0.0-rc.1")
+
+        assert result.get("code") == "would_downgrade"
+        build.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("installed", "incoming"),
+        [
+            ("1.0.0", "1.0.0"),  # a re-sync of the same version
+            ("1.0.0", "1.0.1"),  # an upgrade
+            ("1.0.0-rc.1", "1.0.0"),  # the final build of an installed pre-release
+            (None, "0.1.0"),  # a fresh install has no record to compare
+            ("", "0.1.0"),  # a record with no version is not compared
+            ("latest", "0.1.0"),  # nor one whose version is not a version
+        ],
+    )
+    async def test_anything_not_older_still_builds(self, tmp_path, installed, incoming):
+        result, build, _, _ = await self._run(tmp_path, installed=installed, incoming=incoming)
+
+        assert result["ok"] is True
+        assert "code" not in result
+        build.assert_awaited_once()
