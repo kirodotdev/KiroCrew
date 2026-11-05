@@ -334,6 +334,7 @@
     "lib.sttProviders.downloading_decoder": "Progress line on the Voice settings page while the audio decoder (ffmpeg) is being fetched. Deliberately a separate key from the speech-model bar beside it, because both transfers can run at once and each has to name what it is downloading.",
     "pages.appDetailPage.more_actions": "Accessible name of the overflow menu button beside Enable on the app detail page of a disabled self-managed app; {{name}} is the app's display name. Read by screen readers, not shown on screen.",
     "pages.appDetailPage.github_stars": "aria-label on the star icon beside the abbreviated GitHub stargazer count in the app detail page's hero subtitle. GitHub repository stars, not a rating.",
+    "pages.appDetailPage.managed_by_app": "Value word in the app detail page's Details row \"Origin: … | Resources: {{resources}} | Lifecycle: {{lifecycle}}\": the installed app itself manages its resources or lifecycle (as opposed to the gateway). A software application, not a verb.",
     "pages.appDetailPage.github_stars_2": "Row label in the app detail page's Details metadata card, with the exact stargazer count interpolated as {{value}}. GitHub repository stars, not a rating.",
     "pages.appDetailPage.v": "The \"v\" that prefixes a version number, rendered immediately before the digits with no space (`v1.2.3`). Most languages leave this untranslated.",
     "pages.appsPage.v": "The \"v\" that prefixes a version number, rendered immediately before the digits with no space (`v1.2.3`). Most languages leave this untranslated.",
