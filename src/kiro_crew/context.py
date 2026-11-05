@@ -1107,10 +1107,16 @@ def _agent_includes_crew_context(agent: str | None) -> bool:
     """
     if not agent or agent == "kirocrew":
         return True
-    cached = _INCLUDE_CREW_CONTEXT_CACHE.get(agent)
+    from kiro_crew import agent_spec_pins
+
+    # Keyed with the pin folded in, from one snapshot that also drives the read: a
+    # pin change picks another file, whose flag may differ.
+    pins = agent_spec_pins.spec_pins()
+    key = agent_spec_pins.pinned_memo_key(agent, pins)
+    cached = _INCLUDE_CREW_CONTEXT_CACHE.get(key)
     if cached is None:
-        cached = _read_include_crew_context(agent)
-        _INCLUDE_CREW_CONTEXT_CACHE[agent] = cached
+        cached = _read_include_crew_context(agent, pins)
+        _INCLUDE_CREW_CONTEXT_CACHE[key] = cached
     return cached
 
 

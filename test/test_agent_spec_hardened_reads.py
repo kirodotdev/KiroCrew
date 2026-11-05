@@ -1022,6 +1022,12 @@ class TestProjectFilesDenialAttribution:
 # Forwarding helpers are pinned as forwarding rather than forced to use a fixed
 # literal that would erase the caller's attribution.
 _EXPECTED_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
+    # The pin target check of ``kirocrew agent pin`` and the dashboard's pin routes,
+    # and the listing of contested names both surfaces show.
+    "kiro_crew/agent_spec_pin_ops.py": [
+        ("agent_spec_pin", "cli"),
+        ("agent_spec_pin", "dashboard"),
+    ],
     # One read: the launch loop reads each authored spec to project it. Alias
     # reclaim is keyed on lease liveness and reads no authored source.
     "kiro_crew/acp/skill_projection_parts/preparation.py": [
@@ -1317,6 +1323,9 @@ def _labelled_call_sites(target: str) -> dict[str, list[tuple[str | None, str | 
 # surface triggered a denial. Callers therefore name themselves at the call
 # site, and the wrapper's own `_read_agent_spec` call is pinned as forwarding.
 _EXPECTED_PARSED_SPECS_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
+    # Which declared names two or more specs claim, so their view's source is the
+    # declared-name resolver's answer with ``agent.spec_pins`` applied.
+    "kiro_crew/acp/skill_projection_parts/preparation.py": [("native_skill_projection", "acp")],
     "kiro_crew/agent_discovery_parts/skill_scope.py": [("agent_skill_globs", "unknown")],
     # ``cached_agent_specs`` is the on-loop face of the same snapshot: it
     # forwards its caller's labels into the pool-side refresh, so the surface
@@ -1425,11 +1434,29 @@ _EXPECTED_LINKED_TEMPLATE_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
 }
 _EXPECTED_DECLARED_ENTRY_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
     "kiro_crew/agent_discovery_parts/spec_reads.py": [("forward:operation", "forward:source")],
-    "kiro_crew/member_essential_context.py": [("forward:operation", "forward:source")],
 }
 
 
+_EXPECTED_DECLARED_CLAIM_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
+    # The kiro-cli view's source for a contested name, and the launch refusal for
+    # handing kiro-cli the authored name of one.
+    "kiro_crew/acp/skill_projection_parts/preparation.py": [("native_skill_projection", "acp")],
+    "kiro_crew/agent_discovery_parts/agent_roster.py": [("agent_welcome_message", "unknown")],
+    "kiro_crew/agent_discovery_parts/spec_reads.py": [("forward:operation", "forward:source")],
+    "kiro_crew/agent_discovery_parts/skill_scope.py": [("agent_skill_globs", "unknown")],
+    "kiro_crew/agent_materialization/fork_refresh.py": [("kiro_cli_launch_pin", "acp")],
+    # The fenced linked-template read, and its unfenced check that the fence did
+    # not set the pinned claimant aside.
+    "kiro_crew/member_essential_context.py": [
+        ("forward:operation", "forward:source"),
+        ("forward:operation", "forward:source"),
+    ],
+    # The file a path reader and the pooled overlay follow for a pinned name.
+    "kiro_crew/agent_parts/spec_lookup.py": [("session_agent_spec_path", "unknown")],
+    "kiro_crew/mcp_gateway/session_servers.py": [("mcp_overlay_pin", "unknown")],
+}
 _RATCHET_INVENTORY: dict[str, dict[str, list[tuple[str, str]]]] = {
+    "declared_spec_claim": _EXPECTED_DECLARED_CLAIM_CALL_SITE_LABELS,
     "declared_spec_entry": _EXPECTED_DECLARED_ENTRY_CALL_SITE_LABELS,
     "linked_global_template_spec": _EXPECTED_LINKED_TEMPLATE_CALL_SITE_LABELS,
     "read_template_spec": _EXPECTED_TEMPLATE_SPEC_CALL_SITE_LABELS,

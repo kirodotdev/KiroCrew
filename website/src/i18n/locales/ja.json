@@ -12030,7 +12030,19 @@
         "repair_images_done_not_resumed": "画像を修復しました。返信を続けるには「再開」を押してください。",
         "repair_images_failed": "1 つのチャットで画像を 2 回修復することはできません。続けるには新しいセッションを開始してください — このチャットは保持され、アシスタントは要約から続行します。",
         "repair_images_not_persistent": "プライベートまたは一時的なチャットでは画像を修復できません。再読み込みすると履歴が消去されるためです。続けるには新しいセッションを開始してください。",
-        "repair_images_retry_hint": "今回は問題が発生したため、1 回分の修復は使用されていません — もう一度試すには「画像を修復して再開」を押してください。"
+        "repair_images_retry_hint": "今回は問題が発生したため、1 回分の修復は使用されていません — もう一度試すには「画像を修復して再開」を押してください。",
+        "spec_choice_title": "インストール済みの複数のパッケージが {{agent}} という名前のエージェントを含み、内容が異なります。使うものを1つ選んでください。",
+        "spec_choice_broken": "{{agent}} に選んだファイル {{file}} は見つからないか、別のエージェントになっています。使うものを1つ選んでください。",
+        "spec_choice_use": "これを使う",
+        "spec_choice_use_label": "{{agent}} に {{file}} を使う",
+        "spec_choice_package": "パッケージ: {{package}}",
+        "spec_choice_package_unknown": "パッケージ不明",
+        "spec_choice_modified": "更新 {{date}}",
+        "spec_choice_differs": "他のファイルとの違い: {{fields}}",
+        "spec_choice_more": "{{agent}} を宣言するファイルがほかに {{count}} 個あり、ここには表示していません。次のコマンドで1つを選べます: kirocrew agent pin {{agent}} <file>",
+        "spec_choice_done_resuming": "今後 {{agent}} には {{file}} を使います。セッションを再開しています。後で kirocrew agent pin で変更できます。",
+        "spec_choice_done": "今後 {{agent}} には {{file}} を使います。メッセージをもう一度送信して開始してください。後で kirocrew agent pin で変更できます。",
+        "spec_choice_failed": "選択を保存できませんでした"
       },
       "folderPanel": {
         "clear_search": "検索をクリア",

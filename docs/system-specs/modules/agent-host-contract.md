@@ -109,6 +109,31 @@ validation strictness, whether bookkeeping may live in-spec, its
 shadowing/selection rules, its hook-event vocabulary, whether it can resolve an
 `"auto"` model, and its protocol-version shape.
 
+**One name, several files.** A package installer namespaces each agent it ships as
+`<package>-<name>.json` and keeps the declared `name` bare, so two packages can install
+differing specs under one name. Kiro Crew never picks among them. The operator pins one
+with `agent.spec_pins: {"<name>": "<file name>"}` (`kirocrew agent pin <name> <file>`,
+or the chat's chooser card, `PUT /api/agent-spec-pins/{agent}`); a pin is a bare file
+name, so it survives the package's updates. Every reader resolves through the one
+declared-name resolver (`agent_discovery.declared_spec_claim`, `agent.session_agent_spec_path`
+for a reader that needs a path, `agent_spec_pins.pick_spec_row` for first-match model and
+flag lookups): with no pin, differing claimants are refused with the pin command for each
+file; a pin naming none of them is refused and never falls back; identical claimants
+still pass; a pin on a name with one claimant is ignored. KAS takes the pinned file's
+projection over the wire. kiro-cli resolves a name it is handed itself, so for a contested
+name it is handed only a skill view built from the pinned file (`acp/skill_projection`);
+handing it the authored name of a contested agent is refused
+(`fork_refresh.require_launch_resolves_one_file`, run inside the over-ceiling start
+check at every spawn, mode switch and session start). A pin is read at each session
+start, so a new session (the card's retry
+included) runs the pinned file; a running session's later spec reads (its spawn allowlist and tool policy) follow the current pin, as they follow an edit to the file itself. Prompt and member-essential readers use
+`session_agent_spec_path` in both user and mate scope, and read-only side sessions
+read their base through the same path resolver. User-level skill scope resolves
+`declared_spec_claim` from the hardened parsed-spec snapshot, preserving its warm-read
+cache while applying the current pin on each lookup; the selected file anchors relative
+skill URIs. A project spec still takes precedence over a user-level pin. Strict skill
+scope refuses an ambiguous or broken choice rather than using another claimant's mapping.
+
 **A spec built for one session.** A crewmate's worker runs a spec built per
 session: the source-defined `kirocrew-mate-worker` base (generated, with the
 conductor, into `~/.kiro/mates/agents/`, which kiro-cli does not list) plus that crewmate's

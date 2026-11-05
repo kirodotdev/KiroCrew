@@ -521,7 +521,7 @@ def _read_base_spec(base_name: str, project_dir: str | None) -> tuple[dict[str, 
     path (``kiro_crew.agent`` is heavy and imports the ACP stack) and out of an
     import cycle with ``agent_discovery``.
     """
-    from kiro_crew.agent import agent_spec_path
+    from kiro_crew.agent import session_agent_spec_path
     from kiro_crew.agent_discovery import _read_agent_spec, project_agent_files, project_agent_name
     from kiro_crew.member_essential_context import linked_global_template_spec
 
@@ -539,7 +539,7 @@ def _read_base_spec(base_name: str, project_dir: str | None) -> tuple[dict[str, 
                     )
                 return data, str(Path(project_dir).resolve())
     try:
-        user_path = agent_spec_path(base_name)
+        user_path = session_agent_spec_path(base_name)
         linked = (
             None
             if user_path is not None

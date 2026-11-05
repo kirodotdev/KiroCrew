@@ -313,7 +313,7 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         (
             "_scan_parent_spawn_allowlists",
             "function",
-            "(agents_dir: 'Path', parent_template: 'str', operation: 'str' = 'spawn_available_agents') -> '_ScopeAllowlists'",
+            "(agents_dir: 'Path', parent_template: 'str', operation: 'str' = 'spawn_available_agents', *, pins: 'Mapping[str, str] | None' = None) -> '_ScopeAllowlists'",
         ),
         (
             "parent_template_allowlists",

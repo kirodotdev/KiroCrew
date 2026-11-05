@@ -1052,7 +1052,9 @@ async def test_activating_a_disk_spec_over_the_ceiling_ends_the_session_before_s
     rt.terminate_session = AsyncMock()  # type: ignore[method-assign]
     asked: list[tuple[str, str]] = []
 
-    def _over(agent: str, backend: str, *, launch_name: str | None = None) -> None:
+    def _over(
+        agent: str, backend: str, *, launch_name: str | None = None, work_dir: object = None
+    ) -> None:
         asked.append((agent, backend))
         raise agent_mod.SharedTemplateOverCeiling("over the ceiling")
 
@@ -1084,7 +1086,9 @@ async def test_a_warm_session_that_inherits_the_spawn_agent_is_checked_before_th
     rt._send_and_await = AsyncMock()  # type: ignore[method-assign]
     asked: list[tuple[str, str]] = []
 
-    def _over(agent: str, backend: str, *, launch_name: str | None = None) -> None:
+    def _over(
+        agent: str, backend: str, *, launch_name: str | None = None, work_dir: object = None
+    ) -> None:
         asked.append((agent, backend))
         raise agent_mod.SharedTemplateOverCeiling("over the ceiling")
 

@@ -12548,7 +12548,19 @@
         "repair_images_done_not_resumed": "Immagini riparate. Premi Riprendi per continuare la risposta.",
         "repair_images_failed": "Le immagini non possono essere riparate due volte nella stessa chat. Avvia una nuova sessione per continuare — questa chat resta nel tuo elenco e l'assistente prosegue da un riepilogo.",
         "repair_images_not_persistent": "Le immagini non possono essere riparate in una chat in incognito o temporanea, perché ricaricarla ne cancella la cronologia. Avvia una nuova sessione per continuare.",
-        "repair_images_retry_hint": "Qualcosa è andato storto questa volta, quindi la tua unica riparazione non è stata utilizzata — puoi riprovare."
+        "repair_images_retry_hint": "Qualcosa è andato storto questa volta, quindi la tua unica riparazione non è stata utilizzata — puoi riprovare.",
+        "spec_choice_title": "Più pacchetti installati includono un agente chiamato {{agent}}, e sono diversi. Scegli quello da usare.",
+        "spec_choice_broken": "Il file scelto per {{agent}}, {{file}}, manca o ora è un altro agente. Scegli quello da usare.",
+        "spec_choice_use": "Usa questo",
+        "spec_choice_use_label": "Usa {{file}} per {{agent}}",
+        "spec_choice_package": "Pacchetto: {{package}}",
+        "spec_choice_package_unknown": "Pacchetto sconosciuto",
+        "spec_choice_modified": "Modificato {{date}}",
+        "spec_choice_differs": "Diverso dagli altri in: {{fields}}",
+        "spec_choice_more": "Altri {{count}} file dichiarano {{agent}} e non sono elencati. Scegline uno con: kirocrew agent pin {{agent}} <file>",
+        "spec_choice_done_resuming": "D’ora in poi {{agent}} usa {{file}}. Avvio di nuovo della sessione. Puoi cambiarlo in seguito con kirocrew agent pin.",
+        "spec_choice_done": "D’ora in poi {{agent}} usa {{file}}. Invia di nuovo il messaggio per iniziare. Puoi cambiarlo in seguito con kirocrew agent pin.",
+        "spec_choice_failed": "Impossibile salvare la scelta"
       },
       "folderPanel": {
         "clear_search": "Cancella ricerca",

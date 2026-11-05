@@ -13,11 +13,11 @@ import hashlib
 import json
 import logging
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from aiohttp import web
 
-from kiro_crew import hooks
+from kiro_crew import agent_spec_pins, hooks
 from kiro_crew.agent_discovery import (
     _AGENTS_DIR_MEMO_MAX_KEYS,
     AgentsDirMemo,
@@ -35,6 +35,7 @@ from kiro_crew.agent_spec_format import (
     is_markdown_spec,
     iter_agent_spec_files,
 )
+from kiro_crew.agent_spec_pins import pinned_memo_key
 from kiro_crew.config.paths import kiro_agents_dir
 from kiro_crew.dashboard.handlers._shared import guard_owner_surface_routes, internal_memory_scope
 from kiro_crew.dashboard.handlers.sessions_parts.app_scope import _sel
@@ -121,12 +122,12 @@ def _ambiguous_spec_reason(agent_name: str, exc: AmbiguousAgentSpecError) -> str
     """
     if not exc.paths:
         return str(exc)
-    names = ", ".join(repr(path.name) for path in exc.paths)
+    file_names = [path.name for path in exc.paths]
+    if exc.pin is not None:
+        return agent_spec_pins.broken_pin_message(agent_name, exc.pin, file_names)
     return (
-        f"{len(exc.paths)} specs in the agents directory declare the name {agent_name!r} "
-        f"with differing content: {names}. Which one is live is undefined, so the policy "
-        f"for {agent_name!r} is unknown. Remove or rename one of them in the agents "
-        f"directory (~/.kiro/agents unless relocated); no restart needed."
+        f"{agent_spec_pins.ambiguous_message(agent_name, file_names, file_names)}\n"
+        f"Until one is chosen, the policy for {agent_name!r} is unknown; no restart needed."
     )
 
 
@@ -343,10 +344,13 @@ def _read_managed_tool_policy_sync(agents_dir: Path, agent_name: str) -> dict[st
     request, and the state it reports is the one a fix to the directory clears.
     The revision and store rules are the memo's; see its docstring.
     """
+    # The pin is part of the key, so a pin change is a miss (see pinned_memo_key);
+    # one snapshot keys and resolves, so a concurrent pin write cannot cross them.
+    pins = agent_spec_pins.spec_pins()
     return _TOOL_POLICY_MEMO.get(
         agents_dir,
-        agent_name,
-        lambda: _read_managed_tool_policy_uncached(agents_dir, agent_name),
+        pinned_memo_key(agent_name, pins),
+        lambda: _read_managed_tool_policy_uncached(agents_dir, agent_name, pins),
         prefill=lambda: _prefill_managed_tool_policies(agents_dir, requested=agent_name),
     )
 
@@ -392,7 +396,9 @@ def _prefill_managed_tool_policies(
     return answers
 
 
-def _read_managed_tool_policy_uncached(agents_dir: Path, agent_name: str) -> dict[str, Any] | None:
+def _read_managed_tool_policy_uncached(
+    agents_dir: Path, agent_name: str, pins: Mapping[str, str] | None = None
+) -> dict[str, Any] | None:
     """Read one agent's ``managedToolPolicy`` from disk. Blocking.
 
     Split out so the whole filesystem transaction -- the existence probe, the
@@ -442,7 +448,7 @@ def _read_managed_tool_policy_uncached(agents_dir: Path, agent_name: str) -> dic
     spec_path: Path | None = None
     try:
         config: Any = spec_by_declared_name(
-            agents_dir, agent_name, operation="session_tool_policy", source="dashboard"
+            agents_dir, agent_name, operation="session_tool_policy", source="dashboard", pins=pins
         )
         if config is None:
             # ``<name>.json`` then ``<name>.md``: beside a twin the JSON wins,

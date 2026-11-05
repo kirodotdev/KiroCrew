@@ -458,6 +458,7 @@ _CAP_REGISTER: dict[str, tuple[str, str]] = {
     "handlers/cron_runs.py::api_cron_ack": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "handlers/cron_lessons.py::api_lessons_create": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "handlers/cron_lessons.py::api_lessons_delete": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    "handlers/agent_spec_pins.py::api_agent_spec_pin_write": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "handlers/cron_board.py::api_cron_folders_create": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "handlers/cron_board.py::api_cron_folders_update": ("<default>", _BOUNDED_CONTROL_FIELDS),
     # handlers/workflows.py: workflow bodies carry a script source or a

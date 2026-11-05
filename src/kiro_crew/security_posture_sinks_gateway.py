@@ -870,4 +870,11 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "exfiltration-URL and credential redactor at the gateway before reaching "
         "the dashboard, preserving record separators and patch framing.",
     ),
+    (
+        "Agent spec chooser descriptions",
+        "agent_spec_pin_ops.py",
+        "Each claimant's `description` and package label, read from a spec file an "
+        "agent may have written, pass the exfiltration-URL and credential redactors "
+        "before they are carried in the chat metadata of the spec chooser card.",
+    ),
 )

@@ -161,13 +161,17 @@ from kiro_crew.agent_parts.spec_grants import (
     _WORKER_WORK_GRANTS,
 )
 from kiro_crew.agent_parts.spec_lookup import (
+    _claimed_pin_path,
     _conflicting_spec_for,
+    _pinned_spec_path,
     _project_shadow_of,
     _read_spec_capped,
+    _resolve_spec_path,
     _spec_path_is_safe,
     _spec_path_shape_refusal,
     agent_spec_path,
     markdown_spec_for_agent,
+    session_agent_spec_path,
 )
 from kiro_crew.agent_parts.spec_prompts import (
     _CONDUCTOR_PROMPT_SECTIONS,

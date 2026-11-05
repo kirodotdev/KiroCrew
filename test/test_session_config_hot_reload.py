@@ -177,6 +177,17 @@ class TestAdoptOnChange:
         assert "session.pool_agent" in SessionManager._FACTORY_CONFIG_PATHS
 
     @pytest.mark.asyncio
+    async def test_a_spec_pin_change_retires_the_warm_pool(self) -> None:
+        """A warm provider of a contested name runs the file pinned when it
+        started, so a pin change re-derives the pool instead of letting a new
+        chat claim a provider running a file the pin does not name."""
+        mgr, _ = _make_manager()
+        mgr.refresh_defaults = AsyncMock()  # type: ignore[method-assign]
+        new_cfg = _make_cfg()
+        await mgr._on_config_change(_change(new_cfg, "agent.spec_pins"))
+        mgr.refresh_defaults.assert_awaited_once_with(cfg=new_cfg)
+
+    @pytest.mark.asyncio
     async def test_factory_bound_default_goes_through_refresh_defaults(self) -> None:
         mgr, old_factory = _make_manager()
         new_cfg = _make_cfg()

@@ -142,6 +142,20 @@ class AgentConfig:
             "1,000,000-token reference. Takes effect on the next config reload.",
         ),
     )
+    spec_pins: dict[str, str] = field(
+        default_factory=dict,
+        metadata=_meta(
+            "Agent spec pins",
+            "Which file an agent name runs when two or more specs in the agents "
+            'directory declare it, as {"<agent name>": "<file name>"}, for example '
+            '{"helper": "PkgA-helper.json"}. A bare .json or .md file name, never a '
+            "path, so a pin survives the package's updates. Set it with "
+            "'kirocrew agent pin <name> <file>' or the chat's chooser. With no pin, "
+            "differing specs under one name are refused; a pin naming none of them is "
+            "refused too and never falls back to another file. New sessions run the "
+            "pinned file; a running session's later spec reads follow the current pin.",
+        ),
+    )
     fallback_model: str = field(
         default="auto",
         metadata=_meta(
@@ -1451,6 +1465,11 @@ class AgentConfig:
         self.role_models = coerce_role_models(self.role_models)
         self.role_efforts = coerce_role_efforts(self.role_efforts)
         self.model_context_tokens = coerce_model_context_tokens(self.model_context_tokens)
+        # Call-time: bound here, the coercer would be a name this section module
+        # serves, and the sections facade re-exports only names its owners define.
+        from kiro_crew.agent_spec_pins import coerce_spec_pins
+
+        self.spec_pins = coerce_spec_pins(self.spec_pins)
         # Same defensive TYPE coercion for the DeepSeek provider-key map. What its
         # names and values may BE is refused at spawn, by name -- see
         # coerce_deepseek_env.

@@ -1243,7 +1243,13 @@ session first), on each view name it sends, since that spec is read there and no
 spawn. A runtime on such a host also checks the session's effective agent before each
 `session/new` and `session/load` (`acp.runtime_session_setup._refuse_over_ceiling_start`, on
 the name that agent runs under), because a session that names no agent inherits the spawn
-agent on a warm runtime, and its spec may have gained a grant since the spawn checked it. A binding counts when it records the agent's
+agent on a warm runtime, and its spec may have gained a grant since the spawn checked it.
+Before the ceiling, the same check refuses handing such a host the AUTHORED name of an
+agent two or more user-level specs declare (`fork_refresh.require_launch_resolves_one_file`):
+the host would choose the file itself. Differing claimants with no `agent.spec_pins` pin, a
+broken pin, or a pin with no skill view built from the pinned file are refused; a skill view,
+which the projection builds only from the declared-name resolver's file, passes (see
+agent-host-contract.md, "One name, several files"). A binding counts when it records the agent's
 name or the file stem kiro-cli is dispatched under its declared name
 (`config.loader_snapshots.dispatch_kiro_agent`), and a config load that could not read a
 config file whole checks the agent's claimants as if it were bound, because the missing

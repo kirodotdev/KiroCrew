@@ -124,7 +124,10 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.acp.skill_projection_parts.preparation import (  # noqa: F401
         _CEILING_FALLBACK_WARNED,
         _CEILING_FALLBACK_WARNED_LOCK,
+        _contested_names,
         _count_projected_aliases,
+        _has_spec_pin,
+        _pinned_source,
         _projection_enabled,
         _warn_ceiling_fallback_once,
         prepare_native_skill_projection,

@@ -364,6 +364,7 @@ async def _spawn(self: AcpClient) -> None:
                 self._agent,
                 self.backend,
                 launch_name=launch_name,
+                work_dir=self._work_dir,
             )
         except SharedTemplateOverCeiling as exc:
             raise AcpError(str(exc)) from exc

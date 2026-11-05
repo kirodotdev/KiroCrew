@@ -12548,7 +12548,19 @@
         "repair_images_done_not_resumed": "Imagens reparadas. Pressione Retomar para continuar a resposta.",
         "repair_images_failed": "As imagens não podem ser reparadas duas vezes no mesmo chat. Inicie uma nova sessão para continuar — este chat permanece na sua lista, e o assistente continua a partir de um resumo.",
         "repair_images_not_persistent": "As imagens não podem ser reparadas em um chat anônimo ou temporário, porque recarregá-lo apaga o histórico. Inicie uma nova sessão para continuar.",
-        "repair_images_retry_hint": "Algo deu errado desta vez, então o seu único reparo não foi usado — você pode tentar novamente."
+        "repair_images_retry_hint": "Algo deu errado desta vez, então o seu único reparo não foi usado — você pode tentar novamente.",
+        "spec_choice_title": "Vários pacotes instalados incluem um agente chamado {{agent}}, e eles são diferentes. Escolha o que deseja usar.",
+        "spec_choice_broken": "O arquivo escolhido para {{agent}}, {{file}}, está faltando ou agora é outro agente. Escolha o que deseja usar.",
+        "spec_choice_use": "Usar este",
+        "spec_choice_use_label": "Usar {{file}} para {{agent}}",
+        "spec_choice_package": "Pacote: {{package}}",
+        "spec_choice_package_unknown": "Pacote desconhecido",
+        "spec_choice_modified": "Modificado {{date}}",
+        "spec_choice_differs": "Difere dos outros em: {{fields}}",
+        "spec_choice_more": "Mais {{count}} arquivos declaram {{agent}} e não estão listados. Escolha um deles com: kirocrew agent pin {{agent}} <file>",
+        "spec_choice_done_resuming": "A partir de agora {{agent}} usa {{file}}. Iniciando a sessão novamente. Você pode mudar isso depois com kirocrew agent pin.",
+        "spec_choice_done": "A partir de agora {{agent}} usa {{file}}. Envie sua mensagem novamente para começar. Você pode mudar isso depois com kirocrew agent pin.",
+        "spec_choice_failed": "Não foi possível salvar a escolha"
       },
       "folderPanel": {
         "clear_search": "Limpar pesquisa",

@@ -16,6 +16,7 @@ import { isSystemNoticeKind } from '../../lib/systemNotice'
 import type { ChatMessage } from '../../types'
 import { withOriginLink } from '../../components/withOriginLink'
 import { SessionTurnLimitButton } from '../../components/SessionTurnLimitMenu'
+import { AgentSpecChoiceCard, agentSpecAmbiguity } from './AgentSpecChoiceCard'
 import { injectOpensTurn } from './RecoveryCard'
 import { resumeProseFor } from './gatewayNotice'
 
@@ -639,6 +640,12 @@ export const ErrorCard = memo(function ErrorCard({
         </div>
       </div>
     )
+  }
+  const contested = agentSpecAmbiguity({ meta })
+  if (contested) {
+    // Several spec files declare the agent's name and nothing chooses one: the
+    // card lists them, and pinning one restarts the session through Resume.
+    return <AgentSpecChoiceCard ambiguity={contested} onRetry={onContinue} />
   }
   const refusal = capabilityRefusal({ meta })
   if (refusal) {

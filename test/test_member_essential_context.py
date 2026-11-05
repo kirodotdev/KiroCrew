@@ -830,7 +830,7 @@ def test_unreadable_project_template_does_not_fall_back_to_another_soul(env, mon
     spec = env.project / ".kiro" / "agents" / "writer-template.json"
     spec.write_bytes(b"\xff")
     fallback = Mock(side_effect=AssertionError("unreadable private persona fell back"))
-    monkeypatch.setattr(agent, "agent_spec_path", fallback)
+    monkeypatch.setattr(agent, "session_agent_spec_path", fallback)
     with pytest.raises(MemberEssentialContextError, match="writer-template.json"):
         env.builder.build_message(
             "Continue", False, memory_store=env.store, member=env.member, project=str(env.project)
@@ -853,7 +853,7 @@ def test_global_template_cannot_import_managed_memory_or_peer_briefing(env, monk
     spec.write_text(
         json.dumps({"name": "writer-template", "resources": [f"file://{path.as_posix()}"]})
     )
-    monkeypatch.setattr(agent, "agent_spec_path", lambda _: spec)
+    monkeypatch.setattr(agent, "session_agent_spec_path", lambda _: spec)
     fake_home = config_dir().parent
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: fake_home))
     with pytest.raises(MemberEssentialContextError, match="managed memory/member state"):

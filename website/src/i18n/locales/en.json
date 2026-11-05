@@ -7083,7 +7083,19 @@
         "pick_model_hint": "Open the model picker and choose one of the models your account can use, then send your message again.",
         "both_hint": "Do both: “{{pick}}” fixes this session, “{{default}}” stops new sessions from starting on the same model if the default is set to it. Then send your message again.",
         "elsewhere_hint": "The model picker and Settings → Chat are in the main chat window. Open it to choose a model and change the default model.",
-        "elsewhere_settings_hint": "Settings → Chat is in the main chat window. Open it to change the default model."
+        "elsewhere_settings_hint": "Settings → Chat is in the main chat window. Open it to change the default model.",
+        "spec_choice_title": "Two or more installed packages each ship an agent called {{agent}}, and they differ. Pick the one to use.",
+        "spec_choice_broken": "The file picked for {{agent}}, {{file}}, is missing or is now a different agent. Pick the one to use.",
+        "spec_choice_use": "Use this",
+        "spec_choice_use_label": "Use {{file}} for {{agent}}",
+        "spec_choice_package": "Package: {{package}}",
+        "spec_choice_package_unknown": "Package unknown",
+        "spec_choice_modified": "Modified {{date}}",
+        "spec_choice_differs": "Differs from the others in: {{fields}}",
+        "spec_choice_more": "{{count}} more files declare {{agent}} and are not listed. Pin one of them with: kirocrew agent pin {{agent}} <file>",
+        "spec_choice_done_resuming": "Using {{file}} for {{agent}} from now on. Starting the session again. Change it later with kirocrew agent pin.",
+        "spec_choice_done": "Using {{file}} for {{agent}} from now on. Send your message again to start. Change it later with kirocrew agent pin.",
+        "spec_choice_failed": "The choice could not be saved"
       },
       "knowledgePicker": {
         "cancel": "Cancel",

@@ -1442,8 +1442,13 @@ class SessionAllocationService:
             directory_mtime = 0.0
         now = time.monotonic()
         cache = self._deps.agent_model_cache()
+        from kiro_crew import agent_spec_pins
 
-        entry = cache.get(agent)
+        # Keyed with the pin folded in: a pin change picks another file, and the
+        # agents directory's mtime does not move for it.
+        pins = agent_spec_pins.spec_pins()
+        cache_key = agent_spec_pins.pinned_memo_key(agent, pins)
+        entry = cache.get(cache_key)
         if entry is not None:
             cached_model, cached_mtime, cached_at = entry
             if (
@@ -1454,20 +1459,24 @@ class SessionAllocationService:
 
         model = "auto"
         try:
-            for agent_file in iter_agent_spec_files(agents_dir, ordered=False):
-                data = self._deps.read_agent_spec(
+            # First match, with ``agent.spec_pins`` applied (``pick_spec_row``).
+            rows = (
+                (
+                    self._deps.read_agent_spec(
+                        agent_file,
+                        operation="resolve_agent_model",
+                        source="unknown",
+                    ),
                     agent_file,
-                    operation="resolve_agent_model",
-                    source="unknown",
                 )
-                if data is None:
-                    continue
-                if data.get("name") == agent or agent_file.stem == agent:
-                    model = self._deps.spec_model(data)
-                    break
+                for agent_file in iter_agent_spec_files(agents_dir, ordered=False)
+            )
+            picked = agent_spec_pins.pick_spec_row(rows, agent, pins)
+            if picked is not None:
+                model = self._deps.spec_model(picked)
         except Exception:
             pass
-        cache[agent] = (model, directory_mtime, now)
+        cache[cache_key] = (model, directory_mtime, now)
         return model
 
 

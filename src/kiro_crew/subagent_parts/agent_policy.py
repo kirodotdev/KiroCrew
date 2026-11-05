@@ -561,10 +561,17 @@ def _scope_spawn_allowlists(
         logger.warning("agents directory %s is not scannable (%s); refusing spawn", agents_dir, exc)
         return None, False
     try:
+        from kiro_crew.agent_spec_pins import pinned_memo_key, spec_pins
+
+        # A pin change is a miss: the pin chooses which claimant's list applies.
+        # One snapshot keys and scans, so a concurrent pin write cannot cross them.
+        pins = spec_pins()
         return memo.get(
             agents_dir,
-            parent_template,
-            lambda: _scan_parent_spawn_allowlists(agents_dir, parent_template, operation),
+            pinned_memo_key(parent_template, pins),
+            lambda: _scan_parent_spawn_allowlists(
+                agents_dir, parent_template, operation, pins=pins
+            ),
         )
     except OSError as exc:  # the directory walk itself failed: an unknown answer
         logger.warning("agents directory %s is not scannable (%s); refusing spawn", agents_dir, exc)
@@ -669,7 +676,11 @@ _PARENT_PROJECT_ALLOWLIST_MEMO: AgentsDirMemo[_ScopeAllowlists] = AgentsDirMemo(
 
 
 def _scan_parent_spawn_allowlists(
-    agents_dir: Path, parent_template: str, operation: str = "spawn_available_agents"
+    agents_dir: Path,
+    parent_template: str,
+    operation: str = "spawn_available_agents",
+    *,
+    pins: Mapping[str, str] | None = None,
 ) -> _ScopeAllowlists:
     """One fresh walk of *agents_dir* for :func:`parent_spawn_allowlists`.
 
@@ -708,7 +719,31 @@ def _scan_parent_spawn_allowlists(
             unreadable.append(path)
         else:
             rows.append((data, path))
-    declared = [data for data, _path in rows if data.get("name") == parent_template]
+    from kiro_crew import agent_spec_pins
+
+    declared_rows = [(data, path) for data, path in rows if data.get("name") == parent_template]
+    if operation == "spawn_available_agents_project":
+        # ``agent.spec_pins`` chooses among the USER-level agents directory only;
+        # every project claimant's allowlist stays in the intersection.
+        decision, pin = "none", None
+    else:
+        decision, pin = agent_spec_pins.pin_decision(
+            parent_template, [path.name for _data, path in declared_rows], pins
+        )
+    if decision == "broken":
+        # The resolver refuses this parent's spec, so its allowlist is UNKNOWN: no
+        # other claimant's list, and no filename fallback, stands in for it.
+        logger.warning(
+            "parent agent %r is pinned to %r, which no spec declaring it is; "
+            "refusing spawn (fail-closed)",
+            parent_template,
+            pin,
+        )
+        return None, False
+    # The parent session runs the pinned claimant when ``agent.spec_pins`` chooses
+    # one, so its allowlist is the one that applies. Any other case keeps every
+    # claimant, the strictest reading.
+    declared = [data for data, path in declared_rows if decision != "use" or path.name == pin]
     if not declared:
         # No readable spec declares the name. kiro-cli resolves a name by the
         # DECLARED ``name`` first, so the declaration may sit in a spec file the

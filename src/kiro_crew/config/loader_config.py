@@ -1185,11 +1185,10 @@ class KiroCrewConfig:
             return ""
         # Stable sort: JSON rows first, filename order preserved within each group.
         rows.sort(key=lambda row: row[1].suffix.lower() != ".json")
-        for ad, af in rows:
-            # Skip stray non-object JSON a user may have dropped in the dir.
-            if isinstance(ad, dict) and (ad.get("name") == agent or af.stem == agent):
-                return ad.get("model") or ""
-        return ""
+        from kiro_crew.agent_spec_pins import pick_spec_row  # the pin chooses among claimants
+
+        picked = pick_spec_row(rows, agent)
+        return (picked.get("model") or "") if isinstance(picked, dict) else ""
 
     def load_credentials(self, *, propagate: bool = True) -> dict[str, str]:
         """Load credentials from ~/.kiro/crew/.env and environment variables.

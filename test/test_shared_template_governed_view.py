@@ -500,13 +500,15 @@ async def test_the_spawn_launch_check_judges_the_agent_argument(monkeypatch) -> 
 
     asked: list[tuple[str, str, str | None]] = []
 
-    def gate(agent_name: str, backend: str, *, launch_name: str | None = None) -> None:
+    def gate(
+        agent_name: str, backend: str, *, launch_name: str | None = None, work_dir: object = None
+    ) -> None:
         asked.append((agent_name, backend, launch_name))
         if launch_name == "pkg-reviewer":
             raise agent.SharedTemplateOverCeiling("over the ceiling")
 
     monkeypatch.setattr(agent, "require_shared_template_within_ceiling", gate)
-    rt = SimpleNamespace(_agent="pkg-reviewer")
+    rt = SimpleNamespace(_agent="pkg-reviewer", _work_dir=None)
     view = "kirocrew-skill-view-" + "1" * 24
     await runtime_spawn_launch._refuse_over_ceiling_launch(rt, view)
     with pytest.raises(AcpRuntimeError, match="over the ceiling"):
@@ -556,7 +558,9 @@ async def test_a_mode_switch_refusal_ends_the_session(monkeypatch) -> None:
 
     asked: list[str | None] = []
 
-    def gate(agent_name: str, backend: str, *, launch_name: str | None = None) -> None:
+    def gate(
+        agent_name: str, backend: str, *, launch_name: str | None = None, work_dir: object = None
+    ) -> None:
         asked.append(launch_name)
         if launch_name is None:
             raise agent.SharedTemplateOverCeiling("over the ceiling")
