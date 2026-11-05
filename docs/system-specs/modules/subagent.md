@@ -4418,7 +4418,12 @@ the hint the parent re-spawns from scratch and pays for the same tool calls twic
   retention and owner from the latest valid durable cleanup generation instead of
   treating the record as non-retained. Provider cleanup runs before lock release;
   folder and protected-record removal follow only when every trusted generation
-  reports success. Unsupported providers and transient deletion failures preserve
+  reports success. kiro-cli and Claude Code are the supported providers; a Claude
+  run's cleanup deletes Claude Code's own store at the generation's recorded cwd
+  (`agent_sdk/claude_transcripts.py`), and a missing cwd counts as not done. The same
+  route answers `spawn_release`, whose disk half reads that cwd from the trusted
+  cleanup record, so a Claude release answers `released` rather than
+  `not_disposed`. Unsupported providers and transient deletion failures preserve
   both retry surfaces for later sweeps, capped at 90 days so a permanently missing
   cleanup route cannot accumulate private run folders forever. A legacy SID present
   only in agent-folder state/tombstone likewise preserves the folder inside that

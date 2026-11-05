@@ -29,6 +29,10 @@ from typing import TYPE_CHECKING, Callable, NamedTuple, Protocol
 import kiro_crew._facade_mirror as _facade_mirror
 from kiro_crew import platform_compat
 from kiro_crew.acp.types import PROVIDER_LABEL_DEFAULT
+from kiro_crew.agent_sdk.claude_transcripts import (
+    delete_claude_session_files,
+    is_claude_provider_label,
+)
 from kiro_crew.atomic_write import atomic_write, fsync_dir, read_bytes_with_retry
 from kiro_crew.config.paths import data_home, kiro_sessions_dir
 from kiro_crew.execution_context import ExecutionContext
@@ -838,9 +842,10 @@ def _cleanup_session_files_sync(
     future provider cleanup implementation or transient filesystem recovery can
     retry instead of making the leaked transcript permanently unreachable.
 
-    Only the kiro-cli backend stores transcripts where this function can reach
-    them. Any other *provider* is logged and its files are left in place, since
-    reporting success without deleting anything hides the leak.
+    The kiro-cli backend's replay log and Claude Code's own store (spelled from
+    the recorded *cwd*, ``agent_sdk.claude_transcripts``) are the transcripts this
+    function can reach. Any other *provider* is logged and its files are left in
+    place, since reporting success without deleting anything hides the leak.
     """
     if not session_id:
         return True
@@ -868,6 +873,8 @@ def _cleanup_session_files_sync(
                         exc_info=True,
                     )
             return succeeded
+        if is_claude_provider_label(provider):
+            return delete_claude_session_files(session_id, cwd)
         # Every other backend owns its own session storage, which this function
         # has no route to. Report failure so prune retains retry metadata.
         logger.debug(
