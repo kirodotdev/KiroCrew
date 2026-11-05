@@ -247,7 +247,7 @@ async def test_slot_cap_is_rechecked_after_the_pre_creation_awaits(monkeypatch):
 
     resp = await st.api_chat_slot_import(_make_request(state, _valid(agent="some-agent")))
 
-    assert resp.status == 429
+    assert resp.status == 409
     assert json.loads(resp.body)["code"] == "transfer_slot_cap"
     # Nothing was allocated by the request that lost the race.
     assert "imported-1" not in state._slots
@@ -557,7 +557,7 @@ async def test_a_bundle_with_no_sender_is_filed_under_the_group(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_placement_is_resolved_after_the_slot_exists(monkeypatch):
-    """A 429 from the post-await cap re-check leaves no folder behind (RFC §5.2).
+    """A 409 from the post-await cap re-check leaves no folder behind (RFC §5.2).
 
     The cap bites only after the early check, as a real concurrent burst does.
     """
@@ -575,7 +575,7 @@ async def test_placement_is_resolved_after_the_slot_exists(monkeypatch):
     state.live_slot_count = _count
     resp = await st.api_chat_slot_import(_make_request(state, _valid(origin="mac")))
 
-    assert resp.status == 429, resp.body
+    assert resp.status == 409, resp.body
     assert json.loads(resp.body)["code"] == "transfer_slot_cap"
     assert state._folders == [], "a refused import must leave no folder behind"
 
