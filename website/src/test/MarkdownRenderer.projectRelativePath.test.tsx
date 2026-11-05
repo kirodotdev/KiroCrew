@@ -12,7 +12,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, waitFor } from '@testing-library/react'
 import MarkdownRenderer from '../components/MarkdownRenderer'
 import { ChatProjectDirCtx } from '../components/markdown/contexts'
-import { joinProjectRelative } from '../components/markdown/pathReferences'
+import { isFileLinkDest, joinProjectRelative } from '../components/markdown/pathReferences'
 import { __resetPathKindCache } from '../hooks/usePathKind'
 import { probedPaths, stubPathKinds } from './pathKindStub'
 
@@ -67,6 +67,37 @@ describe('joinProjectRelative', () => {
     expect(joinProjectRelative('run/checkin.sh', 'C:\\Users\\me\\proj')).toBe('C:\\Users\\me\\proj\\run\\checkin.sh')
     expect(joinProjectRelative('src\\..\\a.py', 'C:\\proj\\')).toBe('C:\\proj\\src\\..\\a.py')
     expect(joinProjectRelative('..\\a.py', 'C:\\proj')).toBeNull()
+  })
+})
+
+describe('isFileLinkDest', () => {
+  it('reads a rooted path with an extension as a file', () => {
+    expect(isFileLinkDest('/tmp/x.md')).toBe(true)
+    expect(isFileLinkDest('/abs/notes.md')).toBe(true)
+    expect(isFileLinkDest('/var/log/app.log')).toBe(true)
+  })
+
+  it('reads a relative or home-rooted path as a file (never a route)', () => {
+    expect(isFileLinkDest('notes/guide.md')).toBe(true)
+    expect(isFileLinkDest('src/a.ts')).toBe(true)
+    expect(isFileLinkDest('~/notes.md')).toBe(true)
+    expect(isFileLinkDest('./run/check.sh')).toBe(true)
+  })
+
+  it('leaves a rooted, extension-less destination a route', () => {
+    expect(isFileLinkDest('/schedule')).toBe(false)
+    expect(isFileLinkDest('/settings')).toBe(false)
+    expect(isFileLinkDest('/settings/security/rules')).toBe(false)
+    // An extension-less rooted directory is indistinguishable from a route by
+    // shape, so it stays a route rather than risk muting a real one.
+    expect(isFileLinkDest('/var/log/app')).toBe(false)
+  })
+
+  it('leaves a /api/ gateway endpoint a route even with a file extension', () => {
+    // A download route such as `/api/outbox/report.txt` carries a `.txt` tail
+    // but names a gateway endpoint, not a disk file, so it must keep navigating.
+    expect(isFileLinkDest('/api/outbox/report.txt')).toBe(false)
+    expect(isFileLinkDest('/api/file-read?path=/x.md')).toBe(false)
   })
 })
 
@@ -241,5 +272,113 @@ describe('MarkdownRenderer relative and home path links', () => {
     link.dispatchEvent(ev)
     expect(onFileOpen).not.toHaveBeenCalled()
     expect(getByRole('link', { name: 'route' }).getAttribute('href')).toBe('settings')
+  })
+})
+
+describe('MarkdownRenderer missing file links', () => {
+  // A path-shaped link whose destination reads as a file and whose probe says
+  // `missing` reads and behaves like the unconfirmed inline backtick chip: it is
+  // muted, and a plain click is swallowed rather than following the local-path
+  // href to a new browser tab at the dashboard origin -- a URL that names
+  // nothing. The same path in backticks is a neutral copy chip, so a navigating
+  // link here would be the one surface that leads the reader to a dead tab.
+  it('does not open a dead tab for an absolute missing file link', async () => {
+    const fetchMock = stubPathKinds(() => null)
+    const onFileOpen = vi.fn()
+    const { getByRole } = render(
+      <MarkdownRenderer content={'See [the note](/tmp/x.md).'} onFileOpen={onFileOpen} />,
+    )
+    const link = getByRole('link', { name: 'the note' })
+    // The probe runs for a shaped candidate; the muted class is the signal the
+    // answer landed and the link was demoted.
+    await waitFor(() => expect(link.getAttribute('class')).toContain('text-muted'))
+    expect(probedPaths(fetchMock)).toEqual(['/tmp/x.md'])
+    // No new-tab affordance, and a plain click is cancelled.
+    expect(link.getAttribute('target')).toBeNull()
+    const ev = new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 })
+    link.dispatchEvent(ev)
+    expect(ev.defaultPrevented).toBe(true)
+    expect(onFileOpen).not.toHaveBeenCalled()
+    // The href is kept, so a modified click still reaches the browser.
+    expect(link.getAttribute('href')).toBe('/tmp/x.md')
+  })
+
+  it('does not open a dead tab for a relative missing file link joined to the chat project', async () => {
+    const fetchMock = stubPathKinds(() => null)
+    const { getByRole } = render(
+      <ChatProjectDirCtx.Provider value={PROJECT}>
+        <MarkdownRenderer content={'See [the note](notes/guide.md).'} onFileOpen={vi.fn()} />
+      </ChatProjectDirCtx.Provider>,
+    )
+    const link = getByRole('link', { name: 'the note' })
+    await waitFor(() => expect(link.getAttribute('class')).toContain('text-muted'))
+    expect(probedPaths(fetchMock)).toEqual([`${PROJECT}/notes/guide.md`])
+    expect(link.getAttribute('target')).toBeNull()
+    const ev = new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 })
+    link.dispatchEvent(ev)
+    expect(ev.defaultPrevented).toBe(true)
+  })
+
+  it('does not open a dead tab for a home-relative missing file link', async () => {
+    stubPathKinds(() => null)
+    const { getByRole } = render(
+      <ChatProjectDirCtx.Provider value={PROJECT}>
+        <MarkdownRenderer content={'See [notes](~/notes.md).'} onFileOpen={vi.fn()} />
+      </ChatProjectDirCtx.Provider>,
+    )
+    const link = getByRole('link', { name: 'notes' })
+    await waitFor(() => expect(link.getAttribute('class')).toContain('text-muted'))
+    expect(link.getAttribute('target')).toBeNull()
+    const ev = new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 })
+    link.dispatchEvent(ev)
+    expect(ev.defaultPrevented).toBe(true)
+  })
+
+  it('keeps a root-relative in-app route link working when the probe says missing', async () => {
+    stubPathKinds(() => null)
+    const { getByRole } = render(
+      <MarkdownRenderer content={'Open [rules](/settings/security/rules).'} onFileOpen={vi.fn()} />,
+    )
+    const link = getByRole('link', { name: 'rules' })
+    // A rooted, extension-less destination is a route, not a file, so it keeps
+    // its accent dress and its ordinary navigation even while the probe answers
+    // missing. Settle the probe first, then assert nothing was demoted.
+    await waitFor(() => expect(link.getAttribute('class')).toContain('text-accent'))
+    expect(link.getAttribute('target')).toBe('_blank')
+    expect(link.getAttribute('href')).toBe('/settings/security/rules')
+    const ev = new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 })
+    link.dispatchEvent(ev)
+    expect(ev.defaultPrevented).toBe(false)
+  })
+
+  it('keeps a /api/ download link navigating even when the probe says missing', async () => {
+    // `[download](/api/outbox/report.txt)` points at a gateway download route,
+    // not a disk file. Its `.txt` tail must not demote it: the plain click must
+    // still reach the browser so the backend handler serves the file.
+    stubPathKinds(() => null)
+    const { getByRole } = render(
+      <MarkdownRenderer content={'Grab [the report](/api/outbox/report.txt).'} onFileOpen={vi.fn()} />,
+    )
+    const link = getByRole('link', { name: 'the report' })
+    await waitFor(() => expect(link.getAttribute('class')).toContain('text-accent'))
+    expect(link.getAttribute('target')).toBe('_blank')
+    expect(link.getAttribute('href')).toBe('/api/outbox/report.txt')
+    const ev = new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 })
+    link.dispatchEvent(ev)
+    expect(ev.defaultPrevented).toBe(false)
+  })
+
+  it('opens a confirmed file link, so the demotion is the missing verdict only', async () => {
+    stubPathKinds(p => (p === '/tmp/x.md' ? 'file' : null))
+    const onFileOpen = vi.fn()
+    const { getByRole } = render(
+      <MarkdownRenderer content={'See [the note](/tmp/x.md).'} onFileOpen={onFileOpen} />,
+    )
+    const link = getByRole('link', { name: 'the note' })
+    await waitFor(() => {
+      link.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 }))
+      expect(onFileOpen).toHaveBeenCalledWith('/tmp/x.md')
+    })
+    expect(link.getAttribute('class')).not.toContain('text-muted')
   })
 })
