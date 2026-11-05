@@ -5702,10 +5702,10 @@
   },
   "components": {
     "mateWorkers": {
-      "approvals_label": "来自此团队成员会话的工具批准：{{n}}",
+      "approvals_label": "来自此 Bot 会话的工具批准：{{n}}",
       "trust": "信任此会话",
       "trust_hint": "批准此请求，并让此会话在 {{productName}} 重启前无需询问即可运行工具。",
-      "questions_label": "来自此团队成员会话的问题",
+      "questions_label": "来自此 Bot 会话的问题",
       "question_from": "{{name}} 提问",
       "answer_not_sent": "你给 {{name}} 的回答未发送，已放回 {{name}} 的输入框。",
       "answer_maybe_lost": "你给 {{name}} 的回答可能未送达。打开 {{name}} 查看。"
@@ -12495,7 +12495,7 @@
         "deferred_followup": "回复说智能体稍后会跟进，但本轮没有设置任何监控、计划任务或后台运行，此会话上也没有正在运行的监控 — 因此不会有任何东西唤醒它来发送该更新。需要时请发送消息，或让智能体设置一个监控。",
         "memory_preparing": "网关重启后仍在准备记忆。准备就绪后，队列中的消息将会运行。",
         "agent_switch_blocked_pinned": "已阻止切换到 {{agent}} — 此话题已绑定到 {{member}}。下一轮将在绑定的团队上重新开始。",
-        "agent_switch_blocked_crew_mode": "已阻止切换到 {{agent}} — 此聊天处于 Crew Mode，会保持在其指挥者上。下一轮将在指挥者上重新开始。",
+        "agent_switch_blocked_crew_mode": "已阻止切换到 {{agent}} — 此聊天处于 Ultra Mode，会保持在它自己的智能体上。下一轮将在该智能体上重新开始。",
         "agent_switch_blocked_channel": "切换到 {{agent}} 已被阻止 — 此聊天已关联到由 {{channel_agent}} 服务的 Slack 频道。下一轮将在该智能体上重新开始。",
         "channel_message_not_run": "Slack 频道发来的消息未运行：此会话的智能体与该频道所用智能体不同。",
         "crew_name_undispatchable": "无法使用此话题的团队名称。请重命名或重新创建该 Bot。",
@@ -13730,7 +13730,7 @@
       "only_show_sessions_that_have_no_tags": "仅显示没有标签的会话",
       "opens_here_runs_on_instance": "在此处打开该会话——它的执行仍在 {{name}} 上进行",
       "opens_on_members_page": "这是一个 Bot 自己的会话——在“成员”页面打开",
-      "members_page_chip": "成员页面",
+      "members_page_chip": "Bots 页面",
       "opened_sessions_count_other": "此会话开启了 {{count}} 个会话",
       "opens_on_crew_switches_there": "在 {{name}} 上打开 —— 切换到该 Crew，而不是在此处",
       "remote_instances_list_unavailable": "无法列出远程 Crew，因此不显示其会话。",

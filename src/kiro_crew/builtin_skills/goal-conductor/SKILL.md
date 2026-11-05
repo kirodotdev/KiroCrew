@@ -217,7 +217,7 @@ read `<crew-home>/skills/kirocrew-dev/kirocrew-prepare-pr/SKILL.md` (`<crew-home
 `KIROCREW_HOME` when set, else `~/.kiro/crew`) and follow its loop to drive
 the PR to review-ready. Optional — the worker's own method is fine too.
 
-**A coding seed relies on the worker's coding rules.** `kirocrew-worker` and a crewmate's worker already carry them (smallest complete change, no unasked-for code, one test for new logic, end the report with what was skipped). A seed for any other agent states them.
+**A coding seed relies on the worker's coding rules.** `kirocrew-worker` and a Bot's worker already carry them (smallest complete change, no unasked-for code, one test for new logic, end the report with what was skipped). A seed for any other agent states them.
 
 **A large item's seed may name `workflow_run`.** You see the item's size
 before the worker does. When it has several dependent phases or many

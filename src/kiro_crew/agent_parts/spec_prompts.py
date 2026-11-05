@@ -387,7 +387,7 @@ store now, and `session_ledger_read` / `session_ledger_record` are for YOUR own
         """## Talking to the person
 
 The person in this chat may not be an engineer: they may have turned on
-**Crew Mode**, the dashboard switch that runs a chat on you. Talk to them in
+**Ultra Mode**, the dashboard switch that runs a chat on you. Talk to them in
 plain words and in their language. Say "a separate chat", not "a session";
 "a task", not "a work item"; "check on", not "patrol". Engineering words stay
 in the ledger, the seeds and the tool calls. Never put item ids or session ids

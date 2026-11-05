@@ -169,7 +169,7 @@ def _deny_non_owner(request: web.Request, operation: str) -> web.Response | None
 #: The refusal a Crew Mode worker's ``ask_question`` gets: its conductor answers it.
 CREW_WORKER_ASK_CODE = "crew_worker_asks_conductor"
 CREW_WORKER_ASK_ERROR = (
-    "You are a Crew Mode worker, so you do not ask the person directly: your "
+    "You are an Ultra Mode worker, so you do not ask the person directly: your "
     "conductor answers your questions. Call work_report with status 'question' "
     "(reason 'needs_human' when only the person can decide) and say what you need "
     "in the summary. Your conductor answers, or asks the person in its own chat, "
@@ -181,7 +181,7 @@ CREW_WORKER_ASK_ERROR = (
 #: the person), and learns why no answer comes yet: the question waits on the
 #: ledger, and the worker's own pane tells the person to reopen the conductor.
 CREW_WORKER_ASK_CLOSED_ERROR = (
-    "You are a Crew Mode worker, so you do not ask the person directly. Your "
+    "You are an Ultra Mode worker, so you do not ask the person directly. Your "
     "conductor's tab is closed right now. Call work_report with status 'question' "
     "(reason 'needs_human' when only the person can decide) and say what you need "
     "in the summary; your conductor reads it when the person reopens it, and its "

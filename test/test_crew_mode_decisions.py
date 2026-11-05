@@ -194,7 +194,7 @@ async def test_the_provider_side_switch_is_vetoed_on_a_crew_mode_root(monkeypatc
     assert await chat_runner._on_agent_switched(turn, event) is _Flow.BREAK
     assert root.agent == "kirocrew-conductor"
     assert turn.needs_session_reset and turn._produced_visible_output
-    assert notices and notices[0][0] == "notice" and "Crew Mode" in notices[0][1]
+    assert notices and notices[0][0] == "notice" and "Ultra Mode" in notices[0][1]
     assert audit.log_api_access.call_args.kwargs["source"] == "crew_mode_locked"
 
 

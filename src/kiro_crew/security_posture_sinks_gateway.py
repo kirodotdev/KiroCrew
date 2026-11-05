@@ -16,7 +16,7 @@ from __future__ import annotations
 
 _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
     (
-        "Interrupted work in a mate reply",
+        "Interrupted work in a Bot reply",
         "dashboard/responsive_chat.py",
         "The bounded interrupted-turn reference passed to the next model prompt. "
         "Structural markers are neutralized, then exfiltration URLs and "
@@ -54,10 +54,10 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "value passes the credential redactor before it reaches the card.",
     ),
     (
-        "Mate goals",
+        "Bot goals",
         "member_goals.py",
-        "The goals, key results and their readings a mate may write "
-        "about itself, on their way to the Goals tab, the mate's tools and its "
+        "The goals, key results and their readings a Bot may write "
+        "about itself, on their way to the Goals tab, the Bot's tools and its "
         "saved goal reports. Each string passes the "
         "exfiltration-URL then the credential redactor before it leaves the record.",
     ),
@@ -113,7 +113,7 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "than emitting it unredacted.",
     ),
     (
-        "Fold values filled into a mate's dashboard page",
+        "Fold values filled into a Bot's dashboard page",
         "dashboard/handlers/member_dashboard.py",
         "Every string a template's fold paths resolve to, on its way into the page's "
         "own data island. A fold value is whatever a conductor wrote into the crew "
@@ -252,7 +252,7 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "agent_capabilities.py",
         "Owner-facing capability rows, Parent-change previews and impact summaries. "
         "safe_view applies redact_via_context before serialization and masks credential "
-        "map values while preserving their structure. A crewmate's in-place editor "
+        "map values while preserving their structure. A Bot's in-place editor "
         "(`mate_capabilities`) returns through the same safe_view. Retained secret "
         "values and source-content digests remain server-side.",
     ),
@@ -819,8 +819,8 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
     (
         "Reply-thread stream and store",
         "dashboard/chat_threads.py",
-        "Three boundaries of a reply thread on a mate chat message: the "
-        "StreamRedactor on the mate's live reply (as the side panel's), the "
+        "Three boundaries of a reply thread on a Bot chat message: the "
+        "StreamRedactor on the Bot's live reply (as the side panel's), the "
         "thread envelope (parent, surrounding chat and prior replies, which "
         "kiro-cli persists into its own session file), and every stored reply "
         "and quoted parent on its way out of the sidecar to the browser.",
@@ -848,7 +848,7 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "Streamed and non-streamed completions served to third-party clients.",
     ),
     (
-        "A Crew Mode root's worker list and timeline",
+        "An Ultra Mode root's worker list and timeline",
         "dashboard/handlers/crew_workers.py",
         "The side panel's worker cards (a closed worker's saved title, the ledger "
         "line through the board's deep redactor) and every timeline bar and mark "
@@ -859,7 +859,7 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
     (
         "One crew member's in-place recap",
         "dashboard/handlers/crew_worker_recap.py",
-        "The crewmate Sessions tab's recap: the work item's title, report summary, "
+        "The Bot Sessions tab's recap: the work item's title, report summary, "
         "decision, artifacts, PR link and pending approval tool names, each passed "
         "through the work-ledger board's deep redactor before it reaches the browser.",
     ),

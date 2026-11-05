@@ -29,7 +29,7 @@ a conductor would only add overhead.
 
 To start one, open a session on the **`kirocrew-conductor`** agent (see
 [Agents](agents.md) for the per-session, per-thread and per-cron selectors), which
-is what a Crew Mode chat runs on, and give it the goal. Its operating procedure ships as the `goal-conductor` skill.
+is what an Ultra Mode chat runs on, and give it the goal. Its operating procedure ships as the `goal-conductor` skill.
 `kirocrew-ledger-conductor` is a deprecated alias of the same spec, kept for one
 release so an existing session or cron that names the old string keeps resolving.
 
@@ -224,7 +224,7 @@ at the cap still reads.
 
 An item can carry a `steer` event: the time, actor `person`, and the person's own
 text, redacted and cut to 500 characters. It records that the person typed into
-the crew member (the worker session) that holds the item, from a Crew Mode chat.
+the crew member (the worker session) that holds the item, from an Ultra Mode chat.
 It is also written, with fixed text and nothing from the tool call, when the
 person answers a tool approval in that crew member's chat while the item's last
 report is `blocked` or `question` with reason `approval` and nobody has answered

@@ -6024,10 +6024,10 @@
   },
   "components": {
     "mateWorkers": {
-      "approvals_label": "Approbations d'outils des sessions de ce coéquipier : {{n}}",
+      "approvals_label": "Approbations d’outils des sessions de ce Bot : {{n}}",
       "trust": "Faire confiance à cette session",
       "trust_hint": "Approuve ceci et laisse cette session utiliser des outils sans demander jusqu'au redémarrage de {{productName}}.",
-      "questions_label": "Questions des sessions de ce coéquipier",
+      "questions_label": "Questions des sessions de ce Bot",
       "question_from": "{{name}} demande",
       "answer_not_sent": "Ta réponse à {{name}} n'a pas été envoyée. Elle est de retour dans la zone de message de {{name}}.",
       "answer_maybe_lost": "Ta réponse à {{name}} n'est peut-être pas arrivée. Ouvre {{name}} pour vérifier."
@@ -13083,7 +13083,7 @@
         "deferred_followup": "La réponse indique que l’agent reviendra plus tard, mais ce tour n’a configuré aucune surveillance, tâche planifiée ou exécution en arrière-plan, et aucune surveillance ne tourne dans cette session — rien ne le réveillera donc pour envoyer cette mise à jour. Envoie un message quand tu la veux, ou demande à l’agent de configurer une surveillance.",
         "memory_preparing": "La mémoire est encore en préparation après le redémarrage de la passerelle. Les messages en file d’attente s’exécuteront quand elle sera prête.",
         "agent_switch_blocked_pinned": "Le passage à {{agent}} a été bloqué — ce fil est épinglé à {{member}}. Le prochain tour redémarre sur la crew épinglée.",
-        "agent_switch_blocked_crew_mode": "Le passage à {{agent}} a été bloqué — ce chat est en Crew Mode, qui reste sur son chef d’orchestre. Le prochain tour redémarre sur le chef d’orchestre.",
+        "agent_switch_blocked_crew_mode": "Le passage à {{agent}} a été bloqué — ce chat est en Ultra Mode, qui reste sur son propre agent. Le prochain tour redémarre sur cet agent.",
         "agent_switch_blocked_channel": "Le passage à {{agent}} a été bloqué — ce chat est lié à un canal Slack servi par {{channel_agent}}. Le prochain tour redémarre sur cet agent.",
         "channel_message_not_run": "Un message d'un canal Slack n'a pas été exécuté : l'agent de cette session n'est pas celui qu'utilise ce canal.",
         "crew_name_undispatchable": "Le nom de crew de ce fil ne peut pas être utilisé. Renomme ou recrée le Bot.",

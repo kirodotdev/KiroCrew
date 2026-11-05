@@ -126,7 +126,7 @@ def _caller_app_scope(caller_key: str, rows: list[dict]) -> str | None:
 
 #: What a folder argument becomes for a Crew Mode session: nothing, said once.
 CREW_MODE_FOLDER_NOTE = (
-    " (folder ignored: this session is part of a Crew Mode chat, which keeps its "
+    " (folder ignored: this session is part of an Ultra Mode chat, which keeps its "
     "sessions out of the person's folders)"
 )
 

@@ -5702,10 +5702,10 @@
   },
   "components": {
     "mateWorkers": {
-      "approvals_label": "このクルーメイトのセッションからのツール承認: {{n}}",
+      "approvals_label": "この Bot のセッションからのツール承認: {{n}}",
       "trust": "このセッションを信頼",
       "trust_hint": "これを承認し、{{productName}} が再起動するまでこのセッションが確認なしでツールを実行できるようにします。",
-      "questions_label": "このクルーメイトのセッションからの質問",
+      "questions_label": "この Bot のセッションからの質問",
       "question_from": "{{name}} からの質問",
       "answer_not_sent": "{{name}} への回答は送信されませんでした。{{name}} のメッセージ欄に戻してあります。",
       "answer_maybe_lost": "{{name}} への回答は届いていない可能性があります。{{name}} を開いて確認してください。"
@@ -12495,7 +12495,7 @@
         "deferred_followup": "返答ではエージェントが後で続報すると言っていますが、このターンでは監視、スケジュール済みジョブ、バックグラウンド実行のいずれも設定されておらず、このセッションで動いている監視もありません — そのため、その続報を送るためにエージェントを起こすものはありません。続報が必要なときにメッセージを送信するか、エージェントに監視を設定するよう依頼してください。",
         "memory_preparing": "ゲートウェイの再起動後、メモリーをまだ準備しています。準備ができるとキュー内のメッセージが実行されます。",
         "agent_switch_blocked_pinned": "「{{agent}}」への切り替えはブロックされました — このスレッドは「{{member}}」に固定されています。次のターンは固定されたクルーで再開します。",
-        "agent_switch_blocked_crew_mode": "「{{agent}}」への切り替えはブロックされました — このチャットは Crew Mode で、コンダクターに固定されています。次のターンはコンダクターで再開します。",
+        "agent_switch_blocked_crew_mode": "「{{agent}}」への切り替えはブロックされました — このチャットは Ultra Mode で、自身のエージェントに固定されています。次のターンはそのエージェントで再開します。",
         "agent_switch_blocked_channel": "{{agent}} への切り替えはブロックされました — このチャットは {{channel_agent}} が担当する Slack チャンネルにリンクされています。次のターンはそのエージェントで再開します。",
         "channel_message_not_run": "Slack チャンネルからのメッセージは実行されませんでした: このセッションのエージェントは、そのチャンネルが使うエージェントではありません。",
         "crew_name_undispatchable": "このスレッドのクルー名は使用できません。Bot の名前を変更するか、作り直してください。",
@@ -13730,7 +13730,7 @@
       "only_show_sessions_that_have_no_tags": "タグがないセッションのみ表示",
       "opens_here_runs_on_instance": "このセッションをここで開きます — 実行は {{name}} で続きます",
       "opens_on_members_page": "Bot 自身のスレッド — メンバーページで開きます",
-      "members_page_chip": "メンバーページ",
+      "members_page_chip": "Bots ページ",
       "opened_sessions_count_other": "このセッションが開いたセッション {{count}} 件",
       "opens_on_crew_switches_there": "{{name}} で開きます — その Crew に切り替わり、ここでは開きません",
       "remote_instances_list_unavailable": "リモートクルーを一覧取得できなかったため、それらのセッションは表示されません。",

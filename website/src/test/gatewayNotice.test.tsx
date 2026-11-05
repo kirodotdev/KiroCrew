@@ -382,7 +382,10 @@ describe('the recovery, cancelled-replay, end-of-turn and admission rows', () =>
     ).toBe('The last tool call was refused because the gateway was at capacity — retrying it in 9s (attempt 3).')
     expect(
       resolveGatewayNotice(legacy('notice', '📌 Agent switch to x was blocked — this chat is in Crew Mode, which stays on its conductor. The next turn restarts on the conductor.'), [], 0)?.text,
-    ).toBe('Switching to x was blocked — this chat is in Crew Mode, which stays on its conductor. The next turn restarts on the conductor.')
+    ).toBe('Switching to x was blocked — this chat is in Ultra Mode, which stays on its own agent. The next turn restarts on that agent.')
+    expect(
+      resolveGatewayNotice(legacy('notice', '📌 Agent switch to x was blocked — this chat is in Ultra Mode, which stays on its own agent. The next turn restarts on that agent.'), [], 0)?.text,
+    ).toBe('Switching to x was blocked — this chat is in Ultra Mode, which stays on its own agent. The next turn restarts on that agent.')
     // A notice wording on an error row is not ours.
     expect(resolveGatewayNotice(legacy('error', 'ℹ Auto-continue cancelled — your message takes over.'), [], 0)).toBeNull()
   })

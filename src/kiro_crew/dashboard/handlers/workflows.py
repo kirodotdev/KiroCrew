@@ -193,7 +193,7 @@ async def _resolve_fallback_folder_id(
 
     if home_owner_of(state._folders, folder_id):
         return "", _error(
-            "this folder belongs to a mate and is managed for you", "mate_home_locked", 403
+            "this folder belongs to a Bot and is managed for you", "mate_home_locked", 403
         )
     return folder_id, None
 

@@ -6024,10 +6024,10 @@
   },
   "components": {
     "mateWorkers": {
-      "approvals_label": "Aprobaciones de herramientas de las sesiones de este compañero: {{n}}",
+      "approvals_label": "Aprobaciones de herramientas de las sesiones de este Bot: {{n}}",
       "trust": "Confiar en esta sesión",
       "trust_hint": "Aprueba esto y deja que esta sesión use herramientas sin preguntar hasta que {{productName}} se reinicie.",
-      "questions_label": "Preguntas de las sesiones de este compañero",
+      "questions_label": "Preguntas de las sesiones de este Bot",
       "question_from": "{{name}} pregunta",
       "answer_not_sent": "Tu respuesta a {{name}} no se envió. Está de nuevo en el cuadro de mensaje de {{name}}.",
       "answer_maybe_lost": "Puede que tu respuesta a {{name}} no haya llegado. Abre {{name}} para comprobarlo."
@@ -13083,7 +13083,7 @@
         "deferred_followup": "La respuesta dice que el agente hará un seguimiento más tarde, pero este turno no configuró ningún monitor, tarea programada ni ejecución en segundo plano, y no hay ningún monitor activo en esta sesión — así que nada lo despertará para enviar esa actualización. Envía un mensaje cuando la quieras o pide al agente que configure un monitor.",
         "memory_preparing": "La memoria todavía se está preparando tras el reinicio de la pasarela. Los mensajes en cola se ejecutarán cuando esté lista.",
         "agent_switch_blocked_pinned": "Se bloqueó el cambio a {{agent}} — este hilo está fijado a {{member}}. El siguiente turno se reinicia en la crew fijada.",
-        "agent_switch_blocked_crew_mode": "Se bloqueó el cambio a {{agent}} — este chat está en Crew Mode, que se queda en su director. El siguiente turno se reinicia en el director.",
+        "agent_switch_blocked_crew_mode": "Se bloqueó el cambio a {{agent}} — este chat está en Ultra Mode, que se queda en su propio agente. El siguiente turno se reinicia con ese agente.",
         "agent_switch_blocked_channel": "Se bloqueó el cambio a {{agent}}: este chat está vinculado a un canal de Slack que atiende {{channel_agent}}. El próximo turno se reinicia con ese agente.",
         "channel_message_not_run": "No se ejecutó un mensaje de un canal de Slack: el agente de esta sesión no es el agente que usa ese canal.",
         "crew_name_undispatchable": "No se puede usar el nombre de crew de este hilo. Cambia el nombre del Bot o vuelve a crearlo.",
