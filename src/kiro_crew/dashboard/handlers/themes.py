@@ -97,6 +97,11 @@ logger = logging.getLogger(__name__)
 
 _THEME_GIT_SANDBOX_UNAVAILABLE = "theme install sandbox is unavailable on this server"
 
+# `_swap_onto` moves `<slug>/` to `.<slug>.old-<token>` before the new copy lands.
+_THEME_SWAP_BACKUP_RE = re.compile(r"^\.([a-z0-9-]+)\.old-[0-9a-f]+$")
+# How long the list waits for an in-flight reinstall of one slug to finish.
+_THEME_SWAP_WAIT_SEC = 10.0
+
 
 def _read_listed_theme(path: Path, slug: str) -> Any:
     """Parse one theme file for the list, or ``None`` to skip it.
@@ -136,20 +141,20 @@ def _list_themes_sync() -> list[dict[str, Any]]:
                     "created_at": data.get("created_at", ""),
                 }
             )
-        # Installed themes are directories (<slug>/) carrying a theme.json.
-        # Dot-prefixed dirs are transient install staging/backup snapshots
-        # (.install-staging-*, .<slug>.old-*) — never valid slugs, never listed.
-        for d in sorted(
-            p
-            for p in themes_path.iterdir()
-            if p.is_dir() and not p.is_symlink() and not p.name.startswith(".")
-        ):
+
+        def _add_installed(d: Path) -> bool:
+            """Add `d` when it is a listable theme; False only when `d` is not
+            a folder at all, the one case a reinstall's swap can explain."""
+            if d.is_symlink() or d.name.startswith("."):
+                return True
+            if not d.is_dir():
+                return False
             mpath = d / "theme.json"
             if not mpath.is_file():
-                continue
+                return True
             m = _read_listed_theme(mpath, d.name)
             if not isinstance(m, dict):
-                continue
+                return True
             result.append(
                 {
                     "slug": d.name,
@@ -160,6 +165,39 @@ def _list_themes_sync() -> list[dict[str, Any]]:
                     "level": m.get("level", 0),
                 }
             )
+            return True
+
+        # Installed themes are directories (<slug>/) carrying a theme.json.
+        # Dot-prefixed dirs are transient install staging/backup snapshots
+        # (.install-staging-*, .<slug>.old-*) — never valid slugs, never listed.
+        def _add_after_swap(slug: str) -> None:
+            # Wait out an in-flight swap of this slug on its install lock, then
+            # read `<slug>/` once more.
+            lock = _theme_install_lock(slug)
+            if lock.acquire(timeout=_THEME_SWAP_WAIT_SEC):
+                try:
+                    _add_installed(themes_path / slug)
+                finally:
+                    lock.release()
+
+        entries = sorted(themes_path.iterdir())
+        for d in entries:
+            if not _add_installed(d) and _safe_theme_slug(d.name):
+                # Not readable now: a reinstall may have moved it aside after
+                # the snapshot, so retry once the swap's lock is free.
+                _add_after_swap(d.name)
+        # A `.<slug>.old-*` backup with no `<slug>/` beside it is a reinstall
+        # caught between its two renames, so `<slug>/` is read again after the
+        # swap. A backup left by a crash has no swap behind it: the lock is
+        # free, `<slug>/` is still missing, and the theme stays out as before.
+        listed = {t["slug"] for t in result}
+        for d in entries:
+            backup = _THEME_SWAP_BACKUP_RE.match(d.name)
+            slug = backup.group(1) if backup else None
+            if slug is None or slug in listed:
+                continue
+            listed.add(slug)
+            _add_after_swap(slug)
     # Sort by created_at (oldest first), falling back to name
     result.sort(key=lambda t: t.get("created_at") or "9999")
     return result
