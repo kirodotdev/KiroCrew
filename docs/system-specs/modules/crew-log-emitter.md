@@ -706,6 +706,13 @@ cannot detect it: a short tail is visible, a reordered one reads as fact. A sync
 caller therefore waits a bounded time for the batch to finish and then hands its job to
 the writer rather than racing it.
 
+The same rule binds the other way: while the shutdown thread drains inline, it holds the
+claim a pass would. It takes it in the lock hold that found no batch claimed and releases
+it in the hold that takes its last look at the buffers. A producer arriving meanwhile
+queues behind the drain instead of starting a pass that would take the session's newer
+entries and write them ahead of the batch the shutdown thread is still writing; one
+arriving after that last look starts a pass of its own.
+
 **The residual:** a batch a wedged writer still holds cannot be finished from the
 shutdown thread, and the entries buffered behind it are left alone rather than written
 out of order. A False return means exactly that -- some entries did not land and the
