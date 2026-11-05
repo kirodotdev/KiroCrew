@@ -478,9 +478,10 @@ async def test_deregister_helper_dispatches_off_loop(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_install_route_registers_off_loop(tmp_path, monkeypatch):
-    """The install handler reaches register_app via the executor: the real
-    registration call must not execute on the event-loop thread."""
+async def test_install_then_enable_registers_off_loop(tmp_path, monkeypatch):
+    """Install registers nothing for its disabled record; the enable that
+    follows reaches register_app via the executor, so the real registration
+    call must not execute on the event-loop thread."""
     import threading
 
     import kiro_crew.apps.routes as routes_mod
@@ -502,4 +503,7 @@ async def test_install_route_registers_off_loop(tmp_path, monkeypatch):
         data = await resp.json()
         assert data["ok"] is True
         assert "registration" in data  # helper's return value still surfaces
+        assert "thread" not in seen
+        resp = await client.post(f"/api/apps/{data['name']}/enable")
+        assert resp.status == 200, await resp.text()
     assert seen["thread"] is not loop_thread

@@ -22,7 +22,7 @@ from typing import Any
 from aiohttp import web
 
 from kiro_crew.apps import official_catalog
-from kiro_crew.apps.manager import app_lifecycle_lock, get_app
+from kiro_crew.apps.manager import app_lifecycle_lock
 from kiro_crew.apps.official_category_order import forget_cache as forget_category_order_cache
 from kiro_crew.apps.official_category_order import load_category_order
 from kiro_crew.apps.official_editorial import forget_cache as forget_editorial_cache
@@ -197,7 +197,6 @@ async def handle_registry_install(request: web.Request) -> web.Response:
     # lock-free internally (asyncio.Lock is not reentrant), so this is the
     # single acquisition covering clone/build → copy → register → backend.
     async with app_lifecycle_lock(name):
-        was_installed = await asyncio.to_thread(lambda: get_app(name) is not None)
         result = await install_from_registry(name)
 
         # Redact install log and error before returning to client — build output
@@ -225,11 +224,13 @@ async def handle_registry_install(request: web.Request) -> web.Response:
             )
             return web.json_response(result, status=400)
 
-        may_run = await _app_may_run_after_install(result["name"], fresh_install=not was_installed)
+        may_run = await _app_may_run_after_install(result["name"])
         if not may_run:
-            # The install transaction owns the live state. An update that newly asks
-            # for session control leaves the app disabled, but this also preserves a
-            # user's existing disabled state without depending on response wording.
+            # The install transaction owns the live state, and the live enabled
+            # flag decides. A fresh managed install is written disabled, an update
+            # that newly asks for session control leaves the app disabled, and a
+            # user's existing disabled state is preserved, without depending on
+            # response wording. Resources register at enable.
             reg = await _suspend_app_for_session_approval_reconsent(result["name"])
         else:
             # Auto-register resources
@@ -355,12 +356,9 @@ async def handle_registry_install_stream(request: web.Request) -> web.StreamResp
     # lock (install_from_registry is lock-free internally).
     async def _locked_install() -> dict[str, Any]:
         async with app_lifecycle_lock(name):
-            was_installed = await asyncio.to_thread(lambda: get_app(name) is not None)
             r = await install_from_registry(name, log_lines=streaming_log)
             if r.get("ok") and not r.get("needsClientInstall"):
-                may_run = await _app_may_run_after_install(
-                    r["name"], fresh_install=not was_installed
-                )
+                may_run = await _app_may_run_after_install(r["name"])
                 if not may_run:
                     # Match the non-stream and update routes: live enabled state,
                     # rather than notice wording, decides whether resources may run.

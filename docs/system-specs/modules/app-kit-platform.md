@@ -1692,6 +1692,33 @@ advance the generation through the public `start_app_backend` or
 `stop_app_backend` entry points, which take `_health_reconcile_lock` and `_lock`
 and call `_advance_lifecycle_locked`, never by mutating `_processes` directly.
 
+### 7.3 An install registers and starts nothing for a disabled record
+
+`register_app` never consults `enabled`, so whether an install publishes an app's
+agents, skills, MCP servers and crons and starts its backend is decided by the
+caller, from the live record. `apps/routes_lifecycle._app_may_run_after_install`
+is that read, for a fresh install and an update alike: True only when the record
+is enabled and not waiting for session-approval consent. `install_app` writes a
+new record disabled, so a fresh managed install from the registry route, its SSE
+stream or the local-path route registers nothing and starts no backend; its
+`registration` is empty and `GET /api/apps` shows it disabled with no files in the
+agents directory. The resources arrive at the guarded `enable_app` transition
+(`routes_enable.handle_enable_app`, `kirocrew app enable`), which the detail
+page's Enable button calls after the install. A record that is enabled after the
+install (an update of an enabled app, a self-managed record
+`register_external_app` writes enabled) registers and starts as before. The
+file-only `kirocrew app install` follows the same rule and prints the enable
+hint. Registry default installs (§15.1) read
+`_app_may_enable_after_install` instead, which answers only "may this be enabled
+without the user" (a record exists and no consent is pending), and then take the
+same `enable_app` transition before registering.
+
+Writers: `apps/routes_lifecycle.py` (`_app_may_run_after_install`,
+`_app_may_enable_after_install`), `apps/routes_registry.py`,
+`apps/routes_install.py::handle_install_app`, `apps/default_installs.py`,
+`cli_commands_app.py`. Pinned by
+`test/test_apps_install_registers_nothing_disabled.py`.
+
 ## 8. An app's EventBus only exists with a real broadcast function
 
 `build_app_context` returns `events=None` when `broadcast_fn` is None, and
@@ -5680,8 +5707,7 @@ permissions under "declared by the publisher, not enforced" and the label
 "Community, not reviewed by Kiro Space". `complete_market_install(prepared,
 confirmed=True)` then calls `install_app(<folder>, expected_name=<listing
 name>, market_source=..., source_commit=...)` directly, never the dashboard
-local-path route (which registers the app and starts its backend after a fresh
-install). `install_app` writes `origin = "local"`, `source =
+local-path route. `install_app` writes `origin = "local"`, `source =
 "market:<ref>@<n>"` and `sourceCommit = <zip SHA-256>` in its FIRST record
 write, still `enabled = False`, so no record ever names the staging folder
 (which a local-folder grant would admit), and its install-time trust check

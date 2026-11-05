@@ -482,11 +482,11 @@ async def handle_install_app(request: web.Request) -> web.Response:
             return web.json_response(result.to_dict(), status=400)
         invalidate_app_secret_cache(result.name)
 
-        # Same gate as the registry paths: a fresh install whose manifest declares
-        # ``permissions.sessionApproval`` is consent-pending, so its resources
-        # are not registered and its backend does not start until the user
-        # enables it from the disclosure surface.
-        if await _app_may_run_after_install(result.name, fresh_install=True):
+        # Same gate as the registry paths: the live record decides. ``install_app``
+        # writes it disabled, so the app's resources are not registered and its
+        # backend does not start until the user enables it (from the disclosure
+        # surface when the manifest declares ``permissions.sessionApproval``).
+        if await _app_may_run_after_install(result.name):
             # Auto-register resources
             reg = await _register_app_off_loop(result.name)
             # Spawn the backend now so the app is reachable without a gateway
