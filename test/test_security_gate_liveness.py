@@ -682,7 +682,13 @@ def _url_payload_command(n: int) -> str:
 #: Raised by one, from 34,522, for the TickTick consent host in ``exfil_oauth``'s
 #: ``_OAUTH_AUTHORIZATION_ENDPOINTS``: one allowlist entry, no new machinery. Re-measured.
 #: Raised by one, from 34,523, for the Railway consent host in the same set, likewise.
-_PACKAGE_LINE_BUDGET = 34_524
+#: Raised by 1,026, from 34,524, for ``git_write``: the git write classifier
+#: the dashboard approval ladder asks before a trust, YOLO or pattern grant approves
+#: a shell call (``hooks.confirm_git_writes``), with its per-subcommand option
+#: allow-lists and a scan that asks on any shell expansion, heredoc opener,
+#: unclosed quote, backslash line break, U+FEFF or shell that may read a pipe. A new
+#: confirm classifier, not a deny tier: no existing floor or pattern changed.
+_PACKAGE_LINE_BUDGET = 35_550
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

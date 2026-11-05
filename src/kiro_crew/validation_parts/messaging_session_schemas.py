@@ -386,6 +386,9 @@ SESSION_CREATE_SCHEMA = ToolSchema(
             min_val=AUTOCOMPACT_PCT_MIN,
             max_val=AUTOCOMPACT_PCT_MAX,
         ),
+        # The per-session allow for git history writes, set on the child at
+        # birth. create_session repeats the type check for the HTTP route.
+        FieldSpec("allow_git_writes", bool, required=False),
         # ``crew=`` (rfc-conductor-remote-dispatch.md): a remote crew's instance id
         # or exact name. Accepted here whatever ``work_ledger.remote_dispatch`` says,
         # so the gateway answers a call carrying it with the typed

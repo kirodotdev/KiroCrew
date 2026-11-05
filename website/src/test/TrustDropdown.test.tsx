@@ -516,3 +516,19 @@ describe('TrustDropdown timed grants', () => {
     expect(rowTexts().some(t => t.includes('hour') || t.includes('midnight'))).toBe(false)
   })
 })
+
+describe('TrustDropdown git-writes tier', () => {
+  it('offers the per-session git-writes allow when the card is a git write', () => {
+    const onAction = vi.fn()
+    render(<TrustDropdown fullCommand="" baseCommand="" isShell={false} hasCommand={false} gitWritesLabelKey="components.chatInput.allow_git_writes" className={btnClass} onAction={onAction} />)
+    fireEvent.click(screen.getByText('Trust'))
+    fireEvent.click(screen.getByText('Allow git writes in this session'))
+    expect(onAction).toHaveBeenCalledWith('git_writes')
+  })
+
+  it('does not offer it without the key', () => {
+    render(<TrustDropdown fullCommand="ls /tmp" baseCommand="ls" isShell className={btnClass} onAction={() => {}} />)
+    fireEvent.click(screen.getByText('Trust'))
+    expect(screen.queryByText('Allow git writes in this session')).not.toBeInTheDocument()
+  })
+})

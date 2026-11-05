@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import functools
 import json
+import re
 import time
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, Literal
@@ -44,6 +45,9 @@ from kiro_crew.name_grant import log_decline, shell_command_for_event, should_lo
 # is now chosen by ``_audit_approve_refused`` through ``batch_guard.refusal_outcome``.
 from kiro_crew.permission_floor import OUTCOME_REJECTED_TRANSPORT_FLOOR  # noqa: F401
 from kiro_crew.security.deny_waiver import deny_key_description
+from kiro_crew.security.git_write import GRANT_REQUEST
+from kiro_crew.security.git_write import UNREADABLE as UNREADABLE_GIT_COMMAND
+from kiro_crew.security.git_write import git_history_write
 from kiro_crew.security.readonly_bash import command_invokes_git, is_read_only_bash
 from kiro_crew.tool_gate_busy import hook_gate_busy
 from kiro_crew.trust_patterns import GrantEnded, approval_command
@@ -407,6 +411,269 @@ def _crew_root_own_worker_call(state: Any, slot: Any, event: Any) -> bool:
     return _vouched_creator_of(target, slots) == slot.key
 
 
+def _git_write_needing_confirm(state: Any, slot: Any, event: Any) -> str:
+    """Why this shell call needs the person under ``hooks.confirm_git_writes``, or ``""``.
+
+    Non-empty when the call runs git in any way ``security.git_write`` cannot
+    show is a known read (or asks for the allow, or cannot be read). It means
+    every auto-approve rung below the hook gate's deny is
+    skipped for this call -- the hook layer's auto-approve, native crew, session
+    trusted patterns, trust-reads, session trust (``_trust`` and the scoped
+    ``_trust_scope``) and YOLO -- and it goes to the interactive card. A deny
+    still wins: this runs after the gate's ``TOOL_DENY``.
+
+    Empty when ``hooks.confirm_git_writes`` is off, when the slot holds the
+    per-session allow (``slot._git_writes_allowed``, set from the card or by
+    ``session_create(allow_git_writes=True)``), for a non-shell tool that does
+    not ask for ``allow_git_writes``, and for a shell command that writes no
+    history (``security.git_write``). The command is
+    the one the hook gate judged (``event.shell_command``). A low-fidelity child
+    request (arguments absent) counts as a write, and so does a shell call whose
+    command cannot be read when no hook gate ran (the gate refuses it otherwise).
+    """
+    if getattr(slot, "_git_writes_allowed", False):
+        return ""
+    builder = getattr(state, "context_builder", None)
+    hooks = getattr(builder, "hooks", None) if builder else None
+    if hooks is not None and not bool(getattr(hooks, "confirm_git_writes", True)):
+        return ""
+    if getattr(event, "child_low_fidelity", False):
+        # A backend-subagent request whose arguments never reached us: nothing
+        # shows it is not a git history write, so it is put to the person.
+        return UNREADABLE_GIT_COMMAND
+    if not getattr(event, "is_shell", False):
+        if _requests_git_writes_grant(event):
+            return GIT_WRITES_GRANT_REQUEST
+        # A file tool aimed at a git directory or git configuration can move a
+        # ref or name a program git runs later (``.git/config``, ``.git/hooks``,
+        # ``~/.gitconfig``).
+        if _names_git_path_target(event):
+            return "file tool on a git directory or git configuration"
+        return ""
+    cmd = shell_command_for_event(event)
+    if not cmd:
+        # With a hook gate, its deny-by-default tier refuses a shell call
+        # whose command cannot be recovered before any grant here. With no
+        # gate, nothing has read the command, so it asks.
+        return "" if builder is not None else UNREADABLE_GIT_COMMAND
+    return git_history_write(cmd)
+
+
+#: The reason for a tool call that asks to open a session holding the allow.
+GIT_WRITES_GRANT_REQUEST = GRANT_REQUEST
+
+#: A path git reads configuration or hooks from, in tool arguments (JSON-escaped
+#: backslashes too): a ``.git`` component or a ``<name>.git`` repository
+#: directory, the user's ``.gitconfig`` (and ``.gitconfig.<name>`` files it
+#: includes), and the ``git/config`` file under the XDG configuration directory.
+#: Case-insensitive, as the Windows and macOS file systems are.
+_GIT_DIR_PATH_RE = re.compile(
+    r"\.git(?:[/\\\"'\s]|$)|\.gitconfig|[/\\]git[/\\]+config(?:[\\\"'\s]|$)", re.I
+)
+
+#: U+FEFF (zero width no-break space, also the byte order mark), as the
+#: character or as a JSON ``\ufeff`` escape in arguments that could not be
+#: parsed. A tool may drop it from a path before opening the file, so a path
+#: holding it cannot be compared with the git paths above and is not read: it
+#: asks.
+_UNREADABLE_PATH_RE = re.compile(r"\ufeff|\\u[fF][eE][fF][fF]")
+
+
+def _reads_as_git_path(text: str) -> bool:
+    """Whether *text*, read as a path, names a git path or cannot be read."""
+    return bool(_UNREADABLE_PATH_RE.search(text) or _GIT_DIR_PATH_RE.search(text))
+
+
+def _names_git_path_target(event: Any) -> bool:
+    """Whether a non-shell call names a path git reads configuration or hooks from.
+
+    Both the structured arguments and the arguments text are read, every time.
+    Every string argument, at any depth and whatever the tool's kind, is read
+    as a path, and so is every key and the call's diff block path. The only
+    values not read are strings under a fixed set of content and URL keys
+    (:data:`_GIT_PATH_SKIP_KEYS`) that are not ``file:`` URIs; a patch is read
+    for every line but its body lines. Arguments that cannot be parsed are
+    matched as written, and a walk past :data:`_GIT_PATH_SCAN_MAX_NODES` asks.
+    """
+    diff_path = getattr(event, "diff_path", "") or ""
+    if isinstance(diff_path, str) and _reads_as_git_path(diff_path):
+        return True
+    budget = [_GIT_PATH_SCAN_MAX_NODES]
+    # The structured arguments and the arguments text are both read: either can
+    # be empty, or hold an earlier frame's arguments, while the other is current.
+    params = getattr(event, "raw_tool_params", None)
+    if isinstance(params, (dict, list)) and _value_names_git_path(params, budget):
+        return True
+    raw = getattr(event, "tool_input", "") or ""
+    if not isinstance(raw, str) or not raw:
+        return False
+    try:
+        parsed = json.loads(raw)
+    except RecursionError:
+        # Nested past what the parser can read: not read, so it asks.
+        return True
+    except (TypeError, ValueError):
+        # Arguments that cannot be read are matched as written.
+        return _reads_as_git_path(raw)
+    return _value_names_git_path(parsed, budget)
+
+
+#: Keys whose values are file contents, edit text or a URL, never a path a tool
+#: writes to. Every other string value, at any depth, is read as a path.
+_GIT_PATH_SKIP_KEYS = frozenset(
+    {
+        "url",
+        "uri",
+        "href",
+        "content",
+        "text",
+        "body",
+        "prompt",
+        "message",
+        "query",
+        "old_str",
+        "new_str",
+        "oldstr",
+        "newstr",
+        "old_string",
+        "new_string",
+        "file_text",
+    }
+)
+
+#: The patch text field: its file headers name the paths it writes, and its
+#: other lines are content.
+_GIT_PATH_PATCH_KEY = "patchText"
+
+#: Line starts of a patch's body lines, which hold file content.
+_PATCH_BODY_PREFIXES = ("+", "-", " ", "@@")
+
+#: Most containers and strings the walk visits; past it the call asks.
+_GIT_PATH_SCAN_MAX_NODES = 10_000
+
+
+#: Deepest nesting the walk follows; deeper arguments ask.
+_GIT_PATH_SCAN_MAX_DEPTH = 64
+
+
+def _patch_names_git(patch: str) -> bool:
+    """Whether a patch's text, outside its body lines, names a git path.
+
+    Lines are split on ``\\n`` only, as the patch applier splits them, and one
+    trailing ``\\r`` per line is dropped. A line that still holds another line
+    break (``\\r``, ``\\f``, ``\\v``, ``\\x1c``-``\\x1e``, ``\\x85``, U+2028,
+    U+2029) is read one way by the applier and another way by other splitters,
+    so it asks wherever it sits, a header (``*** Add File:``, ``*** Update
+    File:``, ``*** Delete File:``, ``*** Move to:``) or any other line. A line
+    whose text after leading blanks starts with ``***`` is a header however it
+    is indented. Body lines (``+``, ``-``, `` ``, ``@@``) are content and are
+    not otherwise read.
+    """
+    for line in patch.split("\n"):
+        if line.endswith("\r"):
+            line = line[:-1]
+        if line and line.splitlines() != [line]:
+            return True
+        if not line.lstrip().startswith("***") and line.startswith(_PATCH_BODY_PREFIXES):
+            continue
+        if _reads_as_git_path(line):
+            return True
+    return False
+
+
+def _value_names_git_path(value: Any, budget: list[int]) -> bool:
+    """Walk *value* without recursion; past the depth or node cap it asks."""
+    stack: list[tuple[Any, int]] = [(value, 0)]
+    while stack:
+        item, depth = stack.pop()
+        budget[0] -= 1
+        if budget[0] < 0 or depth > _GIT_PATH_SCAN_MAX_DEPTH:
+            return True
+        if isinstance(item, str):
+            if _reads_as_git_path(item):
+                return True
+        elif isinstance(item, dict):
+            for key, child in item.items():
+                if isinstance(key, str) and _reads_as_git_path(key):
+                    return True
+                if key == _GIT_PATH_PATCH_KEY:
+                    if not isinstance(child, str) or _patch_names_git(child):
+                        return True
+                    continue
+                if (
+                    isinstance(key, str)
+                    and key.lower() in _GIT_PATH_SKIP_KEYS
+                    and isinstance(child, str)
+                    and not child.lstrip().lower().startswith("file:")
+                ):
+                    # Content or a web URL. A ``file:`` URI names a path, and a
+                    # container under a content key is still walked.
+                    continue
+                stack.append((child, depth + 1))
+        elif isinstance(item, (list, tuple)):
+            stack.extend((child, depth + 1) for child in item)
+    return False
+
+
+def _requests_git_writes_grant(event: Any) -> bool:
+    """Whether a non-shell call asks for ``allow_git_writes`` (``session_create``).
+
+    Opening a session that may write git history without a card is itself a git
+    write authority, so it gets the same confirm. Read from the structured
+    arguments, never the title; arguments that cannot be parsed but name the
+    field read as a request.
+    """
+    params = getattr(event, "raw_tool_params", None)
+    if isinstance(params, dict) and "allow_git_writes" in params:
+        return params.get("allow_git_writes") is not False
+    raw = getattr(event, "tool_input", "") or ""
+    if "allow_git_writes" not in raw:
+        return False
+    try:
+        data = json.loads(raw)
+    except (RecursionError, ValueError, TypeError):
+        # Nested past what the parser reads, or not JSON: not read, so it asks.
+        return True
+    if not isinstance(data, dict):
+        return True
+    for container in (data, data.get("arguments"), data.get("input")):
+        if isinstance(container, dict) and "allow_git_writes" in container:
+            return container.get("allow_git_writes") is not False
+    return True
+
+
+def _note_git_write_confirm(
+    *, session_key: str, slot: Any, event: Any, reason: str, notices: dict[str, str]
+) -> None:
+    """Audit that a git history write is being put to the person, and hold the card notice."""
+    sel().log_tool_invocation(
+        session_key=session_key,
+        agent=slot.agent or "kirocrew",
+        source="dashboard",
+        tool_name=_redact_display_text(event.title),
+        tool_kind=event.tool_kind,
+        outcome="auto_approve_declined",
+        request_id=event.request_id,
+        error="git history writes are confirmed in this session",
+        metadata={"reason": "git_write_confirm", "git_write": reason},
+    )
+    notices.setdefault(
+        "git_write_confirm",
+        (
+            (
+                "🛡️ This opens a session that may write git history without asking, so it "
+                "asks even with trust or YOLO on. Approve it once to open that session."
+            )
+            if reason == GIT_WRITES_GRANT_REQUEST
+            else (
+                "🛡️ This git command is not a known read-only one, so it asks even with "
+                "trust or YOLO on. Approve it once, or choose “Allow git writes in this "
+                "session” from Trust."
+            )
+        ),
+    )
+
+
 async def _name_grant_refusal_for(event: object) -> Refusal | None:
     """Why a shell *event* may not be auto-approved by program NAME, or ``None``.
 
@@ -619,6 +886,11 @@ async def _decide_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CO
         else ""
     )
     turn._child_lf_warning = _child_lf_warning
+    # Read once per request: whether this shell call writes git history that
+    # the person must confirm in this session (hooks.confirm_git_writes). The
+    # card reads it too, to offer the per-session allow.
+    _git_write = _git_write_needing_confirm(state, slot, event)
+    turn._git_write_confirm = _git_write
     if state.context_builder:
         # Pass the raw shell command (not just the display title)
         # so the security gate evaluates what actually executes.
@@ -785,6 +1057,11 @@ async def _decide_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CO
                     event.mcp_server_name,
                     event.tool_name,
                 )
+        if _git_write and tool_result.action == TOOL_AUTO_APPROVE:
+            # A git history write is put to the person in this session; the
+            # hook layer's grant becomes a plain allow, so the scripted
+            # PreToolUse hooks below still run before the card.
+            tool_result = ToolHookResult(action=TOOL_ALLOW)
         if tool_result.action == TOOL_AUTO_APPROVE:
             # The hook layer granted this by NAME (its
             # `auto_approve_tools` globs, or the read-only allowlist).
@@ -970,6 +1247,17 @@ async def _decide_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CO
             return _Flow.CONTINUE
         _pre_tool_hooks_fired = True
         # Hooks passed — fall through to patterns/trust-reads/trust/yolo/interactive
+    if _git_write:
+        # Every grant below (native crew, trusted patterns, trust-reads,
+        # session trust, YOLO) is skipped: the card asks.
+        _note_git_write_confirm(
+            session_key=session_key,
+            slot=slot,
+            event=event,
+            reason=_git_write,
+            notices=_declined_grant_notices,
+        )
+        return None
     # Native crew auto-approve: when a native subagent (crew pipeline)
     # is active and the session is configured to auto-approve subagent
     # tools, approve immediately to avoid deadlocking the blocked

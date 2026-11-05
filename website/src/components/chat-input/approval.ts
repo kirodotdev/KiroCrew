@@ -43,7 +43,7 @@ type AppDispatch = ReturnType<typeof useAppDispatch>
  *  `approvalIsUnattended`), so the Trust controls are withheld and only
  *  Allow once / Reject are offered. Kept in sync with the backend's
  *  `_BACKGROUND_APPROVAL_SOURCES` minus `autonudge`, which does run in-session. */
-const TRUST_DECISIONS = ['trust_command', 'trust_base', 'trust', 'trust_reads']
+const TRUST_DECISIONS = ['trust_command', 'trust_base', 'trust', 'trust_reads', 'git_writes']
 // The one-shot decisions the slot route takes with a card row (`request_mid`).
 const ONE_SHOT_DECISIONS = ['approved', 'rejected', 'rejected_once']
 
@@ -166,6 +166,10 @@ export function useToolApproval({ slotId, slotApprovalChrome, approvalMode, disp
    *  a card that could still take a session grant offered allow-once and reject
    *  alone. */
   const approvalTrustAllGrantable = approvalMeta?.trust_grantable === '1'
+  /** Server mark that this card is a git history write the session confirms
+   *  (`hooks.confirm_git_writes`). The only card that offers the per-session
+   *  "Allow git writes" tier; the route refuses that decision on any other. */
+  const approvalGitWrite = approvalMeta?.git_write === '1'
   /** Set when the card is a security-rule override (the server refused the
    *  command by this rule): the bar offers the override scopes and a reject,
    *  and no Allow once / Trust, which the server would read as a refusal. */
@@ -403,7 +407,7 @@ export function useToolApproval({ slotId, slotApprovalChrome, approvalMode, disp
     approvalModeAdjusted, approvalNudgeActive, dismissApprovalNudge, hideApprovalNudge,
     approvalNotice, setApprovalNotice, approvalNoticeKind, showApprovalError,
     approvalToolInput, approvalIsReadOnly, approvalFullCommand, approvalBaseCommand, approvalIsShell,
-    approvalTrustCommandGrantable, approvalTrustBaseGrantable, approvalTrustAllGrantable, approvalIsUnattended, approvalTrustGrantable,
+    approvalTrustCommandGrantable, approvalTrustBaseGrantable, approvalTrustAllGrantable, approvalGitWrite, approvalIsUnattended, approvalTrustGrantable,
     approvalDenyRule, approvalDenyDetail, approvalDenyFamily, approvalDenyCommand,
     approvalLabelRaw, approvalToolCallId, approvalPurpose, approvalTs, approvalLabel, approvalRaisedBy, showGhost, showInChat, handleApprovalAction,
   }

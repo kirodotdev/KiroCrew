@@ -259,6 +259,11 @@ class HooksConfig:
     #: ``auto_approve_tools`` grant. Empty by default: nothing changes unless the
     #: operator lists something.
     confirm_tools: list[str] = field(default_factory=list)
+    #: A dashboard shell call that writes git history (``security.git_write``)
+    #: asks the person even where session trust, YOLO, a native crew or a
+    #: pattern grant would approve it, until git writes are allowed for that
+    #: session. On by default; ``false`` restores the plain ladder.
+    confirm_git_writes: bool = True
     #: The batch write guard (``acp.batch_guard``): refuse a write-class tool call
     #: sent in the same parallel batch as a read-class call. Off by default.
     batch_write_guard: bool = False
@@ -372,6 +377,8 @@ class HooksConfig:
             ),
             auto_deny_tools=_str_list(data.get("auto_deny_tools", [])),
             confirm_tools=_str_list(data.get("confirm_tools", [])),
+            # Fail safe the other way round: junk keeps the confirm ON.
+            confirm_git_writes=_coerce_bool(data.get("confirm_git_writes", True), default=True),
             # Only a real ``true`` turns it on: the guard refuses calls, so a
             # malformed value keeps it off.
             batch_write_guard=data.get("batch_write_guard", False) is True,
@@ -406,6 +413,7 @@ class HooksConfig:
             "auto_approve_subagent_tools": self.auto_approve_subagent_tools,
             "auto_deny_tools": list(self.auto_deny_tools),
             "confirm_tools": list(self.confirm_tools),
+            "confirm_git_writes": self.confirm_git_writes,
             "batch_write_guard": self.batch_write_guard,
             "batch_write_guard_commands": list(self.batch_write_guard_commands),
             "auto_replies": [asdict(h) for h in self.auto_replies],
