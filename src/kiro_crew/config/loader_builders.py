@@ -1051,6 +1051,13 @@ def _build_session_config(session_data: dict) -> SessionConfig:
             _sections.KAS_DELETE_DELAY_SECS_MIN,
             _sections.KAS_DELETE_DELAY_SECS_MAX,
         ),
+        # Bounds via the module handle, like the rest of this section.
+        search_scan_window=section.read(
+            "search_scan_window",
+            _safe_int,
+            _sections.SEARCH_SCAN_WINDOW_MIN,
+            _sections.SEARCH_SCAN_WINDOW_MAX,
+        ),
         watchdog_rss_max_mb=section.read("watchdog_rss_max_mb", _safe_int),
         harness_background_hold_secs=_load_background_hold_secs(section),
         # Clamped HERE as well as in the `_SECURITY_BOUNDED_FIELDS` sweep, for the
