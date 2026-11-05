@@ -59,8 +59,10 @@ vi.mock('framer-motion', async () => {
   const make = (tag: string) => React.forwardRef<unknown, Record<string, unknown>>(
     (props, ref) => React.createElement(tag, { ...strip(props), ref }),
   )
+  // One component per tag: a fresh type on every read would remount the subtree.
+  const byTag = new Map<string, ReturnType<typeof make>>()
   return {
-    motion: new Proxy({} as Record<string, unknown>, { get: (_t, tag: string) => make(tag) }),
+    motion: new Proxy({} as Record<string, unknown>, { get: (_t, tag: string) => { if (!byTag.has(tag)) byTag.set(tag, make(tag)); return byTag.get(tag) } }),
     AnimatePresence: ({ children }: { children?: React.ReactNode }) => React.createElement(React.Fragment, null, children),
     LayoutGroup: ({ children }: { children?: React.ReactNode }) => React.createElement(React.Fragment, null, children),
   }
