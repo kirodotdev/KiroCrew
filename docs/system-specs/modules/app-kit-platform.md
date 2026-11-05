@@ -1184,7 +1184,8 @@ resolves the data-home tree (§ Former built-in adoption).
 
 Every manifest resource path (`agents`/`skills`/`sops`, `ui.entry`,
 `ui.pages[].entryPoint`, `backend.entryPoint`, `contributes.panelTabs[].entry`,
-`contributes.linkPreviews[].entry`, session-control `entryPoint`) is joined onto the app root, so
+`contributes.linkPreviews[].entry`, `contributes.sessionKinds[].entry`, session-control
+`entryPoint`) is joined onto the app root, so
 `manifest._app_path_refusal` refuses any path that could relocate that join.
 It applies three checks, and the two lexical ones run **first and unconditionally**
 — before, and independent of, whether `app_root` is known:
@@ -4768,6 +4769,86 @@ Writers: `apps/selection_action_frame.py`, `apps/selection_action_grants.py`,
 `apps/manifest_contributes.py`, `website/src/selectionActions/*`,
 `pages/chat/AssistantMessage.tsx`, `pages/AppDetailPage.tsx`.
 
+## 18g. `contributes.sessionKinds`: a session whose main pane an app draws
+
+An app declares a kind of session; a session of that kind is an ordinary chat slot
+whose main pane the app's `entry` draws, mounted in process like a panel tab (§18).
+The seam is generic: core knows nothing about any app that uses it. Product framing:
+[rfc-project-apps](../../request-for-change/rfc-project-apps.md) §6.2.
+
+- **Manifest** (`SessionKindConfig` and `session_kinds_errors` in
+  `manifest_session_kinds.py`, held by `Contributes.sessionKinds`): at most 4 per
+  app; `id` (`SESSION_KIND_ID_RE`, the panel-tab slug), `title`, `menuLabel` and
+  `entry` required; `menuDescription`, `icon` and `defaultAgent` (a bare agent stem)
+  optional; the four labels capped at 120 UTF-16 units (`manifest_labels`). A
+  non-array block, a non-object entry or a duplicate id is refused. `entry` resolves
+  under `ui/` and gets the panel-tab path containment in `AppManifest.validate`, and
+  a non-empty block puts `contributes` in `signing_payload`. The dashboard reads the
+  kinds from each app row's `manifest` in `GET /api/apps` and lists those of enabled
+  apps.
+- **Create gate** (`session_kind_for_create` in `dashboard/session_kinds.py`, called
+  by `api_chat_slot_create` before it reads a folder or builds a slot): a body
+  `session_kind: {app, kind}` is admitted only when it is well formed (the app-name
+  contract and the kind slug), the create is unnamed, not `ephemeral` and not
+  `artifact`, the caller is the owner's own dashboard request or an app token whose
+  `request["app"]` is `session_kind.app`, and, off the loop,
+  `app_declares_session_kind` finds the app installed and enabled with a kinds block
+  that validates clean and declares the kind. Every refusal is one `400
+  invalid_session_kind` body, so the answer does not say which apps exist. The mint
+  decision re-asks that the slot is new. `session_kind` is not in
+  `_DEFERRED_PLAIN_CREATE_KNOWN_KEYS`, so such a create broadcasts synchronously like
+  every metadata-bearing one.
+- **Binding** (`_ChatSlot._session_kind`, defaulted in `init_sidebar_fields`):
+  `{app, kind, object}` or None, set once on the newborn and never changed. The
+  server mints `object` (`mint_session_kind`, 16 random bytes as lowercase hex) and
+  ignores one the caller sends, so no session can claim a record another holds. It is
+  not `_app`, which records who owns the slot: an app-token create sets both, the
+  owner's create only the binding. A fork does not copy it.
+- **Birth line**: the create writes the slot's metadata line before it answers
+  (`_persist_birth_line`, as for `app_agent_owner`), so a message-less session comes
+  back as its kind after a restart. If neither write commits, the newborn is
+  retracted and the create answers `503 session_kind_unpersisted`.
+- **Persistence and projection**: metadata key `session_kind` (scope `_ALL`, so
+  RESTORE, RECENT and RESUME all read it), in `SLOT_OWNED_META_KEYS` so no carry
+  copies one session's binding onto another. Every read and both writers pass the
+  value through `session_kind_binding`, which rebuilds exactly the three keys and
+  re-checks each, so a tampered line restores the session unbound.
+  `SlotProjection.to_dict` emits `session_kind` on every slot, `null` when unbound.
+- **App gone**: disabling or uninstalling the app deletes nothing; the binding stays
+  and the dashboard shows the transcript read-only with a notice.
+- **Dashboard** (`website/src/hooks/sessionKindRegistry.ts`): `resolveSessionKinds`
+  reads the kinds of enabled, available apps from the shared `['apps']` observer
+  (`useInstalledApps`), in byte order of the app name, and warns and skips what the
+  manifest would refuse (a bad id, a missing label or entry, a duplicate, a fifth
+  kind), so a hand-edited `app.json` cannot grow the menu. The sidebar's create menu
+  lists them in their own group under New chat and New folder; a row creates the
+  slot with `session_kind`, the kind's `defaultAgent` as a template pick, its
+  `title`, `memory_mode: persistent` (the binding lives on the birth line, which an
+  incognito or temporary session does not keep) and, only when `defaultAgent` is the
+  stem of one of the app's `agents` files, `app_agent_owner` set to the app, so a turn
+  refuses a same-name spec from anywhere else; a core agent (the conductor) gets
+  none, since the owner check would refuse every turn. `ChatPage` keeps the
+  title row and, for a bound slot whose app still declares the kind, mounts
+  `AppHost` with the kind's `entry`, `sessionKey` `dashboard:<slot>` and
+  `sessionPane` in place of the transcript and composer (`pages/chat/page/AppSessionPane.tsx`).
+  Otherwise it draws the transcript with a notice where the composer would be and no
+  composer; a failed app list is an `ErrorNotice`, never "the app is gone".
+  Approvals stay host controls (rfc-project-apps §9): over a drawn pane,
+  `SessionPaneApprovals` shows the slot's pending tool approval
+  (`ToolApprovalBar` over `useToolApproval`, the composer's own bar and route), its
+  spawn approvals and its workers' `CrewApprovalCards`, bottom-right, above the app's
+  own stacking context, only while one waits. The app keeps the bottom-left. The app
+  reads the binding with the App SDK's `useSessionPane()`, which `AppHost` publishes
+  and every other host resets to `null`; the vendor stub re-exports it. The seam is
+  App Kit level 2 (`APP_SDK_LEVEL`, §32).
+
+Writers: `apps/app_sdk_level.py`, `apps/manifest_session_kinds.py`, `apps/manifest_contributes.py`,
+`apps/manifest.py`, `dashboard/session_kinds.py`, `dashboard/chat_api/slot_create.py`,
+`dashboard/slot_persistence/metadata_codec.py`, `dashboard/slot_projection.py`;
+dashboard: `hooks/sessionKindRegistry.ts`, `pages/chat-sidebar/create.ts`,
+`pages/chat/page/AppSessionPane.tsx`, `pages/chat/page/SessionPaneApprovals.tsx`,
+`app-sdk/sessionPane.ts`.
+
 ## 19. Spec Builder's backend is composed by lifecycle owner
 
 Spec Builder's backend carries more orchestration than a typical app: agent turns
@@ -5338,12 +5419,15 @@ This section records which module owns which part, so a change lands in its owne
 | `manifest_containment.py` | App-root containment of declared resource paths through the shared path screen (`_app_path_refusal`, `screen_app_path`, the `Containment` answers) and of the agents a contributed command selects (`_declared_agent_names`, `contain_command_agents`) |
 | `manifest_sections.py` | The typed `app.json` blocks other than `contributes`: `CronEntry`, `UIConfig` with its pages, overlays and sidebar, `BackendConfig` with `HooksConfig`, `Permissions`, `SetupConfig`, `Dependencies`, `PlatformConfig`, `PublishProviderConfig` and `NotificationsConfig` |
 | `manifest_contributes.py` | The `contributes` block: session controls, Command Bar commands and their argument, side-panel tabs, file-menu rows, `Contributes`, and the caps and grammars the dashboard mirrors for them |
+| `manifest_session_kinds.py` | `contributes.sessionKinds` (§18g): `SessionKindConfig`, the kind id grammar (`SESSION_KIND_ID_RE`), the per-app cap and the block's refusals (`session_kinds_errors`) |
+| `manifest_labels.py` | How a contributed label is measured (`_mirrored_len`, UTF-16 units) and the shared label cap (`_MAX_TITLE`), for every `contributes` owner |
 | `job_sdk.py` | The facade, plus `JobSDK`, the per-app `JobStore`, the process-wide SDK registry, the interruption message `reconcile` composes (`_interrupt_error`), the process identity (`_ORIGIN`) and the tunables only they read |
 | `job_sdk_records.py` | The run record (`JobRun`), its lifecycle states and interruption causes, the params bounds and the ingest redaction (`_validated_params`, `_redact`), the `JobHandle` a runner holds, and the Job SDK exceptions |
 | `job_sdk_returns.py` | What a runner hands back: `_undriven_result`, `_stop_returned_work`, `_close_quietly`, and the registration-time `_lazy_call_shape` |
 
 Imports only point down. `manifest_sections` imports `KEBAB_RE` from `manifest_names`;
-`manifest_containment`, `manifest_contributes`, `job_sdk_records` and `job_sdk_returns`
+`manifest_session_kinds` imports `manifest_labels`, and `manifest_contributes` imports
+both; `manifest_containment`, `manifest_labels`, `job_sdk_records` and `job_sdk_returns`
 import no owner, and no owner imports its facade, even for type checking. Each facade
 imports every name its owners define
 at its own import, private names included, so every `from kiro_crew.apps.manifest
@@ -5374,7 +5458,8 @@ fails. `test_setup_hooks_contract.py` excludes `manifest_sections.py`, where eve
 `apps/job_sdk_records.py`, whose `_redact` is the ingest scrub.
 
 Writers: `apps/manifest.py`, `apps/manifest_names.py`, `apps/manifest_containment.py`,
-`apps/manifest_sections.py`, `apps/manifest_contributes.py`, `apps/job_sdk.py`,
+`apps/manifest_sections.py`, `apps/manifest_contributes.py`,
+`apps/manifest_session_kinds.py`, `apps/manifest_labels.py`, `apps/job_sdk.py`,
 `apps/job_sdk_records.py`, `apps/job_sdk_returns.py`.
 
 ## 27. The app manager is composed by lifecycle owner
@@ -5675,7 +5760,8 @@ the set of seams a built-in's code needed from core, published generically. Noth
 any of them names an app. `APP_SDK_LEVEL` is one integer on both sides
 (`apps/app_sdk_level.py`, `website/src/app-sdk/sdkLevel.ts`), pinned equal by
 `test/test_app_sdk_level_mirror.py`. An app reads `ctx.sdk_level` or the SDK export to
-detect an older host and degrade, instead of failing on a missing attribute.
+detect an older host and degrade, instead of failing on a missing attribute. Level 2
+adds the session-kind seam (§18g): `contributes.sessionKinds` and `useSessionPane()`.
 
 **Structural routes.** `RouteRegistry` reads each item a `routes` hook returns through
 `_route_fields`: an `AppRoute`, or any object whose `method` is a str naming GET, POST,

@@ -567,6 +567,7 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "_resumed_count": ("value", "0"),
     "_revived_by": ("value", "''"),
     "_saved_created_by": ("value", "''"),
+    "_session_kind": ("value", "None"),
     "_session_not_found_retry_used": ("value", "False"),
     "_session_requested_model": ("value", "None"),
     "_side": ("value", "None"),

@@ -5431,7 +5431,7 @@
         "backup_others_on_drive": "备份到此云盘的其他安装实例：{{count}} 个",
         "backup_show_others": "包含其他安装实例的存档",
         "backup_others_truncated": "只显示前 {{max}} 个其他安装实例。",
-"backup_archives_truncated": "部分{{kind}}存档未能列出，最新的存档可能未显示。",
+        "backup_archives_truncated": "部分{{kind}}存档未能列出，最新的存档可能未显示。",
         "backup_shared_note": "两个安装实例共用一个云盘，并不意味着共享记忆或共享会话。每个备份都是某一时刻的独立存档，恢复只是把该文件下载到一个暂存文件夹 — 文件由你自己替换，且需在 gateway 停止时进行。",
         "backup_restore_foreign_confirm": "此存档由另一个安装实例（{{install}}）上传。恢复它会下载那个安装实例的数据，而不是此安装实例的数据。仍要下载吗？",
         "backup_restore_unverified_confirm": "此存档存放在此安装实例自己的文件夹里，但此安装实例没有上传它的记录。任何能写入云盘的东西都能创建那个文件夹，所以它未必来自此安装实例。仍要下载吗？",
@@ -13275,6 +13275,10 @@
         "no_prompt_yet": "此会话中尚未发送任何提示词。",
         "retry": "重试",
         "starting": "正在打开新的草稿会话…"
+      },
+      "appSessionPane": {
+        "apps_load_failed": "无法检查此会话所属的应用，因此其对话为只读",
+        "unavailable_read_only": "此会话属于 {{app}}，该应用已关闭或已卸载，因此其对话为只读。"
       }
     },
     "chatPage": {

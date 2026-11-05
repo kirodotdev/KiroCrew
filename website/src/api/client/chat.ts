@@ -172,11 +172,14 @@ export function createChatEndpoints({ post, put, del, patch, j, jAccepted, jfetc
     },
     /** Create a chat slot on this machine. A session on a connected crew is
      *  created on that crew and opened through its window, never here. */
-    createChatSlot: async (name?: string, agent?: string, model?: string, mode?: string, memory_mode?: string, title?: string, artifact?: string, folder_id?: string, agent_kind?: 'member' | 'template', no_session_folder?: boolean, app_agent_owner?: string, default_folder?: boolean) => {
+    createChatSlot: async (name?: string, agent?: string, model?: string, mode?: string, memory_mode?: string, title?: string, artifact?: string, folder_id?: string, agent_kind?: 'member' | 'template', no_session_folder?: boolean, app_agent_owner?: string, default_folder?: boolean, session_kind?: { app: string; kind: string }) => {
       const resolvedMemoryMode = memory_mode ?? await resolveDefaultMemoryMode(
         () => fetch('/api/dashboard/config').then(j),
       )
       return post('/api/chat/slots', {
+        // An app-drawn session (`contributes.sessionKinds`): the server checks the
+        // app is enabled and declares the kind, then mints the bound object.
+        ...(session_kind ? { session_kind: { app: session_kind.app, kind: session_kind.kind } } : {}),
         ...(name ? { name } : {}),
         ...(agent ? { agent } : {}),
         // Only beside an agent: a namespace without a name selects nothing.

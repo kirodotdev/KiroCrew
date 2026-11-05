@@ -197,6 +197,7 @@ Available in `@kirocrew/app-sdk`:
 | `useNotify()` | Show toast notifications |
 | `useNavBadge()` | Update sidebar badge count |
 | `useChatLauncher()` | Open a new chat or target `slotKey`; set `autoSend: false` for an unsent draft |
+| `useSessionPane()` | The session a `contributes.sessionKinds` pane is drawing (`{ slotKey, sessionKey, app, kind, object }`), or `null` on any other surface |
 
 `useAppInfo().active` tells your app whether its host surface is the one the user is
 looking at. A routed `ui.pages` page is always the visible surface, so it reads `true`.

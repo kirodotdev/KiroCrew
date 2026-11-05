@@ -3,7 +3,7 @@
 Session controls in the composer, Command Bar commands and the one argument a command
 may collect, chat side-panel tabs, file-menu rows, link previews, message actions,
 link opening, composer actions and selection actions, plus ``Contributes``, which holds
-them. Every contribution is declarative data the host interprets -- no app code crosses
+them and the session kinds ``manifest_session_kinds`` defines. Every contribution is declarative data the host interprets -- no app code crosses
 into a host surface -- and the dashboard reader mirrors the caps and grammars it relies on
 (``contributedCommands.ts``, ``panelTabRegistry.ts``, ``fileMenuContributions.tsx``), so
 a change to a mirrored one is a change to both sides.
@@ -20,6 +20,8 @@ from typing import Any
 
 from kiro_crew.apps.app_hosts import HOST_RE as _HOST_RE
 from kiro_crew.apps.app_hosts import host_list_errors, normalize_host
+from kiro_crew.apps.manifest_labels import _MAX_TITLE, _mirrored_len
+from kiro_crew.apps.manifest_session_kinds import SessionKindConfig, session_kinds_errors
 
 #: Hard cap on session controls per app. A control here renders inside the
 #: composer, on the path of every turn — an app must not be able to crowd the
@@ -147,8 +149,6 @@ _MAX_COMMANDS_PER_APP = 20
 #: keystroke, so an unbounded list is paid per character typed, not once per render.
 _MAX_KEYWORDS = 30
 _MAX_KEYWORD = 60
-#: Longest accepted row label, mirroring `MAX_TITLE` in `contributedCommands.ts`.
-_MAX_TITLE = 120
 
 #: Longest accepted prompt template. The prompt is sent to an agent as if the user
 #: typed it; a template past this length is a document, not a command.
@@ -185,26 +185,6 @@ FILE_MENU_SURFACES = frozenset({"file-overflow", "tree-context", "folder-row"})
 
 #: The node kinds a `when.kinds` filter may name.
 _FILE_MENU_KINDS = frozenset({"file", "dir"})
-
-
-def _mirrored_len(text: str) -> int:
-    """Length in UTF-16 code units -- what JavaScript's ``.length`` counts.
-
-    Every cap above is mirrored by a constant in ``contributedCommands.ts`` compared
-    against ``.length``, and the two languages do not agree on what a character is:
-    Python counts CODE POINTS, JavaScript counts UTF-16 units, so anything outside the
-    BMP counts once here and twice there. A 100-emoji title is 100 to ``len()`` and 200
-    to the launcher, which passed the manifest and was then dropped by the renderer --
-    the app installed clean and the row never appeared. This file already says of the
-    title cap that "a cap that only one side enforces is not a cap"; that holds for the
-    UNIT as well as for the number, so the caps are measured the host's way.
-    UNPAIRED surrogates are why this passes ``surrogatepass``: JSON can carry a lone
-    ``\\ud800`` escape, ``json.loads`` accepts it, and a plain ``utf-16-le`` encode then
-    raises ``UnicodeEncodeError`` -- so a manifest would CRASH validation instead of
-    being told what is wrong with it. With the flag the count still matches the host
-    exactly: a lone surrogate is one unit in both languages, an astral character two.
-    """
-    return len(text.encode("utf-16-le", errors="surrogatepass")) // 2
 
 
 @dataclass
@@ -1553,6 +1533,13 @@ class Contributes:
     #: serialized.
     bad_link_open: bool = False
     dropped_link_open: int = 0
+    #: Kinds of session whose main pane the app draws (``manifest_session_kinds``).
+    #: Serialized, so signed: an entry is an ESM module the dashboard runs in its own
+    #: origin. The two flags after it are the ``panelTabs`` pair, kept for the same
+    #: reason, and like them are not serialized.
+    sessionKinds: list[SessionKindConfig] = field(default_factory=list)  # noqa: N815
+    bad_session_kinds: bool = False
+    dropped_session_kinds: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {}
@@ -1588,6 +1575,10 @@ class Contributes:
         kept_opens = [o for o in opens if o]
         if kept_opens:
             d["linkOpen"] = kept_opens
+        kinds = [k.to_dict() for k in self.sessionKinds]
+        kept_kinds = [k for k in kinds if k]
+        if kept_kinds:
+            d["sessionKinds"] = kept_kinds
         return d
 
     @classmethod
@@ -1629,7 +1620,14 @@ class Contributes:
         composer_entries = composer_raw if isinstance(composer_raw, list) else []
         opens_raw = data.get("linkOpen", [])
         open_entries = opens_raw if isinstance(opens_raw, list) else []
+        kinds_raw = data.get("sessionKinds", [])
+        kind_entries = kinds_raw if isinstance(kinds_raw, list) else []
         return cls(
+            sessionKinds=[
+                SessionKindConfig.from_dict(k) for k in kind_entries if isinstance(k, dict)
+            ],
+            bad_session_kinds="sessionKinds" in data and not isinstance(kinds_raw, list),
+            dropped_session_kinds=sum(1 for k in kind_entries if not isinstance(k, dict)),
             messageActions=[
                 MessageActionConfig.from_dict(a) for a in action_entries if isinstance(a, dict)
             ],
@@ -1861,6 +1859,13 @@ class Contributes:
         for link_open in self.linkOpen:
             errors.extend(link_open.validate())
         errors.extend(self._validate_selection_actions())
+        errors.extend(
+            session_kinds_errors(
+                self.sessionKinds,
+                bad=self.bad_session_kinds,
+                dropped=self.dropped_session_kinds,
+            )
+        )
         return errors
 
     def _validate_selection_actions(self) -> list[str]:

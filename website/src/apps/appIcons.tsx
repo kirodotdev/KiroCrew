@@ -19,6 +19,7 @@
  */
 import {
   Activity,
+  AppWindow,
   AudioLines,
   Bell,
   BookOpen,
@@ -59,6 +60,7 @@ import type { ReactElement } from 'react'
 
 const APP_ICONS: Record<string, ReactElement> = {
   Activity: <Activity size={16} />,
+  AppWindow: <AppWindow size={16} />,
   AudioLines: <AudioLines size={16} />,
   Bell: <Bell size={16} />,
   BookOpen: <BookOpen size={16} />,

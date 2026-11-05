@@ -17,4 +17,6 @@ export const {
   // WS event scope prediction, so a subscription that will never be delivered warns at
   // development time instead of silently receiving nothing.
   checkSubscribeAllowed,
+  // The session an app-drawn main pane is bound to (contributes.sessionKinds), or null.
+  useSessionPane,
 } = m

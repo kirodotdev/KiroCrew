@@ -5729,7 +5729,7 @@
         "backup_others_on_drive": "Altre installazioni che eseguono il backup su questo drive: {{count}}",
         "backup_show_others": "Includi gli archivi di altre installazioni",
         "backup_others_truncated": "Vengono mostrate solo le prime {{max}} altre installazioni.",
-"backup_archives_truncated": "Non è stato possibile elencare alcuni archivi di tipo {{kind}}. I più recenti potrebbero mancare.",
+        "backup_archives_truncated": "Non è stato possibile elencare alcuni archivi di tipo {{kind}}. I più recenti potrebbero mancare.",
         "backup_shared_note": "Un drive condiviso da due installazioni non è memoria condivisa né sessioni condivise. Ogni backup è un archivio separato di un momento, e un ripristino scarica quel file solo in una cartella di staging — i file li sostituisci tu, con il gateway fermo.",
         "backup_restore_foreign_confirm": "Questo archivio è stato caricato da un'altra installazione ({{install}}). Ripristinarlo scarica i dati di quella installazione, non quelli di questa installazione. Scaricarlo comunque?",
         "backup_restore_unverified_confirm": "Questo archivio si trova nella cartella propria di questa installazione, ma questa installazione non ha alcuna traccia di averlo caricato. Chiunque possa scrivere sul drive può creare quella cartella, quindi potrebbe non essere di questa installazione. Scaricarlo comunque?",
@@ -13885,6 +13885,10 @@
         "no_prompt_yet": "In questa sessione non è ancora stato inviato nessun prompt.",
         "retry": "Riprova",
         "starting": "Apertura di una nuova sessione bozza…"
+      },
+      "appSessionPane": {
+        "apps_load_failed": "Impossibile verificare l’app a cui appartiene questa sessione, quindi la sua chat è di sola lettura",
+        "unavailable_read_only": "Questa sessione appartiene a {{app}}, che è disattivata o non più installata, quindi la sua chat è di sola lettura."
       }
     },
     "chatPage": {

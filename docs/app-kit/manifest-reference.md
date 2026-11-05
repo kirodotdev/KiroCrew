@@ -793,11 +793,68 @@ app page.
 Lucide catalog, because resolving an arbitrary name would mean bundling every
 icon; an unrecognised or absent name renders a generic panel glyph.
 
-`Activity`, `AudioLines`, `Bell`, `BookOpen`, `Bot`, `Boxes`, `Bug`, `Cloud`, `Code`,
+`Activity`, `AppWindow`, `AudioLines`, `Bell`, `BookOpen`, `Bot`, `Boxes`, `Bug`, `Cloud`, `Code`,
 `Database`, `FileText`, `Files`, `Folder`, `FolderTree`, `GitBranch`, `Globe`,
 `Inbox`, `Layers`, `Link`, `ListTodo`, `Mic`, `MessageSquare`, `Package`, `PanelRight`,
 `Pin`, `Search`, `Settings`, `Shield`, `Sparkles`, `Star`, `Table`, `Tag`,
 `Terminal`, `Users`, `Wrench`, `Zap`
+
+## App-drawn sessions
+
+### `contributes.sessionKinds` — Sessions whose main pane an app draws
+
+A kind of session the app draws itself. Each kind is a row in the sidebar's create
+menu; choosing it creates an ordinary chat session bound to the kind, and the
+dashboard mounts the kind's `entry` in place of the transcript and composer, through
+the **same in-process ESM app host** a panel tab uses. The session keeps its title,
+folder, agent and history like any other; only its main pane is the app's.
+
+```json
+"contributes": {
+  "sessionKinds": [{
+    "id": "project",
+    "title": "Project app",
+    "menuLabel": "New project app",
+    "menuDescription": "A React app built for this piece of work",
+    "icon": "AppWindow",
+    "entry": "dist/pane.mjs",
+    "defaultAgent": "kirocrew-conductor"
+  }]
+}
+```
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `contributes.sessionKinds[].id` | string | | Stable kind id, unique within the app; storage-safe slug (`[a-z][a-z0-9_-]{0,63}`). Bound sessions name their kind by it |
+| `contributes.sessionKinds[].title` | string | | The kind's name, shown on a bound session |
+| `contributes.sessionKinds[].menuLabel` | string | | Row label in the sidebar's create menu |
+| `contributes.sessionKinds[].menuDescription` | string | | Optional one-line description under the row |
+| `contributes.sessionKinds[].icon` | string | | Optional icon name from the panel-tab icon set above |
+| `contributes.sessionKinds[].entry` | string | | ESM bundle mounted as the session's pane, relative to the app's `ui/` directory (the same base as a panel tab's `entry`) |
+| `contributes.sessionKinds[].defaultAgent` | string | | Optional agent the create menu starts the session on, as a template pick; a bare agent name (`[A-Za-z0-9._-]{1,120}`). Empty means the dashboard default |
+
+An app may declare at most 4 kinds. `title`, `menuLabel`, `menuDescription` and
+`icon` are capped at 120 characters, counted in UTF-16 units as the browser counts
+them. The block is in the signing payload, because `entry` names a module the
+dashboard runs in its own origin. A non-array `sessionKinds`, a non-object entry,
+a duplicate `id` or a fifth kind is refused at install.
+
+**Creating a session of a kind.** The create menu calls `POST /api/chat/slots` with
+`session_kind: {"app": "<app name>", "kind": "<id>"}`. The gateway creates the
+session only when the app is installed and enabled and its manifest declares that
+kind, and only for the owner's own dashboard or for the app's own token. It mints
+the session's `object` itself (32 lowercase hex characters) and ignores any
+`object` the caller sends, so the app receives a fresh id for the record it keeps
+for this session. A create that names a session (`name`), or asks for an
+`ephemeral` or `artifact` session, is refused. Every refusal answers `400` with
+`code: "invalid_session_kind"`.
+
+The session carries `session_kind: {"app", "kind", "object"}` in every slot payload
+(`null` on an ordinary session) and in its saved metadata, written when the session
+is created, so it reopens as its kind after a restart even if it never got a
+message. When the app is later disabled or uninstalled, nothing is deleted: the
+session keeps its binding and the dashboard shows its transcript, read-only, with a
+notice. The pane reads its binding through the App SDK's `useSessionPane()`.
 
 ## Backend
 
@@ -2073,8 +2130,8 @@ before it runs your command, which is the same silent failure:
 - `version` must start with `MAJOR.MINOR.PATCH`; a pre-release (`-`) or build
   (`+`) suffix may follow it
 - Paths in `agents`, `skills`, `sops`, `ui.entry`, `ui.pages[].entryPoint`,
-  `contributes.sessionControls[].entryPoint`, `contributes.panelTabs[].entry`, and
-  `backend.entryPoint` must be relative and stay inside the app root: absolute paths
+  `contributes.sessionControls[].entryPoint`, `contributes.panelTabs[].entry`,
+  `contributes.sessionKinds[].entry`, and `backend.entryPoint` must be relative and stay inside the app root: absolute paths
   and `..` traversal are rejected (canonical resolve + containment when the app dir
   is known). `backend.hooks.*` are format-checked (`module.path:callable`, which
   cannot express traversal) and containment-checked again at load time.

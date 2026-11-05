@@ -120,6 +120,17 @@ resolves through:
 | `Select` | `@kirocrew/app-sdk/ui` | A themed inline dropdown: `options`, `optionLabels?`, `value`, `onChange`, `clearLabel?`, `disabled?`, `aria-label?`, `title?`, `className?`. Native list on touch devices. |
 | `guideCaution` | `@kirocrew/app-sdk/ui` | Spread onto a control that removes something (`<Btn {...guideCaution}>`), so a dashboard guide shows its caution line before a press there. |
 
+`useSessionPane()` returns the binding of the session whose main pane this bundle is
+drawing, for a `contributes.sessionKinds` entry
+([manifest-reference.md](manifest-reference.md)): `slotKey` (the dashboard slot),
+`sessionKey` (`dashboard:<slotKey>`, the identity every scoped request already
+carries), `app`, `kind`, and `object`, the id the gateway minted for this session when
+it was created. Key the record your app keeps for the session by `object`. On a routed
+page, a side-panel tab or anywhere else it returns `null`, and a host nested inside a
+pane does not inherit the pane's binding. The vendor stub re-exports it like every
+other hook. It is a level-2 addition: a bundle that must also load on a level-1 host
+reads it through a namespace import and checks `sdk.APP_SDK_LEVEL >= 2`.
+
 A bundle that must also load on an older host reads these through a namespace import
 (`import * as sdk from '@kirocrew/app-sdk'`) and falls back when one is `undefined`. A
 named import of a name the host lacks fails the whole bundle at load time.
@@ -1294,7 +1305,9 @@ fall back to `asyncio.to_thread` and keyword search.
 An `int`, the App Kit seam level this host provides. Level 1 means the owner gate,
 the shared embedder, structural routes (see `backend.hooks.routes` in
 [manifest-reference.md](manifest-reference.md)) and the dashboard SDK additions
-listed under [App SDK Hooks](#app-sdk-hooks-dashboard-ui) are all present. Read it
+listed under [App SDK Hooks](#app-sdk-hooks-dashboard-ui) are all present. Level 2
+adds `contributes.sessionKinds` (see [manifest-reference.md](manifest-reference.md))
+and the dashboard's `useSessionPane()`. Read it
 with `getattr(ctx, "sdk_level", 0)`. When it is lower than your app needs, call
 `ctx.health.mark_degraded(...)` with the consequence and keep serving what you can.
 The dashboard exports the same number as `APP_SDK_LEVEL`.

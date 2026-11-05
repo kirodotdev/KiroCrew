@@ -34,7 +34,8 @@ The line is a file the agent's own tools can write. Each row's read keeps exactl
 the checks its hand-written reader applied, no more and no fewer: some values are
 re-validated (the title state, the compaction threshold, the dismissed links, the
 model and effort, the mode, the custom color hex, the tags, the agent kind, the
-artifact, the executor, the held notes, the queue), and the rest are still copied
+artifact, the session kind, the executor, the held notes, the queue), and the rest are
+still copied
 as written. The checks a value of its own needs before a slot takes it live in
 ``metadata_values``.
 New slot-owned metadata fields belong here: a row, its key in ``LINE_ORDER`` and
@@ -57,6 +58,7 @@ from kiro_crew.dashboard.chat_utils import (
     effective_session_key,
     slot_transcript_key,
 )
+from kiro_crew.dashboard.session_kinds import session_kind_binding
 from kiro_crew.dashboard.slot_buffers import (
     committed_filtered_note_ids,
     drop_committed_restored_notes,
@@ -601,6 +603,15 @@ def _read_artifact(r: _Read) -> None:
         r.slot._artifact = artifact
 
 
+def _read_session_kind(r: _Read) -> None:
+    # Re-validated field by field (``session_kind_binding``): the line is
+    # attacker-writable and the binding reaches every client's slot payload, where
+    # it decides which app's module draws the session.
+    binding = session_kind_binding(r.meta.get("session_kind"))
+    if binding is not None:
+        r.slot._session_kind = binding
+
+
 def _read_pinned(r: _Read) -> None:
     if r.meta.get("pinned"):
         r.slot.pinned = True
@@ -1076,6 +1087,17 @@ FIELDS: tuple[Field, ...] = (
             "resume clears it (#17025)"
         ),
     ),
+    # The app-drawn session binding. Restored on every read, RESUME included: a
+    # session reopened from History is still the app's same record. Both writers
+    # re-check the value, so a bad in-memory dict is never written back.
+    Field(
+        "session_kind",
+        _ALL,
+        attr="_session_kind",
+        line=_truthy(lambda s: session_kind_binding(s._session_kind)),
+        merge=_truthy(lambda s: session_kind_binding(s._session_kind)),
+        read=_read_session_kind,
+    ),
     Field(
         "pinned",
         _ALL,
@@ -1333,6 +1355,7 @@ LINE_ORDER: tuple[str, ...] = (
     "created_by",
     "attribution",
     "artifact",
+    "session_kind",
     "pinned",
     "mutes_opened",
     "muted",
@@ -1362,6 +1385,7 @@ MERGE_ORDER: tuple[str, ...] = (
     "muted",
     "mode",
     "artifact",
+    "session_kind",
     "reasoning_effort",
     "color_index",
     "color_hex",

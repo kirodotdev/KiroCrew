@@ -86,6 +86,7 @@ from kiro_crew.dashboard.chat_utils import (  # noqa: F401
     slot_transcript_key,
     with_bounded_redaction_records,
 )
+from kiro_crew.dashboard.session_kinds import session_kind_binding  # noqa: F401
 from kiro_crew.dashboard.slot_buffers import (  # noqa: F401
     committed_filtered_note_ids,
     drop_committed_restored_notes,
