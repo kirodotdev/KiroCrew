@@ -37,18 +37,7 @@ import { useCrewMode } from '../../hooks/usePreviewFlag'
 import { useCommandBarOverlaySlots } from './useCommandBarOverlaySlots'
 import { useCommandBarOverlayActivation } from './useCommandBarOverlayActivation'
 import { commandBarOverlaySlotRenderer } from './CommandBarOverlaySlot'
-import { chordMatchesEvent, hasCustomChord, isModKEvent, loadQuickSearchConfig } from '../../lib/quickSearchShortcut'
-
-/**
- * Whether `e` is the gesture that toggles the quick-search slot this bar fills:
- * ⌘K / Ctrl+K in `mod-k` mode, or the recorded chord in `custom` mode. The same
- * test `useCommandPalette` applies, read live so a Settings change applies at once.
- */
-function isQuickSearchToggleEvent(e: KeyboardEvent): boolean {
-  const config = loadQuickSearchConfig()
-  if (config.mode === 'mod-k') return isModKEvent(e)
-  return hasCustomChord(config) && chordMatchesEvent(e, config.custom)
-}
+import { isQuickSearchToggleEvent } from '../../lib/quickSearchShortcut'
 
 /**
  * Command Bar — the ⌘K launcher.

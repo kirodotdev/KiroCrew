@@ -231,6 +231,21 @@ export function hasCustomChord(config: QuickSearchConfig): config is QuickSearch
   return config.mode === 'custom' && isValidChord(config.custom)
 }
 
+/**
+ * Whether `e` is the gesture that toggles the quick-search surface: ⌘K / Ctrl+K
+ * in `mod-k` mode, or the recorded chord in `custom` mode. The same test
+ * {@link useCommandPalette} applies, read live so a Settings change applies at
+ * once. A modal quick-search surface lets this one key bubble so the `window`
+ * listener can toggle it shut, and stops every other key.
+ */
+export function isQuickSearchToggleEvent(
+  e: Pick<KeyboardEvent, 'code' | 'key' | 'metaKey' | 'ctrlKey' | 'altKey' | 'shiftKey'>,
+): boolean {
+  const config = loadQuickSearchConfig()
+  if (config.mode === 'mod-k') return isModKEvent(e)
+  return hasCustomChord(config) && chordMatchesEvent(e, config.custom)
+}
+
 /** Human keycaps for a config's PRIMARY gesture, platform-aware, for rendering. */
 export function formatQuickSearchKeys(config: QuickSearchConfig, mac: boolean = isMac): string[] {
   switch (config.mode) {
