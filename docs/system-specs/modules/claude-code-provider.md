@@ -725,6 +725,28 @@ installed plugins' MCP servers beside the wire array, and each helper call start
 fresh session, so those servers would start on every call in a session that runs no
 tool. Only the wire array mounts; nothing else in the envelope changes.
 
+### An incognito or temporary chat
+
+Claude Code's auto-memory reads `<config dir>/projects/<project key>/memory/MEMORY.md`
+into every session and writes memory files there, with no `session/request_permission`,
+so Crew's gate never sees those writes. A session whose `memory_mode` is `incognito` or
+`temporary` gets `env: {"CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1"}` in
+`_meta.claudeCode.options`, beside whatever else its envelope carries. The adapter
+spreads that `env` over its own process env (verified on claude-agent-acp 0.100.0), and
+the CLI then neither loads nor writes auto-memory; the variable wins over the
+`autoMemoryEnabled` setting (verified on Claude Code 2.1.318). Claude Code also copies
+each settings tier's own `env` over the process env, user, project and local first and
+the flag tier last, so a settings file that sets the variable to a false value would
+turn auto-memory back on. The same key therefore also goes into the flag tier's
+`settings.env` (a copy of any inline settings, which stay unchanged). A persistent
+session's envelope is unchanged. `AcpProvider.start` sets the client's `memory_mode`
+before the client starts, and a restricted session never takes a warm-pool child or a
+native resume, so every `session/new` it sends carries the variable. Not covered: a
+sub-agent spawned with `include_memory=false` (that choice shapes the prompt only and
+does not reach the client), and a live chat tightened to incognito or temporary while
+its claude session runs, which keeps the envelope it started with until its next
+`session/new`. Contract tests: `test_claude_auto_memory_envelope.py`.
+
 ### Known gap: the user's global `~/.claude` is inherited
 
 With no `CLAUDE_CONFIG_DIR` set by the core, the adapter and the SDK read the

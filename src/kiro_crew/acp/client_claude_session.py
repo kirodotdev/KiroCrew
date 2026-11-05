@@ -15,7 +15,7 @@ Instance fields written: ``_claude_inline_settings``,
 
 Instance fields read: ``_agent_version``, ``_agent_version_read``, ``_permission_mode``,
 ``_session_id``, ``_session_mcp_excludes_local``, ``_session_mcp_inline_settings``,
-``_side_read_only``, ``_spec_zero_tools``.
+``_side_read_only``, ``_spec_zero_tools``, ``memory_mode``.
 """
 
 from __future__ import annotations
@@ -82,6 +82,14 @@ _CLAUDE_SIDE_READ_ONLY_ASK_RULES: tuple[str, ...] = (
     "WebFetch",
     "WebSearch",
 )
+
+#: The Claude Code switch that turns its auto-memory off for the whole session: it
+#: neither loads ``<config dir>/projects/<project key>/memory/MEMORY.md`` nor writes
+#: a memory file. Read by the CLI from its process env, where it wins over the
+#: ``autoMemoryEnabled`` setting (Claude Code 2.1.318). Sent in
+#: ``_meta.claudeCode.options.env`` and in the flag tier's ``settings.env`` for an
+#: incognito or temporary session.
+_CLAUDE_DISABLE_AUTO_MEMORY_ENV = "CLAUDE_CODE_DISABLE_AUTO_MEMORY"
 
 #: gitignore's pattern characters. A rule written from a real path escapes them, as
 #: Claude Code does for a path the user approves, so a directory named ``[x]`` is
@@ -425,6 +433,14 @@ def _claude_session_meta(self: AcpClient) -> dict[str, Any]:
     session needs; the deny rules are what keep an allow rule or an
     additional directory there from reaching a sensitive path. A side session
     with no deny rules to carry raises ``AcpError`` instead of starting.
+
+    An incognito or temporary session (``memory_mode`` not ``persistent``) gets
+    ``CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`` in ``env`` and in ``settings.env``, so
+    Claude Code's auto-memory neither reads nor writes the project's memory
+    files. The adapter spreads ``env`` over its own process env, so nothing it
+    sets there is lost; ``settings.env`` is the flag tier, which Claude Code
+    applies after the user, project and local tiers' ``env``, so none of those
+    can set the switch back.
     """
     options: dict[str, Any] = {}
     excluded = getattr(self, "_claude_local_settings_excluded", False) or getattr(
@@ -471,6 +487,18 @@ def _claude_session_meta(self: AcpClient) -> dict[str, Any]:
         side_settings["permissions"] = side_permissions
         side_settings["disableAllHooks"] = True
         options["settings"] = side_settings
+    if self.memory_mode != "persistent":
+        # Claude Code's auto-memory reads the project's MEMORY.md into the
+        # session and writes memory files with no permission request. The
+        # adapter spreads this env over its own process env. Claude Code then
+        # copies each settings tier's ``env`` over the process env, so a user
+        # or project ``env`` could set the switch back; the flag tier
+        # (``settings``) is copied last, so it carries the switch too. Copied,
+        # never mutated: the inline and Side Chat settings are shared dicts.
+        options.setdefault("env", {})[_CLAUDE_DISABLE_AUTO_MEMORY_ENV] = "1"
+        flag = dict(options.get("settings") or {})
+        flag["env"] = {**dict(flag.get("env") or {}), _CLAUDE_DISABLE_AUTO_MEMORY_ENV: "1"}
+        options["settings"] = flag
     # What this envelope ships, recorded as it is built: the session freezes
     # these deny and ask rules at creation, and a later re-seed (``_reseed_after_capture``)
     # moves the live inline settings without reaching the session.
