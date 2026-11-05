@@ -15,7 +15,7 @@ from aiohttp import web
 from aiohttp.multipart import BodyPartReader
 
 from kiro_crew.dashboard import part_stream
-from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+from kiro_crew.dashboard.handlers._shared import open_multipart, require_owner_dashboard_request
 from kiro_crew.portability import (
     apply_import_zip,
     is_agent_template_stem,
@@ -148,7 +148,9 @@ def _requested_agent_templates(
 
 async def _read_upload_file(request: web.Request) -> tuple[Path | None, web.Response | None]:
     """Read a multipart file upload into a temp file. Returns (path, None) or (None, error_response)."""
-    reader = await request.multipart()
+    reader, not_multipart = await open_multipart(request)
+    if reader is None:
+        return None, not_multipart
     part = await reader.next()
     if part is None or not isinstance(part, BodyPartReader) or part.name != "file":
         return None, web.json_response(

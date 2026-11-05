@@ -20,7 +20,7 @@ from pathlib import Path
 from aiohttp import web
 
 from kiro_crew.dashboard import part_stream
-from kiro_crew.dashboard.handlers._shared import read_bounded_json
+from kiro_crew.dashboard.handlers._shared import open_multipart, read_bounded_json
 from kiro_crew.dashboard.handlers.files import _ZIP_CONTAINER_EXTS, _content_matches_ext
 from kiro_crew.dashboard.handlers.knowledge_access import (
     _audited_write,
@@ -202,7 +202,9 @@ async def ingest_file(request: web.Request) -> web.Response:
         return web.json_response({"error": "ingestion pipeline not configured"}, status=503)
 
     namespace = request.query.get("namespace", "default")
-    reader = await request.multipart()
+    reader, not_multipart = await open_multipart(request)
+    if reader is None:
+        return not_multipart  # type: ignore[return-value]
     field = await reader.next()
     if not field or not hasattr(field, "read_chunk") or field.name != "file":  # type: ignore[union-attr]
         return web.json_response({"error": "missing 'file' field"}, status=400)
