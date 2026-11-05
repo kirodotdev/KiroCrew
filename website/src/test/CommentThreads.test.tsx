@@ -161,6 +161,16 @@ describe('reading threads', () => {
     expect(screen.queryByText(/Settled thing/)).toBeNull()
   })
 
+  it('says whether resolved threads are showing', async () => {
+    mount(source([
+      comment({ id: 'c1', threadId: 'T1' }),
+      comment({ id: 'c2', threadId: 'T2', body: 'Settled thing', resolved: true }),
+    ]))
+    expect(screen.getByRole('button', { name: /Show resolved/ })).toHaveAttribute('aria-expanded', 'false')
+    await userEvent.click(screen.getByRole('button', { name: /Show resolved/ }))
+    expect(screen.getByRole('button', { name: /Hide resolved/ })).toHaveAttribute('aria-expanded', 'true')
+  })
+
   it('reveals resolved threads on request', async () => {
     mount(source([
       comment({ id: 'c1', threadId: 'T1' }),

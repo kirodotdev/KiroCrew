@@ -314,6 +314,7 @@ export default function CommentThreads(
           <button
             type="button"
             onClick={() => setShowResolved((v) => !v)}
+            aria-expanded={showResolved}
             className="ml-auto bg-transparent p-0 text-[12px] text-accent hover:underline cursor-pointer"
           >
             {showResolved
