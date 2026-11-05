@@ -135,6 +135,7 @@ class TestConductorCarriesTheWidgetBlock:
 
         from kiro_crew.agent_parts.spec_prompts import (
             _CONDUCTOR_SYSTEM_PROMPT,
+            _TEAM_LEAD_SYSTEM_PROMPT,
             _WORKER_SYSTEM_PROMPT,
         )
         from kiro_crew.context import ContextBuilder
@@ -143,7 +144,10 @@ class TestConductorCarriesTheWidgetBlock:
 
         agents_dir = tmp_path / ".kiro" / "agents"
         agents_dir.mkdir(parents=True, exist_ok=True)
-        body = _WORKER_SYSTEM_PROMPT if agent == "kirocrew-worker" else _CONDUCTOR_SYSTEM_PROMPT
+        body = {
+            "kirocrew-worker": _WORKER_SYSTEM_PROMPT,
+            "kirocrew-team-lead": _TEAM_LEAD_SYSTEM_PROMPT,
+        }.get(agent, _CONDUCTOR_SYSTEM_PROMPT)
         (agents_dir / f"{agent}.json").write_text(
             json.dumps({"name": agent, "prompt": body}), encoding="utf-8"
         )
@@ -205,6 +209,29 @@ class TestConductorCarriesTheWidgetBlock:
         assert "{{WIDGET_BLOCK}}" not in contract
         # A crewmate whose block held only the pointer gets no block at all.
         assert (contract == "") is private_owner
+
+    @pytest.mark.parametrize("private_owner", [True, False])
+    def test_the_team_lead_gets_the_pointer_on_the_dashboard(
+        self, tmp_path, monkeypatch, private_owner
+    ):
+        contract = self._contract(
+            tmp_path,
+            monkeypatch,
+            "kirocrew-team-lead",
+            "dashboard_member-kirocrew-team-lead",
+            private_owner=private_owner,
+        )
+        assert "## Inline Widgets" in contract
+        assert "{{WIDGET_BLOCK}}" not in contract
+        assert ("# Kiro Crew Team Lead" in contract) is not private_owner
+
+    def test_the_team_lead_gets_no_pointer_off_the_dashboard(self, tmp_path, monkeypatch):
+        contract = self._contract(
+            tmp_path, monkeypatch, "kirocrew-team-lead", "slack:C123:123.456", private_owner=False
+        )
+        assert "# Kiro Crew Team Lead" in contract
+        assert "Inline Widgets" not in contract
+        assert "{{WIDGET_BLOCK}}" not in contract
 
     def test_the_worker_gets_no_pointer(self, tmp_path, monkeypatch):
         contract = self._contract(
