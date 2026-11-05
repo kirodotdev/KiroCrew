@@ -483,6 +483,13 @@ OFF_CARD_SETS: Mapping[str, str] = {
         "a request the backend never sends, or leave a KAS server unable to sign in, "
         "which is a defect"
     ),
+    "ACP_BACKENDS_CREW_ENFORCES_SPEC_TOOLS_SETTINGS": (
+        "who enforces the agent spec's toolsSettings shell and write allowlists: the "
+        "harness, or Crew's gate for a harness that never reads them. The allowlist "
+        "holds either way, so a reader choosing a harness loses nothing; a wrong "
+        "membership refuses commands the harness allows or drops the allowlist, "
+        "which is a defect"
+    ),
     "ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS": (
         "who runs the agent spec's own hooks: the harness, or Crew's turn loop for a "
         "harness that never receives them. The hooks run either way, so a reader "

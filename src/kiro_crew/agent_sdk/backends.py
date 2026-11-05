@@ -257,6 +257,10 @@ with no row here.
      - semantic question (``SessionCapabilities.crew_fires_spec_hooks``)
    * - ``ACP_BACKENDS_CREW_FIRES_SPEC_OBSERVER_HOOKS``
      - semantic question (``SessionCapabilities.crew_fires_spec_observer_hooks``)
+   * - ``ACP_BACKENDS_CREW_ENFORCES_SPEC_TOOLS_SETTINGS``
+     - driver-internal (whether the direct client stamps the spec's shell and
+       write allowlists on its own permission requests, and the claude seed adds
+       the ``permissions.ask`` rules that make those calls reach the gate)
    * - ``ACP_BACKENDS_HOST_AUTH_CALLBACK``
      - driver-internal (whether the reader loop may answer the engine's
        ``_kiro/auth/getAccessToken`` from Crew's own vault)
@@ -1188,6 +1192,7 @@ from kiro_crew.agent_sdk.backends_routing import (  # noqa: E402,F401 - re-expor
     ACP_BACKEND_PERMISSION_SETTING,
     ACP_BACKEND_PROMPT_COMMAND_ALLOWLIST,
     ACP_BACKEND_ROUTING,
+    ACP_BACKENDS_CREW_ENFORCES_SPEC_TOOLS_SETTINGS,
     ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS,
     ACP_BACKENDS_CREW_FIRES_SPEC_OBSERVER_HOOKS,
     ACP_BACKENDS_DIRECT_CLIENT_CHILD_CALLS_MARKED,

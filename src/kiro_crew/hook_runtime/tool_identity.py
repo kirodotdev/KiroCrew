@@ -182,18 +182,18 @@ class ToolCall:
     #: way. Read by the ``spec-builtin-grant`` tier only, against the recovered
     #: ``command``. Empty grants nothing.
     spec_granted_commands: tuple[str, ...] = ()
-    #: ``AcpEvent.spec_shell_allowlist``: when the KAS session's own agent sets
+    #: ``AcpEvent.spec_shell_allowlist``: when the KAS or claude session's own agent sets
     #: ``toolsSettings.shell.denyByDefault``, the only commands its shell may run;
     #: ``None`` otherwise. Read by the ``spec-shell-allowlist`` tier, which REFUSES
     #: a shell call none matches. A restriction, never a grant.
     spec_shell_allowlist: tuple[str, ...] | None = None
-    #: ``AcpEvent.spec_write_allowlist``: when the KAS session's own agent sets
+    #: ``AcpEvent.spec_write_allowlist``: when the KAS or claude session's own agent sets
     #: ``toolsSettings.fs_write.fallbackAction: "deny"``, the absolute globs its
     #: write tool may touch; ``None`` otherwise. Read by the
     #: ``spec-write-allowlist`` tier, which REFUSES a file write none covers. A
     #: restriction, never a grant.
     spec_write_allowlist: tuple[str, ...] | None = None
-    #: ``AcpEvent.spec_write_cwd``: the KAS session's own directory, which the
+    #: ``AcpEvent.spec_write_cwd``: the KAS or claude session's own directory, which the
     #: ``spec-write-allowlist`` tier joins a relative write target to. ``""``
     #: leaves a relative target uncovered.
     spec_write_cwd: str = ""

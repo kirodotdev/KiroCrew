@@ -1261,13 +1261,16 @@ def _command_matches_any(command: str | None, patterns: Sequence[str]) -> bool:
 
 
 def _tier_spec_shell_allowlist(facts: GateFacts, tier: GateTier) -> ToolHookResult | None:
-    """A KAS spec's ``toolsSettings.shell.denyByDefault``: refuse an unlisted command.
+    """A spec's ``toolsSettings.shell.denyByDefault`` on a harness that does not
+    read it (KAS, claude): refuse an unlisted command.
 
     On kiro-cli such a spec refuses every shell command its ``allowedCommands``
-    do not match. KAS has no rule for it, so the session handle stamps the spec's
-    usable patterns on its own agent's permission requests
+    do not match. KAS and claude have no rule for it, so the KAS session handle and
+    the claude direct client stamp the spec's usable patterns on their own agent's
+    permission requests
     (``AcpEvent.spec_shell_allowlist``; ``None`` when the spec does not set it, a
-    sub-session's or native sub-agent's request carries ``None`` too), and this row
+    sub-session's or native KAS sub-agent's request carries ``None`` too, a native
+    claude sub-agent's the parent's), and this row
     refuses a shell call (kiro-cli's ``execute_bash`` among its names, no MCP
     server behind it) unless its recovered command passes the same match the
     ``spec-builtin-grant`` row grants by (:func:`_spec_command_granted`: plain,
@@ -1373,15 +1376,16 @@ def _write_target_uncovered(target: str, patterns: Sequence[str], cwd: str) -> s
 
 
 def _tier_spec_write_allowlist(facts: GateFacts, tier: GateTier) -> ToolHookResult | None:
-    """A KAS spec's ``toolsSettings.fs_write.fallbackAction: "deny"``: refuse an
-    uncovered write, a relative target judged under ``spec_write_cwd``.
+    """A spec's ``toolsSettings.fs_write.fallbackAction: "deny"`` on a harness that
+    does not read it (KAS, claude): refuse an uncovered write, a relative target
+    judged under ``spec_write_cwd``.
 
     On kiro-cli such a spec refuses every file write its ``allowedPaths`` do not
-    cover, instead of asking. KAS has no rule for it, so the session handle stamps
-    the spec's usable entries, anchored at the session's directory, on its own
-    agent's permission requests (``AcpEvent.spec_write_allowlist``; ``None`` when
-    the spec does not set it, and on a sub-session's or native sub-agent's
-    request), and this row refuses a file write (:func:`_is_spec_write_call`, no
+    cover, instead of asking. KAS and claude have no rule for it, so the KAS session
+    handle and the claude direct client stamp the spec's usable entries, anchored
+    at the session's directory, on their own agent's permission requests (``AcpEvent.spec_write_allowlist``; ``None`` when
+    the spec does not set it, and on a sub-session's or native KAS sub-agent's
+    request; a native claude sub-agent's carries the parent's), and this row refuses a file write (:func:`_is_spec_write_call`, no
     MCP server behind it) unless every target it names is covered
     (:func:`_write_target_uncovered`, matched by
     :mod:`kiro_crew.platform.allowed_paths`). A write whose targets cannot all be

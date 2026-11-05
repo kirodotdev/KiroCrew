@@ -354,6 +354,26 @@ ACP_BACKENDS_CREW_FIRES_SPEC_OBSERVER_HOOKS = ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS
     {ACP_BACKEND_CLAUDE}
 )
 
+#: Backends on the direct ``AcpClient`` whose session never reads the agent spec's
+#: ``toolsSettings`` shell and write allowlists, so Crew's gate enforces them: the
+#: client reads ``shell.denyByDefault``/``allowedCommands`` and
+#: ``fs_write.fallbackAction: "deny"``/``allowedPaths`` from the spec it projects
+#: (``acp.spec_tools_allowlists``), stamps them on the session's own permission
+#: requests, and the gate's ``spec-shell-allowlist`` and ``spec-write-allowlist``
+#: rows refuse what they do not cover, ``AUTO_APPROVE`` included. KAS gets the same
+#: stamps from the shared runtime's session handle, so it is not a member here.
+#:
+#: claude is the member. Its settings seed adds ``permissions.ask`` rules for the
+#: shell and the file-write tools while either allowlist is set, so a call the
+#: harness would approve on its own (a read-only command, an edit under
+#: ``acceptEdits``) still raises the request the gate answers.
+#:
+#: kiro-cli is NOT a member and must never become one: it reads ``toolsSettings``
+#: off disk and enforces it itself, and Crew's narrower pattern subset would refuse
+#: commands kiro-cli allows. The other backends stay out until their seed is shown
+#: to make every shell and write call ask.
+ACP_BACKENDS_CREW_ENFORCES_SPEC_TOOLS_SETTINGS: FrozenSet[str] = frozenset({ACP_BACKEND_CLAUDE})
+
 
 # ── How a harness is made to ask ──
 # Kiro Crew's PreToolUse gate -- the bundled denied-command rules, the
