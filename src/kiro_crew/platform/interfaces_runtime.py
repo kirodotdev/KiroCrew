@@ -634,7 +634,10 @@ class SttStreamSession(Protocol):
     it could not start; ``feed()`` takes 16 kHz mono Int16 PCM and answers False
     once the session stops accepting audio; ``events()`` yields
     ``{"type": "partial"|"final", "text": str}`` or ``{"type": "error",
-    "message": str}``; ``finish()`` ends the input so the trailing finals arrive;
+    "message": str, "code": str}``, where ``code`` is optional and core relays it
+    only when it is one of ``stt_stream.RELAYED_SESSION_ERROR_CODES`` (any other
+    code, or none, reaches the client as ``stt_session_failed``); ``finish()``
+    ends the input so the trailing finals arrive;
     ``close()`` releases everything and is idempotent.
     """
 
@@ -665,6 +668,17 @@ class SttProvider(Protocol):
     also set an optional ``identifies_languages = True``. Core then offers the
     mixed-language picker for it; the provider reads the candidates from
     ``stt_config.transcribe_language_identification`` itself.
+
+    A streaming provider whose backend decides how long one session runs may set
+    an optional ``owns_session_limit = True``. Core then applies no duration cap
+    to its sessions and advertises no ``max_duration_ms``: the backend's limit is
+    the only one, so it can change without a client release. When the backend
+    ends a session at its limit, the provider emits ``{"type": "error", "code":
+    "stt_max_duration_exceeded"}`` and the dashboard shows its length-limit
+    message. Such a provider must bound its own I/O (connect and read timeouts),
+    since no core deadline will end a session whose backend stops answering.
+    Without the attribute, core's ``_MAX_STREAM_DURATION_SECS`` applies as it
+    does to the built-in providers.
 
     Core may call any method from any event loop. A provider must not keep a
     loop-bound client (an aiohttp or httpx session) across calls: it creates one
