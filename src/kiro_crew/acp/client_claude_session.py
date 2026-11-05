@@ -276,7 +276,8 @@ def _exclude_foreign_local_settings(self: AcpClient, local_settings: Path, paylo
     channel, so a project file that sets either refuses the exclusion.
 
     Refused, keeping the array withheld, when this session asked for a
-    permission mode of its own (the pin sets only the asking mode), when
+    permission mode other than :data:`_CLAUDE_PINNED_MODE` (the pin sets only
+    the asking mode, so a request for that mode is honoured), when
     a project file cannot be examined or sets ``hooks`` or ``sandbox``, or
     when the adapter that
     answered the handshake is below
@@ -291,7 +292,10 @@ def _exclude_foreign_local_settings(self: AcpClient, local_settings: Path, paylo
     if self._claude_adapter_below_setting_sources_floor():
         self._log_claude_adapter_below_floor(local_settings, whose)
         return False
-    if getattr(self, "_permission_mode", None):
+    requested = getattr(self, "_permission_mode", None)
+    # A request for the pinned mode is what the pin below sets anyway, so it
+    # needs no file of its own; only a different mode does.
+    if requested and requested != _CLAUDE_PINNED_MODE:
         logger.warning(
             "%s %s and this session requested permission mode "
             "%r, which cannot be pinned without that file; the session runs without "
