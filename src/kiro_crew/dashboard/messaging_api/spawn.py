@@ -36,7 +36,7 @@ if TYPE_CHECKING:
         internal_memory_scope,
         ledger_of,
         parent_project_dirs,
-        parent_template_allowlists,
+        parent_template_spawn_policy,
         parent_work_supported,
         spawn_parent_claim,
         stopped_before_start,
@@ -482,17 +482,14 @@ async def api_spawn(request: web.Request) -> web.Response:
         # no declaration to honour: the synthesized context below carries the
         # CHILD's template, which must not be mistaken for a parent.
         parent_spawn_policy = (
-            (
+            await asyncio.to_thread(
+                parent_template_spawn_policy,
+                parent_session,
                 parent_execution.template_id,
-                await asyncio.to_thread(
-                    parent_template_allowlists,
-                    parent_session,
-                    parent_execution.template_id,
-                    parent_dirs,
-                ),
+                parent_dirs,
             )
             if parent_execution is not None
-            else ("", ())
+            else ("", (), ())
         )
         if parent_execution is None and parent_session and not agent:
             # A parent with no execution record yet (a channel conversation whose
