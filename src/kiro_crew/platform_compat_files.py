@@ -533,44 +533,110 @@ def chmod_safe(path: str | os.PathLike, mode: int) -> None:
             logger.warning("Cannot set permissions on %s", path)
 
 
-def _clear_readonly_and_retry(func: Any, path: str, _exc: BaseException) -> None:
-    """``shutil.rmtree`` error hook: drop the read-only bit, then retry once.
+def _grant_owner_write_to_parent(path: str, root: str | os.PathLike) -> bool:
+    """POSIX: add owner write and search to *path*'s parent directory. True if changed.
+
+    POSIX decides an unlink or rmdir by the PARENT directory's write bit, so an
+    entry inside a directory left without it (a test that made a fixture
+    read-only, a tool that copies a read-only package tree) cannot be removed
+    by its own owner until that bit is back.
+
+    Only parents at or below *root* may change. Each component from the root
+    to the parent is opened with ``O_NOFOLLOW | O_DIRECTORY`` relative to the
+    preceding descriptor, so a symlink cannot redirect the permission change.
+    Only a directory this process's user owns is touched, and the bits
+    are ADDED to its mode, never set in its place. A directory owned by someone
+    else (a container that wrote as root) is left alone: only that owner can
+    change it.
+    """
+    root_path = Path(root)
+    entry = Path(path)
+    if entry == root_path:
+        return False
+    try:
+        relative_parent = entry.parent.relative_to(root_path)
+    except ValueError:
+        return False
+    if ".." in relative_parent.parts:
+        return False
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(root_path, flags)
+    except OSError:
+        return False
+    try:
+        for component in relative_parent.parts:
+            child_fd = os.open(component, flags, dir_fd=fd)
+            os.close(fd)
+            fd = child_fd
+        info = os.fstat(fd)
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid():
+            return False
+        mode = stat.S_IMODE(info.st_mode)
+        wanted = mode | stat.S_IWUSR | stat.S_IXUSR
+        if wanted == mode:
+            return False
+        os.fchmod(fd, wanted)
+        return True
+    except OSError:
+        return False
+    finally:
+        os.close(fd)
+
+
+def _retry_removal(
+    func: Any, path: str, exc: BaseException, *, root: str | os.PathLike | None = None
+) -> bool:
+    """Make the failed removal *func(path)* possible, retry it once. True if it now succeeded.
 
     Windows checks the read-only ATTRIBUTE on the file being deleted, whereas
     POSIX consults the parent directory's write bit. So a mode-``444`` file — of
     which a git checkout is full, since loose objects are written read-only —
     cannot be unlinked on Windows even when its directory is writable.
 
-    Only Windows gets the chmod, and only for an entry that is not a link. On
-    POSIX the entry's own mode never decides whether it can be removed, so a
-    chmod there buys nothing, and ``os.chmod`` follows a symlink: a tree an
-    agent wrote could aim one at any file this process can reach and have its
-    mode rewritten. The write bit is ADDED to the current mode, never set in
-    its place, so a failed retry leaves a directory still listable.
+    On Windows the entry's read-only bit is cleared, and only for an entry that
+    is not a link. On POSIX the entry's own mode never decides whether it can be
+    removed, and ``os.chmod`` follows a symlink: a tree an agent wrote could aim
+    one at any file this process can reach and have its mode rewritten. POSIX
+    instead restores the parent's owner write bit after a permission refusal,
+    only within an explicitly supplied removal root
+    (:func:`_grant_owner_write_to_parent`). Bits are ADDED to the current mode,
+    never set in its place, so a failed retry leaves a directory still listable.
 
     Only a removal (``unlink``/``rmdir``) is retried. ``rmtree`` also reports a
     directory it could not open or list (``os.open``, ``os.scandir``, ...);
     the read-only bit is not why those failed, and ``os.open(path)`` called
     with ``path`` alone raises ``TypeError``, which would unwind past
-    ``rmtree_force``'s "never raises" contract. Those are logged and left.
+    ``rmtree_force``'s "never raises" contract. Those are left.
     """
     if func not in (os.unlink, os.remove, os.rmdir):
-        logger.warning("Cannot remove %s", path)
-        return
+        return False
     try:
         if not IS_POSIX:
             info = os.lstat(path)
             if not (stat.S_ISLNK(info.st_mode) or lstat_is_name_surrogate(info)):
                 os.chmod(path, stat.S_IMODE(info.st_mode) | stat.S_IWRITE)
+        elif isinstance(exc, PermissionError) and root is not None:
+            _grant_owner_write_to_parent(path, root)
         func(path)
     except OSError:
+        return False
+    return True
+
+
+def _clear_readonly_and_retry(func: Any, path: str, exc: BaseException) -> None:
+    """Retry without a POSIX permission grant; no removal root is known here."""
+    if not _retry_removal(func, path, exc):
         logger.warning("Cannot remove %s", path)
 
 
 def rmtree_force(path: str | os.PathLike) -> bool:
-    """Remove a directory tree, defeating Windows read-only files. Never raises.
+    """Remove a tree with read-only entries. Never raises.
 
     Returns True when *path* is gone afterwards.
+
+    POSIX permission repairs stay inside the tree: a read-only parent of the
+    root is left unchanged, and a root that cannot be removed returns False.
 
     ``shutil.rmtree(..., ignore_errors=True)`` is the usual spelling and is WRONG
     for any tree that may contain a git checkout: on Windows the read-only loose
@@ -582,7 +648,17 @@ def rmtree_force(path: str | os.PathLike) -> bool:
     The return value is what lets a caller tell a real deletion from a partial
     one; the boolean is derived from the filesystem rather than from the hook,
     because a surviving file is the only thing that actually matters.
+
+    Entries that still cannot be removed are reported in ONE warning per call,
+    with their count and the first one, not one warning each: a tree a sweep
+    retries every hour can hold thousands of them.
     """
+    failures: list[str] = []
+
+    def _hook(func: Any, target: str, exc: BaseException) -> None:
+        if not _retry_removal(func, target, exc, root=path):
+            failures.append(target)
+
     # `onexc` replaced `onerror` in 3.12 and the old name warns; this project
     # still supports 3.9+, so pick by capability rather than by version number.
     kwarg = "onexc" if sys.version_info >= (3, 12) else "onerror"
@@ -590,11 +666,11 @@ def rmtree_force(path: str | os.PathLike) -> bool:
         if kwarg == "onerror":  # pragma: no cover - exercised on Python < 3.12
 
             def _legacy(func: Any, target: str, exc_info: Any) -> None:
-                _clear_readonly_and_retry(func, target, exc_info[1])
+                _hook(func, target, exc_info[1])
 
             shutil.rmtree(path, onerror=_legacy)
         else:
-            shutil.rmtree(path, onexc=_clear_readonly_and_retry)  # type: ignore[call-arg]
+            shutil.rmtree(path, onexc=_hook)  # type: ignore[call-arg]
     except FileNotFoundError:
         # A missing ROOT is success. A nested entry can disappear during rmtree while
         # the root survives, especially through the Python <3.12 onerror path.
@@ -602,6 +678,15 @@ def rmtree_force(path: str | os.PathLike) -> bool:
     except OSError:
         logger.warning("Cannot remove %s", path)
         return False
+    finally:
+        if failures:
+            logger.warning(
+                "Cannot remove %d entr%s under %s (first: %s)",
+                len(failures),
+                "y" if len(failures) == 1 else "ies",
+                path,
+                failures[0],
+            )
     return not os.path.lexists(path)
 
 

@@ -39,7 +39,7 @@ is defined in an owner module beside it. Import and patch every one as
     pinned directory that acts on its entries through its descriptor, and the opens that
     never follow a link at the final name;
   - `platform_compat_files`: permission changes that never raise, a tree removal that
-    defeats Windows read-only files, the no-replace rename and directory publication, a
+    handles read-only entries, the no-replace rename and directory publication, a
     path's mount identity, the log-tail and lock-sweep opens, owner access restored to
     every directory of a copied tree, the macOS TCC folders a home-rooted walk prunes,
     and the remote-volume, executable-file and read-only checks;
@@ -86,6 +86,22 @@ also matches no module directly under `src/kiro_crew/`; see #21019.)
 
 This is the contract. The Windows install and runtime story a user follows is
 [windows-install.md](../../guides/windows-install.md).
+
+### Tree removal permission repairs
+
+`rmtree_force` retries a refused removal once. On POSIX, a `PermissionError`
+can restore owner write and search bits on an entry's parent only when that
+parent is the removal root or a descendant. The root's own parent is never
+changed. Each directory component from the root is opened with `O_NOFOLLOW`
+and `O_DIRECTORY` relative to the preceding descriptor; ownership is checked
+with `fstat` and bits are added with `fchmod` on the opened parent. A symlink
+at the root or within that walk cannot redirect the permission change.
+Without an explicit root, the standalone retry hook grants no POSIX permissions.
+Windows still clears an entry's read-only attribute before retrying removal.
+
+Entries that remain produce one warning per tree, with their count and the
+first path. The return value reports whether the root is gone; a read-only
+parent outside the tree can therefore leave an empty root and return `False`.
 
 ## Why a table rather than a rule
 

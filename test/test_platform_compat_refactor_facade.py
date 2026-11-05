@@ -208,7 +208,7 @@ _MOVED: dict[str, tuple[str, ...]] = {
         tcc_protected_dirs_for_walk tcc_prune_walk_dirs fchmod_safe dup_fd_at_or_above
         chmod_safe
         claude_code_managed_settings_dir
-        _clear_readonly_and_retry rmtree_force _WIN_FILE_SHARE_READ_WRITE_DELETE
+        _clear_readonly_and_retry _grant_owner_write_to_parent _retry_removal rmtree_force _WIN_FILE_SHARE_READ_WRITE_DELETE
         open_log_file_for_tail open_lock_file_for_sweep path_volume_is_remote
         _WINDOWS_RUNNABLE_HOOK_SUFFIXES is_executable_file is_readonly_filesystem
         ensure_owner_rwx_dirs _SYS_STATX_BY_MACHINE _AT_FDCWD _AT_EMPTY_PATH _STATX_INO
