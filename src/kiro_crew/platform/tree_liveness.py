@@ -64,7 +64,9 @@ def hold_running_tree_lock() -> None:
     if tree is None:
         return
     try:
-        fd = os.open(str(tree / LIVENESS_LOCK), os.O_RDWR)
+        # Read-only: a shared ``flock`` needs no write access, and a sandboxed child
+        # finds its tree read-only.
+        fd = os.open(str(tree / LIVENESS_LOCK), os.O_RDONLY)
     except OSError:
         return
     if try_acquire_lock(fd, exclusive=False):
