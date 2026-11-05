@@ -107,6 +107,16 @@ def _backend_name(backend: str) -> str:
     return POLICY_ID_BY_BACKEND.get(backend, backend)
 
 
+def backend_id_for_policy_id(name: str) -> str | None:
+    """The backend id a governance policy id names (Kiro's is ``""``), or None."""
+    from kiro_crew.acp_backends import POLICY_ID_BY_BACKEND
+
+    for backend, policy_id in POLICY_ID_BY_BACKEND.items():
+        if policy_id == name:
+            return backend
+    return None
+
+
 async def _failover_backend(
     raw: str, verdict: str, available: list[str]
 ) -> tuple[str | None, tuple[str, ...]]:
@@ -191,7 +201,6 @@ async def _requested_backend(
 
     if raw is None or raw == "":
         return None, None, None
-    by_name = {name: backend for backend, name in POLICY_ID_BY_BACKEND.items()}
     selectable = selectable_backend_values()
     # Off the loop: a probe shells out and walks the filesystem (cached briefly).
     states = await asyncio.to_thread(lambda: {b: probe_backend(b) for b in selectable})
@@ -201,7 +210,7 @@ async def _requested_backend(
         b for b in selectable if states[b].installed != MISSING and not states[b].restart_required
     ]
     names = sorted(POLICY_ID_BY_BACKEND.get(b, b) for b in available)
-    backend = by_name.get(raw) if isinstance(raw, str) else None
+    backend = backend_id_for_policy_id(raw) if isinstance(raw, str) else None
     if backend is not None and backend in available:
         return backend, None, None
 

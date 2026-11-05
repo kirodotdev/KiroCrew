@@ -23,6 +23,7 @@ _TO_DICT_KEYS = (
     "crew_mode_agent",
     "effective_agent",
     "model",
+    "backend",
     # The owner's per-turn model-routing choice (the picker's "Auto (Jev)" entry).
     # Present on EVERY slot, so an absent key and "pinned by hand" are not the
     # same reading for a stale client.
@@ -34,22 +35,14 @@ _TO_DICT_KEYS = (
     "surface",
     "workspace",
     "project",
-    # Remote-execution binding: present on EVERY slot, so the frontend can tell
-    # "runs locally" from "the field is missing on an older gateway".
     "executor",
     "instance_id",
-    # The row's identity, resolved server-side. `<instance_id>:<peer_key>` for a
-    # remote-bound session, the slot key otherwise. The peer's own slot key is NOT
-    # projected; this is what the sidebar needs from it.
     "row_identity",
     "artifact",
     "messages",
     "running",
     "admission_queued",
     "wake_starting",
-    # Turn identity beside `running`: the slot's monotonic turn counter and the
-    # gateway process generation it is comparable within. The dashboard uses the
-    # pair to match an idle row to its `chat_done` and history reply.
     "turn",
     "turn_gen",
     "compacting",
@@ -99,8 +92,6 @@ _TO_DICT_KEYS = (
     "memory_mode",
     "forked_from",
     "linked_session_key",
-    # The transcript's session key, derived by ``slot_history_key``; the
-    # reopen-closed-session shortcut resumes by it.
     "history_key",
     "app",
     "origin",

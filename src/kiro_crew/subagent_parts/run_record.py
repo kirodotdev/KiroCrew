@@ -456,6 +456,8 @@ class SubagentInfo:
     # run on ``backend`` instead; ``None`` when no hop happened. Informational:
     # ``spawn_status`` and ``spawn_list`` show it, nothing decides on it.
     failover_from: str | None = None
+    # The parent chat's backend pick a run that named no ``backend`` started on.
+    inherited_backend: str | None = None
     allowed_tools: list[str] = field(default_factory=list)
     bare: bool = False
     # Continuable conversations (spawn_run keep=True / spawn_continue):
