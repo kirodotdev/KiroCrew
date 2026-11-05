@@ -7721,6 +7721,7 @@
       "tooltip": "このエージェントはここでは起動しません。Markdown で定義されていて、{{current}} は JSON エージェントしか実行しないためです。{{backends}} を使うか、JSON ファイルを追加してください。"
     },
     "markdownPanel": {
+      "partial_copy_cannot_save": "このファイルは一部しか読み込まれていません（途中で切り詰められたか、認証情報が伏せられています）。そのため、ディスク上のファイルに上書き保存できません。",
       "add_to_artifact_library": "アーティファクトライブラリに追加",
       "add_to_artifacts": "アーティファクトに追加",
       "add_to_knowledge": "ナレッジに追加",

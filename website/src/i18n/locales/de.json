@@ -7919,6 +7919,7 @@
       "tooltip": "Dieser Agent startet hier nicht. Er ist in Markdown definiert, und {{current}} führt nur JSON-Agenten aus. Nutze {{backends}} oder leg eine JSON-Datei dafür an."
     },
     "markdownPanel": {
+      "partial_copy_cannot_save": "Nur ein Teil dieser Datei wurde geladen (sie wurde gekürzt oder Anmeldedaten wurden geschwärzt), daher kann sie nicht über die Datei auf dem Datenträger gespeichert werden.",
       "add_to_artifact_library": "Zur Artefaktbibliothek hinzufügen",
       "add_to_artifacts": "Zu Artefakten hinzufügen",
       "add_to_knowledge": "Zum Wissen hinzufügen",
