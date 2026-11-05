@@ -325,6 +325,9 @@ export function countUpdatables(
   return installed.filter(a => keepInLibrary(a) && isUpdatable(a, updateMap)).length
 }
 
+/** How long a ['registry'] answer serves a page switch before it is fetched again. */
+export const REGISTRY_STALE_MS = 5 * 60_000
+
 /**
  * The single fetch boundary for the ['registry'] cache, shared by every
  * observer of that key. React Query keeps one queryFn per key — whichever
@@ -332,9 +335,14 @@ export function countUpdatables(
  * hook MUST reference the same function: a second, raw fetcher would win the
  * registration race and hand normalized-shape consumers an unnormalized
  * payload.
+ *
+ * `rawApps` is the server's rows as sent, kept for the one reader that must
+ * not see normalization's fallbacks (`AppDetailPage` hands a built-in row to
+ * the row-first `mergeBuiltinRow`). Every other reader uses `apps`.
  */
 export async function registryQueryFn(): Promise<{
   apps: RegistryApp[]
+  rawApps: unknown[]
   categoryOrder: string[]
   editorialSections: EditorialBlock[]
 }> {
@@ -408,8 +416,10 @@ export async function registryQueryFn(): Promise<{
           return [{ form: b.form, items, curated: true }]
         })
       : []
+    const rawApps: unknown[] = res.apps
     return {
-      apps: (res.apps as RegistryApp[]).map(normalizeRegistryApp),
+      apps: (rawApps as RegistryApp[]).map(normalizeRegistryApp),
+      rawApps,
       categoryOrder: publishedOrder,
       editorialSections: publishedSections,
     }
@@ -438,7 +448,7 @@ export default function useAppsData(): AppsData {
     queryKey: ['registry'],
     // Shared fetch boundary — see registryQueryFn's contract comment.
     queryFn: registryQueryFn,
-    staleTime: 5 * 60_000, // cache for 5min to avoid re-fetching on page switch
+    staleTime: REGISTRY_STALE_MS,
   })
   const registry: RegistryApp[] = useMemo(() => registryData?.apps || [], [registryData])
 
