@@ -140,7 +140,7 @@ describe('reducer families', () => {
     const exported = Object.keys(facade)
       .filter(n => typeof surface[n]?.type === 'string' && surface[n]?.typePrefix === undefined)
       // The switch-notice pair is a createAction owned by slotSwitch, handled in its extra reducers.
-      .filter(n => n !== 'clearSwitchSlotGone')
+      .filter(n => n !== 'clearSwitchSlotGone' && n !== 'setSwitchSlotGone')
       .sort()
     expect(wired).toEqual(exported)
     for (const name of wired) expect(surface[name].type, name).toBe(`chat/${name}`)
@@ -177,7 +177,7 @@ const REEXPORTS: Array<[string, Record<string, unknown>, string[]]> = [
     'selectSlotPendingApproval', 'selectSlotRunEpoch', 'selectSlotStreamState', 'selectSlotToolLog', 'selectTrailingSendUnconfirmed',
     'selectSlotTurnFromWake', 'selectTurnInterrupted', 'QUIET_END_SERVER', 'QUIET_END_TOOL',
   ]],
-  ['slotSwitch', slotSwitch, ['clearSwitchSlotGone', 'switchSlot', 'switchSlotNoticeCopy']],
+  ['slotSwitch', slotSwitch, ['clearSwitchSlotGone', 'setSwitchSlotGone', 'switchSlot', 'switchSlotNoticeCopy']],
   ['slotRefresh', slotRefresh, ['refreshSlot', 'warmSlotCache']],
   ['runState', runState, ['wireTurnIdentity']],
   ['windowWalk', windowWalk, ['WINDOW_WALK_MAX_PAGES']],

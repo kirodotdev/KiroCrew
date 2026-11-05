@@ -169,7 +169,8 @@ const switchSlotFailureReport = (
  *  for ChatPage (which re-resolves it on a locale switch) and the journal entry
  *  `switchSlotFailureReport` records under it — the journal is keyed by the
  *  message as the UI shows it, so the two must be the same words. */
-export function switchSlotNoticeCopy(kind: 'gone' | 'failed', name: string): string {
+export function switchSlotNoticeCopy(kind: 'gone' | 'failed' | 'closed', name: string): string {
+  if (kind === 'closed') return i18nT('store.chatSlice.session_closed_find_in_older_sessions')
   if (kind === 'failed') {
     return name
       ? i18nT('store.chatSlice.session_open_error_named', { name })
@@ -181,8 +182,9 @@ export function switchSlotNoticeCopy(kind: 'gone' | 'failed', name: string): str
 }
 
 /** See `switchSlotGone` on ChatState. Set by `switchSlot`'s catch for an
- *  `announceOnMissing` caller whose target 404ed. */
-export const setSwitchSlotGone = createAction<{ name: string; kind: 'gone' | 'failed'; report?: ErrorReport }>('chat/setSwitchSlotGone')
+ *  `announceOnMissing` caller whose target 404ed, and by the chat page's
+ *  Back/Forward reader for a session this tab saw closed. */
+export const setSwitchSlotGone = createAction<{ name: string; kind: 'gone' | 'failed' | 'closed'; report?: ErrorReport }>('chat/setSwitchSlotGone')
 export const clearSwitchSlotGone = createAction('chat/clearSwitchSlotGone')
 
 export const switchSlot = createAsyncThunk<
