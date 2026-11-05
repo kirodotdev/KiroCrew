@@ -13,6 +13,7 @@ import { useSharedCrewViewer, useTeamAttribution } from '../../../hooks/sharedCr
 import type { PublicPrincipal, SessionAttribution } from '../../../api/sharedCrew'
 import type { RootState } from '../../../store'
 import { i18nT } from '../../../i18n/t'
+import { useLanguageGeneration } from '../../../i18n/useLanguageGeneration'
 
 const noSubscribe = () => () => {}
 
@@ -45,6 +46,7 @@ function AuthoredBy({ author, slotKey }: { author: PublicPrincipal; slotKey?: st
 }
 
 export function MessageByline({ meta, slotKey }: { meta?: Record<string, unknown>; slotKey?: string }) {
+  useLanguageGeneration() // rendered by the compiled UserMessage, which caches this subtree; subscribe so the byline follows a language switch
   const author = messageAuthor(meta)
   if (!author) return null
   return <AuthoredBy author={author} slotKey={slotKey} />
