@@ -36,6 +36,7 @@ type Counts = { gesture: number; announced: number; keepTarget: number; plain: n
 /** file -> pinned counts. `reason` documents why the PLAIN sites stay silent. */
 const PINNED: Record<string, Counts> = {
   'src/shell/appShell.tsx': { gesture: 0, announced: 2, keepTarget: 0, plain: 0, reason: 'popout nav-intent suppliers announce; a forwarded intent or native deep link is not a gesture in this window, so neither marks one' },
+  'src/shell/nav/railPins.tsx': { gesture: 1, announced: 1, keepTarget: 0, plain: 0, reason: 'a click on a session pinned to the rail opens it' },
   'src/app-sdk/ChatPanel.tsx': { gesture: 0, announced: 0, keepTarget: 0, plain: 1, reason: 'panel binds to a slot the host supplied programmatically' },
   'src/apps/auto-improvement/lib/agentSession.ts': { gesture: 0, announced: 0, keepTarget: 0, plain: 2, reason: 'awaited unwrap() flows with their own catch/recovery' },
   'src/apps/command-bar/CommandBarOverlayRootRows.tsx': { gesture: 2, announced: 2, keepTarget: 0, plain: 0, reason: 'attention row and recent row announce' },

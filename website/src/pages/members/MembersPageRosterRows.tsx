@@ -28,6 +28,7 @@ import type { RosterView } from '../../state/memberProjectionTypes'
 import { uiLocation } from '../../uiLocations/uiLocation'
 import { guidePick } from '../../uiLocations/targetRegistry'
 import { type TFn } from './membersPageModel'
+import { matePinId, RAIL_PIN_MIME } from '../../lib/railLayout'
 
 /** One roster row. Extracted so `useMemberProjection` is called once PER ROW
  *  (a hook cannot run inside the parent's `.map`), letting a `member_projection`
@@ -142,6 +143,13 @@ export function MemberRow({
             label its width. */}
         <button
           onClick={() => openMember(view)}
+          // Drag onto the left rail to pin this Mate there (rail-only; the
+          // star is a separate thing).
+          draggable
+          onDragStart={e => {
+            e.dataTransfer.setData(RAIL_PIN_MIME, matePinId(view.slug))
+            e.dataTransfer.effectAllowed = 'copy'
+          }}
           // The open row keeps itself in view: a member opened by URL
           // (a deep link, the crew manager's post-create landing) can sit
           // below the fold of a long roster, and a thread with no visible

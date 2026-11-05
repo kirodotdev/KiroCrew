@@ -3,6 +3,7 @@
  *  reorder. */
 import { type CollisionDetection, type Collision, type DroppableContainer, type ClientRect, closestCenter, pointerWithin } from '@dnd-kit/core'
 import { pointerWithinDeepest, closestEdge } from '../../../components/dnd'
+import { RAIL_PIN_DROP_TYPE } from '../../../shell/nav/railPinDrop'
 
 /**
  * Whether the pointer sits in the nest band of a collided folder's HEADER.
@@ -259,6 +260,8 @@ export const sidebarCollision: CollisionDetection = (args) => {
   const sidebarContainers = args.droppableContainers.filter(c => {
     const d = c.data?.current as { type?: string; container?: string } | undefined
     if (d?.type === CHAT_PANE_DROP_TYPE) return false
+    // The rail zone, like the pane, wins only by containing the pointer.
+    if (d?.type === RAIL_PIN_DROP_TYPE) return false
     if (d?.type === 'pinned-session') {
       return activeData?.pinned === true && d.container === activeData.container
     }

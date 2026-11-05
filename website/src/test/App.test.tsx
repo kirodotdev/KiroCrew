@@ -516,8 +516,14 @@ describe('App routing', () => {
   it('renders nav items', () => {
     renderWithProviders(<App />, { route: '/chat' })
     expect(screen.getByText('Sessions')).toBeInTheDocument()
-    expect(screen.getByText('Customize')).toBeInTheDocument()
     expect(screen.getByText('Settings')).toBeInTheDocument()
+    // Desktop: Customize left the rail for the Settings row's click menu.
+    expect(screen.queryByText('Customize')).not.toBeInTheDocument()
+    const settingsRow = screen.getByText('Settings').closest('[role="button"]')!
+    fireEvent.pointerEnter(settingsRow)
+    expect(screen.queryByRole('menu', { name: 'Settings' })).not.toBeInTheDocument()
+    fireEvent.click(settingsRow)
+    expect(within(screen.getByRole('menu', { name: 'Settings' })).getByText('Customize')).toBeInTheDocument()
     // PR1 App Store split: the single 'Explore' entry is gone — the sidebar
     // now carries TWO App Store rows, Discover (/apps) and Library
     // (/apps/library).
@@ -597,7 +603,9 @@ describe('App routing', () => {
     expect(screen.getAllByText('Secretary')).toHaveLength(1)
   })
 
-  it('collapses a long Apps list behind a "more" toggle so the nav cannot grow unbounded', async () => {
+  // Left-rail POC: the Apps "N more" overflow toggle is gone while apps live in
+  // the rail layout's groups (lib/railLayout.ts). Restore if it returns per group.
+  it.skip('collapses a long Apps list behind a "more" toggle so the nav cannot grow unbounded', async () => {
     // Regression for the nav-overflow bug: with many enabled apps the rail used
     // to grow past the viewport. The Apps group now shows up to APPS_NAV_LIMIT
     // (6) and hides the rest behind a "show more" toggle.
@@ -624,7 +632,9 @@ describe('App routing', () => {
     expect(screen.getByTitle(/show fewer apps/i)).toBeInTheDocument()
   })
 
-  it('keeps the overflow toggle visible while expanded (no disappear / layout shift)', async () => {
+  // Left-rail POC: the Apps "N more" overflow toggle is gone while apps live in
+  // the rail layout's groups (lib/railLayout.ts). Restore if it returns per group.
+  it.skip('keeps the overflow toggle visible while expanded (no disappear / layout shift)', async () => {
     // Regression for the toggle-disappears bug: the toggle must render whenever
     // the Apps list is collapsible (length > APPS_NAV_LIMIT), not only when
     // hiddenCount > 0 — otherwise it vanishes (e.g. when the active app is the
@@ -929,7 +939,9 @@ describe('App routing', () => {
     fireEvent.keyDown(rows[0], { key: 'Enter' })
   })
 
-  it('dismisses the collapsed overflow-toggle hover label when the toggle is pressed', async () => {
+  // Left-rail POC: the Apps "N more" overflow toggle is gone while apps live in
+  // the rail layout's groups (lib/railLayout.ts). Restore if it returns per group.
+  it.skip('dismisses the collapsed overflow-toggle hover label when the toggle is pressed', async () => {
     // Regression: pressing the Apps overflow toggle in the collapsed rail left
     // its portaled "N more" / "Show less" flyout on screen until the user
     // clicked elsewhere. Two causes: expanding re-flows the list so the row
@@ -1004,8 +1016,8 @@ describe('App routing', () => {
 
     const view = renderWithProviders(<App />, { route: '/chat' })
     try {
-      const nav = screen.getByRole('navigation', { name: 'Main navigation' })
-      const brand = within(nav).getByRole('button', { name: 'Collapse sidebar' })
+      screen.getByRole('navigation', { name: 'Main navigation' })
+      const brand = screen.getByTestId('topbar-brand') // top-bar brand mark
       await waitFor(() => expect(brand).toHaveTextContent('KIRO CREW'))
       expect(brand.querySelector('img')).toHaveAttribute(
         'src',
@@ -1384,15 +1396,15 @@ describe('App routing', () => {
   it('starts the rail collapsed on a fresh profile and keeps a stored expand', () => {
     localStorage.removeItem('mc-nav')
     const { unmount } = renderWithProviders(<App />, { route: '/chat' })
-    let nav = screen.getByRole('navigation', { name: 'Main navigation' })
-    expect(within(nav).getByRole('button', { name: 'Expand sidebar' })).toBeInTheDocument()
-    expect(within(nav).queryByRole('button', { name: 'Collapse sidebar' })).not.toBeInTheDocument()
+    screen.getByRole('navigation', { name: 'Main navigation' })
+    expect(screen.getByRole('button', { name: 'Expand sidebar' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Collapse sidebar' })).not.toBeInTheDocument()
     unmount()
 
     localStorage.setItem('mc-nav', '0')
     renderWithProviders(<App />, { route: '/chat' })
-    nav = screen.getByRole('navigation', { name: 'Main navigation' })
-    expect(within(nav).getByRole('button', { name: 'Collapse sidebar' })).toBeInTheDocument()
+    screen.getByRole('navigation', { name: 'Main navigation' })
+    expect(screen.getByRole('button', { name: 'Collapse sidebar' })).toBeInTheDocument()
     localStorage.removeItem('mc-nav')
   })
 
@@ -1403,16 +1415,16 @@ describe('App routing', () => {
     const nav = screen.getByRole('navigation', { name: 'Main navigation' })
     // Brand (logo + name) now lives in the rail's menu row, replacing the old
     // hamburger; the collapse control is an arrow-left-to-line button.
-    expect(within(nav).getByText('Crew')).toBeInTheDocument()
-    const collapse = within(nav).getByRole('button', { name: 'Collapse sidebar' })
+    expect(within(screen.getByTestId('topbar-brand')).getByText('Crew')).toBeInTheDocument()
+    const collapse = screen.getByRole('button', { name: 'Collapse sidebar' })
     expect(within(nav).queryByRole('button', { name: 'Toggle sidebar' })).not.toBeInTheDocument()
     expect(within(nav).queryByText('Main')).not.toBeInTheDocument()
 
     fireEvent.click(collapse)
     // Collapsed: the brand shrinks to a clickable logo that expands the rail;
     // the collapse control unmounts.
-    expect(within(nav).getByRole('button', { name: 'Expand sidebar' })).toBeInTheDocument()
-    expect(within(nav).queryByRole('button', { name: 'Collapse sidebar' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Expand sidebar' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Collapse sidebar' })).not.toBeInTheDocument()
     expect(localStorage.getItem('mc-nav')).toBe('1')
     localStorage.removeItem('mc-nav')
   })
@@ -1420,43 +1432,53 @@ describe('App routing', () => {
   it('lets the brand toggle expand the rail while preview expand mode is active', () => {
     localStorage.setItem('mc-nav', '0')
     renderWithProviders(<App />, { route: '/chat' })
-    const nav = screen.getByRole('navigation', { name: 'Main navigation' })
+    screen.getByRole('navigation', { name: 'Main navigation' })
 
     // Entering the Web Preview's expand mode collapses the rail.
     act(() => {
       window.dispatchEvent(new CustomEvent('kirocrew-preview-expand', { detail: { expanded: true } }))
     })
-    expect(within(nav).getByRole('button', { name: 'Expand sidebar' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Expand sidebar' })).toBeInTheDocument()
 
     // The logo keeps its standard behavior inside expand mode: it expands.
-    fireEvent.click(within(nav).getByRole('button', { name: 'Expand sidebar' }))
-    expect(within(nav).getByRole('button', { name: 'Collapse sidebar' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Expand sidebar' }))
+    expect(screen.getByRole('button', { name: 'Collapse sidebar' })).toBeInTheDocument()
 
     // Leaving expand mode must not undo that explicit choice.
     act(() => {
       window.dispatchEvent(new CustomEvent('kirocrew-preview-expand', { detail: { expanded: false } }))
     })
-    expect(within(nav).getByRole('button', { name: 'Collapse sidebar' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Collapse sidebar' })).toBeInTheDocument()
     localStorage.removeItem('mc-nav')
   })
 
   it('restores the pre-expand rail state when preview expand mode ends untouched', () => {
     localStorage.setItem('mc-nav', '0') // start expanded
     renderWithProviders(<App />, { route: '/chat' })
-    const nav = screen.getByRole('navigation', { name: 'Main navigation' })
-    expect(within(nav).getByRole('button', { name: 'Collapse sidebar' })).toBeInTheDocument()
+    screen.getByRole('navigation', { name: 'Main navigation' })
+    expect(screen.getByRole('button', { name: 'Collapse sidebar' })).toBeInTheDocument()
 
     act(() => {
       window.dispatchEvent(new CustomEvent('kirocrew-preview-expand', { detail: { expanded: true } }))
     })
-    expect(within(nav).getByRole('button', { name: 'Expand sidebar' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Expand sidebar' })).toBeInTheDocument()
 
     act(() => {
       window.dispatchEvent(new CustomEvent('kirocrew-preview-expand', { detail: { expanded: false } }))
     })
-    expect(within(nav).getByRole('button', { name: 'Collapse sidebar' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Collapse sidebar' })).toBeInTheDocument()
     // The auto-collapse is transient: it never writes the persisted preference.
     expect(localStorage.getItem('mc-nav')).toBe('0')
+  })
+
+  it('opens the rail menu, not the OS one, on empty rail space', async () => {
+    renderWithProviders(<App />, { route: '/chat' })
+    const nav = screen.getByRole('navigation', { name: 'Main navigation' })
+    const ev = new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 10, clientY: 10 })
+    act(() => { nav.dispatchEvent(ev) })
+    expect(ev.defaultPrevented).toBe(true)
+    expect(await screen.findByRole('menuitem', { name: /Customize rail/ })).toBeInTheDocument()
+    expect(screen.getByRole('menuitem', { name: /New group/ })).toBeInTheDocument()
   })
 
   it('hides the community row when the sidebar is collapsed', () => {
@@ -1465,7 +1487,7 @@ describe('App routing', () => {
     const nav = screen.getByRole('navigation', { name: 'Main navigation' })
     const contact = within(nav).getByText('Star us')
     expect(contact).toBeVisible()
-    fireEvent.click(within(nav).getByRole('button', { name: 'Collapse sidebar' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Collapse sidebar' }))
     // The row folds away (max-h-0 + opacity-0 + inert) instead of unmounting.
     const wrapper = contact.closest('[class*="max-h-0"]')
     expect(wrapper).not.toBeNull()
@@ -1482,9 +1504,9 @@ describe('App routing', () => {
     // sidebar's collapsed/expanded state.
     expect(screen.getByRole('button', { name: 'Request a Feature' })).toBeInTheDocument()
 
-    const nav = screen.getByRole('navigation', { name: 'Main navigation' })
-    fireEvent.click(within(nav).getByRole('button', { name: 'Expand sidebar' }))
-    expect(within(nav).getByRole('button', { name: 'Collapse sidebar' })).toBeInTheDocument()
+    screen.getByRole('navigation', { name: 'Main navigation' })
+    fireEvent.click(screen.getByRole('button', { name: 'Expand sidebar' }))
+    expect(screen.getByRole('button', { name: 'Collapse sidebar' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Request a Feature' })).toBeInTheDocument()
     expect(localStorage.getItem('mc-nav')).toBe('0')
     localStorage.removeItem('mc-nav')

@@ -518,7 +518,7 @@ export function useAppShell() {
   // Dynamic app nav items — all apps (builtin + installed) with UI pages
   const [appNavItems, setAppNavItems] = useState<Array<{ path: string; id: string; label: string; group: string; icon: React.ReactElement }>>([])
   const {
-    advertisedNavItems, sortedAppGroup, activeAppDragId, appDndSensors,
+    advertisedNavItems, sortedAppGroup, allAppGroup, activeAppDragId, appDndSensors,
     handleAppDragStart, handleAppDragEnd, handleAppDragCancel,
   } = useAppRailOrder(appNavItems)
   // Collapse a long Apps list behind a "N more" toggle so the nav can't grow
@@ -896,7 +896,7 @@ export function useAppShell() {
     macFullscreen, macInset, topReservePx, focusMode, toggleFocusMode, focusActive, topPeek, railPeek,
     topPeekTrigger, topPeekSurface, railPeekTrigger, railPeekSurface, topChromeShown, localHeaderDragGaps,
     shellEntered, setShellEntered, mobileNavMounted, mobileNavX, mobileNavPanelRef, mobileNavScrimRef, shellRef,
-    mobileNavScrim, closeMobileNavDrawer, setMembersBar, advertisedNavItems, sortedAppGroup, activeAppDragId,
+    mobileNavScrim, closeMobileNavDrawer, setMembersBar, advertisedNavItems, sortedAppGroup, allAppGroup, activeAppDragId,
     appDndSensors, handleAppDragStart, handleAppDragEnd, handleAppDragCancel, APPS_NAV_LIMIT, appsExpanded,
     toggleAppsExpanded, slotOwners, appBadges, discoverBadges, railAppBadges, railAppRunStates, shortcutsOpen,
     setShortcutsOpen, toggleShortcutsModal, commandPalette, agentSwitchNotice, kiroUsageOpen, setKiroUsageOpen,

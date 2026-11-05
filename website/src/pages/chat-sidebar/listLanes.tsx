@@ -18,6 +18,7 @@ import { slotActivityTs } from '../chat/sessionOrder'
 import { i18nT } from '../../i18n/t'
 import { sidebarCollision } from './dnd/collision'
 import { ChatPaneDropZone, RootDropHint, SortableFolderBlock, FolderDragGhost, SessionDragGhost } from './dnd/targets'
+import { RailPinDropZone } from '../../shell/nav/railPinDrop'
 import type { Slot } from './types'
 import { isPeerRow, sessionRowIdentity } from './rowIdentity'
 import { citedCreatorOf } from './conductor'
@@ -328,6 +329,8 @@ export function createListLanes(shell: SidebarScope & LaneRows & FolderBlocks) {
                 <ChatPaneDropZone refusal={draggingRefRefusal} />,
                 chatDropTarget,
               )}
+            {/* Pin to the left rail: portaled over the rail by the zone itself. */}
+            {activeDrag?.type === 'session' && <RailPinDropZone />}
             <SessionRowWindowContext.Provider value={laneRowWindow.rowWindow}>
             <motion.div ref={setLaneScrollEl} onScroll={laneScrollMemory.onScroll} layoutScroll={rowAnimEnabled} className={`${LIST_BODY_CLS} flex flex-col`} style={{ scrollbarWidth: 'none' }} data-testid="flat-view-lane">
               {/* Flat view renders no folder headers, so the per-folder mount
@@ -438,6 +441,7 @@ export function createListLanes(shell: SidebarScope & LaneRows & FolderBlocks) {
                   <ChatPaneDropZone refusal={draggingRefRefusal} />,
                   chatDropTarget,
                 )}
+              {activeDrag?.type === 'session' && <RailPinDropZone />}
               {/* Root lane is the fallback drop target: dropping a session on
                *  empty space (not over a folder) ungroups it (folderId: null). */}
               <DndDroppable id="root-lane" data={{ type: 'folder-drop', folderId: null }}>

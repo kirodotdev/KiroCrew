@@ -68,7 +68,7 @@ export function useAppRailOrder(appNavItems: AppNavRow[]) {
   // rail's own choice: a plain click has to reach NavItem navigation, so the
   // threshold sits higher than a list whose rows only select.
   const appDndSensors = useDndSensors({ distance: 8 })
-  const { sortedAppGroup, sortedAppGroupAllIds } = useMemo(() => {
+  const { sortedAppGroup, sortedAppGroupAllIds, allAppGroup } = useMemo(() => {
     // Drop rows the user unpinned in the Library launchpad BEFORE the
     // APPS_NAV_LIMIT slice downstream, so a hidden row never consumes a
     // visible slot. The hidden set only ever contains ids written by the
@@ -92,6 +92,9 @@ export function useAppRailOrder(appNavItems: AppNavRow[]) {
     return {
       sortedAppGroupAllIds: sortedAll.map(n => n.id),
       sortedAppGroup: sortedAll.filter(n => !appNavHidden.has(n.id)),
+      // Every app row INCLUDING the Library-unpinned ones, for the rail
+      // customize modal's "not on the rail" list.
+      allAppGroup: sortedAll,
     }
   }, [advertisedNavItems, appNavItems, appNavOrder, appNavHidden])
   // dnd-kit fires this once the sensor's constraint is met (the 250ms touch hold
@@ -162,7 +165,7 @@ export function useAppRailOrder(appNavItems: AppNavRow[]) {
   // lingers. Mirrors ChatSidebar's handleSidebarDragCancel.
   const handleAppDragCancel = useCallback(() => setActiveAppDragId(null), [])
   return {
-    advertisedNavItems, sortedAppGroup, activeAppDragId, appDndSensors,
+    advertisedNavItems, sortedAppGroup, allAppGroup, activeAppDragId, appDndSensors,
     handleAppDragStart, handleAppDragEnd, handleAppDragCancel,
   }
 }

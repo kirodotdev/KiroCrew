@@ -18,6 +18,8 @@ import { sessionRefBlockReason } from '../../../utils/sessionRefs'
 import { boardColumnFromDroppableId } from '../../../utils/boardFolderCollapse'
 import { sessionDisplayTitle } from '../../../utils/sessionDisplayTitle'
 import { CHAT_PANE_DROP_TYPE } from './collision'
+import { RAIL_PIN_DROP_TYPE, dndDropY, pinAtPoint } from '../../../shell/nav/railPinDrop'
+import { sessionPinId } from '../../../lib/railLayout'
 import type { FolderSortModeRead } from '../../../hooks/useFolderSortMode'
 import type { FolderMutations } from '../folders'
 
@@ -424,6 +426,12 @@ export function useSidebarDragHandlers({ releaseHoverPin, setDragFrozen, hideFol
       //  chat-pane-ref → stage a LINK to this session in the open chat's composer
       //  folder-drop  → assign to that folder (folderId may be null for root lane)
       //  folder       → sortable folder container (whole block) → assign to its id
+      //  rail-pin     → pin this session to the left rail at the drop point
+      if (o?.type === RAIL_PIN_DROP_TYPE) {
+        const y = dndDropY(event.activatorEvent, event.delta.y)
+        if (y !== null && pinAtPoint(sessionPinId(a.key), y)) haptic('light')
+        return
+      }
       if (o?.type === CHAT_PANE_DROP_TYPE) {
         const src = localSlots.find(x => x.key === a.key)
         // Re-decide at drop time rather than trusting the drag-start snapshot:

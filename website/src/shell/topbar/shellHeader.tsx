@@ -22,6 +22,7 @@ import { i18nT } from '../../i18n/t'
 import { uiLocation } from '../../uiLocations/uiLocation'
 import { GuideRevealScope } from '../../guide/GuideRevealScope'
 import type { AppShell } from '../appShell'
+import { TopBarRailToggle } from './topBarRailToggle'
 import { hiddenChromeProps } from '../focus/focusChrome'
 import { setAgentSwitchNotice } from '../../store/chatSlice'
 
@@ -149,7 +150,7 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
     toggleFocusMode, focusActive, topPeek, topPeekSurface, topChromeShown, slotOwners, commandPalette,
     setKiroUsageOpen, kiroUsageState, usageSegmentHidden, metrics, capsuleCollapsed, setCapsuleCollapsed,
     capsuleLayoutPulse, pulseCapsuleLayout, sysMetrics, metricsProbeRef, metricsGroupRef, setReportProblemOpen,
-    requestFeature, toggleNav, mobileSingle, membersRoute, membersBarPending, mobileNavOpen,
+    requestFeature, toggleNav, effectiveCollapsed, botName, mobileSingle, membersRoute, membersBarPending, mobileNavOpen,
   } = shell
   return (
     <>
@@ -236,6 +237,11 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
               would walk an unrelated stack. Order: after the Windows app menu,
               before the instance selector — the leftmost NAVIGATION control,
               matching where every browser puts it. */}
+          {/* Left-rail POC: the rail's brand + expand toggle lives here on
+              desktop, ahead of Back/Forward. The phone keeps its drawer header. */}
+          {!isMobile && (
+            <TopBarRailToggle collapsed={effectiveCollapsed} toggleNav={toggleNav} avatar={avatar} branding={branding} botName={botName} />
+          )}
           {!isMobile && <NavHistoryArrows />}
           {isMobile && (
             <button className="group p-2 rounded-md bg-transparent border-none cursor-pointer text-muted hover:text-text shrink-0" onClick={toggleNav} aria-label={i18nT('app.open_menu')} {...uiLocation('shell.mobile-menu')}>

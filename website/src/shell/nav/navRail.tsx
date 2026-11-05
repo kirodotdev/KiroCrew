@@ -1,11 +1,8 @@
 import { surfaceLabel } from '../../surfaces/registry'
-import { SortableAppNavRow, NavToggle } from './appRail'
 import { railWidthFor } from '../../hooks/useRailWidth'
 import { FOCUS_INSET } from '../../hooks/useFocusMode'
 import { Coins, Compass, LayoutGrid, SquareTerminal, Smartphone, Search as SearchIcon } from 'lucide-react'
 import { motion } from 'framer-motion'
-import { DndContext, closestCenter, DragOverlay } from '@dnd-kit/core'
-import { SortableContext, verticalListSortingStrategy } from '@dnd-kit/sortable'
 import { toggleBottomTerminal } from '../../hooks/useBottomTerminal'
 import { focusPopout as focusTerminalPopout } from '../../utils/terminalPopout'
 import { i18nT } from '../../i18n/t'
@@ -14,11 +11,21 @@ import { isAppNavId } from '../../appNotificationBadges'
 import { NAV_ITEMS } from './navItems'
 import { isChatRoute } from './routeActive'
 import { RailBrandToggle, RailCommunityLinks } from './railChrome'
+import { PinnedRailGroups } from './railPins'
+import { forwardRailContextMenu } from './railPinDrop'
+import { RailSettingsFlyout } from './railSettingsFlyout'
+import { defaultGroupOf } from '../../lib/railLayout'
+import { readAppNavHidden, toggleAppNavHidden } from '../../lib/appNavHidden'
 import { appPathname } from '../../lib/basePath'
 import { MOBILE_NAV_WIDTH, type AppShell } from '../appShell'
 import { NavItem, NavBadge } from './navRow'
 import { hiddenChromeProps } from '../focus/focusChrome'
 import { coversPaneProps } from '../../hooks/paneVisibility'
+
+/** Built-ins keep their shipped group; anything else (an installed app) joins Apps. */
+const STATIC_RAIL_IDS = new Set(['chat', 'members', 'schedule', 'artifacts', 'apps', 'apps-library'])
+const railDefaultIsStatic = (id: string) => STATIC_RAIL_IDS.has(id) || id.startsWith('capabilities-')
+const railDefaultGroup = (id: string) => (railDefaultIsStatic(id) ? defaultGroupOf(id) : 'apps')
 
 /**
  * The main navigation: the desktop rail, and the phone nav drawer with its scrim,
@@ -30,9 +37,8 @@ export function ShellNavRail({ shell }: { shell: AppShell }) {
     updateAvailable, terminalEnabled, terminalPoppedOut, bottomTerminalOpen, mobileConnectOpen,
     setMobileConnectOpen, hasRenderableMobileConnect, activeSlotProject, navigate, branding, botName, avatar,
     isMobile, focusActive, focusChromeInert, railPeek, railPeekSurface, mobileNavMounted, mobileNavOpen, mobileNavX, mobileNavPanelRef,
-    mobileNavScrimRef, mobileNavScrim, closeMobileNavDrawer, advertisedNavItems, sortedAppGroup,
-    activeAppDragId, appDndSensors, handleAppDragStart, handleAppDragEnd, handleAppDragCancel, APPS_NAV_LIMIT,
-    appsExpanded, toggleAppsExpanded, slotOwners, appBadges, discoverBadges, railAppBadges, railAppRunStates,
+    mobileNavScrimRef, mobileNavScrim, closeMobileNavDrawer, advertisedNavItems, sortedAppGroup, allAppGroup,
+    slotOwners, appBadges, discoverBadges, railAppBadges, railAppRunStates,
     commandPalette, kiroUsageOpen, setKiroUsageOpen, kiroAccountEntry,
     setReportProblemOpen, toggleNav, effectiveCollapsed, closeMobileNav, activePath, libraryNavActive,
     discoverNavActive, isChat, navRowActive,
@@ -46,13 +52,17 @@ export function ShellNavRail({ shell }: { shell: AppShell }) {
 
   const renderNavRow = (
     n: { path: string; id: string; label: string; labelKey?: string; icon: React.ReactNode; appName?: string },
+    /** The user's rail-only name for this row, when set. */
+    label?: string,
+    /** A pin inside this row's section is the selected row (see railPins). */
+    covered = false,
   ) => (
     <NavItem
       navId={n.id}
       path={n.path}
-      label={surfaceLabel(n)}
+      label={label ?? surfaceLabel(n)}
       icon={n.icon}
-      active={navRowActive(n.path)}
+      active={!covered && navRowActive(n.path)}
       collapsed={effectiveCollapsed}
       onClick={closeMobileNav}
       // The chat row, while chat is the page on screen, toggles the sessions
@@ -112,86 +122,18 @@ export function ShellNavRail({ shell }: { shell: AppShell }) {
           the threshold; only the fixed-position drawer animates in/out. */}
       {(() => {
         const navBody = (<>
-        {/* Top-fixed: menu row + primary destinations + Apps section header.
-            The sidebar toggle lives HERE (menu row), not in the topbar. */}
+        {/* Top-fixed: the menu row. The sidebar toggle lives HERE, not in the topbar. */}
         <div className="shrink-0 flex flex-col gap-0.5 px-2 pt-2">
-          <RailBrandToggle effectiveCollapsed={effectiveCollapsed} toggleNav={toggleNav} avatar={avatar} branding={branding} botName={botName} />
+          {/* Desktop: the brand + expand toggle moved to the top bar
+              (topbar/topBarRailToggle.tsx). The phone drawer keeps its header. */}
+          {isMobile && <RailBrandToggle effectiveCollapsed={effectiveCollapsed} toggleNav={toggleNav} avatar={avatar} branding={branding} botName={botName} />}
           {/* Hairline under the expanded header (collapsed rail has none —
               the big logo alone separates well). */}
-          {!effectiveCollapsed && <div aria-hidden="true" className="h-px bg-border shrink-0 mb-[7px]" />}
-          {advertisedNavItems.filter(n => n.group === 'Main').map(n => <div key={n.id}>{renderNavRow(n)}</div>)}
-          {/* Apps section: the old single "Explore" header link split into two
-              nav rows — Discover (the storefront, /apps) and Library
-              (installed-app management, /apps/library). Expanded keeps the
-              muted "Apps" section label above them; collapsed renders the two
-              rows as regular icon rows like their neighbors. The unread-updates
-              badge rides Discover (navId "apps"), matching where update
-              discovery lives. NavItem carries data-onboarding-nav={navId}, so
-              the onboarding anchor "apps" stays on the Discover row. */}
-          {!effectiveCollapsed ? (
-            <>
-              <div className="nav-section flex items-center pl-3 pr-1 pt-3 pb-1">
-                <span
-                  // `overflow-hidden` + `whitespace-nowrap` means this clips
-                  // silently once the label grows — which it does in a longer
-                  // locale. The `title` keeps the full string reachable instead
-                  // of losing the tail with no affordance.
-                  title={i18nT('app.apps')}
-                  className="text-[13px] font-medium text-muted whitespace-nowrap overflow-hidden"
-                >{i18nT('app.apps')}</span>
-              </div>
-              <NavItem
-                navId="apps"
-                path="/apps"
-                label={i18nT('nav.discover')}
-                icon={<Compass size={16} />}
-                active={discoverNavActive}
-                collapsed={false}
-                onClick={closeMobileNav}
-                badge={<NavBadge navId="apps" collapsed={false} appBadges={discoverBadges} />}
-              />
-              <NavItem
-                navId="apps-library"
-                path="/apps/library"
-                label={i18nT('nav.library')}
-                icon={<LayoutGrid size={16} />}
-                active={libraryNavActive}
-                collapsed={false}
-                onClick={closeMobileNav}
-              />
-            </>
-          ) : (
-            <motion.div
-              className="mt-4"
-              initial={{ opacity: 0, y: 8 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.2, ease: 'easeOut' }}
-            >
-              <NavItem
-                navId="apps"
-                path="/apps"
-                label={i18nT('nav.discover')}
-                icon={<Compass size={16} />}
-                active={discoverNavActive}
-                collapsed
-                onClick={closeMobileNav}
-                badge={<NavBadge navId="apps" collapsed appBadges={discoverBadges} />}
-              />
-              <NavItem
-                navId="apps-library"
-                path="/apps/library"
-                label={i18nT('nav.library')}
-                icon={<LayoutGrid size={16} />}
-                active={libraryNavActive}
-                collapsed
-                onClick={closeMobileNav}
-              />
-            </motion.div>
-          )}
+          {isMobile && !effectiveCollapsed && <div aria-hidden="true" className="h-px bg-border shrink-0 mb-[7px]" />}
         </div>
 
-        {/* Apps list: scrolls in its OWN frame when many apps are enabled —
-            the top (menu/mains/header) and bottom sections stay pinned.
+        {/* Rail groups: scroll in their OWN frame when the layout is long —
+            the top (menu row) and bottom sections stay pinned.
             Collapsed hover labels are portaled to the body-level overlay root (see NavItem /
             NavToggle) so this vertical clip never chops them at the rail
             edge. overscroll-y-none kills the macOS rubber-band bounce;
@@ -199,63 +141,59 @@ export function ShellNavRail({ shell }: { shell: AppShell }) {
             Firefox, modern WebKit, and older Safari (<16). */}
         <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden overscroll-y-none scrollbar-none px-2" style={{ scrollbarWidth: 'none' }}>
           <div className="grid gap-0.5">
-            {(() => {
-              const fullList = sortedAppGroup
-              // Collapse a long Apps list behind a "N more" toggle (both expanded
-              // and collapsed modes). Keep the active item visible even when it's
-              // in the overflow, so navigation state is never hidden.
-              const overflowing = !appsExpanded && fullList.length > APPS_NAV_LIMIT
-              const visible = overflowing
-                ? fullList.filter((n, i) => i < APPS_NAV_LIMIT || activePath === n.path || activePath.startsWith(n.path + '/'))
-                : fullList
-              const hiddenCount = fullList.length - visible.length
-              // Apps rows are dnd-kit sortable. Rows reflow to open a gap as one
-              // is dragged; the source dims and a DragOverlay renders the ghost.
-              // SortableContext/DndContext add no DOM wrapper, so the parent grid
-              // gap is unchanged.
-              //
-              // Overflow caveat: when collapsed behind "N more", the active app
-              // may be PULLED IN from the overflow to keep its nav state visible
-              // (`visible` keeps it past APPS_NAV_LIMIT). That pulled-in row must
-              // NOT be sortable: handleAppDragEnd resolves from/to against the
-              // FULL order, so dropping onto a row whose full-list index is
-              // >= APPS_NAV_LIMIT would push the dragged app past the limit and
-              // into the hidden overflow (it would disappear). Restrict the
-              // sortable set to the always-visible window (first APPS_NAV_LIMIT)
-              // and render any pulled-in overflow row as a plain static row —
-              // still navigable, but it registers no droppable, so a drag can
-              // never resolve to it and both endpoints stay in-window. (Trimming
-              // only SortableContext.items is insufficient: useSortable registers
-              // a droppable per wrapped row regardless of the items array.)
-              const sortableRows = overflowing ? visible.slice(0, APPS_NAV_LIMIT) : visible
-              const pulledInRows = overflowing ? visible.slice(APPS_NAV_LIMIT) : []
-              const activeApp = activeAppDragId ? fullList.find(n => n.id === activeAppDragId) : null
-              return (<>
-              <DndContext sensors={appDndSensors} collisionDetection={closestCenter} onDragStart={handleAppDragStart} onDragEnd={handleAppDragEnd} onDragCancel={handleAppDragCancel}>
-                <SortableContext items={sortableRows.map(n => n.id)} strategy={verticalListSortingStrategy}>
-                  {sortableRows.map(n => (
-                    <SortableAppNavRow key={n.id} id={n.id}>{renderNavRow(n)}</SortableAppNavRow>
-                  ))}
-                </SortableContext>
-                {/* Pulled-in active overflow row(s): static, non-draggable. */}
-                {pulledInRows.map(n => <div key={n.id} role="presentation">{renderNavRow(n)}</div>)}
-                <DragOverlay>{activeApp ? renderNavRow(activeApp) : null}</DragOverlay>
-              </DndContext>
-              {/* Show the toggle whenever the list is collapsible, NOT only when
-               *  hiddenCount > 0 — otherwise navigating to an app that's the sole
-               *  overflow item pulls it into `visible` (hiddenCount → 0) and the
-               *  toggle vanishes, causing a jarring layout shift as you move
-               *  between apps. The toggle stays put; only its label changes. */}
-              {fullList.length > APPS_NAV_LIMIT && (
-                <NavToggle
-                  collapsed={effectiveCollapsed}
-                  expanded={appsExpanded}
-                  hiddenCount={hiddenCount}
-                  onClick={toggleAppsExpanded}
-                />
-              )}
-              </>)
-            })()}
+            {/* Layout-driven groups: the user's rail layout (lib/railLayout.ts),
+                starting from the shipped default. Static routes, Discover,
+                Library and the installed apps are all ordinary items. Apps
+                arrive in `sortedAppGroup` order (the legacy mc-app-nav-order)
+                with Library-unpinned ones already filtered out, so a user with
+                no stored layout sees their apps exactly as before, in the Apps
+                group, and a newly installed app joins that group. */}
+            <PinnedRailGroups
+              onNavigate={closeMobileNav}
+              available={[
+                ...advertisedNavItems.filter(n => n.group === 'Main').map(n => n.id),
+                'apps', 'apps-library',
+                ...sortedAppGroup.map(n => n.id),
+              ]}
+              defaultGroup={railDefaultGroup}
+              collapsed={effectiveCollapsed}
+              meta={id => {
+                if (id === 'apps') return { label: i18nT('nav.discover'), icon: <Compass size={16} /> }
+                if (id === 'apps-library') return { label: i18nT('nav.library'), icon: <LayoutGrid size={16} /> }
+                const n = advertisedNavItems.find(x => x.id === id) ?? allAppGroup.find(x => x.id === id)
+                return n ? { label: surfaceLabel(n), icon: n.icon } : null
+              }}
+              unpinnedApps={allAppGroup.filter(a => !sortedAppGroup.some(v => v.id === a.id)).map(a => a.id)}
+              isApp={id => !railDefaultIsStatic(id) && allAppGroup.some(a => a.id === id)}
+              setAppPinned={(id, pinned) => { if (readAppNavHidden().has(id) === pinned) toggleAppNavHidden(id) }}
+              renderItem={(id, label, covered) => {
+                if (id === 'apps') return (
+                  <NavItem
+                    navId="apps"
+                    path="/apps"
+                    label={label ?? i18nT('nav.discover')}
+                    icon={<Compass size={16} />}
+                    active={discoverNavActive}
+                    collapsed={effectiveCollapsed}
+                    onClick={closeMobileNav}
+                    badge={<NavBadge navId="apps" collapsed={effectiveCollapsed} appBadges={discoverBadges} />}
+                  />
+                )
+                if (id === 'apps-library') return (
+                  <NavItem
+                    navId="apps-library"
+                    path="/apps/library"
+                    label={label ?? i18nT('nav.library')}
+                    icon={<LayoutGrid size={16} />}
+                    active={libraryNavActive}
+                    collapsed={effectiveCollapsed}
+                    onClick={closeMobileNav}
+                  />
+                )
+                const n = advertisedNavItems.find(x => x.id === id) ?? sortedAppGroup.find(x => x.id === id)
+                return n ? renderNavRow(n, label, covered) : null
+              }}
+            />
           </div>
         </div>
 
@@ -265,6 +203,26 @@ export function ShellNavRail({ shell }: { shell: AppShell }) {
         {(() => {
           const s = NAV_ITEMS.find(n => n.id === 'settings')!
           const cap = NAV_ITEMS.find(n => n.id === 'capabilities')!
+          const updateBadge = updateAvailable ? <span title={i18nT('app.update_available')} role="status" aria-label={i18nT('app.update_available_2')} className={effectiveCollapsed ? 'absolute top-1 right-1 w-2 h-2 bg-accent rounded-full z-10' : 'absolute top-1/2 -translate-y-1/2 right-2 w-2 h-2 bg-accent rounded-full z-10'} /> : undefined
+          // Desktop: Settings is the rail's only permanent row; Customize, phone
+          // connect and the rail customize modal live in its hover flyout, and
+          // the terminal + phone toggles live in the status bar
+          // (statusbar/shellStatusBar.tsx). The phone drawer keeps every row.
+          if (!isMobile) return (
+            <div className="shrink-0 grid gap-0.5 px-2 pt-1 pb-2">
+              <RailSettingsFlyout
+                settings={{ path: s.path, label: surfaceLabel(s), icon: s.icon }}
+                customize={{ path: cap.path, label: surfaceLabel(cap), icon: cap.icon }}
+                collapsed={effectiveCollapsed}
+                activePath={activePath}
+                badge={updateBadge}
+                phone={hasRenderableMobileConnect ? { open: () => setMobileConnectOpen(true) } : undefined}
+                onNavigate={closeMobileNav}
+              />
+              {/* Expanded-only footer; folds away when collapsed. */}
+              <RailCommunityLinks effectiveCollapsed={effectiveCollapsed} setReportProblemOpen={setReportProblemOpen} />
+            </div>
+          )
           return (
             <div className="shrink-0 grid gap-0.5 px-2 pt-1 pb-2">
               {terminalEnabled && (
@@ -394,6 +352,8 @@ export function ShellNavRail({ shell }: { shell: AppShell }) {
             )}
           </>
         ) : (
+          // The rail's right-click is mouse-only by nature (see onContextMenu).
+          // eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions
           <nav
             ref={railPeekSurface}
             className="focus-chrome-rail bg-bg-elevated border border-border rounded-xl flex flex-col mx-2 mt-0 mb-2 shadow-sm z-50 overflow-hidden"
@@ -419,6 +379,10 @@ export function ShellNavRail({ shell }: { shell: AppShell }) {
               : { gridArea: 'nav', width: 'auto' }}
             role="navigation"
             aria-label={i18nT('app.main_navigation')}
+            // Anywhere on the rail opens the rail's own menu, not the OS one.
+            // Mouse-only by nature; keyboard users reach the same menu with
+            // Shift+F10 / the Menu key on any rail row.
+            onContextMenu={forwardRailContextMenu}
             {...hiddenChromeProps(focusActive && !railPeek.open && focusChromeInert)}
             {...(focusActive ? railPeek.surfaceProps : {})}
           >
