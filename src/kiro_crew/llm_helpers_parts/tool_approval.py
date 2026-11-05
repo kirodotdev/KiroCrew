@@ -213,6 +213,26 @@ def _orphan_reject_done(task: asyncio.Task[Any]) -> None:
         )
 
 
+def _body_field_link_origin() -> str:
+    """The dashboard origin a size refusal links to, or ``""``. Blocking; never raises.
+
+    Same origin choice as the Slack->dashboard links
+    (``dashboard.urls.dashboard_link_origin``). No click token: the refusal reaches
+    the model and may be relayed to a shared channel.
+    """
+    try:
+        from kiro_crew.config.loader import KiroCrewConfig
+        from kiro_crew.dashboard.urls import dashboard_link_origin, tunnel_origin_if_opted_in
+
+        cfg = KiroCrewConfig.load()
+        return dashboard_link_origin(
+            cfg.dashboard.url, tunnel_origin_if_opted_in(cfg.slack.use_tunnel_url)
+        )
+    except Exception:
+        logger.debug("body-field refusal: dashboard origin unavailable", exc_info=True)
+        return ""
+
+
 async def _resolve_permission(
     provider: LLMProvider,
     event: LLMEvent,
@@ -639,6 +659,7 @@ async def _resolve_permission(
             _body_field_server,
             _body_field_tool,
             _MAX_SCANNABLE_TOOL_INPUT_CHARS,
+            dashboard_origin=_body_field_link_origin(),
         )
         return hit if reason is None else (hit[0], reason, hit[2])
 

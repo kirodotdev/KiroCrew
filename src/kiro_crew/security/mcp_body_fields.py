@@ -52,12 +52,28 @@ from kiro_crew.security.paths import (
     is_unverifiable_path_refusal,
     sensitive_path_refusal,
 )
-from kiro_crew.security.redaction_entropy import _contains_fixed_credential
+from kiro_crew.security.redaction_entropy import (
+    _contains_fixed_credential,
+    _text_contains_bare_secret,
+)
 
 logger = logging.getLogger(__name__)
 
 #: Longest body field the document detectors will scan; longer is refused.
 MAX_BODY_FIELD_CHARS = MAX_SCANNABLE_SOURCE_BODY_CHARS
+
+#: The dashboard route of the Settings > Security > Message body fields section.
+SETTINGS_ROUTE = "/settings/security/bodyFields"
+
+#: An embedded ``data:<mime>;base64,<payload>`` blob: an inline image or file in an
+#: HTML or Markdown body. The header grammar is the one
+#: ``redaction_entropy._DATA_URI_BEFORE_RE`` reads.
+# shortcut: a payload wrapped across lines, or a key glued to the payload with no
+# delimiter, is not separated; upgrade if owners report a wrapped inline image refused.
+_DATA_URI_BLOB_RE = re.compile(
+    r"data:[A-Za-z0-9.+-]+/[A-Za-z0-9.+-]+(?:;[A-Za-z0-9=.+-]+)*;base64,[A-Za-z0-9+/]+={0,2}",
+    re.IGNORECASE,
+)
 
 #: A server or tool name a row may hold: what MCP configs and tool lists use.
 _NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.\-]{0,127}$")
@@ -234,10 +250,7 @@ def body_field_denial(bodies: list[str]) -> tuple[str, str, str] | None:
             if is_unverifiable_path_refusal(path_refusal):
                 return ("path", path_refusal, "")
             return ("path", "Blocked: sensitive path in a message body field", "")
-        # The fixed-format predicate the request-blocking gates use, not the
-        # redaction pass: its entropy guess would read an inline base64 image in
-        # an HTML mail as a key.
-        if _contains_fixed_credential(s):
+        if _contains_credential(s):
             return ("body", "Blocked: a message body field contains a credential", "")
         if scan_exfiltration_urls(s):
             return (
@@ -246,6 +259,20 @@ def body_field_denial(bodies: list[str]) -> tuple[str, str, str] | None:
                 "",
             )
     return None
+
+
+def _contains_credential(body: str) -> bool:
+    """The full credential test, with embedded ``data:`` base64 blobs left out of the guess.
+
+    The fixed-format and decode-and-scan predicate reads the whole body, so a
+    credential base64-encoded as a ``data:`` payload is still found. The bare-key
+    entropy guess reads the body with each blob replaced by a space: an inline
+    image's payload is random-looking by construction and would read as a key,
+    while a key written next to the blob stays a separate run and is judged.
+    """
+    if _contains_fixed_credential(body):
+        return True
+    return _text_contains_bare_secret(_DATA_URI_BLOB_RE.sub(" ", body))
 
 
 def oversize_field(params: Mapping[str, Any], limit: int) -> str | None:
@@ -296,7 +323,12 @@ def forget_size_refusal(row: BodyField) -> None:
 
 
 def named_size_refusal(
-    params: Mapping[str, Any], server: str, tool_name: str, limit: int
+    params: Mapping[str, Any],
+    server: str,
+    tool_name: str,
+    limit: int,
+    *,
+    dashboard_origin: str = "",
 ) -> str | None:
     """The size refusal naming the oversize top-level field of a TRUSTED call, or ``None``.
 
@@ -308,14 +340,25 @@ def named_size_refusal(
         return None
     tool = _bare_tool(tool_name, server)
     record_size_refusal(server, tool, field)
-    return size_refusal_reason(server, tool, field, len(params[field]), limit)
+    return size_refusal_reason(
+        server, tool, field, len(params[field]), limit, dashboard_origin=dashboard_origin
+    )
 
 
-def size_refusal_reason(server: str, tool: str, field: str, length: int, limit: int) -> str:
-    """The refusal that names the tool and field, and where the owner allows it."""
+def size_refusal_reason(
+    server: str, tool: str, field: str, length: int, limit: int, *, dashboard_origin: str = ""
+) -> str:
+    """The refusal that names the tool and field, and where the owner allows it.
+
+    *dashboard_origin* (no token: the text can reach a shared channel) adds a link
+    to the section; empty means the text names the section only.
+    """
+    where = "Settings > Security > Message body fields"
+    if dashboard_origin:
+        where += f" ({dashboard_origin.rstrip('/')}{SETTINGS_ROUTE})"
     return (
         f"Blocked: the {field!r} field of @{server}/{tool} is too large to "
         f"security-scan ({length} chars > {limit} limit); refused rather than left "
         "unscanned. If this field is a message or document body, the dashboard owner "
-        "can allow it under Settings > Security > Message body fields"
+        f"can allow it in the dashboard under {where}"
     )

@@ -177,6 +177,47 @@ class TestTheSizeRefusalIsNamedAndOffered:
         ]
 
     @pytest.mark.asyncio
+    async def test_the_size_refusal_links_to_the_settings_section(self) -> None:
+        from kiro_crew.llm_helpers_parts import tool_approval
+
+        body = _html(_MAX_SCANNABLE_TOOL_INPUT_CHARS + 1)
+        with patch.object(
+            tool_approval, "_body_field_link_origin", return_value="https://crew.example.com"
+        ):
+            approved, error = await _resolve(_event({"to": "a@example.com", "html": body}))
+        assert approved is False
+        assert "'html' field of @gmail/send_email" in error
+        assert (
+            "Settings > Security > Message body fields "
+            "(https://crew.example.com/settings/security/bodyFields)"
+        ) in error
+        assert "token=" not in error
+        assert "kirocrew " not in error
+
+    def test_without_a_dashboard_origin_the_refusal_names_the_section_only(self) -> None:
+        reason = mbf.size_refusal_reason("mail", "send", "html", 30000, 20480)
+        assert "'html' field of @mail/send" in reason
+        assert reason.endswith("under Settings > Security > Message body fields")
+        assert "http" not in reason
+
+    def test_the_link_origin_follows_the_dashboard_url(self, monkeypatch) -> None:
+        from types import SimpleNamespace
+
+        from kiro_crew.config import loader
+        from kiro_crew.llm_helpers_parts import tool_approval
+
+        cfg = SimpleNamespace(
+            dashboard=SimpleNamespace(url="http://127.0.0.1:8765/"),
+            slack=SimpleNamespace(use_tunnel_url=False),
+        )
+        monkeypatch.setattr(loader.KiroCrewConfig, "load", classmethod(lambda cls: cfg))
+        assert tool_approval._body_field_link_origin() == "http://127.0.0.1:8765"
+        monkeypatch.setattr(
+            loader.KiroCrewConfig, "load", classmethod(lambda cls: (_ for _ in ()).throw(OSError))
+        )
+        assert tool_approval._body_field_link_origin() == ""
+
+    @pytest.mark.asyncio
     async def test_an_owner_row_lets_the_field_through(self) -> None:
         body = _html(60 * 1024)
         params = {"to": "a@example.com", "html": body}
@@ -229,6 +270,41 @@ class TestAnHtmlMailIsNotACredential:
         body = f'<p>Chart:</p><img src="data:image/png;base64,{image}">' + _html(30 * 1024)
         approved, error = await _resolve(_event(_mail(body)))
         assert approved is True, error
+
+    @pytest.mark.asyncio
+    async def test_a_bare_key_in_an_html_body_is_refused(self) -> None:
+        # Only the entropy guess finds this one: no fixed-format prefix.
+        assert not mbf._contains_fixed_credential(_BARE_KEY)
+        body = f"<p>Use this key: {_BARE_KEY}</p>" + _html(30 * 1024)
+        approved, error = await _resolve(_event(_mail(body)))
+        assert approved is False
+        assert "credential" in error
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "template",
+        [
+            '<img src="data:image/png;base64,{image}" alt="{key}">',
+            '<img src="data:image/png;base64,{image}">{key}',
+            '<a href="#">{key}</a><img src="data:image/png;base64,{image}">',
+        ],
+    )
+    async def test_a_key_next_to_an_inline_image_is_still_refused(self, template) -> None:
+        body = template.format(image=_image(), key=_BARE_KEY) + _html(30 * 1024)
+        approved, error = await _resolve(_event(_mail(body)))
+        assert approved is False
+        assert "credential" in error
+
+
+_BARE_KEY = "Kx3Q51tPusV/D0URlGfM" "mNbVc7Z8yJhLpQrStUwZ"
+
+
+def _image() -> str:
+    import base64
+    import hashlib
+
+    blob = b"".join(hashlib.sha256(str(i).encode()).digest() for i in range(256))
+    return base64.b64encode(blob).decode()
 
 
 # --------------------------------------------------------------- the routes
