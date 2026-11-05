@@ -2825,8 +2825,8 @@ caller-supplied filename cannot walk out of it. Which store each surface may add
 [the shared `?store=` rule](#which-store-a-dashboard-route-reads-store) on the
 dashboard and `--store` on the CLI.
 
-**Every applier that rewrites this install takes a copy first.** (The gateway's
-unattended policy-provider apply does not yet: #21898.) `platform/wheel_apply.snapshot_memory_before_update`
+**Every applier that rewrites this install takes a copy first.**
+`platform/wheel_apply.snapshot_memory_before_update`
 calls `back_up_all_stores` with `force=True` (the retention interval is bypassed) and
 `memory.backup_keep`. On a managed venv it is the shadow engine's last step before
 promotion, for the gateway's automatic update, an approved in-app update and
