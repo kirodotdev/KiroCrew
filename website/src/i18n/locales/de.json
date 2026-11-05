@@ -9189,6 +9189,7 @@
       "make_a_status_tag": "{{name}} zu einem Status-Tag machen",
       "make_status_tag": "Zu Status-Tag machen",
       "new_tag": "Neuer Tag… ↵",
+      "new_tag_label": "Name des neuen Tags",
       "remove_status_flag_from": "Status-Markierung von {{name}} entfernen",
       "rename_tag": "Tag {{name}} umbenennen",
       "set_color_to_name": "Farbe auf {{name}} setzen",

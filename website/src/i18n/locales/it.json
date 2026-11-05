@@ -9402,6 +9402,7 @@
       "make_a_status_tag": "Rendi {{name}} un tag di stato",
       "make_status_tag": "Trasforma in tag di stato",
       "new_tag": "Nuovo tag… ↵",
+      "new_tag_label": "Nome del nuovo tag",
       "remove_status_flag_from": "Rimuovi il contrassegno di stato da {{name}}",
       "rename_tag": "Rinomina il tag {{name}}",
       "set_color_to_name": "Imposta il colore su {{name}}",

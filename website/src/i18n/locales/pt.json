@@ -9402,6 +9402,7 @@
       "make_a_status_tag": "Transformar {{name}} em tag de status",
       "make_status_tag": "Transformar em etiqueta de status",
       "new_tag": "Nova etiqueta… ↵",
+      "new_tag_label": "Nome da nova etiqueta",
       "remove_status_flag_from": "Remover a marcação de status de {{name}}",
       "rename_tag": "Renomear a tag {{name}}",
       "set_color_to_name": "Definir cor como {{name}}",

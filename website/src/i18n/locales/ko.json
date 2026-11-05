@@ -8976,6 +8976,7 @@
       "make_a_status_tag": "{{name}}을(를) 상태 태그로 설정",
       "make_status_tag": "상태 태그로 설정",
       "new_tag": "새 태그… ↵",
+      "new_tag_label": "새 태그 이름",
       "remove_status_flag_from": "{{name}}에서 상태 플래그 해제",
       "rename_tag": "{{name}} 태그 이름 변경",
       "set_color_to_name": "색상을 {{name}}(으)로 설정",

@@ -5795,7 +5795,8 @@
       "screen_capture_drag_the_area_you_want_it_attache": "Screen capture — drag the area you want; it attaches automatically on release"
     },
     "tagManagerList": {
-      "new_tag": "New tag… ↵"
+      "new_tag": "New tag… ↵",
+      "new_tag_label": "New tag name"
     },
     "terminalCompletion": {
       "path_completions": "Path completions"

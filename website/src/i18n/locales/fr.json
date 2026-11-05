@@ -9402,6 +9402,7 @@
       "make_a_status_tag": "Faire de {{name}} une étiquette de statut",
       "make_status_tag": "Convertir en étiquette d’état",
       "new_tag": "Nouvelle étiquette… ↵",
+      "new_tag_label": "Nom de la nouvelle étiquette",
       "remove_status_flag_from": "Retirer l’indicateur de statut de {{name}}",
       "rename_tag": "Renommer l’étiquette {{name}}",
       "set_color_to_name": "Définir la couleur sur {{name}}",
