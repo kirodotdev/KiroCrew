@@ -559,9 +559,14 @@ pointer -- which `kirocrew cloud list` can rediscover from the real stacks anywa
   AppStream `dnf` repo (the reliable primary path, validated live). The
   NodeSource fallback does NOT `curl … | bash` a remote installer; it imports
   NodeSource's GPG key over pinned TLS and writes a `gpgcheck=1` dnf repo, so RPM
-  signatures are verified before install. kiro-cli is fetched over
-  `--proto '=https' --tlsv1.2` and the binary presence is asserted afterward
-  (fail-closed WaitCondition on a broken install).
+  signatures are verified before install. kiro-cli is the musl zip of the
+  `packaging/kiro-cli-version` release, fetched from `prod.download.cli.kiro.dev`
+  over `--proto '=https' --tlsv1.2` and checked against its
+  `packaging/kiro-cli-sha256` SHA-256 before it is unzipped; the binary presence
+  is asserted afterward (fail-closed WaitCondition on a broken install). That
+  host sits outside every `*.amazonaws.com` service namespace, so no AWS service
+  endpoint's private DNS zone (Amazon Q's owns `q.<region>.amazonaws.com`) can
+  answer NXDOMAIN for it.
 - **Least-privilege, tag-/prefix-scoped IAM.** The RCE-adjacent SSM verbs
   (`ssm:StartSession` / `ssm:SendCommand` on instances) and the EC2 destructive
   verbs (`DeleteSecurityGroup` / `RevokeSecurityGroup{Ingress,Egress}` / `DeleteTags`)
