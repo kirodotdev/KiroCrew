@@ -156,7 +156,7 @@ export default function MigrationPage() {
             <Card>
               <CardTitle>
                 <AlertTriangle size={16} className="text-warn" />
-                {displayName} {i18nT('pages.migrationPage.has_moved_to_a_standalone_app')}
+                {i18nT('pages.migrationPage.name_has_moved_to_a_standalone_app', { name: displayName })}
               </CardTitle>
               <p className="text-[13px] text-muted leading-relaxed mb-4">
                 {i18nT('pages.migrationPage.this_feature_was_previously_built_into_kirocrew')}

@@ -9043,7 +9043,7 @@
       "back_to_apps": "Back to Apps",
       "cleanup_complete": "Cleanup Complete",
       "coming_soon_this_app_is_not_yet_available_in_app": "Coming soon — this app is not yet available in Apps. Check back after the next update.",
-      "has_moved_to_a_standalone_app": "has moved to a standalone app",
+      "name_has_moved_to_a_standalone_app": "{{name}} has moved to a standalone app",
       "install_from_apps": "Install from Apps",
       "install_the_standalone_version_to_continue_using": "Install the standalone version to continue using this feature.",
       "migration_complete": "Migration Complete",

@@ -15406,7 +15406,7 @@
       "cleanup_failed": "清理失败",
       "coming_soon_this_app_is_not_yet_available_in_app": "即将推出 — 此应用尚未在“应用”中提供。请在下次更新后再查看。",
       "failed_to_load_app_info": "加载应用信息失败",
-      "has_moved_to_a_standalone_app": "已迁移为独立应用",
+      "name_has_moved_to_a_standalone_app": "{{name}} 已迁移为独立应用",
       "install_from_apps": "从“应用”安装",
       "install_the_standalone_version_to_continue_using": "安装独立版本以继续使用此功能。",
       "migration_complete": "迁移完成",

@@ -16561,7 +16561,7 @@
       "cleanup_failed": "Очистка не удалась",
       "coming_soon_this_app_is_not_yet_available_in_app": "Скоро — это приложение пока недоступно в разделе «Приложения». Проверьте снова после следующего обновления.",
       "failed_to_load_app_info": "Не удалось загрузить сведения о приложении",
-      "has_moved_to_a_standalone_app": "теперь доступно как отдельное приложение",
+      "name_has_moved_to_a_standalone_app": "{{name}} теперь доступно как отдельное приложение",
       "install_from_apps": "Установить из Приложений",
       "install_the_standalone_version_to_continue_using": "Установите отдельную версию, чтобы продолжить пользоваться этой функцией.",
       "migration_complete": "Миграция завершена",

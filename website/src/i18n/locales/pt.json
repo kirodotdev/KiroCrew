@@ -16176,7 +16176,7 @@
       "cleanup_failed": "Falha na limpeza",
       "coming_soon_this_app_is_not_yet_available_in_app": "Em breve — este app ainda não está disponível em Apps. Volte após a próxima atualização.",
       "failed_to_load_app_info": "Falha ao carregar as informações do app",
-      "has_moved_to_a_standalone_app": "foi movido para um app independente",
+      "name_has_moved_to_a_standalone_app": "{{name}} foi movido para um app independente",
       "install_from_apps": "Instalar em Apps",
       "install_the_standalone_version_to_continue_using": "Instale a versão independente para continuar usando este recurso.",
       "migration_complete": "Migração concluída",

@@ -15406,7 +15406,7 @@
       "cleanup_failed": "クリーンアップ失敗",
       "coming_soon_this_app_is_not_yet_available_in_app": "近日公開予定 — このアプリはまだアプリで利用できません。次回の更新後にご確認ください。",
       "failed_to_load_app_info": "アプリ情報の読み込みに失敗しました",
-      "has_moved_to_a_standalone_app": "スタンドアロンアプリに移行しました",
+      "name_has_moved_to_a_standalone_app": "{{name}} はスタンドアロンアプリに移行しました",
       "install_from_apps": "アプリからインストール",
       "install_the_standalone_version_to_continue_using": "スタンドアロン版をインストールしてこの機能を引き続き使用してください。",
       "migration_complete": "移行完了",
