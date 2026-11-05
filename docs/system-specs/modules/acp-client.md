@@ -281,9 +281,10 @@ file with bad JSON loads with the key at its default; a config load that raises
 disables projection, as `mcp_gateway.apps_enabled` does (`_projection_enabled`). Disabled launches restore the Crew-owned inheritance
 overlay before spawning and bypass alias translation and projected search
 requirements. A spawn-time ceiling takes the same fallback automatically: when
-the agents directory already holds `SKILL_VIEW_PROJECTION_CEILING` (128, the
-constant the doctor's backlog warning also reads) or more
-`kirocrew-skill-view-*.json` files, a fresh preparation stops minting new views
+the agents directory already holds `skill_view_ceiling` or more
+`kirocrew-skill-view-*.json` files -- the larger of
+`SKILL_VIEW_PROJECTION_CEILING` (128) and two per authored agent spec in the
+directory, the same sizing the doctor's backlog warning uses -- a fresh preparation stops minting new views
 and runs the authored agent, so a regression that reopens the leak cannot deepen
 it. The count is the raw total of alias files, including those another Crew home
 sharing the agents directory wrote, because kiro-cli reads every one at startup
@@ -1041,8 +1042,8 @@ record could be the unreadable one that makes a reclaim pass fail closed, so
 the report says reclaimability is unknown rather than promising a drain. A
 backlog left by a build that predates the reclaim is thereby visible without
 `ls`, and its drain can be watched. Above
-`_SKILL_VIEW_BACKLOG_WARN` (128, the same number the projection enforces as
-`SKILL_VIEW_PROJECTION_CEILING`, so a host the doctor warns about is a host whose
+`skill_view_ceiling` over `_SKILL_VIEW_BACKLOG_WARN` (at least 128, two per
+authored agent spec, the same number the projection enforces, so a host the doctor warns about is a host whose
 next spawn has already fallen back to its authored agent; the number is sized
 for the IDE's drop-down over the measured steady state -- 35 views for 34
 authored agents on a heavily used host, since global agents share one view

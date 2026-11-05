@@ -2,7 +2,8 @@
 
 It publishes, under this home's publication lock and lease, the views a spawn launches
 with, and falls back to the authored agent once the projected-alias count reaches
-``SKILL_VIEW_PROJECTION_CEILING``, warning once per process.
+the ceiling (``skill_view_ceiling``: ``SKILL_VIEW_PROJECTION_CEILING`` or two views
+per authored agent, whichever is larger), warning once per process.
 
 :mod:`kiro_crew.acp.skill_projection` stays the import path and the patch surface; see
 :mod:`kiro_crew.acp.skill_projection_parts`.
@@ -80,7 +81,12 @@ from kiro_crew.agent_discovery import (
     list_agents,
     skill_search_refusal,
 )
-from kiro_crew.agent_spec_format import NATIVE_SKILL_ALIAS_PREFIX, SKILL_VIEW_PROJECTION_CEILING
+from kiro_crew.agent_spec_format import (
+    NATIVE_SKILL_ALIAS_PREFIX,
+    SKILL_VIEW_PROJECTION_CEILING,
+    count_authored_agent_files,
+    skill_view_ceiling,
+)
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.paths import data_home, kiro_agents_dir, kiro_home, project_agents_dir
 from kiro_crew.user_json import copy_json_document
@@ -100,8 +106,9 @@ logger = logging.getLogger("kiro_crew.acp.skill_projection")
 # (a per-launch env value that mints a view per spawn, or one unreadable lease
 # that keeps the reclaim from draining anything), NOT the mechanism that keeps a
 # healthy host bounded -- the boot drain and per-spawn reclaim do that, far below
-# this number. Deliberately well above a healthy host's authored-agents x
-# workspaces so normal use never trips it.
+# this number. ``skill_view_ceiling`` sizes it from the authored agents in the
+# directory (two views each, never below the constant), so a host whose steady
+# state is one view per agent does not trip it before anything has leaked.
 #
 # Defined in the ``agent_spec_format`` leaf (beside the alias prefix) and
 # imported at the top of this module, so the doctor can share the number without
@@ -142,13 +149,13 @@ def _projection_enabled() -> bool:
         return False
 
 
-def _count_projected_aliases(directory: Path) -> int:
-    """Count ``kirocrew-skill-view-*.json`` files in *directory*, up to the ceiling.
+def _count_projected_aliases(directory: Path, ceiling: int) -> int:
+    """Count ``kirocrew-skill-view-*.json`` files in *directory*, up to *ceiling*.
 
     One bounded ``os.scandir``. Counts regular files by name only -- no read, no
     lease probe, no sidecar -- because the ceiling asks only "how many views are
     on disk", which is what kiro-cli pays for at startup. The scan STOPS as soon
-    as the count reaches :data:`SKILL_VIEW_PROJECTION_CEILING`: the only caller
+    as the count reaches *ceiling*: the only caller
     tests ``>= ceiling``, so an exact count past it buys nothing and every extra
     entry is wasted work on the spawn path. No result cache sits in front of it:
     on a healthy host it lists a near-empty directory in microseconds, and the
@@ -161,7 +168,7 @@ def _count_projected_aliases(directory: Path) -> int:
     try:
         with os.scandir(directory) as entries:
             for entry in entries:
-                if count >= SKILL_VIEW_PROJECTION_CEILING:
+                if count >= ceiling:
                     break
                 if (
                     entry.name.startswith(NATIVE_SKILL_ALIAS_PREFIX)
@@ -179,7 +186,7 @@ def _count_projected_aliases(directory: Path) -> int:
     return count
 
 
-def _warn_ceiling_fallback_once(directory: Path, count: int) -> None:
+def _warn_ceiling_fallback_once(directory: Path, count: int, ceiling: int) -> None:
     """Warn, at most once per process, that the view ceiling is now in effect."""
     global _CEILING_FALLBACK_WARNED
     with _CEILING_FALLBACK_WARNED_LOCK:
@@ -197,7 +204,7 @@ def _warn_ceiling_fallback_once(directory: Path, count: int) -> None:
         "gateway using this agents directory, then move the files out). A gateway restart "
         "runs the boot drain for this home's own files.",
         count,
-        SKILL_VIEW_PROJECTION_CEILING,
+        ceiling,
         directory,
     )
 
@@ -379,8 +386,11 @@ def prepare_native_skill_projection(
         # fallback. So the ceiling never touches an explicit caller; it only
         # declines to START projecting when nothing asked for it specifically.
         if enabled:
-            view_count = _count_projected_aliases(directory)
-            if view_count >= SKILL_VIEW_PROJECTION_CEILING:
+            ceiling = skill_view_ceiling(
+                count_authored_agent_files(directory), SKILL_VIEW_PROJECTION_CEILING
+            )
+            view_count = _count_projected_aliases(directory, ceiling)
+            if view_count >= ceiling:
                 # The safety net: the agents directory already holds at least the
                 # ceiling of views, so minting more would deepen a backlog
                 # kiro-cli reads in full on every start. Fall back to the authored
@@ -396,7 +406,7 @@ def prepare_native_skill_projection(
                 # host never reaches here; see the ceiling constant. The fallback
                 # still prunes below (``ceiling_tripped``) so the count can fall
                 # back under the ceiling without a restart.
-                _warn_ceiling_fallback_once(directory, view_count)
+                _warn_ceiling_fallback_once(directory, view_count, ceiling)
                 enabled = False
                 ceiling_tripped = True
     if not enabled:
