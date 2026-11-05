@@ -14760,6 +14760,7 @@
       "backend_oauth_caveat": "Connect se completa igualmente y el inicio de sesión de {{provider}} se guarda para los chats que lo admiten. Algunos chats aún no pueden usar este tipo de inicio de sesión, así que sus herramientas pueden no funcionar allí.",
       "chat_use_label": "En los chats",
       "chat_use_lacks_oauth": "Guardado para los chats que lo admiten. Algunos chats aún no pueden usar este tipo de inicio de sesión.",
+      "chat_use_kas_sign_in": "Los chats inician sesión por su cuenta: escribe {{word}} una vez en un chat.",
       "configure_oauth_app": "Configurar aplicación OAuth",
       "prerequisite_github": "GitHub no admite el registro dinámico de clientes, así que Conectar usa la app OAuth de GitHub registrada en Ajustes → Apps OAuth. La página de consentimiento de GitHub muestra esa app; apruébala para continuar.",
       "prerequisite_asana": "Asana no admite el registro dinámico de clientes, así que Conectar usa la app MCP de Asana registrada en Ajustes → Apps OAuth. La página de consentimiento de Asana muestra esa app; apruébala para continuar.",

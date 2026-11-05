@@ -6762,6 +6762,7 @@
       "backend_oauth_caveat": "Connect still finishes, and the {{provider}} sign-in is saved for chats that support it. Some chats can't use this kind of sign-in yet, so its tools may not work there.",
       "chat_use_label": "In chats",
       "chat_use_lacks_oauth": "Saved for chats that support it. Some chats can't use this kind of sign-in yet.",
+      "chat_use_kas_sign_in": "Chats sign in separately: type {{word}} in a chat once.",
       "configure_oauth_app": "Configure OAuth app",
       "prerequisite_github": "GitHub does not support dynamic client registration, so Connect uses the GitHub OAuth App registered under Settings → OAuth Apps. The GitHub consent page names that app; approve it to continue.",
       "prerequisite_asana": "Asana does not support dynamic client registration, so Connect uses the Asana MCP app registered under Settings → OAuth Apps. The Asana consent page names that app; approve it to continue.",

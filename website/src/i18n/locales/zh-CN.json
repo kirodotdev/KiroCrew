@@ -14048,6 +14048,7 @@
       "backend_oauth_caveat": "Connect 仍会完成，{{provider}} 登录会为支持它的聊天保存。部分聊天暂时无法使用这类登录，因此其工具在那里可能无法工作。",
       "chat_use_label": "在聊天中",
       "chat_use_lacks_oauth": "已为支持它的聊天保存。部分聊天暂时无法使用这类登录。",
+      "chat_use_kas_sign_in": "聊天需要单独登录：在聊天中输入一次 {{word}}。",
       "configure_oauth_app": "配置 OAuth 应用",
       "prerequisite_github": "GitHub 不支持动态客户端注册，因此“连接”会使用在设置 → OAuth 应用中注册的 GitHub OAuth 应用。GitHub 授权页面显示的是此应用；同意后即可继续。",
       "prerequisite_asana": "Asana 不支持动态客户端注册，因此“连接”会使用在设置 → OAuth 应用中注册的 Asana MCP 应用。Asana 授权页面显示的是此应用；同意后即可继续。",

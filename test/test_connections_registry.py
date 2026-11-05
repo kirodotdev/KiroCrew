@@ -305,6 +305,26 @@ def test_category_outside_the_vocabulary_is_rejected(tmp_path):
         _load_registry(registry_path)
 
 
+@pytest.mark.parametrize("bad", [[], "jira", ["Jira"], ["ji"], ["jira issues"], [7]])
+def test_sign_in_words_must_be_lowercase_single_words(tmp_path, bad):
+    payload = get_all_registry_providers()
+    payload[0]["sign_in_words"] = bad
+    registry_path = tmp_path / "registry.json"
+    registry_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(RegistryValidationError, match="sign_in_words must be"):
+        _load_registry(registry_path)
+
+
+def test_only_atlassian_declares_sign_in_words():
+    from kiro_crew.connections.registry import sign_in_words
+
+    assert sign_in_words("atlassian") == ("jira", "confluence")
+    declared = [p["slug"] for p in get_all_registry_providers() if "sign_in_words" in p]
+    assert declared == ["atlassian"]
+    assert sign_in_words("not-a-provider") == ()
+
+
 def test_category_stays_optional_for_an_entry_that_predates_it(tmp_path):
     payload = get_all_registry_providers()
     del payload[0]["category"]

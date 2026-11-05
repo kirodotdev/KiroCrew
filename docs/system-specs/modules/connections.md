@@ -1214,6 +1214,14 @@ v3 relay), so naming a switch would point at a route that does not help.
 An unreadable config makes no
 claim.
 
+While `agent.acp_backend` is KAS (`chat_backend_is_kas`), every other connected row
+carries `signInInChat`: the card's grant is real for Kiro CLI chats, and a KAS chat
+signs in on its own once the user's message names the server (`acp-client.md`). The
+card shows it in the same "In chats" line, or inside the shared-grant tip: "Chats
+sign in separately: type <slug> in a chat once." Like the `backendLacksOauth`
+copy it names no harness: the line shows only while chats run on KAS, so the
+reader need not know which harness they have. Kiro CLI chats and an unreadable config get no line.
+
 **What the user sees.** `get_visible_providers` shows a pre-registered entry
 regardless of `launch_gate_passed` (vendor approval still hides), because until
 a client exists the card is an instruction, not an offer: `/api/connections/status`

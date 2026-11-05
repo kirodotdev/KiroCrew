@@ -156,6 +156,12 @@ class Provider(_RequiredProviderFields, total=False):
     (which categories the registry covers against the ChatGPT / Claude connector
     directories), not a behavioural switch: nothing mints, mounts or gates on
     it. Optional so an entry predating the field stays a valid shape.
+
+    ``sign_in_words`` are extra words that name this provider's server in a
+    user's chat message, beside its own name (``atlassian`` also answers to
+    ``jira`` and ``confluence``). A KAS chat offers a server's sign-in only when
+    the user's message names it (``text_names_mcp_server``). Each word is one
+    lowercase word of three or more letters or digits, matched whole.
     """
 
     client_id: str
@@ -164,6 +170,7 @@ class Provider(_RequiredProviderFields, total=False):
     revoke_manual_path: str
     tool_aliases: dict[str, str]
     category: str
+    sign_in_words: list[str]
 
 
 class RegistryValidationError(ValueError):
@@ -235,7 +242,9 @@ _OPTIONAL_PROVIDER_FIELDS = {
     "revoke_manual_path",
     "tool_aliases",
     "category",
+    "sign_in_words",
 }
+_SIGN_IN_WORD_PATTERN = re.compile(r"^[a-z0-9]{3,}$")
 # ``auth`` block vocabulary. Closed on purpose: the runtime branches on the mode
 # and the runbooks print the redirect host, so a misspelling must fail the load,
 # not silently fall back to DCR against a provider that refuses it.
@@ -504,6 +513,18 @@ def _validate_provider(raw: object, index: int) -> Provider:
         raise _validation_error(
             index, "category must be one of " + ", ".join(sorted(PROVIDER_CATEGORIES))
         )
+    if "sign_in_words" in raw:
+        words = raw["sign_in_words"]
+        if (
+            not isinstance(words, list)
+            or not words
+            or not all(
+                isinstance(word, str) and _SIGN_IN_WORD_PATTERN.fullmatch(word) for word in words
+            )
+        ):
+            raise _validation_error(
+                index, "sign_in_words must be a non-empty list of lowercase words of 3+ characters"
+            )
 
     if "auth" in raw:
         _validate_auth(raw["auth"], index)
@@ -717,6 +738,13 @@ def get_provider(slug: str) -> Provider | None:
 
     provider = _PROVIDERS_BY_SLUG.get(slug)
     return _copy_provider(provider) if provider is not None else None
+
+
+def sign_in_words(slug: str) -> tuple[str, ...]:
+    """The extra words that name provider *slug*'s server, or ``()`` when none."""
+
+    provider = _PROVIDERS_BY_SLUG.get(slug)
+    return tuple(provider.get("sign_in_words", ())) if provider is not None else ()
 
 
 def get_visible_providers() -> list[Provider]:

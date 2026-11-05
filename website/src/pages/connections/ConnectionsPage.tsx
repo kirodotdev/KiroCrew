@@ -806,6 +806,7 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
                     grantSharedWith={status?.grantSharedWith}
                     grantSharedUnconfirmed={status?.grantSharedUnconfirmed}
                     backendLacksOauth={status?.backendLacksOauth === true}
+                    signInInChat={status?.signInInChat === true}
                     busy={cardBusy}
                     testingProvider={testingProvider}
                     feedbackSlots={feedbackSlots}
