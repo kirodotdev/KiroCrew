@@ -1,6 +1,6 @@
 // The PR content tab bodies: description, CI checks, comments.
 // `/all` for every catalog: `../i18n` registers English only.
-import { i18next } from '../i18n/all'
+import { i18next } from '../../i18n/all'
 //
 // These are pure given a PullRequestSource, so they are tested directly; the tab
 // bar that hosts them (and the single shared query behind it) is covered in
@@ -10,9 +10,9 @@ import { describe, expect, it } from 'vitest'
 
 import {
   PartialNote, SourceError,
-} from '../apps/code-review-sage/components/PrSourcePanel'
-import PrStatusChips from '../apps/code-review-sage/components/PrStatusChips'
-import type { PullRequestSource } from '../types'
+} from './components/PrSourcePanel'
+import PrStatusChips from './components/PrStatusChips'
+import type { PullRequestSource } from '../../types'
 
 const URL_ = 'https://github.com/acme/widgets/pull/7'
 

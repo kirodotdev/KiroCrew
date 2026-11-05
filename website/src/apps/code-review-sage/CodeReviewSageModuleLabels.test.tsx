@@ -21,7 +21,7 @@ import ts from 'typescript'
  * Scope is this app's own tree. A repo-wide version of this rule belongs with the
  * i18n campaign that owns the other ~250 components, not here.
  */
-const APP = join(__dirname, '..', 'apps', 'code-review-sage')
+const APP = __dirname
 
 /** Property names whose value reaches the screen. */
 const USER_VISIBLE = new Set([

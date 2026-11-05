@@ -3,8 +3,8 @@ import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { ReviewQueueResponse } from '../apps/code-review-sage/lib/types'
-import type { SageContextValue } from '../apps/code-review-sage/context'
+import type { ReviewQueueResponse } from './lib/types'
+import type { SageContextValue } from './context'
 
 /**
  * The rail's "Requests" tab: it feeds `gh search prs --review-requested=@me`
@@ -14,16 +14,16 @@ import type { SageContextValue } from '../apps/code-review-sage/context'
 const sage: Record<string, unknown> = {}
 const queue = vi.fn<() => Promise<ReviewQueueResponse>>()
 
-vi.mock('../apps/code-review-sage/context', async importOriginal => {
-  const actual = await importOriginal<typeof import('../apps/code-review-sage/context')>()
+vi.mock('./context', async importOriginal => {
+  const actual = await importOriginal<typeof import('./context')>()
   return { ...actual, useSage: () => sage as unknown as SageContextValue }
 })
-vi.mock('../apps/code-review-sage/api', async importOriginal => {
-  const actual = await importOriginal<typeof import('../apps/code-review-sage/api')>()
+vi.mock('./api', async importOriginal => {
+  const actual = await importOriginal<typeof import('./api')>()
   return { ...actual, sageApi: { ...actual.sageApi, reviewQueue: () => queue() } }
 })
 
-import MiddleColumn from '../apps/code-review-sage/components/MiddleColumn'
+import MiddleColumn from './components/MiddleColumn'
 
 const URL = 'https://github.com/zzzacme/widgets/pull/1'
 

@@ -1,15 +1,15 @@
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
 // `/all` for every catalog: `../i18n` registers English only.
-import { i18next } from '../i18n/all'
-import type { Run } from '../apps/code-review-sage/lib/types'
+import { i18next } from '../../i18n/all'
+import type { Run } from './lib/types'
 
-import RunList from '../apps/code-review-sage/components/RunList'
-import RunProgress from '../apps/code-review-sage/components/RunProgress'
-import RunCard from '../apps/code-review-sage/components/RunCard'
-import FailureNotice from '../apps/code-review-sage/components/FailureNotice'
-import { failureReason } from '../apps/code-review-sage/lib/format'
-import { typicalRunMs } from '../apps/code-review-sage/lib/format'
+import RunList from './components/RunList'
+import RunProgress from './components/RunProgress'
+import RunCard from './components/RunCard'
+import FailureNotice from './components/FailureNotice'
+import { failureReason } from './lib/format'
+import { typicalRunMs } from './lib/format'
 
 function makeRun(overrides: Partial<Run> = {}): Run {
   return {

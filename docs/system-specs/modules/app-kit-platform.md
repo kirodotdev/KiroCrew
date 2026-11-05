@@ -674,14 +674,29 @@ fails on any dashboard module outside `src/apps/file-explorer/` except
 imports (`hooks/useDebouncedValue.ts`, `utils/parentDir.ts`), and the app pins its
 copy of the core file-read endpoint's binary-extension set in its own `tests/`.
 
+Code Review Sage needs no seam: it reaches core only through public surfaces it
+imports itself (the ACP worker pool, `github_runner`, the dashboard's pull-request
+panel and resize grip). `test/test_core_code_review_sage_decoupling.py` fails on any
+core module or script that imports `kiro_crew.apps.builtins.code_review_sage` or names
+`code_review_sage` / `code-review-sage` in a non-docstring string, except its pinned
+rows: the `security_posture.py` redaction rows for the app's modules and the
+`scripts/docs_lint.py` skip of the app's test fixtures, each deleted with the app.
+`website/src/apps/code-review-sage/codeReviewSageBoundary.test.ts` fails on any
+dashboard module outside that directory except `builtinRegistry.ts` that imports from
+it. The app's backend and frontend tests live in its own directories, including its
+rows of core-wide pins (the internal-credential port pairing, the Windows
+replace-retry, the folder `created_at` stamp, the focus-refetch, touch-state and
+resize-grip policies), which `codeReviewSageSharedPolicies.test.ts` and the app's
+`tests/` hold.
+
 Every backend app gate runs the same scanner, `test/core_app_independence.py`:
 `core_app_imports` finds a core import of the app's package in any spelling, and
 `core_name_strings` finds a core string naming it, minus the reasoned rows the gate
 allows. Each app's gate, `test/test_core_<app>_decoupling.py`, calls it with its own
-package and names (aws-control, Files, Design Critique and Auto-Improvement among
-them), and the next app to leave adds a gate that does the same, never another
-scanner. An app that core never calls, as with Auto-Improvement, needs no seam: its
-gate pins that direction and the reasoned rows left (see `auto-improvement.md`,
+package and names (aws-control, Files, Design Critique, Auto-Improvement and Code
+Review Sage among them), and the next app to leave adds a gate that does the same,
+never another scanner. An app that core never calls, as with Auto-Improvement, needs no
+seam: its gate pins that direction and the reasoned rows left (see `auto-improvement.md`,
 "Repository boundary").
 Issue Radar's gate (`test/test_core_issue_radar_decoupling.py`) pins the rows
 that still name it, chiefly its three agent tools, which the data-only

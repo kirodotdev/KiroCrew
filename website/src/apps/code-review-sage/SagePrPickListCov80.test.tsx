@@ -2,8 +2,8 @@ import { render, screen, fireEvent } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { RepoPr } from '../apps/code-review-sage/lib/types'
-import type { SageContextValue } from '../apps/code-review-sage/context'
+import type { RepoPr } from './lib/types'
+import type { SageContextValue } from './context'
 
 /**
  * The middle column: pick PRs, batch them, or review the whole repo behind a
@@ -14,12 +14,12 @@ import type { SageContextValue } from '../apps/code-review-sage/context'
  */
 const sage: Record<string, unknown> = {}
 
-vi.mock('../apps/code-review-sage/context', async importOriginal => {
-  const actual = await importOriginal<typeof import('../apps/code-review-sage/context')>()
+vi.mock('./context', async importOriginal => {
+  const actual = await importOriginal<typeof import('./context')>()
   return { ...actual, useSage: () => sage as unknown as SageContextValue }
 })
 
-import PrPickList from '../apps/code-review-sage/components/PrPickList'
+import PrPickList from './components/PrPickList'
 
 function pr(overrides: Partial<RepoPr> = {}): RepoPr {
   return {

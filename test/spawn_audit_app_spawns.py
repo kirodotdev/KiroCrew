@@ -363,6 +363,13 @@ BENIGN_APP_SPAWNS: frozenset[str] = frozenset(
         "::test_a_planted_tmp_symlink_is_not_followed",
         "apps/builtins/code_review_sage/tests/test_backend_routes.py"
         "::test_the_predictable_tmp_name_is_never_used",
+        # Same construct and classification: ``asyncio.run`` drives one of the app's
+        # own route coroutines (``_run_review_bg`` against a stub driver, ``_record``
+        # on a private copy of the routes module) to completion. No child process;
+        # every run record is a literal dict built by the test.
+        "apps/builtins/code_review_sage/tests/test_backend_routes_coverage.py::_drive",
+        "apps/builtins/code_review_sage/tests/test_routes_parts_composition_contract.py"
+        "::test_a_patched_function_on_a_copy_is_what_a_moved_caller_awaits",
         # md-notebook shells out to the real git binary rather than a pure-Python
         # implementation, because a server refuses a push from the shallow clone
         # isomorphic-git produces. The command is the literal "git"; the remote

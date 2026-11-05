@@ -7,15 +7,15 @@
 // rather than handed to the markdown renderer as one blob.
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
-import type { Finding, ReportRow, RunReport } from '../apps/code-review-sage/lib/types'
+import type { Finding, ReportRow, RunReport } from './lib/types'
 
-vi.mock('../components/MarkdownRenderer', () => ({
+vi.mock('../../components/MarkdownRenderer', () => ({
   default: ({ content }: { content: string }) => <span data-testid="md">{content}</span>,
 }))
 
-const FindingCard = (await import('../apps/code-review-sage/components/FindingCard')).default
-const ReportView = (await import('../apps/code-review-sage/components/ReportView')).default
-const ShipSummaryCard = (await import('../apps/code-review-sage/components/ShipSummaryCard')).default
+const FindingCard = (await import('./components/FindingCard')).default
+const ReportView = (await import('./components/ReportView')).default
+const ShipSummaryCard = (await import('./components/ShipSummaryCard')).default
 
 function finding(over: Partial<Finding> = {}): Finding {
   return {
@@ -341,7 +341,7 @@ describe('FindingCard dismissal', () => {
 describe('pendingCommentCount with dismissals', () => {
   it('does not count a dismissed finding as one still to send', async () => {
     const { pendingCommentCount } = await import(
-      '../apps/code-review-sage/components/PostCommentsButton')
+      './components/PostCommentsButton')
     const report = {
       rows: [{ change_id: 'c1', red: 1, yellow: 2 }],
     } as unknown as RunReport

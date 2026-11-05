@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
-import { sageApi } from '../apps/code-review-sage/api'
+import { sageApi } from './api'
 
 /**
  * A multi-change selection must go out as ONE request.

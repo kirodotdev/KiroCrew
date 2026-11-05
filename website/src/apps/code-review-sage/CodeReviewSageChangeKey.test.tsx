@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 
-import { changeKey, runCoversChange } from '../apps/code-review-sage/lib/format'
+import { changeKey, runCoversChange } from './lib/format'
 
 /**
  * A PR must be matched to its run by URL, never by `change_id`.

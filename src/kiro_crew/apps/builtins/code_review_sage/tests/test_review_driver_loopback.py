@@ -15,6 +15,7 @@ is that these two product functions route through it.
 """
 
 import http.server
+import socketserver
 import sys
 import threading
 import urllib.request
@@ -22,7 +23,6 @@ from pathlib import Path
 from unittest import mock
 
 import pytest
-from loopback_servers import LoopbackHTTPServer
 
 from kiro_crew.apps.builtins.code_review_sage.sage_lib import review_driver
 
@@ -42,6 +42,21 @@ _PROXY_ENV_KEYS = (
     # set (the httpoxy CGI guard), which would silently disarm these tests.
     "REQUEST_METHOD",
 )
+
+
+class LoopbackHTTPServer(http.server.HTTPServer):
+    """``HTTPServer`` whose bind skips the ``socket.getfqdn`` lookup.
+
+    The stock ``server_bind`` reverse-resolves the bind address, which can take
+    about thirty seconds on a macOS runner; a test server is reached by address,
+    so it records the address as the server name instead.
+    """
+
+    def server_bind(self) -> None:
+        socketserver.TCPServer.server_bind(self)
+        host, port = self.server_address[:2]
+        self.server_name = str(host)
+        self.server_port = int(port)
 
 
 def _make_handler(sink):

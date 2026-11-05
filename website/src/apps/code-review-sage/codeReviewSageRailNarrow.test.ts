@@ -21,21 +21,21 @@ import { describe, it, expect } from 'vitest'
 
 import {
   COLLAPSED_RAIL_WIDTH, MIN_RAIL_WIDTH, RAIL_COLLAPSED_KEY,
-} from '../apps/code-review-sage/lib/layout'
+} from './lib/layout'
 
 async function shell(): Promise<string> {
-  return (await import('../apps/code-review-sage/Workspace.tsx?raw')).default as string
+  return (await import('./Workspace.tsx?raw')).default as string
 }
 
 /** Any other file in the app, read as source for the same reason as `shell`.
  * Spelled out per file rather than interpolated, so the bundler resolves each
  * `?raw` import statically. */
 async function railSource(): Promise<string> {
-  return (await import('../apps/code-review-sage/components/LeftRail.tsx?raw')).default as string
+  return (await import('./components/LeftRail.tsx?raw')).default as string
 }
 
 async function headerSource(): Promise<string> {
-  return (await import('../apps/code-review-sage/components/RailHeader.tsx?raw')).default as string
+  return (await import('./components/RailHeader.tsx?raw')).default as string
 }
 
 describe('Code Review Sage rail at narrow widths', () => {

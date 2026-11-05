@@ -6,7 +6,7 @@ import {
   DEFAULT_LIST_WIDTH, MIN_LIST_WIDTH, MAX_LIST_WIDTH,
   LIVE_POLL_MS, IDLE_POLL_MS,
   loadRailWidth, loadListWidth,
-} from '../apps/code-review-sage/lib/layout'
+} from './lib/layout'
 
 /**
  * Column geometry persistence. A stored width is user preference, so it has to

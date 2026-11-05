@@ -15,7 +15,7 @@ was. Three consequences follow:
 * A part's imports are inert for its functions. A part imports the facade only under
   ``TYPE_CHECKING`` and stdlib names plainly. Every name a function reads must exist
   on the facade, which binds every name a part defines;
-  ``test/test_routes_parts_sage_composition_contract.py`` sweeps each function's
+  ``tests/test_routes_parts_composition_contract.py`` sweeps each function's
   bytecode to prove it.
 * A function's ``__module__`` reads the facade's name, as it did before the split, and
   it logs through the facade's ``logger``; its source file differs, so a log record's

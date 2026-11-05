@@ -21,7 +21,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { render, screen, waitFor, fireEvent } from '@testing-library/react'
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 
-import type { ChatState, ChatTurn } from '../apps/code-review-sage/lib/types'
+import type { ChatState, ChatTurn } from './lib/types'
 
 const chatState = vi.fn()
 const followupStart = vi.fn()
@@ -36,7 +36,7 @@ class FakeSageApiError extends Error {
   }
 }
 
-vi.mock('../apps/code-review-sage/api', () => ({
+vi.mock('./api', () => ({
   sageApi: {
     chatState: (...a: unknown[]) => chatState(...a),
     followupStart: (...a: unknown[]) => followupStart(...a),
@@ -44,7 +44,7 @@ vi.mock('../apps/code-review-sage/api', () => ({
   SageApiError: FakeSageApiError,
 }))
 
-vi.mock('../api/client', () => ({
+vi.mock('../../api/client', () => ({
   api: { createChatSlot: (...a: unknown[]) => createChatSlot(...a) },
 }))
 
@@ -53,7 +53,7 @@ vi.mock('react-router-dom', () => ({
 }))
 
 const ReviewChat = (await import(
-  '../apps/code-review-sage/components/ReviewChat')).default
+  './components/ReviewChat')).default
 
 function turn(over: Partial<ChatTurn> = {}): ChatTurn {
   return {

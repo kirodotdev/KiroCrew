@@ -1,11 +1,10 @@
 """Coverage tests for the Code Review Sage backend HTTP handlers.
 
-The app ships its own suite next to the code
-(``src/kiro_crew/apps/builtins/code_review_sage/tests/``), but several handlers
-were never exercised there: the repo-discovery pair (``repo-prs`` /
-``review-repo``), the review-settings read/write path, namespace create/delete,
-the learnings view, the comment-posting background task, and the notification
-helpers a finished run pushes to the bell feed.
+These are the handlers the rest of this suite never exercised: the
+repo-discovery pair (``repo-prs`` / ``review-repo``), the review-settings
+read/write path, namespace create/delete, the learnings view, the
+comment-posting background task, and the notification helpers a finished run
+pushes to the bell feed.
 
 Harness matches the app suite's ``test_run_endpoints.py`` exactly: the routes
 module is loaded by file path (the app dir is hyphenated and cannot be imported
@@ -36,8 +35,7 @@ from aiohttp import web
 
 from kiro_crew.apps.builtins.code_review_sage.tests.fixtures import OwnerRequest
 
-_APP_ROOT = (Path(__file__).resolve().parent.parent / "src" / "kiro_crew" / "apps"
-             / "builtins" / "code_review_sage")
+_APP_ROOT = Path(__file__).resolve().parent.parent
 _ROUTES = _APP_ROOT / "backend" / "routes.py"
 if str(_APP_ROOT) not in sys.path:
     sys.path.insert(0, str(_APP_ROOT))
@@ -117,7 +115,6 @@ class _SageRoutesBase(unittest.IsolatedAsyncioTestCase):
         # config_dir() memoizes the resolved data home for the process; reset it
         # so this test's KIROCREW_HOME wins over whatever an earlier test cached.
         import kiro_crew.config.paths as _paths
-        self._paths = _paths
         self._old_resolved = getattr(_paths, "_resolved_home", None)
         _paths._resolved_home = None
         self.mod = _load_routes_module()
@@ -134,7 +131,8 @@ class _SageRoutesBase(unittest.IsolatedAsyncioTestCase):
         self.mod._INFLIGHT.clear()
         self.mod._STAGE_OWNER.clear()
         self.mod._CONSOLIDATING.clear()
-        self._paths._resolved_home = self._old_resolved
+        import kiro_crew.config.paths as _paths
+        _paths._resolved_home = self._old_resolved
         if self._old_home is None:
             os.environ.pop("KIROCREW_HOME", None)
         else:
@@ -653,9 +651,9 @@ class TestReviewSectionIO(_SageRoutesBase):
 
     def test_write_seeds_the_layout_when_config_is_missing(self):
         self._cfg_path().unlink()
-        with unittest.mock.patch.object(self.mod, "_KNOWN_MODELS", ["opus-4.8"]):
-            review = self.mod._write_review_section({"model": "opus-4.8"})
-        self.assertEqual(review["model"], "opus-4.8")
+        with unittest.mock.patch.object(self.mod, "_KNOWN_MODELS", ["fixture-model-1"]):
+            review = self.mod._write_review_section({"model": "fixture-model-1"})
+        self.assertEqual(review["model"], "fixture-model-1")
         self.assertTrue(self._cfg_path().is_file())
 
     def _save_with_bom(self, cfg: dict) -> None:
@@ -713,7 +711,7 @@ class TestReviewSectionIO(_SageRoutesBase):
         self.assertIsNone(review["model"])
 
     def test_unknown_model_is_rejected(self):
-        with unittest.mock.patch.object(self.mod, "_KNOWN_MODELS", ["opus-4.8"]):
+        with unittest.mock.patch.object(self.mod, "_KNOWN_MODELS", ["fixture-model-1"]):
             with self.assertRaises(ValueError):
                 self.mod._write_review_section({"model": "sneaky[1m]"})
 
@@ -764,10 +762,10 @@ class TestValidModel(_SageRoutesBase):
                 self.assertFalse(self.mod._valid_model(bad))
 
     def test_registry_membership_is_required_when_known(self):
-        with unittest.mock.patch.object(self.mod, "_KNOWN_MODELS", ["opus-4.8"]):
-            self.assertTrue(self.mod._valid_model("opus-4.8"))
-            self.assertFalse(self.mod._valid_model("sonnet-9"))
-            self.assertEqual(self.mod._known_models(), ["opus-4.8"])
+        with unittest.mock.patch.object(self.mod, "_KNOWN_MODELS", ["fixture-model-1"]):
+            self.assertTrue(self.mod._valid_model("fixture-model-1"))
+            self.assertFalse(self.mod._valid_model("fixture-model-2"))
+            self.assertEqual(self.mod._known_models(), ["fixture-model-1"])
 
     def test_any_safe_token_passes_when_the_registry_is_unavailable(self):
         with unittest.mock.patch.object(self.mod, "_KNOWN_MODELS", []):
@@ -807,20 +805,20 @@ class TestSettingsHandler(_SageRoutesBase):
 
     async def test_put_persists_the_patch_and_audits_success(self):
         with self._patch_audit() as sel, \
-                unittest.mock.patch.object(self.mod, "_KNOWN_MODELS", ["opus-4.8"]):
+                unittest.mock.patch.object(self.mod, "_KNOWN_MODELS", ["fixture-model-1"]):
             resp = await self.mod._handle_settings(_Req(
                 method="PUT",
-                body={"model": "opus-4.8", "effort": "high", "max_concurrent": 4}))
+                body={"model": "fixture-model-1", "effort": "high", "max_concurrent": 4}))
         self.assertEqual(resp.status, 200)
         payload = _body(resp)
         self.assertTrue(payload["ok"])
-        self.assertEqual(payload["settings"]["model"], "opus-4.8")
+        self.assertEqual(payload["settings"]["model"], "fixture-model-1")
         self.assertEqual(payload["settings"]["effort"], "high")
         self.assertEqual(payload["settings"]["max_concurrent"], 4)
         outcome = sel.return_value.log_api_access.call_args.kwargs["outcome"]
         self.assertEqual(outcome, "success")
         on_disk = json.loads(self._cfg_path().read_text(encoding="utf-8"))
-        self.assertEqual(on_disk["review"]["model"], "opus-4.8")
+        self.assertEqual(on_disk["review"]["model"], "fixture-model-1")
 
     async def test_put_with_unreadable_body_is_an_empty_patch(self):
         with self._patch_audit():
@@ -835,7 +833,7 @@ class TestSettingsHandler(_SageRoutesBase):
 
     async def test_put_rejects_an_invalid_model_and_audits_the_denial(self):
         with self._patch_audit() as sel, \
-                unittest.mock.patch.object(self.mod, "_KNOWN_MODELS", ["opus-4.8"]):
+                unittest.mock.patch.object(self.mod, "_KNOWN_MODELS", ["fixture-model-1"]):
             resp = await self.mod._handle_settings(
                 _Req(method="PUT", body={"model": "evil[1m]"}))
         self.assertEqual(resp.status, 400)

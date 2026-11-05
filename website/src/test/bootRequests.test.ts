@@ -45,7 +45,6 @@ describe('focus-refetch opt-ins via finite staleTime', () => {
     ['../components/RegistryManager.tsx', 'replace-all PUT of registries'],
     ['../apps/personal-shopper/SitesTab.tsx', 'replace-all PUT of shopper sites'],
     ['../apps/papyrus/PapyrusPage.tsx', 'project deleted-in-another-tab detection'],
-    ['../apps/code-review-sage/components/LearningRail.tsx', 'replace-all PUT of active namespaces'],
   ]
 
   it.each(optIns)('%s sets a finite staleTime (%s)', (rel) => {

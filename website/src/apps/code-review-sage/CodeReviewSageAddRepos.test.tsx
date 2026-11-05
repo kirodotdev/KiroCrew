@@ -10,10 +10,10 @@ import { useEffect, useRef } from 'react'
 import { MemoryRouter } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { SageProvider, useSage } from '../apps/code-review-sage/context'
-import AddReposModal from '../apps/code-review-sage/components/AddReposModal'
+import { SageProvider, useSage } from './context'
+import AddReposModal from './components/AddReposModal'
 
-vi.mock('../apps/code-review-sage/api', () => ({
+vi.mock('./api', () => ({
   sageApi: {
     runs: vi.fn(),
     runReport: vi.fn(),
@@ -28,7 +28,7 @@ vi.mock('../apps/code-review-sage/api', () => ({
   },
 }))
 
-import { sageApi } from '../apps/code-review-sage/api'
+import { sageApi } from './api'
 
 const api = sageApi as unknown as Record<string, ReturnType<typeof vi.fn>>
 

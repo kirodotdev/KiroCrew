@@ -10,16 +10,16 @@ import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import Workspace from '../apps/code-review-sage/Workspace'
-import { SageProvider } from '../apps/code-review-sage/context'
+import Workspace from './Workspace'
+import { SageProvider } from './context'
 import {
   UI_STATE_KEY, loadRecentRepos, loadUiState, readSnapshot, rememberRecentRepo,
   saveUiState, writeSnapshot,
-} from '../apps/code-review-sage/lib/persist'
-import { sageApi } from '../apps/code-review-sage/api'
-import type { Run } from '../apps/code-review-sage/lib/types'
+} from './lib/persist'
+import { sageApi } from './api'
+import type { Run } from './lib/types'
 
-vi.mock('../apps/code-review-sage/api', () => ({
+vi.mock('./api', () => ({
   sageApi: {
     runs: vi.fn(),
     runReport: vi.fn(),

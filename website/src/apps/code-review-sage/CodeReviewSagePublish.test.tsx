@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
-import type { PullRequestSource } from '../types'
+import type { PullRequestSource } from '../../types'
 
 const mockApi = vi.hoisted(() => ({
   pullRequestChecks: vi.fn(),
@@ -13,12 +13,12 @@ const mockApi = vi.hoisted(() => ({
   pullRequestPendingReview: vi.fn(),
   submitPullRequestReview: vi.fn(),
 }))
-vi.mock('../api/client', () => ({ api: mockApi }))
-vi.mock('../components/MarkdownRenderer', () => ({
+vi.mock('../../api/client', () => ({ api: mockApi }))
+vi.mock('../../components/MarkdownRenderer', () => ({
   default: ({ content }: { content: string }) => <div>{content}</div>,
 }))
 
-import DraftReviewActions from '../apps/code-review-sage/components/DraftReviewActions'
+import DraftReviewActions from './components/DraftReviewActions'
 
 const PR_URL = 'https://github.com/acme/widgets/pull/12'
 

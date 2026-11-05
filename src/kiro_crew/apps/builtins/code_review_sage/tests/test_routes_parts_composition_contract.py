@@ -15,7 +15,7 @@ file pins what keeps that working:
   two ``_require_enabled`` follow-up handlers stay in the facade;
 * a private copy loaded by file path composes the parts onto its own namespace, two copies
   share no state, and loading one leaves the canonical facade's functions alone;
-* every name the test trees rebind or patch on the routes module is a facade global, and
+* every name the app's tests rebind or patch on the routes module is a facade global, and
   every composed function that reads one reads it through that namespace (a corpus scan
   with a planted self-test); a rebind on a copy reaches a moved function;
 * nothing but the facade imports a part (with a planted-importer self-test), a part
@@ -33,19 +33,19 @@ import builtins
 import dis
 import importlib
 import importlib.util
-import itertools
 import types
 from pathlib import Path
+from typing import Any
 
-import composition_contract_checks
 import pytest
-import source_corpus
 
-pytestmark = pytest.mark.xdist_group(name="tree_scan_test_routes_parts_sage_composition_contract")
+import kiro_crew
+
+pytestmark = pytest.mark.xdist_group(name="tree_scan_code_review_sage_routes_parts_composition")
 
 FACADE = "kiro_crew.apps.builtins.code_review_sage.backend.routes"
 PARTS_PACKAGE = "kiro_crew.apps.builtins.code_review_sage.backend.routes_parts"
-facade = importlib.import_module(FACADE)
+facade: Any = importlib.import_module(FACADE)
 FACADE_PATH = Path(facade.__file__).resolve()
 PARTS_DIR = FACADE_PATH.with_name("routes_parts")
 APP_TESTS_DIR = FACADE_PATH.parent.parent / "tests"
@@ -192,7 +192,7 @@ def _part_defined() -> dict[str, str]:
     return {name: stem for stem in PARTS for name in _defined(_tree(PARTS_DIR / f"{stem}.py"))}
 
 
-def _load_copy(name: str) -> types.ModuleType:
+def _load_copy(name: str) -> Any:
     """A private copy of the facade, loaded by file path the way the app's tests load it."""
     spec = importlib.util.spec_from_file_location(name, str(FACADE_PATH))
     assert spec and spec.loader
@@ -253,6 +253,7 @@ def unread_imports(
     """Imports *source* binds that nothing in the family reads, and part imports of names
     the part does not define. ``from __future__`` binds no name anyone reads."""
     found: list[str] = []
+    bound: list[tuple[str, str | None]]
     for node in ast.parse(source).body:
         if isinstance(node, ast.Import):
             bound = [(alias.asname or alias.name.split(".")[0], None) for alias in node.names]
@@ -261,7 +262,7 @@ def unread_imports(
         else:
             continue
         for name, module in bound:
-            if module in part_names and name not in part_names[module]:
+            if module is not None and module in part_names and name not in part_names[module]:
                 found.append(f"{module}.{name}")
             elif module not in part_names and name not in family_reads:
                 found.append(name)
@@ -384,19 +385,15 @@ def patched_names(source: str) -> set[str]:
 def _corpus() -> list[Path]:
     """The test sources that can reach the routes module by one of the spellings above.
 
-    Every file of the app's own suite that holds a spelling's text, and every file of the
-    top-level test tree that holds one and names ``code_review_sage`` (there, ``backend``
-    and ``routes.py`` are other apps' names as often as this one's).
+    Every file of the app's own suite that holds a spelling's text. The app's tests all
+    live in that suite; no Kiro Crew core test reaches the app's routes.
     """
-    root = source_corpus.repo_root()
-    tests = root / "test"
     files = []
-    for path in sorted(itertools.chain(tests.rglob("*.py"), APP_TESTS_DIR.rglob("*.py"))):
+    for path in sorted(APP_TESTS_DIR.rglob("*.py")):
         if path.resolve() == _THIS_FILE:
             continue
         text = path.read_text(encoding="utf-8", errors="replace")
-        in_app = APP_TESTS_DIR in path.parents
-        if any(m in text for m in _REACH_MARKERS) and (in_app or "code_review_sage" in text):
+        if any(m in text for m in _REACH_MARKERS):
             files.append(path)
     return files
 
@@ -409,10 +406,14 @@ def _corpus_patched_names() -> dict[str, set[str]]:
     return by_name
 
 
-class TestPackage(
-    composition_contract_checks.ThePackageHoldsExactlyTheComposedParts,
-    composition_contract_checks.ThePackageInitHoldsOnlyItsDocstring,
-):
+class TestPackage:
+    def test_the_package_holds_exactly_the_composed_parts(self) -> None:
+        assert {path.stem for path in PARTS_DIR.glob("*.py")} == {*PARTS, "__init__"}
+
+    def test_the_package_init_holds_only_its_docstring(self) -> None:
+        body = _tree(PARTS_DIR / "__init__.py").body
+        assert len(body) == 1 and isinstance(body[0], ast.Expr)
+        assert isinstance(body[0].value, ast.Constant) and isinstance(body[0].value.value, str)
 
     def test_the_facade_composes_every_part_once_through_the_shared_helper(self) -> None:
         tree = _tree(FACADE_PATH)
@@ -433,6 +434,7 @@ class TestPackage(
         assert len(helper) == 1 and len(calls) == 1
         args = calls[0].args
         assert ast.unparse(args[0]) == "globals()" and len(args) == 2 and not calls[0].keywords
+        assert isinstance(args[1], (ast.Tuple, ast.List))
         assert [ast.unparse(part) for part in args[1].elts] == [f"_parts.{p}" for p in PARTS]
 
     def test_the_facade_imports_its_parts_by_absolute_name(self) -> None:
@@ -572,7 +574,7 @@ class TestPrivateCopies:
 
 
 class TestPatchReach:
-    """Every name the test trees rebind on the routes module is one the composed code reads
+    """Every name the app's tests rebind on the routes module is one the composed code reads
     through the namespace it was rebound in."""
 
     def test_every_name_the_tests_patch_is_a_facade_global_the_parts_read_through_it(self) -> None:
@@ -672,20 +674,13 @@ class TestPatchReach:
             "test_consolidate.py",
             "test_paste_pr_link.py",
             "test_no_auto_post.py",
-            "test_sage_backend_routes_coverage.py",
+            "test_backend_routes_coverage.py",
         } <= names
-
-    def test_leaf_test_scope_derives_this_file_as_a_corpus_gate(self, monkeypatch) -> None:
-        """It reads the whole test tree, so a leaf-only diff must still run it."""
-        root = source_corpus.repo_root()
-        monkeypatch.syspath_prepend(str(root / "scripts"))
-        leaf_test_scope = importlib.import_module("leaf_test_scope")
-        assert _THIS_FILE.relative_to(root).as_posix() in leaf_test_scope.corpus_gates(root)
 
 
 class TestPlacement:
     def test_nothing_but_the_facade_imports_a_part(self) -> None:
-        importers = _part_importers(source_corpus.repo_root() / "src" / "kiro_crew")
+        importers = _part_importers(Path(kiro_crew.__file__).resolve().parent)
         assert importers == ["apps/builtins/code_review_sage/backend/routes.py"]
 
     def test_the_importer_scan_reports_planted_importers(self, tmp_path) -> None:
@@ -701,11 +696,12 @@ class TestPlacement:
         for stem in PARTS:
             for node in _tree(PARTS_DIR / f"{stem}.py").body:
                 if _is_type_checking(node):
+                    assert isinstance(node, ast.If)
                     for sub in node.body:
                         assert isinstance(sub, ast.ImportFrom) and sub.module == FACADE, stem
                 elif isinstance(node, ast.ImportFrom):
                     assert node.module in {"__future__", "typing"} or (
-                        node.module.split(".")[0] in {"collections", "functools", "pathlib"}
+                        (node.module or "").split(".")[0] in {"collections", "functools", "pathlib"}
                     ), (stem, node.module)
                 elif isinstance(node, ast.Import):
                     assert all("." not in a.name and a.name != "kiro_crew" for a in node.names)
