@@ -1431,9 +1431,13 @@ class TestDigestHoldDeadline:
         assert digest.startswith("[Subagent batch completion event]")
         # Both finished siblings' results are in the parent's context now.
         assert "/tmp/s0/result.txt" in digest and "/tmp/s1/result.txt" in digest
-        # Honest labelling: a partial release, wave-close chunk still to come.
+        # Honest labelling: a partial release, wave-close chunk still to come,
+        # with counts dated because the digest can wait in a busy parent's queue.
         assert "Batch results 1/2" in digest
-        assert "2 of 3 delivered, 1 still running" in digest
+        assert (
+            "2 of 3 delivered, 1 still running.\nThese counts were taken when this "
+            "digest was composed; a running agent may have finished since.\n"
+        ) in digest
         assert "PARTIAL result set" in digest
         assert "wave finished" not in digest
         # The synthetic record invented no agent: no terminal WS event for it,

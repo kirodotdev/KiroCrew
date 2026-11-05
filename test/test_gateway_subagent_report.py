@@ -347,7 +347,8 @@ async def test_a_mid_wave_chunk_carries_its_progress_facts(
     ((text, _kind, meta),) = slot.queued
     assert text.startswith(
         f"{gw_mod.SUBAGENT_BATCH_COMPLETION_PREFIX}\nBatch results 1/2 — "
-        "2 of 3 delivered, 1 still running.\nProcess these results now"
+        "2 of 3 delivered, 1 still running.\nThese counts were taken when this digest was "
+        "composed; a running agent may have finished since.\nProcess these results now"
     )
     assert meta[gw_mod.SUBAGENT_COMPLETION_META_KEY] == gw_mod.wave_chunk_meta(
         chunk=1, chunks=2, delivered=2, total=3, running=1
