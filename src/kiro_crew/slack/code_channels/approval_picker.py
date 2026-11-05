@@ -37,6 +37,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from kiro_crew.dashboard.approval_inheritance import _RANK
+from kiro_crew.dashboard.git_confirm_card import git_confirm_refuses
 from kiro_crew.slack.code_channels import surface
 from kiro_crew.slack.code_channels.binding import channel_session, code_channels_on, live_config
 from kiro_crew.slack.code_channels.store import Binding, store
@@ -195,6 +196,8 @@ REBOUND_TEXT = (
 )
 #: The same words ``apply_approval_mode`` answers a spent prompt with (its 409).
 STALE_REASON = "the approval is no longer waiting"
+GIT_CONFIRM_TEXT = "⛔ This command asks every time: approve it once or reject it."
+GIT_CONFIRM_REASON = "a git-confirm card takes no channel trust"
 TRUSTED_CARD_TEXT = "🤝 Approved, and this channel is now on Trust (<@{user}>)."
 RAN_UNDER_TRUST = "🤝 Ran under Trust: <@{user}> put this channel on Trust."
 
@@ -1199,6 +1202,11 @@ async def handle_trust_call(orch: Any, payload: dict[str, Any]) -> bool:
     if not _live():
         _audit("denied", resources, STALE_REASON)
         await _ephemeral(channel, user, NOT_LIVE_TEXT)
+        return True
+    if git_confirm_refuses(getattr(slot, "messages", None), request_id, "trust", from_app=False):
+        # hooks.confirm_git_writes: the card is answered once, so no mode changes.
+        _audit("denied", resources, GIT_CONFIRM_REASON)
+        await _ephemeral(channel, user, GIT_CONFIRM_TEXT)
         return True
     outcome = await set_channel_mode(
         binding,

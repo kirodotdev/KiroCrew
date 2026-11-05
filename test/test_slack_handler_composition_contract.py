@@ -242,9 +242,13 @@ _SPLIT_HELPERS: dict[str, str] = {
 #: channel's own session posts its approval card top-level), its keyword-only
 #: ``mcp_server_name`` / ``tool_name`` / ``mcp_identity_trusted`` (the mirrored card
 #: names the trusted MCP server, as the native card does), its keyword-only
-#: ``slot_key`` / ``future`` (a click settles the slot and future that asked), and
-#: its ``channel_trust`` (a code channel's card adds "Trust this channel").
-_BASE_SHAPE_DIGEST = "bf10542b3308fe597a848771a94e29c97e3128464eb0da7fac163295698e8a6e"
+#: ``slot_key`` / ``future`` (a click settles the slot and future that asked),
+#: its ``channel_trust`` (a code channel's card adds "Trust this channel") and its
+#: ``git_confirm``, ``_build_approval_blocks``'s ``trust_button`` (a git-confirm card
+#: keeps the code channel's escaping without the Trust button), and
+#: ``_resolve_linked_click`` returning ``None`` (a Trust click on a git-confirm card
+#: settles nothing).
+_BASE_SHAPE_DIGEST = "f82728e3fe9568ec605a8cf3d52f17cd6e2ef95f6d06460fa4341710d9c63b15"
 
 #: Definitions that stay in the facade file, each because a repository guard, a
 #: contract or the import-time body reads it there. The reason per entry is in

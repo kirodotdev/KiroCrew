@@ -297,11 +297,13 @@ def _blocks(
     mcp_server_name: str = "",
     tool_name: str = "",
     mcp_identity_trusted: bool = False,
+    trust_button: bool = True,
 ) -> list[dict[str, Any]]:
     """The approval card the channel's own session posts, re-headed and re-wired.
 
     Carries the permission event's MCP identity as the linked card does, so the
     card names the proven server/tool rather than only the model-written title.
+    Without *trust_button* (a git-confirm card) it offers Approve and Reject only.
     """
     from kiro_crew.slack.handler import _build_approval_blocks, _LinkedApprovalEvent
 
@@ -313,7 +315,12 @@ def _blocks(
         tool_name=tool_name,
         mcp_identity_trusted=mcp_identity_trusted,
     )
-    blocks = _build_approval_blocks(event, is_dm=False, channel_trust=True)  # type: ignore[arg-type]
+    blocks = _build_approval_blocks(
+        event,  # type: ignore[arg-type]
+        is_dm=False,
+        channel_trust=True,
+        trust_button=trust_button,
+    )
     remap = {
         "approve_tool": APPROVE_ACTION_ID,
         "reject_tool": REJECT_ACTION_ID,
@@ -432,6 +439,8 @@ async def relay(
         worker_title = _worker_title(slot)
         header = HEADER.format(title=worker_title)
         rid = str(request_id)
+        from kiro_crew.dashboard.git_confirm_card import is_git_confirm_card
+
         ts = await slack.post_blocks(
             binding.channel_id,
             _blocks(
@@ -442,6 +451,7 @@ async def relay(
                 mcp_server_name=mcp_server_name,
                 tool_name=tool_name,
                 mcp_identity_trusted=mcp_identity_trusted,
+                trust_button=not is_git_confirm_card(getattr(slot, "messages", None), rid),
             ),
             FALLBACK.format(title=worker_title),
             None,
@@ -606,6 +616,20 @@ async def handle_click(orch: Any, payload: dict[str, Any]) -> bool:
         await _ephemeral(channel, user, NOT_LIVE_TEXT)
         return True
     line = APPROVED_BY if action_id == APPROVE_ACTION_ID else REJECTED_BY
+    from kiro_crew.dashboard.git_confirm_card import git_confirm_refuses
+
+    if action_id == TRUST_ACTION_ID and git_confirm_refuses(
+        getattr(worker, "messages", None), card.request_id, "trust", from_app=False
+    ):
+        # hooks.confirm_git_writes: the card is answered once, so no mode changes.
+        from kiro_crew.slack.code_channels.approval_picker import (
+            GIT_CONFIRM_REASON,
+            GIT_CONFIRM_TEXT,
+        )
+
+        _audit("denied", resources, GIT_CONFIRM_REASON)
+        await _ephemeral(channel, user, GIT_CONFIRM_TEXT)
+        return True
     if action_id == TRUST_ACTION_ID:
 
         def _live() -> bool:

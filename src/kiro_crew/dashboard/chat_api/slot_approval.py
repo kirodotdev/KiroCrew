@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any
 from aiohttp import web
 
 from kiro_crew.dashboard.deny_override import DENY_OVERRIDE_ACTIONS, is_deny_override_card
+from kiro_crew.dashboard.git_confirm_card import git_confirm_refuses
 
 if TYPE_CHECKING:
     import time
@@ -830,6 +831,12 @@ def _sweep_pending_approvals(
             # override: a trust tier is not an answer to either, and the card
             # stays open.
             continue
+        if _get_pattern_from_pending(slot, aid, "git_confirm"):
+            # A command the session confirms (a git history write, or a
+            # git-free command holding a shell expansion): trust and YOLO
+            # do not answer it (hooks.confirm_git_writes), so it stays
+            # open for the person.
+            continue
         if not fut.done():
             # Read while still pending: names the row the frame settles.
             _mid = slot.approval_instance(aid) or ""
@@ -1072,6 +1079,32 @@ def _deny_override_answer_refusal(
     return web.json_response(
         {"error": errors[code], "code": code},
         status=403 if code == "deny_override_owner_only" else 400,
+    )
+
+
+def _git_confirm_answer_refused(
+    caller: str, request_id: Any, action: Any, request_app: str
+) -> web.Response:
+    """Refuse an answer a git-confirm card does not take (``git_confirm_refuses``)."""
+    code = "git_confirm_person_only" if request_app else "git_confirm_allow_once_only"
+    try:
+        sel().log_api_access(
+            caller=caller,
+            operation=f"tool_approval:{action}",
+            outcome="denied",
+            resources=str(request_id or ""),
+            error=code,
+        )
+    except Exception:
+        logger.warning("SEL audit failed for refused git confirm %s", request_id, exc_info=True)
+    if request_app:
+        return web.json_response(
+            {"error": "a person answers this approval from the dashboard", "code": code},
+            status=403,
+        )
+    return web.json_response(
+        {"error": "this approval is answered with allow once or reject", "code": code},
+        status=400,
     )
 
 
@@ -1325,6 +1358,17 @@ async def api_chat_slot_approve(request: web.Request) -> web.Response:
     )
     if _override_refusal is not None:
         return _override_refusal
+    # A git-confirm card (hooks.confirm_git_writes) takes only a person's one-shot
+    # answer: no standing tier and no app's grant settles it. Checked before any
+    # side effect, so a refused answer grants nothing and the card stays open.
+    if (
+        fut is not None
+        and not fut.done()
+        and git_confirm_refuses(
+            owner.messages, request_id, original_action, from_app=bool(request_app)
+        )
+    ):
+        return _git_confirm_answer_refused(audit_caller(), request_id, original_action, request_app)
     # A card's Trust / Trust-reads press sets a session mode, so the policy that
     # governs ``api_chat_mode`` governs it too. Checked before any side effect.
     if action in ("trust", "trust_reads") and not session_mode_permitted(action):

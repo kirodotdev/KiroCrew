@@ -104,8 +104,8 @@ _STABLE_TEXT = {
 
 _STABLE_TEXT_SHA256 = {
     "context_scope_all_withheld": "98ed04f8fca6f805d76f7fd3f518c63f221d5af6da6636fd30b28dc217207a0a",
-    "critical_rules": "55287e9d4c20eee441889066653c1ccd801a38f10e67669bebbb358e2f40c597",
-    "critical_rules_channel": "dc35d4213b48db6e36c3e4e520824280eed5a84e5008724f9335cfca332dd094",
+    "critical_rules": "3823098f623d361d6b52dcfcd79209d666cbdd5b6570e6597b96f4d9629fbdbf",
+    "critical_rules_channel": "03059ddcdcd64b42f132febdaaa6269570b0550077e324b22de2bfb0af0a0d68",
     "critical_rules_subagent": "cf4781f0764c60bc6e8f7efe68c04719118d56ce1b6722da0ca13c78b1512aa1",
     "docs_section": "971b6008afbd9ff048c498c06cffecc6dafc7a58b0df75ff9db0b15cf9e26c09",
     "member_how_you_work": "df9ee9aff3939ab17a682684f48cd06a091911e3e5774bfc3fce764809b7b946",
