@@ -541,7 +541,7 @@ _DENY_EXCEPTIONS: dict[str, list[str]] = {
     "rm -rf ~.*": list(_INERT_SEARCH_GLOBS),
 }
 
-# The ``chmod``/``chown`` rows are matched on argv, not as regexes: see
+# The ``chmod``/``chown`` and ``dd`` rows are matched on argv, not as regexes: see
 # :mod:`~.argv_rules`. As text they could not tell a verb that runs from the same
 # word in another command's arguments (``grep -n 'chmod 777' f``) or a path that
 # belongs to another command (``chmod +x a && ls /usr/lib``).

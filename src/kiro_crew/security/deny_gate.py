@@ -604,7 +604,7 @@ def is_denied(
     # under backtracking and are already enforced by the ``_is_git_publish`` floor
     # below (see ``_GIT_PUBLISH_RULE_PATTERNS``).
     regex_patterns = [p for p in regex_patterns if p not in _rules._GIT_PUBLISH_RULE_PATTERNS]
-    # The chmod/chown rows are matched on argv (``argv_rules``), not as regexes: run
+    # The chmod/chown and dd rows are matched on argv (``argv_rules``), not as regexes: run
     # across a whole compound command, their text matched words of OTHER commands
     # (``chmod +x a && ls /usr/lib`` read as a chmod on /usr). Same capture-then-strip
     # as git-publish, so a disabled row stays disabled.
@@ -854,7 +854,7 @@ def is_denied(
             # The raw input, not ``lower``: see the audit note below.
             _emit_deny_event(tool_name, pattern, tool_name)
             return _reason(pattern, note, rule=rule_id, component="argv-floor")
-    # ── Argv rules (chmod/chown: mode 777, system dirs) ──
+    # ── Argv rules (chmod/chown: mode 777, system dirs; dd: raw disk output) ──
     # Read from the raw input: paths and modes are case-sensitive.
     # A waived row leaves the set and the rest are asked again, so a second row the
     # command also breaks still refuses; each pass removes one row, so this ends.
