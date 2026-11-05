@@ -39,6 +39,7 @@ import { i18nT } from '../i18n/t'
 import { canGoBack, canGoForward } from '../lib/routeHistoryPosition'
 import { useGuardedHistoryStep, useGuardedLeave } from '../components/NavigationLeaveGuard'
 import { MOBILE_BREAKPOINT } from './useIsMobile'
+import { touchFirstForm } from '../lib/touchLayoutForm'
 import { isEditableTarget } from '../utils/editableTarget'
 import { closeShownCrewWindow, crewWindowShown } from '../pages/chat/crew-window/crewWindowStore'
 import { stepTurn } from '../pages/chat/turnStep'
@@ -644,8 +645,8 @@ function isTerminalTarget(target: EventTarget | null): boolean {
  *  keypress so the handler's document listener never re-registers on resize.
  *  Same breakpoint as `useIsMobile` — one source of truth for "narrow". */
 function isNarrowViewport(): boolean {
-  return typeof window.matchMedia === 'function'
-    && window.matchMedia(`(max-width: ${MOBILE_BREAKPOINT - 1}px)`).matches
+  return touchFirstForm() ?? (typeof window.matchMedia === 'function'
+    && window.matchMedia(`(max-width: ${MOBILE_BREAKPOINT - 1}px)`).matches)
 }
 
 export function formatShortcut(def: ShortcutDef): string {
