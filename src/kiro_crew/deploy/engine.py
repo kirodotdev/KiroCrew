@@ -453,7 +453,7 @@ def run_aws(
             # the CHILD's PATH, and a desktop-app gateway hands the child the
             # minimal launchd PATH. ``run_limited`` forwards this ``env`` untouched
             # and sets no PATH of its own, so the child gets the env
-            # ``cloud.aws.run_aws`` passes too. ``aws_spawn_env`` APPENDS
+            # ``cloud.aws.run_aws`` builds on too. ``aws_spawn_env`` APPENDS
             # :data:`_AWS_BIN_DIRS`, the dirs the ``aws`` head itself is resolved
             # from, after the inherited PATH; it widens only for an absolute head
             # and drops any provenance-refused dir. So it can make an unresolvable
