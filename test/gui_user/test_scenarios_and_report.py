@@ -195,7 +195,7 @@ class TestShippedScenarios:
                     for i, step in enumerate(sc.steps)
                     if any(label in step for label in labels)
                     and re.search(r"\b(click|find)\b", step, re.IGNORECASE)
-                    and "Search Bots" not in step
+                    and "Search bots" not in step
                 ),
                 None,
             )
@@ -203,7 +203,7 @@ class TestShippedScenarios:
                 continue
             checked += 1
             searched = any(
-                "Search Bots" in step and any(m.split("-")[0] in step.lower() for m in sc.members)
+                "Search bots" in step and any(m.split("-")[0] in step.lower() for m in sc.members)
                 for step in sc.steps[:click_at]
             )
             assert (
@@ -417,7 +417,7 @@ class TestShippedScenarios:
     def test_members_dm_scenario_says_where_the_list_is_before_the_search(self) -> None:
         """The page reopens the last mate with the list in the switcher; the steps say so before the search."""
         sc = scenarios.load_scenario(SCENARIOS_DIR / "members-dm-hello.yaml")
-        search = next(i for i, s in enumerate(sc.steps) if "Search Bots" in s)
+        search = next(i for i, s in enumerate(sc.steps) if "Search bots" in s)
         before = " ".join(sc.steps[:search])
         assert "avatar switcher" in before
         assert '"Show the full roster"' in before
