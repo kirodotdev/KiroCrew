@@ -10,9 +10,12 @@ defined here, so each one reads, imports and patches as ``kiro_crew.work_ledger.
 
 from __future__ import annotations
 
+import itertools
 import json
 import re
 import secrets
+import threading
+from collections import OrderedDict
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
@@ -225,6 +228,52 @@ def _open_lock(path: Path, *, create: bool = True) -> Iterator[None]:
             yield
 
 
+#: Change marks for readers in THIS process: the end of every hold of a store's
+#: conductor or item lock gives the store's exact slot key a fresh mark, because every
+#: write, rebuild and purge of a store happens under one of those two locks. A reader
+#: that keeps what it read beside the mark it saw BEFORE reading may serve it again
+#: while :func:`change_mark` still returns that mark. ``itertools.count`` hands out
+#: each value once even across threads, so a mark never repeats.
+#:
+#: At most :data:`CHANGE_MARKS_KEPT` stores keep their own mark, least recently
+#: written dropped first. A dropped store answers the newest mark ever dropped
+#: (``_last_mark[1]``), which is at least its own last one and so never equals a mark
+#: a reader kept from before that write.
+CHANGE_MARKS_KEPT = 4096
+_change_counter = itertools.count(1)
+_change_marks: "OrderedDict[str, int]" = OrderedDict()
+_change_lock = threading.Lock()
+#: ``[newest mark handed out, newest mark dropped]``, in a list so the facade's
+#: binding of it stays live.
+_last_mark = [0, 0]
+
+
+def _mark_changed(slot_key: str) -> None:
+    with _change_lock:
+        mark = next(_change_counter)
+        _change_marks[slot_key] = mark
+        _change_marks.move_to_end(slot_key)
+        while len(_change_marks) > CHANGE_MARKS_KEPT:
+            _last_mark[1] = _change_marks.popitem(last=False)[1]
+        _last_mark[0] = mark
+
+
+def change_mark(slot_key: str) -> int:
+    """The mark of the last lock hold on *slot_key*'s store here (``0`` for none, or
+    the newest dropped mark for a store whose own mark was dropped).
+
+    shortcut: a store written by another process (a CLI sweep) moves no mark here;
+    readers bound how long they trust an unmoved mark (``crew_workers``).
+    """
+    with _change_lock:
+        return _change_marks.get(slot_key, _last_mark[1])
+
+
+def last_change_mark() -> int:
+    """The newest mark of any store: unchanged means no store was written here since."""
+    return _last_mark[0]
+
+
 @contextmanager
 def conductor_lock(slot_key: str, *, create: bool = True) -> Iterator[None]:
     """Hold the conductor lock. FIRST in the lock order; see the module docstring.
@@ -233,7 +282,10 @@ def conductor_lock(slot_key: str, *, create: bool = True) -> Iterator[None]:
     store; it is the form a deleter takes.
     """
     with _open_lock(conductor_dir(slot_key) / _LOCK_FILE, create=create):
-        yield
+        try:
+            yield
+        finally:
+            _mark_changed(slot_key)
 
 
 @contextmanager
@@ -259,7 +311,10 @@ def item_lock(slot_key: str, item_id: str, *, create: bool = True) -> Iterator[N
     path = _item_lock_path(slot_key, item_id)
     if create:
         with _open_lock(path):
-            yield
+            try:
+                yield
+            finally:
+                _mark_changed(slot_key)
         return
     try:
         lock_cm = _open_lock(path, create=False)
@@ -284,6 +339,7 @@ def item_lock(slot_key: str, item_id: str, *, create: bool = True) -> Iterator[N
     try:
         yield
     finally:
+        _mark_changed(slot_key)
         lock_cm.__exit__(None, None, None)
 
 

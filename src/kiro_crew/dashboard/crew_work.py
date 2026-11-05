@@ -15,7 +15,8 @@ worker's closed and looping liveness read the way the side board reads them
 left to the dashboard, which holds the live rows (``website/src/lib/crewWork.ts``).
 
 The items come from the ``work`` slot fold the crew log already publishes on its bus,
-so no read here touches disk. Only live Crew Mode roots' boards are followed
+so no read here touches disk. Only live conductors' boards (Crew Mode roots and
+the sub-conductors under them) are followed
 (:func:`follow`, keyed subscriptions, released by :func:`retain`), so every other
 board's fold stays on demand. A board not folded yet has no entry, and its row
 carries no field: the row then behaves as it did before the field existed.
@@ -37,7 +38,7 @@ CREW_WORK_FIELD: Final[str] = "crew_work"
 #: The slot fold the summary is read from.
 WORK_FOLD: Final[str] = "work"
 
-#: Boards followed at once. A root past it is still shown, on the old reading.
+#: Boards followed at once. A conductor past it is still shown, on the old reading.
 CREW_WORK_FOLLOW_LIMIT: Final[int] = 64
 
 #: Open items one summary lists. More are still counted in ``open``.
@@ -234,13 +235,13 @@ def _on_fold(event: Any) -> None:
 def follow(slot: str, fold_keys: Iterable[str]) -> None:
     """Keep *slot*'s board current: listen to its ``work`` fold, prime it once.
 
-    For a live Crew Mode root's row. The subscriptions are KEYED to the board's fold
+    For a live conductor's row. The subscriptions are KEYED to the board's fold
     keys (its slot key and session key, the two spellings a fold may name it by), so
     only these boards' ``work`` folds are kept eager. A root with no items kept yet
     gets one background fold, which publishes on the bus and lands here; so a restart
     does not leave its row on the old reading until its ledger next moves.
     Idempotent; bounded at :data:`CREW_WORK_FOLLOW_LIMIT` boards, and :func:`retain`
-    gives a closed root's place back.
+    gives a closed conductor's place back.
     """
     from kiro_crew.crew_log import bus
 
