@@ -96,6 +96,7 @@ export default function HookSkillsDropdown({
       <Input
         ref={inputRef}
         placeholder={i18nT('components.skillsMultiSelect.filter_skills')}
+        aria-label={i18nT('components.agentSkillsEditor.filter_skills')}
         value={filter}
         onChange={e => setFilter(e.target.value)}
         className="mb-1 text-[12px]"
