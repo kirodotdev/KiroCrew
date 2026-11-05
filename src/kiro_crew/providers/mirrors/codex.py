@@ -70,6 +70,7 @@ from kiro_crew.acp_backends import ACP_BACKEND_CODEX
 from kiro_crew.mcp_gateway import STUB_MODULE
 from kiro_crew.mcp_gateway.claim import STUB_SESSION_TOKEN_ENV
 from kiro_crew.mcp_gateway.hashing import expand_stub_flags
+from kiro_crew.mcp_cleanup import WORK_LEDGER_SERVER
 from kiro_crew.members import MEMBER_DISPATCH_SERVER
 from kiro_crew.providers.mirrors.base import (
     RESOURCES_NO_READER,
@@ -561,7 +562,7 @@ class CodexMirror(AgentConfigMirror):
                 "inherits nothing; that credential rides ONLY kirocrew-core and "
                 "kirocrew-cron, the two entries the translation replaces from the "
                 "managed source, so no part of a hand-editable spec reaches a child "
-                "holding it. Every OTHER managed Crew server is withheld rather than "
+                "holding it. Other direct managed Crew launches are withheld rather than "
                 "mounted credential-less, since it would answer not_bound to every "
                 "call, and that set is DERIVED as the managed servers minus the "
                 "control plane -- see _identity_bound_crew_servers. Gateway "

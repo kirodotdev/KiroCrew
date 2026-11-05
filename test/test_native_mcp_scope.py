@@ -37,6 +37,58 @@ def test_scope_requires_runtime_session_and_freshness(envelope):
     )
 
 
+@pytest.mark.parametrize("channel", [None, "dashboard:synthetic"])
+def test_attach_signs_the_child_channel_instead_of_the_hosts(monkeypatch, tmp_path, channel):
+    from kiro_crew.mcp_gateway import stub_register
+    from kiro_crew.mcp_gateway.claim import STUB_SESSION_TOKEN_ENV
+
+    monkeypatch.setattr(native_scope, "_key", lambda: b"synthetic-scope-key")
+    monkeypatch.setenv("KIROCREW_CHANNEL_ID", "unrelated-host-channel")
+    monkeypatch.setattr(
+        stub_register,
+        "build_register_payload",
+        lambda *args, **kwargs: {
+            "type": "register",
+            "stub_uuid": "client",
+            "stub_session_token": "synthetic",
+            "channel_id": "unrelated-host-channel",
+        },
+    )
+    (tmp_path / native_scope.DESCRIPTOR_NAME).write_text(
+        json.dumps({"pid": 1, "start": 2, "request": 3, "response": 4, "instance": "runtime-A"}),
+        encoding="ascii",
+    )
+    env = [{"name": STUB_SESSION_TOKEN_ENV, "value": "synthetic"}]
+    if channel:
+        env.append({"name": "KIROCREW_CHANNEL_ID", "value": channel})
+    [entry] = native_scope.attach(
+        [
+            {
+                "name": "kirocrew-core",
+                "command": "python",
+                "args": [
+                    "-m",
+                    "kiro_crew.mcp_gateway.stub",
+                    "--server",
+                    "kirocrew-core",
+                    "--agent",
+                    "synthetic",
+                    "--target-command",
+                    "python",
+                    "--work-dir",
+                    str(tmp_path),
+                ],
+                "env": env,
+            }
+        ],
+        tmp_path,
+    )
+    child_env = {item["name"]: item["value"] for item in entry["env"]}
+    body = json.loads(child_env[native_scope.SCOPE_ENV])["body"]
+    assert body["fields"]["channel_id"] == channel
+    assert child_env["PYTHONIOENCODING"] == "utf-8:backslashreplace"
+
+
 def test_confined_runtime_uses_signed_host_generation_without_losing_binary_identity(envelope):
     register, _ = envelope
     register = {

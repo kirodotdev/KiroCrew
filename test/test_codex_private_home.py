@@ -180,6 +180,9 @@ def test_explicit_setup_routes_host_tools_without_changing_sharing_or_unrelated_
         "other-server": False,
         "kirocrew-core": True,
         "kirocrew-cron": True,
+        "kirocrew-dashboard": True,
+        "kirocrew-work": True,
+        "kirocrew-panel": True,
     }
     assert configured["agent"] == {"acp_backend": "codex"}
 
